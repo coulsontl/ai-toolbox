@@ -1,9 +1,32 @@
 import React from 'react';
-import { Modal, Form, Input, InputNumber, Button, message } from 'antd';
+import { Modal, Form, Input, AutoComplete, Button, message } from 'antd';
 import { useTranslation } from 'react-i18next';
 import JsonEditor from '@/components/common/JsonEditor';
 import { createModel, updateModel, listModels } from '@/services/providerApi';
 import type { Model } from '@/types/provider';
+
+// Context limit options with display labels
+const CONTEXT_LIMIT_OPTIONS = [
+  { value: '4096', label: '4K' },
+  { value: '8192', label: '8K' },
+  { value: '16384', label: '16K' },
+  { value: '32768', label: '32K' },
+  { value: '65536', label: '64K' },
+  { value: '128000', label: '128K' },
+  { value: '200000', label: '200K' },
+  { value: '1000000', label: '1M' },
+  { value: '2000000', label: '2M' },
+];
+
+// Output limit options with display labels
+const OUTPUT_LIMIT_OPTIONS = [
+  { value: '2048', label: '2K' },
+  { value: '4096', label: '4K' },
+  { value: '8192', label: '8K' },
+  { value: '16384', label: '16K' },
+  { value: '32768', label: '32K' },
+  { value: '65536', label: '64K' },
+];
 
 interface ModelFormModalProps {
   open: boolean;
@@ -43,7 +66,7 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
           const parsed = model.options ? JSON.parse(model.options) : {};
           setJsonOptions(parsed);
           setJsonValid(true);
-        } catch (e) {
+        } catch {
           setJsonOptions({});
           setJsonValid(false);
         }
@@ -56,7 +79,12 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
   }, [open, model, form]);
 
   const handleJsonChange = (value: unknown, isValid: boolean) => {
-    setJsonOptions(value);
+    // Only update jsonOptions when JSON is valid
+    // This prevents passing raw text strings back to the editor
+    // which would cause a value type change and trigger set()
+    if (isValid) {
+      setJsonOptions(value);
+    }
     setJsonValid(isValid);
   };
 
@@ -158,24 +186,62 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
         <Form.Item
           label={t('settings.model.contextLimit')}
           name="context_limit"
-          rules={[{ required: true, message: t('settings.model.contextLimitPlaceholder') }]}
+          rules={[
+            { required: true, message: t('settings.model.contextLimitPlaceholder') },
+            {
+              validator: (_, value) => {
+                if (value && !/^\d+$/.test(String(value))) {
+                  return Promise.reject(t('settings.model.invalidNumber'));
+                }
+                return Promise.resolve();
+              },
+            },
+          ]}
+          getValueFromEvent={(val) => {
+            const num = parseInt(val, 10);
+            return isNaN(num) ? val : num;
+          }}
+          normalize={(val) => (typeof val === 'number' ? String(val) : val)}
         >
-          <InputNumber
+          <AutoComplete
+            options={CONTEXT_LIMIT_OPTIONS}
             placeholder={t('settings.model.contextLimitPlaceholder')}
             style={{ width: '100%' }}
-            min={0}
+            filterOption={(inputValue, option) =>
+              (option?.label.toLowerCase().includes(inputValue.toLowerCase()) ||
+              option?.value.includes(inputValue)) ?? false
+            }
           />
         </Form.Item>
 
         <Form.Item
           label={t('settings.model.outputLimit')}
           name="output_limit"
-          rules={[{ required: true, message: t('settings.model.outputLimitPlaceholder') }]}
+          rules={[
+            { required: true, message: t('settings.model.outputLimitPlaceholder') },
+            {
+              validator: (_, value) => {
+                if (value && !/^\d+$/.test(String(value))) {
+                  return Promise.reject(t('settings.model.invalidNumber'));
+                }
+                return Promise.resolve();
+              },
+            },
+          ]}
+          getValueFromEvent={(val) => {
+            const num = parseInt(val, 10);
+            return isNaN(num) ? val : num;
+          }}
+          normalize={(val) => (typeof val === 'number' ? String(val) : val)}
         >
-          <InputNumber
+          <AutoComplete
+            options={OUTPUT_LIMIT_OPTIONS}
             placeholder={t('settings.model.outputLimitPlaceholder')}
             style={{ width: '100%' }}
-            min={0}
+            filterOption={(inputValue, option) =>
+              (option?.label.toLowerCase().includes(inputValue.toLowerCase()) ||
+              option?.value.includes(inputValue)) ?? false
+            }
           />
         </Form.Item>
 
@@ -185,6 +251,7 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
             onChange={handleJsonChange}
             mode="text"
             height={300}
+            resizable
           />
         </Form.Item>
       </Form>

@@ -1,2 +1,69 @@
 /* Import vanilla-jsoneditor styles */
 @import 'vanilla-jsoneditor/themes/jse-theme-dark.css';
+
+/* JSON Editor container - make internal editor fill container height */
+.json-editor-wrapper {
+  display: flex;
+  flex-direction: column;
+}
+
+.json-editor-wrapper > div {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Target the root svelte component */
+.json-editor-wrapper > div > div {
+  flex: 1 !important;
+  height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+}
+
+/* Main container should fill available space */
+.json-editor-wrapper .jse-main {
+  flex: 1 !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Menu bar and status bar should NOT flex */
+.json-editor-wrapper .jse-menu {
+  flex: none !important;
+}
+
+.json-editor-wrapper .jse-status-bar {
+  flex: none !important;
+}
+
+/* Contents area should flex to fill space */
+.json-editor-wrapper .jse-contents {
+  flex: 1 !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.json-editor-wrapper .jse-text-mode,
+.json-editor-wrapper .jse-tree-mode {
+  flex: 1 !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* CodeMirror editor inside text mode */
+.json-editor-wrapper .cm-editor {
+  height: 100% !important;
+  flex: 1 !important;
+  min-height: 0 !important;
+}
+
+.json-editor-wrapper .cm-scroller {
+  overflow: auto !important;
+  flex: 1 !important;
+}

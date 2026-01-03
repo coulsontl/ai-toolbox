@@ -67,7 +67,8 @@
       "options": "额外参数",
       "optionsPlaceholder": "JSON 格式的透传参数",
       "emptyText": "暂无模型",
-      "invalidJson": "JSON 格式不正确"
+      "invalidJson": "JSON 格式不正确",
+      "invalidNumber": "请输入有效的数字"
     },
     "backupSettings": {
       "title": "备份设置",

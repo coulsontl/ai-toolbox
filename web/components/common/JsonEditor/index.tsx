@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import {
   createJSONEditor,
   type JSONEditorPropsOptional,
@@ -20,6 +20,12 @@ export interface JsonEditorProps {
   readOnly?: boolean;
   /** Editor height */
   height?: number | string;
+  /** Minimum height when resizable */
+  minHeight?: number;
+  /** Maximum height when resizable */
+  maxHeight?: number;
+  /** Enable resize handle */
+  resizable?: boolean;
   /** Additional CSS class name */
   className?: string;
 }
@@ -37,15 +43,67 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   mode = 'text',
   readOnly = false,
   height = 300,
+  minHeight = 150,
+  maxHeight = 800,
+  resizable = false,
   className,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<JSONEditorInstance | null>(null);
   const valueRef = useRef<unknown>(value);
+  const externalValueRef = useRef<string>(JSON.stringify(value));
+  
+  // Convert initial height to number for resizable mode
+  const initialHeight = typeof height === 'number' ? height : parseInt(height, 10) || 300;
+  const [currentHeight, setCurrentHeight] = useState(initialHeight);
+  
+  // Resize handling
+  const isResizingRef = useRef(false);
+  const startYRef = useRef(0);
+  const startHeightRef = useRef(0);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizingRef.current = true;
+    startYRef.current = e.clientY;
+    startHeightRef.current = currentHeight;
+    document.body.style.cursor = 'ns-resize';
+    document.body.style.userSelect = 'none';
+  }, [currentHeight]);
+
+  useEffect(() => {
+    if (!resizable) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizingRef.current) return;
+      const deltaY = e.clientY - startYRef.current;
+      const newHeight = Math.min(maxHeight, Math.max(minHeight, startHeightRef.current + deltaY));
+      setCurrentHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      if (isResizingRef.current) {
+        isResizingRef.current = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [resizable, minHeight, maxHeight]);
 
   // Initialize editor
   useEffect(() => {
     if (!containerRef.current) return;
+
+    // Clear any existing content (handles React StrictMode double-mount)
+    containerRef.current.innerHTML = '';
 
     const handleChange: OnChange = (content, _previousContent, { contentErrors }) => {
       if (!onChange) return;
@@ -62,6 +120,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
           valueRef.current = parsed;
           onChange(parsed, true);
         } catch {
+          // Pass raw text for invalid JSON, but caller should not update value state with it
           onChange(content.text, false);
         }
       }
@@ -106,11 +165,20 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   useEffect(() => {
     if (!editorRef.current) return;
 
-    // Skip if value hasn't changed (to avoid infinite loops)
-    if (JSON.stringify(valueRef.current) === JSON.stringify(value)) {
+    const newValueStr = JSON.stringify(value);
+    
+    // Skip if external value hasn't changed (to avoid resetting during editing)
+    if (externalValueRef.current === newValueStr) {
       return;
     }
 
+    // Also skip if the current internal value matches (user just typed this)
+    if (JSON.stringify(valueRef.current) === newValueStr) {
+      externalValueRef.current = newValueStr;
+      return;
+    }
+
+    externalValueRef.current = newValueStr;
     valueRef.current = value;
 
     const newContent: Content =
@@ -131,19 +199,45 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
     });
   }, [mode, readOnly]);
 
-  const heightStyle = typeof height === 'number' ? `${height}px` : height;
+  const actualHeight = resizable ? currentHeight : (typeof height === 'number' ? height : parseInt(height, 10) || 300);
 
   return (
-    <div
-      ref={containerRef}
-      className={className}
-      style={{
-        height: heightStyle,
-        border: '1px solid #d9d9d9',
-        borderRadius: 6,
-        overflow: 'hidden',
-      }}
-    />
+    <div style={{ position: 'relative', height: actualHeight }}>
+      <div
+        ref={containerRef}
+        className={`json-editor-wrapper ${className || ''}`}
+        style={{
+          height: '100%',
+          border: '1px solid #d9d9d9',
+          borderRadius: 6,
+          overflow: 'hidden',
+        }}
+      />
+      {resizable && (
+        <div
+          onMouseDown={handleMouseDown}
+          style={{
+            position: 'absolute',
+            bottom: 0,
+            right: 0,
+            width: 16,
+            height: 16,
+            cursor: 'ns-resize',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            opacity: 0.5,
+            transition: 'opacity 0.2s',
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.5'; }}
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+            <path d="M8 2L2 8M8 5L5 8M8 8L8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+        </div>
+      )}
+    </div>
   );
 };
 

@@ -67,7 +67,8 @@
       "options": "Additional Options",
       "optionsPlaceholder": "JSON formatted pass-through parameters",
       "emptyText": "No models yet",
-      "invalidJson": "Invalid JSON format"
+      "invalidJson": "Invalid JSON format",
+      "invalidNumber": "Please enter a valid number"
     },
     "backupSettings": {
       "title": "Backup Settings",
