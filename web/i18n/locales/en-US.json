@@ -1,0 +1,143 @@
+{
+  "app": {
+    "name": "AI Toolbox"
+  },
+  "modules": {
+    "daily": "Daily",
+    "coding": "Coding",
+    "settings": "Settings"
+  },
+  "subModules": {
+    "notes": "Notes",
+    "opencode": "OpenCode",
+    "claude": "Claude"
+  },
+  "settings": {
+    "title": "Settings",
+    "tabs": {
+      "general": "General",
+      "provider": "Provider"
+    },
+    "general": "General",
+    "language": "Language",
+    "currentLanguage": "Current Language",
+    "theme": "Theme",
+    "backup": "Backup",
+    "backupPath": "Backup Path",
+    "selectPath": "Select Path",
+    "export": "Export Data",
+    "import": "Import Data",
+    "lastBackup": "Last Backup",
+    "provider": {
+      "title": "Provider Management",
+      "addProvider": "Add Provider",
+      "editProvider": "Edit Provider",
+      "deleteProvider": "Delete Provider",
+      "confirmDelete": "Are you sure you want to delete provider \"{name}\"? Associated models will also be deleted.",
+      "id": "Provider ID",
+      "idPlaceholder": "Unique identifier, e.g., my-openai",
+      "idExists": "This provider ID already exists",
+      "name": "Name",
+      "namePlaceholder": "Display name, e.g., My OpenAI",
+      "providerType": "Provider Type",
+      "baseUrl": "Base URL",
+      "baseUrlPlaceholder": "API base URL, e.g., https://api.openai.com/v1",
+      "baseUrlHint": "Make sure the URL ends with /v1 (if required)",
+      "apiKey": "API Key",
+      "apiKeyPlaceholder": "Enter API Key",
+      "showApiKey": "Show",
+      "hideApiKey": "Hide",
+      "emptyText": "No providers yet, click the button above to add one"
+    },
+    "model": {
+      "title": "Model List",
+      "addModel": "Add Model",
+      "editModel": "Edit Model",
+      "deleteModel": "Delete Model",
+      "confirmDelete": "Are you sure you want to delete model \"{name}\"?",
+      "id": "Model ID",
+      "idPlaceholder": "Unique identifier, e.g., gpt-4o",
+      "idExists": "This model ID already exists under this provider",
+      "name": "Model Name",
+      "namePlaceholder": "Display name, e.g., GPT-4o",
+      "contextLimit": "Context Limit",
+      "contextLimitPlaceholder": "e.g., 128000",
+      "outputLimit": "Output Limit",
+      "outputLimitPlaceholder": "e.g., 8000",
+      "options": "Additional Options",
+      "optionsPlaceholder": "JSON formatted pass-through parameters",
+      "emptyText": "No models yet",
+      "invalidJson": "Invalid JSON format"
+    },
+    "backupSettings": {
+      "title": "Backup Settings",
+      "storageType": "Storage Type",
+      "local": "Local",
+      "webdav": "WebDAV",
+      "localPath": "Local Path",
+      "selectFolder": "Select Folder",
+      "backupNow": "Backup Now",
+      "restoreBackup": "Restore Backup",
+      "noPathConfigured": "Please configure backup path first",
+      "noWebDAVConfigured": "Please configure WebDAV server first",
+      "backupSuccess": "Backup successful",
+      "backupFailed": "Backup failed",
+      "restoreSuccess": "Restore successful, page will reload",
+      "restoreFailed": "Restore failed",
+      "confirmRestore": "Confirm Restore",
+      "confirmRestoreDesc": "Restoring backup will overwrite all current data. Are you sure you want to continue?",
+      "selectBackupFile": "Select Backup File",
+      "noBackupsFound": "No backup files found",
+      "listBackupsFailed": "Failed to list backup files"
+    },
+    "webdav": {
+      "url": "Server URL",
+      "username": "Username",
+      "password": "Password",
+      "remotePath": "Remote Path"
+    },
+    "s3": {
+      "title": "S3 Storage Settings",
+      "accessKey": "Access Key",
+      "secretKey": "Secret Key",
+      "bucket": "Bucket",
+      "region": "Region",
+      "prefix": "Path Prefix",
+      "endpointUrl": "Endpoint URL",
+      "forcePathStyle": "Force Path Style",
+      "publicDomain": "Public Domain",
+      "notConfigured": "Not Configured"
+    }
+  },
+  "theme": {
+    "light": "Light",
+    "dark": "Dark"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "delete": "Delete",
+    "edit": "Edit",
+    "add": "Add",
+    "search": "Search",
+    "loading": "Loading...",
+    "noData": "No Data",
+    "success": "Success",
+    "error": "Error",
+    "browse": "Browse",
+    "notSet": "Not Set"
+  },
+  "notes": {
+    "title": "Notes",
+    "newNote": "New Note",
+    "searchPlaceholder": "Search notes...",
+    "untitled": "Untitled",
+    "confirmDelete": "Are you sure to delete this note?"
+  },
+  "placeholder": {
+    "comingSoon": "Coming soon...",
+    "opencode": "OpenCode feature is coming soon",
+    "claude": "Claude configuration management is coming soon"
+  }
+}

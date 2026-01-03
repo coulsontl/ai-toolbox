@@ -1,0 +1,143 @@
+{
+  "app": {
+    "name": "AI 工具箱"
+  },
+  "modules": {
+    "daily": "日常",
+    "coding": "编码",
+    "settings": "设置"
+  },
+  "subModules": {
+    "notes": "笔记",
+    "opencode": "OpenCode",
+    "claude": "Claude"
+  },
+  "settings": {
+    "title": "设置",
+    "tabs": {
+      "general": "通用设置",
+      "provider": "供应商设置"
+    },
+    "general": "通用设置",
+    "language": "语言",
+    "currentLanguage": "当前语言",
+    "theme": "主题",
+    "backup": "备份设置",
+    "backupPath": "备份路径",
+    "selectPath": "选择路径",
+    "export": "导出数据",
+    "import": "导入数据",
+    "lastBackup": "上次备份",
+    "provider": {
+      "title": "供应商管理",
+      "addProvider": "添加供应商",
+      "editProvider": "编辑供应商",
+      "deleteProvider": "删除供应商",
+      "confirmDelete": "确定要删除供应商 \"{name}\" 吗？关联的模型也将被删除。",
+      "id": "供应商 ID",
+      "idPlaceholder": "唯一标识符，如 my-openai",
+      "idExists": "该供应商 ID 已存在",
+      "name": "名称",
+      "namePlaceholder": "显示名称，如 My OpenAI",
+      "providerType": "供应商类型",
+      "baseUrl": "Base URL",
+      "baseUrlPlaceholder": "API 基础地址，如 https://api.openai.com/v1",
+      "baseUrlHint": "请确保 URL 以 /v1 结尾（如需要）",
+      "apiKey": "API Key",
+      "apiKeyPlaceholder": "输入 API Key",
+      "showApiKey": "显示",
+      "hideApiKey": "隐藏",
+      "emptyText": "暂无供应商，点击上方按钮添加"
+    },
+    "model": {
+      "title": "模型列表",
+      "addModel": "添加模型",
+      "editModel": "编辑模型",
+      "deleteModel": "删除模型",
+      "confirmDelete": "确定要删除模型 \"{name}\" 吗？",
+      "id": "模型 ID",
+      "idPlaceholder": "唯一标识符，如 gpt-4o",
+      "idExists": "该模型 ID 在此供应商下已存在",
+      "name": "模型名称",
+      "namePlaceholder": "显示名称，如 GPT-4o",
+      "contextLimit": "上下文限制",
+      "contextLimitPlaceholder": "如 128000",
+      "outputLimit": "输出限制",
+      "outputLimitPlaceholder": "如 8000",
+      "options": "额外参数",
+      "optionsPlaceholder": "JSON 格式的透传参数",
+      "emptyText": "暂无模型",
+      "invalidJson": "JSON 格式不正确"
+    },
+    "backupSettings": {
+      "title": "备份设置",
+      "storageType": "存储位置",
+      "local": "本地",
+      "webdav": "WebDAV",
+      "localPath": "本地路径",
+      "selectFolder": "选择文件夹",
+      "backupNow": "立即备份",
+      "restoreBackup": "恢复备份",
+      "noPathConfigured": "请先配置备份路径",
+      "noWebDAVConfigured": "请先配置 WebDAV 服务器",
+      "backupSuccess": "备份成功",
+      "backupFailed": "备份失败",
+      "restoreSuccess": "恢复成功，页面即将刷新",
+      "restoreFailed": "恢复失败",
+      "confirmRestore": "确认恢复",
+      "confirmRestoreDesc": "恢复备份将覆盖当前所有数据，确定要继续吗？",
+      "selectBackupFile": "选择备份文件",
+      "noBackupsFound": "未找到备份文件",
+      "listBackupsFailed": "获取备份列表失败"
+    },
+    "webdav": {
+      "url": "服务器地址",
+      "username": "用户名",
+      "password": "密码",
+      "remotePath": "远程路径"
+    },
+    "s3": {
+      "title": "S3 存储设置",
+      "accessKey": "Access Key",
+      "secretKey": "Secret Key",
+      "bucket": "存储桶",
+      "region": "区域",
+      "prefix": "路径前缀",
+      "endpointUrl": "端点 URL",
+      "forcePathStyle": "强制路径风格",
+      "publicDomain": "公共域名",
+      "notConfigured": "未配置"
+    }
+  },
+  "theme": {
+    "light": "浅色",
+    "dark": "深色"
+  },
+  "common": {
+    "save": "保存",
+    "cancel": "取消",
+    "confirm": "确认",
+    "delete": "删除",
+    "edit": "编辑",
+    "add": "添加",
+    "search": "搜索",
+    "loading": "加载中...",
+    "noData": "暂无数据",
+    "success": "操作成功",
+    "error": "操作失败",
+    "browse": "浏览",
+    "notSet": "未设置"
+  },
+  "notes": {
+    "title": "笔记",
+    "newNote": "新建笔记",
+    "searchPlaceholder": "搜索笔记...",
+    "untitled": "无标题",
+    "confirmDelete": "确定要删除这条笔记吗？"
+  },
+  "placeholder": {
+    "comingSoon": "功能开发中...",
+    "opencode": "OpenCode 功能即将上线",
+    "claude": "Claude 配置管理即将上线"
+  }
+}
