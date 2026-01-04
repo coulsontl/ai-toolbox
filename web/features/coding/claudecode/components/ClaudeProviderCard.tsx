@@ -5,8 +5,6 @@ import {
   DeleteOutlined,
   CopyOutlined,
   MoreOutlined,
-  DownOutlined,
-  UpOutlined,
   CheckCircleOutlined,
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
@@ -35,7 +33,16 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
   onSelect,
 }) => {
   const { t } = useTranslation();
-  const [modelsExpanded, setModelsExpanded] = React.useState(false);
+
+  // 解析 settingsConfig JSON 字符串
+  const settingsConfig = React.useMemo(() => {
+    try {
+      return JSON.parse(provider.settingsConfig);
+    } catch (error) {
+      console.error('Failed to parse settingsConfig:', error);
+      return {};
+    }
+  }, [provider.settingsConfig]);
 
   const menuItems: MenuProps['items'] = [
     {
@@ -63,9 +70,9 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
   ];
 
   const hasModels =
-    provider.settingsConfig.haikuModel ||
-    provider.settingsConfig.sonnetModel ||
-    provider.settingsConfig.opusModel;
+    settingsConfig.haikuModel ||
+    settingsConfig.sonnetModel ||
+    settingsConfig.opusModel;
 
   return (
     <Card
@@ -95,22 +102,10 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
             </div>
 
             {/* Base URL */}
-            {provider.settingsConfig.env?.ANTHROPIC_BASE_URL && (
+            {settingsConfig.env?.ANTHROPIC_BASE_URL && (
               <Text type="secondary" style={{ fontSize: 12 }}>
-                {provider.settingsConfig.env.ANTHROPIC_BASE_URL}
+                {settingsConfig.env.ANTHROPIC_BASE_URL}
               </Text>
-            )}
-
-            {/* 默认模型 */}
-            {provider.settingsConfig.model && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  {t('claudecode.provider.defaultModel')}:
-                </Text>
-                <Text code style={{ fontSize: 12 }}>
-                  {provider.settingsConfig.model}
-                </Text>
-              </div>
             )}
 
             {/* 备注 */}
@@ -120,67 +115,56 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
               </Text>
             )}
 
-            {/* 展开的模型配置 */}
-            {hasModels && modelsExpanded && (
-              <div
-                style={{
-                  marginTop: 8,
-                  padding: 8,
-                  backgroundColor: '#fafafa',
-                  borderRadius: 4,
-                }}
-              >
-                <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                  {provider.settingsConfig.haikuModel && (
-                    <div>
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        Haiku:
-                      </Text>{' '}
-                      <Text code style={{ fontSize: 12 }}>
-                        {provider.settingsConfig.haikuModel}
-                      </Text>
-                    </div>
-                  )}
-                  {provider.settingsConfig.sonnetModel && (
-                    <div>
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        Sonnet:
-                      </Text>{' '}
-                      <Text code style={{ fontSize: 12 }}>
-                        {provider.settingsConfig.sonnetModel}
-                      </Text>
-                    </div>
-                  )}
-                  {provider.settingsConfig.opusModel && (
-                    <div>
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        Opus:
-                      </Text>{' '}
-                      <Text code style={{ fontSize: 12 }}>
-                        {provider.settingsConfig.opusModel}
-                      </Text>
-                    </div>
-                  )}
-                </Space>
-              </div>
+            {/* 所有模型配置 - 一行展示 */}
+            {(settingsConfig.model || hasModels) && (
+              <Space size={16} style={{ marginTop: 4 }}>
+                {settingsConfig.model && (
+                  <div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {t('claudecode.provider.defaultModel')}:
+                    </Text>{' '}
+                    <Text code style={{ fontSize: 12 }}>
+                      {settingsConfig.model}
+                    </Text>
+                  </div>
+                )}
+                {settingsConfig.haikuModel && (
+                  <div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      Haiku:
+                    </Text>{' '}
+                    <Text code style={{ fontSize: 12 }}>
+                      {settingsConfig.haikuModel}
+                    </Text>
+                  </div>
+                )}
+                {settingsConfig.sonnetModel && (
+                  <div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      Sonnet:
+                    </Text>{' '}
+                    <Text code style={{ fontSize: 12 }}>
+                      {settingsConfig.sonnetModel}
+                    </Text>
+                  </div>
+                )}
+                {settingsConfig.opusModel && (
+                  <div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      Opus:
+                    </Text>{' '}
+                    <Text code style={{ fontSize: 12 }}>
+                      {settingsConfig.opusModel}
+                    </Text>
+                  </div>
+                )}
+              </Space>
             )}
           </Space>
         </div>
 
         {/* 操作按钮 */}
         <Space>
-          {hasModels && (
-            <Button
-              type="text"
-              size="small"
-              icon={modelsExpanded ? <UpOutlined /> : <DownOutlined />}
-              onClick={() => setModelsExpanded(!modelsExpanded)}
-            >
-              {modelsExpanded
-                ? t('claudecode.provider.collapseModels')
-                : t('claudecode.provider.expandModels')}
-            </Button>
-          )}
           {!isCurrent && (
             <Button type="primary" size="small" onClick={() => onSelect(provider)}>
               {t('claudecode.provider.enable')}

@@ -2,7 +2,8 @@ import React from 'react';
 import { Modal, Tabs, Form, Input, Select, Space, Button, Alert, message } from 'antd';
 import { EyeInvisibleOutlined, EyeOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import type { ClaudeCodeProvider, ClaudeProviderFormValues } from '@/types/claudecode';
+import { useAppStore } from '@/stores';
+import type { ClaudeCodeProvider, ClaudeProviderFormValues, ClaudeSettingsConfig } from '@/types/claudecode';
 import { listProviders, listModels } from '@/services/providerApi';
 import type { Provider, Model } from '@/types/provider';
 
@@ -22,10 +23,14 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
   onSubmit,
 }) => {
   const { t } = useTranslation();
+  const language = useAppStore((state) => state.language);
   const [form] = Form.useForm();
   const [loading, setLoading] = React.useState(false);
   const [showApiKey, setShowApiKey] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<'manual' | 'import'>('manual');
+
+  const labelCol = { span: language === 'zh-CN' ? 4 : 6 };
+  const wrapperCol = { span: 20 };
 
   // 从设置导入相关状态
   const [settingsProviders, setSettingsProviders] = React.useState<Provider[]>([]);
@@ -46,14 +51,21 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
   // 初始化表单
   React.useEffect(() => {
     if (open && provider) {
+      let settingsConfig: ClaudeSettingsConfig = {};
+      try {
+        settingsConfig = JSON.parse(provider.settingsConfig);
+      } catch (error) {
+        console.error('Failed to parse settingsConfig:', error);
+      }
+
       form.setFieldsValue({
         name: provider.name,
-        baseUrl: provider.settingsConfig.env?.ANTHROPIC_BASE_URL,
-        apiKey: provider.settingsConfig.env?.ANTHROPIC_API_KEY,
-        model: provider.settingsConfig.model,
-        haikuModel: provider.settingsConfig.haikuModel,
-        sonnetModel: provider.settingsConfig.sonnetModel,
-        opusModel: provider.settingsConfig.opusModel,
+        baseUrl: settingsConfig.env?.ANTHROPIC_BASE_URL,
+        apiKey: settingsConfig.env?.ANTHROPIC_API_KEY,
+        model: settingsConfig.model,
+        haikuModel: settingsConfig.haikuModel,
+        sonnetModel: settingsConfig.sonnetModel,
+        opusModel: settingsConfig.opusModel,
         notes: provider.notes,
       });
     } else if (open && !provider) {
@@ -65,8 +77,8 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
     setLoadingProviders(true);
     try {
       const providers = await listProviders();
-      // 只显示 SDK 类型为 claude 的供应商
-      const claudeProviders = providers.filter((p) => p.provider_type === 'claude');
+      // 只显示 SDK 类型为 @ai-sdk/anthropic 的供应商（Claude）
+      const claudeProviders = providers.filter((p) => p.provider_type === '@ai-sdk/anthropic');
       setSettingsProviders(claudeProviders);
     } catch (error) {
       console.error('Failed to load providers:', error);
@@ -148,7 +160,12 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
   }));
 
   const renderManualTab = () => (
-    <Form form={form} layout="vertical">
+    <Form
+      form={form}
+      layout="horizontal"
+      labelCol={labelCol}
+      wrapperCol={wrapperCol}
+    >
       <Form.Item
         name="name"
         label={t('claudecode.provider.name')}
@@ -186,14 +203,6 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
         />
       </Form.Item>
 
-      <Alert
-        message={t('claudecode.model.title')}
-        description={t('claudecode.model.manualInput')}
-        type="info"
-        showIcon
-        style={{ marginBottom: 16 }}
-      />
-
       <Form.Item name="model" label={t('claudecode.model.defaultModel')}>
         <Input placeholder={t('claudecode.model.defaultModelPlaceholder')} />
       </Form.Item>
@@ -228,7 +237,12 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
         style={{ marginBottom: 16 }}
       />
 
-      <Form form={form} layout="vertical">
+      <Form
+        form={form}
+        layout="horizontal"
+        labelCol={labelCol}
+        wrapperCol={wrapperCol}
+      >
         <Form.Item
           name="sourceProvider"
           label={t('claudecode.import.selectProvider')}
@@ -252,7 +266,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
               <Space direction="vertical" size={4}>
                 <div>• {t('claudecode.import.providerName')}: {selectedProvider.name}</div>
                 <div>• {t('claudecode.import.baseUrl')}: {processedBaseUrl}</div>
-                <div>• {t('claudecode.import.availableModels')}: {t('claudecode.import.modelsCount', { count: availableModels.length })}</div>
+                <div>• {t('claudecode.import.availableModels')}: {availableModels.length > 0 ? t('claudecode.import.modelsCount', { count: availableModels.length }) : '-'}</div>
               </Space>
             }
             type="success"
@@ -319,6 +333,13 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
             </Form.Item>
           </>
         )}
+
+        <Form.Item name="notes" label={t('claudecode.provider.notes')}>
+          <TextArea
+            rows={3}
+            placeholder={t('claudecode.provider.notesPlaceholder')}
+          />
+        </Form.Item>
       </Form>
     </div>
   );

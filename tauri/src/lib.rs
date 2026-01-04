@@ -1037,25 +1037,31 @@ async fn get_all_providers_with_models(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaudeCodeProviderRecord {
     pub id: Thing,
+    #[serde(alias = "providerId")]
     pub provider_id: String,
     pub name: String,
     pub category: String,
+    #[serde(alias = "settingsConfig")]
     pub settings_config: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "sourceProviderId", skip_serializing_if = "Option::is_none")]
     pub source_provider_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "websiteUrl", skip_serializing_if = "Option::is_none")]
     pub website_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "iconColor", skip_serializing_if = "Option::is_none")]
     pub icon_color: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "sortIndex", skip_serializing_if = "Option::is_none")]
     pub sort_index: Option<i32>,
+    #[serde(alias = "isCurrent")]
     pub is_current: bool,
+    #[serde(alias = "isApplied")]
     pub is_applied: bool,
+    #[serde(alias = "createdAt")]
     pub created_at: String,
+    #[serde(alias = "updatedAt")]
     pub updated_at: String,
 }
 
@@ -1065,6 +1071,7 @@ pub struct ClaudeCodeProvider {
     pub id: String,
     pub name: String,
     pub category: String,
+    #[serde(alias = "settings_config", rename = "settingsConfig")]
     pub settings_config: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_provider_id: Option<String>,
@@ -1076,11 +1083,15 @@ pub struct ClaudeCodeProvider {
     pub icon: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon_color: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "sortIndex", skip_serializing_if = "Option::is_none")]
     pub sort_index: Option<i32>,
+    #[serde(alias = "isCurrent")]
     pub is_current: bool,
+    #[serde(alias = "isApplied")]
     pub is_applied: bool,
+    #[serde(alias = "createdAt")]
     pub created_at: String,
+    #[serde(alias = "updatedAt")]
     pub updated_at: String,
 }
 
@@ -1105,7 +1116,7 @@ impl From<ClaudeCodeProviderRecord> for ClaudeCodeProvider {
     }
 }
 
-// ClaudeCodeProvider - Content for create/update
+// ClaudeCodeProvider - Content for create/update (Database storage)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaudeCodeProviderContent {
     pub provider_id: String,
@@ -1136,6 +1147,7 @@ pub struct ClaudeCodeProviderInput {
     pub id: String,
     pub name: String,
     pub category: String,
+    #[serde(alias = "settings_config", rename = "settingsConfig")]
     pub settings_config: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_provider_id: Option<String>,

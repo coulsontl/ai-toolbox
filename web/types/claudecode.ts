@@ -30,7 +30,7 @@ export interface ClaudeCodeProvider {
   id: string;
   name: string;
   category: ClaudeProviderCategory;
-  settingsConfig: ClaudeSettingsConfig;
+  settingsConfig: string; // JSON string of ClaudeSettingsConfig
   // Source info if imported from settings
   sourceProviderId?: string;
   // Metadata

@@ -2,6 +2,7 @@ import React from 'react';
 import { Modal, Form, Input, AutoComplete, Button, message } from 'antd';
 import { RightOutlined, DownOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { useAppStore } from '@/stores';
 import JsonEditor from '@/components/common/JsonEditor';
 import type { I18nPrefix } from '@/components/common/ProviderCard/types';
 
@@ -81,11 +82,15 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
   i18nPrefix = 'settings',
 }) => {
   const { t } = useTranslation();
+  const language = useAppStore((state) => state.language);
   const [form] = Form.useForm();
   const [loading, setLoading] = React.useState(false);
   const [jsonOptions, setJsonOptions] = React.useState<unknown>({});
   const [jsonValid, setJsonValid] = React.useState(true);
   const [advancedExpanded, setAdvancedExpanded] = React.useState(false);
+
+  const labelCol = { span: language === 'zh-CN' ? 4 : 6 };
+  const wrapperCol = { span: 20 };
 
   // Check if options has content
   const hasOptionsContent = React.useMemo(() => {
@@ -249,8 +254,8 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
       <Form
         form={form}
         layout="horizontal"
-        labelCol={{ span: 4 }}
-        wrapperCol={{ span: 20 }}
+        labelCol={labelCol}
+        wrapperCol={wrapperCol}
         style={{ marginTop: 24 }}
       >
         <Form.Item

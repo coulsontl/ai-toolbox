@@ -1,9 +1,8 @@
 import React from 'react';
-import { Modal, Input, Alert, message } from 'antd';
+import { Modal, Alert, message } from 'antd';
 import { useTranslation } from 'react-i18next';
 import { getClaudeCommonConfig, saveClaudeCommonConfig } from '@/services/claudeCodeApi';
-
-const { TextArea } = Input;
+import JsonEditor from '@/components/common/JsonEditor';
 
 interface CommonConfigModalProps {
   open: boolean;
@@ -18,8 +17,8 @@ const CommonConfigModal: React.FC<CommonConfigModalProps> = ({
 }) => {
   const { t } = useTranslation();
   const [loading, setLoading] = React.useState(false);
-  const [configText, setConfigText] = React.useState('{}');
-  const [jsonError, setJsonError] = React.useState<string>('');
+  const [configValue, setConfigValue] = React.useState<unknown>({});
+  const [isValid, setIsValid] = React.useState(true);
 
   // 加载现有配置
   React.useEffect(() => {
@@ -34,44 +33,33 @@ const CommonConfigModal: React.FC<CommonConfigModalProps> = ({
       if (config && config.config) {
         try {
           const configObj = JSON.parse(config.config);
-          setConfigText(JSON.stringify(configObj, null, 2));
+          setConfigValue(configObj);
+          setIsValid(true);
         } catch (error) {
           console.error('Failed to parse config JSON:', error);
-          setConfigText(config.config);
+          setConfigValue(config.config);
+          setIsValid(false);
         }
       } else {
-        setConfigText('{}');
+        setConfigValue({});
+        setIsValid(true);
       }
-      setJsonError('');
     } catch (error) {
       console.error('Failed to load common config:', error);
       message.error(t('common.error'));
     }
   };
 
-  const handleConfigChange = (value: string) => {
-    setConfigText(value);
-    // 验证 JSON 格式
-    try {
-      JSON.parse(value);
-      setJsonError('');
-    } catch (error) {
-      setJsonError(t('claudecode.commonConfig.invalidJson'));
-    }
-  };
-
   const handleSave = async () => {
-    // 验证 JSON
-    try {
-      JSON.parse(configText);
-    } catch (error) {
+    if (!isValid) {
       message.error(t('claudecode.commonConfig.invalidJson'));
       return;
     }
 
     setLoading(true);
     try {
-      await saveClaudeCommonConfig(configText);
+      const configString = JSON.stringify(configValue, null, 2);
+      await saveClaudeCommonConfig(configString);
       message.success(t('common.success'));
       onSuccess();
       onCancel();
@@ -83,6 +71,11 @@ const CommonConfigModal: React.FC<CommonConfigModalProps> = ({
     }
   };
 
+  const handleEditorChange = (value: unknown, valid: boolean) => {
+    setConfigValue(value);
+    setIsValid(valid);
+  };
+
   return (
     <Modal
       title={t('claudecode.commonConfig.title')}
@@ -90,9 +83,10 @@ const CommonConfigModal: React.FC<CommonConfigModalProps> = ({
       onCancel={onCancel}
       onOk={handleSave}
       confirmLoading={loading}
-      width={600}
+      width={700}
       okText={t('common.save')}
       cancelText={t('common.cancel')}
+      okButtonProps={{ disabled: !isValid }}
     >
       <div style={{ marginBottom: 16 }}>
         <Alert
@@ -103,22 +97,15 @@ const CommonConfigModal: React.FC<CommonConfigModalProps> = ({
         />
       </div>
 
-      <TextArea
-        value={configText}
-        onChange={(e) => handleConfigChange(e.target.value)}
-        placeholder={t('claudecode.commonConfig.placeholder')}
-        rows={12}
-        style={{
-          fontFamily: 'monospace',
-          fontSize: 12,
-        }}
+      <JsonEditor
+        value={configValue}
+        onChange={handleEditorChange}
+        mode="text"
+        height={400}
+        minHeight={200}
+        maxHeight={600}
+        resizable
       />
-
-      {jsonError && (
-        <div style={{ marginTop: 8 }}>
-          <Alert message={jsonError} type="error" showIcon />
-        </div>
-      )}
 
       <div style={{ marginTop: 12 }}>
         <Alert

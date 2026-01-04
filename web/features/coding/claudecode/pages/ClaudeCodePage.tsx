@@ -219,29 +219,48 @@ const ClaudeCodePage: React.FC = () => {
 
   const doSaveProvider = async (values: ClaudeProviderFormValues) => {
     try {
-      const providerData: Omit<ClaudeCodeProvider, 'id' | 'createdAt' | 'updatedAt'> = {
-        name: values.name,
-        category: values.category,
-        settingsConfig: {
-          env: {
-            ANTHROPIC_BASE_URL: values.baseUrl,
-            ANTHROPIC_API_KEY: values.apiKey,
-          },
-          model: values.model,
-          haikuModel: values.haikuModel,
-          sonnetModel: values.sonnetModel,
-          opusModel: values.opusModel,
-        },
-        sourceProviderId: values.sourceProviderId,
-        notes: values.notes,
-        isCurrent: false,
-        isApplied: false,
+      // 生成唯一的 provider ID
+      const generateId = (name: string): string => {
+        const timestamp = Date.now().toString(36);
+        const random = Math.random().toString(36).substring(2, 8);
+        const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        return `${slug}-${timestamp}-${random}`;
       };
 
+      const settingsConfigObj: Record<string, unknown> = {
+        env: {
+          ANTHROPIC_BASE_URL: values.baseUrl,
+          ANTHROPIC_API_KEY: values.apiKey,
+        },
+      };
+
+      if (values.model) settingsConfigObj.model = values.model;
+      if (values.haikuModel) settingsConfigObj.haikuModel = values.haikuModel;
+      if (values.sonnetModel) settingsConfigObj.sonnetModel = values.sonnetModel;
+      if (values.opusModel) settingsConfigObj.opusModel = values.opusModel;
+
       if (editingProvider) {
-        await updateClaudeProvider({ ...editingProvider, ...providerData });
+        await updateClaudeProvider({
+          id: editingProvider.id,
+          name: values.name,
+          category: values.category,
+          settingsConfig: JSON.stringify(settingsConfigObj),
+          sourceProviderId: values.sourceProviderId,
+          notes: values.notes,
+          isCurrent: editingProvider.isCurrent,
+          isApplied: editingProvider.isApplied,
+        });
       } else {
-        await createClaudeProvider(providerData);
+        await createClaudeProvider({
+          id: generateId(values.name),
+          name: values.name,
+          category: values.category,
+          settingsConfig: JSON.stringify(settingsConfigObj),
+          sourceProviderId: values.sourceProviderId,
+          notes: values.notes,
+          isCurrent: false,
+          isApplied: false,
+        });
       }
 
       message.success(t('common.success'));
@@ -259,20 +278,23 @@ const ClaudeCodePage: React.FC = () => {
       const existingProvider = providers.find((p) => p.id === id);
       if (!existingProvider) return;
 
+      const settingsConfigObj: Record<string, unknown> = {
+        env: {
+          ANTHROPIC_BASE_URL: values.baseUrl,
+          ANTHROPIC_API_KEY: values.apiKey,
+        },
+      };
+
+      if (values.model) settingsConfigObj.model = values.model;
+      if (values.haikuModel) settingsConfigObj.haikuModel = values.haikuModel;
+      if (values.sonnetModel) settingsConfigObj.sonnetModel = values.sonnetModel;
+      if (values.opusModel) settingsConfigObj.opusModel = values.opusModel;
+
       const providerData: ClaudeCodeProvider = {
         ...existingProvider,
         name: values.name,
         category: values.category,
-        settingsConfig: {
-          env: {
-            ANTHROPIC_BASE_URL: values.baseUrl,
-            ANTHROPIC_API_KEY: values.apiKey,
-          },
-          model: values.model,
-          haikuModel: values.haikuModel,
-          sonnetModel: values.sonnetModel,
-          opusModel: values.opusModel,
-        },
+        settingsConfig: JSON.stringify(settingsConfigObj),
         notes: values.notes,
       };
 

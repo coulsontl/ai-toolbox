@@ -36,7 +36,7 @@ export const listClaudeProviders = async (): Promise<ClaudeCodeProvider[]> => {
  * Create a new Claude Code provider
  */
 export const createClaudeProvider = async (
-  provider: Omit<ClaudeCodeProvider, 'id' | 'createdAt' | 'updatedAt'>
+  provider: Omit<ClaudeCodeProvider, 'createdAt' | 'updatedAt'>
 ): Promise<ClaudeCodeProvider> => {
   return await invoke<ClaudeCodeProvider>('create_claude_provider', { provider });
 };

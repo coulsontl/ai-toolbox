@@ -2,6 +2,7 @@ import React from 'react';
 import { Modal, Form, Input, Select, Button, Typography, message } from 'antd';
 import { EyeOutlined, EyeInvisibleOutlined, RightOutlined, DownOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { useAppStore } from '@/stores';
 import { PROVIDER_TYPES } from '@/constants/providerTypes';
 import HeadersEditor from '@/components/common/HeadersEditor';
 import type { I18nPrefix } from '@/components/common/ProviderCard/types';
@@ -62,11 +63,15 @@ const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
   headersOutputFormat = 'string',
 }) => {
   const { t } = useTranslation();
+  const language = useAppStore((state) => state.language);
   const [form] = Form.useForm();
   const [loading, setLoading] = React.useState(false);
   const [showApiKey, setShowApiKey] = React.useState(false);
   const [headersValid, setHeadersValid] = React.useState(true);
   const [advancedExpanded, setAdvancedExpanded] = React.useState(false);
+
+  const labelCol = { span: language === 'zh-CN' ? 4 : 6 };
+  const wrapperCol = { span: 20 };
 
   // Check if headers has content
   const hasHeadersContent = React.useMemo(() => {
@@ -167,8 +172,8 @@ const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
       <Form
         form={form}
         layout="horizontal"
-        labelCol={{ span: 4 }}
-        wrapperCol={{ span: 20 }}
+        labelCol={labelCol}
+        wrapperCol={wrapperCol}
         style={{ marginTop: 24 }}
       >
         <Form.Item

@@ -31,6 +31,16 @@ const ImportConflictDialog: React.FC<ImportConflictDialogProps> = ({
     ? new Date(conflictInfo.existingProvider.createdAt).toLocaleString()
     : t('common.notSet');
 
+  // 解析 settingsConfig JSON 字符串
+  const existingConfig = React.useMemo(() => {
+    try {
+      return JSON.parse(conflictInfo.existingProvider.settingsConfig);
+    } catch (error) {
+      console.error('Failed to parse settingsConfig:', error);
+      return {};
+    }
+  }, [conflictInfo.existingProvider.settingsConfig]);
+
   return (
     <Modal
       title={t('claudecode.conflict.title')}
@@ -57,7 +67,7 @@ const ImportConflictDialog: React.FC<ImportConflictDialogProps> = ({
             <div>• {t('claudecode.provider.name')}: {conflictInfo.existingProvider.name}</div>
             <div>
               • {t('claudecode.provider.baseUrl')}:{' '}
-              {conflictInfo.existingProvider.settingsConfig.env?.ANTHROPIC_BASE_URL || '-'}
+              {existingConfig.env?.ANTHROPIC_BASE_URL || '-'}
             </div>
             <div>• {t('claudecode.conflict.createdAt')}: {createdDate}</div>
           </div>
