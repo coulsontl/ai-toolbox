@@ -1037,31 +1037,31 @@ async fn get_all_providers_with_models(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaudeCodeProviderRecord {
     pub id: Thing,
-    #[serde(alias = "providerId")]
+    #[serde(alias = "providerId", alias = "provider_id", rename = "providerId")]
     pub provider_id: String,
     pub name: String,
     pub category: String,
-    #[serde(alias = "settingsConfig")]
+    #[serde(alias = "settingsConfig", alias = "settings_config", rename = "settingsConfig")]
     pub settings_config: String,
-    #[serde(alias = "sourceProviderId", skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "sourceProviderId", alias = "source_provider_id", rename = "sourceProviderId", skip_serializing_if = "Option::is_none")]
     pub source_provider_id: Option<String>,
-    #[serde(alias = "websiteUrl", skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "websiteUrl", alias = "website_url", rename = "websiteUrl", skip_serializing_if = "Option::is_none")]
     pub website_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    #[serde(alias = "iconColor", skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "iconColor", alias = "icon_color", rename = "iconColor", skip_serializing_if = "Option::is_none")]
     pub icon_color: Option<String>,
-    #[serde(alias = "sortIndex", skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "sortIndex", alias = "sort_index", rename = "sortIndex", skip_serializing_if = "Option::is_none")]
     pub sort_index: Option<i32>,
-    #[serde(alias = "isCurrent")]
+    #[serde(alias = "isCurrent", alias = "is_current", rename = "isCurrent")]
     pub is_current: bool,
-    #[serde(alias = "isApplied")]
+    #[serde(alias = "isApplied", alias = "is_applied", rename = "isApplied")]
     pub is_applied: bool,
-    #[serde(alias = "createdAt")]
+    #[serde(alias = "createdAt", alias = "created_at", rename = "createdAt")]
     pub created_at: String,
-    #[serde(alias = "updatedAt")]
+    #[serde(alias = "updatedAt", alias = "updated_at", rename = "updatedAt")]
     pub updated_at: String,
 }
 
@@ -1071,27 +1071,27 @@ pub struct ClaudeCodeProvider {
     pub id: String,
     pub name: String,
     pub category: String,
-    #[serde(alias = "settings_config", rename = "settingsConfig")]
+    #[serde(alias = "settings_config", alias = "settingsConfig", rename = "settingsConfig")]
     pub settings_config: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "source_provider_id", alias = "sourceProviderId", skip_serializing_if = "Option::is_none")]
     pub source_provider_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "website_url", alias = "websiteUrl", skip_serializing_if = "Option::is_none")]
     pub website_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "icon_color", alias = "iconColor", skip_serializing_if = "Option::is_none")]
     pub icon_color: Option<String>,
-    #[serde(alias = "sortIndex", skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "sort_index", alias = "sortIndex", rename = "sortIndex", skip_serializing_if = "Option::is_none")]
     pub sort_index: Option<i32>,
-    #[serde(alias = "isCurrent")]
+    #[serde(alias = "is_current", alias = "isCurrent", rename = "isCurrent")]
     pub is_current: bool,
-    #[serde(alias = "isApplied")]
+    #[serde(alias = "is_applied", alias = "isApplied", rename = "isApplied")]
     pub is_applied: bool,
-    #[serde(alias = "createdAt")]
+    #[serde(alias = "created_at", alias = "createdAt", rename = "createdAt")]
     pub created_at: String,
-    #[serde(alias = "updatedAt")]
+    #[serde(alias = "updated_at", alias = "updatedAt", rename = "updatedAt")]
     pub updated_at: String,
 }
 
@@ -1135,9 +1135,13 @@ pub struct ClaudeCodeProviderContent {
     pub icon_color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_index: Option<i32>,
+    #[serde(alias = "isCurrent", rename = "isCurrent")]
     pub is_current: bool,
+    #[serde(alias = "isApplied", rename = "isApplied")]
     pub is_applied: bool,
+    #[serde(alias = "createdAt", rename = "createdAt")]
     pub created_at: String,
+    #[serde(alias = "updatedAt", rename = "updatedAt")]
     pub updated_at: String,
 }
 
@@ -1161,6 +1165,14 @@ pub struct ClaudeCodeProviderInput {
     pub icon_color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_index: Option<i32>,
+    #[serde(alias = "isCurrent", rename = "isCurrent")]
+    pub is_current: bool,
+    #[serde(alias = "isApplied", rename = "isApplied")]
+    pub is_applied: bool,
+    #[serde(alias = "createdAt", rename = "createdAt")]
+    pub created_at: String,
+    #[serde(alias = "updatedAt", rename = "updatedAt")]
+    pub updated_at: String,
 }
 
 // ClaudeCommonConfig - Database record
@@ -1318,15 +1330,15 @@ async fn select_claude_provider(
     id: String,
 ) -> Result<(), String> {
     let db = state.0.lock().await;
-    
-    // Get all providers
+
     let records: Vec<ClaudeCodeProviderRecord> = db
         .select("claude_provider")
         .await
         .map_err(|e| format!("Failed to list providers: {}", e))?;
-    
-    // Update each provider
+
     for record in records {
+        let is_selected = record.provider_id == id;
+
         let content = ClaudeCodeProviderContent {
             provider_id: record.provider_id.clone(),
             name: record.name,
@@ -1338,19 +1350,20 @@ async fn select_claude_provider(
             icon: record.icon,
             icon_color: record.icon_color,
             sort_index: record.sort_index,
-            is_current: record.provider_id == id,
+            is_current: is_selected,
             is_applied: record.is_applied,
             created_at: record.created_at,
             updated_at: Local::now().to_rfc3339(),
         };
-        
+
+        let thing_id = record.provider_id.clone();
         let _: Option<ClaudeCodeProviderRecord> = db
-            .update(("claude_provider", &record.provider_id))
+            .update(("claude_provider", thing_id))
             .content(content)
             .await
             .map_err(|e| format!("Failed to update provider: {}", e))?;
     }
-    
+
     Ok(())
 }
 
@@ -1510,12 +1523,19 @@ async fn apply_claude_config(
     // Build env section from provider config
     let mut env = serde_json::Map::new();
     
-    if let Some(api_key) = provider_config.get("apiKey").and_then(|v| v.as_str()) {
-        env.insert("ANTHROPIC_API_KEY".to_string(), serde_json::json!(api_key));
-    }
-    
-    if let Some(base_url) = provider_config.get("baseUrl").and_then(|v| v.as_str()) {
-        env.insert("ANTHROPIC_BASE_URL".to_string(), serde_json::json!(base_url));
+    // Get env section from provider config
+    if let Some(env_config) = provider_config.get("env").and_then(|v| v.as_object()) {
+        if let Some(api_key) = env_config.get("ANTHROPIC_API_KEY").and_then(|v| v.as_str()) {
+            env.insert("ANTHROPIC_API_KEY".to_string(), serde_json::json!(api_key));
+        }
+        
+        if let Some(base_url) = env_config.get("ANTHROPIC_BASE_URL").and_then(|v| v.as_str()) {
+            env.insert("ANTHROPIC_BASE_URL".to_string(), serde_json::json!(base_url));
+        }
+        
+        if let Some(auth_token) = env_config.get("ANTHROPIC_AUTH_TOKEN").and_then(|v| v.as_str()) {
+            env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), serde_json::json!(auth_token));
+        }
     }
     
     if let Some(model) = provider_config.get("model").and_then(|v| v.as_str()) {

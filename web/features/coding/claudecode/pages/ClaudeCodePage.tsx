@@ -1,5 +1,5 @@
 import React from 'react';
-import { Typography, Card, Button, Space, Empty, Alert, message, Modal, Spin } from 'antd';
+import { Typography, Card, Button, Space, Empty, message, Modal, Spin } from 'antd';
 import { PlusOutlined, FolderOpenOutlined, SettingOutlined, SyncOutlined, ExclamationCircleOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -33,7 +33,6 @@ const ClaudeCodePage: React.FC = () => {
   const [providers, setProviders] = React.useState<ClaudeCodeProvider[]>([]);
   const [currentProvider, setCurrentProvider] = React.useState<ClaudeCodeProvider | null>(null);
   const [appliedProviderId, setAppliedProviderId] = React.useState<string>('');
-  const [hasUnsavedChanges, setHasUnsavedChanges] = React.useState(false);
 
   // 模态框状态
   const [providerModalOpen, setProviderModalOpen] = React.useState(false);
@@ -47,25 +46,6 @@ const ClaudeCodePage: React.FC = () => {
   React.useEffect(() => {
     loadConfig();
   }, []);
-
-  // 监听未保存更改
-  React.useEffect(() => {
-    const hasChanges = currentProvider !== null && currentProvider.id !== appliedProviderId;
-    setHasUnsavedChanges(hasChanges);
-  }, [currentProvider, appliedProviderId]);
-
-  // 页面离开确认
-  React.useEffect(() => {
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (hasUnsavedChanges) {
-        e.preventDefault();
-        e.returnValue = '';
-      }
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [hasUnsavedChanges]);
 
   const loadConfig = async () => {
     setLoading(true);
@@ -100,28 +80,11 @@ const ClaudeCodePage: React.FC = () => {
     }
   };
 
-  const handleApplyConfig = async () => {
-    if (!currentProvider) {
-      message.warning(t('claudecode.apply.noProvider'));
-      return;
-    }
-
-    try {
-      await applyClaudeConfig(currentProvider.id);
-      message.success(t('claudecode.apply.success'));
-      setAppliedProviderId(currentProvider.id);
-      setHasUnsavedChanges(false);
-      await loadConfig();
-    } catch (error) {
-      console.error('Failed to apply config:', error);
-      message.error(t('claudecode.apply.failed'));
-    }
-  };
-
   const handleSelectProvider = async (provider: ClaudeCodeProvider) => {
     try {
       await selectClaudeProvider(provider.id);
-      setCurrentProvider(provider);
+      await applyClaudeConfig(provider.id);
+      message.success(t('claudecode.apply.success'));
       await loadConfig();
     } catch (error) {
       console.error('Failed to select provider:', error);
@@ -350,26 +313,9 @@ const ClaudeCodePage: React.FC = () => {
             <Button icon={<SettingOutlined />} onClick={() => setCommonConfigModalOpen(true)}>
               {t('claudecode.commonConfigButton')}
             </Button>
-            {hasUnsavedChanges && (
-              <Button type="primary" onClick={handleApplyConfig}>
-                {t('claudecode.applyConfig')}
-              </Button>
-            )}
           </Space>
         </div>
       </div>
-
-      {/* 未保存更改警告 */}
-      {hasUnsavedChanges && (
-        <Alert
-          message={t('claudecode.unsavedChanges')}
-          type="warning"
-          showIcon
-          closable
-          onClose={() => setHasUnsavedChanges(false)}
-          style={{ marginBottom: 16 }}
-        />
-      )}
 
       {/* 操作栏 */}
       <div style={{ marginBottom: 16 }}>

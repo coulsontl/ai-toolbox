@@ -40,9 +40,9 @@ export interface ClaudeCodeProvider {
   iconColor?: string;
   sortIndex?: number;
   isCurrent?: boolean;
-  isApplied?: boolean; // Whether this config has been applied to settings.json
-  createdAt?: number;
-  updatedAt?: number;
+  isApplied?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 /**
