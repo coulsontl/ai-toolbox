@@ -166,6 +166,7 @@
       "noModels": "暂无可用模型，请先添加供应商"
     },
     "provider": {
+      "title": "供应商列表",
       "id": "供应商 ID",
       "idPlaceholder": "唯一标识符，如 my-provider",
       "idExists": "该供应商 ID 已存在",

@@ -166,6 +166,7 @@
       "noModels": "No models available, please add a provider first"
     },
     "provider": {
+      "title": "Providers",
       "id": "Provider ID",
       "idPlaceholder": "Unique identifier, e.g., my-provider",
       "idExists": "This provider ID already exists",

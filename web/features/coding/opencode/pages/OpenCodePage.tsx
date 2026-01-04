@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Empty, Space, Typography, message, Spin, Tooltip, Modal, Select, Card } from 'antd';
+import { Button, Empty, Space, Typography, message, Spin, Tooltip, Modal, Select, Card, Collapse } from 'antd';
 import { PlusOutlined, FolderOpenOutlined, SyncOutlined, CodeOutlined, SaveOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
@@ -75,6 +75,7 @@ const OpenCodePage: React.FC = () => {
   const [modelInitialValues, setModelInitialValues] = React.useState<Partial<ModelFormValues> | undefined>();
 
   const [syncModalOpen, setSyncModalOpen] = React.useState(false);
+  const [providerListCollapsed, setProviderListCollapsed] = React.useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -586,53 +587,69 @@ const OpenCodePage: React.FC = () => {
         </Space>
       </Card>
 
-      <Spin spinning={loading}>
-        {providerEntries.length === 0 ? (
-          <Empty description={t('opencode.emptyText')} style={{ marginTop: 40 }} />
-        ) : (
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragEnd={handleProviderDragEnd}
-          >
-            <SortableContext
-              items={providerEntries.map(([id]) => id)}
-              strategy={verticalListSortingStrategy}
-            >
-              {providerEntries.map(([providerId, provider]) => (
-                <ProviderCard
-                  key={providerId}
-                  provider={toProviderDisplayData(providerId, provider)}
-                  models={Object.entries(provider.models).map(([modelId, model]) => 
-                    toModelDisplayData(modelId, model)
-                  )}
-                  draggable
-                  sortableId={providerId}
-                  onEdit={() => handleEditProvider(providerId)}
-                  onCopy={() => handleCopyProvider(providerId)}
-                  onDelete={() => handleDeleteProvider(providerId)}
-                  extraActions={
-                    <Tooltip title={t('opencode.sync.saveToSettings')}>
-                      <Button
-                        size="small"
-                        icon={<SaveOutlined />}
-                        onClick={() => handleSaveToSettings(providerId)}
-                      />
-                    </Tooltip>
-                  }
-                  onAddModel={() => handleAddModel(providerId)}
-                  onEditModel={(modelId) => handleEditModel(providerId, modelId)}
-                  onCopyModel={(modelId) => handleCopyModel(providerId, modelId)}
-                  onDeleteModel={(modelId) => handleDeleteModel(providerId, modelId)}
-                  modelsDraggable
-                  onReorderModels={(modelIds) => handleReorderModels(providerId, modelIds)}
-                  i18nPrefix="opencode"
-                />
-              ))}
-            </SortableContext>
-          </DndContext>
-        )}
-      </Spin>
+      <Collapse 
+        style={{ marginBottom: 16 }}
+        ghost
+        activeKey={providerListCollapsed ? [] : ['providers']}
+        onChange={(keys) => setProviderListCollapsed(!keys.includes('providers'))}
+        items={[
+          {
+            key: 'providers',
+            label: (
+              <Text strong>{t('opencode.provider.title')}</Text>
+            ),
+            children: (
+              <Spin spinning={loading}>
+                {providerEntries.length === 0 ? (
+                  <Empty description={t('opencode.emptyText')} style={{ marginTop: 40 }} />
+                ) : (
+                  <DndContext
+                    sensors={sensors}
+                    collisionDetection={closestCenter}
+                    onDragEnd={handleProviderDragEnd}
+                  >
+                    <SortableContext
+                      items={providerEntries.map(([id]) => id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      {providerEntries.map(([providerId, provider]) => (
+                        <ProviderCard
+                          key={providerId}
+                          provider={toProviderDisplayData(providerId, provider)}
+                          models={Object.entries(provider.models).map(([modelId, model]) => 
+                            toModelDisplayData(modelId, model)
+                          )}
+                          draggable
+                          sortableId={providerId}
+                          onEdit={() => handleEditProvider(providerId)}
+                          onCopy={() => handleCopyProvider(providerId)}
+                          onDelete={() => handleDeleteProvider(providerId)}
+                          extraActions={
+                            <Tooltip title={t('opencode.sync.saveToSettings')}>
+                              <Button
+                                size="small"
+                                icon={<SaveOutlined />}
+                                onClick={() => handleSaveToSettings(providerId)}
+                              />
+                            </Tooltip>
+                          }
+                          onAddModel={() => handleAddModel(providerId)}
+                          onEditModel={(modelId) => handleEditModel(providerId, modelId)}
+                          onCopyModel={(modelId) => handleCopyModel(providerId, modelId)}
+                          onDeleteModel={(modelId) => handleDeleteModel(providerId, modelId)}
+                          modelsDraggable
+                          onReorderModels={(modelIds) => handleReorderModels(providerId, modelIds)}
+                          i18nPrefix="opencode"
+                        />
+                      ))}
+                    </SortableContext>
+                  </DndContext>
+                )}
+              </Spin>
+            ),
+          },
+        ]}
+      />
 
       <ProviderFormModal
         open={providerModalOpen}
