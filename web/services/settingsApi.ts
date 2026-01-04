@@ -93,3 +93,10 @@ export const updateSettings = async (
   await saveSettings(newSettings);
   return newSettings;
 };
+
+/**
+ * Open the app data directory in file explorer
+ */
+export const openAppDataDir = async (): Promise<void> => {
+  await invoke('open_app_data_dir');
+};

@@ -12,6 +12,7 @@ const { TextArea } = Input;
 interface ClaudeProviderFormModalProps {
   open: boolean;
   provider?: ClaudeCodeProvider | null;
+  defaultTab?: 'manual' | 'import';
   onCancel: () => void;
   onSubmit: (values: ClaudeProviderFormValues) => Promise<void>;
 }
@@ -19,6 +20,7 @@ interface ClaudeProviderFormModalProps {
 const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
   open,
   provider,
+  defaultTab = 'manual',
   onCancel,
   onSubmit,
 }) => {
@@ -27,7 +29,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
   const [form] = Form.useForm();
   const [loading, setLoading] = React.useState(false);
   const [showApiKey, setShowApiKey] = React.useState(false);
-  const [activeTab, setActiveTab] = React.useState<'manual' | 'import'>('manual');
+  const [activeTab, setActiveTab] = React.useState<'manual' | 'import'>(defaultTab);
 
   const labelCol = { span: language === 'zh-CN' ? 4 : 6 };
   const wrapperCol = { span: 20 };
@@ -40,6 +42,13 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
   const [processedBaseUrl, setProcessedBaseUrl] = React.useState<string>('');
 
   const isEdit = !!provider;
+
+  // 当 Modal 打开时，根据 defaultTab 设置 activeTab
+  React.useEffect(() => {
+    if (open) {
+      setActiveTab(defaultTab);
+    }
+  }, [open, defaultTab]);
 
   // 加载设置中的供应商列表
   React.useEffect(() => {

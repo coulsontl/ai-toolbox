@@ -37,6 +37,7 @@ const ClaudeCodePage: React.FC = () => {
   // 模态框状态
   const [providerModalOpen, setProviderModalOpen] = React.useState(false);
   const [editingProvider, setEditingProvider] = React.useState<ClaudeCodeProvider | null>(null);
+  const [modalDefaultTab, setModalDefaultTab] = React.useState<'manual' | 'import'>('manual');
   const [commonConfigModalOpen, setCommonConfigModalOpen] = React.useState(false);
   const [conflictDialogOpen, setConflictDialogOpen] = React.useState(false);
   const [conflictInfo, setConflictInfo] = React.useState<ImportConflictInfo | null>(null);
@@ -94,11 +95,19 @@ const ClaudeCodePage: React.FC = () => {
 
   const handleAddProvider = () => {
     setEditingProvider(null);
+    setModalDefaultTab('manual');
+    setProviderModalOpen(true);
+  };
+
+  const handleImportFromSettings = () => {
+    setEditingProvider(null);
+    setModalDefaultTab('import');
     setProviderModalOpen(true);
   };
 
   const handleEditProvider = (provider: ClaudeCodeProvider) => {
     setEditingProvider(provider);
+    setModalDefaultTab('manual');
     setProviderModalOpen(true);
   };
 
@@ -110,6 +119,7 @@ const ClaudeCodePage: React.FC = () => {
       isCurrent: false,
       isApplied: false,
     });
+    setModalDefaultTab('manual');
     setProviderModalOpen(true);
   };
 
@@ -320,7 +330,7 @@ const ClaudeCodePage: React.FC = () => {
       {/* 操作栏 */}
       <div style={{ marginBottom: 16 }}>
         <Space>
-          <Button icon={<SyncOutlined />} onClick={handleAddProvider}>
+          <Button icon={<SyncOutlined />} onClick={handleImportFromSettings}>
             {t('claudecode.importFromSettings')}
           </Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={handleAddProvider}>
@@ -357,6 +367,7 @@ const ClaudeCodePage: React.FC = () => {
       <ClaudeProviderFormModal
         open={providerModalOpen}
         provider={editingProvider}
+        defaultTab={modalDefaultTab}
         onCancel={() => {
           setProviderModalOpen(false);
           setEditingProvider(null);

@@ -59,6 +59,8 @@ export const deleteClaudeProvider = async (id: string): Promise<void> => {
 
 /**
  * Reorder Claude Code providers
+ * Note: UI for drag-and-drop reordering is not yet implemented
+ * This API is reserved for future functionality
  */
 export const reorderClaudeProviders = async (ids: string[]): Promise<void> => {
   await invoke('reorder_claude_providers', { ids });

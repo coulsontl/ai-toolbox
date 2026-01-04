@@ -397,6 +397,48 @@ fn get_database_path(app_handle: tauri::AppHandle) -> Result<String, String> {
     Ok(db_path.to_string_lossy().to_string())
 }
 
+/// Open the app data directory in the file explorer
+#[tauri::command]
+fn open_app_data_dir(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    
+    // Ensure directory exists
+    if !app_data_dir.exists() {
+        fs::create_dir_all(&app_data_dir)
+            .map_err(|e| format!("Failed to create app data directory: {}", e))?;
+    }
+    
+    // Open in file explorer (platform-specific)
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&app_data_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&app_data_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&app_data_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+    
+    Ok(())
+}
+
 /// Create a temporary backup zip file and return its contents as bytes
 fn create_backup_zip(db_path: &Path) -> Result<Vec<u8>, String> {
     use std::io::Cursor;
@@ -1035,63 +1077,54 @@ async fn get_all_providers_with_models(
 
 // ClaudeCodeProvider - Database record
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ClaudeCodeProviderRecord {
     pub id: Thing,
-    #[serde(alias = "providerId", alias = "provider_id", rename = "providerId")]
     pub provider_id: String,
     pub name: String,
     pub category: String,
-    #[serde(alias = "settingsConfig", alias = "settings_config", rename = "settingsConfig")]
     pub settings_config: String,
-    #[serde(alias = "sourceProviderId", alias = "source_provider_id", rename = "sourceProviderId", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source_provider_id: Option<String>,
-    #[serde(alias = "websiteUrl", alias = "website_url", rename = "websiteUrl", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub website_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    #[serde(alias = "iconColor", alias = "icon_color", rename = "iconColor", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub icon_color: Option<String>,
-    #[serde(alias = "sortIndex", alias = "sort_index", rename = "sortIndex", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_index: Option<i32>,
-    #[serde(alias = "isCurrent", alias = "is_current", rename = "isCurrent")]
     pub is_current: bool,
-    #[serde(alias = "isApplied", alias = "is_applied", rename = "isApplied")]
     pub is_applied: bool,
-    #[serde(alias = "createdAt", alias = "created_at", rename = "createdAt")]
     pub created_at: String,
-    #[serde(alias = "updatedAt", alias = "updated_at", rename = "updatedAt")]
     pub updated_at: String,
 }
 
 // ClaudeCodeProvider - API response
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ClaudeCodeProvider {
     pub id: String,
     pub name: String,
     pub category: String,
-    #[serde(alias = "settings_config", alias = "settingsConfig", rename = "settingsConfig")]
     pub settings_config: String,
-    #[serde(alias = "source_provider_id", alias = "sourceProviderId", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source_provider_id: Option<String>,
-    #[serde(alias = "website_url", alias = "websiteUrl", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub website_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    #[serde(alias = "icon_color", alias = "iconColor", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub icon_color: Option<String>,
-    #[serde(alias = "sort_index", alias = "sortIndex", rename = "sortIndex", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_index: Option<i32>,
-    #[serde(alias = "is_current", alias = "isCurrent", rename = "isCurrent")]
     pub is_current: bool,
-    #[serde(alias = "is_applied", alias = "isApplied", rename = "isApplied")]
     pub is_applied: bool,
-    #[serde(alias = "created_at", alias = "createdAt", rename = "createdAt")]
     pub created_at: String,
-    #[serde(alias = "updated_at", alias = "updatedAt", rename = "updatedAt")]
     pub updated_at: String,
 }
 
@@ -1118,6 +1151,7 @@ impl From<ClaudeCodeProviderRecord> for ClaudeCodeProvider {
 
 // ClaudeCodeProvider - Content for create/update (Database storage)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ClaudeCodeProviderContent {
     pub provider_id: String,
     pub name: String,
@@ -1135,23 +1169,19 @@ pub struct ClaudeCodeProviderContent {
     pub icon_color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_index: Option<i32>,
-    #[serde(alias = "isCurrent", rename = "isCurrent")]
     pub is_current: bool,
-    #[serde(alias = "isApplied", rename = "isApplied")]
     pub is_applied: bool,
-    #[serde(alias = "createdAt", rename = "createdAt")]
     pub created_at: String,
-    #[serde(alias = "updatedAt", rename = "updatedAt")]
     pub updated_at: String,
 }
 
-// ClaudeCodeProvider - Input from frontend
+// ClaudeCodeProvider - Input from frontend (for create operation)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ClaudeCodeProviderInput {
     pub id: String,
     pub name: String,
     pub category: String,
-    #[serde(alias = "settings_config", rename = "settingsConfig")]
     pub settings_config: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_provider_id: Option<String>,
@@ -1165,18 +1195,11 @@ pub struct ClaudeCodeProviderInput {
     pub icon_color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_index: Option<i32>,
-    #[serde(alias = "isCurrent", rename = "isCurrent")]
-    pub is_current: bool,
-    #[serde(alias = "isApplied", rename = "isApplied")]
-    pub is_applied: bool,
-    #[serde(alias = "createdAt", rename = "createdAt")]
-    pub created_at: String,
-    #[serde(alias = "updatedAt", rename = "updatedAt")]
-    pub updated_at: String,
 }
 
 // ClaudeCommonConfig - Database record
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ClaudeCommonConfigRecord {
     pub id: Thing,
     pub config: String,
@@ -1185,6 +1208,7 @@ pub struct ClaudeCommonConfigRecord {
 
 // ClaudeCommonConfig - API response
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ClaudeCommonConfig {
     pub config: String,
     pub updated_at: String,
@@ -1892,6 +1916,7 @@ pub fn run() {
             backup_database,
             restore_database,
             get_database_path,
+            open_app_data_dir,
             backup_to_webdav,
             list_webdav_backups,
             restore_from_webdav,

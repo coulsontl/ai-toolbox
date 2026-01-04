@@ -12,6 +12,7 @@ import {
   selectBackupFile,
   backupToWebDAV,
   restoreFromWebDAV,
+  openAppDataDir,
 } from '@/services';
 
 const { Title, Text } = Typography;
@@ -162,6 +163,15 @@ const GeneralSettingsPage: React.FC = () => {
     });
   };
 
+  const handleOpenDataDir = async () => {
+    try {
+      await openAppDataDir();
+    } catch (error) {
+      console.error('Failed to open data directory:', error);
+      message.error('打开数据目录失败');
+    }
+  };
+
   // Backup settings table data
   const backupColumns = [
     { title: t('settings.backupSettings.storageType'), dataIndex: 'storageType', key: 'storageType' },
@@ -254,6 +264,9 @@ const GeneralSettingsPage: React.FC = () => {
         <Button icon={<CloudDownloadOutlined />} onClick={handleRestore} loading={restoreLoading}>
           {t('settings.backupSettings.restoreBackup')}
         </Button>
+        <Typography.Link onClick={handleOpenDataDir}>
+          {t('settings.backupSettings.openDataDir')}
+        </Typography.Link>
       </Space>
 
       <Divider />

@@ -50,9 +50,8 @@ export interface ClaudeCodeProvider {
  * Stored as a single record in database
  */
 export interface ClaudeCommonConfig {
-  id: string; // Always "common"
   config: string; // JSON string like '{ "statusLine": {...}, "skipWebFetchPreflight": true }'
-  updatedAt?: number;
+  updatedAt?: string;
 }
 
 /**
