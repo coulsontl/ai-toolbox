@@ -1,8 +1,7 @@
 import React from 'react';
-import { Button, Card, Empty, Space, Typography, Popconfirm, message, Spin, Tag } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, HolderOutlined, CopyOutlined } from '@ant-design/icons';
+import { Button, Empty, Typography, message, Spin } from 'antd';
+import { PlusOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   DndContext,
   closestCenter,
@@ -16,329 +15,60 @@ import {
   arrayMove,
   SortableContext,
   sortableKeyboardCoordinates,
-  useSortable,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 import {
   getAllProvidersWithModels,
   deleteProvider,
   deleteModel,
   reorderProviders,
   reorderModels,
+  createProvider,
+  updateProvider,
+  listProviders,
+  createModel,
+  updateModel,
+  listModels,
 } from '@/services/providerApi';
 import type { Provider, Model, ProviderWithModels } from '@/types/provider';
-import ProviderFormModal from '../components/ProviderFormModal';
-import ModelFormModal from '../components/ModelFormModal';
+import type { ProviderDisplayData, ModelDisplayData } from '@/components/common/ProviderCard/types';
+import ProviderCard from '@/components/common/ProviderCard';
+import ProviderFormModal, { ProviderFormValues } from '@/components/common/ProviderFormModal';
+import ModelFormModal, { ModelFormValues } from '@/components/common/ModelFormModal';
 
-const { Title, Text } = Typography;
+const { Title } = Typography;
 
-const AI_SDK_DOCS_URL = 'https://ai-sdk.dev/docs/foundations/providers-and-models#ai-sdk-providers';
+// Helper function to convert Provider to ProviderDisplayData
+const toProviderDisplayData = (provider: Provider): ProviderDisplayData => ({
+  id: provider.id,
+  name: provider.name,
+  sdkName: provider.provider_type,
+  baseUrl: provider.base_url,
+});
 
-// Sortable Provider Card Component
-interface SortableProviderCardProps {
-  providerWithModels: ProviderWithModels;
-  onEditProvider: (provider: Provider) => void;
-  onCopyProvider: (provider: Provider) => void;
-  onDeleteProvider: (provider: Provider) => void;
-  onAddModel: (providerId: string) => void;
-  onEditModel: (model: Model) => void;
-  onCopyModel: (model: Model) => void;
-  onDeleteModel: (providerId: string, model: Model) => void;
-  onReorderModels: (providerId: string, models: Model[]) => void;
-}
+// Helper function to convert Model to ModelDisplayData
+const toModelDisplayData = (model: Model): ModelDisplayData => ({
+  id: model.id,
+  name: model.name,
+  contextLimit: model.context_limit,
+  outputLimit: model.output_limit,
+});
 
-const SortableProviderCard: React.FC<SortableProviderCardProps> = ({
-  providerWithModels,
-  onEditProvider,
-  onCopyProvider,
-  onDeleteProvider,
-  onAddModel,
-  onEditModel,
-  onCopyModel,
-  onDeleteModel,
-  onReorderModels,
-}) => {
-  const { t } = useTranslation();
-  const { provider, models } = providerWithModels;
-
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: provider.id });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-  };
-
-  // Model drag sensors
-  const modelSensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  );
-
-  const handleModelDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event;
-
-    if (over && active.id !== over.id) {
-      const oldIndex = models.findIndex((m) => m.id === active.id);
-      const newIndex = models.findIndex((m) => m.id === over.id);
-
-      const newModels = arrayMove(models, oldIndex, newIndex);
-      onReorderModels(provider.id, newModels);
-    }
-  };
-
-  return (
-    <div ref={setNodeRef} style={style}>
-      <Card
-        style={{ marginBottom: 16 }}
-        styles={{
-          body: { padding: 16 },
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-          <div
-            {...attributes}
-            {...listeners}
-            style={{
-              cursor: 'grab',
-              padding: '4px 0',
-              display: 'flex',
-              alignItems: 'center',
-            }}
-          >
-            <HolderOutlined style={{ fontSize: 16, color: '#999' }} />
-          </div>
-
-          <div style={{ flex: 1 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
-              <div>
-                <Title level={5} style={{ margin: 0, marginBottom: 4 }}>
-                  {provider.name}
-                </Title>
-                <Space size={8}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    ID: {provider.id}
-                  </Text>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    •
-                  </Text>
-                  <Tag
-                    color="blue"
-                    style={{ margin: 0, cursor: 'pointer' }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openUrl(AI_SDK_DOCS_URL);
-                    }}
-                  >
-                    {provider.provider_type}
-                  </Tag>
-                </Space>
-                <div style={{ marginTop: 4 }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    {provider.base_url}
-                  </Text>
-                </div>
-              </div>
-
-              <Space>
-                <Button
-                  size="small"
-                  icon={<EditOutlined />}
-                  onClick={() => onEditProvider(provider)}
-                />
-                <Button
-                  size="small"
-                  icon={<CopyOutlined />}
-                  onClick={() => onCopyProvider(provider)}
-                />
-                <Popconfirm
-                  title={t('settings.provider.deleteProvider')}
-                  description={t('settings.provider.confirmDelete', { name: provider.name })}
-                  onConfirm={() => onDeleteProvider(provider)}
-                  okText={t('common.confirm')}
-                  cancelText={t('common.cancel')}
-                >
-                  <Button size="small" danger icon={<DeleteOutlined />} />
-                </Popconfirm>
-              </Space>
-            </div>
-
-            <div
-              style={{
-                background: '#fafafa',
-                borderRadius: 4,
-                padding: 12,
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <Text strong style={{ fontSize: 13 }}>
-                  {t('settings.model.title')}
-                </Text>
-                <Button
-                  size="small"
-                  type="link"
-                  icon={<PlusOutlined />}
-                  onClick={() => onAddModel(provider.id)}
-                >
-                  {t('settings.model.addModel')}
-                </Button>
-              </div>
-
-              {models.length === 0 ? (
-                <Empty
-                  image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description={t('settings.model.emptyText')}
-                  style={{ margin: '8px 0' }}
-                />
-              ) : (
-                <DndContext
-                  sensors={modelSensors}
-                  collisionDetection={closestCenter}
-                  onDragEnd={handleModelDragEnd}
-                >
-                  <SortableContext
-                    items={models.map((m) => m.id)}
-                    strategy={verticalListSortingStrategy}
-                  >
-                    <Space direction="vertical" style={{ width: '100%' }} size={4}>
-                      {models.map((model) => (
-                        <SortableModelItem
-                          key={model.id}
-                          model={model}
-                          providerId={provider.id}
-                          onEdit={onEditModel}
-                          onCopy={onCopyModel}
-                          onDelete={onDeleteModel}
-                        />
-                      ))}
-                    </Space>
-                  </SortableContext>
-                </DndContext>
-              )}
-            </div>
-          </div>
-        </div>
-      </Card>
-    </div>
-  );
-};
-
-// Sortable Model Item Component
-interface SortableModelItemProps {
-  model: Model;
-  providerId: string;
-  onEdit: (model: Model) => void;
-  onCopy: (model: Model) => void;
-  onDelete: (providerId: string, model: Model) => void;
-}
-
-const SortableModelItem: React.FC<SortableModelItemProps> = ({
-  model,
-  providerId,
-  onEdit,
-  onCopy,
-  onDelete,
-}) => {
-  const { t } = useTranslation();
-
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: model.id });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-  };
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={{
-        ...style,
-        background: '#fff',
-        border: '1px solid #e8e8e8',
-        borderRadius: 4,
-        padding: '8px 12px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-      }}
-    >
-      <div
-        {...attributes}
-        {...listeners}
-        style={{
-          cursor: 'grab',
-          display: 'flex',
-          alignItems: 'center',
-        }}
-      >
-        <HolderOutlined style={{ fontSize: 14, color: '#bbb' }} />
-      </div>
-
-      <div style={{ flex: 1 }}>
-        <div>
-          <Text strong style={{ fontSize: 13 }}>
-            {model.name}
-          </Text>
-          <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-            ({model.id})
-          </Text>
-        </div>
-        <div style={{ marginTop: 2 }}>
-          <Text type="secondary" style={{ fontSize: 11 }}>
-            {t('settings.model.contextLimit')}: {model.context_limit.toLocaleString()} | {t('settings.model.outputLimit')}: {model.output_limit.toLocaleString()}
-          </Text>
-        </div>
-      </div>
-
-      <Space>
-        <Button size="small" type="text" icon={<EditOutlined />} onClick={() => onEdit(model)} />
-        <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => onCopy(model)} />
-        <Popconfirm
-          title={t('settings.model.deleteModel')}
-          description={t('settings.model.confirmDelete', { name: model.name })}
-          onConfirm={() => onDelete(providerId, model)}
-          okText={t('common.confirm')}
-          cancelText={t('common.cancel')}
-        >
-          <Button size="small" type="text" danger icon={<DeleteOutlined />} />
-        </Popconfirm>
-      </Space>
-    </div>
-  );
-};
-
-// Main Page Component
 const ProviderSettingsPage: React.FC = () => {
   const { t } = useTranslation();
   const [loading, setLoading] = React.useState(false);
   const [providersWithModels, setProvidersWithModels] = React.useState<ProviderWithModels[]>([]);
 
+  // Provider modal state
   const [providerModalOpen, setProviderModalOpen] = React.useState(false);
   const [currentProvider, setCurrentProvider] = React.useState<Provider | null>(null);
-  const [copyProviderData, setCopyProviderData] = React.useState<Provider | null>(null);
+  const [providerInitialValues, setProviderInitialValues] = React.useState<Partial<ProviderFormValues> | undefined>();
 
+  // Model modal state
   const [modelModalOpen, setModelModalOpen] = React.useState(false);
   const [currentProviderId, setCurrentProviderId] = React.useState<string>('');
   const [currentModel, setCurrentModel] = React.useState<Model | null>(null);
-  const [copyModelData, setCopyModelData] = React.useState<Model | null>(null);
+  const [modelInitialValues, setModelInitialValues] = React.useState<Partial<ModelFormValues> | undefined>();
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -369,69 +99,193 @@ const ProviderSettingsPage: React.FC = () => {
     loadData();
   }, [loadData]);
 
+  // Provider handlers
   const handleAddProvider = () => {
     setCurrentProvider(null);
+    setProviderInitialValues(undefined);
     setProviderModalOpen(true);
   };
 
-  const handleEditProvider = (provider: Provider) => {
+  const handleEditProvider = (providerId: string) => {
+    const item = providersWithModels.find(p => p.provider.id === providerId);
+    if (!item) return;
+    
+    const provider = item.provider;
     setCurrentProvider(provider);
-    setCopyProviderData(null);
-    setProviderModalOpen(true);
-  };
-
-  const handleCopyProvider = (provider: Provider) => {
-    setCurrentProvider(null);
-    setCopyProviderData({
-      ...provider,
-      id: `${provider.id}_copy`,
+    setProviderInitialValues({
+      id: provider.id,
+      name: provider.name,
+      sdkType: provider.provider_type,
+      baseUrl: provider.base_url,
+      apiKey: provider.api_key,
+      headers: provider.headers,
     });
     setProviderModalOpen(true);
   };
 
-  const handleDeleteProvider = async (provider: Provider) => {
+  const handleCopyProvider = (providerId: string) => {
+    const item = providersWithModels.find(p => p.provider.id === providerId);
+    if (!item) return;
+    
+    const provider = item.provider;
+    setCurrentProvider(null);
+    setProviderInitialValues({
+      id: `${provider.id}_copy`,
+      name: provider.name,
+      sdkType: provider.provider_type,
+      baseUrl: provider.base_url,
+      apiKey: provider.api_key,
+      headers: provider.headers,
+    });
+    setProviderModalOpen(true);
+  };
+
+  const handleDeleteProvider = async (providerId: string) => {
     try {
-      await deleteProvider(provider.id);
+      await deleteProvider(providerId);
       message.success(t('common.success'));
       await loadData();
-    } catch (error) {
+    } catch {
       message.error(t('common.error'));
     }
   };
 
+  const handleProviderSuccess = async (values: ProviderFormValues) => {
+    try {
+      if (currentProvider) {
+        // Update existing provider
+        await updateProvider({
+          ...currentProvider,
+          id: values.id,
+          name: values.name,
+          provider_type: values.sdkType,
+          base_url: values.baseUrl,
+          api_key: values.apiKey || '',
+          headers: values.headers as string | undefined,
+        });
+      } else {
+        // Create new provider
+        const existingProviders = await listProviders();
+        await createProvider({
+          id: values.id,
+          name: values.name,
+          provider_type: values.sdkType,
+          base_url: values.baseUrl,
+          api_key: values.apiKey || '',
+          headers: values.headers as string | undefined,
+          sort_order: existingProviders.length,
+        });
+      }
+      message.success(t('common.success'));
+      setProviderModalOpen(false);
+      setProviderInitialValues(undefined);
+      await loadData();
+    } catch (error) {
+      console.error('Provider save error:', error);
+      message.error(t('common.error'));
+    }
+  };
+
+  const handleProviderDuplicateId = () => {
+    message.error(t('settings.provider.idExists'));
+  };
+
+  // Model handlers
   const handleAddModel = (providerId: string) => {
     setCurrentProviderId(providerId);
     setCurrentModel(null);
+    setModelInitialValues(undefined);
     setModelModalOpen(true);
   };
 
-  const handleEditModel = (model: Model) => {
-    setCurrentProviderId(model.provider_id);
+  const handleEditModel = (providerId: string, modelId: string) => {
+    const item = providersWithModels.find(p => p.provider.id === providerId);
+    if (!item) return;
+    
+    const model = item.models.find(m => m.id === modelId);
+    if (!model) return;
+
+    setCurrentProviderId(providerId);
     setCurrentModel(model);
-    setCopyModelData(null);
-    setModelModalOpen(true);
-  };
-
-  const handleCopyModel = (model: Model) => {
-    setCurrentProviderId(model.provider_id);
-    setCurrentModel(null);
-    setCopyModelData({
-      ...model,
-      id: `${model.id}_copy`,
+    setModelInitialValues({
+      id: model.id,
+      name: model.name,
+      contextLimit: model.context_limit,
+      outputLimit: model.output_limit,
+      options: model.options,
     });
     setModelModalOpen(true);
   };
 
-  const handleDeleteModel = async (providerId: string, model: Model) => {
+  const handleCopyModel = (providerId: string, modelId: string) => {
+    const item = providersWithModels.find(p => p.provider.id === providerId);
+    if (!item) return;
+    
+    const model = item.models.find(m => m.id === modelId);
+    if (!model) return;
+
+    setCurrentProviderId(providerId);
+    setCurrentModel(null);
+    setModelInitialValues({
+      id: `${model.id}_copy`,
+      name: model.name,
+      contextLimit: model.context_limit,
+      outputLimit: model.output_limit,
+      options: model.options,
+    });
+    setModelModalOpen(true);
+  };
+
+  const handleDeleteModel = async (providerId: string, modelId: string) => {
     try {
-      await deleteModel(providerId, model.id);
+      await deleteModel(providerId, modelId);
       message.success(t('common.success'));
       await loadData();
-    } catch (error) {
+    } catch {
       message.error(t('common.error'));
     }
   };
 
+  const handleModelSuccess = async (values: ModelFormValues) => {
+    try {
+      if (currentModel) {
+        // Update existing model
+        await updateModel({
+          ...currentModel,
+          id: values.id,
+          name: values.name,
+          context_limit: values.contextLimit || 128000,
+          output_limit: values.outputLimit || 8000,
+          options: values.options || '{}',
+        });
+      } else {
+        // Create new model
+        const existingModels = await listModels(currentProviderId);
+        await createModel({
+          id: values.id,
+          provider_id: currentProviderId,
+          name: values.name,
+          context_limit: values.contextLimit || 128000,
+          output_limit: values.outputLimit || 8000,
+          options: values.options || '{}',
+          sort_order: existingModels.length,
+        });
+      }
+      message.success(t('common.success'));
+      setModelModalOpen(false);
+      setModelInitialValues(undefined);
+      await loadData();
+    } catch (error) {
+      console.error('Model save error:', error);
+      message.error(t('common.error'));
+    }
+  };
+
+  const handleModelDuplicateId = () => {
+    message.error(t('settings.model.idExists'));
+  };
+
+  // Drag handlers
   const handleProviderDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
 
@@ -444,28 +298,42 @@ const ProviderSettingsPage: React.FC = () => {
 
       try {
         await reorderProviders(newProviders.map((p) => p.provider.id));
-      } catch (error) {
+      } catch {
         message.error(t('common.error'));
         await loadData();
       }
     }
   };
 
-  const handleReorderModels = async (providerId: string, models: Model[]) => {
+  const handleReorderModels = async (providerId: string, modelIds: string[]) => {
+    const item = providersWithModels.find(p => p.provider.id === providerId);
+    if (!item) return;
+
+    // Reorder models based on new IDs order
+    const modelMap = new Map(item.models.map(m => [m.id, m]));
+    const newModels = modelIds.map(id => modelMap.get(id)!).filter(Boolean);
+
     // Optimistic update
     setProvidersWithModels((prev) =>
       prev.map((p) =>
-        p.provider.id === providerId ? { ...p, models } : p
+        p.provider.id === providerId ? { ...p, models: newModels } : p
       )
     );
 
     try {
-      await reorderModels(providerId, models.map((m) => m.id));
-    } catch (error) {
+      await reorderModels(providerId, modelIds);
+    } catch {
       message.error(t('common.error'));
       await loadData();
     }
   };
+
+  // Get existing IDs for duplicate check
+  const existingProviderIds = providersWithModels.map(p => p.provider.id);
+  const existingModelIds = React.useMemo(() => {
+    const item = providersWithModels.find(p => p.provider.id === currentProviderId);
+    return item ? item.models.map(m => m.id) : [];
+  }, [providersWithModels, currentProviderId]);
 
   return (
     <div>
@@ -492,17 +360,22 @@ const ProviderSettingsPage: React.FC = () => {
               strategy={verticalListSortingStrategy}
             >
               {providersWithModels.map((item) => (
-                <SortableProviderCard
+                <ProviderCard
                   key={item.provider.id}
-                  providerWithModels={item}
-                  onEditProvider={handleEditProvider}
-                  onCopyProvider={handleCopyProvider}
-                  onDeleteProvider={handleDeleteProvider}
-                  onAddModel={handleAddModel}
-                  onEditModel={handleEditModel}
-                  onCopyModel={handleCopyModel}
-                  onDeleteModel={handleDeleteModel}
-                  onReorderModels={handleReorderModels}
+                  provider={toProviderDisplayData(item.provider)}
+                  models={item.models.map(toModelDisplayData)}
+                  draggable
+                  sortableId={item.provider.id}
+                  onEdit={() => handleEditProvider(item.provider.id)}
+                  onCopy={() => handleCopyProvider(item.provider.id)}
+                  onDelete={() => handleDeleteProvider(item.provider.id)}
+                  onAddModel={() => handleAddModel(item.provider.id)}
+                  onEditModel={(modelId) => handleEditModel(item.provider.id, modelId)}
+                  onCopyModel={(modelId) => handleCopyModel(item.provider.id, modelId)}
+                  onDeleteModel={(modelId) => handleDeleteModel(item.provider.id, modelId)}
+                  modelsDraggable
+                  onReorderModels={(modelIds) => handleReorderModels(item.provider.id, modelIds)}
+                  i18nPrefix="settings"
                 />
               ))}
             </SortableContext>
@@ -512,33 +385,34 @@ const ProviderSettingsPage: React.FC = () => {
 
       <ProviderFormModal
         open={providerModalOpen}
-        provider={currentProvider}
-        initialData={copyProviderData}
+        isEdit={!!currentProvider}
+        initialValues={providerInitialValues}
+        existingIds={currentProvider ? [] : existingProviderIds}
+        apiKeyRequired
         onCancel={() => {
           setProviderModalOpen(false);
-          setCopyProviderData(null);
+          setProviderInitialValues(undefined);
         }}
-        onSuccess={() => {
-          setProviderModalOpen(false);
-          setCopyProviderData(null);
-          loadData();
-        }}
+        onSuccess={handleProviderSuccess}
+        onDuplicateId={handleProviderDuplicateId}
+        i18nPrefix="settings"
+        headersOutputFormat="string"
       />
 
       <ModelFormModal
         open={modelModalOpen}
-        providerId={currentProviderId}
-        model={currentModel}
-        initialData={copyModelData}
+        isEdit={!!currentModel}
+        initialValues={modelInitialValues}
+        existingIds={currentModel ? [] : existingModelIds}
+        showOptions
+        limitRequired
         onCancel={() => {
           setModelModalOpen(false);
-          setCopyModelData(null);
+          setModelInitialValues(undefined);
         }}
-        onSuccess={() => {
-          setModelModalOpen(false);
-          setCopyModelData(null);
-          loadData();
-        }}
+        onSuccess={handleModelSuccess}
+        onDuplicateId={handleModelDuplicateId}
+        i18nPrefix="settings"
       />
     </div>
   );

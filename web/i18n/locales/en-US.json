@@ -48,8 +48,9 @@
       "apiKeyPlaceholder": "Enter API Key",
       "showApiKey": "Show",
       "hideApiKey": "Hide",
-      "headers": "Custom Headers",
+      "headers": "Headers",
       "headersHint": "Standard JSON object format HTTP request headers (optional)",
+      "invalidHeaders": "Invalid Headers JSON format",
       "emptyText": "No providers yet, click the button above to add one"
     },
     "model": {
@@ -144,5 +145,74 @@
     "comingSoon": "Coming soon...",
     "opencode": "OpenCode feature is coming soon",
     "claude": "Claude configuration management is coming soon"
+  },
+  "opencode": {
+    "title": "OpenCode Configuration",
+    "configPath": "Configuration File Path",
+    "openInExplorer": "Open in File Explorer",
+    "syncFromSettings": "Sync from Settings",
+    "addProvider": "Add Provider",
+    "editProvider": "Edit Provider",
+    "deleteProvider": "Delete Provider",
+    "confirmDelete": "Are you sure you want to delete provider \"{name}\"? Associated models will also be deleted.",
+    "emptyText": "No configuration yet, click the button above to add a provider or sync from settings",
+    "modelSettings": {
+      "title": "Model Settings",
+      "modelLabel": "Main Model",
+      "modelPlaceholder": "Select main model",
+      "smallModelLabel": "Small Model",
+      "smallModelPlaceholder": "Select small model",
+      "smallModelHint": "For lightweight tasks like title generation",
+      "noModels": "No models available, please add a provider first"
+    },
+    "provider": {
+      "id": "Provider ID",
+      "idPlaceholder": "Unique identifier, e.g., my-provider",
+      "idExists": "This provider ID already exists",
+      "name": "Display Name",
+      "namePlaceholder": "Provider display name",
+      "npm": "NPM Package",
+      "npmPlaceholder": "Select AI SDK package type",
+      "baseURL": "Base URL",
+      "baseURLPlaceholder": "API base URL",
+      "apiKey": "API Key",
+      "apiKeyPlaceholder": "API key (optional)",
+      "headers": "Headers",
+      "headersPlaceholder": "JSON formatted HTTP headers (optional)"
+    },
+    "model": {
+      "title": "Model List",
+      "addModel": "Add Model",
+      "editModel": "Edit Model",
+      "deleteModel": "Delete Model",
+      "confirmDelete": "Are you sure you want to delete model \"{name}\"?",
+      "id": "Model ID",
+      "idPlaceholder": "Model identifier, e.g., gpt-4o",
+      "idExists": "This model ID already exists",
+      "name": "Model Name",
+      "namePlaceholder": "Model display name",
+      "contextLimit": "Context Limit",
+      "contextLimitPlaceholder": "e.g., 128000 (optional)",
+      "outputLimit": "Output Limit",
+      "outputLimitPlaceholder": "e.g., 8000 (optional)",
+      "emptyText": "No models yet"
+    },
+    "sync": {
+      "title": "Sync from Settings",
+      "description": "Select providers and models to sync to OpenCode configuration",
+      "selectAll": "Select All",
+      "selectProviders": "Please select at least one provider",
+      "selected": "{{count}} provider(s) selected",
+      "mergeStrategy": "Merge Strategy",
+      "mergeDescription": "If a provider with the same ID already exists in the configuration, it will be overwritten",
+      "syncSuccess": "Sync successful",
+      "noProviders": "No providers configured in settings",
+      "saveToSettings": "Save to Settings",
+      "saveSuccess": "Saved to settings",
+      "conflictTitle": "Provider Already Exists",
+      "conflictDescription": "Provider \"{{name}}\" already exists in settings, please choose an action",
+      "replaceProvider": "Replace Provider",
+      "addModelsOnly": "Add Models Only"
+    }
   }
 }

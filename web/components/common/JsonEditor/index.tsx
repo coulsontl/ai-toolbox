@@ -115,12 +115,21 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
         valueRef.current = content.json;
         onChange(content.json, isValid);
       } else if ('text' in content && content.text !== undefined) {
+        // Treat empty or whitespace-only string as valid empty object
+        const trimmedText = content.text.trim();
+        if (trimmedText === '') {
+          valueRef.current = {};
+          onChange({}, true);
+          return;
+        }
+        
+        // Non-empty string must be valid JSON
         try {
           const parsed = JSON.parse(content.text);
           valueRef.current = parsed;
           onChange(parsed, true);
         } catch {
-          // Pass raw text for invalid JSON, but caller should not update value state with it
+          // Invalid JSON - mark as invalid
           onChange(content.text, false);
         }
       }

@@ -1029,6 +1029,189 @@ async fn get_all_providers_with_models(
     Ok(result)
 }
 
+// ============================================================================
+// OpenCode Configuration Management
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenCodeModelLimit {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenCodeModel {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<OpenCodeModelLimit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenCodeProviderOptions {
+    #[serde(rename = "baseURL")]
+    pub base_url: String,
+    #[serde(rename = "apiKey", skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenCodeProvider {
+    pub npm: String,
+    pub name: String,
+    pub options: OpenCodeProviderOptions,
+    pub models: std::collections::HashMap<String, OpenCodeModel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenCodeConfig {
+    #[serde(rename = "$schema", skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    pub provider: std::collections::HashMap<String, OpenCodeProvider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(rename = "small_model", skip_serializing_if = "Option::is_none")]
+    pub small_model: Option<String>,
+}
+
+/// Get OpenCode config file path
+/// Priority: ~/.config/opencode/opencode.json(c)
+#[tauri::command]
+fn get_opencode_config_path() -> Result<String, String> {
+    let home_dir = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map_err(|_| "Failed to get home directory".to_string())?;
+    
+    let config_dir = Path::new(&home_dir).join(".config").join("opencode");
+    
+    // Check for .json first, then .jsonc
+    let json_path = config_dir.join("opencode.json");
+    let jsonc_path = config_dir.join("opencode.jsonc");
+    
+    if json_path.exists() {
+        Ok(json_path.to_string_lossy().to_string())
+    } else if jsonc_path.exists() {
+        Ok(jsonc_path.to_string_lossy().to_string())
+    } else {
+        // Return default path for new file
+        Ok(json_path.to_string_lossy().to_string())
+    }
+}
+
+/// Read OpenCode configuration file
+#[tauri::command]
+async fn read_opencode_config() -> Result<Option<OpenCodeConfig>, String> {
+    let config_path_str = get_opencode_config_path()?;
+    let config_path = Path::new(&config_path_str);
+    
+    if !config_path.exists() {
+        return Ok(None);
+    }
+    
+    let content = fs::read_to_string(config_path)
+        .map_err(|e| format!("Failed to read config file: {}", e))?;
+    
+    // Strip JSONC comments for parsing
+    let json_content = strip_jsonc_comments(&content);
+    
+    let config: OpenCodeConfig = serde_json::from_str(&json_content)
+        .map_err(|e| format!("Failed to parse config file: {}", e))?;
+    
+    Ok(Some(config))
+}
+
+/// Save OpenCode configuration file
+#[tauri::command]
+async fn save_opencode_config(config: OpenCodeConfig) -> Result<(), String> {
+    let config_path_str = get_opencode_config_path()?;
+    let config_path = Path::new(&config_path_str);
+    
+    // Ensure directory exists
+    if let Some(parent) = config_path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create config directory: {}", e))?;
+        }
+    }
+    
+    // Serialize with pretty printing
+    let json_content = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    
+    fs::write(config_path, json_content)
+        .map_err(|e| format!("Failed to write config file: {}", e))?;
+    
+    Ok(())
+}
+
+/// Strip JSONC comments (simple implementation)
+fn strip_jsonc_comments(content: &str) -> String {
+    let mut result = String::new();
+    let mut in_string = false;
+    let mut escape_next = false;
+    let chars: Vec<char> = content.chars().collect();
+    let mut i = 0;
+    
+    while i < chars.len() {
+        let ch = chars[i];
+        
+        if escape_next {
+            result.push(ch);
+            escape_next = false;
+            i += 1;
+            continue;
+        }
+        
+        if ch == '\\' && in_string {
+            result.push(ch);
+            escape_next = true;
+            i += 1;
+            continue;
+        }
+        
+        if ch == '"' {
+            in_string = !in_string;
+            result.push(ch);
+            i += 1;
+            continue;
+        }
+        
+        if !in_string {
+            // Check for // comments
+            if ch == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
+                // Skip until end of line
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            
+            // Check for /* */ comments
+            if ch == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+                i += 2;
+                while i + 1 < chars.len() {
+                    if chars[i] == '*' && chars[i + 1] == '/' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        
+        result.push(ch);
+        i += 1;
+    }
+    
+    result
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1087,7 +1270,10 @@ pub fn run() {
             update_model,
             delete_model,
             reorder_models,
-            get_all_providers_with_models
+            get_all_providers_with_models,
+            get_opencode_config_path,
+            read_opencode_config,
+            save_opencode_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

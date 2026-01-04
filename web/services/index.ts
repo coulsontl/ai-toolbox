@@ -7,3 +7,4 @@
 
 export * from './settingsApi';
 export * from './backupApi';
+export * from './opencodeApi';

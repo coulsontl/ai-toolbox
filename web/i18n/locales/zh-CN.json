@@ -48,8 +48,9 @@
       "apiKeyPlaceholder": "输入 API Key",
       "showApiKey": "显示",
       "hideApiKey": "隐藏",
-      "headers": "自定义 Headers",
+      "headers": "Headers",
       "headersHint": "标准的 JSON 对象格式的 HTTP 请求头（可选）",
+      "invalidHeaders": "Headers JSON 格式不正确",
       "emptyText": "暂无供应商，点击上方按钮添加"
     },
     "model": {
@@ -144,5 +145,74 @@
     "comingSoon": "功能开发中...",
     "opencode": "OpenCode 功能即将上线",
     "claude": "Claude 配置管理即将上线"
+  },
+  "opencode": {
+    "title": "OpenCode 配置管理",
+    "configPath": "配置文件路径",
+    "openInExplorer": "在文件管理器中打开",
+    "syncFromSettings": "从设置同步",
+    "addProvider": "添加供应商",
+    "editProvider": "编辑供应商",
+    "deleteProvider": "删除供应商",
+    "confirmDelete": "确定要删除供应商 \"{name}\" 吗？关联的模型也将被删除。",
+    "emptyText": "暂无配置，点击上方按钮添加供应商或从设置同步",
+    "modelSettings": {
+      "title": "模型设置",
+      "modelLabel": "主模型",
+      "modelPlaceholder": "选择主模型",
+      "smallModelLabel": "小模型",
+      "smallModelPlaceholder": "选择小模型",
+      "smallModelHint": "用于轻量级任务，如标题生成",
+      "noModels": "暂无可用模型，请先添加供应商"
+    },
+    "provider": {
+      "id": "供应商 ID",
+      "idPlaceholder": "唯一标识符，如 my-provider",
+      "idExists": "该供应商 ID 已存在",
+      "name": "显示名称",
+      "namePlaceholder": "供应商显示名称",
+      "npm": "NPM 包",
+      "npmPlaceholder": "选择 AI SDK 包类型",
+      "baseURL": "Base URL",
+      "baseURLPlaceholder": "API 基础地址",
+      "apiKey": "API Key",
+      "apiKeyPlaceholder": "API 密钥（可选）",
+      "headers": "Headers",
+      "headersPlaceholder": "JSON 格式的 HTTP 请求头（可选）"
+    },
+    "model": {
+      "title": "模型列表",
+      "addModel": "添加模型",
+      "editModel": "编辑模型",
+      "deleteModel": "删除模型",
+      "confirmDelete": "确定要删除模型 \"{name}\" 吗？",
+      "id": "模型 ID",
+      "idPlaceholder": "模型标识符，如 gpt-4o",
+      "idExists": "该模型 ID 已存在",
+      "name": "模型名称",
+      "namePlaceholder": "模型显示名称",
+      "contextLimit": "上下文限制",
+      "contextLimitPlaceholder": "如 128000（可选）",
+      "outputLimit": "输出限制",
+      "outputLimitPlaceholder": "如 8000（可选）",
+      "emptyText": "暂无模型"
+    },
+    "sync": {
+      "title": "从设置同步",
+      "description": "选择要同步到 OpenCode 配置的供应商和模型",
+      "selectAll": "全选",
+      "selectProviders": "请至少选择一个供应商",
+      "selected": "已选择 {{count}} 个供应商",
+      "mergeStrategy": "合并策略",
+      "mergeDescription": "如果配置中已存在同 ID 的供应商，将覆盖原有配置",
+      "syncSuccess": "同步成功",
+      "noProviders": "设置中暂无供应商配置",
+      "saveToSettings": "保存到设置",
+      "saveSuccess": "已保存到设置",
+      "conflictTitle": "供应商已存在",
+      "conflictDescription": "设置中已存在供应商 \"{{name}}\"，请选择操作方式",
+      "replaceProvider": "覆盖供应商",
+      "addModelsOnly": "仅新增模型"
+    }
   }
 }
