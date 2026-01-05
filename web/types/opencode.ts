@@ -23,7 +23,7 @@ export interface OpenCodeProviderOptions {
 
 export interface OpenCodeProvider {
   npm: string;
-  name: string;
+  name?: string;
   options: OpenCodeProviderOptions;
   models: Record<string, OpenCodeModel>;
 }

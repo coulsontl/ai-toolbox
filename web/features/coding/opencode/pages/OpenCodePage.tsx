@@ -35,7 +35,7 @@ const { Title, Text } = Typography;
 // Helper function to convert OpenCodeProvider to ProviderDisplayData
 const toProviderDisplayData = (id: string, provider: OpenCodeProvider): ProviderDisplayData => ({
   id,
-  name: provider.name,
+  name: provider.name || id,
   sdkName: provider.npm,
   baseUrl: provider.options.baseURL,
 });
@@ -424,7 +424,7 @@ const OpenCodePage: React.FC = () => {
         const existingProviders = await listProviders();
         await createProvider({
           id: providerId,
-          name: provider.name,
+          name: provider.name || providerId,
           provider_type: provider.npm,
           base_url: provider.options.baseURL,
           api_key: provider.options.apiKey || '',
@@ -434,7 +434,7 @@ const OpenCodePage: React.FC = () => {
       } else if (mode === 'replace' && existingProvider) {
         await updateProvider({
           ...existingProvider,
-          name: provider.name,
+          name: provider.name || providerId,
           provider_type: provider.npm,
           base_url: provider.options.baseURL,
           api_key: provider.options.apiKey || existingProvider.api_key,

@@ -1745,7 +1745,8 @@ pub struct OpenCodeProviderOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenCodeProvider {
     pub npm: String,
-    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub options: OpenCodeProviderOptions,
     pub models: std::collections::HashMap<String, OpenCodeModel>,
 }
@@ -1803,8 +1804,15 @@ async fn read_opencode_config() -> Result<Option<OpenCodeConfig>, String> {
     // Strip JSONC comments for parsing
     let json_content = strip_jsonc_comments(&content);
     
-    let config: OpenCodeConfig = serde_json::from_str(&json_content)
+    let mut config: OpenCodeConfig = serde_json::from_str(&json_content)
         .map_err(|e| format!("Failed to parse config file: {}", e))?;
+    
+    // Fill missing name fields with provider key
+    for (key, provider) in config.provider.iter_mut() {
+        if provider.name.is_none() {
+            provider.name = Some(key.clone());
+        }
+    }
     
     Ok(Some(config))
 }
