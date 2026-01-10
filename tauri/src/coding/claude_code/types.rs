@@ -154,3 +154,17 @@ pub struct ClaudeSettings {
     #[serde(flatten)]
     pub other: serde_json::Map<String, serde_json::Value>,
 }
+
+// ============================================================================
+// Claude Plugin Integration Types
+// ============================================================================
+
+/// ClaudePluginStatus - API response for plugin integration status
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudePluginStatus {
+    /// Whether primaryApiKey = "any" is set (third-party providers enabled)
+    pub enabled: bool,
+    /// Whether ~/.claude/config.json exists
+    pub has_config_file: bool,
+}

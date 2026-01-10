@@ -605,7 +605,7 @@ pub async fn save_claude_common_config(
         .await
         .map_err(|e| format!("Failed to query applied provider: {}", e))?
         .take(0);
-    
+
     if let Ok(records) = applied_result {
         if let Some(record) = records.first() {
             let applied_provider = adapter::from_db_value_provider(record.clone());
@@ -618,4 +618,107 @@ pub async fn save_claude_common_config(
     }
 
     Ok(())
+}
+
+// ============================================================================
+// Claude Plugin Integration Commands
+// ============================================================================
+
+/// Get Claude plugin config path (~/.claude/config.json)
+fn get_claude_plugin_config_path() -> Result<std::path::PathBuf, String> {
+    let home_dir = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map_err(|_| "Failed to get home directory".to_string())?;
+
+    Ok(std::path::Path::new(&home_dir).join(".claude").join("config.json"))
+}
+
+/// Check if plugin config has primaryApiKey = "any"
+fn is_plugin_config_enabled(content: &str) -> bool {
+    match serde_json::from_str::<serde_json::Value>(content) {
+        Ok(value) => value
+            .get("primaryApiKey")
+            .and_then(|v| v.as_str())
+            .map(|val| val == "any")
+            .unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
+/// Get Claude plugin integration status
+#[tauri::command]
+pub async fn get_claude_plugin_status() -> Result<ClaudePluginStatus, String> {
+    let config_path = get_claude_plugin_config_path()?;
+    let has_config_file = config_path.exists();
+
+    if !has_config_file {
+        return Ok(ClaudePluginStatus {
+            enabled: false,
+            has_config_file: false,
+        });
+    }
+
+    let content = fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read config file: {}", e))?;
+
+    let enabled = is_plugin_config_enabled(&content);
+
+    Ok(ClaudePluginStatus {
+        enabled,
+        has_config_file: true,
+    })
+}
+
+/// Apply Claude plugin configuration
+#[tauri::command]
+pub async fn apply_claude_plugin_config(enabled: bool) -> Result<bool, String> {
+    let config_path = get_claude_plugin_config_path()?;
+
+    // Ensure directory exists
+    if let Some(parent) = config_path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create .claude directory: {}", e))?;
+        }
+    }
+
+    // Read existing config or create empty
+    let mut obj: serde_json::Map<String, serde_json::Value> = if config_path.exists() {
+        let content = fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read config file: {}", e))?;
+
+        match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        }
+    } else {
+        serde_json::Map::new()
+    };
+
+    if enabled {
+        // Set primaryApiKey = "any"
+        let current = obj
+            .get("primaryApiKey")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if current != "any" {
+            obj.insert(
+                "primaryApiKey".to_string(),
+                serde_json::Value::String("any".to_string()),
+            );
+        }
+    } else {
+        // Remove primaryApiKey field
+        obj.remove("primaryApiKey");
+    }
+
+    // Write back to file
+    let serialized = serde_json::to_string_pretty(&serde_json::Value::Object(obj))
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+
+    fs::write(&config_path, format!("{serialized}\n"))
+        .map_err(|e| format!("Failed to write config file: {}", e))?;
+
+    Ok(true)
 }

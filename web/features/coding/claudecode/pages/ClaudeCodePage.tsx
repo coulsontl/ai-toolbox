@@ -1,6 +1,6 @@
 import React from 'react';
-import { Typography, Card, Button, Space, Empty, message, Modal, Spin } from 'antd';
-import { PlusOutlined, FolderOpenOutlined, SettingOutlined, SyncOutlined, ExclamationCircleOutlined, LinkOutlined, EyeOutlined } from '@ant-design/icons';
+import { Typography, Card, Button, Space, Empty, message, Modal, Spin, Switch, Tooltip } from 'antd';
+import { PlusOutlined, FolderOpenOutlined, SettingOutlined, SyncOutlined, ExclamationCircleOutlined, LinkOutlined, EyeOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useNavigate, useLocation } from 'react-router-dom';
@@ -9,8 +9,9 @@ import type {
   ClaudeProviderFormValues,
   ImportConflictInfo,
   ImportConflictAction,
+  ClaudePluginStatus,
 } from '@/types/claudecode';
-  import {
+import {
   getClaudeConfigPath,
   listClaudeProviders,
   createClaudeProvider,
@@ -21,6 +22,8 @@ import type {
   revealClaudeConfigFolder,
   getClaudeCommonConfig,
   readClaudeSettings,
+  getClaudePluginStatus,
+  applyClaudePluginConfig,
 } from '@/services/claudeCodeApi';
 import { usePreviewStore, useAppStore, useRefreshStore } from '@/stores';
 import ClaudeProviderCard from '../components/ClaudeProviderCard';
@@ -104,6 +107,11 @@ const ClaudeCodePage: React.FC = () => {
   const [configPath, setConfigPath] = React.useState<string>('');
   const [providers, setProviders] = React.useState<ClaudeCodeProvider[]>([]);
   const [appliedProviderId, setAppliedProviderId] = React.useState<string>('');
+  const [pluginStatus, setPluginStatus] = React.useState<ClaudePluginStatus>({
+    enabled: false,
+    hasConfigFile: false,
+  });
+  const [pluginLoading, setPluginLoading] = React.useState(false);
 
   // 模态框状态
   const [providerModalOpen, setProviderModalOpen] = React.useState(false);
@@ -118,6 +126,7 @@ const ClaudeCodePage: React.FC = () => {
   // 加载配置（on mount and when refresh key changes）
   React.useEffect(() => {
     loadConfig();
+    loadPluginStatus();
   }, [claudeProviderRefreshKey]);
 
   const loadConfig = async () => {
@@ -147,6 +156,29 @@ const ClaudeCodePage: React.FC = () => {
     } catch (error) {
       console.error('Failed to open folder:', error);
       message.error(t('common.error'));
+    }
+  };
+
+  const loadPluginStatus = async () => {
+    try {
+      const status = await getClaudePluginStatus();
+      setPluginStatus(status);
+    } catch (error) {
+      console.error('Failed to load plugin status:', error);
+    }
+  };
+
+  const handlePluginToggle = async (enabled: boolean) => {
+    setPluginLoading(true);
+    try {
+      await applyClaudePluginConfig(enabled);
+      setPluginStatus({ ...pluginStatus, enabled });
+      message.success(enabled ? t('claudecode.plugin.enabled') : t('claudecode.plugin.disabled'));
+    } catch (error) {
+      console.error('Failed to toggle plugin config:', error);
+      message.error(t('common.error'));
+    } finally {
+      setPluginLoading(false);
     }
   };
 
@@ -461,6 +493,18 @@ const ClaudeCodePage: React.FC = () => {
           </div>
 
           <Space>
+            <Tooltip title={t('claudecode.plugin.tooltip')}>
+              <span>
+                <Switch
+                  checked={pluginStatus.enabled}
+                  loading={pluginLoading}
+                  onChange={handlePluginToggle}
+                  checkedChildren="VSCode"
+                  unCheckedChildren="VSCode"
+                  disabled={!pluginStatus.hasConfigFile && !pluginStatus.enabled}
+                />
+              </span>
+            </Tooltip>
             <Button icon={<SettingOutlined />} onClick={() => setCommonConfigModalOpen(true)}>
               {t('claudecode.commonConfigButton')}
             </Button>

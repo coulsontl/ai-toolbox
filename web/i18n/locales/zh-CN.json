@@ -472,6 +472,12 @@
       "hint": "应用供应商配置时会自动合并通用配置。",
       "invalidJson": "JSON 格式不正确"
     },
+    "plugin": {
+      "title": "VSCode 插件集成",
+      "tooltip": "启用后将允许 Vscode Claude Code 插件使用第三方供应商",
+      "enabled": "已开启插件集成",
+      "disabled": "已关闭插件集成"
+    },
     "form": {
       "tabManual": "手动配置",
       "tabImport": "从 OpenCode 导入"

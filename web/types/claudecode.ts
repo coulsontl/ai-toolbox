@@ -101,3 +101,11 @@ export interface ImportConflictInfo {
   newProviderName: string;
   sourceProviderId: string;
 }
+
+/**
+ * Claude Plugin integration status
+ */
+export interface ClaudePluginStatus {
+  enabled: boolean;       // Whether primaryApiKey = "any" is set
+  hasConfigFile: boolean; // Whether ~/.claude/config.json exists
+}

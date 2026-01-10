@@ -9,6 +9,7 @@ import type {
   ClaudeCodeProvider,
   ClaudeCommonConfig,
   ClaudeSettings,
+  ClaudePluginStatus,
 } from '@/types/claudecode';
 
 /**
@@ -99,4 +100,20 @@ export const getClaudeCommonConfig = async (): Promise<ClaudeCommonConfig | null
  */
 export const saveClaudeCommonConfig = async (config: string): Promise<void> => {
   await invoke('save_claude_common_config', { config });
+};
+
+/**
+ * Get Claude plugin integration status
+ */
+export const getClaudePluginStatus = async (): Promise<ClaudePluginStatus> => {
+  return await invoke<ClaudePluginStatus>('get_claude_plugin_status');
+};
+
+/**
+ * Apply Claude plugin configuration
+ * @param enabled - true to enable third-party providers (set primaryApiKey = "any"),
+ *                  false to disable (remove primaryApiKey field)
+ */
+export const applyClaudePluginConfig = async (enabled: boolean): Promise<boolean> => {
+  return await invoke<boolean>('apply_claude_plugin_config', { enabled });
 };

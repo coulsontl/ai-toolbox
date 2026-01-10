@@ -472,6 +472,12 @@
       "hint": "Common config will be automatically merged when applying provider configuration.",
       "invalidJson": "Invalid JSON format"
     },
+    "plugin": {
+      "title": "VSCode Plugin Integration",
+      "tooltip": "Enable to allow Vscode Claude Code plugin to use third-party providers",
+      "enabled": "Plugin integration enabled",
+      "disabled": "Plugin integration disabled"
+    },
     "form": {
       "tabManual": "Manual Configuration",
       "tabImport": "Import from OpenCode"

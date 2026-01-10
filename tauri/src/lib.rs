@@ -190,6 +190,8 @@ pub fn run() {
             coding::claude_code::apply_claude_config,
             coding::claude_code::get_claude_common_config,
             coding::claude_code::save_claude_common_config,
+            coding::claude_code::get_claude_plugin_status,
+            coding::claude_code::apply_claude_plugin_config,
             // OpenCode
             coding::open_code::get_opencode_config_path,
             coding::open_code::get_opencode_config_path_info,
