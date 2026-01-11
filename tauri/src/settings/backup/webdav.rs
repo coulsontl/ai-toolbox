@@ -4,11 +4,14 @@ use std::path::PathBuf;
 use zip::ZipArchive;
 
 use super::utils::{create_backup_zip, get_db_path, get_opencode_restore_dir};
+use crate::db::DbState;
+use crate::http_client;
 
 /// Backup database to WebDAV server
 #[tauri::command]
 pub async fn backup_to_webdav(
     app_handle: tauri::AppHandle,
+    state: tauri::State<'_, DbState>,
     url: String,
     username: String,
     password: String,
@@ -38,8 +41,8 @@ pub async fn backup_to_webdav(
         format!("{}/{}/{}", base_url, remote, backup_filename)
     };
 
-    // Upload to WebDAV using PUT request
-    let client = reqwest::Client::new();
+    // Upload to WebDAV using PUT request with proxy support
+    let client = http_client::client(&state).await?;
     let response = client
         .put(&full_url)
         .basic_auth(&username, Some(&password))
@@ -61,6 +64,7 @@ pub async fn backup_to_webdav(
 /// List backup files from WebDAV server
 #[tauri::command]
 pub async fn list_webdav_backups(
+    state: tauri::State<'_, DbState>,
     url: String,
     username: String,
     password: String,
@@ -75,8 +79,8 @@ pub async fn list_webdav_backups(
         format!("{}/{}/", base_url, remote)
     };
 
-    // Send PROPFIND request to list files
-    let client = reqwest::Client::new();
+    // Send PROPFIND request to list files with proxy support
+    let client = http_client::client(&state).await?;
     let response = client
         .request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &folder_url)
         .basic_auth(&username, Some(&password))
@@ -130,6 +134,7 @@ fn get_home_dir() -> Result<PathBuf, String> {
 #[tauri::command]
 pub async fn restore_from_webdav(
     app_handle: tauri::AppHandle,
+    state: tauri::State<'_, DbState>,
     url: String,
     username: String,
     password: String,
@@ -147,8 +152,8 @@ pub async fn restore_from_webdav(
         format!("{}/{}/{}", base_url, remote, filename)
     };
 
-    // Download from WebDAV
-    let client = reqwest::Client::new();
+    // Download from WebDAV with proxy support
+    let client = http_client::client(&state).await?;
     let response = client
         .get(&full_url)
         .basic_auth(&username, Some(&password))

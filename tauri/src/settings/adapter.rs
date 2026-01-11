@@ -17,13 +17,14 @@ pub fn from_db_value(value: Value) -> AppSettings {
         current_sub_tab: get_str(&value, "current_sub_tab", "opencode"),
         backup_type: get_str(&value, "backup_type", "local"),
         local_backup_path: get_str(&value, "local_backup_path", ""),
-        
+
         webdav: get_webdav(&value),
         s3: get_s3(&value),
-        
+
         last_backup_time: get_opt_str(&value, "last_backup_time"),
         launch_on_startup: get_bool(&value, "launch_on_startup", true),
         minimize_to_tray_on_close: get_bool(&value, "minimize_to_tray_on_close", true),
+        proxy_url: get_str(&value, "proxy_url", ""),
     }
 }
 

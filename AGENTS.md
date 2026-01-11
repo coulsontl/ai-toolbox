@@ -657,3 +657,44 @@ When a user selects a model from the tray menu:
 2. Update config with new selection
 3. Emit `config-changed` event with `"tray"` payload
 4. Frontend reloads page to reflect changes
+
+---
+
+## HTTP Client Guidelines
+
+All HTTP requests in the Rust backend MUST use the unified `http_client` module to ensure proxy settings are respected.
+
+### Usage
+
+```rust
+use crate::http_client;
+use crate::db::DbState;
+
+// Standard request (30s timeout, auto proxy)
+let client = http_client::client(&state).await?;
+
+// Custom timeout
+let client = http_client::client_with_timeout(&state, 60).await?;
+
+// Bypass proxy (special cases only)
+let client = http_client::client_no_proxy(30)?;
+```
+
+### Rules
+
+1. **NEVER** use `reqwest::Client::new()` or `reqwest::Client::builder()` directly
+2. **ALWAYS** use `http_client::client()` for requests that should respect proxy settings
+3. Use `http_client::client_no_proxy()` only when you explicitly need to bypass proxy
+
+### Supported Proxy Formats
+
+- HTTP: `http://proxy.example.com:8080`
+- HTTP with auth: `http://user:pass@proxy.example.com:8080`
+- SOCKS5: `socks5://proxy.example.com:1080`
+- SOCKS5 with auth: `socks5://user:pass@proxy.example.com:1080`
+
+### Files Using http_client
+
+- `tauri/src/update.rs` - Update checking
+- `tauri/src/settings/backup/webdav.rs` - WebDAV operations
+- `tauri/src/coding/open_code/models_api.rs` - Provider model fetching

@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use crate::db::DbState;
+use crate::http_client;
+
 /// API type for fetching models
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -157,13 +160,11 @@ fn build_models_url(
 /// Fetch models list from provider API
 #[tauri::command]
 pub async fn fetch_provider_models(
+    state: tauri::State<'_, DbState>,
     request: FetchModelsRequest,
 ) -> Result<FetchModelsResponse, String> {
-    // Create HTTP client with timeout
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    // Create HTTP client with timeout and proxy support
+    let client = http_client::client_with_timeout(&state, 30).await?;
 
     // Build request URL based on API type and SDK type
     // Use custom_url if provided, otherwise calculate it

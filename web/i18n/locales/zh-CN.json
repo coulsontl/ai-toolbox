@@ -125,6 +125,16 @@
       "launchOnStartup": "开机自启",
       "minimizeToTrayOnClose": "关闭时最小化到托盘"
     },
+    "proxy": {
+      "title": "网络代理",
+      "urlPlaceholder": "http://user:pass@proxy.example.com:8080",
+      "hint": "支持 HTTP 和 SOCKS5 代理，可包含用户名密码，示例：http://user:pass@proxy.example.com:8080",
+      "testConnection": "测试连接",
+      "testing": "测试中...",
+      "testSuccess": "代理连接成功",
+      "testFailed": "代理连接失败",
+      "urlRequired": "请输入代理地址"
+    },
     "about": {
       "title": "关于",
       "version": "当前版本",

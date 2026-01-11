@@ -36,6 +36,7 @@ export interface AppSettings {
   last_backup_time: string | null;
   launch_on_startup: boolean;
   minimize_to_tray_on_close: boolean;
+  proxy_url: string;
 }
 
 // Default settings
@@ -64,6 +65,7 @@ export const defaultSettings: AppSettings = {
   last_backup_time: null,
   launch_on_startup: true,
   minimize_to_tray_on_close: true,
+  proxy_url: '',
 };
 
 /**
@@ -129,4 +131,11 @@ export const getAutoLaunchStatus = async (): Promise<boolean> => {
  */
 export const restartApp = async (): Promise<void> => {
   await invoke('restart_app');
+};
+
+/**
+ * Test proxy connection
+ */
+export const testProxyConnection = async (proxyUrl: string): Promise<void> => {
+  await invoke('test_proxy_connection', { proxyUrl });
 };

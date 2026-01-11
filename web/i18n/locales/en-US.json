@@ -125,6 +125,16 @@
       "launchOnStartup": "Launch on Startup",
       "minimizeToTrayOnClose": "Minimize to Tray on Close"
     },
+    "proxy": {
+      "title": "Network Proxy",
+      "urlPlaceholder": "http://user:pass@proxy.example.com:8080",
+      "hint": "Supports HTTP and SOCKS5 proxies, with optional username and password, e.g., http://user:pass@proxy.example.com:8080",
+      "testConnection": "Test Connection",
+      "testing": "Testing...",
+      "testSuccess": "Proxy connection successful",
+      "testFailed": "Proxy connection failed",
+      "urlRequired": "Please enter a proxy URL"
+    },
     "about": {
       "title": "About",
       "version": "Current Version",

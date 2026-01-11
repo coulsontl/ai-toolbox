@@ -30,7 +30,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 zip = "2"
 walkdir = "2"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "socks", "system-proxy"] }
 regex = "1"
 dirs = "5"
 auto-launch = "0.5"

@@ -45,6 +45,9 @@ interface SettingsState {
   launchOnStartup: boolean;
   minimizeToTrayOnClose: boolean;
 
+  // Proxy settings
+  proxyUrl: string;
+
   // Actions
   initSettings: () => Promise<void>;
   setBackupSettings: (config: {
@@ -56,6 +59,7 @@ interface SettingsState {
   setLastBackupTime: (time: string | null) => Promise<void>;
   setLaunchOnStartup: (enabled: boolean) => Promise<void>;
   setMinimizeToTrayOnClose: (enabled: boolean) => Promise<void>;
+  setProxyUrl: (url: string) => Promise<void>;
 }
 
 // Convert backend snake_case to frontend camelCase
@@ -124,6 +128,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   lastBackupTime: null,
   launchOnStartup: true,
   minimizeToTrayOnClose: true,
+  proxyUrl: '',
 
   initSettings: async () => {
     if (get().isInitialized) return;
@@ -139,6 +144,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         lastBackupTime: settings.last_backup_time,
         launchOnStartup: settings.launch_on_startup,
         minimizeToTrayOnClose: settings.minimize_to_tray_on_close,
+        proxyUrl: settings.proxy_url || '',
         isInitialized: true,
       });
     } catch (error) {
@@ -222,6 +228,18 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     const newSettings: AppSettings = {
       ...currentSettings,
       minimize_to_tray_on_close: enabled,
+    };
+    await saveSettings(newSettings);
+  },
+
+  setProxyUrl: async (url) => {
+    set({ proxyUrl: url });
+
+    // Update database
+    const currentSettings = await getSettings();
+    const newSettings: AppSettings = {
+      ...currentSettings,
+      proxy_url: url,
     };
     await saveSettings(newSettings);
   },

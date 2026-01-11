@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 pub mod auto_launch;
 pub mod coding;
 pub mod db;
+pub mod http_client;
 pub mod settings;
 pub mod tray;
 pub mod update;
@@ -171,6 +172,7 @@ pub fn run() {
             settings::set_auto_launch,
             settings::get_auto_launch_status,
             settings::restart_app,
+            settings::test_proxy_connection,
             // Backup - Local
             settings::backup::backup_database,
             settings::backup::restore_database,

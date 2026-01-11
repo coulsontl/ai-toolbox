@@ -5,6 +5,9 @@ use std::time::{Duration, Instant};
 use tauri_plugin_updater::UpdaterExt;
 use tauri::Emitter;
 
+use crate::db::DbState;
+use crate::http_client;
+
 /// Response from GitHub latest.json
 #[derive(Debug, Serialize, Deserialize)]
 struct LatestRelease {
@@ -34,7 +37,10 @@ pub struct UpdateCheckResult {
 
 /// Check for updates from GitHub releases
 #[tauri::command]
-pub async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<UpdateCheckResult, String> {
+pub async fn check_for_updates(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, DbState>,
+) -> Result<UpdateCheckResult, String> {
     const GITHUB_REPO: &str = "coulsontl/ai-toolbox";
     let latest_json_url = format!(
         "https://github.com/{}/releases/latest/download/latest.json",
@@ -47,8 +53,8 @@ pub async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<UpdateChe
     // Detect current platform
     let current_platform = detect_current_platform();
 
-    // Fetch latest.json using reqwest (handles redirects properly)
-    let client = reqwest::Client::new();
+    // Fetch latest.json using http_client with proxy support
+    let client = http_client::client(&state).await?;
     let response = client
         .get(&latest_json_url)
         .send()

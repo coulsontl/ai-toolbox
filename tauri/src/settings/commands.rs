@@ -108,3 +108,9 @@ pub fn restart_app() -> Result<(), String> {
     // Exit the current instance
     std::process::exit(0);
 }
+
+/// Test proxy connection
+#[tauri::command]
+pub async fn test_proxy_connection(proxy_url: String) -> Result<(), String> {
+    crate::http_client::test_proxy(&proxy_url).await
+}

@@ -1,11 +1,11 @@
 import React from 'react';
-import { Typography, Button, Select, Divider, Space, message, Modal, Table, Switch, Progress } from 'antd';
+import { Typography, Button, Select, Divider, Space, message, Modal, Table, Switch, Progress, Input } from 'antd';
 import { EditOutlined, CloudUploadOutlined, CloudDownloadOutlined, GithubOutlined, SyncOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useAppStore, useSettingsStore } from '@/stores';
 import { languages, type Language } from '@/i18n';
 import i18n from '@/i18n';
-import { BackupSettingsModal, S3SettingsModal, WebDAVRestoreModal } from '../components';
+import { BackupSettingsModal /* S3SettingsModal */, WebDAVRestoreModal } from '../components';
 import {
   backupDatabase,
   restoreDatabase,
@@ -18,6 +18,7 @@ import {
   openGitHubPage,
   openExternalUrl,
   installUpdate,
+  testProxyConnection,
   type UpdateInfo,
   GITHUB_REPO,
 } from '@/services';
@@ -33,20 +34,26 @@ const GeneralSettingsPage: React.FC = () => {
     backupType,
     localBackupPath,
     webdav,
-    s3,
+    // s3,
     lastBackupTime,
     setLastBackupTime,
     launchOnStartup,
     minimizeToTrayOnClose,
     setLaunchOnStartup,
     setMinimizeToTrayOnClose,
+    proxyUrl,
+    setProxyUrl,
   } = useSettingsStore();
 
   const [backupModalOpen, setBackupModalOpen] = React.useState(false);
-  const [s3ModalOpen, setS3ModalOpen] = React.useState(false);
+  // const [s3ModalOpen, setS3ModalOpen] = React.useState(false);
   const [webdavRestoreModalOpen, setWebdavRestoreModalOpen] = React.useState(false);
   const [backupLoading, setBackupLoading] = React.useState(false);
   const [restoreLoading, setRestoreLoading] = React.useState(false);
+
+  // Proxy settings states
+  const [proxyInput, setProxyInput] = React.useState(proxyUrl);
+  const [proxyTesting, setProxyTesting] = React.useState(false);
 
   // Version and update states
   const [appVersion, setAppVersion] = React.useState<string>('');
@@ -95,6 +102,11 @@ const GeneralSettingsPage: React.FC = () => {
       unlisten.then((fn) => fn()).catch(console.error);
     };
   }, [t]);
+
+  // Sync proxyInput with proxyUrl from store
+  React.useEffect(() => {
+    setProxyInput(proxyUrl);
+  }, [proxyUrl]);
 
   const handleCheckUpdate = async (silent = false) => {
     setCheckingUpdate(true);
@@ -186,11 +198,11 @@ const GeneralSettingsPage: React.FC = () => {
     i18n.changeLanguage(value);
   };
 
-  const maskSecret = (value: string) => {
-    if (!value) return t('common.notSet');
-    if (value.length <= 4) return '****';
-    return value.slice(0, 4) + '****';
-  };
+  // const maskSecret = (value: string) => {
+  //   if (!value) return t('common.notSet');
+  //   if (value.length <= 4) return '****';
+  //   return value.slice(0, 4) + '****';
+  // };
 
   const formatBackupTime = (isoTime: string | null) => {
     if (!isoTime) return t('common.notSet');
@@ -354,6 +366,38 @@ const GeneralSettingsPage: React.FC = () => {
     }
   };
 
+  // Save proxy URL when input loses focus
+  const handleProxySave = async () => {
+    if (proxyInput !== proxyUrl) {
+      try {
+        await setProxyUrl(proxyInput);
+        message.success(t('common.success'));
+      } catch (error) {
+        console.error('Failed to save proxy:', error);
+        message.error(t('common.error'));
+      }
+    }
+  };
+
+  // Test proxy connection
+  const handleProxyTest = async () => {
+    if (!proxyInput) {
+      message.warning(t('settings.proxy.urlRequired'));
+      return;
+    }
+
+    setProxyTesting(true);
+    try {
+      await testProxyConnection(proxyInput);
+      message.success(t('settings.proxy.testSuccess'));
+    } catch (error) {
+      console.error('Proxy test failed:', error);
+      message.error(t('settings.proxy.testFailed') + ': ' + String(error));
+    } finally {
+      setProxyTesting(false);
+    }
+  };
+
   // Backup settings table data
   const backupColumns = [
     { title: t('settings.backupSettings.storageType'), dataIndex: 'storageType', key: 'storageType' },
@@ -373,22 +417,22 @@ const GeneralSettingsPage: React.FC = () => {
   ];
 
   // S3 settings table data
-  const s3Columns = [
-    { title: t('settings.s3.bucket'), dataIndex: 'bucket', key: 'bucket' },
-    { title: t('settings.s3.region'), dataIndex: 'region', key: 'region' },
-    { title: t('settings.s3.accessKey'), dataIndex: 'accessKey', key: 'accessKey' },
-    { title: t('settings.s3.prefix'), dataIndex: 'prefix', key: 'prefix' },
-  ];
+  // const s3Columns = [
+  //   { title: t('settings.s3.bucket'), dataIndex: 'bucket', key: 'bucket' },
+  //   { title: t('settings.s3.region'), dataIndex: 'region', key: 'region' },
+  //   { title: t('settings.s3.accessKey'), dataIndex: 'accessKey', key: 'accessKey' },
+  //   { title: t('settings.s3.prefix'), dataIndex: 'prefix', key: 'prefix' },
+  // ];
 
-  const s3Data = [
-    {
-      key: '1',
-      bucket: s3.bucket || t('common.notSet'),
-      region: s3.region || t('common.notSet'),
-      accessKey: maskSecret(s3.accessKey),
-      prefix: s3.prefix || t('common.notSet'),
-    },
-  ];
+  // const s3Data = [
+  //   {
+  //     key: '1',
+  //     bucket: s3.bucket || t('common.notSet'),
+  //     region: s3.region || t('common.notSet'),
+  //     accessKey: maskSecret(s3.accessKey),
+  //     prefix: s3.prefix || t('common.notSet'),
+  //   },
+  // ];
 
   return (
     <div>
@@ -435,6 +479,34 @@ const GeneralSettingsPage: React.FC = () => {
 
       <Divider />
 
+      {/* Proxy Settings */}
+      <Title level={5} style={{ marginBottom: 16 }}>
+        {t('settings.proxy.title')}
+      </Title>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+          <Input
+            value={proxyInput}
+            onChange={(e) => setProxyInput(e.target.value)}
+            onBlur={handleProxySave}
+            onPressEnter={handleProxySave}
+            placeholder={t('settings.proxy.urlPlaceholder')}
+            style={{ flex: 1 }}
+          />
+          <Button
+            onClick={handleProxyTest}
+            loading={proxyTesting}
+          >
+            {proxyTesting ? t('settings.proxy.testing') : t('settings.proxy.testConnection')}
+          </Button>
+        </div>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {t('settings.proxy.hint')}
+        </Text>
+      </div>
+
+      <Divider />
+
       {/* Backup Settings */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <Title level={5} style={{ margin: 0 }}>
@@ -477,7 +549,7 @@ const GeneralSettingsPage: React.FC = () => {
       <Divider />
 
       {/* S3 Settings */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+      {/* <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <Title level={5} style={{ margin: 0 }}>
           {t('settings.s3.title')}
         </Title>
@@ -498,7 +570,7 @@ const GeneralSettingsPage: React.FC = () => {
         bordered
       />
 
-      <Divider />
+      <Divider /> */}
 
       {/* About */}
       <Title level={5} style={{ marginBottom: 12 }}>
@@ -528,7 +600,7 @@ const GeneralSettingsPage: React.FC = () => {
 
       {/* Modals */}
       <BackupSettingsModal open={backupModalOpen} onClose={() => setBackupModalOpen(false)} />
-      <S3SettingsModal open={s3ModalOpen} onClose={() => setS3ModalOpen(false)} />
+      {/* <S3SettingsModal open={s3ModalOpen} onClose={() => setS3ModalOpen(false)} /> */}
       <WebDAVRestoreModal
         open={webdavRestoreModalOpen}
         onClose={() => setWebdavRestoreModalOpen(false)}
