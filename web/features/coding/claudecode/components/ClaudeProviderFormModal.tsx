@@ -13,7 +13,7 @@ const { TextArea } = Input;
 interface OpenCodeProviderDisplay {
   id: string;
   name: string;
-  baseUrl: string;
+  baseUrl: string | undefined;
   apiKey?: string;
   models: { id: string; name: string }[];
 }
@@ -114,8 +114,8 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
           anthropicProviders.push({
             id,
             name: providerData.name || id,
-            baseUrl: providerData.options.baseURL,
-            apiKey: providerData.options.apiKey,
+            baseUrl: providerData.options?.baseURL,
+            apiKey: providerData.options?.apiKey,
             models,
           });
         }
@@ -138,7 +138,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
     setAvailableModels(providerData.models);
 
     // 处理 baseUrl：去掉末尾的 /v1 和末尾的 /
-    let processedUrl = providerData.baseUrl;
+    let processedUrl = providerData.baseUrl || '';
     // 去掉末尾的 /v1
     if (processedUrl.endsWith('/v1')) {
       processedUrl = processedUrl.slice(0, -3);
@@ -285,7 +285,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
             loading={loadingProviders}
             onChange={handleProviderSelect}
             options={openCodeProviders.map((p) => ({
-              label: `${p.name} (${p.baseUrl})`,
+              label: `${p.name} (${p.baseUrl || ''})`,
               value: p.id,
             }))}
           />
