@@ -66,8 +66,8 @@ pub struct OpenCodeModel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenCodeProviderOptions {
-    #[serde(rename = "baseURL")]
-    pub base_url: String,
+    #[serde(rename = "baseURL", skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
     #[serde(rename = "apiKey", skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,7 +84,8 @@ pub struct OpenCodeProvider {
     pub npm: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    pub options: OpenCodeProviderOptions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<OpenCodeProviderOptions>,
     pub models: HashMap<String, OpenCodeModel>,
 }
 

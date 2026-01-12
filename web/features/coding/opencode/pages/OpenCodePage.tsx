@@ -42,7 +42,7 @@ const toProviderDisplayData = (id: string, provider: OpenCodeProvider): Provider
   id,
   name: provider.name || id,
   sdkName: provider.npm || '@ai-sdk/openai-compatible',
-  baseUrl: provider.options.baseURL,
+  baseUrl: provider.options?.baseURL || '',
 });
 
 // Helper function to convert OpenCodeModel to ModelDisplayData
@@ -179,12 +179,12 @@ const OpenCodePage: React.FC = () => {
       id: providerId,
       name: provider.name,
       sdkType: provider.npm || '@ai-sdk/openai-compatible',
-      baseUrl: provider.options.baseURL,
-      apiKey: provider.options.apiKey || '',
-      headers: provider.options.headers,
-      timeout: provider.options.timeout === false ? undefined : (provider.options.timeout as number | undefined),
-      disableTimeout: provider.options.timeout === false,
-      setCacheKey: provider.options.setCacheKey,
+      baseUrl: provider.options?.baseURL || '',
+      apiKey: provider.options?.apiKey || '',
+      headers: provider.options?.headers,
+      timeout: provider.options?.timeout === false ? undefined : (provider.options?.timeout as number | undefined),
+      disableTimeout: provider.options?.timeout === false,
+      setCacheKey: provider.options?.setCacheKey,
     });
     setProviderModalOpen(true);
   };
@@ -199,12 +199,12 @@ const OpenCodePage: React.FC = () => {
       id: `${providerId}_copy`,
       name: provider.name,
       sdkType: provider.npm,
-      baseUrl: provider.options.baseURL,
-      apiKey: provider.options.apiKey || '',
-      headers: provider.options.headers,
-      timeout: provider.options.timeout === false ? undefined : (provider.options.timeout as number | undefined),
-      disableTimeout: provider.options.timeout === false,
-      setCacheKey: provider.options.setCacheKey,
+      baseUrl: provider.options?.baseURL || '',
+      apiKey: provider.options?.apiKey || '',
+      headers: provider.options?.headers,
+      timeout: provider.options?.timeout === false ? undefined : (provider.options?.timeout as number | undefined),
+      disableTimeout: provider.options?.timeout === false,
+      setCacheKey: provider.options?.setCacheKey,
     });
     setProviderModalOpen(true);
   };
@@ -411,9 +411,9 @@ const OpenCodePage: React.FC = () => {
     if (!provider) return null;
     return {
       name: provider.name || fetchModelsProviderId,
-      baseUrl: provider.options.baseURL || '',
-      apiKey: provider.options.apiKey,
-      headers: provider.options.headers as Record<string, string> | undefined,
+      baseUrl: provider.options?.baseURL || '',
+      apiKey: provider.options?.apiKey,
+      headers: provider.options?.headers as Record<string, string> | undefined,
       sdkName: provider.npm,
       existingModelIds: Object.keys(provider.models || {}),
     };

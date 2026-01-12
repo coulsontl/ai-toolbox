@@ -30,7 +30,7 @@ export interface OpenCodeModel {
 }
 
 export interface OpenCodeProviderOptions {
-  baseURL: string;
+  baseURL?: string;
   apiKey?: string;
   headers?: Record<string, string>;
   timeout?: number | false;
@@ -40,7 +40,7 @@ export interface OpenCodeProviderOptions {
 export interface OpenCodeProvider {
   npm?: string;
   name?: string;
-  options: OpenCodeProviderOptions;
+  options?: OpenCodeProviderOptions;
   models: Record<string, OpenCodeModel>;
 }
 
