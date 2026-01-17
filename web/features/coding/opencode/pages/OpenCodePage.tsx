@@ -21,7 +21,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { readOpenCodeConfigWithResult, saveOpenCodeConfig, getOpenCodeConfigPathInfo, getOpenCodeUnifiedModels, type ConfigPathInfo, type UnifiedModelOption } from '@/services/opencodeApi';
-import { checkOhMyOpenCodeConfigExists } from '@/services/ohMyOpenCodeApi';
+import { listOhMyOpenCodeConfigs, applyOhMyOpenCodeConfig } from '@/services/ohMyOpenCodeApi';
 import { refreshTrayMenu } from '@/services/appApi';
 import type { OpenCodeConfig, OpenCodeProvider, OpenCodeModel } from '@/types/opencode';
 import type { ProviderDisplayData, ModelDisplayData } from '@/components/common/ProviderCard/types';
@@ -103,12 +103,12 @@ const OpenCodePage: React.FC = () => {
   const [pathModalOpen, setPathModalOpen] = React.useState(false);
   const [otherConfigCollapsed, setOtherConfigCollapsed] = React.useState(true);
   const [unifiedModels, setUnifiedModels] = React.useState<UnifiedModelOption[]>([]);
-  
+
   // Use ref for validation state to avoid re-renders during editing
   const otherConfigJsonValidRef = React.useRef(true);
   const [ohMyOpenCodeRefreshKey, setOhMyOpenCodeRefreshKey] = React.useState(0); // 用于触发 OhMyOpenCodeConfigSelector 刷新
   const [ohMyOpenCodeSettingsRefreshKey, setOhMyOpenCodeSettingsRefreshKey] = React.useState(0); // 用于触发 OhMyOpenCodeSettings 刷新
-  const [omoConfigExists, setOmoConfigExists] = React.useState<boolean | null>(null); // 本地是否存在 omo 配置文件
+  const [omoConfigs, setOmoConfigs] = React.useState<Array<{ id: string; name: string; isApplied?: boolean }>>([]); // omo 配置列表
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -175,22 +175,44 @@ const OpenCodePage: React.FC = () => {
     loadConfig();
   }, [loadConfig, openCodeConfigRefreshKey]);
 
-  // Check if local oh-my-opencode config file exists
-  React.useEffect(() => {
-    const checkOmoConfig = async () => {
-      try {
-        const exists = await checkOhMyOpenCodeConfigExists();
-        setOmoConfigExists(exists);
-      } catch (error) {
-        console.error('Failed to check omo config:', error);
-        setOmoConfigExists(false);
-      }
-    };
-    checkOmoConfig();
-  }, [openCodeConfigRefreshKey]);
-
   // Check if oh-my-opencode plugin is enabled
   const omoPluginEnabled = config?.plugin?.some((p) => p.startsWith('oh-my-opencode')) ?? false;
+
+  // Load omo config list
+  React.useEffect(() => {
+    const loadOmoConfigs = async () => {
+      try {
+        const configs = await listOhMyOpenCodeConfigs();
+        setOmoConfigs(configs.map(c => ({ id: c.id, name: c.name, isApplied: c.isApplied })));
+      } catch (error) {
+        console.error('Failed to load omo configs:', error);
+        setOmoConfigs([]);
+      }
+    };
+    loadOmoConfigs();
+  }, [openCodeConfigRefreshKey, ohMyOpenCodeSettingsRefreshKey]);
+
+  // Auto-apply the applied config when plugin is enabled
+  const prevOmoPluginEnabledRef = React.useRef(omoPluginEnabled);
+  React.useEffect(() => {
+    const autoApplyConfig = async () => {
+      // Only auto-apply when plugin changes from disabled to enabled
+      if (!prevOmoPluginEnabledRef.current && omoPluginEnabled && omoConfigs.length > 0) {
+        // Find the applied config
+        const appliedConfig = omoConfigs.find((c) => c.isApplied);
+        if (appliedConfig) {
+          try {
+            await applyOhMyOpenCodeConfig(appliedConfig.id);
+            console.log('Auto-applied omo config:', appliedConfig.name);
+          } catch (error) {
+            console.error('Failed to auto-apply omo config:', error);
+          }
+        }
+      }
+      prevOmoPluginEnabledRef.current = omoPluginEnabled;
+    };
+    autoApplyConfig();
+  }, [omoPluginEnabled, omoConfigs]);
 
   // Load unified models (combining custom providers and official auth providers)
   React.useEffect(() => {
@@ -798,8 +820,8 @@ const OpenCodePage: React.FC = () => {
             />
           </div>
 
-{/* Oh My OpenCode Config Selector - show if local config exists */}
-          {omoConfigExists && (
+{/* Oh My OpenCode Config Selector - show if plugin is enabled or has configs */}
+          {(omoPluginEnabled || omoConfigs.length > 0) && (
             <div style={{ opacity: omoPluginEnabled ? 1 : 0.5 }}>
               <div style={{ marginBottom: 4 }}>
                 <Text strong>{t('opencode.ohMyOpenCode.configLabel')}</Text>
@@ -831,8 +853,8 @@ const OpenCodePage: React.FC = () => {
         onChange={handlePluginChange}
       />
 
-{/* Oh My OpenCode Settings - show if local config exists */}
-      {omoConfigExists && (
+{/* Oh My OpenCode Settings - show if plugin is enabled or has configs */}
+      {(omoPluginEnabled || omoConfigs.length > 0) && (
         <OhMyOpenCodeSettings
           key={ohMyOpenCodeSettingsRefreshKey} // 当 key 改变时，组件会重新挂载并刷新
           modelOptions={modelOptions}

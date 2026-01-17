@@ -433,6 +433,7 @@
       "applied": "已应用",
       "apply": "应用",
       "applySuccess": "配置已应用到文件",
+      "autoApplied": "已自动应用配置：{{name}}",
       "agentsConfigured": "Agent 已配置",
       "noAgentsConfigured": "暂未配置 Agent 模型",
       "noConfigs": "暂无配置，请先添加配置",

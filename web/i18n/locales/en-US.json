@@ -433,6 +433,7 @@
       "applied": "Applied",
       "apply": "Apply",
       "applySuccess": "Config applied to file",
+      "autoApplied": "Auto-applied config: {{name}}",
       "agentsConfigured": "Agents configured",
       "noAgentsConfigured": "No Agent models configured yet",
       "noConfigs": "No configs yet. Click the button above to add",
