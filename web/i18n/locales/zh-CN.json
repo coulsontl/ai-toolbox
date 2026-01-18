@@ -500,6 +500,20 @@
       "pluginRequired": "需要插件",
       "pluginRequiredHint": "请先在插件配置中添加 oh-my-opencode 插件才能使用此功能",
       "pluginRequiredDesc": "Oh-My-OpenCode 功能已禁用。请先在上方的「插件配置」中添加 oh-my-opencode 插件，然后才能管理和应用配置。"
+    },
+    "official": {
+      "title": "官方Auth认证渠道",
+      "description": "以下渠道来自 OpenCode 官方 Auth 认证，本模块只做展示，不提供编辑能力。",
+      "authProvider": "官方认证",
+      "readOnly": "只读",
+      "officialModels": "官方认证模型",
+      "freeModel": "免费",
+      "modelReadOnlyHint": "官方认证模型，只读不可编辑",
+      "noModels": "暂无官方模型",
+      "contextLimit": "上下文限制",
+      "outputLimit": "输出限制",
+      "configNotFound": "未找到 auth.json 配置文件",
+      "openConfigHint": "点击打开配置文件"
     }
   },
   "claudecode": {

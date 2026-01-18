@@ -1,6 +1,6 @@
 use crate::db::DbState;
 use crate::http_client;
-use super::types::{FreeModel, ProviderModelsData, UnifiedModelOption, OpenCodeProvider};
+use super::types::{FreeModel, ProviderModelsData, UnifiedModelOption, OpenCodeProvider, OfficialModel, OfficialProvider, GetAuthProvidersResponse};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use indexmap::IndexMap;
@@ -395,6 +395,13 @@ fn get_auth_json_path() -> Result<PathBuf, String> {
     Ok(home_dir.join(".local/share/opencode/auth.json"))
 }
 
+/// Get auth.json file path for UI display
+#[tauri::command]
+pub fn get_opencode_auth_config_path() -> Result<String, String> {
+    let path = get_auth_json_path()?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 /// Read auth.json and return the list of logged-in provider ids
 /// Returns empty vector if file doesn't exist or fails to parse
 pub fn read_auth_channels() -> Vec<String> {
@@ -628,4 +635,163 @@ pub async fn get_unified_models(
     }
 
     models
+}
+
+// ============================================================================
+// Official Auth Providers API
+// ============================================================================
+
+/// Get official auth providers data for display in UI
+///
+/// # Arguments
+/// * `state` - Database state for reading cached provider models
+/// * `custom_providers` - Optional custom providers from user config
+///
+/// # Returns
+/// GetAuthProvidersResponse containing:
+/// - standalone_providers: Official providers not in custom config
+/// - merged_models: Official models from providers that are in custom config (excluding duplicates)
+/// - custom_provider_ids: All custom provider IDs for reference
+pub async fn get_auth_providers_data(
+    state: &DbState,
+    custom_providers: Option<&IndexMap<String, OpenCodeProvider>>,
+) -> GetAuthProvidersResponse {
+    // Read auth.json to get official provider ids
+    let auth_channels = read_auth_channels();
+
+    // Get custom provider IDs
+    let custom_provider_ids: Vec<String> = custom_providers
+        .map(|p| p.keys().cloned().collect())
+        .unwrap_or_default();
+
+    // Collect custom model IDs for deduplication (provider_id/model_id)
+    let mut custom_model_ids: HashSet<String> = HashSet::new();
+    if let Some(providers) = custom_providers {
+        for (provider_id, provider) in providers {
+            for model_id in provider.models.keys() {
+                custom_model_ids.insert(format!("{}/{}", provider_id, model_id));
+            }
+        }
+    }
+
+    // Get official provider models from database
+    let mut official_models: HashMap<String, ProviderModelsData> = HashMap::new();
+
+    // Filter out opencode from auth channels (it's for free models, not auth)
+    let official_provider_ids: Vec<String> = auth_channels
+        .into_iter()
+        .filter(|id| id != "opencode")
+        .collect();
+
+    // Check if we have any official models cached
+    let mut any_missing = false;
+    for provider_id in &official_provider_ids {
+        match read_provider_models_from_db(state, provider_id).await {
+            Ok(Some(data)) => {
+                official_models.insert(provider_id.clone(), data);
+            }
+            Ok(None) => {
+                any_missing = true;
+            }
+            Err(_) => {
+                any_missing = true;
+            }
+        }
+    }
+
+    // If any official provider data is missing, try to fetch all providers from API
+    if any_missing && !official_provider_ids.is_empty() {
+        if fetch_and_update_all_providers(state).await.is_ok() {
+            // Reload all official providers
+            official_models.clear();
+            for provider_id in &official_provider_ids {
+                if let Ok(Some(data)) = read_provider_models_from_db(state, provider_id).await {
+                    official_models.insert(provider_id.clone(), data);
+                }
+            }
+        }
+    }
+
+    // Split into standalone providers and merged models
+    let mut standalone_providers: Vec<OfficialProvider> = Vec::new();
+    let mut merged_models: HashMap<String, Vec<OfficialModel>> = HashMap::new();
+
+    for (provider_id, official_data) in &official_models {
+        let provider_name = official_data
+            .value
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or(provider_id)
+            .to_string();
+
+        let mut official_models_list: Vec<OfficialModel> = Vec::new();
+
+        if let Some(models_obj) = official_data.value.get("models").and_then(|m| m.as_object()) {
+            for (model_id, model_obj) in models_obj {
+                let full_id = format!("{}/{}", provider_id, model_id);
+
+                // Skip if already in custom models
+                if custom_model_ids.contains(&full_id) {
+                    continue;
+                }
+
+                let model_name = model_obj
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or(model_id)
+                    .to_string();
+
+                let context = model_obj
+                    .get("limit")
+                    .and_then(|limit| limit.as_object())
+                    .and_then(|limit| limit.get("context"))
+                    .and_then(|v| v.as_i64());
+
+                let output = model_obj
+                    .get("limit")
+                    .and_then(|limit| limit.as_object())
+                    .and_then(|limit| limit.get("output"))
+                    .and_then(|v| v.as_i64());
+
+                let is_free = is_model_free_from_value(model_obj);
+
+                official_models_list.push(OfficialModel {
+                    id: model_id.to_string(),
+                    name: model_name,
+                    context,
+                    output,
+                    is_free,
+                });
+            }
+        }
+
+        // Sort models by name
+        official_models_list.sort_by(|a, b| a.name.cmp(&b.name));
+
+        // Check if this provider is in custom config
+        if custom_provider_ids.contains(provider_id) {
+            // Add to merged models
+            if !official_models_list.is_empty() {
+                merged_models.insert(provider_id.clone(), official_models_list);
+            }
+        } else {
+            // Add as standalone provider
+            standalone_providers.push(OfficialProvider {
+                id: provider_id.clone(),
+                name: provider_name,
+                models: official_models_list,
+            });
+        }
+    }
+
+    // Sort standalone providers by name
+    standalone_providers.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let response = GetAuthProvidersResponse {
+        standalone_providers,
+        merged_models,
+        custom_provider_ids,
+    };
+
+    response
 }

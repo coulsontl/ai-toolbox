@@ -401,3 +401,26 @@ pub async fn get_opencode_unified_models(
 
     Ok(models)
 }
+
+// ============================================================================
+// Official Auth Providers Commands
+// ============================================================================
+
+/// Get official auth providers data from auth.json
+/// Returns providers split into standalone (not in custom config) and merged (models only)
+#[tauri::command]
+pub async fn get_opencode_auth_providers(
+    state: tauri::State<'_, DbState>,
+) -> Result<GetAuthProvidersResponse, String> {
+    // Read config to get custom providers
+    let result = read_opencode_config(state.clone()).await?;
+    let custom_providers = match result {
+        ReadConfigResult::Success { config } => config.provider,
+        _ => None,
+    };
+
+    // Get auth providers data
+    let response = super::free_models::get_auth_providers_data(&state, custom_providers.as_ref()).await;
+
+    Ok(response)
+}

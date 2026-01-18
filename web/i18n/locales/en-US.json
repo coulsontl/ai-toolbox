@@ -500,6 +500,20 @@
       "pluginRequired": "Plugin Required",
       "pluginRequiredHint": "Please add the oh-my-opencode plugin in Plugin Configuration first to use this feature",
       "pluginRequiredDesc": "Oh-My-OpenCode features are disabled. Please add the oh-my-opencode plugin in the Plugin Configuration section above, then you can manage and apply configurations."
+    },
+    "official": {
+      "title": "Official Auth Channels",
+      "description": "The following channels are from OpenCode official Auth authentication. This module is for display only and does not provide editing capabilities.",
+      "authProvider": "Official Auth",
+      "readOnly": "Read Only",
+      "officialModels": "Official Auth Models",
+      "freeModel": "Free",
+      "modelReadOnlyHint": "Official auth model, read-only and not editable",
+      "noModels": "No official models",
+      "contextLimit": "Context Limit",
+      "outputLimit": "Output Limit",
+      "configNotFound": "auth.json config file not found",
+      "openConfigHint": "Click to open config file"
     }
   },
   "claudecode": {

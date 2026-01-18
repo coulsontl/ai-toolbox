@@ -435,116 +435,126 @@ const GeneralSettingsPage: React.FC = () => {
   // ];
 
   return (
-    <div>
+    <div className="settings-container">
       {/* Language Settings */}
-      <Title level={5} style={{ marginBottom: 12 }}>
-        {t('settings.language')}
-      </Title>
-      <div style={{ marginBottom: 16 }}>
-        <Text style={{ marginRight: 12 }}>{t('settings.currentLanguage')}:</Text>
-        <Select
-          value={language}
-          onChange={handleLanguageChange}
-          options={languages.map((lang) => ({
-            value: lang.value,
-            label: lang.label,
-          }))}
-          style={{ width: 160 }}
-          size="small"
-        />
+      <div className="settings-card">
+        <Title level={5} className="settings-card-title-only">
+          {t('settings.language')}
+        </Title>
+        <div className="settings-card-content">
+          <Text style={{ marginRight: 12 }}>{t('settings.currentLanguage')}:</Text>
+          <Select
+            value={language}
+            onChange={handleLanguageChange}
+            options={languages.map((lang) => ({
+              value: lang.value,
+              label: lang.label,
+            }))}
+            style={{ width: 160 }}
+            size="small"
+          />
+        </div>
       </div>
 
       <Divider />
 
       {/* Window Settings */}
-      <Title level={5} style={{ marginBottom: 16 }}>
-        {t('settings.window.title')}
-      </Title>
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <Text>{t('settings.window.launchOnStartup')}</Text>
-          <Switch
-            checked={launchOnStartup}
-            onChange={setLaunchOnStartup}
-          />
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Text>{t('settings.window.minimizeToTrayOnClose')}</Text>
-          <Switch
-            checked={minimizeToTrayOnClose}
-            onChange={setMinimizeToTrayOnClose}
-          />
+      <div className="settings-card">
+        <Title level={5} className="settings-card-title-only">
+          {t('settings.window.title')}
+        </Title>
+        <div className="settings-card-content">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <Text>{t('settings.window.launchOnStartup')}</Text>
+            <Switch
+              checked={launchOnStartup}
+              onChange={setLaunchOnStartup}
+            />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text>{t('settings.window.minimizeToTrayOnClose')}</Text>
+            <Switch
+              checked={minimizeToTrayOnClose}
+              onChange={setMinimizeToTrayOnClose}
+            />
+          </div>
         </div>
       </div>
 
       <Divider />
 
       {/* Proxy Settings */}
-      <Title level={5} style={{ marginBottom: 16 }}>
-        {t('settings.proxy.title')}
-      </Title>
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-          <Input
-            value={proxyInput}
-            onChange={(e) => setProxyInput(e.target.value)}
-            onBlur={handleProxySave}
-            onPressEnter={handleProxySave}
-            placeholder={t('settings.proxy.urlPlaceholder')}
-            style={{ flex: 1 }}
-          />
-          <Button
-            onClick={handleProxyTest}
-            loading={proxyTesting}
-          >
-            {proxyTesting ? t('settings.proxy.testing') : t('settings.proxy.testConnection')}
-          </Button>
+      <div className="settings-card">
+        <Title level={5} className="settings-card-title-only">
+          {t('settings.proxy.title')}
+        </Title>
+        <div className="settings-card-content">
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            <Input
+              value={proxyInput}
+              onChange={(e) => setProxyInput(e.target.value)}
+              onBlur={handleProxySave}
+              onPressEnter={handleProxySave}
+              placeholder={t('settings.proxy.urlPlaceholder')}
+              style={{ flex: 1 }}
+            />
+            <Button
+              onClick={handleProxyTest}
+              loading={proxyTesting}
+            >
+              {proxyTesting ? t('settings.proxy.testing') : t('settings.proxy.testConnection')}
+            </Button>
+          </div>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {t('settings.proxy.hint')}
+          </Text>
         </div>
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          {t('settings.proxy.hint')}
-        </Text>
       </div>
 
       <Divider />
 
       {/* Backup Settings */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <Title level={5} style={{ margin: 0 }}>
-          {t('settings.backupSettings.title')}
-        </Title>
-        <Button
-          type="text"
-          icon={<EditOutlined />}
-          size="small"
-          onClick={() => setBackupModalOpen(true)}
-        >
-          {t('common.edit')}
-        </Button>
+      <div className="settings-card">
+        <div className="settings-card-header">
+          <Title level={5} className="settings-card-title" style={{ margin: 0 }}>
+            {t('settings.backupSettings.title')}
+          </Title>
+          <Button
+            type="text"
+            icon={<EditOutlined />}
+            size="small"
+            onClick={() => setBackupModalOpen(true)}
+          >
+            {t('common.edit')}
+          </Button>
+        </div>
+        <div className="settings-card-content">
+          <Table
+            columns={backupColumns}
+            dataSource={backupData}
+            pagination={false}
+            size="small"
+            bordered
+            style={{ marginBottom: 16 }}
+          />
+          <Space>
+            <Button
+              type="primary"
+              icon={<CloudUploadOutlined />}
+              onClick={handleBackup}
+              loading={backupLoading}
+            >
+              {t('settings.backupSettings.backupNow')}
+            </Button>
+            <Button icon={<CloudDownloadOutlined />} onClick={handleRestore} loading={restoreLoading}>
+              {t('settings.backupSettings.restoreBackup')}
+            </Button>
+            <Typography.Link onClick={handleOpenDataDir} style={{ fontSize: 14 }}>
+              {t('settings.backupSettings.openDataDir')}
+            </Typography.Link>
+          </Space>
+        </div>
       </div>
-      <Table
-        columns={backupColumns}
-        dataSource={backupData}
-        pagination={false}
-        size="small"
-        bordered
-        style={{ marginBottom: 16 }}
-      />
-      <Space>
-        <Button
-          type="primary"
-          icon={<CloudUploadOutlined />}
-          onClick={handleBackup}
-          loading={backupLoading}
-        >
-          {t('settings.backupSettings.backupNow')}
-        </Button>
-        <Button icon={<CloudDownloadOutlined />} onClick={handleRestore} loading={restoreLoading}>
-          {t('settings.backupSettings.restoreBackup')}
-        </Button>
-        <Typography.Link onClick={handleOpenDataDir} style={{ fontSize: 14 }}>
-          {t('settings.backupSettings.openDataDir')}
-        </Typography.Link>
-      </Space>
 
       <Divider />
 
@@ -573,30 +583,34 @@ const GeneralSettingsPage: React.FC = () => {
       <Divider /> */}
 
       {/* About */}
-      <Title level={5} style={{ marginBottom: 12 }}>
-        {t('settings.about.title')}
-      </Title>
-      <div style={{ marginBottom: 16 }}>
-        <Text style={{ marginRight: 12 }}>{t('settings.about.version')}:</Text>
-        <Text strong>{appVersion || '-'}</Text>
+      <div className="settings-card">
+        <Title level={5} className="settings-card-title-only">
+          {t('settings.about.title')}
+        </Title>
+        <div className="settings-card-content">
+          <Text style={{ marginRight: 12 }}>{t('settings.about.version')}:</Text>
+          <Text strong>{appVersion || '-'}</Text>
+        </div>
+        <div className="settings-card-content" style={{ paddingTop: 0 }}>
+          <Space>
+            <Button
+              icon={<SyncOutlined spin={checkingUpdate} />}
+              onClick={() => handleCheckUpdate()}
+              loading={checkingUpdate}
+            >
+              {checkingUpdate ? t('settings.about.checking') : t('settings.about.checkUpdate')}
+            </Button>
+            {updateInfo?.hasUpdate && (
+              <Button type="primary" onClick={handleGoToDownload}>
+                {t('settings.about.goToDownload')} (v{updateInfo.latestVersion})
+              </Button>
+            )}
+            <Button icon={<GithubOutlined />} onClick={handleOpenGitHub}>
+              {t('settings.about.github')}
+            </Button>
+          </Space>
+        </div>
       </div>
-      <Space>
-        <Button
-          icon={<SyncOutlined spin={checkingUpdate} />}
-          onClick={() => handleCheckUpdate()}
-          loading={checkingUpdate}
-        >
-          {checkingUpdate ? t('settings.about.checking') : t('settings.about.checkUpdate')}
-        </Button>
-        {updateInfo?.hasUpdate && (
-          <Button type="primary" onClick={handleGoToDownload}>
-            {t('settings.about.goToDownload')} (v{updateInfo.latestVersion})
-          </Button>
-        )}
-        <Button icon={<GithubOutlined />} onClick={handleOpenGitHub}>
-          {t('settings.about.github')}
-        </Button>
-      </Space>
 
       {/* Modals */}
       <BackupSettingsModal open={backupModalOpen} onClose={() => setBackupModalOpen(false)} />

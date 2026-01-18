@@ -198,10 +198,13 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let _ = app1.listen("wsl-sync-request-opencode", move |_event| {
                         let app = app1_clone.clone();
+                        // Spawn background task without awaiting
                         tauri::async_runtime::spawn(async move {
+                            // Re-obtain state inside the spawned task
                             let db_state = app.state::<crate::DbState>();
-                            let app2 = app.clone();
-                            let _ = coding::wsl::wsl_sync(db_state, app2, Some("opencode".to_string())).await;
+                            let result = coding::wsl::wsl_sync(db_state, app.clone(), Some("opencode".to_string())).await;
+                            // Ignore result - fire and forget
+                            let _ = result;
                         });
                     });
 
@@ -215,10 +218,13 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let _ = app2.listen("wsl-sync-request-claude", move |_event| {
                         let app = app2_clone.clone();
+                        // Spawn background task without awaiting
                         tauri::async_runtime::spawn(async move {
+                            // Re-obtain state inside the spawned task
                             let db_state = app.state::<crate::DbState>();
-                            let app2 = app.clone();
-                            let _ = coding::wsl::wsl_sync(db_state, app2, Some("claude".to_string())).await;
+                            let result = coding::wsl::wsl_sync(db_state, app.clone(), Some("claude".to_string())).await;
+                            // Ignore result - fire and forget
+                            let _ = result;
                         });
                     });
 
@@ -232,10 +238,13 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let _ = app3.listen("wsl-sync-request-codex", move |_event| {
                         let app = app3_clone.clone();
+                        // Spawn background task without awaiting
                         tauri::async_runtime::spawn(async move {
+                            // Re-obtain state inside the spawned task
                             let db_state = app.state::<crate::DbState>();
-                            let app2 = app.clone();
-                            let _ = coding::wsl::wsl_sync(db_state, app2, Some("codex".to_string())).await;
+                            let result = coding::wsl::wsl_sync(db_state, app.clone(), Some("codex".to_string())).await;
+                            // Ignore result - fire and forget
+                            let _ = result;
                         });
                     });
 
@@ -359,6 +368,8 @@ pub fn run() {
             coding::open_code::get_opencode_free_models,
             coding::open_code::get_provider_models,
             coding::open_code::get_opencode_unified_models,
+            coding::open_code::get_opencode_auth_providers,
+            coding::open_code::get_opencode_auth_config_path,
             coding::open_code::backup_opencode_config,
             // Codex
             coding::codex::get_codex_config_dir_path,

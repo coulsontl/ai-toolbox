@@ -86,9 +86,10 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
       size="small"
       style={{
         marginBottom: 12,
-        borderColor: isApplied ? '#1890ff' : undefined,
-        backgroundColor: isApplied ? '#e6f7ff' : undefined,
+        borderColor: isApplied ? '#1890ff' : 'rgb(228, 228, 231)',
+        backgroundColor: isApplied ? '#fff' : undefined,
       }}
+      styles={{ body: { padding: 16 } }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div style={{ flex: 1 }}>

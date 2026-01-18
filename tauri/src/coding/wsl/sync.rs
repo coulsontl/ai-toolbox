@@ -2,10 +2,26 @@ use std::path::Path;
 use std::process::Command;
 use super::types::{FileMapping, SyncResult, WSLDetectResult};
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+/// Windows CREATE_NO_WINDOW flag to prevent console window from appearing
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// Create a WSL command with proper flags for Windows GUI apps
+/// This prevents console windows from flashing when running in release mode
+fn create_wsl_command() -> Command {
+    let mut cmd = Command::new("wsl");
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
 /// Detect if WSL is available and get list of distros
 pub fn detect_wsl() -> WSLDetectResult {
     // Check if WSL is installed by running wsl --status
-    let output = Command::new("wsl")
+    let output = create_wsl_command()
         .args(["--status"])
         .output();
 
@@ -43,7 +59,7 @@ pub fn detect_wsl() -> WSLDetectResult {
 
 /// Get list of available WSL distros
 pub fn get_wsl_distros() -> Result<Vec<String>, String> {
-    let output = Command::new("wsl")
+    let output = create_wsl_command()
         .args(["--list", "--quiet"])
         .output()
         .map_err(|e| format!("Failed to run wsl --list: {}", e))?;
@@ -149,7 +165,7 @@ pub fn sync_single_file(windows_path: &str, wsl_path: &str, distro: &str) -> Res
         wsl_target_path, wsl_source_path, wsl_target_path
     );
 
-    let output = Command::new("wsl")
+    let output = create_wsl_command()
         .args(["-d", distro, "--exec", "bash", "-c", &command])
         .output()
         .map_err(|e| format!("Failed to execute WSL command: {}", e))?;
@@ -176,7 +192,7 @@ pub fn sync_directory(windows_path: &str, wsl_path: &str, distro: &str) -> Resul
         wsl_target_path, wsl_target_path, wsl_source_path, wsl_target_path
     );
 
-    let output = Command::new("wsl")
+    let output = create_wsl_command()
         .args(["-d", distro, "--exec", "bash", "-c", &command])
         .output()
         .map_err(|e| format!("Failed to execute WSL directory command: {}", e))?;
@@ -227,7 +243,7 @@ pub fn sync_pattern_files(windows_pattern: &str, wsl_target_dir: &str, distro: &
         wsl_target_dir_expanded
     );
 
-    let output = Command::new("wsl")
+    let output = create_wsl_command()
         .args(["-d", distro, "--exec", "bash", "-c", &command])
         .output()
         .map_err(|e| format!("Failed to execute WSL pattern command: {}", e))?;

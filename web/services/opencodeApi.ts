@@ -157,3 +157,54 @@ export interface UnifiedModelOption {
 export const getOpenCodeUnifiedModels = async (): Promise<UnifiedModelOption[]> => {
   return await invoke<UnifiedModelOption[]>('get_opencode_unified_models');
 };
+
+// ============================================================================
+// Official Auth Providers Types
+// ============================================================================
+
+/**
+ * Official model information from auth.json providers
+ */
+export interface OfficialModel {
+  id: string;
+  name: string;
+  context?: number;
+  output?: number;
+  isFree: boolean;
+}
+
+/**
+ * Official provider information from auth.json
+ */
+export interface OfficialProvider {
+  id: string;
+  name: string;
+  models: OfficialModel[];
+}
+
+/**
+ * Response for get_opencode_auth_providers command
+ */
+export interface GetAuthProvidersResponse {
+  /** Official providers that are NOT in custom config (standalone) */
+  standaloneProviders: OfficialProvider[];
+  /** Official models from providers that ARE in custom config (merged) */
+  mergedModels: Record<string, OfficialModel[]>;
+  /** All custom provider IDs for reference */
+  customProviderIds: string[];
+}
+
+/**
+ * Get official auth providers data from auth.json
+ * Returns providers split into standalone (not in custom config) and merged (models only)
+ */
+export const getOpenCodeAuthProviders = async (): Promise<GetAuthProvidersResponse> => {
+  return await invoke<GetAuthProvidersResponse>('get_opencode_auth_providers');
+};
+
+/**
+ * Get auth.json file path
+ */
+export const getOpenCodeAuthConfigPath = async (): Promise<string> => {
+  return await invoke<string>('get_opencode_auth_config_path');
+};

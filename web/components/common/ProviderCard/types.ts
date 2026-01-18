@@ -23,6 +23,17 @@ export interface ModelDisplayData {
 }
 
 /**
+ * Official model display data interface (read-only)
+ */
+export interface OfficialModelDisplayData {
+  id: string;
+  name: string;
+  isFree: boolean;
+  context?: number;
+  output?: number;
+}
+
+/**
  * i18n prefix type for different pages
  */
 export type I18nPrefix = 'settings' | 'opencode';

@@ -1,6 +1,6 @@
 import React from 'react';
-import { Button, Empty, Space, Typography, message, Spin, Select, Card, Collapse, Tag, Form } from 'antd';
-import { PlusOutlined, FolderOpenOutlined, CodeOutlined, LinkOutlined, EyeOutlined, EditOutlined, EnvironmentOutlined, CloudDownloadOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Button, Empty, Space, Typography, message, Spin, Select, Collapse, Tag, Form, Tooltip } from 'antd';
+import { PlusOutlined, FolderOpenOutlined, CodeOutlined, LinkOutlined, EyeOutlined, EditOutlined, EnvironmentOutlined, CloudDownloadOutlined, ReloadOutlined, FileOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { invoke } from '@tauri-apps/api/core';
@@ -20,12 +20,13 @@ import {
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { readOpenCodeConfigWithResult, saveOpenCodeConfig, getOpenCodeConfigPathInfo, getOpenCodeUnifiedModels, type ConfigPathInfo, type UnifiedModelOption } from '@/services/opencodeApi';
+import { readOpenCodeConfigWithResult, saveOpenCodeConfig, getOpenCodeConfigPathInfo, getOpenCodeUnifiedModels, getOpenCodeAuthProviders, getOpenCodeAuthConfigPath, type ConfigPathInfo, type UnifiedModelOption, type GetAuthProvidersResponse } from '@/services/opencodeApi';
 import { listOhMyOpenCodeConfigs, applyOhMyOpenCodeConfig } from '@/services/ohMyOpenCodeApi';
 import { refreshTrayMenu } from '@/services/appApi';
 import type { OpenCodeConfig, OpenCodeProvider, OpenCodeModel } from '@/types/opencode';
-import type { ProviderDisplayData, ModelDisplayData } from '@/components/common/ProviderCard/types';
+import type { ProviderDisplayData, ModelDisplayData, OfficialModelDisplayData } from '@/components/common/ProviderCard/types';
 import ProviderCard from '@/components/common/ProviderCard';
+import OfficialProviderCard from '@/components/common/OfficialProviderCard';
 import ProviderFormModal, { ProviderFormValues } from '@/components/common/ProviderFormModal';
 import ModelFormModal, { ModelFormValues } from '@/components/common/ModelFormModal';
 import FetchModelsModal from '@/components/common/FetchModelsModal';
@@ -38,6 +39,7 @@ import OhMyOpenCodeConfigSelector from '../components/OhMyOpenCodeConfigSelector
 import OhMyOpenCodeSettings from '../components/OhMyOpenCodeSettings';
 import JsonEditor from '@/components/common/JsonEditor';
 import { usePreviewStore, useAppStore, useRefreshStore } from '@/stores';
+import styles from './OpenCodePage.module.less';
 
 const { Title, Text, Link } = Typography;
 
@@ -100,9 +102,12 @@ const OpenCodePage: React.FC = () => {
   const [fetchModelsProviderId, setFetchModelsProviderId] = React.useState<string>('');
 
   const [providerListCollapsed, setProviderListCollapsed] = React.useState(false);
+  const [officialProvidersCollapsed, setOfficialProvidersCollapsed] = React.useState(false);
   const [pathModalOpen, setPathModalOpen] = React.useState(false);
   const [otherConfigCollapsed, setOtherConfigCollapsed] = React.useState(true);
   const [unifiedModels, setUnifiedModels] = React.useState<UnifiedModelOption[]>([]);
+  const [authProvidersData, setAuthProvidersData] = React.useState<GetAuthProvidersResponse | null>(null);
+  const [authConfigPath, setAuthConfigPath] = React.useState<string>('');
 
   // Use ref for validation state to avoid re-renders during editing
   const otherConfigJsonValidRef = React.useRef(true);
@@ -235,6 +240,44 @@ const OpenCodePage: React.FC = () => {
 
     loadUnifiedModels();
   }, [openCodeConfigRefreshKey]);
+
+  // Load official auth providers data
+  React.useEffect(() => {
+    const loadAuthProviders = async () => {
+      try {
+        const data = await getOpenCodeAuthProviders();
+        setAuthProvidersData(data);
+      } catch (error) {
+        console.error('Failed to load auth providers:', error);
+      }
+    };
+
+    const loadAuthConfigPath = async () => {
+      try {
+        const path = await getOpenCodeAuthConfigPath();
+        setAuthConfigPath(path);
+      } catch (error) {
+        console.error('Failed to load auth config path:', error);
+      }
+    };
+
+    loadAuthProviders();
+    loadAuthConfigPath();
+  }, [openCodeConfigRefreshKey]);
+
+  // Open auth.json config file
+  const handleOpenAuthConfig = async () => {
+    if (!authConfigPath) {
+      message.warning(t('opencode.official.configNotFound'));
+      return;
+    }
+    try {
+      await revealItemInDir(authConfigPath);
+    } catch (error) {
+      console.error('Failed to open auth config:', error);
+      message.error(t('common.error'));
+    }
+  };
 
   const doSaveConfig = async (newConfig: OpenCodeConfig) => {
     try {
@@ -798,74 +841,75 @@ const OpenCodePage: React.FC = () => {
             </div>
           </div>
 
-          <Card
-        title={t('opencode.modelSettings.title')}
-        style={{ marginBottom: 16 }}
-        size="small"
-      >
-        <Space orientation="vertical" style={{ width: '100%' }} size={12}>
-          <div>
-            <div style={{ marginBottom: 4 }}>
-              <Text strong>{t('opencode.modelSettings.modelLabel')}</Text>
-            </div>
-            <Select
-              value={config?.model}
-              onChange={(value) => handleModelChange('model', value)}
-              placeholder={t('opencode.modelSettings.modelPlaceholder')}
-              allowClear
-              options={mainModelOptions}
-              optionLabelProp="label"
-              style={{ width: '100%' }}
-              notFoundContent={t('opencode.modelSettings.noModels')}
-            />
-          </div>
-          
-          <div>
-            <div style={{ marginBottom: 4 }}>
-              <Text strong>{t('opencode.modelSettings.smallModelLabel')}</Text>
-              <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-                {t('opencode.modelSettings.smallModelHint')}
-              </Text>
-            </div>
-            <Select
-              value={config?.small_model}
-              onChange={(value) => handleModelChange('small_model', value)}
-              placeholder={t('opencode.modelSettings.smallModelPlaceholder')}
-              allowClear
-              options={smallModelOptions}
-              optionLabelProp="label"
-              style={{ width: '100%' }}
-              notFoundContent={t('opencode.modelSettings.noModels')}
-            />
-          </div>
-
-{/* Oh My OpenCode Config Selector - show if plugin is enabled or has configs */}
-          {(omoPluginEnabled || omoConfigs.length > 0) && (
-            <div style={{ opacity: omoPluginEnabled ? 1 : 0.5 }}>
+          <div className={styles.modelCard}>
+        <Title level={5} className={styles.modelCardTitle}>
+          {t('opencode.modelSettings.title')}
+        </Title>
+        <div className={styles.modelCardContent}>
+          <Space orientation="vertical" style={{ width: '100%' }} size={12}>
+            <div>
               <div style={{ marginBottom: 4 }}>
-                <Text strong>{t('opencode.ohMyOpenCode.configLabel')}</Text>
-                <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-                  {t('opencode.ohMyOpenCode.configHint')}
-                </Text>
+                <Text strong>{t('opencode.modelSettings.modelLabel')}</Text>
               </div>
-              {!omoPluginEnabled && (
-                <Text type="warning" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
-                  {t('opencode.ohMyOpenCode.pluginRequiredHint')}
-                </Text>
-              )}
-              <OhMyOpenCodeConfigSelector
-                key={ohMyOpenCodeRefreshKey} // 当 key 改变时，组件会重新挂载并刷新
-                disabled={!omoPluginEnabled}
-                onConfigSelected={() => {
-                  message.success(t('opencode.ohMyOpenCode.configSelected'));
-                  // 当在快速切换框中选择配置时，触发设置列表刷新
-                  setOhMyOpenCodeSettingsRefreshKey((prev) => prev + 1);
-                }}
+              <Select
+                value={config?.model}
+                onChange={(value) => handleModelChange('model', value)}
+                placeholder={t('opencode.modelSettings.modelPlaceholder')}
+                allowClear
+                options={mainModelOptions}
+                optionLabelProp="label"
+                style={{ width: '100%' }}
+                notFoundContent={t('opencode.modelSettings.noModels')}
               />
             </div>
-          )}
-        </Space>
-      </Card>
+
+            <div>
+              <div style={{ marginBottom: 4 }}>
+                <Text strong>{t('opencode.modelSettings.smallModelLabel')}</Text>
+                <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+                  {t('opencode.modelSettings.smallModelHint')}
+                </Text>
+              </div>
+              <Select
+                value={config?.small_model}
+                onChange={(value) => handleModelChange('small_model', value)}
+                placeholder={t('opencode.modelSettings.smallModelPlaceholder')}
+                allowClear
+                options={smallModelOptions}
+                optionLabelProp="label"
+                style={{ width: '100%' }}
+                notFoundContent={t('opencode.modelSettings.noModels')}
+              />
+            </div>
+
+{/* Oh My OpenCode Config Selector - show if plugin is enabled or has configs */}
+            {(omoPluginEnabled || omoConfigs.length > 0) && (
+              <div style={{ opacity: omoPluginEnabled ? 1 : 0.5 }}>
+                <div style={{ marginBottom: 4 }}>
+                  <Text strong>{t('opencode.ohMyOpenCode.configLabel')}</Text>
+                  <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+                    {t('opencode.ohMyOpenCode.configHint')}
+                  </Text>
+                </div>
+                {!omoPluginEnabled && (
+                  <Text type="warning" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
+                    {t('opencode.ohMyOpenCode.pluginRequiredHint')}
+                  </Text>
+                )}
+                <OhMyOpenCodeConfigSelector
+                  key={ohMyOpenCodeRefreshKey} // 当 key 改变时，组件会重新挂载并刷新
+                  disabled={!omoPluginEnabled}
+                  onConfigSelected={() => {
+                    message.success(t('opencode.ohMyOpenCode.configSelected'));
+                    // 当在快速切换框中选择配置时，触发设置列表刷新
+                    setOhMyOpenCodeSettingsRefreshKey((prev) => prev + 1);
+                  }}
+                />
+              </div>
+            )}
+          </Space>
+        </div>
+      </div>
 
       <PluginSettings
         plugins={config?.plugin || []}
@@ -908,6 +952,7 @@ const OpenCodePage: React.FC = () => {
               <Button
                 type="primary"
                 size="small"
+                style={{ fontSize: 12 }}
                 icon={<PlusOutlined />}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -938,6 +983,13 @@ const OpenCodePage: React.FC = () => {
                           models={provider.models ? Object.entries(provider.models).map(([modelId, model]) =>
                             toModelDisplayData(modelId, model)
                           ) : []}
+                          officialModels={authProvidersData?.mergedModels?.[providerId]?.map((m): OfficialModelDisplayData => ({
+                            id: m.id,
+                            name: m.name,
+                            isFree: m.isFree,
+                            context: m.context,
+                            output: m.output,
+                          }))}
                           draggable
                           sortableId={providerId}
                           onEdit={() => handleEditProvider(providerId)}
@@ -970,6 +1022,57 @@ const OpenCodePage: React.FC = () => {
           },
         ]}
       />
+
+      {/* Official Auth Providers Section - only show if there are standalone providers */}
+      {authProvidersData && authProvidersData.standaloneProviders.length > 0 && (
+        <Collapse
+          style={{ marginBottom: 16 }}
+          activeKey={officialProvidersCollapsed ? [] : ['official-providers']}
+          onChange={(keys) => setOfficialProvidersCollapsed(!keys.includes('official-providers'))}
+          items={[
+            {
+              key: 'official-providers',
+              label: (
+                <Space size={8}>
+                  <Text strong>{t('opencode.official.title')}</Text>
+                  <Tooltip title={t('opencode.official.openConfigHint')}>
+                    <Button
+                      type="link"
+                      size="small"
+                      icon={<FileOutlined />}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleOpenAuthConfig();
+                      }}
+                      style={{ padding: 0, height: 'auto' }}
+                    >
+                      auth.json
+                    </Button>
+                  </Tooltip>
+                </Space>
+              ),
+              children: (
+                <div>
+                  <div style={{ marginBottom: 12 }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {t('opencode.official.description')}
+                    </Text>
+                  </div>
+                  {authProvidersData.standaloneProviders.map((provider) => (
+                    <OfficialProviderCard
+                      key={provider.id}
+                      id={provider.id}
+                      name={provider.name}
+                      models={provider.models}
+                      i18nPrefix="opencode"
+                    />
+                  ))}
+                </div>
+              ),
+            },
+          ]}
+        />
+      )}
 
       <Collapse
         style={{ marginBottom: 16 }}

@@ -184,3 +184,44 @@ pub struct UnifiedModelOption {
     pub model_id: String,
     pub is_free: bool,         // Whether this is a free model
 }
+
+// ============================================================================
+// Official Auth Providers Types
+// ============================================================================
+
+/// Official model information from auth.json providers
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficialModel {
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<i64>,
+    pub is_free: bool,
+}
+
+/// Official provider information from auth.json
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficialProvider {
+    pub id: String,
+    pub name: String,
+    pub models: Vec<OfficialModel>,
+}
+
+/// Response for get_opencode_auth_providers command
+/// Returns official providers from auth.json, excluding those merged with custom providers
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetAuthProvidersResponse {
+    /// Official providers that are NOT in custom config (standalone)
+    pub standalone_providers: Vec<OfficialProvider>,
+    /// Official models from providers that ARE in custom config (merged)
+    /// Key: provider_id, Value: list of official models not in custom config
+    pub merged_models: std::collections::HashMap<String, Vec<OfficialModel>>,
+    /// All custom provider IDs for reference
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub custom_provider_ids: Vec<String>,
+}

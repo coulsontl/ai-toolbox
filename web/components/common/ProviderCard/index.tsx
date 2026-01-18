@@ -1,6 +1,6 @@
 import React from 'react';
-import { Button, Card, Empty, Space, Typography, Popconfirm, Collapse } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, HolderOutlined, CopyOutlined } from '@ant-design/icons';
+import { Button, Card, Empty, Space, Typography, Popconfirm, Collapse, Tag } from 'antd';
+import { PlusOutlined, EditOutlined, DeleteOutlined, HolderOutlined, CopyOutlined, LockOutlined, SafetyOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import {
   DndContext,
@@ -21,36 +21,39 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import SdkTag from '@/components/common/SdkTag';
 import ModelItem from '@/components/common/ModelItem';
-import type { ProviderDisplayData, ModelDisplayData, I18nPrefix } from './types';
+import type { ProviderDisplayData, ModelDisplayData, I18nPrefix, OfficialModelDisplayData } from './types';
 
 const { Title, Text } = Typography;
 
 interface ProviderCardProps {
   provider: ProviderDisplayData;
   models: ModelDisplayData[];
-  
+
   /** Whether the card is draggable */
   draggable?: boolean;
   /** Unique ID for sortable (defaults to provider.id) */
   sortableId?: string;
-  
+
   /** Provider action callbacks */
   onEdit?: () => void;
   onCopy?: () => void;
   onDelete?: () => void;
   /** Extra action buttons (e.g., "Save to Settings" button for OpenCode) */
   extraActions?: React.ReactNode;
-  
+
   /** Model action callbacks */
   onAddModel?: () => void;
   onEditModel?: (modelId: string) => void;
   onCopyModel?: (modelId: string) => void;
   onDeleteModel?: (modelId: string) => void;
-  
+
   /** Model drag-and-drop */
   modelsDraggable?: boolean;
   onReorderModels?: (modelIds: string[]) => void;
-  
+
+  /** Official models from auth.json (read-only, merged display) */
+  officialModels?: OfficialModelDisplayData[];
+
   /** i18n prefix for translations */
   i18nPrefix?: I18nPrefix;
 }
@@ -73,10 +76,11 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
   onDeleteModel,
   modelsDraggable = false,
   onReorderModels,
+  officialModels,
   i18nPrefix = 'settings',
 }) => {
   const { t } = useTranslation();
-  
+
   const {
     attributes,
     listeners,
@@ -84,7 +88,7 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
     transform,
     transition,
     isDragging,
-  } = useSortable({ 
+  } = useSortable({
     id: sortableId || provider.id,
     disabled: !draggable,
   });
@@ -116,7 +120,7 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
   };
 
   const renderModelList = () => {
-    if (models.length === 0) {
+    if (models.length === 0 && !officialModels?.length) {
       return (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
@@ -164,6 +168,79 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
       </Space>
     );
   };
+
+  const renderOfficialModels = () => {
+    if (!officialModels || officialModels.length === 0) {
+      return null;
+    }
+
+    return (
+      <>
+        {/* Divider between custom and official models */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          margin: '12px 0 8px 0',
+          gap: 8
+        }}>
+          <div style={{ flex: 1, height: 1, backgroundColor: '#d4b106' }} />
+          <Space size={4}>
+            <SafetyOutlined style={{ color: '#d4b106', fontSize: 12 }} />
+            <Text type="secondary" style={{ fontSize: 11, color: '#d4b106' }}>
+              {t(`${i18nPrefix}.official.officialModels`)}
+            </Text>
+          </Space>
+          <div style={{ flex: 1, height: 1, backgroundColor: '#d4b106' }} />
+        </div>
+
+        {officialModels.map((model, index) => (
+          <div
+            key={model.id}
+            style={{
+              padding: '8px 12px',
+              backgroundColor: '#fff',
+              borderRadius: '6px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              border: '1px dashed #d4b106',
+              marginTop: index > 0 ? 4 : 0,
+            }}
+            title={t(`${i18nPrefix}.official.modelReadOnlyHint`)}
+          >
+            <Space size={8} wrap style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ fontSize: 13 }}>{model.name || model.id}</Text>
+              <Text type="secondary" style={{ fontSize: 11 }}>
+                ID: {model.id}
+              </Text>
+              {model.isFree && (
+                <>
+                  <Text type="secondary" style={{ fontSize: 11 }}>|</Text>
+                  <Tag color="green" style={{ fontSize: 11, margin: 0 }}>
+                    {t(`${i18nPrefix}.official.freeModel`)}
+                  </Tag>
+                </>
+              )}
+              {(model.context !== undefined && model.context !== null) || (model.output !== undefined && model.output !== null) ? (
+                <>
+                  <Text type="secondary" style={{ fontSize: 11 }}>|</Text>
+                  <Text type="secondary" style={{ fontSize: 11 }}>
+                    {[
+                      model.context !== undefined && model.context !== null ? `${t(`${i18nPrefix}.official.contextLimit`)}: ${model.context.toLocaleString()}` : null,
+                      model.output !== undefined && model.output !== null ? `${t(`${i18nPrefix}.official.outputLimit`)}: ${model.output.toLocaleString()}` : null,
+                    ].filter(Boolean).join(' | ')}
+                  </Text>
+                </>
+              ) : null}
+            </Space>
+            <LockOutlined style={{ fontSize: 12, color: '#d4b106', marginLeft: 8 }} />
+          </div>
+        ))}
+      </>
+    );
+  };
+
+  const hasContent = models.length > 0 || (officialModels && officialModels.length > 0);
 
   return (
     <div ref={setNodeRef} style={style}>
@@ -251,7 +328,7 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
                   label: (
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
                       <Text strong style={{ fontSize: 13 }}>
-                        {t(`${i18nPrefix}.model.title`)} ({models.length})
+                        {t(`${i18nPrefix}.model.title`)} ({models.length + (officialModels?.length || 0)})
                       </Text>
                       <Space size={4} onClick={(e) => e.stopPropagation()}>
                         {extraActions}
@@ -268,7 +345,18 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
                       </Space>
                     </div>
                   ),
-                  children: renderModelList(),
+                  children: hasContent ? (
+                    <>
+                      {renderModelList()}
+                      {renderOfficialModels()}
+                    </>
+                  ) : (
+                    <Empty
+                      image={Empty.PRESENTED_IMAGE_SIMPLE}
+                      description={t(`${i18nPrefix}.model.emptyText`)}
+                      style={{ margin: '8px 0' }}
+                    />
+                  ),
                 },
               ]}
             />

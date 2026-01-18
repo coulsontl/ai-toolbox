@@ -35,7 +35,7 @@ const MainLayout: React.FC = () => {
   }, []);
 
   const isSettingsPage = location.pathname.startsWith('/settings');
-  
+
   // Determine active module based on current URL path
   const activeModule = React.useMemo(() => {
     if (isSettingsPage) return 'settings';

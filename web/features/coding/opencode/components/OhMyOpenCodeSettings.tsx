@@ -265,6 +265,7 @@ const OhMyOpenCodeSettings: React.FC<OhMyOpenCodeSettingsProps> = ({
               <Space>
                 <Button
                   size="small"
+                  style={{ fontSize: 12 }}
                   icon={<SettingOutlined />}
                   disabled={disabled}
                   onClick={(e) => {
@@ -277,6 +278,7 @@ const OhMyOpenCodeSettings: React.FC<OhMyOpenCodeSettingsProps> = ({
                 <Button
                   type="primary"
                   size="small"
+                  style={{ fontSize: 12 }}
                   icon={<PlusOutlined />}
                   disabled={disabled}
                   onClick={(e) => {

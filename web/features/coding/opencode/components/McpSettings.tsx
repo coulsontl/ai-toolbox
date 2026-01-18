@@ -192,6 +192,7 @@ const McpSettings: React.FC<McpSettingsProps> = ({ mcp, onChange, defaultCollaps
               <Button
                 type="primary"
                 size="small"
+                style={{ fontSize: 12 }}
                 icon={<PlusOutlined />}
                 onClick={(e) => {
                   e.stopPropagation();
