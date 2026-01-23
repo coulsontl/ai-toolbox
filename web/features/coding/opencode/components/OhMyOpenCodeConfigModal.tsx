@@ -1,5 +1,5 @@
 import React from 'react';
-import { Modal, Form, Input, Button, Typography, Select, Collapse, Space, Alert } from 'antd';
+import { Modal, Form, Input, Button, Typography, Select, Collapse, Space, Alert, message } from 'antd';
 import { MoreOutlined, WarningOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { OH_MY_OPENCODE_AGENTS, type OhMyOpenCodeAgentConfig } from '@/types/ohMyOpenCode';
@@ -52,11 +52,9 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
 
   // Store advanced settings values in refs to avoid re-renders
   const advancedSettingsRef = React.useRef<Record<string, Record<string, unknown>>>({});
+  const advancedSettingsRawRef = React.useRef<Record<string, string>>({});
   const otherFieldsRef = React.useRef<Record<string, unknown>>({});
-
-  // Use refs for validation state to avoid re-renders during editing
-  const otherFieldsValidRef = React.useRef(true);
-  const advancedSettingsValidRef = React.useRef<Record<string, boolean>>({});
+  const otherFieldsRawRef = React.useRef<string>('');
 
   // Track if modal has been initialized to avoid re-initialization on parent re-renders
   const initializedRef = React.useRef(false);
@@ -122,23 +120,23 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
       });
 
       otherFieldsRef.current = initialValues.otherFields || {};
-      advancedSettingsValidRef.current = validityState;
+      otherFieldsRawRef.current = initialValues.otherFields && Object.keys(initialValues.otherFields).length > 0
+        ? JSON.stringify(initialValues.otherFields, null, 2)
+        : '';
     } else {
       form.resetFields();
       form.setFieldsValue({
         otherFields: {},
       });
 
-      // Reset validity state
-      const validityState: Record<string, boolean> = {};
+      // Reset refs
       [...basicAgentKeys, ...advancedAgentKeys].forEach((agentType) => {
-        validityState[agentType] = true;
         advancedSettingsRef.current[agentType] = {};
+        advancedSettingsRawRef.current[agentType] = '';
       });
-      advancedSettingsValidRef.current = validityState;
       otherFieldsRef.current = {};
+      otherFieldsRawRef.current = '';
     }
-    otherFieldsValidRef.current = true;
     setExpandedAgents({}); // Collapse all on open
     setAdvancedCollapsed(true); // Collapse advanced agents on open
   }, [open, initialValues, form, basicAgentKeys, advancedAgentKeys]);
@@ -148,17 +146,43 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
       const values = await form.validateFields();
       setLoading(true);
 
-      // Validate JSON fields
-      if (!otherFieldsValidRef.current) {
-        setLoading(false);
-        return;
+      // Validate otherFields JSON at submit time
+      const otherFieldsRaw = otherFieldsRawRef.current.trim();
+      let parsedOtherFields: Record<string, unknown> = {};
+      if (otherFieldsRaw !== '') {
+        try {
+          parsedOtherFields = JSON.parse(otherFieldsRaw);
+          if (typeof parsedOtherFields !== 'object' || parsedOtherFields === null || Array.isArray(parsedOtherFields)) {
+            message.error(t('opencode.ohMyOpenCode.invalidJson'));
+            setLoading(false);
+            return;
+          }
+        } catch {
+          message.error(t('opencode.ohMyOpenCode.invalidJson'));
+          setLoading(false);
+          return;
+        }
       }
 
-      // Check all advanced settings are valid
-      const hasInvalidAdvancedSettings = Object.values(advancedSettingsValidRef.current).some(valid => !valid);
-      if (hasInvalidAdvancedSettings) {
-        setLoading(false);
-        return;
+      // Validate and parse all advanced settings at submit time
+      const parsedAdvancedSettings: Record<string, Record<string, unknown>> = {};
+      for (const agentType of [...basicAgentKeys, ...advancedAgentKeys]) {
+        const rawAdvanced = advancedSettingsRawRef.current[agentType]?.trim() || '';
+        if (rawAdvanced !== '') {
+          try {
+            const parsed = JSON.parse(rawAdvanced);
+            if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+              message.error(t('opencode.ohMyOpenCode.invalidJson'));
+              setLoading(false);
+              return;
+            }
+            parsedAdvancedSettings[agentType] = parsed;
+          } catch {
+            message.error(t('opencode.ohMyOpenCode.invalidJson'));
+            setLoading(false);
+            return;
+          }
+        }
       }
 
       // Build agents object with merged advanced settings
@@ -167,7 +191,7 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
         const modelFieldName = `agent_${agentType}` as keyof typeof values;
 
         const modelValue = values[modelFieldName];
-        const advancedValue = advancedSettingsRef.current[agentType];
+        const advancedValue = parsedAdvancedSettings[agentType];
 
         // Only create agent config if model is set OR advanced settings exist
         if (modelValue || (advancedValue && Object.keys(advancedValue).length > 0)) {
@@ -183,7 +207,7 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
       const result: OhMyOpenCodeConfigFormValues = {
         name: values.name,
         agents,
-        otherFields: otherFieldsRef.current && Object.keys(otherFieldsRef.current).length > 0 ? otherFieldsRef.current : undefined,
+        otherFields: Object.keys(parsedOtherFields).length > 0 ? parsedOtherFields : undefined,
       };
 
       // Include id when editing (read from form values which were set from initialValues)
@@ -244,10 +268,14 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
         >
           <JsonEditor
             value={advancedSettingsRef.current[agentType] && Object.keys(advancedSettingsRef.current[agentType]).length > 0 ? advancedSettingsRef.current[agentType] : undefined}
-            onChange={(value, isValid) => {
-              advancedSettingsValidRef.current[agentType] = isValid;
-              if (isValid && typeof value === 'object' && value !== null) {
-                advancedSettingsRef.current[agentType] = value as Record<string, unknown>;
+            onChange={(value) => {
+              // Store raw string for submit-time validation
+              if (value === null || value === undefined) {
+                advancedSettingsRawRef.current[agentType] = '';
+              } else if (typeof value === 'string') {
+                advancedSettingsRawRef.current[agentType] = value;
+              } else {
+                advancedSettingsRawRef.current[agentType] = JSON.stringify(value, null, 2);
               }
             }}
             height={150}
@@ -370,10 +398,14 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
                   >
                     <JsonEditor
                       value={otherFieldsRef.current && Object.keys(otherFieldsRef.current).length > 0 ? otherFieldsRef.current : undefined}
-                      onChange={(value, isValid) => {
-                        otherFieldsValidRef.current = isValid;
-                        if (isValid && typeof value === 'object' && value !== null) {
-                          otherFieldsRef.current = value as Record<string, unknown>;
+                      onChange={(value) => {
+                        // Store raw string for submit-time validation
+                        if (value === null || value === undefined) {
+                          otherFieldsRawRef.current = '';
+                        } else if (typeof value === 'string') {
+                          otherFieldsRawRef.current = value;
+                        } else {
+                          otherFieldsRawRef.current = JSON.stringify(value, null, 2);
                         }
                       }}
                       height={200}

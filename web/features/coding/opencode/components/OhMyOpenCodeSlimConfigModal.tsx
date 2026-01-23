@@ -1,5 +1,5 @@
 import React from 'react';
-import { Modal, Form, Input, Button, Typography, Collapse } from 'antd';
+import { Modal, Form, Input, Button, Typography, Collapse, Select, message } from 'antd';
 import { useTranslation } from 'react-i18next';
 import { SLIM_AGENT_TYPES, SLIM_AGENT_DISPLAY_NAMES, SLIM_AGENT_DESCRIPTIONS, type OhMyOpenCodeSlimAgents } from '@/types/ohMyOpenCodeSlim';
 import JsonEditor from '@/components/common/JsonEditor';
@@ -15,6 +15,7 @@ interface OhMyOpenCodeSlimConfigModalProps {
     agents?: OhMyOpenCodeSlimAgents;
     otherFields?: Record<string, unknown>;
   };
+  modelOptions: { label: string; value: string }[];
   onCancel: () => void;
   onSuccess: (values: OhMyOpenCodeSlimConfigFormValues) => void;
 }
@@ -30,6 +31,7 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
   open,
   isEdit,
   initialValues,
+  modelOptions,
   onCancel,
   onSuccess,
 }) => {
@@ -37,9 +39,9 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
   const [form] = Form.useForm();
   const [loading, setLoading] = React.useState(false);
 
-  // Store otherFields in ref to avoid re-renders
+  // Store otherFields - keep both raw string and parsed value for submit-time validation
   const otherFieldsRef = React.useRef<Record<string, unknown>>({});
-  const otherFieldsValidRef = React.useRef(true);
+  const otherFieldsRawRef = React.useRef<string>('');
 
   // Track if modal has been initialized
   const initializedRef = React.useRef(false);
@@ -79,11 +81,14 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
 
       form.setFieldsValue(formValues);
       otherFieldsRef.current = initialValues.otherFields || {};
+      otherFieldsRawRef.current = initialValues.otherFields && Object.keys(initialValues.otherFields).length > 0
+        ? JSON.stringify(initialValues.otherFields, null, 2)
+        : '';
     } else {
       form.resetFields();
       otherFieldsRef.current = {};
+      otherFieldsRawRef.current = '';
     }
-    otherFieldsValidRef.current = true;
   }, [open, initialValues, form]);
 
   const handleSubmit = async () => {
@@ -91,10 +96,22 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
       const values = await form.validateFields();
       setLoading(true);
 
-      // Validate otherFields JSON
-      if (!otherFieldsValidRef.current) {
-        setLoading(false);
-        return;
+      // Validate otherFields JSON at submit time
+      const rawContent = otherFieldsRawRef.current.trim();
+      let parsedOtherFields: Record<string, unknown> = {};
+      if (rawContent !== '') {
+        try {
+          parsedOtherFields = JSON.parse(rawContent);
+          if (typeof parsedOtherFields !== 'object' || parsedOtherFields === null || Array.isArray(parsedOtherFields)) {
+            message.error(t('opencode.ohMyOpenCode.invalidJson'));
+            setLoading(false);
+            return;
+          }
+        } catch {
+          message.error(t('opencode.ohMyOpenCode.invalidJson'));
+          setLoading(false);
+          return;
+        }
       }
 
       // Build agents object
@@ -113,8 +130,8 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
       const result: OhMyOpenCodeSlimConfigFormValues = {
         name: values.name,
         agents,
-        otherFields: otherFieldsRef.current && Object.keys(otherFieldsRef.current).length > 0
-          ? otherFieldsRef.current
+        otherFields: Object.keys(parsedOtherFields).length > 0
+          ? parsedOtherFields
           : undefined,
       };
 
@@ -191,7 +208,13 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
                         tooltip={SLIM_AGENT_DESCRIPTIONS[agentType]}
                         name={`agent_${agentType}_model`}
                       >
-                        <Input placeholder="如：openai/gpt-4o" />
+                        <Select
+                          placeholder={t('opencode.ohMyOpenCode.selectModel')}
+                          options={modelOptions}
+                          allowClear
+                          showSearch
+                          optionFilterProp="label"
+                        />
                       </Form.Item>
                     ))}
                   </>
@@ -299,10 +322,14 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
                         value={otherFieldsRef.current && Object.keys(otherFieldsRef.current).length > 0
                           ? otherFieldsRef.current
                           : undefined}
-                        onChange={(value, isValid) => {
-                          otherFieldsValidRef.current = isValid;
-                          if (isValid && typeof value === 'object' && value !== null) {
-                            otherFieldsRef.current = value as Record<string, unknown>;
+                        onChange={(value) => {
+                          // Store raw string for submit-time validation
+                          if (value === null || value === undefined) {
+                            otherFieldsRawRef.current = '';
+                          } else if (typeof value === 'string') {
+                            otherFieldsRawRef.current = value;
+                          } else {
+                            otherFieldsRawRef.current = JSON.stringify(value, null, 2);
                           }
                         }}
                         height={200}

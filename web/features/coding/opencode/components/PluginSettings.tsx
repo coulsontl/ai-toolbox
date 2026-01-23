@@ -8,9 +8,16 @@ const { Text } = Typography;
 // Common plugins for OpenCode
 const COMMON_PLUGINS = [
   { value: 'oh-my-opencode', label: 'oh-my-opencode' },
+  { value: 'oh-my-opencode-slim', label: 'oh-my-opencode-slim' },
   { value: 'opencode-antigravity-auth', label: 'opencode-antigravity-auth (Antigravity OAuth)' },
   { value: 'opencode-openai-codex-auth', label: 'opencode-openai-codex-auth (Codex OAuth)' },
 ];
+
+// Mutually exclusive plugins - if one is selected, the other should be disabled
+const MUTUALLY_EXCLUSIVE_PLUGINS: Record<string, string[]> = {
+  'oh-my-opencode': ['oh-my-opencode-slim'],
+  'oh-my-opencode-slim': ['oh-my-opencode'],
+};
 
 interface PluginSettingsProps {
   plugins: string[];
@@ -34,10 +41,29 @@ const PluginSettings: React.FC<PluginSettingsProps> = ({ plugins, onChange, defa
     }
   }, [inputVisible]);
 
-  // Filter out already added plugins from common plugins
-  const availableCommonPlugins = COMMON_PLUGINS.filter(
-    (plugin) => !plugins.includes(plugin.value)
-  );
+  // Get plugins that should be disabled due to mutual exclusivity
+  const getDisabledPlugins = React.useCallback((): Set<string> => {
+    const disabled = new Set<string>();
+    for (const selectedPlugin of plugins) {
+      const exclusiveList = MUTUALLY_EXCLUSIVE_PLUGINS[selectedPlugin];
+      if (exclusiveList) {
+        exclusiveList.forEach((p) => disabled.add(p));
+      }
+    }
+    return disabled;
+  }, [plugins]);
+
+  // Filter out already added plugins and mark mutually exclusive ones as disabled
+  const disabledPlugins = getDisabledPlugins();
+  const availableCommonPlugins = COMMON_PLUGINS
+    .filter((plugin) => !plugins.includes(plugin.value))
+    .map((plugin) => ({
+      ...plugin,
+      disabled: disabledPlugins.has(plugin.value),
+      label: disabledPlugins.has(plugin.value)
+        ? `${plugin.label} (${t('opencode.plugin.mutuallyExclusive')})`
+        : plugin.label,
+    }));
 
   // Clear selectValue if it's no longer in available options
   React.useEffect(() => {

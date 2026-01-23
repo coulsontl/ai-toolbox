@@ -22,6 +22,7 @@ import {
 } from '@dnd-kit/sortable';
 import { readOpenCodeConfigWithResult, saveOpenCodeConfig, getOpenCodeConfigPathInfo, getOpenCodeUnifiedModels, getOpenCodeAuthProviders, getOpenCodeAuthConfigPath, type ConfigPathInfo, type UnifiedModelOption, type GetAuthProvidersResponse } from '@/services/opencodeApi';
 import { listOhMyOpenCodeConfigs, applyOhMyOpenCodeConfig } from '@/services/ohMyOpenCodeApi';
+import { listOhMyOpenCodeSlimConfigs } from '@/services/ohMyOpenCodeSlimApi';
 import { refreshTrayMenu } from '@/services/appApi';
 import type { OpenCodeConfig, OpenCodeProvider, OpenCodeModel } from '@/types/opencode';
 import type { ProviderDisplayData, ModelDisplayData, OfficialModelDisplayData } from '@/components/common/ProviderCard/types';
@@ -116,6 +117,7 @@ const OpenCodePage: React.FC = () => {
   const [ohMyOpenCodeRefreshKey, setOhMyOpenCodeRefreshKey] = React.useState(0); // 用于触发 OhMyOpenCodeConfigSelector 刷新
   const [ohMyOpenCodeSettingsRefreshKey, setOhMyOpenCodeSettingsRefreshKey] = React.useState(0); // 用于触发 OhMyOpenCodeSettings 刷新
   const [omoConfigs, setOmoConfigs] = React.useState<Array<{ id: string; name: string; isApplied?: boolean }>>([]); // omo 配置列表
+  const [omoSlimConfigs, setOmoSlimConfigs] = React.useState<Array<{ id: string; name: string; isApplied?: boolean }>>([]); // omo slim 配置列表
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -207,6 +209,20 @@ const OpenCodePage: React.FC = () => {
     };
     loadOmoConfigs();
   }, [openCodeConfigRefreshKey, ohMyOpenCodeSettingsRefreshKey]);
+
+  // Load omo slim config list
+  React.useEffect(() => {
+    const loadOmoSlimConfigs = async () => {
+      try {
+        const configs = await listOhMyOpenCodeSlimConfigs();
+        setOmoSlimConfigs(configs.map(c => ({ id: c.id, name: c.name, isApplied: c.isApplied })));
+      } catch (error) {
+        console.error('Failed to load omo slim configs:', error);
+        setOmoSlimConfigs([]);
+      }
+    };
+    loadOmoSlimConfigs();
+  }, [openCodeConfigRefreshKey]);
 
   // Auto-apply the applied config when plugin is enabled
   const prevOmoPluginEnabledRef = React.useRef(omoPluginEnabled);
@@ -913,23 +929,18 @@ const OpenCodePage: React.FC = () => {
               />
             </div>
 
-{/* Oh My OpenCode Config Selector - show if plugin is enabled or has configs */}
-            {(omoPluginEnabled || omoConfigs.length > 0) && (
-              <div style={{ opacity: omoPluginEnabled ? 1 : 0.5 }}>
+{/* Oh My OpenCode Config Selector - show only if plugin is enabled */}
+            {omoPluginEnabled && (
+              <div>
                 <div style={{ marginBottom: 4 }}>
                   <Text strong>{t('opencode.ohMyOpenCode.configLabel')}</Text>
                   <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
                     {t('opencode.ohMyOpenCode.configHint')}
                   </Text>
                 </div>
-                {!omoPluginEnabled && (
-                  <Text type="warning" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
-                    {t('opencode.ohMyOpenCode.pluginRequiredHint')}
-                  </Text>
-                )}
                 <OhMyOpenCodeConfigSelector
                   key={ohMyOpenCodeRefreshKey} // 当 key 改变时，组件会重新挂载并刷新
-                  disabled={!omoPluginEnabled}
+                  disabled={false}
                   onConfigSelected={() => {
                     message.success(t('opencode.ohMyOpenCode.configSelected'));
                     // 当在快速切换框中选择配置时，触发设置列表刷新
@@ -939,22 +950,17 @@ const OpenCodePage: React.FC = () => {
               </div>
             )}
 
-            {/* Oh My OpenCode Slim Config Selector - show if plugin is enabled */}
+            {/* Oh My OpenCode Slim Config Selector - show only if plugin is enabled */}
             {omoSlimPluginEnabled && (
-              <div style={{ opacity: omoSlimPluginEnabled ? 1 : 0.5 }}>
+              <div>
                 <div style={{ marginBottom: 4 }}>
                   <Text strong>{t('opencode.ohMyOpenCode.slimConfigLabel')}</Text>
                   <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
                     {t('opencode.ohMyOpenCode.slimConfigHint')}
                   </Text>
                 </div>
-                {!omoSlimPluginEnabled && (
-                  <Text type="warning" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
-                    {t('opencode.ohMyOpenCode.pluginRequiredHint')}
-                  </Text>
-                )}
                 <OhMyOpenCodeSlimConfigSelector
-                  disabled={!omoSlimPluginEnabled}
+                  disabled={false}
                   onConfigSelected={() => {
                     message.success(t('opencode.ohMyOpenCode.configSelected'));
                   }}
@@ -987,9 +993,10 @@ const OpenCodePage: React.FC = () => {
         />
       )}
 
-{/* Oh My OpenCode Slim Settings - show if plugin is enabled */}
-      {omoSlimPluginEnabled && (
+{/* Oh My OpenCode Slim Settings - show if plugin is enabled or has configs */}
+      {(omoSlimPluginEnabled || omoSlimConfigs.length > 0) && (
         <OhMyOpenCodeSlimSettings
+          modelOptions={modelOptions}
           disabled={!omoSlimPluginEnabled}
           onConfigApplied={() => {
             message.success('配置已应用');

@@ -408,7 +408,8 @@
       "inputPlaceholder": "Enter plugin name and press Enter",
       "commonPlugins": "Common Plugins",
       "selectPlugin": "Select Plugin",
-      "emptyText": "No plugins yet, type or select from common plugins"
+      "emptyText": "No plugins yet, type or select from common plugins",
+      "mutuallyExclusive": "Mutually exclusive with selected plugin"
     },
     "mcp": {
       "title": "MCP Server Configuration",
@@ -502,7 +503,16 @@
       "idExists": "This config ID already exists",
       "pluginRequired": "Plugin Required",
       "pluginRequiredHint": "Please add the oh-my-opencode plugin in Plugin Configuration first to use this feature",
-      "pluginRequiredDesc": "Oh-My-OpenCode features are disabled. Please add the oh-my-opencode plugin in the Plugin Configuration section above, then you can manage and apply configurations."
+      "pluginRequiredDesc": "Oh-My-OpenCode features are disabled. Please add the oh-my-opencode plugin in the Plugin Configuration section above, then you can manage and apply configurations.",
+      "slimConfigLabel": "Oh-My-OpenCode-Slim Sub-Agent Config",
+      "slimConfigHint": "Select the configuration file to use"
+    },
+    "ohMyOpenCodeSlim": {
+      "title": "Oh-My-OpenCode-Slim Configuration",
+      "pluginRequired": "Plugin Required",
+      "pluginRequiredHint": "Please add the oh-my-opencode-slim plugin in Plugin Configuration first to use this feature",
+      "pluginRequiredDesc": "Oh-My-OpenCode-Slim features are disabled. Please add the oh-my-opencode-slim plugin in the Plugin Configuration section above, then you can manage and apply configurations.",
+      "emptyText": "No configs yet, click the button above to add"
     },
     "official": {
       "title": "Official Auth Channels",

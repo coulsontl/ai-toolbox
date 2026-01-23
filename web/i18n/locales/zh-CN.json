@@ -408,7 +408,8 @@
       "inputPlaceholder": "输入插件名称后回车",
       "commonPlugins": "常用插件",
       "selectPlugin": "选择插件",
-      "emptyText": "暂无插件，可输入或选择常用插件添加"
+      "emptyText": "暂无插件，可输入或选择常用插件添加",
+      "mutuallyExclusive": "与已选插件互斥"
     },
     "mcp": {
       "title": "MCP 服务器配置",
@@ -445,6 +446,7 @@
     "ohMyOpenCodeSlim": {
       "title": "Oh-My-OpenCode-Slim 配置管理",
       "pluginRequired": "需要插件",
+      "pluginRequiredHint": "请先在插件配置中添加 oh-my-opencode-slim 插件才能使用此功能",
       "pluginRequiredDesc": "Oh-My-OpenCode-Slim 功能已禁用。请先在上方的「插件配置」中添加 oh-my-opencode-slim 插件，然后才能管理和应用配置。",
       "emptyText": "暂无配置，点击上方按钮添加"
     },

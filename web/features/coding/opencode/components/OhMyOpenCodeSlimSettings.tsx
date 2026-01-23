@@ -19,12 +19,14 @@ import { useRefreshStore } from '@/stores';
 const { Text, Link } = Typography;
 
 interface OhMyOpenCodeSlimSettingsProps {
+  modelOptions: { label: string; value: string }[];
   disabled?: boolean;
   onConfigApplied?: (config: OhMyOpenCodeSlimConfig) => void;
   onConfigUpdated?: () => void;
 }
 
 const OhMyOpenCodeSlimSettings: React.FC<OhMyOpenCodeSlimSettingsProps> = ({
+  modelOptions,
   disabled = false,
   onConfigApplied,
   onConfigUpdated,
@@ -196,7 +198,7 @@ const OhMyOpenCodeSlimSettings: React.FC<OhMyOpenCodeSlimSettingsProps> = ({
                   style={{ fontSize: 12 }}
                   onClick={(e) => {
                     e.stopPropagation();
-                    openExternalUrl('https://github.com/code-yeongyu/oh-my-opencode-slim');
+                    openExternalUrl('https://github.com/alvinunreal/oh-my-opencode-slim');
                   }}
                 >
                   <LinkOutlined /> {t('opencode.ohMyOpenCode.docs')}
@@ -236,6 +238,7 @@ const OhMyOpenCodeSlimSettings: React.FC<OhMyOpenCodeSlimSettingsProps> = ({
       <OhMyOpenCodeSlimConfigModal
         open={modalOpen}
         isEdit={!isCopyMode && !!editingConfig}
+        modelOptions={modelOptions}
         initialValues={
           editingConfig
             ? {
