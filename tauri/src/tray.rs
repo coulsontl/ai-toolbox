@@ -287,13 +287,6 @@ pub async fn refresh_tray_menus<R: Runtime>(app: &AppHandle<R>) -> Result<(), St
         }
     }
 
-    // Add separator after OpenCode section
-    let separator_after_opencode = if (opencode_enabled || opencode_plugins_enabled) && (omo_enabled || claude_enabled) {
-        Some(PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?)
-    } else {
-        None
-    };
-
     // Oh My OpenCode section (only if enabled)
     let omo_header = if omo_enabled {
         Some(MenuItem::with_id(app, "omo_header", &omo_data.title, false, None::<&str>)
@@ -327,12 +320,6 @@ pub async fn refresh_tray_menus<R: Runtime>(app: &AppHandle<R>) -> Result<(), St
             omo_items.push(menu_item);
         }
     }
-
-    let omo_separator = if omo_enabled && (omo_slim_enabled || claude_enabled) {
-        Some(PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?)
-    } else {
-        None
-    };
 
     // Oh My OpenCode Slim section (only if enabled)
     let omo_slim_header = if omo_slim_enabled {
@@ -368,12 +355,6 @@ pub async fn refresh_tray_menus<R: Runtime>(app: &AppHandle<R>) -> Result<(), St
         }
     }
 
-    let omo_slim_separator = if omo_slim_enabled && claude_enabled {
-        Some(PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?)
-    } else {
-        None
-    };
-
     // Check if modules have items (must be done before consuming items in for loops)
     let claude_has_items = claude_enabled && !claude_data.items.is_empty();
     let codex_has_items = codex_enabled && !codex_data.items.is_empty();
@@ -405,13 +386,6 @@ pub async fn refresh_tray_menus<R: Runtime>(app: &AppHandle<R>) -> Result<(), St
             claude_items.push(menu_item);
         }
     }
-
-    // Codex section (only if enabled and has items)
-    let codex_separator = if claude_has_items && codex_has_items {
-        Some(PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?)
-    } else {
-        None
-    };
 
     let codex_header = if codex_has_items {
         Some(MenuItem::with_id(app, "codex_header", &codex_data.title, false, None::<&str>)
@@ -461,10 +435,6 @@ pub async fn refresh_tray_menus<R: Runtime>(app: &AppHandle<R>) -> Result<(), St
     for item in &opencode_plugin_items {
         all_items.push(item.as_ref());
     }
-    if let Some(ref sep) = separator_after_opencode {
-        all_items.push(sep);
-    }
-
     // Add Oh My OpenCode section if enabled
     if let Some(ref header) = omo_header {
         all_items.push(header);
@@ -472,10 +442,6 @@ pub async fn refresh_tray_menus<R: Runtime>(app: &AppHandle<R>) -> Result<(), St
     for item in &omo_items {
         all_items.push(item.as_ref());
     }
-    if let Some(ref sep) = omo_separator {
-        all_items.push(sep);
-    }
-
     // Add Oh My OpenCode Slim section if enabled
     if let Some(ref header) = omo_slim_header {
         all_items.push(header);
@@ -483,10 +449,6 @@ pub async fn refresh_tray_menus<R: Runtime>(app: &AppHandle<R>) -> Result<(), St
     for item in &omo_slim_items {
         all_items.push(item.as_ref());
     }
-    if let Some(ref sep) = omo_slim_separator {
-        all_items.push(sep);
-    }
-
     // Add Claude Code section if enabled
     if let Some(ref header) = claude_header {
         all_items.push(header);
@@ -494,10 +456,6 @@ pub async fn refresh_tray_menus<R: Runtime>(app: &AppHandle<R>) -> Result<(), St
     for item in &claude_items {
         all_items.push(item.as_ref());
     }
-    if let Some(ref sep) = codex_separator {
-        all_items.push(sep);
-    }
-
     // Add Codex section if enabled
     if let Some(ref header) = codex_header {
         all_items.push(header);

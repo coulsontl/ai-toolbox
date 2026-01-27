@@ -60,9 +60,17 @@ const MainLayout: React.FC = () => {
     return subTabs[0]?.key || '';
   }, [location.pathname, subTabs]);
 
-  const activeTabKey = isSettingsPage ? undefined : currentTabKey;
 
   const handleTabChange = (key: string) => {
+    const tab = subTabs.find((t) => t.key === key);
+    if (tab) {
+      setCurrentModule('coding');
+      setCurrentSubTab(key);
+      navigate(tab.path);
+    }
+  };
+
+  const handleTabClick = (key: string) => {
     const tab = subTabs.find((t) => t.key === key);
     if (tab) {
       setCurrentModule('coding');
@@ -89,8 +97,9 @@ const MainLayout: React.FC = () => {
         headerContentRender={() => (
           <div className={`${styles.tabsWrapper} ${isSettingsPage ? styles.noActiveTab : ''}`}>
             <Tabs
-              activeKey={activeTabKey}
+              activeKey={currentTabKey}
               onChange={handleTabChange}
+              onTabClick={handleTabClick}
               items={subTabs.map((tab) => ({
                 key: tab.key,
                 label: (

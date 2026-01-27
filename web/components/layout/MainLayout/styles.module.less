@@ -63,19 +63,13 @@
       display: none !important;
     }
 
-    /* Force all tab text to look inactive */
-    :global(.ant-tabs-tab-btn) {
-      color: rgba(0, 0, 0, 0.65) !important;
-      text-shadow: none !important;
-      font-weight: normal !important;
-    }
-
-    :global(.ant-tabs-tab-active) :global(.ant-tabs-tab-btn) {
-      color: rgba(0, 0, 0, 0.65) !important;
-    }
-
-    :global(.ant-tabs-tab:hover) :global(.ant-tabs-tab-btn) {
-      color: rgba(0, 0, 0, 0.65) !important;
+    /* Force active tab text to look inactive but keep hover color */
+    :global(.ant-tabs-tab-active) {
+      :global(.ant-tabs-tab-btn) {
+        color: rgba(0, 0, 0, 0.65) !important;
+        text-shadow: none !important;
+        font-weight: normal !important;
+      }
     }
   }
 }
