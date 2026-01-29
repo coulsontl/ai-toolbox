@@ -87,7 +87,7 @@ const ConfigParseErrorAlert: React.FC<ConfigParseErrorAlertProps> = ({
               <Text type="secondary">{t('opencode.configParseError.contentPreview')}:</Text>
               <pre
                 style={{
-                  background: '#f5f5f5',
+                  background: 'var(--color-bg-elevated)',
                   padding: 8,
                   borderRadius: 4,
                   maxHeight: 150,

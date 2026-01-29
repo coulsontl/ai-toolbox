@@ -8,17 +8,17 @@
 .card {
   height: 100%;
   border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
-  border: 1px solid rgb(228, 228, 231) !important;
+  box-shadow: 0 1px 3px var(--color-shadow-secondary), 0 1px 2px var(--color-shadow-secondary);
+  border: 1px solid var(--color-border-card) !important;
   overflow: hidden;
   transition: box-shadow 0.2s ease;
 
   :global {
     .ant-card-head {
-      background: rgba(252, 252, 252, 0.9);
+      background: var(--color-bg-elevated);
       backdrop-filter: blur(20px);
       -webkit-backdrop-filter: blur(20px);
-      border-bottom: 1px solid rgb(228, 228, 231);
+      border-bottom: 1px solid var(--color-border-card);
       padding: 0 20px;
       min-height: 48px;
     }
@@ -26,7 +26,7 @@
       padding: 12px 0;
       font-size: 15px;
       font-weight: 600;
-      color: #1a1a1a;
+      color: var(--color-text-primary);
     }
     .ant-card-body {
       padding: 16px 20px;
@@ -37,8 +37,8 @@
   }
 
   &:hover {
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06), 0 4px 6px rgba(0, 0, 0, 0.02);
-    border-color: rgba(0, 0, 0, 0.1) !important;
+    box-shadow: 0 2px 8px var(--color-shadow), 0 4px 6px var(--color-shadow-secondary);
+    border-color: var(--color-border-secondary) !important;
   }
 }
 
@@ -46,7 +46,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  
+
   span {
     display: flex;
     align-items: center;
@@ -58,20 +58,20 @@
   align-items: center;
   justify-content: space-between;
   margin-bottom: 16px;
-  
+
   .titleLeft {
     display: flex;
     align-items: center;
     gap: 8px;
     font-size: 14px;
     font-weight: 600;
-    color: #1a1a1a;
+    color: var(--color-text-primary);
   }
 }
 
-// Keep existing class names if needed for backward compatibility or transition, 
-// but mapped to the new structure mostly. 
-// The following are legacy classes that might not be used in the new implementation 
+// Keep existing class names if needed for backward compatibility or transition,
+// but mapped to the new structure mostly.
+// The following are legacy classes that might not be used in the new implementation
 // but kept just in case I missed something.
 .settings-container {
   .container();

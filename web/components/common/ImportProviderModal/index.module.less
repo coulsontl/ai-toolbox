@@ -17,7 +17,7 @@
   }
 
   &::-webkit-scrollbar-thumb {
-    background: rgba(0, 0, 0, 0.15);
+    background: var(--color-scrollbar);
     border-radius: 3px;
   }
 
@@ -27,21 +27,21 @@
 }
 
 .card {
-  background: #fafafa;
-  border: 1px solid #f0f0f0;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
   border-radius: 8px;
   padding: 10px 12px;
   cursor: pointer;
   transition: all 0.2s ease;
 
   &:hover {
-    border-color: #d9d9d9;
-    background: #f5f5f5;
+    border-color: var(--color-border-secondary);
+    background: var(--color-bg-hover);
   }
 
   &.selected {
     border-color: #1677ff;
-    background: #f0f7ff;
+    background: var(--color-bg-selected);
 
     &:hover {
       background: #e6f4ff;
@@ -51,11 +51,11 @@
   &.existing {
     opacity: 0.6;
     cursor: not-allowed;
-    background: #fafafa;
+    background: var(--color-bg-elevated);
 
     &:hover {
-      background: #fafafa;
-      border-color: #f0f0f0;
+      background: var(--color-bg-elevated);
+      border-color: var(--color-border);
     }
   }
 }
@@ -91,7 +91,7 @@
 }
 
 .deleteBtn {
-  color: #999;
+  color: var(--color-text-tertiary);
   flex-shrink: 0;
 
   &:hover {
@@ -122,14 +122,14 @@
 }
 
 .icon {
-  color: #999;
+  color: var(--color-text-tertiary);
   font-size: 12px;
   flex-shrink: 0;
 }
 
 .infoText {
   font-size: 12px;
-  color: #666;
+  color: var(--color-text-secondary);
   min-width: 0;
 }
 
@@ -157,8 +157,8 @@
   line-height: 18px;
   margin: 0;
   border-radius: 4px;
-  background: #fff;
-  border-color: #e8e8e8;
+  background: var(--color-bg-container);
+  border-color: var(--color-border-secondary);
 }
 
 .moreTag {
@@ -167,9 +167,9 @@
   line-height: 18px;
   margin: 0;
   border-radius: 4px;
-  background: #f0f0f0;
-  border-color: #d9d9d9;
-  color: #666;
+  background: var(--color-bg-elevated);
+  border-color: var(--color-border-secondary);
+  color: var(--color-text-secondary);
 }
 
 .noModels {

@@ -351,34 +351,34 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
                 label: <Text strong>{t('opencode.ohMyOpenCode.otherFields')}</Text>,
                 children: (
                   <>
-                    <div style={{ marginBottom: 12, fontSize: 12, color: '#666' }}>
+                    <div style={{ marginBottom: 12, fontSize: 12 }}>
                       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                         <thead>
-                          <tr style={{ backgroundColor: '#f5f5f5' }}>
-                            <th style={{ padding: '8px', textAlign: 'left', border: '1px solid #e8e8e8' }}>{t('opencode.ohMyOpenCodeSlim.optionName')}</th>
-                            <th style={{ padding: '8px', textAlign: 'left', border: '1px solid #e8e8e8' }}>{t('opencode.ohMyOpenCodeSlim.optionType')}</th>
-                            <th style={{ padding: '8px', textAlign: 'left', border: '1px solid #e8e8e8' }}>{t('opencode.ohMyOpenCodeSlim.optionDefault')}</th>
-                            <th style={{ padding: '8px', textAlign: 'left', border: '1px solid #e8e8e8' }}>{t('opencode.ohMyOpenCodeSlim.optionDesc')}</th>
+                          <tr style={{ backgroundColor: 'var(--color-bg-elevated)' }}>
+                            <th style={{ padding: '8px', textAlign: 'left', border: '1px solid var(--color-border-secondary)' }}>{t('opencode.ohMyOpenCodeSlim.optionName')}</th>
+                            <th style={{ padding: '8px', textAlign: 'left', border: '1px solid var(--color-border-secondary)' }}>{t('opencode.ohMyOpenCodeSlim.optionType')}</th>
+                            <th style={{ padding: '8px', textAlign: 'left', border: '1px solid var(--color-border-secondary)' }}>{t('opencode.ohMyOpenCodeSlim.optionDefault')}</th>
+                            <th style={{ padding: '8px', textAlign: 'left', border: '1px solid var(--color-border-secondary)' }}>{t('opencode.ohMyOpenCodeSlim.optionDesc')}</th>
                           </tr>
                         </thead>
                         <tbody>
                           <tr>
-                            <td style={{ padding: '8px', border: '1px solid #e8e8e8' }}>tmux.enabled</td>
-                            <td style={{ padding: '8px', border: '1px solid #e8e8e8' }}>boolean</td>
-                            <td style={{ padding: '8px', border: '1px solid #e8e8e8' }}>false</td>
-                            <td style={{ padding: '8px', border: '1px solid #e8e8e8' }}>{t('opencode.ohMyOpenCodeSlim.tmuxEnabledDesc')}</td>
+                            <td style={{ padding: '8px', border: '1px solid var(--color-border-secondary)' }}>tmux.enabled</td>
+                            <td style={{ padding: '8px', border: '1px solid var(--color-border-secondary)' }}>boolean</td>
+                            <td style={{ padding: '8px', border: '1px solid var(--color-border-secondary)' }}>false</td>
+                            <td style={{ padding: '8px', border: '1px solid var(--color-border-secondary)' }}>{t('opencode.ohMyOpenCodeSlim.tmuxEnabledDesc')}</td>
                           </tr>
-                          <tr style={{ backgroundColor: '#fafafa' }}>
-                            <td style={{ padding: '8px', border: '1px solid #e8e8e8' }}>tmux.layout</td>
-                            <td style={{ padding: '8px', border: '1px solid #e8e8e8' }}>string</td>
-                            <td style={{ padding: '8px', border: '1px solid #e8e8e8' }}>"main-vertical"</td>
-                            <td style={{ padding: '8px', border: '1px solid #e8e8e8' }}>{t('opencode.ohMyOpenCodeSlim.tmuxLayoutDesc')}</td>
+                          <tr style={{ backgroundColor: 'var(--color-bg-hover)' }}>
+                            <td style={{ padding: '8px', border: '1px solid var(--color-border-secondary)' }}>tmux.layout</td>
+                            <td style={{ padding: '8px', border: '1px solid var(--color-border-secondary)' }}>string</td>
+                            <td style={{ padding: '8px', border: '1px solid var(--color-border-secondary)' }}>"main-vertical"</td>
+                            <td style={{ padding: '8px', border: '1px solid var(--color-border-secondary)' }}>{t('opencode.ohMyOpenCodeSlim.tmuxLayoutDesc')}</td>
                           </tr>
                           <tr>
-                            <td style={{ padding: '8px', border: '1px solid #e8e8e8' }}>disabled_mcps</td>
-                            <td style={{ padding: '8px', border: '1px solid #e8e8e8' }}>string[]</td>
-                            <td style={{ padding: '8px', border: '1px solid #e8e8e8' }}>[]</td>
-                            <td style={{ padding: '8px', border: '1px solid #e8e8e8' }}>{t('opencode.ohMyOpenCodeSlim.disabledMcpsDesc')}</td>
+                            <td style={{ padding: '8px', border: '1px solid var(--color-border-secondary)' }}>disabled_mcps</td>
+                            <td style={{ padding: '8px', border: '1px solid var(--color-border-secondary)' }}>string[]</td>
+                            <td style={{ padding: '8px', border: '1px solid var(--color-border-secondary)' }}>[]</td>
+                            <td style={{ padding: '8px', border: '1px solid var(--color-border-secondary)' }}>{t('opencode.ohMyOpenCodeSlim.disabledMcpsDesc')}</td>
                           </tr>
                         </tbody>
                       </table>

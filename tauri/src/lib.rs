@@ -25,6 +25,15 @@ pub mod update;
 // Re-export DbState for use in other modules
 pub use db::DbState;
 
+/// Set window background color (affects macOS titlebar color)
+#[tauri::command]
+fn set_window_background_color(window: tauri::Window, r: u8, g: u8, b: u8) -> Result<(), String> {
+    use tauri::window::Color;
+    window
+        .set_background_color(Some(Color(r, g, b, 255)))
+        .map_err(|e| format!("Failed to set background color: {}", e))
+}
+
 /// Open a folder in the system file manager
 /// If the path is a file, opens the parent directory
 /// Creates the directory if it doesn't exist
@@ -482,6 +491,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Common
             open_folder,
+            set_window_background_color,
             // Update
             update::check_for_updates,
             update::install_update,

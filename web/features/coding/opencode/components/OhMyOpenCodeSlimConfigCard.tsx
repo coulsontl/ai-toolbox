@@ -164,8 +164,8 @@ const OhMyOpenCodeSlimConfigCard: React.FC<OhMyOpenCodeSlimConfigCardProps> = ({
         size="small"
         style={{
           marginBottom: 8,
-          borderColor: isSelected ? '#1890ff' : undefined,
-          backgroundColor: isSelected ? '#e6f7ff' : undefined,
+          borderColor: isSelected ? '#1890ff' : 'var(--color-border-secondary)',
+          backgroundColor: isSelected ? 'var(--color-bg-selected)' : 'var(--color-bg-container)',
           transition: 'opacity 0.3s ease, border-color 0.2s ease',
         }}
         styles={{ body: { padding: '8px 12px' } }}

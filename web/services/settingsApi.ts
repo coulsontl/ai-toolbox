@@ -37,6 +37,7 @@ export interface AppSettings {
   launch_on_startup: boolean;
   minimize_to_tray_on_close: boolean;
   proxy_url: string;
+  theme: string;
 }
 
 // Default settings
@@ -66,6 +67,7 @@ export const defaultSettings: AppSettings = {
   launch_on_startup: true,
   minimize_to_tray_on_close: true,
   proxy_url: '',
+  theme: 'system',
 };
 
 /**

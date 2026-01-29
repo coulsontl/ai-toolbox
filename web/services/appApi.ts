@@ -83,3 +83,10 @@ export const openExternalUrl = async (url: string): Promise<void> => {
 export const refreshTrayMenu = async (): Promise<void> => {
   await invoke('refresh_tray_menu');
 };
+
+/**
+ * Set window background color (affects macOS titlebar color)
+ */
+export const setWindowBackgroundColor = async (r: number, g: number, b: number): Promise<void> => {
+  await invoke('set_window_background_color', { r, g, b });
+};

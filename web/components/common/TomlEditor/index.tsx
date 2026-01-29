@@ -3,6 +3,7 @@ import MonacoEditor from 'react-monaco-editor';
 import type { editor } from 'monaco-editor';
 import * as monaco from 'monaco-editor';
 import { parse as parseToml } from 'smol-toml';
+import { useThemeStore } from '@/stores/themeStore';
 
 export interface TomlEditorProps {
   /** TOML 内容值 */
@@ -334,14 +335,20 @@ const TomlEditor: React.FC<TomlEditorProps> = ({
   onBlur,
   height = 300,
   readOnly = false,
-  theme = 'vs',
+  theme,
   placeholder,
   minHeight = 150,
   maxHeight = 800,
   resizable = true,
 }) => {
+  const { resolvedTheme } = useThemeStore();
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const validateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Monaco theme based on app theme (or explicit theme prop)
+  const monacoTheme = theme || (resolvedTheme === 'dark' ? 'vs-dark' : 'vs');
+  const borderColor = resolvedTheme === 'dark' ? 'var(--color-border-secondary)' : '#d9d9d9';
+  const placeholderColor = resolvedTheme === 'dark' ? 'rgba(255, 255, 255, 0.45)' : '#999';
 
   // 可调整大小的高度状态
   const initialHeight = typeof height === 'number' ? height : parseInt(height, 10) || 300;
@@ -495,7 +502,7 @@ const TomlEditor: React.FC<TomlEditorProps> = ({
       <div
         style={{
           height: '100%',
-          border: '1px solid #d9d9d9',
+          border: `1px solid ${borderColor}`,
           borderRadius: 6,
           overflow: 'hidden',
         }}
@@ -504,7 +511,7 @@ const TomlEditor: React.FC<TomlEditorProps> = ({
           width="100%"
           height={actualHeight}
           language="toml"
-          theme={theme}
+          theme={monacoTheme}
           value={value}
           options={options}
           onChange={handleChange}
@@ -517,7 +524,7 @@ const TomlEditor: React.FC<TomlEditorProps> = ({
               position: 'absolute',
               top: 9,
               left: PLACEHOLDER_LEFT,
-              color: '#999',
+              color: placeholderColor,
               fontSize: FONT_SIZE,
               pointerEvents: 'none',
               userSelect: 'none',

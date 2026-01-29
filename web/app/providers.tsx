@@ -1,9 +1,10 @@
 import React from 'react';
-import { ConfigProvider, Spin, notification } from 'antd';
+import { ConfigProvider, Spin, notification, theme as antdTheme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import enUS from 'antd/locale/en_US';
 import { useAppStore, useSettingsStore } from '@/stores';
-import { checkForUpdates, openExternalUrl } from '@/services';
+import { useThemeStore } from '@/stores/themeStore';
+import { checkForUpdates, openExternalUrl, setWindowBackgroundColor } from '@/services';
 import { listen } from '@tauri-apps/api/event';
 import i18n from '@/i18n';
 
@@ -19,17 +20,51 @@ const antdLocales = {
 export const Providers: React.FC<ProvidersProps> = ({ children }) => {
   const { language, isInitialized: appInitialized, initApp } = useAppStore();
   const { isInitialized: settingsInitialized, initSettings } = useSettingsStore();
+  const { mode, resolvedTheme, isInitialized: themeInitialized, initTheme, updateResolvedTheme } = useThemeStore();
 
-  const isLoading = !appInitialized || !settingsInitialized;
+  const isLoading = !appInitialized || !settingsInitialized || !themeInitialized;
 
-  // Initialize app and settings on mount
+  // Initialize app, settings and theme on mount
   React.useEffect(() => {
     const init = async () => {
       await initApp();
       await initSettings();
+      await initTheme();
     };
     init();
-  }, [initApp, initSettings]);
+  }, [initApp, initSettings, initTheme]);
+
+  // Listen for system theme changes
+  React.useEffect(() => {
+    if (!themeInitialized) return;
+
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+    const handleChange = (e: MediaQueryListEvent) => {
+      if (mode === 'system') {
+        updateResolvedTheme(e.matches ? 'dark' : 'light');
+      }
+    };
+
+    mediaQuery.addEventListener('change', handleChange);
+    return () => mediaQuery.removeEventListener('change', handleChange);
+  }, [mode, themeInitialized, updateResolvedTheme]);
+
+  // Apply data-theme attribute to document
+  React.useEffect(() => {
+    if (themeInitialized) {
+      document.documentElement.setAttribute('data-theme', resolvedTheme);
+    }
+  }, [resolvedTheme, themeInitialized]);
+
+  // Set window background color for macOS titlebar
+  React.useEffect(() => {
+    if (themeInitialized) {
+      // Light theme: #ffffff, Dark theme: #1f1f1f
+      const bgColor = resolvedTheme === 'dark' ? { r: 31, g: 31, b: 31 } : { r: 255, g: 255, b: 255 };
+      setWindowBackgroundColor(bgColor.r, bgColor.g, bgColor.b).catch(console.error);
+    }
+  }, [resolvedTheme, themeInitialized]);
 
   // Listen for config changes from tray menu
   React.useEffect(() => {
@@ -121,6 +156,7 @@ export const Providers: React.FC<ProvidersProps> = ({ children }) => {
     <ConfigProvider
       locale={antdLocales[language]}
       theme={{
+        algorithm: resolvedTheme === 'dark' ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
         token: {
           colorPrimary: '#1890ff',
         },

@@ -1,3 +1,59 @@
+/* CSS Variables for theming */
+:root {
+  /* Background colors */
+  --color-bg-base: #ffffff;
+  --color-bg-container: #ffffff;
+  --color-bg-layout: #fefefe;
+  --color-bg-elevated: #fafafa;
+  --color-bg-hover: #f5f5f5;
+  --color-bg-selected: #f0f7ff;
+
+  /* Text colors */
+  --color-text-primary: rgba(0, 0, 0, 0.88);
+  --color-text-secondary: rgba(0, 0, 0, 0.65);
+  --color-text-tertiary: rgba(0, 0, 0, 0.45);
+
+  /* Border colors */
+  --color-border: rgba(0, 0, 0, 0.06);
+  --color-border-secondary: rgba(0, 0, 0, 0.15);
+  --color-border-card: rgb(228, 228, 231);
+
+  /* Shadow and scrollbar */
+  --color-shadow: rgba(0, 0, 0, 0.08);
+  --color-shadow-secondary: rgba(0, 0, 0, 0.04);
+  --color-scrollbar: rgba(0, 0, 0, 0.2);
+}
+
+[data-theme='dark'] {
+  /* Background colors */
+  --color-bg-base: #141414;
+  --color-bg-container: #1f1f1f;
+  --color-bg-layout: #0d0d0d;
+  --color-bg-elevated: #262626;
+  --color-bg-hover: #303030;
+  --color-bg-selected: #111d2c;
+
+  /* Text colors */
+  --color-text-primary: rgba(255, 255, 255, 0.88);
+  --color-text-secondary: rgba(255, 255, 255, 0.65);
+  --color-text-tertiary: rgba(255, 255, 255, 0.45);
+
+  /* Border colors */
+  --color-border: rgba(255, 255, 255, 0.12);
+  --color-border-secondary: rgba(255, 255, 255, 0.2);
+  --color-border-card: rgba(255, 255, 255, 0.12);
+
+  /* Shadow and scrollbar */
+  --color-shadow: rgba(0, 0, 0, 0.45);
+  --color-shadow-secondary: rgba(0, 0, 0, 0.25);
+  --color-scrollbar: rgba(255, 255, 255, 0.2);
+}
+
+/* Fill window background to cover rounded corners */
+html, body {
+  background-color: var(--color-bg-container);
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -26,7 +82,7 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: rgba(0, 0, 0, 0.2);
+  background-color: var(--color-scrollbar);
   border-radius: 4px;
 }
 
@@ -34,12 +90,12 @@ body {
   background-color: transparent;
 }
 
-/* Global Collapse card style - white background, shadow, no border */
+/* Global Collapse card style */
 .ant-collapse {
-  background: #fff;
+  background: var(--color-bg-container);
   border: none;
   border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08), 0 4px 16px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 2px 8px var(--color-shadow), 0 4px 16px var(--color-shadow-secondary);
   overflow: hidden;
 }
 
@@ -48,13 +104,89 @@ body {
 }
 
 .ant-collapse > .ant-collapse-item > .ant-collapse-header {
-  background: #fff;
+  background: var(--color-bg-container);
 }
 
 .ant-collapse > .ant-collapse-item > .ant-collapse-content {
-  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  border-top: 1px solid var(--color-border);
 }
 
 .ant-collapse > .ant-collapse-item > .ant-collapse-content > .ant-collapse-content-box {
   padding: 16px 20px;
+}
+
+/* ProLayout dark mode support */
+[data-theme='dark'] .ant-pro-layout {
+  background: var(--color-bg-layout);
+}
+
+[data-theme='dark'] .ant-pro-layout .ant-pro-top-nav-header {
+  background: var(--color-bg-container);
+  border-bottom-color: var(--color-border);
+}
+
+[data-theme='dark'] .ant-pro-layout .ant-pro-top-nav-header-main-left {
+  border-right-color: var(--color-border);
+}
+
+/* ProLayout header actions (right side buttons) */
+[data-theme='dark'] .ant-pro-layout .ant-pro-global-header-header-actions-item {
+  border-color: transparent;
+}
+
+[data-theme='dark'] .ant-pro-layout .ant-pro-global-header-header-actions-avatar {
+  border-color: transparent;
+}
+
+/* Ensure default buttons have proper dark mode styles */
+[data-theme='dark'] .ant-btn-default:not(.ant-btn-dangerous) {
+  background-color: transparent;
+  border-color: var(--color-border-secondary);
+  color: var(--color-text-primary);
+}
+
+[data-theme='dark'] .ant-btn-default:not(.ant-btn-dangerous):hover {
+  background-color: var(--color-bg-hover);
+  border-color: #1890ff;
+  color: #1890ff;
+}
+
+/* Fix Select dropdown popup in dark mode */
+[data-theme='dark'] .ant-select-dropdown {
+  background-color: var(--color-bg-elevated);
+}
+
+[data-theme='dark'] .ant-select-item {
+  color: var(--color-text-primary);
+}
+
+[data-theme='dark'] .ant-select-item-option-active:not(.ant-select-item-option-disabled) {
+  background-color: var(--color-bg-hover);
+}
+
+[data-theme='dark'] .ant-select-item-option-selected:not(.ant-select-item-option-disabled) {
+  background-color: var(--color-bg-selected);
+}
+
+/* Fix Modal in dark mode */
+[data-theme='dark'] .ant-modal-content {
+  background-color: var(--color-bg-container);
+}
+
+[data-theme='dark'] .ant-modal-header {
+  background-color: var(--color-bg-container);
+}
+
+[data-theme='dark'] .ant-modal-title {
+  color: var(--color-text-primary);
+}
+
+[data-theme='dark'] .ant-modal-close {
+  color: var(--color-text-secondary);
+  border-color: transparent;
+}
+
+[data-theme='dark'] .ant-modal-close:hover {
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-hover);
 }

@@ -28,6 +28,7 @@
       "general": "General Settings",
       "networkBackup": "Network & Backup",
       "language": "Language",
+      "theme": "Theme",
       "window": "Window",
       "about": "About App",
       "proxy": "Network Proxy",
@@ -35,6 +36,7 @@
     },
     "language": "Language",
     "currentLanguage": "Current Language",
+    "currentTheme": "Current Theme",
     "theme": "Theme",
     "backup": "Backup",
     "backupPath": "Backup Path",
@@ -238,7 +240,8 @@
   },
   "theme": {
     "light": "Light",
-    "dark": "Dark"
+    "dark": "Dark",
+    "system": "System"
   },
   "common": {
     "save": "Save",

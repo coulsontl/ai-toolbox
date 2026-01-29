@@ -5,7 +5,6 @@ import { PlusOutlined, FolderOpenOutlined, LinkOutlined, EyeOutlined, EditOutlin
 import { useTranslation } from 'react-i18next';
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { invoke } from '@tauri-apps/api/core';
-import { useNavigate, useLocation } from 'react-router-dom';
 import {
   DndContext,
   closestCenter,
@@ -44,8 +43,9 @@ import OhMyOpenCodeSlimConfigSelector from '../components/OhMyOpenCodeSlimConfig
 import OhMyOpenCodeSettings from '../components/OhMyOpenCodeSettings';
 import OhMyOpenCodeSlimSettings from '../components/OhMyOpenCodeSlimSettings';
 import JsonEditor from '@/components/common/JsonEditor';
+import JsonPreviewModal from '@/components/common/JsonPreviewModal';
 import ConnectivityTestModal from '../components/ConnectivityTestModal';
-import { usePreviewStore, useAppStore, useRefreshStore } from '@/stores';
+import { useRefreshStore } from '@/stores';
 
 import styles from './OpenCodePage.module.less';
 
@@ -87,10 +87,6 @@ const SUPPORTED_PROVIDER_NPMS = new Set([
 
 const OpenCodePage: React.FC = () => {
   const { t } = useTranslation();
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { setPreviewData } = usePreviewStore();
-  const appStoreState = useAppStore.getState();
   const { openCodeConfigRefreshKey, omosConfigRefreshKey, incrementOpenCodeConfigRefresh, incrementOmoConfigRefresh, incrementOmosConfigRefresh } = useRefreshStore();
   const [loading, setLoading] = React.useState(false);
   const [config, setConfig] = React.useState<OpenCodeConfig | null>(null);
@@ -100,6 +96,10 @@ const OpenCodePage: React.FC = () => {
     error: string;
     contentPreview?: string;
   } | null>(null);
+
+  // Preview modal state
+  const [previewModalOpen, setPreviewModalOpen] = React.useState(false);
+  const [previewData, setPreviewDataLocal] = React.useState<unknown>(null);
 
   // Provider modal state
   const [providerModalOpen, setProviderModalOpen] = React.useState(false);
@@ -854,10 +854,8 @@ const OpenCodePage: React.FC = () => {
 
   const handlePreviewConfig = async () => {
     if (!config) return;
-    appStoreState.setCurrentModule('coding');
-    appStoreState.setCurrentSubTab('opencode');
-    setPreviewData(t('opencode.preview.title'), config, location.pathname);
-    navigate('/preview/config');
+    setPreviewDataLocal(config);
+    setPreviewModalOpen(true);
   };
 
   const providerEntries = config && config.provider ? Object.entries(config.provider) : [];
@@ -1031,7 +1029,7 @@ const OpenCodePage: React.FC = () => {
                   </Tag>
                 )}
                 {configPathInfo?.source === 'default' && (
-                  <Tag style={{ fontSize: 12, backgroundColor: '#f0f0f0', color: 'rgba(0, 0, 0, 0.65)', borderColor: '#d9d9d9', border: '1px solid #d9d9d9' }}>
+                  <Tag style={{ fontSize: 12 }}>
                     {t('opencode.configPathSource.default')}
                   </Tag>
                 )}
@@ -1504,6 +1502,14 @@ const OpenCodePage: React.FC = () => {
           onSaveDiagnostics={handleSaveDiagnostics}
         />
       )}
+
+      {/* Preview Modal */}
+      <JsonPreviewModal
+        open={previewModalOpen}
+        onClose={() => setPreviewModalOpen(false)}
+        title={t('opencode.preview.title')}
+        data={previewData}
+      />
 
         </>
       )}

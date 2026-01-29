@@ -128,8 +128,8 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
         size="small"
         style={{
           marginBottom: 12,
-          borderColor: isApplied ? '#1890ff' : 'rgb(228, 228, 231)',
-          backgroundColor: isApplied ? '#fff' : undefined,
+          borderColor: isApplied ? '#1890ff' : 'var(--color-border-card)',
+          backgroundColor: isApplied ? 'var(--color-bg-selected)' : undefined,
           transition: 'opacity 0.3s ease, border-color 0.2s ease',
         }}
         styles={{ body: { padding: 16 } }}

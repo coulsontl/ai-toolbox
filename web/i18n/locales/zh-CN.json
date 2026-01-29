@@ -28,6 +28,7 @@
       "general": "通用设置",
       "networkBackup": "网络与备份",
       "language": "语言设置",
+      "theme": "主题设置",
       "window": "窗口设置",
       "about": "关于应用",
       "proxy": "网络代理",
@@ -35,6 +36,7 @@
     },
     "language": "语言",
     "currentLanguage": "当前语言",
+    "currentTheme": "当前主题",
     "theme": "主题",
     "backup": "备份设置",
     "backupPath": "备份路径",
@@ -238,7 +240,8 @@
   },
   "theme": {
     "light": "浅色",
-    "dark": "深色"
+    "dark": "深色",
+    "system": "跟随系统"
   },
   "common": {
     "save": "保存",

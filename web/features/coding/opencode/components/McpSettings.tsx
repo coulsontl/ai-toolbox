@@ -157,9 +157,11 @@ const McpSettings: React.FC<McpSettingsProps> = ({ mcp, onChange, defaultCollaps
           <Text type="secondary" style={{ fontSize: 12 }}>
             ({typeLabel}{disabledLabel})
           </Text>
-          <Text code style={{ fontSize: 12 }}>
-            {summary}
-          </Text>
+          {summary && (
+            <Text code style={{ fontSize: 12 }}>
+              {summary}
+            </Text>
+          )}
         </Space>
       </List.Item>
     );

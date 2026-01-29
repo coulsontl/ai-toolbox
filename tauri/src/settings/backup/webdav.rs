@@ -1,5 +1,5 @@
 use chrono::Local;
-use log::{error, info, warn};
+use log::{error, info};
 use std::fs;
 use std::path::PathBuf;
 use zip::ZipArchive;

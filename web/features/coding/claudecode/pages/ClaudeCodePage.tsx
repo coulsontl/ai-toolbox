@@ -4,7 +4,6 @@ import { PlusOutlined, FolderOpenOutlined, AppstoreOutlined, SyncOutlined, Excla
 import { useTranslation } from 'react-i18next';
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { invoke } from '@tauri-apps/api/core';
-import { useNavigate, useLocation } from 'react-router-dom';
 import {
   DndContext,
   closestCenter,
@@ -44,12 +43,13 @@ import {
   toggleClaudeCodeProviderDisabled,
   reorderClaudeProviders,
 } from '@/services/claudeCodeApi';
-import { usePreviewStore, useAppStore, useRefreshStore } from '@/stores';
+import { useRefreshStore } from '@/stores';
 import { refreshTrayMenu } from '@/services/appApi';
 import ClaudeProviderCard from '../components/ClaudeProviderCard';
 import ClaudeProviderFormModal from '../components/ClaudeProviderFormModal';
 import CommonConfigModal from '../components/CommonConfigModal';
 import ImportConflictDialog from '../components/ImportConflictDialog';
+import JsonPreviewModal from '@/components/common/JsonPreviewModal';
 
 const { Title, Text, Link } = Typography;
 
@@ -57,10 +57,6 @@ const { Title, Text, Link } = Typography;
 
 const ClaudeCodePage: React.FC = () => {
   const { t } = useTranslation();
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { setPreviewData } = usePreviewStore();
-  const appStoreState = useAppStore.getState();
   const { claudeProviderRefreshKey } = useRefreshStore();
   const [loading, setLoading] = React.useState(false);
   const [configPath, setConfigPath] = React.useState<string>('');
@@ -81,6 +77,8 @@ const ClaudeCodePage: React.FC = () => {
   const [conflictDialogOpen, setConflictDialogOpen] = React.useState(false);
   const [conflictInfo, setConflictInfo] = React.useState<ImportConflictInfo | null>(null);
   const [pendingFormValues, setPendingFormValues] = React.useState<ClaudeProviderFormValues | null>(null);
+  const [previewModalOpen, setPreviewModalOpen] = React.useState(false);
+  const [previewData, setPreviewDataLocal] = React.useState<unknown>(null);
 
   // 配置拖拽传感器
   const sensors = useSensors(
@@ -416,11 +414,8 @@ const ClaudeCodePage: React.FC = () => {
     try {
       const settings = await readClaudeSettings();
       const finalConfig: Record<string, unknown> = { ...settings };
-
-      appStoreState.setCurrentModule('coding');
-      appStoreState.setCurrentSubTab('claudecode');
-      setPreviewData(t('claudecode.preview.currentConfigTitle'), finalConfig, location.pathname);
-      navigate('/preview/config');
+      setPreviewDataLocal(finalConfig);
+      setPreviewModalOpen(true);
     } catch (error) {
       console.error('Failed to preview config:', error);
       message.error(t('common.error'));
@@ -579,6 +574,14 @@ const ClaudeCodePage: React.FC = () => {
           setConflictInfo(null);
           setPendingFormValues(null);
         }}
+      />
+
+      {/* Preview Modal */}
+      <JsonPreviewModal
+        open={previewModalOpen}
+        onClose={() => setPreviewModalOpen(false)}
+        title={t('claudecode.preview.currentConfigTitle')}
+        data={previewData}
       />
     </div>
   );

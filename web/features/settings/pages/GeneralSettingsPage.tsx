@@ -12,10 +12,12 @@ import {
   ApiOutlined,
   CloudSyncOutlined,
   AppstoreOutlined,
-  CloudServerOutlined
+  CloudServerOutlined,
+  BulbOutlined
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useAppStore, useSettingsStore } from '@/stores';
+import { useThemeStore, type ThemeMode } from '@/stores/themeStore';
 import { languages, type Language } from '@/i18n';
 import i18n from '@/i18n';
 import { BackupSettingsModal, WebDAVRestoreModal } from '../components';
@@ -44,6 +46,7 @@ const { Text } = Typography;
 const GeneralSettingsPage: React.FC = () => {
   const { t } = useTranslation();
   const { language, setLanguage } = useAppStore();
+  const { mode: themeMode, setMode: setThemeMode } = useThemeStore();
   const {
     backupType,
     localBackupPath,
@@ -484,7 +487,25 @@ const GeneralSettingsPage: React.FC = () => {
                 style={{ width: 160 }}
               />
             </div>
-            
+
+            <Divider />
+
+            {/* Theme Settings */}
+            <SectionTitle icon={<BulbOutlined style={{ color: '#faad14' }} />} title={t('settings.cards.theme')} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <Text>{t('settings.currentTheme')}:</Text>
+              <Select
+                value={themeMode}
+                onChange={(value: ThemeMode) => setThemeMode(value)}
+                options={[
+                  { value: 'light', label: t('theme.light') },
+                  { value: 'dark', label: t('theme.dark') },
+                  { value: 'system', label: t('theme.system') },
+                ]}
+                style={{ width: 160 }}
+              />
+            </div>
+
             <Divider />
 
             {/* Window Settings */}

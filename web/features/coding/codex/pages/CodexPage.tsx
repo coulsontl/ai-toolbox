@@ -2,7 +2,6 @@ import React from 'react';
 import { Typography, Card, Button, Space, Empty, message, Modal, Spin } from 'antd';
 import { PlusOutlined, FolderOpenOutlined, AppstoreOutlined, SyncOutlined, EyeOutlined, ExclamationCircleOutlined, LinkOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useLocation } from 'react-router-dom';
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -43,20 +42,16 @@ import {
   reorderCodexProviders,
 } from '@/services/codexApi';
 import { refreshTrayMenu } from '@/services/appApi';
-import { usePreviewStore, useAppStore } from '@/stores';
 import CodexProviderCard from '../components/CodexProviderCard';
 import CodexProviderFormModal from '../components/CodexProviderFormModal';
 import CodexCommonConfigModal from '../components/CodexCommonConfigModal';
 import ImportConflictDialog from '../components/ImportConflictDialog';
+import JsonPreviewModal from '@/components/common/JsonPreviewModal';
 
 const { Title, Text, Link } = Typography;
 
 const CodexPage: React.FC = () => {
   const { t } = useTranslation();
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { setPreviewData } = usePreviewStore();
-  const appStoreState = useAppStore.getState();
   const [loading, setLoading] = React.useState(false);
   const [configPath, setConfigPath] = React.useState<string>('');
   const [providers, setProviders] = React.useState<CodexProvider[]>([]);
@@ -71,6 +66,8 @@ const CodexPage: React.FC = () => {
   const [conflictDialogOpen, setConflictDialogOpen] = React.useState(false);
   const [conflictInfo, setConflictInfo] = React.useState<ImportConflictInfo | null>(null);
   const [pendingFormValues, setPendingFormValues] = React.useState<CodexProviderFormValues | null>(null);
+  const [previewModalOpen, setPreviewModalOpen] = React.useState(false);
+  const [previewData, setPreviewDataLocal] = React.useState<unknown>(null);
 
   // 配置拖拽传感器
   const sensors = useSensors(
@@ -409,10 +406,8 @@ settingsConfig = JSON.stringify(settingsConfigObj);
   const handlePreviewCurrentConfig = async () => {
     try {
       const settings = await readCodexSettings();
-      appStoreState.setCurrentModule('coding');
-      appStoreState.setCurrentSubTab('codex');
-      setPreviewData(t('codex.preview.currentConfigTitle'), settings, location.pathname);
-      navigate('/preview/config');
+      setPreviewDataLocal(settings);
+      setPreviewModalOpen(true);
     } catch (error) {
       console.error('Failed to preview config:', error);
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -559,6 +554,14 @@ settingsConfig = JSON.stringify(settingsConfigObj);
           setConflictInfo(null);
           setPendingFormValues(null);
         }}
+      />
+
+      {/* Preview Modal */}
+      <JsonPreviewModal
+        open={previewModalOpen}
+        onClose={() => setPreviewModalOpen(false)}
+        title={t('codex.preview.currentConfigTitle')}
+        data={previewData}
       />
     </div>
   );

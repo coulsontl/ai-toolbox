@@ -158,13 +158,12 @@ const PluginSettings: React.FC<PluginSettingsProps> = ({ plugins, onChange, defa
   // Styles - Designed for visual hierarchy
   // ============================================================================
 
-  // Section title style - darker color
+  // Section title style - use inherit for theme compatibility
   const sectionTitleStyle: React.CSSProperties = {
     fontSize: 13,
     fontWeight: 500,
     display: 'block',
     marginBottom: 8,
-    color: 'rgba(0, 0, 0, 0.85)',
   };
 
   // Enabled plugins: Prominent blue style (active state)
@@ -242,8 +241,6 @@ const PluginSettings: React.FC<PluginSettingsProps> = ({ plugins, onChange, defa
               style={{
                 cursor: 'pointer',
                 borderStyle: 'dashed',
-                borderColor: '#8c8c8c',
-                color: 'rgba(0, 0, 0, 0.85)',
                 backgroundColor: 'transparent',
               }}
             >
@@ -268,9 +265,9 @@ const PluginSettings: React.FC<PluginSettingsProps> = ({ plugins, onChange, defa
           style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}
         >
           {favoriteExpanded ? (
-            <DownOutlined style={{ fontSize: 10, marginRight: 6, color: 'rgba(0, 0, 0, 0.85)' }} />
+            <DownOutlined style={{ fontSize: 10, marginRight: 6 }} />
           ) : (
-            <RightOutlined style={{ fontSize: 10, marginRight: 6, color: 'rgba(0, 0, 0, 0.85)' }} />
+            <RightOutlined style={{ fontSize: 10, marginRight: 6 }} />
           )}
           <Text style={{ ...sectionTitleStyle, marginBottom: 0 }}>
             {t('opencode.plugin.favoritePlugins')} ({favoritePlugins.length})

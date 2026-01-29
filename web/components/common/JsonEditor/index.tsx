@@ -2,6 +2,7 @@ import React, { useRef, useCallback, useEffect, useState } from 'react';
 import MonacoEditor from 'react-monaco-editor';
 import type { editor } from 'monaco-editor';
 import * as monaco from 'monaco-editor';
+import { useThemeStore } from '@/stores/themeStore';
 
 type EditorMode = 'tree' | 'text' | 'table';
 
@@ -52,6 +53,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   showStatusBar: _showStatusBar = false,
   placeholder,
 }) => {
+  const { resolvedTheme } = useThemeStore();
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const validateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [editorContent, setEditorContent] = useState<string | null>(null);
@@ -306,7 +308,8 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
     formatOnType: true,
   };
 
-  const actualHeight = resizable ? currentHeight : (typeof height === 'number' ? height : parseInt(height, 10) || 300);
+  // When resizable, use currentHeight (number). Otherwise, use height prop directly (supports CSS strings like "calc(...)")
+  const actualHeight = resizable ? currentHeight : height;
 
   // 判断是否显示 placeholder - 只要编辑器有任何字符就不显示
   // editorContent 始终与编辑器实际内容同步
@@ -320,13 +323,18 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
     showPlaceholder,
   });
 
+  // Monaco theme based on app theme
+  const monacoTheme = resolvedTheme === 'dark' ? 'vs-dark' : 'vs';
+  const borderColor = resolvedTheme === 'dark' ? 'var(--color-border-secondary)' : '#d9d9d9';
+  const placeholderColor = resolvedTheme === 'dark' ? 'rgba(255, 255, 255, 0.45)' : '#999';
+
   return (
     <div style={{ position: 'relative', height: actualHeight }}>
       <div
         className={className}
         style={{
           height: '100%',
-          border: '1px solid #d9d9d9',
+          border: `1px solid ${borderColor}`,
           borderRadius: 6,
           overflow: 'hidden',
         }}
@@ -335,7 +343,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
           width="100%"
           height={actualHeight}
           language="json"
-          theme="vs"
+          theme={monacoTheme}
           value={valueString}
           options={options}
           onChange={handleChange}
@@ -347,7 +355,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
               position: 'absolute',
               top: 9,
               left: PLACEHOLDER_LEFT,
-              color: '#999',
+              color: placeholderColor,
               fontSize: FONT_SIZE,
               pointerEvents: 'none',
               userSelect: 'none',

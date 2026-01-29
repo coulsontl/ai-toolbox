@@ -14,7 +14,7 @@
 .divider {
   width: 1px;
   height: 16px;
-  background: rgba(0, 0, 0, 0.15);
+  background: var(--color-border-secondary);
 }
 
 /* Tabs wrapper - center */
@@ -57,6 +57,13 @@
     display: block;
   }
 
+  // Dark mode: invert dark icons to make them visible
+  :global([data-theme='dark']) & {
+    .tabIcon {
+      filter: invert(1) hue-rotate(180deg);
+    }
+  }
+
   /* When no tab should be active (settings page) - only hide ink bar */
   &.noActiveTab {
     :global(.ant-tabs-ink-bar) {
@@ -66,7 +73,7 @@
     /* Force active tab text to look inactive but keep hover color */
     :global(.ant-tabs-tab-active) {
       :global(.ant-tabs-tab-btn) {
-        color: rgba(0, 0, 0, 0.65) !important;
+        color: var(--color-text-secondary) !important;
         text-shadow: none !important;
         font-weight: normal !important;
       }
@@ -80,7 +87,7 @@
   align-items: center;
   gap: 4px;
   cursor: pointer;
-  color: rgb(31, 31, 31);
+  color: var(--color-text-primary);
   transition: color 0.3s;
   padding: 6px 12px;
   border-radius: 4px;
@@ -108,5 +115,5 @@
   padding: 24px;
   min-height: calc(100vh - 56px);
   overflow: auto;
-  background: #fefefe;
+  background: var(--color-bg-layout);
 }

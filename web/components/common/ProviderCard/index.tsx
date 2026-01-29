@@ -216,7 +216,7 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
             key={model.id}
             style={{
               padding: '8px 12px',
-              backgroundColor: '#fff',
+              backgroundColor: 'var(--color-bg-container)',
               borderRadius: '6px',
               display: 'flex',
               justifyContent: 'space-between',
