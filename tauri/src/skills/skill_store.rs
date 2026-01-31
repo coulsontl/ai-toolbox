@@ -16,7 +16,7 @@ pub async fn get_managed_skills(state: &DbState) -> Result<Vec<Skill>, String> {
     let db = state.0.lock().await;
 
     let mut result = db
-        .query("SELECT *, type::string(id) as id FROM skill ORDER BY sort_index ASC, updated_at DESC")
+        .query("SELECT *, type::string(id) as id FROM skill ORDER BY sort_index ASC")
         .await
         .map_err(|e| format!("Failed to query skills: {}", e))?;
 
@@ -44,10 +44,25 @@ pub async fn get_skill_by_id(state: &DbState, skill_id: &str) -> Result<Option<S
 /// Create or update a skill
 pub async fn upsert_skill(state: &DbState, skill: &Skill) -> Result<String, String> {
     let db = state.0.lock().await;
-    let payload = to_clean_skill_payload(skill);
 
     if skill.id.is_empty() {
-        // Create new skill with generated ID
+        // Get max sort_index for new skill
+        let mut max_result = db
+            .query("SELECT sort_index FROM skill ORDER BY sort_index DESC LIMIT 1")
+            .await
+            .map_err(|e| format!("Failed to query max sort_index: {}", e))?;
+        let max_records: Vec<Value> = max_result.take(0).map_err(|e| e.to_string())?;
+        let max_index = max_records
+            .first()
+            .and_then(|v| v.get("sort_index"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1) as i32;
+
+        // Create new skill with sort_index = max + 1
+        let mut new_skill = skill.clone();
+        new_skill.sort_index = max_index + 1;
+        let payload = to_clean_skill_payload(&new_skill);
+
         let id = uuid::Uuid::new_v4().to_string();
         db.query("CREATE type::thing('skill', $id) CONTENT $data")
             .bind(("id", id.clone()))
@@ -57,6 +72,7 @@ pub async fn upsert_skill(state: &DbState, skill: &Skill) -> Result<String, Stri
         Ok(id)
     } else {
         // Update existing skill
+        let payload = to_clean_skill_payload(skill);
         let skill_id = skill.id.clone();
         db.query("UPDATE type::thing('skill', $id) CONTENT $data")
             .bind(("id", skill_id.clone()))
@@ -131,12 +147,11 @@ pub async fn upsert_skill_target(
         enabled_tools.push(target.tool.clone());
     }
 
-    // Save updates
-    db.query("UPDATE type::thing('skill', $id) SET sync_details = $sync_details, enabled_tools = $enabled_tools, updated_at = $now")
+    // Save updates (don't update updated_at to preserve sort order)
+    db.query("UPDATE type::thing('skill', $id) SET sync_details = $sync_details, enabled_tools = $enabled_tools")
         .bind(("id", skill_id_owned))
         .bind(("sync_details", new_sync_details))
         .bind(("enabled_tools", enabled_tools))
-        .bind(("now", now_ms()))
         .await
         .map_err(|e| format!("Failed to update skill target: {}", e))?;
 
@@ -173,12 +188,11 @@ pub async fn delete_skill_target(state: &DbState, skill_id: &str, tool: &str) ->
         .filter(|t| t != &tool_owned)
         .collect();
 
-    // Save updates
-    db.query("UPDATE type::thing('skill', $id) SET sync_details = $sync_details, enabled_tools = $enabled_tools, updated_at = $now")
+    // Save updates (don't update updated_at to preserve sort order)
+    db.query("UPDATE type::thing('skill', $id) SET sync_details = $sync_details, enabled_tools = $enabled_tools")
         .bind(("id", skill_id_owned))
         .bind(("sync_details", new_sync_details))
         .bind(("enabled_tools", enabled_tools))
-        .bind(("now", now_ms()))
         .await
         .map_err(|e| format!("Failed to delete skill target: {}", e))?;
 

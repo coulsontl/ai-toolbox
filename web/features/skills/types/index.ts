@@ -90,6 +90,7 @@ export interface OnboardingVariant {
   fingerprint: string | null;
   is_link: boolean;
   link_target: string | null;
+  conflicting_tools: string[];
 }
 
 export interface OnboardingGroup {

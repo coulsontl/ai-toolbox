@@ -171,7 +171,7 @@ export const SkillCard: React.FC<SkillCardProps> = ({
             icon={<SyncOutlined />}
             onClick={() => onUpdate(skill)}
             disabled={loading}
-            title={t('skills.update')}
+            title={t('skills.updateTooltip')}
           />
           <Button
             type="text"

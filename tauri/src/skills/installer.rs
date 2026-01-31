@@ -41,7 +41,7 @@ pub async fn install_local_skill(
             std::fs::remove_dir_all(&central_path)
                 .with_context(|| format!("failed to remove existing skill: {:?}", central_path))?;
         } else {
-            anyhow::bail!("SKILL_EXISTS|{}", central_path.to_string_lossy());
+            anyhow::bail!("SKILL_EXISTS|{}", name);
         }
     }
 
@@ -92,29 +92,8 @@ pub async fn install_git_skill(
     let parsed = parse_github_url(repo_url);
     // Use provided branch, or fall back to parsed branch from URL, or default to "main"
     let effective_branch = branch.or(parsed.branch.as_deref());
-    let name = if let Some(subpath) = &parsed.subpath {
-        subpath
-            .rsplit('/')
-            .next()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| derive_name_from_repo_url(&parsed.clone_url))
-    } else {
-        derive_name_from_repo_url(&parsed.clone_url)
-    };
 
-    let central_dir = resolve_central_repo_path(app, state).await?;
-    ensure_central_repo(&central_dir)?;
-    let central_path = central_dir.join(&name);
-
-    if central_path.exists() {
-        if overwrite {
-            std::fs::remove_dir_all(&central_path)
-                .with_context(|| format!("failed to remove existing skill: {:?}", central_path))?;
-        } else {
-            anyhow::bail!("SKILL_EXISTS|{}", central_path.to_string_lossy());
-        }
-    }
-
+    // Clone first, then read skill name from SKILL.md
     let ttl = get_git_cache_ttl_secs(state).await;
     let (repo_dir, rev) = clone_to_cache(app, ttl, &parsed.clone_url, effective_branch)?;
 
@@ -125,21 +104,73 @@ pub async fn install_git_skill(
         }
         sub_src
     } else {
-        // Check for multi-skill repos using recursive scan
-        let skills_dir = repo_dir.join("skills");
-        if skills_dir.exists() {
-            let count = count_skills_recursive(&skills_dir);
-            if count >= 2 {
-                anyhow::bail!(
-                    "MULTI_SKILLS|This repository contains multiple Skills. Please provide a specific folder URL."
-                );
+        // Collect all skill locations: root + subdirectories
+        let mut candidates = Vec::new();
+
+        // Check root for SKILL.md
+        if repo_dir.join("SKILL.md").exists() {
+            candidates.push(repo_dir.clone());
+        }
+
+        // Scan subdirectories for more skills (skip root itself)
+        for entry in std::fs::read_dir(&repo_dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let dir_name = entry.file_name().to_string_lossy().to_string();
+                if dir_name == ".git" {
+                    continue;
+                }
+                scan_skills_recursive_paths(&path, &repo_dir, &mut candidates);
             }
         }
-        repo_dir.clone()
+
+        match candidates.len() {
+            0 => repo_dir.clone(), // No SKILL.md found, copy root as-is
+            1 => candidates.into_iter().next().unwrap(), // Single skill, use it directly
+            _ => anyhow::bail!(
+                "MULTI_SKILLS|This repository contains multiple Skills. Please provide a specific folder URL."
+            ),
+        }
     };
+
+    // Try to read name from SKILL.md, fallback to URL-derived name
+    let name = read_skill_name_from_dir(&copy_src)
+        .unwrap_or_else(|| derive_name_from_repo_url(&parsed.clone_url));
+
+    let central_dir = resolve_central_repo_path(app, state).await?;
+    ensure_central_repo(&central_dir)?;
+    let central_path = central_dir.join(&name);
+
+    if central_path.exists() {
+        if overwrite {
+            std::fs::remove_dir_all(&central_path)
+                .with_context(|| format!("failed to remove existing skill: {:?}", central_path))?;
+        } else {
+            anyhow::bail!("SKILL_EXISTS|{}", name);
+        }
+    }
 
     copy_skill_dir(&copy_src, &central_path)
         .with_context(|| format!("copy {:?} -> {:?}", copy_src, central_path))?;
+
+    // Build full source_ref URL including subpath for later updates
+    let full_source_ref = if copy_src == repo_dir {
+        // Using repo root
+        repo_url.to_string()
+    } else {
+        // Using a subdirectory - build GitHub tree URL
+        let subpath = copy_src
+            .strip_prefix(&repo_dir)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        let branch_for_url = effective_branch.unwrap_or("main");
+        format!(
+            "{}/tree/{}/{}",
+            parsed.clone_url.trim_end_matches(".git"),
+            branch_for_url,
+            subpath
+        )
+    };
 
     let now = now_ms();
     let content_hash = compute_content_hash(&central_path);
@@ -148,7 +179,7 @@ pub async fn install_git_skill(
         id: String::new(),
         name: name.clone(),
         source_type: "git".to_string(),
-        source_ref: Some(repo_url.to_string()),
+        source_ref: Some(full_source_ref),
         source_revision: Some(rev),
         central_path: central_path.to_string_lossy().to_string(),
         content_hash: content_hash.clone(),
@@ -214,12 +245,9 @@ pub fn list_git_skills(
             description: desc,
             subpath: ".".to_string(),
         });
-    }
-
-    // Recursively scan for skills in standard discovery locations
-    let skills_dir = repo_dir.join("skills");
-    if skills_dir.exists() {
-        scan_skills_recursive(&skills_dir, &repo_dir, &mut out);
+    } else {
+        // Recursively scan entire repo for skills (including hidden dirs like .claude, .cursor)
+        scan_skills_recursive(&repo_dir, &repo_dir, &mut out);
     }
 
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -243,24 +271,8 @@ pub async fn install_git_skill_from_selection(
     let parsed = parse_github_url(repo_url);
     // Use provided branch, or fall back to parsed branch from URL
     let effective_branch = branch.or(parsed.branch.as_deref());
-    let display_name = subpath
-        .rsplit('/')
-        .next()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| derive_name_from_repo_url(&parsed.clone_url));
 
-    let central_dir = resolve_central_repo_path(app, state).await?;
-    ensure_central_repo(&central_dir)?;
-    let central_path = central_dir.join(&display_name);
-    if central_path.exists() {
-        if overwrite {
-            std::fs::remove_dir_all(&central_path)
-                .with_context(|| format!("failed to remove existing skill: {:?}", central_path))?;
-        } else {
-            anyhow::bail!("SKILL_EXISTS|{}", central_path.to_string_lossy());
-        }
-    }
-
+    // Clone first, then read skill name from SKILL.md
     let ttl = get_git_cache_ttl_secs(state).await;
     let (repo_dir, revision) =
         clone_to_cache(app, ttl, &parsed.clone_url, effective_branch)?;
@@ -274,8 +286,42 @@ pub async fn install_git_skill_from_selection(
         anyhow::bail!("path not found in repo: {:?}", copy_src);
     }
 
+    // Try to read name from SKILL.md, fallback to subpath or URL-derived name
+    let display_name = read_skill_name_from_dir(&copy_src).unwrap_or_else(|| {
+        Path::new(subpath)
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| derive_name_from_repo_url(&parsed.clone_url))
+    });
+
+    let central_dir = resolve_central_repo_path(app, state).await?;
+    ensure_central_repo(&central_dir)?;
+    let central_path = central_dir.join(&display_name);
+    if central_path.exists() {
+        if overwrite {
+            std::fs::remove_dir_all(&central_path)
+                .with_context(|| format!("failed to remove existing skill: {:?}", central_path))?;
+        } else {
+            anyhow::bail!("SKILL_EXISTS|{}", display_name);
+        }
+    }
+
     copy_skill_dir(&copy_src, &central_path)
         .with_context(|| format!("copy {:?} -> {:?}", copy_src, central_path))?;
+
+    // Build full source_ref URL including subpath for later updates
+    let branch_for_url = effective_branch.unwrap_or("main");
+    let full_source_ref = if subpath == "." {
+        repo_url.to_string()
+    } else {
+        // Build GitHub tree URL: https://github.com/owner/repo/tree/branch/subpath
+        format!(
+            "{}/tree/{}/{}",
+            parsed.clone_url.trim_end_matches(".git"),
+            branch_for_url,
+            subpath
+        )
+    };
 
     let now = now_ms();
     let content_hash = compute_content_hash(&central_path);
@@ -283,7 +329,7 @@ pub async fn install_git_skill_from_selection(
         id: String::new(),
         name: display_name.clone(),
         source_type: "git".to_string(),
-        source_ref: Some(repo_url.to_string()),
+        source_ref: Some(full_source_ref),
         source_revision: Some(revision),
         central_path: central_path.to_string_lossy().to_string(),
         content_hash: content_hash.clone(),
@@ -618,10 +664,12 @@ fn scan_skills_recursive(current_dir: &Path, base_dir: &Path, out: &mut Vec<GitS
             .unwrap_or(current_dir)
             .to_string_lossy()
             .to_string();
+        // Normalize path separators to forward slashes for cross-platform consistency
+        let subpath = rel.replace('\\', "/");
         out.push(GitSkillCandidate {
             name,
             description: desc,
-            subpath: rel,
+            subpath,
         });
         // Found skill, don't scan subdirectories of this skill dir
         return;
@@ -632,9 +680,9 @@ fn scan_skills_recursive(current_dir: &Path, base_dir: &Path, out: &mut Vec<GitS
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                // Skip hidden directories
                 let dir_name = entry.file_name().to_string_lossy().to_string();
-                if dir_name.starts_with('.') {
+                // Skip .git directory but allow other hidden dirs like .claude, .cursor etc.
+                if dir_name == ".git" {
                     continue;
                 }
                 scan_skills_recursive(&path, base_dir, out);
@@ -643,31 +691,41 @@ fn scan_skills_recursive(current_dir: &Path, base_dir: &Path, out: &mut Vec<GitS
     }
 }
 
-/// Recursively count SKILL.md files in a directory tree.
-/// When a SKILL.md is found, that directory counts as 1 skill and its subdirectories are not scanned.
-fn count_skills_recursive(current_dir: &Path) -> usize {
+/// Read skill name from SKILL.md in a directory
+fn read_skill_name_from_dir(dir: &Path) -> Option<String> {
+    let skill_md = dir.join("SKILL.md");
+    if skill_md.exists() {
+        parse_skill_md(&skill_md).map(|(name, _)| name)
+    } else {
+        None
+    }
+}
+
+/// Recursively scan a directory for SKILL.md files and collect their paths.
+/// When a SKILL.md is found, the directory path is added and its subdirectories are not scanned further.
+fn scan_skills_recursive_paths(current_dir: &Path, base_dir: &Path, out: &mut Vec<PathBuf>) {
     let skill_md = current_dir.join("SKILL.md");
 
     if skill_md.exists() {
-        // Found a skill, count it and don't scan subdirectories
-        return 1;
+        out.push(current_dir.to_path_buf());
+        // Found skill, don't scan subdirectories of this skill dir
+        return;
     }
 
-    let mut count = 0;
+    // Recursively scan subdirectories
     if let Ok(entries) = std::fs::read_dir(current_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                // Skip hidden directories
                 let dir_name = entry.file_name().to_string_lossy().to_string();
-                if dir_name.starts_with('.') {
+                // Skip .git directory but allow other hidden dirs like .claude, .cursor etc.
+                if dir_name == ".git" {
                     continue;
                 }
-                count += count_skills_recursive(&path);
+                scan_skills_recursive_paths(&path, base_dir, out);
             }
         }
     }
-    count
 }
 
 // --- Git cache ---

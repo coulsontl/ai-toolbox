@@ -39,7 +39,6 @@ const SkillsPage: React.FC = () => {
     formatRelative,
     getGithubInfo,
     getSkillSourceLabel,
-    toggleToolSync,
     updateSkill,
     deleteSkill,
     refresh,
@@ -99,11 +98,41 @@ const SkillsPage: React.FC = () => {
   };
 
   const handleToggleTool = async (skill: typeof skills[0], toolId: string) => {
+    const target = skill.targets.find((t) => t.tool === toolId);
+    const synced = Boolean(target);
+
     setActionLoading(true);
     try {
-      await toggleToolSync(skill, toolId);
+      if (synced) {
+        await api.unsyncSkillFromTool(skill.id, toolId);
+      } else {
+        await api.syncSkillToTool(skill.central_path, skill.id, toolId, skill.name);
+      }
+      await refresh();
     } catch (error) {
-      showGitError(String(error));
+      const errMsg = String(error);
+      if (errMsg.includes('TARGET_EXISTS|')) {
+        const match = errMsg.match(/TARGET_EXISTS\|(.+)/);
+        const targetPath = match ? match[1] : '';
+        const toolLabel = allTools.find((t) => t.id === toolId)?.label || toolId;
+        Modal.confirm({
+          title: t('skills.targetExists.title'),
+          content: t('skills.targetExists.message', { skill: skill.name, tool: toolLabel, path: targetPath }),
+          okText: t('skills.overwrite.confirm'),
+          okType: 'danger',
+          cancelText: t('common.cancel'),
+          onOk: async () => {
+            try {
+              await api.syncSkillToTool(skill.central_path, skill.id, toolId, skill.name, true);
+              await refresh();
+            } catch (retryError) {
+              message.error(String(retryError));
+            }
+          },
+        });
+      } else {
+        showGitError(errMsg);
+      }
     } finally {
       setActionLoading(false);
     }

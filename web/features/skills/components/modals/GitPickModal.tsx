@@ -55,14 +55,14 @@ export const GitPickModal: React.FC<GitPickModalProps> = ({
 
   return (
     <Modal
-      title={t('skills.gitPickTitle')}
+      title={t('skills.gitPick.title')}
       open={open}
       onCancel={onClose}
       footer={null}
       width={700}
       destroyOnClose
     >
-      <p className={styles.hint}>{t('skills.gitPickBody')}</p>
+      <p className={styles.hint}>{t('skills.gitPick.description')}</p>
 
       {candidates.length === 0 ? (
         <Empty description={t('skills.errors.noSkillsFoundInRepo')} />

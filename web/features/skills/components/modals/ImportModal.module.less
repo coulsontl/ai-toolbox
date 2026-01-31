@@ -52,7 +52,11 @@
 }
 
 .conflictBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11px;
+  margin-left: 8px;
   padding: 2px 6px;
   background: #fff2e8;
   color: #fa541c;
@@ -61,6 +65,13 @@
   :global([data-theme="dark"]) & {
     background: rgba(250, 84, 28, 0.15);
   }
+}
+
+.variantTool {
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+  color: var(--color-text-primary);
 }
 
 .variant {
@@ -86,17 +97,27 @@
   min-width: 0;
 }
 
-.variantTool {
-  font-size: 13px;
-  color: var(--color-text-primary);
-}
-
 .variantPath {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
   color: var(--color-text-tertiary);
   font-family: monospace;
   margin-top: 2px;
   word-break: break-all;
+}
+
+.openFolder {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: color 0.2s;
+
+  &:hover {
+    color: var(--color-text-primary);
+  }
 }
 
 .footer {

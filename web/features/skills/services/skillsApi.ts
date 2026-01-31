@@ -98,9 +98,10 @@ export const getOnboardingPlan = async (): Promise<OnboardingPlan> => {
 };
 
 export const importExistingSkill = async (
-  sourcePath: string
+  sourcePath: string,
+  overwrite?: boolean
 ): Promise<InstallResult> => {
-  return invoke<InstallResult>('skills_import_existing', { sourcePath });
+  return invoke<InstallResult>('skills_import_existing', { sourcePath, overwrite });
 };
 
 // Git Cache

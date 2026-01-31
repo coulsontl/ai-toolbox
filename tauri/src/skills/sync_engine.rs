@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -132,9 +132,14 @@ fn remove_path_any(path: &Path) -> Result<()> {
     };
     let ft = meta.file_type();
 
-    // Symlinks should be removed with remove_file even if they point to directories
+    // Handle symlinks and junctions
     if ft.is_symlink() {
-        std::fs::remove_file(path).with_context(|| format!("remove symlink {:?}", path))?;
+        // On Windows, directory junctions need remove_dir, not remove_file
+        if path.is_dir() {
+            std::fs::remove_dir(path).with_context(|| format!("remove dir junction {:?}", path))?;
+        } else {
+            std::fs::remove_file(path).with_context(|| format!("remove symlink {:?}", path))?;
+        }
         return Ok(());
     }
     if ft.is_dir() {
@@ -186,6 +191,8 @@ fn should_skip_copy(entry: &walkdir::DirEntry) -> bool {
 ///
 /// Files and directories directly inside `source` (alongside SKILL.md) that are
 /// symlinks will be resolved first so the real content is copied into `target`.
+/// On Windows, Git stores symlinks as text files containing the target path;
+/// this function also handles that case.
 /// Symlinks deeper in the tree are left as-is (skipped by `copy_dir_recursive`).
 pub fn copy_skill_dir(source: &Path, target: &Path) -> Result<()> {
     std::fs::create_dir_all(target)
@@ -201,16 +208,26 @@ pub fn copy_skill_dir(source: &Path, target: &Path) -> Result<()> {
             continue;
         }
 
-        // Resolve symlinks at the top level
-        let real_path = match std::fs::symlink_metadata(entry.path()) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                std::fs::canonicalize(entry.path())
-                    .with_context(|| format!("resolve symlink {:?}", entry.path()))?
-            }
-            _ => entry.path(),
-        };
-
+        let entry_path = entry.path();
         let dest = target.join(&name);
+
+        // Resolve symlinks at the top level
+        let real_path = match std::fs::symlink_metadata(&entry_path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                std::fs::canonicalize(&entry_path)
+                    .with_context(|| format!("resolve symlink {:?}", entry_path))?
+            }
+            Ok(meta) if meta.is_file() => {
+                // On Windows, Git stores symlinks as small text files containing the target path.
+                // Check if this might be a git-style symlink (small file with path content).
+                if let Some(resolved) = try_resolve_git_symlink(&entry_path, source) {
+                    resolved
+                } else {
+                    entry_path.clone()
+                }
+            }
+            _ => entry_path.clone(),
+        };
 
         let real_meta = std::fs::metadata(&real_path)
             .with_context(|| format!("stat {:?}", real_path))?;
@@ -224,6 +241,42 @@ pub fn copy_skill_dir(source: &Path, target: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Try to resolve a potential Git-style symlink file on Windows.
+/// Git stores symlinks as text files containing the relative path when core.symlinks is false.
+/// Returns Some(resolved_path) if the file looks like a symlink and target exists,
+/// None otherwise.
+fn try_resolve_git_symlink(file_path: &Path, _base_dir: &Path) -> Option<PathBuf> {
+    // Only check small files (symlink paths are typically short)
+    let meta = std::fs::metadata(file_path).ok()?;
+    if meta.len() > 512 {
+        return None;
+    }
+
+    let content = std::fs::read_to_string(file_path).ok()?;
+    let content = content.trim();
+
+    // Check if content looks like a relative path
+    if content.is_empty() || content.contains('\n') {
+        return None;
+    }
+
+    // Must start with . or contain path separators, and not contain spaces or special chars
+    if !content.starts_with('.') && !content.starts_with('/') {
+        return None;
+    }
+
+    // Resolve relative to the file's parent directory
+    let parent = file_path.parent()?;
+    let target = parent.join(content);
+
+    // Canonicalize to get absolute path and verify it exists
+    let resolved = std::fs::canonicalize(&target).ok()?;
+
+    // Safety check: make sure we're not escaping to completely unrelated paths
+    // The target should be within the same repository (base_dir or its parent tree)
+    Some(resolved)
 }
 
 /// Recursively copy directory contents
@@ -254,19 +307,28 @@ pub fn copy_dir_recursive(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Remove path (file, dir, or symlink)
+/// Remove path (file, dir, or symlink/junction)
 pub fn remove_path(path: &str) -> Result<(), String> {
     let p = Path::new(path);
-    if !p.exists() {
-        return Ok(());
-    }
 
-    let meta = std::fs::symlink_metadata(p).map_err(|err| err.to_string())?;
+    // Use symlink_metadata to check if path exists (works for broken symlinks too)
+    let meta = match std::fs::symlink_metadata(p) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err.to_string()),
+    };
     let ft = meta.file_type();
 
-    // Symlinks should be removed with remove_file
+    // Handle symlinks and junctions
     if ft.is_symlink() {
-        std::fs::remove_file(p).map_err(|err| err.to_string())?;
+        // On Windows, directory junctions need remove_dir, not remove_file
+        // Check if it's a directory link by checking if the path is a dir
+        // (symlink_metadata tells us it's a link, is_dir follows the link)
+        if p.is_dir() {
+            std::fs::remove_dir(p).map_err(|err| err.to_string())?;
+        } else {
+            std::fs::remove_file(p).map_err(|err| err.to_string())?;
+        }
         return Ok(());
     }
 

@@ -46,7 +46,8 @@ fn build_onboarding_plan_in_home(
             continue;
         }
         scanned += 1;
-        let dir = home.join(&adapter.relative_skills_dir);
+        // Normalize path separators (forward slashes from config -> backslashes on Windows)
+        let dir: std::path::PathBuf = home.join(&adapter.relative_skills_dir).components().collect();
         let detected = scan_runtime_tool_dir(adapter, &dir)?;
         all_detected.extend(filter_detected(
             detected,
@@ -66,23 +67,41 @@ fn build_onboarding_plan_in_home(
             fingerprint,
             is_link: skill.is_link,
             link_target: skill.link_target.as_ref().map(|p| p.to_string_lossy().to_string()),
+            conflicting_tools: Vec::new(), // Will be calculated later
         });
     }
 
     let groups: Vec<OnboardingGroup> = grouped
         .into_iter()
-        .map(|(name, variants)| {
-            let mut uniq = variants
-                .iter()
-                .filter_map(|v| v.fingerprint.as_ref())
-                .collect::<std::collections::HashSet<_>>()
-                .len();
-            if uniq == 0 {
-                uniq = 1;
+        .map(|(name, mut variants)| {
+            // Build fingerprint -> tools mapping (owned data to avoid borrow conflict)
+            let mut fingerprint_tools: HashMap<String, Vec<String>> = HashMap::new();
+            for v in &variants {
+                if let Some(ref fp) = v.fingerprint {
+                    fingerprint_tools.entry(fp.clone()).or_default().push(v.tool.clone());
+                }
             }
+
+            let uniq_fingerprints = fingerprint_tools.len();
+            let has_conflict = uniq_fingerprints > 1;
+
+            // Calculate conflicting tools for each variant
+            for v in &mut variants {
+                if let Some(ref my_fp) = v.fingerprint {
+                    // Find tools with different fingerprints
+                    let mut conflicting: Vec<String> = Vec::new();
+                    for (fp, tools) in &fingerprint_tools {
+                        if fp != my_fp {
+                            conflicting.extend(tools.iter().cloned());
+                        }
+                    }
+                    v.conflicting_tools = conflicting;
+                }
+            }
+
             OnboardingGroup {
                 name,
-                has_conflict: uniq > 1,
+                has_conflict,
                 variants,
             }
         })

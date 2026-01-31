@@ -26,7 +26,7 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = ({
       title={
         <span className={styles.title}>
           <ExclamationCircleOutlined className={styles.icon} />
-          {t('skills.deleteTitle')}
+          {t('skills.delete.title')}
         </span>
       }
       open={open}
@@ -35,11 +35,7 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = ({
       width={400}
     >
       <div className={styles.content}>
-        <p>
-          {t('skills.delete.confirmPrefix')}
-          <strong>{skillName}</strong>
-          {t('skills.delete.confirmSuffix')}
-        </p>
+        <p>{t('skills.delete.message', { name: skillName })}</p>
         <ul className={styles.warnings}>
           <li>{t('skills.delete.warningRemoveFromTools')}</li>
           <li>{t('skills.delete.warningDeleteFromRepo')}</li>

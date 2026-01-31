@@ -253,30 +253,35 @@ export const SkillsSettingsModal: React.FC<SkillsSettingsModalProps> = ({
         </div>
         <div className={styles.inputArea}>
           <div className={styles.toolList}>
-            {sortedTools.map((tool) => (
-              <div key={tool.key} className={styles.toolItem}>
-                <Tooltip title={tool.skills_dir}>
-                  <Checkbox
-                    checked={preferredTools.includes(tool.key)}
-                    onChange={(e) => handleToolToggle(tool.key, e.target.checked)}
-                  >
-                    {tool.label}
-                  </Checkbox>
-                </Tooltip>
-                {!tool.installed && !customTools.some(c => c.key === tool.key) && (
-                  <Tag color="default">{t('skills.notInstalled')}</Tag>
-                )}
-                {customTools.some(c => c.key === tool.key) && (
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<DeleteOutlined />}
-                    danger
-                    onClick={() => handleRemoveCustomTool(tool.key)}
-                  />
-                )}
-              </div>
-            ))}
+            {sortedTools.map((tool) => {
+              const isCustomTool = customTools.some(c => c.key === tool.key);
+              const isDisabled = !tool.installed && !isCustomTool;
+              return (
+                <div key={tool.key} className={styles.toolItem}>
+                  <Tooltip title={tool.skills_dir}>
+                    <Checkbox
+                      checked={preferredTools.includes(tool.key)}
+                      onChange={(e) => handleToolToggle(tool.key, e.target.checked)}
+                      disabled={isDisabled}
+                    >
+                      {tool.label}
+                    </Checkbox>
+                  </Tooltip>
+                  {isDisabled && (
+                    <Tag color="default">{t('skills.notInstalled')}</Tag>
+                  )}
+                  {isCustomTool && (
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<DeleteOutlined />}
+                      danger
+                      onClick={() => handleRemoveCustomTool(tool.key)}
+                    />
+                  )}
+                </div>
+              );
+            })}
             <Button
               type="dashed"
               size="small"

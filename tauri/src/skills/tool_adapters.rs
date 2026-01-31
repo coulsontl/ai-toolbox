@@ -155,13 +155,14 @@ pub fn adapter_by_key(key: &str) -> Option<ToolAdapter> {
 /// Resolve default skills path for a tool
 pub fn resolve_default_path(adapter: &ToolAdapter) -> Result<PathBuf> {
     let home = dirs::home_dir().context("failed to resolve home directory")?;
-    Ok(home.join(adapter.relative_skills_dir))
+    // Normalize path separators (forward slashes in config -> native separators)
+    Ok(home.join(adapter.relative_skills_dir).components().collect())
 }
 
 /// Resolve detect path for a tool
 pub fn resolve_detect_path(adapter: &ToolAdapter) -> Result<PathBuf> {
     let home = dirs::home_dir().context("failed to resolve home directory")?;
-    Ok(home.join(adapter.relative_detect_dir))
+    Ok(home.join(adapter.relative_detect_dir).components().collect())
 }
 
 /// Check if a tool is installed
@@ -239,7 +240,8 @@ pub fn is_runtime_tool_installed(adapter: &RuntimeToolAdapter) -> Result<bool> {
 /// Resolve skills path for a runtime tool
 pub fn resolve_runtime_skills_path(adapter: &RuntimeToolAdapter) -> Result<PathBuf> {
     let home = dirs::home_dir().context("failed to resolve home directory")?;
-    Ok(home.join(&adapter.relative_skills_dir))
+    // Normalize path separators (forward slashes in config -> native separators)
+    Ok(home.join(&adapter.relative_skills_dir).components().collect())
 }
 
 /// Scan a tool directory for skills

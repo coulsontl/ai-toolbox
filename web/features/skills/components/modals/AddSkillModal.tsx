@@ -1,6 +1,6 @@
 import React from 'react';
 import { Modal, Tabs, Input, Button, Checkbox, Space, message, Spin, Dropdown, AutoComplete, Select } from 'antd';
-import { FolderOutlined, GithubOutlined, DownOutlined, DeleteOutlined } from '@ant-design/icons';
+import { FolderOutlined, GithubOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import * as api from '../../services/skillsApi';
@@ -156,8 +156,18 @@ export const AddSkillModal: React.FC<AddSkillModalProps> = ({
         await api.syncSkillToTool(centralPath, skillId, toolId, skillName);
       } catch (error) {
         const errMsg = String(error);
-        if (errMsg.startsWith('TARGET_EXISTS|')) {
-          console.warn(`Skipping ${toolId}: target exists`);
+        if (errMsg.includes('TARGET_EXISTS|')) {
+          const match = errMsg.match(/TARGET_EXISTS\|(.+)/);
+          const targetPath = match ? match[1] : '';
+          const toolLabel = allTools.find((t) => t.id === toolId)?.label || toolId;
+          const shouldOverwrite = await confirmTargetOverwrite(skillName, toolLabel, targetPath);
+          if (shouldOverwrite) {
+            try {
+              await api.syncSkillToTool(centralPath, skillId, toolId, skillName, true);
+            } catch (retryError) {
+              console.error(`Failed to overwrite sync to ${toolId}:`, retryError);
+            }
+          }
         } else {
           console.error(`Failed to sync to ${toolId}:`, error);
         }
@@ -165,7 +175,26 @@ export const AddSkillModal: React.FC<AddSkillModalProps> = ({
     }
   };
 
-  const isSkillExistsError = (errMsg: string) => errMsg.startsWith('SKILL_EXISTS|');
+  const confirmTargetOverwrite = (skillName: string, toolLabel: string, targetPath: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      Modal.confirm({
+        title: t('skills.targetExists.title'),
+        content: t('skills.targetExists.message', { skill: skillName, tool: toolLabel, path: targetPath }),
+        okText: t('skills.overwrite.confirm'),
+        okType: 'danger',
+        cancelText: t('skills.overwrite.skip'),
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false),
+      });
+    });
+  };
+
+  const isSkillExistsError = (errMsg: string) => errMsg.includes('SKILL_EXISTS|');
+
+  const extractSkillName = (errMsg: string) => {
+    const match = errMsg.match(/SKILL_EXISTS\|(.+)/);
+    return match ? match[1] : '';
+  };
 
   // Helper function to show error messages
   const showError = (errMsg: string) => {
@@ -198,7 +227,8 @@ export const AddSkillModal: React.FC<AddSkillModalProps> = ({
     } catch (error) {
       const errMsg = String(error);
       if (!overwrite && isSkillExistsError(errMsg)) {
-        confirmOverwrite(() => doLocalInstall(true));
+        const skillName = extractSkillName(errMsg);
+        confirmOverwrite(skillName, () => doLocalInstall(true));
       } else {
         showError(errMsg);
       }
@@ -236,7 +266,8 @@ export const AddSkillModal: React.FC<AddSkillModalProps> = ({
     } catch (error) {
       const errMsg = String(error);
       if (!overwrite && isSkillExistsError(errMsg)) {
-        confirmOverwrite(() => doGitInstall(true));
+        const skillName = extractSkillName(errMsg);
+        confirmOverwrite(skillName, () => doGitInstall(true));
       } else if (errMsg.startsWith('MULTI_SKILLS|')) {
         try {
           const candidates = await api.listGitSkills(gitUrl, gitBranch || undefined);
@@ -257,10 +288,10 @@ export const AddSkillModal: React.FC<AddSkillModalProps> = ({
     }
   };
 
-  const confirmOverwrite = (onOk: () => void) => {
+  const confirmOverwrite = (skillName: string, onOk: () => void) => {
     Modal.confirm({
       title: t('skills.overwrite.title'),
-      content: t('skills.overwrite.message'),
+      content: t('skills.overwrite.messageWithName', { name: skillName }),
       okText: t('skills.overwrite.confirm'),
       okType: 'danger',
       cancelText: t('common.cancel'),
@@ -288,6 +319,9 @@ export const AddSkillModal: React.FC<AddSkillModalProps> = ({
     setShowGitPick(false);
     setLoading(true);
 
+    const skippedNames: string[] = [];
+    let overwriteAll = false;
+
     try {
       for (const sel of selections) {
         try {
@@ -298,10 +332,28 @@ export const AddSkillModal: React.FC<AddSkillModalProps> = ({
         } catch (error) {
           const errMsg = String(error);
           if (isSkillExistsError(errMsg)) {
-            // Auto-overwrite for batch selections
-            const result = await api.installGitSelection(gitUrl, sel.subpath, gitBranch || undefined, true);
-            if (selectedTools.length > 0) {
-              await syncToTools(result.skill_id, result.central_path, result.name);
+            const skillName = extractSkillName(errMsg);
+            if (overwriteAll) {
+              const result = await api.installGitSelection(gitUrl, sel.subpath, gitBranch || undefined, true);
+              if (selectedTools.length > 0) {
+                await syncToTools(result.skill_id, result.central_path, result.name);
+              }
+            } else {
+              const action = await confirmBatchOverwrite(skillName, selections.length > 1);
+              if (action === 'overwrite') {
+                const result = await api.installGitSelection(gitUrl, sel.subpath, gitBranch || undefined, true);
+                if (selectedTools.length > 0) {
+                  await syncToTools(result.skill_id, result.central_path, result.name);
+                }
+              } else if (action === 'overwriteAll') {
+                overwriteAll = true;
+                const result = await api.installGitSelection(gitUrl, sel.subpath, gitBranch || undefined, true);
+                if (selectedTools.length > 0) {
+                  await syncToTools(result.skill_id, result.central_path, result.name);
+                }
+              } else {
+                skippedNames.push(skillName);
+              }
             }
           } else {
             throw error;
@@ -316,7 +368,11 @@ export const AddSkillModal: React.FC<AddSkillModalProps> = ({
         await loadRepos();
       }
 
-      message.success(t('skills.status.selectedSkillsInstalled'));
+      if (skippedNames.length > 0) {
+        message.info(t('skills.status.installWithSkipped', { skipped: skippedNames.join(', ') }));
+      } else {
+        message.success(t('skills.status.selectedSkillsInstalled'));
+      }
       onSuccess();
       resetForm();
     } catch (error) {
@@ -324,6 +380,37 @@ export const AddSkillModal: React.FC<AddSkillModalProps> = ({
     } finally {
       setLoading(false);
     }
+  };
+
+  const confirmBatchOverwrite = (skillName: string, hasMore: boolean): Promise<'overwrite' | 'overwriteAll' | 'skip'> => {
+    return new Promise((resolve) => {
+      const modal = Modal.confirm({
+        title: t('skills.overwrite.title'),
+        content: t('skills.overwrite.messageWithName', { name: skillName }),
+        okText: t('skills.overwrite.confirm'),
+        okType: 'danger',
+        cancelText: t('skills.overwrite.skip'),
+        onOk: () => resolve('overwrite'),
+        onCancel: () => resolve('skip'),
+        footer: (_, { OkBtn, CancelBtn }) => (
+          <>
+            <CancelBtn />
+            {hasMore && (
+              <Button
+                danger
+                onClick={() => {
+                  modal.destroy();
+                  resolve('overwriteAll');
+                }}
+              >
+                {t('skills.overwrite.overwriteAll')}
+              </Button>
+            )}
+            <OkBtn />
+          </>
+        ),
+      });
+    });
   };
 
   const resetForm = () => {
@@ -498,9 +585,7 @@ export const AddSkillModal: React.FC<AddSkillModalProps> = ({
                     })),
                   }}
                 >
-                  <span className={styles.moreButton}>
-                    <DownOutlined />
-                  </span>
+                  <Button type="dashed" size="small" icon={<PlusOutlined />} />
                 </Dropdown>
               )}
             </div>

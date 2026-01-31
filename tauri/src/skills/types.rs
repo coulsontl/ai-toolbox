@@ -188,6 +188,8 @@ pub struct OnboardingVariant {
     pub fingerprint: Option<String>,
     pub is_link: bool,
     pub link_target: Option<String>,
+    /// Tools that have the same skill name but different content (conflicting versions)
+    pub conflicting_tools: Vec<String>,
 }
 
 /// Internal struct for install operations

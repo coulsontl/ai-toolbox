@@ -1,5 +1,7 @@
 import React from 'react';
-import { Modal, Checkbox, Button, Empty, message, Spin } from 'antd';
+import { Modal, Checkbox, Button, Empty, message, Spin, Tooltip } from 'antd';
+import { WarningOutlined, FolderOpenOutlined } from '@ant-design/icons';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import { useSkillsStore } from '../../stores/skillsStore';
 import * as api from '../../services/skillsApi';
@@ -17,16 +19,28 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   onSuccess,
 }) => {
   const { t } = useTranslation();
-  const { onboardingPlan, loadOnboardingPlan } = useSkillsStore();
+  const { onboardingPlan, loadOnboardingPlan, toolStatus } = useSkillsStore();
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [loading, setLoading] = React.useState(false);
+  const [preferredTools, setPreferredTools] = React.useState<string[] | null>(null);
 
   React.useEffect(() => {
     if (open) {
       loadOnboardingPlan();
       setSelected(new Set());
+      // Load preferred tools
+      api.getPreferredTools().then(setPreferredTools).catch(console.error);
     }
   }, [open, loadOnboardingPlan]);
+
+  // Get target tools: preferred tools if set, otherwise all installed tools
+  const targetTools = React.useMemo(() => {
+    if (preferredTools && preferredTools.length > 0) {
+      return preferredTools;
+    }
+    // Fall back to installed tools
+    return toolStatus?.installed || [];
+  }, [preferredTools, toolStatus]);
 
   const groups = onboardingPlan?.groups || [];
   const allPaths = React.useMemo(() => {
@@ -59,20 +73,123 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     }
   };
 
+  const isSkillExistsError = (errMsg: string) => errMsg.includes('SKILL_EXISTS|');
+
+  const extractSkillName = (errMsg: string) => {
+    const match = errMsg.match(/SKILL_EXISTS\|(.+)/);
+    return match ? match[1] : '';
+  };
+
+  const confirmOverwrite = (skillName: string, hasMore: boolean): Promise<'overwrite' | 'overwriteAll' | 'skip'> => {
+    return new Promise((resolve) => {
+      const modal = Modal.confirm({
+        title: t('skills.overwrite.title'),
+        content: t('skills.overwrite.messageWithName', { name: skillName }),
+        okText: t('skills.overwrite.confirm'),
+        okType: 'danger',
+        cancelText: t('skills.overwrite.skip'),
+        onOk: () => resolve('overwrite'),
+        onCancel: () => resolve('skip'),
+        footer: (_, { OkBtn, CancelBtn }) => (
+          <>
+            <CancelBtn />
+            {hasMore && (
+              <Button
+                danger
+                onClick={() => {
+                  modal.destroy();
+                  resolve('overwriteAll');
+                }}
+              >
+                {t('skills.overwrite.overwriteAll')}
+              </Button>
+            )}
+            <OkBtn />
+          </>
+        ),
+      });
+    });
+  };
+
+  const syncToTools = async (skillId: string, centralPath: string, skillName: string) => {
+    for (const toolId of targetTools) {
+      try {
+        await api.syncSkillToTool(centralPath, skillId, toolId, skillName);
+      } catch (error) {
+        const errMsg = String(error);
+        if (errMsg.includes('TARGET_EXISTS|')) {
+          // Auto-skip for import - the skill is already in that tool
+          console.log(`Skipping ${toolId}: target exists (already synced)`);
+        } else {
+          console.warn(`Failed to sync to ${toolId}:`, error);
+        }
+      }
+    }
+  };
+
   const handleImport = async () => {
     if (selected.size === 0) return;
 
     setLoading(true);
+    const selectedPaths = Array.from(selected);
+    const skippedNames: string[] = [];
+    let overwriteAll = false;
+
     try {
-      for (const path of selected) {
-        await api.importExistingSkill(path);
+      for (let i = 0; i < selectedPaths.length; i++) {
+        const path = selectedPaths[i];
+        let result;
+        try {
+          result = await api.importExistingSkill(path);
+        } catch (error) {
+          const errMsg = String(error);
+          if (isSkillExistsError(errMsg)) {
+            const skillName = extractSkillName(errMsg);
+            if (overwriteAll) {
+              result = await api.importExistingSkill(path, true);
+            } else {
+              const hasMore = i < selectedPaths.length - 1;
+              const action = await confirmOverwrite(skillName, hasMore);
+              if (action === 'overwrite') {
+                result = await api.importExistingSkill(path, true);
+              } else if (action === 'overwriteAll') {
+                overwriteAll = true;
+                result = await api.importExistingSkill(path, true);
+              } else {
+                skippedNames.push(skillName);
+                continue;
+              }
+            }
+          } else {
+            throw error;
+          }
+        }
+
+        // Sync to target tools after successful import
+        if (result && targetTools.length > 0) {
+          await syncToTools(result.skill_id, result.central_path, result.name);
+        }
       }
-      message.success(t('skills.status.importCompleted'));
+
+      if (skippedNames.length > 0) {
+        message.info(t('skills.status.installWithSkipped', { skipped: skippedNames.join(', ') }));
+      } else {
+        message.success(t('skills.status.importCompleted'));
+      }
       onSuccess();
     } catch (error) {
       message.error(String(error));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleOpenFolder = async (path: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await revealItemInDir(path);
+    } catch (error) {
+      message.error(String(error));
     }
   };
 
@@ -121,9 +238,6 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                 <div key={group.name} className={styles.group}>
                   <div className={styles.groupHeader}>
                     <span className={styles.groupName}>{group.name}</span>
-                    {group.has_conflict && (
-                      <span className={styles.conflictBadge}>{t('skills.conflict')}</span>
-                    )}
                   </div>
                   {group.variants.map((v) => (
                     <div
@@ -133,11 +247,26 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                     >
                       <Checkbox checked={selected.has(v.path)} />
                       <div className={styles.variantInfo}>
-                        <div className={styles.variantTool}>{v.tool}</div>
+                        <div className={styles.variantTool}>
+                          {v.tool}
+                          {v.conflicting_tools && v.conflicting_tools.length > 0 && (
+                            <Tooltip title={t('skills.conflictWith', { tools: v.conflicting_tools.join(', ') })}>
+                              <span className={styles.conflictBadge}>
+                                <WarningOutlined /> {v.conflicting_tools.join(', ')}
+                              </span>
+                            </Tooltip>
+                          )}
+                        </div>
                         <div className={styles.variantPath}>
-                          {v.is_link
-                            ? t('skills.linkLabel', { target: v.link_target || v.path })
-                            : v.path}
+                          <span>
+                            {v.is_link
+                              ? t('skills.linkLabel', { target: v.link_target || v.path })
+                              : v.path}
+                          </span>
+                          <FolderOpenOutlined
+                            className={styles.openFolder}
+                            onClick={(e) => handleOpenFolder(v.path, e)}
+                          />
                         </div>
                       </div>
                     </div>
