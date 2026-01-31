@@ -139,6 +139,8 @@ pub struct UpdateMcpServerInput {
 pub struct McpPreferences {
     pub id: String,
     pub show_in_tray: bool,
+    #[serde(default)]
+    pub preferred_tools: Vec<String>,
     pub updated_at: i64,
 }
 
@@ -147,6 +149,7 @@ impl Default for McpPreferences {
         Self {
             id: "default".to_string(),
             show_in_tray: false,
+            preferred_tools: Vec::new(),
             updated_at: 0,
         }
     }
@@ -165,6 +168,7 @@ pub struct McpSyncResultDto {
 pub struct McpImportResultDto {
     pub servers_imported: i32,
     pub servers_skipped: i32,
+    pub servers_duplicated: Vec<String>,  // Names of servers created with suffix due to config differences
     pub errors: Vec<String>,
 }
 

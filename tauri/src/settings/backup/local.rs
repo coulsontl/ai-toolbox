@@ -7,7 +7,7 @@ use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
-use super::utils::{get_db_path, get_opencode_config_path, get_opencode_restore_dir, get_opencode_auth_path, get_codex_auth_path, get_codex_config_path};
+use super::utils::{get_db_path, get_opencode_config_path, get_opencode_restore_dir, get_opencode_auth_path, get_codex_auth_path, get_codex_config_path, get_skills_dir};
 
 /// Get the home directory
 fn get_home_dir() -> Result<PathBuf, String> {
@@ -188,6 +188,40 @@ pub async fn backup_database(
         add_file_to_zip(&mut zip, &codex_config_path, zip_path, options)?;
     }
 
+    // Backup skills directory if exists
+    let skills_dir = get_skills_dir(&app_handle)?;
+    if skills_dir.exists() {
+        zip.add_directory("skills/", options)
+            .map_err(|e| format!("Failed to add skills directory: {}", e))?;
+
+        for entry in WalkDir::new(&skills_dir) {
+            let entry = entry.map_err(|e| format!("Failed to read skills entry: {}", e))?;
+            let path = entry.path();
+            let relative_path = path
+                .strip_prefix(&skills_dir)
+                .map_err(|e| format!("Failed to get relative path: {}", e))?;
+
+            if path.is_file() {
+                // Skip system files
+                if let Some(file_name) = path.file_name() {
+                    let name_str = file_name.to_string_lossy();
+                    if name_str == ".DS_Store" || name_str.starts_with("._") {
+                        continue;
+                    }
+                }
+
+                let relative_str = relative_path.to_string_lossy().replace('\\', "/");
+                let name = format!("skills/{}", relative_str);
+                add_file_to_zip(&mut zip, path, &name, options)?;
+            } else if path.is_dir() && !relative_path.as_os_str().is_empty() {
+                let relative_str = relative_path.to_string_lossy().replace('\\', "/");
+                let name = format!("skills/{}/", relative_str);
+                zip.add_directory(name, options)
+                    .map_err(|e| format!("Failed to add skills subdirectory: {}", e))?;
+            }
+        }
+    }
+
     zip.finish()
         .map_err(|e| format!("Failed to finish zip: {}", e))?;
 
@@ -342,6 +376,30 @@ pub async fn restore_database(
                     File::create(&outpath).map_err(|e| format!("Failed to create file: {}", e))?;
                 std::io::copy(&mut file, &mut outfile)
                     .map_err(|e| format!("Failed to extract file: {}", e))?;
+            } else if file_name.starts_with("skills/") {
+                // Restore skills directory
+                let relative_path = &file_name[7..]; // Remove "skills/" prefix
+                if relative_path.is_empty() || file_name.ends_with('/') {
+                    continue;
+                }
+
+                let skills_dir = get_skills_dir(&app_handle)?;
+                if !skills_dir.exists() {
+                    fs::create_dir_all(&skills_dir)
+                        .map_err(|e| format!("Failed to create skills directory: {}", e))?;
+                }
+
+                let outpath = skills_dir.join(relative_path);
+                if let Some(parent) = outpath.parent() {
+                    if !parent.exists() {
+                        fs::create_dir_all(parent)
+                            .map_err(|e| format!("Failed to create skills parent directory: {}", e))?;
+                    }
+                }
+                let mut outfile = File::create(&outpath)
+                    .map_err(|e| format!("Failed to create skills file: {}", e))?;
+                std::io::copy(&mut file, &mut outfile)
+                    .map_err(|e| format!("Failed to extract skills file: {}", e))?;
             }
         } else {
             // Old format: all files are database files
@@ -364,6 +422,14 @@ pub async fn restore_database(
             }
         }
     }
+
+    // Create resync flag file to trigger skills and MCP resync on next startup
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let resync_flag = app_data_dir.join(".resync_required");
+    let _ = fs::write(&resync_flag, "1");
 
     Ok(())
 }

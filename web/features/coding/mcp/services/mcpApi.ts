@@ -66,6 +66,14 @@ export const setMcpShowInTray = async (enabled: boolean): Promise<void> => {
   return invoke('mcp_set_show_in_tray', { enabled });
 };
 
+export const getMcpPreferredTools = async (): Promise<string[]> => {
+  return invoke<string[]>('mcp_get_preferred_tools');
+};
+
+export const setMcpPreferredTools = async (tools: string[]): Promise<void> => {
+  return invoke('mcp_set_preferred_tools', { tools });
+};
+
 // Custom Tool Management
 export interface AddMcpCustomToolInput {
   key: string;

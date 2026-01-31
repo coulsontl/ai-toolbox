@@ -7,6 +7,8 @@ pub mod types;
 pub mod adapter;
 pub mod mcp_store;
 pub mod config_sync;
+pub mod format_configs;
+pub mod opencode_path;
 pub mod commands;
 pub mod tray_support;
 

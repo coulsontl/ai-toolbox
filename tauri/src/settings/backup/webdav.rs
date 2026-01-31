@@ -2,9 +2,10 @@ use chrono::Local;
 use log::{error, info};
 use std::fs;
 use std::path::PathBuf;
+use tauri::Manager;
 use zip::ZipArchive;
 
-use super::utils::{create_backup_zip, get_db_path, get_opencode_restore_dir};
+use super::utils::{create_backup_zip, get_db_path, get_opencode_restore_dir, get_skills_dir};
 use crate::db::DbState;
 use crate::http_client;
 
@@ -176,7 +177,7 @@ pub async fn backup_to_webdav(
     }
 
     // Create backup zip in memory
-    let zip_data = create_backup_zip(&db_path)?;
+    let zip_data = create_backup_zip(&app_handle, &db_path)?;
 
     // Generate backup filename with timestamp
     let timestamp = Local::now().format("%Y%m%d-%H%M%S");
@@ -564,6 +565,30 @@ pub async fn restore_from_webdav(
                     .map_err(|e| format!("Failed to create file: {}", e))?;
                 std::io::copy(&mut file, &mut outfile)
                     .map_err(|e| format!("Failed to extract file: {}", e))?;
+            } else if file_name.starts_with("skills/") {
+                // Restore skills directory
+                let relative_path = &file_name[7..]; // Remove "skills/" prefix
+                if relative_path.is_empty() || file_name.ends_with('/') {
+                    continue;
+                }
+
+                let skills_dir = get_skills_dir(&app_handle)?;
+                if !skills_dir.exists() {
+                    fs::create_dir_all(&skills_dir)
+                        .map_err(|e| format!("Failed to create skills directory: {}", e))?;
+                }
+
+                let outpath = skills_dir.join(relative_path);
+                if let Some(parent) = outpath.parent() {
+                    if !parent.exists() {
+                        fs::create_dir_all(parent)
+                            .map_err(|e| format!("Failed to create skills parent directory: {}", e))?;
+                    }
+                }
+                let mut outfile = std::fs::File::create(&outpath)
+                    .map_err(|e| format!("Failed to create skills file: {}", e))?;
+                std::io::copy(&mut file, &mut outfile)
+                    .map_err(|e| format!("Failed to extract skills file: {}", e))?;
             }
         } else {
             // Old format: all files are database files
@@ -586,6 +611,14 @@ pub async fn restore_from_webdav(
             }
         }
     }
+
+    // Create resync flag file to trigger skills and MCP resync on next startup
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let resync_flag = app_data_dir.join(".resync_required");
+    let _ = fs::write(&resync_flag, "1");
 
     info!("WebDAV restore completed successfully");
     Ok(())

@@ -45,9 +45,10 @@ export const McpSettingsModal: React.FC<McpSettingsModalProps> = ({
 
   const loadData = async () => {
     try {
-      const [tools, trayEnabled] = await Promise.all([
+      const [tools, trayEnabled, savedPreferredTools] = await Promise.all([
         mcpApi.getMcpTools(),
         mcpApi.getMcpShowInTray(),
+        mcpApi.getMcpPreferredTools(),
       ]);
 
       // Sort: installed tools first
@@ -70,8 +71,12 @@ export const McpSettingsModal: React.FC<McpSettingsModalProps> = ({
         }))
       );
 
-      // Set preferred tools to all installed MCP tools by default
-      setPreferredTools(tools.filter((t) => t.installed && t.supports_mcp).map((t) => t.key));
+      // Use saved preferred tools if available, otherwise default to installed tools
+      if (savedPreferredTools.length > 0) {
+        setPreferredTools(savedPreferredTools);
+      } else {
+        setPreferredTools(tools.filter((t) => t.installed && t.supports_mcp).map((t) => t.key));
+      }
     } catch (error) {
       console.error('Failed to load settings:', error);
     }
@@ -106,8 +111,8 @@ export const McpSettingsModal: React.FC<McpSettingsModalProps> = ({
   const handleSave = async () => {
     setLoading(true);
     try {
-      // Currently we don't persist preferred tools for MCP
-      // Just close the modal
+      // Save preferred tools
+      await mcpApi.setMcpPreferredTools(preferredTools);
       await fetchTools(); // Refresh global store
       message.success(t('common.success'));
       onClose();

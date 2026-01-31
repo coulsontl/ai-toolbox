@@ -47,15 +47,15 @@ pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
         mcp_config_format: None,
         mcp_field: None,
     },
-    // OpenCode - Skills only
+    // OpenCode - supports both Skills and MCP
     BuiltinTool {
         key: "opencode",
         display_name: "OpenCode",
         relative_skills_dir: Some(".config/opencode/skill"),
         relative_detect_dir: Some(".config/opencode"),
-        mcp_config_path: None,
-        mcp_config_format: None,
-        mcp_field: None,
+        mcp_config_path: Some(".config/opencode/opencode.jsonc"), // Dynamic resolution in detection.rs
+        mcp_config_format: Some("jsonc"),
+        mcp_field: Some("mcp"),
     },
     // Antigravity - Skills only
     BuiltinTool {

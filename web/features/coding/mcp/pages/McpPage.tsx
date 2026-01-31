@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { Typography, Button, Space, Modal, message } from 'antd';
+import { Typography, Button, Space, Modal } from 'antd';
 import { PlusOutlined, UserOutlined, ImportOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { arrayMove } from '@dnd-kit/sortable';
@@ -12,7 +12,7 @@ import { McpList } from '../components/McpList';
 import { AddMcpModal } from '../components/modals/AddMcpModal';
 import { McpSettingsModal } from '../components/modals/McpSettingsModal';
 import { ImportMcpModal } from '../components/modals/ImportMcpModal';
-import type { McpServer, CreateMcpServerInput } from '../types';
+import type { McpServer, CreateMcpServerInput, UpdateMcpServerInput } from '../types';
 import styles from './McpPage.module.less';
 
 const { Title } = Typography;
@@ -24,12 +24,14 @@ const McpPage: React.FC = () => {
   const { setServers, isSettingsModalOpen, setSettingsModalOpen, isImportModalOpen, setImportModalOpen, loadScanResult } = useMcpStore();
   const {
     createServer,
+    editServer,
     deleteServer,
     toggleTool,
     reorderServers,
   } = useMcpActions();
 
   const [isAddModalOpen, setAddModalOpen] = useState(false);
+  const [editingServer, setEditingServer] = useState<McpServer | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
 
   const handleAddServer = async (input: CreateMcpServerInput) => {
@@ -42,10 +44,25 @@ const McpPage: React.FC = () => {
     }
   };
 
-  const handleEdit = (_server: McpServer) => {
-    // For now, just show the add modal in edit mode
-    // TODO: Implement edit modal
-    message.info(t('mcp.editNotImplemented'));
+  const handleUpdateServer = async (serverId: string, input: UpdateMcpServerInput) => {
+    setActionLoading(true);
+    try {
+      await editServer(serverId, input);
+      setEditingServer(null);
+      setAddModalOpen(false);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleEdit = (server: McpServer) => {
+    setEditingServer(server);
+    setAddModalOpen(true);
+  };
+
+  const handleCloseModal = () => {
+    setAddModalOpen(false);
+    setEditingServer(null);
   };
 
   const handleDelete = (serverId: string) => {
@@ -150,8 +167,10 @@ const McpPage: React.FC = () => {
       <AddMcpModal
         open={isAddModalOpen}
         tools={tools}
-        onClose={() => setAddModalOpen(false)}
+        editingServer={editingServer}
+        onClose={handleCloseModal}
         onSubmit={handleAddServer}
+        onUpdate={handleUpdateServer}
       />
 
       <McpSettingsModal

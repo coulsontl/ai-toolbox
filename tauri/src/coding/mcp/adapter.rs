@@ -153,6 +153,15 @@ pub fn from_db_mcp_preferences(value: Value) -> McpPreferences {
             .get("show_in_tray")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        preferred_tools: value
+            .get("preferred_tools")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
         updated_at: value.get("updated_at").and_then(|v| v.as_i64()).unwrap_or(0),
     }
 }
@@ -161,6 +170,7 @@ pub fn from_db_mcp_preferences(value: Value) -> McpPreferences {
 pub fn to_mcp_preferences_payload(prefs: &McpPreferences) -> Value {
     serde_json::json!({
         "show_in_tray": prefs.show_in_tray,
+        "preferred_tools": prefs.preferred_tools,
         "updated_at": prefs.updated_at,
     })
 }

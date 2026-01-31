@@ -146,6 +146,16 @@ pub fn get_codex_config_path() -> Result<Option<PathBuf>, String> {
     }
 }
 
+/// Get skills directory path
+pub fn get_skills_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    use tauri::Manager;
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    Ok(app_data_dir.join("skills"))
+}
+
 /// Add a file to zip archive with a specific path
 fn add_file_to_zip<W: Write + std::io::Seek>(
     zip: &mut ZipWriter<W>,
@@ -167,7 +177,7 @@ fn add_file_to_zip<W: Write + std::io::Seek>(
 }
 
 /// Create a temporary backup zip file and return its contents as bytes
-pub fn create_backup_zip(db_path: &Path) -> Result<Vec<u8>, String> {
+pub fn create_backup_zip(app_handle: &tauri::AppHandle, db_path: &Path) -> Result<Vec<u8>, String> {
     use std::io::Cursor;
 
     let mut buffer = Cursor::new(Vec::new());
@@ -282,6 +292,40 @@ pub fn create_backup_zip(db_path: &Path) -> Result<Vec<u8>, String> {
             let _ = zip.add_directory("external-configs/codex/", options);
 
             add_file_to_zip(&mut zip, &codex_config_path, zip_path, options)?;
+        }
+
+        // Backup skills directory if exists
+        let skills_dir = get_skills_dir(app_handle)?;
+        if skills_dir.exists() {
+            zip.add_directory("skills/", options)
+                .map_err(|e| format!("Failed to add skills directory: {}", e))?;
+
+            for entry in WalkDir::new(&skills_dir) {
+                let entry = entry.map_err(|e| format!("Failed to read skills entry: {}", e))?;
+                let path = entry.path();
+                let relative_path = path
+                    .strip_prefix(&skills_dir)
+                    .map_err(|e| format!("Failed to get relative path: {}", e))?;
+
+                if path.is_file() {
+                    // Skip system files
+                    if let Some(file_name) = path.file_name() {
+                        let name_str = file_name.to_string_lossy();
+                        if name_str == ".DS_Store" || name_str.starts_with("._") {
+                            continue;
+                        }
+                    }
+
+                    let relative_str = relative_path.to_string_lossy().replace('\\', "/");
+                    let name = format!("skills/{}", relative_str);
+                    add_file_to_zip(&mut zip, path, &name, options)?;
+                } else if path.is_dir() && !relative_path.as_os_str().is_empty() {
+                    let relative_str = relative_path.to_string_lossy().replace('\\', "/");
+                    let name = format!("skills/{}/", relative_str);
+                    zip.add_directory(name, options)
+                        .map_err(|e| format!("Failed to add skills subdirectory: {}", e))?;
+                }
+            }
         }
 
         zip.finish()

@@ -59,6 +59,7 @@ export interface McpSyncResult {
 export interface McpImportResult {
   servers_imported: number;
   servers_skipped: number;
+  servers_duplicated: string[];  // Names of servers created with suffix due to config differences
   errors: string[];
 }
 

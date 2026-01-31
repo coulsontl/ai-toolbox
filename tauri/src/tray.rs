@@ -143,12 +143,11 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                     let _ = refresh_tray_menus(&app_handle).await;
                 });
             } else if event_id.starts_with("skill_tool_") {
-                // Parse: skill_tool_{skill_id}_{tool_key}
+                // Parse: skill_tool_{skill_id}\x01{tool_key}
                 let remaining = event_id.strip_prefix("skill_tool_").unwrap();
-                // Find the last underscore to separate skill_id and tool_key
-                if let Some(last_underscore) = remaining.rfind('_') {
-                    let skill_id = remaining[..last_underscore].to_string();
-                    let tool_key = remaining[last_underscore + 1..].to_string();
+                if let Some(sep_pos) = remaining.find('\x01') {
+                    let skill_id = remaining[..sep_pos].to_string();
+                    let tool_key = remaining[sep_pos + 1..].to_string();
                     let app_handle = app.clone();
                     tauri::async_runtime::spawn(async move {
                         if let Err(e) = skills_tray::apply_skills_tool_toggle(&app_handle, &skill_id, &tool_key).await {
@@ -158,12 +157,11 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                     });
                 }
             } else if event_id.starts_with("mcp_tool_") {
-                // Parse: mcp_tool_{server_id}_{tool_key}
+                // Parse: mcp_tool_{server_id}\x01{tool_key}
                 let remaining = event_id.strip_prefix("mcp_tool_").unwrap();
-                // Find the last underscore to separate server_id and tool_key
-                if let Some(last_underscore) = remaining.rfind('_') {
-                    let server_id = remaining[..last_underscore].to_string();
-                    let tool_key = remaining[last_underscore + 1..].to_string();
+                if let Some(sep_pos) = remaining.find('\x01') {
+                    let server_id = remaining[..sep_pos].to_string();
+                    let tool_key = remaining[sep_pos + 1..].to_string();
                     let app_handle = app.clone();
                     tauri::async_runtime::spawn(async move {
                         if let Err(e) = mcp_tray::apply_mcp_tool_toggle(&app_handle, &server_id, &tool_key).await {
@@ -621,7 +619,7 @@ fn build_skill_submenu<R: Runtime>(
         submenu.append(&empty_item).map_err(|e| e.to_string())?;
     } else {
         for tool in &skill.tools {
-            let item_id = format!("skill_tool_{}_{}", skill.id, tool.tool_key);
+            let item_id = format!("skill_tool_{}\x01{}", skill.id, tool.tool_key);
             let menu_item = CheckMenuItem::with_id(
                 app,
                 &item_id,
@@ -653,7 +651,7 @@ fn build_mcp_submenu<R: Runtime>(
         submenu.append(&empty_item).map_err(|e| e.to_string())?;
     } else {
         for tool in &server.tools {
-            let item_id = format!("mcp_tool_{}_{}", server.id, tool.tool_key);
+            let item_id = format!("mcp_tool_{}\x01{}", server.id, tool.tool_key);
             let menu_item = CheckMenuItem::with_id(
                 app,
                 &item_id,

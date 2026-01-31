@@ -491,6 +491,53 @@ pub fn run() {
                 });
             }
 
+            // Check for resync flag after restore (delayed to ensure DB is ready)
+            {
+                let app_clone = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    // Delay to ensure database is fully initialized
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+
+                    let app_data_dir = match app_clone.path().app_data_dir() {
+                        Ok(dir) => dir,
+                        Err(_) => return,
+                    };
+                    let resync_flag = app_data_dir.join(".resync_required");
+
+                    if resync_flag.exists() {
+                        info!("Resync flag detected, starting skills and MCP resync...");
+
+                        // Remove the flag file first to prevent repeated resync
+                        let _ = fs::remove_file(&resync_flag);
+
+                        let db_state = app_clone.state::<crate::DbState>();
+
+                        // Resync skills
+                        match coding::skills::commands::skills_resync_all(db_state.clone()).await {
+                            Ok(synced) => {
+                                info!("Skills resync completed: {} items synced", synced.len());
+                            }
+                            Err(e) => {
+                                warn!("Skills resync failed: {}", e);
+                            }
+                        }
+
+                        // Resync MCP servers
+                        match coding::mcp::commands::mcp_sync_all(app_clone.clone(), db_state).await {
+                            Ok(results) => {
+                                let success_count = results.iter().filter(|r| r.success).count();
+                                info!("MCP resync completed: {}/{} succeeded", success_count, results.len());
+                            }
+                            Err(e) => {
+                                warn!("MCP resync failed: {}", e);
+                            }
+                        }
+
+                        info!("Post-restore resync completed");
+                    }
+                });
+            }
+
             info!("setup() 完成，应用即将启动");
             Ok(())
         })
@@ -705,6 +752,8 @@ pub fn run() {
             coding::skills::skills_init_default_repos,
             // Skills Hub - Reorder
             coding::skills::skills_reorder,
+            // Skills Hub - Resync
+            coding::skills::skills_resync_all,
             // MCP Servers
             coding::mcp::mcp_list_servers,
             coding::mcp::mcp_create_server,
@@ -719,6 +768,8 @@ pub fn run() {
             coding::mcp::mcp_scan_servers,
             coding::mcp::mcp_get_show_in_tray,
             coding::mcp::mcp_set_show_in_tray,
+            coding::mcp::mcp_get_preferred_tools,
+            coding::mcp::mcp_set_preferred_tools,
             coding::mcp::mcp_add_custom_tool,
             coding::mcp::mcp_remove_custom_tool,
         ])

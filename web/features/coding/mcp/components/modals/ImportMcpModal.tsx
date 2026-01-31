@@ -44,11 +44,18 @@ export const ImportMcpModal: React.FC<ImportMcpModalProps> = ({
     });
   }, [installedMcpTools, serversByTool]);
 
+  // Track if we've initialized selection for this open session
+  const initializedRef = React.useRef(false);
+
   React.useEffect(() => {
-    if (open) {
-      // Pre-select all tools that have servers
+    if (open && !initializedRef.current) {
+      // Pre-select all tools that have servers (only on first open)
       const allToolKeys = toolsWithServers.map((t) => t.key);
       setSelected(new Set(allToolKeys));
+      initializedRef.current = true;
+    } else if (!open) {
+      // Reset when modal closes
+      initializedRef.current = false;
     }
   }, [open, toolsWithServers]);
 
@@ -79,6 +86,7 @@ export const ImportMcpModal: React.FC<ImportMcpModalProps> = ({
     setLoading(true);
     let totalImported = 0;
     let totalSkipped = 0;
+    const allDuplicated: string[] = [];
     const errors: string[] = [];
 
     try {
@@ -87,6 +95,9 @@ export const ImportMcpModal: React.FC<ImportMcpModalProps> = ({
           const result = await mcpApi.importMcpFromTool(toolKey);
           totalImported += result.servers_imported;
           totalSkipped += result.servers_skipped;
+          if (result.servers_duplicated?.length > 0) {
+            allDuplicated.push(...result.servers_duplicated);
+          }
           if (result.errors.length > 0) {
             errors.push(...result.errors);
           }
@@ -101,6 +112,14 @@ export const ImportMcpModal: React.FC<ImportMcpModalProps> = ({
         message.info(t('mcp.importSkipped', { count: totalSkipped }));
       } else {
         message.info(t('mcp.importNoServers'));
+      }
+
+      // Show warning for duplicated servers with different configs
+      if (allDuplicated.length > 0) {
+        message.warning(
+          t('mcp.importDuplicated', { names: allDuplicated.join(', ') }),
+          5
+        );
       }
 
       if (errors.length > 0) {

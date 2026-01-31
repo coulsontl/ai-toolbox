@@ -571,23 +571,76 @@ fn append_toml_configs(provider: &str, common: &str) -> Result<String, String> {
 /// Write auth.json and config.toml files
 fn write_codex_config_files(auth: &serde_json::Value, config_toml: &str) -> Result<(), String> {
     let config_dir = get_codex_config_dir()?;
-    
+
     // Ensure directory exists
     if !config_dir.exists() {
         fs::create_dir_all(&config_dir)
             .map_err(|e| format!("Failed to create .codex directory: {}", e))?;
     }
 
-    // Write auth.json
+    // Write auth.json (full overwrite is OK for auth)
     let auth_path = config_dir.join("auth.json");
     let auth_content = serde_json::to_string_pretty(auth)
         .map_err(|e| format!("Failed to serialize auth: {}", e))?;
     fs::write(&auth_path, auth_content)
         .map_err(|e| format!("Failed to write auth.json: {}", e))?;
 
-    // Write config.toml
+    // Write config.toml with partial update (preserve mcp_servers)
     let config_path = config_dir.join("config.toml");
-    fs::write(&config_path, config_toml)
+    write_codex_config_toml_preserve_mcp(&config_path, config_toml)?;
+
+    Ok(())
+}
+
+/// Write config.toml while preserving mcp_servers and other unrelated fields
+fn write_codex_config_toml_preserve_mcp(config_path: &std::path::Path, new_config: &str) -> Result<(), String> {
+    use toml_edit::DocumentMut;
+
+    // Parse new config
+    let new_doc: DocumentMut = if new_config.trim().is_empty() {
+        DocumentMut::new()
+    } else {
+        new_config.parse()
+            .map_err(|e| format!("Failed to parse new config: {}", e))?
+    };
+
+    // Read existing config (if exists)
+    let mut existing_doc: DocumentMut = if config_path.exists() {
+        let content = fs::read_to_string(config_path)
+            .map_err(|e| format!("Failed to read config.toml: {}", e))?;
+        if content.trim().is_empty() {
+            DocumentMut::new()
+        } else {
+            content.parse()
+                .map_err(|e| format!("Failed to parse existing config.toml: {}", e))?
+        }
+    } else {
+        DocumentMut::new()
+    };
+
+    // Preserve mcp_servers from existing config
+    let preserved_mcp = existing_doc.get("mcp_servers").cloned();
+
+    // Replace all fields from new config
+    for (key, value) in new_doc.iter() {
+        existing_doc[key] = value.clone();
+    }
+
+    // Restore preserved mcp_servers (if it was present and not in new config)
+    if let Some(mcp) = preserved_mcp {
+        if !new_doc.contains_key("mcp_servers") {
+            existing_doc["mcp_servers"] = mcp;
+        }
+    }
+
+    // Write back with #:schema none header
+    let doc_content = existing_doc.to_string();
+    let final_content = if doc_content.trim_start().starts_with("#:schema") {
+        doc_content
+    } else {
+        format!("#:schema none\n{}", doc_content)
+    };
+    fs::write(config_path, final_content)
         .map_err(|e| format!("Failed to write config.toml: {}", e))?;
 
     Ok(())

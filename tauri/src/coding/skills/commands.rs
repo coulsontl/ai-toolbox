@@ -679,3 +679,59 @@ pub async fn skills_init_default_repos(state: State<'_, DbState>) -> Result<usiz
 
     Ok(default_repos.len())
 }
+
+// --- Resync All Skills ---
+
+/// Re-sync all skills to installed tools (used after restore)
+#[tauri::command]
+pub async fn skills_resync_all(
+    state: State<'_, DbState>,
+) -> Result<Vec<String>, String> {
+    let custom_tools = skill_store::get_custom_tools(&state).await.unwrap_or_default();
+    let skills = skill_store::get_managed_skills(&state).await?;
+
+    let mut synced: Vec<String> = Vec::new();
+
+    for skill in skills {
+        let central_path = PathBuf::from(&skill.central_path);
+        if !central_path.exists() {
+            continue;
+        }
+
+        // Re-sync to each enabled tool
+        for tool_key in &skill.enabled_tools {
+            let runtime_adapter = match runtime_adapter_by_key(tool_key, &custom_tools) {
+                Some(a) => a,
+                None => continue,
+            };
+
+            // Skip if tool not installed (for non-custom tools)
+            if !runtime_adapter.is_custom && !is_runtime_tool_installed(&runtime_adapter).unwrap_or(false) {
+                continue;
+            }
+
+            let tool_root = match resolve_runtime_skills_path(&runtime_adapter) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            let target = tool_root.join(&skill.name);
+
+            // Sync with overwrite
+            if let Ok(result) = sync_dir_for_tool_with_overwrite(tool_key, &central_path, &target, true) {
+                let record = SkillTarget {
+                    tool: tool_key.clone(),
+                    target_path: result.target_path.to_string_lossy().to_string(),
+                    mode: result.mode_used.as_str().to_string(),
+                    status: "ok".to_string(),
+                    error_message: None,
+                    synced_at: Some(now_ms()),
+                };
+                let _ = skill_store::upsert_skill_target(&state, &skill.id, &record).await;
+                synced.push(format!("{}:{}", skill.name, tool_key));
+            }
+        }
+    }
+
+    Ok(synced)
+}

@@ -136,6 +136,44 @@ pub struct ToolDetectionDto {
     pub supports_mcp: bool,
 }
 
+/// MCP format configuration for different tools
+/// Defines how to convert between ai-toolbox's unified format and tool-specific formats
+#[derive(Clone, Debug)]
+pub struct McpFormatConfig {
+    /// Type mappings (e.g., "stdio" -> "local", "sse" -> "remote")
+    pub type_mappings: &'static [(&'static str, &'static str)],
+    /// Whether to merge command and args into a single array
+    pub merge_command_args: bool,
+    /// Field name for environment variables ("env" or "environment")
+    pub env_field: &'static str,
+    /// Whether the format requires an "enabled" field
+    pub requires_enabled: bool,
+    /// Default tool type when type field is missing (e.g., "local" for OpenCode)
+    pub default_tool_type: &'static str,
+}
+
+impl McpFormatConfig {
+    /// Map a server type from unified format to tool format
+    pub fn map_type_to_tool(&self, server_type: &str) -> String {
+        for (from, to) in self.type_mappings {
+            if *from == server_type {
+                return to.to_string();
+            }
+        }
+        server_type.to_string()
+    }
+
+    /// Map a server type from tool format to unified format
+    pub fn map_type_from_tool(&self, tool_type: &str) -> String {
+        for (from, to) in self.type_mappings {
+            if *to == tool_type {
+                return from.to_string();
+            }
+        }
+        tool_type.to_string()
+    }
+}
+
 /// Helper function to get current timestamp in milliseconds
 pub fn now_ms() -> i64 {
     let now = std::time::SystemTime::now()

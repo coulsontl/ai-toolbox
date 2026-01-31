@@ -9,6 +9,22 @@ use super::builtin::BUILTIN_TOOLS;
 
 /// Check if a runtime tool is installed by checking its detect directory
 pub fn is_tool_installed(tool: &RuntimeTool) -> bool {
+    // Special handling for OpenCode - use dynamic path resolution
+    if tool.key == "opencode" {
+        if let Some(config_path) = crate::coding::mcp::opencode_path::get_opencode_mcp_config_path_sync() {
+            // Check if the config file or its parent directory exists
+            if config_path.exists() {
+                return true;
+            }
+            if let Some(parent) = config_path.parent() {
+                if parent.exists() {
+                    return true;
+                }
+            }
+        }
+        // Fall through to default detection
+    }
+
     if let Some(ref detect_dir) = tool.relative_detect_dir {
         if let Some(home) = dirs::home_dir() {
             return home.join(detect_dir).exists();
@@ -26,6 +42,11 @@ pub fn resolve_skills_path(tool: &RuntimeTool) -> Option<PathBuf> {
 
 /// Resolve the MCP config path for a tool
 pub fn resolve_mcp_config_path(tool: &RuntimeTool) -> Option<PathBuf> {
+    // Special handling for OpenCode - use dynamic path resolution
+    if tool.key == "opencode" {
+        return crate::coding::mcp::opencode_path::get_opencode_mcp_config_path_sync();
+    }
+
     tool.mcp_config_path.as_ref().and_then(|path| {
         dirs::home_dir().map(|home| home.join(path))
     })

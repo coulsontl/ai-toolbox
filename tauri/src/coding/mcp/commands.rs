@@ -43,6 +43,7 @@ pub async fn mcp_list_servers(state: State<'_, DbState>) -> Result<Vec<McpServer
 }
 
 /// Create a new MCP server
+/// After creation, automatically sync to all enabled tools
 #[tauri::command]
 pub async fn mcp_create_server(
     state: State<'_, DbState>,
@@ -51,10 +52,10 @@ pub async fn mcp_create_server(
     let now = now_ms();
     let server = McpServer {
         id: String::new(), // Will be assigned by upsert
-        name: input.name,
-        server_type: input.server_type,
-        server_config: input.server_config,
-        enabled_tools: input.enabled_tools,
+        name: input.name.clone(),
+        server_type: input.server_type.clone(),
+        server_config: input.server_config.clone(),
+        enabled_tools: input.enabled_tools.clone(),
         sync_details: None,
         description: input.description,
         tags: input.tags,
@@ -65,7 +66,30 @@ pub async fn mcp_create_server(
 
     let id = mcp_store::upsert_mcp_server(&state, &server).await?;
 
-    // Get the created server
+    // Sync to all enabled tools
+    let custom_tools = custom_store::get_custom_tools(&state).await.unwrap_or_default();
+    for tool_key in &input.enabled_tools {
+        if let Some(tool) = runtime_tool_by_key(tool_key, &custom_tools) {
+            if is_tool_installed(&tool) {
+                match sync_server_to_tool(&server, &tool) {
+                    Ok(detail) => {
+                        let _ = mcp_store::update_sync_detail(&state, &id, &detail).await;
+                    }
+                    Err(e) => {
+                        let detail = McpSyncDetail {
+                            tool: tool_key.clone(),
+                            status: "error".to_string(),
+                            synced_at: Some(now_ms()),
+                            error_message: Some(e),
+                        };
+                        let _ = mcp_store::update_sync_detail(&state, &id, &detail).await;
+                    }
+                }
+            }
+        }
+    }
+
+    // Get the created server with sync details
     let created = mcp_store::get_mcp_server_by_id(&state, &id)
         .await?
         .ok_or("Failed to get created server")?;
@@ -87,6 +111,7 @@ pub async fn mcp_create_server(
 }
 
 /// Update an existing MCP server
+/// After update, automatically re-sync to all enabled tools
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn mcp_update_server(
@@ -121,19 +146,47 @@ pub async fn mcp_update_server(
 
     mcp_store::upsert_mcp_server(&state, &server).await?;
 
-    let sync_details = parse_sync_details_dto(&server);
+    // Re-sync to all enabled tools
+    let custom_tools = custom_store::get_custom_tools(&state).await.unwrap_or_default();
+    for tool_key in &server.enabled_tools {
+        if let Some(tool) = runtime_tool_by_key(tool_key, &custom_tools) {
+            if is_tool_installed(&tool) {
+                match sync_server_to_tool(&server, &tool) {
+                    Ok(detail) => {
+                        let _ = mcp_store::update_sync_detail(&state, &serverId, &detail).await;
+                    }
+                    Err(e) => {
+                        let detail = McpSyncDetail {
+                            tool: tool_key.clone(),
+                            status: "error".to_string(),
+                            synced_at: Some(now_ms()),
+                            error_message: Some(e),
+                        };
+                        let _ = mcp_store::update_sync_detail(&state, &serverId, &detail).await;
+                    }
+                }
+            }
+        }
+    }
+
+    // Get the updated server with sync details
+    let updated = mcp_store::get_mcp_server_by_id(&state, &serverId)
+        .await?
+        .ok_or("Failed to get updated server")?;
+
+    let sync_details = parse_sync_details_dto(&updated);
     Ok(McpServerDto {
-        id: server.id,
-        name: server.name,
-        server_type: server.server_type,
-        server_config: server.server_config,
-        enabled_tools: server.enabled_tools,
+        id: updated.id,
+        name: updated.name,
+        server_type: updated.server_type,
+        server_config: updated.server_config,
+        enabled_tools: updated.enabled_tools,
         sync_details,
-        description: server.description,
-        tags: server.tags,
-        sort_index: server.sort_index,
-        created_at: server.created_at,
-        updated_at: server.updated_at,
+        description: updated.description,
+        tags: updated.tags,
+        sort_index: updated.sort_index,
+        created_at: updated.created_at,
+        updated_at: updated.updated_at,
     })
 }
 
@@ -330,6 +383,8 @@ pub async fn mcp_sync_all<R: Runtime>(
 }
 
 /// Import MCP servers from a tool's config file
+/// After import, automatically sync to preferred tools (or all installed tools if no preference)
+/// If a server with the same name exists but has different config, create with suffix
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn mcp_import_from_tool(
@@ -342,23 +397,75 @@ pub async fn mcp_import_from_tool(
 
     let imported_servers = import_servers_from_tool(&tool)?;
 
+    // Get target tools for sync: preferred tools or all installed MCP tools
+    let prefs = mcp_store::get_mcp_preferences(&state).await?;
+    let target_tools: Vec<String> = if !prefs.preferred_tools.is_empty() {
+        // Use preferred tools, but only those that are installed
+        prefs.preferred_tools
+            .into_iter()
+            .filter(|key| {
+                runtime_tool_by_key(key, &custom_tools)
+                    .map(|t| is_tool_installed(&t))
+                    .unwrap_or(false)
+            })
+            .collect()
+    } else {
+        // Use all installed MCP tools
+        get_mcp_runtime_tools(&custom_tools)
+            .into_iter()
+            .filter(|t| is_tool_installed(t))
+            .map(|t| t.key)
+            .collect()
+    };
+
     let mut servers_imported = 0;
     let mut servers_skipped = 0;
+    let mut servers_duplicated = Vec::new();
     let mut errors = Vec::new();
 
     for mut server in imported_servers {
         // Check if server with same name already exists
-        if let Some(_existing) = mcp_store::get_mcp_server_by_name(&state, &server.name).await? {
-            servers_skipped += 1;
-            continue;
+        if let Some(existing) = mcp_store::get_mcp_server_by_name(&state, &server.name).await? {
+            // Compare configurations
+            if existing.server_type == server.server_type && existing.server_config == server.server_config {
+                // Same config, skip
+                servers_skipped += 1;
+                continue;
+            } else {
+                // Different config, create with suffix
+                let new_name = format!("{} ({})", server.name, tool.display_name);
+                servers_duplicated.push(new_name.clone());
+                server.name = new_name;
+            }
         }
 
-        // Enable the importing tool
-        server.enabled_tools = vec![toolKey.clone()];
+        // Enable the target tools
+        server.enabled_tools = target_tools.clone();
 
         match mcp_store::upsert_mcp_server(&state, &server).await {
-            Ok(_) => {
+            Ok(server_id) => {
                 servers_imported += 1;
+
+                // Sync to each enabled tool
+                for tool_key in &target_tools {
+                    if let Some(target_tool) = runtime_tool_by_key(tool_key, &custom_tools) {
+                        match sync_server_to_tool(&server, &target_tool) {
+                            Ok(detail) => {
+                                let _ = mcp_store::update_sync_detail(&state, &server_id, &detail).await;
+                            }
+                            Err(e) => {
+                                let detail = McpSyncDetail {
+                                    tool: tool_key.clone(),
+                                    status: "error".to_string(),
+                                    synced_at: Some(now_ms()),
+                                    error_message: Some(e.clone()),
+                                };
+                                let _ = mcp_store::update_sync_detail(&state, &server_id, &detail).await;
+                                errors.push(format!("Sync '{}' to {}: {}", server.name, tool_key, e));
+                            }
+                        }
+                    }
+                }
             }
             Err(e) => {
                 errors.push(format!("Failed to import '{}': {}", server.name, e));
@@ -369,6 +476,7 @@ pub async fn mcp_import_from_tool(
     Ok(McpImportResultDto {
         servers_imported,
         servers_skipped,
+        servers_duplicated,
         errors,
     })
 }
@@ -387,11 +495,18 @@ pub async fn mcp_get_tools(state: State<'_, DbState>) -> Result<Vec<RuntimeToolD
         .collect())
 }
 
-/// Scan all installed MCP tools and return discovered servers
+/// Scan all installed MCP tools and return discovered servers (excluding already imported ones)
 #[tauri::command]
 pub async fn mcp_scan_servers(state: State<'_, DbState>) -> Result<McpScanResultDto, String> {
     let custom_tools = custom_store::get_custom_tools(&state).await.unwrap_or_default();
     let mcp_tools = get_mcp_runtime_tools(&custom_tools);
+
+    // Get existing server names for filtering
+    let existing_servers = mcp_store::get_mcp_servers(&state).await?;
+    let existing_names: std::collections::HashSet<_> = existing_servers
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
 
     let mut total_tools_scanned = 0;
     let mut servers: Vec<McpDiscoveredServerDto> = Vec::new();
@@ -407,6 +522,10 @@ pub async fn mcp_scan_servers(state: State<'_, DbState>) -> Result<McpScanResult
         match import_servers_from_tool(tool) {
             Ok(imported) => {
                 for server in imported {
+                    // Skip servers that already exist in the database
+                    if existing_names.contains(server.name.as_str()) {
+                        continue;
+                    }
                     servers.push(McpDiscoveredServerDto {
                         name: server.name,
                         tool_key: tool.key.clone(),
@@ -446,6 +565,25 @@ pub async fn mcp_set_show_in_tray(
 ) -> Result<(), String> {
     let mut prefs = mcp_store::get_mcp_preferences(&state).await?;
     prefs.show_in_tray = enabled;
+    prefs.updated_at = now_ms();
+    mcp_store::save_mcp_preferences(&state, &prefs).await
+}
+
+/// Get MCP preferred tools
+#[tauri::command]
+pub async fn mcp_get_preferred_tools(state: State<'_, DbState>) -> Result<Vec<String>, String> {
+    let prefs = mcp_store::get_mcp_preferences(&state).await?;
+    Ok(prefs.preferred_tools)
+}
+
+/// Set MCP preferred tools
+#[tauri::command]
+pub async fn mcp_set_preferred_tools(
+    state: State<'_, DbState>,
+    tools: Vec<String>,
+) -> Result<(), String> {
+    let mut prefs = mcp_store::get_mcp_preferences(&state).await?;
+    prefs.preferred_tools = tools;
     prefs.updated_at = now_ms();
     mcp_store::save_mcp_preferences(&state, &prefs).await
 }
