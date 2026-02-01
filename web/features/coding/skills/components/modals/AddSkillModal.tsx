@@ -522,7 +522,15 @@ export const AddSkillModal: React.FC<AddSkillModalProps> = ({
                   menu={{
                     items: hiddenTools.map((tool) => ({
                       key: tool.id,
-                      label: tool.label,
+                      disabled: !tool.installed,
+                      label: (
+                        <span>
+                          {tool.label}
+                          {!tool.installed && (
+                            <span className={styles.notInstalledTag}>{t('skills.notInstalled')}</span>
+                          )}
+                        </span>
+                      ),
                       onClick: () => handleToolToggle(tool.id),
                     })),
                   }}

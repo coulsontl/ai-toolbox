@@ -1,8 +1,8 @@
 import React from 'react';
 import { Tooltip } from 'antd';
-import { Blocks } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { MCP } from '@lobehub/icons';
 import styles from './McpButton.module.less';
 
 export const McpButton: React.FC = () => {
@@ -22,7 +22,7 @@ export const McpButton: React.FC = () => {
         className={`${styles.mcpButton} ${isActive ? styles.active : ''}`}
         onClick={handleClick}
       >
-        <Blocks className={styles.icon} size={14} />
+        <MCP className={styles.icon} size={14} />
         <span className={styles.text}>MCP</span>
       </div>
     </Tooltip>

@@ -3,7 +3,7 @@ use serde_json::Value;
 use crate::DbState;
 
 use super::adapter::{
-    from_db_custom_tool, from_db_skill, from_db_skill_preferences, from_db_skill_repo, get_sync_detail,
+    from_db_skill, from_db_skill_preferences, from_db_skill_repo, get_sync_detail,
     parse_sync_details, remove_sync_detail, set_sync_detail, to_clean_skill_payload,
     to_skill_preferences_payload, to_skill_repo_payload,
 };
@@ -381,29 +381,11 @@ pub async fn reorder_skills(state: &DbState, ids: &[String]) -> Result<(), Strin
 
 // ==================== CustomTool CRUD (cont.) ====================
 
-/// Get all custom tools
+/// Get all custom tools that support Skills
+/// Delegates to the shared tools module and converts to skills CustomTool type
 pub async fn get_custom_tools(state: &DbState) -> Result<Vec<CustomTool>, String> {
-    let db = state.0.lock().await;
-
-    let mut result = db
-        .query("SELECT *, type::string(id) as id FROM custom_tool ORDER BY display_name ASC")
-        .await
-        .map_err(|e| format!("Failed to query custom tools: {}", e))?;
-
-    let records: Vec<Value> = result.take(0).map_err(|e| e.to_string())?;
-    // Filter out any malformed records
-    Ok(records
-        .into_iter()
-        .filter_map(|v| {
-            let tool = from_db_custom_tool(v);
-            // Skip records with empty key (likely corrupted)
-            if tool.key.is_empty() {
-                None
-            } else {
-                Some(tool)
-            }
-        })
-        .collect())
+    let tools = crate::coding::tools::custom_store::get_skills_custom_tools(state).await?;
+    Ok(tools.into_iter().map(CustomTool::from).collect())
 }
 
 /// Save a custom tool (preserving MCP fields if they exist)

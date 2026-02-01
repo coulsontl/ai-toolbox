@@ -13,7 +13,7 @@ use super::types::{
 };
 use crate::coding::tools::{
     custom_store, get_mcp_runtime_tools, runtime_tool_by_key, RuntimeToolDto, is_tool_installed,
-    to_runtime_tool_dto,
+    to_runtime_tool_dto, resolve_mcp_config_path,
 };
 use crate::DbState;
 
@@ -518,11 +518,24 @@ pub async fn mcp_get_tools(state: State<'_, DbState>) -> Result<Vec<RuntimeToolD
 /// Scan all installed MCP tools and return discovered servers (excluding already imported ones)
 #[tauri::command]
 pub async fn mcp_scan_servers(state: State<'_, DbState>) -> Result<McpScanResultDto, String> {
-    let custom_tools = custom_store::get_custom_tools(&state).await.unwrap_or_default();
+    // Add 30 second timeout to prevent hanging
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        mcp_scan_servers_inner(&state),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err("Scan timed out after 30 seconds. Please check your custom tool paths.".to_string()),
+    }
+}
+
+async fn mcp_scan_servers_inner(state: &DbState) -> Result<McpScanResultDto, String> {
+    let custom_tools = custom_store::get_custom_tools(state).await.unwrap_or_default();
     let mcp_tools = get_mcp_runtime_tools(&custom_tools);
 
     // Get existing server names for filtering
-    let existing_servers = mcp_store::get_mcp_servers(&state).await?;
+    let existing_servers = mcp_store::get_mcp_servers(state).await?;
     let existing_names: std::collections::HashSet<_> = existing_servers
         .iter()
         .map(|s| s.name.as_str())
@@ -533,14 +546,30 @@ pub async fn mcp_scan_servers(state: State<'_, DbState>) -> Result<McpScanResult
 
     for tool in &mcp_tools {
         if !is_tool_installed(tool) {
+            eprintln!("[DEBUG][mcp_scan_servers] skipping {} (not installed)", tool.key);
             continue;
         }
 
+        let Some(config_path) = resolve_mcp_config_path(tool) else {
+            eprintln!("[DEBUG][mcp_scan_servers] skipping {} (no config path)", tool.key);
+            continue;
+        };
+        if !config_path.exists() {
+            eprintln!(
+                "[DEBUG][mcp_scan_servers] skipping {} (config not found: {})",
+                tool.key,
+                config_path.display()
+            );
+            continue;
+        }
+
+        eprintln!("[DEBUG][mcp_scan_servers] scanning tool: {}", tool.key);
         total_tools_scanned += 1;
 
         // Try to import servers from this tool
         match import_servers_from_tool(tool) {
             Ok(imported) => {
+                eprintln!("[DEBUG][mcp_scan_servers] {} imported {} servers", tool.key, imported.len());
                 for server in imported {
                     // Skip servers that already exist in the database
                     if existing_names.contains(server.name.as_str()) {
@@ -622,7 +651,7 @@ pub async fn mcp_add_custom_tool(
     mcpConfigFormat: String,
     mcpField: String,
 ) -> Result<(), String> {
-    use crate::coding::tools::path_utils::{normalize_path, to_storage_path, PathType};
+    use crate::coding::tools::path_utils::{normalize_path, to_storage_path};
 
     // Trim whitespace from all inputs
     let key = key.trim().to_string();

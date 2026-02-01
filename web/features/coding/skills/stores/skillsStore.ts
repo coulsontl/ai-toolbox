@@ -111,11 +111,12 @@ export const useSkillsStore = create<SkillsState>()((set, get) => ({
   },
 
   refresh: async () => {
-    const { loadToolStatus, loadSkills, loadOnboardingPlan, loadCentralRepoPath } = get();
+    // Note: loadOnboardingPlan is NOT called here to avoid automatic scanning.
+    // It should only be triggered manually from the ImportModal.
+    const { loadToolStatus, loadSkills, loadCentralRepoPath } = get();
     await Promise.all([
       loadToolStatus(),
       loadSkills(),
-      loadOnboardingPlan(),
       loadCentralRepoPath(),
     ]);
   },

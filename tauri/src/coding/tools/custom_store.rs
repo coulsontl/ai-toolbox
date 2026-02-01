@@ -73,21 +73,37 @@ pub async fn get_custom_tools(state: &DbState) -> Result<Vec<CustomTool>, String
         .collect())
 }
 
-/// Get custom tools that support Skills (have relative_skills_dir)
+/// Get custom tools that support Skills (have valid relative_skills_dir, not a root directory)
 pub async fn get_skills_custom_tools(state: &DbState) -> Result<Vec<CustomTool>, String> {
     let tools = get_custom_tools(state).await?;
     Ok(tools
         .into_iter()
-        .filter(|t| t.relative_skills_dir.is_some())
+        .filter(|t| {
+            if let Some(ref dir) = t.relative_skills_dir {
+                // Skip if the path is a root directory (home or appdata)
+                !super::path_utils::is_root_directory(dir)
+            } else {
+                false
+            }
+        })
         .collect())
 }
 
-/// Get custom tools that support MCP (have mcp_config_path)
+/// Get custom tools that support MCP (have valid mcp_config_path, not a root directory)
 pub async fn get_mcp_custom_tools(state: &DbState) -> Result<Vec<CustomTool>, String> {
     let tools = get_custom_tools(state).await?;
     Ok(tools
         .into_iter()
-        .filter(|t| t.mcp_config_path.is_some())
+        .filter(|t| {
+            if let (Some(ref path), Some(_format), Some(_field)) =
+                (&t.mcp_config_path, &t.mcp_config_format, &t.mcp_field)
+            {
+                // Skip if the path is a root directory (home or appdata)
+                !super::path_utils::is_root_directory(path)
+            } else {
+                false
+            }
+        })
         .collect())
 }
 

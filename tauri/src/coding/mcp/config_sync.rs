@@ -70,8 +70,13 @@ fn sync_server_to_json(
     let mut config: Value = if config_path.exists() {
         let content = std::fs::read_to_string(config_path)
             .map_err(|e| format!("Failed to read config file: {}", e))?;
-        json5::from_str(&content)
-            .map_err(|e| format!("Failed to parse config file: {}", e))?
+        let content = content.trim();
+        if content.is_empty() {
+            serde_json::json!({})
+        } else {
+            json5::from_str(content)
+                .map_err(|e| format!("Failed to parse config file: {}", e))?
+        }
     } else {
         serde_json::json!({})
     };
@@ -121,7 +126,11 @@ fn remove_server_from_json(
 
     let content = std::fs::read_to_string(config_path)
         .map_err(|e| format!("Failed to read config file: {}", e))?;
-    let mut config: Value = json5::from_str(&content)
+    let content = content.trim();
+    if content.is_empty() {
+        return Ok(()); // Empty file, nothing to remove
+    }
+    let mut config: Value = json5::from_str(content)
         .map_err(|e| format!("Failed to parse config file: {}", e))?;
 
     // Get the MCP servers field
@@ -438,7 +447,11 @@ fn import_servers_from_json(
 ) -> Result<Vec<McpServer>, String> {
     let content = std::fs::read_to_string(config_path)
         .map_err(|e| format!("Failed to read config file: {}", e))?;
-    let config: Value = json5::from_str(&content)
+    let content = content.trim();
+    if content.is_empty() {
+        return Ok(vec![]);
+    }
+    let config: Value = json5::from_str(content)
         .map_err(|e| format!("Failed to parse config file: {}", e))?;
 
     parse_mcp_servers_from_value(&config, field, format_config)
@@ -616,7 +629,11 @@ fn parse_standard_server_config(
 fn import_servers_from_toml(config_path: &PathBuf, field: &str) -> Result<Vec<McpServer>, String> {
     let content = std::fs::read_to_string(config_path)
         .map_err(|e| format!("Failed to read config file: {}", e))?;
-    let config: toml::Table = content.parse()
+    let content_trimmed = content.trim();
+    if content_trimmed.is_empty() {
+        return Ok(vec![]);
+    }
+    let config: toml::Table = content_trimmed.parse()
         .map_err(|e| format!("Failed to parse TOML config: {}", e))?;
 
     let Some(toml::Value::Table(servers_table)) = config.get(field) else {

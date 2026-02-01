@@ -1187,7 +1187,7 @@
     },
     "customToolSettings": {
       "add": "添加自定义工具",
-      "addTitle": "添加自定义 MCP 工具",
+      "addTitle": "添加自定义工具",
       "key": "工具标识",
       "keyRequired": "请输入工具标识",
       "keyHint": "只能包含小写字母、数字和下划线，且以字母开头",

@@ -54,7 +54,9 @@ pub async fn skills_get_tool_status(state: State<'_, DbState>) -> Result<ToolSta
             installed: ok,
             skills_dir: skills_path,
         });
-        if ok {
+        // Only track built-in tools for "installed" detection
+        // Custom tools are always "installed" but shouldn't trigger save
+        if ok && !adapter.is_custom {
             installed.push(adapter.key.clone());
         }
     }
@@ -76,13 +78,24 @@ pub async fn skills_get_tool_status(state: State<'_, DbState>) -> Result<ToolSta
         .cloned()
         .collect();
 
-    // Persist current set
-    let _ = skill_store::set_setting(
-        &state,
-        "installed_tools_v1",
-        &serde_json::to_string(&installed).unwrap_or_else(|_| "[]".to_string()),
-    )
-    .await;
+    // Persist current set in background (only if changed, to reduce lock contention)
+    // This doesn't block the command return
+    let current_set: std::collections::HashSet<String> = installed.iter().cloned().collect();
+    if current_set != prev_set {
+        let installed_clone = installed.clone();
+        let state_arc = state.0.clone();
+        tokio::spawn(async move {
+            // Small delay to let other operations complete first
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let state_ref = DbState(state_arc);
+            let _ = skill_store::set_setting(
+                &state_ref,
+                "installed_tools_v1",
+                &serde_json::to_string(&installed_clone).unwrap_or_else(|_| "[]".to_string()),
+            )
+            .await;
+        });
+    }
 
     Ok(ToolStatusDto {
         tools,
@@ -418,9 +431,16 @@ pub async fn skills_get_onboarding_plan(
     app: tauri::AppHandle,
     state: State<'_, DbState>,
 ) -> Result<OnboardingPlan, String> {
-    build_onboarding_plan(&app, &state)
-        .await
-        .map_err(|e| format_error(e))
+    // Add 30 second timeout to prevent hanging on large directories
+    match tokio::time::timeout(
+        Duration::from_secs(30),
+        build_onboarding_plan(&app, &state),
+    )
+    .await
+    {
+        Ok(result) => result.map_err(|e| format_error(e)),
+        Err(_) => Err("Scan timed out after 30 seconds. Please check your custom tool paths.".to_string()),
+    }
 }
 
 #[tauri::command]

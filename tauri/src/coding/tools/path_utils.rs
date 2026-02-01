@@ -2,7 +2,7 @@
 //!
 //! Provides functions to normalize user-input paths to relative paths.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Path type indicator for normalized paths
 #[derive(Debug, Clone, PartialEq)]
@@ -118,12 +118,18 @@ pub fn normalize_path(input: &str) -> NormalizedPath {
 }
 
 /// Convert a normalized path back to its storage format.
-/// - HomeRelative: stored as plain relative path (no prefix)
+/// - HomeRelative: stored with ~/ prefix
 /// - AppDataRelative: stored with %APPDATA%/ prefix
 /// - Absolute: stored as-is
 pub fn to_storage_path(normalized: &NormalizedPath) -> String {
     match normalized.path_type {
-        PathType::HomeRelative => normalized.path.clone(),
+        PathType::HomeRelative => {
+            if normalized.path.is_empty() {
+                "~".to_string()
+            } else {
+                format!("~/{}", normalized.path)
+            }
+        }
         PathType::AppDataRelative => {
             if normalized.path.is_empty() {
                 "%APPDATA%".to_string()
@@ -136,16 +142,27 @@ pub fn to_storage_path(normalized: &NormalizedPath) -> String {
 }
 
 /// Resolve a storage path to an absolute path.
+/// - If path starts with ~/, resolve using home_dir
 /// - If path starts with %APPDATA%/, resolve using config_dir
 /// - If path is absolute (starts with / or contains :), use as-is
-/// - Otherwise, resolve relative to home_dir
+/// - Otherwise, treat as home-relative for backward compatibility
 pub fn resolve_storage_path(storage_path: &str) -> Option<PathBuf> {
     let path = storage_path.trim();
+    let normalized = path.replace('\\', "/");
 
-    // Check for %APPDATA% prefix
-    let upper_path = path.to_uppercase();
-    if upper_path.starts_with("%APPDATA%/") || upper_path.starts_with("%APPDATA%\\") {
-        let relative = &path[10..];
+    // Check for ~/ prefix (home directory)
+    if normalized.starts_with("~/") {
+        let relative = &normalized[2..];
+        return dirs::home_dir().map(|h| h.join(relative));
+    }
+    if normalized == "~" {
+        return dirs::home_dir();
+    }
+
+    // Check for %APPDATA% prefix (config directory)
+    let upper_path = normalized.to_uppercase();
+    if upper_path.starts_with("%APPDATA%/") {
+        let relative = &normalized[10..];
         return dirs::config_dir().map(|c| c.join(relative));
     }
     if upper_path == "%APPDATA%" {
@@ -153,13 +170,45 @@ pub fn resolve_storage_path(storage_path: &str) -> Option<PathBuf> {
     }
 
     // Check if it's an absolute path
-    let normalized = path.replace('\\', "/");
     if normalized.starts_with('/') || normalized.contains(':') {
         return Some(PathBuf::from(path));
     }
 
-    // Treat as home-relative
+    // Backward compatibility: treat plain relative paths as home-relative
     dirs::home_dir().map(|h| h.join(path))
+}
+
+/// Check if a storage path is a root directory (home or appdata) that would be dangerous to scan.
+/// Returns true if the path resolves to a root directory that shouldn't be scanned.
+pub fn is_root_directory(storage_path: &str) -> bool {
+    let path = storage_path.trim();
+    if path.is_empty() {
+        return true;
+    }
+
+    let normalized = path.replace('\\', "/");
+    let upper = normalized.to_uppercase();
+
+    // Check for bare home or appdata references
+    if normalized == "~" || upper == "%APPDATA%" {
+        return true;
+    }
+
+    // Check if resolved path equals home_dir or config_dir
+    if let Some(resolved) = resolve_storage_path(storage_path) {
+        if let Some(home) = dirs::home_dir() {
+            if resolved == home {
+                return true;
+            }
+        }
+        if let Some(config) = dirs::config_dir() {
+            if resolved == config {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]
@@ -188,17 +237,29 @@ mod tests {
     }
 
     #[test]
-    fn test_storage_path() {
+    fn test_storage_path_home() {
+        let normalized = NormalizedPath {
+            path: ".config/myapp".to_string(),
+            path_type: PathType::HomeRelative,
+        };
+        assert_eq!(to_storage_path(&normalized), "~/.config/myapp");
+    }
+
+    #[test]
+    fn test_storage_path_appdata() {
         let normalized = NormalizedPath {
             path: "Code/User".to_string(),
             path_type: PathType::AppDataRelative,
         };
         assert_eq!(to_storage_path(&normalized), "%APPDATA%/Code/User");
+    }
 
+    #[test]
+    fn test_storage_path_empty_home() {
         let normalized = NormalizedPath {
-            path: ".config/myapp".to_string(),
+            path: String::new(),
             path_type: PathType::HomeRelative,
         };
-        assert_eq!(to_storage_path(&normalized), ".config/myapp");
+        assert_eq!(to_storage_path(&normalized), "~");
     }
 }

@@ -33,7 +33,8 @@
     "react-monaco-editor": "0.59.0",
     "react-router-dom": "7.12.0",
     "smol-toml": "1.6.0",
-    "zustand": "5.0.10"
+    "zustand": "5.0.10",
+    "@lobehub/icons": "4.1.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.9.6",

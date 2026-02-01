@@ -32,19 +32,36 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [serverType, setServerType] = useState<'stdio' | 'http' | 'sse'>('stdio');
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
-  const [favorites, setFavorites] = useState<mcpApi.FavoriteMcp[]>([]);
+  const [favorites, setFavorites] = React.useState<mcpApi.FavoriteMcp[]>([]);
   const [favoritesExpanded, setFavoritesExpanded] = useState(false);
+  const [preferredTools, setPreferredTools] = useState<string[] | null>(null);
 
   const isEditMode = !!editingServer;
 
-  // Installed tools (memoized to avoid useEffect loops)
-  const installedTools = useMemo(() => tools.filter((t) => t.installed), [tools]);
-  // Uninstalled tools
-  const uninstalledTools = useMemo(() => tools.filter((t) => !t.installed), [tools]);
+  // Split tools based on preferred tools setting (same logic as Skills)
+  const visibleTools = useMemo(() => {
+    if (preferredTools && preferredTools.length > 0) {
+      // If preferred tools are set, only show those
+      return tools.filter((t) => preferredTools.includes(t.key));
+    }
+    // Otherwise show installed tools
+    return tools.filter((t) => t.installed);
+  }, [tools, preferredTools]);
 
-  // Load favorites on mount
+  // Hidden tools: everything not in visible list
+  const hiddenTools = useMemo(() => {
+    if (preferredTools && preferredTools.length > 0) {
+      // If preferred tools are set, hide everything else
+      return tools.filter((t) => !preferredTools.includes(t.key));
+    }
+    // Otherwise hide uninstalled tools
+    return tools.filter((t) => !t.installed);
+  }, [tools, preferredTools]);
+
+  // Load favorites and preferred tools on mount
   useEffect(() => {
     loadFavorites();
+    loadPreferredTools();
   }, []);
 
   const loadFavorites = async () => {
@@ -56,6 +73,15 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
       setFavorites(list);
     } catch (error) {
       console.error('Failed to load favorites:', error);
+    }
+  };
+
+  const loadPreferredTools = async () => {
+    try {
+      const preferred = await mcpApi.getMcpPreferredTools();
+      setPreferredTools(preferred);
+    } catch (error) {
+      console.error('Failed to load preferred tools:', error);
     }
   };
 
@@ -107,18 +133,20 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
       // Reset for add mode
       form.resetFields();
       setServerType('stdio');
-      // Load preferred tools, fallback to all installed tools
-      mcpApi.getMcpPreferredTools().then((preferred) => {
-        if (preferred.length > 0) {
-          setSelectedTools(preferred);
-        } else {
-          setSelectedTools(installedTools.map((t) => t.key));
-        }
-      }).catch(() => {
-        setSelectedTools(installedTools.map((t) => t.key));
-      });
     }
-  }, [editingServer, form, installedTools]);
+  }, [editingServer, form]);
+
+  // Initialize selected tools based on preferredTools (same logic as Skills)
+  useEffect(() => {
+    if (editingServer) return; // Don't override when editing
+    if (preferredTools && preferredTools.length > 0) {
+      setSelectedTools(preferredTools);
+    } else if (preferredTools !== null) {
+      // preferredTools loaded but empty, use installed tools
+      const installed = tools.filter((t) => t.installed).map((t) => t.key);
+      setSelectedTools(installed);
+    }
+  }, [editingServer, tools, preferredTools]);
 
   const handleToolToggle = (toolKey: string) => {
     setSelectedTools((prev) =>
@@ -589,8 +617,8 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
         <div className={styles.toolsLabel}>{t('mcp.enabledTools')}</div>
         <div className={styles.toolsHint}>{t('mcp.enabledToolsHint')}</div>
         <div className={styles.toolsGrid}>
-          {installedTools.length > 0 ? (
-            installedTools.map((tool) => (
+          {visibleTools.length > 0 ? (
+            visibleTools.map((tool) => (
               <Checkbox
                 key={tool.key}
                 checked={selectedTools.includes(tool.key)}
@@ -602,16 +630,19 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
           ) : (
             <span className={styles.noTools}>{t('mcp.noToolsInstalled')}</span>
           )}
-          {uninstalledTools.length > 0 && (
+          {hiddenTools.length > 0 && (
             <Dropdown
               trigger={['click']}
               menu={{
-                items: uninstalledTools.map((tool) => ({
+                items: hiddenTools.map((tool) => ({
                   key: tool.key,
+                  disabled: !tool.installed,
                   label: (
                     <span>
                       {tool.display_name}
-                      <span className={styles.notInstalledTag}>{t('mcp.notInstalled')}</span>
+                      {!tool.installed && (
+                        <span className={styles.notInstalledTag}>{t('mcp.notInstalled')}</span>
+                      )}
                     </span>
                   ),
                   onClick: () => handleToolToggle(tool.key),

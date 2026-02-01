@@ -52,7 +52,8 @@
       "Bash(pnpm run build:web:*)",
       "Bash(find:*)",
       "Bash(git checkout:*)",
-      "Bash(~/.cargo/bin/cargo check:*)"
+      "Bash(~/.cargo/bin/cargo check:*)",
+      "mcp__exa__web_search_exa"
     ]
   }
 }

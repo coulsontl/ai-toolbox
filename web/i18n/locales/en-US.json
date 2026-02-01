@@ -1187,7 +1187,7 @@
     },
     "customToolSettings": {
       "add": "Add Custom Tool",
-      "addTitle": "Add Custom MCP Tool",
+      "addTitle": "Add Custom Tool",
       "key": "Tool Key",
       "keyRequired": "Please enter tool key",
       "keyHint": "Only lowercase letters, numbers and underscores, starting with a letter",
