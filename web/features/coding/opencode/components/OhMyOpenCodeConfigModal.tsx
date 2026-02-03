@@ -49,7 +49,7 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
   const { t, i18n } = useTranslation();
   const [form] = Form.useForm();
   const [loading, setLoading] = React.useState(false);
-  const [categoriesCollapsed, setCategoriesCollapsed] = React.useState(true);
+  const [categoriesCollapsed, setCategoriesCollapsed] = React.useState(false);
 
   // Track which agents/categories have advanced settings expanded
   const [expandedAgents, setExpandedAgents] = React.useState<Record<string, boolean>>({});
@@ -216,7 +216,7 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
     }
     setExpandedAgents({}); // Collapse all on open
     setExpandedCategories({}); // Collapse all categories on open
-    setCategoriesCollapsed(true); // Collapse categories on open
+    setCategoriesCollapsed(false); // Categories expanded by default
     setShowAddAgent(false);
     setShowAddCategory(false);
     setNewAgentKey('');
@@ -431,9 +431,15 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
   // Render agent item (built-in agents)
   const renderAgentItem = (agentType: string) => {
     const recommendedModel = getAgentRecommendedModel(agentType);
-    const placeholder = recommendedModel
-      ? `${t('opencode.ohMyOpenCode.selectModel')} (${t('opencode.ohMyOpenCode.recommended')}${recommendedModel})`
-      : t('opencode.ohMyOpenCode.selectModel');
+    // Special handling for Sisyphus-Junior: show recommended text directly as placeholder
+    let placeholder: string;
+    if (agentType === 'Sisyphus-Junior' && recommendedModel) {
+      placeholder = recommendedModel;
+    } else if (recommendedModel) {
+      placeholder = `${t('opencode.ohMyOpenCode.selectModel')} (${t('opencode.ohMyOpenCode.recommended')}${recommendedModel})`;
+    } else {
+      placeholder = t('opencode.ohMyOpenCode.selectModel');
+    }
 
     return (
       <div key={agentType}>
@@ -563,65 +569,71 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
   );
 
   // Render category item
-  const renderCategoryItem = (category: OhMyOpenCodeCategoryDefinition) => (
-    <div key={category.key}>
-      <Form.Item
-        label={category.display}
-        tooltip={getCategoryDescription(category.key, i18n.language)}
-        style={{ marginBottom: expandedCategories[category.key] ? 8 : 12 }}
-      >
-        <Space.Compact style={{ width: '100%' }}>
-          <Form.Item name={`category_${category.key}`} noStyle>
-            <Select
-              placeholder={t('opencode.ohMyOpenCode.selectModel')}
-              options={modelOptions}
-              allowClear
-              showSearch
-              optionFilterProp="label"
-              style={{ width: 'calc(100% - 32px)' }}
-            />
-          </Form.Item>
-          <Button
-            icon={<MoreOutlined />}
-            onClick={() => toggleCategorySettings(category.key)}
-            type={expandedCategories[category.key] ? 'primary' : 'default'}
-            title={t('opencode.ohMyOpenCode.advancedSettings')}
-          />
-        </Space.Compact>
-      </Form.Item>
+  const renderCategoryItem = (category: OhMyOpenCodeCategoryDefinition) => {
+    const placeholder = category.recommendedModel
+      ? `${t('opencode.ohMyOpenCode.selectModel')} (${t('opencode.ohMyOpenCode.recommended')}${category.recommendedModel})`
+      : t('opencode.ohMyOpenCode.selectModel');
 
-      {expandedCategories[category.key] && (
+    return (
+      <div key={category.key}>
         <Form.Item
-          help={t('opencode.ohMyOpenCode.advancedSettingsHint')}
-          labelCol={{ span: 24 }}
-          wrapperCol={{ span: 24 }}
-          style={{ marginBottom: 16, marginLeft: labelCol * 4 + 8 }}
+          label={category.display}
+          tooltip={getCategoryDescription(category.key, i18n.language)}
+          style={{ marginBottom: expandedCategories[category.key] ? 8 : 12 }}
         >
-          <JsonEditor
-            value={categoryAdvancedSettingsRef.current[category.key] && Object.keys(categoryAdvancedSettingsRef.current[category.key]).length > 0 ? categoryAdvancedSettingsRef.current[category.key] : undefined}
-            onChange={(value) => {
-              // Store raw string for submit-time validation
-              if (value === null || value === undefined) {
-                categoryAdvancedSettingsRawRef.current[category.key] = '';
-              } else if (typeof value === 'string') {
-                categoryAdvancedSettingsRawRef.current[category.key] = value;
-              } else {
-                categoryAdvancedSettingsRawRef.current[category.key] = JSON.stringify(value, null, 2);
-              }
-            }}
-            height={150}
-            minHeight={100}
-            maxHeight={300}
-            resizable
-            mode="text"
-            placeholder={`{
+          <Space.Compact style={{ width: '100%' }}>
+            <Form.Item name={`category_${category.key}`} noStyle>
+              <Select
+                placeholder={placeholder}
+                options={modelOptions}
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                style={{ width: 'calc(100% - 32px)' }}
+              />
+            </Form.Item>
+            <Button
+              icon={<MoreOutlined />}
+              onClick={() => toggleCategorySettings(category.key)}
+              type={expandedCategories[category.key] ? 'primary' : 'default'}
+              title={t('opencode.ohMyOpenCode.advancedSettings')}
+            />
+          </Space.Compact>
+        </Form.Item>
+
+        {expandedCategories[category.key] && (
+          <Form.Item
+            help={t('opencode.ohMyOpenCode.advancedSettingsHint')}
+            labelCol={{ span: 24 }}
+            wrapperCol={{ span: 24 }}
+            style={{ marginBottom: 16, marginLeft: labelCol * 4 + 8 }}
+          >
+            <JsonEditor
+              value={categoryAdvancedSettingsRef.current[category.key] && Object.keys(categoryAdvancedSettingsRef.current[category.key]).length > 0 ? categoryAdvancedSettingsRef.current[category.key] : undefined}
+              onChange={(value) => {
+                // Store raw string for submit-time validation
+                if (value === null || value === undefined) {
+                  categoryAdvancedSettingsRawRef.current[category.key] = '';
+                } else if (typeof value === 'string') {
+                  categoryAdvancedSettingsRawRef.current[category.key] = value;
+                } else {
+                  categoryAdvancedSettingsRawRef.current[category.key] = JSON.stringify(value, null, 2);
+                }
+              }}
+              height={150}
+              minHeight={100}
+              maxHeight={300}
+              resizable
+              mode="text"
+              placeholder={`{
     "temperature": 0.5
 }`}
-          />
-        </Form.Item>
-      )}
-    </div>
-  );
+            />
+          </Form.Item>
+        )}
+      </div>
+    );
+  };
 
   // Render custom category item (with delete button)
   const renderCustomCategoryItem = (categoryKey: string) => (
@@ -740,14 +752,14 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
                 children: (
                   <>
                     <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 12 }}>
-                      {t('opencode.ohMyOpenCode.agentModelsHint')}
+                      有固定专长的"专家角色"，每个Agent有特定能力边界和工具权限
                     </Text>
                     {allAgentKeys.map((agentType) => {
                       // Render separator as a Divider instead of a form item
-                      if (agentType === '__advanced_separator__') {
+                      if (agentType.startsWith('__') && agentType.endsWith('_separator__')) {
                         const desc = getAgentDescription(agentType, i18n.language);
                         return (
-                          <Divider key={agentType} style={{ margin: '12px 0', fontSize: 12, color: '#999' }}>
+                          <Divider key={agentType} style={{ margin: '16px 0 12px 0', fontSize: 12, color: '#666' }}>
                             {desc}
                           </Divider>
                         );
@@ -811,7 +823,7 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
                 children: (
                   <>
                     <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 12 }}>
-                      {t('opencode.ohMyOpenCode.categoriesHint') || 'Configure models for specific task categories.'}
+                      可配置的"任务模板"，定义执行任务时使用的模型、推理强度和工作风格，由Sisyphus-Junior继承后执行具体实现工作。
                     </Text>
                     {categoryDefinitions.map(renderCategoryItem)}
                     

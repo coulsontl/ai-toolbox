@@ -53,6 +53,8 @@ export interface OhMyOpenCodeCategoryDefinition {
   descZh: string;
   /** English description */
   descEn: string;
+  /** Recommended model for this category */
+  recommendedModel?: string;
 }
 
 /**
@@ -60,104 +62,96 @@ export interface OhMyOpenCodeCategoryDefinition {
  * Order defines UI display and should be updated intentionally
  */
 export const OH_MY_OPENCODE_AGENTS: OhMyOpenCodeAgentDefinition[] = [
-  // ===== Sisyphus's Curated Teammates (推荐配置的核心团队) =====
+  // ===== 主 Agents：用户的直接入口，负责协调和决策（你主动找他们）=====
+  {
+    key: '__main_agents_separator__',
+    display: '─ 主 Agents ─',
+    descZh: '主 Agents：用户的直接入口，负责协调和决策（你主动找他们）',
+    descEn: 'Main Agents: Direct entry points for users, responsible for coordination and decision-making (you actively seek them)',
+  },
   {
     key: 'Sisyphus',
     display: 'Sisyphus',
-    descZh: '主协调者 - 默认主智能体，负责任务规划、委派和执行协调',
-    descEn: 'Primary orchestrator for planning, delegation, and execution coordination',
-    recommendedModel: 'Claude Opus 4.5 High',
+    descZh: '主编排者 - 你的"第一接待员"，接收请求后决定自己干还是派专家干，负责任务分类、委派和全局协调',
+    descEn: 'Primary orchestrator - Your "first receptionist", receives requests and decides to handle or delegate, responsible for task classification, delegation and global coordination',
+    recommendedModel: 'claude-opus-4-5 (variant: max)',
   },
   {
     key: 'hephaestus',
     display: 'Hephaestus',
-    descZh: '深度工匠 - 自主深度工作者，目标导向执行，擅长复杂问题的深入研究和解决',
-    descEn: 'Autonomous deep worker, goal-oriented execution — The Legitimate Craftsman',
-    recommendedModel: 'GPT 5.2 Codex Medium',
+    descZh: '自主深度工作者 - 给目标就行的"资深工匠"，会花5-15分钟先研究再动手，端到端自主完成复杂任务不需要逐步指挥',
+    descEn: 'Autonomous deep worker - A "senior craftsman" who just needs goals, spends 5-15 minutes researching before acting, completes complex tasks end-to-end without step-by-step guidance',
+    recommendedModel: 'gpt-5.2-codex (variant: medium，必需)',
   },
   {
-    key: 'oracle',
-    display: 'Oracle',
-    descZh: '架构师 - 架构设计、调试、战略规划，利用GPT-5.2的逻辑推理能力',
-    descEn: 'Architect for design, debugging, and strategic reasoning',
-    recommendedModel: 'GPT 5.2 Medium',
-  },
-  {
-    key: 'frontend-ui-ux-engineer',
-    display: 'Frontend UI/UX',
-    descZh: '前端工程师 - 前端开发，创建美观的用户界面，专注于创意和视觉设计',
-    descEn: 'Frontend engineer focused on UI/UX design',
-    recommendedModel: 'Gemini 3 Pro',
-  },
-  {
-    key: 'explore',
-    display: 'Explore',
-    descZh: '探索者 - 通过上下文Grep快速探索代码库，闪电般的搜索速度',
-    descEn: 'Blazing fast codebase exploration via Contextual Grep',
-    recommendedModel: 'Claude Haiku 4.5',
-  },
-  {
-    key: 'librarian',
-    display: 'Librarian',
-    descZh: '资料管理员 - 官方文档查找、开源实现搜索、代码库深度理解',
-    descEn: 'Official docs, open source implementations, codebase exploration',
-    recommendedModel: 'Claude Sonnet 4.5',
-  },
-  // ===== Separator =====
-  {
-    key: '__advanced_separator__',
-    display: '─ Advanced ─',
-    descZh: '以下 Agent 建议有经验的用户根据需要配置',
-    descEn: 'The following agents are recommended for experienced users to configure as needed',
-  },
-  // ===== Advanced agents =====
-  {
-    key: 'multimodal-looker',
-    display: 'Multimodal Looker',
-    descZh: '多模态观察者 - 视觉内容专家，分析PDF、图像、图表等多媒体内容',
-    descEn: 'Visual content specialist for PDFs, images, and diagrams',
-  },
-  {
-    key: 'document-writer',
-    display: 'Document Writer',
-    descZh: '文档写手 - 技术写作专家，擅长流畅的技术文档写作',
-    descEn: 'Technical writing specialist',
-  },
-  {
-    key: 'Prometheus (Planner)',
+    key: 'Prometheus',
     display: 'Prometheus',
-    descZh: '规划师 - 任务规划，使用工作规划方法论进行任务分解和策略制定',
-    descEn: 'Planner agent that decomposes tasks and builds strategy',
+    descZh: '战略规划者 - 只做计划不写代码的"产品经理"，把大任务拆成小步骤，生成依赖图和执行计划',
+    descEn: 'Strategic planner - A "product manager" who only plans without coding, breaks big tasks into small steps, generates dependency graphs and execution plans',
+    recommendedModel: 'claude-opus-4-5 (variant: max)',
   },
   {
     key: 'Atlas',
     display: 'Atlas',
-    descZh: '守门员 - 强制编排协议与风险控制，阻止编排者越权改项目文件',
-    descEn: 'Gatekeeper enforcing orchestration protocol and delegation',
+    descZh: '任务管理者 - 持有todo清单的"项目经理"，跟踪多步骤任务进度，确保每个步骤有序完成不遗漏（系统会自动调用）',
+    descEn: 'Task manager - A "project manager" with todo list, tracks multi-step task progress, ensures each step is completed in order without omission (automatically invoked by system)',
+    recommendedModel: 'kimi-k2.5',
+  },
+  // ===== 子 Agents：专业领域专家，被主Agent或系统调用（他们被动工作）=====
+  {
+    key: '__sub_agents_separator__',
+    display: '─ 子 Agents ─',
+    descZh: '子 Agents：专业领域专家，被主Agent或系统调用（他们被动工作）',
+    descEn: 'Sub Agents: Domain experts, invoked by main agents or system (they work passively)',
+  },
+  {
+    key: 'oracle',
+    display: 'Oracle',
+    descZh: '战略顾问 - 只看不动手的"CTO顾问"，专门分析架构、审查代码、调试疑难，给建议但不改代码',
+    descEn: 'Strategic advisor - A "CTO consultant" who only observes, specializes in architecture analysis, code review, debugging, gives advice but does not modify code',
+    recommendedModel: 'gpt-5.2 (variant: high)',
+  },
+  {
+    key: 'librarian',
+    display: 'Librarian',
+    descZh: '多仓库研究员 - 专查外部资料的"图书馆员"，搜GitHub代码、读官方文档、找开源实现示例',
+    descEn: 'Multi-repo researcher - A "librarian" for external resources, searches GitHub code, reads official docs, finds open source implementation examples',
+    recommendedModel: 'glm-4.7',
+  },
+  {
+    key: 'explore',
+    display: 'Explore',
+    descZh: '快速代码库搜索 - 项目内的"Ctrl+Shift+F"，快速定位"这个功能在哪"、"谁调用了这个函数"，可并行多个',
+    descEn: 'Fast codebase search - Project-level "Ctrl+Shift+F", quickly locates "where is this feature", "who calls this function", can run multiple in parallel',
+    recommendedModel: 'grok-code-fast-1',
+  },
+  {
+    key: 'multimodal-looker',
+    display: 'Multimodal-Looker',
+    descZh: '媒体分析器 - 有"眼睛"的助手，专门看图片、PDF、设计稿，提取视觉信息转成文字描述',
+    descEn: 'Media analyzer - An assistant with "eyes", specializes in viewing images, PDFs, design drafts, extracts visual information into text descriptions',
+    recommendedModel: 'gemini-3-flash',
+  },
+  {
+    key: 'Metis',
+    display: 'Metis',
+    descZh: '规划前分析顾问 - Prometheus的"前置分析师"，在做计划前先帮你想清楚"你到底要什么"，发现隐藏需求和潜在坑',
+    descEn: 'Pre-planning analyst - Prometheus\'s "pre-analyst", helps clarify "what you really want" before planning, discovers hidden requirements and potential pitfalls',
+    recommendedModel: 'claude-opus-4-5 (variant: max)',
+  },
+  {
+    key: 'Momus',
+    display: 'Momus',
+    descZh: '计划审查者 - Prometheus的"质检员"，专挑计划的阻塞性问题，确保计划可执行、引用有效、没有遗漏',
+    descEn: 'Plan reviewer - Prometheus\'s "QA inspector", identifies blocking issues in plans, ensures plans are executable, references are valid, nothing is missed',
+    recommendedModel: 'gpt-5.2 (variant: medium)',
   },
   {
     key: 'Sisyphus-Junior',
     display: 'Sisyphus-Junior',
-    descZh: '专注执行者 - 执行单元，直接编写代码，不能再委派任务，模型由category动态决定',
-    descEn: 'Focused executor that writes code directly and cannot re-delegate',
-  },
-  {
-    key: 'Metis (Plan Consultant)',
-    display: 'Metis',
-    descZh: '计划顾问 - 预规划分析，识别隐藏需求和潜在的AI失败点',
-    descEn: 'Plan consultant for pre-analysis and risk detection',
-  },
-  {
-    key: 'Momus (Plan Reviewer)',
-    display: 'Momus',
-    descZh: '计划审查员 - 计划审查，对生成的计划进行质量检查和风险评估',
-    descEn: 'Plan reviewer for quality checks and risk assessment',
-  },
-  {
-    key: 'OpenCode-Builder',
-    display: 'OpenCode-Builder',
-    descZh: '构建专家 - OpenCode原生build agent，默认禁用(被Sisyphus-Junior替代)',
-    descEn: 'OpenCode native build agent (disabled by default)',
+    descZh: '委托任务执行器 - 穿上Category"马甲"的"实习生"，根据任务类型动态调整模型和风格去执行具体工作',
+    descEn: 'Delegated task executor - An "intern" wearing Category "vest", dynamically adjusts model and style based on task type to execute specific work',
+    recommendedModel: '无需配置，动态继承Category的配置',
   },
 ];
 
@@ -169,50 +163,58 @@ export const OH_MY_OPENCODE_CATEGORIES: OhMyOpenCodeCategoryDefinition[] = [
   {
     key: 'visual-engineering',
     display: 'Visual Engineering',
-    descZh: '前端工程师 - 前端开发、UI/UX设计、样式调整、动画效果，专注于视觉呈现 (Gemini 3 Pro)',
-    descEn: 'Frontend and UI/UX tasks with visual focus (Gemini 3 Pro)',
+    descZh: '前端UI模式 - 做界面的"设计师模式"，强调大胆审美、独特排版、高冲击力动画，拒绝千篇一律',
+    descEn: 'Frontend UI mode - "Designer mode" for interfaces, emphasizes bold aesthetics, unique layouts, high-impact animations, rejects cookie-cutter designs',
+    recommendedModel: 'gemini-3-pro',
   },
   {
     key: 'ultrabrain',
     display: 'Ultrabrain',
-    descZh: '超级大脑 - 深度逻辑推理、复杂架构决策、需要大量分析的高难度问题 (GPT 5.2 Codex xhigh)',
-    descEn: 'Deep reasoning and complex architecture decisions (GPT 5.2 Codex xhigh)',
+    descZh: '超级大脑模式 - 深度思考的"架构师模式"，只给目标不给步骤，用于真正困难的逻辑推理和架构设计',
+    descEn: 'Super brain mode - Deep thinking "architect mode", give goals not steps, for truly difficult logical reasoning and architecture design',
+    recommendedModel: 'gpt-5.2-codex (variant: xhigh，必需)',
   },
   {
     key: 'deep',
     display: 'Deep',
-    descZh: '深度研究者 - 目标导向的自主问题解决，先深入研究再行动，适合棘手的深度理解问题 (GPT 5.2 Codex Medium)',
-    descEn: 'Goal-oriented autonomous problem-solving. Thorough research before action. For hairy problems requiring deep understanding.',
+    descZh: '深度自主模式 - 自主研究的"资深工程师模式"，会花很长时间先探索再动手，用于疑难杂症和混乱代码重构',
+    descEn: 'Deep autonomous mode - "Senior engineer mode" for autonomous research, spends long time exploring before acting, for tricky issues and messy code refactoring',
+    recommendedModel: 'gpt-5.2-codex (variant: medium，必需)',
   },
   {
     key: 'artistry',
     display: 'Artistry',
-    descZh: '艺术家 - 高度创意任务、艺术性工作、新颖独特的想法生成 (Gemini 3 Pro max)',
-    descEn: 'Highly creative and artistic tasks (Gemini 3 Pro max)',
+    descZh: '艺术创意模式 - 打破常规的"创意总监模式"，鼓励大胆非传统方向，用于需要惊喜和创新的任务',
+    descEn: 'Artistic creativity mode - "Creative director mode" that breaks conventions, encourages bold unconventional directions, for tasks needing surprise and innovation',
+    recommendedModel: 'gemini-3-pro (variant: max，必需)',
   },
   {
     key: 'quick',
     display: 'Quick',
-    descZh: '快速执行者 - 简单任务、单文件修改、拼写修复、小改动，省钱省时 (Claude Haiku 4.5)',
-    descEn: 'Fast execution for small or trivial tasks (Claude Haiku 4.5)',
+    descZh: '快速模式 - 改typo的"实习生模式"，用便宜快速的小模型，但prompt必须写得非常详细明确',
+    descEn: 'Quick mode - "Intern mode" for fixing typos, uses cheap fast small models, but prompts must be very detailed and explicit',
+    recommendedModel: 'claude-haiku-4-5',
   },
   {
     key: 'unspecified-low',
     display: 'Unspecified (Low)',
-    descZh: '通用助手(轻量) - 不适合其他类别的中等难度任务 (Claude Sonnet 4.5)',
-    descEn: 'General helper for medium complexity tasks (Claude Sonnet 4.5)',
+    descZh: '通用中等模式 - 不知道归哪类的"中等杂活模式"，工作量不大、范围有限的常规开发任务',
+    descEn: 'General medium mode - "Medium chores mode" for uncategorized tasks, regular development with limited scope and workload',
+    recommendedModel: 'claude-sonnet-4-5',
   },
   {
     key: 'unspecified-high',
     display: 'Unspecified (High)',
-    descZh: '通用助手(重量) - 不适合其他类别的高难度复杂任务 (Claude Opus 4.5 max)',
-    descEn: 'General helper for high complexity tasks (Claude Opus 4.5 max)',
+    descZh: '通用高级模式 - 不知道归哪类的"大型杂活模式"，跨多模块、影响范围大的高工作量任务',
+    descEn: 'General high mode - "Large chores mode" for uncategorized tasks, cross-module high-workload tasks with large impact scope',
+    recommendedModel: 'claude-opus-4-5 (variant: max)',
   },
   {
     key: 'writing',
     display: 'Writing',
-    descZh: '文档写手 - 通用文案、技术文档编写、README撰写、注释完善、技术写作 (Gemini 3 Flash)',
-    descEn: 'Documentation and writing tasks (Gemini 3 Flash)',
+    descZh: '写作模式 - 写文档的"技术作家模式"，专注清晰流畅的散文表达，用于README、文档、技术文章',
+    descEn: 'Writing mode - "Technical writer mode" for documentation, focuses on clear fluent prose, for README, docs, technical articles',
+    recommendedModel: 'gemini-3-flash',
   },
 ];
 
