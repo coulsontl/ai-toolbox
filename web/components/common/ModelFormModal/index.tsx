@@ -1,10 +1,11 @@
 import React from 'react';
-import { Modal, Form, Input, AutoComplete, Button, Select, message, Typography } from 'antd';
+import { Modal, Form, Input, AutoComplete, Button, Select, message, Typography, Tag } from 'antd';
 import { RightOutlined, DownOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '@/stores';
 import JsonEditor from '@/components/common/JsonEditor';
 import type { I18nPrefix } from '@/components/common/ProviderCard/types';
+import { PRESET_MODELS, type PresetModel } from '@/constants/presetModels';
 
 const { Text } = Typography;
 
@@ -56,15 +57,15 @@ export interface ModelFormValues {
 
 interface ModelFormModalProps {
   open: boolean;
-  
+
   /** Whether this is an edit operation */
   isEdit?: boolean;
   /** Initial form values */
   initialValues?: Partial<ModelFormValues>;
-  
+
   /** Existing model IDs for duplicate check (only used when !isEdit) */
   existingIds?: string[];
-  
+
   /** Whether to show options field (settings page: true, OpenCode: false) */
   showOptions?: boolean;
   /** Whether to show variants field (OpenCode only) */
@@ -75,13 +76,16 @@ interface ModelFormModalProps {
   limitRequired?: boolean;
   /** Whether name field is required (settings page: true, OpenCode: false) */
   nameRequired?: boolean;
-  
+
+  /** NPM SDK type for preset models dropdown */
+  npmType?: string;
+
   /** Callbacks */
   onCancel: () => void;
   onSuccess: (values: ModelFormValues) => void;
   /** Custom duplicate ID error handler */
   onDuplicateId?: (id: string) => void;
-  
+
   /** i18n prefix for translations */
   i18nPrefix?: I18nPrefix;
 }
@@ -99,6 +103,7 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
   showModalities = false,
   limitRequired = true,
   nameRequired = true,
+  npmType,
   onCancel,
   onSuccess,
   onDuplicateId,
@@ -115,6 +120,54 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
   const [inputModalities, setInputModalities] = React.useState<string[]>([]);
   const [outputModalities, setOutputModalities] = React.useState<string[]>([]);
   const [advancedExpanded, setAdvancedExpanded] = React.useState(false);
+  const [presetsExpanded, setPresetsExpanded] = React.useState(false);
+
+  // Get preset models for current npm type
+  const presetModels = React.useMemo(() => {
+    if (!npmType) return [];
+    return PRESET_MODELS[npmType] || [];
+  }, [npmType]);
+
+  // Handle preset model selection
+  const handlePresetSelect = (preset: PresetModel) => {
+    form.setFieldsValue({
+      id: preset.id,
+      name: preset.name,
+      contextLimit: preset.contextLimit,
+      outputLimit: preset.outputLimit,
+    });
+
+    // Set options if present
+    if (preset.options && Object.keys(preset.options).length > 0) {
+      setJsonOptions(preset.options);
+      setJsonValid(true);
+    }
+
+    // Set variants if present
+    if (preset.variants && Object.keys(preset.variants).length > 0) {
+      setJsonVariants(preset.variants);
+      setVariantsValid(true);
+      // Auto expand advanced settings if variants has content
+      setAdvancedExpanded(true);
+    }
+
+    // Set modalities if present
+    if (preset.modalities) {
+      if (preset.modalities.input) {
+        setInputModalities(preset.modalities.input);
+      }
+      if (preset.modalities.output) {
+        setOutputModalities(preset.modalities.output);
+      }
+      // Auto expand advanced settings if modalities has content
+      if ((preset.modalities.input && preset.modalities.input.length > 0) ||
+          (preset.modalities.output && preset.modalities.output.length > 0)) {
+        setAdvancedExpanded(true);
+      }
+    }
+
+    setPresetsExpanded(false);
+  };
 
   const labelCol = { span: language === 'zh-CN' ? 4 : 6 };
   const wrapperCol = { span: 20 };
@@ -376,14 +429,58 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
       >
         <Form.Item
           label={t(getKey('id'))}
-          name="id"
-          rules={[{ required: true, message: t(getKey('idPlaceholder')) }]}
+          required
         >
-          <Input
-            placeholder={t(getKey('idPlaceholder'))}
-            disabled={isEdit}
-          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Form.Item
+              name="id"
+              noStyle
+              rules={[{ required: true, message: t(getKey('idPlaceholder')) }]}
+            >
+              <Input
+                placeholder={t(getKey('idPlaceholder'))}
+                disabled={isEdit}
+                style={{ flex: 1 }}
+              />
+            </Form.Item>
+            {!isEdit && npmType && presetModels.length > 0 && (
+              <a
+                style={{
+                  flexShrink: 0,
+                  fontSize: 12,
+                  fontWeight: 500,
+                  color: 'var(--ant-color-text-secondary)',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  whiteSpace: 'nowrap',
+                }}
+                onClick={() => setPresetsExpanded(!presetsExpanded)}
+              >
+                {t('opencode.model.selectPreset')}
+                {presetsExpanded ? ' ▴' : ' ▾'}
+              </a>
+            )}
+          </div>
         </Form.Item>
+
+        {!isEdit && presetsExpanded && presetModels.length > 0 && (
+          <Form.Item wrapperCol={{ offset: language === 'zh-CN' ? 4 : 6, span: 20 }} style={{ marginTop: -8 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {presetModels.map((preset) => (
+                <Tag
+                  key={preset.id}
+                  style={{
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                  }}
+                  onClick={() => handlePresetSelect(preset)}
+                >
+                  {preset.name}
+                </Tag>
+              ))}
+            </div>
+          </Form.Item>
+        )}
 
         <Form.Item
           label={t(getKey('name'))}
@@ -482,21 +579,6 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
                   </>
                 )}
 
-                {showOptions && (
-                  <Form.Item label={t('settings.model.options')}>
-                    <JsonEditor
-                      value={typeof jsonOptions === 'object' && jsonOptions !== null && Object.keys(jsonOptions).length === 0 ? undefined : jsonOptions}
-                      onChange={handleJsonChange}
-                      mode="text"
-                      height={200}
-                      resizable
-                      placeholder={`{
-    "store": false
-}`}
-                    />
-                  </Form.Item>
-                )}
-
                 {showVariants && (
                   <Form.Item
                     label={t('opencode.model.variants')}
@@ -513,6 +595,21 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
     "low": { "thinkingLevel": "low" },
     "medium": { "thinkingLevel": "medium" },
     "high": { "thinkingLevel": "high" }
+}`}
+                    />
+                  </Form.Item>
+                )}
+
+                {showOptions && (
+                  <Form.Item label={t('settings.model.options')}>
+                    <JsonEditor
+                      value={typeof jsonOptions === 'object' && jsonOptions !== null && Object.keys(jsonOptions).length === 0 ? undefined : jsonOptions}
+                      onChange={handleJsonChange}
+                      mode="text"
+                      height={200}
+                      resizable
+                      placeholder={`{
+    "store": false
 }`}
                     />
                   </Form.Item>

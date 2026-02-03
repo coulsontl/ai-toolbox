@@ -420,7 +420,10 @@
       "inputModalitiesPlaceholder": "选择输入类型",
       "outputModalities": "输出模态",
       "outputModalitiesPlaceholder": "选择输出类型",
-      "modalitiesBothRequired": "输入和输出模态需同时选择或同时留空"
+      "modalitiesBothRequired": "输入和输出模态需同时选择或同时留空",
+      "presetModels": "预设模型",
+      "selectPreset": "选择预设模型",
+      "noPresets": "该 SDK 类型暂无预设"
     },
     "fetchModels": {
       "button": "获取模型",
@@ -906,7 +909,7 @@
     "title": "Skills 管理",
     "viewDocs": "官方文档",
     "tooltip": "管理 AI 工具 Skills",
-    "settings": "偏好设置",
+    "settings": "更多选项",
     "emptyText": "暂无 Skills，点击上方按钮添加",
     "skillsEmpty": "没有找到 Skills",
     "addSkill": "添加 Skill",
@@ -1001,7 +1004,7 @@
       "branchLabel": "分支（可选）",
       "branchPlaceholder": "main",
       "loading": "正在获取仓库内容...",
-      "repoLabel": "常用仓库",
+      "repoLabel": "选择常用仓库",
       "removeRepoTitle": "删除常用仓库",
       "removeRepoConfirm": "确定要从常用仓库列表中删除「{{repo}}」吗？",
       "manageReposHint": "点击删除图标可从列表中移除仓库",
@@ -1022,6 +1025,19 @@
       "warningRemoveFromTools": "将取消与所有工具的同步",
       "warningDeleteFromRepo": "将从中心仓库删除该 Skill",
       "confirmButton": "删除"
+    },
+    "clearAll": {
+      "title": "清空所有 Skills",
+      "button": "清空所有 Skills",
+      "hint": "从中心仓库删除所有 Skills，并取消所有工具的同步",
+      "modalTitle": "清空所有 Skills",
+      "modalMessage": "你即将删除 {{count}} 个 Skill。此操作无法撤销。",
+      "modalWarning": "所有 Skills 将被永久删除！",
+      "inputPrompt": "请输入「{{text}}」以确认：",
+      "confirmText": "我确认删除所有skill",
+      "confirmMismatch": "确认文字不匹配",
+      "confirm": "确认删除",
+      "success": "所有 Skills 已被删除"
     },
     "card": {
       "source": "来源",
@@ -1108,7 +1124,7 @@
     "importFailed": "导入失败",
     "noToolsToImport": "没有可导入的工具",
     "syncAll": "全部同步",
-    "settings": "偏好设置",
+    "settings": "更多选项",
     "showInTray": "在快捷菜单显示",
     "showInTrayHint": "在系统托盘菜单中显示 MCP 服务器列表",
     "hideFromTray": "从托盘菜单隐藏",
@@ -1174,7 +1190,7 @@
       "overwrite": "覆盖"
     },
     "favorites": {
-      "label": "常用 MCP",
+      "label": "选择常用 MCP",
       "removeTitle": "删除常用 MCP",
       "removeConfirm": "确定要从常用 MCP 列表中删除「{{name}}」吗？"
     },

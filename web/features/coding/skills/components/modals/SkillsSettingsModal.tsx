@@ -1,6 +1,6 @@
 import React from 'react';
 import { Modal, InputNumber, Button, Checkbox, message, Form, Input, Space, Tooltip, Switch } from 'antd';
-import { FolderOpenOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
+import { FolderOpenOutlined, DeleteOutlined, PlusOutlined, ClearOutlined } from '@ant-design/icons';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import type { ToolInfo, CustomTool } from '../../types';
@@ -19,7 +19,7 @@ export const SkillsSettingsModal: React.FC<SkillsSettingsModalProps> = ({
   onClose,
 }) => {
   const { t } = useTranslation();
-  const { loadToolStatus } = useSkillsStore();
+  const { loadToolStatus, skills, loadSkills } = useSkillsStore();
   const [form] = Form.useForm();
   const [path, setPath] = React.useState('');
   const [cleanupDays, setCleanupDays] = React.useState(30);
@@ -32,6 +32,9 @@ export const SkillsSettingsModal: React.FC<SkillsSettingsModalProps> = ({
   const [addingTool, setAddingTool] = React.useState(false);
   const [showAddCustomModal, setShowAddCustomModal] = React.useState(false);
   const [showInTray, setShowInTray] = React.useState(false);
+  const [showClearAllModal, setShowClearAllModal] = React.useState(false);
+  const [clearAllConfirmText, setClearAllConfirmText] = React.useState('');
+  const [clearingAll, setClearingAll] = React.useState(false);
 
   // Load settings on mount
   React.useEffect(() => {
@@ -40,6 +43,7 @@ export const SkillsSettingsModal: React.FC<SkillsSettingsModalProps> = ({
     api.getGitCacheTtlSecs().then(setTtlSecs).catch(console.error);
     api.getShowSkillsInTray().then(setShowInTray).catch(console.error);
     loadCustomTools();
+    loadSkills();
 
     // Load tools and preferred tools together
     Promise.all([api.getToolStatus(), api.getPreferredTools()])
@@ -232,6 +236,30 @@ export const SkillsSettingsModal: React.FC<SkillsSettingsModalProps> = ({
     }
   };
 
+  const expectedConfirmText = t('skills.clearAll.confirmText');
+
+  const handleClearAllSkills = async () => {
+    if (clearAllConfirmText !== expectedConfirmText) {
+      message.error(t('skills.clearAll.confirmMismatch'));
+      return;
+    }
+    setClearingAll(true);
+    try {
+      // Delete all managed skills one by one
+      for (const skill of skills) {
+        await api.deleteManagedSkill(skill.id);
+      }
+      await loadSkills();
+      message.success(t('skills.clearAll.success'));
+      setShowClearAllModal(false);
+      setClearAllConfirmText('');
+    } catch (error) {
+      message.error(String(error));
+    } finally {
+      setClearingAll(false);
+    }
+  };
+
   return (
     <Modal
       title={t('skills.settings')}
@@ -362,6 +390,23 @@ export const SkillsSettingsModal: React.FC<SkillsSettingsModalProps> = ({
         </div>
       </div>
 
+      <div className={styles.section}>
+        <div className={styles.labelArea}>
+          <label className={styles.label}>{t('skills.clearAll.title')}</label>
+        </div>
+        <div className={styles.inputArea}>
+          <Button
+            danger
+            icon={<ClearOutlined />}
+            onClick={() => setShowClearAllModal(true)}
+            disabled={skills.length === 0}
+          >
+            {t('skills.clearAll.button')}
+          </Button>
+          <p className={styles.hint}>{t('skills.clearAll.hint')}</p>
+        </div>
+      </div>
+
       <div className={styles.footer}>
         <Button onClick={onClose}>{t('common.cancel')}</Button>
         <Button type="primary" onClick={handleSave} loading={loading}>
@@ -411,6 +456,53 @@ export const SkillsSettingsModal: React.FC<SkillsSettingsModalProps> = ({
         </Form>
       </Modal>
       )}
+
+      <Modal
+        title={t('skills.clearAll.modalTitle')}
+        open={showClearAllModal}
+        onCancel={() => {
+          setShowClearAllModal(false);
+          setClearAllConfirmText('');
+        }}
+        footer={null}
+        width={450}
+      >
+        <div style={{ marginBottom: 16 }}>
+          <p>{t('skills.clearAll.modalMessage', { count: skills.length })}</p>
+          <p style={{ color: '#ff4d4f', fontWeight: 500 }}>
+            {t('skills.clearAll.modalWarning')}
+          </p>
+        </div>
+        <div style={{ marginBottom: 16 }}>
+          <p style={{ marginBottom: 8 }}>
+            {t('skills.clearAll.inputPrompt', { text: expectedConfirmText })}
+          </p>
+          <Input
+            value={clearAllConfirmText}
+            onChange={(e) => setClearAllConfirmText(e.target.value)}
+            placeholder={expectedConfirmText}
+          />
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <Space>
+            <Button onClick={() => {
+              setShowClearAllModal(false);
+              setClearAllConfirmText('');
+            }}>
+              {t('common.cancel')}
+            </Button>
+            <Button
+              type="primary"
+              danger
+              onClick={handleClearAllSkills}
+              loading={clearingAll}
+              disabled={clearAllConfirmText !== expectedConfirmText}
+            >
+              {t('skills.clearAll.confirm')}
+            </Button>
+          </Space>
+        </div>
+      </Modal>
     </Modal>
   );
 };

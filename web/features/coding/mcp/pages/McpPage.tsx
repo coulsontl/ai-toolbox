@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { Typography, Button, Space, Modal } from 'antd';
-import { PlusOutlined, UserOutlined, ImportOutlined, FileTextOutlined } from '@ant-design/icons';
+import { PlusOutlined, EllipsisOutlined, ImportOutlined, FileTextOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { arrayMove } from '@dnd-kit/sortable';
 import type { DragEndEvent } from '@dnd-kit/core';
@@ -123,7 +123,7 @@ const McpPage: React.FC = () => {
         </div>
         <Button
           type="text"
-          icon={<UserOutlined />}
+          icon={<EllipsisOutlined />}
           onClick={() => setSettingsModalOpen(true)}
         >
           {t('mcp.settings')}

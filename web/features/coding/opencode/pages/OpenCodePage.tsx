@@ -1452,6 +1452,7 @@ const OpenCodePage: React.FC = () => {
         showModalities={true}
         limitRequired={false}
         nameRequired={false}
+        npmType={currentModelProviderId && config?.provider[currentModelProviderId]?.npm || '@ai-sdk/openai-compatible'}
         onCancel={() => {
           setModelModalOpen(false);
           setModelInitialValues(undefined);

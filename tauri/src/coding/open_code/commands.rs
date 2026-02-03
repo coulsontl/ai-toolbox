@@ -436,6 +436,7 @@ const DEFAULT_FAVORITE_PLUGINS: &[&str] = &[
     "opencode-antigravity-auth",
     "opencode-openai-codex-auth",
     "opencode-omit-max-tokens",
+    "opencode-axonhub-tracing",
 ];
 
 /// Initialize default favorite plugins if database is empty

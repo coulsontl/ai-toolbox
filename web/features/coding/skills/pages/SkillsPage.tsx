@@ -1,6 +1,6 @@
 import React from 'react';
 import { Typography, Button, Space } from 'antd';
-import { PlusOutlined, UserOutlined, ImportOutlined, LinkOutlined } from '@ant-design/icons';
+import { PlusOutlined, EllipsisOutlined, ImportOutlined, LinkOutlined } from '@ant-design/icons';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import { useSkillsStore } from '../stores/skillsStore';
@@ -77,7 +77,7 @@ const SkillsPage: React.FC = () => {
         </div>
         <Button
           type="text"
-          icon={<UserOutlined />}
+          icon={<EllipsisOutlined />}
           onClick={() => setSettingsModalOpen(true)}
         >
           {t('skills.settings')}

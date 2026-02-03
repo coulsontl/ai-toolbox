@@ -420,7 +420,10 @@
       "inputModalitiesPlaceholder": "Select input types",
       "outputModalities": "Output",
       "outputModalitiesPlaceholder": "Select output types",
-      "modalitiesBothRequired": "Both input and output modalities must be selected or both left empty"
+      "modalitiesBothRequired": "Both input and output modalities must be selected or both left empty",
+      "presetModels": "Preset Models",
+      "selectPreset": "Select Preset Model",
+      "noPresets": "No presets for this SDK type"
     },
     "fetchModels": {
       "button": "Fetch Models",
@@ -906,7 +909,7 @@
     "title": "Skills Management",
     "viewDocs": "Documentation",
     "tooltip": "Manage AI Tool Skills",
-    "settings": "Preferences",
+    "settings": "More Options",
     "emptyText": "No Skills yet. Click the button above to add",
     "skillsEmpty": "No Skills found",
     "addSkill": "Add Skill",
@@ -1001,7 +1004,7 @@
       "branchLabel": "Branch (Optional)",
       "branchPlaceholder": "main",
       "loading": "Fetching repository contents...",
-      "repoLabel": "Common Repos",
+      "repoLabel": "Select Common Repo",
       "removeRepoTitle": "Remove Common Repo",
       "removeRepoConfirm": "Are you sure you want to remove \"{{repo}}\" from common repos?",
       "manageReposHint": "Click the delete icon to remove a repo from the list",
@@ -1022,6 +1025,19 @@
       "warningRemoveFromTools": "This will unsync from all tools",
       "warningDeleteFromRepo": "This will delete the Skill from the central repository",
       "confirmButton": "Delete"
+    },
+    "clearAll": {
+      "title": "Clear All Skills",
+      "button": "Clear All Skills",
+      "hint": "Delete all Skills from the central repository and unsync from all tools",
+      "modalTitle": "Clear All Skills",
+      "modalMessage": "You are about to delete {{count}} Skill(s). This action cannot be undone.",
+      "modalWarning": "All Skills will be permanently deleted!",
+      "inputPrompt": "Please type \"{{text}}\" to confirm:",
+      "confirmText": "I confirm to delete all skills",
+      "confirmMismatch": "The confirmation text does not match",
+      "confirm": "Confirm Delete",
+      "success": "All Skills have been deleted"
     },
     "card": {
       "source": "Source",
@@ -1108,7 +1124,7 @@
     "importFailed": "Import failed",
     "noToolsToImport": "No tools available for import",
     "syncAll": "Sync All",
-    "settings": "Preferences",
+    "settings": "More Options",
     "showInTray": "Show in System Tray",
     "showInTrayHint": "Display MCP servers in the system tray menu",
     "hideFromTray": "Hide from Tray",
@@ -1174,7 +1190,7 @@
       "overwrite": "Overwrite"
     },
     "favorites": {
-      "label": "Common MCP",
+      "label": "Select Common MCP",
       "removeTitle": "Remove Common MCP",
       "removeConfirm": "Are you sure you want to remove \"{{name}}\" from common MCP list?"
     },
