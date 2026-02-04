@@ -56,7 +56,10 @@
       "mcp__exa__web_search_exa",
       "Bash(pnpm type-check)",
       "Bash(npm run check:ts)",
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "Bash(cargo doc:*)",
+      "Bash(cargo search:*)",
+      "Bash(git restore --staged:*)"
     ]
   }
 }

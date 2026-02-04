@@ -7,7 +7,6 @@ use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
-use crate::coding::mcp::command_normalize;
 use super::utils::{get_db_path, get_opencode_config_path, get_opencode_restore_dir, get_opencode_auth_path, get_codex_auth_path, get_codex_config_path, get_skills_dir};
 
 /// Get the home directory
@@ -337,23 +336,12 @@ pub async fn restore_database(
 
                     let outpath = opencode_dir.join(relative_path);
 
-                    // Process MCP config for cross-platform compatibility
-                    if relative_path.ends_with(".json") || relative_path.ends_with(".jsonc") {
-                        let mut content = String::new();
-                        file.read_to_string(&mut content)
-                            .map_err(|e| format!("Failed to read opencode config: {}", e))?;
-
-                        // Windows: wrap cmd /c, Mac/Linux: unwrap cmd /c
-                        let processed = command_normalize::process_opencode_json(&content, cfg!(windows))
-                            .unwrap_or(content);
-                        fs::write(&outpath, processed)
-                            .map_err(|e| format!("Failed to write opencode config: {}", e))?;
-                    } else {
-                        let mut outfile =
-                            File::create(&outpath).map_err(|e| format!("Failed to create file: {}", e))?;
-                        std::io::copy(&mut file, &mut outfile)
-                            .map_err(|e| format!("Failed to extract file: {}", e))?;
-                    }
+                    // Just copy the file - MCP cmd /c normalization will be handled
+                    // by mcp_sync_all during startup resync (triggered by .resync_required flag)
+                    let mut outfile =
+                        File::create(&outpath).map_err(|e| format!("Failed to create file: {}", e))?;
+                    std::io::copy(&mut file, &mut outfile)
+                        .map_err(|e| format!("Failed to extract file: {}", e))?;
                 }
             } else if file_name.starts_with("external-configs/claude/") {
                 // Restore Claude settings
@@ -370,23 +358,12 @@ pub async fn restore_database(
 
                 let outpath = claude_dir.join(relative_path);
 
-                // Process MCP config for cross-platform compatibility (settings.json contains mcpServers)
-                if relative_path == "settings.json" {
-                    let mut content = String::new();
-                    file.read_to_string(&mut content)
-                        .map_err(|e| format!("Failed to read claude config: {}", e))?;
-
-                    // Windows: wrap cmd /c, Mac/Linux: unwrap cmd /c
-                    let processed = command_normalize::process_claude_json(&content, cfg!(windows))
-                        .unwrap_or(content);
-                    fs::write(&outpath, processed)
-                        .map_err(|e| format!("Failed to write claude config: {}", e))?;
-                } else {
-                    let mut outfile =
-                        File::create(&outpath).map_err(|e| format!("Failed to create file: {}", e))?;
-                    std::io::copy(&mut file, &mut outfile)
-                        .map_err(|e| format!("Failed to extract file: {}", e))?;
-                }
+                // Note: Claude's MCP config is in ~/.claude.json, not ~/.claude/settings.json
+                // settings.json contains other settings without MCP, so just copy it directly
+                let mut outfile =
+                    File::create(&outpath).map_err(|e| format!("Failed to create file: {}", e))?;
+                std::io::copy(&mut file, &mut outfile)
+                    .map_err(|e| format!("Failed to extract file: {}", e))?;
             } else if file_name.starts_with("external-configs/codex/") {
                 // Restore Codex settings
                 let relative_path = &file_name[23..]; // Remove "external-configs/codex/" prefix
@@ -402,23 +379,12 @@ pub async fn restore_database(
 
                 let outpath = codex_dir.join(relative_path);
 
-                // Process MCP config for cross-platform compatibility
-                if relative_path == "config.toml" {
-                    let mut content = String::new();
-                    file.read_to_string(&mut content)
-                        .map_err(|e| format!("Failed to read codex config: {}", e))?;
-
-                    // Windows: wrap cmd /c, Mac/Linux: unwrap cmd /c
-                    let processed = command_normalize::process_codex_toml(&content, cfg!(windows))
-                        .unwrap_or(content);
-                    fs::write(&outpath, processed)
-                        .map_err(|e| format!("Failed to write codex config: {}", e))?;
-                } else {
-                    let mut outfile =
-                        File::create(&outpath).map_err(|e| format!("Failed to create file: {}", e))?;
-                    std::io::copy(&mut file, &mut outfile)
-                        .map_err(|e| format!("Failed to extract file: {}", e))?;
-                }
+                // Just copy the file - MCP cmd /c normalization will be handled
+                // by mcp_sync_all during startup resync (triggered by .resync_required flag)
+                let mut outfile =
+                    File::create(&outpath).map_err(|e| format!("Failed to create file: {}", e))?;
+                std::io::copy(&mut file, &mut outfile)
+                    .map_err(|e| format!("Failed to extract file: {}", e))?;
             } else if file_name.starts_with("skills/") {
                 // Restore skills directory
                 let relative_path = &file_name[7..]; // Remove "skills/" prefix

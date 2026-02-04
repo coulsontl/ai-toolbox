@@ -446,11 +446,11 @@ const ClaudeCodePage: React.FC = () => {
           </div>
 
           <Space>
-            <Button type="text" icon={<EllipsisOutlined />} onClick={() => setSettingsModalOpen(true)}>
-              {t('claudecode.moreOptions')}
-            </Button>
             <Button type="text" icon={<AppstoreOutlined />} onClick={() => setCommonConfigModalOpen(true)}>
               {t('claudecode.commonConfigButton')}
+            </Button>
+            <Button type="text" icon={<EllipsisOutlined />} onClick={() => setSettingsModalOpen(true)}>
+              {t('claudecode.moreOptions')}
             </Button>
           </Space>
         </div>
