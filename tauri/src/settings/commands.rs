@@ -115,7 +115,10 @@ pub fn restart_app() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         use std::process::Command;
+        let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
         Command::new(&current_exe)
+            .args(args)
+            .env("AI_TOOLBOX_RESTART_WAIT_LOCK", "1")
             .spawn()
             .map_err(|e| format!("Failed to spawn new process: {}", e))?;
     }

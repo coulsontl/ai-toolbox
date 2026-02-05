@@ -2,11 +2,11 @@ import React from 'react';
 import { ConfigProvider, Spin, App, theme as antdTheme, Button, Modal, Progress, Typography, Space } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import enUS from 'antd/locale/en_US';
+import { emit, listen } from '@tauri-apps/api/event';
 import { useAppStore, useSettingsStore } from '@/stores';
 import { useThemeStore } from '@/stores/themeStore';
 import { checkForUpdates, openExternalUrl, setWindowBackgroundColor, installUpdate, GITHUB_REPO, type UpdateInfo } from '@/services';
 import { restartApp } from '@/services/settingsApi';
-import { listen } from '@tauri-apps/api/event';
 import i18n from '@/i18n';
 
 interface ProvidersProps {
@@ -262,6 +262,27 @@ export const Providers: React.FC<ProvidersProps> = ({ children }) => {
   const { mode, resolvedTheme, isInitialized: themeInitialized, initTheme, updateResolvedTheme } = useThemeStore();
 
   const isLoading = !appInitialized || !settingsInitialized || !themeInitialized;
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    const sendReady = () => {
+      emit('frontend-ready').catch(() => {});
+    };
+
+    // Emit twice to avoid missing the backend listener during early startup.
+    sendReady();
+    const timer = window.setTimeout(() => {
+      if (!cancelled) {
+        sendReady();
+      }
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, []);
 
   // Initialize app, settings and theme on mount
   React.useEffect(() => {

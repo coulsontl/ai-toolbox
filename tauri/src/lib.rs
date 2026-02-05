@@ -12,6 +12,9 @@ use tokio::sync::Mutex;
 use log::{error, info, warn};
 use simplelog::{CombinedLogger, Config, LevelFilter, WriteLogger};
 
+#[cfg(target_os = "linux")]
+use std::sync::Mutex as StdMutex;
+
 // Module declarations
 pub mod auto_launch;
 pub mod coding;
@@ -190,6 +193,322 @@ fn setup_panic_hook() {
     }));
 }
 
+#[cfg(target_os = "linux")]
+fn set_env_if_missing(key: &str, value: &str) -> bool {
+    if std::env::var_os(key).is_some() {
+        return false;
+    }
+    std::env::set_var(key, value);
+    true
+}
+
+#[cfg(target_os = "linux")]
+fn is_wayland_session() -> bool {
+    let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+    if session_type.eq_ignore_ascii_case("wayland") {
+        return true;
+    }
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+}
+
+#[cfg(target_os = "linux")]
+const WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL: u8 = 3;
+
+#[cfg(target_os = "linux")]
+fn wayland_webview_workaround_level_path() -> Option<std::path::PathBuf> {
+    let base_dir = dirs::data_dir()
+        .map(|p| p.join("com.ai-toolbox"))
+        .or_else(|| dirs::home_dir().map(|p| p.join(".ai-toolbox")))?;
+    Some(
+        base_dir
+            .join("runtime")
+            .join("wayland_webview_workaround_level"),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn read_wayland_webview_workaround_level() -> u8 {
+    let Some(path) = wayland_webview_workaround_level_path() else {
+        return 0;
+    };
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return 0;
+    };
+    raw.trim()
+        .parse::<u8>()
+        .ok()
+        .map(|v| v.min(WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL))
+        .unwrap_or(0)
+}
+
+#[cfg(target_os = "linux")]
+fn write_wayland_webview_workaround_level(level: u8) {
+    let Some(path) = wayland_webview_workaround_level_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(&path, level.to_string());
+}
+
+#[cfg(target_os = "linux")]
+fn try_acquire_single_instance_lock_with_optional_retry() -> Result<single_instance::SingleInstanceLock, String> {
+    if std::env::var_os("AI_TOOLBOX_RESTART_WAIT_LOCK").is_none() {
+        return single_instance::try_acquire_lock();
+    }
+
+    let mut last_err: Option<String> = None;
+    for _ in 0..20 {
+        match single_instance::try_acquire_lock() {
+            Ok(lock) => return Ok(lock),
+            Err(e) => {
+                last_err = Some(e);
+                std::thread::sleep(Duration::from_millis(150));
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| "Failed to acquire single instance lock".to_string()))
+}
+
+#[cfg(target_os = "linux")]
+fn setup_linux_wayland_egl_failure_monitor(
+    egl_failure_flag: Arc<std::sync::atomic::AtomicBool>,
+) -> Arc<std::sync::atomic::AtomicBool> {
+    use std::io::{Read, Write};
+    use std::os::unix::io::FromRawFd;
+
+    if std::env::var_os("AI_TOOLBOX_DISABLE_WAYLAND_WEBVIEW_WORKAROUND").is_some() {
+        return egl_failure_flag;
+    }
+    if !is_wayland_session() {
+        return egl_failure_flag;
+    }
+
+    let egl_failure_flag_clone = egl_failure_flag.clone();
+    let Ok(thread_builder) = std::thread::Builder::new().name("egl-stderr-monitor".to_string()).spawn(move || unsafe {
+        let mut pipe_fds = [0; 2];
+        if libc::pipe(pipe_fds.as_mut_ptr()) != 0 {
+            return;
+        }
+
+        let read_fd = pipe_fds[0];
+        let write_fd = pipe_fds[1];
+
+        let original_stderr_fd = libc::dup(libc::STDERR_FILENO);
+        if original_stderr_fd < 0 {
+            libc::close(read_fd);
+            libc::close(write_fd);
+            return;
+        }
+
+        if libc::dup2(write_fd, libc::STDERR_FILENO) < 0 {
+            libc::close(original_stderr_fd);
+            libc::close(read_fd);
+            libc::close(write_fd);
+            return;
+        }
+        libc::close(write_fd);
+
+        let mut original_stderr = std::fs::File::from_raw_fd(original_stderr_fd);
+        let mut reader = std::fs::File::from_raw_fd(read_fd);
+
+        let mut buf = [0u8; 4096];
+        let mut carry = String::new();
+        loop {
+            let Ok(n) = reader.read(&mut buf) else { break };
+            if n == 0 {
+                break;
+            }
+
+            let chunk = &buf[..n];
+            let _ = original_stderr.write_all(chunk);
+            let text = String::from_utf8_lossy(chunk);
+
+            carry.push_str(&text);
+            if carry.contains("Could not create default EGL display")
+                || carry.contains("EGL_BAD_PARAMETER")
+            {
+                egl_failure_flag_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+
+            if carry.len() > 4096 {
+                let keep_from = carry.len().saturating_sub(2048);
+                carry.drain(..keep_from);
+            }
+        }
+    }) else {
+        return egl_failure_flag;
+    };
+
+    let _ = thread_builder;
+    egl_failure_flag
+}
+
+#[cfg(target_os = "linux")]
+fn start_linux_wayland_webview_auto_downgrade_watchdog(
+    app_handle: tauri::AppHandle,
+    current_level: u8,
+    egl_failure_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    single_instance_lock_holder: Arc<StdMutex<Option<single_instance::SingleInstanceLock>>>,
+) {
+    use std::sync::atomic::Ordering;
+    use tokio::sync::watch;
+
+    let egl_failure_flag = egl_failure_flag
+        .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
+
+    tauri::async_runtime::spawn(async move {
+        let (ready_tx, mut ready_rx) = watch::channel(false);
+        let _handler = app_handle.listen("frontend-ready", move |_event| {
+            let _ = ready_tx.send(true);
+        });
+
+        let timeout_secs = std::env::var("AI_TOOLBOX_FRONTEND_READY_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(20);
+        let timeout = Duration::from_secs(timeout_secs);
+        let start = std::time::Instant::now();
+
+        loop {
+            if *ready_rx.borrow() {
+                info!("frontend-ready received; Wayland webview auto-downgrade not needed");
+                return;
+            }
+
+            let egl_failed = egl_failure_flag.load(Ordering::Relaxed);
+            if egl_failed || start.elapsed() >= timeout {
+                let next_level = if egl_failed {
+                    WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL
+                } else {
+                    (current_level + 1).min(WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL)
+                };
+
+                if next_level <= current_level {
+                    warn!(
+                        "Wayland webview auto-downgrade triggered but already at level {}",
+                        current_level
+                    );
+                    return;
+                }
+
+                if egl_failed {
+                    warn!(
+                        "Detected EGL initialization failure; restarting with Wayland webview workaround level {}",
+                        next_level
+                    );
+                } else {
+                    warn!(
+                        "frontend-ready not received in {:?}; restarting with Wayland webview workaround level {}",
+                        timeout, next_level
+                    );
+                }
+
+                write_wayland_webview_workaround_level(next_level);
+
+                if let Ok(mut guard) = single_instance_lock_holder.lock() {
+                    let _ = guard.take();
+                }
+
+                let current_exe = match std::env::current_exe() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        error!("Failed to get current executable for restart: {}", e);
+                        return;
+                    }
+                };
+                let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+
+                match std::process::Command::new(&current_exe)
+                    .args(args)
+                    .env("AI_TOOLBOX_RESTART_WAIT_LOCK", "1")
+                    .spawn()
+                {
+                    Ok(_) => {
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        error!("Failed to spawn restarted instance: {}", e);
+                        return;
+                    }
+                }
+            }
+
+            tokio::select! {
+                _ = ready_rx.changed() => {},
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {},
+            }
+        }
+    });
+}
+
+/// Workaround: On some Linux Wayland environments (e.g. Plasma 6), WebKitGTK can fail to
+/// initialize EGL and the webview shows a white screen.
+///
+/// We apply WebKitGTK GPU/DMABuf workarounds on Wayland based on a fallback level:
+/// - 0: Default (GPU/DMABuf enabled)
+/// - 1: Disable DMABuf renderer
+/// - 2: Disable GPU process
+/// - 3: Disable compositing mode
+///
+/// Notes:
+/// - Debug builds default to level 3 to avoid dev-time white screens.
+/// - Release builds default to level 0 and may auto-downgrade on failure.
+/// - Set `AI_TOOLBOX_DISABLE_WAYLAND_WEBVIEW_WORKAROUND=1` to opt out.
+/// - Set `AI_TOOLBOX_WAYLAND_WEBVIEW_WORKAROUND_LEVEL=0..3` to override.
+#[cfg(target_os = "linux")]
+fn setup_linux_wayland_webview_workaround() -> u8 {
+    if std::env::var_os("AI_TOOLBOX_DISABLE_WAYLAND_WEBVIEW_WORKAROUND").is_some() {
+        info!("Wayland webview workaround disabled via AI_TOOLBOX_DISABLE_WAYLAND_WEBVIEW_WORKAROUND");
+        return 0;
+    }
+
+    if !is_wayland_session() {
+        return 0;
+    }
+
+    let level = std::env::var("AI_TOOLBOX_WAYLAND_WEBVIEW_WORKAROUND_LEVEL")
+        .ok()
+        .and_then(|v| v.trim().parse::<u8>().ok())
+        .map(|v| v.min(WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL))
+        .unwrap_or_else(|| {
+            if cfg!(debug_assertions) {
+                WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL
+            } else {
+                read_wayland_webview_workaround_level()
+            }
+        });
+
+    let mut changed = false;
+    if level >= 1 {
+        changed |= set_env_if_missing("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+    if level >= 2 {
+        changed |= set_env_if_missing("WEBKIT_DISABLE_GPU_PROCESS", "1");
+    }
+    if level >= 3 {
+        changed |= set_env_if_missing("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+    }
+
+    if level == 0 {
+        info!("Detected Wayland session; WebKitGTK GPU/DMABuf is enabled (workaround level 0)");
+    } else if changed {
+        info!(
+            "Detected Wayland session; applied WebKitGTK workarounds (level {}) to avoid white screen",
+            level
+        );
+    } else {
+        info!(
+            "Detected Wayland session; WebKitGTK workarounds (level {}) already set via environment",
+            level
+        );
+    }
+
+    level
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 初始化日志系统
@@ -208,22 +527,51 @@ pub fn run() {
     info!("架构: {}", std::env::consts::ARCH);
     info!("========================================");
 
+    #[cfg(target_os = "linux")]
+    let wayland_webview_workaround_level = setup_linux_wayland_webview_workaround();
+
+    #[cfg(target_os = "linux")]
+    let auto_downgrade_enabled = is_wayland_session()
+        && std::env::var_os("AI_TOOLBOX_DISABLE_WAYLAND_WEBVIEW_WORKAROUND").is_none()
+        && std::env::var_os("AI_TOOLBOX_WAYLAND_WEBVIEW_WORKAROUND_LEVEL").is_none()
+        && wayland_webview_workaround_level < WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL
+        && (!cfg!(debug_assertions)
+            || std::env::var_os("AI_TOOLBOX_ENABLE_WAYLAND_WEBVIEW_AUTO_DOWNGRADE").is_some());
+
+    #[cfg(target_os = "linux")]
+    let egl_failure_flag: Option<Arc<std::sync::atomic::AtomicBool>> = if auto_downgrade_enabled {
+        Some(setup_linux_wayland_egl_failure_monitor(Arc::new(
+            std::sync::atomic::AtomicBool::new(false),
+        )))
+    } else {
+        None
+    };
+
     // Linux: Try to acquire file-based single instance lock as fallback
     // This is needed because D-Bus based detection may not work in all environments
     #[cfg(target_os = "linux")]
-    let _single_instance_lock = match single_instance::try_acquire_lock() {
-        Ok(lock) => {
-            info!("文件锁单实例检测成功");
-            Some(lock)
+    let single_instance_lock_holder: Arc<StdMutex<Option<single_instance::SingleInstanceLock>>> =
+        Arc::new(StdMutex::new(None));
+
+    #[cfg(target_os = "linux")]
+    {
+        let lock = match try_acquire_single_instance_lock_with_optional_retry() {
+            Ok(lock) => {
+                info!("文件锁单实例检测成功");
+                lock
+            }
+            Err(e) => {
+                error!("单实例检测失败: {}", e);
+                eprintln!("AI Toolbox 已经在运行中。");
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        };
+
+        if let Ok(mut guard) = single_instance_lock_holder.lock() {
+            *guard = Some(lock);
         }
-        Err(e) => {
-            error!("单实例检测失败: {}", e);
-            eprintln!("AI Toolbox 已经在运行中。");
-            eprintln!("{}", e);
-            // Exit the application
-            std::process::exit(1);
-        }
-    };
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -838,11 +1186,11 @@ pub fn run() {
             e
         })
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            // Handle macOS dock icon click when app is hidden
-            #[cfg(target_os = "macos")]
-            {
-                if let tauri::RunEvent::Reopen { .. } = event {
+        .run(move |app_handle, event| {
+            match event {
+                // Handle macOS dock icon click when app is hidden
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => {
                     use tauri::ActivationPolicy;
                     // Switch back to Regular mode to show in Dock
                     let _ = app_handle.set_activation_policy(ActivationPolicy::Regular);
@@ -851,13 +1199,25 @@ pub fn run() {
                         let _ = window.set_focus();
                     }
                 }
+
+                // Linux/Wayland: If the webview fails to initialize (white screen), restart with a higher
+                // workaround level. This keeps GPU/DMABuf enabled by default and only degrades when needed.
+                #[cfg(target_os = "linux")]
+                tauri::RunEvent::Ready => {
+                    if auto_downgrade_enabled {
+                        start_linux_wayland_webview_auto_downgrade_watchdog(
+                            app_handle.clone(),
+                            wayland_webview_workaround_level,
+                            egl_failure_flag.clone(),
+                            single_instance_lock_holder.clone(),
+                        );
+                    }
+                }
+
+                _ => {}
             }
-            
-            // Suppress unused variable warnings on non-macOS platforms
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = app_handle;
-                let _ = event;
-            }
+
+            // Avoid unused warnings on platforms where the match arms above are empty.
+            let _ = app_handle;
         });
 }
