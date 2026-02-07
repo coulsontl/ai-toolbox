@@ -212,6 +212,11 @@ fn is_wayland_session() -> bool {
 }
 
 #[cfg(target_os = "linux")]
+fn is_appimage_runtime() -> bool {
+    std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some()
+}
+
+#[cfg(target_os = "linux")]
 const WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL: u8 = 3;
 
 #[cfg(target_os = "linux")]
@@ -359,6 +364,11 @@ fn start_linux_wayland_webview_auto_downgrade_watchdog(
     let egl_failure_flag = egl_failure_flag
         .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
 
+    info!(
+        "Starting Wayland webview auto-downgrade watchdog at level {}",
+        current_level
+    );
+
     tauri::async_runtime::spawn(async move {
         let (ready_tx, mut ready_rx) = watch::channel(false);
         let _handler = app_handle.listen("frontend-ready", move |_event| {
@@ -469,6 +479,12 @@ fn setup_linux_wayland_webview_workaround() -> u8 {
         return 0;
     }
 
+    let appimage_min_level = if !cfg!(debug_assertions) && is_appimage_runtime() {
+        1
+    } else {
+        0
+    };
+
     let level = std::env::var("AI_TOOLBOX_WAYLAND_WEBVIEW_WORKAROUND_LEVEL")
         .ok()
         .and_then(|v| v.trim().parse::<u8>().ok())
@@ -477,9 +493,16 @@ fn setup_linux_wayland_webview_workaround() -> u8 {
             if cfg!(debug_assertions) {
                 WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL
             } else {
-                read_wayland_webview_workaround_level()
+                read_wayland_webview_workaround_level().max(appimage_min_level)
             }
         });
+
+    if appimage_min_level > 0 && level == appimage_min_level {
+        info!(
+            "Detected AppImage runtime on Wayland; using safer initial workaround level {}",
+            appimage_min_level
+        );
+    }
 
     let mut changed = false;
     if level >= 1 {
@@ -594,9 +617,19 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .setup(|app| {
+        .setup(move |app| {
             info!("开始执行 setup()...");
             let app_handle = app.handle().clone();
+
+            #[cfg(target_os = "linux")]
+            if auto_downgrade_enabled {
+                start_linux_wayland_webview_auto_downgrade_watchdog(
+                    app_handle.clone(),
+                    wayland_webview_workaround_level,
+                    egl_failure_flag.clone(),
+                    single_instance_lock_holder.clone(),
+                );
+            }
 
             // Create main window with platform-specific configuration
             info!("正在创建主窗口...");
@@ -1197,20 +1230,6 @@ pub fn run() {
                     if let Some(window) = app_handle.get_webview_window("main") {
                         let _ = window.show();
                         let _ = window.set_focus();
-                    }
-                }
-
-                // Linux/Wayland: If the webview fails to initialize (white screen), restart with a higher
-                // workaround level. This keeps GPU/DMABuf enabled by default and only degrades when needed.
-                #[cfg(target_os = "linux")]
-                tauri::RunEvent::Ready => {
-                    if auto_downgrade_enabled {
-                        start_linux_wayland_webview_auto_downgrade_watchdog(
-                            app_handle.clone(),
-                            wayland_webview_workaround_level,
-                            egl_failure_flag.clone(),
-                            single_instance_lock_holder.clone(),
-                        );
                     }
                 }
 
