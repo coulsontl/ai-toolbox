@@ -47,7 +47,15 @@ fn get_wsl_tool_skills_dir(tool_key: &str) -> Option<String> {
     BUILTIN_TOOLS
         .iter()
         .find(|t| t.key == tool_key && t.relative_skills_dir.is_some())
-        .map(|t| format!("~/{}", t.relative_skills_dir.unwrap()))
+        .map(|t| {
+            let dir = t.relative_skills_dir.unwrap();
+            // relative_skills_dir already has ~/ prefix since path unification
+            if dir.starts_with("~/") || dir.starts_with("~\\") {
+                dir.to_string()
+            } else {
+                format!("~/{}", dir)
+            }
+        })
 }
 
 /// Get all tool keys that support skills
@@ -57,6 +65,72 @@ fn get_all_skill_tool_keys() -> Vec<&'static str> {
         .filter(|t| t.relative_skills_dir.is_some())
         .map(|t| t.key)
         .collect()
+}
+
+/// Migrate legacy OpenCode "skill" (singular) directory to "skills" (plural).
+/// - WSL: rename if only old exists, remove old if both exist
+/// - Windows local: same logic for the local opencode skills directory
+pub fn migrate_opencode_skill_dir(distro: Option<&str>) {
+    // --- Windows local migration ---
+    if let Some(home) = dirs::home_dir() {
+        let old_local = home.join(".config").join("opencode").join("skill");
+        let new_local = home.join(".config").join("opencode").join("skills");
+
+        if old_local.is_dir() {
+            if !new_local.exists() {
+                // Rename old -> new
+                if let Err(e) = std::fs::rename(&old_local, &new_local) {
+                    log::warn!("Failed to rename local opencode skill -> skills: {}", e);
+                } else {
+                    info!("Migrated local OpenCode skill -> skills directory");
+                }
+            } else {
+                // Both exist, remove old
+                if let Err(e) = std::fs::remove_dir_all(&old_local) {
+                    log::warn!("Failed to remove legacy local opencode skill directory: {}", e);
+                } else {
+                    info!("Removed legacy local OpenCode skill directory (skills already exists)");
+                }
+            }
+        }
+    }
+
+    // --- WSL migration ---
+    let distro = match distro {
+        Some(d) if !d.is_empty() => d,
+        _ => return,
+    };
+
+    let old_wsl = "~/.config/opencode/skill";
+    let new_wsl = "~/.config/opencode/skills";
+
+    // Single shell command: rename if only old exists, remove old if both exist
+    let cmd = format!(
+        "old=\"{}\"; new=\"{}\"; \
+         if [ -d \"$old\" ]; then \
+             if [ ! -d \"$new\" ]; then mv \"$old\" \"$new\" && echo renamed; \
+             else rm -rf \"$old\" && echo removed; fi; \
+         else echo skip; fi",
+        old_wsl.replace('~', "$HOME"),
+        new_wsl.replace('~', "$HOME"),
+    );
+
+    let mut wsl_cmd = std::process::Command::new("wsl");
+    wsl_cmd.args(["-d", distro, "--exec", "bash", "-c", &cmd]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        wsl_cmd.creation_flags(0x08000000);
+    }
+
+    if let Ok(output) = wsl_cmd.output() {
+        let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        match result.as_str() {
+            "renamed" => info!("WSL: migrated OpenCode skill -> skills directory in {}", distro),
+            "removed" => info!("WSL: removed legacy OpenCode skill directory in {} (skills already exists)", distro),
+            _ => {}
+        }
+    }
 }
 
 /// Sync all skills to WSL (called on skills-changed event)

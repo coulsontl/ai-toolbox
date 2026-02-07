@@ -887,6 +887,15 @@ pub fn run() {
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     let db_state = app_clone.state::<crate::DbState>();
                     let app = app_clone.clone();
+
+                    // Migrate legacy OpenCode "skill" -> "skills" directory before sync
+                    let distro = coding::wsl::wsl_get_config(db_state.clone())
+                        .await
+                        .ok()
+                        .filter(|c| c.enabled)
+                        .map(|c| c.distro);
+                    coding::wsl::migrate_opencode_skill_dir(distro.as_deref());
+
                     let _ = coding::wsl::wsl_sync(db_state, app, None).await;
                 });
             }
