@@ -1,0 +1,199 @@
+.modalBody {
+  margin-top: 24px;
+}
+
+.scrollArea {
+  max-height: 500px;
+  overflow-y: auto;
+  padding-right: 8px;
+  margin-top: 16px;
+}
+
+.sectionCard {
+  margin-top: 10px;
+  border: 1px solid var(--color-border-secondary);
+  border-radius: 12px;
+  background: var(--color-bg-container);
+  overflow: hidden;
+  box-shadow: 0 4px 16px var(--color-shadow-secondary);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+
+  &:hover {
+    border-color: var(--color-border);
+    box-shadow: 0 6px 20px var(--color-shadow);
+  }
+
+  :global(.ant-collapse-item) {
+    border-bottom: 1px solid var(--color-border);
+
+    &:last-child {
+      border-bottom: none;
+    }
+  }
+
+  :global(.ant-collapse-header) {
+    padding: 12px 16px !important;
+    background: linear-gradient(90deg, var(--color-bg-base) 0%, var(--color-bg-hover) 100%);
+  }
+
+  :global(.ant-collapse-content-box) {
+    padding: 16px !important;
+    background: var(--color-bg-container);
+  }
+}
+
+.batchPanel {
+  border: 1px dashed var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-base);
+  padding: 14px;
+}
+
+.batchFlow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.batchGroup {
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-container);
+  padding: 12px;
+}
+
+.batchGroupFrom {
+  border-style: dashed;
+  background: var(--color-bg-base);
+}
+
+.batchGroupTo {
+  border-color: var(--color-border-secondary);
+  background: var(--color-bg-hover);
+}
+
+.batchGroupHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.batchGroupTag {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.batchGroupTagFrom {
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-container);
+}
+
+.batchGroupTagTo {
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border-secondary);
+  background: var(--color-bg-selected);
+}
+
+.batchGroupHint {
+  font-size: 12px;
+}
+
+.batchGroupFields {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.batchArrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.batchArrowIcon {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-secondary);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.batchField {
+  min-width: 0;
+}
+
+.batchLabel {
+  display: block;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
+
+.batchSelect {
+  width: 100%;
+
+  :global(.ant-select-selector) {
+    border-radius: 8px !important;
+  }
+}
+
+.batchActionRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.batchActionHint {
+  font-size: 12px;
+}
+
+.batchActionButton {
+  min-width: 96px;
+}
+
+.helperText {
+  display: block;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-bottom: 12px;
+  line-height: 1.6;
+}
+
+.variantSelect {
+  width: 100px;
+}
+
+@media (max-width: 960px) {
+  .batchFlow {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .batchArrow {
+    transform: rotate(90deg);
+  }
+
+  .batchActionRow {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .batchActionButton {
+    width: 100%;
+  }
+}

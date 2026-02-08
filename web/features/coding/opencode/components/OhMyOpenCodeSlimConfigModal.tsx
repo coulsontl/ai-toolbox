@@ -1,9 +1,10 @@
 import React from 'react';
 import { Modal, Form, Input, Button, Typography, Collapse, Select, message, Divider, Space } from 'antd';
-import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, SwapOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { SLIM_AGENT_TYPES, SLIM_AGENT_DISPLAY_NAMES, SLIM_AGENT_DESCRIPTIONS, type OhMyOpenCodeSlimAgents, type SlimAgentType } from '@/types/ohMyOpenCodeSlim';
 import JsonEditor from '@/components/common/JsonEditor';
+import styles from './OhMyOpenCodeSlimConfigModal.module.less';
 
 const { Text } = Typography;
 
@@ -17,6 +18,8 @@ interface OhMyOpenCodeSlimConfigModalProps {
     otherFields?: Record<string, unknown>;
   };
   modelOptions: { label: string; value: string }[];
+  /** Map of model ID to its variant keys */
+  modelVariantsMap?: Record<string, string[]>;
   onCancel: () => void;
   onSuccess: (values: OhMyOpenCodeSlimConfigFormValues) => void;
 }
@@ -33,6 +36,7 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
   isEdit,
   initialValues,
   modelOptions,
+  modelVariantsMap = {},
   onCancel,
   onSuccess,
 }) => {
@@ -44,6 +48,22 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
   const [customAgents, setCustomAgents] = React.useState<string[]>([]);
   const [newAgentKey, setNewAgentKey] = React.useState('');
   const [showAddAgent, setShowAddAgent] = React.useState(false);
+
+  // Batch replace model state
+  const [batchReplaceFromModel, setBatchReplaceFromModel] = React.useState<string | undefined>(undefined);
+  const [batchReplaceToModel, setBatchReplaceToModel] = React.useState<string | undefined>(undefined);
+  const [batchReplaceFromVariant, setBatchReplaceFromVariant] = React.useState<string | undefined>(undefined);
+  const [batchReplaceToVariant, setBatchReplaceToVariant] = React.useState<string | undefined>(undefined);
+
+  const fromModelVariants = React.useMemo(
+    () => (batchReplaceFromModel ? modelVariantsMap[batchReplaceFromModel] ?? [] : []),
+    [batchReplaceFromModel, modelVariantsMap]
+  );
+
+  const toModelVariants = React.useMemo(
+    () => (batchReplaceToModel ? modelVariantsMap[batchReplaceToModel] ?? [] : []),
+    [batchReplaceToModel, modelVariantsMap]
+  );
 
   // Store otherFields - keep both raw string and parsed value for submit-time validation
   const otherFieldsRef = React.useRef<Record<string, unknown>>({});
@@ -87,6 +107,9 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
           if (agent?.model) {
             formValues[`agent_${agentType}_model`] = agent.model;
           }
+          if (typeof agent?.variant === 'string' && agent.variant) {
+            formValues[`agent_${agentType}_variant`] = agent.variant;
+          }
           
           // Track custom agents
           if (!builtInAgentKeySet.has(agentType)) {
@@ -111,7 +134,115 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
     
     setShowAddAgent(false);
     setNewAgentKey('');
+    setBatchReplaceFromModel(undefined);
+    setBatchReplaceToModel(undefined);
+    setBatchReplaceFromVariant(undefined);
+    setBatchReplaceToVariant(undefined);
   }, [open, initialValues, form, builtInAgentKeys]);
+
+  React.useEffect(() => {
+    if (!batchReplaceFromModel) {
+      setBatchReplaceFromVariant(undefined);
+      return;
+    }
+    if (batchReplaceFromVariant && !fromModelVariants.includes(batchReplaceFromVariant)) {
+      setBatchReplaceFromVariant(undefined);
+    }
+  }, [batchReplaceFromModel, batchReplaceFromVariant, fromModelVariants]);
+
+  React.useEffect(() => {
+    if (!batchReplaceToModel) {
+      setBatchReplaceToVariant(undefined);
+      return;
+    }
+    if (batchReplaceToVariant && !toModelVariants.includes(batchReplaceToVariant)) {
+      setBatchReplaceToVariant(undefined);
+    }
+  }, [batchReplaceToModel, batchReplaceToVariant, toModelVariants]);
+
+  const handleBatchReplaceModel = () => {
+    const fromModel = batchReplaceFromModel;
+    const toModel = batchReplaceToModel;
+
+    if (!fromModel || !toModel) {
+      message.warning(t('opencode.ohMyOpenCode.batchReplaceRequired'));
+      return;
+    }
+
+    const sourceVariants = modelVariantsMap[fromModel] ?? [];
+    if (batchReplaceFromVariant && !sourceVariants.includes(batchReplaceFromVariant)) {
+      message.warning(t('opencode.ohMyOpenCode.batchReplaceInvalidFromVariant'));
+      return;
+    }
+
+    const targetVariants = modelVariantsMap[toModel] ?? [];
+    if (batchReplaceToVariant && !targetVariants.includes(batchReplaceToVariant)) {
+      message.warning(t('opencode.ohMyOpenCode.batchReplaceInvalidToVariant'));
+      return;
+    }
+
+    if (fromModel === toModel) {
+      message.warning(t('opencode.ohMyOpenCode.batchReplaceSameModel'));
+      return;
+    }
+
+    const allAgentKeys = [...builtInAgentKeys, ...customAgents];
+    const modelFieldNames = allAgentKeys.map((agentType) => `agent_${agentType}_model`);
+
+    const values = form.getFieldsValue(true) as Record<string, unknown>;
+    const updateValues: Record<string, unknown> = {};
+
+    let replacedCount = 0;
+    let clearedVariantCount = 0;
+    const hasTargetVariants = targetVariants.length > 0;
+
+    modelFieldNames.forEach((modelFieldName) => {
+      if (values[modelFieldName] !== fromModel) {
+        return;
+      }
+
+      const variantFieldName = modelFieldName.replace('_model', '_variant');
+      const variantValue = values[variantFieldName];
+
+      if (batchReplaceFromVariant) {
+        if (typeof variantValue !== 'string' || variantValue !== batchReplaceFromVariant) {
+          return;
+        }
+      }
+
+      updateValues[modelFieldName] = toModel;
+      replacedCount += 1;
+
+      if (batchReplaceToVariant) {
+        updateValues[variantFieldName] = batchReplaceToVariant;
+        return;
+      }
+
+      if (typeof variantValue === 'string' && variantValue) {
+        if (!hasTargetVariants || !targetVariants.includes(variantValue)) {
+          updateValues[variantFieldName] = undefined;
+          clearedVariantCount += 1;
+        }
+      }
+    });
+
+    if (replacedCount === 0) {
+      message.warning(t('opencode.ohMyOpenCode.batchReplaceNoMatch'));
+      return;
+    }
+
+    form.setFieldsValue(updateValues);
+
+    if (clearedVariantCount > 0) {
+      message.success(t('opencode.ohMyOpenCode.batchReplaceSuccessWithVariantReset', {
+        count: replacedCount,
+        variantCount: clearedVariantCount,
+      }));
+      return;
+    }
+
+    message.success(t('opencode.ohMyOpenCode.batchReplaceSuccess', { count: replacedCount }));
+  };
 
   const handleSubmit = async () => {
     try {
@@ -205,12 +336,12 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
       tooltip={SLIM_AGENT_DESCRIPTIONS[agentType]}
       name={`agent_${agentType}_model`}
     >
-      <Select
-        placeholder={t('opencode.ohMyOpenCode.selectModel')}
-        options={modelOptions}
-        allowClear
-        showSearch
-        optionFilterProp="label"
+                <Select
+                  placeholder={t('opencode.ohMyOpenCode.selectModel')}
+                  options={modelOptions}
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
       />
     </Form.Item>
   );
@@ -222,24 +353,24 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
       label={<span style={{ color: '#1890ff' }}>{agentType}</span>}
       tooltip={t('opencode.ohMyOpenCode.customAgentTooltip')}
     >
-      <Space.Compact style={{ width: '100%' }}>
-        <Form.Item name={`agent_${agentType}_model`} noStyle>
-          <Select
-            placeholder={t('opencode.ohMyOpenCode.selectModel')}
-            options={modelOptions}
-            allowClear
-            showSearch
-            optionFilterProp="label"
+            <Space.Compact style={{ width: '100%' }}>
+              <Form.Item name={`agent_${agentType}_model`} noStyle>
+                <Select
+                  placeholder={t('opencode.ohMyOpenCode.selectModel')}
+                  options={modelOptions}
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
             style={{ width: 'calc(100% - 32px)' }}
-          />
-        </Form.Item>
-        <Button
-          icon={<DeleteOutlined />}
-          onClick={() => handleRemoveCustomAgent(agentType)}
-          danger
-          title={t('common.delete')}
-        />
-      </Space.Compact>
+                  />
+                </Form.Item>
+              <Button
+                icon={<DeleteOutlined />}
+                onClick={() => handleRemoveCustomAgent(agentType)}
+                danger
+                title={t('common.delete')}
+              />
+            </Space.Compact>
     </Form.Item>
   );
 
@@ -280,7 +411,131 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
           <Input placeholder={t('opencode.ohMyOpenCode.configNamePlaceholder')} />
         </Form.Item>
 
-        <div style={{ maxHeight: 500, overflowY: 'auto', paddingRight: 8, marginTop: 16 }}>
+        <div className={styles.scrollArea}>
+          {/* 批量替换模型（编辑模式） */}
+          {isEdit && (
+            <Collapse
+              defaultActiveKey={[]}
+              className={styles.sectionCard}
+              ghost
+              items={[
+                {
+                  key: 'batch-replace-model',
+                  label: <Text strong>{t('opencode.ohMyOpenCode.batchReplaceModel')}</Text>,
+                  children: (
+                    <div className={styles.batchPanel}>
+                      <Text type="secondary" className={styles.helperText}>
+                        {t('opencode.ohMyOpenCode.batchReplaceHint')}
+                      </Text>
+                      <div className={styles.batchFlow}>
+                        <div className={`${styles.batchGroup} ${styles.batchGroupFrom}`}>
+                          <div className={styles.batchGroupHeader}>
+                            <Text className={`${styles.batchGroupTag} ${styles.batchGroupTagFrom}`}>
+                              {t('opencode.ohMyOpenCode.batchReplaceFromTitle')}
+                            </Text>
+                            <Text type="secondary" className={styles.batchGroupHint}>
+                              {t('opencode.ohMyOpenCode.batchReplaceFromHint')}
+                            </Text>
+                          </div>
+                          <div className={styles.batchGroupFields}>
+                            <div className={styles.batchField}>
+                              <Text className={styles.batchLabel}>{t('opencode.ohMyOpenCode.batchReplaceFromPlaceholder')}</Text>
+                              <Select
+                                value={batchReplaceFromModel}
+                                placeholder={t('opencode.ohMyOpenCode.batchReplaceFromPlaceholder')}
+                                options={modelOptions}
+                                allowClear
+                                showSearch
+                                optionFilterProp="label"
+                                className={styles.batchSelect}
+                                onChange={(value) => {
+                                  setBatchReplaceFromModel(value);
+                                  setBatchReplaceFromVariant(undefined);
+                                }}
+                              />
+                            </div>
+                            <div className={styles.batchField}>
+                              <Text className={styles.batchLabel}>{t('opencode.ohMyOpenCode.batchReplaceFromVariantPlaceholder')}</Text>
+                              <Select
+                                value={batchReplaceFromVariant}
+                                placeholder={t('opencode.ohMyOpenCode.batchReplaceFromVariantPlaceholder')}
+                                options={fromModelVariants.map((v) => ({ label: v, value: v }))}
+                                allowClear
+                                disabled={!batchReplaceFromModel || fromModelVariants.length === 0}
+                                className={styles.batchSelect}
+                                onChange={(value) => setBatchReplaceFromVariant(value)}
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className={styles.batchArrow}>
+                          <span className={styles.batchArrowIcon}>
+                            <SwapOutlined />
+                          </span>
+                        </div>
+
+                        <div className={`${styles.batchGroup} ${styles.batchGroupTo}`}>
+                          <div className={styles.batchGroupHeader}>
+                            <Text className={`${styles.batchGroupTag} ${styles.batchGroupTagTo}`}>
+                              {t('opencode.ohMyOpenCode.batchReplaceToTitle')}
+                            </Text>
+                            <Text type="secondary" className={styles.batchGroupHint}>
+                              {t('opencode.ohMyOpenCode.batchReplaceToHint')}
+                            </Text>
+                          </div>
+                          <div className={styles.batchGroupFields}>
+                            <div className={styles.batchField}>
+                              <Text className={styles.batchLabel}>{t('opencode.ohMyOpenCode.batchReplaceToPlaceholder')}</Text>
+                              <Select
+                                value={batchReplaceToModel}
+                                placeholder={t('opencode.ohMyOpenCode.batchReplaceToPlaceholder')}
+                                options={modelOptions}
+                                allowClear
+                                showSearch
+                                optionFilterProp="label"
+                                className={styles.batchSelect}
+                                onChange={(value) => {
+                                  setBatchReplaceToModel(value);
+                                  setBatchReplaceToVariant(undefined);
+                                }}
+                              />
+                            </div>
+                            <div className={styles.batchField}>
+                              <Text className={styles.batchLabel}>{t('opencode.ohMyOpenCode.batchReplaceToVariantPlaceholder')}</Text>
+                              <Select
+                                value={batchReplaceToVariant}
+                                placeholder={t('opencode.ohMyOpenCode.batchReplaceToVariantPlaceholder')}
+                                options={toModelVariants.map((v) => ({ label: v, value: v }))}
+                                allowClear
+                                disabled={!batchReplaceToModel || toModelVariants.length === 0}
+                                className={styles.batchSelect}
+                                onChange={(value) => setBatchReplaceToVariant(value)}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div className={styles.batchActionRow}>
+                        <Text type="secondary" className={styles.batchActionHint}>
+                          {t('opencode.ohMyOpenCode.batchReplaceActionHint')}
+                        </Text>
+                        <Button
+                          type="primary"
+                          icon={<SwapOutlined />}
+                          onClick={handleBatchReplaceModel}
+                          className={styles.batchActionButton}
+                        >
+                          {t('opencode.ohMyOpenCode.batchReplaceAction')}
+                        </Button>
+                      </div>
+                    </div>
+                  ),
+                },
+              ]}
+            />
+          )}
+
           {/* Agent 模型配置 */}
           <Collapse
             defaultActiveKey={['agents']}

@@ -40,6 +40,8 @@ const { Text, Link } = Typography;
 
 interface OhMyOpenCodeSlimSettingsProps {
   modelOptions: { label: string; value: string }[];
+  /** Map of model ID to its variant keys */
+  modelVariantsMap?: Record<string, string[]>;
   disabled?: boolean;
   onConfigApplied?: (config: OhMyOpenCodeSlimConfig) => void;
   onConfigUpdated?: () => void;
@@ -47,6 +49,7 @@ interface OhMyOpenCodeSlimSettingsProps {
 
 const OhMyOpenCodeSlimSettings: React.FC<OhMyOpenCodeSlimSettingsProps> = ({
   modelOptions,
+  modelVariantsMap = {},
   disabled = false,
   onConfigApplied,
   onConfigUpdated,
@@ -400,6 +403,7 @@ const OhMyOpenCodeSlimSettings: React.FC<OhMyOpenCodeSlimSettingsProps> = ({
         open={modalOpen}
         isEdit={!isCopyMode && !!editingConfig}
         modelOptions={modelOptions}
+        modelVariantsMap={modelVariantsMap}
         initialValues={
           editingConfig
             ? {
