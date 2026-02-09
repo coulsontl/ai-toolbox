@@ -485,7 +485,7 @@ fn build_connectivity_url(
 ) -> String {
     let base = normalize_base_url(base_url);
     match npm {
-        "@ai-sdk/openai" => format!("{}/v1/responses", base),
+        "@ai-sdk/openai" => format!("{}/v1/chat/completions", base),
         "@ai-sdk/google" => {
             let normalized_model = model_id.strip_prefix("models/").unwrap_or(model_id);
             let action = if stream { "streamGenerateContent" } else { "generateContent" };
@@ -582,14 +582,16 @@ fn build_default_body(
         "@ai-sdk/openai" => {
             let mut body = json!({
                 "model": model_id,
-                "input": request.prompt,
+                "messages": [
+            { "role": "user", "content": request.prompt }
+        ],
                 "stream": stream_enabled,
             });
             if let Some(temperature) = request.temperature {
                 body["temperature"] = json!(temperature);
             }
             if let Some(max_tokens) = request.max_tokens {
-                body["max_output_tokens"] = json!(max_tokens);
+                body["max_tokens"] = json!(max_tokens);
             }
             body
         }
@@ -637,7 +639,9 @@ fn enforce_prompt_and_model(npm: &str, body: &mut Value, model_id: &str, prompt:
         }
         "@ai-sdk/openai" => {
             body["model"] = json!(model_id);
-            body["input"] = json!(prompt);
+             body["messages"] = json!([
+        { "role": "user", "content": prompt }
+    ]);
         }
         "@ai-sdk/openai-compatible" => {
             body["model"] = json!(model_id);
