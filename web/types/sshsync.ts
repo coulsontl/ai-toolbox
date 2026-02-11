@@ -14,6 +14,7 @@ export interface SSHConnection {
   authMethod: string; // "key" | "password"
   password: string;
   privateKeyPath: string;
+  privateKeyContent: string;
   passphrase: string;
   sortOrder: number;
 }

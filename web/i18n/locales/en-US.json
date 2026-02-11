@@ -190,6 +190,8 @@
       "authKey": "SSH Key",
       "authPassword": "Password",
       "privateKeyPath": "Private Key Path",
+      "privateKey": "Private Key",
+      "privateKeyPlaceholder": "File path (e.g. ~/.ssh/id_rsa) or paste key content directly",
       "passphrase": "Key Passphrase",
       "passphrasePlaceholder": "Optional, enter if key has a passphrase",
       "password": "Password",

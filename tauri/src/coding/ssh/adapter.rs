@@ -114,6 +114,12 @@ pub fn connection_from_db_value(value: Value) -> SSHConnection {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
+        private_key_content: value
+            .get("private_key_content")
+            .or_else(|| value.get("privateKeyContent"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         passphrase: value
             .get("passphrase")
             .and_then(|v| v.as_str())
@@ -137,6 +143,7 @@ pub fn connection_to_db_value(conn: &SSHConnection) -> Value {
         "auth_method": conn.auth_method,
         "password": conn.password,
         "private_key_path": conn.private_key_path,
+        "private_key_content": conn.private_key_content,
         "passphrase": conn.passphrase,
         "sort_order": conn.sort_order,
         "updated_at": Local::now().to_rfc3339(),

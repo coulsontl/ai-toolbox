@@ -122,6 +122,7 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
       authMethod: 'key',
       password: '',
       privateKeyPath: '',
+      privateKeyContent: '',
       passphrase: '',
       sortOrder: (config?.connections.length || 0),
     });

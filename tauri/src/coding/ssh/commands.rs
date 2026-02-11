@@ -1,4 +1,5 @@
 use super::{adapter, session::SshSession, session::SshSessionState, sync};
+use super::key_file;
 use super::types::{
     SSHConnection, SSHConnectionResult, SSHFileMapping, SSHStatusResult, SSHSyncConfig,
     SyncProgress, SyncResult,
@@ -6,11 +7,30 @@ use super::types::{
 use crate::coding::{oh_my_opencode, oh_my_opencode_slim, open_code};
 use crate::db::DbState;
 use chrono::Local;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 // ============================================================================
 // 内部共享函数
 // ============================================================================
+
+/// Normalise the private key fields on an SSHConnection.
+///
+/// If the user pasted key content into `private_key_path` (detected by `-----BEGIN`),
+/// move it to `private_key_content` and clear `private_key_path`.
+fn normalise_key_fields(conn: &mut SSHConnection) {
+    // If privateKeyPath actually contains key content, move it
+    if key_file::is_private_key_content(&conn.private_key_path) {
+        conn.private_key_content = conn.private_key_path.clone();
+        conn.private_key_path.clear();
+    }
+}
+
+/// Get the app data directory from the app handle.
+fn get_app_data_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))
+}
 
 /// 内部共享函数：从数据库读取完整 SSH 配置
 /// 参数 include_mappings 控制是否加载 file_mappings（mcp_sync/skills_sync 不需要）
@@ -194,8 +214,16 @@ pub async fn ssh_list_connections(
 pub async fn ssh_create_connection(
     state: tauri::State<'_, DbState>,
     app: tauri::AppHandle,
-    connection: SSHConnection,
+    mut connection: SSHConnection,
 ) -> Result<(), String> {
+    normalise_key_fields(&mut connection);
+
+    // Ensure key file exists on disk if content is provided
+    if !connection.private_key_content.is_empty() {
+        let app_data_dir = get_app_data_dir(&app)?;
+        key_file::ensure_key_file(&app_data_dir, &connection.private_key_content)?;
+    }
+
     let db = state.0.lock().await;
 
     let conn_data = adapter::connection_to_db_value(&connection);
@@ -215,8 +243,39 @@ pub async fn ssh_create_connection(
 pub async fn ssh_update_connection(
     state: tauri::State<'_, DbState>,
     app: tauri::AppHandle,
-    connection: SSHConnection,
+    mut connection: SSHConnection,
 ) -> Result<(), String> {
+    normalise_key_fields(&mut connection);
+    let app_data_dir = get_app_data_dir(&app)?;
+
+    // Load old connection to compare key content
+    {
+        let db = state.0.lock().await;
+        let old_result: Result<Vec<serde_json::Value>, _> = db
+            .query("SELECT *, type::string(id) as id FROM ssh_connection WHERE id = type::thing('ssh_connection', $id)")
+            .bind(("id", connection.id.clone()))
+            .await
+            .map_err(|e| format!("Failed to query old connection: {}", e))?
+            .take(0);
+
+        if let Ok(records) = old_result {
+            if let Some(record) = records.into_iter().next() {
+                let old_conn = adapter::connection_from_db_value(record);
+                // If old key content is different from new, remove old key file
+                if !old_conn.private_key_content.is_empty()
+                    && old_conn.private_key_content != connection.private_key_content
+                {
+                    key_file::remove_key_file(&app_data_dir, &old_conn.private_key_content);
+                }
+            }
+        }
+    }
+
+    // Ensure new key file exists
+    if !connection.private_key_content.is_empty() {
+        key_file::ensure_key_file(&app_data_dir, &connection.private_key_content)?;
+    }
+
     let db = state.0.lock().await;
 
     let conn_data = adapter::connection_to_db_value(&connection);
@@ -239,6 +298,25 @@ pub async fn ssh_delete_connection(
     id: String,
 ) -> Result<(), String> {
     let db = state.0.lock().await;
+
+    // Load connection to get key content before deleting
+    let old_result: Result<Vec<serde_json::Value>, _> = db
+        .query("SELECT *, type::string(id) as id FROM ssh_connection WHERE id = type::thing('ssh_connection', $id)")
+        .bind(("id", id.clone()))
+        .await
+        .map_err(|e| format!("Failed to query connection: {}", e))?
+        .take(0);
+
+    if let Ok(records) = old_result {
+        if let Some(record) = records.into_iter().next() {
+            let old_conn = adapter::connection_from_db_value(record);
+            if !old_conn.private_key_content.is_empty() {
+                if let Ok(app_data_dir) = get_app_data_dir(&app) {
+                    key_file::remove_key_file(&app_data_dir, &old_conn.private_key_content);
+                }
+            }
+        }
+    }
 
     db.query("DELETE ssh_connection WHERE id = type::thing('ssh_connection', $id)")
         .bind(("id", id))
@@ -274,7 +352,12 @@ pub async fn ssh_set_active_connection(
             .find(|c| c.id == connection_id)
         {
             let mut session = session_state.0.lock().await;
-            let _ = session.connect(conn);
+            if session.connect(conn).is_ok() && session.try_acquire_sync_lock() {
+                let result = do_full_sync(&state, &app, &session, &config, None).await;
+                session.release_sync_lock();
+                let _ = update_sync_status(state.inner(), &result).await;
+                let _ = app.emit("ssh-sync-completed", result);
+            }
         }
     }
 
@@ -284,9 +367,36 @@ pub async fn ssh_set_active_connection(
 
 /// Test an SSH connection (async, non-blocking)
 #[tauri::command]
-pub async fn ssh_test_connection(connection: SSHConnection) -> SSHConnectionResult {
+pub async fn ssh_test_connection(
+    app: tauri::AppHandle,
+    mut connection: SSHConnection,
+) -> SSHConnectionResult {
+    normalise_key_fields(&mut connection);
+
+    let app_data_dir = match get_app_data_dir(&app) {
+        Ok(dir) => dir,
+        Err(e) => {
+            return SSHConnectionResult {
+                connected: false,
+                error: Some(e),
+                server_info: None,
+            }
+        }
+    };
+
+    // Ensure key file exists for testing
+    if !connection.private_key_content.is_empty() {
+        if let Err(e) = key_file::ensure_key_file(&app_data_dir, &connection.private_key_content) {
+            return SSHConnectionResult {
+                connected: false,
+                error: Some(e),
+                server_info: None,
+            };
+        }
+    }
+
     // 在 blocking 线程池中执行，避免阻塞 tokio runtime
-    tokio::task::spawn_blocking(move || sync::test_connection(&connection))
+    tokio::task::spawn_blocking(move || sync::test_connection(&connection, &app_data_dir))
         .await
         .unwrap_or(SSHConnectionResult {
             connected: false,

@@ -732,7 +732,7 @@ pub fn run() {
 
                 // 注册 SSH 会话状态
                 let ssh_session = coding::ssh::SshSessionState(
-                    std::sync::Arc::new(tokio::sync::Mutex::new(coding::ssh::SshSession::new()))
+                    std::sync::Arc::new(tokio::sync::Mutex::new(coding::ssh::SshSession::new(app_data_dir.clone())))
                 );
                 app.manage(ssh_session);
                 info!("SSH 会话状态已注册到应用");

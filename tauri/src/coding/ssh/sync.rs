@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::process::Command;
+use super::key_file;
 use super::session::SshSession;
 use super::types::{SSHConnection, SSHConnectionResult, SSHFileMapping, SyncResult};
 
@@ -9,7 +10,7 @@ use super::types::{SSHConnection, SSHConnectionResult, SSHFileMapping, SyncResul
 
 /// 测试 SSH 连接（独立短连接，不复用主连接）
 /// 用于测试未保存的连接配置
-pub fn test_connection(conn: &SSHConnection) -> SSHConnectionResult {
+pub fn test_connection(conn: &SSHConnection, app_data_dir: &Path) -> SSHConnectionResult {
     let target = format!("{}@{}", conn.username, conn.host);
 
     let mut cmd = if conn.auth_method == "password" && !conn.password.is_empty() {
@@ -24,10 +25,17 @@ pub fn test_connection(conn: &SSHConnection) -> SSHConnectionResult {
     cmd.args(["-p", &conn.port.to_string()]);
     cmd.args(["-o", "StrictHostKeyChecking=accept-new"]);
     cmd.args(["-o", "ConnectTimeout=10"]);
-    if conn.auth_method == "key" && !conn.private_key_path.is_empty() {
-        cmd.args(["-i", &conn.private_key_path]);
-        if conn.passphrase.is_empty() {
-            cmd.args(["-o", "BatchMode=yes"]);
+    if conn.auth_method == "key" {
+        let key_path = key_file::resolve_key_path(
+            app_data_dir,
+            &conn.private_key_path,
+            &conn.private_key_content,
+        ).unwrap_or_default();
+        if !key_path.is_empty() {
+            cmd.args(["-i", &key_path]);
+            if conn.passphrase.is_empty() {
+                cmd.args(["-o", "BatchMode=yes"]);
+            }
         }
     }
     cmd.arg(&target);

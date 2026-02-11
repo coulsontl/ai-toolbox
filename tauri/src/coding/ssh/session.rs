@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use log::{info, warn};
 
+use super::key_file;
 use super::types::SSHConnection;
 
 #[cfg(target_os = "windows")]
@@ -34,8 +35,10 @@ pub enum SessionStatus {
 pub struct SshSession {
     /// 当前使用的连接信息
     conn: Option<SSHConnection>,
-    /// ControlMaster socket 路径
-    control_path: PathBuf,
+    /// ControlMaster socket 路径（String 而非 PathBuf，因为 Windows Named Pipe 路径会被 PathBuf 破坏）
+    control_path: String,
+    /// 应用数据目录（用于存储私钥文件）
+    app_data_dir: PathBuf,
     /// 当前会话状态
     status: SessionStatus,
     /// 是否正在进行同步操作（防止并发）
@@ -47,13 +50,22 @@ pub struct SshSessionState(pub Arc<Mutex<SshSession>>);
 
 impl SshSession {
     /// 创建新会话（不连接）
-    pub fn new() -> Self {
-        // control_path 放在系统临时目录: /tmp/ai-toolbox-ssh-ctrl-%C
+    pub fn new(app_data_dir: PathBuf) -> Self {
         // %C 是 OpenSSH 内置的 hash，自动根据 host:port:user 生成唯一值
-        let control_path = std::env::temp_dir().join("ai-toolbox-ssh-ctrl-%C");
+        // Windows: 使用 Named Pipe（\\.\pipe\...），因为 Windows 不支持 Unix domain socket
+        // Unix: 使用临时目录下的 socket 文件
+        let control_path = if cfg!(target_os = "windows") {
+            r"\\.\pipe\ai-toolbox-ssh-ctrl-%C".to_string()
+        } else {
+            std::env::temp_dir()
+                .join("ai-toolbox-ssh-ctrl-%C")
+                .to_string_lossy()
+                .to_string()
+        };
         Self {
             conn: None,
             control_path,
+            app_data_dir,
             status: SessionStatus::Disconnected,
             syncing: AtomicBool::new(false),
         }
@@ -84,14 +96,13 @@ impl SshSession {
         self.status = SessionStatus::Connecting;
         self.conn = Some(conn.clone());
 
-        let control_path_str = self.control_path.to_string_lossy().to_string();
         let target = format!("{}@{}", conn.username, conn.host);
 
         // 构建主连接命令
         let mut cmd = self.build_base_ssh_command(conn);
         cmd.args([
             "-M",                              // 启动 ControlMaster
-            "-S", &control_path_str,           // socket 路径
+            "-S", &self.control_path,          // socket 路径
             "-o", "ControlPersist=yes",        // 前台 ssh 退出后主连接仍保持
             "-o", "ServerAliveInterval=30",    // 每30秒发心跳
             "-o", "ServerAliveCountMax=3",     // 3次无响应断开
@@ -124,12 +135,11 @@ impl SshSession {
             Some(c) => c,
             None => return false,
         };
-        let control_path_str = self.control_path.to_string_lossy().to_string();
         let target = format!("{}@{}", conn.username, conn.host);
 
         let mut cmd = Command::new("ssh");
         cmd.args([
-            "-S", &control_path_str,
+            "-S", &self.control_path,
             "-O", "check",            // 检查主连接状态
             "-p", &conn.port.to_string(),
             &target,
@@ -158,12 +168,11 @@ impl SshSession {
     /// 断开主连接
     pub fn disconnect(&mut self) {
         if let Some(conn) = &self.conn {
-            let control_path_str = self.control_path.to_string_lossy().to_string();
             let target = format!("{}@{}", conn.username, conn.host);
 
             let mut cmd = Command::new("ssh");
             cmd.args([
-                "-S", &control_path_str,
+                "-S", &self.control_path,
                 "-O", "exit",
                 "-p", &conn.port.to_string(),
                 &target,
@@ -183,12 +192,11 @@ impl SshSession {
     pub fn create_ssh_command(&self) -> Result<Command, String> {
         let conn = self.conn.as_ref()
             .ok_or("SSH 会话未建立")?;
-        let control_path_str = self.control_path.to_string_lossy().to_string();
         let target = format!("{}@{}", conn.username, conn.host);
 
         let mut cmd = Command::new("ssh");
         cmd.args([
-            "-S", &control_path_str,          // 复用主连接
+            "-S", &self.control_path,          // 复用主连接
             "-o", "ControlMaster=no",          // 不尝试成为 master
             "-p", &conn.port.to_string(),
             "-o", "ConnectTimeout=10",
@@ -206,11 +214,10 @@ impl SshSession {
     pub fn create_scp_command(&self) -> Result<Command, String> {
         let conn = self.conn.as_ref()
             .ok_or("SSH 会话未建立")?;
-        let control_path_str = self.control_path.to_string_lossy().to_string();
 
         let mut cmd = Command::new("scp");
         cmd.args([
-            "-o", &format!("ControlPath={}", control_path_str),  // 复用主连接
+            "-o", &format!("ControlPath={}", self.control_path),  // 复用主连接
             "-o", "ControlMaster=no",
             "-P", &conn.port.to_string(),
             "-o", "ConnectTimeout=10",
@@ -262,10 +269,17 @@ impl SshSession {
         cmd.args(["-p", &conn.port.to_string()]);
         cmd.args(["-o", "StrictHostKeyChecking=accept-new"]);
         cmd.args(["-o", "ConnectTimeout=10"]);
-        if conn.auth_method == "key" && !conn.private_key_path.is_empty() {
-            cmd.args(["-i", &conn.private_key_path]);
-            if conn.passphrase.is_empty() {
-                cmd.args(["-o", "BatchMode=yes"]);
+        if conn.auth_method == "key" {
+            let key_path = key_file::resolve_key_path(
+                &self.app_data_dir,
+                &conn.private_key_path,
+                &conn.private_key_content,
+            ).unwrap_or_default();
+            if !key_path.is_empty() {
+                cmd.args(["-i", &key_path]);
+                if conn.passphrase.is_empty() {
+                    cmd.args(["-o", "BatchMode=yes"]);
+                }
             }
         }
     }

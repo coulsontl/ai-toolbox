@@ -19,6 +19,7 @@ pub struct SSHConnection {
     pub auth_method: String, // "key" | "password"
     pub password: String,
     pub private_key_path: String,
+    pub private_key_content: String,
     pub passphrase: String,
     pub sort_order: u32,
 }

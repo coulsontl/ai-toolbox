@@ -5,6 +5,7 @@ mod sync;
 mod commands;
 mod mcp_sync;
 mod skills_sync;
+pub mod key_file;
 
 pub use types::*;
 pub use session::*;

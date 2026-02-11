@@ -64,7 +64,10 @@
       "Bash(cargo clippy:*)",
       "mcp__sequential-thinking__sequentialthinking",
       "Bash(gh pr list:*)",
-      "Bash(gh --version:*)"
+      "Bash(gh --version:*)",
+      "Bash(ssh -V 2>&1:*)",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__query-docs"
     ]
   }
 }

@@ -190,6 +190,8 @@
       "authKey": "密钥",
       "authPassword": "密码",
       "privateKeyPath": "私钥路径",
+      "privateKey": "私钥",
+      "privateKeyPlaceholder": "文件路径（如 ~/.ssh/id_rsa）或直接粘贴私钥内容",
       "passphrase": "密钥口令",
       "passphrasePlaceholder": "可选，如密钥有口令请填写",
       "password": "密码",

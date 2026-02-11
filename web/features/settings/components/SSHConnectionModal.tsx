@@ -61,6 +61,7 @@ export const SSHConnectionModal: React.FC<SSHConnectionModalProps> = ({
         authMethod: values.authMethod,
         password: values.authMethod === 'password' ? values.password || '' : '',
         privateKeyPath: values.authMethod === 'key' ? values.privateKeyPath || '' : '',
+        privateKeyContent: connection?.privateKeyContent || '',
         passphrase: values.authMethod === 'key' ? values.passphrase || '' : '',
         sortOrder: connection?.sortOrder || 0,
       });
@@ -122,8 +123,11 @@ export const SSHConnectionModal: React.FC<SSHConnectionModalProps> = ({
 
         {authMethod === 'key' && (
           <>
-            <Form.Item name="privateKeyPath" label={t('settings.ssh.privateKeyPath')}>
-              <Input placeholder="~/.ssh/id_rsa" />
+            <Form.Item name="privateKeyPath" label={t('settings.ssh.privateKey')}>
+              <Input.TextArea
+                placeholder={t('settings.ssh.privateKeyPlaceholder')}
+                autoSize={{ minRows: 1, maxRows: 6 }}
+              />
             </Form.Item>
             <Form.Item name="passphrase" label={t('settings.ssh.passphrase')}>
               <Input.Password placeholder={t('settings.ssh.passphrasePlaceholder')} />
