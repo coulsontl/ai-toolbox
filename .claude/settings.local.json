@@ -71,7 +71,8 @@
       "Bash(gh issue view:*)",
       "WebFetch(domain:github.com)",
       "Bash(gh issue view:*)",
-      "Bash(echo:*)"
+      "Bash(echo:*)",
+      "Bash(gh api:*)"
     ]
   }
 }

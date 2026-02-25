@@ -94,6 +94,11 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
 
     initializedRef.current = true;
 
+    // Always reset form and refs first to prevent stale values from previous edits
+    form.resetFields();
+    otherFieldsRef.current = {};
+    otherFieldsRawRef.current = '';
+
     if (initialValues) {
       // Build form values with nested agent paths
       const formValues: Record<string, unknown> = {
@@ -113,7 +118,7 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
           if (typeof agent?.variant === 'string' && agent.variant) {
             formValues[`agent_${agentType}_variant`] = agent.variant;
           }
-          
+
           // Track custom agents
           if (!builtInAgentKeySet.has(agentType)) {
             detectedCustomAgents.push(agentType);
@@ -129,10 +134,7 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
         ? JSON.stringify(initialValues.otherFields, null, 2)
         : '';
     } else {
-      form.resetFields();
       setCustomAgents([]);
-      otherFieldsRef.current = {};
-      otherFieldsRawRef.current = '';
     }
     
     setShowAddAgent(false);

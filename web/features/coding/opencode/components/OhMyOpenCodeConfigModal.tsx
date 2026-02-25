@@ -134,6 +134,17 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
 
     initializedRef.current = true;
 
+    // Always reset form and refs first to prevent stale values from previous edits
+    // (e.g., fallback_models/ultrawork leaking between different config profiles)
+    form.resetFields();
+    advancedSettingsRef.current = {};
+    advancedSettingsRawRef.current = {};
+    categoryAdvancedSettingsRef.current = {};
+    categoryAdvancedSettingsRawRef.current = {};
+    unknownCategoriesRef.current = {};
+    otherFieldsRef.current = {};
+    otherFieldsRawRef.current = '';
+
     if (initialValues) {
       // Parse agent models and advanced settings from config
       const agentFields: Record<string, string | undefined> = {};
@@ -261,29 +272,9 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
         ? JSON.stringify(initialValues.otherFields, null, 2)
         : '';
     } else {
-      form.resetFields();
-      form.setFieldsValue({
-        otherFields: {},
-      });
-
-      // Reset refs
-      allAgentKeys.forEach((agentType) => {
-        advancedSettingsRef.current[agentType] = {};
-        advancedSettingsRawRef.current[agentType] = '';
-      });
-      
-      categoryKeys.forEach((categoryKey) => {
-        categoryAdvancedSettingsRef.current[categoryKey] = {};
-        categoryAdvancedSettingsRawRef.current[categoryKey] = '';
-      });
-      unknownCategoriesRef.current = {};
-
       // Reset custom agents and categories
       setCustomAgents([]);
       setCustomCategories([]);
-
-      otherFieldsRef.current = {};
-      otherFieldsRawRef.current = '';
     }
     setExpandedAgents({}); // Collapse all on open
     setExpandedCategories({}); // Collapse all categories on open

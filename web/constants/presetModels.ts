@@ -32,6 +32,13 @@ export const PRESET_MODELS: Record<string, PresetModel[]> = {
       modalities: { input: ['text'], output: ['text'] },
     },
     {
+      id: 'qwen3.5-plus',
+      name: 'Qwen3.5 Plus',
+      contextLimit: 1000000,
+      outputLimit: 65536,
+      modalities: { input: ['text', 'image', 'video'], output: ['text'] },
+    },
+    {
       id: 'kimi-k2.5',
       name: 'Kimi K2.5',
       contextLimit: 262144,
