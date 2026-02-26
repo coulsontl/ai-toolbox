@@ -129,7 +129,6 @@ dependencies = [
  "sha2 0.10.9",
  "simplelog",
  "surrealdb",
- "surrealkv",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

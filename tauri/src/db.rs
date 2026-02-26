@@ -1,63 +1,75 @@
 use std::path::Path;
 use std::sync::Arc;
+use surrealdb::engine::local::SurrealKv;
 use surrealdb::Surreal;
 use tokio::sync::Mutex;
 
 pub struct DbState(pub Arc<Mutex<Surreal<surrealdb::engine::local::Db>>>);
 
-/// Run database migrations
-///
-/// Note: With the adapter layer pattern, database migrations are no longer needed.
-/// The adapter handles all backward compatibility automatically.
-pub async fn run_migrations(_db: &Surreal<surrealdb::engine::local::Db>) -> Result<(), String> {
-    // No migrations needed - adapter layer handles all compatibility
-    Ok(())
-}
-
-/// clog 压缩阈值：超过此大小才执行 compact（1MB）
+/// clog 压缩阈值（字节）
 const COMPACT_THRESHOLD: u64 = 1 * 1024 * 1024;
 
-/// 在 SurrealDB 初始化之前，用 SurrealKV 原生 API 执行 compact。
-/// 关闭版本历史（enable_versions=false），使 compact 只保留每个 key 的最新版本，
-/// 清除所有历史版本和已删除记录，大幅缩减 clog 体积。
-pub fn compact_database(db_path: &Path) {
-    let clog_size = get_clog_dir_size(db_path);
-    if clog_size < COMPACT_THRESHOLD {
-        return;
-    }
+/// 检查 clog 是否需要压缩
+pub fn needs_compact(db_path: &Path) -> bool {
+    get_clog_dir_size(db_path) >= COMPACT_THRESHOLD
+}
 
-    let size_mb = clog_size as f64 / 1024.0 / 1024.0;
-    log::info!("clog 大小 {:.1}MB 超过阈值，开始压缩数据库...", size_mb);
+/// 安全压缩：通过 SurrealDB export/import 重建数据库。
+/// 不使用 surrealkv 原生 compact（0.9.3 会损坏数据）。
+///
+/// 流程: open → export SurrealQL → close → 删除 DB → reopen → import
+/// 返回新的 DB 连接。
+pub async fn safe_compact(
+    db: Surreal<surrealdb::engine::local::Db>,
+    db_path: &Path,
+) -> Result<Surreal<surrealdb::engine::local::Db>, String> {
+    let clog_before = get_clog_dir_size(db_path);
+    let before_mb = clog_before as f64 / 1024.0 / 1024.0;
+    log::info!("开始安全压缩数据库 (clog: {:.1}MB)...", before_mb);
 
-    let mut opts = surrealkv::Options::new();
-    opts.dir = db_path.to_path_buf();
-    opts.enable_versions = false;
+    // Export to temp file (placed in parent dir so it survives db dir deletion)
+    let export_path = db_path.with_extension("surql.tmp");
+    db.export(&export_path)
+        .await
+        .map_err(|e| format!("Export failed: {}", e))?;
+    log::info!("数据库已导出到临时文件");
 
-    let store = match surrealkv::Store::new(opts) {
-        Ok(s) => s,
-        Err(e) => {
-            log::warn!("打开 SurrealKV 执行 compact 失败: {}", e);
-            return;
-        }
-    };
+    // Close DB connection
+    drop(db);
 
-    match store.compact() {
-        Ok(_) => log::info!("数据库 compact 完成"),
-        Err(e) => log::warn!("数据库 compact 失败: {}", e),
-    }
+    // Delete database directory
+    std::fs::remove_dir_all(db_path)
+        .map_err(|e| format!("Failed to remove database directory: {}", e))?;
+    std::fs::create_dir_all(db_path)
+        .map_err(|e| format!("Failed to recreate database directory: {}", e))?;
 
-    if let Err(e) = store.close() {
-        log::warn!("关闭 SurrealKV compact store 失败: {}", e);
-    }
+    // Reopen fresh DB
+    let db = Surreal::new::<SurrealKv>(db_path.to_path_buf())
+        .await
+        .map_err(|e| format!("Failed to reopen database: {}", e))?;
+    db.use_ns("ai_toolbox")
+        .use_db("main")
+        .await
+        .map_err(|e| format!("Failed to select ns/db: {}", e))?;
 
-    let new_size = get_clog_dir_size(db_path);
-    let new_size_mb = new_size as f64 / 1024.0 / 1024.0;
+    // Import data
+    db.import(&export_path)
+        .await
+        .map_err(|e| format!("Import failed: {}", e))?;
+
+    // Clean up temp file
+    let _ = std::fs::remove_file(&export_path);
+
+    let clog_after = get_clog_dir_size(db_path);
+    let after_mb = clog_after as f64 / 1024.0 / 1024.0;
     log::info!(
-        "compact 前: {:.1}MB → compact 后: {:.1}MB (节省 {:.1}MB)",
-        size_mb,
-        new_size_mb,
-        size_mb - new_size_mb
+        "安全压缩完成: {:.1}MB → {:.1}MB (节省 {:.1}MB)",
+        before_mb,
+        after_mb,
+        before_mb - after_mb
     );
+
+    Ok(db)
 }
 
 /// 获取数据库 clog 目录的总大小（字节）
@@ -84,4 +96,3 @@ fn get_dir_size(path: &Path) -> u64 {
     }
     total
 }
-

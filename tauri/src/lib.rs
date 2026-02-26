@@ -706,14 +706,6 @@ pub fn run() {
             coding::open_code::free_models::init_default_provider_models();
             info!("模型缓存已初始化 (models.dev.json)");
 
-            // 检测 clog 大小，超过阈值时在 SurrealDB 初始化前执行 compact
-            db::compact_database(&db_path);
-
-            let clog_size = db::get_clog_dir_size(&db_path);
-            if clog_size > 0 {
-                info!("clog: {:.1}MB", clog_size as f64 / 1024.0 / 1024.0);
-            }
-
             // Initialize SurrealDB
             info!("正在初始化 SurrealDB...");
             tauri::async_runtime::block_on(async {
@@ -735,16 +727,25 @@ pub fn run() {
                 }
                 info!("命名空间和数据库选择成功");
 
-                // Run database migrations
-                info!("正在运行数据库迁移...");
-                if let Err(e) = db::run_migrations(&db).await {
-                    error!("数据库迁移失败: {}", e);
-                    panic!("Failed to run database migrations: {}", e);
-                }
-                info!("数据库迁移完成");
-
-                // Clean up legacy provider_models table (migrated to models.dev.json)
+                // Clean up legacy tables before compact to reduce export size
                 let _ = db.query("REMOVE TABLE IF EXISTS provider_models").await;
+
+                // Safe compact: export → delete → reimport (surrealkv native compact is broken)
+                let db = if db::needs_compact(&db_path) {
+                    match db::safe_compact(db, &db_path).await {
+                        Ok(new_db) => new_db,
+                        Err(e) => {
+                            error!("安全压缩失败: {}", e);
+                            let db = Surreal::new::<SurrealKv>(db_path.clone()).await
+                                .expect("Failed to reopen database after compact failure");
+                            db.use_ns("ai_toolbox").use_db("main").await
+                                .expect("Failed to select ns/db after compact failure");
+                            db
+                        }
+                    }
+                } else {
+                    db
+                };
 
                 let db_state = DbState(Arc::new(Mutex::new(db.clone())));
 
