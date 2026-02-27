@@ -3,6 +3,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::db::DbState;
+use crate::coding::db_id::db_record_id;
 use super::adapter;
 use super::types::*;
 use tauri::Emitter;
@@ -267,10 +268,9 @@ pub async fn update_codex_provider(
     let now = Local::now().to_rfc3339();
 
     // Get existing record to preserve created_at
-    // Use type::thing to convert string id to Thing for proper comparison
+    let record_id = db_record_id("codex_provider", &id);
     let existing_result: Result<Vec<Value>, _> = db
-        .query("SELECT * OMIT id FROM codex_provider WHERE id = type::thing('codex_provider', $id) LIMIT 1")
-        .bind(("id", id.clone()))
+        .query(&format!("SELECT * OMIT id FROM {} LIMIT 1", record_id))
         .await
         .map_err(|e| format!("Failed to query existing provider: {}", e))?
         .take(0);
@@ -386,9 +386,9 @@ pub async fn reorder_codex_providers(
 
     for (index, id) in ids.iter().enumerate() {
         // 首先获取现有记录
+        let record_id = db_record_id("codex_provider", id);
         let existing_result: Result<Vec<Value>, _> = db
-            .query("SELECT *, type::string(id) as id FROM codex_provider WHERE id = type::thing('codex_provider', $id) LIMIT 1")
-            .bind(("id", id.clone()))
+            .query(&format!("SELECT *, type::string(id) as id FROM {} LIMIT 1", record_id))
             .await
             .map_err(|e| format!("Failed to query provider {}: {}", id, e))?
             .take(0);
@@ -461,8 +461,8 @@ async fn update_is_applied_status(
         .map_err(|e| format!("Failed to clear applied status: {}", e))?;
 
     // Set target provider as applied
-    db.query("UPDATE codex_provider SET is_applied = true, updated_at = $now WHERE id = type::thing('codex_provider', $id)")
-        .bind(("id", target_id))
+    let record_id = db_record_id("codex_provider", &target_id);
+    db.query(&format!("UPDATE {} SET is_applied = true, updated_at = $now", record_id))
         .bind(("now", now))
         .await
         .map_err(|e| format!("Failed to set applied status: {}", e))?;
@@ -488,9 +488,9 @@ pub async fn apply_config_to_file_public(
     provider_id: &str,
 ) -> Result<(), String> {
     // Get the provider
+    let record_id = db_record_id("codex_provider", provider_id);
     let provider_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM codex_provider WHERE id = type::thing('codex_provider', $id) LIMIT 1")
-        .bind(("id", provider_id.to_string()))
+        .query(&format!("SELECT *, type::string(id) as id FROM {} LIMIT 1", record_id))
         .await
         .map_err(|e| format!("Failed to query provider: {}", e))?
         .take(0);
@@ -679,9 +679,9 @@ pub async fn toggle_codex_provider_disabled(
     .map_err(|e| format!("Failed to toggle provider disabled status: {}", e))?;
 
     // If this provider is applied and now disabled, re-apply config to update files
+    let toggle_id = db_record_id("codex_provider", &provider_id);
     let provider: Option<Value> = db
-        .query("SELECT *, type::string(id) as id FROM codex_provider WHERE id = type::thing('codex_provider', $id)")
-        .bind(("id", provider_id.clone()))
+        .query(&format!("SELECT *, type::string(id) as id FROM {}", toggle_id))
         .await
         .map_err(|e| format!("Failed to query provider: {}", e))?
         .take(0)

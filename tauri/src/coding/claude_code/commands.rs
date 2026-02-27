@@ -4,6 +4,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::db::DbState;
+use crate::coding::db_id::db_record_id;
 use super::adapter;
 use super::types::*;
 use tauri::Emitter;
@@ -208,10 +209,9 @@ pub async fn update_claude_provider(
     let now = Local::now().to_rfc3339();
 
     // Get existing record to preserve created_at
-    // Use type::thing to convert string id to Thing for proper comparison
+    let record_id = db_record_id("claude_provider", &id);
     let existing_result: Result<Vec<Value>, _> = db
-        .query("SELECT * OMIT id FROM claude_provider WHERE id = type::thing('claude_provider', $id) LIMIT 1")
-        .bind(("id", id.clone()))
+        .query(&format!("SELECT * OMIT id FROM {} LIMIT 1", record_id))
         .await
         .map_err(|e| format!("Failed to query existing provider: {}", e))?
         .take(0);
@@ -331,10 +331,10 @@ pub async fn reorder_claude_providers(
     let now = Local::now().to_rfc3339();
 
     for (index, id) in ids.iter().enumerate() {
-        db.query("UPDATE claude_provider SET sort_index = $index, updated_at = $now WHERE id = type::thing('claude_provider', $id)")
+        let record_id = db_record_id("claude_provider", id);
+        db.query(&format!("UPDATE {} SET sort_index = $index, updated_at = $now", record_id))
             .bind(("index", index as i32))
             .bind(("now", now.clone()))
-            .bind(("id", id.clone()))
             .await
             .map_err(|e| format!("Failed to update provider {}: {}", id, e))?;
     }
@@ -361,8 +361,8 @@ pub async fn select_claude_provider(
         .map_err(|e| format!("Failed to reset applied status: {}", e))?;
 
     // Mark target provider as applied
-    db.query("UPDATE claude_provider SET is_applied = true, updated_at = $now WHERE id = type::thing('claude_provider', $id)")
-        .bind(("id", id))
+    let record_id = db_record_id("claude_provider", &id);
+    db.query(&format!("UPDATE {} SET is_applied = true, updated_at = $now", record_id))
         .bind(("now", now))
         .await
         .map_err(|e| format!("Failed to set applied status: {}", e))?;
@@ -470,10 +470,9 @@ pub async fn apply_config_to_file_public(
 
 
     // Get the provider
-    // Use type::thing(table, id) to create a Thing from table name and id
+    let record_id = db_record_id("claude_provider", provider_id);
     let provider_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM claude_provider WHERE id = type::thing('claude_provider', $id) LIMIT 1")
-        .bind(("id", provider_id.to_string()))
+        .query(&format!("SELECT *, type::string(id) as id FROM {} LIMIT 1", record_id))
         .await
         .map_err(|e| format!("Failed to query provider: {}", e))?
         .take(0);
@@ -635,9 +634,9 @@ pub async fn toggle_claude_code_provider_disabled(
     .map_err(|e| format!("Failed to toggle provider disabled status: {}", e))?;
 
     // If this provider is applied and now disabled, re-apply config to update files
+    let toggle_record_id = db_record_id("claude_provider", &provider_id);
     let provider: Option<Value> = db
-        .query("SELECT *, type::string(id) as id FROM claude_provider WHERE id = type::thing('claude_provider', $id)")
-        .bind(("id", provider_id.clone()))
+        .query(&format!("SELECT *, type::string(id) as id FROM {}", toggle_record_id))
         .await
         .map_err(|e| format!("Failed to query provider: {}", e))?
         .take(0)
@@ -691,8 +690,8 @@ pub async fn apply_config_internal<R: tauri::Runtime>(
         .map_err(|e| format!("Failed to reset applied status: {}", e))?;
 
     // Mark target provider as applied
-    db.query("UPDATE claude_provider SET is_applied = true, updated_at = $now WHERE id = type::thing('claude_provider', $id)")
-        .bind(("id", provider_id.to_string()))
+    let apply_record_id = db_record_id("claude_provider", provider_id);
+    db.query(&format!("UPDATE {} SET is_applied = true, updated_at = $now", apply_record_id))
         .bind(("now", now))
         .await
         .map_err(|e| format!("Failed to set applied status: {}", e))?;

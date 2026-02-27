@@ -76,7 +76,8 @@
       "WebFetch(domain:crates.io)",
       "WebFetch(domain:surrealdb.com)",
       "Bash(gh release:*)",
-      "WebFetch(domain:docs.rs)"
+      "WebFetch(domain:docs.rs)",
+      "Bash(xargs sed:*)"
     ]
   }
 }

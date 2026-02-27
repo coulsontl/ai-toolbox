@@ -4,6 +4,7 @@ use super::types::{
     SSHConnection, SSHConnectionResult, SSHFileMapping, SSHStatusResult, SSHSyncConfig,
     SyncProgress, SyncResult,
 };
+use crate::coding::db_id::db_record_id;
 use crate::coding::{oh_my_opencode, oh_my_opencode_slim, open_code};
 use crate::db::DbState;
 use chrono::Local;
@@ -127,9 +128,8 @@ pub async fn ssh_save_config(
         // Update file mappings
         for mapping in config.file_mappings.iter() {
             let mapping_data = adapter::mapping_to_db_value(mapping);
-            let mapping_id = mapping.id.clone();  // 克隆以满足 'static 生命周期
-            db.query("UPSERT type::thing('ssh_file_mapping', $id) CONTENT $data")
-                .bind(("id", mapping_id))
+            let record_id = db_record_id("ssh_file_mapping", &mapping.id);
+            db.query(&format!("UPSERT {} CONTENT $data", record_id))
                 .bind(("data", mapping_data))
                 .await
                 .map_err(|e| format!("Failed to save SSH file mapping: {}", e))?;
@@ -220,9 +220,8 @@ pub async fn ssh_create_connection(
     let db = state.0.lock().await;
 
     let conn_data = adapter::connection_to_db_value(&connection);
-    let conn_id = connection.id.clone();  // 克隆以满足 'static 生命周期
-    db.query("UPSERT type::thing('ssh_connection', $id) CONTENT $data")
-        .bind(("id", conn_id))
+    let record_id = db_record_id("ssh_connection", &connection.id);
+    db.query(&format!("UPSERT {} CONTENT $data", record_id))
         .bind(("data", conn_data))
         .await
         .map_err(|e| format!("Failed to create SSH connection: {}", e))?;
@@ -243,9 +242,8 @@ pub async fn ssh_update_connection(
     let db = state.0.lock().await;
 
     let conn_data = adapter::connection_to_db_value(&connection);
-    let conn_id = connection.id.clone();  // 克隆以满足 'static 生命周期
-    db.query("UPSERT type::thing('ssh_connection', $id) CONTENT $data")
-        .bind(("id", conn_id))
+    let record_id = db_record_id("ssh_connection", &connection.id);
+    db.query(&format!("UPSERT {} CONTENT $data", record_id))
         .bind(("data", conn_data))
         .await
         .map_err(|e| format!("Failed to update SSH connection: {}", e))?;
@@ -263,8 +261,8 @@ pub async fn ssh_delete_connection(
 ) -> Result<(), String> {
     let db = state.0.lock().await;
 
-    db.query("DELETE ssh_connection WHERE id = type::thing('ssh_connection', $id)")
-        .bind(("id", id.clone()))
+    let record_id = db_record_id("ssh_connection", &id);
+    db.query(&format!("DELETE {}", record_id))
         .await
         .map_err(|e| format!("Failed to delete SSH connection: {}", e))?;
 
@@ -340,9 +338,8 @@ pub async fn ssh_add_file_mapping(
     let db = state.0.lock().await;
 
     let mapping_data = adapter::mapping_to_db_value(&mapping);
-    let mapping_id = mapping.id.clone();  // 克隆以满足 'static 生命周期
-    db.query("UPSERT type::thing('ssh_file_mapping', $id) CONTENT $data")
-        .bind(("id", mapping_id))
+    let record_id = db_record_id("ssh_file_mapping", &mapping.id);
+    db.query(&format!("UPSERT {} CONTENT $data", record_id))
         .bind(("data", mapping_data))
         .await
         .map_err(|e| format!("Failed to add SSH file mapping: {}", e))?;
@@ -361,9 +358,8 @@ pub async fn ssh_update_file_mapping(
     let db = state.0.lock().await;
 
     let mapping_data = adapter::mapping_to_db_value(&mapping);
-    let mapping_id = mapping.id.clone();  // 克隆以满足 'static 生命周期
-    db.query("UPSERT type::thing('ssh_file_mapping', $id) CONTENT $data")
-        .bind(("id", mapping_id))
+    let record_id = db_record_id("ssh_file_mapping", &mapping.id);
+    db.query(&format!("UPSERT {} CONTENT $data", record_id))
         .bind(("data", mapping_data))
         .await
         .map_err(|e| format!("Failed to update SSH file mapping: {}", e))?;
@@ -381,8 +377,8 @@ pub async fn ssh_delete_file_mapping(
 ) -> Result<(), String> {
     let db = state.0.lock().await;
 
-    db.query("DELETE ssh_file_mapping WHERE id = type::thing('ssh_file_mapping', $id)")
-        .bind(("id", id))
+    let record_id = db_record_id("ssh_file_mapping", &id);
+    db.query(&format!("DELETE {}", record_id))
         .await
         .map_err(|e| format!("Failed to delete SSH file mapping: {}", e))?;
 

@@ -55,9 +55,7 @@ pub fn config_to_db_value(config: &WSLSyncConfig) -> Value {
 
 /// Convert database Value to FileMapping
 pub fn mapping_from_db_value(value: Value) -> FileMapping {
-    // Use db_extract_id to clean the SurrealDB Thing ID
-    // e.g., "wsl_file_mapping:opencode-main" -> "opencode-main"
-    // Also handles wrapper characters like ⟨⟩
+    // Use db_extract_id to clean the SurrealDB record ID
     let id = db_id::db_extract_id(&value);
 
     FileMapping {

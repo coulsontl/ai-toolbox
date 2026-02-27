@@ -1,9 +1,12 @@
 //! MCP Server database operations
 //!
 //! Provides CRUD operations for MCP server management.
+//! Uses backtick-escaped record references instead of type::thing() to avoid
+//! UUID parsing issues across SurrealDB versions.
 
 use serde_json::Value;
 
+use crate::coding::db_id::{db_record_id, db_new_id};
 use crate::DbState;
 use super::adapter::{
     from_db_mcp_preferences, from_db_mcp_server, from_db_favorite_mcp, remove_sync_detail, set_sync_detail,
@@ -30,13 +33,13 @@ pub async fn get_mcp_servers(state: &DbState) -> Result<Vec<McpServer>, String> 
 /// Get a single MCP server by ID
 pub async fn get_mcp_server_by_id(state: &DbState, server_id: &str) -> Result<Option<McpServer>, String> {
     let db = state.0.lock().await;
-    let server_id_owned = server_id.to_string();
+    let record_id = db_record_id("mcp_server", server_id);
 
     let mut result = db
-        .query(
-            "SELECT *, type::string(id) as id FROM mcp_server WHERE id = type::thing('mcp_server', $id) LIMIT 1",
-        )
-        .bind(("id", server_id_owned))
+        .query(&format!(
+            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
+            record_id
+        ))
         .await
         .map_err(|e| format!("Failed to query MCP server: {}", e))?;
 
@@ -91,9 +94,9 @@ pub async fn upsert_mcp_server(state: &DbState, server: &McpServer) -> Result<St
         new_server.server_config = normalized_config;
         let payload = to_clean_mcp_server_payload(&new_server);
 
-        let id = uuid::Uuid::new_v4().to_string();
-        db.query("CREATE type::thing('mcp_server', $id) CONTENT $data")
-            .bind(("id", id.clone()))
+        let id = db_new_id();
+        let record_id = db_record_id("mcp_server", &id);
+        db.query(&format!("CREATE {} CONTENT $data", record_id))
             .bind(("data", payload))
             .await
             .map_err(|e| format!("Failed to create MCP server: {}", e))?;
@@ -103,9 +106,8 @@ pub async fn upsert_mcp_server(state: &DbState, server: &McpServer) -> Result<St
         let mut updated_server = server.clone();
         updated_server.server_config = normalized_config;
         let payload = to_clean_mcp_server_payload(&updated_server);
-        let server_id = server.id.clone();
-        db.query("UPDATE type::thing('mcp_server', $id) CONTENT $data")
-            .bind(("id", server_id.clone()))
+        let record_id = db_record_id("mcp_server", &server.id);
+        db.query(&format!("UPDATE {} CONTENT $data", record_id))
             .bind(("data", payload))
             .await
             .map_err(|e| format!("Failed to update MCP server: {}", e))?;
@@ -116,10 +118,9 @@ pub async fn upsert_mcp_server(state: &DbState, server: &McpServer) -> Result<St
 /// Delete an MCP server
 pub async fn delete_mcp_server(state: &DbState, server_id: &str) -> Result<(), String> {
     let db = state.0.lock().await;
-    let server_id_owned = server_id.to_string();
+    let record_id = db_record_id("mcp_server", server_id);
 
-    db.query("DELETE FROM mcp_server WHERE id = type::thing('mcp_server', $id)")
-        .bind(("id", server_id_owned))
+    db.query(&format!("DELETE {}", record_id))
         .await
         .map_err(|e| format!("Failed to delete MCP server: {}", e))?;
 
@@ -131,8 +132,8 @@ pub async fn reorder_mcp_servers(state: &DbState, ids: &[String]) -> Result<(), 
     let db = state.0.lock().await;
 
     for (index, id) in ids.iter().enumerate() {
-        db.query("UPDATE type::thing('mcp_server', $id) SET sort_index = $index")
-            .bind(("id", id.clone()))
+        let record_id = db_record_id("mcp_server", id);
+        db.query(&format!("UPDATE {} SET sort_index = $index", record_id))
             .bind(("index", index as i32))
             .await
             .map_err(|e| format!("Failed to reorder MCP servers: {}", e))?;
@@ -150,14 +151,14 @@ pub async fn update_sync_detail(
     detail: &McpSyncDetail,
 ) -> Result<(), String> {
     let db = state.0.lock().await;
+    let record_id = db_record_id("mcp_server", server_id);
 
     // Get existing server
-    let server_id_owned = server_id.to_string();
     let mut result = db
-        .query(
-            "SELECT *, type::string(id) as id FROM mcp_server WHERE id = type::thing('mcp_server', $id) LIMIT 1",
-        )
-        .bind(("id", server_id_owned.clone()))
+        .query(&format!(
+            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
+            record_id
+        ))
         .await
         .map_err(|e| e.to_string())?;
 
@@ -171,8 +172,7 @@ pub async fn update_sync_detail(
     let new_sync_details = set_sync_detail(&server.sync_details, &detail.tool, detail);
 
     // Save updates
-    db.query("UPDATE type::thing('mcp_server', $id) SET sync_details = $sync_details, updated_at = $updated_at")
-        .bind(("id", server_id_owned))
+    db.query(&format!("UPDATE {} SET sync_details = $sync_details, updated_at = $updated_at", record_id))
         .bind(("sync_details", new_sync_details))
         .bind(("updated_at", now_ms()))
         .await
@@ -184,15 +184,15 @@ pub async fn update_sync_detail(
 /// Remove sync detail for a specific tool
 pub async fn delete_sync_detail(state: &DbState, server_id: &str, tool: &str) -> Result<(), String> {
     let db = state.0.lock().await;
+    let record_id = db_record_id("mcp_server", server_id);
+    let tool_owned = tool.to_string();
 
     // Get existing server
-    let server_id_owned = server_id.to_string();
-    let tool_owned = tool.to_string();
     let mut result = db
-        .query(
-            "SELECT *, type::string(id) as id FROM mcp_server WHERE id = type::thing('mcp_server', $id) LIMIT 1",
-        )
-        .bind(("id", server_id_owned.clone()))
+        .query(&format!(
+            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
+            record_id
+        ))
         .await
         .map_err(|e| e.to_string())?;
 
@@ -205,8 +205,7 @@ pub async fn delete_sync_detail(state: &DbState, server_id: &str, tool: &str) ->
     let new_sync_details = remove_sync_detail(&server.sync_details, &tool_owned);
 
     // Save updates
-    db.query("UPDATE type::thing('mcp_server', $id) SET sync_details = $sync_details, updated_at = $updated_at")
-        .bind(("id", server_id_owned))
+    db.query(&format!("UPDATE {} SET sync_details = $sync_details, updated_at = $updated_at", record_id))
         .bind(("sync_details", new_sync_details))
         .bind(("updated_at", now_ms()))
         .await
@@ -222,14 +221,14 @@ pub async fn toggle_tool_enabled(
     tool_key: &str,
 ) -> Result<bool, String> {
     let db = state.0.lock().await;
+    let record_id = db_record_id("mcp_server", server_id);
 
     // Get existing server
-    let server_id_owned = server_id.to_string();
     let mut result = db
-        .query(
-            "SELECT *, type::string(id) as id FROM mcp_server WHERE id = type::thing('mcp_server', $id) LIMIT 1",
-        )
-        .bind(("id", server_id_owned.clone()))
+        .query(&format!(
+            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
+            record_id
+        ))
         .await
         .map_err(|e| e.to_string())?;
 
@@ -250,8 +249,7 @@ pub async fn toggle_tool_enabled(
     };
 
     // Save updates
-    db.query("UPDATE type::thing('mcp_server', $id) SET enabled_tools = $enabled_tools, updated_at = $updated_at")
-        .bind(("id", server_id_owned))
+    db.query(&format!("UPDATE {} SET enabled_tools = $enabled_tools, updated_at = $updated_at", record_id))
         .bind(("enabled_tools", enabled_tools))
         .bind(("updated_at", now_ms()))
         .await
@@ -335,31 +333,30 @@ pub async fn upsert_favorite_mcp(state: &DbState, fav: &FavoriteMcp) -> Result<S
 
     if fav.id.is_empty() {
         // Create new
-        let id = uuid::Uuid::new_v4().to_string();
-        db.query("CREATE type::thing('favorite_mcp', $id) CONTENT $data")
-            .bind(("id", id.clone()))
+        let id = db_new_id();
+        let record_id = db_record_id("favorite_mcp", &id);
+        db.query(&format!("CREATE {} CONTENT $data", record_id))
             .bind(("data", payload))
             .await
             .map_err(|e| format!("Failed to create favorite MCP: {}", e))?;
         Ok(id)
     } else {
         // Update existing
-        let id = fav.id.clone();
-        db.query("UPDATE type::thing('favorite_mcp', $id) CONTENT $data")
-            .bind(("id", id.clone()))
+        let record_id = db_record_id("favorite_mcp", &fav.id);
+        db.query(&format!("UPDATE {} CONTENT $data", record_id))
             .bind(("data", payload))
             .await
             .map_err(|e| format!("Failed to update favorite MCP: {}", e))?;
-        Ok(id)
+        Ok(fav.id.clone())
     }
 }
 
 /// Delete a favorite MCP
 pub async fn delete_favorite_mcp(state: &DbState, id: &str) -> Result<(), String> {
     let db = state.0.lock().await;
+    let record_id = db_record_id("favorite_mcp", id);
 
-    db.query("DELETE FROM favorite_mcp WHERE id = type::thing('favorite_mcp', $id)")
-        .bind(("id", id.to_string()))
+    db.query(&format!("DELETE {}", record_id))
         .await
         .map_err(|e| format!("Failed to delete favorite MCP: {}", e))?;
 

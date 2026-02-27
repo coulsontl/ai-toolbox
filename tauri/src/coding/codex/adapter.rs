@@ -11,7 +11,6 @@ use crate::coding::db_id::db_extract_id;
 /// Convert database value to CodexProvider
 pub fn from_db_value_provider(value: Value) -> CodexProvider {
     // Use common utility to extract and clean the record ID
-    // Handles table prefix (codex_provider:xxx) and wrapper characters (⟨⟩)
     let id = db_extract_id(&value);
 
     CodexProvider {

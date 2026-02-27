@@ -48,7 +48,6 @@ fn get_bool_compat(value: &Value, snake_key: &str, camel_key: &str, default: boo
 /// Supports both snake_case (new) and camelCase (legacy) field names
 pub fn from_db_value_provider(value: Value) -> ClaudeCodeProvider {
     // Use common utility to extract and clean the record ID
-    // Handles table prefix (claude_provider:xxx) and wrapper characters (⟨⟩)
     let id = db_extract_id(&value);
 
     ClaudeCodeProvider {

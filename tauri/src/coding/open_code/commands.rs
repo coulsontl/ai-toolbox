@@ -6,6 +6,7 @@ use tauri::Emitter;
 
 use super::adapter;
 use super::types::*;
+use crate::coding::db_id::db_record_id;
 use crate::db::DbState;
 
 // ============================================================================
@@ -444,11 +445,12 @@ async fn init_default_favorite_plugins(db: &surrealdb::Surreal<surrealdb::engine
     let now = chrono::Local::now().to_rfc3339();
 
     for plugin_name in DEFAULT_FAVORITE_PLUGINS {
+        let record_id = db_record_id("opencode_favorite_plugin", plugin_name);
         let query = format!(
-            "INSERT IGNORE INTO opencode_favorite_plugin {{ id: type::thing('opencode_favorite_plugin', $id), plugin_name: $plugin_name, created_at: $created_at }}"
+            "INSERT IGNORE INTO opencode_favorite_plugin {{ id: {}, plugin_name: $plugin_name, created_at: $created_at }}",
+            record_id
         );
         db.query(&query)
-            .bind(("id", *plugin_name))
             .bind(("plugin_name", *plugin_name))
             .bind(("created_at", now.clone()))
             .await
@@ -518,9 +520,9 @@ pub async fn add_opencode_favorite_plugin(
     let now = chrono::Local::now().to_rfc3339();
 
     // Use INSERT IGNORE to avoid duplicates
-    let query = "INSERT IGNORE INTO opencode_favorite_plugin { id: type::thing('opencode_favorite_plugin', $id), plugin_name: $plugin_name, created_at: $created_at }";
-    db.query(query)
-        .bind(("id", plugin_name.clone()))
+    let record_id = db_record_id("opencode_favorite_plugin", &plugin_name);
+    let query = format!("INSERT IGNORE INTO opencode_favorite_plugin {{ id: {}, plugin_name: $plugin_name, created_at: $created_at }}", record_id);
+    db.query(&query)
         .bind(("plugin_name", plugin_name.clone()))
         .bind(("created_at", now.clone()))
         .await
@@ -589,8 +591,8 @@ async fn sync_providers_from_config(
                 .map_err(|e| format!("Failed to serialize provider config: {}", e))?;
 
             // Use INSERT IGNORE to only insert if not exists
-            db.query("INSERT IGNORE INTO opencode_favorite_provider { id: type::thing('opencode_favorite_provider', $id), provider_id: $provider_id, npm: $npm, base_url: $base_url, provider_config: $provider_config, created_at: $created_at, updated_at: $updated_at }")
-                .bind(("id", provider_id.clone()))
+            let record_id = db_record_id("opencode_favorite_provider", provider_id);
+            db.query(&format!("INSERT IGNORE INTO opencode_favorite_provider {{ id: {}, provider_id: $provider_id, npm: $npm, base_url: $base_url, provider_config: $provider_config, created_at: $created_at, updated_at: $updated_at }}", record_id))
                 .bind(("provider_id", provider_id.clone()))
                 .bind(("npm", npm))
                 .bind(("base_url", base_url))
@@ -707,8 +709,8 @@ pub async fn upsert_opencode_favorite_provider(
             .await
             .map_err(|e| format!("Failed to update favorite provider: {}", e))?;
     } else {
-        db.query("INSERT INTO opencode_favorite_provider { id: type::thing('opencode_favorite_provider', $id), provider_id: $provider_id, npm: $npm, base_url: $base_url, provider_config: $provider_config, diagnostics: $diagnostics, created_at: $created_at, updated_at: $updated_at }")
-            .bind(("id", provider_id.clone()))
+        let record_id = db_record_id("opencode_favorite_provider", &provider_id);
+        db.query(&format!("INSERT INTO opencode_favorite_provider {{ id: {}, provider_id: $provider_id, npm: $npm, base_url: $base_url, provider_config: $provider_config, diagnostics: $diagnostics, created_at: $created_at, updated_at: $updated_at }}", record_id))
             .bind(("provider_id", provider_id.clone()))
             .bind(("npm", npm))
             .bind(("base_url", base_url))

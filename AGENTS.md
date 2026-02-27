@@ -559,38 +559,77 @@ To avoid SurrealDB versioning conflicts (`Invalid revision` errors) and deserial
             // ...
         }
         ```
-    *   **Available Functions**:
+    *   **Available Functions** (`crate::coding::db_id`):
         *   `db_extract_id(record: &Value) -> String` - Extract and clean ID from a record
         *   `db_extract_id_opt(record: &Value) -> Option<String>` - Same but returns Option
         *   `db_clean_id(raw_id: &str) -> String` - Clean a raw ID string
         *   `db_build_id(table: &str, id: &str) -> String` - Build a record ID string
+        *   `db_record_id(table: &str, id: &str) -> String` - Build backtick-escaped record reference for queries (e.g., `` table:`id` ``)
+        *   `db_new_id() -> String` - Generate a new record ID (UUID v4, no hyphens)
 
-2.  **ID Matching in Queries**: Use `type::thing('table', $id)` for proper Thing comparison.
-    *   **Problem**: When querying with `WHERE id = $id`, the frontend sends a pure string ID (e.g., `"abc123"`), but the database `id` field is a `Thing` type. Direct comparison fails with "not found" errors.
-    *   **Solution**: Use `type::thing(table, id)` to convert the string back to a Thing for proper comparison.
+2.  **Record ID Reference in Queries**: Use `db_record_id()` to build backtick-escaped record references.
+    *   **Problem**: `type::thing('table', $id)` behavior changed across SurrealDB versions (e.g., 2.4 → 2.6), causing "not found" errors even for existing records.
+    *   **Solution**: Use `db_record_id(table, id)` which generates `` table:`id` `` format. Backtick-escaped IDs are treated as literal strings regardless of content, avoiding version-specific parsing issues.
+    *   **NEVER** use `type::thing()` in any query. Always use `db_record_id()` instead.
     *   **Code**:
-        ```sql
-        -- Wrong: WHERE id = $id (type mismatch)
-        -- Correct: WHERE id = type::thing('claude_provider', $id)
-        SELECT *, type::string(id) as id FROM claude_provider WHERE id = type::thing('claude_provider', $id) LIMIT 1
-        ```
-    *   **Applies to**: All queries that filter by ID:
-        *   `SELECT ... WHERE id = type::thing('table', $id)`
-        *   `UPDATE ... SET ... WHERE id = type::thing('table', $id)`
+        ```rust
+        use crate::coding::db_id::db_record_id;
 
-3.  **Updates**: Use **Blind Writes (Overwrite)** to bypass version checks.
+        // SELECT by ID
+        let record_id = db_record_id("claude_provider", &id);
+        db.query(&format!("SELECT *, type::string(id) as id FROM {} LIMIT 1", record_id))
+
+        // UPDATE by ID
+        let record_id = db_record_id("mcp_server", &server_id);
+        db.query(&format!("UPDATE {} SET enabled = $enabled", record_id))
+            .bind(("enabled", true))
+
+        // DELETE by ID
+        let record_id = db_record_id("mcp_server", server_id);
+        db.query(&format!("DELETE {}", record_id))
+        ```
+    *   **Applies to**: All queries that target a specific record by ID:
+        *   `SELECT ... FROM {record_id}`
+        *   `UPDATE {record_id} SET ...` or `UPDATE {record_id} CONTENT $data`
+        *   `DELETE {record_id}`
+        *   `CREATE {record_id} CONTENT $data`
+        *   `UPSERT {record_id} CONTENT $data` or `UPSERT {record_id} SET ...`
+
+3.  **Record ID Generation**: Prefer SurrealDB auto-generated IDs. When manual IDs are needed, use `db_new_id()`.
+    *   **Preferred**: Let SurrealDB auto-generate IDs via `CREATE table CONTENT $data` (no ID specified). This is how `claude_provider`, `codex_provider`, `oh_my_opencode_config`, etc. work.
+    *   **When manual IDs are needed** (e.g., MCP servers, skills): Use the shared `db_new_id()` function which generates UUID v4 without hyphens.
+    *   **NEVER** call `uuid::Uuid::new_v4()` directly in store/command files. Always use `db_new_id()` from the `db_id` module.
+    *   **Code**:
+        ```rust
+        use crate::coding::db_id::{db_record_id, db_new_id};
+
+        // Create with manual ID
+        let id = db_new_id();
+        let record_id = db_record_id("mcp_server", &id);
+        db.query(&format!("CREATE {} CONTENT $data", record_id))
+            .bind(("data", payload))
+        ```
+
+4.  **Updates**: Use **Blind Writes (Overwrite)** to bypass version checks.
     *   **Avoid**: Do NOT send the `version` or `revision` field back to the database in the `CONTENT` block. This triggers optimistic currency control checks which often fail.
     *   **Avoid**: Do NOT include the `id` field in the `CONTENT` block. It can cause type conflicts.
-    *   **Pattern 1 (Update only)**: `UPDATE table:`id` CONTENT $data` (native ID format with backticks). Fails if record doesn't exist.
-    *   **Pattern 2 (Create or Update)**: `UPSERT table:`id` CONTENT $data`. Creates record if not exists, updates if exists. Use this for singleton records like `settings:`app``.
-    *   **Pattern 3 (Single Field)**: `UPDATE table:`id` SET field = $value`.
-    *   **Pattern 4 (Conditional)**: `UPDATE table CONTENT $data WHERE id = table:id`.
+    *   **Pattern 1 (Update by ID)**: Use `db_record_id()` to target a specific record:
+        ```rust
+        let record_id = db_record_id("claude_provider", &id);
+        db.query(&format!("UPDATE {} CONTENT $data", record_id))
+            .bind(("data", payload))
+        ```
+    *   **Pattern 2 (Create or Update)**: Use `UPSERT` with `db_record_id()` for singleton or known-ID records:
+        ```rust
+        let record_id = db_record_id("settings", "app");
+        db.query(&format!("UPSERT {} CONTENT $data", record_id))
+            .bind(("data", payload))
+        ```
+        Or use hardcoded backtick format for fixed singleton IDs: `UPSERT settings:\`app\` CONTENT $data`
+    *   **Pattern 3 (Single Field)**: `UPDATE {record_id} SET field = $value`
+    *   **Pattern 4 (Batch by condition)**: `UPDATE table SET field = $value WHERE condition = true` (no ID targeting needed)
 
-4.  **SurrealDB Wrapper Characters**: Special ID formats may include `⟨⟩` wrapper characters.
-    *   **When**: SurrealDB wraps certain ID formats (like UUIDs or IDs with special characters) in `⟨⟩` characters.
-    *   **Example**: `claude_provider:⟨2121-mki2hi2s-bdqiec⟩`
-    *   **Fix**: Always strip `⟨⟩` in the adapter layer after stripping the table prefix (see pattern #1 above).
-    *   **Result**: Clean ID `"2121-mki2hi2s-bdqiec"` for frontend and business logic.
+5.  **SurrealDB Wrapper Characters**: Handled automatically by `db_extract_id()` / `db_clean_id()`. No manual handling needed — these functions strip table prefixes and `⟨⟩` wrappers transparently.
 
 ```rust
 // commands.rs

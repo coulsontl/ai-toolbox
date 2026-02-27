@@ -82,3 +82,38 @@ pub fn db_extract_id_opt(record: &Value) -> Option<String> {
 pub fn db_build_id(table: &str, id: &str) -> String {
     format!("{}:{}", table, id)
 }
+
+/// Build a backtick-escaped record reference for use in SurrealQL queries.
+///
+/// Returns format: `` table:`id` `` which ensures the ID is treated as a literal
+/// string regardless of its content (hyphens, slashes, etc.).
+///
+/// **Purpose**: Avoids `type::thing()` which may interpret UUID-format strings
+/// differently across SurrealDB versions (e.g., 2.4 vs 2.6). Backtick-escaped
+/// IDs are the safest way to reference records with special characters.
+///
+/// **Security**: Input ID is sanitized to only allow safe characters.
+///
+/// # Example
+/// ```rust
+/// let ref_id = db_record_id("mcp_server", "100dcf2a-3718-457f-b1ef-31d48c3478f8");
+/// assert_eq!(ref_id, "mcp_server:`100dcf2a-3718-457f-b1ef-31d48c3478f8`");
+/// ```
+/// Generate a new database record ID (UUID v4 without hyphens).
+///
+/// # Example
+/// ```rust
+/// let id = db_new_id(); // e.g. "a1b2c3d4e5f6..."
+/// ```
+pub fn db_new_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
+pub fn db_record_id(table: &str, id: &str) -> String {
+    // Sanitize: only allow safe characters to prevent query injection
+    let clean: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '/' || *c == '.')
+        .collect();
+    format!("{}:`{}`", table, clean)
+}

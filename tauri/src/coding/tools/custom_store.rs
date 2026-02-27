@@ -5,6 +5,7 @@
 use serde_json::Value;
 
 use crate::coding::db_extract_id;
+use crate::coding::db_record_id;
 use crate::DbState;
 use super::types::CustomTool;
 
@@ -111,10 +112,10 @@ pub async fn get_mcp_custom_tools(state: &DbState) -> Result<Vec<CustomTool>, St
 /// Get a custom tool by key
 pub async fn get_custom_tool_by_key(state: &DbState, key: &str) -> Result<Option<CustomTool>, String> {
     let db = state.0.lock().await;
+    let record_id = db_record_id("custom_tool", key);
 
     let mut result = db
-        .query("SELECT *, type::string(id) as id FROM custom_tool WHERE id = type::thing('custom_tool', $key)")
-        .bind(("key", key.to_string()))
+        .query(&format!("SELECT *, type::string(id) as id FROM {} LIMIT 1", record_id))
         .await
         .map_err(|e| format!("Failed to query custom tool: {}", e))?;
 
@@ -126,9 +127,9 @@ pub async fn get_custom_tool_by_key(state: &DbState, key: &str) -> Result<Option
 /// Save a custom tool (create or update), merging with existing fields
 pub async fn save_custom_tool(state: &DbState, tool: &CustomTool) -> Result<(), String> {
     let db = state.0.lock().await;
+    let record_id = db_record_id("custom_tool", &tool.key);
 
-    db.query("UPSERT type::thing('custom_tool', $key) SET display_name = $display_name, relative_skills_dir = $skills_dir, relative_detect_dir = $detect_dir, force_copy = $force_copy, mcp_config_path = $mcp_path, mcp_config_format = $mcp_format, mcp_field = $mcp_field, created_at = $created_at")
-        .bind(("key", tool.key.clone()))
+    db.query(&format!("UPSERT {} SET display_name = $display_name, relative_skills_dir = $skills_dir, relative_detect_dir = $detect_dir, force_copy = $force_copy, mcp_config_path = $mcp_path, mcp_config_format = $mcp_format, mcp_field = $mcp_field, created_at = $created_at", record_id))
         .bind(("display_name", tool.display_name.clone()))
         .bind(("skills_dir", tool.relative_skills_dir.clone()))
         .bind(("detect_dir", tool.relative_detect_dir.clone()))
@@ -157,6 +158,7 @@ pub async fn save_custom_tool_skills_fields(
     let existing = get_custom_tool_by_key(state, key).await?;
 
     let db = state.0.lock().await;
+    let record_id = db_record_id("custom_tool", key);
 
     // Preserve existing MCP fields
     let (mcp_path, mcp_format, mcp_field) = match existing {
@@ -164,8 +166,7 @@ pub async fn save_custom_tool_skills_fields(
         None => (None, None, None),
     };
 
-    db.query("UPSERT type::thing('custom_tool', $key) SET display_name = $display_name, relative_skills_dir = $skills_dir, relative_detect_dir = $detect_dir, force_copy = $force_copy, mcp_config_path = $mcp_path, mcp_config_format = $mcp_format, mcp_field = $mcp_field, created_at = $created_at")
-        .bind(("key", key.to_string()))
+    db.query(&format!("UPSERT {} SET display_name = $display_name, relative_skills_dir = $skills_dir, relative_detect_dir = $detect_dir, force_copy = $force_copy, mcp_config_path = $mcp_path, mcp_config_format = $mcp_format, mcp_field = $mcp_field, created_at = $created_at", record_id))
         .bind(("display_name", display_name.to_string()))
         .bind(("skills_dir", relative_skills_dir))
         .bind(("detect_dir", relative_detect_dir))
@@ -195,6 +196,7 @@ pub async fn save_custom_tool_mcp_fields(
     let existing = get_custom_tool_by_key(state, key).await?;
 
     let db = state.0.lock().await;
+    let record_id = db_record_id("custom_tool", key);
 
     // Preserve existing skills fields
     let (skills_dir, detect_dir) = match existing {
@@ -202,8 +204,7 @@ pub async fn save_custom_tool_mcp_fields(
         None => (None, relative_detect_dir),
     };
 
-    db.query("UPSERT type::thing('custom_tool', $key) SET display_name = $display_name, relative_skills_dir = $skills_dir, relative_detect_dir = $detect_dir, mcp_config_path = $mcp_path, mcp_config_format = $mcp_format, mcp_field = $mcp_field, created_at = $created_at")
-        .bind(("key", key.to_string()))
+    db.query(&format!("UPSERT {} SET display_name = $display_name, relative_skills_dir = $skills_dir, relative_detect_dir = $detect_dir, mcp_config_path = $mcp_path, mcp_config_format = $mcp_format, mcp_field = $mcp_field, created_at = $created_at", record_id))
         .bind(("display_name", display_name.to_string()))
         .bind(("skills_dir", skills_dir))
         .bind(("detect_dir", detect_dir))
@@ -220,9 +221,9 @@ pub async fn save_custom_tool_mcp_fields(
 /// Delete a custom tool
 pub async fn delete_custom_tool(state: &DbState, key: &str) -> Result<(), String> {
     let db = state.0.lock().await;
+    let record_id = db_record_id("custom_tool", key);
 
-    db.query("DELETE FROM custom_tool WHERE id = type::thing('custom_tool', $key)")
-        .bind(("key", key.to_string()))
+    db.query(&format!("DELETE {}", record_id))
         .await
         .map_err(|e| format!("Failed to delete custom tool: {}", e))?;
 

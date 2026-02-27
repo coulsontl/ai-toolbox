@@ -1,5 +1,6 @@
 use serde_json::Value;
 
+use crate::coding::db_id::{db_record_id, db_new_id};
 use crate::DbState;
 
 use super::adapter::{
@@ -28,13 +29,13 @@ pub async fn get_managed_skills(state: &DbState) -> Result<Vec<Skill>, String> {
 /// Get a single skill by ID
 pub async fn get_skill_by_id(state: &DbState, skill_id: &str) -> Result<Option<Skill>, String> {
     let db = state.0.lock().await;
-    let skill_id_owned = skill_id.to_string();
+    let record_id = db_record_id("skill", skill_id);
 
     let mut result = db
-        .query(
-            "SELECT *, type::string(id) as id FROM skill WHERE id = type::thing('skill', $id) LIMIT 1",
-        )
-        .bind(("id", skill_id_owned))
+        .query(&format!(
+            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
+            record_id
+        ))
         .await
         .map_err(|e| format!("Failed to query skill: {}", e))?;
 
@@ -64,9 +65,9 @@ pub async fn upsert_skill(state: &DbState, skill: &Skill) -> Result<String, Stri
         new_skill.sort_index = max_index + 1;
         let payload = to_clean_skill_payload(&new_skill);
 
-        let id = uuid::Uuid::new_v4().to_string();
-        db.query("CREATE type::thing('skill', $id) CONTENT $data")
-            .bind(("id", id.clone()))
+        let id = db_new_id();
+        let record_id = db_record_id("skill", &id);
+        db.query(&format!("CREATE {} CONTENT $data", record_id))
             .bind(("data", payload))
             .await
             .map_err(|e| format!("Failed to create skill: {}", e))?;
@@ -74,9 +75,8 @@ pub async fn upsert_skill(state: &DbState, skill: &Skill) -> Result<String, Stri
     } else {
         // Update existing skill
         let payload = to_clean_skill_payload(skill);
-        let skill_id = skill.id.clone();
-        db.query("UPDATE type::thing('skill', $id) CONTENT $data")
-            .bind(("id", skill_id.clone()))
+        let record_id = db_record_id("skill", &skill.id);
+        db.query(&format!("UPDATE {} CONTENT $data", record_id))
             .bind(("data", payload))
             .await
             .map_err(|e| format!("Failed to update skill: {}", e))?;
@@ -104,10 +104,9 @@ pub async fn get_skill_by_name(state: &DbState, name: &str) -> Result<Option<Ski
 /// Delete a skill
 pub async fn delete_skill(state: &DbState, skill_id: &str) -> Result<(), String> {
     let db = state.0.lock().await;
-    let skill_id_owned = skill_id.to_string();
+    let record_id = db_record_id("skill", skill_id);
 
-    db.query("DELETE FROM skill WHERE id = type::thing('skill', $id)")
-        .bind(("id", skill_id_owned))
+    db.query(&format!("DELETE {}", record_id))
         .await
         .map_err(|e| format!("Failed to delete skill: {}", e))?;
 
@@ -139,14 +138,14 @@ pub async fn upsert_skill_target(
     target: &SkillTarget,
 ) -> Result<(), String> {
     let db = state.0.lock().await;
+    let record_id = db_record_id("skill", skill_id);
 
     // Get existing skill
-    let skill_id_owned = skill_id.to_string();
     let mut result = db
-        .query(
-            "SELECT *, type::string(id) as id FROM skill WHERE id = type::thing('skill', $id) LIMIT 1",
-        )
-        .bind(("id", skill_id_owned.clone()))
+        .query(&format!(
+            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
+            record_id
+        ))
         .await
         .map_err(|e| e.to_string())?;
 
@@ -166,8 +165,7 @@ pub async fn upsert_skill_target(
     }
 
     // Save updates (don't update updated_at to preserve sort order)
-    db.query("UPDATE type::thing('skill', $id) SET sync_details = $sync_details, enabled_tools = $enabled_tools")
-        .bind(("id", skill_id_owned))
+    db.query(&format!("UPDATE {} SET sync_details = $sync_details, enabled_tools = $enabled_tools", record_id))
         .bind(("sync_details", new_sync_details))
         .bind(("enabled_tools", enabled_tools))
         .await
@@ -179,15 +177,15 @@ pub async fn upsert_skill_target(
 /// Delete a skill target (remove tool entry from sync_details)
 pub async fn delete_skill_target(state: &DbState, skill_id: &str, tool: &str) -> Result<(), String> {
     let db = state.0.lock().await;
+    let record_id = db_record_id("skill", skill_id);
+    let tool_owned = tool.to_string();
 
     // Get existing skill
-    let skill_id_owned = skill_id.to_string();
-    let tool_owned = tool.to_string();
     let mut result = db
-        .query(
-            "SELECT *, type::string(id) as id FROM skill WHERE id = type::thing('skill', $id) LIMIT 1",
-        )
-        .bind(("id", skill_id_owned.clone()))
+        .query(&format!(
+            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
+            record_id
+        ))
         .await
         .map_err(|e| e.to_string())?;
 
@@ -207,8 +205,7 @@ pub async fn delete_skill_target(state: &DbState, skill_id: &str, tool: &str) ->
         .collect();
 
     // Save updates (don't update updated_at to preserve sort order)
-    db.query("UPDATE type::thing('skill', $id) SET sync_details = $sync_details, enabled_tools = $enabled_tools")
-        .bind(("id", skill_id_owned))
+    db.query(&format!("UPDATE {} SET sync_details = $sync_details, enabled_tools = $enabled_tools", record_id))
         .bind(("sync_details", new_sync_details))
         .bind(("enabled_tools", enabled_tools))
         .await
@@ -239,9 +236,9 @@ pub async fn save_skill_repo(state: &DbState, repo: &SkillRepo) -> Result<(), St
 
     // Use owner/name as ID
     let id = format!("{}/{}", repo.owner, repo.name);
+    let record_id = db_record_id("skill_repo", &id);
 
-    db.query("UPSERT type::thing('skill_repo', $id) CONTENT $data")
-        .bind(("id", id))
+    db.query(&format!("UPSERT {} CONTENT $data", record_id))
         .bind(("data", payload))
         .await
         .map_err(|e| format!("Failed to save skill repo: {}", e))?;
@@ -253,9 +250,9 @@ pub async fn save_skill_repo(state: &DbState, repo: &SkillRepo) -> Result<(), St
 pub async fn delete_skill_repo(state: &DbState, owner: &str, name: &str) -> Result<(), String> {
     let db = state.0.lock().await;
     let id = format!("{}/{}", owner, name);
+    let record_id = db_record_id("skill_repo", &id);
 
-    db.query("DELETE FROM skill_repo WHERE id = type::thing('skill_repo', $id)")
-        .bind(("id", id))
+    db.query(&format!("DELETE {}", record_id))
         .await
         .map_err(|e| format!("Failed to delete skill repo: {}", e))?;
 
@@ -369,8 +366,8 @@ pub async fn reorder_skills(state: &DbState, ids: &[String]) -> Result<(), Strin
     let db = state.0.lock().await;
 
     for (index, id) in ids.iter().enumerate() {
-        db.query("UPDATE type::thing('skill', $id) SET sort_index = $index")
-            .bind(("id", id.clone()))
+        let record_id = db_record_id("skill", id);
+        db.query(&format!("UPDATE {} SET sort_index = $index", record_id))
             .bind(("index", index as i32))
             .await
             .map_err(|e| format!("Failed to reorder skills: {}", e))?;
@@ -406,9 +403,9 @@ pub async fn save_custom_tool(state: &DbState, tool: &CustomTool) -> Result<(), 
 /// Delete a custom tool
 pub async fn delete_custom_tool(state: &DbState, key: &str) -> Result<(), String> {
     let db = state.0.lock().await;
+    let record_id = db_record_id("custom_tool", key);
 
-    db.query("DELETE FROM custom_tool WHERE id = type::thing('custom_tool', $key)")
-        .bind(("key", key.to_string()))
+    db.query(&format!("DELETE {}", record_id))
         .await
         .map_err(|e| format!("Failed to delete custom tool: {}", e))?;
 

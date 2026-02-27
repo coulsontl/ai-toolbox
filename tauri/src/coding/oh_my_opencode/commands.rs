@@ -3,6 +3,7 @@ use std::fs;
 use serde_json::Value;
 
 use crate::db::DbState;
+use crate::coding::db_id::db_record_id;
 use super::adapter;
 use super::types::*;
 use tauri::Emitter;
@@ -361,10 +362,10 @@ pub async fn update_oh_my_opencode_config(
     // ID is required for update
     let config_id = input.id.ok_or_else(|| "ID is required for update".to_string())?;
 
-    // Check if config exists using type::thing
+    // Check if config exists using backtick-escaped record ref
+    let record_id = db_record_id("oh_my_opencode_config", &config_id);
     let check_result: Result<Vec<Value>, _> = db
-        .query("SELECT * FROM type::thing('oh_my_opencode_config', $id) LIMIT 1")
-        .bind(("id", config_id.clone()))
+        .query(&format!("SELECT * FROM {} LIMIT 1", record_id))
         .await
         .map_err(|e| format!("Failed to check config existence: {}", e))?
         .take(0);
@@ -717,9 +718,9 @@ pub async fn apply_config_internal<R: tauri::Runtime>(
         .await
         .map_err(|e| format!("Failed to clear applied flags: {}", e))?;
 
-    // Set this config as applied using WHERE clause with type::thing (like ClaudeCode)
-    db.query("UPDATE oh_my_opencode_config SET is_applied = true, updated_at = $now WHERE id = type::thing('oh_my_opencode_config', $id)")
-        .bind(("id", config_id.to_string()))
+    // Set this config as applied using backtick-escaped record ref
+    let record_id = db_record_id("oh_my_opencode_config", config_id);
+    db.query(&format!("UPDATE {} SET is_applied = true, updated_at = $now", record_id))
         .bind(("now", now))
         .await
         .map_err(|e| format!("Failed to update applied flag: {}", e))?;
