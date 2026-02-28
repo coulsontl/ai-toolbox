@@ -1,6 +1,5 @@
 import React from 'react';
-import { Button, Form, Input, Modal, Select, Typography, message } from 'antd';
-import { MoreOutlined } from '@ant-design/icons';
+import { Form, Modal, Select, Typography, message } from 'antd';
 import { useTranslation } from 'react-i18next';
 import { setOpenClawAgentsDefaults } from '@/services/openclawApi';
 import JsonEditor from '@/components/common/JsonEditor';
@@ -14,22 +13,24 @@ interface Props {
   onSaved: () => void;
 }
 
+export interface AgentsDefaultsCardRef {
+  openMoreParams: () => void;
+}
+
 const formItemLayout = {
-  labelCol: { span: 3 },
-  wrapperCol: { span: 21 },
+  labelCol: { span: 2 },
+  wrapperCol: { span: 22 },
 };
 
 /** Keys managed by dedicated form fields — excluded from "more params" editor */
-const MANAGED_KEYS = new Set(['model', 'models', 'workspace']);
+const MANAGED_KEYS = new Set(['model', 'models']);
 
-const AgentsDefaultsCard: React.FC<Props> = ({ defaults, config, onSaved }) => {
+const AgentsDefaultsCard = React.forwardRef<AgentsDefaultsCardRef, Props>(({ defaults, config, onSaved }, ref) => {
   const { t } = useTranslation();
 
   // Local editable state
   const [primaryModel, setPrimaryModel] = React.useState<string | undefined>(undefined);
   const [fallbacks, setFallbacks] = React.useState<string[]>([]);
-  const [workspace, setWorkspace] = React.useState('');
-  const savedWorkspaceRef = React.useRef('');
 
   // More params modal
   const [moreParamsOpen, setMoreParamsOpen] = React.useState(false);
@@ -38,11 +39,8 @@ const AgentsDefaultsCard: React.FC<Props> = ({ defaults, config, onSaved }) => {
 
   React.useEffect(() => {
     if (defaults) {
-      const ws = (defaults as Record<string, unknown>).workspace as string || '';
       setPrimaryModel(defaults.model?.primary || undefined);
       setFallbacks(defaults.model?.fallbacks || []);
-      setWorkspace(ws);
-      savedWorkspaceRef.current = ws;
     }
   }, [defaults]);
 
@@ -53,8 +51,9 @@ const AgentsDefaultsCard: React.FC<Props> = ({ defaults, config, onSaved }) => {
     for (const [providerId, provider] of Object.entries(config.models.providers)) {
       for (const model of provider.models || []) {
         const fullId = `${providerId}/${model.id}`;
+        const modelName = model.name || model.id;
         options.push({
-          label: model.name ? `${fullId} (${model.name})` : fullId,
+          label: `${providerId} / ${modelName}`,
           value: fullId,
         });
       }
@@ -66,12 +65,10 @@ const AgentsDefaultsCard: React.FC<Props> = ({ defaults, config, onSaved }) => {
   const buildDefaults = React.useCallback((overrides?: {
     primaryModel?: string | undefined;
     fallbacks?: string[];
-    workspace?: string;
     extra?: Record<string, unknown>;
   }): OpenClawAgentsDefaults => {
     const pm = overrides?.primaryModel !== undefined ? overrides.primaryModel : primaryModel;
     const fb = overrides?.fallbacks !== undefined ? overrides.fallbacks : fallbacks;
-    const ws = overrides?.workspace !== undefined ? overrides.workspace : workspace;
 
     // Start from extra/unknown fields in defaults (excluding managed keys)
     const extraFields: Record<string, unknown> = {};
@@ -92,15 +89,13 @@ const AgentsDefaultsCard: React.FC<Props> = ({ defaults, config, onSaved }) => {
       model: { primary: pm || '', fallbacks: fb },
       models: defaults?.models,
     };
-    if (ws) (result as Record<string, unknown>).workspace = ws;
 
     return result;
-  }, [defaults, primaryModel, fallbacks, workspace]);
+  }, [defaults, primaryModel, fallbacks]);
 
   const doSave = React.useCallback(async (overrides?: {
     primaryModel?: string | undefined;
     fallbacks?: string[];
-    workspace?: string;
     extra?: Record<string, unknown>;
   }) => {
     try {
@@ -122,14 +117,6 @@ const AgentsDefaultsCard: React.FC<Props> = ({ defaults, config, onSaved }) => {
   const handleFallbacksChange = (value: string[]) => {
     setFallbacks(value);
     doSave({ fallbacks: value });
-  };
-
-  // Blur-based save for workspace
-  const handleWorkspaceBlur = () => {
-    if (workspace !== savedWorkspaceRef.current) {
-      savedWorkspaceRef.current = workspace;
-      doSave({ workspace });
-    }
   };
 
   // More params modal
@@ -156,6 +143,11 @@ const AgentsDefaultsCard: React.FC<Props> = ({ defaults, config, onSaved }) => {
     await doSave({ extra: extraParams });
     setMoreParamsOpen(false);
   };
+
+  // Expose openMoreParams to parent via ref
+  React.useImperativeHandle(ref, () => ({
+    openMoreParams: handleOpenMoreParams,
+  }));
 
   return (
     <>
@@ -190,23 +182,6 @@ const AgentsDefaultsCard: React.FC<Props> = ({ defaults, config, onSaved }) => {
             notFoundContent={t('openclaw.agents.noModels')}
           />
         </Form.Item>
-
-        {/* Workspace */}
-        <Form.Item label={<Text strong>{t('openclaw.agents.workspace')}</Text>}>
-          <Input
-            value={workspace}
-            onChange={(e) => setWorkspace(e.target.value)}
-            onBlur={handleWorkspaceBlur}
-            placeholder={t('openclaw.agents.workspacePlaceholder')}
-          />
-        </Form.Item>
-
-        {/* More params button */}
-        <Form.Item wrapperCol={{ offset: 3, span: 21 }}>
-          <Button type="link" icon={<MoreOutlined />} onClick={handleOpenMoreParams} style={{ padding: 0 }}>
-            {t('openclaw.agents.moreParams')}
-          </Button>
-        </Form.Item>
       </Form>
 
       {/* More Parameters Modal */}
@@ -233,6 +208,8 @@ const AgentsDefaultsCard: React.FC<Props> = ({ defaults, config, onSaved }) => {
       </Modal>
     </>
   );
-};
+});
+
+AgentsDefaultsCard.displayName = 'AgentsDefaultsCard';
 
 export default AgentsDefaultsCard;

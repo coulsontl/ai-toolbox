@@ -1,16 +1,10 @@
 import React from 'react';
-import { Button, Card, Space, Table, Tag, Typography, Popconfirm, Tooltip } from 'antd';
-import {
-  EditOutlined,
-  DeleteOutlined,
-  PlusOutlined,
-  ApiOutlined,
-  CloudDownloadOutlined,
-} from '@ant-design/icons';
+import { Button, Space, Tooltip } from 'antd';
+import { ApiOutlined, CloudDownloadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import ProviderCard from '@/components/common/ProviderCard';
+import type { ProviderDisplayData, ModelDisplayData } from '@/components/common/ProviderCard/types';
 import type { OpenClawProviderConfig, OpenClawModel } from '@/types/openclaw';
-
-const { Text } = Typography;
 
 interface Props {
   providerId: string;
@@ -23,6 +17,20 @@ interface Props {
   onConnectivityTest: () => void;
   onFetchModels: () => void;
 }
+
+const toProviderDisplayData = (id: string, config: OpenClawProviderConfig): ProviderDisplayData => ({
+  id,
+  name: id,
+  sdkName: config.api || '',
+  baseUrl: config.baseUrl || '',
+});
+
+const toModelDisplayData = (model: OpenClawModel): ModelDisplayData => ({
+  id: model.id,
+  name: model.name || model.id,
+  contextLimit: model.contextWindow,
+  outputLimit: model.maxTokens,
+});
 
 const OpenClawProviderCard: React.FC<Props> = ({
   providerId,
@@ -40,114 +48,31 @@ const OpenClawProviderCard: React.FC<Props> = ({
   const isAuthReady = Boolean(config.baseUrl?.trim() && config.apiKey?.trim());
   const authTooltip = !isAuthReady ? t('openclaw.providers.completeUrlAndKey') : '';
 
-  const modelColumns = [
-    {
-      title: t('openclaw.providers.modelId'),
-      dataIndex: 'id',
-      key: 'id',
-      width: '30%',
-      render: (text: string) => <Text code>{text}</Text>,
-    },
-    {
-      title: t('openclaw.providers.modelName'),
-      dataIndex: 'name',
-      key: 'name',
-      width: '20%',
-      render: (text: string | undefined) => text || '-',
-    },
-    {
-      title: t('openclaw.providers.contextLimit'),
-      dataIndex: 'contextWindow',
-      key: 'contextWindow',
-      width: '15%',
-      render: (val: number | undefined) => (val ? val.toLocaleString() : '-'),
-    },
-    {
-      title: t('openclaw.providers.outputLimit'),
-      dataIndex: 'maxTokens',
-      key: 'maxTokens',
-      width: '12%',
-      render: (val: number | undefined) => (val ? val.toLocaleString() : '-'),
-    },
-    {
-      title: 'Cost',
-      key: 'cost',
-      width: '13%',
-      render: (_: unknown, record: OpenClawModel) => {
-        if (!record.cost) return '-';
-        return `$${record.cost.input}/$${record.cost.output}`;
-      },
-    },
-    {
-      title: '',
-      key: 'actions',
-      width: '10%',
-      render: (_: unknown, record: OpenClawModel) => (
-        <Space size={0}>
-          <Button
-            type="link"
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => onEditModel(record)}
-          />
-          <Popconfirm
-            title={t('openclaw.providers.deleteModel') + '?'}
-            onConfirm={() => onDeleteModel(record.id)}
-            okText={t('common.confirm')}
-            cancelText={t('common.cancel')}
-          >
-            <Button type="link" size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
-        </Space>
-      ),
-    },
-  ];
+  const provider = toProviderDisplayData(providerId, config);
+  const models = (config.models || []).map(toModelDisplayData);
+
+  // Map model ID back to OpenClawModel for edit callback
+  const modelMap = React.useMemo(() => {
+    const map = new Map<string, OpenClawModel>();
+    for (const m of config.models || []) {
+      map.set(m.id, m);
+    }
+    return map;
+  }, [config.models]);
 
   return (
-    <Card
-      size="small"
-      style={{ marginBottom: 12 }}
-      title={
-        <Space>
-          <Text strong>{providerId}</Text>
-          {config.api && <Tag color="blue">{config.api}</Tag>}
-        </Space>
-      }
-      extra={
-        <Space size={0}>
-          <Button type="link" size="small" icon={<EditOutlined />} onClick={onEdit}>
-            {t('common.edit')}
-          </Button>
-          <Popconfirm
-            title={t('openclaw.providers.confirmDelete', { name: providerId })}
-            onConfirm={onDelete}
-            okText={t('common.confirm')}
-            cancelText={t('common.cancel')}
-          >
-            <Button type="link" size="small" danger icon={<DeleteOutlined />}>
-              {t('common.delete')}
-            </Button>
-          </Popconfirm>
-        </Space>
-      }
-    >
-      {config.baseUrl && (
-        <div style={{ marginBottom: 8 }}>
-          <Text type="secondary">Base URL: </Text>
-          <Text code>{config.baseUrl}</Text>
-        </div>
-      )}
-
-      <Table
-        dataSource={config.models || []}
-        columns={modelColumns}
-        rowKey="id"
-        size="small"
-        pagination={false}
-        locale={{ emptyText: t('openclaw.providers.emptyText') }}
-      />
-
-      <div style={{ marginTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+    <ProviderCard
+      provider={provider}
+      models={models}
+      onEdit={onEdit}
+      onDelete={onDelete}
+      onAddModel={onAddModel}
+      onEditModel={(modelId) => {
+        const model = modelMap.get(modelId);
+        if (model) onEditModel(model);
+      }}
+      onDeleteModel={onDeleteModel}
+      extraActions={
         <Space size={0}>
           <Tooltip title={authTooltip}>
             <span>
@@ -178,11 +103,9 @@ const OpenClawProviderCard: React.FC<Props> = ({
             </span>
           </Tooltip>
         </Space>
-        <Button type="dashed" size="small" icon={<PlusOutlined />} onClick={onAddModel}>
-          {t('openclaw.providers.addModel')}
-        </Button>
-      </div>
-    </Card>
+      }
+      i18nPrefix="openclaw"
+    />
   );
 };
 

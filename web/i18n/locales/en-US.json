@@ -1080,13 +1080,15 @@
     "customConfigPath": "Custom Config Path",
     "configFileHint": "OpenClaw configuration is always based on the local config file. This page provides visual editing only — all changes are read from and written directly to the config file.",
     "providers": {
-      "title": "Provider Configuration",
+      "title": "Provider List",
       "addProvider": "Add Provider",
       "editProvider": "Edit Provider",
       "deleteProvider": "Delete Provider",
       "confirmDelete": "Are you sure you want to delete provider \"{{name}}\"?",
       "providerId": "Provider ID",
       "providerIdPlaceholder": "e.g., deepseek",
+      "providerName": "Provider Name",
+      "providerNamePlaceholder": "Display name for the provider",
       "baseUrl": "Base URL",
       "baseUrlPlaceholder": "e.g., https://api.deepseek.com/v1",
       "apiKey": "API Key",
@@ -1098,13 +1100,19 @@
       "modelId": "Model ID",
       "modelIdPlaceholder": "e.g., deepseek-chat",
       "modelName": "Model Name",
+      "modelNamePlaceholder": "Display name (leave empty to use ID)",
       "contextLimit": "Context Limit",
+      "contextLimitPlaceholder": "e.g., 128000 (optional)",
       "outputLimit": "Output Limit",
+      "outputLimitPlaceholder": "e.g., 8000 (optional)",
       "reasoning": "Reasoning",
       "costInput": "Input Cost",
       "costOutput": "Output Cost",
       "costCacheRead": "Cache Read Cost",
       "costCacheWrite": "Cache Write Cost",
+      "costSettings": "Cost Settings",
+      "selectPreset": "Select Preset",
+      "otherPresets": "Other Presets",
       "emptyText": "No providers configured yet.",
       "importFromOpenCode": "Import from OpenCode",
       "importFromOpenCodeDesc": "Import providers from your OpenCode configuration",
@@ -1119,6 +1127,20 @@
       "fetchModels": "Fetch Models",
       "completeUrlAndKey": "Please complete Base URL and API Key first",
       "fetchModelsAddSuccess": "Successfully added {{count}} model(s)"
+    },
+    "provider": {
+      "deleteProvider": "Delete Provider",
+      "confirmDelete": "Are you sure you want to delete provider \"{{name}}\"?"
+    },
+    "model": {
+      "title": "Models",
+      "addModel": "Add Model",
+      "editModel": "Edit Model",
+      "deleteModel": "Delete Model",
+      "confirmDelete": "Are you sure you want to delete model \"{{name}}\"?",
+      "contextLimit": "Context Limit",
+      "outputLimit": "Output Limit",
+      "emptyText": "No models"
     },
     "agents": {
       "title": "Agent Defaults",
@@ -1153,7 +1175,9 @@
       "save": "Save"
     },
     "other": {
-      "title": "Other Configuration"
+      "title": "Other Configuration",
+      "hint": "Edit advanced OpenClaw settings here",
+      "autoSaveHint": "Click outside the editor to auto-save"
     },
     "configPath_modal": {
       "title": "Custom Configuration Path",

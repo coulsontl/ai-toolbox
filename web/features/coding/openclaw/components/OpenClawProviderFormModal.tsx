@@ -1,7 +1,8 @@
 import React from 'react';
-import { Modal, Form, Input, Select, Button, Divider } from 'antd';
-import { ImportOutlined } from '@ant-design/icons';
+import { Modal, Form, Input, Select, Button } from 'antd';
+import { ImportOutlined, EyeOutlined, EyeInvisibleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { useAppStore } from '@/stores';
 import type { OpenClawProviderConfig } from '@/types/openclaw';
 
 const API_PROTOCOLS = [
@@ -37,8 +38,13 @@ const OpenClawProviderFormModal: React.FC<Props> = ({
   onOpenImport,
 }) => {
   const { t } = useTranslation();
+  const language = useAppStore((state) => state.language);
   const [form] = Form.useForm();
   const isEdit = !!editingProvider;
+  const [showApiKey, setShowApiKey] = React.useState(false);
+
+  const labelCol = { span: language === 'zh-CN' ? 4 : 6 };
+  const wrapperCol = { span: 20 };
 
   React.useEffect(() => {
     if (modalOpen) {
@@ -53,6 +59,7 @@ const OpenClawProviderFormModal: React.FC<Props> = ({
         form.resetFields();
         form.setFieldsValue({ api: 'openai-completions' });
       }
+      setShowApiKey(false);
     }
   }, [modalOpen, editingProvider, form]);
 
@@ -69,13 +76,26 @@ const OpenClawProviderFormModal: React.FC<Props> = ({
     <Modal
       title={isEdit ? t('openclaw.providers.editProvider') : t('openclaw.providers.addProvider')}
       open={modalOpen}
-      onOk={handleOk}
       onCancel={onCancel}
-      okText={t('common.save')}
-      cancelText={t('common.cancel')}
+      footer={[
+        <Button key="cancel" onClick={onCancel}>
+          {t('common.cancel')}
+        </Button>,
+        <Button key="submit" type="primary" onClick={handleOk}>
+          {t('common.save')}
+        </Button>,
+      ]}
+      width={800}
       destroyOnClose
     >
-      <Form form={form} layout="vertical" autoComplete="off">
+      <Form
+        form={form}
+        layout="horizontal"
+        labelCol={labelCol}
+        wrapperCol={wrapperCol}
+        style={{ marginTop: 24 }}
+        autoComplete="off"
+      >
         <Form.Item
           name="providerId"
           label={t('openclaw.providers.providerId')}
@@ -97,24 +117,37 @@ const OpenClawProviderFormModal: React.FC<Props> = ({
           />
         </Form.Item>
 
+        <Form.Item name="api" label={t('openclaw.providers.apiProtocol')}>
+          <Select
+            options={API_PROTOCOLS}
+            showSearch
+            optionFilterProp="label"
+          />
+        </Form.Item>
+
         <Form.Item name="baseUrl" label={t('openclaw.providers.baseUrl')}>
           <Input placeholder={t('openclaw.providers.baseUrlPlaceholder')} />
         </Form.Item>
 
         <Form.Item name="apiKey" label={t('openclaw.providers.apiKey')}>
-          <Input.Password placeholder={t('openclaw.providers.apiKeyPlaceholder')} />
+          <Input
+            type={showApiKey ? 'text' : 'password'}
+            placeholder={t('openclaw.providers.apiKeyPlaceholder')}
+            suffix={
+              <Button
+                type="text"
+                size="small"
+                icon={showApiKey ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                onClick={() => setShowApiKey(!showApiKey)}
+                style={{ marginRight: -8 }}
+              />
+            }
+          />
         </Form.Item>
 
-        <Form.Item name="api" label={t('openclaw.providers.apiProtocol')}>
-          <Select options={API_PROTOCOLS} />
-        </Form.Item>
-      </Form>
-
-      {/* Import from OpenCode button — only in add mode */}
-      {!isEdit && onOpenImport && (
-        <>
-          <Divider style={{ margin: '8px 0 12px' }} />
-          <div style={{ textAlign: 'center' }}>
+        {/* Import from OpenCode button — only in add mode */}
+        {!isEdit && onOpenImport && (
+          <Form.Item wrapperCol={{ offset: language === 'zh-CN' ? 4 : 6, span: 20 }} style={{ marginBottom: 0 }}>
             <Button
               type="dashed"
               icon={<ImportOutlined />}
@@ -122,9 +155,9 @@ const OpenClawProviderFormModal: React.FC<Props> = ({
             >
               {t('openclaw.providers.importFromOpenCode')}
             </Button>
-          </div>
-        </>
-      )}
+          </Form.Item>
+        )}
+      </Form>
     </Modal>
   );
 };

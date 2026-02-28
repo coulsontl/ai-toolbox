@@ -2,7 +2,7 @@
 //!
 //! Provides system tray icon and menu with flat structure:
 //! - Open Main Window
-//! - ─── OpenCode 模型 ────
+//! - ─── OpenCode ────
 //! - 主模型 / 小模型 (with submenus for model selection)
 //! - ─── OpenCode 插件 ────
 //! - Plugin options (with checkmarks for enabled plugins)
@@ -279,7 +279,7 @@ pub async fn refresh_tray_menus<R: Runtime>(app: &AppHandle<R>) -> Result<(), St
     let openclaw_model_data = if openclaw_enabled {
         openclaw_tray::get_openclaw_tray_model_data(app).await?
     } else {
-        openclaw_tray::TrayModelData { title: "模型".to_string(), current_display: String::new(), items: vec![] }
+        openclaw_tray::TrayModelData { title: "主模型".to_string(), current_display: String::new(), items: vec![] }
     };
     let skills_data = if skills_enabled {
         skills_tray::get_skills_tray_data(app).await?
@@ -301,7 +301,7 @@ pub async fn refresh_tray_menus<R: Runtime>(app: &AppHandle<R>) -> Result<(), St
 
     // OpenCode Model section (only if enabled)
     let opencode_model_header = if opencode_enabled {
-        Some(MenuItem::with_id(app, "opencode_model_header", "──── OpenCode 模型 ────", false, None::<&str>)
+        Some(MenuItem::with_id(app, "opencode_model_header", "──── OpenCode ────", false, None::<&str>)
             .map_err(|e| e.to_string())?)
     } else {
         None

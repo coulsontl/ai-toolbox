@@ -96,7 +96,7 @@ pub async fn get_openclaw_tray_model_data<R: Runtime>(
         });
 
     Ok(TrayModelData {
-        title: "模型".to_string(),
+        title: "主模型".to_string(),
         current_display,
         items,
     })

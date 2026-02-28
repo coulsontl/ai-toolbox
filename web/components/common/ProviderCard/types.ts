@@ -37,4 +37,4 @@ export interface OfficialModelDisplayData {
 /**
  * i18n prefix type for different pages
  */
-export type I18nPrefix = 'settings' | 'opencode';
+export type I18nPrefix = 'settings' | 'opencode' | 'openclaw';

@@ -19,9 +19,8 @@ import {
   LinkOutlined,
   DatabaseOutlined,
   RobotOutlined,
-  EnvironmentOutlined,
-  ToolOutlined,
   SettingOutlined,
+  MoreOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
@@ -33,8 +32,6 @@ import {
   getOpenClawConfigPathInfo,
   backupOpenClawConfig,
   getOpenClawAgentsDefaults,
-  getOpenClawEnv,
-  getOpenClawTools,
 } from '@/services/openclawApi';
 import {
   type OpenCodeDiagnosticsConfig,
@@ -46,8 +43,6 @@ import type {
   OpenClawProviderConfig,
   OpenClawModel,
   OpenClawAgentsDefaults,
-  OpenClawEnvConfig,
-  OpenClawToolsConfig,
 } from '@/types/openclaw';
 import type { OpenCodeProvider } from '@/types/opencode';
 
@@ -66,9 +61,7 @@ import OpenClawModelFormModal, {
 import ImportFromOpenCodeModal, {
   type ImportedProvider,
 } from '../components/ImportFromOpenCodeModal';
-import AgentsDefaultsCard from '../components/AgentsDefaultsCard';
-import EnvCard from '../components/EnvCard';
-import ToolsCard from '../components/ToolsCard';
+import AgentsDefaultsCard, { type AgentsDefaultsCardRef } from '../components/AgentsDefaultsCard';
 import OpenClawConfigPathModal from '../components/OpenClawConfigPathModal';
 import { useRefreshStore } from '@/stores';
 
@@ -123,8 +116,6 @@ const OpenClawPage: React.FC = () => {
 
   // Section data
   const [agentsDefaults, setAgentsDefaults] = React.useState<OpenClawAgentsDefaults | null>(null);
-  const [envConfig, setEnvConfig] = React.useState<OpenClawEnvConfig | null>(null);
-  const [toolsConfig, setToolsConfig] = React.useState<OpenClawToolsConfig | null>(null);
 
   // Modal states
   const [previewOpen, setPreviewOpen] = React.useState(false);
@@ -146,9 +137,11 @@ const OpenClawPage: React.FC = () => {
   // Collapse states
   const [providersCollapsed, setProvidersCollapsed] = React.useState(false);
   const [agentsCollapsed, setAgentsCollapsed] = React.useState(false);
-  const [envCollapsed, setEnvCollapsed] = React.useState(true);
-  const [toolsCollapsed, setToolsCollapsed] = React.useState(true);
   const [otherCollapsed, setOtherCollapsed] = React.useState(true);
+
+  // Refs
+  const agentsDefaultsRef = React.useRef<AgentsDefaultsCardRef>(null);
+  const otherConfigJsonValidRef = React.useRef(true);
 
   // ================================================================
   // Data loading
@@ -195,14 +188,8 @@ const OpenClawPage: React.FC = () => {
 
   const loadSectionData = React.useCallback(async () => {
     try {
-      const [defaults, env, tools] = await Promise.all([
-        getOpenClawAgentsDefaults(),
-        getOpenClawEnv(),
-        getOpenClawTools(),
-      ]);
+      const defaults = await getOpenClawAgentsDefaults();
       setAgentsDefaults(defaults);
-      setEnvConfig(env);
-      setToolsConfig(tools);
     } catch (error) {
       console.error('Failed to load section data:', error);
     }
@@ -534,23 +521,29 @@ const OpenClawPage: React.FC = () => {
   // Other config (flatten fields excluding known sections)
   // ================================================================
   const otherConfigFields = React.useMemo(() => {
-    if (!config) return {};
-    const { models, agents, env, tools, ...rest } = config;
-    return rest;
+    if (!config) return undefined;
+    const { models, agents, ...rest } = config;
+    return Object.keys(rest).length > 0 ? rest : undefined;
   }, [config]);
 
-  const handleOtherConfigChange = async (newOther: Record<string, unknown>) => {
-    if (!config) return;
+  const handleOtherConfigChange = (_value: unknown, isValid: boolean) => {
+    otherConfigJsonValidRef.current = isValid;
+  };
+
+  const handleOtherConfigBlur = async (value: unknown) => {
+    if (!config || !otherConfigJsonValidRef.current) return;
     try {
       const newConfig: OpenClawConfig = {
         models: config.models,
         agents: config.agents,
-        env: config.env,
-        tools: config.tools,
-        ...newOther,
       };
+      if (typeof value === 'object' && value !== null) {
+        Object.assign(newConfig, value);
+      }
       await saveOpenClawConfig(newConfig);
       loadConfig();
+      loadSectionData();
+      refreshTrayMenu();
     } catch (error) {
       console.error('Failed to save other config:', error);
       message.error(t('common.error'));
@@ -704,8 +697,21 @@ const OpenClawPage: React.FC = () => {
                     {t('openclaw.agents.title')}
                   </Text>
                 ),
+                extra: (
+                  <Button
+                    type="link"
+                    size="small"
+                    icon={<MoreOutlined />}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      agentsDefaultsRef.current?.openMoreParams();
+                    }}
+                  >
+                    {t('openclaw.agents.moreParams')}
+                  </Button>
+                ),
                 children: (
-                  <AgentsDefaultsCard defaults={agentsDefaults} config={config} onSaved={handleSectionSaved} />
+                  <AgentsDefaultsCard ref={agentsDefaultsRef} defaults={agentsDefaults} config={config} onSaved={handleSectionSaved} />
                 ),
               },
             ]}
@@ -723,7 +729,6 @@ const OpenClawPage: React.FC = () => {
                   <Text strong>
                     <DatabaseOutlined style={{ marginRight: 8 }} />
                     {t('openclaw.providers.title')}
-                    {providerEntries.length > 0 && ` (${providerEntries.length})`}
                   </Text>
                 ),
                 extra: (
@@ -765,46 +770,6 @@ const OpenClawPage: React.FC = () => {
             ]}
           />
 
-          {/* ===== ENV COLLAPSE ===== */}
-          <Collapse
-            className={styles.collapseCard}
-            activeKey={envCollapsed ? [] : ['env']}
-            onChange={(keys) => setEnvCollapsed(!keys.includes('env'))}
-            items={[
-              {
-                key: 'env',
-                label: (
-                  <Text strong>
-                    <EnvironmentOutlined style={{ marginRight: 8 }} />
-                    {t('openclaw.env.title')}
-                    {envConfig && Object.keys(envConfig).length > 0 &&
-                      ` (${Object.keys(envConfig).length})`}
-                  </Text>
-                ),
-                children: <EnvCard env={envConfig} onSaved={handleSectionSaved} />,
-              },
-            ]}
-          />
-
-          {/* ===== TOOLS COLLAPSE ===== */}
-          <Collapse
-            className={styles.collapseCard}
-            activeKey={toolsCollapsed ? [] : ['tools']}
-            onChange={(keys) => setToolsCollapsed(!keys.includes('tools'))}
-            items={[
-              {
-                key: 'tools',
-                label: (
-                  <Text strong>
-                    <ToolOutlined style={{ marginRight: 8 }} />
-                    {t('openclaw.tools.title')}
-                  </Text>
-                ),
-                children: <ToolsCard tools={toolsConfig} onSaved={handleSectionSaved} />,
-              },
-            ]}
-          />
-
           {/* ===== OTHER CONFIG COLLAPSE ===== */}
           <Collapse
             className={styles.collapseCard}
@@ -820,15 +785,28 @@ const OpenClawPage: React.FC = () => {
                   </Text>
                 ),
                 children: (
-                  <JsonEditor
-                    value={otherConfigFields}
-                    onChange={(val) => {
-                      if (typeof val === 'object' && val !== null) {
-                        handleOtherConfigChange(val as Record<string, unknown>);
-                      }
-                    }}
-                    height={300}
-                  />
+                  <div>
+                    <JsonEditor
+                      value={otherConfigFields}
+                      onChange={handleOtherConfigChange}
+                      onBlur={handleOtherConfigBlur}
+                      height={300}
+                      minHeight={200}
+                      maxHeight={500}
+                      resizable
+                      mode="text"
+                      placeholder={`{
+    "env": {},
+    "tools": { "profile": "default" }
+}`}
+                    />
+                    <div style={{ marginTop: 8 }}>
+                      <Text type="secondary">{t('openclaw.other.hint')}，</Text>
+                      <span style={{ color: '#1677ff' }}>
+                        {t('openclaw.other.autoSaveHint')}
+                      </span>
+                    </div>
+                  </div>
                 ),
               },
             ]}
@@ -857,6 +835,7 @@ const OpenClawPage: React.FC = () => {
             existingIds={
               config?.models?.providers?.[modelTargetProvider]?.models?.map((m) => m.id) || []
             }
+            apiProtocol={config?.models?.providers?.[modelTargetProvider]?.api}
             onCancel={() => setModelModalOpen(false)}
             onSubmit={handleModelSubmit}
           />

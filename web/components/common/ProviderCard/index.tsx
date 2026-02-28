@@ -299,16 +299,16 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
                   {provider.name}
                 </Title>
                 <Space size={8} wrap>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    ID: {provider.id}
-                  </Text>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    •
-                  </Text>
+                  {provider.name !== provider.id && (
+                    <>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        ID: {provider.id}
+                      </Text>
+                      <Text type="secondary" style={{ fontSize: 12 }}>•</Text>
+                    </>
+                  )}
                   <SdkTag name={provider.sdkName} />
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    •
-                  </Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>•</Text>
                   <Text type="secondary" style={{ fontSize: 12 }}>
                     {provider.baseUrl}
                   </Text>
