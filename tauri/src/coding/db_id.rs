@@ -35,10 +35,13 @@ pub fn db_clean_id(raw_id: &str) -> String {
     } else {
         raw_id
     };
-    // Strip SurrealDB wrapper characters ⟨⟩ if present
+    // Strip SurrealDB wrapper characters ⟨⟩ and backticks `` if present
+    // type::string(id) may return either format depending on the ID content
     without_prefix
         .trim_start_matches('⟨')
         .trim_end_matches('⟩')
+        .trim_start_matches('`')
+        .trim_end_matches('`')
         .to_string()
 }
 
