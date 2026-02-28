@@ -388,6 +388,8 @@
     "viewDocs": "官方文档",
     "syncFromSettings": "从设置同步",
     "refreshSuccess": "配置已刷新",
+    "refreshConfig": "刷新配置",
+    "syncModels": "同步官方模型",
     "modelsRefreshSuccess": "模型列表已从 API 刷新",
     "modelsRefreshRateLimit": "请等待 {{seconds}} 秒后再刷新模型",
     "addProvider": "添加供应商",

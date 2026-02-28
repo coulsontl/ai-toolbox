@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button, Empty, Space, Typography, message, Spin, Select, Collapse, Tag, Form, Tooltip } from 'antd';
-import { PlusOutlined, FolderOpenOutlined, LinkOutlined, EyeOutlined, EditOutlined, EnvironmentOutlined, CloudDownloadOutlined, ReloadOutlined, FileOutlined, ImportOutlined, ApiOutlined, SafetyCertificateOutlined, RobotOutlined, ToolOutlined, DatabaseOutlined } from '@ant-design/icons';
+import { PlusOutlined, FolderOpenOutlined, LinkOutlined, EyeOutlined, EditOutlined, EnvironmentOutlined, CloudDownloadOutlined, CloudSyncOutlined, ReloadOutlined, FileOutlined, ImportOutlined, ApiOutlined, SafetyCertificateOutlined, RobotOutlined, ToolOutlined, DatabaseOutlined } from '@ant-design/icons';
 
 import { useTranslation } from 'react-i18next';
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
@@ -1157,12 +1157,20 @@ const OpenCodePage: React.FC = () => {
                     incrementOpenCodeConfigRefresh();
                     incrementOmoConfigRefresh();
                     incrementOmosConfigRefresh();
-                    handleRefreshModelsCache();
                   }}
+                  style={{ padding: 0, fontSize: 12 }}
+                >
+                  {t('opencode.refreshConfig')}
+                </Button>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<CloudSyncOutlined />}
+                  onClick={handleRefreshModelsCache}
                   loading={refreshingModels}
                   style={{ padding: 0, fontSize: 12 }}
                 >
-                  {t('common.refresh')}
+                  {t('opencode.syncModels')}
                 </Button>
               </Space>
             </div>

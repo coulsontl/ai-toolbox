@@ -388,6 +388,8 @@
     "viewDocs": "Documentation",
     "syncFromSettings": "Sync from Settings",
     "refreshSuccess": "Configuration refreshed",
+    "refreshConfig": "Refresh Config",
+    "syncModels": "Sync Official Models",
     "modelsRefreshSuccess": "Model list refreshed from API",
     "modelsRefreshRateLimit": "Please wait {{seconds}} seconds before refreshing models",
     "addProvider": "Add Provider",
