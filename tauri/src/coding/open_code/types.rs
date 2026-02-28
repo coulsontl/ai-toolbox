@@ -1,7 +1,30 @@
 use indexmap::IndexMap;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use surrealdb::sql::Thing;
+
+/// Deserialize a JSON value, normalizing null and empty objects to None
+fn deserialize_nullable_value<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match opt {
+        Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Object(ref obj)) if obj.is_empty() => Ok(None),
+        other => Ok(other),
+    }
+}
+
+/// Check if an Option<Value> should be skipped during serialization
+fn is_empty_or_none(val: &Option<serde_json::Value>) -> bool {
+    match val {
+        None => true,
+        Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::Object(obj)) => obj.is_empty(),
+        _ => false,
+    }
+}
 
 // ============================================================================
 // OpenCode Common Config Types
@@ -89,9 +112,9 @@ pub struct OpenCodeModel {
     pub tool_call: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "deserialize_nullable_value", skip_serializing_if = "is_empty_or_none")]
     pub options: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "deserialize_nullable_value", skip_serializing_if = "is_empty_or_none")]
     pub variants: Option<serde_json::Value>,
 }
 

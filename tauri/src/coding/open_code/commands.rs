@@ -13,38 +13,6 @@ use crate::db::DbState;
 // Helper Functions
 // ============================================================================
 
-/// Fields in model that should be removed if they are empty objects
-const MODEL_EMPTY_OBJECT_FIELDS: &[&str] = &["options", "variants", "modalities"];
-
-/// Recursively clean empty objects from the config
-/// Specifically targets options, variants, modalities in models
-fn clean_empty_objects(value: &mut Value) {
-    if let Value::Object(map) = value {
-        // Check if this is a provider section
-        if let Some(Value::Object(providers)) = map.get_mut("provider") {
-            for (_provider_key, provider_value) in providers.iter_mut() {
-                if let Value::Object(provider) = provider_value {
-                    // Check models in each provider
-                    if let Some(Value::Object(models)) = provider.get_mut("models") {
-                        for (_model_key, model_value) in models.iter_mut() {
-                            if let Value::Object(model) = model_value {
-                                // Remove empty object fields
-                                for field in MODEL_EMPTY_OBJECT_FIELDS {
-                                    if let Some(Value::Object(obj)) = model.get(*field) {
-                                        if obj.is_empty() {
-                                            model.remove(*field);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 // ============================================================================
 // OpenCode Commands
 // ============================================================================
@@ -267,15 +235,8 @@ pub async fn apply_config_internal<R: tauri::Runtime>(
         }
     }
 
-    // Serialize to JSON Value first, then clean up empty objects
-    let mut json_value = serde_json::to_value(&config)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
-
-    // Clean up empty objects in models (options, variants, modalities)
-    clean_empty_objects(&mut json_value);
-
     // Serialize with pretty printing
-    let json_content = serde_json::to_string_pretty(&json_value)
+    let json_content = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
     fs::write(config_path, json_content)
