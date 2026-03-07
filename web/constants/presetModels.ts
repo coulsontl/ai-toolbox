@@ -1,13 +1,11 @@
 /**
  * Preset models configuration for different AI SDK types.
  *
- * The canonical data lives in presetModels.json (same directory).
- * On app startup the frontend fetches the latest version from the
- * remote repository and merges it into PRESET_MODELS so that every
- * consumer automatically sees the updated list.
+ * The canonical data lives in tauri/resources/preset_models.json.
+ * On app startup the Rust backend loads the bundled defaults (or local
+ * cache) and populates PRESET_MODELS, then the frontend background-
+ * fetches the latest version from the remote repository.
  */
-
-import defaultModels from './presetModels.json';
 
 export interface PresetModel {
   id: string;
@@ -28,29 +26,28 @@ export interface PresetModel {
  * Points to the raw file in the main branch of the repository.
  */
 export const PRESET_MODELS_REMOTE_URL =
-  'https://raw.githubusercontent.com/coulsontl/ai-toolbox/main/web/constants/presetModels.json';
+  'https://raw.githubusercontent.com/coulsontl/ai-toolbox/main/tauri/resources/preset_models.json';
 
 /**
  * Preset models grouped by npm SDK type.
  *
- * This is a **mutable** object whose *contents* are replaced in-place
- * when remote data is fetched.  Because the object reference itself
- * never changes, every module that imported it will see the latest
- * data on its next property access — no re-import needed.
+ * Starts empty and is populated at startup from the Rust backend
+ * (bundled defaults or local cache), then updated from remote.
+ * Because the object reference itself never changes, every module
+ * that imported it will see the latest data on its next property
+ * access — no re-import needed.
  */
-export const PRESET_MODELS: Record<string, PresetModel[]> = {
-  ...(defaultModels as Record<string, PresetModel[]>),
-};
+export const PRESET_MODELS: Record<string, PresetModel[]> = {};
 
 /**
  * Replace the contents of PRESET_MODELS with `models`.
  * The object reference stays the same so existing imports remain valid.
  *
- * If `models` is empty or invalid the call is a no-op so that the
- * bundled defaults are never accidentally wiped out.
+ * If `models` is empty or invalid the call is a no-op so that
+ * existing data is never accidentally wiped out.
  */
 export const updatePresetModels = (models: Record<string, PresetModel[]>) => {
-  // Guard: never replace with empty / invalid data — keep bundled defaults
+  // Guard: never replace with empty / invalid data
   if (!models || typeof models !== 'object' || Object.keys(models).length === 0) {
     return;
   }

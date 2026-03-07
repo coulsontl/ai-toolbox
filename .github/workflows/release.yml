@@ -112,7 +112,7 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Update models.json from models.dev
+      - name: Update models.dev.json from models.dev
         run: node scripts/update-models.mjs
         continue-on-error: true
 

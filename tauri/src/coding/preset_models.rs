@@ -7,6 +7,9 @@ use std::sync::OnceLock;
 
 const CACHE_FILE_NAME: &str = "preset_models.json";
 
+/// Bundled preset models JSON (compile-time embedded from resources/)
+const DEFAULT_PRESET_MODELS_JSON: &str = include_str!("../../resources/preset_models.json");
+
 /// App data directory path, set once at startup by lib.rs
 static CACHE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
@@ -26,6 +29,19 @@ fn get_cache_file_path() -> Option<PathBuf> {
 /// Public getter for the cache file path (used by backup/restore)
 pub fn get_preset_models_cache_path() -> Option<PathBuf> {
     get_cache_file_path()
+}
+
+// ============================================================================
+// Bundled defaults
+// ============================================================================
+
+fn get_bundled_preset_models() -> Option<Value> {
+    let data: Value = serde_json::from_str(DEFAULT_PRESET_MODELS_JSON).ok()?;
+    if is_valid_preset_models(&data) {
+        Some(data)
+    } else {
+        None
+    }
 }
 
 // ============================================================================
@@ -73,14 +89,17 @@ fn is_valid_preset_models(data: &Value) -> bool {
 // Tauri commands
 // ============================================================================
 
-/// Load preset models from local cache file.
-/// Returns the cached JSON or null if no cache exists / is invalid.
+/// Load preset models: local cache first, then bundled defaults as fallback.
 #[tauri::command]
 pub fn load_cached_preset_models() -> Result<Option<Value>, String> {
-    match read_cache_file() {
-        Some(data) if is_valid_preset_models(&data) => Ok(Some(data)),
-        _ => Ok(None),
+    // Try local cache first
+    if let Some(data) = read_cache_file() {
+        if is_valid_preset_models(&data) {
+            return Ok(Some(data));
+        }
     }
+    // Fallback to bundled defaults
+    Ok(get_bundled_preset_models())
 }
 
 /// Fetch preset models JSON from a remote URL, save to local cache,
@@ -90,7 +109,7 @@ pub async fn fetch_remote_preset_models(
     state: tauri::State<'_, DbState>,
     url: String,
 ) -> Result<Value, String> {
-    let client = http_client::client_with_timeout(&state, 15).await?;
+    let client = http_client::client_with_timeout(&state, 30).await?;
 
     let response = client
         .get(&url)

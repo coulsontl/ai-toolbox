@@ -10,7 +10,7 @@ use indexmap::IndexMap;
 use std::fs;
 use std::path::PathBuf;
 
-const DEFAULT_MODELS_JSON: &str = include_str!("../../../resources/models.json");
+const DEFAULT_MODELS_JSON: &str = include_str!("../../../resources/models.dev.json");
 
 const MODELS_API_URL: &str = "https://models.dev/api.json";
 const CACHE_FILE_NAME: &str = "models.dev.json";
@@ -128,12 +128,12 @@ fn save_all_providers_to_cache(all_providers: &serde_json::Value, updated_at: &s
 }
 
 // ============================================================================
-// Default data from embedded models.json
+// Default data from embedded models.dev.json
 // ============================================================================
 
 fn get_all_default_providers_data() -> serde_json::Value {
     serde_json::from_str(DEFAULT_MODELS_JSON).unwrap_or_else(|e| {
-        eprintln!("Failed to parse default models.json: {}", e);
+        eprintln!("Failed to parse default models.dev.json: {}", e);
         serde_json::json!({})
     })
 }

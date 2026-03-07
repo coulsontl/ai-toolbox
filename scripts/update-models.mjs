@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Fetch models.json from https://models.dev/api.json and replace tauri/resources/models.json
+ * Fetch models.dev.json from https://models.dev/api.json and replace tauri/resources/models.dev.json
  * Validates structure before replacing to avoid breaking the build.
  */
 
@@ -11,7 +11,7 @@ import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const API_URL = "https://models.dev/api.json";
-const TARGET_PATH = resolve(__dirname, "../tauri/resources/models.json");
+const TARGET_PATH = resolve(__dirname, "../tauri/resources/models.dev.json");
 
 async function fetchModels() {
   console.log(`Fetching models from ${API_URL} ...`);
@@ -111,7 +111,7 @@ async function main() {
       const newSize = Buffer.byteLength(raw, "utf-8");
       console.log(`Existing file: ${(existingSize / 1024).toFixed(1)} KB, New data: ${(newSize / 1024).toFixed(1)} KB`);
     } catch {
-      console.log("No existing models.json found, creating new file.");
+      console.log("No existing models.dev.json found, creating new file.");
     }
 
     writeFileSync(TARGET_PATH, raw, "utf-8");
