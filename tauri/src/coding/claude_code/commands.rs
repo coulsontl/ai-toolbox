@@ -11,7 +11,7 @@ use crate::coding::prompt_file::{read_prompt_content_file, write_prompt_content_
 use crate::db::DbState;
 use tauri::Emitter;
 
-const KNOWN_ENV_FIELDS: [&str; 7] = [
+const KNOWN_ENV_FIELDS: [&str; 8] = [
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
@@ -19,6 +19,7 @@ const KNOWN_ENV_FIELDS: [&str; 7] = [
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_REASONING_MODEL",
 ];
 
 fn get_claude_prompt_file_path() -> Result<std::path::PathBuf, String> {
@@ -157,6 +158,9 @@ async fn load_temp_provider_from_file() -> Result<ClaudeCodeProvider, String> {
     }
     if let Some(opus) = env_obj.get("ANTHROPIC_DEFAULT_OPUS_MODEL") {
         provider_settings.insert("opusModel".to_string(), opus.clone());
+    }
+    if let Some(reasoning) = env_obj.get("ANTHROPIC_REASONING_MODEL") {
+        provider_settings.insert("reasoningModel".to_string(), reasoning.clone());
     }
 
     let now = Local::now().to_rfc3339();
@@ -615,6 +619,13 @@ pub async fn apply_config_to_file_public(
         env.insert(
             "ANTHROPIC_DEFAULT_OPUS_MODEL".to_string(),
             serde_json::json!(opus),
+        );
+    }
+
+    if let Some(reasoning) = provider_config.get("reasoningModel").and_then(|v| v.as_str()) {
+        env.insert(
+            "ANTHROPIC_REASONING_MODEL".to_string(),
+            serde_json::json!(reasoning),
         );
     }
 
@@ -1590,6 +1601,9 @@ pub async fn init_claude_provider_from_settings(
     }
     if let Some(opus) = provider_env.get("ANTHROPIC_DEFAULT_OPUS_MODEL") {
         provider_settings.insert("opusModel".to_string(), opus.clone());
+    }
+    if let Some(reasoning) = provider_env.get("ANTHROPIC_REASONING_MODEL") {
+        provider_settings.insert("reasoningModel".to_string(), reasoning.clone());
     }
 
     // Build common config with unknown fields

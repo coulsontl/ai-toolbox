@@ -15,12 +15,14 @@ export interface ClaudeSettingsConfig {
     ANTHROPIC_AUTH_TOKEN?: string;
     ANTHROPIC_API_KEY?: string; // 兼容旧版本，读取时检查，写入时不使用
     ANTHROPIC_BASE_URL?: string;
+    ANTHROPIC_REASONING_MODEL?: string;
   };
   // Model configurations
   model?: string;
   haikuModel?: string;
   sonnetModel?: string;
   opusModel?: string;
+  reasoningModel?: string;
 }
 
 /**
@@ -67,6 +69,7 @@ export interface ClaudeSettings {
     ANTHROPIC_DEFAULT_HAIKU_MODEL?: string;
     ANTHROPIC_DEFAULT_SONNET_MODEL?: string;
     ANTHROPIC_DEFAULT_OPUS_MODEL?: string;
+    ANTHROPIC_REASONING_MODEL?: string;
   };
   // Common config fields (flattened at top level)
   [key: string]: unknown;
@@ -84,6 +87,7 @@ export interface ClaudeProviderFormValues {
   haikuModel?: string;
   sonnetModel?: string;
   opusModel?: string;
+  reasoningModel?: string;
   notes?: string;
   isDisabled?: boolean;
   // For import from settings

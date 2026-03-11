@@ -118,6 +118,7 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
   ].filter(Boolean) as MenuProps['items'];
 
   const hasModels =
+    settingsConfig.reasoningModel ||
     settingsConfig.haikuModel ||
     settingsConfig.sonnetModel ||
     settingsConfig.opusModel;
@@ -194,7 +195,7 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
                 {settingsConfig.model && (
                   <div>
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      {t('claudecode.provider.defaultModel')}:
+                      {t('claudecode.model.defaultLabel')}:
                     </Text>{' '}
                     <Text code style={{ fontSize: 12 }}>
                       {settingsConfig.model}
@@ -228,6 +229,16 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
                     </Text>{' '}
                     <Text code style={{ fontSize: 12 }}>
                       {settingsConfig.opusModel}
+                    </Text>
+                  </div>
+                )}
+                {settingsConfig.reasoningModel && (
+                  <div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {t('claudecode.model.reasoningLabel')}:
+                    </Text>{' '}
+                    <Text code style={{ fontSize: 12 }}>
+                      {settingsConfig.reasoningModel}
                     </Text>
                   </div>
                 )}

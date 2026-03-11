@@ -314,8 +314,6 @@ const OpenCodePage: React.FC = () => {
       try {
         const models = await getOpenCodeUnifiedModels();
         setUnifiedModels(models);
-        // Refresh tray menu to update model list
-        await refreshTrayMenu();
       } catch (error) {
         console.error('Failed to load unified models:', error);
       }
@@ -1202,6 +1200,7 @@ const OpenCodePage: React.FC = () => {
                     incrementOpenCodeConfigRefresh();
                     incrementOmoConfigRefresh();
                     incrementOmosConfigRefresh();
+                    refreshTrayMenu();
                   }}
                   style={{ padding: 0, fontSize: 12 }}
                 >

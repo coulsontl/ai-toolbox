@@ -99,6 +99,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
         haikuModel: settingsConfig.haikuModel,
         sonnetModel: settingsConfig.sonnetModel,
         opusModel: settingsConfig.opusModel,
+        reasoningModel: settingsConfig.reasoningModel || settingsConfig.env?.ANTHROPIC_REASONING_MODEL,
         notes: provider.notes,
       });
     }
@@ -207,8 +208,8 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
     try {
       // 只验证当前模式需要的字段
       const fieldsToValidate = mode === 'import'
-        ? ['sourceProvider', 'name', 'baseUrl', 'apiKey', 'model', 'haikuModel', 'sonnetModel', 'opusModel', 'notes']
-        : ['name', 'baseUrl', 'apiKey', 'model', 'haikuModel', 'sonnetModel', 'opusModel', 'notes'];
+        ? ['sourceProvider', 'name', 'baseUrl', 'apiKey', 'model', 'haikuModel', 'sonnetModel', 'opusModel', 'reasoningModel', 'notes']
+        : ['name', 'baseUrl', 'apiKey', 'model', 'haikuModel', 'sonnetModel', 'opusModel', 'reasoningModel', 'notes'];
       
       const values = await form.validateFields(fieldsToValidate);
       
@@ -223,6 +224,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
         haikuModel: values.haikuModel,
         sonnetModel: values.sonnetModel,
         opusModel: values.opusModel,
+        reasoningModel: values.reasoningModel,
         notes: values.notes,
         sourceProviderId: mode === 'import' ? selectedProvider?.id : undefined,
       };
@@ -427,6 +429,18 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
         />
       </Form.Item>
 
+      <Form.Item name="reasoningModel" label={t('claudecode.model.reasoningModel')}>
+        <AutoComplete
+          options={modelOptions}
+          placeholder={t('claudecode.model.reasoningModelPlaceholder')}
+          style={{ width: '100%' }}
+          filterOption={(inputValue, option) =>
+            (option?.label.toLowerCase().includes(inputValue.toLowerCase()) ||
+            option?.value.toLowerCase().includes(inputValue.toLowerCase())) ?? false
+          }
+        />
+      </Form.Item>
+
       <Form.Item name="notes" label={t('claudecode.provider.notes')}>
         <TextArea
           rows={3}
@@ -527,6 +541,15 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
             <Form.Item name="opusModel" label={t('claudecode.import.selectOpusModel')}>
               <Select
                 placeholder={t('claudecode.model.opusModelPlaceholder')}
+                options={modelSelectOptions}
+                allowClear
+                showSearch
+              />
+            </Form.Item>
+
+            <Form.Item name="reasoningModel" label={t('claudecode.import.selectReasoningModel')}>
+              <Select
+                placeholder={t('claudecode.model.reasoningModelPlaceholder')}
                 options={modelSelectOptions}
                 allowClear
                 showSearch

@@ -354,7 +354,17 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
           return;
         }
       }
-      
+
+      // Validate limits: when not required, either both filled or both empty
+      if (!limitRequired) {
+        const hasContext = values.contextLimit !== undefined && values.contextLimit !== null;
+        const hasOutput = values.outputLimit !== undefined && values.outputLimit !== null;
+        if (hasContext !== hasOutput) {
+          message.error(t('opencode.model.limitsBothRequired'));
+          return;
+        }
+      }
+
       setLoading(true);
 
       // Check for duplicate ID when creating

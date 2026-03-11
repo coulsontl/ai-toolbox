@@ -1,5 +1,5 @@
 import React from 'react';
-import { Modal, Form, Input, AutoComplete, Button, InputNumber, Tag, Divider, Row, Col, Typography, Checkbox } from 'antd';
+import { Modal, Form, Input, AutoComplete, Button, InputNumber, Tag, Divider, Row, Col, Typography, Checkbox, message } from 'antd';
 import { RightOutlined, DownOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '@/stores';
@@ -183,6 +183,15 @@ const OpenClawModelFormModal: React.FC<Props> = ({
   const handleOk = async () => {
     try {
       const values = await form.validateFields();
+
+      // Validate limits: either both filled or both empty
+      const hasContext = values.contextWindow !== undefined && values.contextWindow !== null;
+      const hasMaxTokens = values.maxTokens !== undefined && values.maxTokens !== null;
+      if (hasContext !== hasMaxTokens) {
+        message.error(t('opencode.model.limitsBothRequired'));
+        return;
+      }
+
       const result: ModelFormValues = { ...values };
       // Include extra params if valid and non-empty
       if (extraParamsValid && typeof extraParamsValue === 'object' && extraParamsValue !== null && Object.keys(extraParamsValue).length > 0) {

@@ -587,6 +587,7 @@
       "outputModalities": "输出模态",
       "outputModalitiesPlaceholder": "选择输出类型",
       "modalitiesBothRequired": "输入和输出模态需同时选择或同时留空",
+      "limitsBothRequired": "上下文限制和输出限制需同时填写或同时留空",
       "presetModels": "预设模型",
       "selectPreset": "选择预设模型",
       "noPresets": "该 SDK 类型暂无预设",
@@ -984,6 +985,7 @@
     "model": {
       "title": "模型配置",
       "defaultModel": "默认模型",
+      "defaultLabel": "默认",
       "defaultModelPlaceholder": "claude-sonnet-4-5-20250929",
       "haikuModel": "Haiku模型",
       "haikuModelPlaceholder": "claude-haiku-4-5-20251001",
@@ -991,6 +993,9 @@
       "sonnetModelPlaceholder": "claude-sonnet-4-5-20250929",
       "opusModel": "Opus模型",
       "opusModelPlaceholder": "claude-opus-4-5-20251101",
+      "reasoningModel": "思考模型",
+      "reasoningLabel": "思考",
+      "reasoningModelPlaceholder": "claude-sonnet-4-5-thinking-20251001",
       "selectFromProvider": "从供应商模型中选择",
       "manualInput": "或手动输入"
     },
@@ -1008,6 +1013,7 @@
       "selectHaikuModel": "Haiku模型",
       "selectSonnetModel": "Sonnet模型",
       "selectOpusModel": "Opus模型",
+      "selectReasoningModel": "思考模型",
       "import": "导入"
     },
     "conflict": {

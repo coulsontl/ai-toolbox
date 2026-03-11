@@ -587,6 +587,7 @@
       "outputModalities": "Output",
       "outputModalitiesPlaceholder": "Select output types",
       "modalitiesBothRequired": "Both input and output modalities must be selected or both left empty",
+      "limitsBothRequired": "Context limit and output limit must be both filled or both left empty",
       "presetModels": "Preset Models",
       "selectPreset": "Select Preset Model",
       "noPresets": "No presets for this SDK type",
@@ -984,6 +985,7 @@
     "model": {
       "title": "Model Configuration",
       "defaultModel": "Default Model",
+      "defaultLabel": "Default",
       "defaultModelPlaceholder": "claude-sonnet-4-5-20250929",
       "haikuModel": "Haiku Model",
       "haikuModelPlaceholder": "claude-haiku-4-5-20251001",
@@ -991,6 +993,9 @@
       "sonnetModelPlaceholder": "claude-sonnet-4-5-20250929",
       "opusModel": "Opus Model",
       "opusModelPlaceholder": "claude-opus-4-5-20251101",
+      "reasoningModel": "Reasoning Model",
+      "reasoningLabel": "Reasoning",
+      "reasoningModelPlaceholder": "claude-sonnet-4-5-thinking-20251001",
       "selectFromProvider": "Select from provider models",
       "manualInput": "Or enter manually"
     },
@@ -1008,6 +1013,7 @@
       "selectHaikuModel": "Select Haiku Model",
       "selectSonnetModel": "Select Sonnet Model",
       "selectOpusModel": "Select Opus Model",
+      "selectReasoningModel": "Select Reasoning Model",
       "import": "Import"
     },
     "conflict": {
