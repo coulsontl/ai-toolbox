@@ -10,6 +10,7 @@ import {
   PlusOutlined,
   HolderOutlined,
 } from '@ant-design/icons';
+import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -81,10 +82,30 @@ export const SkillCard: React.FC<SkillCardProps> = ({
     }
   };
 
+  const handleIconClick = async () => {
+    if (github) {
+      await openUrl(github.href);
+    } else if (skill.source_type === 'local' && skill.source_ref) {
+      try {
+        await revealItemInDir(skill.source_ref);
+      } catch {
+        message.error(t('skills.openFolderFailed'));
+      }
+    }
+  };
+
+  const iconTooltip = github
+    ? t('skills.openRepo')
+    : skill.source_type === 'local' && skill.source_ref
+      ? t('skills.openFolder')
+      : undefined;
+
+  const iconClickable = !!iconTooltip;
+
   const iconNode = typeKey.includes('git') ? (
-    <GithubOutlined className={styles.icon} />
+    <GithubOutlined className={`${styles.icon}${iconClickable ? ` ${styles.clickableIcon}` : ''}`} />
   ) : typeKey.includes('local') ? (
-    <FolderOutlined className={styles.icon} />
+    <FolderOutlined className={`${styles.icon}${iconClickable ? ` ${styles.clickableIcon}` : ''}`} />
   ) : (
     <AppstoreOutlined className={styles.icon} />
   );
@@ -134,7 +155,14 @@ export const SkillCard: React.FC<SkillCardProps> = ({
             <HolderOutlined />
           </div>
         )}
-        <div className={styles.iconArea}>{iconNode}</div>
+        <Tooltip title={iconTooltip}>
+          <div
+            className={`${styles.iconArea}${iconClickable ? ` ${styles.clickableIconArea}` : ''}`}
+            onClick={iconClickable ? handleIconClick : undefined}
+          >
+            {iconNode}
+          </div>
+        </Tooltip>
         <div className={styles.main}>
           <div className={styles.headerRow}>
             <div className={styles.name}>{skill.name}</div>
