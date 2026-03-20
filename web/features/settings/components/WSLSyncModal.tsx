@@ -10,7 +10,11 @@ import { CheckCircleOutlined, CloseCircleOutlined, ReloadOutlined, DeleteOutline
 import { useTranslation } from 'react-i18next';
 import { useWSLSync } from '@/features/settings/hooks/useWSLSync';
 import { useSettingsStore } from '@/stores';
-import { translateDefaultMappingName, translateSyncMessage } from '@/features/settings/utils/syncMessageTranslator';
+import {
+  isBuiltInDefaultMappingName,
+  translateDefaultMappingName,
+  translateSyncMessage,
+} from '@/features/settings/utils/syncMessageTranslator';
 import { FileMappingModal } from './FileMappingModal';
 import { wslDeleteFileMapping, wslResetFileMappings, wslOpenTerminal, wslOpenFolder, wslGetDistroState } from '@/services/wslSyncApi';
 import type { FileMapping } from '@/types/wslsync';
@@ -67,9 +71,10 @@ export const WSLSyncModal: React.FC<WSLSyncModalProps> = ({ open, onClose }) => 
   const [activeModuleTab, setActiveModuleTab] = useState<string>(visibleModuleKeys[0] || 'all');
 
   const getMappingDisplayName = useCallback((mapping: FileMapping) => {
-    return translateDefaultMappingName(mapping.id, t) === mapping.id
-      ? translateDefaultMappingName(mapping.name, t)
-      : translateDefaultMappingName(mapping.id, t);
+    if (isBuiltInDefaultMappingName(mapping.id, mapping.name)) {
+      return translateDefaultMappingName(mapping.id, t);
+    }
+    return mapping.name;
   }, [t]);
 
   const getProgressDisplayName = useCallback((currentItem: string) => {

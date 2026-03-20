@@ -134,6 +134,17 @@ export const translateDefaultMappingName = (value: string, t: TFunction) => {
 	return translateBuiltinMappingLabel(value, t) ?? value;
 };
 
+export const isBuiltInDefaultMappingName = (id: string, name: string) => {
+	if (!id || !name) {
+		return false;
+	}
+	const suffix = BUILTIN_MAPPING_SUFFIX_BY_LABEL.get(id);
+	if (suffix === undefined) {
+		return false;
+	}
+	return BUILTIN_MAPPING_SUFFIX_BY_LABEL.get(name) === suffix;
+};
+
 export const translateSyncMessage = (
 	value: string,
 	mode: SyncMode,

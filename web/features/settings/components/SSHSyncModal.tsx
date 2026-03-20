@@ -12,7 +12,11 @@ import { useSSHSync } from '@/features/settings/hooks/useSSHSync';
 import { useSettingsStore } from '@/stores';
 import { SSHConnectionModal } from './SSHConnectionModal';
 import { SSHFileMappingModal } from './SSHFileMappingModal';
-import { translateDefaultMappingName, translateSyncMessage } from '@/features/settings/utils/syncMessageTranslator';
+import {
+  isBuiltInDefaultMappingName,
+  translateDefaultMappingName,
+  translateSyncMessage,
+} from '@/features/settings/utils/syncMessageTranslator';
 import {
   sshDeleteFileMapping,
   sshResetFileMappings,
@@ -77,9 +81,10 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
   const [testing, setTesting] = useState(false);
 
   const getMappingDisplayName = (mapping: SSHFileMapping) => {
-    return translateDefaultMappingName(mapping.id, t) === mapping.id
-      ? translateDefaultMappingName(mapping.name, t)
-      : translateDefaultMappingName(mapping.id, t);
+    if (isBuiltInDefaultMappingName(mapping.id, mapping.name)) {
+      return translateDefaultMappingName(mapping.id, t);
+    }
+    return mapping.name;
   };
 
   const getProgressDisplayName = (currentItem: string) => {

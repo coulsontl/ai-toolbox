@@ -1583,8 +1583,8 @@ const OpenCodePage: React.FC = () => {
               className={styles.opencodeSection}
               data-opencode-sidebar-section="true"
               data-sidebar-title={t('opencode.plugin.title')}
-              data-sidebar-order={4}
-              style={{ order: 4 }}
+              data-sidebar-order={2}
+              style={{ order: 2 }}
             >
               <PluginSettings
                 key={`opencode-plugin-settings-${pluginExpandNonce}`}
@@ -1600,8 +1600,8 @@ const OpenCodePage: React.FC = () => {
                 className={styles.opencodeSection}
                 data-opencode-sidebar-section="true"
                 data-sidebar-title={t('opencode.ohMyOpenCode.title')}
-                data-sidebar-order={6}
-                style={{ order: 6 }}
+                data-sidebar-order={3}
+                style={{ order: 3 }}
               >
                 <OhMyOpenCodeSettings
                   key={`opencode-omo-settings-${ohMyOpenCodeSettingsRefreshKey}-${omoSettingsExpandNonce}`}
@@ -1626,8 +1626,8 @@ const OpenCodePage: React.FC = () => {
                 className={styles.opencodeSection}
                 data-opencode-sidebar-section="true"
                 data-sidebar-title={t('opencode.ohMyOpenCodeSlim.title')}
-                data-sidebar-order={7}
-                style={{ order: 7 }}
+                data-sidebar-order={4}
+                style={{ order: 4 }}
               >
                 <OhMyOpenCodeSlimSettings
                   key={`opencode-omo-slim-settings-${ohMyOpenCodeSettingsRefreshKey}-${omoSlimSettingsExpandNonce}`}
@@ -1651,8 +1651,8 @@ const OpenCodePage: React.FC = () => {
               className={styles.opencodeSection}
               data-opencode-sidebar-section="true"
               data-sidebar-title={t('opencode.provider.title')}
-              data-sidebar-order={2}
-              style={{ order: 2 }}
+              data-sidebar-order={5}
+              style={{ order: 5 }}
             >
               <Collapse
                 className={styles.collapseCard}
@@ -1807,8 +1807,8 @@ const OpenCodePage: React.FC = () => {
               className={styles.opencodeSection}
               data-opencode-sidebar-section="true"
               data-sidebar-title={t('opencode.prompt.title')}
-              data-sidebar-order={5}
-              style={{ order: 5 }}
+              data-sidebar-order={7}
+              style={{ order: 7 }}
             >
               <GlobalPromptSettings
                 key={`opencode-global-prompt-${globalPromptExpandNonce}`}
@@ -1829,8 +1829,8 @@ const OpenCodePage: React.FC = () => {
               className={styles.opencodeSection}
               data-opencode-sidebar-section="true"
               data-sidebar-title={t('opencode.official.title')}
-              data-sidebar-order={3}
-              style={{ order: 3 }}
+              data-sidebar-order={6}
+              style={{ order: 6 }}
             >
               <Collapse
                 className={styles.collapseCard}
