@@ -483,7 +483,7 @@ const GeneralSettingsPage: React.FC = () => {
       await openAppDataDir();
     } catch (error) {
       console.error('Failed to open data directory:', error);
-      message.error('打开数据目录失败');
+      message.error(t('settings.openDataDirFailed'));
     }
   };
 

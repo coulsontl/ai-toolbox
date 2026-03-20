@@ -1,5 +1,5 @@
-import React from 'react';
-import { Card, Collapse, Tag, Typography, Space } from 'antd';
+import type React from 'react';
+import { Card, Collapse, Tag, Typography, Space, Switch, Tooltip } from 'antd';
 import { SafetyOutlined, LockOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { OfficialModel } from '@/services/opencodeApi';
@@ -87,6 +87,10 @@ interface OfficialProviderCardProps {
   name: string;
   models: OfficialModel[];
   i18nPrefix?: string;
+  /** Whether this provider is disabled (controlled by disabled_providers). */
+  isDisabled?: boolean;
+  /** Toggle callback for disabled state. */
+  onToggleDisabled?: () => void;
 }
 
 /**
@@ -98,6 +102,8 @@ const OfficialProviderCard: React.FC<OfficialProviderCardProps> = ({
   name,
   models,
   i18nPrefix = 'opencode',
+  isDisabled,
+  onToggleDisabled,
 }) => {
   const { t } = useTranslation();
 
@@ -144,9 +150,28 @@ const OfficialProviderCard: React.FC<OfficialProviderCardProps> = ({
               </Text>
             </div>
           </div>
-          <Tag color="warning" icon={<LockOutlined />} style={{ fontSize: 11 }}>
-            {t(`${i18nPrefix}.official.authProvider`)}
-          </Tag>
+          <Space size={8}>
+            <Tag color="warning" icon={<LockOutlined />} style={{ fontSize: 11 }}>
+              {t(`${i18nPrefix}.official.authProvider`)}
+            </Tag>
+            {onToggleDisabled && (
+              <Tooltip
+                title={
+                  isDisabled
+                    ? t(`${i18nPrefix}.provider.disabled`)
+                    : t(`${i18nPrefix}.provider.enabled`)
+                }
+              >
+                <Switch
+                  size="small"
+                  checked={!isDisabled}
+                  onChange={() => {
+                    onToggleDisabled();
+                  }}
+                />
+              </Tooltip>
+            )}
+          </Space>
         </div>
 
         <Collapse

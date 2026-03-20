@@ -191,6 +191,8 @@ pub struct OpenCodeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<IndexMap<String, OpenCodeProvider>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled_providers: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(rename = "small_model", skip_serializing_if = "Option::is_none")]
     pub small_model: Option<String>,

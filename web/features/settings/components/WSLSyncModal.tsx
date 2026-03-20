@@ -10,6 +10,7 @@ import { CheckCircleOutlined, CloseCircleOutlined, ReloadOutlined, DeleteOutline
 import { useTranslation } from 'react-i18next';
 import { useWSLSync } from '@/features/settings/hooks/useWSLSync';
 import { useSettingsStore } from '@/stores';
+import { translateDefaultMappingName, translateSyncMessage } from '@/features/settings/utils/syncMessageTranslator';
 import { FileMappingModal } from './FileMappingModal';
 import { wslDeleteFileMapping, wslResetFileMappings, wslOpenTerminal, wslOpenFolder, wslGetDistroState } from '@/services/wslSyncApi';
 import type { FileMapping } from '@/types/wslsync';
@@ -64,6 +65,49 @@ export const WSLSyncModal: React.FC<WSLSyncModalProps> = ({ open, onClose }) => 
   const [editingMapping, setEditingMapping] = useState<FileMapping | null>(null);
   const [mappingModalOpen, setMappingModalOpen] = useState(false);
   const [activeModuleTab, setActiveModuleTab] = useState<string>(visibleModuleKeys[0] || 'all');
+
+  const getMappingDisplayName = useCallback((mapping: FileMapping) => {
+    return translateDefaultMappingName(mapping.id, t) === mapping.id
+      ? translateDefaultMappingName(mapping.name, t)
+      : translateDefaultMappingName(mapping.id, t);
+  }, [t]);
+
+  const getProgressDisplayName = useCallback((currentItem: string) => {
+    const mapping = config?.fileMappings?.find((item) => item.name === currentItem);
+    return mapping ? getMappingDisplayName(mapping) : currentItem;
+  }, [config?.fileMappings, getMappingDisplayName]);
+
+  const getProgressMessage = useCallback(() => {
+    if (!syncProgress) {
+      return '';
+    }
+
+    if (syncProgress.phase === 'files') {
+      if (syncProgress.current === 0) {
+        return t('settings.wsl.progress.preparingFiles', { total: syncProgress.total });
+      }
+
+      return t('settings.wsl.progress.filesWithName', {
+        current: syncProgress.current,
+        total: syncProgress.total,
+        name: getProgressDisplayName(syncProgress.currentItem),
+      });
+    }
+
+    if (syncProgress.phase === 'skills') {
+      if (syncProgress.current === 0) {
+        return t('settings.wsl.progress.preparingSkills', { total: syncProgress.total });
+      }
+
+      return t('settings.wsl.progress.skillsWithName', {
+        current: syncProgress.current,
+        total: syncProgress.total,
+        name: syncProgress.currentItem,
+      });
+    }
+
+    return translateSyncMessage(syncProgress.message, 'wsl', t);
+  }, [getProgressDisplayName, syncProgress, t]);
 
   // Initialize form when config loads
   useEffect(() => {
@@ -215,10 +259,10 @@ export const WSLSyncModal: React.FC<WSLSyncModalProps> = ({ open, onClose }) => 
 
   const handleResetMappings = () => {
     AntdModal.confirm({
-      title: '重置所有映射',
-      content: '确定要删除所有文件映射吗？此操作不可撤销。',
-      okText: '确定删除',
-      cancelText: '取消',
+      title: t('settings.wsl.resetMappingsTitle'),
+      content: t('settings.wsl.resetMappingsContent'),
+      okText: t('common.confirm'),
+      cancelText: t('common.cancel'),
       okButtonProps: { danger: true },
       onOk: async () => {
         try {
@@ -293,7 +337,7 @@ export const WSLSyncModal: React.FC<WSLSyncModalProps> = ({ open, onClose }) => 
           renderItem={(item: FileMapping) => (
             <List.Item
               actions={[
-                <Tooltip title={t('common.edit')}>
+                <Tooltip key="edit" title={t('common.edit')}>
                   <Button
                     type="text"
                     size="small"
@@ -302,7 +346,7 @@ export const WSLSyncModal: React.FC<WSLSyncModalProps> = ({ open, onClose }) => 
                     disabled={!enabled}
                   />
                 </Tooltip>,
-                <Tooltip title={t('common.delete')}>
+                <Tooltip key="delete" title={t('common.delete')}>
                   <Button
                     type="text"
                     size="small"
@@ -317,7 +361,7 @@ export const WSLSyncModal: React.FC<WSLSyncModalProps> = ({ open, onClose }) => 
               <List.Item.Meta
                 title={
                   <Space>
-                    <Text>{item.name}</Text>
+                    <Text>{getMappingDisplayName(item)}</Text>
                     <Tag color={MODULE_COLORS[item.module] || 'default'}>{MODULE_NAMES[item.module] || item.module}</Tag>
                     {!item.enabled && <Tag>{t('settings.wsl.disabled')}</Tag>}
                   </Space>
@@ -496,7 +540,7 @@ export const WSLSyncModal: React.FC<WSLSyncModalProps> = ({ open, onClose }) => 
               {syncing && syncProgress && (
                 <div style={{ marginTop: 12 }}>
                   <div style={{ marginBottom: 4 }}>
-                    <Text type="secondary">{syncProgress.message}</Text>
+                    <Text type="secondary">{getProgressMessage()}</Text>
                   </div>
                   <Progress 
                     percent={syncProgress.total > 0 ? Math.round((syncProgress.current / syncProgress.total) * 100) : 0}
@@ -508,7 +552,7 @@ export const WSLSyncModal: React.FC<WSLSyncModalProps> = ({ open, onClose }) => 
               {status?.lastSyncError && (
                 <Alert
                   type="error"
-                  message={status.lastSyncError}
+                  message={translateSyncMessage(status.lastSyncError, 'wsl', t)}
                   showIcon
                   style={{ marginTop: 12 }}
                 />
@@ -516,7 +560,7 @@ export const WSLSyncModal: React.FC<WSLSyncModalProps> = ({ open, onClose }) => 
               {syncWarning && (
                 <Alert
                   type="warning"
-                  message={syncWarning}
+                  message={translateSyncMessage(syncWarning, 'wsl', t)}
                   showIcon
                   closable
                   onClose={dismissSyncWarning}

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Typography, Button, Space, Empty, message, Modal, Spin, Collapse } from 'antd';
-import { PlusOutlined, FolderOpenOutlined, AppstoreOutlined, SyncOutlined, EyeOutlined, ExclamationCircleOutlined, LinkOutlined, DatabaseOutlined, ImportOutlined } from '@ant-design/icons';
+import { PlusOutlined, FolderOpenOutlined, AppstoreOutlined, SyncOutlined, EyeOutlined, ExclamationCircleOutlined, LinkOutlined, DatabaseOutlined, ImportOutlined, FileTextOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { invoke } from '@tauri-apps/api/core';
@@ -54,6 +54,7 @@ import AllApiHubIcon from '@/components/common/AllApiHubIcon';
 import JsonPreviewModal from '@/components/common/JsonPreviewModal';
 import { GlobalPromptSettings } from '@/features/coding/shared/prompt';
 import type { OpenCodeAllApiHubProvider } from '@/services/opencodeApi';
+import SectionSidebarLayout from '@/components/layout/SectionSidebarLayout/SectionSidebarLayout';
 
 const { Title, Text, Link } = Typography;
 
@@ -79,6 +80,7 @@ const CodexPage: React.FC = () => {
   const [providerListCollapsed, setProviderListCollapsed] = React.useState(false);
   const [allApiHubImportModalOpen, setAllApiHubImportModalOpen] = React.useState(false);
   const [allApiHubAvailable, setAllApiHubAvailable] = React.useState(false);
+  const [promptExpandNonce, setPromptExpandNonce] = React.useState(0);
 
   // 配置拖拽传感器
   const sensors = useSensors(
@@ -92,7 +94,7 @@ const CodexPage: React.FC = () => {
     })
   );
 
-  const loadConfig = async (silent = false) => {
+  const loadConfig = React.useCallback(async (silent = false) => {
     setLoading(true);
     try {
       const [path, providerList] = await Promise.all([
@@ -112,11 +114,11 @@ const CodexPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [t]);
 
   React.useEffect(() => {
     loadConfig();
-  }, []);
+  }, [loadConfig]);
 
   // 从其他 Tab 切回时刷新数据
   const hasInitializedRef = React.useRef(false);
@@ -128,7 +130,7 @@ const CodexPage: React.FC = () => {
     if (hasInitializedRef.current) {
       loadConfig(true);
     }
-  }, [isActive]);
+  }, [isActive, loadConfig]);
 
   // 监听 tray 或其他页面触发的配置变更
   React.useEffect(() => {
@@ -140,7 +142,7 @@ const CodexPage: React.FC = () => {
     };
     setup();
     return () => { unlisten?.(); };
-  }, []);
+  }, [loadConfig]);
 
   React.useEffect(() => {
     const checkAllApiHubAvailability = async () => {
@@ -381,7 +383,7 @@ const CodexPage: React.FC = () => {
           },
         };
 
-        let configParts: string[] = [];
+        const configParts: string[] = [];
         if (values.baseUrl) {
           configParts.push(`base_url = "${values.baseUrl}"`);
         }
@@ -395,7 +397,7 @@ const CodexPage: React.FC = () => {
           settingsConfigObj.config = (settingsConfigObj.config || '') + '\n' + values.configToml;
         }
 
-settingsConfig = JSON.stringify(settingsConfigObj);
+        settingsConfig = JSON.stringify(settingsConfigObj);
       }
 
       // Check if this is a temporary provider from local files
@@ -461,7 +463,7 @@ settingsConfig = JSON.stringify(settingsConfigObj);
           },
         };
 
-        let configParts: string[] = [];
+        const configParts: string[] = [];
         if (values.baseUrl) {
           configParts.push(`base_url = "${values.baseUrl}"`);
         }
@@ -515,242 +517,282 @@ settingsConfig = JSON.stringify(settingsConfigObj);
   };
 
   return (
-    <div>
-      {/* Page Header */}
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
-            <div style={{ marginBottom: 8 }}>
-              <Title level={4} style={{ margin: 0, display: 'inline-block', marginRight: 8 }}>
-                {t('codex.title')}
-              </Title>
-              <Link
-                type="secondary"
-                style={{ fontSize: 12 }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openUrl('https://developers.openai.com/codex/config-basic');
-                }}
-              >
-                <LinkOutlined /> {t('codex.viewDocs')}
-              </Link>
-              {appliedProviderId && (
+    <SectionSidebarLayout
+      sidebarTitle={t('codex.title')}
+      getIcon={(id) => {
+        switch (id) {
+          case 'codex-providers':
+            return <DatabaseOutlined />;
+          case 'codex-global-prompt':
+            return <FileTextOutlined />;
+          default:
+            return null;
+        }
+      }}
+      onSectionSelect={(id) => {
+        switch (id) {
+          case 'codex-providers':
+            setProviderListCollapsed(false);
+            break;
+          case 'codex-global-prompt':
+            setPromptExpandNonce((v) => v + 1);
+            break;
+          default:
+            break;
+        }
+      }}
+    >
+      <div>
+        {/* Page Header */}
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div>
+              <div style={{ marginBottom: 8 }}>
+                <Title level={4} style={{ margin: 0, display: 'inline-block', marginRight: 8 }}>
+                  {t('codex.title')}
+                </Title>
                 <Link
                   type="secondary"
-                  style={{ fontSize: 12, marginLeft: 16 }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handlePreviewCurrentConfig();
-                  }}
-                >
-                  <EyeOutlined /> {t('common.previewConfig')}
-                </Link>
-              )}
-            </div>
-            <Space size="small">
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {t('codex.configPath')}:
-              </Text>
-              <Text code style={{ fontSize: 12 }}>
-                {configPath || '~/.codex/config.toml'}
-              </Text>
-              <Button
-                type="text"
-                size="small"
-                icon={<FolderOpenOutlined />}
-                onClick={handleOpenFolder}
-                style={{ padding: 0, fontSize: 12 }}
-              >
-                {t('codex.openFolder')}
-              </Button>
-              <Button
-                type="text"
-                size="small"
-                icon={<SyncOutlined />}
-                onClick={handleRefreshPage}
-                style={{ padding: 0, fontSize: 12 }}
-              >
-                {t('codex.refreshConfig')}
-              </Button>
-            </Space>
-          </div>
-        </div>
-      </div>
-
-      {/* Provider List */}
-      <Collapse
-        style={{ marginBottom: 16 }}
-        activeKey={providerListCollapsed ? [] : ['providers']}
-        onChange={(keys) => setProviderListCollapsed(!keys.includes('providers'))}
-        items={[
-          {
-            key: 'providers',
-            label: (
-              <Text strong>
-                <DatabaseOutlined style={{ marginRight: 8 }} />
-                {t('codex.provider.title')}
-              </Text>
-            ),
-            extra: (
-              <Space size={4}>
-                <Button
-                  type="link"
-                  size="small"
                   style={{ fontSize: 12 }}
-                  icon={<AppstoreOutlined />}
                   onClick={(e) => {
                     e.stopPropagation();
-                    setCommonConfigModalOpen(true);
+                    openUrl('https://developers.openai.com/codex/config-basic');
                   }}
                 >
-                  {t('codex.commonConfigButton')}
+                  <LinkOutlined /> {t('codex.viewDocs')}
+                </Link>
+                {appliedProviderId && (
+                  <Link
+                    type="secondary"
+                    style={{ fontSize: 12, marginLeft: 16 }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handlePreviewCurrentConfig();
+                    }}
+                  >
+                    <EyeOutlined /> {t('common.previewConfig')}
+                  </Link>
+                )}
+              </div>
+              <Space size="small">
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {t('codex.configPath')}:
+                </Text>
+                <Text code style={{ fontSize: 12 }}>
+                  {configPath || '~/.codex/config.toml'}
+                </Text>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<FolderOpenOutlined />}
+                  onClick={handleOpenFolder}
+                  style={{ padding: 0, fontSize: 12 }}
+                >
+                  {t('codex.openFolder')}
                 </Button>
                 <Button
-                  type="link"
+                  type="text"
                   size="small"
-                  style={{ fontSize: 12 }}
-                  icon={<PlusOutlined />}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleAddProvider();
-                  }}
+                  icon={<SyncOutlined />}
+                  onClick={handleRefreshPage}
+                  style={{ padding: 0, fontSize: 12 }}
                 >
-                  {t('codex.addProvider')}
+                  {t('codex.refreshConfig')}
                 </Button>
               </Space>
-            ),
-            children: (
-              <Spin spinning={loading}>
-                <div
-                  style={{
-                    fontSize: 12,
-                    color: 'var(--color-text-secondary)',
-                    borderLeft: '2px solid var(--color-border)',
-                    paddingLeft: 8,
-                    marginBottom: 12,
-                  }}
-                >
-                  <div>{t('codex.pageHint')}</div>
-                  <div>{t('codex.pageWarning')}</div>
-                </div>
+            </div>
+          </div>
+        </div>
 
-                {providers.length === 0 ? (
-                  <Empty description={t('codex.emptyText')} style={{ marginTop: 40 }} />
-                ) : (
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleDragEnd}
-                    modifiers={[restrictToVerticalAxis]}
-                  >
-                    <SortableContext
-                      items={providers.map((p) => p.id)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      <div>
-                        {providers.map((provider) => (
-                          <CodexProviderCard
-                            key={provider.id}
-                            provider={provider}
-                            isApplied={provider.id === appliedProviderId}
-                            onEdit={handleEditProvider}
-                            onDelete={handleDeleteProvider}
-                            onCopy={handleCopyProvider}
-                            onSelect={handleSelectProvider}
-                            onToggleDisabled={handleToggleDisabled}
-                          />
-                        ))}
-                      </div>
-                    </SortableContext>
-                  </DndContext>
-                )}
-
-                <div style={{ marginTop: 12 }}>
-                  <Space wrap>
+        {/* Provider List */}
+        <div
+          id="codex-providers"
+          data-sidebar-section="true"
+          data-sidebar-title={t('codex.provider.title')}
+        >
+          <Collapse
+            style={{ marginBottom: 16 }}
+            activeKey={providerListCollapsed ? [] : ['providers']}
+            onChange={(keys) => setProviderListCollapsed(!keys.includes('providers'))}
+            items={[
+              {
+                key: 'providers',
+                label: (
+                  <Text strong>
+                    <DatabaseOutlined style={{ marginRight: 8 }} />
+                    {t('codex.provider.title')}
+                  </Text>
+                ),
+                extra: (
+                  <Space size={4}>
                     <Button
-                      type="dashed"
-                      icon={<ImportOutlined />}
-                      onClick={handleImportFromOpenCode}
+                      type="link"
+                      size="small"
+                      style={{ fontSize: 12 }}
+                      icon={<AppstoreOutlined />}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCommonConfigModalOpen(true);
+                      }}
                     >
-                      {t('codex.importFromOpenCode')}
+                      {t('codex.commonConfigButton')}
                     </Button>
-                    {allApiHubAvailable && (
-                      <Button
-                        type="dashed"
-                        icon={<AllApiHubIcon />}
-                        onClick={() => setAllApiHubImportModalOpen(true)}
-                      >
-                        {t('common.allApiHub.importFromAllApiHub')}
-                      </Button>
-                    )}
+                    <Button
+                      type="link"
+                      size="small"
+                      style={{ fontSize: 12 }}
+                      icon={<PlusOutlined />}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleAddProvider();
+                      }}
+                    >
+                      {t('codex.addProvider')}
+                    </Button>
                   </Space>
-                </div>
-              </Spin>
-            ),
-          },
-        ]}
-      />
+                ),
+                children: (
+                  <Spin spinning={loading}>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: 'var(--color-text-secondary)',
+                        borderLeft: '2px solid var(--color-border)',
+                        paddingLeft: 8,
+                        marginBottom: 12,
+                      }}
+                    >
+                      <div>{t('codex.pageHint')}</div>
+                      <div>{t('codex.pageWarning')}</div>
+                    </div>
 
-      <GlobalPromptSettings
-        translationKeyPrefix="codex.prompt"
-        service={codexPromptApi}
-        collapseKey="codex-prompt"
-        onUpdated={loadConfig}
-      />
+                    {providers.length === 0 ? (
+                      <Empty description={t('codex.emptyText')} style={{ marginTop: 40 }} />
+                    ) : (
+                      <DndContext
+                        sensors={sensors}
+                        collisionDetection={closestCenter}
+                        onDragEnd={handleDragEnd}
+                        modifiers={[restrictToVerticalAxis]}
+                      >
+                        <SortableContext
+                          items={providers.map((p) => p.id)}
+                          strategy={verticalListSortingStrategy}
+                        >
+                          <div>
+                            {providers.map((provider) => (
+                              <CodexProviderCard
+                                key={provider.id}
+                                provider={provider}
+                                isApplied={provider.id === appliedProviderId}
+                                onEdit={handleEditProvider}
+                                onDelete={handleDeleteProvider}
+                                onCopy={handleCopyProvider}
+                                onSelect={handleSelectProvider}
+                                onToggleDisabled={handleToggleDisabled}
+                              />
+                            ))}
+                          </div>
+                        </SortableContext>
+                      </DndContext>
+                    )}
 
-      {/* Modals */}
-      {providerModalOpen && (
-        <CodexProviderFormModal
-          open={providerModalOpen}
-          provider={editingProvider}
-          isCopy={isCopyMode}
-          mode={providerModalMode}
-          onCancel={() => {
-            setProviderModalOpen(false);
-            setEditingProvider(null);
-            setIsCopyMode(false);
+                    <div style={{ marginTop: 12 }}>
+                      <Space wrap>
+                        <Button
+                          type="dashed"
+                          icon={<ImportOutlined />}
+                          onClick={handleImportFromOpenCode}
+                        >
+                          {t('codex.importFromOpenCode')}
+                        </Button>
+                        {allApiHubAvailable && (
+                          <Button
+                            type="dashed"
+                            icon={<AllApiHubIcon />}
+                            onClick={() => setAllApiHubImportModalOpen(true)}
+                          >
+                            {t('common.allApiHub.importFromAllApiHub')}
+                          </Button>
+                        )}
+                      </Space>
+                    </div>
+                  </Spin>
+                ),
+              },
+            ]}
+          />
+        </div>
+
+        <div
+          id="codex-global-prompt"
+          data-sidebar-section="true"
+          data-sidebar-title={t('codex.prompt.title')}
+        >
+          <GlobalPromptSettings
+            key={`codex-prompt-${promptExpandNonce}`}
+            translationKeyPrefix="codex.prompt"
+            service={codexPromptApi}
+            collapseKey="codex-prompt"
+            defaultExpanded={promptExpandNonce > 0}
+            onUpdated={loadConfig}
+          />
+        </div>
+
+        {/* Modals */}
+        {providerModalOpen && (
+          <CodexProviderFormModal
+            open={providerModalOpen}
+            provider={editingProvider}
+            isCopy={isCopyMode}
+            mode={providerModalMode}
+            onCancel={() => {
+              setProviderModalOpen(false);
+              setEditingProvider(null);
+              setIsCopyMode(false);
+            }}
+            onSubmit={handleProviderSubmit}
+          />
+        )}
+
+        <CodexCommonConfigModal
+          open={commonConfigModalOpen}
+          onCancel={() => setCommonConfigModalOpen(false)}
+          onSuccess={() => {
+            setCommonConfigModalOpen(false);
           }}
-          onSubmit={handleProviderSubmit}
+          isLocalProvider={providers.some((provider) => provider.id === '__local__')}
         />
-      )}
 
-      <CodexCommonConfigModal
-        open={commonConfigModalOpen}
-        onCancel={() => setCommonConfigModalOpen(false)}
-        onSuccess={() => {
-          setCommonConfigModalOpen(false);
-        }}
-        isLocalProvider={providers.some((provider) => provider.id === '__local__')}
-      />
-
-      <ImportConflictDialog
-        open={conflictDialogOpen}
-        conflictInfo={conflictInfo}
-        onResolve={handleConflictResolve}
-        onCancel={() => {
-          setConflictDialogOpen(false);
-          setConflictInfo(null);
-          setPendingFormValues(null);
-        }}
-      />
-
-      {allApiHubAvailable && (
-        <ImportFromAllApiHubModal
-          open={allApiHubImportModalOpen}
-          existingProviderIds={providers.map((provider) => provider.sourceProviderId || provider.id)}
-          onCancel={() => setAllApiHubImportModalOpen(false)}
-          onImport={handleImportFromAllApiHub}
+        <ImportConflictDialog
+          open={conflictDialogOpen}
+          conflictInfo={conflictInfo}
+          onResolve={handleConflictResolve}
+          onCancel={() => {
+            setConflictDialogOpen(false);
+            setConflictInfo(null);
+            setPendingFormValues(null);
+          }}
         />
-      )}
 
-      {/* Preview Modal */}
-      <JsonPreviewModal
-        open={previewModalOpen}
-        onClose={() => setPreviewModalOpen(false)}
-        title={t('codex.preview.currentConfigTitle')}
-        data={previewData}
-      />
-    </div>
+        {allApiHubAvailable && (
+          <ImportFromAllApiHubModal
+            open={allApiHubImportModalOpen}
+            existingProviderIds={providers.map((provider) => provider.sourceProviderId || provider.id)}
+            onCancel={() => setAllApiHubImportModalOpen(false)}
+            onImport={handleImportFromAllApiHub}
+          />
+        )}
+
+        {/* Preview Modal */}
+        <JsonPreviewModal
+          open={previewModalOpen}
+          onClose={() => setPreviewModalOpen(false)}
+          title={t('codex.preview.currentConfigTitle')}
+          data={previewData}
+        />
+      </div>
+    </SectionSidebarLayout>
   );
 };
 

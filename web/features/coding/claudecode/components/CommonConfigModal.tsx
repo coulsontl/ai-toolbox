@@ -20,7 +20,7 @@ const CommonConfigModal: React.FC<CommonConfigModalProps> = ({
   const { t } = useTranslation();
   const [loading, setLoading] = React.useState(false);
   const [configValue, setConfigValue] = React.useState<unknown>({});
-  
+
   // Use ref for validation state to avoid re-renders during editing
   const isValidRef = React.useRef(true);
 
@@ -34,7 +34,7 @@ const CommonConfigModal: React.FC<CommonConfigModalProps> = ({
   const loadConfig = async () => {
     try {
       const config = await getClaudeCommonConfig();
-      if (config && config.config) {
+      if (config?.config) {
         try {
           const configObj = JSON.parse(config.config);
           setConfigValue(configObj);

@@ -1,11 +1,10 @@
-import React from 'react';
 import { Card, Typography, Space, Button, Tag, Switch, Dropdown, message } from 'antd';
 import { EditOutlined, CopyOutlined, DeleteOutlined, CheckCircleOutlined, MoreOutlined, HolderOutlined } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 import { useTranslation } from 'react-i18next';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { SLIM_AGENT_TYPES, SLIM_AGENT_DISPLAY_NAMES, type OhMyOpenCodeSlimConfig, type SlimAgentType } from '@/types/ohMyOpenCodeSlim';
+import { SLIM_AGENT_TYPES, getSlimAgentDisplayNameKey, type OhMyOpenCodeSlimConfig, type SlimAgentType } from '@/types/ohMyOpenCodeSlim';
 
 const { Text } = Typography;
 
@@ -73,7 +72,7 @@ const OhMyOpenCodeSlimConfigCard: React.FC<OhMyOpenCodeSlimConfigCardProps> = ({
     SLIM_AGENT_TYPES.forEach((agentType) => {
       const agent = config.agents?.[agentType];
       if (agent && typeof agent.model === 'string' && agent.model) {
-        const displayName = SLIM_AGENT_DISPLAY_NAMES[agentType].split(' ')[0]; // Get short name
+        const displayName = t(getSlimAgentDisplayNameKey(agentType));
         const variant = typeof agent.variant === 'string' && agent.variant ? agent.variant : undefined;
         result.push({ name: displayName, model: agent.model, variant });
       }
@@ -105,9 +104,9 @@ const OhMyOpenCodeSlimConfigCard: React.FC<OhMyOpenCodeSlimConfigCardProps> = ({
   // Get configured count (only built-in agents for the X/Y display)
   const configuredCount = config.agents
     ? Object.keys(config.agents).filter((key) => {
-        const agent = config.agents?.[key as SlimAgentType];
-        return BUILT_IN_AGENT_KEYS.has(key) && agent && typeof agent.model === 'string' && !!agent.model;
-      }).length
+      const agent = config.agents?.[key as SlimAgentType];
+      return BUILT_IN_AGENT_KEYS.has(key) && agent && typeof agent.model === 'string' && !!agent.model;
+    }).length
     : 0;
   const totalAgents = STANDARD_AGENT_COUNT;
 
@@ -246,8 +245,8 @@ const OhMyOpenCodeSlimConfigCard: React.FC<OhMyOpenCodeSlimConfigCardProps> = ({
                   gap: '4px 12px',
                   lineHeight: '1.6'
                 }}>
-                  {agentsData.map((item, index) => (
-                    <span key={index} style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+                  {agentsData.map((item) => (
+                    <span key={`${item.name}-${item.model}-${item.variant ?? 'default'}`} style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
                       <Text strong style={{ color: item.isCustom ? '#722ed1' : '#1890ff', fontSize: 12 }}>{item.name}</Text>
                       <Text type="secondary" style={{ fontSize: 12 }}>: </Text>
                       <Text type="secondary" style={{ fontSize: 12 }}>{item.model}</Text>
@@ -269,7 +268,7 @@ const OhMyOpenCodeSlimConfigCard: React.FC<OhMyOpenCodeSlimConfigCardProps> = ({
             )}
           </div>
         </div>
-    </Card>
+      </Card>
     </div>
   );
 };

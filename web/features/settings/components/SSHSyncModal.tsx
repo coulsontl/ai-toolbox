@@ -4,7 +4,7 @@
  * Modal for configuring SSH sync settings with connection management
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Modal, Switch, Select, Button, List, Space, Typography, Alert, Spin, Tag, Modal as AntdModal, Tabs, Tooltip, Progress, theme } from 'antd';
 import { CheckCircleOutlined, CloseCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ClearOutlined, ApiOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
@@ -12,6 +12,7 @@ import { useSSHSync } from '@/features/settings/hooks/useSSHSync';
 import { useSettingsStore } from '@/stores';
 import { SSHConnectionModal } from './SSHConnectionModal';
 import { SSHFileMappingModal } from './SSHFileMappingModal';
+import { translateDefaultMappingName, translateSyncMessage } from '@/features/settings/utils/syncMessageTranslator';
 import {
   sshDeleteFileMapping,
   sshResetFileMappings,
@@ -75,6 +76,49 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
   const [testResult, setTestResult] = useState<SSHConnectionResult | null>(null);
   const [testing, setTesting] = useState(false);
 
+  const getMappingDisplayName = (mapping: SSHFileMapping) => {
+    return translateDefaultMappingName(mapping.id, t) === mapping.id
+      ? translateDefaultMappingName(mapping.name, t)
+      : translateDefaultMappingName(mapping.id, t);
+  };
+
+  const getProgressDisplayName = (currentItem: string) => {
+    const mapping = config?.fileMappings?.find((item) => item.name === currentItem);
+    return mapping ? getMappingDisplayName(mapping) : currentItem;
+  };
+
+  const getProgressMessage = () => {
+    if (!syncProgress) {
+      return '';
+    }
+
+    if (syncProgress.phase === 'files') {
+      if (syncProgress.current === 0) {
+        return t('settings.ssh.progress.preparingFiles', { total: syncProgress.total });
+      }
+
+      return t('settings.ssh.progress.filesWithName', {
+        current: syncProgress.current,
+        total: syncProgress.total,
+        name: getProgressDisplayName(syncProgress.currentItem),
+      });
+    }
+
+    if (syncProgress.phase === 'skills') {
+      if (syncProgress.current === 0) {
+        return t('settings.ssh.progress.preparingSkills', { total: syncProgress.total });
+      }
+
+      return t('settings.ssh.progress.skillsWithName', {
+        current: syncProgress.current,
+        total: syncProgress.total,
+        name: syncProgress.currentItem,
+      });
+    }
+
+    return translateSyncMessage(syncProgress.message, 'ssh', t);
+  };
+
   // Initialize state when config loads
   useEffect(() => {
     if (config) {
@@ -109,7 +153,7 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
   };
 
   // Test connection
-  const handleTestConnection = async (connId?: string) => {
+  const handleTestConnection = useCallback(async (connId?: string) => {
     const targetId = connId || activeConnectionId;
     const conn = config?.connections.find(c => c.id === targetId);
     if (!conn) return;
@@ -127,14 +171,14 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
     } finally {
       setTesting(false);
     }
-  };
+  }, [activeConnectionId, config?.connections]);
 
   // Auto test connection when modal opens or active connection changes
   useEffect(() => {
     if (open && enabled && activeConnectionId && config?.connections.length) {
       handleTestConnection(activeConnectionId);
     }
-  }, [open, activeConnectionId, enabled]);
+  }, [activeConnectionId, config?.connections.length, enabled, handleTestConnection, open]);
 
   // Connection management
   const handleNewConnection = () => {
@@ -316,7 +360,7 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
           renderItem={(item: SSHFileMapping) => (
             <List.Item
               actions={[
-                <Tooltip title={t('common.edit')}>
+                <Tooltip key="edit" title={t('common.edit')}>
                   <Button
                     type="text"
                     size="small"
@@ -325,7 +369,7 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
                     disabled={!enabled}
                   />
                 </Tooltip>,
-                <Tooltip title={t('common.delete')}>
+                <Tooltip key="delete" title={t('common.delete')}>
                   <Button
                     type="text"
                     size="small"
@@ -340,7 +384,7 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
               <List.Item.Meta
                 title={
                   <Space>
-                    <Text>{item.name}</Text>
+                     <Text>{getMappingDisplayName(item)}</Text>
                     <Tag color={MODULE_COLORS[item.module] || 'default'}>{MODULE_NAMES[item.module] || item.module}</Tag>
                     {!item.enabled && <Tag>{t('settings.ssh.disabled')}</Tag>}
                   </Space>
@@ -463,7 +507,7 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
               )}
               {testResult?.error && (
                 <div style={{ marginTop: 4 }}>
-                  <Text type="danger" style={{ fontSize: 12 }}>{testResult.error}</Text>
+                  <Text type="danger" style={{ fontSize: 12 }}>{translateSyncMessage(testResult.error, 'ssh', t)}</Text>
                 </div>
               )}
             </div>
@@ -537,7 +581,7 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
             {syncing && syncProgress && (
               <div style={{ marginTop: 12 }}>
                 <div style={{ marginBottom: 4 }}>
-                  <Text type="secondary">{syncProgress.message}</Text>
+                  <Text type="secondary">{getProgressMessage()}</Text>
                 </div>
                 <Progress
                   percent={syncProgress.total > 0 ? Math.round((syncProgress.current / syncProgress.total) * 100) : 0}
@@ -549,7 +593,7 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
             {status?.lastSyncError && (
               <Alert
                 type="error"
-                message={status.lastSyncError}
+                message={translateSyncMessage(status.lastSyncError, 'ssh', t)}
                 showIcon
                 style={{ marginTop: 12 }}
               />
@@ -557,7 +601,7 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
             {syncWarning && (
               <Alert
                 type="warning"
-                message={syncWarning}
+                message={translateSyncMessage(syncWarning, 'ssh', t)}
                 showIcon
                 closable
                 onClose={dismissSyncWarning}

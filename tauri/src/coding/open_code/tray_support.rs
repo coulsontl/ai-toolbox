@@ -7,6 +7,7 @@ use crate::coding::open_code::free_models;
 use crate::coding::open_code::types::{OpenCodeProvider, ReadConfigResult, UnifiedModelOption};
 use crate::coding::open_code::{read_opencode_config, OpenCodeConfig};
 use indexmap::IndexMap;
+use std::collections::HashSet;
 use tauri::{AppHandle, Manager, Runtime};
 
 /// Helper to extract OpenCodeConfig from ReadConfigResult, returning default config for non-success cases
@@ -16,6 +17,7 @@ fn extract_config_or_default(result: ReadConfigResult) -> OpenCodeConfig {
         _ => OpenCodeConfig {
             schema: None,
             provider: Some(IndexMap::<String, OpenCodeProvider>::new()),
+            disabled_providers: None,
             model: None,
             small_model: None,
             plugin: None,
@@ -73,6 +75,25 @@ pub async fn get_opencode_tray_model_data<R: Runtime>(
     let unified_models =
         free_models::get_unified_models(&*app.state(), config.provider.as_ref(), &auth_channels)
             .await;
+
+    // Filter out disabled providers while keeping current selections visible.
+    let disabled_provider_ids: HashSet<String> = config
+        .disabled_providers
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+
+    let unified_models: Vec<UnifiedModelOption> = unified_models
+        .into_iter()
+        .filter(|m| {
+            if !disabled_provider_ids.contains(&m.provider_id) {
+                return true;
+            }
+            // Keep current selections visible even if their provider is disabled.
+            m.id == current_main || m.id == current_small
+        })
+        .collect();
 
     // Convert to TrayModelItem
     let items: Vec<TrayModelItem> = unified_models

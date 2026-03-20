@@ -8,7 +8,7 @@ import {
   type OhMyOpenCodeAgentConfig,
   type OhMyOpenCodeCategoryDefinition,
 } from '@/types/ohMyOpenCode';
-import { getAgentDisplayName, getAgentDescription, getAgentRecommendedModel, getCategoryDescription } from '@/services/ohMyOpenCodeApi';
+import { getAgentDisplayName, getAgentDescription, getAgentRecommendedModel, getCategoryDescription, getCategoryDisplayName, getCategoryRecommendedModel } from '@/services/ohMyOpenCodeApi';
 import JsonEditor from '@/components/common/JsonEditor';
 import ImportJsonConfigModal, { type ImportedConfigData } from './ImportJsonConfigModal';
 import styles from './OhMyOpenCodeConfigModal.module.less';
@@ -32,7 +32,10 @@ interface OhMyOpenCodeConfigModalProps {
     categories?: Record<string, OhMyOpenCodeAgentConfig | undefined> | null;
     otherFields?: Record<string, unknown>;
   };
-  modelOptions: { label: string; value: string }[];
+  modelOptions: Array<
+    | { label: string; value: string; disabled?: boolean }
+    | { label: string; options: { label: string; value: string; disabled?: boolean }[] }
+  >;
   /** Map of model ID to its variant keys, e.g., { "opencode/openai/gpt-5": ["high", "medium", "low"] } */
   modelVariantsMap?: Record<string, string[]>;
   onCancel: () => void;
@@ -56,7 +59,7 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
   onCancel,
   onSuccess,
 }) => {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const [form] = Form.useForm();
   const [loading, setLoading] = React.useState(false);
   const [categoriesCollapsed, setCategoriesCollapsed] = React.useState(false);
@@ -94,7 +97,7 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
   // Store advanced settings values in refs to avoid re-renders
   const advancedSettingsRef = React.useRef<Record<string, Record<string, unknown>>>({});
   const advancedSettingsRawRef = React.useRef<Record<string, string>>({});
-  
+
   const categoryAdvancedSettingsRef = React.useRef<Record<string, Record<string, unknown>>>({});
   const categoryAdvancedSettingsRawRef = React.useRef<Record<string, string>>({});
   const unknownCategoriesRef = React.useRef<Record<string, OhMyOpenCodeAgentConfig>>({});
@@ -282,7 +285,7 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
     setShowAddAgent(false);
     setShowAddCategory(false);
     setShowBatchReplace(false);
-    setShowImportJson(false);    setNewAgentKey('');
+    setShowImportJson(false); setNewAgentKey('');
     setNewCategoryKey('');
   }, [open, initialValues, form, allAgentKeys, categoryKeys]);
 
@@ -777,24 +780,34 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
     setShowImportJson(false);
   };
 
+  const buildModelPlaceholder = (
+    recommendedModel?: string,
+    showRecommendedOnly = false,
+  ): string => {
+    if (!recommendedModel) {
+      return t('opencode.ohMyOpenCode.selectModel');
+    }
+    if (showRecommendedOnly) {
+      return recommendedModel;
+    }
+    return t('opencode.ohMyOpenCode.selectModelWithRecommended', {
+      model: recommendedModel,
+    });
+  };
+
   // Render agent item (built-in agents)
   const renderAgentItem = (agentType: string) => {
-    const recommendedModel = getAgentRecommendedModel(agentType);
-    // Special handling for Sisyphus-Junior: show recommended text directly as placeholder
-    let placeholder: string;
-    if (agentType === 'Sisyphus-Junior' && recommendedModel) {
-      placeholder = recommendedModel;
-    } else if (recommendedModel) {
-      placeholder = `${t('opencode.ohMyOpenCode.selectModel')} (${t('opencode.ohMyOpenCode.recommended')}${recommendedModel})`;
-    } else {
-      placeholder = t('opencode.ohMyOpenCode.selectModel');
-    }
+    const recommendedModel = getAgentRecommendedModel(agentType, t);
+    const placeholder = buildModelPlaceholder(
+      recommendedModel,
+      agentType === 'Sisyphus-Junior',
+    );
 
     return (
       <div key={agentType}>
         <Form.Item
-          label={getAgentDisplayName(agentType).split(' ')[0]}
-          tooltip={getAgentDescription(agentType, i18n.language)}
+          label={getAgentDisplayName(agentType, t).split(' ')[0]}
+          tooltip={getAgentDescription(agentType, t)}
           style={{ marginBottom: expandedAgents[agentType] ? 8 : 12 }}
         >
           <Form.Item
@@ -974,9 +987,9 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
 }`}
             />
           </Form.Item>
-      )}
-    </div>
-  );
+        )}
+      </div>
+    );
   };
 
   // Render custom agent item (with delete button)
@@ -1175,15 +1188,14 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
 
   // Render category item
   const renderCategoryItem = (category: OhMyOpenCodeCategoryDefinition) => {
-    const placeholder = category.recommendedModel
-      ? `${t('opencode.ohMyOpenCode.selectModel')} (${t('opencode.ohMyOpenCode.recommended')}${category.recommendedModel})`
-      : t('opencode.ohMyOpenCode.selectModel');
+    const recommendedModel = getCategoryRecommendedModel(category.key, t);
+    const placeholder = buildModelPlaceholder(recommendedModel);
 
     return (
       <div key={category.key}>
         <Form.Item
-          label={category.display}
-          tooltip={getCategoryDescription(category.key, i18n.language)}
+          label={getCategoryDisplayName(category.key, t)}
+          tooltip={getCategoryDescription(category.key, t)}
           style={{ marginBottom: expandedCategories[category.key] ? 8 : 12 }}
         >
           <Form.Item
@@ -1636,12 +1648,12 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
                 children: (
                   <>
                     <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 12 }}>
-                      有固定专长的"专家角色"，每个Agent有特定能力边界和工具权限
+                      {t('opencode.ohMyOpenCode.agentModelsHint')}
                     </Text>
                     {allAgentKeys.map((agentType) => {
                       // Render separator as a Divider instead of a form item
                       if (agentType.startsWith('__') && agentType.endsWith('_separator__')) {
-                        const desc = getAgentDescription(agentType, i18n.language);
+                        const desc = getAgentDescription(agentType, t);
                         return (
                           <Divider key={agentType} style={{ margin: '16px 0 12px 0', fontSize: 12, color: '#666' }}>
                             {desc}
@@ -1650,7 +1662,7 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
                       }
                       return renderAgentItem(agentType);
                     })}
-                    
+
                     {/* Custom Agents */}
                     {customAgents.length > 0 && (
                       <>
@@ -1660,7 +1672,7 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
                         {customAgents.map(renderCustomAgentItem)}
                       </>
                     )}
-                    
+
                     {/* Add Custom Agent */}
                     {showAddAgent ? (
                       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
@@ -1707,10 +1719,10 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
                 children: (
                   <>
                     <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 12 }}>
-                      可配置的"任务模板"，定义执行任务时使用的模型、推理强度和工作风格，由Sisyphus-Junior继承后执行具体实现工作。
+                      {t('opencode.ohMyOpenCode.categoriesHint')}
                     </Text>
                     {categoryDefinitions.map(renderCategoryItem)}
-                    
+
                     {/* Custom Categories */}
                     {customCategories.length > 0 && (
                       <>
@@ -1720,7 +1732,7 @@ const OhMyOpenCodeConfigModal: React.FC<OhMyOpenCodeConfigModalProps> = ({
                         {customCategories.map(renderCustomCategoryItem)}
                       </>
                     )}
-                    
+
                     {/* Add Custom Category */}
                     {showAddCategory ? (
                       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>

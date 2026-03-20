@@ -18,7 +18,7 @@ import {
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
 import type { OhMyOpenCodeSlimConfig, OhMyOpenCodeSlimGlobalConfig, OhMyOpenCodeSlimGlobalConfigInput } from '@/types/ohMyOpenCodeSlim';
 import OhMyOpenCodeSlimConfigCard from './OhMyOpenCodeSlimConfigCard';
-import OhMyOpenCodeSlimConfigModal, { OhMyOpenCodeSlimConfigFormValues } from './OhMyOpenCodeSlimConfigModal';
+import OhMyOpenCodeSlimConfigModal, { type OhMyOpenCodeSlimConfigFormValues } from './OhMyOpenCodeSlimConfigModal';
 import OhMyOpenCodeSlimGlobalConfigModal from './OhMyOpenCodeSlimGlobalConfigModal';
 import {
   listOhMyOpenCodeSlimConfigs,
@@ -39,7 +39,10 @@ import { useRefreshStore } from '@/stores';
 const { Text, Link } = Typography;
 
 interface OhMyOpenCodeSlimSettingsProps {
-  modelOptions: { label: string; value: string }[];
+  modelOptions: Array<
+    | { label: string; value: string; disabled?: boolean }
+    | { label: string; options: { label: string; value: string; disabled?: boolean }[] }
+  >;
   /** Map of model ID to its variant keys */
   modelVariantsMap?: Record<string, string[]>;
   disabled?: boolean;
@@ -74,11 +77,7 @@ const OhMyOpenCodeSlimSettings: React.FC<OhMyOpenCodeSlimSettingsProps> = ({
   );
 
   // Load configs on mount and when refresh key changes
-  React.useEffect(() => {
-    loadConfigs();
-  }, [omosConfigRefreshKey]);
-
-  const loadConfigs = async () => {
+  const loadConfigs = React.useCallback(async () => {
     setLoading(true);
     try {
       const data = await listOhMyOpenCodeSlimConfigs();
@@ -89,7 +88,14 @@ const OhMyOpenCodeSlimSettings: React.FC<OhMyOpenCodeSlimSettingsProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [t]);
+
+  React.useEffect(() => {
+    // Biome exhaustive-deps: explicitly reference the refresh key
+    // so the dependency array is considered necessary.
+    void omosConfigRefreshKey;
+    void loadConfigs();
+  }, [omosConfigRefreshKey, loadConfigs]);
 
   const handleAddConfig = () => {
     setEditingConfig(null);
@@ -413,11 +419,11 @@ const OhMyOpenCodeSlimSettings: React.FC<OhMyOpenCodeSlimSettingsProps> = ({
         initialValues={
           editingConfig
             ? {
-                ...editingConfig,
-                // 复制模式下移除 id，避免意外使用原配置的 id
-                id: isCopyMode ? undefined : editingConfig.id,
-                name: isCopyMode ? `${editingConfig.name}_copy` : editingConfig.name,
-              }
+              ...editingConfig,
+              // 复制模式下移除 id，避免意外使用原配置的 id
+              id: isCopyMode ? undefined : editingConfig.id,
+              name: isCopyMode ? `${editingConfig.name}_copy` : editingConfig.name,
+            }
             : undefined
         }
         onCancel={() => {

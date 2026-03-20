@@ -1,0 +1,113 @@
+.pageWithSidebar {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.sidebar {
+  position: sticky;
+  top: 16px;
+  flex: 0 0 240px;
+  width: 240px;
+  max-height: calc(100vh - 88px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--color-bg-container);
+  border: 1px solid var(--color-border-card);
+  border-right: none;
+  box-shadow: 0 2px 8px var(--color-shadow), 0 4px 16px var(--color-shadow-secondary);
+  box-sizing: border-box;
+  z-index: 1;
+  align-self: flex-start;
+
+  /* ant-menu light inline/vertical will render a divider on the right via border-inline-end */
+  :global(.ant-menu-root) {
+    border-inline-end: none !important;
+  }
+}
+
+.sidebarCollapsed {
+  flex: 0 0 56px;
+  width: 56px;
+  padding: 8px 0;
+  border-right: none;
+}
+
+.sidebarCollapsed :global(.ant-menu) {
+  padding: 0 !important;
+  width: 100%;
+  overflow-x: hidden;
+}
+
+.sidebarCollapsed :global(.ant-menu-root) {
+  padding: 0 8px !important;
+  margin: 0 !important;
+}
+
+.sidebarCollapsed :global(.ant-menu-inline) {
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+.sidebarCollapsed .sidebarHeader {
+  justify-content: center;
+  margin-bottom: 6px;
+}
+
+.sidebarCollapsed :global(.ant-menu-item) {
+  justify-content: center;
+  align-items: center;
+  padding: 0 !important;
+  margin: 0 !important;
+  display: flex;
+  height: 40px;
+  width: 40px !important;
+  min-width: 40px !important;
+  max-width: 40px !important;
+  box-sizing: border-box;
+}
+
+.sidebarCollapsed :global(.ant-menu-item .ant-menu-item-icon) {
+  margin: 0 !important;
+  margin-inline-end: 0 !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  width: 48px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex: 0 0 48px;
+}
+
+.sidebarCollapsed :global(.ant-menu-item .ant-menu-item-icon > span) {
+  margin: 0 !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.sidebarCollapsed :global(.ant-menu-title-content) {
+  display: none !important;
+}
+
+.sidebarHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  /* allow inner sections to control their own scroll behavior */
+}
+
+.content :global([data-sidebar-section="true"]),
+.content :global([data-opencode-sidebar-section="true"]) {
+  scroll-margin-top: 84px;
+}
+

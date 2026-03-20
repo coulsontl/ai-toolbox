@@ -5,12 +5,10 @@
  */
 
 import React, { useEffect } from 'react';
-import { Modal, Form, Input, Select, Switch, Space, Typography, Divider, Button, Modal as AntdModal } from 'antd';
+import { Modal, Form, Input, Select, Switch, Divider, Button, Modal as AntdModal } from 'antd';
 import { useTranslation } from 'react-i18next';
 import { wslAddFileMapping, wslUpdateFileMapping } from '@/services/wslSyncApi';
 import type { FileMapping } from '@/types/wslsync';
-
-const { Text } = Typography;
 
 interface FileMappingModalProps {
   open: boolean;
@@ -198,12 +196,7 @@ export const FileMappingModal: React.FC<FileMappingModalProps> = ({ open, onClos
 
         <Form.Item
           name="windowsPath"
-          label={
-            <Space>
-              <Text>Windows</Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>路径</Text>
-            </Space>
-          }
+          label={t('settings.wsl.windowsPath')}
           rules={[{ required: true, message: t('settings.wsl.windowsPathRequired') }]}
           extra={t('settings.wsl.windowsPathHint')}
         >
@@ -212,12 +205,7 @@ export const FileMappingModal: React.FC<FileMappingModalProps> = ({ open, onClos
 
         <Form.Item
           name="wslPath"
-          label={
-            <Space>
-              <Text>WSL</Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>路径</Text>
-            </Space>
-          }
+          label={t('settings.wsl.wslPath')}
           rules={[{ required: true, message: t('settings.wsl.wslPathRequired') }]}
           extra={t('settings.wsl.wslPathHint')}
         >
@@ -228,12 +216,7 @@ export const FileMappingModal: React.FC<FileMappingModalProps> = ({ open, onClos
 
         <Form.Item
           name="enabled"
-          label={
-            <Space>
-              <Text>启用</Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>同步</Text>
-            </Space>
-          }
+          label={t('settings.wsl.enableMapping')}
           valuePropName="checked"
         >
           <Switch />
@@ -241,12 +224,7 @@ export const FileMappingModal: React.FC<FileMappingModalProps> = ({ open, onClos
 
         <Form.Item
           name="isPattern"
-          label={
-            <Space>
-              <Text>模式</Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>通配符</Text>
-            </Space>
-          }
+          label={t('settings.wsl.patternMode')}
           valuePropName="checked"
           extra={t('settings.wsl.patternModeHint')}
         >
@@ -255,14 +233,9 @@ export const FileMappingModal: React.FC<FileMappingModalProps> = ({ open, onClos
 
         <Form.Item
           name="isDirectory"
-          label={
-            <Space>
-              <Text>模式</Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>目录</Text>
-            </Space>
-          }
+          label={t('settings.wsl.directoryMode')}
           valuePropName="checked"
-          extra="同步整个目录及其内容"
+          extra={t('settings.wsl.directoryModeHint')}
         >
           <Switch />
         </Form.Item>

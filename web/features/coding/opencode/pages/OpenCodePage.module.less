@@ -24,3 +24,18 @@
 .collapseCard {
   margin-bottom: 16px;
 }
+
+.opencodeSection {
+  scroll-margin-top: 84px;
+}
+
+// Make section DOM order independent from visual order.
+// Child sections can then use CSS `order` to control top-to-bottom placement.
+.opencodePageContent {
+  display: flex;
+  flex-direction: column;
+}
+
+.opencodePageContent > * {
+  order: 999;
+}

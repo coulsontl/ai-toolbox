@@ -23,17 +23,10 @@ const CodexCommonConfigModal: React.FC<CodexCommonConfigModalProps> = ({
   const [configValue, setConfigValue] = React.useState<string>('');
   const [isTomlValid, setIsTomlValid] = React.useState(true);
 
-  // Load existing config
-  React.useEffect(() => {
-    if (open) {
-      loadConfig();
-    }
-  }, [open]);
-
-  const loadConfig = async () => {
+  const loadConfig = React.useCallback(async () => {
     try {
       const config = await getCodexCommonConfig();
-      if (config && config.config) {
+      if (config?.config) {
         setConfigValue(config.config);
       } else {
         setConfigValue('');
@@ -43,7 +36,14 @@ const CodexCommonConfigModal: React.FC<CodexCommonConfigModalProps> = ({
       const errorMsg = error instanceof Error ? error.message : String(error);
       message.error(errorMsg || t('common.error'));
     }
-  };
+  }, [t]);
+
+  // Load existing config
+  React.useEffect(() => {
+    if (open) {
+      loadConfig();
+    }
+  }, [loadConfig, open]);
 
   const handleSave = async () => {
     // 验证 TOML 格式
@@ -51,7 +51,7 @@ const CodexCommonConfigModal: React.FC<CodexCommonConfigModalProps> = ({
       message.error(t('codex.provider.configTomlInvalid'));
       return;
     }
-    
+
     setLoading(true);
     try {
       if (isLocalProvider) {
@@ -73,7 +73,7 @@ const CodexCommonConfigModal: React.FC<CodexCommonConfigModalProps> = ({
 
   const handleEditorChange = (value: string) => {
     setConfigValue(value);
-    
+
     // 验证 TOML 有效性
     try {
       if (value.trim()) {
@@ -112,7 +112,7 @@ const CodexCommonConfigModal: React.FC<CodexCommonConfigModalProps> = ({
 
       <div style={{ marginTop: 12 }}>
         <Alert
-          message="这些配置将追加到 config.toml 末尾，适用于所有供应商。"
+          message={t('codex.commonConfig.description')}
           type="info"
           showIcon
         />

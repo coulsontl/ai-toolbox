@@ -2,7 +2,7 @@ import React from 'react';
 import { Modal, Form, Input, Button, Typography, Collapse, Select, message, Divider, Space } from 'antd';
 import { PlusOutlined, DeleteOutlined, SwapOutlined, ImportOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { SLIM_AGENT_TYPES, SLIM_AGENT_DISPLAY_NAMES, SLIM_AGENT_DESCRIPTIONS, type OhMyOpenCodeSlimAgents, type SlimAgentType } from '@/types/ohMyOpenCodeSlim';
+import { SLIM_AGENT_TYPES, getSlimAgentDescriptionKey, getSlimAgentDisplayNameKey, type OhMyOpenCodeSlimAgents, type SlimAgentType } from '@/types/ohMyOpenCodeSlim';
 import JsonEditor from '@/components/common/JsonEditor';
 import ImportJsonConfigModal, { type ImportedConfigData } from './ImportJsonConfigModal';
 import styles from './OhMyOpenCodeSlimConfigModal.module.less';
@@ -18,7 +18,10 @@ interface OhMyOpenCodeSlimConfigModalProps {
     agents?: OhMyOpenCodeSlimAgents;
     otherFields?: Record<string, unknown>;
   };
-  modelOptions: { label: string; value: string }[];
+  modelOptions: Array<
+    | { label: string; value: string; disabled?: boolean }
+    | { label: string; options: { label: string; value: string; disabled?: boolean }[] }
+  >;
   /** Map of model ID to its variant keys */
   modelVariantsMap?: Record<string, string[]>;
   onCancel: () => void;
@@ -136,7 +139,7 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
     } else {
       setCustomAgents([]);
     }
-    
+
     setShowAddAgent(false);
     setShowBatchReplace(false);
     setShowImportJson(false);
@@ -391,8 +394,8 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
   const renderBuiltInAgentItem = (agentType: SlimAgentType) => (
     <Form.Item
       key={agentType}
-      label={SLIM_AGENT_DISPLAY_NAMES[agentType]}
-      tooltip={SLIM_AGENT_DESCRIPTIONS[agentType]}
+      label={t(getSlimAgentDisplayNameKey(agentType))}
+      tooltip={t(getSlimAgentDescriptionKey(agentType))}
     >
       <Form.Item
         noStyle
@@ -699,7 +702,7 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
                     </Text>
 
                     {SLIM_AGENT_TYPES.map(renderBuiltInAgentItem)}
-                    
+
                     {/* Custom Agents */}
                     {customAgents.length > 0 && (
                       <>
@@ -709,7 +712,7 @@ const OhMyOpenCodeSlimConfigModal: React.FC<OhMyOpenCodeSlimConfigModalProps> = 
                         {customAgents.map(renderCustomAgentItem)}
                       </>
                     )}
-                    
+
                     {/* Add Custom Agent */}
                     {showAddAgent ? (
                       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>

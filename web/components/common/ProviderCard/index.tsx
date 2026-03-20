@@ -1,5 +1,5 @@
-import React from 'react';
-import { Button, Card, Empty, Space, Typography, Popconfirm, Collapse, Tag } from 'antd';
+import type React from 'react';
+import { Button, Card, Empty, Space, Typography, Popconfirm, Collapse, Tag, Switch, Tooltip } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, HolderOutlined, CopyOutlined, LockOutlined, SafetyOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import {
@@ -9,8 +9,8 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
-  DragEndEvent,
 } from '@dnd-kit/core';
+import type { DragEndEvent } from '@dnd-kit/core';
 import {
   arrayMove,
   SortableContext,
@@ -55,6 +55,12 @@ interface ProviderCardProps {
   /** Official models from auth.json (read-only, merged display) */
   officialModels?: OfficialModelDisplayData[];
 
+  /** Whether this provider is disabled (only used when onToggleDisabled is provided). */
+  isDisabled?: boolean;
+
+  /** Toggle callback for provider disabled state. When provided, a small Switch will be shown in card header. */
+  onToggleDisabled?: () => void;
+
   /** i18n prefix for translations */
   i18nPrefix?: I18nPrefix;
 }
@@ -78,6 +84,8 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
   modelsDraggable = false,
   onReorderModels,
   officialModels,
+  isDisabled,
+  onToggleDisabled,
   i18nPrefix = 'settings',
 }) => {
   const { t } = useTranslation();
@@ -316,6 +324,23 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
               </div>
 
               <Space>
+                {onToggleDisabled && (
+                  <Tooltip
+                    title={
+                      isDisabled
+                        ? t(`${i18nPrefix}.provider.disabled`)
+                        : t(`${i18nPrefix}.provider.enabled`)
+                    }
+                  >
+                    <Switch
+                      size="small"
+                      checked={!isDisabled}
+                      onChange={() => {
+                        onToggleDisabled();
+                      }}
+                    />
+                  </Tooltip>
+                )}
                 {onEdit && (
                   <Button
                     size="small"

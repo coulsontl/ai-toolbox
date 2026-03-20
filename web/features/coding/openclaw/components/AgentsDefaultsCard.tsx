@@ -47,18 +47,28 @@ const AgentsDefaultsCard = React.forwardRef<AgentsDefaultsCardRef, Props>(({ def
   // Build model options from all providers
   const modelOptions = React.useMemo(() => {
     if (!config?.models?.providers) return [];
-    const options: { label: string; value: string }[] = [];
+    const groups = new Map<string, { label: string; options: { label: string; value: string }[] }>();
+
     for (const [providerId, provider] of Object.entries(config.models.providers)) {
+      const groupLabel = providerId;
+      const entry = groups.get(providerId) || { label: groupLabel, options: [] };
+
       for (const model of provider.models || []) {
         const fullId = `${providerId}/${model.id}`;
         const modelName = model.name || model.id;
-        options.push({
-          label: `${providerId} / ${modelName}`,
-          value: fullId,
-        });
+        // Keep provider prefix for each option to avoid same model name confusion.
+        entry.options.push({ label: `${providerId} / ${modelName}`, value: fullId });
       }
+
+      groups.set(providerId, entry);
     }
-    return options;
+
+    const result = Array.from(groups.values());
+    for (const g of result) {
+      g.options.sort((a, b) => a.label.localeCompare(b.label));
+    }
+    result.sort((a, b) => a.label.localeCompare(b.label));
+    return result;
   }, [config]);
 
   // Build the full defaults object from current state + extra params
@@ -160,6 +170,7 @@ const AgentsDefaultsCard = React.forwardRef<AgentsDefaultsCardRef, Props>(({ def
             placeholder={t('openclaw.agents.primaryModelPlaceholder')}
             allowClear
             showSearch
+            optionFilterProp="label"
             options={modelOptions}
             optionLabelProp="label"
             style={{ width: '100%' }}
@@ -176,6 +187,7 @@ const AgentsDefaultsCard = React.forwardRef<AgentsDefaultsCardRef, Props>(({ def
             placeholder={t('openclaw.agents.fallbacksPlaceholder')}
             allowClear
             showSearch
+            optionFilterProp="label"
             options={modelOptions}
             optionLabelProp="label"
             style={{ width: '100%' }}

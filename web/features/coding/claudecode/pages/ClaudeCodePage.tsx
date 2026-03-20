@@ -1,6 +1,6 @@
 import React from 'react';
 import { Typography, Button, Space, Empty, message, Modal, Spin, Collapse } from 'antd';
-import { PlusOutlined, FolderOpenOutlined, AppstoreOutlined, SyncOutlined, ExclamationCircleOutlined, LinkOutlined, EyeOutlined, EllipsisOutlined, DatabaseOutlined, ImportOutlined } from '@ant-design/icons';
+import { PlusOutlined, FolderOpenOutlined, AppstoreOutlined, SyncOutlined, ExclamationCircleOutlined, LinkOutlined, EyeOutlined, EllipsisOutlined, DatabaseOutlined, ImportOutlined, FileTextOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { invoke } from '@tauri-apps/api/core';
@@ -53,6 +53,7 @@ import JsonPreviewModal from '@/components/common/JsonPreviewModal';
 import AllApiHubIcon from '@/components/common/AllApiHubIcon';
 import { GlobalPromptSettings } from '@/features/coding/shared/prompt';
 import type { OpenCodeAllApiHubProvider } from '@/services/opencodeApi';
+import SectionSidebarLayout from '@/components/layout/SectionSidebarLayout/SectionSidebarLayout';
 
 const { Title, Text, Link } = Typography;
 
@@ -81,6 +82,7 @@ const ClaudeCodePage: React.FC = () => {
   const [providerListCollapsed, setProviderListCollapsed] = React.useState(false);
   const [allApiHubImportModalOpen, setAllApiHubImportModalOpen] = React.useState(false);
   const [allApiHubAvailable, setAllApiHubAvailable] = React.useState(false);
+  const [promptExpandNonce, setPromptExpandNonce] = React.useState(0);
 
   // 配置拖拽传感器
   const sensors = useSensors(
@@ -93,11 +95,6 @@ const ClaudeCodePage: React.FC = () => {
       coordinateGetter: sortableKeyboardCoordinates,
     })
   );
-
-  // 加载配置（on mount and when refresh key changes）
-  React.useEffect(() => {
-    loadConfig();
-  }, [claudeProviderRefreshKey]);
 
   React.useEffect(() => {
     const checkAllApiHubAvailability = async () => {
@@ -112,7 +109,7 @@ const ClaudeCodePage: React.FC = () => {
     checkAllApiHubAvailability();
   }, []);
 
-  const loadConfig = async (silent = false) => {
+  const loadConfig = React.useCallback(async (silent = false) => {
     setLoading(true);
     try {
       const [path, providerList] = await Promise.all([
@@ -133,7 +130,16 @@ const ClaudeCodePage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [t]);
+
+  const loadConfigRef = React.useRef(loadConfig);
+  loadConfigRef.current = loadConfig;
+
+  // 加载配置（on mount and when refresh key changes）
+  React.useEffect(() => {
+    void claudeProviderRefreshKey;
+    loadConfigRef.current();
+  }, [claudeProviderRefreshKey]);
 
   const handleOpenFolder = async () => {
     if (!configPath) return;
@@ -268,7 +274,7 @@ const ClaudeCodePage: React.FC = () => {
       const existingProvider = providers.find(
         (p) => p.sourceProviderId === values.sourceProviderId
       );
-      
+
       if (existingProvider) {
         // 显示冲突对话框
         setConflictInfo({
@@ -456,257 +462,297 @@ const ClaudeCodePage: React.FC = () => {
   };
 
   return (
-    <div>
-      {/* 页面头部 */}
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
-            <div style={{ marginBottom: 8 }}>
-              <Title level={4} style={{ margin: 0, display: 'inline-block', marginRight: 8 }}>
-                {t('claudecode.title')}
-              </Title>
-              <Link
-                type="secondary"
-                style={{ fontSize: 12 }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openUrl('https://code.claude.com/docs/en/settings#environment-variables');
-                }}
-              >
-                <LinkOutlined /> {t('claudecode.viewDocs')}
-              </Link>
-              {appliedProviderId && (
+    <SectionSidebarLayout
+      sidebarTitle={t('claudecode.title')}
+      getIcon={(id) => {
+        switch (id) {
+          case 'claudecode-providers':
+            return <DatabaseOutlined />;
+          case 'claudecode-global-prompt':
+            return <FileTextOutlined />;
+          default:
+            return null;
+        }
+      }}
+      onSectionSelect={(id) => {
+        switch (id) {
+          case 'claudecode-providers':
+            setProviderListCollapsed(false);
+            break;
+          case 'claudecode-global-prompt':
+            setPromptExpandNonce((v) => v + 1);
+            break;
+          default:
+            break;
+        }
+      }}
+    >
+      <div>
+        {/* 页面头部 */}
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div>
+              <div style={{ marginBottom: 8 }}>
+                <Title level={4} style={{ margin: 0, display: 'inline-block', marginRight: 8 }}>
+                  {t('claudecode.title')}
+                </Title>
                 <Link
                   type="secondary"
-                  style={{ fontSize: 12, marginLeft: 16 }}
+                  style={{ fontSize: 12 }}
                   onClick={(e) => {
                     e.stopPropagation();
-                    handlePreviewCurrentConfig();
+                    openUrl('https://code.claude.com/docs/en/settings#environment-variables');
                   }}
                 >
-                  <EyeOutlined /> {t('common.previewConfig')}
+                  <LinkOutlined /> {t('claudecode.viewDocs')}
                 </Link>
-              )}
+                {appliedProviderId && (
+                  <Link
+                    type="secondary"
+                    style={{ fontSize: 12, marginLeft: 16 }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handlePreviewCurrentConfig();
+                    }}
+                  >
+                    <EyeOutlined /> {t('common.previewConfig')}
+                  </Link>
+                )}
+              </div>
+              <Space>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {t('claudecode.configPath')}:
+                </Text>
+                <Text code style={{ fontSize: 12 }}>
+                  {configPath || '~/.claude/settings.json'}
+                </Text>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<FolderOpenOutlined />}
+                  onClick={handleOpenFolder}
+                  style={{ padding: 0, fontSize: 12 }}
+                >
+                  {t('claudecode.openFolder')}
+                </Button>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<SyncOutlined />}
+                  onClick={handleRefreshPage}
+                  style={{ padding: 0, fontSize: 12 }}
+                >
+                  {t('claudecode.refreshConfig')}
+                </Button>
+              </Space>
             </div>
+
             <Space>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {t('claudecode.configPath')}:
-              </Text>
-              <Text code style={{ fontSize: 12 }}>
-                {configPath || '~/.claude/settings.json'}
-              </Text>
-              <Button
-                type="text"
-                size="small"
-                icon={<FolderOpenOutlined />}
-                onClick={handleOpenFolder}
-                style={{ padding: 0, fontSize: 12 }}
-              >
-                {t('claudecode.openFolder')}
-              </Button>
-              <Button
-                type="text"
-                size="small"
-                icon={<SyncOutlined />}
-                onClick={handleRefreshPage}
-                style={{ padding: 0, fontSize: 12 }}
-              >
-                {t('claudecode.refreshConfig')}
+              <Button type="text" icon={<EllipsisOutlined />} onClick={() => setSettingsModalOpen(true)}>
+                {t('claudecode.moreOptions')}
               </Button>
             </Space>
           </div>
-
-          <Space>
-            <Button type="text" icon={<EllipsisOutlined />} onClick={() => setSettingsModalOpen(true)}>
-              {t('claudecode.moreOptions')}
-            </Button>
-          </Space>
         </div>
-      </div>
 
-      {/* Provider 列表 */}
-      <Collapse
-        style={{ marginBottom: 16 }}
-        activeKey={providerListCollapsed ? [] : ['providers']}
-        onChange={(keys) => setProviderListCollapsed(!keys.includes('providers'))}
-        items={[
-          {
-            key: 'providers',
-            label: (
-              <Text strong>
-                <DatabaseOutlined style={{ marginRight: 8 }} />
-                {t('claudecode.provider.title')}
-              </Text>
-            ),
-            extra: (
-              <Space size={4}>
-                <Button
-                  type="link"
-                  size="small"
-                  style={{ fontSize: 12 }}
-                  icon={<AppstoreOutlined />}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setCommonConfigModalOpen(true);
-                  }}
-                >
-                  {t('claudecode.commonConfigButton')}
-                </Button>
-                <Button
-                  type="link"
-                  size="small"
-                  style={{ fontSize: 12 }}
-                  icon={<PlusOutlined />}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleAddProvider();
-                  }}
-                >
-                  {t('claudecode.addProvider')}
-                </Button>
-              </Space>
-            ),
-            children: (
-              <Spin spinning={loading}>
-                <div
-                  style={{
-                    fontSize: 12,
-                    color: 'var(--color-text-secondary)',
-                    borderLeft: '2px solid var(--color-border)',
-                    paddingLeft: 8,
-                    marginBottom: 12,
-                  }}
-                >
-                  <div>{t('claudecode.pageHint')}</div>
-                  <div>{t('claudecode.pageWarning')}</div>
-                </div>
-
-                {providers.length === 0 ? (
-                  <Empty description={t('claudecode.emptyText')} style={{ marginTop: 40 }} />
-                ) : (
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    modifiers={[restrictToVerticalAxis]}
-                    onDragEnd={handleDragEnd}
-                  >
-                    <SortableContext
-                      items={providers.map((p) => p.id)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      <div>
-                        {providers.map((provider) => (
-                          <ClaudeProviderCard
-                            key={provider.id}
-                            provider={provider}
-                            isApplied={provider.id === appliedProviderId}
-                            onEdit={handleEditProvider}
-                            onDelete={handleDeleteProvider}
-                            onCopy={handleCopyProvider}
-                            onSelect={handleSelectProvider}
-                            onToggleDisabled={handleToggleDisabled}
-                          />
-                        ))}
-                      </div>
-                    </SortableContext>
-                  </DndContext>
-                )}
-
-                <div style={{ marginTop: 12 }}>
-                  <Space wrap>
+        {/* Provider 列表 */}
+        <div
+          id="claudecode-providers"
+          data-sidebar-section="true"
+          data-sidebar-title={t('claudecode.provider.title')}
+        >
+          <Collapse
+            style={{ marginBottom: 16 }}
+            activeKey={providerListCollapsed ? [] : ['providers']}
+            onChange={(keys) => setProviderListCollapsed(!keys.includes('providers'))}
+            items={[
+              {
+                key: 'providers',
+                label: (
+                  <Text strong>
+                    <DatabaseOutlined style={{ marginRight: 8 }} />
+                    {t('claudecode.provider.title')}
+                  </Text>
+                ),
+                extra: (
+                  <Space size={4}>
                     <Button
-                      type="dashed"
-                      icon={<ImportOutlined />}
-                      onClick={handleImportFromOpenCode}
+                      type="link"
+                      size="small"
+                      style={{ fontSize: 12 }}
+                      icon={<AppstoreOutlined />}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCommonConfigModalOpen(true);
+                      }}
                     >
-                      {t('claudecode.importFromOpenCode')}
+                      {t('claudecode.commonConfigButton')}
                     </Button>
-                    {allApiHubAvailable && (
-                      <Button
-                        type="dashed"
-                        icon={<AllApiHubIcon />}
-                        onClick={() => setAllApiHubImportModalOpen(true)}
-                      >
-                        {t('common.allApiHub.importFromAllApiHub')}
-                      </Button>
-                    )}
+                    <Button
+                      type="link"
+                      size="small"
+                      style={{ fontSize: 12 }}
+                      icon={<PlusOutlined />}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleAddProvider();
+                      }}
+                    >
+                      {t('claudecode.addProvider')}
+                    </Button>
                   </Space>
-                </div>
-              </Spin>
-            ),
-          },
-        ]}
-      />
+                ),
+                children: (
+                  <Spin spinning={loading}>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: 'var(--color-text-secondary)',
+                        borderLeft: '2px solid var(--color-border)',
+                        paddingLeft: 8,
+                        marginBottom: 12,
+                      }}
+                    >
+                      <div>{t('claudecode.pageHint')}</div>
+                      <div>{t('claudecode.pageWarning')}</div>
+                    </div>
 
-      <GlobalPromptSettings
-        translationKeyPrefix="claudecode.prompt"
-        service={claudeCodePromptApi}
-        collapseKey="claudecode-prompt"
-        refreshKey={claudeProviderRefreshKey}
-        onUpdated={loadConfig}
-      />
+                    {providers.length === 0 ? (
+                      <Empty description={t('claudecode.emptyText')} style={{ marginTop: 40 }} />
+                    ) : (
+                      <DndContext
+                        sensors={sensors}
+                        collisionDetection={closestCenter}
+                        modifiers={[restrictToVerticalAxis]}
+                        onDragEnd={handleDragEnd}
+                      >
+                        <SortableContext
+                          items={providers.map((p) => p.id)}
+                          strategy={verticalListSortingStrategy}
+                        >
+                          <div>
+                            {providers.map((provider) => (
+                              <ClaudeProviderCard
+                                key={provider.id}
+                                provider={provider}
+                                isApplied={provider.id === appliedProviderId}
+                                onEdit={handleEditProvider}
+                                onDelete={handleDeleteProvider}
+                                onCopy={handleCopyProvider}
+                                onSelect={handleSelectProvider}
+                                onToggleDisabled={handleToggleDisabled}
+                              />
+                            ))}
+                          </div>
+                        </SortableContext>
+                      </DndContext>
+                    )}
 
-      {/* 模态框 */}
-      {providerModalOpen && (
-        <ClaudeProviderFormModal
-          open={providerModalOpen}
-          provider={editingProvider}
-          isCopy={isCopyMode}
-          mode={providerModalMode}
-          onCancel={() => {
-            setProviderModalOpen(false);
-            setEditingProvider(null);
-            setIsCopyMode(false);
+                    <div style={{ marginTop: 12 }}>
+                      <Space wrap>
+                        <Button
+                          type="dashed"
+                          icon={<ImportOutlined />}
+                          onClick={handleImportFromOpenCode}
+                        >
+                          {t('claudecode.importFromOpenCode')}
+                        </Button>
+                        {allApiHubAvailable && (
+                          <Button
+                            type="dashed"
+                            icon={<AllApiHubIcon />}
+                            onClick={() => setAllApiHubImportModalOpen(true)}
+                          >
+                            {t('common.allApiHub.importFromAllApiHub')}
+                          </Button>
+                        )}
+                      </Space>
+                    </div>
+                  </Spin>
+                ),
+              },
+            ]}
+          />
+        </div>
+
+        <div
+          id="claudecode-global-prompt"
+          data-sidebar-section="true"
+          data-sidebar-title={t('claudecode.prompt.title')}
+        >
+          <GlobalPromptSettings
+            key={`claudecode-prompt-${promptExpandNonce}`}
+            translationKeyPrefix="claudecode.prompt"
+            service={claudeCodePromptApi}
+            collapseKey="claudecode-prompt"
+            refreshKey={claudeProviderRefreshKey}
+            defaultExpanded={promptExpandNonce > 0}
+            onUpdated={loadConfig}
+          />
+        </div>
+
+        {/* 模态框 */}
+        {providerModalOpen && (
+          <ClaudeProviderFormModal
+            open={providerModalOpen}
+            provider={editingProvider}
+            isCopy={isCopyMode}
+            mode={providerModalMode}
+            onCancel={() => {
+              setProviderModalOpen(false);
+              setEditingProvider(null);
+              setIsCopyMode(false);
+            }}
+            onSubmit={handleProviderSubmit}
+          />
+        )}
+
+        <CommonConfigModal
+          open={commonConfigModalOpen}
+          onCancel={() => setCommonConfigModalOpen(false)}
+          onSuccess={() => {
+            setCommonConfigModalOpen(false);
+            message.success(t('common.success'));
           }}
-          onSubmit={handleProviderSubmit}
+          isLocalProvider={providers.some((provider) => provider.id === '__local__')}
         />
-      )}
 
-      <CommonConfigModal
-        open={commonConfigModalOpen}
-        onCancel={() => setCommonConfigModalOpen(false)}
-        onSuccess={() => {
-          setCommonConfigModalOpen(false);
-          message.success(t('common.success'));
-        }}
-        isLocalProvider={providers.some((provider) => provider.id === '__local__')}
-      />
+        {settingsModalOpen && (
+          <ClaudeCodeSettingsModal
+            open={settingsModalOpen}
+            onClose={() => setSettingsModalOpen(false)}
+          />
+        )}
 
-      {settingsModalOpen && (
-        <ClaudeCodeSettingsModal
-          open={settingsModalOpen}
-          onClose={() => setSettingsModalOpen(false)}
+        <ImportConflictDialog
+          open={conflictDialogOpen}
+          conflictInfo={conflictInfo}
+          onResolve={handleConflictResolve}
+          onCancel={() => {
+            setConflictDialogOpen(false);
+            setConflictInfo(null);
+            setPendingFormValues(null);
+          }}
         />
-      )}
 
-      <ImportConflictDialog
-        open={conflictDialogOpen}
-        conflictInfo={conflictInfo}
-        onResolve={handleConflictResolve}
-        onCancel={() => {
-          setConflictDialogOpen(false);
-          setConflictInfo(null);
-          setPendingFormValues(null);
-        }}
-      />
+        {allApiHubAvailable && (
+          <ImportFromAllApiHubModal
+            open={allApiHubImportModalOpen}
+            existingProviderIds={providers.map((provider) => provider.sourceProviderId || provider.id)}
+            onCancel={() => setAllApiHubImportModalOpen(false)}
+            onImport={handleImportFromAllApiHub}
+          />
+        )}
 
-      {allApiHubAvailable && (
-        <ImportFromAllApiHubModal
-          open={allApiHubImportModalOpen}
-          existingProviderIds={providers.map((provider) => provider.sourceProviderId || provider.id)}
-          onCancel={() => setAllApiHubImportModalOpen(false)}
-          onImport={handleImportFromAllApiHub}
+        {/* Preview Modal */}
+        <JsonPreviewModal
+          open={previewModalOpen}
+          onClose={() => setPreviewModalOpen(false)}
+          title={t('claudecode.preview.currentConfigTitle')}
+          data={previewData}
         />
-      )}
-
-      {/* Preview Modal */}
-      <JsonPreviewModal
-        open={previewModalOpen}
-        onClose={() => setPreviewModalOpen(false)}
-        title={t('claudecode.preview.currentConfigTitle')}
-        data={previewData}
-      />
-    </div>
+      </div>
+    </SectionSidebarLayout>
   );
 };
 

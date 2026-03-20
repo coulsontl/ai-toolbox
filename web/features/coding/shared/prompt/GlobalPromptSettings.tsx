@@ -33,6 +33,11 @@ interface GlobalPromptSettingsProps {
   collapseKey: string;
   refreshKey?: number;
   onUpdated?: () => Promise<void> | void;
+  /**
+   * Whether the collapse panel should be opened on mount.
+   * Used by pages that provide "jump to section" sidebars.
+   */
+  defaultExpanded?: boolean;
 }
 
 const GlobalPromptSettings: React.FC<GlobalPromptSettingsProps> = ({
@@ -41,6 +46,7 @@ const GlobalPromptSettings: React.FC<GlobalPromptSettingsProps> = ({
   collapseKey,
   refreshKey = 0,
   onUpdated,
+  defaultExpanded = false,
 }) => {
   const { t } = useTranslation();
   const [loading, setLoading] = React.useState(false);
@@ -70,6 +76,8 @@ const GlobalPromptSettings: React.FC<GlobalPromptSettingsProps> = ({
   }, [service, t]);
 
   React.useEffect(() => {
+    // Reference refreshKey to make the dependency explicit for the linter.
+    void refreshKey;
     loadConfigs();
   }, [loadConfigs, refreshKey]);
 
@@ -216,6 +224,7 @@ const GlobalPromptSettings: React.FC<GlobalPromptSettingsProps> = ({
     <>
       <Collapse
         style={{ marginBottom: 16 }}
+        defaultActiveKey={defaultExpanded ? [collapseKey] : []}
         items={[
           {
             key: collapseKey,

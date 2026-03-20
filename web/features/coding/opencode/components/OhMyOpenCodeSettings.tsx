@@ -18,7 +18,7 @@ import {
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
 import type { OhMyOpenCodeConfig, OhMyOpenCodeGlobalConfig } from '@/types/ohMyOpenCode';
 import OhMyOpenCodeConfigCard from './OhMyOpenCodeConfigCard';
-import OhMyOpenCodeConfigModal, { OhMyOpenCodeConfigFormValues } from './OhMyOpenCodeConfigModal';
+import OhMyOpenCodeConfigModal, { type OhMyOpenCodeConfigFormValues } from './OhMyOpenCodeConfigModal';
 import OhMyOpenCodeGlobalConfigModal from './OhMyOpenCodeGlobalConfigModal';
 import {
   listOhMyOpenCodeConfigs,
@@ -39,7 +39,10 @@ import { useRefreshStore } from '@/stores';
 const { Text, Link } = Typography;
 
 interface OhMyOpenCodeSettingsProps {
-  modelOptions: { label: string; value: string }[];
+  modelOptions: Array<
+    | { label: string; value: string; disabled?: boolean }
+    | { label: string; options: { label: string; value: string; disabled?: boolean }[] }
+  >;
   /** Map of model ID to its variant keys */
   modelVariantsMap?: Record<string, string[]>;
   disabled?: boolean;
@@ -74,11 +77,7 @@ const OhMyOpenCodeSettings: React.FC<OhMyOpenCodeSettingsProps> = ({
   );
 
   // Load configs on mount and when refresh key changes
-  React.useEffect(() => {
-    loadConfigs();
-  }, [omoConfigRefreshKey]);
-
-  const loadConfigs = async () => {
+  const loadConfigs = React.useCallback(async () => {
     setLoading(true);
     try {
       const data = await listOhMyOpenCodeConfigs();
@@ -89,7 +88,14 @@ const OhMyOpenCodeSettings: React.FC<OhMyOpenCodeSettingsProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [t]);
+
+  React.useEffect(() => {
+    // Biome exhaustive-deps: explicitly reference the refresh key
+    // so the dependency array is considered necessary.
+    void omoConfigRefreshKey;
+    void loadConfigs();
+  }, [omoConfigRefreshKey, loadConfigs]);
 
   const handleAddConfig = () => {
     setEditingConfig(null);
@@ -446,11 +452,11 @@ const OhMyOpenCodeSettings: React.FC<OhMyOpenCodeSettingsProps> = ({
         initialValues={
           editingConfig
             ? {
-                ...editingConfig,
-                // 复制模式下移除 id，避免意外使用原配置的 id
-                id: isCopyMode ? undefined : editingConfig.id,
-                name: isCopyMode ? `${editingConfig.name}_copy` : editingConfig.name,
-              }
+              ...editingConfig,
+              // 复制模式下移除 id，避免意外使用原配置的 id
+              id: isCopyMode ? undefined : editingConfig.id,
+              name: isCopyMode ? `${editingConfig.name}_copy` : editingConfig.name,
+            }
             : undefined
         }
         modelOptions={modelOptions}

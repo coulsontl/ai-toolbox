@@ -65,6 +65,11 @@ export interface McpServerConfig {
 export interface OpenCodeConfig {
   $schema?: string;
   provider: Record<string, OpenCodeProvider>;
+  /**
+   * List of provider IDs that are disabled.
+   * When present, OpenCode should not use these providers for model availability.
+   */
+  disabled_providers?: string[];
   model?: string;
   small_model?: string;
   plugin?: string[];

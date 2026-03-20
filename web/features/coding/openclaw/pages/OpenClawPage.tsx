@@ -54,9 +54,7 @@ import {
   PRESET_MODELS,
   type PresetModel,
 } from '@/constants/presetModels';
-import {
-  type OpenCodeDiagnosticsConfig,
-} from '@/services/opencodeApi';
+import type { OpenCodeDiagnosticsConfig } from '@/services/opencodeApi';
 import { refreshTrayMenu, hasAllApiHubExtension } from '@/services/appApi';
 import type {
   OpenClawConfig,
@@ -88,12 +86,14 @@ import AgentsDefaultsCard, { type AgentsDefaultsCardRef } from '../components/Ag
 import OpenClawConfigPathModal from '../components/OpenClawConfigPathModal';
 import { useRefreshStore } from '@/stores';
 import type { OpenClawAllApiHubProvider } from '@/services/openclawApi';
+import SectionSidebarLayout from '@/components/layout/SectionSidebarLayout/SectionSidebarLayout';
 
 import styles from './OpenClawPage.module.less';
 
 const { Title, Text, Link } = Typography;
 
 const OPENAI_COMPATIBLE_NPM = '@ai-sdk/openai-compatible';
+const OPENAI_RESPONSES_NPM = '@ai-sdk/openai';
 
 /**
  * Map OpenClaw `api` protocol (+ optional baseUrl hint) to OpenCode `npm` SDK name.
@@ -101,6 +101,8 @@ const OPENAI_COMPATIBLE_NPM = '@ai-sdk/openai-compatible';
  */
 const apiToNpm = (api?: string, baseUrl?: string): string => {
   // Explicit protocol match
+  if (api === 'openai-completions') return OPENAI_COMPATIBLE_NPM;
+  if (api === 'openai-responses') return OPENAI_RESPONSES_NPM;
   if (api === 'anthropic-messages') return '@ai-sdk/anthropic';
   if (api === 'google-generative-ai') return '@ai-sdk/google';
 
@@ -268,11 +270,13 @@ const OpenClawPage: React.FC = () => {
   }, []);
 
   React.useEffect(() => {
+    void openClawConfigRefreshKey;
     loadConfig();
     loadSectionData();
   }, [loadConfig, loadSectionData, openClawConfigRefreshKey]);
 
   React.useEffect(() => {
+    void openClawConfigRefreshKey;
     const checkAllApiHubAvailability = async () => {
       try {
         const available = await hasAllApiHubExtension();
@@ -512,11 +516,11 @@ const OpenClawPage: React.FC = () => {
         cost:
           values.costInput !== undefined || values.costOutput !== undefined
             ? {
-                input: values.costInput || 0,
-                output: values.costOutput || 0,
-                cacheRead: values.costCacheRead,
-                cacheWrite: values.costCacheWrite,
-              }
+              input: values.costInput || 0,
+              output: values.costOutput || 0,
+              cacheRead: values.costCacheRead,
+              cacheWrite: values.costCacheWrite,
+            }
             : undefined,
         ...(values.extraParams || {}),
       };
@@ -569,13 +573,16 @@ const OpenClawPage: React.FC = () => {
     const provider = config.models?.providers?.[connectivityProviderId];
     if (!provider) return;
 
+    const providers = config.models?.providers;
+    if (!providers) return;
+
     const newModels = (provider.models || []).filter((m) => !modelIdsToRemove.includes(m.id));
     const newConfig: OpenClawConfig = {
       ...config,
       models: {
         ...config.models,
         providers: {
-          ...config.models!.providers,
+          ...providers,
           [connectivityProviderId]: { ...provider, models: newModels },
         },
       },
@@ -620,6 +627,9 @@ const OpenClawPage: React.FC = () => {
     if (!provider) return;
     const providerNpm = apiToNpm(provider.api, provider.baseUrl);
 
+    const providers = config.models?.providers;
+    if (!providers) return;
+
     const newModels = [...(provider.models || [])];
     for (const model of selectedModels) {
       if (!newModels.find((m) => m.id === model.id)) {
@@ -632,7 +642,7 @@ const OpenClawPage: React.FC = () => {
       models: {
         ...config.models,
         providers: {
-          ...config.models!.providers,
+          ...providers,
           [fetchModelsProviderId]: { ...provider, models: newModels },
         },
       },
@@ -708,7 +718,9 @@ const OpenClawPage: React.FC = () => {
     if (!config?.models?.providers?.[providerId]) return;
     const provider = config.models.providers[providerId];
     const modelMap = new Map((provider.models || []).map((m) => [m.id, m]));
-    const reordered = modelIds.map((id) => modelMap.get(id)!).filter(Boolean);
+    const reordered = modelIds
+      .map((id) => modelMap.get(id))
+      .filter((m): m is OpenClawModel => Boolean(m));
 
     const newConfig: OpenClawConfig = {
       ...config,
@@ -759,352 +771,406 @@ const OpenClawPage: React.FC = () => {
   // Render
   // ================================================================
   return (
-    <div>
-      {parseError ? (
-        <Alert
-          type="error"
-          message={`Config parse error: ${parseError.error}`}
-          description={
-            <div>
-              <Text code>{parseError.path}</Text>
-              {parseError.contentPreview && (
-                <pre style={{ fontSize: 12, marginTop: 8, maxHeight: 200, overflow: 'auto' }}>
-                  {parseError.contentPreview}
-                </pre>
-              )}
-              <Space style={{ marginTop: 8 }}>
-                <Button onClick={async () => { await backupOpenClawConfig(); loadConfig(); }}>
-                  Backup & Reset
-                </Button>
-                <Button onClick={handleRefresh}>Retry</Button>
-              </Space>
-            </div>
-          }
-        />
-      ) : (
-        <>
-          {/* ===== HEADER ===== */}
-          <div style={{ marginBottom: 16 }}>
-            <div>
-              <div style={{ marginBottom: 8 }}>
-                <Title level={4} style={{ margin: 0, display: 'inline-block', marginRight: 8 }}>
-                  {t('openclaw.title')}
-                </Title>
-                <Link
-                  type="secondary"
-                  style={{ fontSize: 12 }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    openUrl('https://docs.openclaw.ai/concepts/model-providers');
-                  }}
-                >
-                  <LinkOutlined /> {t('openclaw.viewDocs')}
-                </Link>
-                <Link
-                  type="secondary"
-                  style={{ fontSize: 12, marginLeft: 16 }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setPreviewOpen(true);
-                  }}
-                >
-                  <EyeOutlined /> {t('openclaw.previewConfig')}
-                </Link>
-              </div>
-              <Space>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  {t('openclaw.configPath')}:
-                </Text>
-                {configPathInfo?.source === 'custom' && (
-                  <Tag color="green" style={{ fontSize: 12 }}>custom</Tag>
+    <SectionSidebarLayout
+      sidebarTitle={t('openclaw.title')}
+      getIcon={(id) => {
+        switch (id) {
+          case 'openclaw-agents':
+            return <RobotOutlined />;
+          case 'openclaw-providers':
+            return <DatabaseOutlined />;
+          case 'openclaw-other':
+            return <SettingOutlined />;
+          default:
+            return null;
+        }
+      }}
+      onSectionSelect={(id) => {
+        switch (id) {
+          case 'openclaw-agents':
+            setAgentsCollapsed(false);
+            break;
+          case 'openclaw-providers':
+            setProvidersCollapsed(false);
+            break;
+          case 'openclaw-other':
+            setOtherCollapsed(false);
+            break;
+          default:
+            break;
+        }
+      }}
+    >
+      <div>
+        {parseError ? (
+          <Alert
+            type="error"
+            message={`Config parse error: ${parseError.error}`}
+            description={
+              <div>
+                <Text code>{parseError.path}</Text>
+                {parseError.contentPreview && (
+                  <pre style={{ fontSize: 12, marginTop: 8, maxHeight: 200, overflow: 'auto' }}>
+                    {parseError.contentPreview}
+                  </pre>
                 )}
-                <Text code style={{ fontSize: 12 }}>
-                  {configPathInfo?.path || '~/.openclaw/openclaw.json'}
-                </Text>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<EditOutlined />}
-                  onClick={() => setConfigPathModalOpen(true)}
-                  style={{ padding: 0, fontSize: 12 }}
-                />
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<FolderOpenOutlined />}
-                  onClick={handleOpenFolder}
-                  style={{ padding: 0, fontSize: 12 }}
-                />
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<ReloadOutlined />}
-                  onClick={handleRefresh}
-                  style={{ padding: 0, fontSize: 12 }}
-                />
-              </Space>
+                <Space style={{ marginTop: 8 }}>
+                  <Button onClick={async () => { await backupOpenClawConfig(); loadConfig(); }}>
+                    Backup & Reset
+                  </Button>
+                  <Button onClick={handleRefresh}>Retry</Button>
+                </Space>
+              </div>
+            }
+          />
+        ) : (
+          <>
+            {/* ===== HEADER ===== */}
+            <div style={{ marginBottom: 16 }}>
+              <div>
+                <div style={{ marginBottom: 8 }}>
+                  <Title level={4} style={{ margin: 0, display: 'inline-block', marginRight: 8 }}>
+                    {t('openclaw.title')}
+                  </Title>
+                  <Link
+                    type="secondary"
+                    style={{ fontSize: 12 }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openUrl('https://docs.openclaw.ai/concepts/model-providers');
+                    }}
+                  >
+                    <LinkOutlined /> {t('openclaw.viewDocs')}
+                  </Link>
+                  <Link
+                    type="secondary"
+                    style={{ fontSize: 12, marginLeft: 16 }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setPreviewOpen(true);
+                    }}
+                  >
+                    <EyeOutlined /> {t('openclaw.previewConfig')}
+                  </Link>
+                </div>
+                <Space>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {t('openclaw.configPath')}:
+                  </Text>
+                  {configPathInfo?.source === 'custom' && (
+                    <Tag color="green" style={{ fontSize: 12 }}>custom</Tag>
+                  )}
+                  <Text code style={{ fontSize: 12 }}>
+                    {configPathInfo?.path || '~/.openclaw/openclaw.json'}
+                  </Text>
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<EditOutlined />}
+                    onClick={() => setConfigPathModalOpen(true)}
+                    style={{ padding: 0, fontSize: 12 }}
+                  />
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<FolderOpenOutlined />}
+                    onClick={handleOpenFolder}
+                    style={{ padding: 0, fontSize: 12 }}
+                  />
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<ReloadOutlined />}
+                    onClick={handleRefresh}
+                    style={{ padding: 0, fontSize: 12 }}
+                  />
+                </Space>
+              </div>
+
+              <div
+                style={{
+                  fontSize: 12,
+                  color: 'var(--color-text-tertiary)',
+                  borderLeft: '2px solid var(--color-border)',
+                  paddingLeft: 8,
+                  marginTop: 8,
+                }}
+              >
+                {t('openclaw.configFileHint')}
+              </div>
             </div>
 
+            {/* ===== AGENTS DEFAULTS COLLAPSE ===== */}
             <div
-              style={{
-                fontSize: 12,
-                color: 'var(--color-text-tertiary)',
-                borderLeft: '2px solid var(--color-border)',
-                paddingLeft: 8,
-                marginTop: 8,
-              }}
+              id="openclaw-agents"
+              data-sidebar-section="true"
+              data-sidebar-title={t('openclaw.agents.title')}
             >
-              {t('openclaw.configFileHint')}
-            </div>
-          </div>
-
-          {/* ===== AGENTS DEFAULTS COLLAPSE ===== */}
-          <Collapse
-            className={styles.collapseCard}
-            activeKey={agentsCollapsed ? [] : ['agents']}
-            onChange={(keys) => setAgentsCollapsed(!keys.includes('agents'))}
-            items={[
-              {
-                key: 'agents',
-                label: (
-                  <Text strong>
-                    <RobotOutlined style={{ marginRight: 8 }} />
-                    {t('openclaw.agents.title')}
-                  </Text>
-                ),
-                extra: (
-                  <Button
-                    type="link"
-                    size="small"
-                    icon={<MoreOutlined />}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      agentsDefaultsRef.current?.openMoreParams();
-                    }}
-                  >
-                    {t('openclaw.agents.moreParams')}
-                  </Button>
-                ),
-                children: (
-                  <AgentsDefaultsCard ref={agentsDefaultsRef} defaults={agentsDefaults} config={config} onSaved={handleSectionSaved} />
-                ),
-              },
-            ]}
-          />
-
-          {/* ===== PROVIDERS COLLAPSE ===== */}
-          <Collapse
-            className={styles.collapseCard}
-            activeKey={providersCollapsed ? [] : ['providers']}
-            onChange={(keys) => setProvidersCollapsed(!keys.includes('providers'))}
-            items={[
-              {
-                key: 'providers',
-                label: (
-                  <Text strong>
-                    <DatabaseOutlined style={{ marginRight: 8 }} />
-                    {t('openclaw.providers.title')}
-                  </Text>
-                ),
-                extra: (
-                  <Button
-                    type="link"
-                    size="small"
-                    icon={<PlusOutlined />}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleAddProvider();
-                    }}
-                  >
-                    {t('openclaw.providers.addProvider')}
-                  </Button>
-                ),
-                children: (
-                  <Spin spinning={loading}>
-                    {providerEntries.length === 0 ? (
-                      <Empty description={t('openclaw.providers.emptyText')} />
-                    ) : (
-                      <DndContext
-                        sensors={sensors}
-                        collisionDetection={closestCenter}
-                        modifiers={[restrictToVerticalAxis]}
-                        onDragEnd={handleProviderDragEnd}
+              <Collapse
+                className={styles.collapseCard}
+                activeKey={agentsCollapsed ? [] : ['agents']}
+                onChange={(keys) => setAgentsCollapsed(!keys.includes('agents'))}
+                items={[
+                  {
+                    key: 'agents',
+                    label: (
+                      <Text strong>
+                        <RobotOutlined style={{ marginRight: 8 }} />
+                        {t('openclaw.agents.title')}
+                      </Text>
+                    ),
+                    extra: (
+                      <Button
+                        type="link"
+                        size="small"
+                        icon={<MoreOutlined />}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          agentsDefaultsRef.current?.openMoreParams();
+                        }}
                       >
-                        <SortableContext
-                          items={providerEntries.map(([id]) => id)}
-                          strategy={verticalListSortingStrategy}
-                        >
-                          {providerEntries.map(([providerId, providerConfig]) => (
-                            <OpenClawProviderCard
-                              key={providerId}
-                              providerId={providerId}
-                              config={providerConfig}
-                              draggable
-                              sortableId={providerId}
-                              modelsDraggable
-                              onReorderModels={(modelIds) => handleReorderModels(providerId, modelIds)}
-                              onEdit={() => handleEditProvider(providerId, providerConfig)}
-                              onDelete={() => handleDeleteProvider(providerId)}
-                              onAddModel={() => handleAddModel(providerId)}
-                              onEditModel={(model) => handleEditModel(providerId, model)}
-                              onDeleteModel={(modelId) => handleDeleteModel(providerId, modelId)}
-                              onConnectivityTest={() => handleOpenConnectivityTest(providerId)}
-                              onFetchModels={() => handleOpenFetchModels(providerId)}
-                            />
-                          ))}
-                        </SortableContext>
-                      </DndContext>
-                    )}
-                    <div style={{ marginTop: 12 }}>
-                      <Space wrap>
-                        <Button
-                          type="dashed"
-                          icon={<ImportOutlined />}
-                          onClick={() => setImportModalOpen(true)}
-                        >
-                          {t('openclaw.providers.importFromOpenCode')}
-                        </Button>
-                        {allApiHubAvailable && (
-                          <Button
-                            type="dashed"
-                            icon={<AllApiHubIcon />}
-                            onClick={() => setAllApiHubImportModalOpen(true)}
-                          >
-                            {t('openclaw.providers.importFromAllApiHub')}
-                          </Button>
-                        )}
-                      </Space>
-                    </div>
-                  </Spin>
-                ),
-              },
-            ]}
-          />
+                        {t('openclaw.agents.moreParams')}
+                      </Button>
+                    ),
+                    children: (
+                      <AgentsDefaultsCard
+                        ref={agentsDefaultsRef}
+                        defaults={agentsDefaults}
+                        config={config}
+                        onSaved={handleSectionSaved}
+                      />
+                    ),
+                  },
+                ]}
+              />
+            </div>
 
-          {/* ===== OTHER CONFIG COLLAPSE ===== */}
-          <Collapse
-            className={styles.collapseCard}
-            activeKey={otherCollapsed ? [] : ['other']}
-            onChange={(keys) => setOtherCollapsed(!keys.includes('other'))}
-            items={[
-              {
-                key: 'other',
-                label: (
-                  <Text strong>
-                    <SettingOutlined style={{ marginRight: 8 }} />
-                    {t('openclaw.other.title')}
-                  </Text>
-                ),
-                children: (
-                  <div>
-                    <JsonEditor
-                      value={otherConfigFields}
-                      onChange={handleOtherConfigChange}
-                      onBlur={handleOtherConfigBlur}
-                      height={300}
-                      minHeight={200}
-                      maxHeight={500}
-                      resizable
-                      mode="text"
-                      placeholder={`{
+            {/* ===== PROVIDERS COLLAPSE ===== */}
+            <div
+              id="openclaw-providers"
+              data-sidebar-section="true"
+              data-sidebar-title={t('openclaw.providers.title')}
+            >
+              <Collapse
+                className={styles.collapseCard}
+                activeKey={providersCollapsed ? [] : ['providers']}
+                onChange={(keys) => setProvidersCollapsed(!keys.includes('providers'))}
+                items={[
+                  {
+                    key: 'providers',
+                    label: (
+                      <Text strong>
+                        <DatabaseOutlined style={{ marginRight: 8 }} />
+                        {t('openclaw.providers.title')}
+                      </Text>
+                    ),
+                    extra: (
+                      <Button
+                        type="link"
+                        size="small"
+                        icon={<PlusOutlined />}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleAddProvider();
+                        }}
+                      >
+                        {t('openclaw.providers.addProvider')}
+                      </Button>
+                    ),
+                    children: (
+                      <Spin spinning={loading}>
+                        {providerEntries.length === 0 ? (
+                          <Empty description={t('openclaw.providers.emptyText')} />
+                        ) : (
+                          <DndContext
+                            sensors={sensors}
+                            collisionDetection={closestCenter}
+                            modifiers={[restrictToVerticalAxis]}
+                            onDragEnd={handleProviderDragEnd}
+                          >
+                            <SortableContext
+                              items={providerEntries.map(([id]) => id)}
+                              strategy={verticalListSortingStrategy}
+                            >
+                              {providerEntries.map(([providerId, providerConfig]) => (
+                                <OpenClawProviderCard
+                                  key={providerId}
+                                  providerId={providerId}
+                                  config={providerConfig}
+                                  draggable
+                                  sortableId={providerId}
+                                  modelsDraggable
+                                  onReorderModels={(modelIds) => handleReorderModels(providerId, modelIds)}
+                                  onEdit={() => handleEditProvider(providerId, providerConfig)}
+                                  onDelete={() => handleDeleteProvider(providerId)}
+                                  onAddModel={() => handleAddModel(providerId)}
+                                  onEditModel={(model) => handleEditModel(providerId, model)}
+                                  onDeleteModel={(modelId) => handleDeleteModel(providerId, modelId)}
+                                  onConnectivityTest={() => handleOpenConnectivityTest(providerId)}
+                                  onFetchModels={() => handleOpenFetchModels(providerId)}
+                                />
+                              ))}
+                            </SortableContext>
+                          </DndContext>
+                        )}
+                        <div style={{ marginTop: 12 }}>
+                          <Space wrap>
+                            <Button
+                              type="dashed"
+                              icon={<ImportOutlined />}
+                              onClick={() => setImportModalOpen(true)}
+                            >
+                              {t('openclaw.providers.importFromOpenCode')}
+                            </Button>
+                            {allApiHubAvailable && (
+                              <Button
+                                type="dashed"
+                                icon={<AllApiHubIcon />}
+                                onClick={() => setAllApiHubImportModalOpen(true)}
+                              >
+                                {t('openclaw.providers.importFromAllApiHub')}
+                              </Button>
+                            )}
+                          </Space>
+                        </div>
+                      </Spin>
+                    ),
+                  },
+                ]}
+              />
+            </div>
+
+            {/* ===== OTHER CONFIG COLLAPSE ===== */}
+            <div
+              id="openclaw-other"
+              data-sidebar-section="true"
+              data-sidebar-title={t('openclaw.other.title')}
+            >
+              <Collapse
+                className={styles.collapseCard}
+                activeKey={otherCollapsed ? [] : ['other']}
+                onChange={(keys) => setOtherCollapsed(!keys.includes('other'))}
+                items={[
+                  {
+                    key: 'other',
+                    label: (
+                      <Text strong>
+                        <SettingOutlined style={{ marginRight: 8 }} />
+                        {t('openclaw.other.title')}
+                      </Text>
+                    ),
+                    children: (
+                      <div>
+                        <JsonEditor
+                          value={otherConfigFields}
+                          onChange={handleOtherConfigChange}
+                          onBlur={handleOtherConfigBlur}
+                          height={300}
+                          minHeight={200}
+                          maxHeight={500}
+                          resizable
+                          mode="text"
+                          placeholder={`{
     "env": {},
     "tools": { "profile": "default" }
 }`}
-                    />
-                    <div style={{ marginTop: 8 }}>
-                      <Text type="secondary">{t('openclaw.other.hint')}，</Text>
-                      <span style={{ color: '#1677ff' }}>
-                        {t('openclaw.other.autoSaveHint')}
-                      </span>
-                    </div>
-                  </div>
-                ),
-              },
-            ]}
-          />
+                        />
+                        <div style={{ marginTop: 8 }}>
+                          <Text type="secondary">{t('openclaw.other.hint')}，</Text>
+                          <span style={{ color: '#1677ff' }}>
+                            {t('openclaw.other.autoSaveHint')}
+                          </span>
+                        </div>
+                      </div>
+                    ),
+                  },
+                ]}
+              />
+            </div>
 
-          {/* ===== MODALS ===== */}
-          <OpenClawProviderFormModal
-            open={providerModalOpen}
-            editingProvider={editingProvider}
-            existingIds={providerEntries.map(([id]) => id)}
-            onCancel={() => setProviderModalOpen(false)}
-            onSubmit={handleProviderSubmit}
-            onOpenImport={handleOpenImportModal}
-          />
+            {/* ===== MODALS ===== */}
+            <OpenClawProviderFormModal
+              open={providerModalOpen}
+              editingProvider={editingProvider}
+              existingIds={providerEntries.map(([id]) => id)}
+              onCancel={() => setProviderModalOpen(false)}
+              onSubmit={handleProviderSubmit}
+              onOpenImport={handleOpenImportModal}
+            />
 
-          <ImportFromOpenCodeModal
-            open={importModalOpen}
-            existingProviderIds={providerEntries.map(([id]) => id)}
-            onCancel={() => setImportModalOpen(false)}
-            onImport={handleImportFromOpenCode}
-          />
-
-          {allApiHubAvailable && (
-            <ImportFromAllApiHubModal
-              open={allApiHubImportModalOpen}
+            <ImportFromOpenCodeModal
+              open={importModalOpen}
               existingProviderIds={providerEntries.map(([id]) => id)}
-              onCancel={() => setAllApiHubImportModalOpen(false)}
-              onImport={handleImportFromAllApiHub}
+              onCancel={() => setImportModalOpen(false)}
+              onImport={handleImportFromOpenCode}
             />
-          )}
 
-          <OpenClawModelFormModal
-            open={modelModalOpen}
-            editingModel={editingModel}
-            existingIds={
-              config?.models?.providers?.[modelTargetProvider]?.models?.map((m) => m.id) || []
-            }
-            apiProtocol={config?.models?.providers?.[modelTargetProvider]?.api}
-            onCancel={() => setModelModalOpen(false)}
-            onSubmit={handleModelSubmit}
-          />
+            {allApiHubAvailable && (
+              <ImportFromAllApiHubModal
+                open={allApiHubImportModalOpen}
+                existingProviderIds={providerEntries.map(([id]) => id)}
+                onCancel={() => setAllApiHubImportModalOpen(false)}
+                onImport={handleImportFromAllApiHub}
+              />
+            )}
 
-          <OpenClawConfigPathModal
-            open={configPathModalOpen}
-            currentPathInfo={configPathInfo}
-            onCancel={() => setConfigPathModalOpen(false)}
-            onSuccess={handleConfigPathSuccess}
-          />
-
-          <JsonPreviewModal
-            open={previewOpen}
-            onClose={() => setPreviewOpen(false)}
-            title={t('openclaw.previewConfig')}
-            data={config}
-          />
-
-          {/* Fetch Models Modal (reuse common component) */}
-          {fetchModelsProviderInfo && (
-            <FetchModelsModal
-              open={fetchModelsModalOpen}
-              providerName={fetchModelsProviderInfo.name}
-              baseUrl={fetchModelsProviderInfo.baseUrl}
-              apiKey={fetchModelsProviderInfo.apiKey}
-              sdkType={fetchModelsProviderInfo.sdkName}
-              existingModelIds={fetchModelsProviderInfo.existingModelIds}
-              onCancel={() => setFetchModelsModalOpen(false)}
-              onSuccess={handleFetchModelsSuccess}
+            <OpenClawModelFormModal
+              open={modelModalOpen}
+              editingModel={editingModel}
+              existingIds={
+                config?.models?.providers?.[modelTargetProvider]?.models?.map((m) => m.id) || []
+              }
+              apiProtocol={config?.models?.providers?.[modelTargetProvider]?.api}
+              onCancel={() => setModelModalOpen(false)}
+              onSubmit={handleModelSubmit}
             />
-          )}
 
-          {/* Connectivity Test Modal (reuse OpenCode component) */}
-          {connectivityProviderInfo && (
-            <ConnectivityTestModal
-              open={connectivityModalOpen}
-              onCancel={() => setConnectivityModalOpen(false)}
-              providerId={connectivityProviderId}
-              providerName={connectivityProviderInfo.name}
-              providerConfig={connectivityProviderInfo.config}
-              modelIds={connectivityProviderInfo.modelIds}
-              diagnostics={connectivityDiagnostics}
-              onSaveDiagnostics={handleSaveDiagnostics}
-              onRemoveModels={handleRemoveModels}
+            <OpenClawConfigPathModal
+              open={configPathModalOpen}
+              currentPathInfo={configPathInfo}
+              onCancel={() => setConfigPathModalOpen(false)}
+              onSuccess={handleConfigPathSuccess}
             />
-          )}
-        </>
-      )}
-    </div>
+
+            <JsonPreviewModal
+              open={previewOpen}
+              onClose={() => setPreviewOpen(false)}
+              title={t('openclaw.previewConfig')}
+              data={config}
+            />
+
+            {/* Fetch Models Modal (reuse common component) */}
+            {fetchModelsProviderInfo && (
+              <FetchModelsModal
+                open={fetchModelsModalOpen}
+                providerName={fetchModelsProviderInfo.name}
+                baseUrl={fetchModelsProviderInfo.baseUrl}
+                apiKey={fetchModelsProviderInfo.apiKey}
+                sdkType={fetchModelsProviderInfo.sdkName}
+                existingModelIds={fetchModelsProviderInfo.existingModelIds}
+                onCancel={() => setFetchModelsModalOpen(false)}
+                onSuccess={handleFetchModelsSuccess}
+              />
+            )}
+
+            {/* Connectivity Test Modal (reuse OpenCode component) */}
+            {connectivityProviderInfo && (
+              <ConnectivityTestModal
+                open={connectivityModalOpen}
+                onCancel={() => setConnectivityModalOpen(false)}
+                providerId={connectivityProviderId}
+                providerName={connectivityProviderInfo.name}
+                providerConfig={connectivityProviderInfo.config}
+                modelIds={connectivityProviderInfo.modelIds}
+                diagnostics={connectivityDiagnostics}
+                onSaveDiagnostics={handleSaveDiagnostics}
+                onRemoveModels={handleRemoveModels}
+              />
+            )}
+          </>
+        )}
+      </div>
+    </SectionSidebarLayout>
   );
 };
 

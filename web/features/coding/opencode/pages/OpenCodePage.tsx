@@ -1,6 +1,25 @@
 import React from 'react';
 import { Button, Empty, Space, Typography, message, Spin, Select, Collapse, Tag, Form, Tooltip } from 'antd';
-import { PlusOutlined, FolderOpenOutlined, LinkOutlined, EyeOutlined, EditOutlined, EnvironmentOutlined, CloudDownloadOutlined, CloudSyncOutlined, ReloadOutlined, FileOutlined, ImportOutlined, ApiOutlined, SafetyCertificateOutlined, RobotOutlined, ToolOutlined, DatabaseOutlined } from '@ant-design/icons';
+import {
+  PlusOutlined,
+  FolderOpenOutlined,
+  LinkOutlined,
+  EyeOutlined,
+  EditOutlined,
+  EnvironmentOutlined,
+  CloudDownloadOutlined,
+  CloudSyncOutlined,
+  ReloadOutlined,
+  FileOutlined,
+  ImportOutlined,
+  ApiOutlined,
+  SafetyCertificateOutlined,
+  RobotOutlined,
+  ToolOutlined,
+  DatabaseOutlined,
+  ThunderboltOutlined,
+  FileTextOutlined,
+} from '@ant-design/icons';
 
 import { useTranslation } from 'react-i18next';
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
@@ -13,7 +32,7 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
-  DragEndEvent,
+  type DragEndEvent,
 } from '@dnd-kit/core';
 import {
   arrayMove,
@@ -36,8 +55,10 @@ import {
 import type { ProviderDisplayData, ModelDisplayData, OfficialModelDisplayData } from '@/components/common/ProviderCard/types';
 import ProviderCard from '@/components/common/ProviderCard';
 import OfficialProviderCard from '@/components/common/OfficialProviderCard';
-import ProviderFormModal, { ProviderFormValues } from '@/components/common/ProviderFormModal';
-import ModelFormModal, { ModelFormValues } from '@/components/common/ModelFormModal';
+import ProviderFormModal from '@/components/common/ProviderFormModal';
+import type { ProviderFormValues } from '@/components/common/ProviderFormModal';
+import ModelFormModal from '@/components/common/ModelFormModal';
+import type { ModelFormValues } from '@/components/common/ModelFormModal';
 import FetchModelsModal from '@/components/common/FetchModelsModal';
 import ImportProviderModal from '@/components/common/ImportProviderModal';
 import AllApiHubIcon from '@/components/common/AllApiHubIcon';
@@ -57,6 +78,7 @@ import ConnectivityTestModal from '../components/ConnectivityTestModal';
 import { useRefreshStore } from '@/stores';
 import type { OpenCodeAllApiHubProvider } from '@/services/opencodeApi';
 import { openCodePromptApi } from '@/services/openCodePromptApi';
+import SectionSidebarLayout from '@/components/layout/SectionSidebarLayout/SectionSidebarLayout';
 
 import styles from './OpenCodePage.module.less';
 
@@ -106,15 +128,26 @@ const getFetchedModelDefaultModalities = (providerNpm?: string): OpenCodeModel['
   };
 };
 
+const SIDEBAR_ICON_BY_SECTION_ID: Record<string, React.ReactNode> = {
+  'opencode-model-settings': <RobotOutlined />,
+  'opencode-plugin-configuration': <ApiOutlined />,
+  'opencode-omo-configuration': <ThunderboltOutlined />,
+  'opencode-omo-slim-configuration': <ThunderboltOutlined />,
+  'opencode-providers': <DatabaseOutlined />,
+  'opencode-global-prompt': <FileTextOutlined />,
+  'opencode-official-auth-channels': <SafetyCertificateOutlined />,
+  'opencode-other-configuration': <ToolOutlined />,
+};
+
 const buildOpenCodeModelFromPreset = (preset: PresetModel, fallbackName: string): OpenCodeModel => ({
   name: preset.name || fallbackName,
   ...(preset.contextLimit || preset.outputLimit
     ? {
-        limit: {
-          ...(preset.contextLimit ? { context: preset.contextLimit } : {}),
-          ...(preset.outputLimit ? { output: preset.outputLimit } : {}),
-        },
-      }
+      limit: {
+        ...(preset.contextLimit ? { context: preset.contextLimit } : {}),
+        ...(preset.outputLimit ? { output: preset.outputLimit } : {}),
+      },
+    }
     : {}),
   ...(preset.modalities ? { modalities: preset.modalities } : {}),
   ...(preset.reasoning !== undefined ? { reasoning: preset.reasoning } : {}),
@@ -197,6 +230,11 @@ const OpenCodePage: React.FC = () => {
 
   // Use ref for validation state to avoid re-renders during editing
   const otherConfigJsonValidRef = React.useRef(true);
+  const [pluginExpandNonce, setPluginExpandNonce] = React.useState(0);
+  const [omoSettingsExpandNonce, setOmoSettingsExpandNonce] = React.useState(0);
+  const [omoSlimSettingsExpandNonce, setOmoSlimSettingsExpandNonce] = React.useState(0);
+  const [globalPromptExpandNonce, setGlobalPromptExpandNonce] = React.useState(0);
+
   const [ohMyOpenCodeRefreshKey, setOhMyOpenCodeRefreshKey] = React.useState(0); // 用于触发 OhMyOpenCodeConfigSelector 刷新
   const [ohMyOpenCodeSettingsRefreshKey, setOhMyOpenCodeSettingsRefreshKey] = React.useState(0); // 用于触发 OhMyOpenCodeSettings 刷新
   const [omoConfigs, setOmoConfigs] = React.useState<Array<{ id: string; name: string; isApplied?: boolean }>>([]); // omo 配置列表
@@ -208,6 +246,35 @@ const OpenCodePage: React.FC = () => {
       coordinateGetter: sortableKeyboardCoordinates,
     })
   );
+
+  const handleSidebarSelect = React.useCallback((id: string) => {
+    // Keep expand logic local to this page.
+    switch (id) {
+      case 'opencode-providers':
+        setProviderListCollapsed(false);
+        break;
+      case 'opencode-official-auth-channels':
+        setOfficialProvidersCollapsed(false);
+        break;
+      case 'opencode-other-configuration':
+        setOtherConfigCollapsed(false);
+        break;
+      case 'opencode-plugin-configuration':
+        setPluginExpandNonce((v) => v + 1);
+        break;
+      case 'opencode-omo-configuration':
+        setOmoSettingsExpandNonce((v) => v + 1);
+        break;
+      case 'opencode-omo-slim-configuration':
+        setOmoSlimSettingsExpandNonce((v) => v + 1);
+        break;
+      case 'opencode-global-prompt':
+        setGlobalPromptExpandNonce((v) => v + 1);
+        break;
+      default:
+        break;
+    }
+  }, []);
 
   const loadConfig = React.useCallback(async (showSuccessMessage = false, silent = false) => {
     setLoading(true);
@@ -272,6 +339,8 @@ const OpenCodePage: React.FC = () => {
 
   React.useEffect(() => {
     loadConfig();
+    // Biome: make the dependency explicit for re-running on refresh key changes
+    void openCodeConfigRefreshKey;
   }, [loadConfig, openCodeConfigRefreshKey]);
 
   React.useEffect(() => {
@@ -286,6 +355,8 @@ const OpenCodePage: React.FC = () => {
     };
 
     checkAllApiHubAvailability();
+    // Biome: make the dependency explicit
+    void openCodeConfigRefreshKey;
   }, [openCodeConfigRefreshKey]);
 
   // Reload config when MCP changes (from tray menu or MCP page)
@@ -314,6 +385,9 @@ const OpenCodePage: React.FC = () => {
 
   // Load omo config list
   React.useEffect(() => {
+    // Biome: make the dependencies explicit
+    void openCodeConfigRefreshKey;
+    void ohMyOpenCodeSettingsRefreshKey;
     const loadOmoConfigs = async () => {
       try {
         const configs = await listOhMyOpenCodeConfigs();
@@ -326,19 +400,22 @@ const OpenCodePage: React.FC = () => {
     loadOmoConfigs();
   }, [openCodeConfigRefreshKey, ohMyOpenCodeSettingsRefreshKey]);
 
-  // Load omo slim config list
+  // Load omo slim config list (used for visibility/filtering)
   React.useEffect(() => {
+    // Biome: make the dependencies explicit
+    void omosConfigRefreshKey;
     const loadOmoSlimConfigs = async () => {
       try {
         const configs = await listOhMyOpenCodeSlimConfigs();
-        setOmoSlimConfigs(configs.map(c => ({ id: c.id, name: c.name, isApplied: c.isApplied })));
+        setOmoSlimConfigs(configs.map((c) => ({ id: c.id, name: c.name, isApplied: c.isApplied })));
       } catch (error) {
         console.error('Failed to load omo slim configs:', error);
         setOmoSlimConfigs([]);
       }
     };
+
     loadOmoSlimConfigs();
-  }, [openCodeConfigRefreshKey]);
+  }, [omosConfigRefreshKey]);
 
   // Auto-apply the applied config when plugin is enabled
   const prevOmoPluginEnabledRef = React.useRef(omoPluginEnabled);
@@ -364,6 +441,8 @@ const OpenCodePage: React.FC = () => {
 
   // Load unified models (combining custom providers and official auth providers)
   React.useEffect(() => {
+    // Biome: make the dependency explicit
+    void openCodeConfigRefreshKey;
     const loadUnifiedModels = async () => {
       try {
         const models = await getOpenCodeUnifiedModels();
@@ -404,6 +483,8 @@ const OpenCodePage: React.FC = () => {
 
   // Load official auth providers data
   React.useEffect(() => {
+    // Biome: make the dependency explicit
+    void openCodeConfigRefreshKey;
     const loadAuthProviders = async () => {
       try {
         const data = await getOpenCodeAuthProviders();
@@ -428,6 +509,8 @@ const OpenCodePage: React.FC = () => {
 
   React.useEffect(() => {
     if (!config) return;
+    // Biome: make the dependency explicit
+    void omosConfigRefreshKey;
     const loadFavProviders = async () => {
       try {
         const providers = await listFavoriteProviders();
@@ -461,6 +544,35 @@ const OpenCodePage: React.FC = () => {
     } catch {
       message.error(t('common.error'));
       throw new Error('Save failed');
+    }
+  };
+
+  const disabledProviderIds = React.useMemo(
+    () => new Set(config?.disabled_providers ?? []),
+    [config?.disabled_providers],
+  );
+
+  const handleToggleProviderDisabled = async (providerId: string) => {
+    if (!config) return;
+
+    const current = config.disabled_providers ?? [];
+    const nextSet = new Set(current);
+    if (nextSet.has(providerId)) {
+      nextSet.delete(providerId); // enable
+    } else {
+      nextSet.add(providerId); // disable
+    }
+
+    const nextArr = Array.from(nextSet);
+    try {
+      await doSaveConfig({
+        ...config,
+        disabled_providers: nextArr.length > 0 ? nextArr : undefined,
+      });
+      await refreshTrayMenu();
+      incrementOpenCodeConfigRefresh();
+    } catch (e) {
+      console.error('Failed to toggle provider disabled state:', e);
     }
   };
 
@@ -500,7 +612,7 @@ const OpenCodePage: React.FC = () => {
   const handleRefreshModelsCache = async () => {
     const now = Date.now();
     const timeSinceLastRefresh = now - lastModelsRefreshTimeRef.current;
-    
+
     if (timeSinceLastRefresh < MODELS_REFRESH_INTERVAL_MS) {
       const secondsLeft = Math.ceil((MODELS_REFRESH_INTERVAL_MS - timeSinceLastRefresh) / 1000);
       message.info(t('opencode.modelsRefreshRateLimit', { seconds: secondsLeft }));
@@ -543,9 +655,10 @@ const OpenCodePage: React.FC = () => {
     const knownOptionKeys = ['baseURL', 'apiKey', 'headers', 'timeout', 'setCacheKey'];
     const extraOptions: Record<string, unknown> = {};
     if (provider.options) {
-      Object.keys(provider.options).forEach((key) => {
+      const options = provider.options;
+      Object.keys(options).forEach((key) => {
         if (!knownOptionKeys.includes(key)) {
-          extraOptions[key] = provider.options![key];
+          extraOptions[key] = options[key];
         }
       });
     }
@@ -581,9 +694,10 @@ const OpenCodePage: React.FC = () => {
     const knownOptionKeys = ['baseURL', 'apiKey', 'headers', 'timeout', 'setCacheKey'];
     const extraOptions: Record<string, unknown> = {};
     if (provider.options) {
-      Object.keys(provider.options).forEach((key) => {
+      const options = provider.options;
+      Object.keys(options).forEach((key) => {
         if (!knownOptionKeys.includes(key)) {
-          extraOptions[key] = provider.options![key];
+          extraOptions[key] = options[key];
         }
       });
     }
@@ -614,9 +728,12 @@ const OpenCodePage: React.FC = () => {
     const newProviders = { ...config.provider };
     delete newProviders[providerId];
 
+    const nextDisabledProviders = (config.disabled_providers ?? []).filter((id) => id !== providerId);
+
     await doSaveConfig({
       ...config,
       provider: newProviders,
+      disabled_providers: nextDisabledProviders.length > 0 ? nextDisabledProviders : undefined,
     });
   };
 
@@ -771,11 +888,11 @@ const OpenCodePage: React.FC = () => {
       ...(values.name && { name: values.name }),
       ...(values.contextLimit || values.outputLimit
         ? {
-            limit: {
-              ...(values.contextLimit && { context: values.contextLimit }),
-              ...(values.outputLimit && { output: values.outputLimit }),
-            },
-          }
+          limit: {
+            ...(values.contextLimit && { context: values.contextLimit }),
+            ...(values.outputLimit && { output: values.outputLimit }),
+          },
+        }
         : {}),
       ...(values.modalities && { modalities: JSON.parse(values.modalities) }),
       ...(values.reasoning !== undefined && { reasoning: values.reasoning }),
@@ -957,7 +1074,7 @@ const OpenCodePage: React.FC = () => {
     // Save diagnostics to favorite provider ONLY
     try {
       const updatedFav = await upsertFavoriteProvider(connectivityProviderId, provider, diagnostics);
-      
+
       // Update local state
       setFavoriteProviders((prev) => {
         const index = prev.findIndex((p) => p.providerId === connectivityProviderId);
@@ -1049,7 +1166,7 @@ const OpenCodePage: React.FC = () => {
     setPreviewModalOpen(true);
   };
 
-  const providerEntries = config && config.provider ? Object.entries(config.provider) : [];
+  const providerEntries = config?.provider ? Object.entries(config.provider) : [];
   const existingProviderIds = providerEntries.map(([id]) => id);
   const presetModelsVersion = React.useSyncExternalStore(
     subscribePresetModels,
@@ -1059,42 +1176,118 @@ const OpenCodePage: React.FC = () => {
   const existingModelIds = React.useMemo(() => {
     if (!config || !config.provider || !currentModelProviderId) return [];
     const provider = config.provider[currentModelProviderId];
-    return provider && provider.models ? Object.keys(provider.models) : [];
+    return provider?.models ? Object.keys(provider.models) : [];
   }, [config, currentModelProviderId]);
 
-  // Collect all available models for model selectors using unified models
-  const modelOptions = React.useMemo(() => {
-    return unifiedModels.map((m) => ({
-      label: m.displayName,
-      value: m.id,
+  // OMO settings should keep all models available (including those from disabled providers),
+  // but we still group options by provider for easier scanning/search.
+
+  const selectedMainModel = config?.model;
+  const selectedSmallModel = config?.small_model;
+
+  const enabledUnifiedModels = React.useMemo(() => {
+    return unifiedModels.filter((m) => {
+      const isProviderDisabled = disabledProviderIds.has(m.providerId);
+      if (!isProviderDisabled) return true;
+      // Keep current selections visible even if their provider is disabled
+      return m.id === selectedMainModel || m.id === selectedSmallModel;
+    });
+  }, [unifiedModels, disabledProviderIds, selectedMainModel, selectedSmallModel]);
+
+  type ModelOption = { label: string; value: string; disabled?: boolean };
+  type ModelGroup = { label: string; options: ModelOption[] };
+
+  const omoModelGroupedOptions = React.useMemo((): ModelGroup[] => {
+    const groups = new Map<string, { groupLabel: string; options: ModelOption[] }>();
+
+    for (const m of unifiedModels) {
+      const parts = m.displayName.split(' / ');
+      const modelLabel = parts.slice(1).join(' / ') || m.modelId;
+
+      const isProviderDisabled = disabledProviderIds.has(m.providerId);
+
+      const entry = groups.get(m.providerId) || {
+        groupLabel: m.providerId,
+        options: [],
+      };
+
+      entry.options.push({
+        label: `${m.providerId} / ${modelLabel}`,
+        value: m.id,
+        disabled: isProviderDisabled,
+      });
+
+      groups.set(m.providerId, entry);
+    }
+
+    const result: ModelGroup[] = [];
+    for (const [providerId, entry] of groups.entries()) {
+      const groupLabel = entry.groupLabel || providerId;
+      entry.options.sort((a, b) => a.label.localeCompare(b.label));
+      result.push({ label: groupLabel, options: entry.options });
+    }
+
+    result.sort((a, b) => a.label.localeCompare(b.label));
+    return result;
+  }, [unifiedModels, disabledProviderIds]);
+
+  const groupedModelOptionsBase = React.useMemo((): ModelGroup[] => {
+    const groups = new Map<string, { groupLabel: string; options: ModelOption[] }>();
+
+    for (const m of enabledUnifiedModels) {
+      const parts = m.displayName.split(' / ');
+      const providerLabel = parts[0] || m.providerId;
+      const modelLabel = parts.slice(1).join(' / ') || m.modelId;
+
+      const entry = groups.get(m.providerId) || { groupLabel: providerLabel, options: [] };
+      // Keep provider prefix for each option to avoid same model name confusion.
+      entry.options.push({ label: `${providerLabel} / ${modelLabel}`, value: m.id });
+      groups.set(m.providerId, entry);
+    }
+
+    const result: ModelGroup[] = [];
+    for (const [providerId, entry] of groups.entries()) {
+      const groupLabel = entry.groupLabel || providerId;
+      entry.options.sort((a, b) => a.label.localeCompare(b.label));
+      result.push({ label: groupLabel, options: entry.options });
+    }
+
+    result.sort((a, b) => a.label.localeCompare(b.label));
+    return result;
+  }, [enabledUnifiedModels]);
+
+  const mainModelGroupedOptions = React.useMemo((): ModelGroup[] => {
+    return groupedModelOptionsBase.map((g) => ({
+      ...g,
+      options: g.options.map((opt) => ({
+        ...opt,
+        label: opt.value === selectedMainModel ? `${opt.label} ✓` : opt.label,
+      })),
     }));
-  }, [unifiedModels]);
+  }, [groupedModelOptionsBase, selectedMainModel]);
+
+  const smallModelGroupedOptions = React.useMemo((): ModelGroup[] => {
+    return groupedModelOptionsBase.map((g) => ({
+      ...g,
+      options: g.options.map((opt) => ({
+        ...opt,
+        label: opt.value === selectedSmallModel ? `${opt.label} ✓` : opt.label,
+      })),
+    }));
+  }, [groupedModelOptionsBase, selectedSmallModel]);
 
   // Build model variants map from config and preset models
   const modelVariantsMap = React.useMemo(
-    () => buildModelVariantsMap(config, unifiedModels, PRESET_MODELS),
+    () => {
+      void presetModelsVersion; // Biome: dependency marker (PRESET_MODELS content can update without reference changes)
+      return buildModelVariantsMap(config, unifiedModels, PRESET_MODELS);
+    },
     [config, unifiedModels, presetModelsVersion]
   );
 
-  // 主模型选项 - 基于 modelOptions 添加选中标记
-  const mainModelOptions = React.useMemo(() => {
-    return modelOptions.map((opt) => ({
-      ...opt,
-      label: config?.model === opt.value ? `${opt.label} ✓` : opt.label,
-    }));
-  }, [modelOptions, config?.model]);
-
-  // 小模型选项 - 基于 modelOptions 添加选中标记
-  const smallModelOptions = React.useMemo(() => {
-    return modelOptions.map((opt) => ({
-      ...opt,
-      label: config?.small_model === opt.value ? `${opt.label} ✓` : opt.label,
-    }));
-  }, [modelOptions, config?.small_model]);
-
   const handleModelChange = async (field: 'model' | 'small_model', value: string | undefined) => {
     if (!config) return;
-    
+
     await doSaveConfig({
       ...config,
       [field]: value || undefined,
@@ -1103,7 +1296,7 @@ const OpenCodePage: React.FC = () => {
 
   const handlePluginChange = async (plugins: string[]) => {
     if (!config) return;
-    
+
     await doSaveConfig({
       ...config,
       plugin: plugins.length > 0 ? plugins : undefined,
@@ -1113,7 +1306,7 @@ const OpenCodePage: React.FC = () => {
   // Extract other config fields (unknown fields)
   const otherConfigFields = React.useMemo(() => {
     if (!config) return undefined;
-    const knownFields = ['$schema', 'provider', 'model', 'small_model', 'plugin', 'mcp'];
+    const knownFields = ['$schema', 'provider', 'model', 'small_model', 'plugin', 'mcp', 'disabled_providers'];
     const other: Record<string, unknown> = {};
     Object.keys(config).forEach((key) => {
       if (!knownFields.includes(key)) {
@@ -1139,6 +1332,7 @@ const OpenCodePage: React.FC = () => {
     const newConfig: OpenCodeConfig = {
       $schema: config.$schema,
       provider: config.provider,
+      disabled_providers: config.disabled_providers,
       model: config.model,
       small_model: config.small_model,
       plugin: config.plugin,
@@ -1174,584 +1368,681 @@ const OpenCodePage: React.FC = () => {
           </div>
         </div>
       ) : (
-        <>
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div>
-              <div style={{ marginBottom: 8 }}>
-                <Title level={4} style={{ margin: 0, display: 'inline-block', marginRight: 8 }}>
-                  {t('opencode.title')}
-                </Title>
-                <Link
-                  type="secondary"
-                  style={{ fontSize: 12 }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    openUrl('https://opencode.ai/docs/config/#format');
-                  }}
-                >
-                  <LinkOutlined /> {t('opencode.viewDocs')}
-                </Link>
-                <Link
-                  type="secondary"
-                  style={{ fontSize: 12, marginLeft: 16 }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handlePreviewConfig();
-                  }}
-                >
-                  <EyeOutlined /> {t('common.previewConfig')}
-                </Link>
-              </div>
-              <Space>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  {t('opencode.configPath')}:
-                </Text>
-                {configPathInfo?.source === 'env' && (
-                  <Tag color="blue" icon={<EnvironmentOutlined />} style={{ fontSize: 12 }}>
-                    {t('opencode.configPathSource.fromEnv')}
-                  </Tag>
-                )}
-                {configPathInfo?.source === 'custom' && (
-                  <Tag color="green" style={{ fontSize: 12 }}>
-                    {t('opencode.configPathSource.custom')}
-                  </Tag>
-                )}
-                {configPathInfo?.source === 'shell' && (
-                  <Tag color="cyan" style={{ fontSize: 12 }}>
-                    {t('opencode.configPathSource.fromShell')}
-                  </Tag>
-                )}
-                {configPathInfo?.source === 'default' && (
-                  <Tag style={{ fontSize: 12 }}>
-                    {t('opencode.configPathSource.default')}
-                  </Tag>
-                )}
-                <Text code style={{ fontSize: 12 }}>
-                  {configPathInfo?.path}
-                </Text>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<EditOutlined />}
-                  onClick={() => setPathModalOpen(true)}
-                  style={{ padding: 0, fontSize: 12 }}
-                >
-                  {t('opencode.configPathSource.customize')}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<FolderOpenOutlined />}
-                  onClick={handleOpenConfigFolder}
-                  style={{ padding: 0, fontSize: 12 }}
-                >
-                  {t('opencode.openFolder')}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<ReloadOutlined />}
-                  onClick={() => {
-                    loadConfig(true);
-                    incrementOpenCodeConfigRefresh();
-                    incrementOmoConfigRefresh();
-                    incrementOmosConfigRefresh();
-                    refreshTrayMenu();
-                  }}
-                  style={{ padding: 0, fontSize: 12 }}
-                >
-                  {t('opencode.refreshConfig')}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<CloudSyncOutlined />}
-                  onClick={handleRefreshModelsCache}
-                  loading={refreshingModels}
-                  style={{ padding: 0, fontSize: 12 }}
-                >
-                  {t('opencode.syncModels')}
-                </Button>
-              </Space>
-            </div>
-          </div>
-          <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', borderLeft: '2px solid rgba(0,0,0,0.12)', paddingLeft: 8, marginTop: 4 }}>
-            {t('opencode.pageHint')}
-          </div>
-        </div>
-
-          <div className={styles.modelCard}>
-        <Title level={5} className={styles.modelCardTitle}>
-          <RobotOutlined style={{ marginRight: 8 }} />
-          {t('opencode.modelSettings.title')}
-        </Title>
-        <div className={styles.modelCardContent}>
-          <Space orientation="vertical" style={{ width: '100%' }} size={12}>
-            <div>
-              <div style={{ marginBottom: 4 }}>
-                <Text strong>{t('opencode.modelSettings.modelLabel')}</Text>
-              </div>
-              <Select
-                value={config?.model}
-                onChange={(value) => handleModelChange('model', value)}
-                placeholder={t('opencode.modelSettings.modelPlaceholder')}
-                allowClear
-                options={mainModelOptions}
-                optionLabelProp="label"
-                style={{ width: '100%' }}
-                notFoundContent={t('opencode.modelSettings.noModels')}
-              />
-            </div>
-
-            <div>
-              <div style={{ marginBottom: 4 }}>
-                <Text strong>{t('opencode.modelSettings.smallModelLabel')}</Text>
-                <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-                  {t('opencode.modelSettings.smallModelHint')}
-                </Text>
-              </div>
-              <Select
-                value={config?.small_model}
-                onChange={(value) => handleModelChange('small_model', value)}
-                placeholder={t('opencode.modelSettings.smallModelPlaceholder')}
-                allowClear
-                options={smallModelOptions}
-                optionLabelProp="label"
-                style={{ width: '100%' }}
-                notFoundContent={t('opencode.modelSettings.noModels')}
-              />
-            </div>
-
-{/* Oh My OpenCode Config Selector - show only if plugin is enabled */}
-            {omoPluginEnabled && (
-              <div>
-                <div style={{ marginBottom: 4 }}>
-                  <Text strong>{t('opencode.ohMyOpenCode.configLabel')}</Text>
-                  <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-                    {t('opencode.ohMyOpenCode.configHint')}
-                  </Text>
-                </div>
-                <OhMyOpenCodeConfigSelector
-                  key={ohMyOpenCodeRefreshKey} // 当 key 改变时，组件会重新挂载并刷新
-                  disabled={false}
-                  onConfigSelected={() => {
-                    message.success(t('opencode.ohMyOpenCode.configSelected'));
-                    // 当在快速切换框中选择配置时，触发设置列表刷新
-                    setOhMyOpenCodeSettingsRefreshKey((prev) => prev + 1);
-                  }}
-                />
-              </div>
-            )}
-
-            {/* Oh My OpenCode Slim Config Selector - show only if plugin is enabled */}
-            {omoSlimPluginEnabled && (
-              <div>
-                <div style={{ marginBottom: 4 }}>
-                  <Text strong>{t('opencode.ohMyOpenCode.slimConfigLabel')}</Text>
-                  <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-                    {t('opencode.ohMyOpenCode.slimConfigHint')}
-                  </Text>
-                </div>
-                <OhMyOpenCodeSlimConfigSelector
-                  disabled={false}
-                  onConfigSelected={() => {
-                    message.success(t('opencode.ohMyOpenCode.configSelected'));
-                  }}
-                />
-              </div>
-            )}
-          </Space>
-        </div>
-      </div>
-
-      <PluginSettings
-        plugins={config?.plugin || []}
-        onChange={handlePluginChange}
-      />
-
-{/* Oh My OpenCode Settings - show if plugin is enabled or has configs */}
-      {(omoPluginEnabled || omoConfigs.length > 0) && (
-        <OhMyOpenCodeSettings
-          key={ohMyOpenCodeSettingsRefreshKey} // 当 key 改变时，组件会重新挂载并刷新
-          modelOptions={modelOptions}
-          modelVariantsMap={modelVariantsMap}
-          disabled={!omoPluginEnabled}
-          onConfigApplied={() => {
-            // 当配置被应用时，触发 Selector 刷新以更新选中状态
-            setOhMyOpenCodeRefreshKey((prev) => prev + 1);
-          }}
-          onConfigUpdated={() => {
-            // 当配置被创建/更新/删除时，触发 Selector 刷新
-            setOhMyOpenCodeRefreshKey((prev) => prev + 1);
-          }}
-        />
-      )}
-
-{/* Oh My OpenCode Slim Settings - show if plugin is enabled or has configs */}
-      {(omoSlimPluginEnabled || omoSlimConfigs.length > 0) && (
-        <OhMyOpenCodeSlimSettings
-          modelOptions={modelOptions}
-          modelVariantsMap={modelVariantsMap}
-          disabled={!omoSlimPluginEnabled}
-          onConfigApplied={() => {
-            message.success('配置已应用');
-          }}
-          onConfigUpdated={() => {
-            // 配置更新后刷新
-            loadConfig();
-          }}
-        />
-      )}
-
-
-      <Collapse
-        className={styles.collapseCard}
-        activeKey={providerListCollapsed ? [] : ['providers']}
-        onChange={(keys) => setProviderListCollapsed(!keys.includes('providers'))}
-        items={[
-          {
-            key: 'providers',
-            label: (
-              <Text strong><DatabaseOutlined style={{ marginRight: 8 }} />{t('opencode.provider.title')}</Text>
-            ),
-            extra: (
-              <Button
-                type="link"
-                size="small"
-                style={{ fontSize: 12 }}
-                icon={<PlusOutlined />}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleAddProvider();
-                }}
-              >
-                {t('opencode.addProvider')}
-              </Button>
-            ),
-            children: (
-              <Spin spinning={loading}>
-                {providerEntries.length === 0 ? (
-                  <Empty description={t('opencode.emptyText')} style={{ marginTop: 40 }} />
-                ) : (
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    modifiers={[restrictToVerticalAxis]}
-                    onDragEnd={handleProviderDragEnd}
-                  >
-                    <SortableContext
-                      items={providerEntries.map(([id]) => id)}
-                      strategy={verticalListSortingStrategy}
+        <SectionSidebarLayout
+          sidebarTitle={t('opencode.title')}
+          markerAttr="data-opencode-sidebar-section"
+          getIcon={(id) => SIDEBAR_ICON_BY_SECTION_ID[id] ?? null}
+          onSectionSelect={handleSidebarSelect}
+        >
+          <div className={styles.opencodePageContent}>
+            <div style={{ marginBottom: 16, order: 0 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div>
+                  <div style={{ marginBottom: 8 }}>
+                    <Title level={4} style={{ margin: 0, display: 'inline-block', marginRight: 8 }}>
+                      {t('opencode.title')}
+                    </Title>
+                    <Link
+                      type="secondary"
+                      style={{ fontSize: 12 }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openUrl('https://opencode.ai/docs/config/#format');
+                      }}
                     >
-                      {providerEntries.map(([providerId, provider]) => {
-                        const providerNpm = provider.npm || '@ai-sdk/openai-compatible';
-                        const isConnectivitySupported = SUPPORTED_PROVIDER_NPMS.has(providerNpm);
-                        const providerBaseUrl = provider.options?.baseURL?.trim() || '';
-                        const providerApiKey = provider.options?.apiKey?.trim() || '';
-                        const isProviderAuthReady = Boolean(providerBaseUrl && providerApiKey);
-                        const connectivityTooltip = !isConnectivitySupported
-                          ? t('opencode.connectivity.unsupportedNpm', { npm: providerNpm })
-                          : !isProviderAuthReady
-                            ? t('opencode.provider.completeUrlAndKey')
-                            : '';
-                        const fetchModelsTooltip = !isProviderAuthReady
-                          ? t('opencode.provider.completeUrlAndKey')
-                          : '';
-                        return (
-                        <ProviderCard
-                          key={providerId}
-                          provider={toProviderDisplayData(providerId, provider)}
-                          models={provider.models ? Object.entries(provider.models).map(([modelId, model]) =>
-                            toModelDisplayData(modelId, model)
-                          ) : []}
-                          officialModels={authProvidersData?.mergedModels?.[providerId]?.map((m): OfficialModelDisplayData => ({
-                            id: m.id,
-                            name: m.name,
-                            isFree: m.isFree,
-                            context: m.context,
-                            output: m.output,
-                            status: m.status,
-                          }))}
-                          draggable
-                          sortableId={providerId}
-                          onEdit={() => handleEditProvider(providerId)}
-                          onCopy={() => handleCopyProvider(providerId)}
-                          onDelete={() => handleDeleteProvider(providerId)}
-                          extraActions={
-                            <Space size={0}>
-                              <Tooltip title={connectivityTooltip}>
-                                <span>
-                                  <Button
-                                    size="small"
-                                    type="text"
-                                    style={{ fontSize: 12 }}
-                                    onClick={() => handleOpenConnectivityTest(providerId)}
-                                    disabled={!isConnectivitySupported || !isProviderAuthReady}
-                                  >
-                                    <ApiOutlined style={{ marginRight: 4 }} />
-                                    {t('opencode.connectivity.button')}
-                                  </Button>
-                                </span>
-                              </Tooltip>
-                              <Tooltip title={fetchModelsTooltip}>
-                                <span>
-                                  <Button
-                                    size="small"
-                                    type="text"
-                                    style={{ fontSize: 12 }}
-                                    onClick={() => handleOpenFetchModels(providerId)}
-                                    disabled={!isProviderAuthReady}
-                                  >
-                                    <CloudDownloadOutlined style={{ marginRight: 4 }} />
-                                    {t('opencode.fetchModels.button')}
-                                  </Button>
-                                </span>
-                              </Tooltip>
-                            </Space>
-                          }
-
-                          onAddModel={() => handleAddModel(providerId)}
-                          onEditModel={(modelId) => handleEditModel(providerId, modelId)}
-                          onCopyModel={(modelId) => handleCopyModel(providerId, modelId)}
-                          onDeleteModel={(modelId) => handleDeleteModel(providerId, modelId)}
-                          modelsDraggable
-                          onReorderModels={(modelIds) => handleReorderModels(providerId, modelIds)}
-                          i18nPrefix="opencode"
-                        />
-                        );
-                      })}
-                    </SortableContext>
-                  </DndContext>
-                )}
-                <div style={{ marginTop: 12 }}>
-                  <Space wrap>
+                      <LinkOutlined /> {t('opencode.viewDocs')}
+                    </Link>
+                    <Link
+                      type="secondary"
+                      style={{ fontSize: 12, marginLeft: 16 }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handlePreviewConfig();
+                      }}
+                    >
+                      <EyeOutlined /> {t('common.previewConfig')}
+                    </Link>
+                  </div>
+                  <Space>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {t('opencode.configPath')}:
+                    </Text>
+                    {configPathInfo?.source === 'env' && (
+                      <Tag color="blue" icon={<EnvironmentOutlined />} style={{ fontSize: 12 }}>
+                        {t('opencode.configPathSource.fromEnv')}
+                      </Tag>
+                    )}
+                    {configPathInfo?.source === 'custom' && (
+                      <Tag color="green" style={{ fontSize: 12 }}>
+                        {t('opencode.configPathSource.custom')}
+                      </Tag>
+                    )}
+                    {configPathInfo?.source === 'shell' && (
+                      <Tag color="cyan" style={{ fontSize: 12 }}>
+                        {t('opencode.configPathSource.fromShell')}
+                      </Tag>
+                    )}
+                    {configPathInfo?.source === 'default' && (
+                      <Tag style={{ fontSize: 12 }}>
+                        {t('opencode.configPathSource.default')}
+                      </Tag>
+                    )}
+                    <Text code style={{ fontSize: 12 }}>
+                      {configPathInfo?.path}
+                    </Text>
                     <Button
-                      type="dashed"
-                      icon={<ImportOutlined />}
-                      onClick={() => setImportModalOpen(true)}
+                      type="text"
+                      size="small"
+                      icon={<EditOutlined />}
+                      onClick={() => setPathModalOpen(true)}
+                      style={{ padding: 0, fontSize: 12 }}
                     >
-                      {t('opencode.provider.importFavorite')}
+                      {t('opencode.configPathSource.customize')}
                     </Button>
-                    {allApiHubAvailable && (
-                      <Button
-                        type="dashed"
-                        icon={<AllApiHubIcon />}
-                        onClick={() => setAllApiHubImportModalOpen(true)}
-                      >
-                        {t('opencode.provider.importAllApiHub')}
-                      </Button>
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<FolderOpenOutlined />}
+                      onClick={handleOpenConfigFolder}
+                      style={{ padding: 0, fontSize: 12 }}
+                    >
+                      {t('opencode.openFolder')}
+                    </Button>
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<ReloadOutlined />}
+                      onClick={() => {
+                        loadConfig(true);
+                        incrementOpenCodeConfigRefresh();
+                        incrementOmoConfigRefresh();
+                        incrementOmosConfigRefresh();
+                        refreshTrayMenu();
+                      }}
+                      style={{ padding: 0, fontSize: 12 }}
+                    >
+                      {t('opencode.refreshConfig')}
+                    </Button>
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<CloudSyncOutlined />}
+                      onClick={handleRefreshModelsCache}
+                      loading={refreshingModels}
+                      style={{ padding: 0, fontSize: 12 }}
+                    >
+                      {t('opencode.syncModels')}
+                    </Button>
+                  </Space>
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', borderLeft: '2px solid rgba(0,0,0,0.12)', paddingLeft: 8, marginTop: 4 }}>
+                {t('opencode.pageHint')}
+              </div>
+            </div>
+
+            <div
+              id="opencode-model-settings"
+              className={styles.opencodeSection}
+              data-opencode-sidebar-section="true"
+              data-sidebar-title={t('opencode.modelSettings.title')}
+              data-sidebar-order={1}
+              style={{ order: 1 }}
+            >
+              <div className={styles.modelCard}>
+                <Title level={5} className={styles.modelCardTitle}>
+                  <RobotOutlined style={{ marginRight: 8 }} />
+                  {t('opencode.modelSettings.title')}
+                </Title>
+                <div className={styles.modelCardContent}>
+                  <Space orientation="vertical" style={{ width: '100%' }} size={12}>
+                    <div>
+                      <div style={{ marginBottom: 4 }}>
+                        <Text strong>{t('opencode.modelSettings.modelLabel')}</Text>
+                      </div>
+                      <Select
+                        value={config?.model}
+                        onChange={(value) => handleModelChange('model', value)}
+                        placeholder={t('opencode.modelSettings.modelPlaceholder')}
+                        allowClear
+                        showSearch
+                        optionFilterProp="label"
+                        options={mainModelGroupedOptions}
+                        optionLabelProp="label"
+                        style={{ width: '100%' }}
+                        notFoundContent={t('opencode.modelSettings.noModels')}
+                      />
+                    </div>
+
+                    <div>
+                      <div style={{ marginBottom: 4 }}>
+                        <Text strong>{t('opencode.modelSettings.smallModelLabel')}</Text>
+                        <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+                          {t('opencode.modelSettings.smallModelHint')}
+                        </Text>
+                      </div>
+                      <Select
+                        value={config?.small_model}
+                        onChange={(value) => handleModelChange('small_model', value)}
+                        placeholder={t('opencode.modelSettings.smallModelPlaceholder')}
+                        allowClear
+                        showSearch
+                        optionFilterProp="label"
+                        options={smallModelGroupedOptions}
+                        optionLabelProp="label"
+                        style={{ width: '100%' }}
+                        notFoundContent={t('opencode.modelSettings.noModels')}
+                      />
+                    </div>
+
+                    {/* Oh My OpenCode Config Selector - show only if plugin is enabled */}
+                    {omoPluginEnabled && (
+                      <div>
+                        <div style={{ marginBottom: 4 }}>
+                          <Text strong>{t('opencode.ohMyOpenCode.configLabel')}</Text>
+                          <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+                            {t('opencode.ohMyOpenCode.configHint')}
+                          </Text>
+                        </div>
+                        <OhMyOpenCodeConfigSelector
+                          key={ohMyOpenCodeRefreshKey} // 当 key 改变时，组件会重新挂载并刷新
+                          disabled={false}
+                          onConfigSelected={() => {
+                            message.success(t('opencode.ohMyOpenCode.configSelected'));
+                            // 当在快速切换框中选择配置时，触发设置列表刷新
+                            setOhMyOpenCodeSettingsRefreshKey((prev) => prev + 1);
+                          }}
+                        />
+                      </div>
+                    )}
+
+                    {/* Oh My OpenCode Slim Config Selector - show only if plugin is enabled */}
+                    {omoSlimPluginEnabled && (
+                      <div>
+                        <div style={{ marginBottom: 4 }}>
+                          <Text strong>{t('opencode.ohMyOpenCode.slimConfigLabel')}</Text>
+                          <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+                            {t('opencode.ohMyOpenCode.slimConfigHint')}
+                          </Text>
+                        </div>
+                        <OhMyOpenCodeSlimConfigSelector
+                          disabled={false}
+                          onConfigSelected={() => {
+                            message.success(t('opencode.ohMyOpenCode.configSelected'));
+                          }}
+                        />
+                      </div>
                     )}
                   </Space>
                 </div>
-              </Spin>
-            ),
-          },
-        ]}
-      />
+              </div>
+            </div>
 
-      <GlobalPromptSettings
-        translationKeyPrefix="opencode.prompt"
-        service={openCodePromptApi}
-        collapseKey="opencode-prompt"
-        refreshKey={openCodeConfigRefreshKey}
-        onUpdated={() => {
-          loadConfig();
-          incrementOpenCodeConfigRefresh();
-        }}
-      />
+            <div
+              id="opencode-plugin-configuration"
+              className={styles.opencodeSection}
+              data-opencode-sidebar-section="true"
+              data-sidebar-title={t('opencode.plugin.title')}
+              data-sidebar-order={4}
+              style={{ order: 4 }}
+            >
+              <PluginSettings
+                key={`opencode-plugin-settings-${pluginExpandNonce}`}
+                plugins={config?.plugin || []}
+                onChange={handlePluginChange}
+                defaultCollapsed={pluginExpandNonce === 0}
+              />
+            </div>
 
-      {/* Official Auth Providers Section - only show if there are standalone providers */}
-      {authProvidersData && authProvidersData.standaloneProviders.length > 0 && (
-        <Collapse
-          className={styles.collapseCard}
-          activeKey={officialProvidersCollapsed ? [] : ['official-providers']}
-          onChange={(keys) => setOfficialProvidersCollapsed(!keys.includes('official-providers'))}
-          items={[
-            {
-              key: 'official-providers',
-              label: (
-                <Space size={8}>
-                  <Text strong><SafetyCertificateOutlined style={{ marginRight: 8 }} />{t('opencode.official.title')}</Text>
-                  <Tooltip title={t('opencode.official.openConfigHint')}>
-                    <Button
-                      type="link"
-                      size="small"
-                      icon={<FileOutlined />}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleOpenAuthConfig();
-                      }}
-                      style={{ padding: 0, height: 'auto' }}
-                    >
-                      auth.json
-                    </Button>
-                  </Tooltip>
-                </Space>
-              ),
-              children: (
-                <div>
-                  <div style={{ marginBottom: 12 }}>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      {t('opencode.official.description')}
-                    </Text>
-                  </div>
-                  {authProvidersData.standaloneProviders.map((provider) => (
-                    <OfficialProviderCard
-                      key={provider.id}
-                      id={provider.id}
-                      name={provider.name}
-                      models={provider.models}
-                      i18nPrefix="opencode"
-                    />
-                  ))}
-                </div>
-              ),
-            },
-          ]}
-        />
-      )}
+            {(omoPluginEnabled || omoConfigs.length > 0) && (
+              <div
+                id="opencode-omo-configuration"
+                className={styles.opencodeSection}
+                data-opencode-sidebar-section="true"
+                data-sidebar-title={t('opencode.ohMyOpenCode.title')}
+                data-sidebar-order={6}
+                style={{ order: 6 }}
+              >
+                <OhMyOpenCodeSettings
+                  key={`opencode-omo-settings-${ohMyOpenCodeSettingsRefreshKey}-${omoSettingsExpandNonce}`}
+                  modelOptions={omoModelGroupedOptions}
+                  modelVariantsMap={modelVariantsMap}
+                  disabled={!omoPluginEnabled}
+                  onConfigApplied={() => {
+                    // 当配置被应用时，触发 Selector 刷新以更新选中状态
+                    setOhMyOpenCodeRefreshKey((prev) => prev + 1);
+                  }}
+                  onConfigUpdated={() => {
+                    // 当配置被创建/更新/删除时，触发 Selector 刷新
+                    setOhMyOpenCodeRefreshKey((prev) => prev + 1);
+                  }}
+                />
+              </div>
+            )}
 
-      <Collapse
-        className={styles.collapseCard}
-        activeKey={otherConfigCollapsed ? [] : ['other']}
-        onChange={(keys) => setOtherConfigCollapsed(!keys.includes('other'))}
-        items={[
-          {
-            key: 'other',
-            label: <Text strong><ToolOutlined style={{ marginRight: 8 }} />{t('opencode.otherConfig.title')}</Text>,
-            children: (
-              <div>
-                <Form.Item
-                  help={
-                    <span>
-                      <Text type="secondary">{t('opencode.otherConfig.hint')}，</Text>
-                      <span style={{ color: '#1677ff' }}>
-                        {t('opencode.otherConfig.autoSaveHint')}
-                      </span>
-                    </span>
-                  }
-                  style={{ marginBottom: 0 }}
-                >
-                  <JsonEditor
-                    value={otherConfigFields}
-                    onChange={handleOtherConfigChange}
-                    onBlur={handleOtherConfigBlur}
-                    height={300}
-                    minHeight={200}
-                    maxHeight={500}
-                    resizable
-                    mode="text"
-                    placeholder={`{
+            {(omoSlimPluginEnabled || omoSlimConfigs.length > 0) && (
+              <div
+                id="opencode-omo-slim-configuration"
+                className={styles.opencodeSection}
+                data-opencode-sidebar-section="true"
+                data-sidebar-title={t('opencode.ohMyOpenCodeSlim.title')}
+                data-sidebar-order={7}
+                style={{ order: 7 }}
+              >
+                <OhMyOpenCodeSlimSettings
+                  key={`opencode-omo-slim-settings-${ohMyOpenCodeSettingsRefreshKey}-${omoSlimSettingsExpandNonce}`}
+                  modelOptions={omoModelGroupedOptions}
+                  modelVariantsMap={modelVariantsMap}
+                  disabled={!omoSlimPluginEnabled}
+                  onConfigApplied={() => {
+                    message.success(t('opencode.ohMyOpenCode.configSelected'));
+                  }}
+                  onConfigUpdated={() => {
+                    // 配置更新后刷新
+                    loadConfig();
+                  }}
+                />
+              </div>
+            )}
+
+
+            <div
+              id="opencode-providers"
+              className={styles.opencodeSection}
+              data-opencode-sidebar-section="true"
+              data-sidebar-title={t('opencode.provider.title')}
+              data-sidebar-order={2}
+              style={{ order: 2 }}
+            >
+              <Collapse
+                className={styles.collapseCard}
+                activeKey={providerListCollapsed ? [] : ['providers']}
+                onChange={(keys) => setProviderListCollapsed(!keys.includes('providers'))}
+                items={[
+                  {
+                    key: 'providers',
+                    label: (
+                      <Text strong><DatabaseOutlined style={{ marginRight: 8 }} />{t('opencode.provider.title')}</Text>
+                    ),
+                    extra: (
+                      <Button
+                        type="link"
+                        size="small"
+                        style={{ fontSize: 12 }}
+                        icon={<PlusOutlined />}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleAddProvider();
+                        }}
+                      >
+                        {t('opencode.addProvider')}
+                      </Button>
+                    ),
+                    children: (
+                      <Spin spinning={loading}>
+                        {providerEntries.length === 0 ? (
+                          <Empty description={t('opencode.emptyText')} style={{ marginTop: 40 }} />
+                        ) : (
+                          <DndContext
+                            sensors={sensors}
+                            collisionDetection={closestCenter}
+                            modifiers={[restrictToVerticalAxis]}
+                            onDragEnd={handleProviderDragEnd}
+                          >
+                            <SortableContext
+                              items={providerEntries.map(([id]) => id)}
+                              strategy={verticalListSortingStrategy}
+                            >
+                              {providerEntries.map(([providerId, provider]) => {
+                                const providerNpm = provider.npm || '@ai-sdk/openai-compatible';
+                                const isConnectivitySupported = SUPPORTED_PROVIDER_NPMS.has(providerNpm);
+                                const providerBaseUrl = provider.options?.baseURL?.trim() || '';
+                                const providerApiKey = provider.options?.apiKey?.trim() || '';
+                                const isProviderAuthReady = Boolean(providerBaseUrl && providerApiKey);
+                                const connectivityTooltip = !isConnectivitySupported
+                                  ? t('opencode.connectivity.unsupportedNpm', { npm: providerNpm })
+                                  : !isProviderAuthReady
+                                    ? t('opencode.provider.completeUrlAndKey')
+                                    : '';
+                                const fetchModelsTooltip = !isProviderAuthReady
+                                  ? t('opencode.provider.completeUrlAndKey')
+                                  : '';
+                                return (
+                                  <ProviderCard
+                                    key={providerId}
+                                    provider={toProviderDisplayData(providerId, provider)}
+                                    models={provider.models ? Object.entries(provider.models).map(([modelId, model]) =>
+                                      toModelDisplayData(modelId, model)
+                                    ) : []}
+                                    officialModels={authProvidersData?.mergedModels?.[providerId]?.map((m): OfficialModelDisplayData => ({
+                                      id: m.id,
+                                      name: m.name,
+                                      isFree: m.isFree,
+                                      context: m.context,
+                                      output: m.output,
+                                      status: m.status,
+                                    }))}
+                                    draggable
+                                    sortableId={providerId}
+                                    onEdit={() => handleEditProvider(providerId)}
+                                    onCopy={() => handleCopyProvider(providerId)}
+                                    onDelete={() => handleDeleteProvider(providerId)}
+                                    isDisabled={disabledProviderIds.has(providerId)}
+                                    onToggleDisabled={() => handleToggleProviderDisabled(providerId)}
+                                    extraActions={
+                                      <Space size={0}>
+                                        <Tooltip title={connectivityTooltip}>
+                                          <span>
+                                            <Button
+                                              size="small"
+                                              type="text"
+                                              style={{ fontSize: 12 }}
+                                              onClick={() => handleOpenConnectivityTest(providerId)}
+                                              disabled={!isConnectivitySupported || !isProviderAuthReady}
+                                            >
+                                              <ApiOutlined style={{ marginRight: 4 }} />
+                                              {t('opencode.connectivity.button')}
+                                            </Button>
+                                          </span>
+                                        </Tooltip>
+                                        <Tooltip title={fetchModelsTooltip}>
+                                          <span>
+                                            <Button
+                                              size="small"
+                                              type="text"
+                                              style={{ fontSize: 12 }}
+                                              onClick={() => handleOpenFetchModels(providerId)}
+                                              disabled={!isProviderAuthReady}
+                                            >
+                                              <CloudDownloadOutlined style={{ marginRight: 4 }} />
+                                              {t('opencode.fetchModels.button')}
+                                            </Button>
+                                          </span>
+                                        </Tooltip>
+                                      </Space>
+                                    }
+
+                                    onAddModel={() => handleAddModel(providerId)}
+                                    onEditModel={(modelId) => handleEditModel(providerId, modelId)}
+                                    onCopyModel={(modelId) => handleCopyModel(providerId, modelId)}
+                                    onDeleteModel={(modelId) => handleDeleteModel(providerId, modelId)}
+                                    modelsDraggable
+                                    onReorderModels={(modelIds) => handleReorderModels(providerId, modelIds)}
+                                    i18nPrefix="opencode"
+                                  />
+                                );
+                              })}
+                            </SortableContext>
+                          </DndContext>
+                        )}
+                        <div style={{ marginTop: 12 }}>
+                          <Space wrap>
+                            <Button
+                              type="dashed"
+                              icon={<ImportOutlined />}
+                              onClick={() => setImportModalOpen(true)}
+                            >
+                              {t('opencode.provider.importFavorite')}
+                            </Button>
+                            {allApiHubAvailable && (
+                              <Button
+                                type="dashed"
+                                icon={<AllApiHubIcon />}
+                                onClick={() => setAllApiHubImportModalOpen(true)}
+                              >
+                                {t('opencode.provider.importAllApiHub')}
+                              </Button>
+                            )}
+                          </Space>
+                        </div>
+                      </Spin>
+                    ),
+                  },
+                ]}
+              />
+            </div>
+
+            <div
+              id="opencode-global-prompt"
+              className={styles.opencodeSection}
+              data-opencode-sidebar-section="true"
+              data-sidebar-title={t('opencode.prompt.title')}
+              data-sidebar-order={5}
+              style={{ order: 5 }}
+            >
+              <GlobalPromptSettings
+                key={`opencode-global-prompt-${globalPromptExpandNonce}`}
+                translationKeyPrefix="opencode.prompt"
+                service={openCodePromptApi}
+                collapseKey="opencode-prompt"
+                refreshKey={openCodeConfigRefreshKey}
+                defaultExpanded={globalPromptExpandNonce > 0}
+                onUpdated={() => {
+                  loadConfig();
+                  incrementOpenCodeConfigRefresh();
+                }}
+              />
+            </div>
+
+            <div
+              id="opencode-official-auth-channels"
+              className={styles.opencodeSection}
+              data-opencode-sidebar-section="true"
+              data-sidebar-title={t('opencode.official.title')}
+              data-sidebar-order={3}
+              style={{ order: 3 }}
+            >
+              <Collapse
+                className={styles.collapseCard}
+                activeKey={officialProvidersCollapsed ? [] : ['official-providers']}
+                onChange={(keys) => setOfficialProvidersCollapsed(!keys.includes('official-providers'))}
+                items={[
+                  {
+                    key: 'official-providers',
+                    label: (
+                      <Space size={8}>
+                        <Text strong>
+                          <SafetyCertificateOutlined style={{ marginRight: 8 }} />
+                          {t('opencode.official.title')}
+                        </Text>
+                        <Tooltip title={t('opencode.official.openConfigHint')}>
+                          <Button
+                            type="link"
+                            size="small"
+                            icon={<FileOutlined />}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenAuthConfig();
+                            }}
+                            style={{ padding: 0, height: 'auto' }}
+                          >
+                            auth.json
+                          </Button>
+                        </Tooltip>
+                      </Space>
+                    ),
+                    children: (
+                      <div>
+                        <div style={{ marginBottom: 12 }}>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            {t('opencode.official.description')}
+                          </Text>
+                        </div>
+                        {authProvidersData ? (
+                          authProvidersData.standaloneProviders.length > 0 ? (
+                            authProvidersData.standaloneProviders.map((provider) => (
+                              <OfficialProviderCard
+                                key={provider.id}
+                                id={provider.id}
+                                name={provider.name}
+                                models={provider.models}
+                                i18nPrefix="opencode"
+                                isDisabled={disabledProviderIds.has(provider.id)}
+                                onToggleDisabled={() => handleToggleProviderDisabled(provider.id)}
+                              />
+                            ))
+                          ) : (
+                            <Empty description={t('opencode.official.noModels')} style={{ marginTop: 40 }} />
+                          )
+                        ) : (
+                          <Spin spinning />
+                        )}
+                      </div>
+                    ),
+                  },
+                ]}
+              />
+            </div>
+
+            <div
+              id="opencode-other-configuration"
+              className={styles.opencodeSection}
+              data-opencode-sidebar-section="true"
+              data-sidebar-title={t('opencode.otherConfig.title')}
+              data-sidebar-order={8}
+              style={{ order: 8 }}
+            >
+              <Collapse
+                className={styles.collapseCard}
+                activeKey={otherConfigCollapsed ? [] : ['other']}
+                onChange={(keys) => setOtherConfigCollapsed(!keys.includes('other'))}
+                items={[
+                  {
+                    key: 'other',
+                    label: <Text strong><ToolOutlined style={{ marginRight: 8 }} />{t('opencode.otherConfig.title')}</Text>,
+                    children: (
+                      <div>
+                        <Form.Item
+                          help={
+                            <span>
+                              <Text type="secondary">{t('opencode.otherConfig.hint')}，</Text>
+                              <span style={{ color: '#1677ff' }}>
+                                {t('opencode.otherConfig.autoSaveHint')}
+                              </span>
+                            </span>
+                          }
+                          style={{ marginBottom: 0 }}
+                        >
+                          <JsonEditor
+                            value={otherConfigFields}
+                            onChange={handleOtherConfigChange}
+                            onBlur={handleOtherConfigBlur}
+                            height={300}
+                            minHeight={200}
+                            maxHeight={500}
+                            resizable
+                            mode="text"
+                            placeholder={`{
     "permission": "allow",
     "autoupdate": true
 }`}
-                  />
-                </Form.Item>
-              </div>
-            ),
-          },
-        ]}
-      />
+                          />
+                        </Form.Item>
+                      </div>
+                    ),
+                  },
+                ]}
+              />
+            </div>
 
-      <ProviderFormModal
-        open={providerModalOpen}
-        isEdit={!!currentProviderId}
-        initialValues={providerInitialValues}
-        existingIds={currentProviderId ? [] : existingProviderIds}
-        apiKeyRequired={false}
-        onCancel={() => {
-          setProviderModalOpen(false);
-          setProviderInitialValues(undefined);
-        }}
-        onSuccess={handleProviderSuccess}
-        onDuplicateId={handleProviderDuplicateId}
-        i18nPrefix="opencode"
-        headersOutputFormat="object"
-        showOpenCodeAdvanced={true}
-        modelOptions={providerFilterOptions}
-      />
+            <ProviderFormModal
+              open={providerModalOpen}
+              isEdit={!!currentProviderId}
+              initialValues={providerInitialValues}
+              existingIds={currentProviderId ? [] : existingProviderIds}
+              apiKeyRequired={false}
+              onCancel={() => {
+                setProviderModalOpen(false);
+                setProviderInitialValues(undefined);
+              }}
+              onSuccess={handleProviderSuccess}
+              onDuplicateId={handleProviderDuplicateId}
+              i18nPrefix="opencode"
+              headersOutputFormat="object"
+              showOpenCodeAdvanced={true}
+              modelOptions={providerFilterOptions}
+            />
 
-      <ModelFormModal
-        open={modelModalOpen}
-        isEdit={!!currentModelId}
-        initialValues={modelInitialValues}
-        existingIds={currentModelId ? [] : existingModelIds}
-        showOptions
-        showVariants={true}
-        showModalities={true}
-        limitRequired={false}
-        nameRequired={false}
-        npmType={currentModelProviderId && config?.provider[currentModelProviderId]?.npm || '@ai-sdk/openai-compatible'}
-        onCancel={() => {
-          setModelModalOpen(false);
-          setModelInitialValues(undefined);
-        }}
-        onSuccess={handleModelSuccess}
-        onDuplicateId={handleModelDuplicateId}
-        i18nPrefix="opencode"
-      />
+            <ModelFormModal
+              open={modelModalOpen}
+              isEdit={!!currentModelId}
+              initialValues={modelInitialValues}
+              existingIds={currentModelId ? [] : existingModelIds}
+              showOptions
+              showVariants={true}
+              showModalities={true}
+              limitRequired={false}
+              nameRequired={false}
+              npmType={currentModelProviderId && config?.provider[currentModelProviderId]?.npm || '@ai-sdk/openai-compatible'}
+              onCancel={() => {
+                setModelModalOpen(false);
+                setModelInitialValues(undefined);
+              }}
+              onSuccess={handleModelSuccess}
+              onDuplicateId={handleModelDuplicateId}
+              i18nPrefix="opencode"
+            />
 
-      <ConfigPathModal
-        open={pathModalOpen}
-        currentPathInfo={configPathInfo}
-        onCancel={() => setPathModalOpen(false)}
-        onSuccess={handlePathModalSuccess}
-      />
+            <ConfigPathModal
+              open={pathModalOpen}
+              currentPathInfo={configPathInfo}
+              onCancel={() => setPathModalOpen(false)}
+              onSuccess={handlePathModalSuccess}
+            />
 
-      {fetchModelsProviderInfo && (
-        <FetchModelsModal
-          open={fetchModelsModalOpen}
-          providerName={fetchModelsProviderInfo.name}
-          baseUrl={fetchModelsProviderInfo.baseUrl}
-          apiKey={fetchModelsProviderInfo.apiKey}
-          headers={fetchModelsProviderInfo.headers}
-          sdkType={fetchModelsProviderInfo.sdkName}
-          existingModelIds={fetchModelsProviderInfo.existingModelIds}
-          onCancel={() => setFetchModelsModalOpen(false)}
-          onSuccess={handleFetchModelsSuccess}
-        />
-      )}
+            {fetchModelsProviderInfo && (
+              <FetchModelsModal
+                open={fetchModelsModalOpen}
+                providerName={fetchModelsProviderInfo.name}
+                baseUrl={fetchModelsProviderInfo.baseUrl}
+                apiKey={fetchModelsProviderInfo.apiKey}
+                headers={fetchModelsProviderInfo.headers}
+                sdkType={fetchModelsProviderInfo.sdkName}
+                existingModelIds={fetchModelsProviderInfo.existingModelIds}
+                onCancel={() => setFetchModelsModalOpen(false)}
+                onSuccess={handleFetchModelsSuccess}
+              />
+            )}
 
-      <ImportProviderModal
-        open={importModalOpen}
-        onClose={() => setImportModalOpen(false)}
-        onImport={handleImportProviders}
-        existingProviderIds={existingProviderIds}
-      />
+            <ImportProviderModal
+              open={importModalOpen}
+              onClose={() => setImportModalOpen(false)}
+              onImport={handleImportProviders}
+              existingProviderIds={existingProviderIds}
+            />
 
-      {allApiHubAvailable && (
-        <ImportFromAllApiHubModal
-          open={allApiHubImportModalOpen}
-          onClose={() => setAllApiHubImportModalOpen(false)}
-          onImport={handleImportAllApiHubProviders}
-          existingProviderIds={existingProviderIds}
-        />
-      )}
+            {allApiHubAvailable && (
+              <ImportFromAllApiHubModal
+                open={allApiHubImportModalOpen}
+                onClose={() => setAllApiHubImportModalOpen(false)}
+                onImport={handleImportAllApiHubProviders}
+                existingProviderIds={existingProviderIds}
+              />
+            )}
 
-      {connectivityProviderInfo && (
-        <ConnectivityTestModal
-          open={connectivityModalOpen}
-          onCancel={() => setConnectivityModalOpen(false)}
-          providerId={connectivityProviderId}
-          providerName={connectivityProviderInfo.name}
-          providerConfig={connectivityProviderInfo.config}
-          modelIds={connectivityProviderInfo.modelIds}
-          diagnostics={connectivityProviderInfo.diagnostics}
-          onSaveDiagnostics={handleSaveDiagnostics}
-          onRemoveModels={handleRemoveModels}
-        />
-      )}
+            {connectivityProviderInfo && (
+              <ConnectivityTestModal
+                open={connectivityModalOpen}
+                onCancel={() => setConnectivityModalOpen(false)}
+                providerId={connectivityProviderId}
+                providerName={connectivityProviderInfo.name}
+                providerConfig={connectivityProviderInfo.config}
+                modelIds={connectivityProviderInfo.modelIds}
+                diagnostics={connectivityProviderInfo.diagnostics}
+                onSaveDiagnostics={handleSaveDiagnostics}
+                onRemoveModels={handleRemoveModels}
+              />
+            )}
 
-      {/* Preview Modal */}
-      <JsonPreviewModal
-        open={previewModalOpen}
-        onClose={() => setPreviewModalOpen(false)}
-        title={t('opencode.preview.title')}
-        data={previewData}
-      />
-
-        </>
+            {/* Preview Modal */}
+            <JsonPreviewModal
+              open={previewModalOpen}
+              onClose={() => setPreviewModalOpen(false)}
+              title={t('opencode.preview.title')}
+              data={previewData}
+            />
+          </div>
+        </SectionSidebarLayout>
       )}
     </div>
   );
