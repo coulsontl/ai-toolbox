@@ -29,6 +29,7 @@ function npmToApi(npm?: string): string | undefined {
     case '@ai-sdk/google':
       return 'google-generative-ai';
     case '@ai-sdk/openai':
+      return 'openai-responses';
     case '@ai-sdk/openai-compatible':
       return 'openai-completions';
     default:

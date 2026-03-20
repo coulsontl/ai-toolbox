@@ -93,6 +93,7 @@ import styles from './OpenClawPage.module.less';
 const { Title, Text, Link } = Typography;
 
 const OPENAI_COMPATIBLE_NPM = '@ai-sdk/openai-compatible';
+const OPENAI_RESPONSES_NPM = '@ai-sdk/openai';
 
 /**
  * Map OpenClaw `api` protocol (+ optional baseUrl hint) to OpenCode `npm` SDK name.
@@ -100,6 +101,8 @@ const OPENAI_COMPATIBLE_NPM = '@ai-sdk/openai-compatible';
  */
 const apiToNpm = (api?: string, baseUrl?: string): string => {
   // Explicit protocol match
+  if (api === 'openai-completions') return OPENAI_COMPATIBLE_NPM;
+  if (api === 'openai-responses') return OPENAI_RESPONSES_NPM;
   if (api === 'anthropic-messages') return '@ai-sdk/anthropic';
   if (api === 'google-generative-ai') return '@ai-sdk/google';
 

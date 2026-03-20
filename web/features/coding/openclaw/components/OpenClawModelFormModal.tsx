@@ -41,7 +41,7 @@ const OUTPUT_LIMIT_OPTIONS = [
 /** Map OpenClaw API protocol to npm SDK type for preset models lookup */
 const API_TO_NPM: Record<string, string> = {
   'openai-completions': '@ai-sdk/openai-compatible',
-  'openai-responses': '@ai-sdk/openai-compatible',
+  'openai-responses': '@ai-sdk/openai',
   'anthropic-messages': '@ai-sdk/anthropic',
   'google-generative-ai': '@ai-sdk/google',
 };
@@ -331,7 +331,7 @@ const OpenClawModelFormModal: React.FC<Props> = ({
             style={{ width: '100%' }}
             filterOption={(inputValue, option) =>
               (option?.label.toLowerCase().includes(inputValue.toLowerCase()) ||
-              option?.value.includes(inputValue)) ?? false
+                option?.value.includes(inputValue)) ?? false
             }
           />
         </Form.Item>
@@ -350,7 +350,7 @@ const OpenClawModelFormModal: React.FC<Props> = ({
             style={{ width: '100%' }}
             filterOption={(inputValue, option) =>
               (option?.label.toLowerCase().includes(inputValue.toLowerCase()) ||
-              option?.value.includes(inputValue)) ?? false
+                option?.value.includes(inputValue)) ?? false
             }
           />
         </Form.Item>
