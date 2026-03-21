@@ -106,7 +106,8 @@ pub fn list_local_skills(source_path: &Path) -> Result<Vec<GitSkillCandidate>> {
     // Check root for SKILL.md
     let root_skill = source_path.join("SKILL.md");
     if root_skill.exists() {
-        let (name, desc) = parse_skill_md(&root_skill).unwrap_or(("root-skill".to_string(), None));
+        let (name, desc) =
+            parse_skill_md(&root_skill).unwrap_or(("root-skill".to_string(), None));
         out.push(GitSkillCandidate {
             name,
             description: desc,

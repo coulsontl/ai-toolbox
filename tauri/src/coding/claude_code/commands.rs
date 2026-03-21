@@ -622,10 +622,7 @@ pub async fn apply_config_to_file_public(
         );
     }
 
-    if let Some(reasoning) = provider_config
-        .get("reasoningModel")
-        .and_then(|v| v.as_str())
-    {
+    if let Some(reasoning) = provider_config.get("reasoningModel").and_then(|v| v.as_str()) {
         env.insert(
             "ANTHROPIC_REASONING_MODEL".to_string(),
             serde_json::json!(reasoning),

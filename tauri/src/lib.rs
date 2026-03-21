@@ -26,7 +26,6 @@ pub mod http_client;
 pub mod settings;
 pub mod single_instance;
 pub mod tray;
-pub mod tray_cli_icons;
 pub mod update;
 
 // Re-export DbState for use in other modules
@@ -797,56 +796,19 @@ pub fn run() {
             }
             info!("系统托盘创建成功");
 
-            tray::spawn_tray_os_appearance_watcher(app_handle.clone());
-
-            // Refresh tray on config / OpenClaw / skills events. Tray-originated payloads defer
-            // refresh so the native popup can close before `set_menu`, reducing flicker.
+            // Listen for config changes to refresh tray menu
             let app_handle_clone = app_handle.clone();
             tauri::async_runtime::spawn(async move {
-                let host = app_handle_clone.clone();
-
-                let h_cfg = host.clone();
-                let _l_cfg = host.listen("config-changed", move |event| {
-                    let app = h_cfg.clone();
-                    let defer_refresh =
-                        tray::tray_refresh_should_wait_for_menu_close(event.payload());
+                let value = app_handle_clone.clone();
+                let value_for_closure = value.clone();
+                let _listener = value.listen("config-changed", move |_event| {
+                    let app = value_for_closure.app_handle().clone();
                     let _ = tauri::async_runtime::spawn(async move {
-                        if defer_refresh {
-                            tray::spawn_refresh_tray_menus_after_submenu_close(app);
-                        } else {
-                            let _ = tray::refresh_tray_menus(&app).await;
-                        }
+                        let _ = tray::refresh_tray_menus(&app).await;
                     });
                 });
 
-                let h_oc = host.clone();
-                let _l_oc = host.listen("openclaw-config-changed", move |event| {
-                    let app = h_oc.clone();
-                    let defer_refresh =
-                        tray::tray_refresh_should_wait_for_menu_close(event.payload());
-                    let _ = tauri::async_runtime::spawn(async move {
-                        if defer_refresh {
-                            tray::spawn_refresh_tray_menus_after_submenu_close(app);
-                        } else {
-                            let _ = tray::refresh_tray_menus(&app).await;
-                        }
-                    });
-                });
-
-                let h_sk = host.clone();
-                let _l_sk = host.listen("skills-changed", move |event| {
-                    let app = h_sk.clone();
-                    let defer_refresh =
-                        tray::tray_refresh_should_wait_for_menu_close(event.payload());
-                    let _ = tauri::async_runtime::spawn(async move {
-                        if defer_refresh {
-                            tray::spawn_refresh_tray_menus_after_submenu_close(app);
-                        } else {
-                            let _ = tray::refresh_tray_menus(&app).await;
-                        }
-                    });
-                });
-
+                // Keep this async block alive forever to prevent listener from being dropped
                 std::future::pending::<()>().await;
             });
 
@@ -1379,15 +1341,6 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // macOS / Windows: system appearance (Linux uses tray poll; see `spawn_tray_os_appearance_watcher`).
-            if let tauri::WindowEvent::ThemeChanged(_) = event {
-                let app_handle = window.app_handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let _ = tray::refresh_tray_menus(&app_handle).await;
-                });
-                return;
-            }
-
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if APP_EXIT_REQUESTED.load(Ordering::SeqCst) {
                     return;

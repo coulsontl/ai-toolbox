@@ -3,21 +3,16 @@
 //! Provides system tray icon and menu with flat structure:
 //! - Open Main Window
 //! - ─── OpenCode ────
-//! - 主模型 / 小模型 (`Submenu` + transparent spacer icon = same column width as CLI icons)
+//! - 主模型 / 小模型 (with submenus for model selection)
 //! - ─── OpenCode 插件 ────
-//! - Plugin rows: `IconMenuItem` with ◉/◎ bitmaps in the native icon slot (no leading spaces)
-//! - ─── Oh My OpenCode / Oh My OpenCode Slim ───
-//! - Section headers: `omo.png` (same tier as OpenCode / Claude / Codex headers)
-//! - Config rows: ◉/◎ like other selection rows
+//! - Plugin options (with checkmarks for enabled plugins)
+//! - ─── Oh My OpenCode ───
+//! - Config options (with checkmarks for applied config)
 //! - ─── Claude Code ───
-//! - Provider rows: same
+//! - Provider options (with checkmarks for applied provider)
 //! - ─── MCP Servers ───
-//! - MCP tool rows: same in submenus
+//! - MCP server options (with submenus for tool selection)
 //! - Quit
-//!
-//! OS appearance: on **Linux**, [`spawn_tray_os_appearance_watcher`] polls `dark_light` (gated by
-//! theme `system`). On **macOS / Windows**, `WindowEvent::ThemeChanged` from Tauri/wry is used instead
-//! (see `lib.rs` `on_window_event`) — event-driven, no background poll.
 
 use crate::coding::claude_code::tray_support as claude_tray;
 use crate::coding::codex::tray_support as codex_tray;
@@ -27,12 +22,9 @@ use crate::coding::oh_my_opencode_slim::tray_support as omo_slim_tray;
 use crate::coding::open_claw::tray_support as openclaw_tray;
 use crate::coding::open_code::tray_support as opencode_tray;
 use crate::coding::skills::tray_support as skills_tray;
-use crate::tray_cli_icons;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 use tauri::{
-    image::Image,
-    menu::{IconMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
     AppHandle, Manager, Runtime,
 };
@@ -79,9 +71,9 @@ fn tray_texts(language: &str) -> TrayTexts {
             openclaw_header: "OpenClaw",
             skills_header: "Skills",
             mcp_header: "MCP Servers",
-            no_config: "No configs",
-            no_model: "No models",
-            no_tools: "No tools",
+            no_config: "  No configs",
+            no_model: "  No models",
+            no_tools: "  No tools",
         }
     } else {
         TrayTexts {
@@ -99,102 +91,17 @@ fn tray_texts(language: &str) -> TrayTexts {
             openclaw_header: "OpenClaw",
             skills_header: "Skills",
             mcp_header: "MCP Servers",
-            no_config: "暂无配置",
-            no_model: "暂无模型",
-            no_tools: "暂无工具",
+            no_config: "  暂无配置",
+            no_model: "  暂无模型",
+            no_tools: "  暂无工具",
         }
     }
-}
-
-// ── Native icon column alignment (no space-padding) ───────────────────────────────
-//
-// CLI marks use 128×128 PNGs. `menu_spacer.png` matches that size so `Submenu::with_id_and_icon` /
-// `IconMenuItem` reserve the same width the OS uses for real icons. Root list: ◉/◎ bitmaps.
-// Popup submenus: selected → `menu_radio_on.png` (◉); unselected → `menu_spacer` (empty slot).
-// muda does not expose NSMenuItem.indentationLevel.
-
-#[inline]
-fn tray_menu_radio_icon(
-    icons: &tray_cli_icons::TrayMenuIcons,
-    selected: bool,
-    in_submenu_popup: bool,
-) -> Option<Image<'static>> {
-    if in_submenu_popup {
-        icons.menu_radio_icon_submenu(selected)
-    } else {
-        icons.menu_radio_icon(selected)
-    }
-}
-
-fn tray_spacer_icon_row<R: Runtime, I: Into<tauri::menu::MenuId>, S: AsRef<str>>(
-    app: &AppHandle<R>,
-    id: I,
-    title: S,
-    enabled: bool,
-) -> Result<IconMenuItem<R>, String> {
-    IconMenuItem::with_id(
-        app,
-        id,
-        title.as_ref(),
-        enabled,
-        tray_cli_icons::menu_spacer(),
-        None::<&str>,
-    )
-    .map_err(|e| e.to_string())
-}
-
-fn tray_radio_icon_row<R: Runtime, I: Into<tauri::menu::MenuId>, S: AsRef<str>>(
-    app: &AppHandle<R>,
-    icons: &tray_cli_icons::TrayMenuIcons,
-    id: I,
-    title: S,
-    selected: bool,
-    enabled: bool,
-    in_submenu_popup: bool,
-) -> Result<IconMenuItem<R>, String> {
-    IconMenuItem::with_id(
-        app,
-        id,
-        title.as_ref(),
-        enabled,
-        tray_menu_radio_icon(icons, selected, in_submenu_popup),
-        None::<&str>,
-    )
-    .map_err(|e| e.to_string())
-}
-
-fn tray_submenu_with_spacer<R: Runtime, I: Into<tauri::menu::MenuId>, S: AsRef<str>>(
-    app: &AppHandle<R>,
-    id: I,
-    title: S,
-) -> Result<Submenu<R>, String> {
-    Submenu::with_id_and_icon(app, id, title.as_ref(), true, tray_cli_icons::menu_spacer())
-        .map_err(|e| e.to_string())
-}
-
-/// Delay before rebuilding the tray menu after a tray-driven change, so the native popup can close first.
-const TRAY_MENU_POST_ACTION_DELAY_MS: u64 = 280;
-
-/// `true` when the event payload is JSON `"tray"` (change originated from the tray menu).
-pub fn tray_refresh_should_wait_for_menu_close(payload: &str) -> bool {
-    serde_json::from_str::<String>(payload).ok().as_deref() == Some("tray")
-}
-
-/// Schedules [`refresh_tray_menus`] after [`TRAY_MENU_POST_ACTION_DELAY_MS`] (avoids `set_menu` while the popup is dismissing).
-pub fn spawn_refresh_tray_menus_after_submenu_close<R: Runtime>(app: AppHandle<R>) {
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(TRAY_MENU_POST_ACTION_DELAY_MS)).await;
-        let _ = refresh_tray_menus(&app).await;
-    });
 }
 
 /// Prevents concurrent refresh_tray_menus execution
 static TRAY_REFRESHING: AtomicBool = AtomicBool::new(false);
 /// Signals that another refresh was requested during the current one
 static TRAY_REFRESH_PENDING: AtomicBool = AtomicBool::new(false);
-/// `true` when settings theme is `system` — OS watcher calls [`dark_light::detect`]; otherwise it
-/// sleeps longer and skips detection (Linux `detect()` hits D-Bus per call).
-static TRAY_THEME_FOLLOWS_OS: AtomicBool = AtomicBool::new(true);
 const TRAY_SHOW_MENU_ID: &str = "show";
 const TRAY_QUIT_MENU_ID: &str = "app_quit";
 
@@ -202,6 +109,9 @@ fn request_app_exit<R: Runtime>(app: &AppHandle<R>) {
     crate::APP_EXIT_REQUESTED.store(true, Ordering::SeqCst);
     app.exit(0);
 }
+
+#[cfg(target_os = "macos")]
+use tauri::image::Image;
 
 #[cfg(target_os = "macos")]
 fn macos_tray_icon() -> Option<Image<'static>> {
@@ -270,6 +180,8 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                     {
                         eprintln!("Failed to apply Oh My OpenCode config: {}", e);
                     }
+                    // Refresh tray menu to update checkmarks
+                    let _ = refresh_tray_menus(&app_handle).await;
                 });
             } else if event_id.starts_with("omo_slim_config_") {
                 let config_id = event_id
@@ -284,6 +196,8 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                     {
                         eprintln!("Failed to apply Oh My OpenCode Slim config: {}", e);
                     }
+                    // Refresh tray menu to update checkmarks
+                    let _ = refresh_tray_menus(&app_handle).await;
                 });
             } else if event_id.starts_with("claude_provider_") {
                 let provider_id = event_id
@@ -297,6 +211,8 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                     {
                         eprintln!("Failed to apply Claude provider: {}", e);
                     }
+                    // Refresh tray menu to update checkmarks
+                    let _ = refresh_tray_menus(&app_handle).await;
                 });
             } else if event_id.starts_with("claude_prompt_") {
                 let config_id = event_id.strip_prefix("claude_prompt_").unwrap().to_string();
@@ -307,6 +223,7 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                     {
                         eprintln!("Failed to apply Claude prompt config: {}", e);
                     }
+                    let _ = refresh_tray_menus(&app_handle).await;
                 });
             } else if event_id.starts_with("opencode_model_") {
                 // Parse: opencode_model_main|small_provider/model_id
@@ -322,6 +239,8 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                     {
                         eprintln!("Failed to apply OpenCode model: {}", e);
                     }
+                    // Refresh tray menu to update checkmarks
+                    let _ = refresh_tray_menus(&app_handle).await;
                 });
             } else if event_id.starts_with("opencode_plugin_") {
                 let plugin_name = event_id
@@ -335,6 +254,8 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                     {
                         eprintln!("Failed to apply OpenCode plugin: {}", e);
                     }
+                    // Refresh tray menu to update checkmarks
+                    let _ = refresh_tray_menus(&app_handle).await;
                 });
             } else if event_id.starts_with("opencode_prompt_") {
                 let config_id = event_id
@@ -348,6 +269,7 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                     {
                         eprintln!("Failed to apply OpenCode prompt config: {}", e);
                     }
+                    let _ = refresh_tray_menus(&app_handle).await;
                 });
             } else if event_id.starts_with("codex_provider_") {
                 let provider_id = event_id
@@ -361,6 +283,7 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                     {
                         eprintln!("Failed to apply Codex provider: {}", e);
                     }
+                    let _ = refresh_tray_menus(&app_handle).await;
                 });
             } else if event_id.starts_with("codex_prompt_") {
                 let config_id = event_id.strip_prefix("codex_prompt_").unwrap().to_string();
@@ -371,6 +294,7 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                     {
                         eprintln!("Failed to apply Codex prompt config: {}", e);
                     }
+                    let _ = refresh_tray_menus(&app_handle).await;
                 });
             } else if event_id.starts_with("openclaw_model_") {
                 let item_id = event_id
@@ -383,6 +307,7 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                     {
                         eprintln!("Failed to apply OpenClaw model: {}", e);
                     }
+                    let _ = refresh_tray_menus(&app_handle).await;
                 });
             } else if event_id.starts_with("skill_tool_") {
                 // Parse: skill_tool_{skill_id}\x01{tool_key}
@@ -398,6 +323,7 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                         {
                             eprintln!("Failed to toggle skill tool: {}", e);
                         }
+                        let _ = refresh_tray_menus(&app_handle).await;
                     });
                 }
             } else if event_id.starts_with("mcp_tool_") {
@@ -414,6 +340,7 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                         {
                             eprintln!("Failed to toggle MCP tool: {}", e);
                         }
+                        let _ = refresh_tray_menus(&app_handle).await;
                     });
                 }
             }
@@ -456,63 +383,6 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-/// **Linux only:** polls OS appearance and rebuilds the tray when it changes.
-///
-/// Tauri does not deliver [`tauri::WindowEvent::ThemeChanged`] on Linux, so we poll [`dark_light::detect`]
-/// instead. Each `detect()` may use D-Bus (freedesktop portal); polling is gated by
-/// [`TRAY_THEME_FOLLOWS_OS`] and uses longer sleeps when the app theme is not `system`.
-///
-/// On **macOS / Windows**, this is a no-op — use `WindowEvent::ThemeChanged` in `lib.rs`.
-#[cfg(target_os = "linux")]
-pub fn spawn_tray_os_appearance_watcher<R: Runtime>(app: AppHandle<R>) {
-    use dark_light::Mode;
-    use std::sync::Mutex;
-    use std::time::Duration;
-
-    const POLL_WHEN_SYSTEM_SECS: u64 = 5;
-    const POLL_WHEN_FORCED_SECS: u64 = 30;
-
-    static LAST_OS_APPEARANCE: Mutex<Option<Mode>> = Mutex::new(None);
-
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        loop {
-            let sleep_for = if TRAY_THEME_FOLLOWS_OS.load(Ordering::Relaxed) {
-                Duration::from_secs(POLL_WHEN_SYSTEM_SECS)
-            } else {
-                Duration::from_secs(POLL_WHEN_FORCED_SECS)
-            };
-            tokio::time::sleep(sleep_for).await;
-
-            if !TRAY_THEME_FOLLOWS_OS.load(Ordering::Relaxed) {
-                continue;
-            }
-
-            let now = dark_light::detect();
-            let should_refresh = {
-                let mut guard = LAST_OS_APPEARANCE.lock().unwrap_or_else(|e| e.into_inner());
-                match *guard {
-                    None => {
-                        *guard = Some(now);
-                        false
-                    }
-                    Some(prev) if prev != now => {
-                        *guard = Some(now);
-                        true
-                    }
-                    _ => false,
-                }
-            };
-            if should_refresh {
-                let _ = refresh_tray_menus(&app).await;
-            }
-        }
-    });
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn spawn_tray_os_appearance_watcher<R: Runtime>(_app: AppHandle<R>) {}
-
 /// Refresh tray menus with deduplication (coalescing pattern)
 pub async fn refresh_tray_menus<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     // If already refreshing, mark pending and return
@@ -538,30 +408,21 @@ pub async fn refresh_tray_menus<R: Runtime>(app: &AppHandle<R>) -> Result<(), St
 
 /// Refresh tray menus with flat structure
 async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    let (visible_tabs, texts, theme_for_icons) =
-        match crate::settings::commands::get_settings(app.state()).await {
-            Ok(settings) => (
-                settings.visible_tabs,
-                tray_texts(&settings.language),
-                settings.theme,
-            ),
-            Err(err) => {
-                log::warn!("Failed to read settings for tray visibility: {err}");
-                (
-                    vec![
-                        "opencode".to_string(),
-                        "claudecode".to_string(),
-                        "codex".to_string(),
-                        "openclaw".to_string(),
-                    ],
-                    tray_texts("zh-CN"),
-                    "system".to_string(),
-                )
-            }
-        };
-    TRAY_THEME_FOLLOWS_OS.store(theme_for_icons == "system", Ordering::Relaxed);
-
-    let icons = tray_cli_icons::TrayMenuIcons::new(&theme_for_icons);
+    let (visible_tabs, texts) = match crate::settings::commands::get_settings(app.state()).await {
+        Ok(settings) => (settings.visible_tabs, tray_texts(&settings.language)),
+        Err(err) => {
+            log::warn!("Failed to read settings for tray visibility: {err}");
+            (
+                vec![
+                    "opencode".to_string(),
+                    "claudecode".to_string(),
+                    "codex".to_string(),
+                    "openclaw".to_string(),
+                ],
+                tray_texts("zh-CN"),
+            )
+        }
+    };
 
     let is_tab_visible = |tab: &str| visible_tabs.iter().any(|item| item == tab);
 
@@ -730,12 +591,11 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     // OpenCode Model section (only if enabled)
     let opencode_model_header = if opencode_enabled {
         Some(
-            IconMenuItem::with_id(
+            MenuItem::with_id(
                 app,
                 "opencode_model_header",
                 texts.opencode_header,
-                true,
-                icons.opencode(),
+                false,
                 None::<&str>,
             )
             .map_err(|e| e.to_string())?,
@@ -745,13 +605,13 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     };
 
     let main_model_submenu = if opencode_enabled {
-        Some(build_model_submenu(app, &icons, &main_model_data, "main", texts).await?)
+        Some(build_model_submenu(app, &main_model_data, "main", texts).await?)
     } else {
         None
     };
 
     let small_model_submenu = if opencode_enabled {
-        Some(build_model_submenu(app, &icons, &small_model_data, "small", texts).await?)
+        Some(build_model_submenu(app, &small_model_data, "small", texts).await?)
     } else {
         None
     };
@@ -761,7 +621,6 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     let openclaw_submenu = if openclaw_has_items {
         Some(build_openclaw_model_submenu(
             app,
-            &icons,
             &openclaw_model_data,
             texts,
         )?)
@@ -772,12 +631,16 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     // OpenCode Plugin section (only if enabled)
     let opencode_plugin_header =
         if opencode_plugins_enabled && !opencode_plugin_data.items.is_empty() {
-            Some(tray_spacer_icon_row(
-                app,
-                "opencode_plugin_header",
-                &opencode_plugin_data.title,
-                false,
-            )?)
+            Some(
+                MenuItem::with_id(
+                    app,
+                    "opencode_plugin_header",
+                    &opencode_plugin_data.title,
+                    false,
+                    None::<&str>,
+                )
+                .map_err(|e| e.to_string())?,
+            )
         } else {
             None
         };
@@ -787,26 +650,23 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     if opencode_plugins_enabled && !opencode_plugin_data.items.is_empty() {
         for item in opencode_plugin_data.items {
             let item_id = format!("opencode_plugin_{}", item.id);
-            let menu_item: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(tray_radio_icon_row(
-                app,
-                &icons,
-                &item_id,
-                &item.display_name,
-                item.is_selected,
-                !item.is_disabled,
-                false,
-            )?);
+            let menu_item: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(
+                CheckMenuItem::with_id(
+                    app,
+                    &item_id,
+                    &item.display_name,
+                    !item.is_disabled, // enabled: 如果 is_disabled=true，则 enabled=false
+                    item.is_selected,  // checked: 是否已启用
+                    None::<&str>,
+                )
+                .map_err(|e| e.to_string())?,
+            );
             opencode_plugin_items.push(menu_item);
         }
     }
 
     let opencode_prompt_submenu = if opencode_enabled && !opencode_prompt_data.items.is_empty() {
-        Some(build_prompt_submenu(
-            app,
-            &icons,
-            &opencode_prompt_data,
-            texts,
-        )?)
+        Some(build_prompt_submenu(app, &opencode_prompt_data, texts)?)
     } else {
         None
     };
@@ -814,58 +674,12 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     // Skills section (only if enabled)
     let skills_has_items = skills_enabled && !skills_data.items.is_empty();
     let skills_header = if skills_has_items {
-        Some(tray_spacer_icon_row(
-            app,
-            "skills_header",
-            &skills_data.title,
-            false,
-        )?)
-    } else {
-        None
-    };
-
-    // Build Skills submenus - each skill gets a submenu (◉ = on, unselected = spacer)
-    let mut skills_submenus: Vec<Box<dyn tauri::menu::IsMenuItem<R>>> = Vec::new();
-    if skills_has_items {
-        for skill in skills_data.items {
-            let skill_submenu = build_skill_submenu(app, &icons, &skill, texts)?;
-            let boxed: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(skill_submenu);
-            skills_submenus.push(boxed);
-        }
-    }
-
-    // MCP section (only if enabled)
-    let mcp_has_items = mcp_enabled && !mcp_data.items.is_empty();
-    let mcp_header = if mcp_has_items {
-        Some(tray_spacer_icon_row(
-            app,
-            "mcp_header",
-            &mcp_data.title,
-            false,
-        )?)
-    } else {
-        None
-    };
-
-    // Build MCP submenus - each server gets a submenu (◉ = on, unselected = spacer)
-    let mut mcp_submenus: Vec<Box<dyn tauri::menu::IsMenuItem<R>>> = Vec::new();
-    if mcp_has_items {
-        for server in mcp_data.items {
-            let mcp_submenu = build_mcp_submenu(app, &icons, &server, texts)?;
-            let boxed: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(mcp_submenu);
-            mcp_submenus.push(boxed);
-        }
-    }
-
-    // Oh My OpenCode section (only if enabled)
-    let omo_header = if omo_enabled {
         Some(
-            IconMenuItem::with_id(
+            MenuItem::with_id(
                 app,
-                "omo_header",
-                &omo_data.title,
-                true,
-                icons.omo(),
+                "skills_header",
+                &skills_data.title,
+                false,
                 None::<&str>,
             )
             .map_err(|e| e.to_string())?,
@@ -874,28 +688,69 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
         None
     };
 
+    // Build Skills submenus - each skill gets a submenu with tools as CheckMenuItems
+    let mut skills_submenus: Vec<Box<dyn tauri::menu::IsMenuItem<R>>> = Vec::new();
+    if skills_has_items {
+        for skill in skills_data.items {
+            let skill_submenu = build_skill_submenu(app, &skill, texts)?;
+            let boxed: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(skill_submenu);
+            skills_submenus.push(boxed);
+        }
+    }
+
+    // MCP section (only if enabled)
+    let mcp_has_items = mcp_enabled && !mcp_data.items.is_empty();
+    let mcp_header = if mcp_has_items {
+        Some(
+            MenuItem::with_id(app, "mcp_header", &mcp_data.title, false, None::<&str>)
+                .map_err(|e| e.to_string())?,
+        )
+    } else {
+        None
+    };
+
+    // Build MCP submenus - each server gets a submenu with tools as CheckMenuItems
+    let mut mcp_submenus: Vec<Box<dyn tauri::menu::IsMenuItem<R>>> = Vec::new();
+    if mcp_has_items {
+        for server in mcp_data.items {
+            let mcp_submenu = build_mcp_submenu(app, &server, texts)?;
+            let boxed: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(mcp_submenu);
+            mcp_submenus.push(boxed);
+        }
+    }
+
+    // Oh My OpenCode section (only if enabled)
+    let omo_header = if omo_enabled {
+        Some(
+            MenuItem::with_id(app, "omo_header", &omo_data.title, false, None::<&str>)
+                .map_err(|e| e.to_string())?,
+        )
+    } else {
+        None
+    };
+
     // Build Oh My OpenCode items
     let mut omo_items: Vec<Box<dyn tauri::menu::IsMenuItem<R>>> = Vec::new();
     if omo_enabled && omo_data.items.is_empty() {
-        let empty_item: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(tray_spacer_icon_row(
-            app,
-            "omo_empty",
-            texts.no_config,
-            false,
-        )?);
+        let empty_item: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(
+            MenuItem::with_id(app, "omo_empty", texts.no_config, false, None::<&str>)
+                .map_err(|e| e.to_string())?,
+        );
         omo_items.push(empty_item);
     } else if omo_enabled {
         for item in omo_data.items {
             let item_id = format!("omo_config_{}", item.id);
-            let menu_item: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(tray_radio_icon_row(
-                app,
-                &icons,
-                &item_id,
-                &item.display_name,
-                item.is_selected,
-                !item.is_disabled,
-                false,
-            )?);
+            let menu_item: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(
+                CheckMenuItem::with_id(
+                    app,
+                    &item_id,
+                    &item.display_name,
+                    !item.is_disabled, // enabled: 如果 is_disabled=true，则 enabled=false
+                    item.is_selected,  // checked: 是否已应用
+                    None::<&str>,
+                )
+                .map_err(|e| e.to_string())?,
+            );
             omo_items.push(menu_item);
         }
     }
@@ -903,12 +758,11 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     // Oh My OpenCode Slim section (only if enabled)
     let omo_slim_header = if omo_slim_enabled {
         Some(
-            IconMenuItem::with_id(
+            MenuItem::with_id(
                 app,
                 "omo_slim_header",
                 &omo_slim_data.title,
-                true,
-                icons.omo(),
+                false,
                 None::<&str>,
             )
             .map_err(|e| e.to_string())?,
@@ -920,25 +774,25 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     // Build Oh My OpenCode Slim items
     let mut omo_slim_items: Vec<Box<dyn tauri::menu::IsMenuItem<R>>> = Vec::new();
     if omo_slim_enabled && omo_slim_data.items.is_empty() {
-        let empty_item: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(tray_spacer_icon_row(
-            app,
-            "omo_slim_empty",
-            texts.no_config,
-            false,
-        )?);
+        let empty_item: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(
+            MenuItem::with_id(app, "omo_slim_empty", texts.no_config, false, None::<&str>)
+                .map_err(|e| e.to_string())?,
+        );
         omo_slim_items.push(empty_item);
     } else if omo_slim_enabled {
         for item in omo_slim_data.items {
             let item_id = format!("omo_slim_config_{}", item.id);
-            let menu_item: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(tray_radio_icon_row(
-                app,
-                &icons,
-                &item_id,
-                &item.display_name,
-                item.is_selected,
-                !item.is_disabled,
-                false,
-            )?);
+            let menu_item: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(
+                CheckMenuItem::with_id(
+                    app,
+                    &item_id,
+                    &item.display_name,
+                    !item.is_disabled, // enabled: 如果 is_disabled=true，则 enabled=false
+                    item.is_selected,  // checked: 是否已应用
+                    None::<&str>,
+                )
+                .map_err(|e| e.to_string())?,
+            );
             omo_slim_items.push(menu_item);
         }
     }
@@ -953,7 +807,6 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     let claude_prompt_submenu = if claude_has_prompt_items {
         Some(build_named_prompt_submenu(
             app,
-            &icons,
             "claude",
             &claude_prompt_data,
             texts,
@@ -964,7 +817,6 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     let codex_prompt_submenu = if codex_has_prompt_items {
         Some(build_named_prompt_submenu(
             app,
-            &icons,
             "codex",
             &codex_prompt_data,
             texts,
@@ -976,12 +828,11 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     // Claude Code section (only if enabled and has items)
     let claude_header = if claude_has_section {
         Some(
-            IconMenuItem::with_id(
+            MenuItem::with_id(
                 app,
                 "claude_header",
                 &claude_data.title,
-                true,
-                icons.claude(),
+                false,
                 None::<&str>,
             )
             .map_err(|e| e.to_string())?,
@@ -995,30 +846,25 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     if claude_has_items {
         for item in claude_data.items {
             let item_id = format!("claude_provider_{}", item.id);
-            let menu_item: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(tray_radio_icon_row(
-                app,
-                &icons,
-                &item_id,
-                &item.display_name,
-                item.is_selected,
-                !item.is_disabled,
-                false,
-            )?);
+            let menu_item: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(
+                CheckMenuItem::with_id(
+                    app,
+                    &item_id,
+                    &item.display_name,
+                    !item.is_disabled, // enabled: 如果 is_disabled=true，则 enabled=false
+                    item.is_selected,  // checked: 是否已应用
+                    None::<&str>,
+                )
+                .map_err(|e| e.to_string())?,
+            );
             claude_items.push(menu_item);
         }
     }
 
     let codex_header = if codex_has_section {
         Some(
-            IconMenuItem::with_id(
-                app,
-                "codex_header",
-                &codex_data.title,
-                true,
-                icons.codex(),
-                None::<&str>,
-            )
-            .map_err(|e| e.to_string())?,
+            MenuItem::with_id(app, "codex_header", &codex_data.title, false, None::<&str>)
+                .map_err(|e| e.to_string())?,
         )
     } else {
         None
@@ -1029,15 +875,17 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     if codex_has_items {
         for item in codex_data.items {
             let item_id = format!("codex_provider_{}", item.id);
-            let menu_item: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(tray_radio_icon_row(
-                app,
-                &icons,
-                &item_id,
-                &item.display_name,
-                item.is_selected,
-                !item.is_disabled,
-                false,
-            )?);
+            let menu_item: Box<dyn tauri::menu::IsMenuItem<R>> = Box::new(
+                CheckMenuItem::with_id(
+                    app,
+                    &item_id,
+                    &item.display_name,
+                    !item.is_disabled,
+                    item.is_selected,
+                    None::<&str>,
+                )
+                .map_err(|e| e.to_string())?,
+            );
             codex_items.push(menu_item);
         }
     }
@@ -1045,12 +893,11 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     // OpenClaw section (only if enabled and has items)
     let openclaw_header = if openclaw_has_items {
         Some(
-            IconMenuItem::with_id(
+            MenuItem::with_id(
                 app,
                 "openclaw_header",
                 texts.openclaw_header,
-                true,
-                tray_cli_icons::openclaw(),
+                false,
                 None::<&str>,
             )
             .map_err(|e| e.to_string())?,
@@ -1154,23 +1001,28 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
 /// Build a model selection submenu from tray data
 async fn build_model_submenu<R: Runtime>(
     app: &AppHandle<R>,
-    icons: &tray_cli_icons::TrayMenuIcons,
     data: &opencode_tray::TrayModelData,
     model_type: &str, // "main" or "small"
     texts: TrayTexts,
 ) -> Result<Submenu<R>, String> {
     // Build title with current selection in parentheses
-    let inner_title = if data.current_display.is_empty() {
+    let title = if data.current_display.is_empty() {
         data.title.clone()
     } else {
         format!("{} ({})", data.title, data.current_display)
     };
     let submenu_id = format!("{}_submenu", data.title);
-    let submenu = tray_submenu_with_spacer(app, &submenu_id, &inner_title)?;
+    let submenu = Submenu::with_id(app, &submenu_id, &title, true).map_err(|e| e.to_string())?;
 
     if data.items.is_empty() {
-        let empty_item =
-            tray_spacer_icon_row(app, format!("{}_empty", data.title), texts.no_model, false)?;
+        let empty_item = MenuItem::with_id(
+            app,
+            &format!("{}_empty", data.title),
+            texts.no_model,
+            false,
+            None::<&str>,
+        )
+        .map_err(|e| e.to_string())?;
         submenu.append(&empty_item).map_err(|e| e.to_string())?;
     } else {
         // Group by provider so the tray menu is easier to scan.
@@ -1238,7 +1090,8 @@ async fn build_model_submenu<R: Runtime>(
             );
 
             let provider_submenu =
-                tray_submenu_with_spacer(app, &provider_submenu_id, &provider_label)?;
+                Submenu::with_id(app, &provider_submenu_id, &provider_label, true)
+                    .map_err(|e| e.to_string())?;
 
             for item in &items {
                 let item_id = format!("opencode_model_{}_{}", model_type, item.id);
@@ -1248,15 +1101,15 @@ async fn build_model_submenu<R: Runtime>(
                     .nth(1)
                     .unwrap_or(&item.display_name);
 
-                let menu_item = tray_radio_icon_row(
+                let menu_item = CheckMenuItem::with_id(
                     app,
-                    icons,
                     &item_id,
                     model_label,
+                    true,
                     item.is_selected,
-                    true,
-                    true,
-                )?;
+                    None::<&str>,
+                )
+                .map_err(|e| e.to_string())?;
 
                 provider_submenu
                     .append(&menu_item)
@@ -1274,33 +1127,39 @@ async fn build_model_submenu<R: Runtime>(
 
 fn build_prompt_submenu<R: Runtime>(
     app: &AppHandle<R>,
-    icons: &tray_cli_icons::TrayMenuIcons,
     data: &opencode_tray::TrayPromptData,
     texts: TrayTexts,
 ) -> Result<Submenu<R>, String> {
-    let inner_title = if data.current_display.is_empty() {
+    let title = if data.current_display.is_empty() {
         data.title.clone()
     } else {
         format!("{} ({})", data.title, data.current_display)
     };
-    let submenu = tray_submenu_with_spacer(app, "opencode_prompt_submenu", &inner_title)?;
+    let submenu = Submenu::with_id(app, "opencode_prompt_submenu", &title, true)
+        .map_err(|e| e.to_string())?;
 
     if data.items.is_empty() {
-        let empty_item =
-            tray_spacer_icon_row(app, "opencode_prompt_empty", texts.no_config, false)?;
+        let empty_item = MenuItem::with_id(
+            app,
+            "opencode_prompt_empty",
+            texts.no_config,
+            false,
+            None::<&str>,
+        )
+        .map_err(|e| e.to_string())?;
         submenu.append(&empty_item).map_err(|e| e.to_string())?;
     } else {
         for item in &data.items {
             let item_id = format!("opencode_prompt_{}", item.id);
-            let menu_item = tray_radio_icon_row(
+            let menu_item = CheckMenuItem::with_id(
                 app,
-                icons,
                 &item_id,
                 &item.display_name,
+                true,
                 item.is_selected,
-                true,
-                true,
-            )?;
+                None::<&str>,
+            )
+            .map_err(|e| e.to_string())?;
             submenu.append(&menu_item).map_err(|e| e.to_string())?;
         }
     }
@@ -1310,38 +1169,40 @@ fn build_prompt_submenu<R: Runtime>(
 
 fn build_named_prompt_submenu<R: Runtime>(
     app: &AppHandle<R>,
-    icons: &tray_cli_icons::TrayMenuIcons,
     prefix: &str,
     data: &impl NamedPromptTrayData,
     texts: TrayTexts,
 ) -> Result<Submenu<R>, String> {
-    let inner_title = if data.current_display().is_empty() {
+    let title = if data.current_display().is_empty() {
         data.title().to_string()
     } else {
         format!("{} ({})", data.title(), data.current_display())
     };
-    let submenu = tray_submenu_with_spacer(app, format!("{}_prompt_submenu", prefix), inner_title)?;
+    let submenu = Submenu::with_id(app, format!("{}_prompt_submenu", prefix), &title, true)
+        .map_err(|e| e.to_string())?;
 
     if data.items().is_empty() {
-        let empty_item = tray_spacer_icon_row(
+        let empty_item = MenuItem::with_id(
             app,
             format!("{}_prompt_empty", prefix),
             texts.no_config,
             false,
-        )?;
+            None::<&str>,
+        )
+        .map_err(|e| e.to_string())?;
         submenu.append(&empty_item).map_err(|e| e.to_string())?;
     } else {
         for item in data.items() {
             let item_id = format!("{}_prompt_{}", prefix, item.id());
-            let menu_item = tray_radio_icon_row(
+            let menu_item = CheckMenuItem::with_id(
                 app,
-                icons,
                 &item_id,
                 item.display_name(),
+                true,
                 item.is_selected(),
-                true,
-                true,
-            )?;
+                None::<&str>,
+            )
+            .map_err(|e| e.to_string())?;
             submenu.append(&menu_item).map_err(|e| e.to_string())?;
         }
     }
@@ -1423,36 +1284,38 @@ impl NamedPromptTrayData for codex_tray::TrayPromptData {
     }
 }
 
-/// Build a skill submenu (◉ when selected/synced, spacer when not — same as other popup submenus)
+/// Build a skill submenu with tool checkmarks
 fn build_skill_submenu<R: Runtime>(
     app: &AppHandle<R>,
-    icons: &tray_cli_icons::TrayMenuIcons,
     skill: &skills_tray::TraySkillItem,
     texts: TrayTexts,
 ) -> Result<Submenu<R>, String> {
     let submenu_id = format!("skill_{}", skill.id);
-    let submenu = tray_submenu_with_spacer(app, &submenu_id, &skill.display_name)?;
+    let submenu =
+        Submenu::with_id(app, &submenu_id, &skill.display_name, true).map_err(|e| e.to_string())?;
 
     if skill.tools.is_empty() {
-        let empty_item = tray_spacer_icon_row(
+        let empty_item = MenuItem::with_id(
             app,
-            format!("skill_{}_empty", skill.id),
+            &format!("skill_{}_empty", skill.id),
             texts.no_tools,
             false,
-        )?;
+            None::<&str>,
+        )
+        .map_err(|e| e.to_string())?;
         submenu.append(&empty_item).map_err(|e| e.to_string())?;
     } else {
         for tool in &skill.tools {
             let item_id = format!("skill_tool_{}\x01{}", skill.id, tool.tool_key);
-            let menu_item = tray_radio_icon_row(
+            let menu_item = CheckMenuItem::with_id(
                 app,
-                icons,
                 &item_id,
                 &tool.display_name,
-                tool.is_synced,
-                tool.is_installed,
-                true,
-            )?;
+                tool.is_installed, // enabled only if tool is installed
+                tool.is_synced,    // checked if synced
+                None::<&str>,
+            )
+            .map_err(|e| e.to_string())?;
             submenu.append(&menu_item).map_err(|e| e.to_string())?;
         }
     }
@@ -1460,36 +1323,38 @@ fn build_skill_submenu<R: Runtime>(
     Ok(submenu)
 }
 
-/// Build an MCP server submenu (◉ when enabled, spacer when not)
+/// Build an MCP server submenu with tool checkmarks
 fn build_mcp_submenu<R: Runtime>(
     app: &AppHandle<R>,
-    icons: &tray_cli_icons::TrayMenuIcons,
     server: &mcp_tray::TrayMcpServerItem,
     texts: TrayTexts,
 ) -> Result<Submenu<R>, String> {
     let submenu_id = format!("mcp_{}", server.id);
-    let submenu = tray_submenu_with_spacer(app, &submenu_id, &server.display_name)?;
+    let submenu = Submenu::with_id(app, &submenu_id, &server.display_name, true)
+        .map_err(|e| e.to_string())?;
 
     if server.tools.is_empty() {
-        let empty_item = tray_spacer_icon_row(
+        let empty_item = MenuItem::with_id(
             app,
-            format!("mcp_{}_empty", server.id),
+            &format!("mcp_{}_empty", server.id),
             texts.no_tools,
             false,
-        )?;
+            None::<&str>,
+        )
+        .map_err(|e| e.to_string())?;
         submenu.append(&empty_item).map_err(|e| e.to_string())?;
     } else {
         for tool in &server.tools {
             let item_id = format!("mcp_tool_{}\x01{}", server.id, tool.tool_key);
-            let menu_item = tray_radio_icon_row(
+            let menu_item = CheckMenuItem::with_id(
                 app,
-                icons,
                 &item_id,
                 &tool.display_name,
-                tool.is_enabled,
-                tool.is_installed,
-                true,
-            )?;
+                tool.is_installed, // enabled only if tool is installed
+                tool.is_enabled,   // checked if enabled
+                None::<&str>,
+            )
+            .map_err(|e| e.to_string())?;
             submenu.append(&menu_item).map_err(|e| e.to_string())?;
         }
     }
@@ -1500,19 +1365,26 @@ fn build_mcp_submenu<R: Runtime>(
 /// Build an OpenClaw model selection submenu
 fn build_openclaw_model_submenu<R: Runtime>(
     app: &AppHandle<R>,
-    icons: &tray_cli_icons::TrayMenuIcons,
     data: &openclaw_tray::TrayModelData,
     texts: TrayTexts,
 ) -> Result<Submenu<R>, String> {
-    let inner_title = if data.current_display.is_empty() {
+    let title = if data.current_display.is_empty() {
         data.title.clone()
     } else {
         format!("{} ({})", data.title, data.current_display)
     };
-    let submenu = tray_submenu_with_spacer(app, "openclaw_model_submenu", &inner_title)?;
+    let submenu =
+        Submenu::with_id(app, "openclaw_model_submenu", &title, true).map_err(|e| e.to_string())?;
 
     if data.items.is_empty() {
-        let empty_item = tray_spacer_icon_row(app, "openclaw_model_empty", texts.no_model, false)?;
+        let empty_item = MenuItem::with_id(
+            app,
+            "openclaw_model_empty",
+            texts.no_model,
+            false,
+            None::<&str>,
+        )
+        .map_err(|e| e.to_string())?;
         submenu.append(&empty_item).map_err(|e| e.to_string())?;
     } else {
         // Group by provider for better readability.
@@ -1572,7 +1444,8 @@ fn build_openclaw_model_submenu<R: Runtime>(
             let provider_submenu_id = format!("openclaw_provider_{}_submenu", safe_provider_id);
 
             let provider_submenu =
-                tray_submenu_with_spacer(app, &provider_submenu_id, &provider_label)?;
+                Submenu::with_id(app, &provider_submenu_id, &provider_label, true)
+                    .map_err(|e| e.to_string())?;
 
             for item in &items {
                 let item_id = format!("openclaw_model_{}", item.id);
@@ -1582,15 +1455,15 @@ fn build_openclaw_model_submenu<R: Runtime>(
                     .nth(1)
                     .unwrap_or(&item.display_name);
 
-                let menu_item = tray_radio_icon_row(
+                let menu_item = CheckMenuItem::with_id(
                     app,
-                    icons,
                     &item_id,
                     model_label,
+                    true,
                     item.is_selected,
-                    true,
-                    true,
-                )?;
+                    None::<&str>,
+                )
+                .map_err(|e| e.to_string())?;
 
                 provider_submenu
                     .append(&menu_item)

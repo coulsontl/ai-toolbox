@@ -1,4 +1,6 @@
-use super::types::{default_sidebar_hidden_by_page, AppSettings, S3Config, WebDAVConfig};
+use super::types::{
+    default_sidebar_hidden_by_page, AppSettings, S3Config, WebDAVConfig,
+};
 /**
  * Settings Adapter Layer
  *
@@ -129,10 +131,7 @@ fn get_s3(value: &Value) -> S3Config {
 fn get_sidebar_hidden_by_page(value: &Value) -> std::collections::HashMap<String, bool> {
     let mut sidebar_hidden = default_sidebar_hidden_by_page();
 
-    if let Some(sidebar_value) = value
-        .get("sidebar_hidden_by_page")
-        .and_then(|v| v.as_object())
-    {
+    if let Some(sidebar_value) = value.get("sidebar_hidden_by_page").and_then(|v| v.as_object()) {
         for page_key in ["opencode", "claudecode", "codex", "openclaw"] {
             let Some(page_value) = sidebar_value.get(page_key).and_then(|v| v.as_bool()) else {
                 continue;
@@ -142,10 +141,7 @@ fn get_sidebar_hidden_by_page(value: &Value) -> std::collections::HashMap<String
         return sidebar_hidden;
     }
 
-    let Some(legacy_sidebar_value) = value
-        .get("sidebar_visibility_by_page")
-        .and_then(|v| v.as_object())
-    else {
+    let Some(legacy_sidebar_value) = value.get("sidebar_visibility_by_page").and_then(|v| v.as_object()) else {
         return sidebar_hidden;
     };
 

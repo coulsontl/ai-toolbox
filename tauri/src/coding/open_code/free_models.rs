@@ -52,7 +52,9 @@ fn get_cache_file_path() -> Option<PathBuf> {
 
 /// Check if the cache file has been initialized (exists on disk)
 fn is_cache_initialized() -> bool {
-    get_cache_file_path().map(|p| p.exists()).unwrap_or(false)
+    get_cache_file_path()
+        .map(|p| p.exists())
+        .unwrap_or(false)
 }
 
 /// Get the cache file path as a String (for backup utilities)
@@ -201,9 +203,10 @@ fn trigger_background_refresh(state: &DbState) {
             let result = fetch_and_update_all_providers(&db_state).await;
             IS_REFRESHING.store(false, Ordering::SeqCst);
             match result {
-                Ok(count) => {
-                    log::info!("[Models Cache] Successfully refreshed {} providers", count)
-                }
+                Ok(count) => log::info!(
+                    "[Models Cache] Successfully refreshed {} providers",
+                    count
+                ),
                 Err(e) => log::warn!("[Models Cache] Failed to refresh providers: {}", e),
             }
         }

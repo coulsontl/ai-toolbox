@@ -231,9 +231,7 @@ pub async fn skills_install_local(
 
 #[tauri::command]
 #[allow(non_snake_case)]
-pub async fn skills_list_local_skills(
-    sourcePath: String,
-) -> Result<Vec<GitSkillCandidate>, String> {
+pub async fn skills_list_local_skills(sourcePath: String) -> Result<Vec<GitSkillCandidate>, String> {
     let source = std::path::Path::new(&sourcePath);
     list_local_skills(source).map_err(|e| format_error(e))
 }
