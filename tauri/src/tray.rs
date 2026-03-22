@@ -261,8 +261,8 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                 }
             } else if event_id == TRAY_QUIT_MENU_ID {
                 request_app_exit(app);
-            } else if event_id.starts_with("omo_config_") {
-                let config_id = event_id.strip_prefix("omo_config_").unwrap().to_string();
+            } else if let Some(config_id) = event_id.strip_prefix("omo_config_") {
+                let config_id = config_id.to_string();
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) =
@@ -271,11 +271,8 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                         eprintln!("Failed to apply Oh My OpenCode config: {}", e);
                     }
                 });
-            } else if event_id.starts_with("omo_slim_config_") {
-                let config_id = event_id
-                    .strip_prefix("omo_slim_config_")
-                    .unwrap()
-                    .to_string();
+            } else if let Some(config_id) = event_id.strip_prefix("omo_slim_config_") {
+                let config_id = config_id.to_string();
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) =
@@ -285,11 +282,8 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                         eprintln!("Failed to apply Oh My OpenCode Slim config: {}", e);
                     }
                 });
-            } else if event_id.starts_with("claude_provider_") {
-                let provider_id = event_id
-                    .strip_prefix("claude_provider_")
-                    .unwrap()
-                    .to_string();
+            } else if let Some(provider_id) = event_id.strip_prefix("claude_provider_") {
+                let provider_id = provider_id.to_string();
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) =
@@ -298,8 +292,8 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                         eprintln!("Failed to apply Claude provider: {}", e);
                     }
                 });
-            } else if event_id.starts_with("claude_prompt_") {
-                let config_id = event_id.strip_prefix("claude_prompt_").unwrap().to_string();
+            } else if let Some(config_id) = event_id.strip_prefix("claude_prompt_") {
+                let config_id = config_id.to_string();
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) =
@@ -308,26 +302,23 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                         eprintln!("Failed to apply Claude prompt config: {}", e);
                     }
                 });
-            } else if event_id.starts_with("opencode_model_") {
+            } else if let Some(remaining) = event_id.strip_prefix("opencode_model_") {
                 // Parse: opencode_model_main|small_provider/model_id
-                let remaining = event_id.strip_prefix("opencode_model_").unwrap();
-                let (model_type, item_id) = remaining.split_once('_').unwrap();
-                let model_type = model_type.to_string();
-                let item_id = item_id.to_string();
-                let app_handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Err(e) =
-                        opencode_tray::apply_opencode_model(&app_handle, &model_type, &item_id)
-                            .await
-                    {
-                        eprintln!("Failed to apply OpenCode model: {}", e);
-                    }
-                });
-            } else if event_id.starts_with("opencode_plugin_") {
-                let plugin_name = event_id
-                    .strip_prefix("opencode_plugin_")
-                    .unwrap()
-                    .to_string();
+                if let Some((model_type, item_id)) = remaining.split_once('_') {
+                    let model_type = model_type.to_string();
+                    let item_id = item_id.to_string();
+                    let app_handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) =
+                            opencode_tray::apply_opencode_model(&app_handle, &model_type, &item_id)
+                                .await
+                        {
+                            eprintln!("Failed to apply OpenCode model: {}", e);
+                        }
+                    });
+                }
+            } else if let Some(plugin_name) = event_id.strip_prefix("opencode_plugin_") {
+                let plugin_name = plugin_name.to_string();
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) =
@@ -336,11 +327,8 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                         eprintln!("Failed to apply OpenCode plugin: {}", e);
                     }
                 });
-            } else if event_id.starts_with("opencode_prompt_") {
-                let config_id = event_id
-                    .strip_prefix("opencode_prompt_")
-                    .unwrap()
-                    .to_string();
+            } else if let Some(config_id) = event_id.strip_prefix("opencode_prompt_") {
+                let config_id = config_id.to_string();
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) =
@@ -349,11 +337,8 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                         eprintln!("Failed to apply OpenCode prompt config: {}", e);
                     }
                 });
-            } else if event_id.starts_with("codex_provider_") {
-                let provider_id = event_id
-                    .strip_prefix("codex_provider_")
-                    .unwrap()
-                    .to_string();
+            } else if let Some(provider_id) = event_id.strip_prefix("codex_provider_") {
+                let provider_id = provider_id.to_string();
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) =
@@ -362,8 +347,8 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                         eprintln!("Failed to apply Codex provider: {}", e);
                     }
                 });
-            } else if event_id.starts_with("codex_prompt_") {
-                let config_id = event_id.strip_prefix("codex_prompt_").unwrap().to_string();
+            } else if let Some(config_id) = event_id.strip_prefix("codex_prompt_") {
+                let config_id = config_id.to_string();
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) =
@@ -372,11 +357,8 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                         eprintln!("Failed to apply Codex prompt config: {}", e);
                     }
                 });
-            } else if event_id.starts_with("openclaw_model_") {
-                let item_id = event_id
-                    .strip_prefix("openclaw_model_")
-                    .unwrap()
-                    .to_string();
+            } else if let Some(item_id) = event_id.strip_prefix("openclaw_model_") {
+                let item_id = item_id.to_string();
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = openclaw_tray::apply_openclaw_model(&app_handle, &item_id).await
@@ -384,9 +366,8 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                         eprintln!("Failed to apply OpenClaw model: {}", e);
                     }
                 });
-            } else if event_id.starts_with("skill_tool_") {
+            } else if let Some(remaining) = event_id.strip_prefix("skill_tool_") {
                 // Parse: skill_tool_{skill_id}\x01{tool_key}
-                let remaining = event_id.strip_prefix("skill_tool_").unwrap();
                 if let Some(sep_pos) = remaining.find('\x01') {
                     let skill_id = remaining[..sep_pos].to_string();
                     let tool_key = remaining[sep_pos + 1..].to_string();
@@ -400,9 +381,8 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                         }
                     });
                 }
-            } else if event_id.starts_with("mcp_tool_") {
+            } else if let Some(remaining) = event_id.strip_prefix("mcp_tool_") {
                 // Parse: mcp_tool_{server_id}\x01{tool_key}
-                let remaining = event_id.strip_prefix("mcp_tool_").unwrap();
                 if let Some(sep_pos) = remaining.find('\x01') {
                     let server_id = remaining[..sep_pos].to_string();
                     let tool_key = remaining[sep_pos + 1..].to_string();
@@ -732,9 +712,9 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
         Some(
             IconMenuItem::with_id(
                 app,
-                "opencode_model_header",
+                "tray_header_opencode",
                 texts.opencode_header,
-                true,
+                false,
                 icons.opencode(),
                 None::<&str>,
             )
@@ -862,9 +842,9 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
         Some(
             IconMenuItem::with_id(
                 app,
-                "omo_header",
+                "tray_header_omo",
                 &omo_data.title,
-                true,
+                false,
                 icons.omo(),
                 None::<&str>,
             )
@@ -905,9 +885,9 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
         Some(
             IconMenuItem::with_id(
                 app,
-                "omo_slim_header",
+                "tray_header_omo_slim",
                 &omo_slim_data.title,
-                true,
+                false,
                 icons.omo(),
                 None::<&str>,
             )
@@ -978,9 +958,9 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
         Some(
             IconMenuItem::with_id(
                 app,
-                "claude_header",
+                "tray_header_claude",
                 &claude_data.title,
-                true,
+                false,
                 icons.claude(),
                 None::<&str>,
             )
@@ -1012,9 +992,9 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
         Some(
             IconMenuItem::with_id(
                 app,
-                "codex_header",
+                "tray_header_codex",
                 &codex_data.title,
-                true,
+                false,
                 icons.codex(),
                 None::<&str>,
             )
@@ -1047,9 +1027,9 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
         Some(
             IconMenuItem::with_id(
                 app,
-                "openclaw_header",
+                "tray_header_openclaw",
                 texts.openclaw_header,
-                true,
+                false,
                 tray_cli_icons::openclaw(),
                 None::<&str>,
             )
