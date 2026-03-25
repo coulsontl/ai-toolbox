@@ -185,23 +185,6 @@ fn normalize_optional_string(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn resolve_api_key_value(
-    explicit_api_key: Option<&str>,
-    fallback_api_key: Option<&str>,
-) -> Option<String> {
-    match explicit_api_key {
-        Some(api_key) => {
-            let trimmed_api_key = api_key.trim();
-            if trimmed_api_key.is_empty() {
-                None
-            } else {
-                Some(trimmed_api_key.to_string())
-            }
-        }
-        None => normalize_optional_string(fallback_api_key),
-    }
-}
-
 fn resolve_provider_request(
     provider_id: Option<&str>,
     base_url: &str,
@@ -211,8 +194,8 @@ fn resolve_provider_request(
         .or_else(|| provider_id.and_then(super::free_models::resolve_provider_api_base_url))
         .unwrap_or_default();
 
-    let fallback_api_key = provider_id.and_then(super::free_models::resolve_auth_credential);
-    let resolved_api_key = resolve_api_key_value(api_key, fallback_api_key.as_deref());
+    let resolved_api_key = normalize_optional_string(api_key)
+        .or_else(|| provider_id.and_then(super::free_models::resolve_auth_credential));
 
     ResolvedProviderRequest {
         base_url: resolved_base_url,
@@ -1108,28 +1091,6 @@ mod tests {
                 None
             ),
             "https://api.example.com/v1/models"
-        );
-    }
-
-    #[test]
-    fn test_resolve_api_key_value_uses_fallback_when_explicit_value_is_missing() {
-        assert_eq!(
-            resolve_api_key_value(None, Some("fallback-key")),
-            Some("fallback-key".to_string())
-        );
-    }
-
-    #[test]
-    fn test_resolve_api_key_value_does_not_fallback_when_explicit_value_is_empty() {
-        assert_eq!(resolve_api_key_value(Some(""), Some("fallback-key")), None);
-        assert_eq!(resolve_api_key_value(Some("   "), Some("fallback-key")), None);
-    }
-
-    #[test]
-    fn test_resolve_api_key_value_prefers_explicit_non_empty_value() {
-        assert_eq!(
-            resolve_api_key_value(Some(" explicit-key "), Some("fallback-key")),
-            Some("explicit-key".to_string())
         );
     }
 }
