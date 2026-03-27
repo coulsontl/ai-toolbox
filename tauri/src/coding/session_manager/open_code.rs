@@ -400,6 +400,7 @@ fn collect_parts_text(part_dir: &Path) -> String {
 
     let mut part_files = Vec::new();
     collect_json_files(part_dir, &mut part_files);
+    part_files.sort();
 
     let mut texts = Vec::new();
     for part_path in &part_files {

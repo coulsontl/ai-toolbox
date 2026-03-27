@@ -76,21 +76,57 @@ const SessionManagerPanel: React.FC<SessionManagerPanelProps> = ({
   const [activeMessageIndex, setActiveMessageIndex] = React.useState<number | null>(null);
   const messageRefs = React.useRef<Map<number, HTMLDivElement>>(new Map());
   const [expandedMessages, setExpandedMessages] = React.useState<Record<number, boolean>>({});
+  const listContextIdRef = React.useRef(0);
+  const listReplaceRequestIdRef = React.useRef(0);
+  const listAppendRequestIdRef = React.useRef(0);
+  const detailRequestIdRef = React.useRef(0);
 
   React.useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 250);
     return () => window.clearTimeout(timer);
   }, [query]);
 
+  React.useEffect(() => {
+    if (expanded) {
+      return;
+    }
+
+    listContextIdRef.current += 1;
+    listReplaceRequestIdRef.current += 1;
+    listAppendRequestIdRef.current += 1;
+    setLoading(false);
+    setLoadingMore(false);
+  }, [expanded]);
+
   const loadSessions = React.useCallback(async (nextPage: number, append: boolean) => {
     if (!expanded) {
       return;
     }
 
+    const requestContextId = append ? listContextIdRef.current : listContextIdRef.current + 1;
+    const requestId = append
+      ? listAppendRequestIdRef.current + 1
+      : listReplaceRequestIdRef.current + 1;
+
+    const isCurrentRequest = () => {
+      if (requestContextId !== listContextIdRef.current) {
+        return false;
+      }
+      return append
+        ? requestId === listAppendRequestIdRef.current
+        : requestId === listReplaceRequestIdRef.current;
+    };
+
     if (append) {
+      listAppendRequestIdRef.current = requestId;
       setLoadingMore(true);
     } else {
+      listContextIdRef.current = requestContextId;
+      listReplaceRequestIdRef.current = requestId;
+      listAppendRequestIdRef.current += 1;
       setLoading(true);
+      setLoadingMore(false);
+      setHasMore(false);
     }
 
     try {
@@ -101,14 +137,24 @@ const SessionManagerPanel: React.FC<SessionManagerPanelProps> = ({
         pageSize: PAGE_SIZE,
       });
 
+      if (!isCurrentRequest()) {
+        return;
+      }
+
       setItems((current) => (append ? [...current, ...result.items] : result.items));
       setPage(result.page);
       setHasMore(result.hasMore);
       setTotal(result.total);
     } catch (error) {
+      if (!isCurrentRequest()) {
+        return;
+      }
       const errorMessage = error instanceof Error ? error.message : String(error);
       message.error(errorMessage || t('common.error'));
     } finally {
+      if (!isCurrentRequest()) {
+        return;
+      }
       if (append) {
         setLoadingMore(false);
       } else {
@@ -172,19 +218,45 @@ const SessionManagerPanel: React.FC<SessionManagerPanelProps> = ({
     await loadSessions(1, false);
   };
 
+  const resetDetailState = React.useCallback(() => {
+    detailRequestIdRef.current += 1;
+    setDetail(null);
+    setDetailLoading(false);
+    setDetailQuery('');
+    setExpandedMessages({});
+    setMobileTocOpen(false);
+    setActiveMessageIndex(null);
+    messageRefs.current.clear();
+  }, []);
+
   const handleOpenDetail = async (session: SessionMeta) => {
+    const requestId = detailRequestIdRef.current + 1;
+    detailRequestIdRef.current = requestId;
     setDetailOpen(true);
+    setDetail(null);
     setDetailLoading(true);
     setDetailQuery('');
     setExpandedMessages({});
+    setMobileTocOpen(false);
+    setActiveMessageIndex(null);
+    messageRefs.current.clear();
 
     try {
       const result = await getToolSessionDetail(tool, session.sourcePath);
+      if (requestId !== detailRequestIdRef.current) {
+        return;
+      }
       setDetail(result);
     } catch (error) {
+      if (requestId !== detailRequestIdRef.current) {
+        return;
+      }
       const errorMessage = error instanceof Error ? error.message : String(error);
       message.error(errorMessage || t('common.error'));
     } finally {
+      if (requestId !== detailRequestIdRef.current) {
+        return;
+      }
       setDetailLoading(false);
     }
   };
@@ -373,7 +445,11 @@ const SessionManagerPanel: React.FC<SessionManagerPanelProps> = ({
                 <div ref={sentinelRef} className={styles.sentinel} />
                 {(hasMore || loadingMore) ? (
                   <div className={styles.loadMore}>
-                    <Button loading={loadingMore} onClick={() => void loadSessions(page + 1, true)}>
+                    <Button
+                      loading={loadingMore}
+                      disabled={loading || loadingMore}
+                      onClick={() => void loadSessions(page + 1, true)}
+                    >
                       {t('sessionManager.loadMore')}
                     </Button>
                   </div>
@@ -387,8 +463,8 @@ const SessionManagerPanel: React.FC<SessionManagerPanelProps> = ({
       <Modal
         open={detailOpen}
         onCancel={() => {
+          resetDetailState();
           setDetailOpen(false);
-          setMobileTocOpen(false);
         }}
         width={1200}
         footer={null}
