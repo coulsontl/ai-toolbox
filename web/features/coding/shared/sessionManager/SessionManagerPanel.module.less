@@ -117,13 +117,11 @@
   :global(.ant-modal-content) {
     padding: 0;
     overflow: hidden;
-    background:
-      radial-gradient(circle at top right, color-mix(in srgb, var(--color-text-primary) 8%, transparent), transparent 28%),
-      linear-gradient(180deg, var(--color-bg-elevated) 0%, var(--color-bg-container) 100%);
+    background: var(--color-bg-container);
     border: 1px solid var(--color-border-card);
     box-shadow:
-      0 24px 60px var(--color-shadow),
-      0 10px 30px var(--color-shadow-secondary);
+      0 18px 48px var(--color-shadow),
+      0 8px 20px var(--color-shadow-secondary);
   }
 
   :global(.ant-modal-body) {
@@ -139,14 +137,7 @@
 .detailHero {
   padding: 18px 20px 16px;
   border-bottom: 1px solid var(--color-border);
-  background:
-    linear-gradient(
-      135deg,
-      color-mix(in srgb, var(--color-text-primary) 6%, transparent),
-      color-mix(in srgb, var(--color-bg-hover) 70%, transparent) 38%,
-      transparent 70%
-    ),
-    var(--color-bg-container);
+  background: var(--color-bg-container);
 }
 
 .detailHeroTop {
@@ -154,31 +145,12 @@
   gap: 10px;
   align-items: flex-start;
   justify-content: space-between;
-  margin-bottom: 10px;
+  margin-bottom: 0;
 }
 
-.detailHeroBadges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.detailHeroBadge {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-  min-height: 26px;
-  padding: 0 9px;
-  border: 1px solid color-mix(in srgb, var(--color-text-primary) 10%, var(--color-border));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-text-primary) 4%, var(--color-bg-hover));
-  color: var(--color-text-secondary);
-  font-size: 12px;
-}
-
-.detailHeroBadgeMono {
-  font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', monospace;
-  letter-spacing: 0.02em;
+.detailHeroMain {
+  min-width: 0;
+  flex: 1;
 }
 
 .detailHeroActions {
@@ -194,7 +166,7 @@
 }
 
 .detailHeroSummary {
-  max-width: 860px;
+  max-width: 760px;
   margin-top: 6px;
   color: var(--color-text-secondary);
   font-size: 13px;
@@ -216,8 +188,8 @@
   padding: 11px 13px;
   border: 1px solid var(--color-border);
   border-radius: 14px;
-  background: color-mix(in srgb, var(--color-bg-container) 85%, transparent);
-  box-shadow: 0 8px 18px var(--color-shadow-secondary);
+  background: var(--color-bg-container);
+  box-shadow: none;
 }
 
 .detailMetaLabel {
@@ -243,6 +215,7 @@
   display: flex;
   gap: 0;
   min-height: 560px;
+  background: var(--color-bg-container);
 }
 
 .tocPane {
@@ -250,8 +223,7 @@
   flex: 0 0 290px;
   border-right: 1px solid var(--color-border);
   padding: 20px 18px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--color-bg-elevated) 92%, transparent), var(--color-bg-container));
+  background: var(--color-bg-container);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -271,7 +243,8 @@
   height: 28px;
   padding: 0 8px;
   border-radius: 999px;
-  background: var(--color-bg-hover);
+  background: var(--color-bg-container);
+  border: 1px solid var(--color-border);
   color: var(--color-text-secondary);
   font-size: 12px;
   font-weight: 600;
@@ -288,13 +261,11 @@
 .tocButton {
   width: 100%;
   text-align: left;
-  display: grid;
-  grid-template-columns: 36px minmax(0, 1fr);
-  gap: 12px;
+  display: block;
   align-items: start;
   border: 1px solid var(--color-border);
   border-radius: 14px;
-  background: color-mix(in srgb, var(--color-bg-container) 88%, transparent);
+  background: var(--color-bg-container);
   color: var(--color-text-primary);
   padding: 12px;
   cursor: pointer;
@@ -303,27 +274,13 @@
 
 .tocButton:hover {
   border-color: var(--color-border-secondary);
-  background: var(--color-bg-hover);
-  box-shadow: 0 10px 24px var(--color-shadow-secondary);
-  transform: translateY(-1px);
-}
-
-.tocIndex {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--color-text-primary) 8%, var(--color-bg-hover));
-  color: var(--color-text-primary);
-  font-size: 13px;
-  font-weight: 700;
+  background: var(--color-bg-container);
+  box-shadow: 0 6px 16px var(--color-shadow-secondary);
 }
 
 .tocPreview {
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.55;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -348,7 +305,7 @@
   padding: 12px 14px;
   border: 1px solid var(--color-border);
   border-radius: 14px;
-  background: linear-gradient(180deg, var(--color-bg-elevated), var(--color-bg-container));
+  background: var(--color-bg-container);
 }
 
 .detailToolbarLeft {
@@ -371,7 +328,7 @@
   padding: 0 10px;
   border: 1px solid var(--color-border);
   border-radius: 999px;
-  background: var(--color-bg-hover);
+  background: var(--color-bg-container);
   color: var(--color-text-secondary);
   font-size: 12px;
   font-weight: 600;
@@ -414,12 +371,11 @@
 .messagesPanel {
   flex: 1;
   min-height: 0;
-  padding: 4px;
-  border: 1px solid var(--color-border);
-  border-radius: 18px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--color-bg-elevated) 85%, transparent), var(--color-bg-container));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: var(--color-bg-container);
+  box-shadow: none;
 }
 
 .messagesList {
@@ -429,81 +385,40 @@
   max-height: 100%;
   min-height: 0;
   overflow-y: auto;
-  padding: 6px 8px 10px 6px;
+  padding: 2px 0 6px;
 }
 
 .messageCard {
   position: relative;
   border: 1px solid var(--color-border);
   border-radius: 18px;
-  padding: 14px 16px 14px 60px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--color-bg-container) 96%, transparent), var(--color-bg-elevated));
-  box-shadow: 0 14px 28px var(--color-shadow-secondary);
+  padding: 14px 16px;
+  background: var(--color-bg-container);
+  box-shadow: none;
 }
 
 .messageCardActive {
   border-color: color-mix(in srgb, var(--color-text-primary) 18%, var(--color-border-secondary));
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--color-text-primary) 10%, transparent),
-    0 16px 32px var(--color-shadow-secondary);
+    0 8px 20px var(--color-shadow-secondary);
 }
 
 .messageCardUser {
   border-color: color-mix(in srgb, var(--color-text-primary) 8%, var(--color-border));
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--color-text-primary) 2%, var(--color-bg-container)), var(--color-bg-container));
 }
 
 .messageCardAssistant {
   border-color: color-mix(in srgb, var(--color-text-primary) 12%, var(--color-border));
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--color-bg-elevated) 85%, transparent), var(--color-bg-container));
 }
 
 .messageCardTool {
   border-style: dashed;
   border-color: color-mix(in srgb, var(--color-text-secondary) 30%, var(--color-border));
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--color-bg-hover) 75%, transparent), var(--color-bg-container));
 }
 
 .messageCardSystem {
   border-color: color-mix(in srgb, var(--color-text-tertiary) 35%, var(--color-border));
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--color-bg-elevated) 92%, transparent), var(--color-bg-container));
-}
-
-.messageRail {
-  position: absolute;
-  left: 16px;
-  top: 14px;
-  bottom: 14px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  width: 28px;
-}
-
-.messageNode {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-text-primary) 8%, var(--color-bg-hover));
-  color: var(--color-text-primary);
-  font-size: 11px;
-  font-weight: 700;
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-bg-container) 88%, transparent);
-}
-
-.messageLine {
-  flex: 1;
-  width: 1px;
-  margin-top: 8px;
-  background: linear-gradient(180deg, var(--color-border-secondary), transparent);
 }
 
 .messageHeader {
@@ -663,11 +578,7 @@
   }
 
   .messageCard {
-    padding: 14px 14px 14px 52px;
-  }
-
-  .messageRail {
-    left: 12px;
+    padding: 14px;
   }
 
   .messageContent {

@@ -201,7 +201,6 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
     return buildSessionTocItems(detail?.messages ?? []);
   }, [detail?.messages]);
 
-  const detailDisplayTime = detail?.meta.lastActiveAt || detail?.meta.createdAt;
   const detailSummary = detail?.meta.summary?.trim() || t('sessionManager.noSummary');
 
   const filteredMessages = React.useMemo(() => {
@@ -327,7 +326,6 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
     const isExpanded = expandedMessages[index] ?? false;
     const messageRoleClassName = getMessageCardRoleClassName(messageItem.role);
     const messageRoleTagClassName = getMessageRoleTagClassName(messageItem.role);
-    const messageOrder = index + 1;
 
     return (
       <div
@@ -341,12 +339,6 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
         }}
         className={`${styles.messageCard}${messageRoleClassName ? ` ${messageRoleClassName}` : ''}${activeMessageIndex === index ? ` ${styles.messageCardActive}` : ''}`}
       >
-        <div className={styles.messageRail}>
-          <div className={styles.messageNode}>
-            <span>{messageOrder}</span>
-          </div>
-          <div className={styles.messageLine} />
-        </div>
         <div className={styles.messageHeader}>
           <div className={styles.messageHeaderLeft}>
             <Tag
@@ -506,20 +498,9 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
             <div className={styles.detailShell}>
               <div className={styles.detailHero}>
                 <div className={styles.detailHeroTop}>
-                  <div className={styles.detailHeroBadges}>
-                    <span className={styles.detailHeroBadge}>
-                      <MessageOutlined />
-                      {getToolLabel(detail.meta.providerId, t)}
-                    </span>
-                    {detailDisplayTime ? (
-                      <span className={styles.detailHeroBadge}>
-                        <ClockCircleOutlined />
-                        {formatRelativeTime(detailDisplayTime, t)}
-                      </span>
-                    ) : null}
-                    <span className={`${styles.detailHeroBadge} ${styles.detailHeroBadgeMono}`}>
-                      {shortSessionId(detail.meta.sessionId)}
-                    </span>
+                  <div className={styles.detailHeroMain}>
+                    <div className={styles.detailHeroTitle}>{formatSessionTitle(detail.meta)}</div>
+                    <div className={styles.detailHeroSummary}>{detailSummary}</div>
                   </div>
                   <Space wrap className={styles.detailHeroActions}>
                     <Button
@@ -547,9 +528,6 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
                     </Button>
                   </Space>
                 </div>
-
-                <div className={styles.detailHeroTitle}>{formatSessionTitle(detail.meta)}</div>
-                <div className={styles.detailHeroSummary}>{detailSummary}</div>
 
                 <div className={styles.detailMetaGrid}>
                   <div className={styles.detailMetaCard}>
@@ -597,7 +575,6 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
                       className={styles.tocButton}
                       onClick={() => scrollToMessage(item.index)}
                     >
-                      <div className={styles.tocIndex}>{tocIndex + 1}</div>
                       <div className={styles.tocPreview}>{item.preview}</div>
                     </button>
                   ))}
@@ -661,7 +638,6 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
               className={styles.tocButton}
               onClick={() => scrollToMessage(item.index)}
             >
-              <div className={styles.tocIndex}>{tocIndex + 1}</div>
               <div className={styles.tocPreview}>{item.preview}</div>
             </button>
           ))}
