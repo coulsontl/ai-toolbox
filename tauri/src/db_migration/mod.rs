@@ -1,3 +1,4 @@
+mod mcp_github_copilot_key_v1;
 mod oh_my_openagent_rename_v1;
 
 use serde_json::Value;
@@ -19,11 +20,18 @@ struct DbMigration {
     runner: MigrationRunner,
 }
 
-const REGISTERED_MIGRATIONS: &[DbMigration] = &[DbMigration {
-    id: oh_my_openagent_rename_v1::MIGRATION_ID,
-    description: "Rename Oh My OpenAgent main persistence contracts",
-    runner: oh_my_openagent_rename_v1::run_migration,
-}];
+const REGISTERED_MIGRATIONS: &[DbMigration] = &[
+    DbMigration {
+        id: oh_my_openagent_rename_v1::MIGRATION_ID,
+        description: "Rename Oh My OpenAgent main persistence contracts",
+        runner: oh_my_openagent_rename_v1::run_migration,
+    },
+    DbMigration {
+        id: mcp_github_copilot_key_v1::MIGRATION_ID,
+        description: "Normalize MCP GitHub Copilot legacy IntelliJ tool keys",
+        runner: mcp_github_copilot_key_v1::run_migration,
+    },
+];
 
 /// Execute all registered database migrations in order.
 ///

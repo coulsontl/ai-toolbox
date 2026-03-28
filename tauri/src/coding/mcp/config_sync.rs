@@ -4,7 +4,8 @@
 //! Supports JSON/JSONC (unified with json5) and TOML formats.
 //! Also handles format conversion for tools like OpenCode that use different schemas.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -12,9 +13,64 @@ use super::command_normalize;
 use super::format_configs::get_format_config;
 use super::types::{now_ms, McpServer, McpSyncDetail};
 use crate::coding::tools::{
-    resolve_mcp_config_path_with_db, resolve_mcp_config_path_with_db_async, McpFormatConfig,
+    resolve_mcp_config_path_with_db, resolve_mcp_config_path_with_db_async,
+    resolve_mcp_config_paths_with_db, resolve_mcp_config_paths_with_db_async, McpFormatConfig,
     RuntimeTool,
 };
+
+fn existing_sync_target_paths(config_paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    config_paths
+        .into_iter()
+        .filter(|path| path.exists() || path.parent().map(|parent| parent.exists()).unwrap_or(false))
+        .collect()
+}
+
+fn github_copilot_path_label(path: &Path) -> &'static str {
+    let path_str = path.to_string_lossy().to_lowercase();
+    if path_str.contains("intellij") {
+        "IntelliJ"
+    } else {
+        "VSCode"
+    }
+}
+
+fn merge_imported_servers(
+    merged: &mut HashMap<String, McpServer>,
+    imported: Vec<McpServer>,
+    source_label: &str,
+) {
+    for mut server in imported {
+        match merged.get(&server.name) {
+            Some(existing)
+                if existing.server_type == server.server_type
+                    && existing.server_config == server.server_config =>
+            {
+                continue;
+            }
+            Some(_) => {
+                let original_name = server.name.clone();
+                let mut index = 1;
+                loop {
+                    let candidate = if index == 1 {
+                        format!("{} ({})", original_name, source_label)
+                    } else {
+                        format!("{} ({}) {}", original_name, source_label, index)
+                    };
+
+                    if !merged.contains_key(&candidate) {
+                        server.name = candidate;
+                        break;
+                    }
+
+                    index += 1;
+                }
+            }
+            None => {}
+        }
+
+        merged.insert(server.name.clone(), server);
+    }
+}
 
 /// Sync an MCP server to a specific tool's config file
 pub fn sync_server_to_tool(
@@ -40,6 +96,31 @@ pub fn sync_server_to_tool_with_enabled(
     tool: &RuntimeTool,
     enabled: bool,
 ) -> Result<McpSyncDetail, String> {
+    if tool.key == "github_copilot" {
+        let config_paths = existing_sync_target_paths(resolve_mcp_config_paths_with_db(db, tool));
+        if config_paths.is_empty() {
+            return Err("Tool github_copilot does not have any detected MCP config locations".to_string());
+        }
+
+        let mut errors = Vec::new();
+        for config_path in config_paths {
+            if let Err(err) = sync_server_to_path(tool, &config_path, server, enabled) {
+                errors.push(format!("{}: {}", config_path.to_string_lossy(), err));
+            }
+        }
+
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
+
+        return Ok(McpSyncDetail {
+            tool: tool.key.clone(),
+            status: "ok".to_string(),
+            synced_at: Some(now_ms()),
+            error_message: None,
+        });
+    }
+
     let config_path = resolve_mcp_config_path_with_db(db, tool)
         .ok_or_else(|| format!("Tool {} does not support MCP", tool.key))?;
     sync_server_to_path(tool, &config_path, server, enabled)
@@ -51,6 +132,32 @@ pub async fn sync_server_to_tool_with_enabled_async(
     tool: &RuntimeTool,
     enabled: bool,
 ) -> Result<McpSyncDetail, String> {
+    if tool.key == "github_copilot" {
+        let config_paths =
+            existing_sync_target_paths(resolve_mcp_config_paths_with_db_async(db, tool).await);
+        if config_paths.is_empty() {
+            return Err("Tool github_copilot does not have any detected MCP config locations".to_string());
+        }
+
+        let mut errors = Vec::new();
+        for config_path in config_paths {
+            if let Err(err) = sync_server_to_path(tool, &config_path, server, enabled) {
+                errors.push(format!("{}: {}", config_path.to_string_lossy(), err));
+            }
+        }
+
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
+
+        return Ok(McpSyncDetail {
+            tool: tool.key.clone(),
+            status: "ok".to_string(),
+            synced_at: Some(now_ms()),
+            error_message: None,
+        });
+    }
+
     let config_path = resolve_mcp_config_path_with_db_async(db, tool)
         .await
         .ok_or_else(|| format!("Tool {} does not support MCP", tool.key))?;
@@ -63,6 +170,26 @@ pub fn remove_server_from_tool(
     server_name: &str,
     tool: &RuntimeTool,
 ) -> Result<(), String> {
+    if tool.key == "github_copilot" {
+        let config_paths = resolve_mcp_config_paths_with_db(db, tool);
+        if config_paths.is_empty() {
+            return Err(format!("Tool {} does not support MCP", tool.key));
+        }
+
+        let mut errors = Vec::new();
+        for config_path in config_paths {
+            if let Err(err) = remove_server_from_path(tool, &config_path, server_name) {
+                errors.push(format!("{}: {}", config_path.to_string_lossy(), err));
+            }
+        }
+
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
+
+        return Ok(());
+    }
+
     let config_path = resolve_mcp_config_path_with_db(db, tool)
         .ok_or_else(|| format!("Tool {} does not support MCP", tool.key))?;
     remove_server_from_path(tool, &config_path, server_name)
@@ -73,6 +200,26 @@ pub async fn remove_server_from_tool_async(
     server_name: &str,
     tool: &RuntimeTool,
 ) -> Result<(), String> {
+    if tool.key == "github_copilot" {
+        let config_paths = resolve_mcp_config_paths_with_db_async(db, tool).await;
+        if config_paths.is_empty() {
+            return Err(format!("Tool {} does not support MCP", tool.key));
+        }
+
+        let mut errors = Vec::new();
+        for config_path in config_paths {
+            if let Err(err) = remove_server_from_path(tool, &config_path, server_name) {
+                errors.push(format!("{}: {}", config_path.to_string_lossy(), err));
+            }
+        }
+
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
+
+        return Ok(());
+    }
+
     let config_path = resolve_mcp_config_path_with_db_async(db, tool)
         .await
         .ok_or_else(|| format!("Tool {} does not support MCP", tool.key))?;
@@ -608,6 +755,19 @@ pub fn import_servers_from_tool(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
     tool: &RuntimeTool,
 ) -> Result<Vec<McpServer>, String> {
+    if tool.key == "github_copilot" {
+        let mut merged = HashMap::new();
+        for config_path in resolve_mcp_config_paths_with_db(db, tool) {
+            let imported = import_servers_from_path(tool, &config_path)?;
+            merge_imported_servers(
+                &mut merged,
+                imported,
+                github_copilot_path_label(&config_path),
+            );
+        }
+        return Ok(merged.into_values().collect());
+    }
+
     let config_path = resolve_mcp_config_path_with_db(db, tool)
         .ok_or_else(|| format!("Tool {} does not support MCP", tool.key))?;
     import_servers_from_path(tool, &config_path)
@@ -617,6 +777,19 @@ pub async fn import_servers_from_tool_async(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
     tool: &RuntimeTool,
 ) -> Result<Vec<McpServer>, String> {
+    if tool.key == "github_copilot" {
+        let mut merged = HashMap::new();
+        for config_path in resolve_mcp_config_paths_with_db_async(db, tool).await {
+            let imported = import_servers_from_path(tool, &config_path)?;
+            merge_imported_servers(
+                &mut merged,
+                imported,
+                github_copilot_path_label(&config_path),
+            );
+        }
+        return Ok(merged.into_values().collect());
+    }
+
     let config_path = resolve_mcp_config_path_with_db_async(db, tool)
         .await
         .ok_or_else(|| format!("Tool {} does not support MCP", tool.key))?;
@@ -993,3 +1166,67 @@ fn import_servers_from_toml(config_path: &PathBuf, field: &str) -> Result<Vec<Mc
 
     Ok(servers)
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn build_server(name: &str, server_config: Value) -> McpServer {
+        McpServer {
+            id: String::new(),
+            name: name.to_string(),
+            server_type: "stdio".to_string(),
+            server_config,
+            enabled_tools: vec![],
+            sync_details: None,
+            description: None,
+            tags: vec![],
+            timeout: None,
+            sort_index: 0,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn test_merge_imported_servers_github_copilot_dedupes_identical_configs() {
+        let mut merged = HashMap::new();
+
+        merge_imported_servers(
+            &mut merged,
+            vec![build_server("demo", json!({ "command": "npx", "args": ["-y", "demo"] }))],
+            "VSCode",
+        );
+        merge_imported_servers(
+            &mut merged,
+            vec![build_server("demo", json!({ "command": "npx", "args": ["-y", "demo"] }))],
+            "IntelliJ",
+        );
+
+        assert_eq!(merged.len(), 1);
+        assert!(merged.contains_key("demo"));
+    }
+
+    #[test]
+    fn test_merge_imported_servers_github_copilot_suffixes_conflicting_names() {
+        let mut merged = HashMap::new();
+
+        merge_imported_servers(
+            &mut merged,
+            vec![build_server("demo", json!({ "command": "npx", "args": ["-y", "demo-a"] }))],
+            "VSCode",
+        );
+        merge_imported_servers(
+            &mut merged,
+            vec![build_server("demo", json!({ "command": "npx", "args": ["-y", "demo-b"] }))],
+            "IntelliJ",
+        );
+
+        assert_eq!(merged.len(), 2);
+        assert!(merged.contains_key("demo"));
+        assert!(merged.contains_key("demo (IntelliJ)"));
+    }
+}
+

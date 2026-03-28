@@ -7,6 +7,13 @@ use serde_json::Value;
 use super::types::{FavoriteMcp, McpPreferences, McpServer, McpSyncDetail, McpSyncDetailDto};
 use crate::coding::db_extract_id;
 
+fn normalize_tool_key(key: &str) -> String {
+    match key {
+        "github_copilot_intellij" => "github_copilot".to_string(),
+        _ => key.to_string(),
+    }
+}
+
 /// Convert database record to McpServer struct
 pub fn from_db_mcp_server(value: Value) -> McpServer {
     let enabled_tools: Vec<String> = value
@@ -14,7 +21,7 @@ pub fn from_db_mcp_server(value: Value) -> McpServer {
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                .filter_map(|item| item.as_str().map(normalize_tool_key))
                 .collect()
         })
         .unwrap_or_default();
@@ -98,7 +105,7 @@ pub fn parse_sync_details(server: &McpServer) -> Vec<McpSyncDetail> {
 
     obj.iter()
         .map(|(tool_key, entry)| McpSyncDetail {
-            tool: tool_key.clone(),
+            tool: normalize_tool_key(tool_key),
             status: entry
                 .get("status")
                 .and_then(|v| v.as_str())
@@ -169,7 +176,7 @@ pub fn from_db_mcp_preferences(value: Value) -> McpPreferences {
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .filter_map(|v| v.as_str().map(normalize_tool_key))
                     .collect()
             })
             .unwrap_or_default(),

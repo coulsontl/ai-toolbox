@@ -18,8 +18,8 @@ use super::types::{
 };
 use crate::coding::tools::{
     custom_store, get_mcp_runtime_tools, is_tool_installed_with_db_async,
-    resolve_mcp_config_path_with_db_async, runtime_tool_by_key, to_runtime_tool_dto_with_db_async,
-    CustomTool, RuntimeToolDto,
+    resolve_mcp_config_path_with_db_async, resolve_mcp_config_paths_with_db_async,
+    runtime_tool_by_key, to_runtime_tool_dto_with_db_async, CustomTool, RuntimeToolDto,
 };
 use crate::DbState;
 
@@ -662,15 +662,22 @@ async fn mcp_scan_servers_inner(state: &DbState) -> Result<McpScanResultDto, Str
             continue;
         }
 
-        let Some(config_path) = resolve_mcp_config_path_with_db_async(&scan_db, tool).await else {
-            continue;
+        let config_paths = if tool.key == "github_copilot" {
+            resolve_mcp_config_paths_with_db_async(&scan_db, tool).await
+        } else {
+            resolve_mcp_config_path_with_db_async(&scan_db, tool)
+                .await
+                .into_iter()
+                .collect()
         };
 
-        if !config_path.exists() {
-            continue;
-        }
+        for config_path in config_paths {
+            if !config_path.exists() {
+                continue;
+            }
 
-        scan_targets.push((tool.clone(), config_path));
+            scan_targets.push((tool.clone(), config_path));
+        }
     }
 
     // Run the blocking file system operations in a dedicated thread pool
@@ -678,6 +685,7 @@ async fn mcp_scan_servers_inner(state: &DbState) -> Result<McpScanResultDto, Str
     let scan_result = tokio::task::spawn_blocking(move || {
         let mut total_tools_scanned = 0;
         let mut servers: Vec<McpDiscoveredServerDto> = Vec::new();
+        let mut seen_servers = std::collections::HashSet::new();
 
         for (tool, config_path) in &scan_targets {
             eprintln!("[DEBUG][mcp_scan_servers] scanning tool: {}", tool.key);
@@ -694,6 +702,16 @@ async fn mcp_scan_servers_inner(state: &DbState) -> Result<McpScanResultDto, Str
                     for server in imported {
                         // Skip servers that already exist in the database
                         if existing_names.contains(&server.name) {
+                            continue;
+                        }
+                        let fingerprint = format!(
+                            "{}::{}::{}::{}",
+                            tool.key,
+                            server.name,
+                            server.server_type,
+                            serde_json::to_string(&server.server_config).unwrap_or_default()
+                        );
+                        if !seen_servers.insert(fingerprint) {
                             continue;
                         }
                         servers.push(McpDiscoveredServerDto {

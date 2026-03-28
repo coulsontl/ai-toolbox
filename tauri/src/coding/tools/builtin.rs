@@ -119,7 +119,8 @@ pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
         mcp_field: None,
     },
     // GitHub Copilot - supports both Skills and MCP
-    // MCP path uses VSCode plugin config path (same as Amp)
+    // MCP sync uses the VSCode plugin config path as primary path and may also
+    // update other GitHub Copilot plugin locations (for example IntelliJ)
     BuiltinTool {
         key: "github_copilot",
         display_name: "GitHub Copilot",
@@ -184,5 +185,10 @@ pub fn get_mcp_builtin_tools() -> Vec<&'static BuiltinTool> {
 
 /// Find a built-in tool by key
 pub fn builtin_tool_by_key(key: &str) -> Option<&'static BuiltinTool> {
-    BUILTIN_TOOLS.iter().find(|t| t.key == key)
+    let normalized_key = match key {
+        "github_copilot_intellij" => "github_copilot",
+        _ => key,
+    };
+
+    BUILTIN_TOOLS.iter().find(|t| t.key == normalized_key)
 }
