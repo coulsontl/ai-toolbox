@@ -116,7 +116,7 @@ const PluginSettings: React.FC<PluginSettingsProps> = ({ plugins, onChange, defa
   const disabledPlugins = getDisabledPlugins();
 
   const handleClose = (removedPlugin: string) => {
-    const newPlugins = plugins.filter((plugin) => !isPluginEquivalent(plugin, removedPlugin));
+    const newPlugins = plugins.filter((plugin) => plugin !== removedPlugin);
     onChange(newPlugins);
   };
 
