@@ -507,7 +507,9 @@ skills-git-cache/
 
 ### 5.1 工具适配器 (tool_adapters.rs)
 
-内置支持 14 个 AI 编程工具：
+内置工具清单由共享模块 `crate::coding::tools::BUILTIN_TOOLS` 统一提供，Skills 不允许再维护一份平行的内置工具枚举或 key 映射。
+
+当前内置支持的 Skills 工具如下：
 
 | 工具 Key | 显示名称 | Skills 目录 | 检测目录 |
 |----------|----------|-------------|----------|
@@ -523,6 +525,8 @@ skills-git-cache/
 | gemini_cli | Gemini CLI | ~/.gemini/skills | ~/.gemini |
 | github_copilot | GitHub Copilot | ~/.copilot/skills | ~/.copilot |
 | openclaw | OpenClaw | ~/.openclaw/skills | ~/.openclaw |
+| qoder_work | QoderWork | ~/.qoderwork/skills | ~/.qoderwork |
+| qoder | Qoder | ~/.qoder/skills | %APPDATA%/Qoder |
 | droid | Droid | ~/.factory/skills | ~/.factory |
 | windsurf | Windsurf | ~/.codeium/windsurf/skills | ~/.codeium/windsurf |
 

@@ -55,70 +55,10 @@ impl From<&CustomTool> for tools::CustomTool {
     }
 }
 
-/// Tool ID enum for all supported AI coding tools
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ToolId {
-    Cursor,
-    ClaudeCode,
-    Codex,
-    OpenCode,
-    Antigravity,
-    Amp,
-    KiloCode,
-    RooCode,
-    Goose,
-    GeminiCli,
-    GithubCopilot,
-    OpenClaw,
-    Droid,
-    Windsurf,
-}
-
-impl ToolId {
-    pub fn as_key(&self) -> &'static str {
-        match self {
-            ToolId::Cursor => "cursor",
-            ToolId::ClaudeCode => "claude_code",
-            ToolId::Codex => "codex",
-            ToolId::OpenCode => "opencode",
-            ToolId::Antigravity => "antigravity",
-            ToolId::Amp => "amp",
-            ToolId::KiloCode => "kilo_code",
-            ToolId::RooCode => "roo_code",
-            ToolId::Goose => "goose",
-            ToolId::GeminiCli => "gemini_cli",
-            ToolId::GithubCopilot => "github_copilot",
-            ToolId::OpenClaw => "openclaw",
-            ToolId::Droid => "droid",
-            ToolId::Windsurf => "windsurf",
-        }
-    }
-
-    pub fn from_key(key: &str) -> Option<ToolId> {
-        match key {
-            "cursor" => Some(ToolId::Cursor),
-            "claude_code" => Some(ToolId::ClaudeCode),
-            "codex" => Some(ToolId::Codex),
-            "opencode" => Some(ToolId::OpenCode),
-            "antigravity" => Some(ToolId::Antigravity),
-            "amp" => Some(ToolId::Amp),
-            "kilo_code" => Some(ToolId::KiloCode),
-            "roo_code" => Some(ToolId::RooCode),
-            "goose" => Some(ToolId::Goose),
-            "gemini_cli" => Some(ToolId::GeminiCli),
-            "github_copilot" => Some(ToolId::GithubCopilot),
-            "openclaw" => Some(ToolId::OpenClaw),
-            "droid" => Some(ToolId::Droid),
-            "windsurf" => Some(ToolId::Windsurf),
-            _ => None,
-        }
-    }
-}
-
 /// Tool adapter with path information (legacy type for compatibility)
 #[derive(Clone, Debug)]
 pub struct ToolAdapter {
-    pub id: ToolId,
+    pub key: &'static str,
     pub display_name: &'static str,
     pub relative_skills_dir: &'static str,
     pub relative_detect_dir: &'static str,
@@ -129,13 +69,12 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
     BUILTIN_TOOLS
         .iter()
         .filter(|t| t.relative_skills_dir.is_some())
-        .filter_map(|t| {
-            let id = ToolId::from_key(t.key)?;
+        .filter_map(|tool| {
             Some(ToolAdapter {
-                id,
-                display_name: t.display_name,
-                relative_skills_dir: t.relative_skills_dir?,
-                relative_detect_dir: t.relative_detect_dir?,
+                key: tool.key,
+                display_name: tool.display_name,
+                relative_skills_dir: tool.relative_skills_dir?,
+                relative_detect_dir: tool.relative_detect_dir?,
             })
         })
         .collect()
@@ -145,7 +84,7 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
 pub fn adapter_by_key(key: &str) -> Option<ToolAdapter> {
     default_tool_adapters()
         .into_iter()
-        .find(|adapter| adapter.id.as_key() == key)
+        .find(|adapter| adapter.key == key)
 }
 
 /// Resolve default skills path for a tool
@@ -177,7 +116,7 @@ pub struct RuntimeToolAdapter {
 impl From<&ToolAdapter> for RuntimeToolAdapter {
     fn from(adapter: &ToolAdapter) -> Self {
         RuntimeToolAdapter {
-            key: adapter.id.as_key().to_string(),
+            key: adapter.key.to_string(),
             display_name: adapter.display_name.to_string(),
             relative_skills_dir: adapter.relative_skills_dir.to_string(),
             relative_detect_dir: adapter.relative_detect_dir.to_string(),
@@ -334,7 +273,7 @@ pub fn scan_tool_dir(
 
         let name = entry.file_name().to_string_lossy().to_string();
         // Skip system directories
-        if adapter.id == ToolId::Codex && name == ".system" {
+        if adapter.key == "codex" && name == ".system" {
             continue;
         }
 
@@ -349,7 +288,7 @@ pub fn scan_tool_dir(
         }
 
         results.push(super::types::DetectedSkill {
-            tool: adapter.id.as_key().to_string(),
+            tool: adapter.key.to_string(),
             tool_display: adapter.display_name.to_string(),
             name,
             path,
@@ -375,5 +314,51 @@ fn detect_link(path: &Path) -> (bool, Option<PathBuf>) {
                 (false, None)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::{adapter_by_key, default_tool_adapters, runtime_adapter_by_key, CustomTool};
+    use crate::coding::tools::BUILTIN_TOOLS;
+
+    #[test]
+    fn default_tool_adapters_cover_all_builtin_skill_tools() {
+        let actual_keys: HashSet<&'static str> = default_tool_adapters()
+            .into_iter()
+            .map(|adapter| adapter.key)
+            .collect();
+        let expected_keys: HashSet<&'static str> = BUILTIN_TOOLS
+            .iter()
+            .filter(|tool| tool.relative_skills_dir.is_some())
+            .map(|tool| tool.key)
+            .collect();
+
+        assert_eq!(actual_keys, expected_keys);
+    }
+
+    #[test]
+    fn adapter_by_key_returns_qoder_variants() {
+        let qoder = adapter_by_key("qoder").expect("qoder should be available in skills adapters");
+        assert_eq!(qoder.display_name, "Qoder");
+        assert_eq!(qoder.relative_skills_dir, "~/.qoder/skills");
+
+        let qoder_work = adapter_by_key("qoder_work")
+            .expect("qoder_work should be available in skills adapters");
+        assert_eq!(qoder_work.display_name, "QoderWork");
+        assert_eq!(qoder_work.relative_skills_dir, "~/.qoderwork/skills");
+    }
+
+    #[test]
+    fn runtime_adapter_by_key_prefers_builtin_tool_without_custom_entry() {
+        let custom_tools: Vec<CustomTool> = Vec::new();
+        let runtime_adapter = runtime_adapter_by_key("qoder_work", &custom_tools)
+            .expect("qoder_work runtime adapter should resolve");
+
+        assert_eq!(runtime_adapter.key, "qoder_work");
+        assert_eq!(runtime_adapter.display_name, "QoderWork");
+        assert!(!runtime_adapter.is_custom);
     }
 }
