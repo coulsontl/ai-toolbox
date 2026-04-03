@@ -357,12 +357,29 @@ const ClaudePluginsPanel: React.FC<ClaudePluginsPanelProps> = ({ refreshToken = 
                 <div className={styles.pluginTitleWrap}>
                   <div className={styles.pluginTitleRow}>
                     <Text className={styles.pluginTitle}>{marketplace.name}</Text>
-                    <Tag color={marketplace.autoUpdateEnabled ? 'green' : 'default'}>
-                      {marketplace.autoUpdateEnabled
-                        ? t('claudecode.plugins.marketplaces.autoUpdateOn')
-                        : t('claudecode.plugins.marketplaces.autoUpdateOff')}
-                    </Tag>
                     <Tag>{t('claudecode.plugins.marketplaces.pluginCount', { count: marketplace.pluginCount })}</Tag>
+                    <div className={styles.marketplaceToggleInline}>
+                      <Switch
+                        size="small"
+                        checked={marketplace.autoUpdateEnabled}
+                        checkedChildren={t('claudecode.plugins.marketplaces.autoUpdateOn')}
+                        unCheckedChildren={t('claudecode.plugins.marketplaces.autoUpdateOff')}
+                        loading={activeActionKey === `marketplace:${marketplace.name}:autoUpdate`}
+                        disabled={Boolean(activeActionKey)}
+                        onChange={(checked) => {
+                          void runAction(
+                            `marketplace:${marketplace.name}:autoUpdate`,
+                            () => setClaudeMarketplaceAutoUpdate({
+                              marketplaceName: marketplace.name,
+                              autoUpdateEnabled: checked,
+                            }),
+                            checked
+                              ? t('claudecode.plugins.marketplaces.autoUpdateEnableSuccess')
+                              : t('claudecode.plugins.marketplaces.autoUpdateDisableSuccess'),
+                          );
+                        }}
+                      />
+                    </div>
                   </div>
                   {marketplace.description ? (
                     <div className={styles.pluginDescription}>{marketplace.description}</div>
@@ -379,29 +396,6 @@ const ClaudePluginsPanel: React.FC<ClaudePluginsPanelProps> = ({ refreshToken = 
                   >
                     {t('common.preview')}
                   </Button>
-                  <div className={styles.marketplaceToggleWrap}>
-                    <Text className={styles.marketplaceToggleLabel}>
-                      {t('claudecode.plugins.marketplaces.autoUpdateLabel')}
-                    </Text>
-                    <Switch
-                      size="small"
-                      checked={marketplace.autoUpdateEnabled}
-                      loading={activeActionKey === `marketplace:${marketplace.name}:autoUpdate`}
-                      disabled={Boolean(activeActionKey)}
-                      onChange={(checked) => {
-                        void runAction(
-                          `marketplace:${marketplace.name}:autoUpdate`,
-                          () => setClaudeMarketplaceAutoUpdate({
-                            marketplaceName: marketplace.name,
-                            autoUpdateEnabled: checked,
-                          }),
-                          checked
-                            ? t('claudecode.plugins.marketplaces.autoUpdateEnableSuccess')
-                            : t('claudecode.plugins.marketplaces.autoUpdateDisableSuccess'),
-                        );
-                      }}
-                    />
-                  </div>
                   <Button
                     type="text"
                     className={styles.ghostActionButton}
