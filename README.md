@@ -83,6 +83,22 @@ AI Toolbox 是一个跨平台桌面应用，旨在帮助开发者高效管理各
 | macOS | `.dmg` |
 | Linux | `.deb` / `.AppImage` |
 
+macOS 也可以通过 Homebrew 安装、升级和卸载：
+
+```bash
+brew tap coulsontl/ai-toolbox https://github.com/coulsontl/ai-toolbox
+brew install --cask coulsontl/ai-toolbox/ai-toolbox
+brew upgrade --cask coulsontl/ai-toolbox/ai-toolbox
+brew uninstall --cask coulsontl/ai-toolbox/ai-toolbox
+# 可选：不再需要此 tap 时移除
+brew untap coulsontl/ai-toolbox
+```
+
+说明：
+
+- 当前 Cask 暂时直接托管在本仓库，因此首次需要使用带仓库 URL 的 `brew tap`。
+- 后续发布新版本后，仓库中的 `Casks/ai-toolbox.rb` 会由 release workflow 自动更新，`brew upgrade` 即可获取新版本。
+
 ## 技术栈
 
 | 类别 | 技术 |

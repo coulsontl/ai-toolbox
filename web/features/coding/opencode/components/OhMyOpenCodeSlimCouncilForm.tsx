@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Collapse, Divider, Form, Input, InputNumber, Select, Switch } from 'antd';
+import { Alert, Button, Collapse, Divider, Form, Input, InputNumber, Select, Switch, message } from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import JsonEditor from '@/components/common/JsonEditor';
@@ -334,6 +334,8 @@ const ModelVariantField: React.FC<{
   form: ReturnType<typeof Form.useForm>[0];
   modelName: FieldPath;
   variantName: FieldPath;
+  modelValuePath?: FieldPath;
+  variantValuePath?: FieldPath;
   modelOptions: SlimCouncilModelOption[];
   modelVariantsMap: Record<string, string[]>;
   modelPlaceholder: string;
@@ -342,25 +344,30 @@ const ModelVariantField: React.FC<{
   form,
   modelName,
   variantName,
+  modelValuePath,
+  variantValuePath,
   modelOptions,
   modelVariantsMap,
   modelPlaceholder,
   variantPlaceholder,
 }) => {
+  const effectiveModelValuePath = modelValuePath ?? modelName;
+  const effectiveVariantValuePath = variantValuePath ?? variantName;
+
   return (
     <Form.Item
       noStyle
       shouldUpdate={(previousValues, currentValues) => {
-        const previousModel = getPathValue(previousValues, modelName);
-        const currentModel = getPathValue(currentValues, modelName);
-        const previousVariant = getPathValue(previousValues, variantName);
-        const currentVariant = getPathValue(currentValues, variantName);
+        const previousModel = getPathValue(previousValues, effectiveModelValuePath);
+        const currentModel = getPathValue(currentValues, effectiveModelValuePath);
+        const previousVariant = getPathValue(previousValues, effectiveVariantValuePath);
+        const currentVariant = getPathValue(currentValues, effectiveVariantValuePath);
         return previousModel !== currentModel || previousVariant !== currentVariant;
       }}
     >
       {() => {
-        const selectedModel = form.getFieldValue(modelName);
-        const currentVariant = form.getFieldValue(variantName);
+        const selectedModel = form.getFieldValue(effectiveModelValuePath);
+        const currentVariant = form.getFieldValue(effectiveVariantValuePath);
         const mappedVariants = typeof selectedModel === 'string' ? modelVariantsMap[selectedModel] ?? [] : [];
         const variantOptions = [...mappedVariants];
 
@@ -382,9 +389,9 @@ const ModelVariantField: React.FC<{
                 className={styles.compactModelSelect}
                 onChange={(nextModel) => {
                   const nextVariants = typeof nextModel === 'string' ? modelVariantsMap[nextModel] ?? [] : [];
-                  const existingVariant = form.getFieldValue(variantName);
+                  const existingVariant = form.getFieldValue(effectiveVariantValuePath);
                   if (nextVariants.length === 0 || (existingVariant && !nextVariants.includes(existingVariant))) {
-                    form.setFieldValue(variantName, undefined);
+                    form.setFieldValue(effectiveVariantValuePath, undefined);
                   }
                 }}
               />
@@ -479,8 +486,8 @@ const OhMyOpenCodeSlimCouncilForm: React.FC<SlimCouncilFormSectionProps> = ({
       <div className={styles.mainCard}>
         <div className={styles.cardHeader}>
           <div className={styles.cardHeaderMeta}>
-            <span className={styles.cardTitle}>{t('opencode.ohMyOpenCodeSlim.councilSettings')}</span>
-            <span className={styles.cardHint}>{t('opencode.ohMyOpenCodeSlim.councilHint')}</span>
+            <span className={styles.cardTitle}>{t('opencode.ohMyOpenCodeSlim.councilPresets')}</span>
+            <span className={styles.cardHint}>{t('opencode.ohMyOpenCodeSlim.councilPresetSelectionHint')}</span>
           </div>
         </div>
 
@@ -532,7 +539,7 @@ const OhMyOpenCodeSlimCouncilForm: React.FC<SlimCouncilFormSectionProps> = ({
       </div>
 
       <div className={styles.mainCard}>
-        <Divider className={styles.divider}>{t('opencode.ohMyOpenCodeSlim.councilPresets')}</Divider>
+        <Divider className={styles.divider}>{t('opencode.ohMyOpenCodeSlim.councilPresetList')}</Divider>
 
         <Form.List name="councilPresets">
           {(presetFields, { add: addPreset, remove: removePreset }) => (
@@ -572,8 +579,10 @@ const OhMyOpenCodeSlimCouncilForm: React.FC<SlimCouncilFormSectionProps> = ({
                       <Form.Item className={styles.fullWidthItem} label={t('opencode.ohMyOpenCodeSlim.councilMasterModel')}>
                         <ModelVariantField
                           form={form}
-                          modelName={['councilPresets', presetField.name, 'master', 'model']}
-                          variantName={['councilPresets', presetField.name, 'master', 'variant']}
+                          modelName={[presetField.name, 'master', 'model']}
+                          variantName={[presetField.name, 'master', 'variant']}
+                          modelValuePath={['councilPresets', presetField.name, 'master', 'model']}
+                          variantValuePath={['councilPresets', presetField.name, 'master', 'variant']}
                           modelOptions={modelOptions}
                           modelVariantsMap={modelVariantsMap}
                           modelPlaceholder={t('opencode.ohMyOpenCode.selectModel')}
@@ -612,7 +621,13 @@ const OhMyOpenCodeSlimCouncilForm: React.FC<SlimCouncilFormSectionProps> = ({
                                     danger
                                     type="text"
                                     icon={<DeleteOutlined />}
-                                    onClick={() => removeCouncillor(councillorField.name)}
+                                    onClick={() => {
+                                      if (councillorFields.length <= 1) {
+                                        message.warning(t('opencode.ohMyOpenCodeSlim.councilCouncillorDeleteBlocked'));
+                                        return;
+                                      }
+                                      removeCouncillor(councillorField.name);
+                                    }}
                                     className={styles.iconButton}
                                   />
                                 </div>
@@ -628,8 +643,10 @@ const OhMyOpenCodeSlimCouncilForm: React.FC<SlimCouncilFormSectionProps> = ({
                                   <Form.Item className={styles.fullWidthItem} label={t('opencode.ohMyOpenCodeSlim.councilCouncillorModel')}>
                                     <ModelVariantField
                                       form={form}
-                                      modelName={['councilPresets', presetField.name, 'councillors', councillorField.name, 'model']}
-                                      variantName={['councilPresets', presetField.name, 'councillors', councillorField.name, 'variant']}
+                                      modelName={[councillorField.name, 'model']}
+                                      variantName={[councillorField.name, 'variant']}
+                                      modelValuePath={['councilPresets', presetField.name, 'councillors', councillorField.name, 'model']}
+                                      variantValuePath={['councilPresets', presetField.name, 'councillors', councillorField.name, 'variant']}
                                       modelOptions={modelOptions}
                                       modelVariantsMap={modelVariantsMap}
                                       modelPlaceholder={t('opencode.ohMyOpenCode.selectModel')}
@@ -713,7 +730,6 @@ const OhMyOpenCodeSlimCouncilForm: React.FC<SlimCouncilFormSectionProps> = ({
               <div className={styles.switchRow}>
                 <div className={styles.switchContent}>
                   <span className={styles.switchTitle}>{t('opencode.ohMyOpenCodeSlim.councilEnabled')}</span>
-                  <span className={styles.switchHint}>{t('opencode.ohMyOpenCodeSlim.councilHint')}</span>
                 </div>
                 <Form.Item name="councilEnabled" valuePropName="checked" noStyle>
                   <Switch />
