@@ -275,9 +275,9 @@ const CodexPluginsPanel: React.FC<CodexPluginsPanelProps> = ({ refreshToken = 0 
                     : t('codex.plugins.installed.disabled')}
                 </Tag>
                 <Tag>{plugin.marketplaceName}</Tag>
+                <Text code className={styles.pluginId}>{plugin.pluginId}</Text>
                 {plugin.activeVersion ? <Tag>{plugin.activeVersion}</Tag> : null}
               </div>
-              <Text code className={styles.pluginId}>{plugin.pluginId}</Text>
               {plugin.description ? (
                 <div className={styles.pluginDescription}>{plugin.description}</div>
               ) : null}
@@ -545,6 +545,7 @@ const CodexPluginsPanel: React.FC<CodexPluginsPanelProps> = ({ refreshToken = 0 
                       <div className={styles.pluginTitleRow}>
                         <Text className={styles.pluginTitle}>{plugin.displayName || plugin.name}</Text>
                         <Tag>{plugin.marketplaceName}</Tag>
+                        <Text code className={styles.pluginId}>{plugin.pluginId}</Text>
                         {plugin.installed ? (
                           <Tag color={plugin.enabled ? 'green' : 'default'}>
                             {plugin.enabled
@@ -556,7 +557,6 @@ const CodexPluginsPanel: React.FC<CodexPluginsPanelProps> = ({ refreshToken = 0 
                           <Tag color="red">{t('codex.plugins.marketplaces.notAvailable')}</Tag>
                         ) : null}
                       </div>
-                      <Text code className={styles.pluginId}>{plugin.pluginId}</Text>
                       {plugin.description ? (
                         <div className={styles.pluginDescription}>{plugin.description}</div>
                       ) : null}
