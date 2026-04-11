@@ -281,6 +281,54 @@ pub async fn list_claude_known_marketplaces(
     Ok(marketplaces)
 }
 
+/// Backup auto_update_enabled settings for all known marketplaces.
+/// Used to preserve these settings before calling external CLI commands
+/// that may rewrite known_marketplaces.json without this field.
+pub fn backup_marketplace_auto_update_settings(
+    host_path: &Path,
+) -> Result<HashMap<String, bool>, String> {
+    let known_marketplaces_file_path = known_marketplaces_path(host_path);
+    let marketplaces_file: HashMap<String, KnownMarketplaceEntry> =
+        read_json_file_or_default(&known_marketplaces_file_path)?;
+
+    let mut settings = HashMap::new();
+    for (name, entry) in &marketplaces_file {
+        if let Some(enabled) = entry.auto_update_enabled {
+            settings.insert(name.clone(), enabled);
+        }
+    }
+    Ok(settings)
+}
+
+/// Restore auto_update_enabled settings after external CLI commands
+/// have potentially rewritten known_marketplaces.json.
+pub fn restore_marketplace_auto_update_settings(
+    host_path: &Path,
+    settings: &HashMap<String, bool>,
+) -> Result<(), String> {
+    if settings.is_empty() {
+        return Ok(());
+    }
+    let known_marketplaces_file_path = known_marketplaces_path(host_path);
+    let mut marketplaces_file: HashMap<String, KnownMarketplaceEntry> =
+        read_json_file_or_default(&known_marketplaces_file_path)?;
+
+    let mut changed = false;
+    for (name, enabled) in settings {
+        if let Some(entry) = marketplaces_file.get_mut(name) {
+            if entry.auto_update_enabled != Some(*enabled) {
+                entry.auto_update_enabled = Some(*enabled);
+                changed = true;
+            }
+        }
+    }
+
+    if changed {
+        write_json_file_pretty(&known_marketplaces_file_path, &marketplaces_file)?;
+    }
+    Ok(())
+}
+
 pub async fn set_claude_marketplace_auto_update_enabled(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
     marketplace_name: &str,
