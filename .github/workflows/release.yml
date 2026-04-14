@@ -18,6 +18,7 @@ env:
 
 jobs:
   create-release:
+    needs: test
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -96,7 +97,7 @@ jobs:
         run: node --test web/features/coding/opencode/components/ohMyOpenCodeSlimFormUtils.test.ts
 
   build:
-    needs: [create-release, test]
+    needs: create-release
     permissions:
       contents: write
     strategy:
