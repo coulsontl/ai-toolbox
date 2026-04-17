@@ -2118,12 +2118,12 @@ mod tests {
         }
 
         let program = String::from_utf8(output.stdout).ok()?;
-        let trimmed = program.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
+        let first_path = program
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())?;
 
-        Some(PathBuf::from(trimmed))
+        Some(PathBuf::from(first_path))
     }
 
     fn skip_when_opencode_cli_missing(test_name: &str) -> bool {

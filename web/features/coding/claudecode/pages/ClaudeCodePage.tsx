@@ -46,6 +46,7 @@ import {
 } from '@/services/claudeCodeApi';
 import { useRefreshStore, useSettingsStore } from '@/stores';
 import { refreshTrayMenu, hasAllApiHubExtension } from '@/services/appApi';
+import { TRAY_CONFIG_REFRESH_EVENT } from '@/constants/configEvents';
 import { claudeCodePromptApi } from '@/services/claudeCodePromptApi';
 import ClaudeProviderCard from '../components/ClaudeProviderCard';
 import ClaudeProviderFormModal from '../components/ClaudeProviderFormModal';
@@ -357,6 +358,18 @@ const ClaudeCodePage: React.FC = () => {
     void claudeProviderRefreshKey;
     loadConfigRef.current();
   }, [claudeProviderRefreshKey]);
+
+  React.useEffect(() => {
+    const handleTrayConfigRefresh = (event: Event) => {
+      event.preventDefault();
+      void loadConfig(true);
+    };
+
+    window.addEventListener(TRAY_CONFIG_REFRESH_EVENT, handleTrayConfigRefresh);
+    return () => {
+      window.removeEventListener(TRAY_CONFIG_REFRESH_EVENT, handleTrayConfigRefresh);
+    };
+  }, [loadConfig]);
 
   const handleOpenFolder = async () => {
     if (!configPath) return;

@@ -48,6 +48,7 @@ import {
 import { codexPromptApi } from '@/services/codexPromptApi';
 import { refreshTrayMenu, hasAllApiHubExtension } from '@/services/appApi';
 import { useKeepAlive } from '@/components/layout/KeepAliveOutlet';
+import { TRAY_CONFIG_REFRESH_EVENT } from '@/constants/configEvents';
 import { useSettingsStore } from '@/stores';
 import CodexProviderCard from '../components/CodexProviderCard';
 import CodexProviderFormModal from '../components/CodexProviderFormModal';
@@ -299,6 +300,18 @@ const CodexPage: React.FC = () => {
       loadConfig(true);
     }
   }, [isActive, loadConfig]);
+
+  React.useEffect(() => {
+    const handleTrayConfigRefresh = (event: Event) => {
+      event.preventDefault();
+      void loadConfig(true);
+    };
+
+    window.addEventListener(TRAY_CONFIG_REFRESH_EVENT, handleTrayConfigRefresh);
+    return () => {
+      window.removeEventListener(TRAY_CONFIG_REFRESH_EVENT, handleTrayConfigRefresh);
+    };
+  }, [loadConfig]);
 
   React.useEffect(() => {
     const checkAllApiHubAvailability = async () => {

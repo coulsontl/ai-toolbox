@@ -55,6 +55,7 @@ import {
   subscribePresetModels,
   type PresetModel,
 } from '@/constants/presetModels';
+import { TRAY_CONFIG_REFRESH_EVENT } from '@/constants/configEvents';
 import type {
   ProviderDisplayData,
   ModelDisplayData,
@@ -149,6 +150,36 @@ const reorderObject = <T,>(obj: Record<string, T>, newOrder: string[]): Record<s
 };
 
 const buildUnifiedModelId = (providerId: string, modelId: string): string => `${providerId}/${modelId}`;
+
+const sanitizeAgentsModelReferences = (
+  agents: unknown,
+  removedModelIdSet: Set<string>,
+): unknown => {
+  if (!agents || typeof agents !== 'object' || Array.isArray(agents)) {
+    return agents;
+  }
+
+  let mutated = false;
+  const nextAgents: Record<string, unknown> = {};
+
+  for (const [agentName, agent] of Object.entries(agents as Record<string, unknown>)) {
+    if (
+      agent
+      && typeof agent === 'object'
+      && !Array.isArray(agent)
+      && typeof (agent as Record<string, unknown>).model === 'string'
+      && removedModelIdSet.has((agent as Record<string, string>).model)
+    ) {
+      const { model: _removedAgentModel, ...remainingAgent } = agent as Record<string, unknown>;
+      nextAgents[agentName] = remainingAgent;
+      mutated = true;
+    } else {
+      nextAgents[agentName] = agent;
+    }
+  }
+
+  return mutated ? nextAgents : agents;
+};
 
 const SUPPORTED_PROVIDER_NPMS = new Set([
   '@ai-sdk/openai',
@@ -435,16 +466,15 @@ const OpenCodePage: React.FC = () => {
 
   // Reload config when tray menu changes the active OpenCode config.
   React.useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    const setup = async () => {
-      unlisten = await listen<string>('config-changed', (event) => {
-        if (event.payload === 'tray') {
-          loadConfig(false, true);
-        }
-      });
+    const handleTrayConfigRefresh = (event: Event) => {
+      event.preventDefault();
+      void loadConfig(false, true);
     };
-    setup();
-    return () => { unlisten?.(); };
+
+    window.addEventListener(TRAY_CONFIG_REFRESH_EVENT, handleTrayConfigRefresh);
+    return () => {
+      window.removeEventListener(TRAY_CONFIG_REFRESH_EVENT, handleTrayConfigRefresh);
+    };
   }, [loadConfig]);
 
   // Check if the Oh My OpenAgent plugin is enabled.
@@ -746,12 +776,19 @@ const OpenCodePage: React.FC = () => {
     }
 
     const removedModelIdSet = new Set(removedUnifiedModelIds);
+    const sanitizedAgents = sanitizeAgentsModelReferences(currentConfig.agents, removedModelIdSet);
 
-    return {
+    const nextConfig: OpenCodeConfig = {
       ...currentConfig,
       model: currentConfig.model && removedModelIdSet.has(currentConfig.model) ? undefined : currentConfig.model,
       small_model: currentConfig.small_model && removedModelIdSet.has(currentConfig.small_model) ? undefined : currentConfig.small_model,
     };
+
+    if (sanitizedAgents !== currentConfig.agents) {
+      nextConfig.agents = sanitizedAgents;
+    }
+
+    return nextConfig;
   }, []);
 
   const clearBatchDeleteState = React.useCallback((providerId?: string) => {

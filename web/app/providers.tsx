@@ -3,6 +3,7 @@ import { ConfigProvider, Spin, App, theme as antdTheme, Button, Modal, Progress,
 import zhCN from 'antd/locale/zh_CN';
 import enUS from 'antd/locale/en_US';
 import { emit, listen } from '@tauri-apps/api/event';
+import { TRAY_CONFIG_REFRESH_EVENT } from '@/constants/configEvents';
 import { useAppStore, useSettingsStore } from '@/stores';
 import { useThemeStore } from '@/stores/themeStore';
 import { checkForUpdates, openExternalUrl, setWindowBackgroundColor, installUpdate, loadCachedPresetModels, fetchRemotePresetModels, GITHUB_REPO, type UpdateInfo } from '@/services';
@@ -191,7 +192,14 @@ const AppInitializer: React.FC<{ children: React.ReactNode }> = ({ children }) =
       try {
         unlisten = await listen<string>('config-changed', async (event) => {
           if (event.payload === 'tray') {
-            window.location.reload();
+            const refreshEvent = new CustomEvent(TRAY_CONFIG_REFRESH_EVENT, {
+              cancelable: true,
+            });
+            window.dispatchEvent(refreshEvent);
+
+            if (!refreshEvent.defaultPrevented) {
+              window.location.reload();
+            }
           }
         });
       } catch (error) {

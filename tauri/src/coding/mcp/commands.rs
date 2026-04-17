@@ -1091,55 +1091,52 @@ pub async fn mcp_delete_favorite(
     mcp_store::delete_favorite_mcp(&state, &favoriteId).await
 }
 
-/// Initialize default favorite MCPs (presets) if not already initialized
-fn default_favorite_mcp_presets() -> [(&'static str, &'static str, &'static str); 7] {
-    [
-        (
-            "mcp-server-fetch",
-            "stdio",
-            r#"{"command":"uvx","args":["mcp-server-fetch"]}"#,
-        ),
-        (
-            "@modelcontextprotocol/server-time",
-            "stdio",
-            r#"{"command":"npx","args":["-y","@modelcontextprotocol/server-time"]}"#,
-        ),
-        (
-            "@modelcontextprotocol/server-memory",
-            "stdio",
-            r#"{"command":"npx","args":["-y","@modelcontextprotocol/server-memory"]}"#,
-        ),
-        (
-            "@modelcontextprotocol/server-sequential-thinking",
-            "stdio",
-            r#"{"command":"npx","args":["-y","@modelcontextprotocol/server-sequential-thinking"]}"#,
-        ),
-        (
-            "@upstash/context7-mcp",
-            "stdio",
-            r#"{"command":"npx","args":["-y","@upstash/context7-mcp"]}"#,
-        ),
-        (
-            "chrome-devtools",
-            "stdio",
-            r#"{"command":"npx","args":["-y","chrome-devtools-mcp@latest"]}"#,
-        ),
-        (
-            "playwright",
-            "stdio",
-            r#"{"command":"npx","args":["@playwright/mcp@latest"]}"#,
-        ),
-    ]
-}
+/// Default favorite MCP presets seeded into a user's library.
+const DEFAULT_FAVORITE_MCP_PRESETS: &[(&str, &str, &str)] = &[
+    (
+        "mcp-server-fetch",
+        "stdio",
+        r#"{"command":"uvx","args":["mcp-server-fetch"]}"#,
+    ),
+    (
+        "@modelcontextprotocol/server-time",
+        "stdio",
+        r#"{"command":"npx","args":["-y","@modelcontextprotocol/server-time"]}"#,
+    ),
+    (
+        "@modelcontextprotocol/server-memory",
+        "stdio",
+        r#"{"command":"npx","args":["-y","@modelcontextprotocol/server-memory"]}"#,
+    ),
+    (
+        "@modelcontextprotocol/server-sequential-thinking",
+        "stdio",
+        r#"{"command":"npx","args":["-y","@modelcontextprotocol/server-sequential-thinking"]}"#,
+    ),
+    (
+        "@upstash/context7-mcp",
+        "stdio",
+        r#"{"command":"npx","args":["-y","@upstash/context7-mcp"]}"#,
+    ),
+    (
+        "chrome-devtools",
+        "stdio",
+        r#"{"command":"npx","args":["-y","chrome-devtools-mcp@latest"]}"#,
+    ),
+    (
+        "playwright",
+        "stdio",
+        r#"{"command":"npx","args":["@playwright/mcp@latest"]}"#,
+    ),
+];
 
 #[tauri::command]
 pub async fn mcp_init_default_favorites(state: State<'_, DbState>) -> Result<usize, String> {
     let prefs = mcp_store::get_mcp_preferences(&state).await?;
     let now = now_ms();
-    let presets = default_favorite_mcp_presets();
     let mut inserted_count = 0;
 
-    for (name, server_type, config_json) in presets {
+    for (name, server_type, config_json) in DEFAULT_FAVORITE_MCP_PRESETS {
         if mcp_store::get_favorite_mcp_by_name(&state, name).await?.is_some() {
             continue;
         }

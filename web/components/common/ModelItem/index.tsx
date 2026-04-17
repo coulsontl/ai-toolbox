@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { ModelDisplayData, I18nPrefix } from '@/components/common/ProviderCard/types';
+import styles from './styles.module.less';
 
 const { Text } = Typography;
 
@@ -46,7 +47,6 @@ const ModelItem: React.FC<ModelItemProps> = ({
   i18nPrefix = 'settings',
 }) => {
   const { t } = useTranslation();
-  const [hovered, setHovered] = React.useState(false);
   
   const {
     attributes,
@@ -74,14 +74,13 @@ const ModelItem: React.FC<ModelItemProps> = ({
   };
 
   const hasLimits = model.contextLimit !== undefined || model.outputLimit !== undefined;
-  const showPrimaryAction = hovered && !selectionMode && onSetPrimary;
+  const showPrimaryAction = !selectionMode && onSetPrimary;
 
   return (
     <div
       ref={setNodeRef}
       style={style}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      className={styles.container}
     >
       {draggable && (
         <div
@@ -101,6 +100,7 @@ const ModelItem: React.FC<ModelItemProps> = ({
         <Checkbox
           checked={selected}
           onChange={(event) => onSelectChange(event.target.checked)}
+          aria-label={t(`${i18nPrefix}.model.selectModel`, { name: model.name })}
         />
       )}
 
@@ -132,6 +132,7 @@ const ModelItem: React.FC<ModelItemProps> = ({
       <Space>
         {showPrimaryAction && (
           <Button
+            className={styles.primaryAction}
             size="small"
             type="text"
             icon={<CheckCircleOutlined />}
