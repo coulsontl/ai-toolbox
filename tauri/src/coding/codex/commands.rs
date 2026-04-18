@@ -3,6 +3,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use super::adapter;
+use super::official_accounts::{
+    clear_all_codex_official_account_apply_status, codex_provider_has_official_accounts,
+    ensure_codex_provider_has_no_official_accounts, sync_codex_official_account_apply_status,
+};
 use super::plugin_ops;
 use super::plugin_state;
 use super::plugin_types::{
@@ -59,7 +63,7 @@ pub(crate) fn get_codex_root_dir_without_db() -> Result<PathBuf, String> {
     get_codex_default_root_dir()
 }
 
-async fn get_codex_custom_root_dir_async(
+pub(super) async fn get_codex_custom_root_dir_async(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
 ) -> Option<PathBuf> {
     let mut result = db
@@ -82,7 +86,7 @@ pub fn get_codex_root_dir_from_db(
     get_codex_root_dir_without_db()
 }
 
-async fn get_codex_root_dir_from_db_async(
+pub(super) async fn get_codex_root_dir_from_db_async(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
 ) -> Result<PathBuf, String> {
     if let Some(custom_root_dir) = get_codex_custom_root_dir_async(db).await {
@@ -670,6 +674,32 @@ async fn get_applied_codex_provider(
     }
 }
 
+async fn query_codex_provider_by_id(
+    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    provider_id: &str,
+) -> Result<CodexProvider, String> {
+    let record_id = db_record_id("codex_provider", provider_id);
+    let provider_result: Result<Vec<Value>, _> = db
+        .query(&format!(
+            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
+            record_id
+        ))
+        .await
+        .map_err(|e| format!("Failed to query provider: {}", e))?
+        .take(0);
+
+    match provider_result {
+        Ok(records) => {
+            if let Some(record) = records.first() {
+                Ok(adapter::from_db_value_provider(record.clone()))
+            } else {
+                Err("Provider not found".to_string())
+            }
+        }
+        Err(e) => Err(format!("Failed to deserialize provider: {}", e)),
+    }
+}
+
 fn parse_toml_document(raw_toml: &str, context: &str) -> Result<toml_edit::DocumentMut, String> {
     if raw_toml.trim().is_empty() {
         Ok(toml_edit::DocumentMut::new())
@@ -769,9 +799,23 @@ fn merge_codex_auth_json(
                 "OPENAI_API_KEY".to_string(),
                 serde_json::Value::String(api_key),
             );
+            merged_auth.insert(
+                "auth_mode".to_string(),
+                serde_json::Value::String("apikey".to_string()),
+            );
         }
         None => {
             merged_auth.remove("OPENAI_API_KEY");
+            if merged_auth
+                .get("tokens")
+                .and_then(|value| value.as_object())
+                .is_some_and(|tokens| !tokens.is_empty())
+            {
+                merged_auth.insert(
+                    "auth_mode".to_string(),
+                    serde_json::Value::String("chatgpt".to_string()),
+                );
+            }
         }
     }
 
@@ -1232,6 +1276,12 @@ pub async fn update_codex_provider(
             return Err(format!("Codex provider with ID '{}' not found", id));
         }
     }
+    if provider.category != "official" && codex_provider_has_official_accounts(&db, &id).await? {
+        return Err(
+            "This provider still has official accounts. Delete them before switching the provider away from official mode"
+                .to_string(),
+        );
+    }
 
     // Get created_at and is_disabled from existing record
     let (created_at, existing_is_disabled) = if !provider.created_at.is_empty() {
@@ -1346,6 +1396,7 @@ pub async fn delete_codex_provider(
     id: String,
 ) -> Result<(), String> {
     let db = state.db();
+    ensure_codex_provider_has_no_official_accounts(&db, &id).await?;
 
     db.query(format!("DELETE codex_provider:`{}`", id))
         .await
@@ -1457,7 +1508,14 @@ pub async fn select_codex_provider(
     id: String,
 ) -> Result<(), String> {
     let db = state.db();
-    apply_config_internal(&db, &app, &id, false).await
+    let provider = query_codex_provider_by_id(&db, &id).await?;
+    apply_config_internal(&db, &app, &id, false).await?;
+    if provider.category == "official" {
+        sync_codex_official_account_apply_status(&db, &id).await?;
+    } else {
+        clear_all_codex_official_account_apply_status(&db).await?;
+    }
+    Ok(())
 }
 
 /// Internal function: update is_applied status
@@ -2378,6 +2436,96 @@ model_provider = "custom"
                 .pointer("/tokens/account_id")
                 .and_then(|value| value.as_str()),
             Some("account-id")
+        );
+    }
+
+    #[test]
+    fn merge_codex_auth_json_api_key_mode_keeps_chatgpt_runtime_fields_for_restore() {
+        let existing_auth = json!({
+            "auth_mode": "chatgpt",
+            "OPENAI_API_KEY": "sk-old",
+            "last_refresh": "2026-04-10T00:00:00Z",
+            "tokens": {
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "account_id": "account-id"
+            },
+            "agent_identity": {
+                "workspace_id": "workspace-id"
+            }
+        });
+        let managed_auth = json!({
+            "OPENAI_API_KEY": "sk-new"
+        });
+
+        let merged_auth = merge_codex_auth_json(&existing_auth, &managed_auth);
+
+        assert_eq!(
+            merged_auth
+                .get("OPENAI_API_KEY")
+                .and_then(|value| value.as_str()),
+            Some("sk-new")
+        );
+        assert_eq!(
+            merged_auth
+                .get("auth_mode")
+                .and_then(|value| value.as_str()),
+            Some("apikey")
+        );
+        assert_eq!(
+            merged_auth
+                .pointer("/tokens/access_token")
+                .and_then(|value| value.as_str()),
+            Some("access-token")
+        );
+        assert_eq!(
+            merged_auth
+                .pointer("/tokens/refresh_token")
+                .and_then(|value| value.as_str()),
+            Some("refresh-token")
+        );
+        assert_eq!(
+            merged_auth
+                .get("last_refresh")
+                .and_then(|value| value.as_str()),
+            Some("2026-04-10T00:00:00Z")
+        );
+        assert!(merged_auth.get("agent_identity").is_some());
+    }
+
+    #[test]
+    fn merge_codex_auth_json_official_mode_removes_api_key_without_dropping_chatgpt_tokens() {
+        let existing_auth = json!({
+            "auth_mode": "apikey",
+            "OPENAI_API_KEY": "sk-old",
+            "last_refresh": "2026-04-10T00:00:00Z",
+            "tokens": {
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "account_id": "account-id"
+            }
+        });
+
+        let merged_auth = merge_codex_auth_json(&existing_auth, &json!({}));
+
+        assert!(merged_auth.get("OPENAI_API_KEY").is_none());
+        assert_eq!(
+            merged_auth
+                .get("auth_mode")
+                .and_then(|value| value.as_str()),
+            Some("chatgpt")
+        );
+        assert_eq!(
+            merged_auth
+                .pointer("/tokens/access_token")
+                .and_then(|value| value.as_str()),
+            Some("access-token")
+        );
+        assert_eq!(
+            merged_auth
+                .pointer("/tokens/refresh_token")
+                .and_then(|value| value.as_str()),
+            Some("refresh-token")
         );
     }
 

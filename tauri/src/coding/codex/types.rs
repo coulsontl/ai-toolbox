@@ -192,6 +192,164 @@ pub struct CodexSettings {
 }
 
 // ============================================================================
+// Codex Official Account Types
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexOfficialAccountRecord {
+    pub id: Thing,
+    pub provider_id: String,
+    pub name: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    pub auth_snapshot: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_refresh: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_short_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_5h_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_weekly_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_5h_reset_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_weekly_reset_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_limits_fetched_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_index: Option<i32>,
+    pub is_applied: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexOfficialAccount {
+    pub id: String,
+    pub provider_id: String,
+    pub name: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing, skip_deserializing, default)]
+    pub auth_snapshot: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_refresh: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_expires_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_token_preview: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token_preview: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_short_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_5h_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_weekly_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_5h_reset_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_weekly_reset_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_limits_fetched_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_index: Option<i32>,
+    pub is_applied: bool,
+    pub is_virtual: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<CodexOfficialAccountRecord> for CodexOfficialAccount {
+    fn from(record: CodexOfficialAccountRecord) -> Self {
+        CodexOfficialAccount {
+            id: record.id.id.to_string(),
+            provider_id: record.provider_id,
+            name: record.name,
+            kind: record.kind,
+            email: record.email,
+            auth_snapshot: Some(record.auth_snapshot),
+            auth_mode: record.auth_mode,
+            account_id: record.account_id,
+            plan_type: record.plan_type,
+            last_refresh: record.last_refresh,
+            token_expires_at: None,
+            access_token_preview: None,
+            refresh_token_preview: None,
+            limit_short_label: record.limit_short_label,
+            limit_5h_text: record.limit_5h_text,
+            limit_weekly_text: record.limit_weekly_text,
+            limit_5h_reset_at: record.limit_5h_reset_at,
+            limit_weekly_reset_at: record.limit_weekly_reset_at,
+            last_limits_fetched_at: record.last_limits_fetched_at,
+            last_error: record.last_error,
+            sort_index: record.sort_index,
+            is_applied: record.is_applied,
+            is_virtual: false,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexOfficialAccountContent {
+    pub provider_id: String,
+    pub name: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    pub auth_snapshot: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_refresh: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_short_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_5h_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_weekly_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_5h_reset_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_weekly_reset_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_limits_fetched_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_index: Option<i32>,
+    pub is_applied: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+// ============================================================================
 // Codex Prompt Config Types
 // ============================================================================
 

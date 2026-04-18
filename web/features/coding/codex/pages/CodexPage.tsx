@@ -1,6 +1,6 @@
 import React from 'react';
-import { Typography, Button, Space, Empty, message, Modal, Spin, Collapse } from 'antd';
-import { PlusOutlined, FolderOpenOutlined, AppstoreOutlined, SyncOutlined, EyeOutlined, ExclamationCircleOutlined, LinkOutlined, EllipsisOutlined, DatabaseOutlined, ImportOutlined, FileTextOutlined, ThunderboltOutlined, EditOutlined } from '@ant-design/icons';
+import { Typography, Button, Space, Empty, message, Modal, Spin, Collapse, Descriptions } from 'antd';
+import { PlusOutlined, FolderOpenOutlined, AppstoreOutlined, SyncOutlined, EyeOutlined, ExclamationCircleOutlined, LinkOutlined, EllipsisOutlined, DatabaseOutlined, ImportOutlined, FileTextOutlined, ThunderboltOutlined, EditOutlined, CopyOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { invoke } from '@tauri-apps/api/core';
@@ -22,6 +22,7 @@ import {
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
 import type {
   CodexProvider,
+  CodexOfficialAccount,
   CodexProviderFormValues,
   CodexProviderInput,
   ConfigPathInfo,
@@ -35,6 +36,13 @@ import {
   getCodexRootPathInfo,
   getCodexCommonConfig,
   listCodexProviders,
+  listCodexOfficialAccounts,
+  startCodexOfficialAccountOauth,
+  saveCodexOfficialLocalAccount,
+  applyCodexOfficialAccount,
+  deleteCodexOfficialAccount,
+  refreshCodexOfficialAccountLimits,
+  copyCodexOfficialAccountToken,
   selectCodexProvider,
   readCodexSettings,
   createCodexProvider,
@@ -134,6 +142,50 @@ function buildCodexFavoriteProviderConfig(provider: CodexProvider) {
   );
 }
 
+const ACCOUNT_DETAILS_EMPTY_VALUE = '-';
+
+function maskTokenPreview(tokenKind: 'access' | 'refresh', account: CodexOfficialAccount): string {
+  const preview = tokenKind === 'access'
+    ? account.accessTokenPreview
+    : account.refreshTokenPreview;
+  if (preview?.trim()) {
+    return preview.trim();
+  }
+  return ACCOUNT_DETAILS_EMPTY_VALUE;
+}
+
+function renderTokenPreview(
+  previewValue: string,
+  onCopy: () => Promise<void>,
+): React.ReactNode {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, maxWidth: '100%' }}>
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          fontFamily: 'ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace',
+          fontSize: 12,
+        }}
+      >
+        {previewValue}
+      </div>
+      <Button
+        type="text"
+        size="small"
+        icon={<CopyOutlined />}
+        onClick={() => {
+          void onCopy();
+        }}
+        style={{ height: 'auto', paddingInline: 4, flexShrink: 0 }}
+      />
+    </div>
+  );
+}
+
 const CodexPage: React.FC = () => {
   const { t } = useTranslation();
   const { isActive } = useKeepAlive();
@@ -145,7 +197,16 @@ const CodexPage: React.FC = () => {
   const [configPath, setConfigPath] = React.useState<string>('');
   const [rootPathInfo, setRootPathInfo] = React.useState<ConfigPathInfo | null>(null);
   const [providers, setProviders] = React.useState<CodexProvider[]>([]);
+  const [officialAccountsByProviderId, setOfficialAccountsByProviderId] = React.useState<
+    Record<string, CodexOfficialAccount[]>
+  >({});
   const [appliedProviderId, setAppliedProviderId] = React.useState<string>('');
+  const [refreshingOfficialAccountId, setRefreshingOfficialAccountId] = React.useState<string | null>(null);
+  const [savingOfficialAccountId, setSavingOfficialAccountId] = React.useState<string | null>(null);
+  const [officialAccountDetails, setOfficialAccountDetails] = React.useState<{
+    provider: CodexProvider;
+    account: CodexOfficialAccount;
+  } | null>(null);
 
   // Modal states
   const [providerModalOpen, setProviderModalOpen] = React.useState(false);
@@ -220,6 +281,13 @@ const CodexPage: React.FC = () => {
       setConfigPath(path);
       setRootPathInfo(nextRootPathInfo);
       setProviders(providerList);
+      const officialAccountEntries = await Promise.all(
+        providerList.map(async (provider) => [
+          provider.id,
+          await listCodexOfficialAccounts(provider.id),
+        ] as const),
+      );
+      setOfficialAccountsByProviderId(Object.fromEntries(officialAccountEntries));
       setPluginPanelRefreshToken((value) => value + 1);
       const applied = providerList.find((p) => p.isApplied);
       setAppliedProviderId(applied?.id || '');
@@ -387,6 +455,153 @@ const CodexPage: React.FC = () => {
       message.error(errorMsg || t('common.error'));
     }
   };
+
+  const handleStartOfficialAccountOauth = async (provider: CodexProvider) => {
+    try {
+      await startCodexOfficialAccountOauth(provider.id);
+      message.success(t('codex.provider.officialAccountOauthSuccess'));
+      await loadConfig();
+      await refreshTrayMenu();
+    } catch (error) {
+      console.error('Failed to start Codex official account OAuth:', error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      message.error(errorMsg || t('common.error'));
+    }
+  };
+
+  const handleApplyOfficialAccount = async (
+    provider: CodexProvider,
+    account: CodexOfficialAccount,
+  ) => {
+    try {
+      await applyCodexOfficialAccount(provider.id, account.id);
+      message.success(t('codex.apply.success'));
+      await loadConfig();
+      await refreshTrayMenu();
+    } catch (error) {
+      console.error('Failed to apply Codex official account:', error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      message.error(errorMsg || t('common.error'));
+    }
+  };
+
+  const handleSaveOfficialLocalAccount = async (
+    provider: CodexProvider,
+    account: CodexOfficialAccount,
+  ) => {
+    try {
+      setSavingOfficialAccountId(account.id);
+      await saveCodexOfficialLocalAccount(provider.id);
+      if (officialAccountDetails?.account.id === account.id) {
+        setOfficialAccountDetails(null);
+      }
+      message.success(t('codex.provider.officialAccountSaveSuccess'));
+      await loadConfig();
+      await refreshTrayMenu();
+    } catch (error) {
+      console.error('Failed to save Codex local official account:', error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      message.error(errorMsg || t('common.error'));
+    } finally {
+      setSavingOfficialAccountId((current) => (current === account.id ? null : current));
+    }
+  };
+
+  const handleDeleteOfficialAccount = async (
+    provider: CodexProvider,
+    account: CodexOfficialAccount,
+  ) => {
+    Modal.confirm({
+      title: t('codex.provider.officialAccountDeleteConfirm', {
+        name: account.email || account.name,
+      }),
+      icon: <ExclamationCircleOutlined />,
+      onOk: async () => {
+        try {
+          await deleteCodexOfficialAccount(provider.id, account.id);
+          message.success(t('common.success'));
+          await loadConfig();
+          await refreshTrayMenu();
+        } catch (error) {
+          console.error('Failed to delete Codex official account:', error);
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          message.error(errorMsg || t('common.error'));
+        }
+      },
+    });
+  };
+
+  const handleRefreshOfficialAccount = async (
+    provider: CodexProvider,
+    account: CodexOfficialAccount,
+  ) => {
+    try {
+      setRefreshingOfficialAccountId(account.id);
+      const refreshedAccount = await refreshCodexOfficialAccountLimits(provider.id, account.id);
+      setOfficialAccountsByProviderId((previous) => ({
+        ...previous,
+        [provider.id]: (previous[provider.id] || []).map((currentAccount) =>
+          currentAccount.id === refreshedAccount.id ? refreshedAccount : currentAccount,
+        ),
+      }));
+      setOfficialAccountDetails((current) => {
+        if (!current || current.account.id !== refreshedAccount.id) {
+          return current;
+        }
+        return {
+          provider: current.provider,
+          account: refreshedAccount,
+        };
+      });
+      message.success(t('codex.provider.officialAccountRefreshSuccess'));
+    } catch (error) {
+      console.error('Failed to refresh Codex official account usage:', error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      message.error(errorMsg || t('common.error'));
+    } finally {
+      setRefreshingOfficialAccountId((current) => (current === account.id ? null : current));
+    }
+  };
+
+  const handleViewOfficialAccountDetails = (
+    provider: CodexProvider,
+    account: CodexOfficialAccount,
+  ) => {
+    setOfficialAccountDetails({ provider, account });
+  };
+
+  const handleCopyOfficialAccountToken = React.useCallback(async (
+    provider: CodexProvider,
+    account: CodexOfficialAccount,
+    tokenKind: 'access' | 'refresh',
+  ) => {
+    try {
+      await copyCodexOfficialAccountToken(provider.id, account.id, tokenKind);
+      message.success(t('common.copied'));
+    } catch (error) {
+      console.error('Failed to copy official account token:', error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      message.error(errorMsg || t('common.error'));
+    }
+  }, [t]);
+
+  const formatDateTime = React.useCallback((value?: string | null) => {
+    if (!value) {
+      return ACCOUNT_DETAILS_EMPTY_VALUE;
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return value;
+    }
+    return date.toLocaleString();
+  }, []);
+
+  const formatUnixTimestamp = React.useCallback((value?: number | null) => {
+    if (value == null) {
+      return ACCOUNT_DETAILS_EMPTY_VALUE;
+    }
+    return new Date(value * 1000).toLocaleString();
+  }, []);
 
   // 拖拽排序处理
   const handleDragEnd = async (event: DragEndEvent) => {
@@ -1143,12 +1358,21 @@ const CodexPage: React.FC = () => {
                                 key={provider.id}
                                 provider={provider}
                                 isApplied={provider.id === appliedProviderId}
+                                officialAccounts={officialAccountsByProviderId[provider.id] || []}
                                 onEdit={handleEditProvider}
                                 onDelete={handleDeleteProvider}
                                 onCopy={handleCopyProvider}
                                 onTest={handleTestProvider}
                                 onSelect={handleSelectProvider}
                                 onToggleDisabled={handleToggleDisabled}
+                                onOfficialAccountLogin={handleStartOfficialAccountOauth}
+                                onOfficialLocalAccountSave={handleSaveOfficialLocalAccount}
+                                onOfficialAccountApply={handleApplyOfficialAccount}
+                                onOfficialAccountDelete={handleDeleteOfficialAccount}
+                                onOfficialAccountRefresh={handleRefreshOfficialAccount}
+                                onOfficialAccountViewDetails={handleViewOfficialAccountDetails}
+                                refreshingOfficialAccountId={refreshingOfficialAccountId}
+                                savingOfficialAccountId={savingOfficialAccountId}
                                 connectivityStatus={connectivityStatuses[provider.id]}
                               />
                             ))}
@@ -1337,6 +1561,106 @@ const CodexPage: React.FC = () => {
           sidebarVisible={!sidebarHidden}
           onSidebarVisibleChange={(visible) => setSidebarHidden('codex', !visible)}
         />
+        <Modal
+          open={Boolean(officialAccountDetails)}
+          title={t('codex.provider.officialAccountDetailsTitle')}
+          onCancel={() => setOfficialAccountDetails(null)}
+          footer={null}
+          width={640}
+        >
+          {officialAccountDetails && (
+            <Descriptions
+              column={1}
+              size="small"
+              labelStyle={{ width: 180 }}
+              items={[
+                {
+                  key: 'provider',
+                  label: t('codex.provider.name'),
+                  children: officialAccountDetails.provider.name,
+                },
+                {
+                  key: 'account',
+                  label: t('codex.provider.officialAccountLabel'),
+                  children: officialAccountDetails.account.email || officialAccountDetails.account.name,
+                },
+                {
+                  key: 'type',
+                  label: t('codex.provider.mode'),
+                  children: officialAccountDetails.account.id === '__local__'
+                    ? t('codex.provider.officialAccountLocalTag')
+                    : t('codex.provider.officialAccountOauthTag'),
+                },
+                {
+                  key: 'plan',
+                  label: t('codex.provider.officialAccountPlanType'),
+                  children: officialAccountDetails.account.planType || ACCOUNT_DETAILS_EMPTY_VALUE,
+                },
+                {
+                  key: 'usage5h',
+                  label: t('codex.provider.officialAccountShortWindowUsage', {
+                    label: officialAccountDetails.account.limitShortLabel || '5h',
+                  }),
+                  children: officialAccountDetails.account.limit5hText || ACCOUNT_DETAILS_EMPTY_VALUE,
+                },
+                {
+                  key: 'usageWeek',
+                  label: t('codex.provider.officialAccountWeeklyLimit'),
+                  children: officialAccountDetails.account.limitWeeklyText || ACCOUNT_DETAILS_EMPTY_VALUE,
+                },
+                {
+                  key: 'reset5h',
+                  label: t('codex.provider.officialAccountShortWindowResetAt'),
+                  children: formatUnixTimestamp(officialAccountDetails.account.limit5hResetAt),
+                },
+                {
+                  key: 'resetWeek',
+                  label: t('codex.provider.officialAccountWeeklyResetAt'),
+                  children: formatUnixTimestamp(officialAccountDetails.account.limitWeeklyResetAt),
+                },
+                {
+                  key: 'lastFetched',
+                  label: t('codex.provider.officialAccountLastLimitRefreshAt'),
+                  children: formatDateTime(officialAccountDetails.account.lastLimitsFetchedAt),
+                },
+                {
+                  key: 'tokenExpiresAt',
+                  label: t('codex.provider.officialAccountTokenExpiresAt'),
+                  children: formatUnixTimestamp(officialAccountDetails.account.tokenExpiresAt),
+                },
+                {
+                  key: 'accessToken',
+                  label: t('codex.provider.officialAccountAccessToken'),
+                  children: renderTokenPreview(
+                    maskTokenPreview('access', officialAccountDetails.account),
+                    async () => handleCopyOfficialAccountToken(
+                      officialAccountDetails.provider,
+                      officialAccountDetails.account,
+                      'access',
+                    ),
+                  ),
+                },
+                {
+                  key: 'refreshToken',
+                  label: t('codex.provider.officialAccountRefreshToken'),
+                  children: renderTokenPreview(
+                    maskTokenPreview('refresh', officialAccountDetails.account),
+                    async () => handleCopyOfficialAccountToken(
+                      officialAccountDetails.provider,
+                      officialAccountDetails.account,
+                      'refresh',
+                    ),
+                  ),
+                },
+                {
+                  key: 'lastError',
+                  label: t('codex.provider.officialAccountLastErrorLabel'),
+                  children: officialAccountDetails.account.lastError || ACCOUNT_DETAILS_EMPTY_VALUE,
+                },
+              ]}
+            />
+          )}
+        </Modal>
       </div>
     </SectionSidebarLayout>
   );

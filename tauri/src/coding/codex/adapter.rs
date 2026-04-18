@@ -1,12 +1,73 @@
+use base64::Engine;
 use chrono::Local;
 use serde_json::Value;
 
 use super::commands::infer_codex_provider_category_from_settings;
 use super::types::{
-    CodexCommonConfig, CodexPromptConfig, CodexPromptConfigContent, CodexProvider,
-    CodexProviderContent,
+    CodexCommonConfig, CodexOfficialAccount, CodexOfficialAccountContent, CodexPromptConfig,
+    CodexPromptConfigContent, CodexProvider, CodexProviderContent,
 };
 use crate::coding::db_id::db_extract_id;
+
+fn decode_jwt_expiration(value: &str) -> Option<i64> {
+    let payload = value.split('.').nth(1)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()
+        .or_else(|| {
+            let padded = format!("{}{}", payload, "=".repeat((4 - payload.len() % 4) % 4));
+            base64::engine::general_purpose::URL_SAFE
+                .decode(padded)
+                .ok()
+        })?;
+    serde_json::from_slice::<Value>(&decoded)
+        .ok()?
+        .get("exp")
+        .and_then(Value::as_i64)
+}
+
+fn token_expires_at_from_snapshot(snapshot: &str) -> Option<i64> {
+    let parsed = serde_json::from_str::<Value>(snapshot).ok()?;
+    parsed
+        .pointer("/tokens/access_token")
+        .and_then(Value::as_str)
+        .and_then(decode_jwt_expiration)
+        .or_else(|| {
+            parsed
+                .pointer("/tokens/id_token")
+                .and_then(Value::as_str)
+                .and_then(decode_jwt_expiration)
+        })
+}
+
+fn mask_token_preview(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let char_count = trimmed.chars().count();
+    if char_count <= 12 {
+        return Some(trimmed.to_string());
+    }
+    let head: String = trimmed.chars().take(6).collect();
+    let tail: String = trimmed
+        .chars()
+        .rev()
+        .take(6)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    Some(format!("{head}...{tail}"))
+}
+
+fn token_preview_from_snapshot(snapshot: &str, pointer: &str) -> Option<String> {
+    let parsed = serde_json::from_str::<Value>(snapshot).ok()?;
+    parsed
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .and_then(mask_token_preview)
+}
 
 // ============================================================================
 // Provider Adapter Functions
@@ -130,6 +191,190 @@ pub fn to_db_value_provider(content: &CodexProviderContent) -> Value {
 
     map.insert("is_applied".to_string(), Value::Bool(content.is_applied));
     map.insert("is_disabled".to_string(), Value::Bool(content.is_disabled));
+    map.insert(
+        "created_at".to_string(),
+        Value::String(content.created_at.clone()),
+    );
+    map.insert(
+        "updated_at".to_string(),
+        Value::String(content.updated_at.clone()),
+    );
+
+    Value::Object(map)
+}
+
+// ============================================================================
+// Official Account Adapter Functions
+// ============================================================================
+
+pub fn from_db_value_official_account(value: Value) -> CodexOfficialAccount {
+    let id = db_extract_id(&value);
+    let auth_snapshot = value
+        .get("auth_snapshot")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    CodexOfficialAccount {
+        id,
+        provider_id: value
+            .get("provider_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        name: value
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        kind: value
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("oauth")
+            .to_string(),
+        email: value
+            .get("email")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        auth_snapshot: Some(auth_snapshot.clone()),
+        auth_mode: value
+            .get("auth_mode")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        account_id: value
+            .get("account_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        plan_type: value
+            .get("plan_type")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        last_refresh: value
+            .get("last_refresh")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        token_expires_at: token_expires_at_from_snapshot(&auth_snapshot),
+        access_token_preview: token_preview_from_snapshot(&auth_snapshot, "/tokens/access_token"),
+        refresh_token_preview: token_preview_from_snapshot(&auth_snapshot, "/tokens/refresh_token"),
+        limit_short_label: value
+            .get("limit_short_label")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        limit_5h_text: value
+            .get("limit_5h_text")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        limit_weekly_text: value
+            .get("limit_weekly_text")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        limit_5h_reset_at: value.get("limit_5h_reset_at").and_then(|v| v.as_i64()),
+        limit_weekly_reset_at: value.get("limit_weekly_reset_at").and_then(|v| v.as_i64()),
+        last_limits_fetched_at: value
+            .get("last_limits_fetched_at")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        last_error: value
+            .get("last_error")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        sort_index: value
+            .get("sort_index")
+            .and_then(|v| v.as_i64())
+            .map(|n| n as i32),
+        is_applied: value
+            .get("is_applied")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        is_virtual: false,
+        created_at: value
+            .get("created_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        updated_at: value
+            .get("updated_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+    }
+}
+
+pub fn to_db_value_official_account(content: &CodexOfficialAccountContent) -> Value {
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "provider_id".to_string(),
+        Value::String(content.provider_id.clone()),
+    );
+    map.insert("name".to_string(), Value::String(content.name.clone()));
+    map.insert("kind".to_string(), Value::String(content.kind.clone()));
+    map.insert(
+        "auth_snapshot".to_string(),
+        Value::String(content.auth_snapshot.clone()),
+    );
+
+    if let Some(ref email) = content.email {
+        map.insert("email".to_string(), Value::String(email.clone()));
+    }
+    if let Some(ref auth_mode) = content.auth_mode {
+        map.insert("auth_mode".to_string(), Value::String(auth_mode.clone()));
+    }
+    if let Some(ref account_id) = content.account_id {
+        map.insert("account_id".to_string(), Value::String(account_id.clone()));
+    }
+    if let Some(ref plan_type) = content.plan_type {
+        map.insert("plan_type".to_string(), Value::String(plan_type.clone()));
+    }
+    if let Some(ref last_refresh) = content.last_refresh {
+        map.insert(
+            "last_refresh".to_string(),
+            Value::String(last_refresh.clone()),
+        );
+    }
+    if let Some(ref label) = content.limit_short_label {
+        map.insert(
+            "limit_short_label".to_string(),
+            Value::String(label.clone()),
+        );
+    }
+    if let Some(ref limit_5h_text) = content.limit_5h_text {
+        map.insert(
+            "limit_5h_text".to_string(),
+            Value::String(limit_5h_text.clone()),
+        );
+    }
+    if let Some(ref limit_weekly_text) = content.limit_weekly_text {
+        map.insert(
+            "limit_weekly_text".to_string(),
+            Value::String(limit_weekly_text.clone()),
+        );
+    }
+    if let Some(limit_5h_reset_at) = content.limit_5h_reset_at {
+        map.insert(
+            "limit_5h_reset_at".to_string(),
+            Value::Number(limit_5h_reset_at.into()),
+        );
+    }
+    if let Some(limit_weekly_reset_at) = content.limit_weekly_reset_at {
+        map.insert(
+            "limit_weekly_reset_at".to_string(),
+            Value::Number(limit_weekly_reset_at.into()),
+        );
+    }
+    if let Some(ref last_limits_fetched_at) = content.last_limits_fetched_at {
+        map.insert(
+            "last_limits_fetched_at".to_string(),
+            Value::String(last_limits_fetched_at.clone()),
+        );
+    }
+    if let Some(ref last_error) = content.last_error {
+        map.insert("last_error".to_string(), Value::String(last_error.clone()));
+    }
+    if let Some(sort_index) = content.sort_index {
+        map.insert("sort_index".to_string(), Value::Number(sort_index.into()));
+    }
+
+    map.insert("is_applied".to_string(), Value::Bool(content.is_applied));
     map.insert(
         "created_at".to_string(),
         Value::String(content.created_at.clone()),

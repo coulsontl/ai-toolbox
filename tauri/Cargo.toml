@@ -51,6 +51,8 @@ russh = { version = "0.57", default-features = false, features = ["ring", "flate
 russh-sftp = "2.1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 tempfile = "3.23.0"
+base64 = "0.22"
+arboard = "3.6.1"
 
 [target.'cfg(windows)'.dependencies]
 junction = "1.1"
@@ -64,4 +66,3 @@ strip = true
 opt-level = 3
 panic = "abort"
 codegen-units = 1
-

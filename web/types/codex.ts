@@ -61,6 +61,35 @@ export interface CodexSettings {
   config?: string;
 }
 
+export type CodexOfficialAccountKind = 'oauth' | 'local';
+
+export interface CodexOfficialAccount {
+  id: string;
+  providerId: string;
+  name: string;
+  kind: CodexOfficialAccountKind;
+  email?: string;
+  authMode?: string;
+  accountId?: string;
+  planType?: string;
+  lastRefresh?: string;
+  tokenExpiresAt?: number;
+  accessTokenPreview?: string;
+  refreshTokenPreview?: string;
+  limitShortLabel?: string;
+  limit5hText?: string;
+  limitWeeklyText?: string;
+  limit5hResetAt?: number;
+  limitWeeklyResetAt?: number;
+  lastLimitsFetchedAt?: string;
+  lastError?: string;
+  sortIndex?: number;
+  isApplied: boolean;
+  isVirtual: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface CodexPluginRuntimeStatus {
   mode: 'local' | 'wslDirect';
   source: 'custom' | 'env' | 'shell' | 'default';

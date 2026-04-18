@@ -7,6 +7,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   CodexProvider,
+  CodexOfficialAccount,
   CodexCommonConfig,
   CodexCommonConfigInput,
   ConfigPathInfo,
@@ -104,6 +105,60 @@ export const revealCodexConfigFolder = async (): Promise<void> => {
  */
 export const listCodexProviders = async (): Promise<CodexProvider[]> => {
   return await invoke<CodexProvider[]>('list_codex_providers');
+};
+
+export const listCodexOfficialAccounts = async (providerId: string): Promise<CodexOfficialAccount[]> => {
+  return await invoke<CodexOfficialAccount[]>('list_codex_official_accounts', { providerId });
+};
+
+export const startCodexOfficialAccountOauth = async (
+  providerId: string,
+): Promise<CodexOfficialAccount> => {
+  return await invoke<CodexOfficialAccount>('start_codex_official_account_oauth', { providerId });
+};
+
+export const saveCodexOfficialLocalAccount = async (
+  providerId: string,
+): Promise<CodexOfficialAccount> => {
+  return await invoke<CodexOfficialAccount>('save_codex_official_local_account', { providerId });
+};
+
+export const applyCodexOfficialAccount = async (
+  providerId: string,
+  accountId: string,
+): Promise<void> => {
+  await invoke('apply_codex_official_account', { providerId, accountId });
+};
+
+export const deleteCodexOfficialAccount = async (
+  providerId: string,
+  accountId: string,
+): Promise<void> => {
+  await invoke('delete_codex_official_account', { providerId, accountId });
+};
+
+export const refreshCodexOfficialAccountLimits = async (
+  providerId: string,
+  accountId: string,
+): Promise<CodexOfficialAccount> => {
+  return await invoke<CodexOfficialAccount>('refresh_codex_official_account_limits', {
+    providerId,
+    accountId,
+  });
+};
+
+export const copyCodexOfficialAccountToken = async (
+  providerId: string,
+  accountId: string,
+  tokenKind: 'access' | 'refresh',
+): Promise<void> => {
+  await invoke('copy_codex_official_account_token', {
+    input: {
+      providerId,
+      accountId,
+      tokenKind,
+    },
+  });
 };
 
 /**

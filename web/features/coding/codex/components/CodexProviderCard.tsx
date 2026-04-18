@@ -9,12 +9,17 @@ import {
   MoreOutlined,
   CheckCircleOutlined,
   HolderOutlined,
+  DownOutlined,
+  RightOutlined,
+  LinkOutlined,
+  SyncOutlined,
+  EyeOutlined,
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 import { useTranslation } from 'react-i18next';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import type { CodexProvider, CodexSettingsConfig } from '@/types/codex';
+import type { CodexOfficialAccount, CodexProvider, CodexSettingsConfig } from '@/types/codex';
 import { extractCodexBaseUrl, extractCodexModel, extractCodexReasoningEffort } from '@/utils/codexConfigUtils';
 import ProviderConnectivityStatus from '@/features/coding/shared/providerConnectivity/ProviderConnectivityStatus';
 import type { ProviderConnectivityStatusItem } from '@/components/common/ProviderCard/types';
@@ -30,6 +35,15 @@ interface CodexProviderCardProps {
   onTest: (provider: CodexProvider) => void;
   onSelect: (provider: CodexProvider) => void;
   onToggleDisabled: (provider: CodexProvider, isDisabled: boolean) => void;
+  officialAccounts?: CodexOfficialAccount[];
+  onOfficialAccountLogin?: (provider: CodexProvider) => void;
+  onOfficialLocalAccountSave?: (provider: CodexProvider, account: CodexOfficialAccount) => void;
+  onOfficialAccountApply?: (provider: CodexProvider, account: CodexOfficialAccount) => void;
+  onOfficialAccountDelete?: (provider: CodexProvider, account: CodexOfficialAccount) => void;
+  onOfficialAccountRefresh?: (provider: CodexProvider, account: CodexOfficialAccount) => void;
+  onOfficialAccountViewDetails?: (provider: CodexProvider, account: CodexOfficialAccount) => void;
+  refreshingOfficialAccountId?: string | null;
+  savingOfficialAccountId?: string | null;
   connectivityStatus?: ProviderConnectivityStatusItem;
 }
 
@@ -42,9 +56,19 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
   onTest,
   onSelect,
   onToggleDisabled,
+  officialAccounts = [],
+  onOfficialAccountLogin,
+  onOfficialLocalAccountSave,
+  onOfficialAccountApply,
+  onOfficialAccountDelete,
+  onOfficialAccountRefresh,
+  onOfficialAccountViewDetails,
+  refreshingOfficialAccountId,
+  savingOfficialAccountId,
   connectivityStatus,
 }) => {
   const { t } = useTranslation();
+  const [accountsCollapsed, setAccountsCollapsed] = React.useState(true);
 
   // 拖拽排序
   const {
@@ -99,6 +123,7 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
     return extractCodexReasoningEffort(configContent);
   }, [settingsConfig.config]);
   const isOfficialProvider = provider.category === 'official';
+  const hasOfficialAccounts = isOfficialProvider && officialAccounts.length > 0;
   const displayModelName = modelName === 'gpt-5.4' && reasoningEffort
     ? `${modelName} (${reasoningEffort})`
     : modelName;
@@ -109,6 +134,217 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
     Boolean(modelName?.trim()) &&
     (!requiresExplicitBaseUrl || Boolean(baseUrl?.trim()));
   const actionAreaWidth = isApplied ? 40 : 112;
+  const shouldShowOfficialAccounts = officialAccounts.length > 0 || isOfficialProvider;
+
+  const formatOfficialAccountLabel = (account: CodexOfficialAccount) => {
+    if (account.id === '__local__') {
+      return account.email || t('codex.provider.officialAccountLocal');
+    }
+    return account.email || account.name;
+  };
+
+  const renderOfficialAccounts = () => {
+    if (!shouldShowOfficialAccounts) {
+      return null;
+    }
+
+    return (
+      <div
+        style={{
+          marginTop: 12,
+          paddingTop: 12,
+          borderTop: '1px solid var(--color-border)',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            marginBottom: accountsCollapsed ? 0 : 10,
+          }}
+        >
+          <Button
+            type="text"
+            size="small"
+            onClick={() => setAccountsCollapsed((current) => !current)}
+            style={{
+              padding: 0,
+              height: 'auto',
+              color: 'var(--color-text-secondary)',
+              fontSize: 12,
+            }}
+          >
+            <Space size={6}>
+              {accountsCollapsed ? <RightOutlined /> : <DownOutlined />}
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {t('codex.provider.officialAccountsTitle')}
+              </Text>
+              <Text type="secondary" style={{ fontSize: 11 }}>
+                ({officialAccounts.length})
+              </Text>
+            </Space>
+          </Button>
+
+          {isOfficialProvider ? (
+            <Button
+              type="link"
+              size="small"
+              icon={<LinkOutlined />}
+              onClick={() => onOfficialAccountLogin?.(provider)}
+              style={{ paddingInline: 0, height: 'auto', fontSize: 12 }}
+            >
+              {t('codex.provider.officialAccountLogin')}
+            </Button>
+          ) : (
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              {t('codex.provider.officialAccountLegacyNotice')}
+            </Text>
+          )}
+        </div>
+
+        {!accountsCollapsed && (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+              paddingLeft: 18,
+            }}
+          >
+            {hasOfficialAccounts ? officialAccounts.map((account) => (
+              <div
+                key={account.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  padding: '6px 0',
+                  borderBottom: '1px solid var(--color-border)',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: 8,
+                    minWidth: 0,
+                    flex: 1,
+                  }}
+                >
+                  <Text
+                    strong={account.isApplied}
+                    style={{ fontSize: 12 }}
+                    ellipsis={{ tooltip: formatOfficialAccountLabel(account) }}
+                  >
+                    {formatOfficialAccountLabel(account)}
+                  </Text>
+                  <Tag style={{ margin: 0, fontSize: 10 }}>
+                    {account.id === '__local__'
+                      ? t('codex.provider.officialAccountLocalTag')
+                      : t('codex.provider.officialAccountOauthTag')}
+                  </Tag>
+                  {account.planType && (
+                    <Text type="secondary" style={{ fontSize: 11 }}>
+                      {account.planType}
+                    </Text>
+                  )}
+                  {account.lastError ? (
+                    <Text type="danger" style={{ fontSize: 11 }}>
+                      {t('codex.provider.officialAccountLastError', { message: account.lastError })}
+                    </Text>
+                  ) : (
+                    <>
+                      {account.limit5hText && (
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                          {`${t('codex.provider.officialAccountShortWindowLimitLabel', {
+                            label: account.limitShortLabel || '5h',
+                          })}: ${account.limit5hText}`}
+                        </Text>
+                      )}
+                      {account.limitWeeklyText && (
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                          {`${t('codex.provider.officialAccountWeeklyLimitLabel')}: ${account.limitWeeklyText}`}
+                        </Text>
+                      )}
+                    </>
+                  )}
+                  {account.isApplied && (
+                    <Tag color="green" style={{ margin: 0, fontSize: 10 }}>
+                      {t('codex.provider.applied')}
+                    </Tag>
+                  )}
+                </div>
+
+                <Space size={4} wrap>
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<SyncOutlined />}
+                    onClick={() => onOfficialAccountRefresh?.(provider, account)}
+                    loading={refreshingOfficialAccountId === account.id}
+                    style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
+                  >
+                    {t('codex.provider.officialAccountRefresh')}
+                  </Button>
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<EyeOutlined />}
+                    onClick={() => onOfficialAccountViewDetails?.(provider, account)}
+                    style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
+                  >
+                    {t('codex.provider.officialAccountViewDetails')}
+                  </Button>
+                  {account.id === '__local__' ? (
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<CheckOutlined />}
+                      onClick={() => onOfficialLocalAccountSave?.(provider, account)}
+                      loading={savingOfficialAccountId === account.id}
+                      style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
+                    >
+                      {t('common.save')}
+                    </Button>
+                  ) : !account.isApplied ? (
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<CheckOutlined />}
+                      onClick={() => onOfficialAccountApply?.(provider, account)}
+                      style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
+                    >
+                      {t('codex.provider.apply')}
+                    </Button>
+                  ) : null}
+                  {!account.isVirtual && (
+                    <Button
+                      type="text"
+                      danger
+                      size="small"
+                      icon={<DeleteOutlined />}
+                      onClick={() => onOfficialAccountDelete?.(provider, account)}
+                      style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
+                    >
+                      {t('common.delete')}
+                    </Button>
+                  )}
+                </Space>
+              </div>
+            )) : (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {t('codex.provider.officialAccountsEmpty')}
+              </Text>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const menuItems: MenuProps['items'] = [
     {
@@ -163,17 +399,17 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
         size="small"
         style={{
           marginBottom: 12,
-          borderColor: isApplied ? '#1890ff' : 'var(--color-border-card)',
+          borderColor: isApplied ? 'var(--ant-color-primary)' : 'var(--color-border-card)',
           backgroundColor: isApplied ? 'var(--color-bg-selected)' : undefined,
-          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.06)',
+          boxShadow: 'var(--color-shadow)',
           transition: 'opacity 0.3s ease, border-color 0.2s ease, box-shadow 0.2s ease',
         }}
         styles={{ body: { padding: 16 } }}
         onMouseEnter={(e) => {
-          e.currentTarget.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.1)';
+          e.currentTarget.style.boxShadow = 'var(--color-shadow-secondary)';
         }}
         onMouseLeave={(e) => {
-          e.currentTarget.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.06)';
+          e.currentTarget.style.boxShadow = 'var(--color-shadow)';
         }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -184,7 +420,7 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
               {...listeners}
               style={{
                 cursor: isDragging ? 'grabbing' : 'grab',
-                color: '#999',
+                color: 'var(--color-text-tertiary)',
                 padding: '4px 0',
                 touchAction: 'none',
               }}
@@ -283,6 +519,7 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
             </Dropdown>
           </div>
       </div>
+        {renderOfficialAccounts()}
     </Card>
     </div>
   );
