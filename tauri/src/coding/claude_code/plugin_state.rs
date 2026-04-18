@@ -148,8 +148,13 @@ fn write_json_value_atomic(path: &Path, value: &Value) -> Result<(), String> {
                 .map_err(|error| format!("Failed to create {}: {}", parent_dir.display(), error))?;
         }
 
-        let mut temp_file = NamedTempFile::new_in(parent_dir)
-            .map_err(|error| format!("Failed to create temp file for {}: {}", path.display(), error))?;
+        let mut temp_file = NamedTempFile::new_in(parent_dir).map_err(|error| {
+            format!(
+                "Failed to create temp file for {}: {}",
+                path.display(),
+                error
+            )
+        })?;
         serde_json::to_writer_pretty(temp_file.as_file_mut(), value)
             .map_err(|error| format!("Failed to serialize {}: {}", path.display(), error))?;
         use std::io::Write;
@@ -220,7 +225,10 @@ fn marketplace_file_as_object(path: &Path) -> Result<Map<String, Value>, String>
         .map_err(|error| format!("Failed to parse {}: {}", path.display(), error))?
     {
         Value::Object(object) => Ok(object),
-        _ => Err(format!("Expected {} to contain a JSON object", path.display())),
+        _ => Err(format!(
+            "Expected {} to contain a JSON object",
+            path.display()
+        )),
     }
 }
 
@@ -237,7 +245,10 @@ fn extract_marketplace_auto_update_settings_from_object(
         let Some(entry_object) = entry.as_object() else {
             continue;
         };
-        let Some(enabled) = entry_object.get("autoUpdateEnabled").and_then(Value::as_bool) else {
+        let Some(enabled) = entry_object
+            .get("autoUpdateEnabled")
+            .and_then(Value::as_bool)
+        else {
             continue;
         };
         settings.insert(name.clone(), enabled);
@@ -259,7 +270,9 @@ fn merge_marketplace_auto_update_settings_into_object(
         let Some(entry_object) = entry_value.as_object_mut() else {
             continue;
         };
-        let current_enabled = entry_object.get("autoUpdateEnabled").and_then(Value::as_bool);
+        let current_enabled = entry_object
+            .get("autoUpdateEnabled")
+            .and_then(Value::as_bool);
         if current_enabled == Some(*enabled) {
             continue;
         }
@@ -278,10 +291,15 @@ fn update_marketplace_auto_update_in_object(
     let entry_value = marketplaces_file
         .get_mut(marketplace_name)
         .ok_or_else(|| format!("Marketplace not found: {}", marketplace_name))?;
-    let entry_object = entry_value
-        .as_object_mut()
-        .ok_or_else(|| format!("Marketplace entry is not a JSON object: {}", marketplace_name))?;
-    let current_enabled = entry_object.get("autoUpdateEnabled").and_then(Value::as_bool);
+    let entry_object = entry_value.as_object_mut().ok_or_else(|| {
+        format!(
+            "Marketplace entry is not a JSON object: {}",
+            marketplace_name
+        )
+    })?;
+    let current_enabled = entry_object
+        .get("autoUpdateEnabled")
+        .and_then(Value::as_bool);
     if current_enabled == Some(auto_update_enabled) {
         return Ok(false);
     }
@@ -583,7 +601,8 @@ pub async fn list_claude_installed_plugins(
 mod tests {
     use super::{
         extract_marketplace_auto_update_settings_from_object,
-        merge_marketplace_auto_update_settings_into_object, update_marketplace_auto_update_in_object,
+        merge_marketplace_auto_update_settings_into_object,
+        update_marketplace_auto_update_in_object,
     };
     use serde_json::{json, Value};
 
@@ -644,9 +663,7 @@ mod tests {
             .get("beta")
             .and_then(Value::as_object)
             .unwrap();
-        assert!(
-            !beta_entry.contains_key("autoUpdateEnabled")
-        );
+        assert!(!beta_entry.contains_key("autoUpdateEnabled"));
     }
 
     #[test]

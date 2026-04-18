@@ -9,7 +9,9 @@ fn assert_roundtrip_fixture(fixture_name: &str, fixture_content: &str) {
     let original_value = json5::from_str::<serde_json::Value>(fixture_content)
         .unwrap_or_else(|error| panic!("failed to parse fixture value {fixture_name}: {error}"));
     let roundtripped_value = serde_json::from_str::<serde_json::Value>(&serialized_config)
-        .unwrap_or_else(|error| panic!("failed to parse serialized fixture {fixture_name}: {error}"));
+        .unwrap_or_else(|error| {
+            panic!("failed to parse serialized fixture {fixture_name}: {error}")
+        });
 
     assert_eq!(
         roundtripped_value, original_value,

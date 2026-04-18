@@ -345,7 +345,9 @@ async fn load_stored_claude_common_config_value(
     }
 }
 
-fn parse_optional_common_config_value(raw_common_config: Option<&str>) -> Result<Option<Value>, String> {
+fn parse_optional_common_config_value(
+    raw_common_config: Option<&str>,
+) -> Result<Option<Value>, String> {
     match raw_common_config {
         Some(raw_config) => {
             let parsed = serde_json::from_str::<Value>(raw_config)
@@ -1553,13 +1555,12 @@ pub async fn save_claude_local_config(
     let next_common_config_value = parse_optional_common_config_value(Some(&common_config))?;
 
     let now = Local::now().to_rfc3339();
-    let normalized_provider_settings_config =
-        normalize_provider_settings_for_storage(
-            &db,
-            &provider_settings_config,
-            next_common_config_value.as_ref(),
-        )
-        .await?;
+    let normalized_provider_settings_config = normalize_provider_settings_for_storage(
+        &db,
+        &provider_settings_config,
+        next_common_config_value.as_ref(),
+    )
+    .await?;
     let provider_content = ClaudeCodeProviderContent {
         name: provider_name,
         category: provider_category,

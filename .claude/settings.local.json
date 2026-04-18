@@ -84,7 +84,8 @@
       "WebFetch(domain:openclawlab.com)",
       "Bash(gh pr:*)",
       "Bash(git:*)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "mcp__exa__web_fetch_exa"
     ]
   }
 }

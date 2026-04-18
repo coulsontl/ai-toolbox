@@ -60,9 +60,13 @@ fn json_array_contains_subset(target_array: &[Value], source_array: &[Value]) ->
     let mut matched = vec![false; target_array.len()];
 
     source_array.iter().all(|source_item| {
-        if let Some((index, _)) = target_array.iter().enumerate().find(|(index, target_item)| {
-            !matched[*index] && json_is_subset(target_item, source_item)
-        }) {
+        if let Some((index, _)) = target_array
+            .iter()
+            .enumerate()
+            .find(|(index, target_item)| {
+                !matched[*index] && json_is_subset(target_item, source_item)
+            })
+        {
             matched[index] = true;
             true
         } else {

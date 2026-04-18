@@ -412,7 +412,8 @@ pub fn import_native_snapshot(
     let serialized = if let Some(official_export) = snapshot.get("officialExport").cloned() {
         serde_json::to_string_pretty(&official_export)
             .map_err(|error| format!("Failed to serialize OpenCode official export: {error}"))?
-    } else if let Some(official_export_raw) = snapshot.get("officialExportRaw").and_then(Value::as_str)
+    } else if let Some(official_export_raw) =
+        snapshot.get("officialExportRaw").and_then(Value::as_str)
     {
         match serde_json::from_str::<Value>(official_export_raw) {
             Ok(_) => official_export_raw.to_string(),
@@ -497,8 +498,7 @@ pub fn import_native_snapshot(
     if output.status.success() {
         let stderr_preview = summarize_command_output(&output.stderr);
         let stdout_preview = summarize_command_output(&output.stdout);
-        if stderr_preview.contains("File not found:")
-            || stdout_preview.contains("File not found:")
+        if stderr_preview.contains("File not found:") || stdout_preview.contains("File not found:")
         {
             return Err(format!(
                 "`opencode import` reported success but could not read the import file ({command_context}). stderr: {}; stdout: {}",
@@ -625,80 +625,85 @@ fn build_recovered_official_export(
         }));
     }
 
-    messages.extend(source_messages.iter().enumerate().map(|(message_index, message)| {
-        let message_id = format!("msg_recovered_{message_index:06}");
-        let part_id = format!("prt_recovered_{message_index:06}");
-        let message_ts = message
-            .ts
-            .unwrap_or_else(|| created_at.saturating_add((message_index as i64) * 1000));
-        let parent_message_id = if message_index > 0 {
-            Some(format!("msg_recovered_{:06}", message_index - 1))
-        } else if needs_leading_parent {
-            Some("msg_recovered_parent_000000".to_string())
-        } else {
-            None
-        };
-        let info_value = if message.role == "assistant" {
-            serde_json::json!({
-                "id": message_id,
-                "sessionID": session_id,
-                "role": message.role,
-                "time": {
-                    "created": message_ts,
-                    "completed": message_ts
-                },
-                "parentID": parent_message_id.unwrap_or_default(),
-                "modelID": "recovered",
-                "providerID": "imported",
-                "mode": "imported",
-                "agent": "imported",
-                "path": {
-                    "cwd": project_dir,
-                    "root": project_dir
-                },
-                "cost": 0,
-                "tokens": {
-                    "total": 0,
-                    "input": 0,
-                    "output": 0,
-                    "reasoning": 0,
-                    "cache": {
-                        "read": 0,
-                        "write": 0
-                    }
-                },
-                "variant": "recovered",
-                "finish": "recovered"
-            })
-        } else {
-            serde_json::json!({
-                "id": message_id,
-                "sessionID": session_id,
-                "role": message.role,
-                "time": {
-                    "created": message_ts
-                },
-                "agent": "imported",
-                "model": {
-                    "providerID": "imported",
-                    "modelID": "recovered"
-                }
-            })
-        };
+    messages.extend(
+        source_messages
+            .iter()
+            .enumerate()
+            .map(|(message_index, message)| {
+                let message_id = format!("msg_recovered_{message_index:06}");
+                let part_id = format!("prt_recovered_{message_index:06}");
+                let message_ts = message
+                    .ts
+                    .unwrap_or_else(|| created_at.saturating_add((message_index as i64) * 1000));
+                let parent_message_id = if message_index > 0 {
+                    Some(format!("msg_recovered_{:06}", message_index - 1))
+                } else if needs_leading_parent {
+                    Some("msg_recovered_parent_000000".to_string())
+                } else {
+                    None
+                };
+                let info_value = if message.role == "assistant" {
+                    serde_json::json!({
+                        "id": message_id,
+                        "sessionID": session_id,
+                        "role": message.role,
+                        "time": {
+                            "created": message_ts,
+                            "completed": message_ts
+                        },
+                        "parentID": parent_message_id.unwrap_or_default(),
+                        "modelID": "recovered",
+                        "providerID": "imported",
+                        "mode": "imported",
+                        "agent": "imported",
+                        "path": {
+                            "cwd": project_dir,
+                            "root": project_dir
+                        },
+                        "cost": 0,
+                        "tokens": {
+                            "total": 0,
+                            "input": 0,
+                            "output": 0,
+                            "reasoning": 0,
+                            "cache": {
+                                "read": 0,
+                                "write": 0
+                            }
+                        },
+                        "variant": "recovered",
+                        "finish": "recovered"
+                    })
+                } else {
+                    serde_json::json!({
+                        "id": message_id,
+                        "sessionID": session_id,
+                        "role": message.role,
+                        "time": {
+                            "created": message_ts
+                        },
+                        "agent": "imported",
+                        "model": {
+                            "providerID": "imported",
+                            "modelID": "recovered"
+                        }
+                    })
+                };
 
-        serde_json::json!({
-            "info": info_value,
-            "parts": [
-                {
-                    "id": part_id,
-                    "sessionID": session_id,
-                    "messageID": format!("msg_recovered_{message_index:06}"),
-                    "type": "text",
-                    "text": message.content
-                }
-            ]
-        })
-    }));
+                serde_json::json!({
+                    "info": info_value,
+                    "parts": [
+                        {
+                            "id": part_id,
+                            "sessionID": session_id,
+                            "messageID": format!("msg_recovered_{message_index:06}"),
+                            "type": "text",
+                            "text": message.content
+                        }
+                    ]
+                })
+            }),
+    );
 
     serde_json::json!({
         "info": {

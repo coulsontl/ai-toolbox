@@ -54,3 +54,78 @@ test('buildSlimAgentsFromFormValues omits agent when managed and unmanaged field
 
   assert.deepEqual(result, {});
 });
+
+test('buildSlimAgentsFromFormValues writes normalized fallback_models for managed agent fields', () => {
+  const result = buildSlimAgentsFromFormValues({
+    builtInAgentKeys: ['oracle'],
+    customAgents: [],
+    formValues: {
+      agent_oracle_model: 'gpt-5.4',
+      agent_oracle_fallback_models: [' gpt-5.4-mini ', '', 'gpt-4.1'],
+    },
+    initialAgents: {
+      oracle: {
+        model: 'old-oracle',
+        fallback_models: ['legacy-model'],
+        temperature: 0.3,
+      },
+    },
+  });
+
+  assert.deepEqual(result, {
+    oracle: {
+      temperature: 0.3,
+      model: 'gpt-5.4',
+      fallback_models: ['gpt-5.4-mini', 'gpt-4.1'],
+    },
+  });
+});
+
+test('buildSlimAgentsFromFormValues removes legacy fallback_models when user clears managed fallback field', () => {
+  const result = buildSlimAgentsFromFormValues({
+    builtInAgentKeys: ['oracle'],
+    customAgents: [],
+    formValues: {
+      agent_oracle_model: 'gpt-5.4',
+      agent_oracle_fallback_models: [],
+    },
+    initialAgents: {
+      oracle: {
+        model: 'old-oracle',
+        fallback_models: ['legacy-model'],
+        skills: ['plan'],
+      },
+    },
+  });
+
+  assert.deepEqual(result, {
+    oracle: {
+      skills: ['plan'],
+      model: 'gpt-5.4',
+    },
+  });
+});
+
+test('buildSlimAgentsFromFormValues normalizes string fallback_models for custom agents', () => {
+  const result = buildSlimAgentsFromFormValues({
+    builtInAgentKeys: [],
+    customAgents: ['reviewer'],
+    formValues: {
+      agent_reviewer_model: 'gpt-5.4-mini',
+      agent_reviewer_fallback_models: ' gpt-4.1-mini ',
+    },
+    initialAgents: {
+      reviewer: {
+        tools: ['lint'],
+      },
+    },
+  });
+
+  assert.deepEqual(result, {
+    reviewer: {
+      tools: ['lint'],
+      model: 'gpt-5.4-mini',
+      fallback_models: ['gpt-4.1-mini'],
+    },
+  });
+});

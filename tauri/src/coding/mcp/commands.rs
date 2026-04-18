@@ -1137,7 +1137,10 @@ pub async fn mcp_init_default_favorites(state: State<'_, DbState>) -> Result<usi
     let mut inserted_count = 0;
 
     for (name, server_type, config_json) in DEFAULT_FAVORITE_MCP_PRESETS {
-        if mcp_store::get_favorite_mcp_by_name(&state, name).await?.is_some() {
+        if mcp_store::get_favorite_mcp_by_name(&state, name)
+            .await?
+            .is_some()
+        {
             continue;
         }
 

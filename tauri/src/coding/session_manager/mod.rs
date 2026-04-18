@@ -1549,8 +1549,9 @@ mod tests {
             .pointer("/nativeSnapshot/payload/officialExportRaw")
             .and_then(Value::as_str)
             .expect("opencode export should include officialExportRaw");
-        let exported_official_export_json: Value = serde_json::from_str(exported_official_export_raw)
-            .expect("parse exported official export raw json");
+        let exported_official_export_json: Value =
+            serde_json::from_str(exported_official_export_raw)
+                .expect("parse exported official export raw json");
         assert_eq!(exported_official_export_json, official_export_json);
 
         let import_env = OpenCodeEnv::new(test_root, "opencode-import-env");
@@ -1874,7 +1875,9 @@ mod tests {
         let project_dir = test_root.path().join("opencode-project");
         fs::create_dir_all(&project_dir).expect("failed to create opencode project dir");
 
-        let export_file = test_root.path().join("opencode-truncated-raw-assistant-first.json");
+        let export_file = test_root
+            .path()
+            .join("opencode-truncated-raw-assistant-first.json");
         write_text_file(
             &export_file,
             &serde_json::to_string_pretty(&json!({
@@ -2131,9 +2134,7 @@ mod tests {
             return false;
         }
 
-        eprintln!(
-            "skip {test_name}: OpenCode CLI `opencode` is not available in PATH"
-        );
+        eprintln!("skip {test_name}: OpenCode CLI `opencode` is not available in PATH");
         true
     }
 

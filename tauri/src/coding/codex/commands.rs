@@ -601,8 +601,10 @@ async fn normalize_provider_settings_for_storage(
         None => get_codex_common_toml(db).await?,
     };
 
-    let normalized_settings =
-        extract_provider_settings_for_storage(&parsed_settings, effective_common_config.as_deref())?;
+    let normalized_settings = extract_provider_settings_for_storage(
+        &parsed_settings,
+        effective_common_config.as_deref(),
+    )?;
 
     serde_json::to_string(&normalized_settings)
         .map_err(|error| format!("Failed to serialize normalized provider config: {}", error))
@@ -879,7 +881,10 @@ fn remove_toml_item(target: &mut toml_edit::Item, source: &toml_edit::Item) {
     }
 }
 
-fn remove_toml_table_like(target: &mut dyn toml_edit::TableLike, source: &dyn toml_edit::TableLike) {
+fn remove_toml_table_like(
+    target: &mut dyn toml_edit::TableLike,
+    source: &dyn toml_edit::TableLike,
+) {
     let keys: Vec<String> = source.iter().map(|(key, _)| key.to_string()).collect();
 
     for key in keys {
@@ -2538,7 +2543,8 @@ plugins = true
     }
 
     #[test]
-    fn extract_codex_common_config_from_settings_toml_removes_model_for_top_level_custom_base_url() {
+    fn extract_codex_common_config_from_settings_toml_removes_model_for_top_level_custom_base_url()
+    {
         let config_toml = r#"
 model = "gpt-5.4"
 base_url = "https://api.example.com/v1"
@@ -2740,9 +2746,12 @@ pub async fn save_codex_local_config(
     let common_config = input.common_config.unwrap_or_default();
 
     let now = Local::now().to_rfc3339();
-    let normalized_provider_settings_config =
-        normalize_provider_settings_for_storage(&db, &provider_settings_config, Some(&common_config))
-            .await?;
+    let normalized_provider_settings_config = normalize_provider_settings_for_storage(
+        &db,
+        &provider_settings_config,
+        Some(&common_config),
+    )
+    .await?;
     let provider_content = CodexProviderContent {
         name: provider_name,
         category: provider_category,

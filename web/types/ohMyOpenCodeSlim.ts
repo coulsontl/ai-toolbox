@@ -17,8 +17,18 @@
 export interface OhMyOpenCodeSlimAgent {
 	model?: string;
 	variant?: string;
+	fallback_models?: string[] | string;
 	skills?: string[];
 	[key: string]: any; // Allow additional custom fields
+}
+
+export interface OhMyOpenCodeSlimFallbackConfig {
+	enabled?: boolean;
+	timeoutMs?: number;
+	retryDelayMs?: number;
+	retry_on_empty?: boolean;
+	chains?: Record<string, string[] | string>;
+	[key: string]: unknown;
 }
 
 /**
@@ -44,6 +54,7 @@ export interface OhMyOpenCodeSlimConfig {
 	isDisabled: boolean;
 	agents?: OhMyOpenCodeSlimAgents;
 	council?: Record<string, unknown> | null;
+	fallback?: OhMyOpenCodeSlimFallbackConfig | null;
 	otherFields?: Record<string, any>; // For extra configuration fields
 	sortIndex?: number; // For manual ordering
 	createdAt?: string;
@@ -59,6 +70,7 @@ export interface OhMyOpenCodeSlimConfigInput {
 	isDisabled?: boolean;
 	agents?: OhMyOpenCodeSlimAgents;
 	council?: Record<string, unknown> | null;
+	fallback?: OhMyOpenCodeSlimFallbackConfig | null;
 	otherFields?: Record<string, any>;
 }
 

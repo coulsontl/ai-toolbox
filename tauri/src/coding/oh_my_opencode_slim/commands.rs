@@ -110,6 +110,9 @@ async fn load_temp_config_from_file(
         .get("agents")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
     let council = json_value.get("council").cloned();
+    let fallback = json_value
+        .get("fallback")
+        .and_then(adapter::parse_fallback_config_value);
 
     // 提取 other_fields（除了 agents 和全局配置字段之外的所有字段）
     let mut other_fields = json_value.clone();
@@ -128,6 +131,7 @@ async fn load_temp_config_from_file(
         obj.remove("lsp");
         obj.remove("experimental");
         obj.remove("council");
+        obj.remove("fallback");
     }
 
     let other_fields_value = if other_fields
@@ -148,6 +152,7 @@ async fn load_temp_config_from_file(
         is_disabled: false,
         agents,
         council,
+        fallback,
         other_fields: other_fields_value,
         sort_index: None,
         created_at: Some(now.clone()),
@@ -258,6 +263,7 @@ pub async fn create_oh_my_opencode_slim_config(
         is_disabled: false,
         agents: input.agents.clone(),
         council: input.council.clone(),
+        fallback: input.fallback.clone(),
         other_fields: input.other_fields.clone(),
         sort_index: None,
         created_at: now.clone(),
@@ -369,6 +375,7 @@ pub async fn update_oh_my_opencode_slim_config(
         is_disabled: is_disabled_value,
         agents: input.agents,
         council: input.council,
+        fallback: input.fallback,
         other_fields: input.other_fields,
         sort_index: sort_index_value,
         created_at,
@@ -403,6 +410,7 @@ pub async fn update_oh_my_opencode_slim_config(
         is_disabled: content.is_disabled,
         agents: content.agents,
         council: content.council,
+        fallback: content.fallback,
         other_fields: content.other_fields,
         sort_index: sort_index_value,
         created_at: Some(content.created_at),
@@ -569,11 +577,20 @@ pub async fn apply_config_to_file_public(
     if let Some(profile_council) = agents_profile.council {
         final_json.insert("council".to_string(), profile_council);
     }
+    let existing_global_fallback = final_json.get("fallback").cloned();
+    let profile_fallback = agents_profile
+        .fallback
+        .and_then(|fallback| adapter::fallback_config_to_value(&fallback));
+    if let Some(merged_fallback) =
+        adapter::merge_fallback_values(profile_fallback, existing_global_fallback)
+    {
+        final_json.insert("fallback".to_string(), merged_fallback);
+    }
 
     if let Some(profile_others) = agents_profile.other_fields {
         if let Some(others_obj) = profile_others.as_object() {
             for (key, value) in others_obj {
-                if key == "council" {
+                if key == "council" || key == "fallback" {
                     continue;
                 }
                 final_json.insert(key.clone(), value.clone());
@@ -893,6 +910,11 @@ pub async fn save_oh_my_opencode_slim_local_config(
     } else {
         base_config.council
     };
+    let config_fallback = if let Some(config) = config_input.as_ref() {
+        config.fallback.clone()
+    } else {
+        base_config.fallback
+    };
     let config_other_fields = if let Some(config) = config_input.as_ref() {
         config.other_fields.clone()
     } else {
@@ -905,6 +927,7 @@ pub async fn save_oh_my_opencode_slim_local_config(
         is_disabled: false,
         agents: config_agents,
         council: config_council,
+        fallback: config_fallback,
         other_fields: config_other_fields,
         sort_index: None,
         created_at: now.clone(),
