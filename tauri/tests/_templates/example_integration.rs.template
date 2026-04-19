@@ -1,0 +1,10 @@
+// Copy this file to a real `.rs` file under `tauri/tests/coding/...`
+// and register that file from `tauri/tests/coding.rs` with a `#[path = "..."] mod ...;` entry.
+use ai_toolbox_lib::coding::tools::builtin_tool_by_key;
+
+#[test]
+fn example_integration_test() {
+    let tool = builtin_tool_by_key("codex").expect("codex should exist");
+
+    assert_eq!(tool.display_name, "Codex");
+}

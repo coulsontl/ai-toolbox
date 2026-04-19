@@ -83,14 +83,14 @@ cd tauri && cargo fmt
 cd tauri && cargo clippy
 ```
 
-### Testing (Not yet configured)
+### Testing
 
 ```bash
-# Frontend tests (when configured)
+# Frontend tests
 pnpm test
 
 # Run single test file
-pnpm test -- path/to/test.ts
+node --test web/test/path/to/test.test.ts
 
 # Rust tests
 cd tauri && cargo test
@@ -102,7 +102,14 @@ cd tauri && cargo test test_name
 ### Test Execution Rules
 
 - 对跨模块、跨层、会影响“保存/应用/同步/恢复/导入导出/配置落盘”的**大功能迭代**，不要只跑针对性测试；在交付前必须补跑当前仓库可用的全量测试集合。
-- 当前仓库没有稳定配置好的前端单元测试脚本时，全量校验的最小集合是：
+- 当前仓库前端测试统一通过 `pnpm test` 执行；该脚本会发现并运行 `web/test/**` 下的 `.test.ts` / `.spec.ts` 文件。
+- 前端测试文件必须放在 `web/test/` 下，并镜像对应功能目录结构；不要把 `.test.ts` 文件继续与实现文件并排放在 `web/features/**`、`web/components/**` 等源码目录里。
+  - 例如：`web/features/coding/opencode/components/foo.ts` 对应测试应放在 `web/test/features/coding/opencode/components/foo.test.ts`
+- Rust 测试保持分层约定：
+  - 依赖模块私有实现的单元测试，继续放在 `tauri/src/**` 的 `#[cfg(test)]` / `#[test]` 中
+  - 面向公开行为或黑盒回归的集成测试，放在 `tauri/tests/**`，并按功能镜像组织目录与 fixtures
+- 当前仓库全量校验的最小集合是：
+  - `pnpm test`
   - `cd tauri && cargo test`
   - `pnpm exec tsc --noEmit`
 - 发版相关 GitHub Actions 也必须在打包 job 开始前先跑同一套全量测试闸门；只要测试未全部通过，就不能进入构建产物的打包与发布步骤。

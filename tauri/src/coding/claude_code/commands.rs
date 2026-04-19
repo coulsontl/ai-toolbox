@@ -11,6 +11,7 @@ use super::plugin_types::{
     ClaudeMarketplaceUpdateInput, ClaudePluginActionInput,
 };
 use super::settings_merge;
+use super::settings_merge::KNOWN_ENV_FIELDS;
 use super::types::*;
 use crate::coding::all_api_hub;
 use crate::coding::db_id::{db_new_id, db_record_id};
@@ -20,17 +21,6 @@ use crate::coding::runtime_location;
 use crate::coding::skills::commands::resync_all_skills_if_tool_path_changed;
 use crate::db::DbState;
 use tauri::Emitter;
-
-const KNOWN_ENV_FIELDS: [&str; 8] = [
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_MODEL",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL",
-    "ANTHROPIC_REASONING_MODEL",
-];
 
 fn get_home_dir() -> Result<PathBuf, String> {
     std::env::var("USERPROFILE")

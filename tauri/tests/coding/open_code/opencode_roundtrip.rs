@@ -23,7 +23,7 @@ fn assert_roundtrip_fixture(fixture_name: &str, fixture_content: &str) {
 fn opencode_roundtrip_preserves_plugin_tuple_shape() {
     assert_roundtrip_fixture(
         "plugin_tuple.json5",
-        include_str!("fixtures/opencode/plugin_tuple.json5"),
+        include_str!("fixtures/plugin_tuple.json5"),
     );
 }
 
@@ -31,7 +31,7 @@ fn opencode_roundtrip_preserves_plugin_tuple_shape() {
 fn opencode_roundtrip_preserves_provider_and_model_extra_fields() {
     assert_roundtrip_fixture(
         "provider_model_extras.json5",
-        include_str!("fixtures/opencode/provider_model_extras.json5"),
+        include_str!("fixtures/provider_model_extras.json5"),
     );
 }
 
@@ -39,6 +39,6 @@ fn opencode_roundtrip_preserves_provider_and_model_extra_fields() {
 fn opencode_roundtrip_preserves_mcp_and_other_polymorphic_fields() {
     assert_roundtrip_fixture(
         "mcp_polymorphic.json5",
-        include_str!("fixtures/opencode/mcp_polymorphic.json5"),
+        include_str!("fixtures/mcp_polymorphic.json5"),
     );
 }

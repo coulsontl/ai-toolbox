@@ -103,8 +103,8 @@ jobs:
       - name: Run TypeScript type check
         run: pnpm exec tsc --noEmit
 
-      - name: Run OMOS regression tests
-        run: node --test web/features/coding/opencode/components/ohMyOpenCodeSlimFormUtils.test.ts
+      - name: Run frontend tests
+        run: pnpm test
 
   build:
     needs: create-release

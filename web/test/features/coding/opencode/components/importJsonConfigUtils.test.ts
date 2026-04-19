@@ -7,7 +7,7 @@ import {
   extractImportedConfigData,
   parseImportedConfigText,
   resolveSlimImportedAgents,
-} from './importJsonConfigUtils.ts';
+} from '../../../../../features/coding/opencode/components/importJsonConfigUtils.ts';
 
 test('resolveSlimImportedAgents reads active preset agents for OMOS author preset configs', () => {
   const result = resolveSlimImportedAgents({

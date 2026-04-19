@@ -8,6 +8,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "test:web": "node ./scripts/run-web-tests.mjs",
+    "test": "pnpm run test:web",
     "sync:version": "node scripts/sync-tauri-version.mjs",
     "tauri": "tauri",
     "prepare": "husky"
@@ -56,7 +58,6 @@
     "vite": "7.3.1"
   }
 }
-
 
 
 

@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildSlimAgentsFromFormValues } from './ohMyOpenCodeSlimFormUtils.ts';
+import { buildSlimAgentsFromFormValues } from '../../../../../features/coding/opencode/components/ohMyOpenCodeSlimFormUtils.ts';
 
 test('buildSlimAgentsFromFormValues preserves unmanaged agent fields while updating managed ones', () => {
   const result = buildSlimAgentsFromFormValues({

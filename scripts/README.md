@@ -1,5 +1,25 @@
 # Scripts
 
+## run-web-tests.mjs
+
+Run all frontend test files under `web/test/`.
+
+Default usage:
+
+```bash
+pnpm test
+```
+
+Notes:
+
+- Frontend tests should live under `web/test/` and mirror the source directory structure.
+- The script discovers `.test.ts` and `.spec.ts` files recursively.
+- For a single file, prefer Node's built-in runner directly:
+
+```bash
+node --test web/test/path/to/file.test.ts
+```
+
 ## transparent-white.js
 
 Convert white/near-white pixels to transparent in a PNG image.

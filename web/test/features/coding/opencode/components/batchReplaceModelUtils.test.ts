@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import {
   applyBatchReplaceModel,
   collectBatchReplaceSourceUsage,
-} from './batchReplaceModelUtils.ts';
+} from '../../../../../features/coding/opencode/components/batchReplaceModelUtils.ts';
 
 test('collectBatchReplaceSourceUsage includes fallback models in source candidates', () => {
   const result = collectBatchReplaceSourceUsage({
