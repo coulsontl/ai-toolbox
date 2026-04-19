@@ -266,11 +266,9 @@ async fn write_prompt_content_to_file(
     write_prompt_content_file(&prompt_path, prompt_content, "Codex")
 }
 
-fn emit_prompt_sync_requests<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+fn emit_prompt_sync_requests<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) {
     #[cfg(target_os = "windows")]
-    let _ = app.emit("wsl-sync-request-codex", ());
-
-    let _ = app.emit("ssh-sync-request-codex", ());
+    let _ = _app.emit("wsl-sync-request-codex", ());
 }
 
 fn emit_codex_plugin_config_changed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {

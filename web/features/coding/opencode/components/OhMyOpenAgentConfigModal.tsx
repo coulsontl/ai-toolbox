@@ -16,6 +16,9 @@ import styles from './OhMyOpenAgentConfigModal.module.less';
 const { Text } = Typography;
 
 const getCategoryDefinitions = (): OhMyOpenAgentCategoryDefinition[] => OH_MY_OPENAGENT_CATEGORIES;
+type ModelOption = { label: string; value: string; disabled?: boolean };
+type ModelOptionGroup = { label: string; options: ModelOption[] };
+type GroupedModelOptions = Array<ModelOption | ModelOptionGroup>;
 
 // Map agent keys to lowercase for backward compatibility with old configs
 function normalizeAgentKey(key: string): string {
@@ -32,10 +35,7 @@ interface OhMyOpenAgentConfigModalProps {
     categories?: Record<string, OhMyOpenAgentAgentConfig | undefined> | null;
     otherFields?: Record<string, unknown>;
   };
-  modelOptions: Array<
-    | { label: string; value: string; disabled?: boolean }
-    | { label: string; options: { label: string; value: string; disabled?: boolean }[] }
-  >;
+  modelOptions: GroupedModelOptions;
   /** Map of model ID to its variant keys, e.g., { "opencode/openai/gpt-5": ["high", "medium", "low"] } */
   modelVariantsMap?: Record<string, string[]>;
   onCancel: () => void;
@@ -84,11 +84,6 @@ const OhMyOpenAgentConfigModal: React.FC<OhMyOpenAgentConfigModalProps> = ({
   const [batchReplaceFromVariant, setBatchReplaceFromVariant] = React.useState<string | undefined>(undefined);
   const [batchReplaceToVariant, setBatchReplaceToVariant] = React.useState<string | undefined>(undefined);
 
-  const fromModelVariants = React.useMemo(
-    () => (batchReplaceFromModel ? modelVariantsMap[batchReplaceFromModel] ?? [] : []),
-    [batchReplaceFromModel, modelVariantsMap]
-  );
-
   const toModelVariants = React.useMemo(
     () => (batchReplaceToModel ? modelVariantsMap[batchReplaceToModel] ?? [] : []),
     [batchReplaceToModel, modelVariantsMap]
@@ -116,6 +111,81 @@ const OhMyOpenAgentConfigModal: React.FC<OhMyOpenAgentConfigModalProps> = ({
     () => categoryDefinitions.map((category) => category.key),
     [categoryDefinitions]
   );
+  const builtInAgentKeys = React.useMemo(
+    () => allAgentKeys.filter((agentKey) => !(agentKey.startsWith('__') && agentKey.endsWith('__'))),
+    [allAgentKeys]
+  );
+  const batchReplaceModelFieldNames = React.useMemo(
+    () => [
+      ...builtInAgentKeys.map((agentKey) => `agent_${agentKey}`),
+      ...customAgents.map((agentKey) => `agent_${agentKey}`),
+      ...categoryKeys.map((categoryKey) => `category_${categoryKey}`),
+      ...customCategories.map((categoryKey) => `category_${categoryKey}`),
+    ],
+    [builtInAgentKeys, customAgents, categoryKeys, customCategories]
+  );
+  const watchedFormValues = Form.useWatch([], form) as Record<string, unknown> | undefined;
+  const batchReplaceSourceUsage = React.useMemo(() => {
+    const usedModels = new Set<string>();
+    const variantsByModel = new Map<string, Set<string>>();
+    const values = watchedFormValues ?? {};
+
+    batchReplaceModelFieldNames.forEach((modelFieldName) => {
+      const modelValue = values[modelFieldName];
+      if (typeof modelValue !== 'string' || !modelValue) {
+        return;
+      }
+
+      usedModels.add(modelValue);
+
+      const variantValue = values[`${modelFieldName}_variant`];
+      if (typeof variantValue !== 'string' || !variantValue) {
+        return;
+      }
+
+      const modelVariants = variantsByModel.get(modelValue) ?? new Set<string>();
+      modelVariants.add(variantValue);
+      variantsByModel.set(modelValue, modelVariants);
+    });
+
+    return { usedModels, variantsByModel };
+  }, [batchReplaceModelFieldNames, watchedFormValues]);
+  const batchReplaceFromModelOptions = React.useMemo<GroupedModelOptions>(() => {
+    return Array.from(batchReplaceSourceUsage.usedModels)
+      .sort((left, right) => left.localeCompare(right))
+      .map((modelId) => ({
+        label: modelId,
+        value: modelId
+      }));
+  }, [batchReplaceSourceUsage.usedModels]);
+  const batchReplaceFromVariantOptions = React.useMemo(() => {
+    if (!batchReplaceFromModel) {
+      return [];
+    }
+
+    return Array.from(batchReplaceSourceUsage.variantsByModel.get(batchReplaceFromModel) ?? [])
+      .sort((left, right) => left.localeCompare(right));
+  }, [batchReplaceFromModel, batchReplaceSourceUsage.variantsByModel]);
+
+  React.useEffect(() => {
+    if (!batchReplaceFromModel) {
+      setBatchReplaceFromVariant(undefined);
+      return;
+    }
+    if (!batchReplaceSourceUsage.usedModels.has(batchReplaceFromModel)) {
+      setBatchReplaceFromModel(undefined);
+      setBatchReplaceFromVariant(undefined);
+      return;
+    }
+    if (batchReplaceFromVariant && !batchReplaceFromVariantOptions.includes(batchReplaceFromVariant)) {
+      setBatchReplaceFromVariant(undefined);
+    }
+  }, [
+    batchReplaceFromModel,
+    batchReplaceFromVariant,
+    batchReplaceFromVariantOptions,
+    batchReplaceSourceUsage.usedModels,
+  ]);
 
   const labelCol = 6;
   const wrapperCol = 18;
@@ -556,7 +626,7 @@ const OhMyOpenAgentConfigModal: React.FC<OhMyOpenAgentConfigModalProps> = ({
       return;
     }
 
-    const sourceVariants = modelVariantsMap[fromModel] ?? [];
+    const sourceVariants = batchReplaceFromVariantOptions;
     if (batchReplaceFromVariant && !sourceVariants.includes(batchReplaceFromVariant)) {
       message.warning(t('opencode.ohMyOpenCode.batchReplaceInvalidFromVariant'));
       return;
@@ -573,17 +643,6 @@ const OhMyOpenAgentConfigModal: React.FC<OhMyOpenAgentConfigModalProps> = ({
       return;
     }
 
-    const builtInAgentKeys = allAgentKeys.filter(
-      (agentKey) => !(agentKey.startsWith('__') && agentKey.endsWith('__'))
-    );
-
-    const modelFieldNames = [
-      ...builtInAgentKeys.map((agentKey) => `agent_${agentKey}`),
-      ...customAgents.map((agentKey) => `agent_${agentKey}`),
-      ...categoryKeys.map((categoryKey) => `category_${categoryKey}`),
-      ...customCategories.map((categoryKey) => `category_${categoryKey}`),
-    ];
-
     const values = form.getFieldsValue(true) as Record<string, unknown>;
     const updateValues: Record<string, unknown> = {};
 
@@ -592,7 +651,7 @@ const OhMyOpenAgentConfigModal: React.FC<OhMyOpenAgentConfigModalProps> = ({
 
     const hasTargetVariants = targetVariants.length > 0;
 
-    modelFieldNames.forEach((modelFieldName) => {
+    batchReplaceModelFieldNames.forEach((modelFieldName) => {
       if (values[modelFieldName] !== fromModel) {
         return;
       }
@@ -1551,7 +1610,7 @@ const OhMyOpenAgentConfigModal: React.FC<OhMyOpenAgentConfigModalProps> = ({
                           <Select
                             value={batchReplaceFromModel}
                             placeholder={t('opencode.ohMyOpenCode.batchReplaceFromPlaceholder')}
-                            options={modelOptions}
+                            options={batchReplaceFromModelOptions}
                             allowClear
                             showSearch
                             optionFilterProp="label"
@@ -1567,9 +1626,9 @@ const OhMyOpenAgentConfigModal: React.FC<OhMyOpenAgentConfigModalProps> = ({
                           <Select
                             value={batchReplaceFromVariant}
                             placeholder={t('opencode.ohMyOpenCode.batchReplaceFromVariantPlaceholder')}
-                            options={fromModelVariants.map((v) => ({ label: v, value: v }))}
+                            options={batchReplaceFromVariantOptions.map((v) => ({ label: v, value: v }))}
                             allowClear
-                            disabled={!batchReplaceFromModel || fromModelVariants.length === 0}
+                            disabled={!batchReplaceFromModel || batchReplaceFromVariantOptions.length === 0}
                             className={styles.batchSelect}
                             onChange={(value) => setBatchReplaceFromVariant(value)}
                           />

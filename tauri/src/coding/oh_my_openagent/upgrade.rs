@@ -321,10 +321,6 @@ async fn update_ssh_mapping_if_needed(
 
     ssh::ssh_update_file_mapping(state, app.clone(), updated_mapping).await?;
 
-    if ssh_config.enabled && !ssh_config.active_connection_id.is_empty() {
-        let _ = app.emit("ssh-sync-request-opencode", ());
-    }
-
     Ok(true)
 }
 

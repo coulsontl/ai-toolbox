@@ -417,11 +417,9 @@ async fn write_prompt_content_to_file(
     write_prompt_content_file(&prompt_path, prompt_content, "Claude Code")
 }
 
-fn emit_prompt_sync_requests<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+fn emit_prompt_sync_requests<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) {
     #[cfg(target_os = "windows")]
-    let _ = app.emit("wsl-sync-request-claude", ());
-
-    let _ = app.emit("ssh-sync-request-claude", ());
+    let _ = _app.emit("wsl-sync-request-claude", ());
 }
 
 // ============================================================================
@@ -1479,6 +1477,9 @@ pub async fn save_claude_common_config(
                     e
                 );
                 // 不中断保存流程，只记录错误
+            } else {
+                #[cfg(target_os = "windows")]
+                let _ = app.emit("wsl-sync-request-claude", ());
             }
         }
     }
@@ -1623,6 +1624,9 @@ pub async fn save_claude_local_config(
             .await
             {
                 eprintln!("Failed to apply config after local save: {}", e);
+            } else {
+                #[cfg(target_os = "windows")]
+                let _ = app.emit("wsl-sync-request-claude", ());
             }
         }
     }
@@ -1662,8 +1666,6 @@ fn emit_claude_plugin_config_changed<R: tauri::Runtime>(app: &tauri::AppHandle<R
 
     #[cfg(target_os = "windows")]
     let _ = app.emit("wsl-sync-request-claude", ());
-
-    let _ = app.emit("ssh-sync-request-claude", ());
 }
 
 /// Get Claude plugin integration status

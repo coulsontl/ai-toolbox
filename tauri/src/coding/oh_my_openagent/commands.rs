@@ -1211,6 +1211,9 @@ pub async fn save_oh_my_openagent_local_config(
             let created_config = adapter::from_db_value(record.clone());
             if let Err(e) = apply_config_to_file(&db, &created_config.id).await {
                 eprintln!("Failed to apply config after local save: {}", e);
+            } else {
+                #[cfg(target_os = "windows")]
+                let _ = app.emit("wsl-sync-request-opencode", ());
             }
         }
     }

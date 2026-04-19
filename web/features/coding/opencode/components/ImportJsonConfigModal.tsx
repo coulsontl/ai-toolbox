@@ -12,6 +12,50 @@ export interface ImportedConfigData {
   otherFields?: Record<string, unknown>;
 }
 
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const deepMergeObjects = (
+  base?: Record<string, unknown>,
+  override?: Record<string, unknown>,
+): Record<string, unknown> | undefined => {
+  if (!base) return override;
+  if (!override) return base;
+
+  const result: Record<string, unknown> = { ...base };
+
+  Object.entries(override).forEach(([key, overrideValue]) => {
+    const baseValue = result[key];
+    if (isPlainObject(baseValue) && isPlainObject(overrideValue)) {
+      result[key] = deepMergeObjects(baseValue, overrideValue);
+      return;
+    }
+    result[key] = overrideValue;
+  });
+
+  return result;
+};
+
+const resolveSlimImportedAgents = (
+  config: Record<string, unknown>,
+): Record<string, Record<string, unknown>> | undefined => {
+  const rootAgents = isPlainObject(config.agents)
+    ? config.agents as Record<string, Record<string, unknown>>
+    : undefined;
+
+  const activePresetName = typeof config.preset === 'string' ? config.preset.trim() : '';
+  const presets = isPlainObject(config.presets) ? config.presets : undefined;
+  const presetAgents = activePresetName && presets && isPlainObject(presets[activePresetName])
+    ? presets[activePresetName] as Record<string, Record<string, unknown>>
+    : undefined;
+
+  if (!presetAgents) {
+    return rootAgents;
+  }
+
+  return deepMergeObjects(presetAgents, rootAgents) as Record<string, Record<string, unknown>>;
+};
+
 interface ImportJsonConfigModalProps {
   open: boolean;
   onCancel: () => void;
@@ -64,18 +108,25 @@ const ImportJsonConfigModal: React.FC<ImportJsonConfigModalProps> = ({
 
     const config = obj as Record<string, unknown>;
 
-    const agents = (typeof config.agents === 'object' && config.agents !== null && !Array.isArray(config.agents))
-      ? config.agents as Record<string, Record<string, unknown>>
-      : undefined;
+    const agents = variant === 'omos'
+      ? resolveSlimImportedAgents(config)
+      : (isPlainObject(config.agents)
+        ? config.agents as Record<string, Record<string, unknown>>
+        : undefined);
 
-    const categories = (typeof config.categories === 'object' && config.categories !== null && !Array.isArray(config.categories))
+    const categories = isPlainObject(config.categories)
       ? config.categories as Record<string, Record<string, unknown>>
       : undefined;
 
     // Collect other fields (everything except agents, categories, $schema)
     const otherFields: Record<string, unknown> = {};
     Object.entries(config).forEach(([key, value]) => {
-      if (key !== 'agents' && key !== 'categories' && key !== '$schema') {
+      if (
+        key !== 'agents' &&
+        key !== 'categories' &&
+        key !== '$schema' &&
+        !(variant === 'omos' && (key === 'preset' || key === 'presets'))
+      ) {
         otherFields[key] = value;
       }
     });
@@ -107,6 +158,25 @@ const ImportJsonConfigModal: React.FC<ImportJsonConfigModalProps> = ({
   const agentCount = parsed?.agents ? Object.keys(parsed.agents).length : 0;
   const categoryCount = parsed?.categories ? Object.keys(parsed.categories).length : 0;
   const otherFieldCount = parsed?.otherFields ? Object.keys(parsed.otherFields).length : 0;
+  const jsonPlaceholder = variant === 'omo'
+    ? `{
+  "agents": {
+    "Coder": { "model": "..." },
+    "Architect": { "model": "..." }
+  },
+  "categories": {
+    "coding": { "model": "..." }
+  }
+}`
+    : `{
+  "preset": "openai",
+  "presets": {
+    "openai": {
+      "orchestrator": { "model": "..." },
+      "oracle": { "model": "..." }
+    }
+  }
+}`;
 
   return (
     <Modal
@@ -170,15 +240,7 @@ const ImportJsonConfigModal: React.FC<ImportJsonConfigModalProps> = ({
         maxHeight={500}
         resizable
         mode="text"
-        placeholder={`{
-  "agents": {
-    "Coder": { "model": "..." },
-    "Architect": { "model": "..." }
-  }${variant === 'omo' ? `,
-  "categories": {
-    "coding": { "model": "..." }
-  }` : ''}
-}`}
+        placeholder={jsonPlaceholder}
       />
 
       {parsed && (
