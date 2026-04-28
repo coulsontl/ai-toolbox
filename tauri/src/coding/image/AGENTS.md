@@ -17,6 +17,7 @@
 - 渠道配置单独落 `image_channel` 表，模型嵌在渠道记录里；工作台运行时选择由前端聚合后传 `channel_id + model_id`，后端再做最终校验。
 - 当前只实现 OpenAI-compatible `images/generations` 和 `images/edits`，不要在现有代码路径里继续保留未接通的 provider 选项。
 - 渠道创建统一走 `image_update_channel` 的“`id` 为空即创建”语义；不要再单独提供“先落一条默认空渠道记录”的命令，否则前端很容易实现出“点新增先写库、再弹编辑窗”的脏交互。
+- 当某个图片参数在前端语义上已被判定为“不适用”并省略提交时，后端 `ImageTaskParams` 和请求构造也必须允许真正省略；不要因为 Rust 侧字段仍是必填，就把前端隐藏字段重新写回请求体。
 
 ## 关键流程
 

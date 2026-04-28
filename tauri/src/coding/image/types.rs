@@ -91,7 +91,8 @@ pub struct ImageTaskParams {
     pub output_format: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_compression: Option<u8>,
-    pub moderation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moderation: Option<String>,
 }
 
 impl Default for ImageTaskParams {
@@ -101,7 +102,7 @@ impl Default for ImageTaskParams {
             quality: "auto".to_string(),
             output_format: "png".to_string(),
             output_compression: None,
-            moderation: "low".to_string(),
+            moderation: Some("low".to_string()),
         }
     }
 }

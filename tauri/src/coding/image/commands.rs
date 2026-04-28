@@ -340,8 +340,17 @@ fn build_text_to_image_request_body(
         "size": input.params.size,
         "quality": input.params.quality,
         "output_format": output_format,
-        "moderation": input.params.moderation,
     });
+
+    if let Some(moderation) = input
+        .params
+        .moderation
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        request_body["moderation"] = json!(moderation);
+    }
 
     if let Some(output_compression) = input.params.output_compression {
         if output_format != "png" {
@@ -362,7 +371,6 @@ fn build_image_to_image_request_body_snapshot(
         "size": input.params.size,
         "quality": input.params.quality,
         "output_format": output_format,
-        "moderation": input.params.moderation,
         "image_field": if input.references.len() > 1 { "image[]" } else { "image" },
         "reference_count": input.references.len(),
         "references": input
@@ -374,6 +382,16 @@ fn build_image_to_image_request_body_snapshot(
             }))
             .collect::<Vec<_>>(),
     });
+
+    if let Some(moderation) = input
+        .params
+        .moderation
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        request_body["moderation"] = json!(moderation);
+    }
 
     if let Some(output_compression) = input.params.output_compression {
         if output_format != "png" {
@@ -672,8 +690,17 @@ async fn execute_generation_request(
                 .text("prompt", input.prompt.clone())
                 .text("size", input.params.size.clone())
                 .text("quality", input.params.quality.clone())
-                .text("output_format", output_format.clone())
-                .text("moderation", input.params.moderation.clone());
+                .text("output_format", output_format.clone());
+
+            if let Some(moderation) = input
+                .params
+                .moderation
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+            {
+                form = form.text("moderation", moderation.to_string());
+            }
 
             if let Some(output_compression) = input.params.output_compression {
                 if output_format != "png" {
@@ -1673,7 +1700,7 @@ mod tests {
                 quality: "auto".to_string(),
                 output_format: "png".to_string(),
                 output_compression: Some(80),
-                moderation: "low".to_string(),
+                moderation: Some("low".to_string()),
             },
             references: Vec::new(),
         }
@@ -1690,7 +1717,7 @@ mod tests {
                 quality: "high".to_string(),
                 output_format: "webp".to_string(),
                 output_compression: Some(65),
-                moderation: "low".to_string(),
+                moderation: Some("low".to_string()),
             },
             references: vec![
                 ImageReferenceInput {
@@ -1829,6 +1856,10 @@ mod tests {
             request_body["output_format"],
             serde_json::Value::String("png".to_string())
         );
+        assert_eq!(
+            request_body["moderation"],
+            serde_json::Value::String("low".to_string())
+        );
         assert!(
             request_body.get("output_compression").is_none(),
             "png output should not include output_compression"
@@ -1870,6 +1901,32 @@ mod tests {
         assert_eq!(
             request_body["output_compression"],
             serde_json::Value::from(65)
+        );
+        assert_eq!(
+            request_body["moderation"],
+            serde_json::Value::String("low".to_string())
+        );
+    }
+
+    #[test]
+    fn image_build_request_snapshot_omits_moderation_when_not_provided() {
+        let channel = sample_channel(
+            "https://example.com/",
+            "test-key",
+            "google/nano-banana",
+            Some("/custom/generations/"),
+            None,
+        );
+        let mut input = sample_text_to_image_input("google/nano-banana");
+        input.params.moderation = None;
+
+        let snapshot = build_request_snapshot(&channel, &input).expect("build request snapshot");
+        let request_body: serde_json::Value =
+            serde_json::from_str(&snapshot.request_body_json).expect("parse request body json");
+
+        assert!(
+            request_body.get("moderation").is_none(),
+            "banana-compatible requests should omit moderation when not provided"
         );
     }
 

@@ -68,6 +68,11 @@ import type {
 import ImageChannelModal from '../components/ImageChannelModal';
 import SizePickerModal from '../components/SizePickerModal';
 import { useImage } from '../hooks/useImage';
+import {
+  filterHistoryJobParamsByModel,
+  getImageParameterVisibility,
+  parseHistoryJobParams,
+} from '../utils/modelProfile';
 import { normalizeImageSize } from '../utils/sizeUtils';
 import styles from './ImagePage.module.less';
 
@@ -120,14 +125,6 @@ interface ChannelDraft {
   timeout_seconds?: number | null;
   enabled: boolean;
   models: ImageChannelModel[];
-}
-
-interface HistoryJobParams {
-  size?: string;
-  quality?: string;
-  output_format?: string;
-  output_compression?: number | null;
-  moderation?: string;
 }
 
 interface ResultImageViewModel {
@@ -419,19 +416,6 @@ const toErrorMessage = (error: unknown, fallbackMessage: string): string => {
     : fallbackMessage;
 };
 
-const parseHistoryJobParams = (rawValue: string): HistoryJobParams | null => {
-  const trimmedValue = rawValue.trim();
-  if (!trimmedValue) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(trimmedValue) as HistoryJobParams;
-  } catch {
-    return null;
-  }
-};
-
 const buildResultDimensionLabel = (
   width?: number | null,
   height?: number | null,
@@ -632,6 +616,10 @@ const ImagePage: React.FC = () => {
   const isCompressionDisabled = formState.outputFormat === 'png';
   const hasAvailableModels = availableModelOptions.length > 0;
   const hasAvailableChannels = availableChannelOptions.length > 0;
+  const selectedParameterVisibility = React.useMemo(
+    () => getImageParameterVisibility(formState.modelId, selectedModelOption?.label ?? null),
+    [formState.modelId, selectedModelOption?.label]
+  );
 
   React.useEffect(() => {
     if (!hasAvailableModels) {
@@ -745,27 +733,37 @@ const ImagePage: React.FC = () => {
     []
   );
 
-  const formatHistoryJobParams = React.useCallback((jobParamsJson: string) => {
+  const formatHistoryJobParams = React.useCallback((
+    jobParamsJson: string,
+    modelId: string,
+    modelName?: string | null
+  ) => {
     const parsedParams = parseHistoryJobParams(jobParamsJson);
     if (!parsedParams) {
       return '';
     }
 
+    const visibleParams = filterHistoryJobParamsByModel(
+      parsedParams,
+      modelId,
+      modelName
+    );
+
     const summaryParts = [
-      parsedParams.size
-        ? `${t('image.fields.size')}: ${normalizeImageSize(parsedParams.size) || parsedParams.size}`
+      visibleParams.size
+        ? `${t('image.fields.size')}: ${normalizeImageSize(visibleParams.size) || visibleParams.size}`
         : null,
-      parsedParams.quality
-        ? `${t('image.fields.quality')}: ${findOptionLabel(QUALITY_OPTIONS, parsedParams.quality)}`
+      visibleParams.quality
+        ? `${t('image.fields.quality')}: ${findOptionLabel(QUALITY_OPTIONS, visibleParams.quality)}`
         : null,
-      parsedParams.output_format
-        ? `${t('image.fields.outputFormat')}: ${findOptionLabel(FORMAT_OPTIONS, parsedParams.output_format)}`
+      visibleParams.output_format
+        ? `${t('image.fields.outputFormat')}: ${findOptionLabel(FORMAT_OPTIONS, visibleParams.output_format)}`
         : null,
-      parsedParams.moderation
-        ? `${t('image.fields.moderation')}: ${findOptionLabel(MODERATION_OPTIONS, parsedParams.moderation)}`
+      visibleParams.moderation
+        ? `${t('image.fields.moderation')}: ${findOptionLabel(MODERATION_OPTIONS, visibleParams.moderation)}`
         : null,
-      typeof parsedParams.output_compression === 'number'
-        ? `${t('image.fields.outputCompression')}: ${parsedParams.output_compression}`
+      typeof visibleParams.output_compression === 'number'
+        ? `${t('image.fields.outputCompression')}: ${visibleParams.output_compression}`
         : null,
     ].filter((value): value is string => Boolean(value));
 
@@ -821,8 +819,13 @@ const ImagePage: React.FC = () => {
         size: formState.size,
         quality: formState.quality,
         output_format: formState.outputFormat,
-        output_compression: isCompressionDisabled ? null : formState.outputCompression,
-        moderation: formState.moderation,
+        output_compression:
+          selectedParameterVisibility.outputCompression && !isCompressionDisabled
+            ? formState.outputCompression
+            : null,
+        moderation: selectedParameterVisibility.moderation
+          ? formState.moderation
+          : null,
       },
       references: isImageToImage
         ? references.map((reference) => ({
@@ -1163,55 +1166,61 @@ const ImagePage: React.FC = () => {
                   </Dropdown>
                 </div>
 
-                <div className={styles.paramField}>
-                  <span className={styles.paramLabel}>{t('image.fields.moderation')}</span>
-                  <Dropdown
-                    trigger={['click']}
-                    overlayClassName={styles.paramDropdownOverlay}
-                    menu={{
-                      items: buildDropdownItems(MODERATION_OPTIONS),
-                      selectable: true,
-                      selectedKeys: [formState.moderation],
-                      onClick: ({ key }) =>
+                {selectedParameterVisibility.moderation && (
+                  <div className={styles.paramField}>
+                    <span className={styles.paramLabel}>{t('image.fields.moderation')}</span>
+                    <Dropdown
+                      trigger={['click']}
+                      overlayClassName={styles.paramDropdownOverlay}
+                      menu={{
+                        items: buildDropdownItems(MODERATION_OPTIONS),
+                        selectable: true,
+                        selectedKeys: [formState.moderation],
+                        onClick: ({ key }) =>
+                          setFormState((currentFormState) => ({
+                            ...currentFormState,
+                            moderation: key,
+                          })),
+                      }}
+                    >
+                      {renderParamDropdownTrigger(
+                        findOptionLabel(MODERATION_OPTIONS, formState.moderation),
+                        `${styles.paramControl} ${styles.paramControlMedium}`
+                      )}
+                    </Dropdown>
+                  </div>
+                )}
+
+                {selectedParameterVisibility.outputCompression && (
+                  <div className={styles.paramField}>
+                    <span className={styles.paramLabel}>{t('image.fields.outputCompression')}</span>
+                    <InputNumber
+                      className={`${styles.paramControl} ${styles.paramNumberControl} ${styles.paramControlNarrow}`}
+                      size="small"
+                      min={0}
+                      max={100}
+                      controls={false}
+                      value={formState.outputCompression}
+                      disabled={isCompressionDisabled}
+                      placeholder={t('image.placeholders.outputCompression')}
+                      onChange={(value) =>
                         setFormState((currentFormState) => ({
                           ...currentFormState,
-                          moderation: key,
-                        })),
-                    }}
-                  >
-                    {renderParamDropdownTrigger(
-                      findOptionLabel(MODERATION_OPTIONS, formState.moderation),
-                      `${styles.paramControl} ${styles.paramControlMedium}`
-                    )}
-                  </Dropdown>
-                </div>
-
-                <div className={styles.paramField}>
-                  <span className={styles.paramLabel}>{t('image.fields.outputCompression')}</span>
-                  <InputNumber
-                    className={`${styles.paramControl} ${styles.paramNumberControl} ${styles.paramControlNarrow}`}
-                    size="small"
-                    min={0}
-                    max={100}
-                    controls={false}
-                    value={formState.outputCompression}
-                    disabled={isCompressionDisabled}
-                    placeholder={t('image.placeholders.outputCompression')}
-                    onChange={(value) =>
-                      setFormState((currentFormState) => ({
-                        ...currentFormState,
-                        outputCompression: typeof value === 'number' ? value : null,
-                      }))
-                    }
-                  />
-                </div>
+                          outputCompression: typeof value === 'number' ? value : null,
+                        }))
+                      }
+                    />
+                  </div>
+                )}
               </div>
 
-              <div className={styles.paramHint}>
-                {isCompressionDisabled
-                  ? t('image.hints.outputCompressionDisabled')
-                  : t('image.hints.outputCompression')}
-              </div>
+              {selectedParameterVisibility.outputCompression && (
+                <div className={styles.paramHint}>
+                  {isCompressionDisabled
+                    ? t('image.hints.outputCompressionDisabled')
+                    : t('image.hints.outputCompression')}
+                </div>
+              )}
             </div>
           </div>
 
@@ -1517,7 +1526,13 @@ const ImagePage: React.FC = () => {
       <div className={styles.historyList}>
         {jobs.map((job) => {
           const historyParamsSummary =
-            job.status === 'done' ? formatHistoryJobParams(job.params_json) : '';
+            job.status === 'done'
+              ? formatHistoryJobParams(
+                  job.params_json,
+                  job.model_id,
+                  job.model_name_snapshot
+                )
+              : '';
 
           return (
             <div key={job.id} className={styles.historyItem}>

@@ -29,7 +29,7 @@ export interface ImageTaskParams {
   quality: string;
   output_format: string;
   output_compression?: number | null;
-  moderation: string;
+  moderation?: string | null;
 }
 
 export interface ImageReferenceInput {
