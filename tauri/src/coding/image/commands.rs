@@ -1,8 +1,8 @@
+use std::collections::HashSet;
+use std::error::Error as _;
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::collections::HashSet;
-use std::error::Error as _;
 use std::time::Instant;
 
 use base64::Engine;
@@ -14,10 +14,10 @@ use tauri::{AppHandle, Manager, State};
 
 use super::store;
 use super::types::{
-    now_ms, CreateImageJobInput, DeleteImageChannelInput, DeleteImageJobInput, ImageAssetDto, ImageAssetRecord,
-    ImageChannelDto, ImageChannelModel, ImageChannelRecord, ImageJobDto, ImageJobMode,
-    ImageJobRecord, ImageJobStatus, ImageReferenceInput, ImageWorkspaceDto, ListImageChannelsInput,
-    ListImageJobsInput, ReorderImageChannelsInput, UpsertImageChannelInput,
+    now_ms, CreateImageJobInput, DeleteImageChannelInput, DeleteImageJobInput, ImageAssetDto,
+    ImageAssetRecord, ImageChannelDto, ImageChannelModel, ImageChannelRecord, ImageJobDto,
+    ImageJobMode, ImageJobRecord, ImageJobStatus, ImageReferenceInput, ImageWorkspaceDto,
+    ListImageChannelsInput, ListImageJobsInput, ReorderImageChannelsInput, UpsertImageChannelInput,
 };
 use crate::coding::db_id::db_clean_id;
 use crate::http_client;
@@ -50,7 +50,8 @@ pub fn image_assets_dir(app: &AppHandle) -> Result<PathBuf, String> {
 fn ensure_image_assets_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = image_assets_dir(app)?;
     if !dir.exists() {
-        fs::create_dir_all(&dir).map_err(|e| format!("Failed to create image assets dir: {}", e))?;
+        fs::create_dir_all(&dir)
+            .map_err(|e| format!("Failed to create image assets dir: {}", e))?;
     }
     Ok(dir)
 }
@@ -58,7 +59,11 @@ fn ensure_image_assets_dir(app: &AppHandle) -> Result<PathBuf, String> {
 fn sanitize_file_name(file_name: &str) -> String {
     let trimmed = file_name.trim();
     let fallback = "image.png";
-    let candidate = if trimmed.is_empty() { fallback } else { trimmed };
+    let candidate = if trimmed.is_empty() {
+        fallback
+    } else {
+        trimmed
+    };
     candidate
         .chars()
         .map(|ch| match ch {
@@ -151,6 +156,29 @@ fn summarize_response_headers(headers: &reqwest::header::HeaderMap) -> String {
     }
 }
 
+fn build_image_result_http_error(
+    mode: &str,
+    channel_name: &str,
+    request_url: &str,
+    image_url: &str,
+    status: reqwest::StatusCode,
+    headers: &str,
+    body_bytes: &[u8],
+) -> String {
+    let body_preview = String::from_utf8_lossy(body_bytes);
+    let preview = truncate_for_log(&body_preview, 240);
+    format!(
+        "Image result fetch failed: mode={} channel={} url={} image_url={} HTTP {} headers={} body_preview={}",
+        mode,
+        channel_name,
+        request_url,
+        image_url,
+        status,
+        headers,
+        preview
+    )
+}
+
 fn format_reqwest_error(error: &reqwest::Error) -> String {
     let mut parts = vec![error.to_string()];
 
@@ -235,11 +263,13 @@ fn parse_channel_models(models_json: &str) -> Result<Vec<ImageChannelModel>, Str
     if models_json.trim().is_empty() {
         return Ok(Vec::new());
     }
-    serde_json::from_str(models_json).map_err(|e| format!("Failed to parse image channel models: {}", e))
+    serde_json::from_str(models_json)
+        .map_err(|e| format!("Failed to parse image channel models: {}", e))
 }
 
 fn serialize_channel_models(models: &[ImageChannelModel]) -> Result<String, String> {
-    serde_json::to_string(models).map_err(|e| format!("Failed to serialize image channel models: {}", e))
+    serde_json::to_string(models)
+        .map_err(|e| format!("Failed to serialize image channel models: {}", e))
 }
 
 fn channel_to_dto(record: ImageChannelRecord) -> Result<ImageChannelDto, String> {
@@ -265,10 +295,15 @@ fn resolve_default_channel_path(provider_kind: &str, mode: &str) -> Result<&'sta
         (PROVIDER_KIND_OPENAI_COMPATIBLE, value) if value == ImageJobMode::TextToImage.as_str() => {
             Ok("images/generations")
         }
-        (PROVIDER_KIND_OPENAI_COMPATIBLE, value) if value == ImageJobMode::ImageToImage.as_str() => {
+        (PROVIDER_KIND_OPENAI_COMPATIBLE, value)
+            if value == ImageJobMode::ImageToImage.as_str() =>
+        {
             Ok("images/edits")
         }
-        _ => Err(format!("Unsupported image provider kind: {}", provider_kind)),
+        _ => Err(format!(
+            "Unsupported image provider kind: {}",
+            provider_kind
+        )),
     }
 }
 
@@ -432,7 +467,10 @@ fn validate_channel_input(input: &UpsertImageChannelInput) -> Result<(), String>
 
     let provider_kind = input.provider_kind.trim();
     if provider_kind != PROVIDER_KIND_OPENAI_COMPATIBLE {
-        return Err(format!("Unsupported image provider kind: {}", provider_kind));
+        return Err(format!(
+            "Unsupported image provider kind: {}",
+            provider_kind
+        ));
     }
 
     let mut model_ids = HashSet::new();
@@ -453,7 +491,11 @@ fn validate_channel_input(input: &UpsertImageChannelInput) -> Result<(), String>
     }
 
     for raw_path in [&input.generation_path, &input.edit_path] {
-        if let Some(path) = raw_path.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty()) {
+        if let Some(path) = raw_path
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
             if path.contains("://") {
                 return Err(format!("Image channel path must be relative: {}", path));
             }
@@ -468,7 +510,11 @@ fn normalize_channel_models(models: &[ImageChannelModel]) -> Vec<ImageChannelMod
         .iter()
         .map(|model| ImageChannelModel {
             id: model.id.trim().to_string(),
-            name: model.name.as_ref().map(|value| value.trim().to_string()).filter(|value| !value.is_empty()),
+            name: model
+                .name
+                .as_ref()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
             supports_text_to_image: model.supports_text_to_image,
             supports_image_to_image: model.supports_image_to_image,
             enabled: model.enabled,
@@ -501,8 +547,13 @@ fn remove_asset_files(app: &AppHandle, assets: &[ImageAssetRecord]) -> Result<()
             continue;
         }
 
-        fs::remove_file(&asset_path)
-            .map_err(|e| format!("Failed to remove image asset file {}: {}", asset_path.display(), e))?;
+        fs::remove_file(&asset_path).map_err(|e| {
+            format!(
+                "Failed to remove image asset file {}: {}",
+                asset_path.display(),
+                e
+            )
+        })?;
     }
 
     Ok(())
@@ -558,7 +609,10 @@ async fn persist_asset_file(
         stored_file_name,
         started_at.elapsed().as_millis()
     );
-    Ok(ImageAssetRecord { id: created_id, ..asset })
+    Ok(ImageAssetRecord {
+        id: created_id,
+        ..asset
+    })
 }
 
 async fn persist_reference_assets(
@@ -650,7 +704,10 @@ async fn execute_generation_request(
                 .await
             {
                 Ok(response) => response,
-                Err(error) if attempt < IMAGE_REQUEST_MAX_ATTEMPTS && should_retry_image_request_error(&error) => {
+                Err(error)
+                    if attempt < IMAGE_REQUEST_MAX_ATTEMPTS
+                        && should_retry_image_request_error(&error) =>
+                {
                     let delay_ms = image_request_retry_delay_ms(attempt);
                     warn!(
                         "Image request retry scheduled after transport error: mode={} channel={} model={} url={} attempt={}/{} delay_ms={} error={}",
@@ -694,7 +751,9 @@ async fn execute_generation_request(
                 IMAGE_REQUEST_MAX_ATTEMPTS
             );
 
-            if attempt < IMAGE_REQUEST_MAX_ATTEMPTS && should_retry_image_response_status(response.status()) {
+            if attempt < IMAGE_REQUEST_MAX_ATTEMPTS
+                && should_retry_image_response_status(response.status())
+            {
                 let retry_status = response.status();
                 let retry_body = match response.text().await {
                     Ok(body) => truncate_for_log(&body.replace(['\r', '\n'], " "), 240),
@@ -759,7 +818,10 @@ async fn execute_generation_request(
             .await
         {
             Ok(response) => response,
-            Err(error) if attempt < IMAGE_REQUEST_MAX_ATTEMPTS && should_retry_image_request_error(&error) => {
+            Err(error)
+                if attempt < IMAGE_REQUEST_MAX_ATTEMPTS
+                    && should_retry_image_request_error(&error) =>
+            {
                 let delay_ms = image_request_retry_delay_ms(attempt);
                 warn!(
                     "Image request retry scheduled after transport error: mode={} channel={} model={} url={} attempt={}/{} delay_ms={} error={}",
@@ -803,7 +865,9 @@ async fn execute_generation_request(
             IMAGE_REQUEST_MAX_ATTEMPTS
         );
 
-        if attempt < IMAGE_REQUEST_MAX_ATTEMPTS && should_retry_image_response_status(response.status()) {
+        if attempt < IMAGE_REQUEST_MAX_ATTEMPTS
+            && should_retry_image_response_status(response.status())
+        {
             let retry_status = response.status();
             let retry_body = match response.text().await {
                 Ok(body) => truncate_for_log(&body.replace(['\r', '\n'], " "), 240),
@@ -940,12 +1004,16 @@ async fn parse_image_response(
     let mut results = Vec::new();
     for item in data {
         if let Some(base64_data) = item.get("b64_json").and_then(|value| value.as_str()) {
-            results.push((decode_base64_bytes(base64_data)?, fallback_mime_type.to_string()));
+            results.push((
+                decode_base64_bytes(base64_data)?,
+                fallback_mime_type.to_string(),
+            ));
             continue;
         }
 
         if let Some(image_url) = item.get("url").and_then(|value| value.as_str()) {
-            let client = http_client::client_with_timeout_no_compression(state, timeout_seconds).await?;
+            let client =
+                http_client::client_with_timeout_no_compression(state, timeout_seconds).await?;
             let image_url_started_at = Instant::now();
             debug!(
                 "Image result fetch start: mode={} channel={} request_url={} image_url={} timeout={}s",
@@ -1018,6 +1086,20 @@ async fn parse_image_response(
                 bytes.len(),
                 headers
             );
+
+            if !status.is_success() {
+                let message = build_image_result_http_error(
+                    mode,
+                    channel_name,
+                    request_url,
+                    image_url,
+                    status,
+                    &headers,
+                    &bytes,
+                );
+                error!("{}", message);
+                return Err(message);
+            }
             results.push((bytes.to_vec(), fallback_mime_type.to_string()));
         }
     }
@@ -1025,9 +1107,7 @@ async fn parse_image_response(
     if results.is_empty() {
         let message = format!(
             "Image API returned no usable image payload: mode={} channel={} url={}",
-            mode,
-            channel_name,
-            request_url
+            mode, channel_name, request_url
         );
         error!("{}", message);
         return Err(message);
@@ -1081,6 +1161,21 @@ async fn to_job_dto(
     })
 }
 
+async fn mark_job_as_error(
+    state: &DbState,
+    job_record: &mut ImageJobRecord,
+    created_at: i64,
+    error_message: String,
+) -> Result<(), String> {
+    job_record.status = ImageJobStatus::Error.as_str().to_string();
+    job_record.error_message = Some(error_message);
+    job_record.finished_at = Some(now_ms());
+    job_record.elapsed_ms = job_record
+        .finished_at
+        .map(|finished_at| finished_at - created_at);
+    store::update_image_job(state, job_record).await
+}
+
 #[tauri::command]
 pub async fn image_get_workspace(
     app: AppHandle,
@@ -1113,7 +1208,8 @@ pub async fn image_get_workspace(
     Ok(ImageWorkspaceDto {
         channels: channel_dtos,
         jobs: job_dtos,
-    }).map(|workspace| {
+    })
+    .map(|workspace| {
         debug!(
             "Image workspace load complete: channels={} jobs={} elapsed_ms={}",
             workspace.channels.len(),
@@ -1129,7 +1225,9 @@ pub async fn image_list_channels(
     state: State<'_, DbState>,
     input: Option<ListImageChannelsInput>,
 ) -> Result<Vec<ImageChannelDto>, String> {
-    let limit = input.map(|value| value.limit).unwrap_or(DEFAULT_CHANNEL_LIST_LIMIT);
+    let limit = input
+        .map(|value| value.limit)
+        .unwrap_or(DEFAULT_CHANNEL_LIST_LIMIT);
     let channels = store::list_image_channels(&state, limit).await?;
     let mut channel_dtos = Vec::with_capacity(channels.len());
     for channel in channels {
@@ -1154,45 +1252,46 @@ pub async fn image_update_channel(
     let normalized_models = normalize_channel_models(&input.models);
     let models_json = serialize_channel_models(&normalized_models)?;
 
-    let next_record = if let Some(channel_id) = input.id.clone().filter(|value| !value.trim().is_empty()) {
-        let clean_channel_id = db_clean_id(&channel_id);
-        let existing_channel = store::get_image_channel_by_id(&state, &clean_channel_id)
-            .await?
-            .ok_or_else(|| format!("Image channel not found: {}", clean_channel_id))?;
+    let next_record =
+        if let Some(channel_id) = input.id.clone().filter(|value| !value.trim().is_empty()) {
+            let clean_channel_id = db_clean_id(&channel_id);
+            let existing_channel = store::get_image_channel_by_id(&state, &clean_channel_id)
+                .await?
+                .ok_or_else(|| format!("Image channel not found: {}", clean_channel_id))?;
 
-        ImageChannelRecord {
-            id: existing_channel.id,
-            name: input.name.trim().to_string(),
-            provider_kind: input.provider_kind.trim().to_string(),
-            base_url: input.base_url.trim().to_string(),
-            api_key: input.api_key.trim().to_string(),
-            generation_path: sanitize_channel_path(input.generation_path),
-            edit_path: sanitize_channel_path(input.edit_path),
-            timeout_seconds: input.timeout_seconds.map(|value| value.max(1)),
-            enabled: input.enabled,
-            sort_order: existing_channel.sort_order,
-            models_json,
-            created_at: existing_channel.created_at,
-            updated_at: now,
-        }
-    } else {
-        let next_sort_order = store::get_max_image_channel_sort_order(&state).await? + 1;
-        ImageChannelRecord {
-            id: crate::coding::db_new_id(),
-            name: input.name.trim().to_string(),
-            provider_kind: input.provider_kind.trim().to_string(),
-            base_url: input.base_url.trim().to_string(),
-            api_key: input.api_key.trim().to_string(),
-            generation_path: sanitize_channel_path(input.generation_path),
-            edit_path: sanitize_channel_path(input.edit_path),
-            timeout_seconds: input.timeout_seconds.map(|value| value.max(1)),
-            enabled: input.enabled,
-            sort_order: next_sort_order,
-            models_json,
-            created_at: now,
-            updated_at: now,
-        }
-    };
+            ImageChannelRecord {
+                id: existing_channel.id,
+                name: input.name.trim().to_string(),
+                provider_kind: input.provider_kind.trim().to_string(),
+                base_url: input.base_url.trim().to_string(),
+                api_key: input.api_key.trim().to_string(),
+                generation_path: sanitize_channel_path(input.generation_path),
+                edit_path: sanitize_channel_path(input.edit_path),
+                timeout_seconds: input.timeout_seconds.map(|value| value.max(1)),
+                enabled: input.enabled,
+                sort_order: existing_channel.sort_order,
+                models_json,
+                created_at: existing_channel.created_at,
+                updated_at: now,
+            }
+        } else {
+            let next_sort_order = store::get_max_image_channel_sort_order(&state).await? + 1;
+            ImageChannelRecord {
+                id: crate::coding::db_new_id(),
+                name: input.name.trim().to_string(),
+                provider_kind: input.provider_kind.trim().to_string(),
+                base_url: input.base_url.trim().to_string(),
+                api_key: input.api_key.trim().to_string(),
+                generation_path: sanitize_channel_path(input.generation_path),
+                edit_path: sanitize_channel_path(input.edit_path),
+                timeout_seconds: input.timeout_seconds.map(|value| value.max(1)),
+                enabled: input.enabled,
+                sort_order: next_sort_order,
+                models_json,
+                created_at: now,
+                updated_at: now,
+            }
+        };
 
     let saved_record = store::upsert_image_channel(&state, &next_record).await?;
     channel_to_dto(saved_record)
@@ -1313,17 +1412,25 @@ pub async fn image_create_job(
     );
 
     if channel_dto.api_key.trim().is_empty() {
-        return Err(format!("Image channel API key is not configured: {}", channel_dto.name));
+        return Err(format!(
+            "Image channel API key is not configured: {}",
+            channel_dto.name
+        ));
     }
 
-    let model = find_channel_model(&channel_dto, input.model_id.trim())
-        .ok_or_else(|| format!("Image model not found on channel {}: {}", channel_dto.name, input.model_id))?;
+    let model = find_channel_model(&channel_dto, input.model_id.trim()).ok_or_else(|| {
+        format!(
+            "Image model not found on channel {}: {}",
+            channel_dto.name, input.model_id
+        )
+    })?;
     validate_channel_model_support(&channel_dto, model, &mode)?;
     let request_snapshot = build_request_snapshot(&channel_dto, &input)?;
 
     let created_at = now_ms();
     let job_id = crate::coding::db_new_id();
-    let reference_assets = persist_reference_assets(&app, &state, &job_id, &input.references).await?;
+    let reference_assets =
+        persist_reference_assets(&app, &state, &job_id, &input.references).await?;
     debug!(
         "Image job references persisted: job_id={} count={} elapsed_ms={}",
         job_id,
@@ -1348,7 +1455,10 @@ pub async fn image_create_job(
         request_url: Some(request_snapshot.request_url.clone()),
         request_headers_json: Some(request_snapshot.request_headers_json.clone()),
         request_body_json: Some(request_snapshot.request_body_json.clone()),
-        input_asset_ids: reference_assets.iter().map(|asset| asset.id.clone()).collect(),
+        input_asset_ids: reference_assets
+            .iter()
+            .map(|asset| asset.id.clone())
+            .collect(),
         output_asset_ids: Vec::new(),
         created_at,
         finished_at: None,
@@ -1363,7 +1473,9 @@ pub async fn image_create_job(
         command_started_at.elapsed().as_millis()
     );
 
-    match execute_generation_request(&state, &channel_dto, &input, &request_snapshot.request_url).await {
+    match execute_generation_request(&state, &channel_dto, &input, &request_snapshot.request_url)
+        .await
+    {
         Ok(result_images) => {
             debug!(
                 "Image generation finished, persisting outputs: job_id={} output_count={} elapsed_ms={}",
@@ -1371,41 +1483,76 @@ pub async fn image_create_job(
                 result_images.len(),
                 command_started_at.elapsed().as_millis()
             );
-            let mut output_asset_ids = Vec::with_capacity(result_images.len());
-            for (index, (bytes, mime_type)) in result_images.into_iter().enumerate() {
-                let file_name = format!("result-{}.{}", index + 1, file_extension_for_mime(&mime_type));
-                debug!(
-                    "Image output persist start: job_id={} index={} bytes={} mime_type={} elapsed_ms={}",
-                    job_record.id,
-                    index + 1,
-                    bytes.len(),
-                    mime_type,
-                    command_started_at.elapsed().as_millis()
-                );
-                let asset = persist_asset_file(
-                    &app,
-                    &state,
-                    Some(job_record.id.clone()),
-                    "output",
-                    &file_name,
-                    &mime_type,
-                    &bytes,
-                )
-                .await?;
-                output_asset_ids.push(asset.id);
-            }
+            let persist_result: Result<(), String> = async {
+                let mut output_asset_ids = Vec::with_capacity(result_images.len());
+                for (index, (bytes, mime_type)) in result_images.into_iter().enumerate() {
+                    let file_name = format!("result-{}.{}", index + 1, file_extension_for_mime(&mime_type));
+                    debug!(
+                        "Image output persist start: job_id={} index={} bytes={} mime_type={} elapsed_ms={}",
+                        job_record.id,
+                        index + 1,
+                        bytes.len(),
+                        mime_type,
+                        command_started_at.elapsed().as_millis()
+                    );
+                    let asset = persist_asset_file(
+                        &app,
+                        &state,
+                        Some(job_record.id.clone()),
+                        "output",
+                        &file_name,
+                        &mime_type,
+                        &bytes,
+                    )
+                    .await?;
+                    output_asset_ids.push(asset.id);
+                }
 
-            job_record.output_asset_ids = output_asset_ids;
-            job_record.status = ImageJobStatus::Done.as_str().to_string();
-            job_record.finished_at = Some(now_ms());
-            job_record.elapsed_ms = job_record.finished_at.map(|finished_at| finished_at - created_at);
-            store::update_image_job(&state, &job_record).await?;
-            debug!(
-                "Image job db record marked done: job_id={} output_assets={} elapsed_ms={}",
-                job_record.id,
-                job_record.output_asset_ids.len(),
-                command_started_at.elapsed().as_millis()
-            );
+                job_record.output_asset_ids = output_asset_ids;
+                job_record.status = ImageJobStatus::Done.as_str().to_string();
+                job_record.error_message = None;
+                job_record.finished_at = Some(now_ms());
+                job_record.elapsed_ms = job_record.finished_at.map(|finished_at| finished_at - created_at);
+                store::update_image_job(&state, &job_record).await?;
+                Ok(())
+            }
+            .await;
+
+            match persist_result {
+                Ok(()) => {
+                    debug!(
+                        "Image job db record marked done: job_id={} output_assets={} elapsed_ms={}",
+                        job_record.id,
+                        job_record.output_asset_ids.len(),
+                        command_started_at.elapsed().as_millis()
+                    );
+                }
+                Err(error_message) => {
+                    error!(
+                        "Image job output persistence failed: id={} mode={} channel={} model={} error={}",
+                        job_record.id,
+                        job_record.mode,
+                        job_record.channel_name_snapshot,
+                        job_record.model_name_snapshot,
+                        error_message
+                    );
+                    mark_job_as_error(&state, &mut job_record, created_at, error_message.clone())
+                        .await
+                        .map_err(|update_error| {
+                            format!(
+                                "Failed to mark image job as error after output persistence failure: job_id={} original_error={} update_error={}",
+                                job_record.id,
+                                error_message,
+                                update_error
+                            )
+                        })?;
+                    debug!(
+                        "Image job db record marked error after output persistence failure: job_id={} elapsed_ms={}",
+                        job_record.id,
+                        command_started_at.elapsed().as_millis()
+                    );
+                }
+            }
         }
         Err(error_message) => {
             error!(
@@ -1416,11 +1563,7 @@ pub async fn image_create_job(
                 job_record.model_name_snapshot,
                 error_message
             );
-            job_record.status = ImageJobStatus::Error.as_str().to_string();
-            job_record.error_message = Some(error_message);
-            job_record.finished_at = Some(now_ms());
-            job_record.elapsed_ms = job_record.finished_at.map(|finished_at| finished_at - created_at);
-            store::update_image_job(&state, &job_record).await?;
+            mark_job_as_error(&state, &mut job_record, created_at, error_message).await?;
             debug!(
                 "Image job db record marked error: job_id={} elapsed_ms={}",
                 job_record.id,
@@ -1569,6 +1712,75 @@ mod tests {
     }
 
     #[test]
+    fn build_image_result_http_error_contains_status_and_preview() {
+        let message = build_image_result_http_error(
+            "text_to_image",
+            "Demo Channel",
+            "https://gateway.example/v1/images/generations",
+            "https://cdn.example/result.png",
+            reqwest::StatusCode::FORBIDDEN,
+            "content-type=text/html",
+            b"<html>signature expired</html>",
+        );
+
+        assert!(message.contains("HTTP 403 Forbidden"));
+        assert!(message.contains("content-type=text/html"));
+        assert!(message.contains("signature expired"));
+    }
+
+    #[tokio::test]
+    async fn mark_job_as_error_updates_status_message_and_elapsed_time() {
+        let test_db_state = create_test_db_state().await;
+        let created_at = now_ms().saturating_sub(25);
+        let mut record = ImageJobRecord {
+            id: "job-mark-error".to_string(),
+            mode: ImageJobMode::TextToImage.as_str().to_string(),
+            prompt: "prompt".to_string(),
+            channel_id: "channel-1".to_string(),
+            channel_name_snapshot: "Channel 1".to_string(),
+            model_id: "gpt-image-2".to_string(),
+            model_name_snapshot: "gpt-image-2".to_string(),
+            params_json: "{}".to_string(),
+            status: ImageJobStatus::Running.as_str().to_string(),
+            error_message: None,
+            request_url: None,
+            request_headers_json: None,
+            request_body_json: None,
+            input_asset_ids: Vec::new(),
+            output_asset_ids: Vec::new(),
+            created_at,
+            finished_at: None,
+            elapsed_ms: None,
+        };
+
+        store::create_image_job(&test_db_state.state, &record)
+            .await
+            .expect("create job record");
+
+        mark_job_as_error(
+            &test_db_state.state,
+            &mut record,
+            created_at,
+            "persist output failed".to_string(),
+        )
+        .await
+        .expect("mark job as error");
+
+        let saved_job = store::get_image_job_by_id(&test_db_state.state, &record.id)
+            .await
+            .expect("load saved job")
+            .expect("saved job exists");
+
+        assert_eq!(saved_job.status, ImageJobStatus::Error.as_str());
+        assert_eq!(
+            saved_job.error_message.as_deref(),
+            Some("persist output failed")
+        );
+        assert!(saved_job.finished_at.is_some());
+        assert!(saved_job.elapsed_ms.unwrap_or_default() >= 0);
+    }
+
+    #[test]
     fn detect_dimensions_reads_png_size() {
         let png_bytes = base64::engine::general_purpose::STANDARD
             .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0mQAAAAASUVORK5CYII=")
@@ -1592,7 +1804,8 @@ mod tests {
 
         let snapshot = build_request_snapshot(&channel, &input).expect("build request snapshot");
         let request_headers: serde_json::Value =
-            serde_json::from_str(&snapshot.request_headers_json).expect("parse request headers json");
+            serde_json::from_str(&snapshot.request_headers_json)
+                .expect("parse request headers json");
         let request_body: serde_json::Value =
             serde_json::from_str(&snapshot.request_body_json).expect("parse request body json");
 
@@ -1635,7 +1848,8 @@ mod tests {
 
         let snapshot = build_request_snapshot(&channel, &input).expect("build request snapshot");
         let request_headers: serde_json::Value =
-            serde_json::from_str(&snapshot.request_headers_json).expect("parse request headers json");
+            serde_json::from_str(&snapshot.request_headers_json)
+                .expect("parse request headers json");
         let request_body: serde_json::Value =
             serde_json::from_str(&snapshot.request_body_json).expect("parse request body json");
 
@@ -1674,9 +1888,10 @@ mod tests {
         input.prompt = prompt;
 
         let request_url = build_request_url(&channel, &input.mode).expect("build request url");
-        let results = execute_generation_request(&test_db_state.state, &channel, &input, &request_url)
-            .await
-            .expect("execute real image generation request");
+        let results =
+            execute_generation_request(&test_db_state.state, &channel, &input, &request_url)
+                .await
+                .expect("execute real image generation request");
 
         assert!(
             !results.is_empty(),

@@ -4,7 +4,7 @@ import type {
   ImageChannel,
   ImageJob,
   UpsertImageChannelInput,
-} from '../services/imageApi';
+} from '../services/imageApi.ts';
 import {
   createImageJob,
   deleteImageJob,
@@ -13,7 +13,7 @@ import {
   listImageJobs,
   reorderImageChannels,
   updateImageChannel,
-} from '../services/imageApi';
+} from '../services/imageApi.ts';
 
 export type ImageViewKey = 'workbench' | 'history' | 'more';
 
@@ -45,7 +45,29 @@ const upsertImageJob = (jobs: ImageJob[], job: ImageJob): ImageJob[] => {
   return [...nextJobs].sort((left, right) => right.created_at - left.created_at);
 };
 
-export const useImageStore = create<ImageState>()((set, get) => ({
+interface ImageStoreDependencies {
+  createImageJob: typeof createImageJob;
+  deleteImageJob: typeof deleteImageJob;
+  deleteImageChannel: typeof deleteImageChannel;
+  getImageWorkspace: typeof getImageWorkspace;
+  listImageJobs: typeof listImageJobs;
+  reorderImageChannels: typeof reorderImageChannels;
+  updateImageChannel: typeof updateImageChannel;
+}
+
+const defaultImageStoreDependencies: ImageStoreDependencies = {
+  createImageJob,
+  deleteImageJob,
+  deleteImageChannel,
+  getImageWorkspace,
+  listImageJobs,
+  reorderImageChannels,
+  updateImageChannel,
+};
+
+export const createImageStore = (
+  dependencies: ImageStoreDependencies = defaultImageStoreDependencies
+) => create<ImageState>()((set, get) => ({
   channels: [],
   jobs: [],
   loading: false,
@@ -58,7 +80,7 @@ export const useImageStore = create<ImageState>()((set, get) => ({
   loadWorkspace: async () => {
     set({ loading: true });
     try {
-      const workspace = await getImageWorkspace();
+      const workspace = await dependencies.getImageWorkspace();
       set({
         channels: workspace.channels,
         jobs: workspace.jobs,
@@ -74,7 +96,7 @@ export const useImageStore = create<ImageState>()((set, get) => ({
   },
 
   refreshJobs: async () => {
-    const jobs = await listImageJobs(50);
+    const jobs = await dependencies.listImageJobs(50);
     set({
       jobs,
       lastJobId: jobs[0]?.id ?? null,
@@ -84,7 +106,7 @@ export const useImageStore = create<ImageState>()((set, get) => ({
   saveChannel: async (input) => {
     set({ channelSaving: true });
     try {
-      const channel = await updateImageChannel(input);
+      const channel = await dependencies.updateImageChannel(input);
       set((currentState) => {
         const nextChannels = currentState.channels.some((item) => item.id === channel.id)
           ? currentState.channels.map((item) => (item.id === channel.id ? channel : item))
@@ -102,7 +124,7 @@ export const useImageStore = create<ImageState>()((set, get) => ({
   },
 
   removeChannel: async (channelId) => {
-    await deleteImageChannel(channelId);
+    await dependencies.deleteImageChannel(channelId);
     set((currentState) => {
       const nextChannels = currentState.channels.filter((channel) => channel.id !== channelId);
       return {
@@ -116,7 +138,7 @@ export const useImageStore = create<ImageState>()((set, get) => ({
   },
 
   removeJob: async (jobId, deleteLocalAssets) => {
-    await deleteImageJob({ id: jobId, delete_local_assets: deleteLocalAssets });
+    await dependencies.deleteImageJob({ id: jobId, delete_local_assets: deleteLocalAssets });
     set((currentState) => {
       const nextJobs = currentState.jobs.filter((job) => job.id !== jobId);
       const nextLastJobId =
@@ -132,7 +154,7 @@ export const useImageStore = create<ImageState>()((set, get) => ({
   },
 
   reorderChannels: async (orderedIds) => {
-    const channels = await reorderImageChannels(orderedIds);
+    const channels = await dependencies.reorderImageChannels(orderedIds);
     set({ channels });
     return channels;
   },
@@ -140,16 +162,20 @@ export const useImageStore = create<ImageState>()((set, get) => ({
   submitJob: async (input) => {
     set({ submitting: true });
     try {
-      const job = await createImageJob(input);
+      const job = await dependencies.createImageJob(input);
       set((currentState) => ({
         jobs: upsertImageJob(currentState.jobs, job),
         lastJobId: job.id,
       }));
-      const jobs = await listImageJobs(50);
-      set((currentState) => ({
-        jobs: jobs.length > 0 ? jobs : currentState.jobs,
-        lastJobId: job.id,
-      }));
+      try {
+        const jobs = await dependencies.listImageJobs(50);
+        set((currentState) => ({
+          jobs: jobs.length > 0 ? jobs : currentState.jobs,
+          lastJobId: job.id,
+        }));
+      } catch (refreshError) {
+        console.warn('Image jobs refresh failed after successful submit', refreshError);
+      }
       return job;
     } finally {
       set({ submitting: false });
@@ -159,3 +185,5 @@ export const useImageStore = create<ImageState>()((set, get) => ({
   setActiveView: (view) => set({ activeView: view }),
   setEditingChannelId: (channelId) => set({ editingChannelId: channelId }),
 }));
+
+export const useImageStore = createImageStore();
