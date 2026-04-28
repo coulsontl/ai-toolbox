@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use serde_json::json;
+use surrealdb::sql::Thing;
 
 use super::types::{ImageAssetRecord, ImageChannelRecord, ImageJobRecord};
 use crate::coding::db_id::{db_clean_id, db_new_id, db_record_id};
@@ -234,6 +237,24 @@ pub async fn create_image_asset(
     Ok(id)
 }
 
+pub async fn get_image_asset_by_id(
+    state: &DbState,
+    asset_id: &str,
+) -> Result<Option<ImageAssetRecord>, String> {
+    let db = state.db();
+    let record_id = db_record_id("image_asset", asset_id);
+    let mut result = db
+        .query(&format!(
+            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
+            record_id
+        ))
+        .await
+        .map_err(|e| format!("Failed to get image asset: {}", e))?;
+
+    let records: Vec<ImageAssetRecord> = result.take(0).map_err(|e| e.to_string())?;
+    Ok(records.into_iter().map(normalize_image_asset_record).next())
+}
+
 pub async fn list_image_assets_by_ids(
     state: &DbState,
     asset_ids: &[String],
@@ -243,29 +264,31 @@ pub async fn list_image_assets_by_ids(
     }
 
     let db = state.db();
-    let record_ids: Vec<String> = asset_ids
+    let record_refs = asset_ids
         .iter()
-        .map(|asset_id| db_record_id("image_asset", asset_id))
-        .collect();
+        .map(|asset_id| Thing::from(("image_asset", db_clean_id(asset_id).as_str())))
+        .collect::<Vec<_>>();
 
     let mut result = db
-        .query("SELECT *, type::string(id) as id FROM $asset_ids")
-        .bind(("asset_ids", record_ids))
+        .query("SELECT *, type::string(id) as id FROM image_asset WHERE id INSIDE $asset_ids")
+        .bind(("asset_ids", record_refs))
         .await
-        .map_err(|e| format!("Failed to list image assets: {}", e))?;
+        .map_err(|e| format!("Failed to list image assets by ids: {}", e))?;
 
-    let mut assets: Vec<ImageAssetRecord> = result
-        .take::<Vec<ImageAssetRecord>>(0)
-        .map_err(|e| e.to_string())?
+    let records: Vec<ImageAssetRecord> = result.take(0).map_err(|e| e.to_string())?;
+    let records_by_id = records
         .into_iter()
         .map(normalize_image_asset_record)
-        .collect();
-    assets.sort_by_key(|asset| {
-        asset_ids
-            .iter()
-            .position(|asset_id| asset_id == &asset.id)
-            .unwrap_or(usize::MAX)
-    });
+        .map(|record| (record.id.clone(), record))
+        .collect::<HashMap<_, _>>();
+
+    let mut assets = Vec::with_capacity(asset_ids.len());
+    for asset_id in asset_ids {
+        let clean_asset_id = db_clean_id(asset_id);
+        if let Some(asset) = records_by_id.get(&clean_asset_id) {
+            assets.push(asset.clone());
+        }
+    }
     Ok(assets)
 }
 
@@ -286,4 +309,70 @@ pub async fn delete_image_assets_by_ids(state: &DbState, asset_ids: &[String]) -
         .map_err(|e| format!("Failed to delete image assets: {}", e))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use surrealdb::engine::local::SurrealKv;
+    use surrealdb::Surreal;
+
+    async fn create_test_db_state() -> (tempfile::TempDir, DbState) {
+        let temp_dir = tempfile::tempdir().expect("create temp db dir");
+        let db_path = temp_dir.path().join("surreal");
+        let db = Surreal::new::<SurrealKv>(db_path)
+            .await
+            .expect("open surreal test db");
+        db.use_ns("ai_toolbox")
+            .use_db("main")
+            .await
+            .expect("select surreal test namespace");
+        (temp_dir, DbState(db))
+    }
+
+    fn sample_asset(asset_id: &str, job_id: &str, file_name: &str) -> ImageAssetRecord {
+        ImageAssetRecord {
+            id: asset_id.to_string(),
+            job_id: Some(job_id.to_string()),
+            role: "output".to_string(),
+            mime_type: "image/png".to_string(),
+            file_name: file_name.to_string(),
+            relative_path: format!("assets/{asset_id}.png"),
+            bytes: 123,
+            width: None,
+            height: None,
+            created_at: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn list_image_assets_by_ids_preserves_input_order_and_skips_missing_records() {
+        let (_temp_dir, db_state) = create_test_db_state().await;
+
+        let first_asset = sample_asset("asset-first", "job-1", "first.png");
+        let second_asset = sample_asset("asset-second", "job-1", "second.png");
+        create_image_asset(&db_state, &first_asset)
+            .await
+            .expect("create first image asset");
+        create_image_asset(&db_state, &second_asset)
+            .await
+            .expect("create second image asset");
+
+        let assets = list_image_assets_by_ids(
+            &db_state,
+            &[
+                "asset-second".to_string(),
+                "asset-missing".to_string(),
+                "asset-first".to_string(),
+                "asset-second".to_string(),
+            ],
+        )
+        .await
+        .expect("list image assets by ids");
+
+        assert_eq!(assets.len(), 3);
+        assert_eq!(assets[0].id, "asset-second");
+        assert_eq!(assets[1].id, "asset-first");
+        assert_eq!(assets[2].id, "asset-second");
+    }
 }

@@ -1,3 +1,5 @@
+@import '../styles/buttonSystem.less';
+
 .paramControlHeight() {
   min-height: 28px;
   height: 28px;
@@ -7,16 +9,22 @@
   border: 1px solid var(--color-border);
   border-radius: 10px;
   background: var(--color-bg-container);
-  box-shadow: none;
+  box-shadow:
+    0 1px 0 color-mix(in srgb, white 34%, transparent) inset,
+    0 6px 14px color-mix(in srgb, var(--color-shadow) 6%, transparent);
   transition:
     border-color 0.2s,
     background 0.2s,
-    color 0.2s;
+    color 0.2s,
+    box-shadow 0.2s;
 
   &:hover,
   &:focus-within {
-    border-color: color-mix(in srgb, var(--ant-color-primary) 28%, transparent);
-    background: color-mix(in srgb, var(--ant-color-primary) 6%, var(--color-bg-container));
+    border-color: color-mix(in srgb, var(--color-border-secondary) 34%, white 66%);
+    background: color-mix(in srgb, var(--color-border-secondary) 8%, var(--color-bg-container));
+    box-shadow:
+      0 1px 0 color-mix(in srgb, white 40%, transparent) inset,
+      0 8px 16px color-mix(in srgb, var(--color-shadow) 8%, transparent);
   }
 }
 
@@ -71,34 +79,15 @@
 }
 
 .viewTabs {
-  display: inline-flex;
-  gap: 8px;
-  padding: 4px;
-  border: 1px solid var(--color-border);
-  border-radius: 999px;
-  background: var(--color-bg-container);
+  .segmentedContainer();
 }
 
 .viewTab {
-  border: none;
-  background: transparent;
-  color: var(--color-text-secondary);
-  padding: 6px 14px;
-  border-radius: 999px;
-  cursor: pointer;
-  transition:
-    color 0.2s,
-    background 0.2s;
-
-  &:hover {
-    color: var(--color-text-primary);
-    background: var(--color-bg-hover);
-  }
+  .segmentedButton();
 }
 
 .viewTabActive {
-  background: color-mix(in srgb, var(--ant-color-primary) 12%, transparent);
-  color: var(--ant-color-primary);
+  .segmentedButtonActive();
 }
 
 .contentGrid {
@@ -134,27 +123,19 @@
 }
 
 .modeGroup {
-  display: inline-flex;
-  gap: 8px;
+  .segmentedContainer();
   flex-wrap: nowrap;
   align-items: center;
 }
 
 .modeButton {
-  border: 1px solid var(--color-border);
-  border-radius: 999px;
-  background: var(--color-bg-container);
-  color: var(--color-text-secondary);
-  padding: 6px 12px;
-  cursor: pointer;
+  .segmentedButton();
   white-space: nowrap;
   flex: 0 0 auto;
 }
 
 .modeButtonActive {
-  border-color: color-mix(in srgb, var(--ant-color-primary) 28%, transparent);
-  background: color-mix(in srgb, var(--ant-color-primary) 12%, transparent);
-  color: var(--ant-color-primary);
+  .segmentedButtonActive();
 }
 
 .formGrid {
@@ -196,9 +177,14 @@
   min-width: 0;
 }
 
-.paramNumberControl:global(.ant-input-number) {
+.paramNeutralControlShell() {
   .interactiveInputShell();
   .paramControlHeight();
+  border-radius: 10px;
+}
+
+.paramNumberControl:global(.ant-input-number) {
+  .paramNeutralControlShell();
 }
 
 .paramNumberControl:global(.ant-input-number) :global(.ant-input-number-input) {
@@ -213,11 +199,15 @@
 }
 
 .paramSelectTrigger {
+  .paramNeutralControlShell();
+  padding: 0 10px;
   display: inline-flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  .paramControlHeight();
+  color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
 }
 
 .paramSelectValue {
@@ -272,8 +262,8 @@
   }
 
   :global(.ant-dropdown-menu-item-selected) {
-    background: color-mix(in srgb, var(--ant-color-primary) 10%, transparent);
-    color: var(--ant-color-primary);
+    background: color-mix(in srgb, var(--color-border-secondary) 14%, var(--color-bg-container));
+    color: var(--color-text-primary);
     font-weight: 500;
   }
 }
@@ -303,16 +293,79 @@
 
 .sizeTrigger {
   width: 100%;
-  .interactiveInputShell();
+  .paramNeutralControlShell();
   color: var(--color-text-primary);
-  padding: 3px 10px;
-  text-align: left;
-  cursor: pointer;
+  padding: 0 10px;
   display: inline-flex;
   align-items: center;
+  text-align: left;
   justify-content: flex-start;
+  gap: 8px;
+  cursor: pointer;
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   font-size: 12px;
+}
+
+.primaryActionButton:global(.ant-btn) {
+  .buttonBase();
+  .buttonPrimarySurface();
+}
+
+.secondaryActionButton:global(.ant-btn) {
+  .buttonBase();
+  .buttonSecondarySurface();
+}
+
+.secondaryActionButtonCompact:global(.ant-btn) {
+  .buttonBase();
+  .buttonSecondarySurface();
+  .buttonCompact();
+}
+
+.toolActionButton:global(.ant-btn) {
+  .buttonBase();
+  .buttonToolSurface();
+  .buttonCompact();
+}
+
+.toolActionIconButton:global(.ant-btn) {
+  .buttonBase();
+  .buttonToolSurface();
+  .buttonCompact();
+  .buttonIconOnly();
+}
+
+.dangerToolActionButton:global(.ant-btn) {
+  .buttonBase();
+  .buttonDangerSurface();
+  .buttonCompact();
+}
+
+.dangerToolIconButton:global(.ant-btn) {
+  .buttonBase();
+  .buttonDangerSurface();
+  .buttonCompact();
+  .buttonIconOnly();
+}
+
+.inlineTextButton:global(.ant-btn) {
+  min-height: 30px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 12px;
+  color: var(--color-text-secondary);
+  border: 1px solid transparent;
+  background: transparent;
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 600;
+  .buttonMotion();
+
+  &:hover:not(:disabled):not([disabled]) {
+    color: var(--color-text-primary);
+    border-color: color-mix(in srgb, var(--color-border) 80%, var(--ant-color-primary) 20%);
+    background: color-mix(in srgb, var(--ant-color-primary) 6%, var(--color-bg-container));
+  }
 }
 
 .textarea {
@@ -431,6 +484,10 @@
   background: var(--color-bg-container);
 }
 
+.resultImageMedia {
+  position: relative;
+}
+
 .resultImage {
   display: block;
 
@@ -443,19 +500,51 @@
   }
 }
 
+.resultBadge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-bg-elevated) 84%, transparent);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  backdrop-filter: blur(8px);
+}
+
+.resultSizeBadge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-elevated) 86%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  backdrop-filter: blur(8px);
+}
+
 .resultMeta {
   padding: 10px 12px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 8px;
-}
-
-.resultMetaText {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
 }
 
 .channelList {
@@ -582,8 +671,28 @@
   background: var(--color-bg-elevated);
   padding: 14px;
   display: flex;
-  flex-direction: column;
-  gap: 10px;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.historyPreview {
+  flex: 0 0 84px;
+  width: 84px;
+}
+
+.historyPreviewImage {
+  display: block;
+  width: 100%;
+
+  :global(.ant-image-img) {
+    width: 100%;
+    aspect-ratio: 1;
+    border-radius: 12px;
+    border: 1px solid var(--color-border);
+    background: linear-gradient(135deg, var(--color-bg-container), var(--color-bg-hover));
+    object-fit: cover;
+    display: block;
+  }
 }
 
 .historyTopRow {
@@ -591,6 +700,8 @@
   justify-content: space-between;
   gap: 12px;
   align-items: flex-start;
+  flex: 1;
+  min-width: 0;
 }
 
 .historyPrompt {
@@ -605,6 +716,15 @@
   gap: 8px;
   color: var(--color-text-secondary);
   font-size: 12px;
+}
+
+.historyParams {
+  margin-top: 6px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .historyHeadSide {
@@ -689,6 +809,15 @@
 @media (max-width: 720px) {
   .pageHeader {
     flex-direction: column;
+  }
+
+  .historyItem {
+    flex-direction: column;
+  }
+
+  .historyPreview {
+    width: 100%;
+    max-width: 160px;
   }
 
   .fieldRow {

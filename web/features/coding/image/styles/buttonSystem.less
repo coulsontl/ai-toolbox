@@ -1,0 +1,248 @@
+.buttonMotion() {
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    border-color 0.18s ease,
+    background 0.18s ease,
+    color 0.18s ease,
+    opacity 0.18s ease;
+
+  &:hover:not(:disabled):not([disabled]) {
+    transform: translateY(-1px);
+  }
+
+  &:active:not(:disabled):not([disabled]) {
+    transform: translateY(0);
+  }
+
+  &:focus-visible {
+    outline: none;
+  }
+
+  &:disabled,
+  &[disabled] {
+    opacity: 0.56;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+  }
+}
+
+.buttonBase() {
+  min-height: 36px;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 14px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  .buttonMotion();
+}
+
+.buttonPrimarySurface() {
+  color: color-mix(in srgb, var(--ant-color-primary) 72%, black 28%);
+  border-color: color-mix(in srgb, var(--ant-color-primary) 24%, var(--color-border) 76%);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--ant-color-primary) 14%, white 86%) 0%,
+      color-mix(in srgb, var(--ant-color-primary) 24%, var(--color-bg-container) 76%) 100%
+    );
+  box-shadow:
+    0 1px 0 color-mix(in srgb, white 58%, transparent) inset,
+    0 10px 20px color-mix(in srgb, var(--color-shadow) 10%, transparent);
+
+  &:hover:not(:disabled):not([disabled]) {
+    border-color: color-mix(in srgb, var(--ant-color-primary) 30%, var(--color-border) 70%);
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--ant-color-primary) 18%, white 82%) 0%,
+        color-mix(in srgb, var(--ant-color-primary) 30%, var(--color-bg-container) 70%) 100%
+      );
+    box-shadow:
+      0 1px 0 color-mix(in srgb, white 62%, transparent) inset,
+      0 12px 24px color-mix(in srgb, var(--color-shadow) 12%, transparent);
+  }
+
+  &:active:not(:disabled):not([disabled]) {
+    box-shadow:
+      0 1px 0 color-mix(in srgb, white 42%, transparent) inset,
+      0 6px 12px color-mix(in srgb, var(--color-shadow) 8%, transparent);
+  }
+
+  &:focus-visible {
+    box-shadow:
+      0 0 0 3px color-mix(in srgb, var(--color-border-secondary) 38%, white 62%),
+      0 1px 0 color-mix(in srgb, white 58%, transparent) inset,
+      0 10px 20px color-mix(in srgb, var(--color-shadow) 10%, transparent);
+  }
+}
+
+.buttonSecondarySurface() {
+  color: var(--color-text-primary);
+  border-color: color-mix(in srgb, var(--color-border) 92%, transparent);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-bg-container) 90%, white 10%) 0%,
+      color-mix(in srgb, var(--color-bg-container) 98%, var(--color-border) 2%) 100%
+    );
+  box-shadow:
+    0 1px 0 color-mix(in srgb, white 40%, transparent) inset,
+    0 8px 18px color-mix(in srgb, var(--color-shadow) 10%, transparent);
+
+  &:hover:not(:disabled):not([disabled]) {
+    color: var(--color-text-primary);
+    border-color: color-mix(in srgb, var(--color-border-secondary) 32%, white 68%);
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in srgb, white 92%, var(--color-bg-container) 8%) 0%,
+        color-mix(in srgb, var(--color-bg-container) 94%, var(--color-border-secondary) 6%) 100%
+      );
+    box-shadow:
+      0 1px 0 color-mix(in srgb, white 48%, transparent) inset,
+      0 10px 22px color-mix(in srgb, var(--color-shadow) 14%, transparent);
+  }
+
+  &:active:not(:disabled):not([disabled]) {
+    box-shadow:
+      0 1px 0 color-mix(in srgb, white 34%, transparent) inset,
+      0 6px 12px color-mix(in srgb, var(--color-shadow) 8%, transparent);
+  }
+
+  &:focus-visible {
+    box-shadow:
+      0 0 0 3px color-mix(in srgb, var(--color-border-secondary) 34%, white 66%),
+      0 1px 0 color-mix(in srgb, white 40%, transparent) inset,
+      0 8px 18px color-mix(in srgb, var(--color-shadow) 10%, transparent);
+  }
+}
+
+.buttonToolSurface() {
+  color: var(--color-text-secondary);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+
+  &:hover:not(:disabled):not([disabled]) {
+    color: var(--color-text-primary);
+    border-color: color-mix(in srgb, var(--color-border) 82%, var(--ant-color-primary) 18%);
+    background: color-mix(in srgb, var(--ant-color-primary) 6%, var(--color-bg-container));
+    box-shadow: 0 8px 16px color-mix(in srgb, var(--color-shadow) 8%, transparent);
+  }
+
+  &:active:not(:disabled):not([disabled]) {
+    box-shadow: 0 4px 10px color-mix(in srgb, var(--color-shadow) 6%, transparent);
+  }
+
+  &:focus-visible {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-border-secondary) 32%, white 68%);
+  }
+}
+
+.buttonDangerSurface() {
+  color: var(--ant-color-error);
+  border-color: color-mix(in srgb, var(--ant-color-error) 22%, var(--color-border) 78%);
+  background: color-mix(in srgb, var(--ant-color-error) 6%, var(--color-bg-container));
+  box-shadow: none;
+
+  &:hover:not(:disabled):not([disabled]) {
+    color: color-mix(in srgb, var(--ant-color-error) 88%, black 12%);
+    border-color: color-mix(in srgb, var(--ant-color-error) 34%, var(--color-border) 66%);
+    background: color-mix(in srgb, var(--ant-color-error) 10%, var(--color-bg-container));
+    box-shadow: 0 8px 16px color-mix(in srgb, var(--ant-color-error) 10%, transparent);
+  }
+
+  &:focus-visible {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-border-secondary) 32%, white 68%);
+  }
+}
+
+.buttonCompact() {
+  min-height: 32px;
+  height: 32px;
+  border-radius: 12px;
+  padding: 0 11px;
+  font-size: 12px;
+}
+
+.buttonIconOnly() {
+  width: 32px;
+  min-width: 32px;
+  padding: 0;
+}
+
+.segmentedContainer() {
+  display: inline-flex;
+  gap: 8px;
+  padding: 5px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-bg-container) 92%, white 8%) 0%,
+      color-mix(in srgb, var(--color-bg-container) 98%, var(--color-border) 2%) 100%
+    );
+  box-shadow:
+    0 1px 0 color-mix(in srgb, white 32%, transparent) inset,
+    0 10px 22px color-mix(in srgb, var(--color-shadow) 8%, transparent);
+}
+
+.segmentedButton() {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 7px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  .buttonMotion();
+
+  &:hover:not(:disabled):not([disabled]) {
+    color: var(--color-text-primary);
+    background: color-mix(in srgb, var(--color-border-secondary) 18%, var(--color-bg-container));
+  }
+
+  &:focus-visible {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-border-secondary) 30%, white 70%);
+  }
+}
+
+.segmentedButtonActive() {
+  border-color: color-mix(in srgb, var(--color-border-secondary) 38%, white 62%);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, white 72%, var(--ant-color-primary) 10%) 0%,
+      color-mix(in srgb, var(--color-bg-container) 88%, var(--color-border-secondary) 12%) 100%
+    );
+  color: var(--color-text-primary);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, white 38%, transparent) inset,
+    0 8px 16px color-mix(in srgb, var(--color-shadow) 8%, transparent);
+}
+
+.controlTrigger() {
+  .buttonBase();
+  .buttonSecondarySurface();
+  min-height: 32px;
+  height: 32px;
+  border-radius: 12px;
+  padding: 0 12px;
+  justify-content: space-between;
+  font-size: 12px;
+}

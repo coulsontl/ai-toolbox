@@ -1,10 +1,13 @@
 use std::fs;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::collections::HashSet;
 use std::error::Error as _;
+use std::time::Instant;
 
 use base64::Engine;
-use log::error;
+use image::ImageReader;
+use log::{debug, error, warn};
 use reqwest::multipart::{Form, Part};
 use serde_json::json;
 use tauri::{AppHandle, Manager, State};
@@ -23,6 +26,8 @@ use crate::DbState;
 const DEFAULT_CHANNEL_LIST_LIMIT: usize = 200;
 const PROVIDER_KIND_OPENAI_COMPATIBLE: &str = "openai_compatible";
 const IMAGE_REQUEST_ACCEPT_ENCODING: &str = "identity";
+const IMAGE_REQUEST_MAX_ATTEMPTS: usize = 4;
+const IMAGE_REQUEST_RETRY_DELAYS_MS: [u64; 3] = [1500, 3000, 5000];
 
 struct ImageJobRequestSnapshot {
     request_url: String,
@@ -118,6 +123,34 @@ fn serialize_json_pretty(value: &serde_json::Value, error_context: &str) -> Resu
         .map_err(|e| format!("Failed to serialize {}: {}", error_context, e))
 }
 
+fn summarize_response_headers(headers: &reqwest::header::HeaderMap) -> String {
+    let interesting_headers = [
+        "content-type",
+        "content-length",
+        "content-encoding",
+        "transfer-encoding",
+        "connection",
+        "server",
+        "cf-ray",
+    ];
+
+    let parts = interesting_headers
+        .iter()
+        .filter_map(|header_name| {
+            headers
+                .get(*header_name)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| format!("{header_name}={value}"))
+        })
+        .collect::<Vec<_>>();
+
+    if parts.is_empty() {
+        "none".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
 fn format_reqwest_error(error: &reqwest::Error) -> String {
     let mut parts = vec![error.to_string()];
 
@@ -155,8 +188,47 @@ fn format_reqwest_error(error: &reqwest::Error) -> String {
     parts.join(" ")
 }
 
-fn detect_dimensions(_bytes: &[u8]) -> (Option<i64>, Option<i64>) {
-    (None, None)
+fn should_retry_image_request_error(error: &reqwest::Error) -> bool {
+    error.is_timeout() || error.is_connect() || error.is_request() || error.is_body()
+}
+
+fn should_retry_image_response_status(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::REQUEST_TIMEOUT
+            | reqwest::StatusCode::BAD_GATEWAY
+            | reqwest::StatusCode::SERVICE_UNAVAILABLE
+            | reqwest::StatusCode::GATEWAY_TIMEOUT
+    )
+}
+
+fn image_request_retry_delay_ms(attempt: usize) -> u64 {
+    IMAGE_REQUEST_RETRY_DELAYS_MS
+        .get(attempt.saturating_sub(1))
+        .copied()
+        .unwrap_or(*IMAGE_REQUEST_RETRY_DELAYS_MS.last().unwrap_or(&3000))
+}
+
+fn truncate_for_log(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let preview = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{preview}...")
+    } else {
+        preview
+    }
+}
+
+fn detect_dimensions(bytes: &[u8]) -> (Option<i64>, Option<i64>) {
+    let reader = match ImageReader::new(Cursor::new(bytes)).with_guessed_format() {
+        Ok(reader) => reader,
+        Err(_) => return (None, None),
+    };
+
+    match reader.into_dimensions() {
+        Ok((width, height)) => (Some(width as i64), Some(height as i64)),
+        Err(_) => (None, None),
+    }
 }
 
 fn parse_channel_models(models_json: &str) -> Result<Vec<ImageChannelModel>, String> {
@@ -445,6 +517,7 @@ async fn persist_asset_file(
     mime_type: &str,
     bytes: &[u8],
 ) -> Result<ImageAssetRecord, String> {
+    let started_at = Instant::now();
     let assets_dir = ensure_image_assets_dir(app)?;
     let asset_id = crate::coding::db_new_id();
     let extension = Path::new(file_name)
@@ -472,6 +545,19 @@ async fn persist_asset_file(
     };
 
     let created_id = store::create_image_asset(state, &asset).await?;
+    debug!(
+        "Image asset persisted: asset_id={} job_id={} role={} bytes={} mime_type={} file_name={} elapsed_ms={}",
+        created_id,
+        asset
+            .job_id
+            .as_deref()
+            .unwrap_or("none"),
+        role,
+        bytes.len(),
+        mime_type,
+        stored_file_name,
+        started_at.elapsed().as_millis()
+    );
     Ok(ImageAssetRecord { id: created_id, ..asset })
 }
 
@@ -512,54 +598,233 @@ async fn execute_generation_request(
     let mime_type = mime_from_output_format(&output_format).to_string();
 
     if input.mode == ImageJobMode::ImageToImage.as_str() {
-        let mut form = Form::new()
-            .text("model", input.model_id.clone())
-            .text("prompt", input.prompt.clone())
-            .text("size", input.params.size.clone())
-            .text("quality", input.params.quality.clone())
-            .text("output_format", output_format.clone())
-            .text("moderation", input.params.moderation.clone());
+        for attempt in 1..=IMAGE_REQUEST_MAX_ATTEMPTS {
+            let request_started_at = Instant::now();
+            debug!(
+                "Image request start: mode={} channel={} model={} url={} timeout={}s output_format={} reference_count={} attempt={}/{}",
+                input.mode,
+                channel.name,
+                input.model_id,
+                request_url,
+                timeout_seconds,
+                output_format,
+                input.references.len(),
+                attempt,
+                IMAGE_REQUEST_MAX_ATTEMPTS
+            );
 
-        if let Some(output_compression) = input.params.output_compression {
-            if output_format != "png" {
-                form = form.text("output_compression", output_compression.to_string());
+            let mut form = Form::new()
+                .text("model", input.model_id.clone())
+                .text("prompt", input.prompt.clone())
+                .text("size", input.params.size.clone())
+                .text("quality", input.params.quality.clone())
+                .text("output_format", output_format.clone())
+                .text("moderation", input.params.moderation.clone());
+
+            if let Some(output_compression) = input.params.output_compression {
+                if output_format != "png" {
+                    form = form.text("output_compression", output_compression.to_string());
+                }
             }
-        }
 
-        for reference in &input.references {
-            let bytes = decode_base64_bytes(&reference.base64_data)?;
-            let part = Part::bytes(bytes)
-                .file_name(sanitize_file_name(&reference.file_name))
-                .mime_str(&reference.mime_type)
-                .map_err(|e| format!("Invalid image mime type: {}", e))?;
-            let field_name = if input.references.len() > 1 {
-                "image[]"
-            } else {
-                "image"
+            for reference in &input.references {
+                let bytes = decode_base64_bytes(&reference.base64_data)?;
+                let part = Part::bytes(bytes)
+                    .file_name(sanitize_file_name(&reference.file_name))
+                    .mime_str(&reference.mime_type)
+                    .map_err(|e| format!("Invalid image mime type: {}", e))?;
+                let field_name = if input.references.len() > 1 {
+                    "image[]"
+                } else {
+                    "image"
+                };
+                form = form.part(field_name.to_string(), part);
+            }
+
+            let response = match client
+                .post(request_url)
+                .header("Authorization", &authorization)
+                .header("Accept-Encoding", IMAGE_REQUEST_ACCEPT_ENCODING)
+                .multipart(form)
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(error) if attempt < IMAGE_REQUEST_MAX_ATTEMPTS && should_retry_image_request_error(&error) => {
+                    let delay_ms = image_request_retry_delay_ms(attempt);
+                    warn!(
+                        "Image request retry scheduled after transport error: mode={} channel={} model={} url={} attempt={}/{} delay_ms={} error={}",
+                        input.mode,
+                        channel.name,
+                        input.model_id,
+                        request_url,
+                        attempt,
+                        IMAGE_REQUEST_MAX_ATTEMPTS,
+                        delay_ms,
+                        format_reqwest_error(&error)
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    continue;
+                }
+                Err(error) => {
+                    let message = format!(
+                        "Image edit request failed: mode={} channel={} model={} url={} timeout={}s error={}",
+                        input.mode,
+                        channel.name,
+                        input.model_id,
+                        request_url,
+                        timeout_seconds,
+                        format_reqwest_error(&error)
+                    );
+                    error!("{}", message);
+                    return Err(message);
+                }
             };
-            form = form.part(field_name.to_string(), part);
+
+            debug!(
+                "Image request headers received: mode={} channel={} model={} url={} elapsed_ms={} status={} headers={} attempt={}/{}",
+                input.mode,
+                channel.name,
+                input.model_id,
+                request_url,
+                request_started_at.elapsed().as_millis(),
+                response.status(),
+                summarize_response_headers(response.headers()),
+                attempt,
+                IMAGE_REQUEST_MAX_ATTEMPTS
+            );
+
+            if attempt < IMAGE_REQUEST_MAX_ATTEMPTS && should_retry_image_response_status(response.status()) {
+                let retry_status = response.status();
+                let retry_body = match response.text().await {
+                    Ok(body) => truncate_for_log(&body.replace(['\r', '\n'], " "), 240),
+                    Err(error) => format!("<failed to read retry body: {}>", error),
+                };
+                let delay_ms = image_request_retry_delay_ms(attempt);
+                warn!(
+                    "Image request retry scheduled after upstream status: mode={} channel={} model={} url={} attempt={}/{} delay_ms={} status={} body_preview={}",
+                    input.mode,
+                    channel.name,
+                    input.model_id,
+                    request_url,
+                    attempt,
+                    IMAGE_REQUEST_MAX_ATTEMPTS,
+                    delay_ms,
+                    retry_status,
+                    retry_body
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                continue;
+            }
+
+            return parse_image_response(
+                state,
+                timeout_seconds,
+                response,
+                &mime_type,
+                request_url,
+                &channel.name,
+                &input.mode,
+                request_started_at,
+            )
+            .await;
         }
 
-        let response = client
+        return Err("Image edit request exhausted retries unexpectedly".to_string());
+    }
+
+    let request_body = build_text_to_image_request_body(input, &output_format);
+    for attempt in 1..=IMAGE_REQUEST_MAX_ATTEMPTS {
+        let request_started_at = Instant::now();
+        debug!(
+            "Image request start: mode={} channel={} model={} url={} timeout={}s output_format={} reference_count={} attempt={}/{}",
+            input.mode,
+            channel.name,
+            input.model_id,
+            request_url,
+            timeout_seconds,
+            output_format,
+            input.references.len(),
+            attempt,
+            IMAGE_REQUEST_MAX_ATTEMPTS
+        );
+
+        let response = match client
             .post(request_url)
-            .header("Authorization", authorization)
+            .header("Authorization", &authorization)
+            .header("Content-Type", "application/json")
             .header("Accept-Encoding", IMAGE_REQUEST_ACCEPT_ENCODING)
-            .multipart(form)
+            .json(&request_body)
             .send()
             .await
-            .map_err(|e| {
+        {
+            Ok(response) => response,
+            Err(error) if attempt < IMAGE_REQUEST_MAX_ATTEMPTS && should_retry_image_request_error(&error) => {
+                let delay_ms = image_request_retry_delay_ms(attempt);
+                warn!(
+                    "Image request retry scheduled after transport error: mode={} channel={} model={} url={} attempt={}/{} delay_ms={} error={}",
+                    input.mode,
+                    channel.name,
+                    input.model_id,
+                    request_url,
+                    attempt,
+                    IMAGE_REQUEST_MAX_ATTEMPTS,
+                    delay_ms,
+                    format_reqwest_error(&error)
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                continue;
+            }
+            Err(error) => {
                 let message = format!(
-                    "Image edit request failed: mode={} channel={} model={} url={} timeout={}s error={}",
+                    "Image generation request failed: mode={} channel={} model={} url={} timeout={}s error={}",
                     input.mode,
                     channel.name,
                     input.model_id,
                     request_url,
                     timeout_seconds,
-                    format_reqwest_error(&e)
+                    format_reqwest_error(&error)
                 );
                 error!("{}", message);
-                message
-            })?;
+                return Err(message);
+            }
+        };
+
+        debug!(
+            "Image request headers received: mode={} channel={} model={} url={} elapsed_ms={} status={} headers={} attempt={}/{}",
+            input.mode,
+            channel.name,
+            input.model_id,
+            request_url,
+            request_started_at.elapsed().as_millis(),
+            response.status(),
+            summarize_response_headers(response.headers()),
+            attempt,
+            IMAGE_REQUEST_MAX_ATTEMPTS
+        );
+
+        if attempt < IMAGE_REQUEST_MAX_ATTEMPTS && should_retry_image_response_status(response.status()) {
+            let retry_status = response.status();
+            let retry_body = match response.text().await {
+                Ok(body) => truncate_for_log(&body.replace(['\r', '\n'], " "), 240),
+                Err(error) => format!("<failed to read retry body: {}>", error),
+            };
+            let delay_ms = image_request_retry_delay_ms(attempt);
+            warn!(
+                "Image request retry scheduled after upstream status: mode={} channel={} model={} url={} attempt={}/{} delay_ms={} status={} body_preview={}",
+                input.mode,
+                channel.name,
+                input.model_id,
+                request_url,
+                attempt,
+                IMAGE_REQUEST_MAX_ATTEMPTS,
+                delay_ms,
+                retry_status,
+                retry_body
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            continue;
+        }
 
         return parse_image_response(
             state,
@@ -569,44 +834,12 @@ async fn execute_generation_request(
             request_url,
             &channel.name,
             &input.mode,
+            request_started_at,
         )
         .await;
     }
 
-    let request_body = build_text_to_image_request_body(input, &output_format);
-
-    let response = client
-        .post(request_url)
-        .header("Authorization", authorization)
-        .header("Content-Type", "application/json")
-        .header("Accept-Encoding", IMAGE_REQUEST_ACCEPT_ENCODING)
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|e| {
-            let message = format!(
-                "Image generation request failed: mode={} channel={} model={} url={} timeout={}s error={}",
-                input.mode,
-                channel.name,
-                input.model_id,
-                request_url,
-                timeout_seconds,
-                format_reqwest_error(&e)
-            );
-            error!("{}", message);
-            message
-        })?;
-
-    parse_image_response(
-        state,
-        timeout_seconds,
-        response,
-        &mime_type,
-        request_url,
-        &channel.name,
-        &input.mode,
-    )
-    .await
+    Err("Image generation request exhausted retries unexpectedly".to_string())
 }
 
 async fn parse_image_response(
@@ -617,10 +850,40 @@ async fn parse_image_response(
     request_url: &str,
     channel_name: &str,
     mode: &str,
+    request_started_at: Instant,
 ) -> Result<Vec<(Vec<u8>, String)>, String> {
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+    let status = response.status();
+    let response_headers = summarize_response_headers(response.headers());
+    let body_read_started_at = Instant::now();
+    let response_bytes = response.bytes().await.map_err(|e| {
+        let message = format!(
+            "Failed to read image API response body: mode={} channel={} url={} status={} elapsed_ms={} body_read_ms={} error={}",
+            mode,
+            channel_name,
+            request_url,
+            status,
+            request_started_at.elapsed().as_millis(),
+            body_read_started_at.elapsed().as_millis(),
+            format_reqwest_error(&e)
+        );
+        error!("{}", message);
+        message
+    })?;
+
+    debug!(
+        "Image response body read: mode={} channel={} url={} status={} elapsed_ms={} body_read_ms={} bytes={} headers={}",
+        mode,
+        channel_name,
+        request_url,
+        status,
+        request_started_at.elapsed().as_millis(),
+        body_read_started_at.elapsed().as_millis(),
+        response_bytes.len(),
+        response_headers
+    );
+
+    if !status.is_success() {
+        let body = String::from_utf8_lossy(&response_bytes);
         let mut message = format!(
             "Image API failed: mode={mode} channel={channel_name} url={request_url} HTTP {status} {body}"
         );
@@ -641,20 +904,33 @@ async fn parse_image_response(
         return Err(message);
     }
 
-    let payload: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| {
-            let message = format!(
-                "Failed to parse image API response: mode={} channel={} url={} error={}",
-                mode,
-                channel_name,
-                request_url,
-                e
-            );
-            error!("{}", message);
-            message
-        })?;
+    let json_parse_started_at = Instant::now();
+    let payload: serde_json::Value = serde_json::from_slice(&response_bytes).map_err(|e| {
+        let body_preview = String::from_utf8_lossy(&response_bytes);
+        let preview = body_preview.chars().take(240).collect::<String>();
+        let message = format!(
+            "Failed to parse image API response: mode={} channel={} url={} elapsed_ms={} json_parse_ms={} bytes={} error={} body_preview={}",
+            mode,
+            channel_name,
+            request_url,
+            request_started_at.elapsed().as_millis(),
+            json_parse_started_at.elapsed().as_millis(),
+            response_bytes.len(),
+            e,
+            preview
+        );
+        error!("{}", message);
+        message
+    })?;
+
+    debug!(
+        "Image response json parsed: mode={} channel={} url={} elapsed_ms={} json_parse_ms={}",
+        mode,
+        channel_name,
+        request_url,
+        request_started_at.elapsed().as_millis(),
+        json_parse_started_at.elapsed().as_millis()
+    );
 
     let data = payload
         .get("data")
@@ -670,6 +946,15 @@ async fn parse_image_response(
 
         if let Some(image_url) = item.get("url").and_then(|value| value.as_str()) {
             let client = http_client::client_with_timeout_no_compression(state, timeout_seconds).await?;
+            let image_url_started_at = Instant::now();
+            debug!(
+                "Image result fetch start: mode={} channel={} request_url={} image_url={} timeout={}s",
+                mode,
+                channel_name,
+                request_url,
+                image_url,
+                timeout_seconds
+            );
             let bytes = client
                 .get(image_url)
                 .header("Accept-Encoding", IMAGE_REQUEST_ACCEPT_ENCODING)
@@ -687,21 +972,52 @@ async fn parse_image_response(
                     );
                     error!("{}", message);
                     message
-                })?
+                })?;
+
+            debug!(
+                "Image result headers received: mode={} channel={} request_url={} image_url={} elapsed_ms={} status={} headers={}",
+                mode,
+                channel_name,
+                request_url,
+                image_url,
+                image_url_started_at.elapsed().as_millis(),
+                bytes.status(),
+                summarize_response_headers(bytes.headers())
+            );
+
+            let status = bytes.status();
+            let headers = summarize_response_headers(bytes.headers());
+            let image_body_read_started_at = Instant::now();
+            let bytes = bytes
                 .bytes()
                 .await
                 .map_err(|e| {
                     let message = format!(
-                        "Failed to read image URL bytes: mode={} channel={} url={} image_url={} error={}",
+                        "Failed to read image URL bytes: mode={} channel={} url={} image_url={} elapsed_ms={} body_read_ms={} error={}",
                         mode,
                         channel_name,
                         request_url,
                         image_url,
-                        e
+                        image_url_started_at.elapsed().as_millis(),
+                        image_body_read_started_at.elapsed().as_millis(),
+                        format_reqwest_error(&e)
                     );
                     error!("{}", message);
                     message
                 })?;
+
+            debug!(
+                "Image result body read: mode={} channel={} request_url={} image_url={} status={} elapsed_ms={} body_read_ms={} bytes={} headers={}",
+                mode,
+                channel_name,
+                request_url,
+                image_url,
+                status,
+                image_url_started_at.elapsed().as_millis(),
+                image_body_read_started_at.elapsed().as_millis(),
+                bytes.len(),
+                headers
+            );
             results.push((bytes.to_vec(), fallback_mime_type.to_string()));
         }
     }
@@ -716,6 +1032,15 @@ async fn parse_image_response(
         error!("{}", message);
         return Err(message);
     }
+
+    debug!(
+        "Image response processed: mode={} channel={} url={} elapsed_ms={} result_count={}",
+        mode,
+        channel_name,
+        request_url,
+        request_started_at.elapsed().as_millis(),
+        results.len()
+    );
 
     Ok(results)
 }
@@ -761,6 +1086,8 @@ pub async fn image_get_workspace(
     app: AppHandle,
     state: State<'_, DbState>,
 ) -> Result<ImageWorkspaceDto, String> {
+    let started_at = Instant::now();
+    debug!("Image workspace load start");
     let channels = store::list_image_channels(&state, DEFAULT_CHANNEL_LIST_LIMIT).await?;
     let jobs = store::list_image_jobs(&state, 20).await?;
     let mut job_dtos = Vec::with_capacity(jobs.len());
@@ -786,6 +1113,14 @@ pub async fn image_get_workspace(
     Ok(ImageWorkspaceDto {
         channels: channel_dtos,
         jobs: job_dtos,
+    }).map(|workspace| {
+        debug!(
+            "Image workspace load complete: channels={} jobs={} elapsed_ms={}",
+            workspace.channels.len(),
+            workspace.jobs.len(),
+            started_at.elapsed().as_millis()
+        );
+        workspace
     })
 }
 
@@ -918,7 +1253,9 @@ pub async fn image_list_jobs(
     state: State<'_, DbState>,
     input: Option<ListImageJobsInput>,
 ) -> Result<Vec<ImageJobDto>, String> {
+    let started_at = Instant::now();
     let limit = input.and_then(|value| value.limit).unwrap_or(50);
+    debug!("Image list jobs start: limit={}", limit);
     let jobs = store::list_image_jobs(&state, limit).await?;
     let mut job_dtos = Vec::with_capacity(jobs.len());
     for job in jobs {
@@ -929,6 +1266,12 @@ pub async fn image_list_jobs(
             }
         }
     }
+    debug!(
+        "Image list jobs complete: limit={} jobs={} elapsed_ms={}",
+        limit,
+        job_dtos.len(),
+        started_at.elapsed().as_millis()
+    );
     Ok(job_dtos)
 }
 
@@ -938,6 +1281,7 @@ pub async fn image_create_job(
     state: State<'_, DbState>,
     input: CreateImageJobInput,
 ) -> Result<ImageJobDto, String> {
+    let command_started_at = Instant::now();
     let prompt = input.prompt.trim().to_string();
     if prompt.is_empty() {
         return Err("Prompt is required".to_string());
@@ -958,6 +1302,16 @@ pub async fn image_create_job(
         .ok_or_else(|| format!("Image channel not found: {}", clean_channel_id))?;
     let channel_dto = channel_to_dto(channel)?;
 
+    debug!(
+        "Image job command start: mode={} channel={} model={} prompt_len={} reference_count={} elapsed_ms={}",
+        mode,
+        channel_dto.name,
+        input.model_id.trim(),
+        prompt.chars().count(),
+        input.references.len(),
+        command_started_at.elapsed().as_millis()
+    );
+
     if channel_dto.api_key.trim().is_empty() {
         return Err(format!("Image channel API key is not configured: {}", channel_dto.name));
     }
@@ -970,6 +1324,12 @@ pub async fn image_create_job(
     let created_at = now_ms();
     let job_id = crate::coding::db_new_id();
     let reference_assets = persist_reference_assets(&app, &state, &job_id, &input.references).await?;
+    debug!(
+        "Image job references persisted: job_id={} count={} elapsed_ms={}",
+        job_id,
+        reference_assets.len(),
+        command_started_at.elapsed().as_millis()
+    );
     let mut job_record = ImageJobRecord {
         id: job_id,
         mode,
@@ -997,12 +1357,31 @@ pub async fn image_create_job(
 
     let created_job_id = store::create_image_job(&state, &job_record).await?;
     job_record.id = created_job_id;
+    debug!(
+        "Image job db record created: job_id={} elapsed_ms={}",
+        job_record.id,
+        command_started_at.elapsed().as_millis()
+    );
 
     match execute_generation_request(&state, &channel_dto, &input, &request_snapshot.request_url).await {
         Ok(result_images) => {
+            debug!(
+                "Image generation finished, persisting outputs: job_id={} output_count={} elapsed_ms={}",
+                job_record.id,
+                result_images.len(),
+                command_started_at.elapsed().as_millis()
+            );
             let mut output_asset_ids = Vec::with_capacity(result_images.len());
             for (index, (bytes, mime_type)) in result_images.into_iter().enumerate() {
                 let file_name = format!("result-{}.{}", index + 1, file_extension_for_mime(&mime_type));
+                debug!(
+                    "Image output persist start: job_id={} index={} bytes={} mime_type={} elapsed_ms={}",
+                    job_record.id,
+                    index + 1,
+                    bytes.len(),
+                    mime_type,
+                    command_started_at.elapsed().as_millis()
+                );
                 let asset = persist_asset_file(
                     &app,
                     &state,
@@ -1021,6 +1400,12 @@ pub async fn image_create_job(
             job_record.finished_at = Some(now_ms());
             job_record.elapsed_ms = job_record.finished_at.map(|finished_at| finished_at - created_at);
             store::update_image_job(&state, &job_record).await?;
+            debug!(
+                "Image job db record marked done: job_id={} output_assets={} elapsed_ms={}",
+                job_record.id,
+                job_record.output_asset_ids.len(),
+                command_started_at.elapsed().as_millis()
+            );
         }
         Err(error_message) => {
             error!(
@@ -1036,13 +1421,36 @@ pub async fn image_create_job(
             job_record.finished_at = Some(now_ms());
             job_record.elapsed_ms = job_record.finished_at.map(|finished_at| finished_at - created_at);
             store::update_image_job(&state, &job_record).await?;
+            debug!(
+                "Image job db record marked error: job_id={} elapsed_ms={}",
+                job_record.id,
+                command_started_at.elapsed().as_millis()
+            );
         }
     }
 
+    debug!(
+        "Image job reload start: job_id={} elapsed_ms={}",
+        job_record.id,
+        command_started_at.elapsed().as_millis()
+    );
     let saved_job = store::get_image_job_by_id(&state, &job_record.id)
         .await?
         .ok_or_else(|| "Created image job not found".to_string())?;
-    to_job_dto(&app, &state, saved_job).await
+    debug!(
+        "Image job dto build start: job_id={} elapsed_ms={}",
+        job_record.id,
+        command_started_at.elapsed().as_millis()
+    );
+    let job_dto = to_job_dto(&app, &state, saved_job).await?;
+    debug!(
+        "Image job command complete: job_id={} status={} output_assets={} elapsed_ms={}",
+        job_dto.id,
+        job_dto.status,
+        job_dto.output_assets.len(),
+        command_started_at.elapsed().as_millis()
+    );
+    Ok(job_dto)
 }
 
 #[tauri::command]
@@ -1158,6 +1566,17 @@ mod tests {
 
     fn require_live_env(name: &str) -> String {
         std::env::var(name).unwrap_or_else(|_| panic!("missing required env var: {name}"))
+    }
+
+    #[test]
+    fn detect_dimensions_reads_png_size() {
+        let png_bytes = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0mQAAAAASUVORK5CYII=")
+            .expect("decode png bytes");
+
+        let dimensions = detect_dimensions(&png_bytes);
+
+        assert_eq!(dimensions, (Some(1), Some(1)));
     }
 
     #[test]

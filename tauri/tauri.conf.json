@@ -12,7 +12,13 @@
   "app": {
     "windows": [],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPDATA/image-studio/assets/**"
+        ]
+      }
     }
   },
   "bundle": {

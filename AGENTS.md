@@ -891,6 +891,12 @@ To avoid SurrealDB versioning conflicts (`Invalid revision` errors) and deserial
         *   `CREATE {record_id} CONTENT $data`
         *   `UPSERT {record_id} CONTENT $data` or `UPSERT {record_id} SET ...`
 
+    *   **Batch record lookup rule**: Do **NOT** use `SELECT ... FROM $ids` and then deserialize directly into a strong Rust list when any referenced record may be missing.
+        *   **Why**: SurrealDB can yield `NONE` elements for missing records, which then explode during Rust deserialization with errors like `Expected a string but cannot convert NONE into a string`.
+        *   **Safe pattern**: Query the concrete table and filter with `WHERE id INSIDE $record_refs`, where `$record_refs` is a `Vec<surrealdb::sql::Thing>` built from real record refs such as `Thing::from(("image_asset", "abc"))`.
+        *   **Ordering**: Do not assume SurrealDB preserves the input ID order. If caller-visible order matters, rebuild the output order in Rust using the original ID list.
+        *   **Duplicates**: If duplicate IDs in the input are semantically meaningful, restore duplicates during the Rust-side reorder step rather than expecting the database to return repeated rows.
+
 3.  **Record ID Generation**: Prefer SurrealDB auto-generated IDs. When manual IDs are needed, use `db_new_id()`.
     *   **Preferred**: Let SurrealDB auto-generate IDs via `CREATE table CONTENT $data` (no ID specified). This is how `claude_provider`, `codex_provider`, `oh_my_opencode_config`, etc. work.
     *   **When manual IDs are needed** (e.g., MCP servers, skills): Use the shared `db_new_id()` function which generates UUID v4 without hyphens.

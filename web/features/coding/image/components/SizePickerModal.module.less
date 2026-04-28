@@ -1,3 +1,5 @@
+@import '../styles/buttonSystem.less';
+
 .modal {
   :global(.ant-modal-header) {
     padding: 20px 24px 10px;
@@ -37,34 +39,18 @@
 }
 
 .modeTabs {
-  display: inline-flex;
-  gap: 8px;
-  padding: 4px;
-  border: 1px solid var(--color-border);
-  border-radius: 999px;
-  background: var(--color-bg-container);
+  .segmentedContainer();
   flex-wrap: nowrap;
 }
 
 .modeTab {
-  border: none;
-  background: transparent;
-  color: var(--color-text-secondary);
-  padding: 6px 12px;
-  border-radius: 999px;
-  cursor: pointer;
+  .segmentedButton();
   white-space: nowrap;
   flex: 0 0 auto;
-
-  &:hover {
-    color: var(--color-text-primary);
-    background: var(--color-bg-hover);
-  }
 }
 
 .modeTabActive {
-  background: color-mix(in srgb, var(--ant-color-primary) 12%, transparent);
-  color: var(--ant-color-primary);
+  .segmentedButtonActive();
 }
 
 .sectionCard {
@@ -102,19 +88,25 @@
 }
 
 .choiceButton {
-  border: 1px solid var(--color-border);
-  border-radius: 12px;
-  background: var(--color-bg-container);
-  color: var(--color-text-secondary);
-  padding: 8px 10px;
-  cursor: pointer;
+  .buttonBase();
+  .buttonSecondarySurface();
+  .buttonCompact();
+  width: 100%;
   white-space: nowrap;
 }
 
 .choiceButtonActive {
-  border-color: color-mix(in srgb, var(--ant-color-primary) 28%, transparent);
-  background: color-mix(in srgb, var(--ant-color-primary) 12%, transparent);
+  border-color: color-mix(in srgb, var(--ant-color-primary) 32%, transparent);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--ant-color-primary) 10%, white 12%) 0%,
+      color-mix(in srgb, var(--ant-color-primary) 16%, transparent) 100%
+    );
   color: var(--ant-color-primary);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, white 38%, transparent) inset,
+    0 10px 18px color-mix(in srgb, var(--ant-color-primary) 12%, transparent);
 }
 
 .choiceButtonWide {
@@ -155,6 +147,16 @@
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   min-width: 0;
   word-break: break-word;
+}
+
+.primaryActionButton:global(.ant-btn) {
+  .buttonBase();
+  .buttonPrimarySurface();
+}
+
+.secondaryActionButton:global(.ant-btn) {
+  .buttonBase();
+  .buttonSecondarySurface();
 }
 
 @media (max-width: 720px) {

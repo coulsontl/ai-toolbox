@@ -106,6 +106,8 @@ const ImageChannelModal: React.FC<ImageChannelModalProps> = ({
           message.error(toErrorMessage(error, t('common.error')));
         });
       }}
+      okButtonProps={{ className: styles.primaryActionButton }}
+      cancelButtonProps={{ className: styles.secondaryActionButton }}
       okText={t('common.save')}
       cancelText={t('common.cancel')}
       confirmLoading={saving}
@@ -223,6 +225,7 @@ const ImageChannelModal: React.FC<ImageChannelModalProps> = ({
             </div>
             <Button
               size="small"
+              className={styles.secondaryActionButtonCompact}
               icon={<Plus size={12} />}
               onClick={() => onChange({ ...draft, models: [...draft.models, createEmptyModel()] })}
             >
@@ -312,6 +315,7 @@ const ImageChannelModal: React.FC<ImageChannelModalProps> = ({
                 <div className={styles.modelActions}>
                   <Button
                     size="small"
+                    className={styles.dangerActionButtonCompact}
                     danger
                     icon={<Trash2 size={12} />}
                     onClick={() =>

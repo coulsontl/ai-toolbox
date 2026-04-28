@@ -122,6 +122,30 @@ interface ChannelDraft {
   models: ImageChannelModel[];
 }
 
+interface HistoryJobParams {
+  size?: string;
+  quality?: string;
+  output_format?: string;
+  output_compression?: number | null;
+  moderation?: string;
+}
+
+interface ResultImageViewModel {
+  id: string;
+  job_id?: string | null;
+  role: string;
+  mime_type: string;
+  file_name: string;
+  relative_path: string;
+  bytes: number;
+  width?: number | null;
+  height?: number | null;
+  created_at: number;
+  file_path: string;
+  previewUrl: string;
+  dimensionLabel: string | null;
+}
+
 const MODE_KEYS: ImageModeKey[] = ['text_to_image', 'image_to_image'];
 
 const QUALITY_OPTIONS = [
@@ -171,14 +195,6 @@ const createEmptyChannelDraft = (): ChannelDraft => ({
   timeout_seconds: 300,
   enabled: true,
   models: [],
-});
-
-const createEmptyChannelModel = (): ImageChannelModel => ({
-  id: '',
-  name: '',
-  supports_text_to_image: true,
-  supports_image_to_image: true,
-  enabled: true,
 });
 
 const buildDropdownItems = (
@@ -287,7 +303,7 @@ const SortableChannelCard: React.FC<SortableChannelCardProps> = ({
           <div className={styles.channelListActions}>
             <Button
               size="small"
-              type="text"
+              className={styles.toolActionIconButton}
               icon={<Pencil size={14} />}
               onClick={(event) => {
                 event.stopPropagation();
@@ -296,7 +312,7 @@ const SortableChannelCard: React.FC<SortableChannelCardProps> = ({
             />
             <Button
               size="small"
-              type="text"
+              className={styles.toolActionIconButton}
               icon={<Copy size={14} />}
               onClick={(event) => {
                 event.stopPropagation();
@@ -309,7 +325,7 @@ const SortableChannelCard: React.FC<SortableChannelCardProps> = ({
             >
               <Button
                 size="small"
-                type="text"
+                className={styles.dangerToolIconButton}
                 danger
                 icon={<Trash2 size={14} />}
                 onClick={(event) => event.stopPropagation()}
@@ -401,6 +417,40 @@ const toErrorMessage = (error: unknown, fallbackMessage: string): string => {
   return stringifiedError && stringifiedError !== '[object Object]'
     ? stringifiedError
     : fallbackMessage;
+};
+
+const parseHistoryJobParams = (rawValue: string): HistoryJobParams | null => {
+  const trimmedValue = rawValue.trim();
+  if (!trimmedValue) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(trimmedValue) as HistoryJobParams;
+  } catch {
+    return null;
+  }
+};
+
+const buildResultDimensionLabel = (
+  width?: number | null,
+  height?: number | null,
+  fallbackSize?: string | null
+): string | null => {
+  if (typeof width === 'number' && width > 0 && typeof height === 'number' && height > 0) {
+    return `${width}x${height}`;
+  }
+
+  if (!fallbackSize) {
+    return null;
+  }
+
+  const normalizedSize = normalizeImageSize(fallbackSize);
+  if (!normalizedSize || normalizedSize === 'auto') {
+    return null;
+  }
+
+  return normalizedSize;
 };
 
 const buildWorkbenchModelOptions = (channels: ImageChannel[]): WorkbenchModelOption[] => {
@@ -566,10 +616,15 @@ const ImagePage: React.FC = () => {
   );
 
   const resultImages = React.useMemo(
-    () => (latestJob?.output_assets ?? []).map((asset) => ({
-      ...asset,
-      previewUrl: convertFileSrc(asset.file_path),
-    })),
+    (): ResultImageViewModel[] => {
+      const fallbackSize = latestJob ? parseHistoryJobParams(latestJob.params_json)?.size ?? null : null;
+
+      return (latestJob?.output_assets ?? []).map((asset) => ({
+        ...asset,
+        previewUrl: convertFileSrc(asset.file_path),
+        dimensionLabel: buildResultDimensionLabel(asset.width, asset.height, fallbackSize),
+      }));
+    },
     [latestJob]
   );
 
@@ -689,6 +744,33 @@ const ImagePage: React.FC = () => {
     ),
     []
   );
+
+  const formatHistoryJobParams = React.useCallback((jobParamsJson: string) => {
+    const parsedParams = parseHistoryJobParams(jobParamsJson);
+    if (!parsedParams) {
+      return '';
+    }
+
+    const summaryParts = [
+      parsedParams.size
+        ? `${t('image.fields.size')}: ${normalizeImageSize(parsedParams.size) || parsedParams.size}`
+        : null,
+      parsedParams.quality
+        ? `${t('image.fields.quality')}: ${findOptionLabel(QUALITY_OPTIONS, parsedParams.quality)}`
+        : null,
+      parsedParams.output_format
+        ? `${t('image.fields.outputFormat')}: ${findOptionLabel(FORMAT_OPTIONS, parsedParams.output_format)}`
+        : null,
+      parsedParams.moderation
+        ? `${t('image.fields.moderation')}: ${findOptionLabel(MODERATION_OPTIONS, parsedParams.moderation)}`
+        : null,
+      typeof parsedParams.output_compression === 'number'
+        ? `${t('image.fields.outputCompression')}: ${parsedParams.output_compression}`
+        : null,
+    ].filter((value): value is string => Boolean(value));
+
+    return summaryParts.join(' · ');
+  }, [t]);
 
   const handleAddFiles = React.useCallback(async (files: File[]) => {
     const acceptedFiles = files.filter((file) => file.type.startsWith('image/'));
@@ -1188,6 +1270,7 @@ const ImagePage: React.FC = () => {
                         <div className={styles.referenceActions}>
                           <Button
                             size="small"
+                            className={styles.dangerToolActionButton}
                             danger
                             onClick={() =>
                               setReferences((currentReferences) =>
@@ -1213,6 +1296,7 @@ const ImagePage: React.FC = () => {
             <Space wrap>
               <Button
                 type="primary"
+                className={styles.primaryActionButton}
                 icon={<Sparkles size={14} />}
                 onClick={() => void handleGenerate()}
                 loading={submitting}
@@ -1220,7 +1304,11 @@ const ImagePage: React.FC = () => {
               >
                 {t('image.actions.generate')}
               </Button>
-              <Button icon={<RefreshCcw size={14} />} onClick={handleReset}>
+              <Button
+                className={styles.secondaryActionButton}
+                icon={<RefreshCcw size={14} />}
+                onClick={handleReset}
+              >
                 {t('image.actions.reset')}
               </Button>
             </Space>
@@ -1256,20 +1344,27 @@ const ImagePage: React.FC = () => {
           <div className={styles.resultPreview}>
             {resultImages.map((asset, index) => (
               <div key={asset.id} className={styles.resultImageCard}>
-                <Image
-                  src={asset.previewUrl}
-                  alt=""
-                  className={styles.resultImage}
-                  preview={{ mask: t('common.preview') }}
-                />
+                <div className={styles.resultImageMedia}>
+                  <Image
+                    src={asset.previewUrl}
+                    alt=""
+                    className={styles.resultImage}
+                    preview={{ mask: t('common.preview') }}
+                  />
+                  <span className={styles.resultBadge}>
+                    {index + 1}
+                  </span>
+                  {asset.dimensionLabel && (
+                    <span className={styles.resultSizeBadge}>
+                      {asset.dimensionLabel}
+                    </span>
+                  )}
+                </div>
                 <div className={styles.resultMeta}>
-                  <div className={styles.resultMetaText}>
-                    <Text>{t('image.result.previewLabel', { index: index + 1 })}</Text>
-                    <span className={styles.hintText}>{latestJob?.channel_name_snapshot}</span>
-                  </div>
                   <Space size={4}>
                     <Button
                       size="small"
+                      className={styles.secondaryActionButtonCompact}
                       onClick={async () => {
                         try {
                           const base64Data = await filePathToDataUrl(asset.file_path);
@@ -1299,6 +1394,7 @@ const ImagePage: React.FC = () => {
                     </Button>
                     <Button
                       size="small"
+                      className={styles.secondaryActionButtonCompact}
                       onClick={() => void handleDownloadAsset(asset.file_path, asset.file_name)}
                     >
                       {t('image.actions.download')}
@@ -1326,6 +1422,7 @@ const ImagePage: React.FC = () => {
         </div>
         <Button
           type="primary"
+          className={styles.primaryActionButton}
           icon={<Plus size={14} />}
           onClick={() => void handleCreateChannel()}
           loading={channelSaving}
@@ -1398,75 +1495,105 @@ const ImagePage: React.FC = () => {
           <span className={styles.sectionHint}>{t('image.history.hint')}</span>
         </div>
         <Space>
-          <Button icon={<RefreshCcw size={14} />} onClick={() => void refreshJobs()} loading={loading}>
+          <Button
+            className={styles.secondaryActionButton}
+            icon={<RefreshCcw size={14} />}
+            onClick={() => void refreshJobs()}
+            loading={loading}
+          >
             {t('common.refresh')}
           </Button>
-          <Button icon={<Palette size={14} />} type="primary" onClick={() => setActiveView('workbench')}>
+          <Button
+            type="primary"
+            className={styles.primaryActionButton}
+            icon={<Palette size={14} />}
+            onClick={() => setActiveView('workbench')}
+          >
             {t('image.actions.backToWorkbench')}
           </Button>
         </Space>
       </div>
 
       <div className={styles.historyList}>
-        {jobs.map((job) => (
-          <div key={job.id} className={styles.historyItem}>
-            <div className={styles.historyTopRow}>
-              <div>
-                <div className={styles.historyPrompt}>{job.prompt}</div>
-                <div className={styles.historyMeta}>
-                  <span>{job.model_name_snapshot}</span>
-                  <span>{job.channel_name_snapshot}</span>
-                  <span>{t(`image.modes.${job.mode}`)}</span>
-                  <span>{formatTime(job.created_at)}</span>
-                  <span>{job.elapsed_ms ? `${job.elapsed_ms} ms` : '-'}</span>
+        {jobs.map((job) => {
+          const historyParamsSummary =
+            job.status === 'done' ? formatHistoryJobParams(job.params_json) : '';
+
+          return (
+            <div key={job.id} className={styles.historyItem}>
+              {job.output_assets[0] && (
+                <div className={styles.historyPreview}>
+                  <Image
+                    src={convertFileSrc(job.output_assets[0].file_path)}
+                    alt=""
+                    className={styles.historyPreviewImage}
+                    preview={{ mask: t('common.preview') }}
+                  />
                 </div>
-              </div>
-              <div className={styles.historyHeadSide}>
-                <Tag
-                  color={job.status === 'done' ? 'success' : job.status === 'error' ? 'error' : 'processing'}
-                  className={styles.historyStatusTag}
-                >
-                  {t(`image.status.${job.status}`)}
-                </Tag>
-                <div className={styles.historyHeadActions}>
-                  <Button
-                    size="small"
-                    type="text"
-                    icon={<FileJson size={14} />}
-                    title={t('image.actions.viewDetail')}
-                    onClick={() => setRequestDetailJobId(job.id)}
-                  />
-                  <Button
-                    size="small"
-                    type="text"
-                    icon={<RotateCcw size={14} />}
-                    title={t('image.actions.reuse')}
-                    onClick={() => handleSelectHistoryJob(job.id)}
-                  />
-                  {job.output_assets[0] && (
+              )}
+              <div className={styles.historyTopRow}>
+                <div>
+                  <div className={styles.historyPrompt}>{job.prompt}</div>
+                  <div className={styles.historyMeta}>
+                    <span>{job.model_name_snapshot}</span>
+                    <span>{job.channel_name_snapshot}</span>
+                    <span>{t(`image.modes.${job.mode}`)}</span>
+                    <span>{formatTime(job.created_at)}</span>
+                    <span>{job.elapsed_ms ? `${job.elapsed_ms} ms` : '-'}</span>
+                  </div>
+                  {historyParamsSummary && (
+                    <div className={styles.historyParams}>
+                      {historyParamsSummary}
+                    </div>
+                  )}
+                </div>
+                <div className={styles.historyHeadSide}>
+                  <Tag
+                    color={job.status === 'done' ? 'success' : job.status === 'error' ? 'error' : 'processing'}
+                    className={styles.historyStatusTag}
+                  >
+                    {t(`image.status.${job.status}`)}
+                  </Tag>
+                  <div className={styles.historyHeadActions}>
                     <Button
                       size="small"
-                      type="text"
-                      icon={<Download size={14} />}
-                      title={t('image.actions.download')}
-                      onClick={() =>
-                        void handleDownloadAsset(job.output_assets[0].file_path, job.output_assets[0].file_name)
-                      }
+                      className={styles.toolActionIconButton}
+                      icon={<FileJson size={14} />}
+                      title={t('image.actions.viewDetail')}
+                      onClick={() => setRequestDetailJobId(job.id)}
                     />
-                  )}
-                  <Button
-                    size="small"
-                    type="text"
-                    danger
-                    icon={<Trash2 size={14} />}
-                    title={t('common.delete')}
-                    onClick={() => handleDeleteHistoryJob(job.id)}
-                  />
+                    <Button
+                      size="small"
+                      className={styles.toolActionIconButton}
+                      icon={<RotateCcw size={14} />}
+                      title={t('image.actions.reuse')}
+                      onClick={() => handleSelectHistoryJob(job.id)}
+                    />
+                    {job.output_assets[0] && (
+                      <Button
+                        size="small"
+                        className={styles.toolActionIconButton}
+                        icon={<Download size={14} />}
+                        title={t('image.actions.download')}
+                        onClick={() =>
+                          void handleDownloadAsset(job.output_assets[0].file_path, job.output_assets[0].file_name)
+                        }
+                      />
+                    )}
+                    <Button
+                      size="small"
+                      className={styles.dangerToolIconButton}
+                      danger
+                      icon={<Trash2 size={14} />}
+                      title={t('common.delete')}
+                      onClick={() => handleDeleteHistoryJob(job.id)}
+                    />
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {jobs.length === 0 && <Empty description={t('image.history.empty')} />}
@@ -1487,12 +1614,11 @@ const ImagePage: React.FC = () => {
           <div className={styles.headerHintRow}>
             <div className={styles.headerHint}>{t('image.pageHint')}</div>
             <Button
-              type="text"
+              className={`${styles.toolActionButton} ${styles.headerRefreshButton}`}
               size="small"
               icon={<RefreshCcw size={14} />}
               onClick={() => void loadWorkspace()}
               loading={loading}
-              className={styles.headerRefreshButton}
             >
               {t('common.refresh')}
             </Button>

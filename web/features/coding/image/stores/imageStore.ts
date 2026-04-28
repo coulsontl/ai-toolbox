@@ -37,6 +37,14 @@ interface ImageState {
   setEditingChannelId: (channelId: string | null) => void;
 }
 
+const upsertImageJob = (jobs: ImageJob[], job: ImageJob): ImageJob[] => {
+  const nextJobs = jobs.some((currentJob) => currentJob.id === job.id)
+    ? jobs.map((currentJob) => (currentJob.id === job.id ? job : currentJob))
+    : [job, ...jobs];
+
+  return [...nextJobs].sort((left, right) => right.created_at - left.created_at);
+};
+
 export const useImageStore = create<ImageState>()((set, get) => ({
   channels: [],
   jobs: [],
@@ -133,11 +141,15 @@ export const useImageStore = create<ImageState>()((set, get) => ({
     set({ submitting: true });
     try {
       const job = await createImageJob(input);
-      const jobs = await listImageJobs(50);
-      set({
-        jobs,
+      set((currentState) => ({
+        jobs: upsertImageJob(currentState.jobs, job),
         lastJobId: job.id,
-      });
+      }));
+      const jobs = await listImageJobs(50);
+      set((currentState) => ({
+        jobs: jobs.length > 0 ? jobs : currentState.jobs,
+        lastJobId: job.id,
+      }));
       return job;
     } finally {
       set({ submitting: false });
