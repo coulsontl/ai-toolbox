@@ -42,6 +42,7 @@ interface SettingsState {
   localBackupPath: string;
   webdav: WebDAVConfigFE;
   lastBackupTime: string | null;
+  backupImageAssetsEnabled: boolean;
 
   // S3 storage settings
   s3: S3ConfigFE;
@@ -76,6 +77,7 @@ interface SettingsState {
     backupType: 'local' | 'webdav';
     localBackupPath?: string;
     webdav?: Partial<WebDAVConfigFE>;
+    backupImageAssetsEnabled?: boolean;
   }) => Promise<void>;
   setS3: (config: Partial<S3ConfigFE>) => Promise<void>;
   setLastBackupTime: (time: string | null) => Promise<void>;
@@ -162,6 +164,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   webdav: defaultWebDAV,
   s3: defaultS3,
   lastBackupTime: null,
+  backupImageAssetsEnabled: true,
   launchOnStartup: true,
   minimizeToTrayOnClose: true,
   startMinimized: false,
@@ -187,6 +190,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         webdav: toFrontendWebDAV(settings.webdav),
         s3: toFrontendS3(settings.s3),
         lastBackupTime: settings.last_backup_time,
+        backupImageAssetsEnabled: settings.backup_image_assets_enabled ?? true,
         launchOnStartup: settings.launch_on_startup,
         minimizeToTrayOnClose: settings.minimize_to_tray_on_close,
         startMinimized: settings.start_minimized ?? false,
@@ -214,11 +218,14 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       ? { ...state.webdav, ...config.webdav }
       : state.webdav;
     const newLocalPath = config.localBackupPath ?? state.localBackupPath;
+    const newBackupImageAssetsEnabled =
+      config.backupImageAssetsEnabled ?? state.backupImageAssetsEnabled;
 
     set({
       backupType: config.backupType,
       localBackupPath: newLocalPath,
       webdav: newWebdav,
+      backupImageAssetsEnabled: newBackupImageAssetsEnabled,
     });
 
     // Get current settings and update
@@ -228,6 +235,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       backup_type: config.backupType,
       local_backup_path: newLocalPath,
       webdav: toBackendWebDAV(newWebdav),
+      backup_image_assets_enabled: newBackupImageAssetsEnabled,
     };
     await saveSettings(newSettings);
   },

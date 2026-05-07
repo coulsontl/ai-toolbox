@@ -282,6 +282,7 @@
 			"backupNow": "Backup Now",
 			"restoreBackup": "Restore Backup",
 			"openDataDir": "Open Data Directory",
+			"imageAssets": "Back up generated images",
 			"noPathConfigured": "Please configure backup path first",
 			"noWebDAVConfigured": "Please configure WebDAV server first",
 			"backupSuccess": "Backup successful",

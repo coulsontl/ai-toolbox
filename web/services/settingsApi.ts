@@ -74,6 +74,7 @@ export interface AppSettings {
   webdav: WebDAVConfig;
   s3: S3Config;
   last_backup_time: string | null;
+  backup_image_assets_enabled: boolean;
   launch_on_startup: boolean;
   minimize_to_tray_on_close: boolean;
   start_minimized: boolean;
@@ -114,6 +115,7 @@ export const defaultSettings: AppSettings = {
     public_domain: '',
   },
   last_backup_time: null,
+  backup_image_assets_enabled: true,
   launch_on_startup: true,
   minimize_to_tray_on_close: true,
   start_minimized: false,

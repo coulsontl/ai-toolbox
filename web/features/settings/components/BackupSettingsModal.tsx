@@ -17,11 +17,23 @@ const BackupSettingsModal: React.FC<BackupSettingsModalProps> = ({
 }) => {
   const { t } = useTranslation();
   const [form] = Form.useForm();
-  const { backupType, localBackupPath, webdav, setBackupSettings, autoBackupEnabled, autoBackupIntervalDays, autoBackupMaxKeep, setAutoBackupSettings } = useSettingsStore();
+  const {
+    backupType,
+    localBackupPath,
+    webdav,
+    backupImageAssetsEnabled,
+    setBackupSettings,
+    autoBackupEnabled,
+    autoBackupIntervalDays,
+    autoBackupMaxKeep,
+    setAutoBackupSettings,
+  } = useSettingsStore();
 
   const [currentBackupType, setCurrentBackupType] = React.useState<'local' | 'webdav'>(backupType);
   const [currentLocalPath, setCurrentLocalPath] = React.useState(localBackupPath);
   const [testingConnection, setTestingConnection] = React.useState(false);
+  const [currentBackupImageAssetsEnabled, setCurrentBackupImageAssetsEnabled] =
+    React.useState(backupImageAssetsEnabled);
   const [currentAutoBackupEnabled, setCurrentAutoBackupEnabled] = React.useState(autoBackupEnabled);
   const [currentIntervalDays, setCurrentIntervalDays] = React.useState(autoBackupIntervalDays);
   const [currentMaxKeep, setCurrentMaxKeep] = React.useState(autoBackupMaxKeep);
@@ -30,6 +42,7 @@ const BackupSettingsModal: React.FC<BackupSettingsModalProps> = ({
     if (isOpen) {
       setCurrentBackupType(backupType);
       setCurrentLocalPath(localBackupPath);
+      setCurrentBackupImageAssetsEnabled(backupImageAssetsEnabled);
       setCurrentAutoBackupEnabled(autoBackupEnabled);
       setCurrentIntervalDays(autoBackupIntervalDays);
       setCurrentMaxKeep(autoBackupMaxKeep);
@@ -38,7 +51,7 @@ const BackupSettingsModal: React.FC<BackupSettingsModalProps> = ({
         webdav,
       });
     }
-  }, [isOpen, backupType, localBackupPath, webdav, autoBackupEnabled, autoBackupIntervalDays, autoBackupMaxKeep, form]);
+  }, [isOpen, backupType, localBackupPath, webdav, backupImageAssetsEnabled, autoBackupEnabled, autoBackupIntervalDays, autoBackupMaxKeep, form]);
 
   const handleSelectFolder = async () => {
     try {
@@ -62,6 +75,7 @@ const BackupSettingsModal: React.FC<BackupSettingsModalProps> = ({
         backupType: currentBackupType,
         localBackupPath: currentLocalPath,
         webdav: values.webdav as Partial<WebDAVConfigFE>,
+        backupImageAssetsEnabled: currentBackupImageAssetsEnabled,
       });
       await setAutoBackupSettings({
         enabled: currentAutoBackupEnabled,
@@ -177,6 +191,13 @@ const BackupSettingsModal: React.FC<BackupSettingsModalProps> = ({
             </Form.Item>
           </>
         )}
+
+        <Form.Item label={t('settings.backupSettings.imageAssets')}>
+          <Switch
+            checked={currentBackupImageAssetsEnabled}
+            onChange={setCurrentBackupImageAssetsEnabled}
+          />
+        </Form.Item>
 
         <Divider />
 

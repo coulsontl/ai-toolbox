@@ -21,6 +21,7 @@ pub fn from_db_value(value: Value) -> AppSettings {
         s3: get_s3(&value),
 
         last_backup_time: get_opt_str(&value, "last_backup_time"),
+        backup_image_assets_enabled: get_bool(&value, "backup_image_assets_enabled", true),
         launch_on_startup: get_bool(&value, "launch_on_startup", true),
         minimize_to_tray_on_close: get_bool(&value, "minimize_to_tray_on_close", true),
         start_minimized: get_bool(&value, "start_minimized", false),
@@ -185,4 +186,26 @@ fn get_sidebar_hidden_by_page(value: &Value) -> std::collections::HashMap<String
     }
 
     sidebar_hidden
+}
+
+#[cfg(test)]
+mod tests {
+    use super::from_db_value;
+    use serde_json::json;
+
+    #[test]
+    fn backup_image_assets_enabled_defaults_to_true() {
+        let settings = from_db_value(json!({}));
+
+        assert!(settings.backup_image_assets_enabled);
+    }
+
+    #[test]
+    fn backup_image_assets_enabled_preserves_explicit_false() {
+        let settings = from_db_value(json!({
+            "backup_image_assets_enabled": false,
+        }));
+
+        assert!(!settings.backup_image_assets_enabled);
+    }
 }

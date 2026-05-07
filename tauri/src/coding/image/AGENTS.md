@@ -6,7 +6,7 @@
 
 ## Source of Truth
 
-- 图片工作台的主数据分两层：SurrealDB 里的 `image_channel` / `image_job` / `image_asset` 元数据，以及 app data 下 `image-studio/assets/` 的真实图片文件；两者缺一不可。
+- 图片工作台的主数据分两层：SurrealDB 里的 `image_channel` / `image_job` / `image_asset` 元数据，以及 app data 下 `image-studio/assets/` 的真实图片文件；两者缺一不可。备份默认包含资产文件，但用户可通过备份设置关闭 `backup_image_assets_enabled` 来减少备份体积。
 - 前端表单、预览 data URL 和临时引用顺序都不是业务事实源；真正的任务记录由 `image_create_job` 写库后形成。
 - 下载、历史、备份恢复消费的是落盘后的图片资产文件，不是接口响应的临时 base64。
 
@@ -58,7 +58,7 @@ sequenceDiagram
 - “自动选择第一个渠道”的语义依赖 `image_channel.sort_order`；排序是业务事实，不能依赖查询返回顺序或 JSON 内部顺序。
 - 返回给前端用于 `<img>` 展示的应该是文件路径，由前端再通过 `convertFileSrc` 转换；不要自造协议 URL。
 - 只把文件路径回给前端还不够。图片页一旦依赖 `convertFileSrc(file_path)` 展示 app data 下的本地资产，必须同步确认 `tauri.conf.json -> app.security.assetProtocol` 已开启，并且 scope 覆盖 `image-studio/assets/**`；否则后端任务、数据库记录和本地文件都成功了，webview 仍会因为拿不到 asset 协议资源而表现成“页面没有图片”。
-- 新增图片资产目录后，必须在同一任务里同步接入 backup / restore，否则会出现“历史任务还在、图片文件丢了”的分叉。
+- 新增图片资产目录后，必须在同一任务里同步接入 backup / restore，否则会出现“历史任务还在、图片文件丢了”的分叉；唯一例外是用户显式关闭备份设置里的图片资产开关。
 - 图片 API 报错不能只透传裸 HTTP 状态和上游 body；至少要带上 `mode`、`channel`、实际请求 `url`。否则像“image is not supported”这类上游转换错误，很难判断到底是文生图 path 配错，还是改图接口本身不支持图片输入。
 - `provider_kind=gemini` 时，不要复用 OpenAI Images 的路径、鉴权和请求体：
   - 鉴权使用 `x-goog-api-key`
@@ -90,7 +90,7 @@ sequenceDiagram
 
 - 依赖全局 `http_client` 读取代理设置并构建 HTTP client。
 - 依赖根级 `lib.rs` 注册命令。
-- 与 `settings/backup` 紧耦合：`image-studio/assets/` 必须进入备份恢复。
+- 与 `settings/backup` 紧耦合：`image-studio/assets/` 默认必须进入备份恢复，除非用户显式关闭 `backup_image_assets_enabled`。
 
 ## 典型变更场景（按需）
 

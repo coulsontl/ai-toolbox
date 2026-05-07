@@ -582,6 +582,25 @@ fn add_file_to_zip<W: Write + std::io::Seek>(
     Ok(())
 }
 
+pub async fn get_backup_image_assets_enabled_from_db(
+    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+) -> Result<bool, String> {
+    let mut result = db
+        .query("SELECT * OMIT id FROM settings:`app` LIMIT 1")
+        .await
+        .map_err(|e| format!("Failed to query settings: {}", e))?;
+
+    let records: Vec<serde_json::Value> = result
+        .take(0)
+        .map_err(|e| format!("Failed to parse settings: {}", e))?;
+
+    Ok(records
+        .first()
+        .map(|record| crate::settings::adapter::from_db_value(record.clone()))
+        .map(|settings| settings.backup_image_assets_enabled)
+        .unwrap_or(true))
+}
+
 pub fn add_text_to_zip<W: Write + std::io::Seek>(
     zip: &mut ZipWriter<W>,
     zip_path: &str,
@@ -595,10 +614,53 @@ pub fn add_text_to_zip<W: Write + std::io::Seek>(
     Ok(())
 }
 
+pub fn add_image_assets_to_zip<W: Write + std::io::Seek>(
+    app_handle: &tauri::AppHandle,
+    zip: &mut ZipWriter<W>,
+    options: SimpleFileOptions,
+) -> Result<(), String> {
+    let image_assets_dir = get_image_assets_dir(app_handle)?;
+    if !image_assets_dir.exists() {
+        return Ok(());
+    }
+
+    zip.add_directory("image-studio/assets/", options)
+        .map_err(|e| format!("Failed to add image assets directory: {}", e))?;
+
+    for entry in WalkDir::new(&image_assets_dir) {
+        let entry = entry.map_err(|e| format!("Failed to read image asset entry: {}", e))?;
+        let path = entry.path();
+        let relative_path = path
+            .strip_prefix(&image_assets_dir)
+            .map_err(|e| format!("Failed to get image asset relative path: {}", e))?;
+
+        if path.is_file() {
+            if let Some(file_name) = path.file_name() {
+                let name_str = file_name.to_string_lossy();
+                if name_str == ".DS_Store" || name_str.starts_with("._") {
+                    continue;
+                }
+            }
+
+            let relative_str = relative_path.to_string_lossy().replace('\\', "/");
+            let name = format!("image-studio/assets/{}", relative_str);
+            add_file_to_zip(zip, path, &name, options)?;
+        } else if path.is_dir() && !relative_path.as_os_str().is_empty() {
+            let relative_str = relative_path.to_string_lossy().replace('\\', "/");
+            let name = format!("image-studio/assets/{}/", relative_str);
+            zip.add_directory(name, options)
+                .map_err(|e| format!("Failed to add image asset subdirectory: {}", e))?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Create a temporary backup zip file and return its contents as bytes
 pub async fn create_backup_zip(
     app_handle: &tauri::AppHandle,
     db_path: &Path,
+    include_image_assets: bool,
 ) -> Result<Vec<u8>, String> {
     use std::io::Cursor;
 
@@ -847,37 +909,8 @@ pub async fn create_backup_zip(
             }
         }
 
-        let image_assets_dir = get_image_assets_dir(app_handle)?;
-        if image_assets_dir.exists() {
-            zip.add_directory("image-studio/assets/", options)
-                .map_err(|e| format!("Failed to add image assets directory: {}", e))?;
-
-            for entry in WalkDir::new(&image_assets_dir) {
-                let entry =
-                    entry.map_err(|e| format!("Failed to read image asset entry: {}", e))?;
-                let path = entry.path();
-                let relative_path = path
-                    .strip_prefix(&image_assets_dir)
-                    .map_err(|e| format!("Failed to get image asset relative path: {}", e))?;
-
-                if path.is_file() {
-                    if let Some(file_name) = path.file_name() {
-                        let name_str = file_name.to_string_lossy();
-                        if name_str == ".DS_Store" || name_str.starts_with("._") {
-                            continue;
-                        }
-                    }
-
-                    let relative_str = relative_path.to_string_lossy().replace('\\', "/");
-                    let name = format!("image-studio/assets/{}", relative_str);
-                    add_file_to_zip(&mut zip, path, &name, options)?;
-                } else if path.is_dir() && !relative_path.as_os_str().is_empty() {
-                    let relative_str = relative_path.to_string_lossy().replace('\\', "/");
-                    let name = format!("image-studio/assets/{}/", relative_str);
-                    zip.add_directory(name, options)
-                        .map_err(|e| format!("Failed to add image asset subdirectory: {}", e))?;
-                }
-            }
+        if include_image_assets {
+            add_image_assets_to_zip(app_handle, &mut zip, options)?;
         }
 
         zip.finish()

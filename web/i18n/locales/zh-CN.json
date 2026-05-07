@@ -282,6 +282,7 @@
 			"backupNow": "立即备份",
 			"restoreBackup": "恢复备份",
 			"openDataDir": "打开数据目录",
+			"imageAssets": "备份生图图片",
 			"noPathConfigured": "请先配置备份路径",
 			"noWebDAVConfigured": "请先配置 WebDAV 服务器",
 			"backupSuccess": "备份成功",

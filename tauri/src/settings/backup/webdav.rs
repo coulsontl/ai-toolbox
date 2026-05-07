@@ -6,9 +6,10 @@ use tauri::Manager;
 use zip::ZipArchive;
 
 use super::utils::{
-    create_backup_zip, get_claude_mcp_restore_path, get_claude_restore_dir, get_codex_restore_dir,
-    get_db_path, get_image_assets_dir, get_opencode_auth_restore_path, get_opencode_restore_dir,
-    get_skills_dir, normalize_restore_entry_name, push_restore_warning, read_root_dir_override,
+    create_backup_zip, get_backup_image_assets_enabled_from_db, get_claude_mcp_restore_path,
+    get_claude_restore_dir, get_codex_restore_dir, get_db_path, get_image_assets_dir,
+    get_opencode_auth_restore_path, get_opencode_restore_dir, get_skills_dir,
+    normalize_restore_entry_name, push_restore_warning, read_root_dir_override,
     resolve_restore_dir_override, resolve_skills_restore_output_path, RestoreResult,
 };
 use crate::db::DbState;
@@ -198,8 +199,12 @@ pub async fn backup_to_webdav(
         })?;
     }
 
+    let db = state.db();
+    let backup_image_assets_enabled = get_backup_image_assets_enabled_from_db(&db).await?;
+    drop(db);
+
     // Create backup zip in memory
-    let zip_data = create_backup_zip(&app_handle, &db_path).await?;
+    let zip_data = create_backup_zip(&app_handle, &db_path, backup_image_assets_enabled).await?;
 
     // Generate backup filename with timestamp and optional host label
     let timestamp = Local::now().format("%Y%m%d-%H%M%S");

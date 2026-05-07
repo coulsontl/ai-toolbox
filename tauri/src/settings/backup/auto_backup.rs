@@ -171,7 +171,8 @@ async fn perform_webdav_backup(
     settings: &crate::settings::types::AppSettings,
 ) -> Result<(), String> {
     let db_path = get_db_path(app_handle)?;
-    let zip_data = create_backup_zip(app_handle, &db_path).await?;
+    let zip_data =
+        create_backup_zip(app_handle, &db_path, settings.backup_image_assets_enabled).await?;
 
     let timestamp = Local::now().format("%Y%m%d-%H%M%S");
     let host = settings.webdav.host_label.trim();
@@ -222,7 +223,8 @@ async fn perform_local_backup(
     settings: &crate::settings::types::AppSettings,
 ) -> Result<(), String> {
     let db_path = get_db_path(app_handle)?;
-    let zip_data = create_backup_zip(app_handle, &db_path).await?;
+    let zip_data =
+        create_backup_zip(app_handle, &db_path, settings.backup_image_assets_enabled).await?;
 
     let backup_dir = std::path::Path::new(&settings.local_backup_path);
     if !backup_dir.exists() {

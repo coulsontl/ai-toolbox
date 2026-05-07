@@ -38,6 +38,8 @@ pub struct AppSettings {
     pub webdav: WebDAVConfig,
     pub s3: S3Config,
     pub last_backup_time: Option<String>,
+    /// Include generated image files in backup zip (default: true)
+    pub backup_image_assets_enabled: bool,
     /// Launch on startup (default: true)
     pub launch_on_startup: bool,
     /// Minimize to tray on close instead of exiting (default: true)
@@ -77,6 +79,7 @@ impl Default for AppSettings {
             webdav: WebDAVConfig::default(),
             s3: S3Config::default(),
             last_backup_time: None,
+            backup_image_assets_enabled: true,
             launch_on_startup: true,
             minimize_to_tray_on_close: true,
             start_minimized: false,
