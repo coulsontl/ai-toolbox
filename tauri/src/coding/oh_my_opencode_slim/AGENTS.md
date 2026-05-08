@@ -43,6 +43,8 @@ sequenceDiagram
 - 改应用/保存链路时，同样要考虑它会触发 OpenCode WSL 同步，而不是独立的 Slim 事件。
 - OMOS 现在只认顶层 `fallback.chains`。如果遇到历史 `agents.*.fallback_models`，读取时直接忽略，写数据库和运行时文件时也要剔除，不再做兼容迁移。
 - 数据库为空时的 `__local__` 临时记录必须同时支持根级 `agents` 和官方 `preset/presets` 形态；解析规则与前端 JSON 导入保持一致：优先读取当前 `preset`，找不到且只有一个 preset 时使用该 preset，根级 `agents` 覆盖 preset 中的同名 agent 字段，并保留 `agents.<agent>` 内未结构化高级字段。
+- “清除已应用配置”只删除当前决议到的运行时配置文件并取消 `is_applied`，不删除数据库里的 profile，也不是文件映射能力。`__local__` 不应开放该危险操作。
+- 在 Windows + WSL 自动同步开启时，清除已应用配置必须先显式删除 `opencode-oh-my-slim` 的 WSL 目标文件，再删除本机文件并取消 `is_applied`；不要只发 `wsl-sync-request-opencode`，因为普通同步会跳过不存在的源文件，不会删除远端旧文件。
 
 ## 跨模块依赖
 

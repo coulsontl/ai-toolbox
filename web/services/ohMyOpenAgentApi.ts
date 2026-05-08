@@ -64,6 +64,15 @@ export const deleteOhMyOpenAgentConfig = async (id: string): Promise<void> => {
 };
 
 /**
+ * Clear the applied Oh My OpenAgent runtime config file without deleting the saved profile.
+ */
+export const clearOhMyOpenAgentAppliedConfig = async (
+	configId: string,
+): Promise<void> => {
+	await invoke("clear_oh_my_openagent_applied_config", { configId });
+};
+
+/**
  * Apply a configuration to the Oh My OpenAgent config file
  */
 export const applyOhMyOpenAgentConfig = async (

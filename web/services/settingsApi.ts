@@ -88,6 +88,7 @@ export interface AppSettings {
   auto_check_update: boolean;
   visible_tabs: string[];
   sidebar_hidden_by_page: SidebarHiddenByPage;
+  opencode_allow_clear_applied_oh_my_config: boolean;
 }
 
 // Default settings
@@ -129,6 +130,7 @@ export const defaultSettings: AppSettings = {
   auto_check_update: true,
   visible_tabs: ['opencode', 'claudecode', 'codex', 'openclaw', 'image', 'ssh', 'wsl'],
   sidebar_hidden_by_page: createDefaultSidebarHiddenByPage(),
+  opencode_allow_clear_applied_oh_my_config: false,
 };
 
 /**

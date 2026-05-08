@@ -566,6 +566,79 @@ pub async fn is_wsl_auto_sync_enabled(state: &DbState) -> bool {
         .unwrap_or(false)
 }
 
+/// Remove the WSL target for an enabled file mapping when automatic sync is on.
+///
+/// Normal file sync intentionally skips missing local sources. Delete-style tool
+/// actions must call this helper before clearing local state, otherwise the WSL
+/// target keeps the stale runtime file.
+pub async fn remove_auto_synced_wsl_mapping_target(
+    state: &DbState,
+    mapping_id: &str,
+) -> Result<bool, String> {
+    let db = state.db();
+
+    let config_result: Result<Vec<serde_json::Value>, _> = db
+        .query("SELECT *, type::string(id) as id FROM wsl_sync_config:`config` LIMIT 1")
+        .await
+        .map_err(|e| format!("Failed to query WSL config: {}", e))?
+        .take(0);
+
+    let config = match config_result {
+        Ok(records) => records
+            .first()
+            .map(|record| adapter::config_from_db_value(record.clone(), vec![]))
+            .unwrap_or_default(),
+        Err(_) => WSLSyncConfig::default(),
+    };
+
+    if !config.enabled {
+        return Ok(false);
+    }
+
+    let mappings_result: Result<Vec<serde_json::Value>, _> = db
+        .query("SELECT *, type::string(id) as id FROM wsl_file_mapping ORDER BY module, name")
+        .await
+        .map_err(|e| format!("Failed to query WSL file mappings: {}", e))?
+        .take(0);
+
+    let file_mappings = match mappings_result {
+        Ok(records) => records
+            .into_iter()
+            .map(adapter::mapping_from_db_value)
+            .collect(),
+        Err(_) => vec![],
+    };
+
+    let file_mappings = backfill_default_mappings(&db, file_mappings).await;
+    let file_mappings = resolve_dynamic_paths_with_db(&db, file_mappings).await;
+    let Some(mapping) = file_mappings
+        .into_iter()
+        .find(|mapping| mapping.id == mapping_id)
+    else {
+        return Ok(false);
+    };
+
+    if !mapping.enabled {
+        return Ok(false);
+    }
+
+    if mapping.is_directory || mapping.is_pattern {
+        return Err(format!(
+            "Refusing to remove non-file WSL mapping target '{}'",
+            mapping.id
+        ));
+    }
+
+    if runtime_location::parse_wsl_unc_path(&mapping.windows_path).is_some() {
+        return Ok(false);
+    }
+
+    let distro = sync::get_effective_distro(&config.distro)?;
+    sync::remove_wsl_path(&distro, &mapping.wsl_path)?;
+
+    Ok(true)
+}
+
 /// Get current WSL sync status
 #[tauri::command]
 pub async fn wsl_get_status(state: tauri::State<'_, DbState>) -> Result<WSLStatusResult, String> {

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Empty, Space, Typography, message, Spin, Select, Collapse, Form, Tooltip, Modal } from 'antd';
+import { Button, Empty, Space, Typography, message, Spin, Select, Collapse, Form, Tooltip, Modal, Switch } from 'antd';
 import {
   PlusOutlined,
   FolderOpenOutlined,
@@ -306,10 +306,12 @@ const buildFetchedOpenCodeModel = (
 
 const OpenCodePage: React.FC = () => {
   const { t } = useTranslation();
-  const { openCodeConfigRefreshKey, omosConfigRefreshKey, incrementOpenCodeConfigRefresh, incrementOmoConfigRefresh, incrementOmosConfigRefresh } = useRefreshStore();
+  const { openCodeConfigRefreshKey, omoConfigRefreshKey, omosConfigRefreshKey, incrementOpenCodeConfigRefresh, incrementOmoConfigRefresh, incrementOmosConfigRefresh } = useRefreshStore();
   const {
     sidebarHiddenByPage,
     setSidebarHidden,
+    opencodeAllowClearAppliedOhMyConfig,
+    setOpencodeAllowClearAppliedOhMyConfig,
   } = useSettingsStore();
   const [loading, setLoading] = React.useState(false);
   const [config, setConfig] = React.useState<OpenCodeConfig | null>(null);
@@ -618,6 +620,7 @@ const OpenCodePage: React.FC = () => {
   React.useEffect(() => {
     // Biome: make the dependencies explicit
     void openCodeConfigRefreshKey;
+    void omoConfigRefreshKey;
     void ohMyOpenAgentSettingsRefreshKey;
     const loadOmoConfigs = async () => {
       try {
@@ -629,7 +632,7 @@ const OpenCodePage: React.FC = () => {
       }
     };
     loadOmoConfigs();
-  }, [openCodeConfigRefreshKey, ohMyOpenAgentSettingsRefreshKey]);
+  }, [openCodeConfigRefreshKey, omoConfigRefreshKey, ohMyOpenAgentSettingsRefreshKey]);
 
   // Load omo slim config list (used for visibility/filtering)
   React.useEffect(() => {
@@ -2165,12 +2168,13 @@ const OpenCodePage: React.FC = () => {
                 data-sidebar-order={3}
                 style={{ order: 3 }}
               >
-                <OhMyOpenAgentSettings
-                  key={`opencode-omo-settings-${ohMyOpenAgentSettingsRefreshKey}-${omoSettingsExpandNonce}`}
-                  modelOptions={omoModelGroupedOptions}
-                  modelVariantsMap={modelVariantsMap}
-                  disabled={!omoPluginEnabled}
-                  onConfigApplied={() => {
+	                <OhMyOpenAgentSettings
+	                  key={`opencode-omo-settings-${ohMyOpenAgentSettingsRefreshKey}-${omoSettingsExpandNonce}`}
+	                  modelOptions={omoModelGroupedOptions}
+	                  modelVariantsMap={modelVariantsMap}
+	                  disabled={!omoPluginEnabled}
+	                  allowClearAppliedConfig={opencodeAllowClearAppliedOhMyConfig}
+	                  onConfigApplied={() => {
                     // 当配置被应用时，触发 Selector 刷新以更新选中状态
                     setOhMyOpenAgentRefreshKey((prev) => prev + 1);
                   }}
@@ -2197,12 +2201,13 @@ const OpenCodePage: React.FC = () => {
                 data-sidebar-order={4}
                 style={{ order: 4 }}
               >
-                <OhMyOpenCodeSlimSettings
-                  key={`opencode-omo-slim-settings-${ohMyOpenAgentSettingsRefreshKey}-${omoSlimSettingsExpandNonce}`}
-                  modelOptions={omoModelGroupedOptions}
-                  modelVariantsMap={modelVariantsMap}
-                  disabled={!omoSlimPluginEnabled}
-                  onConfigApplied={() => {
+	                <OhMyOpenCodeSlimSettings
+	                  key={`opencode-omo-slim-settings-${ohMyOpenAgentSettingsRefreshKey}-${omoSlimSettingsExpandNonce}`}
+	                  modelOptions={omoModelGroupedOptions}
+	                  modelVariantsMap={modelVariantsMap}
+	                  disabled={!omoSlimPluginEnabled}
+	                  allowClearAppliedConfig={opencodeAllowClearAppliedOhMyConfig}
+	                  onConfigApplied={() => {
                     message.success(t('opencode.ohMyOpenCode.configSelected'));
                   }}
                   onConfigUpdated={() => {
@@ -2692,7 +2697,24 @@ const OpenCodePage: React.FC = () => {
               onClose={() => setSettingsModalOpen(false)}
               sidebarVisible={!sidebarHidden}
               onSidebarVisibleChange={(visible) => setSidebarHidden('opencode', !visible)}
-            />
+            >
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+                <div style={{ width: 180, paddingTop: 4, color: 'var(--color-text-primary)', fontWeight: 500 }}>
+                  {t('opencode.ohMyOpenCode.clearAppliedEnable')}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <Switch
+                    checked={opencodeAllowClearAppliedOhMyConfig}
+                    onChange={(checked) => {
+                      void setOpencodeAllowClearAppliedOhMyConfig(checked);
+                    }}
+                  />
+                  <div style={{ marginTop: 6, color: 'var(--color-text-secondary)', fontSize: 12, lineHeight: 1.5 }}>
+                    {t('opencode.ohMyOpenCode.clearAppliedEnableHint')}
+                  </div>
+                </div>
+              </div>
+            </SidebarSettingsModal>
           </div>
         </SectionSidebarLayout>
       )}

@@ -44,6 +44,13 @@ export const deleteOhMyOpenCodeSlimConfig = async (id: string): Promise<void> =>
 };
 
 /**
+ * Clear the applied oh-my-opencode-slim runtime config file without deleting the saved profile.
+ */
+export const clearOhMyOpenCodeSlimAppliedConfig = async (configId: string): Promise<void> => {
+  await invoke('clear_oh_my_opencode_slim_applied_config', { configId });
+};
+
+/**
  * Apply a configuration to the oh-my-opencode-slim.json file
  */
 export const applyOhMyOpenCodeSlimConfig = async (configId: string): Promise<void> => {

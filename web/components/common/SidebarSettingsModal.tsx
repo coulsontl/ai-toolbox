@@ -7,6 +7,8 @@ interface SidebarSettingsModalProps {
   onClose: () => void;
   sidebarVisible: boolean;
   onSidebarVisibleChange: (visible: boolean) => void | Promise<void>;
+  width?: number;
+  children?: React.ReactNode;
 }
 
 const SidebarSettingsModal: React.FC<SidebarSettingsModalProps> = ({
@@ -14,6 +16,8 @@ const SidebarSettingsModal: React.FC<SidebarSettingsModalProps> = ({
   onClose,
   sidebarVisible,
   onSidebarVisibleChange,
+  width = 680,
+  children,
 }) => {
   const { t } = useTranslation();
 
@@ -23,7 +27,7 @@ const SidebarSettingsModal: React.FC<SidebarSettingsModalProps> = ({
       open={open}
       onCancel={onClose}
       footer={null}
-      width={520}
+      width={width}
     >
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
         <div style={{ width: 180, paddingTop: 4, color: 'var(--color-text-primary)', fontWeight: 500 }}>
@@ -33,6 +37,11 @@ const SidebarSettingsModal: React.FC<SidebarSettingsModalProps> = ({
           <Switch checked={sidebarVisible} onChange={onSidebarVisibleChange} />
         </div>
       </div>
+      {children && (
+        <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {children}
+        </div>
+      )}
     </Modal>
   );
 };

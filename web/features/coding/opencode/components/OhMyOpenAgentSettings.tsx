@@ -37,6 +37,8 @@ import {
   reorderOhMyOpenAgentConfigs,
   getOhMyOpenAgentUpgradeStatus,
   upgradeOhMyOpenAgentLegacySetup,
+  getOhMyOpenAgentConfigPathInfo,
+  clearOhMyOpenAgentAppliedConfig,
 } from '@/services/ohMyOpenAgentApi';
 import { openExternalUrl } from '@/services';
 import { refreshTrayMenu } from '@/services/appApi';
@@ -52,6 +54,7 @@ interface OhMyOpenAgentSettingsProps {
   /** Map of model ID to its variant keys */
   modelVariantsMap?: Record<string, string[]>;
   disabled?: boolean;
+  allowClearAppliedConfig?: boolean;
   onConfigApplied?: (config: OhMyOpenAgentConfig) => void;
   onConfigUpdated?: () => void; // 新增：配置更新/创建/删除后的回调
   onLegacyUpgraded?: () => void;
@@ -61,6 +64,7 @@ const OhMyOpenAgentSettings: React.FC<OhMyOpenAgentSettingsProps> = ({
   modelOptions,
   modelVariantsMap = {},
   disabled = false,
+  allowClearAppliedConfig = false,
   onConfigApplied,
   onConfigUpdated,
   onLegacyUpgraded,
@@ -176,6 +180,41 @@ const OhMyOpenAgentSettings: React.FC<OhMyOpenAgentSettingsProps> = ({
     } catch {
       message.error(t('common.error'));
     }
+  };
+
+  const handleClearAppliedConfig = async (config: OhMyOpenAgentConfig) => {
+    let configPath = '';
+    try {
+      const pathInfo = await getOhMyOpenAgentConfigPathInfo();
+      configPath = pathInfo.path;
+    } catch (error) {
+      console.error('Failed to get Oh My OpenAgent config path:', error);
+    }
+
+    Modal.confirm({
+      title: t('opencode.ohMyOpenCode.clearAppliedConfirmTitle'),
+      content: t('opencode.ohMyOpenCode.clearAppliedConfirmContent', {
+        name: config.name,
+        path: configPath || t('common.unknown'),
+      }),
+      okText: t('opencode.ohMyOpenCode.clearAppliedConfirmOk'),
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await clearOhMyOpenAgentAppliedConfig(config.id);
+          message.success(t('opencode.ohMyOpenCode.clearAppliedSuccess'));
+          loadConfigs();
+          incrementOmoConfigRefresh();
+          await refreshTrayMenu();
+          if (onConfigUpdated) {
+            onConfigUpdated();
+          }
+        } catch (error) {
+          console.error('Failed to clear Oh My OpenAgent applied config:', error);
+          message.error(t('opencode.ohMyOpenCode.clearAppliedError'));
+        }
+      },
+    });
   };
 
   const handleToggleDisabled = async (config: OhMyOpenAgentConfig, isDisabled: boolean) => {
@@ -476,6 +515,8 @@ const OhMyOpenAgentSettings: React.FC<OhMyOpenAgentSettingsProps> = ({
                   onDelete={handleDeleteConfig}
                   onApply={handleApplyConfig}
                   onToggleDisabled={handleToggleDisabled}
+                  allowClearAppliedConfig={allowClearAppliedConfig}
+                  onClearAppliedConfig={handleClearAppliedConfig}
                 />
               ))}
             </div>

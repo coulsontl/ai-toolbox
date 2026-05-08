@@ -45,6 +45,7 @@ sequenceDiagram
 - 改模型刷新或 provider 导入时，不要忘了托盘刷新和 favorite provider 辅助状态更新。
 - OMOS（`oh-my-opencode-slim`）里 UI 上的“备用模型”虽然挂在 agent 行内编辑，但新写入配置时只能落顶层 `fallback.chains`；`agents.*.fallback_models` 仅用于兼容读取旧配置和导入，不要继续写回运行时或数据库新内容。
 - OMOS 的 `agents.<agent>` 高级字段（如 `prompt`、`orchestratorPrompt`、`displayName`、`skills`、`mcps`、`options`）通过每个 Agent 行内的高级 JSON 编辑器进入数据库。保存/应用仍以数据库为准，不从当前运行时 JSON 文件反向合并手写字段。
+- OMO/OMOS 的清除已应用配置是页面级“更多选项”中默认关闭的危险能力；开关值保存在应用 settings 中。开启后点击已应用标签只清除当前运行时配置文件和 applied 状态，不删除 AI Toolbox 保存的配置，也不表示支持任意文件映射。
 
 ## 跨模块依赖
 

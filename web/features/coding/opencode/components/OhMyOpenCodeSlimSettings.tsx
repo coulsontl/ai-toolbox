@@ -31,6 +31,8 @@ import {
   getOhMyOpenCodeSlimGlobalConfig,
   saveOhMyOpenCodeSlimGlobalConfig,
   saveOhMyOpenCodeSlimLocalConfig,
+  getOhMyOpenCodeSlimConfigPathInfo,
+  clearOhMyOpenCodeSlimAppliedConfig,
 } from '@/services/ohMyOpenCodeSlimApi';
 import { openExternalUrl } from '@/services';
 import { refreshTrayMenu } from '@/services/appApi';
@@ -46,6 +48,7 @@ interface OhMyOpenCodeSlimSettingsProps {
   /** Map of model ID to its variant keys */
   modelVariantsMap?: Record<string, string[]>;
   disabled?: boolean;
+  allowClearAppliedConfig?: boolean;
   onConfigApplied?: (config: OhMyOpenCodeSlimConfig) => void;
   onConfigUpdated?: () => void;
 }
@@ -54,6 +57,7 @@ const OhMyOpenCodeSlimSettings: React.FC<OhMyOpenCodeSlimSettingsProps> = ({
   modelOptions,
   modelVariantsMap = {},
   disabled = false,
+  allowClearAppliedConfig = false,
   onConfigApplied,
   onConfigUpdated,
 }) => {
@@ -155,6 +159,41 @@ const OhMyOpenCodeSlimSettings: React.FC<OhMyOpenCodeSlimSettingsProps> = ({
     } catch {
       message.error(t('common.error'));
     }
+  };
+
+  const handleClearAppliedConfig = async (config: OhMyOpenCodeSlimConfig) => {
+    let configPath = '';
+    try {
+      const pathInfo = await getOhMyOpenCodeSlimConfigPathInfo();
+      configPath = pathInfo.path;
+    } catch (error) {
+      console.error('Failed to get Oh My OpenCode Slim config path:', error);
+    }
+
+    Modal.confirm({
+      title: t('opencode.ohMyOpenCode.clearAppliedConfirmTitle'),
+      content: t('opencode.ohMyOpenCode.clearAppliedConfirmContent', {
+        name: config.name,
+        path: configPath || t('common.unknown'),
+      }),
+      okText: t('opencode.ohMyOpenCode.clearAppliedConfirmOk'),
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await clearOhMyOpenCodeSlimAppliedConfig(config.id);
+          message.success(t('opencode.ohMyOpenCode.clearAppliedSuccess'));
+          loadConfigs();
+          incrementOmosConfigRefresh();
+          await refreshTrayMenu();
+          if (onConfigUpdated) {
+            onConfigUpdated();
+          }
+        } catch (error) {
+          console.error('Failed to clear Oh My OpenCode Slim applied config:', error);
+          message.error(t('opencode.ohMyOpenCode.clearAppliedError'));
+        }
+      },
+    });
   };
 
   const handleToggleDisabled = async (config: OhMyOpenCodeSlimConfig, isDisabled: boolean) => {
@@ -342,6 +381,8 @@ const OhMyOpenCodeSlimSettings: React.FC<OhMyOpenCodeSlimSettingsProps> = ({
                   onDelete={handleDeleteConfig}
                   onApply={handleApplyConfig}
                   onToggleDisabled={handleToggleDisabled}
+                  allowClearAppliedConfig={allowClearAppliedConfig}
+                  onClearAppliedConfig={handleClearAppliedConfig}
                 />
               ))}
             </div>

@@ -66,6 +66,8 @@ pub struct AppSettings {
     pub visible_tabs: Vec<String>,
     /// Sidebar hidden state by page
     pub sidebar_hidden_by_page: HashMap<String, bool>,
+    /// Allow clearing OMO/OMOS applied runtime config from OpenCode page (default: false)
+    pub opencode_allow_clear_applied_oh_my_config: bool,
 }
 
 impl Default for AppSettings {
@@ -101,6 +103,7 @@ impl Default for AppSettings {
                 "wsl".to_string(),
             ],
             sidebar_hidden_by_page: default_sidebar_hidden_by_page(),
+            opencode_allow_clear_applied_oh_my_config: false,
         }
     }
 }

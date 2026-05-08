@@ -34,6 +34,8 @@ const OhMyOpenCodeSlimConfigSelector: React.FC<OhMyOpenCodeSlimConfigSelectorPro
       const applied = data.find((c) => c.isApplied);
       if (applied) {
         setSelectedConfigId(applied.id);
+      } else {
+        setSelectedConfigId('');
       }
     } catch (error) {
       console.error('Failed to load configs:', error);

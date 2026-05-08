@@ -71,6 +71,9 @@ interface SettingsState {
   // Sidebar visibility settings
   sidebarHiddenByPage: SidebarHiddenByPage;
 
+  // OpenCode options
+  opencodeAllowClearAppliedOhMyConfig: boolean;
+
   // Actions
   initSettings: () => Promise<void>;
   setBackupSettings: (config: {
@@ -95,6 +98,7 @@ interface SettingsState {
   setAutoCheckUpdate: (enabled: boolean) => Promise<void>;
   setVisibleTabs: (tabs: string[]) => Promise<void>;
   setSidebarHidden: (page: SidebarPageKey, hidden: boolean) => Promise<void>;
+  setOpencodeAllowClearAppliedOhMyConfig: (enabled: boolean) => Promise<void>;
 }
 
 // Convert backend snake_case to frontend camelCase
@@ -177,6 +181,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   autoCheckUpdate: true,
   visibleTabs: ['opencode', 'claudecode', 'codex', 'openclaw', 'image', 'ssh', 'wsl'],
   sidebarHiddenByPage: normalizeSidebarHiddenByPage(),
+  opencodeAllowClearAppliedOhMyConfig: false,
 
   initSettings: async () => {
     if (get().isInitialized) return;
@@ -203,6 +208,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         autoCheckUpdate: settings.auto_check_update ?? true,
         visibleTabs: settings.visible_tabs ?? ['opencode', 'claudecode', 'codex', 'openclaw', 'image', 'ssh', 'wsl'],
         sidebarHiddenByPage: normalizeSidebarHiddenByPage(settings.sidebar_hidden_by_page),
+        opencodeAllowClearAppliedOhMyConfig: settings.opencode_allow_clear_applied_oh_my_config ?? false,
         isInitialized: true,
       });
     } catch (error) {
@@ -391,6 +397,17 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         ...currentSettings.sidebar_hidden_by_page,
         [page]: nextVisibility[page],
       }),
+    };
+    await saveSettings(newSettings);
+  },
+
+  setOpencodeAllowClearAppliedOhMyConfig: async (enabled) => {
+    set({ opencodeAllowClearAppliedOhMyConfig: enabled });
+
+    const currentSettings = await getSettings();
+    const newSettings: AppSettings = {
+      ...currentSettings,
+      opencode_allow_clear_applied_oh_my_config: enabled,
     };
     await saveSettings(newSettings);
   },

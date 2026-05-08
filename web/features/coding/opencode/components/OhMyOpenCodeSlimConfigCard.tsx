@@ -1,4 +1,4 @@
-import { Card, Typography, Space, Button, Tag, Switch, Dropdown, message } from 'antd';
+import { Card, Typography, Space, Button, Tag, Switch, Dropdown, message, Tooltip } from 'antd';
 import { EditOutlined, CopyOutlined, DeleteOutlined, CheckCircleOutlined, CheckOutlined, MoreOutlined, HolderOutlined } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 import { useTranslation } from 'react-i18next';
@@ -21,6 +21,8 @@ interface OhMyOpenCodeSlimConfigCardProps {
   onDelete: (config: OhMyOpenCodeSlimConfig) => void;
   onApply: (config: OhMyOpenCodeSlimConfig) => void;
   onToggleDisabled: (config: OhMyOpenCodeSlimConfig, isDisabled: boolean) => void;
+  allowClearAppliedConfig?: boolean;
+  onClearAppliedConfig?: (config: OhMyOpenCodeSlimConfig) => void;
 }
 
 const OhMyOpenCodeSlimConfigCard: React.FC<OhMyOpenCodeSlimConfigCardProps> = ({
@@ -32,6 +34,8 @@ const OhMyOpenCodeSlimConfigCard: React.FC<OhMyOpenCodeSlimConfigCardProps> = ({
   onDelete,
   onApply,
   onToggleDisabled,
+  allowClearAppliedConfig = false,
+  onClearAppliedConfig,
 }) => {
   const { t } = useTranslation();
 
@@ -109,6 +113,7 @@ const OhMyOpenCodeSlimConfigCard: React.FC<OhMyOpenCodeSlimConfigCardProps> = ({
     }).length
     : 0;
   const totalAgents = STANDARD_AGENT_COUNT;
+  const canClearAppliedConfig = isSelected && allowClearAppliedConfig && config.id !== '__local__';
 
   const menuItems: MenuProps['items'] = [
     {
@@ -206,9 +211,16 @@ const OhMyOpenCodeSlimConfigCard: React.FC<OhMyOpenCodeSlimConfigCardProps> = ({
                 </Tag>
 
                 {isSelected && (
-                  <Tag color="green" icon={<CheckCircleOutlined />} style={{ margin: 0 }}>
-                    {t('opencode.ohMyOpenCode.applied')}
-                  </Tag>
+                  <Tooltip title={canClearAppliedConfig ? t('opencode.ohMyOpenCode.clearAppliedTagTooltip') : undefined}>
+                    <Tag
+                      color="green"
+                      icon={<CheckCircleOutlined />}
+                      style={{ margin: 0, cursor: canClearAppliedConfig ? 'pointer' : 'default' }}
+                      onClick={canClearAppliedConfig ? () => onClearAppliedConfig?.(config) : undefined}
+                    >
+                      {t('opencode.ohMyOpenCode.applied')}
+                    </Tag>
+                  </Tooltip>
                 )}
               </div>
 

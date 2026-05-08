@@ -439,6 +439,63 @@ pub async fn delete_oh_my_opencode_slim_config(
     Ok(())
 }
 
+/// Clear the currently applied runtime config file without deleting the saved profile.
+#[tauri::command]
+pub async fn clear_oh_my_opencode_slim_applied_config(
+    state: tauri::State<'_, DbState>,
+    app: tauri::AppHandle,
+    config_id: String,
+) -> Result<(), String> {
+    if config_id == "__local__" {
+        return Err("Local config must be saved before clearing the runtime file".to_string());
+    }
+
+    let db = state.db();
+    let record_id = db_record_id("oh_my_opencode_slim_config", &config_id);
+    let records_result: Result<Vec<Value>, _> = db
+        .query(format!(
+            "SELECT type::bool(is_applied) as is_applied FROM {} LIMIT 1",
+            record_id
+        ))
+        .await
+        .map_err(|e| format!("Failed to query applied config: {}", e))?
+        .take(0);
+
+    let is_applied = records_result
+        .map_err(|e| format!("Failed to read applied config: {}", e))?
+        .first()
+        .map(|record| adapter::get_bool_compat(record, "is_applied", "isApplied", false))
+        .ok_or_else(|| format!("Config '{}' not found", config_id))?;
+
+    if !is_applied {
+        return Err(format!("Config '{}' is not currently applied", config_id));
+    }
+
+    let config_path = get_oh_my_opencode_slim_config_path(&db).await?;
+
+    #[cfg(target_os = "windows")]
+    crate::coding::wsl::remove_auto_synced_wsl_mapping_target(state.inner(), "opencode-oh-my-slim")
+        .await?;
+
+    if config_path.exists() {
+        fs::remove_file(&config_path)
+            .map_err(|e| format!("Failed to remove config file: {}", e))?;
+    }
+
+    let now = Local::now().to_rfc3339();
+    db.query("UPDATE oh_my_opencode_slim_config SET is_applied = false, updated_at = $now WHERE is_applied = true")
+        .bind(("now", now))
+        .await
+        .map_err(|e| format!("Failed to clear applied flags: {}", e))?;
+
+    let _ = app.emit("config-changed", "window");
+
+    #[cfg(target_os = "windows")]
+    let _ = app.emit("wsl-sync-request-opencode", ());
+
+    Ok(())
+}
+
 /// 内部函数：将指定配置应用到配置文件
 async fn apply_config_to_file(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,

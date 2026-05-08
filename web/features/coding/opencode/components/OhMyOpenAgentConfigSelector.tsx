@@ -34,6 +34,8 @@ const OhMyOpenAgentConfigSelector: React.FC<OhMyOpenAgentConfigSelectorProps> = 
       const applied = data.find((c) => c.isApplied);
       if (applied) {
         setSelectedConfigId(applied.id);
+      } else {
+        setSelectedConfigId('');
       }
     } catch (error) {
       console.error('Failed to load configs:', error);

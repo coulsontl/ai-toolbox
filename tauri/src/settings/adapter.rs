@@ -47,6 +47,11 @@ pub fn from_db_value(value: Value) -> AppSettings {
             ],
         ),
         sidebar_hidden_by_page: get_sidebar_hidden_by_page(&value),
+        opencode_allow_clear_applied_oh_my_config: get_bool(
+            &value,
+            "opencode_allow_clear_applied_oh_my_config",
+            false,
+        ),
     }
 }
 
@@ -207,5 +212,21 @@ mod tests {
         }));
 
         assert!(!settings.backup_image_assets_enabled);
+    }
+
+    #[test]
+    fn opencode_allow_clear_applied_oh_my_config_defaults_to_false() {
+        let settings = from_db_value(json!({}));
+
+        assert!(!settings.opencode_allow_clear_applied_oh_my_config);
+    }
+
+    #[test]
+    fn opencode_allow_clear_applied_oh_my_config_preserves_explicit_true() {
+        let settings = from_db_value(json!({
+            "opencode_allow_clear_applied_oh_my_config": true,
+        }));
+
+        assert!(settings.opencode_allow_clear_applied_oh_my_config);
     }
 }
