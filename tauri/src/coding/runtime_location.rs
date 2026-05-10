@@ -11,6 +11,12 @@ use crate::coding::{claude_code, codex, gemini_cli, open_claw, open_code};
 const MODULE_KEYS: [&str; 5] = ["opencode", "claude", "codex", "openclaw", "geminicli"];
 const OMO_LEGACY_BASENAME: &str = "oh-my-opencode";
 const OMO_CANONICAL_BASENAME: &str = "oh-my-openagent";
+pub const CODEX_DEFAULT_PROMPT_FILE_NAME: &str = "AGENTS.md";
+pub const CODEX_OVERRIDE_PROMPT_FILE_NAME: &str = "AGENTS.override.md";
+pub const CODEX_PROMPT_FILE_NAMES: [&str; 2] = [
+    CODEX_DEFAULT_PROMPT_FILE_NAME,
+    CODEX_OVERRIDE_PROMPT_FILE_NAME,
+];
 
 static RUNTIME_LOCATION_CACHE: LazyLock<RwLock<HashMap<&'static str, RuntimeLocationInfo>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
@@ -859,21 +865,52 @@ pub async fn get_codex_config_path_async(
         .join("config.toml"))
 }
 
+fn prompt_file_has_content(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .map(|content| !content.trim().is_empty())
+        .unwrap_or(false)
+}
+
+pub fn resolve_codex_prompt_file_path(root_path: &Path) -> PathBuf {
+    let override_path = root_path.join(CODEX_OVERRIDE_PROMPT_FILE_NAME);
+    if prompt_file_has_content(&override_path) {
+        return override_path;
+    }
+
+    let default_path = root_path.join(CODEX_DEFAULT_PROMPT_FILE_NAME);
+    if prompt_file_has_content(&default_path) {
+        return default_path;
+    }
+
+    if override_path.exists() {
+        return override_path;
+    }
+
+    default_path
+}
+
+pub fn replace_path_file_name(path: &str, file_name: &str) -> String {
+    let split_index = path
+        .rfind(|ch| ch == '/' || ch == '\\')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    format!("{}{}", &path[..split_index], file_name)
+}
+
 pub fn get_codex_prompt_path_sync(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
 ) -> Result<PathBuf, String> {
-    Ok(get_codex_runtime_location_sync(db)?
-        .host_path
-        .join("AGENTS.md"))
+    Ok(resolve_codex_prompt_file_path(
+        &get_codex_runtime_location_sync(db)?.host_path,
+    ))
 }
 
 pub async fn get_codex_prompt_path_async(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
 ) -> Result<PathBuf, String> {
-    Ok(get_codex_runtime_location_async(db)
-        .await?
-        .host_path
-        .join("AGENTS.md"))
+    Ok(resolve_codex_prompt_file_path(
+        &get_codex_runtime_location_async(db).await?.host_path,
+    ))
 }
 
 pub fn get_codex_wsl_target_path(
@@ -1500,7 +1537,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_runtime_location_cache, expand_home_from_user_root, get_claude_mcp_config_path_async,
+        CODEX_DEFAULT_PROMPT_FILE_NAME, CODEX_OVERRIDE_PROMPT_FILE_NAME, RuntimeLocationInfo,
+        RuntimeLocationMode, WslLocationInfo, clear_runtime_location_cache,
+        expand_home_from_user_root, get_claude_mcp_config_path_async,
         get_claude_mcp_config_path_from_location, get_claude_mcp_config_path_sync,
         get_claude_plugin_config_path_async, get_claude_plugin_config_path_sync,
         get_claude_plugins_dir_async, get_claude_plugins_dir_sync, get_claude_prompt_path_async,
@@ -1509,12 +1548,12 @@ mod tests {
         get_claude_settings_path_sync, get_claude_wsl_claude_json_path_async,
         get_claude_wsl_target_path_async, get_tool_skills_path_sync,
         module_status_from_runtime_result, refresh_runtime_location_cache_for_module_async,
-        set_cached_runtime_location, RuntimeLocationInfo, RuntimeLocationMode, WslLocationInfo,
+        replace_path_file_name, resolve_codex_prompt_file_path, set_cached_runtime_location,
     };
     use std::ffi::OsString;
     use std::path::PathBuf;
-    use surrealdb::engine::local::SurrealKv;
     use surrealdb::Surreal;
+    use surrealdb::engine::local::SurrealKv;
     use tokio::sync::Mutex;
 
     static TEST_RUNTIME_LOCATION_LOCK: std::sync::LazyLock<Mutex<()>> =
@@ -1592,6 +1631,76 @@ mod tests {
         assert_eq!(
             expand_home_from_user_root(None, "~/.claude/plugins"),
             "~/.claude/plugins"
+        );
+    }
+
+    #[test]
+    fn codex_prompt_path_prefers_non_empty_override_file() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        std::fs::write(
+            temp_dir.path().join(CODEX_DEFAULT_PROMPT_FILE_NAME),
+            "default prompt",
+        )
+        .expect("write default prompt");
+        std::fs::write(
+            temp_dir.path().join(CODEX_OVERRIDE_PROMPT_FILE_NAME),
+            "override prompt",
+        )
+        .expect("write override prompt");
+
+        assert_eq!(
+            resolve_codex_prompt_file_path(temp_dir.path()),
+            temp_dir.path().join(CODEX_OVERRIDE_PROMPT_FILE_NAME)
+        );
+    }
+
+    #[test]
+    fn codex_prompt_path_falls_back_to_default_when_override_is_empty() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        std::fs::write(
+            temp_dir.path().join(CODEX_DEFAULT_PROMPT_FILE_NAME),
+            "default prompt",
+        )
+        .expect("write default prompt");
+        std::fs::write(
+            temp_dir.path().join(CODEX_OVERRIDE_PROMPT_FILE_NAME),
+            "  \n",
+        )
+        .expect("write empty override prompt");
+
+        assert_eq!(
+            resolve_codex_prompt_file_path(temp_dir.path()),
+            temp_dir.path().join(CODEX_DEFAULT_PROMPT_FILE_NAME)
+        );
+    }
+
+    #[test]
+    fn codex_prompt_path_uses_empty_override_as_write_target_without_default_content() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        std::fs::write(
+            temp_dir.path().join(CODEX_OVERRIDE_PROMPT_FILE_NAME),
+            "  \n",
+        )
+        .expect("write empty override prompt");
+
+        assert_eq!(
+            resolve_codex_prompt_file_path(temp_dir.path()),
+            temp_dir.path().join(CODEX_OVERRIDE_PROMPT_FILE_NAME)
+        );
+    }
+
+    #[test]
+    fn replace_path_file_name_handles_unix_and_windows_paths() {
+        assert_eq!(
+            replace_path_file_name("~/.codex/AGENTS.md", CODEX_OVERRIDE_PROMPT_FILE_NAME),
+            "~/.codex/AGENTS.override.md"
+        );
+        assert_eq!(
+            replace_path_file_name(
+                r"C:\Users\tester\.codex\AGENTS.override.md",
+                CODEX_DEFAULT_PROMPT_FILE_NAME,
+            ),
+            r"C:\Users\tester\.codex\AGENTS.md"
         );
     }
 

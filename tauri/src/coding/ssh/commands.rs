@@ -9,6 +9,7 @@ use crate::coding::db_id::db_record_id;
 use crate::coding::runtime_location;
 use crate::db::DbState;
 use chrono::Local;
+use std::path::Path;
 use tauri::Emitter;
 
 // ============================================================================
@@ -715,18 +716,23 @@ async fn sync_mappings_with_progress(
         );
 
         match sync::sync_file_mapping(mapping, session).await {
-            Ok(files) if files.is_empty() => {
-                log::warn!(
-                    "SSH sync mapping produced no uploaded files: id={}, name={}, module={}, local_path={}, remote_path={}",
-                    mapping.id,
-                    mapping.name,
-                    mapping.module,
-                    mapping.local_path,
-                    mapping.remote_path
-                );
-                skipped_files.push(mapping.name.clone());
-            }
-            Ok(files) => {
+            Ok(mut files) => {
+                match reconcile_codex_prompt_files_on_ssh(mapping, session).await {
+                    Ok(prompt_files) => files.extend(prompt_files),
+                    Err(error) => errors.push(format!("{}: {}", mapping.name, error)),
+                }
+                if files.is_empty() {
+                    log::warn!(
+                        "SSH sync mapping produced no uploaded files: id={}, name={}, module={}, local_path={}, remote_path={}",
+                        mapping.id,
+                        mapping.name,
+                        mapping.module,
+                        mapping.local_path,
+                        mapping.remote_path
+                    );
+                    skipped_files.push(mapping.name.clone());
+                    continue;
+                }
                 log::trace!(
                     "SSH sync mapping uploaded files: id={}, name={}, module={}, uploaded_count={}, remote_path={}",
                     mapping.id,
@@ -758,6 +764,35 @@ async fn sync_mappings_with_progress(
         skipped_files,
         errors,
     }
+}
+
+async fn reconcile_codex_prompt_files_on_ssh(
+    mapping: &SSHFileMapping,
+    session: &SshSession,
+) -> Result<Vec<String>, String> {
+    if mapping.id != "codex-prompt" || mapping.is_directory || mapping.is_pattern {
+        return Ok(vec![]);
+    }
+
+    let mut synced_files = Vec::new();
+    for file_name in runtime_location::CODEX_PROMPT_FILE_NAMES {
+        let local_path = runtime_location::replace_path_file_name(&mapping.local_path, file_name);
+        let remote_path = runtime_location::replace_path_file_name(&mapping.remote_path, file_name);
+        let expanded_local_path = sync::expand_local_path(&local_path)?;
+
+        if Path::new(&expanded_local_path).exists() {
+            if local_path == mapping.local_path && remote_path == mapping.remote_path {
+                continue;
+            }
+            synced_files
+                .extend(sync::sync_single_file(&expanded_local_path, &remote_path, session).await?);
+        } else {
+            sync::remove_remote_path(session, &remote_path).await?;
+            synced_files.push(format!("removed stale Codex prompt: {}", remote_path));
+        }
+    }
+
+    Ok(synced_files)
 }
 
 /// Execute SSH sync
@@ -1094,9 +1129,13 @@ pub async fn resolve_dynamic_paths_with_db(
             }
             "codex-prompt" => {
                 if let Ok(path) = runtime_location::get_codex_prompt_path_async(db).await {
+                    let file_name = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(runtime_location::CODEX_DEFAULT_PROMPT_FILE_NAME);
                     mapping.local_path = path.to_string_lossy().to_string();
                     mapping.remote_path =
-                        runtime_location::get_codex_wsl_target_path_async(db, "AGENTS.md").await;
+                        runtime_location::get_codex_wsl_target_path_async(db, file_name).await;
                 }
             }
             "codex-plugins" => {

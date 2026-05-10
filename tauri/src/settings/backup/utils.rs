@@ -330,7 +330,7 @@ pub async fn get_codex_config_path_from_db(
 /// Get Codex prompt file path if it exists
 pub fn get_codex_prompt_path() -> Result<Option<PathBuf>, String> {
     let resolved_root_dir = codex::get_codex_root_dir_without_db()?;
-    let prompt_path = resolved_root_dir.join("AGENTS.md");
+    let prompt_path = runtime_location::resolve_codex_prompt_file_path(&resolved_root_dir);
 
     if prompt_path.exists() {
         Ok(Some(prompt_path))
@@ -339,11 +339,37 @@ pub fn get_codex_prompt_path() -> Result<Option<PathBuf>, String> {
     }
 }
 
+fn get_existing_codex_prompt_paths(root_dir: &Path) -> Vec<PathBuf> {
+    runtime_location::CODEX_PROMPT_FILE_NAMES
+        .iter()
+        .map(|file_name| root_dir.join(file_name))
+        .filter(|path| path.exists())
+        .collect()
+}
+
+pub async fn get_codex_prompt_paths_from_db(
+    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+) -> Result<Vec<PathBuf>, String> {
+    let root_dir = runtime_location::get_codex_runtime_location_async(db)
+        .await?
+        .host_path;
+    Ok(get_existing_codex_prompt_paths(&root_dir))
+}
+
 pub async fn get_codex_prompt_path_from_db(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
 ) -> Result<Option<PathBuf>, String> {
     let path = runtime_location::get_codex_prompt_path_async(db).await?;
     Ok(path.exists().then_some(path))
+}
+
+pub fn get_codex_prompt_backup_zip_path(prompt_path: &Path) -> String {
+    let file_name = prompt_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(runtime_location::CODEX_DEFAULT_PROMPT_FILE_NAME);
+    format!("external-configs/codex/{file_name}")
 }
 
 pub async fn get_gemini_cli_env_path_from_db(
@@ -1474,12 +1500,12 @@ pub async fn create_backup_zip(
             add_file_to_zip(&mut zip, &codex_config_path, zip_path, options)?;
         }
 
-        if let Some(codex_prompt_path) = get_codex_prompt_path_from_db(&db).await? {
-            let zip_path = "external-configs/codex/AGENTS.md";
+        for codex_prompt_path in get_codex_prompt_paths_from_db(&db).await? {
+            let zip_path = get_codex_prompt_backup_zip_path(&codex_prompt_path);
 
             let _ = zip.add_directory("external-configs/codex/", options);
 
-            add_file_to_zip(&mut zip, &codex_prompt_path, zip_path, options)?;
+            add_file_to_zip(&mut zip, &codex_prompt_path, &zip_path, options)?;
         }
 
         if let Some(custom_dir) = get_custom_root_dir_path_info(&db, "openclaw").await {
@@ -1609,9 +1635,10 @@ pub async fn create_backup_zip(
 #[cfg(test)]
 mod tests {
     use super::{
-        add_custom_backup_entries_to_zip, is_filesystem_root_directory,
-        normalize_backup_storage_path, resolve_external_config_restore_output_path,
-        restore_custom_backup_entries, CUSTOM_BACKUP_MANIFEST_PATH,
+        CUSTOM_BACKUP_MANIFEST_PATH, add_custom_backup_entries_to_zip,
+        get_codex_prompt_backup_zip_path, get_existing_codex_prompt_paths,
+        is_filesystem_root_directory, normalize_backup_storage_path,
+        resolve_external_config_restore_output_path, restore_custom_backup_entries,
     };
     use crate::settings::types::{BackupCustomEntry, BackupCustomEntryType};
     use std::fs;
@@ -1669,6 +1696,33 @@ mod tests {
         assert!(resolve_external_config_restore_output_path(root, "../settings.json").is_err());
         assert!(resolve_external_config_restore_output_path(root, "tmp/../settings.json").is_err());
         assert!(resolve_external_config_restore_output_path(root, "C:/settings.json").is_err());
+    }
+
+    #[test]
+    fn codex_prompt_backup_path_preserves_active_prompt_file_name() {
+        assert_eq!(
+            get_codex_prompt_backup_zip_path(Path::new("/tmp/.codex/AGENTS.override.md")),
+            "external-configs/codex/AGENTS.override.md"
+        );
+        assert_eq!(
+            get_codex_prompt_backup_zip_path(Path::new("/tmp/.codex/AGENTS.md")),
+            "external-configs/codex/AGENTS.md"
+        );
+    }
+
+    #[test]
+    fn codex_prompt_backup_collects_default_and_override_files() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        fs::write(temp_dir.path().join("AGENTS.md"), "base").expect("write base prompt");
+        fs::write(temp_dir.path().join("AGENTS.override.md"), "override")
+            .expect("write override prompt");
+
+        let file_names: Vec<_> = get_existing_codex_prompt_paths(temp_dir.path())
+            .into_iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+
+        assert_eq!(file_names, vec!["AGENTS.md", "AGENTS.override.md"]);
     }
 
     #[test]

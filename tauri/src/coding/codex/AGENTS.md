@@ -7,8 +7,8 @@
 ## Source of Truth
 
 - 当前生效根目录优先级是：应用内 `root_dir` > 环境变量 `CODEX_HOME` > shell 配置 > 默认根目录。
-- Codex 是“根目录模块”，`config.toml`、`auth.json`、`AGENTS.md`、`skills/` 都从当前根目录派生。
-- prompt 的运行时事实源是当前根目录下的 `AGENTS.md`，而不是数据库记录本身。
+- Codex 是“根目录模块”，`config.toml`、`auth.json`、prompt、`skills/` 都从当前根目录派生。
+- prompt 的运行时事实源是当前根目录下的 Codex active global prompt 文件，而不是数据库记录本身。当前按 upstream 语义选择：非空 `AGENTS.override.md` 优先，否则使用非空 `AGENTS.md`；两者都为空时写入目标优先保持已存在的 `AGENTS.override.md`，否则使用 `AGENTS.md`。
 
 ## 核心设计决策（Why）
 
@@ -23,7 +23,7 @@
 sequenceDiagram
   participant UI as Codex Page
   participant Cmd as codex::commands
-  participant File as config.toml / auth.json / AGENTS.md
+  participant File as config.toml / auth.json / active prompt
   participant DB as SurrealDB
 
   UI->>Cmd: apply provider/common config
@@ -39,6 +39,8 @@ sequenceDiagram
 - 改写 `config.toml` 时要显式保留 runtime-owned sections，例如 `mcp_servers`、`features`、`plugins`。
 - 改写 `auth.json` 时不要覆盖运行时 OAuth 字段；AI Toolbox 只应管理自己负责的 auth 键。
 - WSL 自动同步是事件驱动，不是“数据库写成功就等于已经同步到 WSL”。
+- 删除已应用 prompt 配置时，不能只删数据库记录；必须清空当前 active prompt 文件并发出 prompt 同步事件，否则 UI/DB 会显示已删除但 Codex 仍继续读取旧全局提示词。
+- Codex prompt 同步必须按一组文件镜像：`AGENTS.md` 与 `AGENTS.override.md` 存在就同步，不存在就清理远端同名文件。不能只同步 active 文件，否则从 override 切回默认时远端会继续读取旧 override。
 - 普通“新建 provider”和“复制已应用 provider”都属于创建新记录，默认不应自动应用；不要因为源 provider 当前已应用，就把新记录写成 `is_applied = true`。
 - `save_codex_local_config` 里的 `__local__` 不是普通新增 provider，而是把当前生效的本地运行时配置正式收编入库；在这个产品语义下，它保持 `is_applied = true` 是合理的，不要把这条链路误修成“保存但取消应用”。
 - 官方模型目录按 CLIProxyAPI 的 Codex plan 语义选择 `free/team/plus/pro` tier；未知 plan 默认按 `pro` 处理，并补入 Codex 内置模型 `gpt-image-2`。
@@ -54,10 +56,11 @@ sequenceDiagram
 - 改 `config.toml` 落盘逻辑时：
   同时检查结构化 merge、runtime-owned sections 保留、WSL 同步事件和最小回归测试。
 - 改 root_dir 逻辑时：
-  同时检查 `auth.json`、`config.toml`、`AGENTS.md`、Skills 路径和前端 path info 展示。
+  同时检查 `auth.json`、`config.toml`、active prompt、Skills 路径和前端 path info 展示。
 
 ## 最小验证
 
 - 至少验证：common/provider 合并后顶层键仍在根级，表结构未错位。
 - 至少验证：编辑已应用配置后仍会发出 `wsl-sync-request-codex`。
-- 至少验证：prompt 应用会改写当前根目录下的 `AGENTS.md`。
+- 至少验证：prompt 应用会改写当前根目录下的 active prompt 文件。
+- 至少验证：存在非空 `AGENTS.override.md` 时，prompt 读取、应用、删除和 WSL/SSH 动态映射都作用于 `AGENTS.override.md`，且切回 `AGENTS.md` 时远端 stale override 会被清理。

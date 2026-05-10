@@ -192,15 +192,17 @@ async fn get_codex_config_path_from_db_async(
 }
 
 fn get_codex_prompt_file_path() -> Result<std::path::PathBuf, String> {
-    Ok(get_codex_config_dir()?.join("AGENTS.md"))
+    Ok(runtime_location::resolve_codex_prompt_file_path(
+        &get_codex_config_dir()?,
+    ))
 }
 
 async fn get_codex_prompt_file_path_from_db_async(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
 ) -> Result<std::path::PathBuf, String> {
-    Ok(get_codex_config_dir_from_db_async(db)
-        .await?
-        .join("AGENTS.md"))
+    Ok(runtime_location::resolve_codex_prompt_file_path(
+        &get_codex_config_dir_from_db_async(db).await?,
+    ))
 }
 
 async fn get_local_prompt_config(
@@ -2199,12 +2201,29 @@ pub async fn delete_codex_prompt_config(
 ) -> Result<(), String> {
     let db = state.db();
     let record_id = db_record_id("codex_prompt_config", &id);
+    let was_applied = db
+        .query(&format!("SELECT is_applied FROM {} LIMIT 1", record_id))
+        .await
+        .ok()
+        .and_then(|mut result| result.take::<Vec<Value>>(0).ok())
+        .and_then(|records| records.into_iter().next())
+        .and_then(|record| {
+            record
+                .get("is_applied")
+                .or_else(|| record.get("isApplied"))
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(false);
 
     db.query(&format!("DELETE {}", record_id))
         .await
         .map_err(|e| format!("Failed to delete prompt config: {}", e))?;
 
-    drop(db);
+    if was_applied {
+        write_prompt_content_to_file(Some(&db), None).await?;
+        emit_prompt_sync_requests(&app);
+    }
+
     let _ = app.emit("config-changed", "window");
     Ok(())
 }

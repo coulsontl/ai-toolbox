@@ -7,6 +7,7 @@ use crate::coding::claude_code::plugin_metadata_sync;
 use crate::coding::runtime_location;
 use crate::db::DbState;
 use chrono::Local;
+use std::path::Path;
 use tauri::Emitter;
 
 // ============================================================================
@@ -492,10 +493,15 @@ fn sync_mappings_with_progress(
         );
 
         match sync::sync_file_mapping(mapping, distro) {
-            Ok(files) if files.is_empty() => {
-                skipped_files.push(mapping.name.clone());
-            }
-            Ok(files) => {
+            Ok(mut files) => {
+                match reconcile_codex_prompt_files_in_wsl(mapping, distro) {
+                    Ok(prompt_files) => files.extend(prompt_files),
+                    Err(error) => errors.push(format!("{}: {}", mapping.name, error)),
+                }
+                if files.is_empty() {
+                    skipped_files.push(mapping.name.clone());
+                    continue;
+                }
                 synced_files.extend(files);
             }
             Err(e) => {
@@ -510,6 +516,43 @@ fn sync_mappings_with_progress(
         skipped_files,
         errors,
     }
+}
+
+fn reconcile_codex_prompt_files_in_wsl(
+    mapping: &FileMapping,
+    distro: &str,
+) -> Result<Vec<String>, String> {
+    if mapping.id != "codex-prompt" || mapping.is_directory || mapping.is_pattern {
+        return Ok(vec![]);
+    }
+
+    if runtime_location::parse_wsl_unc_path(&mapping.windows_path).is_some() {
+        return Ok(vec![]);
+    }
+
+    let mut synced_files = Vec::new();
+    for file_name in runtime_location::CODEX_PROMPT_FILE_NAMES {
+        let windows_path =
+            runtime_location::replace_path_file_name(&mapping.windows_path, file_name);
+        let wsl_path = runtime_location::replace_path_file_name(&mapping.wsl_path, file_name);
+        let expanded_windows_path = sync::expand_env_vars(&windows_path)?;
+
+        if Path::new(&expanded_windows_path).exists() {
+            if windows_path == mapping.windows_path && wsl_path == mapping.wsl_path {
+                continue;
+            }
+            synced_files.extend(sync::sync_single_file(
+                &expanded_windows_path,
+                &wsl_path,
+                distro,
+            )?);
+        } else {
+            sync::remove_wsl_path(distro, &wsl_path)?;
+            synced_files.push(format!("removed stale Codex prompt: {}", wsl_path));
+        }
+    }
+
+    Ok(synced_files)
 }
 
 /// Sync all files or specific module to WSL
@@ -925,9 +968,13 @@ pub(super) async fn resolve_dynamic_paths_with_db(
             }
             "codex-prompt" => {
                 if let Ok(path) = runtime_location::get_codex_prompt_path_async(db).await {
+                    let file_name = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(runtime_location::CODEX_DEFAULT_PROMPT_FILE_NAME);
                     mapping.windows_path = path.to_string_lossy().to_string();
                     mapping.wsl_path =
-                        runtime_location::get_codex_wsl_target_path_async(db, "AGENTS.md").await;
+                        runtime_location::get_codex_wsl_target_path_async(db, file_name).await;
                 }
             }
             "codex-plugins" => {
