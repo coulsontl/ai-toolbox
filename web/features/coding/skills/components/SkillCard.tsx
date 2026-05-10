@@ -10,6 +10,8 @@ import {
   PlusOutlined,
   HolderOutlined,
   EyeOutlined,
+  EllipsisOutlined,
+  TagsOutlined,
 } from '@ant-design/icons';
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
@@ -33,6 +35,7 @@ interface SkillCardProps {
   onUpdate: (skill: ManagedSkill) => void;
   onDelete: (skillId: string) => void;
   onToggleTool: (skill: ManagedSkill, toolId: string) => void;
+  onEditMetadata: (skill: ManagedSkill) => void;
 }
 
 interface SkillCardContentProps extends Omit<SkillCardProps, 'dragDisabled'> {
@@ -55,6 +58,7 @@ const SkillCardContent: React.FC<SkillCardContentProps> = ({
   onUpdate,
   onDelete,
   onToggleTool,
+  onEditMetadata,
   dragHandle,
   containerRef,
   containerStyle,
@@ -161,6 +165,25 @@ const SkillCardContent: React.FC<SkillCardContentProps> = ({
     [availableDropdownTools, onToggleTool, skill],
   );
 
+  const actionItems = React.useMemo(
+    () => [
+      {
+        key: 'metadata',
+        icon: <TagsOutlined />,
+        label: t('skills.metadata.edit'),
+        onClick: () => onEditMetadata(skill),
+      },
+      {
+        key: 'delete',
+        danger: true,
+        icon: <DeleteOutlined />,
+        label: t('skills.remove'),
+        onClick: () => onDelete(skill.id),
+      },
+    ],
+    [onDelete, onEditMetadata, skill, t],
+  );
+
   return (
     <div ref={containerRef} style={containerStyle}>
       <div className={`${styles.card}${selectable && selected ? ` ${styles.selected}` : ''}`}>
@@ -206,6 +229,20 @@ const SkillCardContent: React.FC<SkillCardContentProps> = ({
             <span className={styles.dot}>•</span>
             <span className={styles.time}>{formatRelative(skill.updated_at)}</span>
           </div>
+          {(skill.user_group || skill.user_note) && (
+            <div className={styles.metaRow}>
+              {skill.user_group && (
+                <Tooltip title={skill.user_group}>
+                  <span className={styles.groupTag}>{skill.user_group}</span>
+                </Tooltip>
+              )}
+              {skill.user_note && (
+                <Tooltip title={skill.user_note}>
+                  <span className={styles.note}>{skill.user_note}</span>
+                </Tooltip>
+              )}
+            </div>
+          )}
           <div className={styles.toolMatrix}>
             {syncedTools.map((tool) => {
               const target = skill.targets.find((t) => t.tool === tool.id);
@@ -244,6 +281,18 @@ const SkillCardContent: React.FC<SkillCardContentProps> = ({
           </div>
         </div>
         <div className={styles.actions}>
+          <Dropdown
+            menu={{ items: actionItems }}
+            trigger={['click']}
+            disabled={loading || isUpdating}
+          >
+            <Button
+              type="text"
+              icon={<EllipsisOutlined />}
+              disabled={loading || isUpdating}
+              title={t('skills.more')}
+            />
+          </Dropdown>
           <Button
             type="text"
             icon={<SyncOutlined />}
@@ -251,14 +300,6 @@ const SkillCardContent: React.FC<SkillCardContentProps> = ({
             loading={isUpdating}
             disabled={loading}
             title={t('skills.updateTooltip')}
-          />
-          <Button
-            type="text"
-            danger
-            icon={<DeleteOutlined />}
-            onClick={() => onDelete(skill.id)}
-            disabled={loading || isUpdating}
-            title={t('skills.remove')}
           />
         </div>
       </div>

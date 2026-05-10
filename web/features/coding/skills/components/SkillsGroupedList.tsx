@@ -21,6 +21,7 @@ interface SkillsGroupedListProps {
   onUpdate: (skill: ManagedSkill) => void;
   onDelete: (skillId: string) => void;
   onToggleTool: (skill: ManagedSkill, toolId: string) => void;
+  onEditMetadata: (skill: ManagedSkill) => void;
 }
 
 export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
@@ -39,6 +40,7 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
   onUpdate,
   onDelete,
   onToggleTool,
+  onEditMetadata,
 }) => {
   const { t } = useTranslation();
 
@@ -96,6 +98,7 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
             onUpdate={onUpdate}
             onDelete={onDelete}
             onToggleTool={onToggleTool}
+            onEditMetadata={onEditMetadata}
           />
         ))}
       </div>

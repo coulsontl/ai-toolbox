@@ -53,6 +53,14 @@ pub fn from_db_mcp_server(value: Value) -> McpServer {
             .get("description")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
+        user_group: value
+            .get("user_group")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        user_note: value
+            .get("user_note")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         tags,
         timeout: value.get("timeout").and_then(|v| v.as_i64()),
         sort_index: value
@@ -79,6 +87,8 @@ pub fn to_clean_mcp_server_payload(server: &McpServer) -> Value {
         "enabled_tools": server.enabled_tools,
         "sync_details": server.sync_details,
         "description": server.description,
+        "user_group": server.user_group,
+        "user_note": server.user_note,
         "tags": server.tags,
         "timeout": server.timeout,
         "sort_index": server.sort_index,

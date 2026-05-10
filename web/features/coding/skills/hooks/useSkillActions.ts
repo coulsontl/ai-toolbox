@@ -31,6 +31,7 @@ export interface UseSkillActionsResult {
   confirmBatchDelete: () => Promise<void>;
   handleBatchAddTool: (skillIds: string[], toolId: string) => Promise<void>;
   handleBatchRemoveTool: (skillIds: string[], toolId: string) => Promise<void>;
+  handleBatchSetGroup: (skillIds: string[], userGroup: string | null) => Promise<boolean>;
 }
 
 export function useSkillActions({ allTools }: UseSkillActionsOptions): UseSkillActionsResult {
@@ -238,6 +239,28 @@ export function useSkillActions({ allTools }: UseSkillActionsOptions): UseSkillA
     }
   }, [skills, refresh, t, allTools]);
 
+  const handleBatchSetGroup = React.useCallback(async (
+    skillIds: string[],
+    userGroup: string | null,
+  ) => {
+    if (skillIds.length === 0) {
+      return false;
+    }
+
+    setActionLoading(true);
+    try {
+      await api.batchUpdateSkillGroup(skillIds, userGroup);
+      await refresh();
+      message.success(t('skills.batch.setGroupSuccess', { count: skillIds.length }));
+      return true;
+    } catch (error) {
+      message.error(String(error));
+      return false;
+    } finally {
+      setActionLoading(false);
+    }
+  }, [refresh, t]);
+
   return {
     actionLoading,
     updatingSkillIds,
@@ -256,5 +279,6 @@ export function useSkillActions({ allTools }: UseSkillActionsOptions): UseSkillA
     confirmBatchDelete,
     handleBatchAddTool,
     handleBatchRemoveTool,
+    handleBatchSetGroup,
   };
 }

@@ -34,6 +34,14 @@ export const reorderMcpServers = async (ids: string[]): Promise<void> => {
   return invoke('mcp_reorder_servers', { ids });
 };
 
+export const updateMcpMetadata = async (
+  serverId: string,
+  userGroup: string | null,
+  userNote: string | null,
+): Promise<void> => {
+  return invoke('mcp_update_metadata', { serverId, userGroup, userNote });
+};
+
 // Sync operations
 export const syncMcpToTool = async (toolKey: string): Promise<McpSyncResult[]> => {
   return invoke<McpSyncResult[]>('mcp_sync_to_tool', { toolKey });

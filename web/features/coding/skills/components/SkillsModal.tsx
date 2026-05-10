@@ -11,6 +11,9 @@ import { ImportModal } from './modals/ImportModal';
 import { SkillsSettingsModal } from './modals/SkillsSettingsModal';
 import { DeleteConfirmModal } from './modals/DeleteConfirmModal';
 import { NewToolsModal } from './modals/NewToolsModal';
+import { SkillMetadataModal } from './modals/SkillMetadataModal';
+import { getSkillGroupOptions } from '../utils/skillGrouping';
+import type { ManagedSkill } from '../types';
 import { refreshTrayMenu } from '@/services/appApi';
 import styles from './SkillsModal.module.less';
 
@@ -54,6 +57,8 @@ export const SkillsModal: React.FC<SkillsModalProps> = ({ open, onClose }) => {
   } = useSkills();
 
   const allTools = getAllTools();
+  const [metadataSkill, setMetadataSkill] = React.useState<ManagedSkill | null>(null);
+  const groupOptions = React.useMemo(() => getSkillGroupOptions(skills), [skills]);
 
   const {
     actionLoading,
@@ -112,6 +117,7 @@ export const SkillsModal: React.FC<SkillsModalProps> = ({ open, onClose }) => {
             onUpdate={handleUpdate}
             onDelete={handleDelete}
             onToggleTool={handleToggleTool}
+            onEditMetadata={setMetadataSkill}
             onDragEnd={handleDragEnd}
           />
         </div>
@@ -159,6 +165,17 @@ export const SkillsModal: React.FC<SkillsModalProps> = ({ open, onClose }) => {
 
       <NewToolsModal
         open={isNewToolsModalOpen}
+      />
+
+      <SkillMetadataModal
+        open={!!metadataSkill}
+        skill={metadataSkill}
+        groupOptions={groupOptions}
+        onClose={() => setMetadataSkill(null)}
+        onSuccess={() => {
+          setMetadataSkill(null);
+          refresh();
+        }}
       />
     </>
   );

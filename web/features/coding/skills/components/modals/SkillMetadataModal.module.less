@@ -1,0 +1,153 @@
+.modal {
+  :global(.ant-modal-body) {
+    padding: 18px 24px 22px;
+  }
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.summaryBand {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-layout);
+  min-width: 0;
+}
+
+.summaryIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-container);
+  color: var(--color-text-secondary);
+  font-size: 15px;
+}
+
+.summaryMain {
+  min-width: 0;
+}
+
+.summaryLabel {
+  margin-bottom: 2px;
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.skillName {
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.groupPreview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 150px;
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-container);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.emptyGroup {
+  color: var(--color-text-tertiary);
+  background: transparent;
+}
+
+.sectionCard {
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-bg-elevated);
+  padding: 16px 16px 14px;
+}
+
+.form {
+  :global(.ant-form-item) {
+    margin-bottom: 16px;
+  }
+
+  :global(.ant-form-item:last-child) {
+    margin-bottom: 0;
+  }
+
+  :global(.ant-form-item-label > label) {
+    height: 32px;
+    color: var(--color-text-primary);
+    font-weight: 500;
+  }
+
+  :global(.ant-input),
+  :global(.ant-input-affix-wrapper),
+  :global(.ant-select-selector) {
+    border-radius: 6px !important;
+  }
+
+  :global(.ant-input),
+  :global(.ant-select-selector) {
+    background: var(--color-bg-container) !important;
+  }
+}
+
+.fieldLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-primary);
+
+  :global(.anticon) {
+    color: var(--color-text-tertiary);
+    font-size: 13px;
+  }
+}
+
+@media (max-width: 640px) {
+  .summaryBand {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .groupPreview {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .form {
+    :global(.ant-form-item) {
+      flex-direction: column;
+    }
+
+    :global(.ant-form-item-label) {
+      max-width: 100%;
+      padding-bottom: 4px;
+      text-align: left;
+    }
+
+    :global(.ant-form-item-control) {
+      max-width: 100%;
+    }
+  }
+}

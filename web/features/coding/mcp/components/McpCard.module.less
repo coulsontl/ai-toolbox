@@ -55,6 +55,7 @@
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
+  min-width: 0;
 }
 
 .name {
@@ -82,10 +83,41 @@
   min-width: 0;
 }
 
-.description {
-  font-size: 12px;
+.groupTag {
+  display: inline-flex;
+  align-items: center;
+  max-width: 96px;
+  min-width: 0;
+  padding: 0 5px;
+  border-radius: 3px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-layout);
   color: var(--color-text-secondary);
-  margin-bottom: 8px;
+  font-size: 11px;
+  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+}
+
+.metaRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -2px 0 8px;
+  min-width: 0;
+}
+
+.note {
+  min-width: 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
 }
 
 .toolMatrix {

@@ -8,6 +8,7 @@
 
 - MCP server 主数据存于 `mcp_server` 相关表；各工具配置文件中的 MCP 节点是派生结果，不是主数据。
 - 每个 server 的 `enabled_tools` 和 `sync_details` 描述“应该同步到哪些工具”和“最近同步结果”，不是工具配置文件的反向解析真相。
+- `user_group/user_note` 是 AI Toolbox 内部的用户管理元数据，不写入任何工具 MCP 配置，也不触发 MCP 同步。
 - WSL 自动同步感知的不是某个工具配置文件具体变了什么，而是 `mcp-changed` 事件。
 
 ## 核心设计决策（Why）
@@ -15,6 +16,7 @@
 - MCP 采用“中心存储 + 同步到工具配置”的模型，避免用户分别改 Claude/Codex/OpenCode/OpenClaw 的各自配置。
 - 创建、更新、删除 server 后立即同步到所有启用工具，并统一发 `config-changed` + `mcp-changed`，这样托盘和 WSL 自动同步都能跟上。
 - 导入已有配置时应尽量走共享 config sync 能力，而不是为每个工具复制一套解析逻辑。
+- 更新 `user_group/user_note` 只改变 AI Toolbox 内部列表组织信息，不应走 server CRUD 重同步链路。
 
 ## 关键流程
 

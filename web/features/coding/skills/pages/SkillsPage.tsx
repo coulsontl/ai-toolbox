@@ -1,5 +1,15 @@
 import React from 'react';
-import { Typography, Button, Space, Input, Segmented, Modal, Dropdown, Tooltip } from 'antd';
+import {
+  AutoComplete,
+  Typography,
+  Button,
+  Space,
+  Input,
+  Segmented,
+  Modal,
+  Dropdown,
+  Tooltip,
+} from 'antd';
 import {
   PlusOutlined,
   EllipsisOutlined,
@@ -14,6 +24,7 @@ import {
   DownOutlined,
   UpOutlined,
   DragOutlined,
+  TagsOutlined,
 } from '@ant-design/icons';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
@@ -27,7 +38,15 @@ import { ImportModal } from '../components/modals/ImportModal';
 import { SkillsSettingsModal } from '../components/modals/SkillsSettingsModal';
 import { DeleteConfirmModal } from '../components/modals/DeleteConfirmModal';
 import { NewToolsModal } from '../components/modals/NewToolsModal';
-import type { SkillGroup } from '../types';
+import { SkillMetadataModal } from '../components/modals/SkillMetadataModal';
+import {
+  buildSkillGroups,
+  filterSkillsBySearch,
+  getSkillGroupOptions,
+  normalizeSkillMetadataText,
+  type SkillGroupingMode,
+} from '../utils/skillGrouping';
+import type { ManagedSkill, SkillGroup } from '../types';
 import styles from './SkillsPage.module.less';
 
 const { Title, Text, Link } = Typography;
@@ -57,9 +76,13 @@ const SkillsPage: React.FC = () => {
 
   const [searchText, setSearchText] = React.useState('');
   const [viewMode, setViewMode] = React.useState<'flat' | 'grouped'>('flat');
+  const [groupMode, setGroupMode] = React.useState<SkillGroupingMode>('custom');
   const [groupActiveKeys, setGroupActiveKeys] = React.useState<string[]>([]);
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set());
   const [reorderMode, setReorderMode] = React.useState(false);
+  const [metadataSkill, setMetadataSkill] = React.useState<ManagedSkill | null>(null);
+  const [batchGroupModalOpen, setBatchGroupModalOpen] = React.useState(false);
+  const [batchGroupValue, setBatchGroupValue] = React.useState('');
   const previousViewModeRef = React.useRef<'flat' | 'grouped'>('flat');
   const previousAutoExpandRef = React.useRef(false);
 
@@ -88,21 +111,21 @@ const SkillsPage: React.FC = () => {
     confirmBatchDelete,
     handleBatchAddTool,
     handleBatchRemoveTool,
+    handleBatchSetGroup,
   } = useSkillActions({ allTools });
 
   // Filter skills by search text
   const filteredSkills = React.useMemo(() => {
-    if (!searchText.trim()) return skills;
-    const kw = searchText.trim().toLowerCase();
-    return skills.filter(
-      (s) =>
-        s.name.toLowerCase().includes(kw) ||
-        (s.source_ref && s.source_ref.toLowerCase().includes(kw))
-    );
+    return filterSkillsBySearch(skills, searchText);
   }, [skills, searchText]);
 
   const isSearchActive = !!searchText.trim();
   const isFlatReorderEnabled = viewMode === 'flat' && reorderMode && !isSearchActive;
+  const groupOptions = React.useMemo(() => getSkillGroupOptions(skills), [skills]);
+  const groupOptionItems = React.useMemo(
+    () => groupOptions.map((group) => ({ value: group })),
+    [groupOptions],
+  );
 
   React.useEffect(() => {
     if (viewMode !== 'flat' || isSearchActive) {
@@ -153,54 +176,33 @@ const SkillsPage: React.FC = () => {
   const hasSelection = selectedArray.length > 0;
   const installedTools = React.useMemo(() => allTools.filter((tool) => tool.installed), [allTools]);
 
-  // Group skills by source for grouped view
+  const handleConfirmBatchGroup = React.useCallback(async () => {
+    const saved = await handleBatchSetGroup(
+      selectedArray,
+      normalizeSkillMetadataText(batchGroupValue),
+    );
+    if (!saved) {
+      return;
+    }
+    setBatchGroupModalOpen(false);
+    setBatchGroupValue('');
+    setSelectedIds(new Set());
+  }, [batchGroupValue, handleBatchSetGroup, selectedArray]);
+
   const groupedSkills = React.useMemo<SkillGroup[]>(() => {
     if (viewMode !== 'grouped') return [];
 
-    const groupMap = new Map<string, SkillGroup>();
-
-    for (const skill of filteredSkills) {
-      let groupKey: string;
-      let label: string;
-      let sourceType: 'git' | 'local' | 'import';
-
-      if (skill.source_type === 'git' && skill.source_ref) {
-        const github = getGithubInfo(skill.source_ref);
-        if (github) {
-          // Group by base repo URL (owner/repo), ignoring subpath
-          groupKey = `git:${github.href}`;
-          label = github.label;
-        } else {
-          // Non-GitHub git URL: strip /tree/... subpath
-          const baseUrl = skill.source_ref.replace(/\/tree\/.*$/, '');
-          groupKey = `git:${baseUrl}`;
-          label = baseUrl;
-        }
-        sourceType = 'git';
-      } else if (skill.source_type === 'local') {
-        const path = skill.source_ref || '';
-        const parts = path.split(/[\/\\]/).filter(Boolean);
-        // Group by parent directory so skills from the same folder scan are grouped together
-        const parentPath = parts.slice(0, -1).join('/');
-        groupKey = `local:${parentPath || path}`;
-        label = parts[parts.length - 2] || parts[parts.length - 1] || t('skills.groupLocal');
-        sourceType = 'local';
-      } else {
-        groupKey = 'import';
-        label = t('skills.groupImport');
-        sourceType = 'import';
-      }
-
-      const existing = groupMap.get(groupKey);
-      if (existing) {
-        existing.skills.push(skill);
-      } else {
-        groupMap.set(groupKey, { key: groupKey, label, sourceType, skills: [skill] });
-      }
-    }
-
-    return Array.from(groupMap.values());
-  }, [filteredSkills, viewMode, getGithubInfo, t]);
+    return buildSkillGroups(
+      filteredSkills,
+      groupMode,
+      {
+        groupLocal: t('skills.groupLocal'),
+        groupImport: t('skills.groupImport'),
+        groupUngrouped: t('skills.groupUngrouped'),
+      },
+      getGithubInfo,
+    );
+  }, [filteredSkills, viewMode, groupMode, getGithubInfo, t]);
 
   const shouldAutoExpandGroups =
     filteredSkills.length > 0 && filteredSkills.length < AUTO_EXPAND_SKILL_THRESHOLD;
@@ -370,6 +372,18 @@ const SkillsPage: React.FC = () => {
                   />
                 </Tooltip>
               </Dropdown>
+              <Tooltip title={hasSelection ? t('skills.batch.setGroup') : t('skills.batch.noneSelected')}>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<TagsOutlined />}
+                  disabled={!hasSelection || loading || actionLoading}
+                  onClick={() => {
+                    setBatchGroupValue('');
+                    setBatchGroupModalOpen(true);
+                  }}
+                />
+              </Tooltip>
               <Tooltip title={hasSelection ? t('skills.batch.delete') : t('skills.batch.noneSelected')}>
                 <Button
                   type="text"
@@ -382,6 +396,17 @@ const SkillsPage: React.FC = () => {
               </Tooltip>
               <span className={styles.batchDivider} />
             </>
+          )}
+          {viewMode === 'grouped' && (
+            <Segmented
+              size="small"
+              value={groupMode}
+              onChange={(v) => setGroupMode(v as SkillGroupingMode)}
+              options={[
+                { value: 'custom', label: t('skills.groupByCustom') },
+                { value: 'source', label: t('skills.groupBySource') },
+              ]}
+            />
           )}
           {viewMode === 'grouped' && (
             <>
@@ -431,6 +456,7 @@ const SkillsPage: React.FC = () => {
             onUpdate={handleUpdate}
             onDelete={handleDelete}
             onToggleTool={handleToggleTool}
+            onEditMetadata={setMetadataSkill}
             onDragEnd={handleDragEnd}
           />
         ) : (
@@ -450,6 +476,7 @@ const SkillsPage: React.FC = () => {
             onUpdate={handleUpdate}
             onDelete={handleDelete}
             onToggleTool={handleToggleTool}
+            onEditMetadata={setMetadataSkill}
           />
         )}
       </div>
@@ -502,6 +529,42 @@ const SkillsPage: React.FC = () => {
       >
         {t('skills.batch.deleteConfirmMessage', { count: batchDeleteIds.length })}
       </Modal>
+
+      <Modal
+        open={batchGroupModalOpen}
+        title={t('skills.batch.setGroupTitle')}
+        onCancel={() => setBatchGroupModalOpen(false)}
+        onOk={handleConfirmBatchGroup}
+        okButtonProps={{ loading: actionLoading }}
+        okText={t('common.save')}
+        cancelText={t('common.cancel')}
+      >
+        <div className={styles.batchGroupEditor}>
+          <AutoComplete
+            allowClear
+            value={batchGroupValue}
+            options={groupOptionItems}
+            placeholder={t('skills.metadata.groupPlaceholder')}
+            onChange={setBatchGroupValue}
+            filterOption={(inputValue, option) =>
+              String(option?.value ?? '').toLowerCase().includes(inputValue.toLowerCase())}
+          />
+          <Text type="secondary" className={styles.batchGroupHint}>
+            {t('skills.batch.setGroupHint')}
+          </Text>
+        </div>
+      </Modal>
+
+      <SkillMetadataModal
+        open={!!metadataSkill}
+        skill={metadataSkill}
+        groupOptions={groupOptions}
+        onClose={() => setMetadataSkill(null)}
+        onSuccess={() => {
+          setMetadataSkill(null);
+          refresh();
+        }}
+      />
 
       <NewToolsModal
         open={isNewToolsModalOpen}

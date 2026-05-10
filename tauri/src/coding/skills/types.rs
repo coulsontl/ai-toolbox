@@ -22,6 +22,10 @@ pub struct Skill {
     // Sort order for drag-and-drop reordering
     pub sort_index: i32,
 
+    // User-managed local metadata for organization inside AI Toolbox.
+    pub user_group: Option<String>,
+    pub user_note: Option<String>,
+
     // Enabled tool keys list
     pub enabled_tools: Vec<String>, // ["claude_code", "codex", "opencode"]
 
@@ -123,6 +127,8 @@ pub struct ManagedSkillDto {
     pub last_sync_at: Option<i64>,
     pub status: String,
     pub sort_index: i32,
+    pub user_group: Option<String>,
+    pub user_note: Option<String>,
     pub enabled_tools: Vec<String>,
     pub targets: Vec<SkillTargetDto>, // Derived from sync_details
 }

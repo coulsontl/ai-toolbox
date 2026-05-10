@@ -104,6 +104,21 @@ export const deleteManagedSkill = async (skillId: string): Promise<void> => {
   return invoke('skills_delete_managed', { skillId });
 };
 
+export const updateSkillMetadata = async (
+  skillId: string,
+  userGroup: string | null,
+  userNote: string | null,
+): Promise<void> => {
+  return invoke('skills_update_metadata', { skillId, userGroup, userNote });
+};
+
+export const batchUpdateSkillGroup = async (
+  skillIds: string[],
+  userGroup: string | null,
+): Promise<void> => {
+  return invoke('skills_batch_update_group', { skillIds, userGroup });
+};
+
 // Onboarding
 export const getOnboardingPlan = async (): Promise<OnboardingPlan> => {
   return invoke<OnboardingPlan>('skills_get_onboarding_plan');

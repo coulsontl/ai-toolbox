@@ -68,6 +68,10 @@ pub struct McpServer {
     pub sync_details: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_note: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -97,6 +101,8 @@ pub struct McpServerDto {
     pub enabled_tools: Vec<String>,
     pub sync_details: Vec<McpSyncDetailDto>,
     pub description: Option<String>,
+    pub user_group: Option<String>,
+    pub user_note: Option<String>,
     pub tags: Vec<String>,
     pub timeout: Option<i64>,
     pub sort_index: i32,

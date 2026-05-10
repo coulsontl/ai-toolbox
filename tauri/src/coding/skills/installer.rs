@@ -48,7 +48,7 @@ pub async fn install_local_skill(
     let central_path = central_dir.join(&name);
 
     // Check if skill already exists and get its ID for update
-    let existing_skill_id = if central_path.exists() {
+    let existing_skill = if central_path.exists() {
         if overwrite {
             // Get existing skill ID before deleting
             let existing = skill_store::get_skill_by_name(state, &name)
@@ -57,7 +57,7 @@ pub async fn install_local_skill(
                 .flatten();
             std::fs::remove_dir_all(&central_path)
                 .with_context(|| format!("failed to remove existing skill: {:?}", central_path))?;
-            existing.map(|s| s.id)
+            existing
         } else {
             anyhow::bail!("SKILL_EXISTS|{}", name);
         }
@@ -72,7 +72,10 @@ pub async fn install_local_skill(
     let content_hash = compute_content_hash(&central_path);
 
     let record = Skill {
-        id: existing_skill_id.unwrap_or_default(), // Use existing ID if overwriting
+        id: existing_skill
+            .as_ref()
+            .map(|skill| skill.id.clone())
+            .unwrap_or_default(), // Use existing ID if overwriting
         name: name.clone(),
         source_type: "local".to_string(),
         source_ref: Some(source_path.to_string_lossy().to_string()),
@@ -84,6 +87,12 @@ pub async fn install_local_skill(
         last_sync_at: None,
         status: "ok".to_string(),
         sort_index: 0,
+        user_group: existing_skill
+            .as_ref()
+            .and_then(|skill| skill.user_group.clone()),
+        user_note: existing_skill
+            .as_ref()
+            .and_then(|skill| skill.user_note.clone()),
         enabled_tools: Vec::new(),
         sync_details: None,
     };
@@ -163,7 +172,7 @@ pub async fn install_local_skill_from_selection(
     let central_path = central_dir.join(&name);
 
     // Check if skill already exists and get its ID for update
-    let existing_skill_id = if central_path.exists() {
+    let existing_skill = if central_path.exists() {
         if overwrite {
             let existing = skill_store::get_skill_by_name(state, &name)
                 .await
@@ -171,7 +180,7 @@ pub async fn install_local_skill_from_selection(
                 .flatten();
             std::fs::remove_dir_all(&central_path)
                 .with_context(|| format!("failed to remove existing skill: {:?}", central_path))?;
-            existing.map(|s| s.id)
+            existing
         } else {
             anyhow::bail!("SKILL_EXISTS|{}", name);
         }
@@ -193,7 +202,10 @@ pub async fn install_local_skill_from_selection(
     let content_hash = compute_content_hash(&central_path);
 
     let record = Skill {
-        id: existing_skill_id.unwrap_or_default(),
+        id: existing_skill
+            .as_ref()
+            .map(|skill| skill.id.clone())
+            .unwrap_or_default(),
         name: name.clone(),
         source_type: "local".to_string(),
         source_ref: Some(full_source_ref),
@@ -205,6 +217,12 @@ pub async fn install_local_skill_from_selection(
         last_sync_at: None,
         status: "ok".to_string(),
         sort_index: 0,
+        user_group: existing_skill
+            .as_ref()
+            .and_then(|skill| skill.user_group.clone()),
+        user_note: existing_skill
+            .as_ref()
+            .and_then(|skill| skill.user_note.clone()),
         enabled_tools: Vec::new(),
         sync_details: None,
     };
@@ -287,7 +305,7 @@ pub async fn install_git_skill(
     let central_path = central_dir.join(&name);
 
     // Check if skill already exists and get its ID for update
-    let existing_skill_id = if central_path.exists() {
+    let existing_skill = if central_path.exists() {
         if overwrite {
             // Get existing skill ID before deleting
             let existing = skill_store::get_skill_by_name(state, &name)
@@ -296,7 +314,7 @@ pub async fn install_git_skill(
                 .flatten();
             std::fs::remove_dir_all(&central_path)
                 .with_context(|| format!("failed to remove existing skill: {:?}", central_path))?;
-            existing.map(|s| s.id)
+            existing
         } else {
             anyhow::bail!("SKILL_EXISTS|{}", name);
         }
@@ -330,7 +348,10 @@ pub async fn install_git_skill(
     let content_hash = compute_content_hash(&central_path);
 
     let record = Skill {
-        id: existing_skill_id.unwrap_or_default(), // Use existing ID if overwriting
+        id: existing_skill
+            .as_ref()
+            .map(|skill| skill.id.clone())
+            .unwrap_or_default(), // Use existing ID if overwriting
         name: name.clone(),
         source_type: "git".to_string(),
         source_ref: Some(full_source_ref),
@@ -342,6 +363,12 @@ pub async fn install_git_skill(
         last_sync_at: None,
         status: "ok".to_string(),
         sort_index: 0,
+        user_group: existing_skill
+            .as_ref()
+            .and_then(|skill| skill.user_group.clone()),
+        user_note: existing_skill
+            .as_ref()
+            .and_then(|skill| skill.user_note.clone()),
         enabled_tools: Vec::new(),
         sync_details: None,
     };
@@ -455,7 +482,7 @@ pub async fn install_git_skill_from_selection(
     let central_path = central_dir.join(&display_name);
 
     // Check if skill already exists and get its ID for update
-    let existing_skill_id = if central_path.exists() {
+    let existing_skill = if central_path.exists() {
         if overwrite {
             // Get existing skill ID before deleting
             let existing = skill_store::get_skill_by_name(state, &display_name)
@@ -464,7 +491,7 @@ pub async fn install_git_skill_from_selection(
                 .flatten();
             std::fs::remove_dir_all(&central_path)
                 .with_context(|| format!("failed to remove existing skill: {:?}", central_path))?;
-            existing.map(|s| s.id)
+            existing
         } else {
             anyhow::bail!("SKILL_EXISTS|{}", display_name);
         }
@@ -492,7 +519,10 @@ pub async fn install_git_skill_from_selection(
     let now = now_ms();
     let content_hash = compute_content_hash(&central_path);
     let record = Skill {
-        id: existing_skill_id.unwrap_or_default(), // Use existing ID if overwriting
+        id: existing_skill
+            .as_ref()
+            .map(|skill| skill.id.clone())
+            .unwrap_or_default(), // Use existing ID if overwriting
         name: display_name.clone(),
         source_type: "git".to_string(),
         source_ref: Some(full_source_ref),
@@ -504,6 +534,12 @@ pub async fn install_git_skill_from_selection(
         last_sync_at: None,
         status: "ok".to_string(),
         sort_index: 0,
+        user_group: existing_skill
+            .as_ref()
+            .and_then(|skill| skill.user_group.clone()),
+        user_note: existing_skill
+            .as_ref()
+            .and_then(|skill| skill.user_note.clone()),
         enabled_tools: Vec::new(),
         sync_details: None,
     };
@@ -621,6 +657,8 @@ pub async fn update_managed_skill_from_source(
         last_sync_at: record.last_sync_at,
         status: "ok".to_string(),
         sort_index: record.sort_index,
+        user_group: record.user_group.clone(),
+        user_note: record.user_note.clone(),
         enabled_tools: record.enabled_tools.clone(),
         sync_details: record.sync_details.clone(),
     };

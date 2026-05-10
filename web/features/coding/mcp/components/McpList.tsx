@@ -25,6 +25,7 @@ interface McpListProps {
   loading: boolean;
   dragDisabled?: boolean;
   onEdit: (server: McpServer) => void;
+  onEditMetadata: (server: McpServer) => void;
   onDelete: (serverId: string) => void;
   onToggleTool: (serverId: string, toolKey: string) => void;
   onDragEnd: (event: DragEndEvent) => void;
@@ -36,6 +37,7 @@ export const McpList: React.FC<McpListProps> = ({
   loading,
   dragDisabled,
   onEdit,
+  onEditMetadata,
   onDelete,
   onToggleTool,
   onDragEnd,
@@ -75,6 +77,7 @@ export const McpList: React.FC<McpListProps> = ({
           loading={loading}
           dragDisabled={dragDisabled}
           onEdit={onEdit}
+          onEditMetadata={onEditMetadata}
           onDelete={onDelete}
           onToggleTool={onToggleTool}
         />

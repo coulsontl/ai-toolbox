@@ -45,6 +45,17 @@ fn format_error(err: anyhow::Error) -> String {
     format!("{:#}", err)
 }
 
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value.and_then(|text| {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
 // --- Tool Status ---
 
 #[tauri::command]
@@ -199,6 +210,8 @@ pub async fn skills_get_managed_skills(
             last_sync_at: skill.last_sync_at,
             status: skill.status,
             sort_index: skill.sort_index,
+            user_group: skill.user_group,
+            user_note: skill.user_note,
             enabled_tools: skill.enabled_tools,
             targets,
         });
@@ -782,6 +795,33 @@ pub async fn skills_create_custom_tool_path(relativeSkillsDir: String) -> Result
 #[tauri::command]
 pub async fn skills_reorder(state: State<'_, DbState>, ids: Vec<String>) -> Result<(), String> {
     skill_store::reorder_skills(&state, &ids).await
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn skills_update_metadata(
+    state: State<'_, DbState>,
+    skillId: String,
+    userGroup: Option<String>,
+    userNote: Option<String>,
+) -> Result<(), String> {
+    skill_store::update_skill_metadata(
+        &state,
+        &skillId,
+        normalize_optional_text(userGroup),
+        normalize_optional_text(userNote),
+    )
+    .await
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn skills_batch_update_group(
+    state: State<'_, DbState>,
+    skillIds: Vec<String>,
+    userGroup: Option<String>,
+) -> Result<(), String> {
+    skill_store::update_skills_group(&state, &skillIds, normalize_optional_text(userGroup)).await
 }
 
 // --- Skill Repos (cont.) ---

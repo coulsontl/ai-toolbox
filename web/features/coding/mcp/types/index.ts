@@ -8,6 +8,8 @@ export interface McpServer {
   enabled_tools: string[];
   sync_details: McpSyncDetail[];
   description: string | null;
+  user_group: string | null;
+  user_note: string | null;
   tags: string[];
   timeout: number | null;
   sort_index: number;
@@ -92,4 +94,10 @@ export interface McpTool {
   mcp_config_format: string | null;
   mcp_field: string | null;
   supports_mcp: boolean;
+}
+
+export interface McpGroup {
+  key: string;
+  label: string;
+  servers: McpServer[];
 }

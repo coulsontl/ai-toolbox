@@ -67,6 +67,8 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
 | last_sync_at | i64? | 最后同步时间戳 |
 | status | string | 状态：ok / error |
 | sort_index | i32 | 排序索引（拖拽排序用） |
+| user_group | string? | AI Toolbox 内部自定义分组，不写入 SKILL.md，不影响同步目标路径 |
+| user_note | string? | AI Toolbox 内部自定义备注，不写入 SKILL.md，不参与内容哈希 |
 | enabled_tools | array | 已启用的工具列表，如 ["claude_code", "codex"] |
 | sync_details | object? | 每个工具的同步详情（嵌入式 JSON） |
 
@@ -628,6 +630,7 @@ description: "可选的描述"
 - 存储技能的原始内容
 - 工具目录通过链接或复制引用
 - WSL/SSH 自动同步时，源目录仍然是中央仓库；不要把工具运行时目录误判成同步源
+- 自定义备注和自定义分组属于 `skill` 数据库记录里的用户管理元数据，不属于中央仓库文件内容。更新、同步、WSL/SSH 后续链路不能因为这些元数据变化而改写 `SKILL.md` 或发起技能内容同步。
 
 ### 8.4 代理支持
 

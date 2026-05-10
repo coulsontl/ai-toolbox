@@ -1,6 +1,17 @@
 import React, { useState, useCallback } from 'react';
-import { Typography, Button, Space, Modal, Tooltip } from 'antd';
-import { PlusOutlined, EllipsisOutlined, ImportOutlined, FileTextOutlined, LinkOutlined, DragOutlined } from '@ant-design/icons';
+import { Typography, Button, Space, Modal, Tooltip, Input, Segmented } from 'antd';
+import {
+  PlusOutlined,
+  EllipsisOutlined,
+  ImportOutlined,
+  FileTextOutlined,
+  LinkOutlined,
+  DragOutlined,
+  AppstoreOutlined,
+  BarsOutlined,
+  DownOutlined,
+  UpOutlined,
+} from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { arrayMove } from '@dnd-kit/sortable';
@@ -10,18 +21,36 @@ import { useMcpActions } from '../hooks/useMcpActions';
 import { useMcpTools } from '../hooks/useMcpTools';
 import { useMcpStore } from '../stores/mcpStore';
 import { McpList } from '../components/McpList';
+import { McpGroupedList } from '../components/McpGroupedList';
 import { AddMcpModal } from '../components/modals/AddMcpModal';
 import { McpSettingsModal } from '../components/modals/McpSettingsModal';
 import { ImportMcpModal } from '../components/modals/ImportMcpModal';
 import { ImportJsonModal } from '../components/modals/ImportJsonModal';
-import type { McpServer, CreateMcpServerInput, UpdateMcpServerInput } from '../types';
+import { McpMetadataModal } from '../components/modals/McpMetadataModal';
+import {
+  buildMcpGroups,
+  filterMcpServersBySearch,
+  getMcpGroupOptions,
+} from '../utils/mcpGrouping';
+import type { McpGroup, McpServer, CreateMcpServerInput, UpdateMcpServerInput } from '../types';
 import styles from './McpPage.module.less';
 
 const { Title, Text, Link } = Typography;
+const AUTO_EXPAND_MCP_THRESHOLD = 20;
+
+function getMcpConfigSummary(server: McpServer): string {
+  if (server.server_type === 'stdio') {
+    const config = server.server_config as { command?: string };
+    return config.command || 'stdio';
+  }
+
+  const config = server.server_config as { url?: string };
+  return config.url || 'http';
+}
 
 const McpPage: React.FC = () => {
   const { t } = useTranslation();
-  const { servers, loading } = useMcp();
+  const { servers, loading, refresh } = useMcp();
   const { tools } = useMcpTools();
   const { setServers, isSettingsModalOpen, setSettingsModalOpen, isImportModalOpen, setImportModalOpen, isImportJsonModalOpen, setImportJsonModalOpen, loadScanResult } = useMcpStore();
   const {
@@ -37,6 +66,71 @@ const McpPage: React.FC = () => {
   const [editingServer, setEditingServer] = useState<McpServer | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [reorderMode, setReorderMode] = useState(false);
+  const [searchText, setSearchText] = useState('');
+  const [viewMode, setViewMode] = useState<'flat' | 'grouped'>('flat');
+  const [groupActiveKeys, setGroupActiveKeys] = useState<string[]>([]);
+  const [metadataServer, setMetadataServer] = useState<McpServer | null>(null);
+  const previousViewModeRef = React.useRef<'flat' | 'grouped'>('flat');
+  const previousAutoExpandRef = React.useRef(false);
+
+  const filteredServers = React.useMemo(() => {
+    return filterMcpServersBySearch(servers, searchText, getMcpConfigSummary);
+  }, [servers, searchText]);
+
+  const isSearchActive = !!searchText.trim();
+  const isFlatReorderEnabled = viewMode === 'flat' && reorderMode && !isSearchActive;
+  const groupOptions = React.useMemo(() => getMcpGroupOptions(servers), [servers]);
+  const groupedServers = React.useMemo<McpGroup[]>(() => {
+    if (viewMode !== 'grouped') return [];
+
+    return buildMcpGroups(filteredServers, {
+      groupUngrouped: t('mcp.groupUngrouped'),
+    });
+  }, [filteredServers, t, viewMode]);
+
+  React.useEffect(() => {
+    if (viewMode !== 'flat' || isSearchActive) {
+      setReorderMode(false);
+    }
+  }, [isSearchActive, viewMode]);
+
+  const shouldAutoExpandGroups =
+    filteredServers.length > 0 && filteredServers.length < AUTO_EXPAND_MCP_THRESHOLD;
+
+  React.useEffect(() => {
+    if (viewMode !== 'grouped') {
+      previousViewModeRef.current = viewMode;
+      previousAutoExpandRef.current = false;
+      return;
+    }
+
+    const enteredGroupedView = previousViewModeRef.current !== 'grouped';
+    const autoExpandChanged = previousAutoExpandRef.current !== shouldAutoExpandGroups;
+    previousViewModeRef.current = viewMode;
+    previousAutoExpandRef.current = shouldAutoExpandGroups;
+    if (!enteredGroupedView && !autoExpandChanged) {
+      return;
+    }
+
+    if (shouldAutoExpandGroups) {
+      setGroupActiveKeys(groupedServers.map((group) => group.key));
+      return;
+    }
+
+    setGroupActiveKeys([]);
+  }, [groupedServers, shouldAutoExpandGroups, viewMode]);
+
+  React.useEffect(() => {
+    if (viewMode !== 'grouped') {
+      return;
+    }
+
+    const validGroupKeys = new Set(groupedServers.map((group) => group.key));
+    setGroupActiveKeys((previousKeys) => {
+      const nextKeys = previousKeys.filter((key) => validGroupKeys.has(key));
+      return nextKeys.length === previousKeys.length ? previousKeys : nextKeys;
+    });
+  }, [groupedServers, viewMode]);
 
   const handleAddServer = async (input: CreateMcpServerInput) => {
     setActionLoading(true);
@@ -147,7 +241,14 @@ const McpPage: React.FC = () => {
       </Text>
 
       <div className={styles.toolbar}>
-        <Space size={4}>
+        <Space size={8}>
+          <Input.Search
+            placeholder={t('mcp.searchPlaceholder')}
+            allowClear
+            style={{ width: 200 }}
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+          />
           <Button
             type="text"
             icon={<ImportOutlined />}
@@ -172,31 +273,87 @@ const McpPage: React.FC = () => {
             {t('mcp.addServer')}
           </Button>
         </Space>
-        <Tooltip title={t('mcp.reorderHint')}>
-          <Button
-            type={reorderMode ? 'primary' : 'text'}
-            size="small"
-            icon={<DragOutlined />}
-            className={styles.reorderButton}
-            onClick={() => setReorderMode((prev) => !prev)}
-            disabled={loading || actionLoading}
-          >
-            {t('mcp.reorder')}
-          </Button>
-        </Tooltip>
+        <Space size={4}>
+          {viewMode === 'flat' && (
+            <Tooltip
+              title={
+                isSearchActive
+                  ? t('mcp.reorderDisabledWhileSearching')
+                  : t('mcp.reorderHint')
+              }
+            >
+              <Button
+                type={reorderMode ? 'primary' : 'text'}
+                size="small"
+                icon={<DragOutlined />}
+                className={styles.reorderButton}
+                onClick={() => setReorderMode((prev) => !prev)}
+                disabled={loading || actionLoading || isSearchActive}
+              >
+                {t('mcp.reorder')}
+              </Button>
+            </Tooltip>
+          )}
+          {viewMode === 'grouped' && (
+            <>
+              <Tooltip title={t('mcp.expandAll')}>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<DownOutlined />}
+                  onClick={() => setGroupActiveKeys(groupedServers.map((g) => g.key))}
+                />
+              </Tooltip>
+              <Tooltip title={t('mcp.collapseAll')}>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<UpOutlined />}
+                  onClick={() => setGroupActiveKeys([])}
+                />
+              </Tooltip>
+            </>
+          )}
+          <Tooltip title={t('mcp.groupedViewTip')}>
+            <Segmented
+              size="small"
+              value={viewMode}
+              onChange={(v) => setViewMode(v as 'flat' | 'grouped')}
+              options={[
+                { value: 'flat', icon: <AppstoreOutlined />, label: t('mcp.viewFlat') },
+                { value: 'grouped', icon: <BarsOutlined />, label: t('mcp.viewGrouped') },
+              ]}
+            />
+          </Tooltip>
+        </Space>
       </div>
 
       <div className={styles.content}>
-        <McpList
-          servers={servers}
-          tools={tools}
-          loading={loading || actionLoading}
-          dragDisabled={!reorderMode}
-          onEdit={handleEdit}
-          onDelete={handleDelete}
-          onToggleTool={handleToggleTool}
-          onDragEnd={handleDragEnd}
-        />
+        {viewMode === 'flat' ? (
+          <McpList
+            servers={filteredServers}
+            tools={tools}
+            loading={loading || actionLoading}
+            dragDisabled={!isFlatReorderEnabled}
+            onEdit={handleEdit}
+            onEditMetadata={setMetadataServer}
+            onDelete={handleDelete}
+            onToggleTool={handleToggleTool}
+            onDragEnd={handleDragEnd}
+          />
+        ) : (
+          <McpGroupedList
+            groups={groupedServers}
+            tools={tools}
+            loading={loading || actionLoading}
+            activeKeys={groupActiveKeys}
+            onActiveKeysChange={setGroupActiveKeys}
+            onEdit={handleEdit}
+            onEditMetadata={setMetadataServer}
+            onDelete={handleDelete}
+            onToggleTool={handleToggleTool}
+          />
+        )}
       </div>
 
       {isAddModalOpen && (
@@ -242,6 +399,17 @@ const McpPage: React.FC = () => {
           onSyncAll={syncAll}
         />
       )}
+
+      <McpMetadataModal
+        open={!!metadataServer}
+        server={metadataServer}
+        groupOptions={groupOptions}
+        onClose={() => setMetadataServer(null)}
+        onSuccess={() => {
+          setMetadataServer(null);
+          refresh();
+        }}
+      />
     </div>
   );
 };

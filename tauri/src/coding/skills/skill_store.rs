@@ -111,6 +111,50 @@ pub async fn delete_skill(state: &DbState, skill_id: &str) -> Result<(), String>
     Ok(())
 }
 
+/// Update user-managed metadata for a skill without touching content timestamps or sync state.
+pub async fn update_skill_metadata(
+    state: &DbState,
+    skill_id: &str,
+    user_group: Option<String>,
+    user_note: Option<String>,
+) -> Result<(), String> {
+    let db = state.db();
+    let record_id = db_record_id("skill", skill_id);
+
+    db.query(&format!(
+        "UPDATE {} SET user_group = $user_group, user_note = $user_note",
+        record_id
+    ))
+    .bind(("user_group", user_group))
+    .bind(("user_note", user_note))
+    .await
+    .map_err(|e| format!("Failed to update skill metadata: {}", e))?;
+
+    Ok(())
+}
+
+/// Update user-managed group for multiple skills.
+pub async fn update_skills_group(
+    state: &DbState,
+    skill_ids: &[String],
+    user_group: Option<String>,
+) -> Result<(), String> {
+    let db = state.db();
+
+    for skill_id in skill_ids {
+        let record_id = db_record_id("skill", skill_id);
+        db.query(&format!(
+            "UPDATE {} SET user_group = $user_group",
+            record_id
+        ))
+        .bind(("user_group", user_group.clone()))
+        .await
+        .map_err(|e| format!("Failed to update skill group: {}", e))?;
+    }
+
+    Ok(())
+}
+
 // ==================== Skill sync_details operations ====================
 
 /// Get all targets for a specific skill (parsed from sync_details)

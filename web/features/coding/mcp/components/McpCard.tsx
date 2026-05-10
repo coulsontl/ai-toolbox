@@ -3,15 +3,18 @@ import { Button, Tooltip, Dropdown, Tag } from 'antd';
 import {
   DeleteOutlined,
   EditOutlined,
+  EllipsisOutlined,
   PlusOutlined,
   HolderOutlined,
   CodeOutlined,
   GlobalOutlined,
+  TagsOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { McpServer, McpTool } from '../types';
+import { getMcpDisplayNote } from '../utils/mcpGrouping';
 import styles from './McpCard.module.less';
 
 interface McpCardProps {
@@ -20,6 +23,7 @@ interface McpCardProps {
   loading: boolean;
   dragDisabled?: boolean;
   onEdit: (server: McpServer) => void;
+  onEditMetadata: (server: McpServer) => void;
   onDelete: (serverId: string) => void;
   onToggleTool: (serverId: string, toolKey: string) => void;
 }
@@ -35,6 +39,7 @@ const McpCardContent: React.FC<McpCardContentProps> = ({
   tools,
   loading,
   onEdit,
+  onEditMetadata,
   onDelete,
   onToggleTool,
   dragHandle,
@@ -61,6 +66,8 @@ const McpCardContent: React.FC<McpCardContentProps> = ({
     const config = server.server_config as { url?: string };
     return config.url || 'http';
   }, [server.server_config, server.server_type]);
+
+  const displayNote = React.useMemo(() => getMcpDisplayNote(server), [server]);
 
   // These tool collections are pure derived data from the server/tool definitions.
   // Memoizing them reduces repeated filtering/sorting work across large card lists.
@@ -94,6 +101,25 @@ const McpCardContent: React.FC<McpCardContentProps> = ({
     [availableDropdownTools, onToggleTool, server.id],
   );
 
+  const actionItems = React.useMemo(
+    () => [
+      {
+        key: 'metadata',
+        icon: <TagsOutlined />,
+        label: t('mcp.metadata.edit'),
+        onClick: () => onEditMetadata(server),
+      },
+      {
+        key: 'delete',
+        danger: true,
+        icon: <DeleteOutlined />,
+        label: t('mcp.delete'),
+        onClick: () => onDelete(server.id),
+      },
+    ],
+    [onDelete, onEditMetadata, server, t],
+  );
+
   return (
     <div ref={containerRef} style={containerStyle}>
       <div className={styles.card}>
@@ -105,8 +131,19 @@ const McpCardContent: React.FC<McpCardContentProps> = ({
             <Tag className={styles.typeTag}>{server.server_type}</Tag>
             <span className={styles.configSummary}>{configSummary}</span>
           </div>
-          {server.description && (
-            <div className={styles.description}>{server.description}</div>
+          {(server.user_group || displayNote) && (
+            <div className={styles.metaRow}>
+              {server.user_group && (
+                <Tooltip title={server.user_group}>
+                  <span className={styles.groupTag}>{server.user_group}</span>
+                </Tooltip>
+              )}
+              {displayNote && (
+                <Tooltip title={displayNote}>
+                  <span className={styles.note}>{displayNote}</span>
+                </Tooltip>
+              )}
+            </div>
           )}
           <div className={styles.toolMatrix}>
             {enabledTools.map((tool) => {
@@ -142,20 +179,24 @@ const McpCardContent: React.FC<McpCardContentProps> = ({
           </div>
         </div>
         <div className={styles.actions}>
+          <Dropdown
+            menu={{ items: actionItems }}
+            trigger={['click']}
+            disabled={loading}
+          >
+            <Button
+              type="text"
+              icon={<EllipsisOutlined />}
+              disabled={loading}
+              title={t('mcp.more')}
+            />
+          </Dropdown>
           <Button
             type="text"
             icon={<EditOutlined />}
             onClick={() => onEdit(server)}
             disabled={loading}
-            title={t('mcp.edit')}
-          />
-          <Button
-            type="text"
-            danger
-            icon={<DeleteOutlined />}
-            onClick={() => onDelete(server.id)}
-            disabled={loading}
-            title={t('mcp.delete')}
+            title={t('mcp.editServer')}
           />
         </div>
       </div>

@@ -11,6 +11,8 @@ export interface ManagedSkill {
   last_sync_at: number | null;
   status: string;
   sort_index: number;
+  user_group: string | null;
+  user_note: string | null;
 
   // New fields
   enabled_tools: string[]; // ["claude_code", "codex", ...]
@@ -109,7 +111,7 @@ export interface OnboardingPlan {
 export interface SkillGroup {
   key: string;
   label: string;
-  sourceType: 'git' | 'local' | 'import';
+  sourceType: 'git' | 'local' | 'import' | 'custom';
   skills: ManagedSkill[];
 }
 

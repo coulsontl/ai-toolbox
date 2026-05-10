@@ -69,6 +69,14 @@ pub fn from_db_skill(value: Value) -> Skill {
             .get("sort_index")
             .and_then(|v| v.as_i64())
             .unwrap_or(0) as i32,
+        user_group: value
+            .get("user_group")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        user_note: value
+            .get("user_note")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         enabled_tools,
         sync_details,
     }
@@ -88,6 +96,8 @@ pub fn to_clean_skill_payload(skill: &Skill) -> Value {
         "last_sync_at": skill.last_sync_at,
         "status": skill.status,
         "sort_index": skill.sort_index,
+        "user_group": skill.user_group,
+        "user_note": skill.user_note,
         "enabled_tools": skill.enabled_tools,
         "sync_details": skill.sync_details,
     })

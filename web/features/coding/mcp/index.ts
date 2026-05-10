@@ -9,3 +9,4 @@ export { default as McpPage } from './pages/McpPage';
 export { default as McpButton } from './components/McpButton';
 export { default as McpCard } from './components/McpCard';
 export { default as McpList } from './components/McpList';
+export { default as McpGroupedList } from './components/McpGroupedList';

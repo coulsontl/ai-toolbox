@@ -23,6 +23,17 @@ use crate::coding::tools::{
 };
 use crate::DbState;
 
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value.and_then(|text| {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
 // ==================== MCP Server CRUD ====================
 
 /// List all MCP servers
@@ -40,6 +51,8 @@ pub async fn mcp_list_servers(state: State<'_, DbState>) -> Result<Vec<McpServer
             enabled_tools: s.enabled_tools.clone(),
             sync_details: parse_sync_details_dto(&s),
             description: s.description.clone(),
+            user_group: s.user_group.clone(),
+            user_note: s.user_note.clone(),
             tags: s.tags.clone(),
             timeout: s.timeout,
             sort_index: s.sort_index,
@@ -66,6 +79,8 @@ pub async fn mcp_create_server<R: Runtime>(
         enabled_tools: input.enabled_tools.clone(),
         sync_details: None,
         description: input.description,
+        user_group: None,
+        user_note: None,
         tags: input.tags,
         timeout: input.timeout,
         sort_index: 0, // Will be assigned by upsert
@@ -122,6 +137,8 @@ pub async fn mcp_create_server<R: Runtime>(
         enabled_tools: created.enabled_tools,
         sync_details,
         description: created.description,
+        user_group: created.user_group,
+        user_note: created.user_note,
         tags: created.tags,
         timeout: created.timeout,
         sort_index: created.sort_index,
@@ -215,6 +232,8 @@ pub async fn mcp_update_server<R: Runtime>(
         enabled_tools: updated.enabled_tools,
         sync_details,
         description: updated.description,
+        user_group: updated.user_group,
+        user_note: updated.user_note,
         tags: updated.tags,
         timeout: updated.timeout,
         sort_index: updated.sort_index,
@@ -330,6 +349,24 @@ pub async fn mcp_reorder_servers(
     ids: Vec<String>,
 ) -> Result<(), String> {
     mcp_store::reorder_mcp_servers(&state, &ids).await
+}
+
+/// Update MCP server user-managed metadata only.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn mcp_update_metadata(
+    state: State<'_, DbState>,
+    serverId: String,
+    userGroup: Option<String>,
+    userNote: Option<String>,
+) -> Result<(), String> {
+    mcp_store::update_mcp_server_metadata(
+        &state,
+        &serverId,
+        normalize_optional_text(userGroup),
+        normalize_optional_text(userNote),
+    )
+    .await
 }
 
 // ==================== Sync Operations ====================

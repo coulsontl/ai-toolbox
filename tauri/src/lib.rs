@@ -1627,6 +1627,8 @@ pub fn run() {
             coding::skills::skills_init_default_repos,
             // Skills Hub - Reorder
             coding::skills::skills_reorder,
+            coding::skills::skills_update_metadata,
+            coding::skills::skills_batch_update_group,
             // Skills Hub - Resync
             coding::skills::skills_resync_all,
             // MCP Servers
@@ -1636,6 +1638,7 @@ pub fn run() {
             coding::mcp::mcp_delete_server,
             coding::mcp::mcp_toggle_tool,
             coding::mcp::mcp_reorder_servers,
+            coding::mcp::mcp_update_metadata,
             coding::mcp::mcp_sync_to_tool,
             coding::mcp::mcp_sync_all,
             coding::mcp::mcp_import_from_tool,

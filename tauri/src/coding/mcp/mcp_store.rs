@@ -131,6 +131,28 @@ pub async fn delete_mcp_server(state: &DbState, server_id: &str) -> Result<(), S
     Ok(())
 }
 
+/// Update user-managed metadata for an MCP server without touching sync state.
+pub async fn update_mcp_server_metadata(
+    state: &DbState,
+    server_id: &str,
+    user_group: Option<String>,
+    user_note: Option<String>,
+) -> Result<(), String> {
+    let db = state.db();
+    let record_id = db_record_id("mcp_server", server_id);
+
+    db.query(&format!(
+        "UPDATE {} SET user_group = $user_group, user_note = $user_note",
+        record_id
+    ))
+    .bind(("user_group", user_group))
+    .bind(("user_note", user_note))
+    .await
+    .map_err(|e| format!("Failed to update MCP server metadata: {}", e))?;
+
+    Ok(())
+}
+
 /// Reorder MCP servers by updating sort_index for each server
 pub async fn reorder_mcp_servers(state: &DbState, ids: &[String]) -> Result<(), String> {
     let db = state.db();
