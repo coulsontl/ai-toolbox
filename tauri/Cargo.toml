@@ -1,6 +1,6 @@
 [package]
 name = "ai-toolbox"
-version = "0.8.8"
+version = "0.8.9"
 description = "AI Toolbox - Personal AI Tools Collection"
 authors = ["you"]
 edition = "2021"
