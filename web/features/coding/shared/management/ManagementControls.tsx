@@ -1,6 +1,14 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { Search, X } from 'lucide-react';
+import {
+  Check,
+  Circle,
+  CircleDot,
+  Search,
+  Square,
+  SquareCheck,
+  X,
+} from 'lucide-react';
 import { useKeepAlive } from '@/components/layout/KeepAliveOutlet';
 import styles from './ManagementControls.module.less';
 
@@ -160,14 +168,28 @@ export function ManagementSegmented<TValue extends string>({
   );
 }
 
-export interface ManagementMenuItem {
+type ManagementMenuItemKind = 'checkbox' | 'radio';
+
+interface ManagementMenuSectionItem {
   key: string;
+  type: 'section';
   label: React.ReactNode;
+}
+
+interface ManagementMenuActionItem {
+  key: string;
+  type?: 'item';
+  label: React.ReactNode;
+  tooltip?: React.ReactNode;
   icon?: React.ReactNode;
+  active?: boolean;
+  kind?: ManagementMenuItemKind;
   danger?: boolean;
   disabled?: boolean;
   onSelect: () => void;
 }
+
+export type ManagementMenuItem = ManagementMenuActionItem | ManagementMenuSectionItem;
 
 interface ManagementMenuProps {
   items: ManagementMenuItem[];
@@ -190,6 +212,7 @@ export const ManagementMenu: React.FC<ManagementMenuProps> = ({
 }) => {
   const triggerRef = React.useRef<HTMLButtonElement | null>(null);
   const menuRef = React.useRef<HTMLDivElement | null>(null);
+  const tooltipIdPrefix = React.useId();
   const [open, setOpen] = React.useState(false);
   const [position, setPosition] = React.useState({ top: 0, left: 0 });
 
@@ -241,6 +264,26 @@ export const ManagementMenu: React.FC<ManagementMenuProps> = ({
     };
   }, [closeMenu, open, updatePosition]);
 
+  const renderMenuIndicator = (item: ManagementMenuActionItem) => {
+    if (item.kind === 'checkbox') {
+      return item.active
+        ? <SquareCheck size={14} aria-hidden="true" />
+        : <Square size={14} aria-hidden="true" />;
+    }
+
+    if (item.kind === 'radio') {
+      return item.active
+        ? <CircleDot size={14} aria-hidden="true" />
+        : <Circle size={14} aria-hidden="true" />;
+    }
+
+    if (item.active) {
+      return <Check size={14} aria-hidden="true" />;
+    }
+
+    return item.icon ?? null;
+  };
+
   return (
     <span className={styles.menuHost}>
       <button
@@ -273,28 +316,58 @@ export const ManagementMenu: React.FC<ManagementMenuProps> = ({
           role="menu"
           style={{ top: position.top, left: position.left }}
         >
-          {items.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              role="menuitem"
-              disabled={item.disabled}
-              className={[
-                styles.menuItem,
-                item.danger ? styles.menuItemDanger : '',
-              ].filter(Boolean).join(' ')}
-              onClick={() => {
-                if (item.disabled) {
-                  return;
-                }
-                closeMenu();
-                item.onSelect();
-              }}
-            >
-              {item.icon && <span className={styles.menuItemIcon}>{item.icon}</span>}
-              <span>{item.label}</span>
-            </button>
-          ))}
+          {items.map((item) => {
+            if (item.type === 'section') {
+              return (
+                <div key={item.key} className={styles.menuSection} role="presentation">
+                  {item.label}
+                </div>
+              );
+            }
+
+            const indicator = renderMenuIndicator(item);
+            const tooltipId = item.tooltip ? `${tooltipIdPrefix}-${item.key}-tooltip` : undefined;
+            const menuItemRole = item.kind === 'checkbox'
+              ? 'menuitemcheckbox'
+              : item.kind === 'radio'
+                ? 'menuitemradio'
+                : 'menuitem';
+
+            return (
+              <button
+                key={item.key}
+                type="button"
+                role={menuItemRole}
+                aria-checked={item.kind === 'checkbox' || item.kind === 'radio' ? item.active : undefined}
+                aria-describedby={tooltipId}
+                disabled={item.disabled}
+                className={[
+                  styles.menuItem,
+                  item.active ? styles.menuItemActive : '',
+                  item.danger ? styles.menuItemDanger : '',
+                ].filter(Boolean).join(' ')}
+                onClick={() => {
+                  if (item.disabled) {
+                    return;
+                  }
+                  closeMenu();
+                  item.onSelect();
+                }}
+              >
+                {indicator && (
+                  <span className={styles.menuItemIcon}>
+                    {indicator}
+                  </span>
+                )}
+                <span>{item.label}</span>
+                {item.tooltip && (
+                  <span id={tooltipId} className={styles.menuItemTooltip} role="tooltip">
+                    {item.tooltip}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>,
         document.body,
       )}

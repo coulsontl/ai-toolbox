@@ -2,6 +2,7 @@ import React from 'react';
 import { ChevronDown, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
+  ManagementCheckbox,
   ManagementEmpty,
   ManagementMenu,
   VirtualGrid,
@@ -19,6 +20,10 @@ interface McpGroupedListProps {
   columns?: number;
   activeKeys: string[];
   onActiveKeysChange: (keys: string[]) => void;
+  selectionMode: boolean;
+  selectedIds: Set<string>;
+  onSelectChange: (serverId: string, checked: boolean) => void;
+  onSelectAllGroup: (group: McpGroup, checked: boolean) => void;
   onEdit: (server: McpServer) => void;
   onEditMetadata: (server: McpServer) => void;
   onDelete: (serverId: string) => void;
@@ -35,6 +40,10 @@ export const McpGroupedList: React.FC<McpGroupedListProps> = ({
   columns,
   activeKeys,
   onActiveKeysChange,
+  selectionMode,
+  selectedIds,
+  onSelectChange,
+  onSelectAllGroup,
   onEdit,
   onEditMetadata,
   onDelete,
@@ -53,6 +62,12 @@ export const McpGroupedList: React.FC<McpGroupedListProps> = ({
       </div>
     );
   }
+
+  const isGroupAllSelected = (group: McpGroup) =>
+    group.servers.length > 0 && group.servers.every((server) => selectedIds.has(server.id));
+
+  const isGroupPartialSelected = (group: McpGroup) =>
+    group.servers.some((server) => selectedIds.has(server.id)) && !isGroupAllSelected(group);
 
   const renderGroupTools = (group: McpGroup) => {
     const activeToolKeys = new Set(getMcpGroupToolKeys(group));
@@ -110,22 +125,32 @@ export const McpGroupedList: React.FC<McpGroupedListProps> = ({
         return (
           <section key={group.key} className={styles.groupSection}>
             <div className={styles.groupHeader}>
-              <button
-                type="button"
-                className={styles.groupToggle}
-                aria-expanded={isOpen}
-                onClick={() => handleToggleGroup(group.key)}
-              >
-                <ChevronDown
-                  size={15}
-                  className={`${styles.groupChevron}${isOpen ? ` ${styles.groupChevronOpen}` : ''}`}
-                  aria-hidden="true"
-                />
-                <span className={styles.groupLabel}>{group.label}</span>
-                <span className={styles.groupCount}>
-                  {t('mcp.serverCount', { count: group.servers.length })}
-                </span>
-              </button>
+              <div className={styles.groupTitle}>
+                {selectionMode && (
+                  <ManagementCheckbox
+                    checked={isGroupAllSelected(group)}
+                    indeterminate={isGroupPartialSelected(group)}
+                    ariaLabel={`${t('mcp.batch.selectAll')} ${group.label}`}
+                    onChange={(checked) => onSelectAllGroup(group, checked)}
+                  />
+                )}
+                <button
+                  type="button"
+                  className={styles.groupToggle}
+                  aria-expanded={isOpen}
+                  onClick={() => handleToggleGroup(group.key)}
+                >
+                  <ChevronDown
+                    size={15}
+                    className={`${styles.groupChevron}${isOpen ? ` ${styles.groupChevronOpen}` : ''}`}
+                    aria-hidden="true"
+                  />
+                  <span className={styles.groupLabel}>{group.label}</span>
+                  <span className={styles.groupCount}>
+                    {t('mcp.serverCount', { count: group.servers.length })}
+                  </span>
+                </button>
+              </div>
               {groupToolsEnabled && renderGroupTools(group)}
             </div>
             {isOpen && (
@@ -142,7 +167,10 @@ export const McpGroupedList: React.FC<McpGroupedListProps> = ({
                       tools={tools}
                       loading={loading}
                       dragDisabled
+                      selectable={selectionMode}
+                      selected={selectedIds.has(server.id)}
                       toolsReadOnly={groupToolsEnabled}
+                      onSelectChange={onSelectChange}
                       onEdit={onEdit}
                       onEditMetadata={onEditMetadata}
                       onDelete={onDelete}

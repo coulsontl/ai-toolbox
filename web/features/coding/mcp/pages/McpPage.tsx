@@ -9,9 +9,13 @@ import {
   Import,
   LayoutGrid,
   ListTree,
+  MinusCircle,
   MoreHorizontal,
   Plus,
-  Wrench,
+  PlusCircle,
+  SlidersHorizontal,
+  Tags,
+  Trash2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -20,10 +24,12 @@ import type { DragEndEvent } from '@dnd-kit/core';
 import {
   ManagementButton,
   ManagementIconButton,
+  ManagementMenu,
   ManagementSearchInput,
   ManagementSegmented,
   MANAGEMENT_GRID_COLUMN_OPTIONS,
   type ManagementGridColumnSetting,
+  type ManagementMenuItem,
 } from '@/features/coding/shared/management';
 import { useMcp } from '../hooks/useMcp';
 import { useMcpActions } from '../hooks/useMcpActions';
@@ -46,6 +52,7 @@ import {
   getMcpServerIdsWithTool,
   isMcpGroupToolsAligned,
   isMcpUngroupedCustomGroup,
+  normalizeMcpMetadataText,
 } from '../utils/mcpGrouping';
 import type { McpGroup, McpServer, CreateMcpServerInput, UpdateMcpServerInput } from '../types';
 import styles from './McpPage.module.less';
@@ -83,7 +90,11 @@ const McpPage: React.FC = () => {
   const [searchText, setSearchText] = useState('');
   const [viewMode, setViewMode] = useState<'flat' | 'grouped'>('flat');
   const [groupActiveKeys, setGroupActiveKeys] = useState<string[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selectionMode, setSelectionMode] = useState(false);
   const [metadataServer, setMetadataServer] = useState<McpServer | null>(null);
+  const [batchGroupModalOpen, setBatchGroupModalOpen] = useState(false);
+  const [batchGroupValue, setBatchGroupValue] = useState('');
   const [groupToolMode, setGroupToolMode] = useState(false);
   const [gridColumnSetting, setGridColumnSetting] = useState<ManagementGridColumnSetting>('auto');
   const deferredSearchText = React.useDeferredValue(searchText);
@@ -157,6 +168,20 @@ const McpPage: React.FC = () => {
     });
   }, [groupedServers, viewMode]);
 
+  React.useEffect(() => {
+    if (viewMode !== 'grouped') {
+      setSelectionMode(false);
+      setSelectedIds(new Set());
+      return;
+    }
+
+    setSelectedIds((previousSelectedIds) => {
+      const visibleServerIds = new Set(filteredServers.map((server) => server.id));
+      const nextSelectedIds = new Set([...previousSelectedIds].filter((id) => visibleServerIds.has(id)));
+      return nextSelectedIds.size === previousSelectedIds.size ? previousSelectedIds : nextSelectedIds;
+    });
+  }, [filteredServers, viewMode]);
+
   const groupToolTargetGroups = React.useMemo(
     () => groupedServers.filter((group) => !isMcpUngroupedCustomGroup(group)),
     [groupedServers],
@@ -170,6 +195,47 @@ const McpPage: React.FC = () => {
   const getToolLabel = React.useCallback((toolKey: string) => {
     return tools.find((tool) => tool.key === toolKey)?.display_name ?? toolKey;
   }, [tools]);
+
+  const selectedArray = React.useMemo(() => [...selectedIds], [selectedIds]);
+  const selectedServers = React.useMemo(
+    () => servers.filter((server) => selectedIds.has(server.id)),
+    [selectedIds, servers],
+  );
+  const hasSelection = selectedArray.length > 0;
+  const installedTools = React.useMemo(() => tools.filter((tool) => tool.installed), [tools]);
+
+  const handleToggleSelectionMode = React.useCallback(() => {
+    if (selectionMode) {
+      setSelectedIds(new Set());
+    }
+    setSelectionMode((previousSelectionMode) => !previousSelectionMode);
+  }, [selectionMode]);
+
+  const handleSelectChange = React.useCallback((serverId: string, checked: boolean) => {
+    setSelectedIds((previousSelectedIds) => {
+      const nextSelectedIds = new Set(previousSelectedIds);
+      if (checked) {
+        nextSelectedIds.add(serverId);
+      } else {
+        nextSelectedIds.delete(serverId);
+      }
+      return nextSelectedIds;
+    });
+  }, []);
+
+  const handleSelectAllGroup = React.useCallback((group: McpGroup, checked: boolean) => {
+    setSelectedIds((previousSelectedIds) => {
+      const nextSelectedIds = new Set(previousSelectedIds);
+      for (const server of group.servers) {
+        if (checked) {
+          nextSelectedIds.add(server.id);
+        } else {
+          nextSelectedIds.delete(server.id);
+        }
+      }
+      return nextSelectedIds;
+    });
+  }, []);
 
   const applyMcpToolState = React.useCallback(async (
     serverIds: string[],
@@ -202,6 +268,96 @@ const McpPage: React.FC = () => {
       setActionLoading(false);
     }
   }, [getToolLabel, refresh, t]);
+
+  const handleBatchAddTool = React.useCallback(async (toolKey: string) => {
+    const missingServerIds = selectedServers
+      .filter((server) => !server.enabled_tools.includes(toolKey))
+      .map((server) => server.id);
+    await applyMcpToolState(missingServerIds, toolKey, true);
+  }, [applyMcpToolState, selectedServers]);
+
+  const handleBatchRemoveTool = React.useCallback(async (toolKey: string) => {
+    const enabledServerIds = selectedServers
+      .filter((server) => server.enabled_tools.includes(toolKey))
+      .map((server) => server.id);
+    await applyMcpToolState(enabledServerIds, toolKey, false);
+  }, [applyMcpToolState, selectedServers]);
+
+  const batchAddToolItems = React.useMemo<ManagementMenuItem[]>(
+    () => installedTools.map((tool) => ({
+      key: `add-${tool.key}`,
+      label: tool.display_name,
+      onSelect: () => handleBatchAddTool(tool.key),
+    })),
+    [handleBatchAddTool, installedTools],
+  );
+
+  const batchRemoveToolItems = React.useMemo<ManagementMenuItem[]>(
+    () => installedTools.map((tool) => ({
+      key: `remove-${tool.key}`,
+      label: tool.display_name,
+      onSelect: () => handleBatchRemoveTool(tool.key),
+    })),
+    [handleBatchRemoveTool, installedTools],
+  );
+
+  const handleConfirmBatchGroup = React.useCallback(async () => {
+    if (selectedServers.length === 0) {
+      return;
+    }
+
+    setActionLoading(true);
+    try {
+      const nextGroup = normalizeMcpMetadataText(batchGroupValue);
+      for (const server of selectedServers) {
+        await mcpApi.updateMcpMetadata(
+          server.id,
+          nextGroup,
+          normalizeMcpMetadataText(server.user_note),
+        );
+      }
+      await refresh();
+      message.success(t('mcp.batch.setGroupSuccess', { count: selectedServers.length }));
+      setBatchGroupModalOpen(false);
+      setBatchGroupValue('');
+      setSelectedIds(new Set());
+    } catch (error) {
+      message.error(t('mcp.serverUpdateFailed') + ': ' + String(error));
+      await refresh();
+    } finally {
+      setActionLoading(false);
+    }
+  }, [batchGroupValue, refresh, selectedServers, t]);
+
+  const handleBatchDelete = React.useCallback(() => {
+    if (selectedArray.length === 0) {
+      return;
+    }
+
+    Modal.confirm({
+      title: t('mcp.batch.deleteConfirmTitle'),
+      content: t('mcp.batch.deleteConfirmMessage', { count: selectedArray.length }),
+      okText: t('common.delete'),
+      okType: 'danger',
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        setActionLoading(true);
+        try {
+          for (const serverId of selectedArray) {
+            await mcpApi.deleteMcpServer(serverId);
+          }
+          await refresh();
+          message.success(t('mcp.batch.deleteSuccess', { count: selectedArray.length }));
+          setSelectedIds(new Set());
+        } catch (error) {
+          message.error(t('mcp.serverDeleteFailed') + ': ' + String(error));
+          await refresh();
+        } finally {
+          setActionLoading(false);
+        }
+      },
+    });
+  }, [refresh, selectedArray, t]);
 
   const normalizeMcpGroupTools = React.useCallback(async () => {
     let updatedCount = 0;
@@ -274,6 +430,42 @@ const McpPage: React.FC = () => {
     const enabledServerIds = getMcpServerIdsWithTool(group, toolKey);
     await applyMcpToolState(enabledServerIds, toolKey, false);
   }, [applyMcpToolState]);
+
+  const groupControlItems = React.useMemo<ManagementMenuItem[]>(() => [
+    {
+      key: 'mode-section',
+      type: 'section',
+      label: t('mcp.groupControls.modeSection'),
+    },
+    {
+      key: 'selection-mode',
+      label: selectionMode ? t('mcp.batch.exitSelectionMode') : t('mcp.batch.selectionMode'),
+      tooltip: t('mcp.groupControls.selectionModeTip'),
+      kind: 'checkbox',
+      active: selectionMode,
+      onSelect: handleToggleSelectionMode,
+    },
+    {
+      key: 'group-tools',
+      label: t('mcp.groupTools.mode'),
+      tooltip: isSearchActive
+        ? t('mcp.groupTools.disabledWhileSearching')
+        : t('mcp.groupControls.groupToolsTip'),
+      kind: 'checkbox',
+      active: groupToolMode,
+      disabled: loading || actionLoading || isSearchActive,
+      onSelect: () => handleToggleGroupToolMode(!groupToolMode),
+    },
+  ], [
+    actionLoading,
+    groupToolMode,
+    handleToggleGroupToolMode,
+    handleToggleSelectionMode,
+    isSearchActive,
+    loading,
+    selectionMode,
+    t,
+  ]);
 
   const handleAddServer = async (input: CreateMcpServerInput) => {
     setActionLoading(true);
@@ -386,27 +578,31 @@ const McpPage: React.FC = () => {
             clearLabel={t('common.clearSearch')}
             value={searchText}
             onChange={setSearchText}
+            className={styles.toolbarSearch}
           />
           <span className={styles.resultCount}>
             {filteredServers.length}/{servers.length}
           </span>
           <ManagementButton
             variant="subtle"
-            icon={<Import size={15} aria-hidden="true" />}
+            controlSize="compact"
+            icon={<Import size={14} aria-hidden="true" />}
             onClick={() => setImportModalOpen(true)}
           >
             {t('mcp.importExisting')}
           </ManagementButton>
           <ManagementButton
             variant="subtle"
-            icon={<FileText size={15} aria-hidden="true" />}
+            controlSize="compact"
+            icon={<FileText size={14} aria-hidden="true" />}
             onClick={() => setImportJsonModalOpen(true)}
           >
             {t('mcp.importJson.button')}
           </ManagementButton>
           <ManagementButton
             variant="primary"
-            icon={<Plus size={15} aria-hidden="true" />}
+            controlSize="compact"
+            icon={<Plus size={14} aria-hidden="true" />}
             onClick={() => setAddModalOpen(true)}
           >
             {t('mcp.addServer')}
@@ -431,6 +627,54 @@ const McpPage: React.FC = () => {
             </ManagementButton>
           )}
           {viewMode === 'grouped' && (
+            <ManagementMenu
+              items={groupControlItems}
+              title={t('mcp.groupControls.title')}
+              controlSize="compact"
+            >
+              <SlidersHorizontal size={14} aria-hidden="true" />
+            </ManagementMenu>
+          )}
+          {viewMode === 'grouped' && selectionMode && (
+            <>
+              <ManagementMenu
+                items={batchAddToolItems}
+                disabled={!hasSelection || loading || actionLoading}
+                title={hasSelection ? t('mcp.batch.addTool') : t('mcp.batch.noneSelected')}
+                controlSize="compact"
+              >
+                <PlusCircle size={14} aria-hidden="true" />
+              </ManagementMenu>
+              <ManagementMenu
+                items={batchRemoveToolItems}
+                disabled={!hasSelection || loading || actionLoading}
+                title={hasSelection ? t('mcp.batch.removeTool') : t('mcp.batch.noneSelected')}
+                controlSize="compact"
+              >
+                <MinusCircle size={14} aria-hidden="true" />
+              </ManagementMenu>
+              <ManagementIconButton
+                icon={<Tags size={14} aria-hidden="true" />}
+                title={hasSelection ? t('mcp.batch.setGroup') : t('mcp.batch.noneSelected')}
+                disabled={!hasSelection || loading || actionLoading}
+                onClick={() => {
+                  setBatchGroupValue('');
+                  setBatchGroupModalOpen(true);
+                }}
+                controlSize="compact"
+              />
+              <ManagementIconButton
+                icon={<Trash2 size={14} aria-hidden="true" />}
+                title={hasSelection ? t('mcp.batch.delete') : t('mcp.batch.noneSelected')}
+                disabled={!hasSelection || loading || actionLoading}
+                onClick={handleBatchDelete}
+                danger
+                controlSize="compact"
+              />
+              <span className={styles.batchDivider} />
+            </>
+          )}
+          {viewMode === 'grouped' && (
             <>
               <ManagementIconButton
                 icon={<ChevronsDown size={14} aria-hidden="true" />}
@@ -445,22 +689,6 @@ const McpPage: React.FC = () => {
                 controlSize="compact"
               />
             </>
-          )}
-          {viewMode === 'grouped' && (
-            <ManagementButton
-              variant={groupToolMode ? 'primary' : 'ghost'}
-              controlSize="compact"
-              icon={<Wrench size={14} aria-hidden="true" />}
-              title={
-                isSearchActive
-                  ? t('mcp.groupTools.disabledWhileSearching')
-                  : t('mcp.groupTools.tip')
-              }
-              disabled={loading || actionLoading || isSearchActive}
-              onClick={() => handleToggleGroupToolMode(!groupToolMode)}
-            >
-              {t('mcp.groupTools.mode')}
-            </ManagementButton>
           )}
           <ManagementSegmented<'flat' | 'grouped'>
             value={viewMode}
@@ -496,6 +724,10 @@ const McpPage: React.FC = () => {
             columns={gridColumns}
             activeKeys={groupActiveKeys}
             onActiveKeysChange={setGroupActiveKeys}
+            selectionMode={selectionMode}
+            selectedIds={selectedIds}
+            onSelectChange={handleSelectChange}
+            onSelectAllGroup={handleSelectAllGroup}
             onEdit={handleEdit}
             onEditMetadata={setMetadataServer}
             onDelete={handleDelete}
@@ -553,6 +785,35 @@ const McpPage: React.FC = () => {
           onSyncAll={syncAll}
         />
       )}
+
+      <Modal
+        open={batchGroupModalOpen}
+        title={t('mcp.batch.setGroupTitle')}
+        onCancel={() => setBatchGroupModalOpen(false)}
+        onOk={handleConfirmBatchGroup}
+        okText={t('common.save')}
+        cancelText={t('common.cancel')}
+        confirmLoading={actionLoading}
+        okButtonProps={{ disabled: selectedArray.length === 0 }}
+      >
+        <div className={styles.batchGroupEditor}>
+          <input
+            className={styles.batchGroupInput}
+            value={batchGroupValue}
+            list="mcp-batch-group-options"
+            placeholder={t('mcp.metadata.groupPlaceholder')}
+            onChange={(event) => setBatchGroupValue(event.target.value)}
+          />
+          <datalist id="mcp-batch-group-options">
+            {groupOptions.map((group) => (
+              <option key={group} value={group} />
+            ))}
+          </datalist>
+          <p className={styles.batchGroupHint}>
+            {t('mcp.batch.setGroupHint')}
+          </p>
+        </div>
+      </Modal>
 
       <McpMetadataModal
         open={!!metadataServer}

@@ -231,7 +231,20 @@
   transform: translateX(-100%);
 }
 
+.menuSection {
+  padding: 6px 8px 4px;
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+
+  &:not(:first-child) {
+    margin-top: 4px;
+  }
+}
+
 .menuItem {
+  position: relative;
   display: flex;
   width: 100%;
   min-height: 30px;
@@ -259,9 +272,61 @@
   }
 }
 
+.menuItemTooltip {
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 8px);
+  z-index: 1;
+  width: max-content;
+  max-width: min(240px, calc(100vw - 32px));
+  padding: 7px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-elevated);
+  box-shadow: 0 8px 24px var(--color-shadow);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0;
+  pointer-events: none;
+  text-align: left;
+  transform: translateY(-50%) translateX(-2px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  white-space: normal;
+}
+
+.menuItem:hover .menuItemTooltip,
+.menuItem:focus-visible .menuItemTooltip {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+
+.menuAlignEnd {
+  .menuItemTooltip {
+    right: calc(100% + 8px);
+    left: auto;
+    transform: translateY(-50%) translateX(2px);
+  }
+
+  .menuItem:hover .menuItemTooltip,
+  .menuItem:focus-visible .menuItemTooltip {
+    transform: translateY(-50%) translateX(0);
+  }
+}
+
 .menuItemIcon {
   display: inline-flex;
+  width: 16px;
+  justify-content: center;
   color: var(--color-text-tertiary);
+}
+
+.menuItemActive {
+  color: var(--color-text-primary);
+
+  .menuItemIcon {
+    color: var(--color-text-primary);
+  }
 }
 
 .menuItemDanger {
