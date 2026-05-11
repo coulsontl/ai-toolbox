@@ -176,6 +176,18 @@ fn find_model_display_name(items: &[TrayModelItem], current: &str) -> String {
     current.to_string()
 }
 
+fn parse_model_item_id(item_id: &str) -> Result<(&str, &str), String> {
+    let (provider_id, model_id) = item_id
+        .split_once('/')
+        .ok_or_else(|| format!("Invalid model ID format: {}", item_id))?;
+
+    if provider_id.is_empty() || model_id.is_empty() {
+        return Err(format!("Invalid model ID format: {}", item_id));
+    }
+
+    Ok((provider_id, model_id))
+}
+
 /// Apply model selection from tray menu
 pub async fn apply_opencode_model<R: Runtime>(
     app: &AppHandle<R>,
@@ -183,13 +195,7 @@ pub async fn apply_opencode_model<R: Runtime>(
     item_id: &str,    // Format: "provider/model"
 ) -> Result<(), String> {
     // Parse item_id to get provider_id and model_id
-    let parts: Vec<&str> = item_id.split('/').collect();
-    if parts.len() != 2 {
-        return Err(format!("Invalid model ID format: {}", item_id));
-    }
-
-    let provider_id = parts[0];
-    let model_id = parts[1];
+    let (provider_id, model_id) = parse_model_item_id(item_id)?;
 
     // Read current config
     let result = read_opencode_config(app.state()).await?;
@@ -473,7 +479,10 @@ pub async fn apply_opencode_plugin<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
-    use super::{remember_plugin_entry, remembered_plugin_entries, remembered_plugin_entry};
+    use super::{
+        parse_model_item_id, remember_plugin_entry, remembered_plugin_entries,
+        remembered_plugin_entry,
+    };
     use crate::coding::open_code::types::OpenCodePluginEntry;
     use serde_json::json;
 
@@ -497,5 +506,20 @@ mod tests {
             remembered_plugin_entry("oh-my-opencode"),
             Some(tuple_plugin_entry)
         );
+    }
+
+    #[test]
+    fn parse_model_item_id_keeps_slashes_inside_model_id() {
+        assert_eq!(
+            parse_model_item_id("zenmux/openai/gpt-5.5-fast"),
+            Ok(("zenmux", "openai/gpt-5.5-fast"))
+        );
+    }
+
+    #[test]
+    fn parse_model_item_id_rejects_missing_provider_or_model() {
+        assert!(parse_model_item_id("gpt-5.5-fast").is_err());
+        assert!(parse_model_item_id("/gpt-5.5-fast").is_err());
+        assert!(parse_model_item_id("opencode/").is_err());
     }
 }

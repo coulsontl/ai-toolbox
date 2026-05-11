@@ -113,6 +113,8 @@ export interface FreeModel {
   providerId: string;       // Config key (e.g., "opencode")
   providerName: string;     // Display name (e.g., "OpenCode Zen")
   context?: number;
+  baseModelId?: string;
+  experimentalMode?: string;
 }
 
 /**
@@ -158,6 +160,8 @@ export interface UnifiedModelOption {
   providerId: string;
   modelId: string;
   isFree: boolean;      // Whether this is a free model
+  baseModelId?: string;
+  experimentalMode?: string;
 }
 
 /**
@@ -185,6 +189,8 @@ export const buildModelVariantsMap = (
   presetModels?: Record<string, Array<{ id: string; variants?: Record<string, unknown> }>>
 ): Record<string, string[]> => {
   const variantsMap: Record<string, string[]> = {};
+  const variantKeysByConfiguredModel = new Map<string, string[]>();
+  const variantKeysByPresetModel = new Map<string, string[]>();
 
   // Get variants from config providers
   if (config?.provider) {
@@ -192,7 +198,10 @@ export const buildModelVariantsMap = (
       if (provider.models) {
         Object.entries(provider.models).forEach(([modelId, model]) => {
           if (model.variants && Object.keys(model.variants).length > 0) {
-            variantsMap[`${providerId}/${modelId}`] = Object.keys(model.variants);
+            const variantKeys = Object.keys(model.variants);
+            const fullModelId = `${providerId}/${modelId}`;
+            variantKeysByConfiguredModel.set(fullModelId, variantKeys);
+            variantsMap[fullModelId] = variantKeys;
           }
         });
       }
@@ -205,6 +214,7 @@ export const buildModelVariantsMap = (
       models.forEach((model) => {
         if (model.variants && Object.keys(model.variants).length > 0) {
           const variantKeys = Object.keys(model.variants);
+          variantKeysByPresetModel.set(model.id, variantKeys);
           // Match preset model ID with unified model IDs
           unifiedModels.forEach((um) => {
             if (um.modelId === model.id && !variantsMap[um.id]) {
@@ -215,6 +225,22 @@ export const buildModelVariantsMap = (
       });
     });
   }
+
+  // OpenCode expands models.dev experimental modes into virtual model IDs,
+  // e.g. gpt-5.5 + mode fast -> gpt-5.5-fast. Those virtual models inherit
+  // the base model variants, so the variant dropdown should remain available.
+  unifiedModels.forEach((um) => {
+    if (variantsMap[um.id]) return;
+    if (!um.baseModelId || !um.experimentalMode) return;
+
+    const baseUnifiedId = `${um.providerId}/${um.baseModelId}`;
+    const baseVariantKeys = variantsMap[baseUnifiedId]
+      ?? variantKeysByConfiguredModel.get(baseUnifiedId)
+      ?? variantKeysByPresetModel.get(um.baseModelId);
+    if (baseVariantKeys && baseVariantKeys.length > 0) {
+      variantsMap[um.id] = baseVariantKeys;
+    }
+  });
 
   return variantsMap;
 };

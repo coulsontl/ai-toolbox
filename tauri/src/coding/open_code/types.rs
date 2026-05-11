@@ -293,6 +293,10 @@ pub struct FreeModel {
     pub provider_name: String, // Display name (e.g., "OpenCode Zen")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_model_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experimental_mode: Option<String>,
 }
 
 /// Provider models data stored in database
@@ -337,6 +341,10 @@ pub struct UnifiedModelOption {
     pub provider_id: String,
     pub model_id: String,
     pub is_free: bool, // Whether this is a free model
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_model_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experimental_mode: Option<String>,
 }
 
 // ============================================================================

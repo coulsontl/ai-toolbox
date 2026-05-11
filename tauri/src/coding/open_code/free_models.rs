@@ -18,6 +18,7 @@ const DEFAULT_MODELS_JSON: &str = include_str!("../../../resources/models.dev.js
 const MODELS_API_URL: &str = "https://models.dev/api.json";
 const CACHE_FILE_NAME: &str = "models.dev.json";
 const OPENCODE_PROVIDER_ID: &str = "opencode";
+const MODEL_STATUS_DEPRECATED: &str = "deprecated";
 const CACHE_DURATION_HOURS: u64 = 6;
 const MIN_REFRESH_INTERVAL_SECS: u64 = 30;
 
@@ -267,46 +268,124 @@ fn filter_free_models(provider_id: &str, provider_data: &serde_json::Value) -> V
         None => return free_models,
     };
 
-    for (model_id, model_obj) in models_obj {
-        if let Some(model) = model_obj.as_object() {
-            let is_free = model
-                .get("cost")
-                .and_then(|cost| cost.as_object())
-                .map(|cost| {
-                    let input = cost.get("input").and_then(|v| v.as_f64()).unwrap_or(-1.0);
-                    let output = cost.get("output").and_then(|v| v.as_f64()).unwrap_or(-1.0);
-                    input == 0.0 && output == 0.0
-                })
-                .unwrap_or(false);
-
-            if is_free {
-                let status = model.get("status").and_then(|v| v.as_str());
-                if status == Some("deprecated") {
-                    continue;
-                }
-
-                let model_name = model
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(model_id)
-                    .to_string();
-
+    for_each_active_model_with_modes(
+        models_obj,
+        |model_id, model_name, model_obj, base_model_id, experimental_mode, mode_obj| {
+            if is_model_free_with_mode(model_obj, mode_obj) {
                 free_models.push(FreeModel {
-                    id: model_id.clone(),
+                    id: model_id,
                     name: model_name,
                     provider_id: provider_id.to_string(),
                     provider_name: provider_name.clone(),
-                    context: model
-                        .get("limit")
-                        .and_then(|limit| limit.as_object())
-                        .and_then(|limit| limit.get("context"))
-                        .and_then(|v| v.as_i64()),
+                    context: model_context_limit(model_obj),
+                    base_model_id,
+                    experimental_mode,
                 });
             }
-        }
-    }
+        },
+    );
 
     free_models
+}
+
+fn model_name_from_value(model_id: &str, model_obj: &serde_json::Value) -> String {
+    model_obj
+        .get("name")
+        .and_then(|value| value.as_str())
+        .unwrap_or(model_id)
+        .to_string()
+}
+
+fn model_status(model_obj: &serde_json::Value) -> Option<&str> {
+    model_obj.get("status").and_then(|value| value.as_str())
+}
+
+fn model_context_limit(model_obj: &serde_json::Value) -> Option<i64> {
+    model_obj
+        .get("limit")
+        .and_then(|limit| limit.as_object())
+        .and_then(|limit| limit.get("context"))
+        .and_then(|value| value.as_i64())
+}
+
+fn model_output_limit(model_obj: &serde_json::Value) -> Option<i64> {
+    model_obj
+        .get("limit")
+        .and_then(|limit| limit.as_object())
+        .and_then(|limit| limit.get("output"))
+        .and_then(|value| value.as_i64())
+}
+
+fn format_experimental_mode_name(mode: &str) -> String {
+    let mut chars = mode.chars();
+    match chars.next() {
+        Some(first) => {
+            let mut result = String::new();
+            result.extend(first.to_uppercase());
+            result.push_str(chars.as_str());
+            result
+        }
+        None => mode.to_string(),
+    }
+}
+
+fn for_each_active_model_with_modes<F>(
+    models_obj: &serde_json::Map<String, serde_json::Value>,
+    mut visit: F,
+) where
+    F: FnMut(
+        String,
+        String,
+        &serde_json::Value,
+        Option<String>,
+        Option<String>,
+        Option<&serde_json::Value>,
+    ),
+{
+    for (model_id, model_obj) in models_obj {
+        if model_status(model_obj) == Some(MODEL_STATUS_DEPRECATED) {
+            continue;
+        }
+
+        let model_name = model_name_from_value(model_id, model_obj);
+        visit(
+            model_id.clone(),
+            model_name.clone(),
+            model_obj,
+            None,
+            None,
+            None,
+        );
+
+        let Some(modes_obj) = model_obj
+            .get("experimental")
+            .and_then(|experimental| experimental.get("modes"))
+            .and_then(|modes| modes.as_object())
+        else {
+            continue;
+        };
+
+        for (mode, mode_obj) in modes_obj {
+            let virtual_model_id = format!("{}-{}", model_id, mode);
+            if models_obj.contains_key(&virtual_model_id) {
+                continue;
+            }
+
+            let mode_status = mode_obj.get("status").and_then(|value| value.as_str());
+            if mode_status == Some(MODEL_STATUS_DEPRECATED) {
+                continue;
+            }
+
+            visit(
+                virtual_model_id,
+                format!("{} {}", model_name, format_experimental_mode_name(mode)),
+                model_obj,
+                Some(model_id.clone()),
+                Some(mode.clone()),
+                Some(mode_obj),
+            );
+        }
+    }
 }
 
 fn is_cache_expired(updated_at: &str) -> bool {
@@ -632,16 +711,78 @@ pub fn get_resolved_auth_provider_ids() -> Vec<String> {
 // Unified Models API
 // ============================================================================
 
-fn is_model_free_from_value(model_obj: &serde_json::Value) -> bool {
-    model_obj
-        .get("cost")
-        .and_then(|cost| cost.as_object())
-        .map(|cost| {
-            let input = cost.get("input").and_then(|v| v.as_f64()).unwrap_or(-1.0);
-            let output = cost.get("output").and_then(|v| v.as_f64()).unwrap_or(-1.0);
-            input == 0.0 && output == 0.0
-        })
-        .unwrap_or(false)
+fn is_model_free_with_mode(
+    model_obj: &serde_json::Value,
+    mode_obj: Option<&serde_json::Value>,
+) -> bool {
+    let base_cost = model_obj.get("cost").and_then(|cost| cost.as_object());
+    let mode_cost = mode_obj
+        .and_then(|mode| mode.get("cost"))
+        .and_then(|cost| cost.as_object());
+
+    let cost_value = |key: &str| {
+        mode_cost
+            .and_then(|cost| cost.get(key))
+            .or_else(|| base_cost.and_then(|cost| cost.get(key)))
+            .and_then(|value| value.as_f64())
+            .unwrap_or(-1.0)
+    };
+
+    cost_value("input") == 0.0 && cost_value("output") == 0.0
+}
+
+fn push_unified_model_option(
+    provider_models: &mut Vec<UnifiedModelOption>,
+    provider_id: &str,
+    provider_name: &str,
+    model_id: String,
+    model_name: String,
+    base_model_id: Option<String>,
+    experimental_mode: Option<String>,
+    model_obj: &serde_json::Value,
+    mode_obj: Option<&serde_json::Value>,
+) {
+    let is_free = is_model_free_with_mode(model_obj, mode_obj);
+    let display_name = if provider_id == OPENCODE_PROVIDER_ID && is_free {
+        format!("{} / {} (Free)", provider_name, model_name)
+    } else {
+        format!("{} / {}", provider_name, model_name)
+    };
+
+    provider_models.push(UnifiedModelOption {
+        id: format!("{}/{}", provider_id, model_id),
+        display_name,
+        provider_id: provider_id.to_string(),
+        model_id,
+        is_free,
+        base_model_id,
+        experimental_mode,
+    });
+}
+
+fn push_official_model_option(
+    official_models_list: &mut Vec<OfficialModel>,
+    provider_id: &str,
+    model_id: String,
+    model_name: String,
+    model_obj: &serde_json::Value,
+    mode_obj: Option<&serde_json::Value>,
+) {
+    let status = mode_obj
+        .and_then(|mode| mode.get("status"))
+        .and_then(|value| value.as_str())
+        .or_else(|| model_status(model_obj))
+        .map(String::from);
+
+    official_models_list.push(OfficialModel {
+        id: model_id,
+        name: model_name,
+        context: model_context_limit(model_obj),
+        output: model_output_limit(model_obj),
+        is_free: provider_id == OPENCODE_PROVIDER_ID
+            && is_model_free_with_mode(model_obj, mode_obj),
+        status,
+    });
 }
 
 fn apply_model_filters(
@@ -681,11 +822,11 @@ pub async fn get_unified_models(
 ) -> Vec<UnifiedModelOption> {
     let mut models: Vec<UnifiedModelOption> = Vec::new();
 
-    let has_opencode_auth = auth_channels.contains(&"opencode".to_string());
+    let has_opencode_auth = auth_channels.contains(&OPENCODE_PROVIDER_ID.to_string());
     let mut official_provider_ids = auth_channels.to_vec();
 
     if !has_opencode_auth {
-        official_provider_ids.retain(|id| id != "opencode");
+        official_provider_ids.retain(|id| id != OPENCODE_PROVIDER_ID);
     }
 
     let mut official_models = read_providers_batch(&official_provider_ids);
@@ -714,6 +855,8 @@ pub async fn get_unified_models(
                     provider_id: provider_id.clone(),
                     model_id: model_id.clone(),
                     is_free: false,
+                    base_model_id: None,
+                    experimental_mode: None,
                 });
             }
 
@@ -725,38 +868,33 @@ pub async fn get_unified_models(
                     .get("models")
                     .and_then(|m| m.as_object())
                 {
-                    for (model_id, model_obj) in models_obj {
-                        let full_id = format!("{}/{}", provider_id, model_id);
+                    for_each_active_model_with_modes(
+                        models_obj,
+                        |model_id,
+                         model_name,
+                         model_obj,
+                         base_model_id,
+                         experimental_mode,
+                         mode_obj| {
+                            let full_id = format!("{}/{}", provider_id, model_id);
 
-                        if custom_model_ids.contains(&full_id) {
-                            continue;
-                        }
+                            if custom_model_ids.contains(&full_id) {
+                                return;
+                            }
 
-                        let status = model_obj.get("status").and_then(|v| v.as_str());
-                        if status == Some("deprecated") {
-                            continue;
-                        }
-
-                        let model_name = model_obj
-                            .get("name")
-                            .and_then(|n| n.as_str())
-                            .unwrap_or(model_id);
-                        let is_free = is_model_free_from_value(model_obj);
-
-                        let display_name = if provider_id == "opencode" && is_free {
-                            format!("{} / {} (Free)", provider_name, model_name)
-                        } else {
-                            format!("{} / {}", provider_name, model_name)
-                        };
-
-                        provider_models.push(UnifiedModelOption {
-                            id: full_id,
-                            display_name,
-                            provider_id: provider_id.clone(),
-                            model_id: model_id.clone(),
-                            is_free,
-                        });
-                    }
+                            push_unified_model_option(
+                                &mut provider_models,
+                                provider_id,
+                                provider_name,
+                                model_id,
+                                model_name,
+                                base_model_id,
+                                experimental_mode,
+                                model_obj,
+                                mode_obj,
+                            );
+                        },
+                    );
                 }
             }
 
@@ -784,32 +922,22 @@ pub async fn get_unified_models(
             .get("models")
             .and_then(|m| m.as_object())
         {
-            for (model_id, model_obj) in models_obj {
-                let status = model_obj.get("status").and_then(|v| v.as_str());
-                if status == Some("deprecated") {
-                    continue;
-                }
-
-                let model_name = model_obj
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or(model_id);
-                let is_free = is_model_free_from_value(model_obj);
-
-                let display_name = if provider_id == "opencode" && is_free {
-                    format!("{} / {} (Free)", provider_name, model_name)
-                } else {
-                    format!("{} / {}", provider_name, model_name)
-                };
-
-                provider_models.push(UnifiedModelOption {
-                    id: format!("{}/{}", provider_id, model_id),
-                    display_name,
-                    provider_id: provider_id.clone(),
-                    model_id: model_id.clone(),
-                    is_free,
-                });
-            }
+            for_each_active_model_with_modes(
+                models_obj,
+                |model_id, model_name, model_obj, base_model_id, experimental_mode, mode_obj| {
+                    push_unified_model_option(
+                        &mut provider_models,
+                        provider_id,
+                        provider_name,
+                        model_id,
+                        model_name,
+                        base_model_id,
+                        experimental_mode,
+                        model_obj,
+                        mode_obj,
+                    );
+                },
+            );
         }
 
         provider_models.sort_by(|a, b| a.display_name.cmp(&b.display_name));
@@ -831,6 +959,8 @@ pub async fn get_unified_models(
                         provider_id: free_model.provider_id,
                         model_id: free_model.id,
                         is_free: true,
+                        base_model_id: free_model.base_model_id,
+                        experimental_mode: free_model.experimental_mode,
                     });
                 }
                 free_vec.sort_by(|a, b| a.display_name.cmp(&b.display_name));
@@ -871,7 +1001,7 @@ pub async fn get_auth_providers_data(
 
     let official_provider_ids: Vec<String> = auth_channels
         .into_iter()
-        .filter(|id| id != "opencode")
+        .filter(|id| id != OPENCODE_PROVIDER_ID)
         .collect();
 
     let mut official_models = read_providers_batch(&official_provider_ids);
@@ -899,56 +1029,25 @@ pub async fn get_auth_providers_data(
             .get("models")
             .and_then(|m| m.as_object())
         {
-            for (model_id, model_obj) in models_obj {
-                let full_id = format!("{}/{}", provider_id, model_id);
+            for_each_active_model_with_modes(
+                models_obj,
+                |model_id, model_name, model_obj, _base_model_id, _experimental_mode, mode_obj| {
+                    let full_id = format!("{}/{}", provider_id, model_id);
 
-                if custom_model_ids.contains(&full_id) {
-                    continue;
-                }
+                    if custom_model_ids.contains(&full_id) {
+                        return;
+                    }
 
-                let status = model_obj.get("status").and_then(|v| v.as_str());
-                if status == Some("deprecated") {
-                    continue;
-                }
-
-                let model_name = model_obj
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or(model_id)
-                    .to_string();
-
-                let context = model_obj
-                    .get("limit")
-                    .and_then(|limit| limit.as_object())
-                    .and_then(|limit| limit.get("context"))
-                    .and_then(|v| v.as_i64());
-
-                let output = model_obj
-                    .get("limit")
-                    .and_then(|limit| limit.as_object())
-                    .and_then(|limit| limit.get("output"))
-                    .and_then(|v| v.as_i64());
-
-                let is_free = if provider_id == "opencode" {
-                    is_model_free_from_value(model_obj)
-                } else {
-                    false
-                };
-
-                let status = model_obj
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-
-                official_models_list.push(OfficialModel {
-                    id: model_id.to_string(),
-                    name: model_name,
-                    context,
-                    output,
-                    is_free,
-                    status,
-                });
-            }
+                    push_official_model_option(
+                        &mut official_models_list,
+                        provider_id,
+                        model_id,
+                        model_name,
+                        model_obj,
+                        mode_obj,
+                    );
+                },
+            );
         }
 
         official_models_list.sort_by(|a, b| a.name.cmp(&b.name));
@@ -973,5 +1072,288 @@ pub async fn get_auth_providers_data(
         merged_models,
         resolved_auth_provider_ids,
         custom_provider_ids,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn collect_model_ids_and_names(provider_data: &serde_json::Value) -> Vec<(String, String)> {
+        let models_obj = provider_data
+            .get("models")
+            .and_then(|models| models.as_object())
+            .expect("models object");
+
+        let mut collected = Vec::new();
+        for_each_active_model_with_modes(models_obj, |model_id, model_name, _, _, _, _| {
+            collected.push((model_id, model_name));
+        });
+
+        collected
+    }
+
+    #[test]
+    fn experimental_modes_expand_to_virtual_models() {
+        let provider_data = json!({
+            "name": "OpenCode Zen",
+            "models": {
+                "gpt-5.5": {
+                    "name": "GPT-5.5",
+                    "status": "active",
+                    "cost": {
+                        "input": 5.0,
+                        "output": 30.0,
+                        "cache_read": 0.5
+                    },
+                    "limit": {
+                        "context": 1_050_000,
+                        "output": 128_000
+                    },
+                    "experimental": {
+                        "modes": {
+                            "fast": {
+                                "cost": {
+                                    "input": 12.5,
+                                    "output": 75.0,
+                                    "cache_read": 1.25
+                                },
+                                "provider": {
+                                    "body": {
+                                        "service_tier": "priority"
+                                    }
+                                }
+                            },
+                            "preview-mode": {
+                                "cost": {
+                                    "input": 15.0,
+                                    "output": 90.0,
+                                    "cache_read": 1.5
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let models_obj = provider_data
+            .get("models")
+            .and_then(|models| models.as_object())
+            .expect("models object");
+
+        let mut collected = Vec::new();
+        for_each_active_model_with_modes(
+            models_obj,
+            |model_id, model_name, model_obj, _base_model_id, _experimental_mode, mode_obj| {
+                collected.push((
+                    model_id,
+                    model_name,
+                    model_context_limit(model_obj),
+                    is_model_free_with_mode(model_obj, mode_obj),
+                ));
+            },
+        );
+
+        assert_eq!(
+            collected,
+            vec![
+                (
+                    "gpt-5.5".to_string(),
+                    "GPT-5.5".to_string(),
+                    Some(1_050_000),
+                    false,
+                ),
+                (
+                    "gpt-5.5-fast".to_string(),
+                    "GPT-5.5 Fast".to_string(),
+                    Some(1_050_000),
+                    false,
+                ),
+                (
+                    "gpt-5.5-preview-mode".to_string(),
+                    "GPT-5.5 Preview-mode".to_string(),
+                    Some(1_050_000),
+                    false,
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn experimental_modes_skip_deprecated_base_and_deprecated_fast() {
+        let provider_data = json!({
+            "models": {
+                "deprecated-base": {
+                    "name": "Deprecated Base",
+                    "status": "deprecated",
+                    "experimental": {
+                        "modes": {
+                            "fast": {}
+                        }
+                    }
+                },
+                "active-base": {
+                    "name": "Active Base",
+                    "experimental": {
+                        "modes": {
+                            "fast": {
+                                "status": "deprecated"
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        assert_eq!(
+            collect_model_ids_and_names(&provider_data),
+            vec![("active-base".to_string(), "Active Base".to_string())]
+        );
+    }
+
+    #[test]
+    fn experimental_fast_does_not_duplicate_existing_real_model() {
+        let provider_data = json!({
+            "models": {
+                "gpt-5.5": {
+                    "name": "GPT-5.5",
+                    "experimental": {
+                        "modes": {
+                            "fast": {}
+                        }
+                    }
+                },
+                "gpt-5.5-fast": {
+                    "name": "GPT-5.5 Fast Real"
+                }
+            }
+        });
+
+        assert_eq!(
+            collect_model_ids_and_names(&provider_data),
+            vec![
+                ("gpt-5.5".to_string(), "GPT-5.5".to_string()),
+                ("gpt-5.5-fast".to_string(), "GPT-5.5 Fast Real".to_string(),),
+            ]
+        );
+    }
+
+    #[test]
+    fn experimental_fast_cost_overrides_base_cost_for_free_detection() {
+        let provider_data = json!({
+            "name": "OpenCode Zen",
+            "models": {
+                "paid-base-free-fast": {
+                    "name": "Paid Base Free Fast",
+                    "cost": {
+                        "input": 1.0,
+                        "output": 2.0
+                    },
+                    "experimental": {
+                        "modes": {
+                            "fast": {
+                                "cost": {
+                                    "input": 0.0,
+                                    "output": 0.0
+                                }
+                            }
+                        }
+                    }
+                },
+                "free-base-paid-fast": {
+                    "name": "Free Base Paid Fast",
+                    "cost": {
+                        "input": 0.0,
+                        "output": 0.0
+                    },
+                    "experimental": {
+                        "modes": {
+                            "fast": {
+                                "cost": {
+                                    "input": 1.0,
+                                    "output": 2.0
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let free_model_ids: Vec<String> = filter_free_models(OPENCODE_PROVIDER_ID, &provider_data)
+            .into_iter()
+            .map(|model| model.id)
+            .collect();
+
+        assert_eq!(
+            free_model_ids,
+            vec![
+                "paid-base-free-fast-fast".to_string(),
+                "free-base-paid-fast".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn model_filters_apply_to_virtual_fast_model_ids() {
+        let models = vec![
+            UnifiedModelOption {
+                id: "openai/gpt-5.5".to_string(),
+                display_name: "OpenAI / GPT-5.5".to_string(),
+                provider_id: "openai".to_string(),
+                model_id: "gpt-5.5".to_string(),
+                is_free: false,
+                base_model_id: None,
+                experimental_mode: None,
+            },
+            UnifiedModelOption {
+                id: "openai/gpt-5.5-fast".to_string(),
+                display_name: "OpenAI / GPT-5.5 Fast".to_string(),
+                provider_id: "openai".to_string(),
+                model_id: "gpt-5.5-fast".to_string(),
+                is_free: false,
+                base_model_id: Some("gpt-5.5".to_string()),
+                experimental_mode: Some("fast".to_string()),
+            },
+        ];
+
+        let mut providers = IndexMap::new();
+        providers.insert(
+            "openai".to_string(),
+            OpenCodeProvider {
+                api: None,
+                env: None,
+                id: None,
+                npm: None,
+                name: None,
+                options: None,
+                models: IndexMap::new(),
+                whitelist: Some(vec!["gpt-5.5".to_string()]),
+                blacklist: None,
+                extra: serde_json::Map::new(),
+            },
+        );
+
+        let filtered_ids: Vec<String> = apply_model_filters(models.clone(), Some(&providers))
+            .into_iter()
+            .map(|model| model.model_id)
+            .collect();
+        assert_eq!(filtered_ids, vec!["gpt-5.5"]);
+
+        providers.get_mut("openai").unwrap().whitelist = Some(vec!["gpt-5.5-fast".to_string()]);
+        let filtered_ids: Vec<String> = apply_model_filters(models.clone(), Some(&providers))
+            .into_iter()
+            .map(|model| model.model_id)
+            .collect();
+        assert_eq!(filtered_ids, vec!["gpt-5.5-fast"]);
+
+        providers.get_mut("openai").unwrap().whitelist = None;
+        providers.get_mut("openai").unwrap().blacklist = Some(vec!["gpt-5.5-fast".to_string()]);
+        let filtered_ids: Vec<String> = apply_model_filters(models, Some(&providers))
+            .into_iter()
+            .map(|model| model.model_id)
+            .collect();
+        assert_eq!(filtered_ids, vec!["gpt-5.5"]);
     }
 }
