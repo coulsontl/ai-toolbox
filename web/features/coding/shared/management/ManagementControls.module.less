@@ -134,12 +134,12 @@
 
 .searchShell {
   display: inline-grid;
-  grid-template-columns: 18px minmax(0, 1fr) 28px;
+  grid-template-columns: 18px minmax(0, 1fr);
   width: min(280px, 100%);
   min-height: 34px;
   align-items: center;
   gap: 4px;
-  padding: 0 4px 0 10px;
+  padding: 0 10px;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: var(--color-bg-container);
@@ -152,6 +152,11 @@
     border-color: var(--color-border-secondary);
     background: var(--color-bg-elevated);
   }
+}
+
+.searchShellWithClear {
+  grid-template-columns: 18px minmax(0, 1fr) 28px;
+  padding-right: 4px;
 }
 
 .searchInput {
@@ -171,11 +176,6 @@
   width: 26px;
   height: 26px;
   border-radius: 6px;
-  visibility: hidden;
-}
-
-.searchClearButtonVisible {
-  visibility: visible;
 }
 
 .segmented {

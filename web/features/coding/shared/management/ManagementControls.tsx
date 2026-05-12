@@ -97,7 +97,13 @@ export const ManagementSearchInput: React.FC<ManagementSearchInputProps> = ({
   className,
   ariaLabel,
 }) => (
-  <label className={[styles.searchShell, className ?? ''].filter(Boolean).join(' ')}>
+  <label
+    className={[
+      styles.searchShell,
+      value ? styles.searchShellWithClear : '',
+      className ?? '',
+    ].filter(Boolean).join(' ')}
+  >
     <Search size={15} aria-hidden="true" />
     <input
       className={styles.searchInput}
@@ -106,18 +112,16 @@ export const ManagementSearchInput: React.FC<ManagementSearchInputProps> = ({
       aria-label={ariaLabel ?? placeholder}
       onChange={(event) => onChange(event.target.value)}
     />
-    <button
-      type="button"
-      className={[
-        styles.searchClearButton,
-        value ? styles.searchClearButtonVisible : '',
-      ].filter(Boolean).join(' ')}
-      aria-label={clearLabel}
-      onClick={() => onChange('')}
-      tabIndex={value ? 0 : -1}
-    >
-      <X size={14} aria-hidden="true" />
-    </button>
+    {value ? (
+      <button
+        type="button"
+        className={styles.searchClearButton}
+        aria-label={clearLabel}
+        onClick={() => onChange('')}
+      >
+        <X size={14} aria-hidden="true" />
+      </button>
+    ) : null}
   </label>
 );
 
