@@ -2566,6 +2566,8 @@
 		"skillsStorageHint": "Central location where all Skills are stored. Please use the Add feature to import; manually copying files here won't be recognized",
 		"showInTray": "Show in Quick Menu",
 		"showInTrayHint": "Display Skills in the system tray quick menu for fast sync toggle",
+		"defaultViewMode": "Default View",
+		"defaultViewModeHint": "Saving applies this view immediately and uses it by default when opening Skills later",
 		"storagePath": "Storage Path",
 		"selectStoragePath": "Select Storage Path",
 		"selectLocalFolder": "Select Skill Folder",

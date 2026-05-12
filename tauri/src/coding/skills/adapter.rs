@@ -330,6 +330,9 @@ pub fn from_db_skill_preferences(value: Value) -> SkillPreferences {
             .unwrap_or(&default.central_repo_path)
             .to_string(),
         preferred_tools,
+        default_view_mode: normalize_default_view_mode(
+            value.get("default_view_mode").and_then(|v| v.as_str()),
+        ),
         git_cache_cleanup_days: value
             .get("git_cache_cleanup_days")
             .and_then(|v| v.as_i64())
@@ -351,11 +354,19 @@ pub fn from_db_skill_preferences(value: Value) -> SkillPreferences {
     }
 }
 
+fn normalize_default_view_mode(value: Option<&str>) -> String {
+    match value {
+        Some("grouped") => "grouped".to_string(),
+        _ => "flat".to_string(),
+    }
+}
+
 /// Convert SkillPreferences to database payload
 pub fn to_skill_preferences_payload(prefs: &SkillPreferences) -> Value {
     serde_json::json!({
         "central_repo_path": prefs.central_repo_path,
         "preferred_tools": prefs.preferred_tools,
+        "default_view_mode": normalize_default_view_mode(Some(&prefs.default_view_mode)),
         "git_cache_cleanup_days": prefs.git_cache_cleanup_days,
         "git_cache_ttl_secs": prefs.git_cache_ttl_secs,
         "known_tool_versions": prefs.known_tool_versions,
@@ -408,4 +419,50 @@ pub fn to_custom_tool_payload(tool: &CustomTool) -> Value {
         "created_at": tool.created_at,
         "force_copy": tool.force_copy,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn skill_preferences_default_view_mode_falls_back_to_flat() {
+        let missing = from_db_skill_preferences(json!({}));
+        assert_eq!(missing.default_view_mode, "flat");
+
+        let explicit_flat = from_db_skill_preferences(json!({ "default_view_mode": "flat" }));
+        assert_eq!(explicit_flat.default_view_mode, "flat");
+
+        let invalid = from_db_skill_preferences(json!({ "default_view_mode": "grid" }));
+        assert_eq!(invalid.default_view_mode, "flat");
+    }
+
+    #[test]
+    fn skill_preferences_default_view_mode_allows_grouped() {
+        let grouped = from_db_skill_preferences(json!({ "default_view_mode": "grouped" }));
+        assert_eq!(grouped.default_view_mode, "grouped");
+    }
+
+    #[test]
+    fn skill_preferences_payload_normalizes_default_view_mode() {
+        let mut prefs = SkillPreferences::default();
+        prefs.default_view_mode = "grouped".to_string();
+        let grouped_payload = to_skill_preferences_payload(&prefs);
+        assert_eq!(
+            grouped_payload
+                .get("default_view_mode")
+                .and_then(Value::as_str),
+            Some("grouped")
+        );
+
+        prefs.default_view_mode = "grid".to_string();
+        let fallback_payload = to_skill_preferences_payload(&prefs);
+        assert_eq!(
+            fallback_payload
+                .get("default_view_mode")
+                .and_then(Value::as_str),
+            Some("flat")
+        );
+    }
 }

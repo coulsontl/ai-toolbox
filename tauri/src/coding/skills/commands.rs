@@ -813,6 +813,28 @@ pub async fn skills_set_show_in_tray(
     .await
 }
 
+// --- Default View Mode ---
+
+#[tauri::command]
+pub async fn skills_get_default_view_mode(state: State<'_, DbState>) -> Result<String, String> {
+    let raw = skill_store::get_setting(&state, "default_view_mode")
+        .await
+        .ok()
+        .flatten();
+    match raw.as_deref() {
+        Some("grouped") => Ok("grouped".to_string()),
+        _ => Ok("flat".to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn skills_set_default_view_mode(
+    state: State<'_, DbState>,
+    mode: String,
+) -> Result<(), String> {
+    skill_store::set_setting(&state, "default_view_mode", &mode).await
+}
+
 // --- Custom Tools ---
 
 #[tauri::command]

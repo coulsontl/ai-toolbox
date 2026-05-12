@@ -2563,6 +2563,8 @@
 		"skillsStorageHint": "所有 Skills 统一存放的位置，请通过添加功能导入，手动复制到此目录不会被识别",
 		"showInTray": "在快捷菜单中显示",
 		"showInTrayHint": "在系统托盘快捷菜单中显示 Skills，可快速切换同步状态",
+		"defaultViewMode": "默认视图",
+		"defaultViewModeHint": "保存后立即切换当前页面，并作为后续进入 Skills 时的默认视图",
 		"storagePath": "存储路径",
 		"selectStoragePath": "选择存储路径",
 		"selectLocalFolder": "选择 Skill 文件夹",

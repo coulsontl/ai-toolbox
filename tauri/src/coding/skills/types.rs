@@ -75,6 +75,7 @@ pub struct SkillPreferences {
     pub id: String, // Fixed "default"
     pub central_repo_path: String,
     pub preferred_tools: Option<Vec<String>>, // User selected preferred tools
+    pub default_view_mode: String,
     pub git_cache_cleanup_days: i32,
     pub git_cache_ttl_secs: i32,
     pub known_tool_versions: Option<Value>,
@@ -91,6 +92,7 @@ impl Default for SkillPreferences {
                 .map(|p| p.join(".skills").to_string_lossy().to_string())
                 .unwrap_or_default(),
             preferred_tools: None,
+            default_view_mode: "flat".to_string(),
             git_cache_cleanup_days: 30,
             git_cache_ttl_secs: 60,
             known_tool_versions: None,

@@ -11,6 +11,7 @@ import type {
   CustomTool,
   SkillGroupRecord,
   SkillInventoryPreview,
+  SkillViewMode,
 } from '../types';
 
 // Tool Status
@@ -226,6 +227,15 @@ export const getShowSkillsInTray = async (): Promise<boolean> => {
 
 export const setShowSkillsInTray = async (enabled: boolean): Promise<void> => {
   return invoke('skills_set_show_in_tray', { enabled });
+};
+
+// Default View Mode
+export const getDefaultViewMode = async (): Promise<SkillViewMode> => {
+  return invoke<SkillViewMode>('skills_get_default_view_mode');
+};
+
+export const setDefaultViewMode = async (mode: SkillViewMode): Promise<void> => {
+  return invoke('skills_set_default_view_mode', { mode });
 };
 
 // Skill Repos

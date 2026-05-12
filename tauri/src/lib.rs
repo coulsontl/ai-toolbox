@@ -1614,6 +1614,8 @@ pub fn run() {
             coding::skills::skills_set_preferred_tools,
             coding::skills::skills_get_show_in_tray,
             coding::skills::skills_set_show_in_tray,
+            coding::skills::skills_get_default_view_mode,
+            coding::skills::skills_set_default_view_mode,
             // Skills Hub - Custom Tools
             coding::skills::skills_get_custom_tools,
             coding::skills::skills_add_custom_tool,

@@ -93,6 +93,7 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
 | id | string | 固定为 "default" |
 | central_repo_path | string | 中央仓库路径，默认为应用数据目录/skills |
 | preferred_tools | array? | 首选工具列表 |
+| default_view_mode | string | 进入 Skills 页面时的默认 UI 视图：`flat` / `grouped`，非法或缺失时回退 `flat` |
 | git_cache_cleanup_days | i32 | Git 缓存清理天数，默认 30 |
 | git_cache_ttl_secs | i32 | Git 缓存 TTL 秒数，默认 60 |
 | known_tool_versions | object? | 已知工具版本信息 |

@@ -43,9 +43,12 @@ export interface SkillRepo {
   created_at: number;
 }
 
+export type SkillViewMode = 'flat' | 'grouped';
+
 export interface SkillPreferences {
   central_repo_path: string;
   preferred_tools: string[] | null;
+  default_view_mode: SkillViewMode;
   git_cache_cleanup_days: number;
   git_cache_ttl_secs: number;
   installed_tools: string[] | null;

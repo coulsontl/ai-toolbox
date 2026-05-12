@@ -616,6 +616,7 @@ pub async fn get_setting(state: &DbState, key: &str) -> Result<Option<String>, S
         "preferred_tools_v1" => prefs
             .preferred_tools
             .map(|v| serde_json::to_string(&v).unwrap_or_default()),
+        "default_view_mode" => Some(prefs.default_view_mode),
         "installed_tools_v1" => prefs
             .installed_tools
             .map(|v| serde_json::to_string(&v).unwrap_or_default()),
@@ -637,6 +638,12 @@ pub async fn set_setting(state: &DbState, key: &str, value: &str) -> Result<(), 
         "central_repo_path" => prefs.central_repo_path = value.to_string(),
         "preferred_tools_v1" => {
             prefs.preferred_tools = serde_json::from_str(value).ok();
+        }
+        "default_view_mode" => {
+            prefs.default_view_mode = match value {
+                "grouped" => "grouped".to_string(),
+                _ => "flat".to_string(),
+            };
         }
         "installed_tools_v1" => {
             prefs.installed_tools = serde_json::from_str(value).ok();

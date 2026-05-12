@@ -61,7 +61,7 @@ import {
   type SkillGroupingMode,
 } from '../utils/skillGrouping';
 import { GROUP_TOOL_BATCH_OPTIONS } from '../utils/batchToolOptions';
-import type { ManagedSkill, SkillEnabledFilter, SkillGroup } from '../types';
+import type { ManagedSkill, SkillEnabledFilter, SkillGroup, SkillViewMode } from '../types';
 import styles from './SkillsPage.module.less';
 
 const AUTO_EXPAND_SKILL_THRESHOLD = 20;
@@ -90,7 +90,7 @@ const SkillsPage: React.FC = () => {
   } = useSkills();
 
   const [searchText, setSearchText] = React.useState('');
-  const [viewMode, setViewMode] = React.useState<'flat' | 'grouped'>('flat');
+  const [viewMode, setViewMode] = React.useState<SkillViewMode>('flat');
   const [groupMode, setGroupMode] = React.useState<SkillGroupingMode>('custom');
   const [groupActiveKeys, setGroupActiveKeys] = React.useState<string[]>([]);
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set());
@@ -105,12 +105,35 @@ const SkillsPage: React.FC = () => {
   const [groupToolMode, setGroupToolMode] = React.useState(false);
   const [gridColumnSetting, setGridColumnSetting] = React.useState<ManagementGridColumnSetting>('auto');
   const deferredSearchText = React.useDeferredValue(searchText);
-  const previousViewModeRef = React.useRef<'flat' | 'grouped'>('flat');
+  const previousViewModeRef = React.useRef<SkillViewMode>('flat');
   const previousAutoExpandRef = React.useRef(false);
+  const hasUserSelectedViewModeRef = React.useRef(false);
 
   // Initialize data on mount
   React.useEffect(() => {
+    let cancelled = false;
+    api.getDefaultViewMode()
+      .then((mode) => {
+        if (!cancelled && !hasUserSelectedViewModeRef.current) {
+          setViewMode(mode);
+        }
+      })
+      .catch(console.error);
     refresh();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleViewModeChange = React.useCallback((mode: SkillViewMode) => {
+    hasUserSelectedViewModeRef.current = true;
+    setViewMode(mode);
+  }, []);
+
+  const handleDefaultViewModeApply = React.useCallback((mode: SkillViewMode) => {
+    hasUserSelectedViewModeRef.current = true;
+    setViewMode(mode);
   }, []);
 
   const allTools = getAllTools();
@@ -658,10 +681,10 @@ const SkillsPage: React.FC = () => {
               />
             </>
           )}
-          <ManagementSegmented<'flat' | 'grouped'>
+          <ManagementSegmented<SkillViewMode>
             value={viewMode}
             ariaLabel={t('skills.groupedViewTip')}
-            onChange={setViewMode}
+            onChange={handleViewModeChange}
             options={[
               { value: 'flat', icon: <LayoutGrid size={13} aria-hidden="true" />, label: t('skills.viewFlat') },
               { value: 'grouped', icon: <ListTree size={13} aria-hidden="true" />, label: t('skills.viewGrouped') },
@@ -746,6 +769,7 @@ const SkillsPage: React.FC = () => {
           cardColumnSetting={gridColumnSetting}
           cardColumnOptions={MANAGEMENT_GRID_COLUMN_OPTIONS}
           onCardColumnSettingChange={setGridColumnSetting}
+          onDefaultViewModeApply={handleDefaultViewModeApply}
           onClose={() => setSettingsModalOpen(false)}
         />
       )}
