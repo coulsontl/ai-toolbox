@@ -15,6 +15,13 @@ import styles from './ManagementControls.module.less';
 type ButtonVariant = 'default' | 'subtle' | 'ghost' | 'primary' | 'danger';
 type ControlSize = 'default' | 'compact';
 
+const MENU_VIEWPORT_MARGIN = 12;
+const MENU_TRIGGER_GAP = 6;
+const MENU_FALLBACK_WIDTH = 168;
+
+const clampMenuCoordinate = (value: number, min: number, max: number) =>
+  Math.min(Math.max(value, min), Math.max(min, max));
+
 interface ManagementButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   icon?: React.ReactNode;
   variant?: ButtonVariant;
@@ -228,18 +235,44 @@ export const ManagementMenu: React.FC<ManagementMenuProps> = ({
       return;
     }
     const rect = triggerElement.getBoundingClientRect();
-    setPosition({
-      top: Math.min(rect.bottom + 6, window.innerHeight - 12),
-      left: align === 'end' ? rect.right : rect.left,
+    const menuElement = menuRef.current;
+    const menuWidth = menuElement?.offsetWidth ?? MENU_FALLBACK_WIDTH;
+    const menuHeight = menuElement?.offsetHeight ?? 0;
+    const preferredLeft = align === 'end' ? rect.right - menuWidth : rect.left;
+    const nextPosition = {
+      top: clampMenuCoordinate(
+        rect.bottom + MENU_TRIGGER_GAP,
+        MENU_VIEWPORT_MARGIN,
+        window.innerHeight - menuHeight - MENU_VIEWPORT_MARGIN,
+      ),
+      left: clampMenuCoordinate(
+        preferredLeft,
+        MENU_VIEWPORT_MARGIN,
+        window.innerWidth - menuWidth - MENU_VIEWPORT_MARGIN,
+      ),
+    };
+    setPosition((previousPosition) => {
+      if (
+        previousPosition.top === nextPosition.top &&
+        previousPosition.left === nextPosition.left
+      ) {
+        return previousPosition;
+      }
+      return nextPosition;
     });
   }, [align]);
+
+  React.useLayoutEffect(() => {
+    if (!open) {
+      return;
+    }
+    updatePosition();
+  }, [items.length, open, updatePosition]);
 
   React.useEffect(() => {
     if (!open) {
       return undefined;
     }
-
-    updatePosition();
 
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
