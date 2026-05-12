@@ -127,6 +127,57 @@ fn parse_skill_md_description(path: &Path) -> Option<String> {
     None
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkillSourceDiagnosis {
+    health: String,
+    error: Option<String>,
+}
+
+fn diagnose_skill_source_path(path: &Path) -> SkillSourceDiagnosis {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return SkillSourceDiagnosis {
+                health: "warning".to_string(),
+                error: Some(format!(
+                    "Source path is missing. Restore or reinstall this Skill: {}",
+                    path.display()
+                )),
+            };
+        }
+        Err(_) => {
+            return SkillSourceDiagnosis {
+                health: "warning".to_string(),
+                error: Some(format!(
+                    "Source path cannot be inspected. Restore or reinstall this Skill: {}",
+                    path.display()
+                )),
+            };
+        }
+    }
+
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => SkillSourceDiagnosis {
+            health: "ok".to_string(),
+            error: None,
+        },
+        Ok(_) => SkillSourceDiagnosis {
+            health: "warning".to_string(),
+            error: Some(format!(
+                "Source path is not a directory. Restore or reinstall this Skill: {}",
+                path.display()
+            )),
+        },
+        Err(_) => SkillSourceDiagnosis {
+            health: "warning".to_string(),
+            error: Some(format!(
+                "Source path is not a resolvable directory. Restore or reinstall this Skill: {}",
+                path.display()
+            )),
+        },
+    }
+}
+
 fn group_to_dto(group: SkillGroupRecord) -> SkillGroupDto {
     SkillGroupDto {
         id: group.id,
@@ -291,6 +342,7 @@ pub async fn skills_get_managed_skills(
             .and_then(|group_id| group_names.get(group_id).cloned())
             .or(skill.user_group.clone());
         let description = read_skill_description(&resolved_path, &skill.content_hash);
+        let source_diagnosis = diagnose_skill_source_path(&resolved_path);
 
         result.push(ManagedSkillDto {
             id: skill.id,
@@ -310,12 +362,97 @@ pub async fn skills_get_managed_skills(
             disabled_previous_tools: skill.disabled_previous_tools,
             description,
             content_hash: skill.content_hash,
+            source_health: source_diagnosis.health,
+            source_error: source_diagnosis.error,
             enabled_tools: skill.enabled_tools,
             targets,
         });
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod skill_source_tests {
+    use super::*;
+
+    #[test]
+    fn skill_source_diagnose_valid_dir_is_ok() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("source");
+        std::fs::create_dir(&source).expect("create source dir");
+
+        let diagnosis = diagnose_skill_source_path(&source);
+
+        assert_eq!(diagnosis.health, "ok");
+        assert_eq!(diagnosis.error, None);
+    }
+
+    #[test]
+    fn skill_source_diagnose_missing_is_warning() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("missing");
+
+        let diagnosis = diagnose_skill_source_path(&source);
+
+        assert_eq!(diagnosis.health, "warning");
+        assert!(diagnosis
+            .error
+            .as_deref()
+            .expect("source error")
+            .contains("missing"));
+    }
+
+    #[test]
+    fn skill_source_diagnose_file_is_warning() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("source.txt");
+        std::fs::write(&source, "not a directory").expect("write source file");
+
+        let diagnosis = diagnose_skill_source_path(&source);
+
+        assert_eq!(diagnosis.health, "warning");
+        assert!(diagnosis
+            .error
+            .as_deref()
+            .expect("source error")
+            .contains("not a directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_source_diagnose_self_symlink_is_warning() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("source");
+        std::os::unix::fs::symlink(&source, &source).expect("create self symlink");
+
+        let diagnosis = diagnose_skill_source_path(&source);
+
+        assert_eq!(diagnosis.health, "warning");
+        assert!(diagnosis
+            .error
+            .as_deref()
+            .expect("source error")
+            .contains("not a resolvable directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_source_diagnose_broken_symlink_is_warning() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("source");
+        let missing = temp.path().join("missing");
+        std::os::unix::fs::symlink(&missing, &source).expect("create broken symlink");
+
+        let diagnosis = diagnose_skill_source_path(&source);
+
+        assert_eq!(diagnosis.health, "warning");
+        assert!(diagnosis
+            .error
+            .as_deref()
+            .expect("source error")
+            .contains("not a resolvable directory"));
+    }
 }
 
 // --- Install Skills ---

@@ -2443,6 +2443,8 @@
 		"groupUngrouped": "Ungrouped",
 		"skillCount": "{{count}} skill(s)",
 		"noDescription": "No description",
+		"sourceWarning": "Source issue",
+		"sourceWarningFallback": "The Skill source in the central repository is unavailable. Restore it manually or reinstall the Skill.",
 		"disableSkill": "Disable",
 		"enableSkill": "Enable",
 		"disabledSuccess": "Skill disabled and unsynced",

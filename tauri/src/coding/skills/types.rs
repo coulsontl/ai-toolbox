@@ -149,6 +149,8 @@ pub struct ManagedSkillDto {
     pub disabled_previous_tools: Vec<String>,
     pub description: Option<String>,
     pub content_hash: Option<String>,
+    pub source_health: String,
+    pub source_error: Option<String>,
     pub enabled_tools: Vec<String>,
     pub targets: Vec<SkillTargetDto>, // Derived from sync_details
 }

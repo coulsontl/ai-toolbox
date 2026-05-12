@@ -12,6 +12,7 @@
 - 手动分组事实源是后端 `skill_group` 表和 `skill.group_id`；`user_group` 只是旧数据/展示兼容字段，不要再把 group name 当业务身份。
 - `user_note`、`management_enabled`、`disabled_previous_tools` 是 AI Toolbox 内部用户管理元数据，事实源是后端 `skill` 记录，不是 `SKILL.md` 或工具运行时目录。
 - Skill description 只来自后端对中央仓库 `SKILL.md` frontmatter 的缓存解析；前端不能把 description 写回 DB，也不能塞进 Inventory JSON。
+- `source_health/source_error` 是后端对中央仓库 source 的只读诊断；前端只能标黄提示用户手动恢复或重装，不能据此自动恢复、删除或触发重同步。
 
 ## 核心设计决策（Why）
 

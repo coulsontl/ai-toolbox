@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use super::sync_engine::sync_dir_for_tool_with_overwrite;
+use super::sync_engine::{ensure_source_dir, sync_dir_for_tool_with_overwrite};
 use super::types::{SyncMode, SyncOutcome};
 use crate::coding::runtime_location;
 use crate::coding::wsl;
@@ -20,6 +20,8 @@ pub fn sync_skill_to_target(
     overwrite: bool,
     force_copy: bool,
 ) -> Result<SyncOutcome> {
+    ensure_source_dir(source)?;
+
     if let Some(wsl_target) = parse_wsl_target_path(target) {
         let source_path = source.to_string_lossy().to_string();
         let unc_target_path =

@@ -12,6 +12,7 @@ import {
   Power,
   Tags,
   Trash2,
+  TriangleAlert,
 } from 'lucide-react';
 import { openPath, openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
@@ -86,6 +87,13 @@ const SkillCardContent = React.memo(function SkillCardContent({
   const { t } = useTranslation();
 
   const typeKey = skill.source_type.toLowerCase();
+  const sourceWarningMessage = skill.source_health === 'warning'
+    ? (skill.source_error || t('skills.sourceWarningFallback'))
+    : undefined;
+  const cardClassName = [
+    !skill.management_enabled ? styles.disabledCard : undefined,
+    sourceWarningMessage ? styles.sourceWarningCard : undefined,
+  ].filter(Boolean).join(' ') || undefined;
 
   // These values are derived from stable inputs and are recalculated for every card.
   // Memoizing them keeps scroll and hover interactions cheaper when many cards are on screen.
@@ -239,7 +247,7 @@ const SkillCardContent = React.memo(function SkillCardContent({
       containerStyle={containerStyle}
       selected={selected}
       selectable={selectable}
-      className={skill.management_enabled ? undefined : styles.disabledCard}
+      className={cardClassName}
     >
       {selectable && (
         <ManagementCardCheckboxArea>
@@ -286,6 +294,16 @@ const SkillCardContent = React.memo(function SkillCardContent({
                 </span>
                 <Copy size={11} className={styles.copyIcon} aria-hidden="true" />
               </button>
+              {sourceWarningMessage && (
+                <span
+                  className={styles.sourceWarningTag}
+                  title={sourceWarningMessage}
+                  aria-label={`${t('skills.sourceWarning')}: ${sourceWarningMessage}`}
+                >
+                  <TriangleAlert size={12} aria-hidden="true" />
+                  <span>{t('skills.sourceWarning')}</span>
+                </span>
+              )}
               <span className={styles.dot}>•</span>
               <span className={styles.time}>{formatRelative(skill.updated_at)}</span>
             </>

@@ -38,6 +38,8 @@ function makeSkill(overrides: Partial<ManagedSkill>): ManagedSkill {
     disabled_previous_tools: [],
     description: null,
     content_hash: null,
+    source_health: 'ok',
+    source_error: null,
     enabled_tools: [],
     targets: [],
     ...overrides,

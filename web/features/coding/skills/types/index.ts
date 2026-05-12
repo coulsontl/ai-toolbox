@@ -18,6 +18,8 @@ export interface ManagedSkill {
   disabled_previous_tools: string[];
   description: string | null;
   content_hash: string | null;
+  source_health: SkillSourceHealth;
+  source_error: string | null;
 
   // New fields
   enabled_tools: string[]; // ["claude_code", "codex", ...]
@@ -25,6 +27,8 @@ export interface ManagedSkill {
   // Derived from sync_details (maintained for compatibility)
   targets: SkillTarget[];
 }
+
+export type SkillSourceHealth = 'ok' | 'warning';
 
 export interface SkillTarget {
   tool: string;

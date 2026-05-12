@@ -2440,6 +2440,8 @@
 		"groupUngrouped": "未分组",
 		"skillCount": "{{count}} 个 Skill",
 		"noDescription": "暂无简介",
+		"sourceWarning": "来源异常",
+		"sourceWarningFallback": "中央仓库中的 Skill 来源不可用，请手动恢复或重新安装。",
 		"disableSkill": "禁用",
 		"enableSkill": "启用",
 		"disabledSuccess": "Skill 已禁用并取消同步",
