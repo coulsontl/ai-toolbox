@@ -17,9 +17,9 @@ import {
   Plus,
   PlusCircle,
   RefreshCw,
+  SlidersHorizontal,
   Tags,
   Trash2,
-  Wrench,
 } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
@@ -93,6 +93,7 @@ const SkillsPage: React.FC = () => {
   const [groupMode, setGroupMode] = React.useState<SkillGroupingMode>('custom');
   const [groupActiveKeys, setGroupActiveKeys] = React.useState<string[]>([]);
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set());
+  const [selectionMode, setSelectionMode] = React.useState(false);
   const [reorderMode, setReorderMode] = React.useState(false);
   const [metadataSkill, setMetadataSkill] = React.useState<ManagedSkill | null>(null);
   const [batchGroupModalOpen, setBatchGroupModalOpen] = React.useState(false);
@@ -162,9 +163,10 @@ const SkillsPage: React.FC = () => {
     }
   }, [canUseGroupToolMode]);
 
-  // Clear selection when switching view mode or when skills change
+  // Keep selection scoped to the visible grouped list.
   React.useEffect(() => {
     if (viewMode !== 'grouped') {
+      setSelectionMode(false);
       setSelectedIds(new Set());
     } else {
       setSelectedIds((prev) => {
@@ -174,6 +176,13 @@ const SkillsPage: React.FC = () => {
       });
     }
   }, [viewMode, filteredSkills]);
+
+  const handleToggleSelectionMode = React.useCallback(() => {
+    if (selectionMode) {
+      setSelectedIds(new Set());
+    }
+    setSelectionMode((previousSelectionMode) => !previousSelectionMode);
+  }, [selectionMode]);
 
   const handleSelectChange = React.useCallback((skillId: string, checked: boolean) => {
     setSelectedIds((prev) => {
@@ -372,6 +381,66 @@ const SkillsPage: React.FC = () => {
     await handleBatchRemoveTool(syncedSkillIds, toolId);
   }, [handleBatchRemoveTool]);
 
+  const groupControlItems = React.useMemo<ManagementMenuItem[]>(() => [
+    {
+      key: 'mode-section',
+      type: 'section',
+      label: t('skills.groupControls.modeSection'),
+    },
+    {
+      key: 'selection-mode',
+      label: selectionMode ? t('skills.batch.exitSelectionMode') : t('skills.batch.selectionMode'),
+      tooltip: t('skills.groupControls.selectionModeTip'),
+      kind: 'checkbox',
+      active: selectionMode,
+      onSelect: handleToggleSelectionMode,
+    },
+    {
+      key: 'group-tools',
+      label: t('skills.groupTools.mode'),
+      tooltip: groupMode !== 'custom'
+        ? t('skills.groupControls.groupToolsCustomOnlyTip')
+        : isSearchActive
+          ? t('skills.groupTools.disabledWhileSearching')
+          : t('skills.groupControls.groupToolsTip'),
+      kind: 'checkbox',
+      active: groupToolMode,
+      disabled: groupMode !== 'custom' || loading || actionLoading || isSearchActive,
+      onSelect: () => handleToggleGroupToolMode(!groupToolMode),
+    },
+    {
+      key: 'group-section',
+      type: 'section',
+      label: t('skills.groupControls.groupSection'),
+    },
+    {
+      key: 'group-custom',
+      label: t('skills.groupByCustom'),
+      tooltip: t('skills.groupControls.customGroupingTip'),
+      kind: 'radio',
+      active: groupMode === 'custom',
+      onSelect: () => setGroupMode('custom'),
+    },
+    {
+      key: 'group-source',
+      label: t('skills.groupBySource'),
+      tooltip: t('skills.groupControls.sourceGroupingTip'),
+      kind: 'radio',
+      active: groupMode === 'source',
+      onSelect: () => setGroupMode('source'),
+    },
+  ], [
+    actionLoading,
+    groupMode,
+    groupToolMode,
+    handleToggleGroupToolMode,
+    handleToggleSelectionMode,
+    isSearchActive,
+    loading,
+    selectionMode,
+    t,
+  ]);
+
   const shouldAutoExpandGroups =
     filteredSkills.length > 0 && filteredSkills.length < AUTO_EXPAND_SKILL_THRESHOLD;
 
@@ -446,6 +515,7 @@ const SkillsPage: React.FC = () => {
             clearLabel={t('common.clearSearch')}
             value={searchText}
             onChange={setSearchText}
+            className={styles.toolbarSearch}
           />
           <span className={styles.resultCount}>
             {filteredSkills.length}/{skills.length}
@@ -476,14 +546,16 @@ const SkillsPage: React.FC = () => {
           </ManagementButton>
           <ManagementButton
             variant="subtle"
-            icon={<Import size={15} aria-hidden="true" />}
+            controlSize="compact"
+            icon={<Import size={14} aria-hidden="true" />}
             onClick={() => setImportModalOpen(true)}
           >
             {t('skills.importExisting')}
           </ManagementButton>
           <ManagementButton
             variant="primary"
-            icon={<Plus size={15} aria-hidden="true" />}
+            controlSize="compact"
+            icon={<Plus size={14} aria-hidden="true" />}
             onClick={() => setAddModalOpen(true)}
           >
             {t('skills.addSkill')}
@@ -508,6 +580,15 @@ const SkillsPage: React.FC = () => {
             </ManagementButton>
           )}
           {viewMode === 'grouped' && (
+            <ManagementMenu
+              items={groupControlItems}
+              title={t('skills.groupControls.title')}
+              controlSize="compact"
+            >
+              <SlidersHorizontal size={14} aria-hidden="true" />
+            </ManagementMenu>
+          )}
+          {viewMode === 'grouped' && selectionMode && (
             <>
               <ManagementIconButton
                 icon={<RefreshCw size={14} aria-hidden="true" />}
@@ -552,33 +633,6 @@ const SkillsPage: React.FC = () => {
               />
               <span className={styles.batchDivider} />
             </>
-          )}
-          {viewMode === 'grouped' && (
-            <ManagementSegmented<SkillGroupingMode>
-              value={groupMode}
-              ariaLabel={t('skills.groupedViewTip')}
-              onChange={setGroupMode}
-              options={[
-                { value: 'custom', label: t('skills.groupByCustom') },
-                { value: 'source', label: t('skills.groupBySource') },
-              ]}
-            />
-          )}
-          {viewMode === 'grouped' && groupMode === 'custom' && (
-            <ManagementButton
-              variant={groupToolMode ? 'primary' : 'ghost'}
-              controlSize="compact"
-              icon={<Wrench size={14} aria-hidden="true" />}
-              title={
-                isSearchActive
-                  ? t('skills.groupTools.disabledWhileSearching')
-                  : t('skills.groupTools.tip')
-              }
-              disabled={loading || actionLoading || isSearchActive}
-              onClick={() => handleToggleGroupToolMode(!groupToolMode)}
-            >
-              {t('skills.groupTools.mode')}
-            </ManagementButton>
           )}
           {viewMode === 'grouped' && (
             <>
@@ -636,6 +690,7 @@ const SkillsPage: React.FC = () => {
             columns={gridColumns}
             activeKeys={groupActiveKeys}
             onActiveKeysChange={setGroupActiveKeys}
+            selectionMode={selectionMode}
             selectedIds={selectedIds}
             onSelectChange={handleSelectChange}
             onSelectAllGroup={handleSelectAllGroup}

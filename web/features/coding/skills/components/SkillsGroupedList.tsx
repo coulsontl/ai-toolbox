@@ -21,6 +21,7 @@ interface SkillsGroupedListProps {
   columns?: number;
   activeKeys: string[];
   onActiveKeysChange: (keys: string[]) => void;
+  selectionMode: boolean;
   selectedIds: Set<string>;
   onSelectChange: (skillId: string, checked: boolean) => void;
   onSelectAllGroup: (group: SkillGroup, checked: boolean) => void;
@@ -45,6 +46,7 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
   columns,
   activeKeys,
   onActiveKeysChange,
+  selectionMode,
   selectedIds,
   onSelectChange,
   onSelectAllGroup,
@@ -134,12 +136,14 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
           <section key={group.key} className={styles.groupSection}>
             <div className={styles.groupHeader}>
               <div className={styles.groupTitle}>
-                <ManagementCheckbox
-                  checked={isGroupAllSelected(group)}
-                  indeterminate={isGroupPartialSelected(group)}
-                  ariaLabel={`${t('skills.batch.selectAll')} ${group.label}`}
-                  onChange={(checked) => onSelectAllGroup(group, checked)}
-                />
+                {selectionMode && (
+                  <ManagementCheckbox
+                    checked={isGroupAllSelected(group)}
+                    indeterminate={isGroupPartialSelected(group)}
+                    ariaLabel={`${t('skills.batch.selectAll')} ${group.label}`}
+                    onChange={(checked) => onSelectAllGroup(group, checked)}
+                  />
+                )}
                 <button
                   type="button"
                   className={styles.groupToggle}
@@ -175,7 +179,7 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
                       loading={loading}
                       isUpdating={updatingSkillIds.includes(skill.id)}
                       dragDisabled
-                      selectable
+                      selectable={selectionMode}
                       selected={selectedIds.has(skill.id)}
                       toolsReadOnly={groupToolsEnabled}
                       onSelectChange={onSelectChange}

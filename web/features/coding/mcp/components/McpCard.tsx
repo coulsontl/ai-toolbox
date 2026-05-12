@@ -15,12 +15,14 @@ import { CSS } from '@dnd-kit/utilities';
 import {
   ManagementCard,
   ManagementCardActions,
+  ManagementCardCheckboxArea,
   ManagementCardDragHandle,
   ManagementCardHeader,
   ManagementCardIcon,
   ManagementCardMain,
   ManagementCardMetaRow,
   ManagementCardToolMatrix,
+  ManagementCheckbox,
   ManagementIconButton,
   ManagementMenu,
   type ManagementMenuItem,
@@ -34,7 +36,10 @@ interface McpCardProps {
   tools: McpTool[];
   loading: boolean;
   dragDisabled?: boolean;
+  selected?: boolean;
+  selectable?: boolean;
   toolsReadOnly?: boolean;
+  onSelectChange?: (serverId: string, checked: boolean) => void;
   onEdit: (server: McpServer) => void;
   onEditMetadata: (server: McpServer) => void;
   onDelete: (serverId: string) => void;
@@ -51,7 +56,10 @@ const McpCardContent = React.memo(function McpCardContent({
   server,
   tools,
   loading,
+  selected,
+  selectable,
   toolsReadOnly,
+  onSelectChange,
   onEdit,
   onEditMetadata,
   onDelete,
@@ -138,7 +146,18 @@ const McpCardContent = React.memo(function McpCardContent({
     <ManagementCard
       containerRef={containerRef}
       containerStyle={containerStyle}
+      selected={selected}
+      selectable={selectable}
     >
+      {selectable && (
+        <ManagementCardCheckboxArea>
+          <ManagementCheckbox
+            ariaLabel={`${t('common.select')} ${server.name}`}
+            checked={!!selected}
+            onChange={(checked) => onSelectChange?.(server.id, checked)}
+          />
+        </ManagementCardCheckboxArea>
+      )}
       {dragHandle}
       <ManagementCardIcon icon={iconNode} />
       <ManagementCardMain>

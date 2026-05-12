@@ -172,6 +172,20 @@ export const getOpenCodeUnifiedModels = async (): Promise<UnifiedModelOption[]> 
   return await invoke<UnifiedModelOption[]>('get_opencode_unified_models');
 };
 
+const getPresetVariantKeys = (
+  variantKeysByPresetModel: Map<string, string[]>,
+  modelId: string
+): string[] | undefined => {
+  const directVariantKeys = variantKeysByPresetModel.get(modelId);
+  if (directVariantKeys) return directVariantKeys;
+
+  const lastSlashIndex = modelId.lastIndexOf('/');
+  if (lastSlashIndex < 0) return undefined;
+
+  const bareModelId = modelId.slice(lastSlashIndex + 1);
+  return variantKeysByPresetModel.get(bareModelId);
+};
+
 /**
  * Build a map of model ID to its variant keys
  * This combines variants from:
@@ -236,7 +250,7 @@ export const buildModelVariantsMap = (
     const baseUnifiedId = `${um.providerId}/${um.baseModelId}`;
     const baseVariantKeys = variantsMap[baseUnifiedId]
       ?? variantKeysByConfiguredModel.get(baseUnifiedId)
-      ?? variantKeysByPresetModel.get(um.baseModelId);
+      ?? getPresetVariantKeys(variantKeysByPresetModel, um.baseModelId);
     if (baseVariantKeys && baseVariantKeys.length > 0) {
       variantsMap[um.id] = baseVariantKeys;
     }

@@ -124,6 +124,34 @@ test('buildModelVariantsMap keeps experimental variants when base model is filte
   assert.deepEqual(variantsMap['opencode/gpt-5.5-fast'], ['medium', 'high']);
 });
 
+test('buildModelVariantsMap lets slash-scoped experimental models inherit preset variants', () => {
+  const unifiedModels: UnifiedModelOption[] = [
+    {
+      id: 'zenmux/openai/gpt-5.5-fast',
+      displayName: 'ZenMux / GPT-5.5 Fast',
+      providerId: 'zenmux',
+      modelId: 'openai/gpt-5.5-fast',
+      isFree: false,
+      baseModelId: 'openai/gpt-5.5',
+      experimentalMode: 'fast',
+    },
+  ];
+
+  const variantsMap = buildModelVariantsMap(null, unifiedModels, {
+    '@ai-sdk/openai-compatible': [
+      {
+        id: 'gpt-5.5',
+        variants: {
+          none: {},
+          high: {},
+        },
+      },
+    ],
+  });
+
+  assert.deepEqual(variantsMap['zenmux/openai/gpt-5.5-fast'], ['none', 'high']);
+});
+
 test('buildModelVariantsMap does not infer experimental models from suffix alone', () => {
   const unifiedModels: UnifiedModelOption[] = [
     {
