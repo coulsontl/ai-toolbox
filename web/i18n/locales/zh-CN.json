@@ -2463,6 +2463,7 @@
 		"groupImport": "已导入的 Skills",
 		"groupUngrouped": "未分组",
 		"skillCount": "{{count}} 个 Skill",
+		"groupEnabledCount": "已启用 {{enabled}} / 共 {{total}} 个 Skill",
 		"noDescription": "暂无简介",
 		"sourceWarning": "来源异常",
 		"sourceWarningFallback": "中央仓库中的 Skill 来源不可用，请手动恢复或重新安装。",

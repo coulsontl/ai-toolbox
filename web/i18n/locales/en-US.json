@@ -2466,6 +2466,7 @@
 		"groupImport": "Imported Skills",
 		"groupUngrouped": "Ungrouped",
 		"skillCount": "{{count}} skill(s)",
+		"groupEnabledCount": "{{enabled}} / {{total}} enabled",
 		"noDescription": "No description",
 		"sourceWarning": "Source issue",
 		"sourceWarningFallback": "The Skill source in the central repository is unavailable. Restore it manually or reinstall the Skill.",

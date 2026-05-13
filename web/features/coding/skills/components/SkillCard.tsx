@@ -2,14 +2,12 @@ import React from 'react';
 import { message } from 'antd';
 import {
   Copy,
-  Eye,
   Folder,
   Github,
   Grid2X2,
   MoreHorizontal,
   Plus,
   RefreshCw,
-  Power,
   Tags,
   Trash2,
   TriangleAlert,
@@ -102,6 +100,7 @@ const SkillCardContent = React.memo(function SkillCardContent({
   const shouldShowGroupTag = showGroupTag && groupLabel.length > 0;
   const hasDescription = descriptionText.length > 0;
   const hasUserNote = userNoteText.length > 0;
+  const switchLabel = skill.management_enabled ? t('skills.disableSkill') : t('skills.enableSkill');
 
   // These values are derived from stable inputs and are recalculated for every card.
   // Memoizing them keeps scroll and hover interactions cheaper when many cards are on screen.
@@ -176,6 +175,11 @@ const SkillCardContent = React.memo(function SkillCardContent({
     }
   };
 
+  const handleToggleManagement = React.useCallback(() => {
+    if (loading || isUpdating) return;
+    onSetManagementEnabled(skill, !skill.management_enabled);
+  }, [isUpdating, loading, onSetManagementEnabled, skill]);
+
   const iconTooltip = React.useMemo(() => {
     if (github) {
       return t('skills.openRepo');
@@ -227,16 +231,16 @@ const SkillCardContent = React.memo(function SkillCardContent({
   const actionItems = React.useMemo<ManagementMenuItem[]>(
     () => [
       {
+        key: 'open-central-path',
+        icon: <Folder size={14} />,
+        label: t('skills.openDataDir'),
+        onSelect: handleOpenCentralPath,
+      },
+      {
         key: 'metadata',
         icon: <Tags size={14} />,
         label: t('skills.metadata.edit'),
         onSelect: () => onEditMetadata(skill),
-      },
-      {
-        key: skill.management_enabled ? 'disable' : 'enable',
-        icon: <Power size={14} />,
-        label: skill.management_enabled ? t('skills.disableSkill') : t('skills.enableSkill'),
-        onSelect: () => onSetManagementEnabled(skill, !skill.management_enabled),
       },
       {
         key: 'delete',
@@ -246,7 +250,7 @@ const SkillCardContent = React.memo(function SkillCardContent({
         onSelect: () => onDelete(skill.id),
       },
     ],
-    [onDelete, onEditMetadata, onSetManagementEnabled, skill, t],
+    [handleOpenCentralPath, onDelete, onEditMetadata, skill, t],
   );
 
   return (
@@ -255,7 +259,7 @@ const SkillCardContent = React.memo(function SkillCardContent({
       containerStyle={containerStyle}
       selected={selected}
       selectable={selectable}
-      className={cardClassName}
+      className={[styles.skillCard, cardClassName].filter(Boolean).join(' ')}
     >
       {selectable && (
         <ManagementCardCheckboxArea>
@@ -280,15 +284,6 @@ const SkillCardContent = React.memo(function SkillCardContent({
           minWidth={120}
           meta={
             <>
-              <button
-                type="button"
-                className={styles.detailButton}
-                title={t('skills.openDataDir')}
-                aria-label={t('skills.openDataDir')}
-                onClick={handleOpenCentralPath}
-              >
-                <Eye size={13} aria-hidden="true" />
-              </button>
               {shouldShowGroupTag && (
                 <span
                   className={styles.groupTag}
@@ -329,20 +324,20 @@ const SkillCardContent = React.memo(function SkillCardContent({
         {(hasDescription || hasUserNote) && (
           <ManagementCardMetaRow>
             <div className={styles.infoStack}>
-              {hasDescription && (
-                <div className={styles.summaryBlock} title={descriptionText}>
-                  {descriptionText}
-                </div>
-              )}
               {hasUserNote && (
                 <div className={styles.noteBlock} title={userNoteText}>
                   <span className={styles.noteText}>{userNoteText}</span>
                 </div>
               )}
+              {hasDescription && (
+                <div className={styles.summaryBlock} title={descriptionText}>
+                  {descriptionText}
+                </div>
+              )}
             </div>
           </ManagementCardMetaRow>
         )}
-        <ManagementCardToolMatrix>
+        <ManagementCardToolMatrix className={styles.toolSection}>
           {syncedTools.map((tool) => {
             const target = skill.targets.find((t) => t.tool === tool.id);
             return (
@@ -373,6 +368,18 @@ const SkillCardContent = React.memo(function SkillCardContent({
         </ManagementCardToolMatrix>
       </ManagementCardMain>
       <ManagementCardActions>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={skill.management_enabled}
+          aria-label={`${switchLabel} ${skill.name}`}
+          title={switchLabel}
+          className={`${styles.enableSwitch}${skill.management_enabled ? ` ${styles.enableSwitchOn}` : ''}`}
+          onClick={handleToggleManagement}
+          disabled={loading || isUpdating}
+        >
+          <span className={styles.enableSwitchKnob} />
+        </button>
         <ManagementMenu
           items={actionItems}
           disabled={loading || isUpdating}

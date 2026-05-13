@@ -1,46 +1,57 @@
 .groupedList {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 22px;
 }
 
 .groupSection {
+  position: relative;
   overflow: hidden;
-  border: 1px dashed var(--color-border-secondary);
-  border-radius: 8px;
-  background: var(--color-bg-container);
+  border: 1px solid color-mix(in srgb, var(--color-border) 58%, transparent);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--color-bg-container) 84%, var(--color-bg-layout));
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 18px;
+    left: 18px;
+    height: 1px;
+    background: color-mix(in srgb, var(--color-border-secondary) 44%, transparent);
+  }
 }
 
 .groupHeader {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
+  gap: 16px;
   width: 100%;
   min-width: 0;
-  padding: 8px 10px;
-  border-bottom: 1px solid transparent;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 46%, transparent);
 }
 
 .groupTitle {
   display: inline-flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 10px;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .groupToggle {
   display: inline-flex;
   min-width: 0;
-  align-items: center;
-  gap: 6px;
+  align-items: flex-start;
+  gap: 8px;
   border: none;
   background: transparent;
   color: var(--color-text-primary);
   cursor: pointer;
   font: inherit;
-  font-size: 13px;
-  font-weight: 600;
+  text-align: left;
 
   &:focus-visible {
     outline: 2px solid var(--color-border-secondary);
@@ -54,10 +65,32 @@
   transform: rotate(-90deg);
   transition: transform 0.16s ease;
   flex-shrink: 0;
+  margin-top: 4px;
 }
 
 .groupChevronOpen {
   transform: rotate(0deg);
+}
+
+.groupTitleText {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.groupPrimaryLine {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.groupNumber {
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  flex-shrink: 0;
 }
 
 .groupLabel {
@@ -65,24 +98,34 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 20px;
 }
 
 .groupBody {
-  padding: 0 10px 10px;
+  padding: 16px 18px 18px;
 }
 
 .groupCount {
-  font-size: 12px;
-  color: var(--color-text-tertiary);
-  font-weight: normal;
-  margin-left: 4px;
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-selected) 52%, var(--color-bg-elevated));
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
 }
 
 .groupNote {
   min-width: 0;
-  max-width: 280px;
+  max-width: min(520px, 100%);
   color: var(--color-text-secondary);
   font-size: 12px;
+  line-height: 17px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -129,10 +172,10 @@
 }
 
 .statusBadge {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
-  background: var(--color-status-success);
+  background: color-mix(in srgb, var(--color-status-success) 58%, var(--color-text-tertiary));
   flex-shrink: 0;
 }
 

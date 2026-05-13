@@ -114,7 +114,10 @@ export const SkillsList: React.FC<SkillsListProps> = ({
         items={skills}
         getKey={(skill) => skill.id}
         columns={columns}
-        defaultRowHeight={104}
+        minColumnWidth={360}
+        maxColumns={3}
+        rowGap={14}
+        defaultRowHeight={176}
         renderItem={(skill) => (
           <SkillCard
             skill={skill}

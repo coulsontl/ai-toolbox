@@ -59,6 +59,7 @@ sequenceDiagram
 - Skills 顶部工具栏的表面只保留最高频主视图切换（平铺/分组）作为 shared `ManagementSegmented`；禁用筛选、平铺排序、自定义/来源、浏览/选择、单卡/组工具等辅助查看或组织配置收进 sliders 选项浮层，并在浮层内继续使用 shared `ManagementSegmented`。分组管理和 Inventory 分组导入/导出这类组织类一次性动作放在 sliders 浮层的管理动作分区内，用按钮呈现；展开/折叠这类快捷动作保持 icon button，其他低频入口可继续放按钮或更多菜单，避免把动作误设计成状态。只要 sliders 浮层里存在非默认状态，触发按钮必须给出可见 active feedback；禁用原因要在浮层内有轻量可见提示，不能只依赖 hover title。
 - sliders 选项浮层的信息架构固定为“视图与筛选 / 数据管理”：即时生效的筛选、分组、模式切换使用轻量一体化 segmented；会打开 modal 或文件流程的分组管理、Inventory 导入导出使用列表 action item，并在点击时先关闭浮层再进入流程。不要把 action item 重新做成 segmented 或把 segmented 包进多层线框卡片。
 - Skill 卡片的所属分组标签只在平铺视图中作为标题侧上下文展示；分组视图已有 section/header 提供归属，不要在卡片内重复。卡片里的 description 摘要和 `user_note` 管理备注应拆成不同视觉层级，渲染前先 trim，避免空白字段撑出空内容块；摘要/备注不显示显式文字 label，备注作为左边缘与摘要正文对齐的 shrink-to-content 管理提示块，长文本必须受卡片宽度约束并截断。
+- Skill 卡片结构长期保持“标题/来源上下文 → `user_note` → description → 工具属性区 → 外露启用开关/低频菜单”：`user_note` 是用户管理语义，应优先于英文 description；启用/禁用是高频恢复路径，应在卡片外露，不能只藏进更多菜单；打开中央仓库路径这类辅助动作可放入低频菜单。
 
 ## 跨模块依赖
 

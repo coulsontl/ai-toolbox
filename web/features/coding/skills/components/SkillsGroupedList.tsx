@@ -128,9 +128,12 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
 
   return (
     <div className={styles.groupedList}>
-      {groups.map((group) => {
+      {groups.map((group, groupIndex) => {
         const groupToolsEnabled = groupToolMode && !isSkillUngroupedCustomGroup(group);
         const isOpen = activeKeySet.has(group.key);
+        const activeSkillCount = group.skills.filter((skill) => skill.management_enabled).length;
+        const groupNote = group.note?.trim() ?? '';
+        const groupNumber = String(groupIndex + 1).padStart(2, '0');
 
         return (
           <section key={group.key} className={styles.groupSection}>
@@ -155,12 +158,22 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
                     className={`${styles.groupChevron}${isOpen ? ` ${styles.groupChevronOpen}` : ''}`}
                     aria-hidden="true"
                   />
-                  <span className={styles.groupLabel}>{group.label}</span>
-                  <span className={styles.groupCount}>
-                    {t('skills.skillCount', { count: group.skills.length })}
+                  <span className={styles.groupTitleText}>
+                    <span className={styles.groupPrimaryLine}>
+                      <span className={styles.groupNumber}>{groupNumber}</span>
+                      <span className={styles.groupLabel}>{group.label}</span>
+                      <span
+                        className={styles.groupCount}
+                        title={t('skills.groupEnabledCount', { enabled: activeSkillCount, total: group.skills.length })}
+                      >
+                        {activeSkillCount}/{group.skills.length}
+                      </span>
+                    </span>
+                    {groupNote && (
+                      <span className={styles.groupNote} title={groupNote}>{groupNote}</span>
+                    )}
                   </span>
                 </button>
-                {group.note && <span className={styles.groupNote} title={group.note}>{group.note}</span>}
               </div>
               {groupToolsEnabled && renderGroupTools(group)}
             </div>
@@ -170,7 +183,10 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
                   items={group.skills}
                   getKey={(skill) => skill.id}
                   columns={columns}
-                  defaultRowHeight={104}
+                  minColumnWidth={360}
+                  maxColumns={3}
+                  rowGap={14}
+                  defaultRowHeight={176}
                   virtualize={group.skills.length > 24}
                   renderItem={(skill) => (
                     <SkillCard

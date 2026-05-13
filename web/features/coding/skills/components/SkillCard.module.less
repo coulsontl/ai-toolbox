@@ -1,10 +1,27 @@
+.skillCard {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 400px;
+  min-height: 148px;
+  padding: 18px 18px 18px 20px !important;
+  border-color: color-mix(in srgb, var(--color-border-card) 58%, transparent) !important;
+  border-radius: 16px !important;
+  background: var(--color-bg-container) !important;
+  box-shadow: 0 12px 34px color-mix(in srgb, var(--color-shadow) 9%, transparent);
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--color-border-secondary) 62%, var(--color-border)) !important;
+    background: var(--color-bg-elevated) !important;
+  }
+}
+
 .disabledCard {
-  border-style: dashed !important;
-  background: color-mix(in srgb, var(--color-bg-container) 82%, var(--color-bg-layout)) !important;
+  border-style: solid !important;
+  background: color-mix(in srgb, var(--color-bg-container) 78%, var(--color-bg-layout)) !important;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-shadow) 5%, transparent);
 }
 
 .disabledCard .icon,
-.disabledCard .detailButton,
 .disabledCard .groupTag,
 .disabledCard .sourcePill,
 .disabledCard .summaryBlock,
@@ -43,33 +60,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-}
-
-.detailButton {
-  display: inline-flex;
-  width: 24px;
-  height: 24px;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--color-text-tertiary);
-  cursor: pointer;
-  transition:
-    background 0.16s ease,
-    color 0.16s ease;
-  flex-shrink: 0;
-
-  &:hover {
-    color: var(--color-text-primary);
-    background: var(--color-bg-hover);
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--color-border-secondary);
-    outline-offset: 2px;
   }
 }
 
@@ -153,7 +143,7 @@
 
 .infoStack {
   display: grid;
-  gap: 4px;
+  gap: 6px;
   width: 100%;
   min-width: 0;
   justify-items: start;
@@ -168,7 +158,8 @@
   white-space: nowrap;
   color: var(--color-text-secondary);
   font-size: 12px;
-  line-height: 18px;
+  line-height: 17px;
+  opacity: 0.74;
 }
 
 .noteBlock {
@@ -179,25 +170,24 @@
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  padding: 5px 8px 5px 10px;
-  border-radius: 7px;
-  border: 1px solid color-mix(in srgb, var(--color-border-secondary) 46%, var(--color-border));
-  border-left-color: color-mix(in srgb, var(--color-text-secondary) 48%, var(--color-border-secondary));
-  background: color-mix(in srgb, var(--color-bg-selected) 50%, var(--color-bg-elevated));
-  color: var(--color-text-secondary);
+  padding: 4px 8px 4px 12px;
+  border-radius: 8px;
+  border: none;
+  background: color-mix(in srgb, var(--color-bg-selected) 32%, transparent);
+  color: var(--color-text-primary);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 18px;
 
   &::before {
     content: '';
     position: absolute;
-    top: 5px;
-    bottom: 5px;
-    left: 4px;
-    width: 2px;
+    top: 4px;
+    bottom: 4px;
+    left: 3px;
+    width: 3px;
     border-radius: 999px;
-    background: color-mix(in srgb, var(--color-text-secondary) 46%, transparent);
+    background: color-mix(in srgb, var(--color-primary, var(--color-text-primary)) 70%, var(--color-border-secondary));
   }
 }
 
@@ -228,8 +218,8 @@
   border: 1px solid;
 
   &.active {
-    background: var(--color-bg-elevated);
-    border-color: var(--color-border);
+    background: color-mix(in srgb, var(--color-bg-elevated) 76%, var(--color-bg-selected));
+    border-color: color-mix(in srgb, var(--color-border) 74%, transparent);
     color: var(--color-text-secondary);
 
     &:hover:not(:disabled) {
@@ -256,11 +246,17 @@
 }
 
 .statusBadge {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
-  background: var(--color-status-success);
+  background: color-mix(in srgb, var(--color-status-success) 58%, var(--color-text-tertiary));
   flex-shrink: 0;
+}
+
+.toolSection {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 54%, transparent);
 }
 
 .addToolBtn {
@@ -285,4 +281,60 @@
     background: var(--color-bg-hover);
     color: var(--color-text-primary);
   }
+}
+
+.enableSwitch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--color-border-secondary) 70%, var(--color-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-text-tertiary) 14%, var(--color-bg-elevated));
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease,
+    opacity 0.16s ease;
+
+  &:hover:not(:disabled) {
+    border-color: var(--color-border-secondary);
+    background: color-mix(in srgb, var(--color-text-tertiary) 20%, var(--color-bg-hover));
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-secondary);
+    outline-offset: 2px;
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.58;
+  }
+}
+
+.enableSwitchOn {
+  border-color: color-mix(in srgb, var(--color-primary, var(--color-text-primary)) 72%, var(--color-border-secondary));
+  background: color-mix(in srgb, var(--color-primary, var(--color-text-primary)) 82%, var(--color-bg-elevated));
+
+  &:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--color-primary, var(--color-text-primary)) 88%, var(--color-border-secondary));
+    background: color-mix(in srgb, var(--color-primary, var(--color-text-primary)) 88%, var(--color-bg-hover));
+  }
+}
+
+.enableSwitchKnob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-bg-container);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--color-shadow) 18%, transparent);
+  transition: transform 0.16s ease;
+}
+
+.enableSwitchOn .enableSwitchKnob {
+  transform: translateX(14px);
 }

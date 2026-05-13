@@ -1,7 +1,8 @@
 .list {
   display: grid;
-  grid-template-columns: var(--management-grid-columns, repeat(2, minmax(0, 1fr)));
-  gap: 10px;
+  grid-template-columns: var(--management-grid-columns, repeat(auto-fit, minmax(320px, 400px)));
+  justify-content: start;
+  gap: 14px;
 }
 
 .listAuto {
