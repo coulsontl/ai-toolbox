@@ -256,6 +256,15 @@ export const translateSyncMessage = (
 				withDetail("settings.syncMessages.keyAuthFailed", detail, mode, t),
 		],
 		[
+			/^无认证失败: 服务器不接受 none 认证$/,
+			() => t("settings.syncMessages.noneAuthRejected"),
+		],
+		[
+			/^无认证失败: (.+)$/,
+			(detail) =>
+				withDetail("settings.syncMessages.noneAuthFailed", detail, mode, t),
+		],
+		[
 			/^不支持的认证方式: (.+)$/,
 			(method) => t("settings.syncMessages.unsupportedAuthMethod", { method }),
 		],

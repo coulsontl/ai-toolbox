@@ -17,7 +17,7 @@ pub struct SSHConnection {
     pub host: String,
     pub port: u16,
     pub username: String,
-    pub auth_method: String, // "key" | "password"
+    pub auth_method: String, // "key" | "password" | "none"
     pub password: String,
     pub private_key_path: String,
     pub private_key_content: String,

@@ -67,12 +67,20 @@ impl client::Handler for SshHandler {
     }
 }
 
-/// 对已建立的 SSH 连接进行用户认证（密码或公钥）
+/// 对已建立的 SSH 连接进行用户认证（密码、公钥或 none）
 async fn authenticate(
     session: &mut client::Handle<SshHandler>,
     conn: &SSHConnection,
 ) -> Result<(), String> {
-    if conn.auth_method == "password" && !conn.password.is_empty() {
+    if conn.auth_method == "none" {
+        let auth_result = session
+            .authenticate_none(&conn.username)
+            .await
+            .map_err(|e| format!("无认证失败: {}", e))?;
+        if !auth_result.success() {
+            return Err("无认证失败: 服务器不接受 none 认证".to_string());
+        }
+    } else if conn.auth_method == "password" && !conn.password.is_empty() {
         let auth_result = session
             .authenticate_password(&conn.username, &conn.password)
             .await

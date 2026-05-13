@@ -49,6 +49,12 @@ const MODULE_COLORS: Record<string, string> = {
   geminicli: 'cyan',
 };
 
+const AUTH_METHOD_TAG_COLORS: Record<SSHConnection['authMethod'], string> = {
+  key: 'blue',
+  password: 'green',
+  none: 'default',
+};
+
 // Map sync module keys to visibleTabs keys
 const MODULE_TO_TAB: Record<string, string> = {
   opencode: 'opencode',
@@ -98,6 +104,16 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
   const getProgressDisplayName = (currentItem: string) => {
     const mapping = config?.fileMappings?.find((item) => item.name === currentItem);
     return mapping ? getMappingDisplayName(mapping) : currentItem;
+  };
+
+  const getAuthMethodLabel = (authMethod: SSHConnection['authMethod']) => {
+    if (authMethod === 'key') {
+      return t('settings.ssh.authKey');
+    }
+    if (authMethod === 'password') {
+      return t('settings.ssh.authPassword');
+    }
+    return t('settings.ssh.authNone');
   };
 
   const getModuleStatus = useCallback((module: string): WslDirectModuleStatus | undefined => {
@@ -577,8 +593,8 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
               <Space wrap>
                 <Text type="secondary">{activeConnection.host}:{activeConnection.port}</Text>
                 <Tag>{activeConnection.username}@</Tag>
-                <Tag color={activeConnection.authMethod === 'key' ? 'blue' : 'green'}>
-                  {activeConnection.authMethod === 'key' ? t('settings.ssh.authKey') : t('settings.ssh.authPassword')}
+                <Tag color={AUTH_METHOD_TAG_COLORS[activeConnection.authMethod] || 'default'}>
+                  {getAuthMethodLabel(activeConnection.authMethod)}
                 </Tag>
                 {testing && <Spin size="small" />}
                 {!testing && testResult && (

@@ -55,7 +55,8 @@ export const SSHConnectionModal: React.FC<SSHConnectionModalProps> = ({
     try {
       const values = await form.validateFields();
       const id = connection?.id || `ssh-${Date.now()}`;
-      const keyInput = values.authMethod === 'key' ? values.privateKeyPath || '' : '';
+      const selectedAuthMethod = values.authMethod as SSHConnection['authMethod'];
+      const keyInput = selectedAuthMethod === 'key' ? values.privateKeyPath || '' : '';
       const isContent = isPrivateKeyContent(keyInput);
       onSave({
         id,
@@ -63,11 +64,11 @@ export const SSHConnectionModal: React.FC<SSHConnectionModalProps> = ({
         host: values.host,
         port: values.port || 22,
         username: values.username,
-        authMethod: values.authMethod,
-        password: values.authMethod === 'password' ? values.password || '' : '',
+        authMethod: selectedAuthMethod,
+        password: selectedAuthMethod === 'password' ? values.password || '' : '',
         privateKeyPath: isContent ? '' : keyInput,
         privateKeyContent: isContent ? keyInput : '',
-        passphrase: values.authMethod === 'key' ? values.passphrase || '' : '',
+        passphrase: selectedAuthMethod === 'key' ? values.passphrase || '' : '',
         sortOrder: connection?.sortOrder || 0,
       });
       onClose();
@@ -122,6 +123,7 @@ export const SSHConnectionModal: React.FC<SSHConnectionModalProps> = ({
             <Space direction="horizontal">
               <Radio value="key">{t('settings.ssh.authKey')}</Radio>
               <Radio value="password">{t('settings.ssh.authPassword')}</Radio>
+              <Radio value="none">{t('settings.ssh.authNone')}</Radio>
             </Space>
           </Radio.Group>
         </Form.Item>

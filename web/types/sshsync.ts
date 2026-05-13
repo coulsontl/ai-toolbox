@@ -7,13 +7,15 @@ import type { WslDirectModuleStatus } from './wslsync';
 /**
  * SSH connection preset
  */
+export type SSHAuthMethod = 'key' | 'password' | 'none';
+
 export interface SSHConnection {
   id: string;
   name: string;
   host: string;
   port: number;
   username: string;
-  authMethod: string; // "key" | "password"
+  authMethod: SSHAuthMethod;
   password: string;
   privateKeyPath: string;
   privateKeyContent: string;
