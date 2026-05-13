@@ -50,7 +50,6 @@ export interface SkillRepo {
 export type SkillViewMode = 'flat' | 'grouped';
 
 export interface SkillPreferences {
-  central_repo_path: string;
   preferred_tools: string[] | null;
   default_view_mode: SkillViewMode;
   git_cache_cleanup_days: number;

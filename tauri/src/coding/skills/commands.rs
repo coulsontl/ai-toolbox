@@ -12,6 +12,7 @@ use super::cache_cleanup::{
 };
 use super::central_repo::{
     ensure_central_repo, expand_home_path, resolve_central_repo_path, resolve_skill_central_path,
+    save_central_repo_path,
 };
 use super::git_fetcher::{set_proxy, GitProxyMode};
 use super::installer::{
@@ -294,14 +295,10 @@ pub async fn skills_set_central_repo_path(
     }
     ensure_central_repo(&new_base).map_err(|e| format_error(e))?;
 
-    // Save new path to settings
-    skill_store::set_setting(
-        &state,
-        "central_repo_path",
-        new_base.to_string_lossy().as_ref(),
-    )
-    .await
-    .map_err(|e| e)?;
+    // Save new path to the same authoritative store used by resolve_central_repo_path.
+    save_central_repo_path(&state, &new_base)
+        .await
+        .map_err(|e| format_error(e))?;
 
     Ok(new_base.to_string_lossy().to_string())
 }
@@ -703,13 +700,17 @@ pub async fn skills_sync_to_tool<R: Runtime>(
     name: String,
     overwrite: Option<bool>,
 ) -> Result<SyncResultDto, String> {
-    let mut skill = skill_store::get_skill_by_id(&state, &skillId)
+    let skill = skill_store::get_skill_by_id(&state, &skillId)
         .await?
         .ok_or_else(|| format!("Skill not found: {}", skillId))?;
     if !skill.management_enabled {
         return Err(format!("SKILL_DISABLED|{}", skillId));
     }
-    skill.name = name;
+    // Backward-compatible API fields only. The real sync source and skill name
+    // must come from the DB record + central repo resolver, never from frontend
+    // payloads that may be stale or point at a tool runtime directory.
+    let _ = (&sourcePath, &name);
+    let source_path = resolve_skill_source_path(&app, &state, &skill).await?;
 
     // Get custom tools for runtime adapter lookup
     let custom_tools = skill_store::get_custom_tools(&state)
@@ -720,7 +721,7 @@ pub async fn skills_sync_to_tool<R: Runtime>(
         &state,
         &skill,
         &tool,
-        Path::new(&sourcePath),
+        &source_path,
         overwrite,
         &custom_tools,
     )

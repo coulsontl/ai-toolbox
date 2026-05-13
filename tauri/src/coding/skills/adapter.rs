@@ -300,8 +300,6 @@ pub fn to_skill_repo_payload(repo: &SkillRepo) -> Value {
 
 /// Convert database record to SkillPreferences struct
 pub fn from_db_skill_preferences(value: Value) -> SkillPreferences {
-    let default = SkillPreferences::default();
-
     // Parse preferred_tools: JSON array -> Option<Vec<String>>
     let preferred_tools: Option<Vec<String>> = value
         .get("preferred_tools")
@@ -324,11 +322,6 @@ pub fn from_db_skill_preferences(value: Value) -> SkillPreferences {
 
     SkillPreferences {
         id: db_extract_id(&value),
-        central_repo_path: value
-            .get("central_repo_path")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&default.central_repo_path)
-            .to_string(),
         preferred_tools,
         default_view_mode: normalize_default_view_mode(
             value.get("default_view_mode").and_then(|v| v.as_str()),
@@ -364,7 +357,6 @@ fn normalize_default_view_mode(value: Option<&str>) -> String {
 /// Convert SkillPreferences to database payload
 pub fn to_skill_preferences_payload(prefs: &SkillPreferences) -> Value {
     serde_json::json!({
-        "central_repo_path": prefs.central_repo_path,
         "preferred_tools": prefs.preferred_tools,
         "default_view_mode": normalize_default_view_mode(Some(&prefs.default_view_mode)),
         "git_cache_cleanup_days": prefs.git_cache_cleanup_days,
@@ -464,5 +456,18 @@ mod tests {
                 .and_then(Value::as_str),
             Some("flat")
         );
+    }
+
+    #[test]
+    fn skill_preferences_ignores_legacy_central_repo_path() {
+        let prefs = from_db_skill_preferences(json!({
+            "central_repo_path": "/Users/ralph/.skills",
+            "default_view_mode": "grouped",
+        }));
+
+        assert_eq!(prefs.default_view_mode, "grouped");
+
+        let payload = to_skill_preferences_payload(&prefs);
+        assert!(payload.get("central_repo_path").is_none());
     }
 }

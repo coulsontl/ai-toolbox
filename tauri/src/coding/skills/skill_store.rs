@@ -612,7 +612,6 @@ pub async fn get_setting(state: &DbState, key: &str) -> Result<Option<String>, S
     let prefs = get_skill_preferences(state).await?;
 
     let value = match key {
-        "central_repo_path" => Some(prefs.central_repo_path),
         "preferred_tools_v1" => prefs
             .preferred_tools
             .map(|v| serde_json::to_string(&v).unwrap_or_default()),
@@ -635,7 +634,6 @@ pub async fn set_setting(state: &DbState, key: &str, value: &str) -> Result<(), 
     prefs.updated_at = now_ms();
 
     match key {
-        "central_repo_path" => prefs.central_repo_path = value.to_string(),
         "preferred_tools_v1" => {
             prefs.preferred_tools = serde_json::from_str(value).ok();
         }
@@ -744,4 +742,77 @@ pub async fn delete_custom_tool(state: &DbState, key: &str) -> Result<(), String
         .map_err(|e| format!("Failed to delete custom tool: {}", e))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+    use surrealdb::engine::local::SurrealKv;
+    use surrealdb::Surreal;
+
+    async fn create_test_db() -> (tempfile::TempDir, DbState) {
+        let temp_dir = tempfile::tempdir().expect("create temp db dir");
+        let db_path = temp_dir.path().join("surreal");
+        let db = Surreal::new::<SurrealKv>(db_path)
+            .await
+            .expect("open surreal test db");
+        db.use_ns("ai_toolbox")
+            .use_db("main")
+            .await
+            .expect("select surreal test namespace");
+        (temp_dir, DbState(db))
+    }
+
+    async fn load_raw_preferences(state: &DbState) -> Value {
+        let db = state.db();
+        let mut result = db
+            .query("SELECT *, type::string(id) as id FROM skill_preferences:`default` LIMIT 1")
+            .await
+            .expect("query preferences");
+        let records: Vec<Value> = result.take(0).expect("take preferences");
+        records.into_iter().next().expect("preferences record")
+    }
+
+    #[tokio::test]
+    async fn non_path_setting_write_does_not_create_central_repo_path() {
+        let (_temp, state) = create_test_db().await;
+
+        set_setting(&state, "default_view_mode", "grouped")
+            .await
+            .expect("save default view mode");
+
+        let record = load_raw_preferences(&state).await;
+        assert_eq!(
+            record.get("default_view_mode").and_then(Value::as_str),
+            Some("grouped")
+        );
+        assert!(record.get("central_repo_path").is_none());
+    }
+
+    #[tokio::test]
+    async fn non_path_setting_write_removes_legacy_central_repo_path() {
+        let (_temp, state) = create_test_db().await;
+        let db = state.db();
+        db.query(
+            "UPSERT skill_preferences:`default` CONTENT { central_repo_path: '/Users/ralph/.skills', default_view_mode: 'flat' }",
+        )
+        .await
+        .expect("seed legacy preferences path");
+
+        set_setting(&state, "preferred_tools_v1", "[\"codex\"]")
+            .await
+            .expect("save preferred tools");
+
+        let record = load_raw_preferences(&state).await;
+        assert!(record.get("central_repo_path").is_none());
+        assert_eq!(
+            record
+                .get("preferred_tools")
+                .and_then(Value::as_array)
+                .and_then(|items| items.first())
+                .and_then(Value::as_str),
+            Some("codex")
+        );
+    }
 }

@@ -72,8 +72,7 @@ pub struct SkillRepo {
 /// Skill preferences - user preference settings (structured wide table)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SkillPreferences {
-    pub id: String, // Fixed "default"
-    pub central_repo_path: String,
+    pub id: String,                           // Fixed "default"
     pub preferred_tools: Option<Vec<String>>, // User selected preferred tools
     pub default_view_mode: String,
     pub git_cache_cleanup_days: i32,
@@ -88,9 +87,6 @@ impl Default for SkillPreferences {
     fn default() -> Self {
         Self {
             id: "default".to_string(),
-            central_repo_path: dirs::home_dir()
-                .map(|p| p.join(".skills").to_string_lossy().to_string())
-                .unwrap_or_default(),
             preferred_tools: None,
             default_view_mode: "flat".to_string(),
             git_cache_cleanup_days: 30,

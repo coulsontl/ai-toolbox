@@ -3,7 +3,8 @@
 ## 零、迁移期高优先级补充规则
 
 - Skills 的唯一源目录始终是中央仓库 `central_repo_path`。Claude/Codex/OpenCode/OpenClaw 或任何自定义工具当前运行时的 skills 目录都只是目标目录，不是同步源。
-- `skills_sync_to_tool` 的语义始终是“中央仓库 -> 工具运行时 skills 目录”。如果工具当前配置落在 WSL，该目标目录可能解析成 `\\\\wsl.localhost\\...` UNC 路径，但源目录仍不变。
+- 中央仓库路径只有一个权威配置入口：`skill_settings:skills.central_repo_path`；缺失或为空时 fallback 到 `app_data_dir/skills`。`skill_preferences` 只保存 UI/工具偏好，绝不能读取、默认生成或写入 `central_repo_path`，避免 `~/.skills` 等脏偏好重新成为第二事实源。
+- `skills_sync_to_tool` 的语义始终是“中央仓库 -> 工具运行时 skills 目录”。后端必须先用 `skill_id` 读取 DB 中的 skill 记录，再通过 `resolve_central_repo_path` / `resolve_skill_central_path` 解析真实 source 与 name；前端传入的 `sourcePath/name` 只能作为兼容参数，不能作为事实源。如果工具当前配置落在 WSL，该目标目录可能解析成 `\\\\wsl.localhost\\...` UNC 路径，但源目录仍不变。
 - `management_enabled=false` 是后端必须维护的同步 invariant，不只是前端展示状态。任何会写工具目录的入口（`skills_sync_to_tool`、tray toggle、全量 resync、Inventory apply）都必须先确认 Skill 已启用；禁用 Skill 的唯一恢复路径是先 enable，再走明确的工具恢复/同步流程。
 - 任何会写工具目录的同步入口，在创建、覆盖或删除目标路径前，必须先校验中央仓库 source 是可解析目录（`metadata` 跟随 symlink 后仍是目录）。broken/self symlink 或非目录 source 必须返回错误，不能把 DB/UI 关联写成 ok 却留下 runtime target broken。
 - 同步入口还必须在创建、覆盖或删除目标路径前，按解析 symlink 后的真实路径拒绝 `source == target`、target 位于 source 内、或 source 位于 target 内。尤其要防止工具 skills 父目录本身被 symlink 到中央仓库时，`~/.tool/skills/{name}` 实际解析成 `central_repo/{name}`，这会把中央源删掉或写成 self symlink。
@@ -94,7 +95,6 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | id | string | 固定为 "default" |
-| central_repo_path | string | 中央仓库路径，默认为应用数据目录/skills |
 | preferred_tools | array? | 首选工具列表 |
 | default_view_mode | string | 进入 Skills 页面时的默认 UI 视图：`flat` / `grouped`，非法或缺失时回退 `flat` |
 | git_cache_cleanup_days | i32 | Git 缓存清理天数，默认 30 |
@@ -151,8 +151,9 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
 **处理流程：**
 
 1. **获取中央仓库路径**
-   - 读取 skill_preferences 中的 central_repo_path
-   - 默认为应用数据目录/skills（如 Windows: `%APPDATA%/com.ai-toolbox/skills`）
+   - 读取 `skill_settings:skills.central_repo_path`
+   - 缺失或为空时 fallback 到应用数据目录/skills（如 Windows: `%APPDATA%/com.ai-toolbox/skills`）
+   - 不读取 `skill_preferences.central_repo_path`；该字段即使存在也只视为历史脏数据
 
 2. **获取已管理的目标路径**
    - 查询所有 skill 记录的 sync_details
@@ -434,25 +435,30 @@ skills-git-cache/
 **处理流程：**
 
 1. **获取工具适配器**
-   - 先查找内置工具
-   - 再查找自定义工具
-   - 未找到返回错误
+    - 先查找内置工具
+    - 再查找自定义工具
+    - 未找到返回错误
 
-2. **检查工具安装状态**
-   - 自定义工具跳过检查
-   - 内置工具检查 relative_detect_dir 是否存在
-   - 未安装返回 `TOOL_NOT_INSTALLED|{key}|{path}` 错误
+2. **获取 Skill 事实源**
+   - 只用 `skill_id` 查询 `skill` 表得到 `name/central_path/management_enabled`
+   - 用 `resolve_central_repo_path` + `resolve_skill_central_path` 得到真实中央仓库 source
+   - 不信任前端 payload 里的 `sourcePath/name`；这些字段只为旧前端/旧调用方保持 API 兼容
 
-3. **解析目标路径**
-   - 获取工具的 relative_skills_dir
-   - 拼接 HOME 目录得到绝对路径
-   - 目标：tool_skills_dir/{skill_name}
+3. **检查工具安装状态**
+    - 自定义工具跳过检查
+    - 内置工具检查 relative_detect_dir 是否存在
+    - 未安装返回 `TOOL_NOT_INSTALLED|{key}|{path}` 错误
 
-4. **检查目标是否存在**
-   - 如果存在且 overwrite=false，返回 `TARGET_EXISTS|{path}` 错误
-   - 如果存在且 overwrite=true，删除后继续
+4. **解析目标路径**
+    - 获取工具的 relative_skills_dir
+    - 拼接 HOME 目录得到绝对路径
+    - 目标：tool_skills_dir/{skill_name}
 
-5. **选择同步模式并执行**
+5. **检查目标是否存在**
+    - 如果存在且 overwrite=false，返回 `TARGET_EXISTS|{path}` 错误
+    - 如果存在且 overwrite=true，删除后继续
+
+6. **选择同步模式并执行**
 
    **Cursor 工具：**
    - 强制使用 copy 模式
@@ -468,12 +474,12 @@ skills-git-cache/
      - 递归复制目录内容
      - 跳过 .git 目录
 
-6. **记录同步结果**
-   - 更新 skill 表的 sync_details
-   - 添加工具到 enabled_tools 数组
-   - 设置同步时间戳
+7. **记录同步结果**
+    - 更新 skill 表的 sync_details
+    - 添加工具到 enabled_tools 数组
+    - 设置同步时间戳
 
-7. **返回 SyncResult**
+8. **返回 SyncResult**
    - mode_used: 实际使用的同步模式
    - target_path: 目标路径
 
@@ -692,7 +698,8 @@ description: "可选的描述"
 ### 8.3 中央仓库
 
 - 默认路径：应用数据目录/skills（如 `%APPDATA%/com.ai-toolbox/skills`）
-- 可在设置中自定义
+- 可在设置中自定义；自定义值写入 `skill_settings:skills.central_repo_path`，并通过 MERGE 保留同表的 Git cache 等其他字段
+- `skill_preferences` 不承载中央仓库路径，保存默认视图、首选工具、托盘显示、installed tools 缓存等偏好时不得传播或修复 `central_repo_path`
 - 存储技能的原始内容
 - 工具目录通过链接或复制引用
 - WSL/SSH 自动同步时，源目录仍然是中央仓库；不要把工具运行时目录误判成同步源
