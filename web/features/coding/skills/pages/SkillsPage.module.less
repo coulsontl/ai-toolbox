@@ -105,6 +105,25 @@
   display: inline-flex;
 }
 
+.toolbarOptionsTriggerActive {
+  position: relative;
+  border-color: var(--color-border-secondary) !important;
+  background: var(--color-bg-selected) !important;
+  color: var(--color-text-primary) !important;
+
+  &::after {
+    content: '';
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-text-primary);
+    box-shadow: 0 0 0 2px var(--color-bg-selected);
+  }
+}
+
 .toolbarOptionsPopover {
   position: fixed;
   z-index: 50;
@@ -119,7 +138,6 @@
   border-radius: 10px;
   background: var(--color-bg-elevated);
   box-shadow: 0 10px 28px var(--color-shadow);
-  transform: translateX(-100%);
 }
 
 .toolbarOptionsSection {
@@ -141,6 +159,37 @@
   line-height: 1.2;
 }
 
+.toolbarActiveSummary {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 5px 8px;
+  border: 1px solid color-mix(in srgb, var(--color-border-secondary) 42%, var(--color-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-selected) 70%, var(--color-bg-elevated));
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.toolbarActiveDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.toolbarActiveText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .toolbarOptionRow {
   display: grid;
   grid-template-columns: 112px minmax(0, 1fr);
@@ -153,6 +202,18 @@
   color: var(--color-text-secondary);
   font-size: 12px;
   line-height: 1.35;
+}
+
+.toolbarOptionHint {
+  grid-column: 2;
+  margin-top: -4px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--color-status-warning) 30%, var(--color-border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--color-status-warning) 8%, var(--color-bg-elevated));
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .toolbarActionGrid {
@@ -238,7 +299,6 @@
   .toolbarOptionsPopover {
     left: 12px !important;
     width: calc(100vw - 24px);
-    transform: none;
   }
 
   .toolbarOptionRow {
@@ -248,5 +308,9 @@
 
   .toolbarActionGrid {
     grid-template-columns: 1fr;
+  }
+
+  .toolbarOptionHint {
+    grid-column: 1;
   }
 }

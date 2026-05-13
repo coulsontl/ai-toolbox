@@ -1,5 +1,21 @@
 .disabledCard {
+  border-style: dashed !important;
+  background: color-mix(in srgb, var(--color-bg-container) 82%, var(--color-bg-layout)) !important;
+}
+
+.disabledCard .icon,
+.disabledCard .detailButton,
+.disabledCard .groupTag,
+.disabledCard .sourcePill,
+.disabledCard .summaryBlock,
+.disabledCard .noteBlock,
+.disabledCard .toolPill,
+.disabledCard .addToolBtn {
   opacity: 0.58;
+}
+
+.disabledCard .sourceWarningTag {
+  opacity: 0.8;
 }
 
 .sourceWarningCard {
@@ -20,6 +36,14 @@
   font-size: 11px;
   font-weight: 500;
   flex: 0 0 auto;
+  max-width: min(168px, 100%);
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
 .detailButton {
@@ -67,7 +91,7 @@
     color 0.16s ease;
   flex: 0 1 auto;
   min-width: 48px;
-  max-width: 100%;
+  max-width: min(188px, 100%);
 
   &:hover:not(:disabled) {
     background: var(--color-bg-hover);
@@ -110,7 +134,7 @@
 .groupTag {
   display: inline-flex;
   align-items: center;
-  max-width: 128px;
+  max-width: min(128px, 100%);
   min-width: 0;
   height: 22px;
   padding: 0 7px;
@@ -148,20 +172,33 @@
 }
 
 .noteBlock {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-self: start;
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  padding: 5px 7px;
+  padding: 5px 8px 5px 10px;
   border-radius: 7px;
-  border: 1px solid color-mix(in srgb, var(--color-border-secondary) 54%, var(--color-border));
-  background: color-mix(in srgb, var(--color-bg-selected) 62%, var(--color-bg-elevated));
+  border: 1px solid color-mix(in srgb, var(--color-border-secondary) 46%, var(--color-border));
+  border-left-color: color-mix(in srgb, var(--color-text-secondary) 48%, var(--color-border-secondary));
+  background: color-mix(in srgb, var(--color-bg-selected) 50%, var(--color-bg-elevated));
   color: var(--color-text-secondary);
   font-size: 12px;
   font-weight: 500;
   line-height: 18px;
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 5px;
+    bottom: 5px;
+    left: 4px;
+    width: 2px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-text-secondary) 46%, transparent);
+  }
 }
 
 .noteText {

@@ -2412,12 +2412,16 @@
 		},
 		"toolbar": {
 			"options": "View and organization options",
+			"optionsActive": "View and organization options: {{states}}",
+			"activeSummary": "Active: {{states}}",
 			"view": "View",
 			"viewMode": "Display mode",
 			"arrange": "Arrange",
 			"viewControls": "View options",
 			"organize": "Organize",
 			"organizeControls": "Skill organization options",
+			"management": "Management actions",
+			"managementControls": "Skill management actions",
 			"groupManagement": "Group Management",
 			"inventory": "Group Import/Export"
 		},

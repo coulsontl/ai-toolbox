@@ -2409,12 +2409,16 @@
 		},
 		"toolbar": {
 			"options": "查看与组织选项",
+			"optionsActive": "查看与组织选项：{{states}}",
+			"activeSummary": "当前：{{states}}",
 			"view": "查看",
 			"viewMode": "展示方式",
 			"arrange": "排列",
 			"viewControls": "查看选项",
 			"organize": "组织",
 			"organizeControls": "Skill 组织选项",
+			"management": "管理动作",
+			"managementControls": "Skill 管理动作",
 			"groupManagement": "分组管理",
 			"inventory": "分组导入/导出"
 		},
