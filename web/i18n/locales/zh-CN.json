@@ -2400,10 +2400,10 @@
 		"pageHint": "点击 Skill 卡片上的工具标签可从对应工具中移除该 Skill，点击 + 可将 Skill 关联到新的工具中。",
 		"viewDocs": "官方文档",
 		"tooltip": "管理 AI 工具 Skills",
-		"settings": "Skills 设置",
+		"settings": "更多选项",
 		"moreMenu": {
 			"title": "更多选项",
-			"settings": "Skills 设置",
+			"settings": "更多选项",
 			"groups": "分组管理",
 			"inventory": "分组导入/导出"
 		},
@@ -2457,7 +2457,6 @@
 		"groupUngrouped": "未分组",
 		"skillCount": "{{count}} 个 Skill",
 		"noDescription": "暂无简介",
-		"summary": "简介",
 		"sourceWarning": "来源异常",
 		"sourceWarningFallback": "中央仓库中的 Skill 来源不可用，请手动恢复或重新安装。",
 		"disableSkill": "禁用",

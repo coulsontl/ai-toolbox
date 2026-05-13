@@ -2403,10 +2403,10 @@
 		"pageHint": "Click a tool tag on a Skill card to remove it from that tool. Click + to associate the Skill with another tool.",
 		"viewDocs": "Documentation",
 		"tooltip": "Manage AI Tool Skills",
-		"settings": "Skills Settings",
+		"settings": "More Options",
 		"moreMenu": {
 			"title": "More Options",
-			"settings": "Skills Settings",
+			"settings": "More Options",
 			"groups": "Group Management",
 			"inventory": "Group Import/Export"
 		},
@@ -2460,7 +2460,6 @@
 		"groupUngrouped": "Ungrouped",
 		"skillCount": "{{count}} skill(s)",
 		"noDescription": "No description",
-		"summary": "Summary",
 		"sourceWarning": "Source issue",
 		"sourceWarningFallback": "The Skill source in the central repository is unavailable. Restore it manually or reinstall the Skill.",
 		"disableSkill": "Disable",

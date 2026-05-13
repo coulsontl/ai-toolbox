@@ -132,40 +132,42 @@
   gap: 4px;
   width: 100%;
   min-width: 0;
+  justify-items: start;
 }
 
-.summaryBlock,
-.noteBlock {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
-  gap: 6px;
+.summaryBlock {
+  width: 100%;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
   font-size: 12px;
   line-height: 18px;
 }
 
-.summaryBlock {
-  color: var(--color-text-secondary);
-}
-
 .noteBlock {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   padding: 5px 7px;
   border-radius: 7px;
-  border: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-bg-elevated) 78%, var(--color-bg-layout));
+  border: 1px solid color-mix(in srgb, var(--color-border-secondary) 54%, var(--color-border));
+  background: color-mix(in srgb, var(--color-bg-selected) 62%, var(--color-bg-elevated));
   color: var(--color-text-secondary);
-}
-
-.infoLabel {
-  color: var(--color-text-tertiary);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
-  white-space: nowrap;
+  line-height: 18px;
 }
 
-.infoText {
+.noteText {
+  display: block;
   min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

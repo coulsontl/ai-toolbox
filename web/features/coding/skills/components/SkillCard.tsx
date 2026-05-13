@@ -331,14 +331,12 @@ const SkillCardContent = React.memo(function SkillCardContent({
             <div className={styles.infoStack}>
               {hasDescription && (
                 <div className={styles.summaryBlock} title={descriptionText}>
-                  <span className={styles.infoLabel}>{t('skills.summary')}</span>
-                  <span className={styles.infoText}>{descriptionText}</span>
+                  {descriptionText}
                 </div>
               )}
               {hasUserNote && (
                 <div className={styles.noteBlock} title={userNoteText}>
-                  <span className={styles.infoLabel}>{t('skills.metadata.note')}</span>
-                  <span className={styles.infoText}>{userNoteText}</span>
+                  <span className={styles.noteText}>{userNoteText}</span>
                 </div>
               )}
             </div>
