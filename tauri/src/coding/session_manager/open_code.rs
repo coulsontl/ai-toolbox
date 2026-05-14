@@ -8,6 +8,9 @@ use serde_json::{Map, Value};
 
 use super::utils::{parse_timestamp_to_ms, path_basename, text_contains_query, truncate_summary};
 use super::{SessionMessage, SessionMeta};
+use crate::coding::cli_resolver::{
+    build_local_std_command, local_cli_missing_hint, resolve_local_opencode_program,
+};
 use crate::coding::runtime_location::{RuntimeLocationInfo, RuntimeLocationMode};
 
 const PROVIDER_ID: &str = "opencode";
@@ -59,7 +62,8 @@ fn summarize_command_output(output: &[u8]) -> String {
 
 fn build_missing_local_opencode_cli_message(details: &str) -> String {
     format!(
-        "OpenCode 会话导入/导出需要先安装 OpenCode CLI，并确保当前系统环境可以找到 `opencode` 命令。详情: {details}"
+        "OpenCode 会话导入/导出需要先安装 OpenCode CLI，并确保当前系统环境可以找到 `opencode` 命令。详情: {details}。{}",
+        local_cli_missing_hint("opencode")
     )
 }
 
@@ -80,112 +84,6 @@ fn build_missing_local_opencode_spawn_message(
     } else {
         runtime_error
     }
-}
-
-#[cfg(target_os = "windows")]
-fn windows_command_path_priority(path: &Path) -> usize {
-    match path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("exe") => 0,
-        Some("cmd") => 1,
-        Some("bat") => 2,
-        Some("com") => 3,
-        Some("ps1") => 4,
-        _ => 5,
-    }
-}
-
-fn parse_where_command_output(stdout: &str) -> Vec<PathBuf> {
-    stdout
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(PathBuf::from)
-        .collect()
-}
-
-#[cfg(target_os = "windows")]
-fn select_windows_opencode_command_path(paths: &[PathBuf]) -> Option<PathBuf> {
-    paths
-        .iter()
-        .min_by_key(|path| windows_command_path_priority(path))
-        .cloned()
-}
-
-#[cfg(not(target_os = "windows"))]
-fn select_local_opencode_command_path(paths: &[PathBuf]) -> Option<PathBuf> {
-    paths.first().cloned()
-}
-
-#[cfg(target_os = "windows")]
-fn select_local_opencode_command_path(paths: &[PathBuf]) -> Option<PathBuf> {
-    select_windows_opencode_command_path(paths)
-}
-
-#[cfg(target_os = "windows")]
-fn build_local_windows_opencode_command(program_path: &Path) -> Command {
-    match program_path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("cmd") | Some("bat") => {
-            let mut command = Command::new("cmd");
-            command.arg("/C").arg(program_path);
-            command
-        }
-        Some("ps1") => {
-            let mut command = Command::new("powershell");
-            command
-                .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-                .arg(program_path);
-            command
-        }
-        _ => Command::new(program_path),
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn build_local_opencode_command(program_path: &Path) -> Command {
-    build_local_windows_opencode_command(program_path)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn build_local_opencode_command(program_path: &Path) -> Command {
-    Command::new(program_path)
-}
-
-fn resolve_local_opencode_program() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    let lookup_command = "where";
-
-    #[cfg(not(target_os = "windows"))]
-    let lookup_command = "which";
-
-    let output = Command::new(lookup_command).arg("opencode").output().ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    let candidates = parse_where_command_output(&stdout);
-    select_local_opencode_command_path(&candidates)
-}
-
-#[cfg(target_os = "windows")]
-fn build_fallback_local_opencode_command() -> Command {
-    build_local_windows_opencode_command(Path::new("opencode"))
-}
-
-#[cfg(not(target_os = "windows"))]
-fn build_fallback_local_opencode_command() -> Command {
-    Command::new("opencode")
 }
 
 pub fn scan_sessions(data_root: &Path, sqlite_db_path: &Path) -> Vec<SessionMeta> {
@@ -1637,10 +1535,8 @@ fn build_opencode_command(
 ) -> Result<Command, String> {
     match runtime_location.mode {
         RuntimeLocationMode::LocalWindows => {
-            let mut command = match resolve_local_opencode_program() {
-                Some(opencode_program) => build_local_opencode_command(&opencode_program),
-                None => build_fallback_local_opencode_command(),
-            };
+            let opencode_program = resolve_local_opencode_program();
+            let mut command = build_local_std_command(&opencode_program.path);
             configure_opencode_command_env(&mut command, config_path, data_root, state_root);
             if let Some(working_directory) = working_directory {
                 command.current_dir(working_directory);
@@ -1740,22 +1636,6 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn select_windows_opencode_command_path_prefers_cmd_over_extensionless() {
-        let selected = super::select_windows_opencode_command_path(&[
-            PathBuf::from(r"C:\Users\tester\AppData\Roaming\fnm\aliases\default\opencode"),
-            PathBuf::from(r"C:\Users\tester\AppData\Roaming\fnm\aliases\default\opencode.cmd"),
-            PathBuf::from(r"C:\Users\tester\AppData\Roaming\fnm\aliases\default\opencode.ps1"),
-        ])
-        .expect("expected selected path");
-
-        assert_eq!(
-            selected,
-            PathBuf::from(r"C:\Users\tester\AppData\Roaming\fnm\aliases\default\opencode.cmd")
-        );
     }
 
     #[test]
