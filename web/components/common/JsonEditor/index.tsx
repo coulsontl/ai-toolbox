@@ -13,6 +13,10 @@ export interface JsonEditorProps {
   onChange?: (value: unknown, isValid: boolean) => void;
   /** Callback when editor loses focus and content is valid */
   onBlur?: (value: unknown, isValid: boolean) => void;
+  /** Callback with raw editor content on every keystroke */
+  onRawChange?: (value: string) => void;
+  /** Callback with raw editor content when editor loses focus */
+  onRawBlur?: (value: string) => void;
   /** Editor mode: 'tree', 'text', or 'table' (only 'text' is supported with Monaco) */
   mode?: EditorMode;
   /** Read-only mode */
@@ -42,6 +46,8 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   value,
   onChange,
   onBlur,
+  onRawChange,
+  onRawBlur,
   mode: _mode = 'text',
   readOnly = false,
   height = 300,
@@ -185,9 +191,10 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
     editorInstance.onDidBlurEditorText(() => {
       isUserEditingRef.current = false;
       editorInstance.updateOptions({ renderLineHighlight: 'none' });
+      const currentContent = editorInstance.getValue();
+      onRawBlur?.(currentContent);
       // 失去焦点时触发 onBlur 回调
       if (onBlur) {
-        const currentContent = editorInstance.getValue();
         const trimmedValue = currentContent.trim();
         if (trimmedValue === '') {
           onBlur(null, true);
@@ -201,10 +208,11 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
         }
       }
     });
-  }, [valueString, validateAndSetMarkers, onBlur]);
+  }, [valueString, validateAndSetMarkers, onBlur, onRawBlur]);
 
   const handleChange = useCallback((newValue: string) => {
     setEditorContent(newValue);
+    onRawChange?.(newValue);
 
     // 防抖验证
     if (validateTimeoutRef.current) {
@@ -230,7 +238,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
       // JSON 无效
       onChange(newValue, false);
     }
-  }, [onChange, validateAndSetMarkers]);
+  }, [onChange, onRawChange, validateAndSetMarkers]);
 
   // 当外部 value 变化时更新编辑器
   useEffect(() => {
@@ -314,6 +322,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   // 判断是否显示 placeholder - 只要编辑器有任何字符就不显示
   // editorContent 始终与编辑器实际内容同步
   const showPlaceholder = placeholder && (editorContent === null || editorContent.trim() === '');
+  const displayedValue = editorContent ?? valueString;
 
   console.log('[JsonEditor] Render', {
     value,
@@ -344,7 +353,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
           height={actualHeight}
           language="json"
           theme={monacoTheme}
-          value={valueString}
+          value={displayedValue}
           options={options}
           onChange={handleChange}
           editorDidMount={handleEditorDidMount}

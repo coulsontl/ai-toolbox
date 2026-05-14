@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use surrealdb::sql::Thing;
 
+fn default_json_object_string() -> String {
+    "{}".to_string()
+}
+
 // ============================================================================
 // ClaudeCode Provider Types
 // ============================================================================
@@ -12,6 +16,8 @@ pub struct ClaudeCodeProviderRecord {
     pub name: String,
     pub category: String,
     pub settings_config: String,
+    #[serde(default = "default_json_object_string")]
+    pub extra_settings_config: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_provider_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -38,6 +44,8 @@ pub struct ClaudeCodeProvider {
     pub name: String,
     pub category: String,
     pub settings_config: String,
+    #[serde(default = "default_json_object_string")]
+    pub extra_settings_config: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_provider_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -63,6 +71,7 @@ impl From<ClaudeCodeProviderRecord> for ClaudeCodeProvider {
             name: record.name,
             category: record.category,
             settings_config: record.settings_config,
+            extra_settings_config: record.extra_settings_config,
             source_provider_id: record.source_provider_id,
             website_url: record.website_url,
             notes: record.notes,
@@ -83,6 +92,8 @@ pub struct ClaudeCodeProviderContent {
     pub name: String,
     pub category: String,
     pub settings_config: String,
+    #[serde(default = "default_json_object_string")]
+    pub extra_settings_config: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_provider_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,6 +121,8 @@ pub struct ClaudeCodeProviderInput {
     pub name: String,
     pub category: String,
     pub settings_config: String,
+    #[serde(default)]
+    pub extra_settings_config: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_provider_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -4,12 +4,47 @@ import type { RadioChangeEvent } from 'antd';
 import { EyeInvisibleOutlined, EyeOutlined, CloudDownloadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
+import JsonEditor from '@/components/common/JsonEditor';
 import { useAppStore } from '@/stores';
 import type { ClaudeCodeProvider, ClaudeProviderFormValues, ClaudeSettingsConfig } from '@/types/claudecode';
 import { readCurrentOpenCodeProviders } from '@/services/opencodeApi';
 import styles from './ClaudeProviderFormModal.module.less';
 
 const { TextArea } = Input;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function toExtraSettingsEditorValue(rawConfig?: string): unknown {
+  if (!rawConfig?.trim()) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(rawConfig) as unknown;
+    if (!isPlainObject(parsed)) {
+      return rawConfig;
+    }
+    return parsed;
+  } catch {
+    return rawConfig;
+  }
+}
+
+function parseExtraSettingsConfig(rawConfig?: string): string | undefined {
+  const trimmedConfig = rawConfig?.trim();
+  if (!trimmedConfig) {
+    return undefined;
+  }
+
+  const parsed = JSON.parse(trimmedConfig) as unknown;
+  if (!isPlainObject(parsed)) {
+    throw new Error('Expected JSON object');
+  }
+
+  return JSON.stringify(parsed);
+}
 
 // OpenCode 供应商展示类型
 interface OpenCodeProviderDisplay {
@@ -71,9 +106,63 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
   // 当前表单的 baseUrl（用于匹配供应商）
   const [currentBaseUrl, setCurrentBaseUrl] = React.useState<string>('');
   const [providerCategory, setProviderCategory] = React.useState<'official' | 'custom'>('custom');
+  const [extraSettingsValue, setExtraSettingsValue] = React.useState<unknown>(null);
+  const [extraSettingsError, setExtraSettingsError] = React.useState<string>();
+  const extraSettingsRawRef = React.useRef('');
 
   const isEdit = !!provider && !isCopy;
   const isOfficialMode = providerCategory === 'official';
+
+  const getExtraSettingsErrorMessage = React.useCallback((error: unknown) => {
+    if (error instanceof SyntaxError) {
+      return t('claudecode.provider.extraSettingsInvalidJsonDetailed', { message: error.message });
+    }
+    if (error instanceof Error && error.message === 'Expected JSON object') {
+      return t('claudecode.provider.extraSettingsInvalidObject');
+    }
+    const messageText = error instanceof Error ? error.message : String(error);
+    return t('claudecode.provider.extraSettingsInvalidJsonDetailed', { message: messageText });
+  }, [t]);
+
+  const validateExtraSettingsEditorValue = React.useCallback((): string | undefined => {
+    try {
+      setExtraSettingsError(undefined);
+      return parseExtraSettingsConfig(extraSettingsRawRef.current);
+    } catch (error) {
+      setExtraSettingsError(getExtraSettingsErrorMessage(error));
+      return undefined;
+    }
+  }, [getExtraSettingsErrorMessage]);
+
+  const handleExtraSettingsChange = React.useCallback((_value: unknown, isValid: boolean) => {
+    if (!isValid) {
+      setExtraSettingsError(t('claudecode.provider.extraSettingsInvalidJson'));
+      return;
+    }
+    validateExtraSettingsEditorValue();
+  }, [t, validateExtraSettingsEditorValue]);
+
+  const handleExtraSettingsBlur = React.useCallback((_value: unknown, isValid: boolean) => {
+    if (!isValid) {
+      try {
+        parseExtraSettingsConfig(extraSettingsRawRef.current);
+      } catch (error) {
+        setExtraSettingsError(getExtraSettingsErrorMessage(error));
+      }
+      return;
+    }
+    const parsedExtraSettingsConfig = validateExtraSettingsEditorValue();
+    if (parsedExtraSettingsConfig === undefined) {
+      setExtraSettingsValue(null);
+      return;
+    }
+    setExtraSettingsValue(JSON.parse(parsedExtraSettingsConfig) as unknown);
+  }, [getExtraSettingsErrorMessage, validateExtraSettingsEditorValue]);
+
+  const handleExtraSettingsRawChange = React.useCallback((value: string) => {
+    extraSettingsRawRef.current = value;
+    setExtraSettingsValue(value);
+  }, []);
 
   // 加载 OpenCode 中的供应商列表
   React.useEffect(() => {
@@ -96,6 +185,12 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
       const nextProviderCategory = provider.category === 'official' ? 'official' : 'custom';
       setProviderCategory(nextProviderCategory);
       setCurrentBaseUrl(baseUrl);
+      const nextExtraSettingsRaw = nextProviderCategory === 'official'
+        ? ''
+        : provider.extraSettingsConfig || '';
+      setExtraSettingsValue(toExtraSettingsEditorValue(nextExtraSettingsRaw));
+      setExtraSettingsError(undefined);
+      extraSettingsRawRef.current = nextExtraSettingsRaw;
 
       form.setFieldsValue({
         category: nextProviderCategory,
@@ -112,6 +207,9 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
     } else {
       setProviderCategory('custom');
       setCurrentBaseUrl('');
+      setExtraSettingsValue(null);
+      setExtraSettingsError(undefined);
+      extraSettingsRawRef.current = '';
       form.setFieldsValue({
         category: 'custom',
       });
@@ -126,6 +224,9 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
     if (!provider && mode === 'manual') {
       setProviderCategory('custom');
       setCurrentBaseUrl('');
+      setExtraSettingsValue(null);
+      setExtraSettingsError(undefined);
+      extraSettingsRawRef.current = '';
       form.setFieldsValue({ category: 'custom' });
     }
   }, [form, mode, open, provider]);
@@ -245,6 +346,15 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
       const selectedCategory = mode === 'import'
         ? 'custom'
         : ((isEdit ? providerCategory : values.category) === 'official' ? 'official' : 'custom');
+      let extraSettingsConfig: string | undefined;
+      try {
+        extraSettingsConfig = selectedCategory === 'official'
+          ? undefined
+          : parseExtraSettingsConfig(extraSettingsRawRef.current);
+      } catch (error) {
+        setExtraSettingsError(getExtraSettingsErrorMessage(error));
+        return;
+      }
       const formValues: ClaudeProviderFormValues = {
         name: values.name,
         category: selectedCategory,
@@ -259,12 +369,16 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
         sonnetModel: values.sonnetModel,
         opusModel: values.opusModel,
         reasoningModel: values.reasoningModel,
+        extraSettingsConfig,
         notes: values.notes,
         sourceProviderId: mode === 'import' ? selectedProvider?.id : undefined,
       };
 
       await onSubmit(formValues);
       form.resetFields();
+      setExtraSettingsValue(null);
+      setExtraSettingsError(undefined);
+      extraSettingsRawRef.current = '';
       setSelectedProvider(null);
       setAvailableModels([]);
       onCancel();
@@ -348,6 +462,9 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
     if (nextCategory === 'official') {
       setCurrentBaseUrl('');
       setFetchedModels([]);
+      setExtraSettingsValue(null);
+      setExtraSettingsError(undefined);
+      extraSettingsRawRef.current = '';
       form.setFieldsValue({
         baseUrl: undefined,
         apiKey: undefined,
@@ -458,6 +575,28 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
                 </span>
               )}
             </Space>
+          </Form.Item>
+
+          <Form.Item
+            label={t('claudecode.provider.extraSettings')}
+            tooltip={t('claudecode.provider.extraSettingsHint')}
+            validateStatus={extraSettingsError ? 'error' : undefined}
+            help={extraSettingsError}
+          >
+            <JsonEditor
+              value={extraSettingsValue}
+              onChange={handleExtraSettingsChange}
+              onBlur={handleExtraSettingsBlur}
+              onRawChange={handleExtraSettingsRawChange}
+              onRawBlur={handleExtraSettingsRawChange}
+              mode="text"
+              height={180}
+              minHeight={140}
+              maxHeight={360}
+              resizable
+              className={styles.extraSettingsEditor}
+              placeholder={t('claudecode.provider.extraSettingsPlaceholder')}
+            />
           </Form.Item>
         </>
       )}

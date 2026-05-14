@@ -10,6 +10,12 @@ const PROVIDER_MODEL_FIELD_MAPPINGS: [(&str, &str); 5] = [
     ("reasoningModel", "ANTHROPIC_REASONING_MODEL"),
 ];
 
+fn is_provider_model_field(field_key: &str) -> bool {
+    PROVIDER_MODEL_FIELD_MAPPINGS
+        .iter()
+        .any(|(provider_field, _)| provider_field == &field_key)
+}
+
 pub const KNOWN_ENV_FIELDS: [&str; 8] = [
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_API_KEY",
@@ -125,6 +131,78 @@ fn json_deep_remove(target: &mut Value, source: &Value) {
     }
 }
 
+fn remove_previous_extra_settings(
+    target: &mut Map<String, Value>,
+    previous_extra: &Map<String, Value>,
+) {
+    for field_key in previous_extra.keys() {
+        if field_key == "env" {
+            continue;
+        }
+
+        target.remove(field_key);
+    }
+
+    let Some(previous_extra_env) = previous_extra.get("env").and_then(value_as_object) else {
+        return;
+    };
+
+    let Some(target_env) = target.get_mut("env").and_then(Value::as_object_mut) else {
+        return;
+    };
+
+    for field_key in previous_extra_env.keys() {
+        target_env.remove(field_key);
+    }
+
+    if target_env.is_empty() {
+        target.remove("env");
+    }
+}
+
+fn sanitize_extra_settings_config(
+    extra_settings_config: &Value,
+    known_env_fields: &[&str],
+) -> Result<Map<String, Value>, String> {
+    let extra_settings_object = match extra_settings_config {
+        Value::Object(object) => object,
+        Value::Null => return Ok(Map::new()),
+        _ => return Err("Claude extra settings must be a JSON object".to_string()),
+    };
+
+    let mut sanitized_extra_settings = extra_settings_object.clone();
+    for protected_field in PROTECTED_TOP_LEVEL_FIELDS {
+        sanitized_extra_settings.remove(protected_field);
+    }
+
+    for (provider_field, _) in PROVIDER_MODEL_FIELD_MAPPINGS {
+        sanitized_extra_settings.remove(provider_field);
+    }
+
+    let mut remove_env = false;
+    if let Some(env_value) = sanitized_extra_settings.get_mut("env") {
+        match env_value {
+            Value::Object(env_object) => {
+                for known_env_field in known_env_fields {
+                    env_object.remove(*known_env_field);
+                }
+                if env_object.is_empty() {
+                    remove_env = true;
+                }
+            }
+            Value::Null => {
+                remove_env = true;
+            }
+            _ => return Err("Claude extra settings env must be a JSON object".to_string()),
+        }
+    }
+    if remove_env {
+        sanitized_extra_settings.remove("env");
+    }
+
+    Ok(sanitized_extra_settings)
+}
+
 pub fn parse_json_object(raw_json: &str) -> Result<Map<String, Value>, String> {
     if raw_json.trim().is_empty() {
         return Ok(Map::new());
@@ -223,6 +301,8 @@ pub fn merge_claude_settings_for_provider(
     current_disk_settings: Option<&Value>,
     previous_common_config: Option<&Value>,
     next_common_config: &Value,
+    previous_extra_settings_config: Option<&Value>,
+    next_extra_settings_config: Option<&Value>,
     provider_config: &Value,
     known_env_fields: &[&str],
 ) -> Result<Value, String> {
@@ -243,6 +323,17 @@ pub fn merge_claude_settings_for_provider(
         Some(_) => return Err("Previous Claude common config must be a JSON object".to_string()),
         None => next_common_config_object.clone(),
     };
+    let previous_extra_settings_object = match previous_extra_settings_config {
+        Some(value) => sanitize_extra_settings_config(value, known_env_fields)?,
+        None => sanitize_extra_settings_config(
+            next_extra_settings_config.unwrap_or(&Value::Object(Map::new())),
+            known_env_fields,
+        )?,
+    };
+    let next_extra_settings_object = match next_extra_settings_config {
+        Some(value) => sanitize_extra_settings_config(value, known_env_fields)?,
+        None => Map::new(),
+    };
 
     let mut merged_settings = current_settings_object;
 
@@ -260,6 +351,10 @@ pub fn merge_claude_settings_for_provider(
         }
     }
 
+    if !previous_extra_settings_object.is_empty() {
+        remove_previous_extra_settings(&mut merged_settings, &previous_extra_settings_object);
+    }
+
     for (field_key, field_value) in &next_common_config_object {
         if field_key == "env" {
             continue;
@@ -271,6 +366,26 @@ pub fn merge_claude_settings_for_provider(
 
         if let Some(existing_value) = merged_settings.get_mut(field_key) {
             merge_json_value_preserving_existing(existing_value, field_value);
+        } else {
+            merged_settings.insert(field_key.clone(), field_value.clone());
+        }
+    }
+
+    for (field_key, field_value) in &next_extra_settings_object {
+        if field_key == "env" {
+            continue;
+        }
+
+        if PROTECTED_TOP_LEVEL_FIELDS.contains(&field_key.as_str()) {
+            continue;
+        }
+
+        if is_provider_model_field(field_key) {
+            continue;
+        }
+
+        if let Some(existing_value) = merged_settings.get_mut(field_key) {
+            *existing_value = field_value.clone();
         } else {
             merged_settings.insert(field_key.clone(), field_value.clone());
         }
@@ -299,6 +414,17 @@ pub fn merge_claude_settings_for_provider(
     {
         for (field_key, field_value) in next_common_env {
             merged_env.insert(field_key.clone(), field_value.clone());
+        }
+    }
+
+    if let Some(next_extra_env) = next_extra_settings_object
+        .get("env")
+        .and_then(value_as_object)
+    {
+        for (field_key, field_value) in next_extra_env {
+            if !known_env_fields.contains(&field_key.as_str()) {
+                merged_env.insert(field_key.clone(), field_value.clone());
+            }
         }
     }
 
@@ -393,4 +519,164 @@ pub fn split_settings_into_provider_and_common(
         Value::Object(provider_settings),
         Value::Object(common_settings),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn merge_with_extra(
+        current_disk_settings: Value,
+        previous_extra_settings_config: Option<Value>,
+        next_extra_settings_config: Option<Value>,
+    ) -> Value {
+        merge_claude_settings_for_provider(
+            Some(&current_disk_settings),
+            Some(&json!({
+                "statusLine": { "command": "old-common" },
+                "env": { "COMMON_ENV": "old" }
+            })),
+            &json!({
+                "statusLine": { "command": "common" },
+                "env": { "COMMON_ENV": "common" }
+            }),
+            previous_extra_settings_config.as_ref(),
+            next_extra_settings_config.as_ref(),
+            &json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://provider.example.com",
+                    "ANTHROPIC_AUTH_TOKEN": "provider-key"
+                },
+                "model": "provider-model"
+            }),
+            &KNOWN_ENV_FIELDS,
+        )
+        .expect("settings merge should succeed")
+    }
+
+    #[test]
+    fn extra_settings_override_common_but_not_provider_fields() {
+        let merged = merge_with_extra(
+            json!({
+                "untouched": true,
+                "statusLine": { "command": "old-common" },
+                "env": {
+                    "COMMON_ENV": "old",
+                    "ANTHROPIC_BASE_URL": "https://old.example.com"
+                }
+            }),
+            Some(json!({})),
+            Some(json!({
+                "statusLine": { "command": "extra" },
+                "env": {
+                    "COMMON_ENV": "extra",
+                    "ANTHROPIC_BASE_URL": "https://extra.example.com",
+                    "ANTHROPIC_AUTH_TOKEN": "extra-key"
+                },
+                "model": "extra-model"
+            })),
+        );
+
+        assert_eq!(merged["untouched"], json!(true));
+        assert_eq!(merged["statusLine"]["command"], json!("extra"));
+        assert_eq!(merged["env"]["COMMON_ENV"], json!("extra"));
+        assert_eq!(
+            merged["env"]["ANTHROPIC_BASE_URL"],
+            json!("https://provider.example.com")
+        );
+        assert_eq!(merged["env"]["ANTHROPIC_AUTH_TOKEN"], json!("provider-key"));
+        assert_eq!(merged["env"]["ANTHROPIC_MODEL"], json!("provider-model"));
+        assert!(merged.get("model").is_none());
+    }
+
+    #[test]
+    fn previous_extra_settings_are_removed_when_next_provider_has_none() {
+        let merged = merge_with_extra(
+            json!({
+                "statusLine": { "command": "old-common" },
+                "extraOnly": { "enabled": true },
+                "env": {
+                    "COMMON_ENV": "old",
+                    "EXTRA_ENV": "old-extra",
+                    "ANTHROPIC_AUTH_TOKEN": "old-provider"
+                }
+            }),
+            Some(json!({
+                "extraOnly": { "enabled": true },
+                "env": { "EXTRA_ENV": "old-extra" }
+            })),
+            Some(json!({})),
+        );
+
+        assert!(merged.get("extraOnly").is_none());
+        assert!(merged["env"].get("EXTRA_ENV").is_none());
+        assert_eq!(merged["statusLine"]["command"], json!("common"));
+        assert_eq!(merged["env"]["COMMON_ENV"], json!("common"));
+        assert_eq!(merged["env"]["ANTHROPIC_AUTH_TOKEN"], json!("provider-key"));
+    }
+
+    #[test]
+    fn previous_extra_settings_are_removed_by_managed_key_even_if_disk_value_changed() {
+        let merged = merge_with_extra(
+            json!({
+                "statusLine": { "command": "old-common" },
+                "extraOnly": { "enabled": false, "userChanged": true },
+                "env": {
+                    "COMMON_ENV": "old",
+                    "EXTRA_ENV": "manually-changed"
+                }
+            }),
+            Some(json!({
+                "extraOnly": { "enabled": true },
+                "env": { "EXTRA_ENV": "old-extra" }
+            })),
+            Some(json!({})),
+        );
+
+        assert!(merged.get("extraOnly").is_none());
+        assert!(merged["env"].get("EXTRA_ENV").is_none());
+        assert_eq!(merged["env"]["COMMON_ENV"], json!("common"));
+    }
+
+    #[test]
+    fn protected_top_level_fields_are_preserved_from_disk() {
+        let merged = merge_with_extra(
+            json!({
+                "enabledPlugins": ["runtime-plugin"],
+                "extraKnownMarketplaces": { "runtime": true },
+                "hooks": { "PreToolUse": [] },
+                "statusLine": { "command": "old-common" },
+                "env": { "COMMON_ENV": "old" }
+            }),
+            Some(json!({
+                "enabledPlugins": ["old-extra"],
+                "hooks": { "Stop": [] }
+            })),
+            Some(json!({
+                "enabledPlugins": ["new-extra"],
+                "extraKnownMarketplaces": { "extra": true },
+                "hooks": { "Stop": [] }
+            })),
+        );
+
+        assert_eq!(merged["enabledPlugins"], json!(["runtime-plugin"]));
+        assert_eq!(merged["extraKnownMarketplaces"], json!({ "runtime": true }));
+        assert_eq!(merged["hooks"], json!({ "PreToolUse": [] }));
+    }
+
+    #[test]
+    fn extra_settings_env_must_be_an_object() {
+        let result = merge_claude_settings_for_provider(
+            Some(&json!({})),
+            None,
+            &json!({}),
+            None,
+            Some(&json!({ "env": "invalid" })),
+            &json!({}),
+            &KNOWN_ENV_FIELDS,
+        );
+
+        assert!(result.is_err());
+    }
 }

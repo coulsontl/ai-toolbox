@@ -201,6 +201,7 @@ async fn load_temp_provider_from_file_with_db(
         category: inferred_category,
         settings_config: serde_json::to_string(&provider_settings)
             .map_err(|error| format!("Failed to serialize provider settings: {}", error))?,
+        extra_settings_config: "{}".to_string(),
         source_provider_id: None,
         website_url: None,
         notes: None,
@@ -302,6 +303,53 @@ fn parse_optional_common_config_value(
             Ok(Some(parsed))
         }
         None => Ok(None),
+    }
+}
+
+fn normalize_extra_settings_config_for_storage(
+    category: &str,
+    raw_extra_settings_config: Option<&str>,
+) -> Result<String, String> {
+    if category == "official" {
+        return Ok("{}".to_string());
+    }
+
+    let raw_config = raw_extra_settings_config.unwrap_or("{}");
+    let parsed = settings_merge::parse_json_object(raw_config).map(Value::Object)?;
+    serde_json::to_string(&parsed)
+        .map_err(|e| format!("Failed to serialize extra settings config: {}", e))
+}
+
+fn parse_extra_settings_config_value(provider: &ClaudeCodeProvider) -> Result<Value, String> {
+    if provider.category == "official" {
+        return Ok(Value::Object(serde_json::Map::new()));
+    }
+
+    Ok(Value::Object(settings_merge::parse_json_object(
+        &provider.extra_settings_config,
+    )?))
+}
+
+async fn load_applied_provider_extra_settings_value(
+    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+) -> Result<Option<Value>, String> {
+    let applied_result: Result<Vec<Value>, _> = db
+        .query(
+            "SELECT *, type::string(id) as id FROM claude_provider WHERE is_applied = true LIMIT 1",
+        )
+        .await
+        .map_err(|e| format!("Failed to query applied provider: {}", e))?
+        .take(0);
+
+    match applied_result {
+        Ok(records) => records
+            .first()
+            .map(|record| {
+                let provider = adapter::from_db_value_provider(record.clone());
+                parse_extra_settings_config_value(&provider)
+            })
+            .transpose(),
+        Err(_) => Ok(None),
     }
 }
 
@@ -426,12 +474,17 @@ pub async fn create_claude_provider(
     let db = state.db();
     let normalized_settings_config =
         normalize_provider_settings_for_storage(&db, &provider.settings_config, None).await?;
+    let extra_settings_config = normalize_extra_settings_config_for_storage(
+        &provider.category,
+        provider.extra_settings_config.as_deref(),
+    )?;
 
     let now = Local::now().to_rfc3339();
     let content = ClaudeCodeProviderContent {
         name: provider.name,
         category: provider.category,
         settings_config: normalized_settings_config,
+        extra_settings_config,
         source_provider_id: provider.source_provider_id,
         website_url: provider.website_url,
         notes: provider.notes,
@@ -484,6 +537,10 @@ pub async fn update_claude_provider(
     let db = state.db();
     let normalized_settings_config =
         normalize_provider_settings_for_storage(&db, &provider.settings_config, None).await?;
+    let extra_settings_config = normalize_extra_settings_config_for_storage(
+        &provider.category,
+        Some(&provider.extra_settings_config),
+    )?;
 
     // Use the id from frontend (pure string id without table prefix)
     let id = provider.id.clone();
@@ -505,6 +562,16 @@ pub async fn update_claude_provider(
     }
 
     // Get created_at and is_disabled from existing record
+    let previous_extra_settings_config_value = existing_result
+        .as_ref()
+        .ok()
+        .and_then(|records| records.first())
+        .map(|record| {
+            let previous_provider = adapter::from_db_value_provider(record.clone());
+            parse_extra_settings_config_value(&previous_provider)
+        })
+        .transpose()?;
+
     let (created_at, existing_is_disabled) = if !provider.created_at.is_empty() {
         (provider.created_at, false)
     } else if let Ok(records) = &existing_result {
@@ -531,6 +598,7 @@ pub async fn update_claude_provider(
         name: provider.name,
         category: provider.category,
         settings_config: normalized_settings_config,
+        extra_settings_config,
         source_provider_id: provider.source_provider_id,
         website_url: provider.website_url,
         notes: provider.notes,
@@ -553,7 +621,10 @@ pub async fn update_claude_provider(
 
     // 如果该配置当前是应用状态，立即重新写入到配置文件
     if content.is_applied {
-        if let Err(e) = apply_config_to_file(&db, &id).await {
+        if let Err(e) =
+            apply_config_to_file_with_context(&db, &id, None, previous_extra_settings_config_value)
+                .await
+        {
             eprintln!("Failed to auto-apply updated config: {}", e);
             // 不中断更新流程，只记录错误
         }
@@ -567,6 +638,7 @@ pub async fn update_claude_provider(
         name: content.name,
         category: content.category,
         settings_config: content.settings_config,
+        extra_settings_config: content.extra_settings_config,
         source_provider_id: content.source_provider_id,
         website_url: content.website_url,
         notes: content.notes,
@@ -757,6 +829,15 @@ async fn apply_config_to_file_with_previous_common_config(
     provider_id: &str,
     previous_common_config: Option<Value>,
 ) -> Result<(), String> {
+    apply_config_to_file_with_context(db, provider_id, previous_common_config, None).await
+}
+
+async fn apply_config_to_file_with_context(
+    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    provider_id: &str,
+    previous_common_config: Option<Value>,
+    previous_extra_settings_config: Option<Value>,
+) -> Result<(), String> {
     // Get the provider
     let record_id = db_record_id("claude_provider", provider_id);
     let provider_result: Result<Vec<Value>, _> = db
@@ -792,6 +873,11 @@ async fn apply_config_to_file_with_previous_common_config(
     // Parse provider settings_config
     let provider_config: serde_json::Value = serde_json::from_str(&provider.settings_config)
         .map_err(|e| format!("Failed to parse provider config: {}", e))?;
+    let extra_settings_config = parse_extra_settings_config_value(&provider)?;
+    let previous_extra_settings_config = match previous_extra_settings_config {
+        Some(value) => Some(value),
+        None => load_applied_provider_extra_settings_value(db).await?,
+    };
 
     // Get common config
     let common_config_result: Result<Vec<Value>, _> = db
@@ -818,6 +904,8 @@ async fn apply_config_to_file_with_previous_common_config(
         current_settings.as_ref(),
         previous_common_config.as_ref(),
         &common_config,
+        previous_extra_settings_config.as_ref(),
+        Some(&extra_settings_config),
         &provider_config,
         &KNOWN_ENV_FIELDS,
     )?;
@@ -1479,6 +1567,10 @@ pub async fn save_claude_local_config(
         .as_ref()
         .map(|p| p.settings_config.clone())
         .unwrap_or(base_provider.settings_config);
+    let provider_extra_settings_config = provider_input
+        .as_ref()
+        .and_then(|p| p.extra_settings_config.clone())
+        .unwrap_or(base_provider.extra_settings_config);
     let provider_source_id = provider_input
         .as_ref()
         .and_then(|p| p.source_provider_id.clone());
@@ -1514,10 +1606,15 @@ pub async fn save_claude_local_config(
         next_common_config_value.as_ref(),
     )
     .await?;
+    let normalized_extra_settings_config = normalize_extra_settings_config_for_storage(
+        &provider_category,
+        Some(&provider_extra_settings_config),
+    )?;
     let provider_content = ClaudeCodeProviderContent {
         name: provider_name,
         category: provider_category,
         settings_config: normalized_provider_settings_config,
+        extra_settings_config: normalized_extra_settings_config,
         source_provider_id: provider_source_id,
         website_url: None,
         notes: provider_notes,
@@ -1996,6 +2093,7 @@ pub async fn init_claude_provider_from_settings(
         category: infer_claude_provider_category_from_settings(&provider_settings),
         settings_config: serde_json::to_string(&provider_settings)
             .map_err(|e| format!("Failed to serialize provider settings: {}", e))?,
+        extra_settings_config: "{}".to_string(),
         source_provider_id: None,
         website_url: None,
         notes: Some("从 settings.json 自动导入".to_string()),
