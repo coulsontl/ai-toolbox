@@ -33,6 +33,7 @@ export interface ClaudeCodeProvider {
   name: string;
   category: ClaudeProviderCategory;
   settingsConfig: string; // JSON string of ClaudeSettingsConfig
+  extraSettingsConfig: string; // JSON string of additional settings.json fields for custom providers
   // Source info if imported from settings
   sourceProviderId?: string;
   // Metadata
@@ -94,6 +95,7 @@ export interface ClaudeProviderFormValues {
   sonnetModel?: string;
   opusModel?: string;
   reasoningModel?: string;
+  extraSettingsConfig?: string;
   notes?: string;
   isDisabled?: boolean;
   // For import from settings
@@ -107,6 +109,7 @@ export interface ClaudeProviderInput {
   name: string;
   category: ClaudeProviderCategory;
   settingsConfig: string;
+  extraSettingsConfig?: string;
   sourceProviderId?: string;
   websiteUrl?: string;
   notes?: string;

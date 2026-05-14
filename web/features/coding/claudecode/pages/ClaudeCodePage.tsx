@@ -38,7 +38,6 @@ import {
   updateClaudeProvider,
   saveClaudeLocalConfig,
   deleteClaudeProvider,
-  selectClaudeProvider,
   applyClaudeConfig,
   readClaudeSettings,
   toggleClaudeCodeProviderDisabled,
@@ -150,6 +149,7 @@ function buildClaudeFavoriteProviderConfig(provider: ClaudeCodeProvider) {
       name: provider.name,
       category: provider.category,
       settingsConfig: provider.settingsConfig,
+      extraSettingsConfig: provider.extraSettingsConfig,
       ...(provider.notes ? { notes: provider.notes } : {}),
     } satisfies ClaudeFavoriteProviderPayload,
   );
@@ -410,7 +410,6 @@ const ClaudeCodePage: React.FC = () => {
 
   const handleSelectProvider = async (provider: ClaudeCodeProvider) => {
     try {
-      await selectClaudeProvider(provider.id);
       await applyClaudeConfig(provider.id);
       message.success(t('claudecode.apply.success'));
       await loadConfig();
@@ -725,6 +724,7 @@ const ClaudeCodePage: React.FC = () => {
               }),
             },
           }),
+          extraSettingsConfig: '{}',
           sourceProviderId: item.providerId,
           notes: undefined,
         };
@@ -764,6 +764,7 @@ const ClaudeCodePage: React.FC = () => {
           name: payload.name,
           category: payload.category as ClaudeProviderInput['category'],
           settingsConfig: payload.settingsConfig,
+          extraSettingsConfig: payload.extraSettingsConfig || '{}',
           notes: payload.notes,
           sourceProviderId: extractFavoriteProviderRawId('claudecode', favoriteProvider.providerId),
         });
@@ -801,6 +802,7 @@ const ClaudeCodePage: React.FC = () => {
         name: values.name,
         category: values.category,
         settingsConfig,
+        extraSettingsConfig: values.extraSettingsConfig || '{}',
         sourceProviderId: values.sourceProviderId,
         notes: values.notes,
       };
@@ -817,6 +819,7 @@ const ClaudeCodePage: React.FC = () => {
           name: values.name,
           category: values.category,
           settingsConfig: providerInput.settingsConfig,
+          extraSettingsConfig: providerInput.extraSettingsConfig || '{}',
           sourceProviderId: values.sourceProviderId,
           notes: values.notes,
           sortIndex: editingProvider.sortIndex,
@@ -838,6 +841,7 @@ const ClaudeCodePage: React.FC = () => {
           name: values.name,
           category: values.category,
           settingsConfig: providerInput.settingsConfig,
+          extraSettingsConfig: providerInput.extraSettingsConfig || '{}',
           sourceProviderId: values.sourceProviderId,
           notes: values.notes,
           isApplied: false,
@@ -876,6 +880,7 @@ const ClaudeCodePage: React.FC = () => {
         name: values.name,
         category: values.category,
         settingsConfig,
+        extraSettingsConfig: values.extraSettingsConfig || '{}',
         notes: values.notes,
         createdAt: existingProvider.createdAt,
         updatedAt: existingProvider.updatedAt,

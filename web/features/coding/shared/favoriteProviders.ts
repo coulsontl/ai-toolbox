@@ -7,6 +7,7 @@ export interface ClaudeFavoriteProviderPayload {
   name: string;
   category: string;
   settingsConfig: string;
+  extraSettingsConfig?: string;
   notes?: string;
 }
 

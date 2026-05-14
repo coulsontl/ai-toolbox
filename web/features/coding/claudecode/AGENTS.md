@@ -9,6 +9,7 @@
 - 页面展示的根目录来源于后端 `getClaudeRootPathInfo()`，不是前端自己推导。
 - Claude Code 页面管理的是根目录而不是单一配置文件路径；后续 `settings.json`、`CLAUDE.md` 等都从这个根目录派生。
 - provider 的 `is_applied` 与运行时文件状态都以后台命令执行结果为准。
+- 自定义 provider 的 Extra settings JSON 是 provider 记录的一部分，只在自定义渠道表单展示；官方订阅模式不展示也不写入额外字段。
 
 ## 核心设计决策（Why）
 
@@ -39,6 +40,7 @@ sequenceDiagram
 - 普通“新建 provider”和“复制已应用 provider”都应走普通创建语义，默认不自动应用；不要因为复制源当前已应用，就在提交对象或页面状态里把新记录当成已应用配置处理。
 - 页面里的 `__local__` 不是普通新增 provider，而是当前生效本地配置的收编入口；当用户把它保存为正式 provider 时，产品语义是“把当前生效配置正式落库”，不是“基于当前配置再新建一个未应用草稿”。
 - provider 模式只允许在新增或复制时选择。编辑已保存 provider 时必须隐藏模式选择，并沿用原 provider 的 `category`，不要允许官方/自定义互相切换。
+- Extra settings JSON 允许为空或 JSON object；保存时必须保留“用户清空”的语义，不能用 truthy 判断导致旧 extra settings 留在数据库或 settings.json 中。
 
 ## 跨模块依赖
 

@@ -41,6 +41,8 @@ fn merge_preserves_existing_nested_status_line_details() {
         Some(&current_disk_settings),
         Some(&previous_common_config),
         &next_common_config,
+        None,
+        None,
         &provider_config,
         &KNOWN_ENV_FIELDS,
     )
@@ -97,6 +99,8 @@ fn merge_removes_deleted_top_level_status_line_key() {
         Some(&current_disk_settings),
         Some(&previous_common_config),
         &next_common_config,
+        None,
+        None,
         &json!({}),
         &KNOWN_ENV_FIELDS,
     )

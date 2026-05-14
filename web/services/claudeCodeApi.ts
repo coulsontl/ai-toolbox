@@ -22,6 +22,7 @@ import type {
   ClaudeMarketplaceUpdateInput,
   ClaudePluginActionInput,
   ClaudePluginRuntimeStatus,
+  ClaudeProviderInput,
 } from '@/types/claudecode';
 import type { OpenCodeAllApiHubProvider, OpenCodeAllApiHubProvidersResult } from '@/services/opencodeApi';
 
@@ -54,7 +55,7 @@ export const listClaudeProviders = async (): Promise<ClaudeCodeProvider[]> => {
  * Create a new Claude Code provider
  */
 export const createClaudeProvider = async (
-  provider: Omit<ClaudeCodeProvider, 'id' | 'createdAt' | 'updatedAt'>
+  provider: ClaudeProviderInput
 ): Promise<ClaudeCodeProvider> => {
   return await invoke<ClaudeCodeProvider>('create_claude_provider', { provider });
 };

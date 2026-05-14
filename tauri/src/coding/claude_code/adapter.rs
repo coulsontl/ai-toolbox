@@ -58,6 +58,12 @@ pub fn from_db_value_provider(value: Value) -> ClaudeCodeProvider {
         name: get_str_compat(&value, "name", "name", "Unnamed Provider"),
         category: get_str_compat(&value, "category", "category", "other"),
         settings_config: get_str_compat(&value, "settings_config", "settingsConfig", "{}"),
+        extra_settings_config: get_str_compat(
+            &value,
+            "extra_settings_config",
+            "extraSettingsConfig",
+            "{}",
+        ),
         source_provider_id: get_opt_str_compat(&value, "source_provider_id", "sourceProviderId"),
         website_url: get_opt_str_compat(&value, "website_url", "websiteUrl"),
         notes: get_opt_str_compat(&value, "notes", "notes"),
