@@ -80,15 +80,6 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: './tauri -> target'
-          shared-key: release-test
-          # Release runs are tag-scoped or manual release runs; skip saving
-          # large Rust caches that later release tags cannot reuse.
-          save-if: ${{ false }}
-
       - name: Install pnpm
         uses: pnpm/action-setup@v4
 
@@ -155,15 +146,6 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: './tauri -> target'
-          shared-key: ${{ matrix.target }}
-          # Tag-scoped caches cannot be reused by later tags. Keep release jobs
-          # restore-only to avoid large cache uploads during post-job cleanup.
-          save-if: ${{ false }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
