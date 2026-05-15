@@ -1370,7 +1370,9 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: true,
-            directory_excludes: super::types::default_directory_excludes(),
+            directory_excludes: super::types::default_directory_excludes_for_mapping(
+                super::types::CLAUDE_PLUGINS_MAPPING_ID,
+            ),
         },
         // Codex
         SSHFileMapping {
@@ -1529,4 +1531,33 @@ fn shell_path_literal(path: &str) -> String {
     }
 
     format!("'{}'", path.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_file_mappings;
+
+    #[test]
+    fn claude_plugins_default_mapping_keeps_plugin_cache_available() {
+        let mapping = default_file_mappings()
+            .into_iter()
+            .find(|mapping| mapping.id == "claude-plugins")
+            .expect("claude-plugins default mapping exists");
+
+        assert!(mapping.directory_excludes.contains(&".venv".to_string()));
+        assert!(mapping
+            .directory_excludes
+            .contains(&"node_modules".to_string()));
+        assert!(!mapping.directory_excludes.contains(&"cache".to_string()));
+    }
+
+    #[test]
+    fn codex_plugins_default_mapping_still_uses_generic_directory_excludes() {
+        let mapping = default_file_mappings()
+            .into_iter()
+            .find(|mapping| mapping.id == "codex-plugins")
+            .expect("codex-plugins default mapping exists");
+
+        assert!(mapping.directory_excludes.contains(&"cache".to_string()));
+    }
 }

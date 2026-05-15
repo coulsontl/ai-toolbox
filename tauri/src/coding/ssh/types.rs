@@ -15,11 +15,21 @@ pub const DEFAULT_DIRECTORY_EXCLUDES: &[&str] = &[
     "cache",
 ];
 
+pub const CLAUDE_PLUGINS_MAPPING_ID: &str = "claude-plugins";
+
 pub fn default_directory_excludes() -> Vec<String> {
     DEFAULT_DIRECTORY_EXCLUDES
         .iter()
         .map(|name| (*name).to_string())
         .collect()
+}
+
+pub fn default_directory_excludes_for_mapping(mapping_id: &str) -> Vec<String> {
+    let mut excludes = default_directory_excludes();
+    if mapping_id == CLAUDE_PLUGINS_MAPPING_ID {
+        excludes.retain(|name| name != "cache");
+    }
+    excludes
 }
 
 pub fn normalize_directory_excludes(excludes: &[String]) -> Vec<String> {
@@ -40,6 +50,10 @@ pub fn normalize_directory_excludes(excludes: &[String]) -> Vec<String> {
     }
 
     normalized
+}
+
+pub fn matches_default_directory_excludes(excludes: &[String]) -> bool {
+    normalize_directory_excludes(excludes) == default_directory_excludes()
 }
 
 // ============================================================================
@@ -124,7 +138,11 @@ impl Default for SSHSyncConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_directory_excludes, normalize_directory_excludes};
+    use super::{
+        default_directory_excludes, default_directory_excludes_for_mapping,
+        matches_default_directory_excludes, normalize_directory_excludes,
+        CLAUDE_PLUGINS_MAPPING_ID,
+    };
 
     #[test]
     fn normalizes_directory_excludes_by_trimming_and_deduplicating() {
@@ -149,6 +167,31 @@ mod tests {
         assert!(excludes.contains(&".venv".to_string()));
         assert!(excludes.contains(&"node_modules".to_string()));
         assert!(excludes.contains(&"cache".to_string()));
+    }
+
+    #[test]
+    fn claude_plugins_default_excludes_keep_plugin_cache_available() {
+        let excludes = default_directory_excludes_for_mapping(CLAUDE_PLUGINS_MAPPING_ID);
+
+        assert!(excludes.contains(&".venv".to_string()));
+        assert!(excludes.contains(&"node_modules".to_string()));
+        assert!(!excludes.contains(&"cache".to_string()));
+    }
+
+    #[test]
+    fn detects_normalized_default_directory_excludes() {
+        let input = vec![
+            ".git".to_string(),
+            ".venv".to_string(),
+            "venv".to_string(),
+            "node_modules".to_string(),
+            "__pycache__".to_string(),
+            ".pytest_cache".to_string(),
+            ".mypy_cache".to_string(),
+            "cache/".to_string(),
+        ];
+
+        assert!(matches_default_directory_excludes(&input));
     }
 }
 

@@ -1,7 +1,7 @@
 use super::super::db_id;
 use super::types::{
-    default_directory_excludes, normalize_directory_excludes, SSHConnection, SSHFileMapping,
-    SSHSyncConfig,
+    default_directory_excludes_for_mapping, matches_default_directory_excludes,
+    normalize_directory_excludes, SSHConnection, SSHFileMapping, SSHSyncConfig,
 };
 use chrono::Local;
 use serde_json::{json, Value};
@@ -146,16 +146,21 @@ pub fn connection_to_db_value(conn: &SSHConnection) -> Value {
 // SSH File Mapping Adapter Functions
 // ============================================================================
 
-fn directory_excludes_from_db_value(value: &Value, is_directory: bool) -> Vec<String> {
+fn directory_excludes_from_db_value(
+    value: &Value,
+    mapping_id: &str,
+    is_directory: bool,
+) -> Vec<String> {
     if !is_directory {
         return vec![];
     }
 
+    let default_excludes = default_directory_excludes_for_mapping(mapping_id);
     let Some(raw_excludes) = value
         .get("directory_excludes")
         .or_else(|| value.get("directoryExcludes"))
     else {
-        return default_directory_excludes();
+        return default_excludes;
     };
 
     let excludes = raw_excludes
@@ -168,7 +173,14 @@ fn directory_excludes_from_db_value(value: &Value, is_directory: bool) -> Vec<St
         })
         .unwrap_or_default();
 
-    normalize_directory_excludes(&excludes)
+    let normalized_excludes = normalize_directory_excludes(&excludes);
+    if normalized_excludes != default_excludes
+        && matches_default_directory_excludes(&normalized_excludes)
+    {
+        return default_excludes;
+    }
+
+    normalized_excludes
 }
 
 /// Convert database Value to SSHFileMapping
@@ -179,7 +191,7 @@ pub fn mapping_from_db_value(value: Value) -> SSHFileMapping {
         .or_else(|| value.get("isDirectory"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let directory_excludes = directory_excludes_from_db_value(&value, is_directory);
+    let directory_excludes = directory_excludes_from_db_value(&value, &id, is_directory);
 
     SSHFileMapping {
         id,
@@ -246,7 +258,24 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn directory_mapping_without_saved_excludes_uses_defaults() {
+    fn directory_mapping_without_saved_excludes_uses_generic_defaults() {
+        let mapping = mapping_from_db_value(json!({
+            "id": "ssh_file_mapping:custom-dir",
+            "name": "Custom Dir",
+            "module": "claude",
+            "local_path": "~/src",
+            "remote_path": "~/src",
+            "enabled": true,
+            "is_pattern": false,
+            "is_directory": true,
+        }));
+
+        assert!(mapping.directory_excludes.contains(&"cache".to_string()));
+        assert!(mapping.directory_excludes.contains(&".venv".to_string()));
+    }
+
+    #[test]
+    fn claude_plugins_without_saved_excludes_keep_plugin_cache_available() {
         let mapping = mapping_from_db_value(json!({
             "id": "ssh_file_mapping:claude-plugins",
             "name": "Claude Code 插件目录",
@@ -258,8 +287,52 @@ mod tests {
             "is_directory": true,
         }));
 
-        assert!(mapping.directory_excludes.contains(&"cache".to_string()));
         assert!(mapping.directory_excludes.contains(&".venv".to_string()));
+        assert!(!mapping.directory_excludes.contains(&"cache".to_string()));
+    }
+
+    #[test]
+    fn claude_plugins_legacy_default_excludes_keep_plugin_cache_available() {
+        let mapping = mapping_from_db_value(json!({
+            "id": "ssh_file_mapping:claude-plugins",
+            "name": "Claude Code 插件目录",
+            "module": "claude",
+            "local_path": "~/.claude/plugins",
+            "remote_path": "~/.claude/plugins",
+            "enabled": true,
+            "is_pattern": false,
+            "is_directory": true,
+            "directory_excludes": [
+                ".git",
+                ".venv",
+                "venv",
+                "node_modules",
+                "__pycache__",
+                ".pytest_cache",
+                ".mypy_cache",
+                "cache"
+            ],
+        }));
+
+        assert!(mapping.directory_excludes.contains(&".venv".to_string()));
+        assert!(!mapping.directory_excludes.contains(&"cache".to_string()));
+    }
+
+    #[test]
+    fn claude_plugins_custom_excludes_are_preserved() {
+        let mapping = mapping_from_db_value(json!({
+            "id": "ssh_file_mapping:claude-plugins",
+            "name": "Claude Code 插件目录",
+            "module": "claude",
+            "local_path": "~/.claude/plugins",
+            "remote_path": "~/.claude/plugins",
+            "enabled": true,
+            "is_pattern": false,
+            "is_directory": true,
+            "directory_excludes": ["cache"],
+        }));
+
+        assert_eq!(mapping.directory_excludes, vec!["cache".to_string()]);
     }
 
     #[test]
