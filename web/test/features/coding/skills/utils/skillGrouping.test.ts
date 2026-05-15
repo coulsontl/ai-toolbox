@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   buildSkillGroups,
   CUSTOM_UNGROUPED_GROUP_KEY,
+  findSkillGroupOptionByName,
   filterSkillsBySearch,
   getSkillGroupToolIds,
   getSkillGroupOptions,
@@ -68,6 +69,17 @@ test('getSkillGroupOptions returns sorted registry groups', () => {
     { id: 'frontend', name: 'Frontend' },
     { id: 'reverse', name: 'Reverse' },
   ]);
+});
+
+test('findSkillGroupOptionByName matches trimmed names case-insensitively', () => {
+  const groups = [
+    { id: 'reverse', name: 'Reverse' },
+    { id: 'frontend', name: 'Frontend' },
+  ];
+
+  assert.deepEqual(findSkillGroupOptionByName(groups, ' reverse '), groups[0]);
+  assert.deepEqual(findSkillGroupOptionByName(groups, 'FRONTEND'), groups[1]);
+  assert.equal(findSkillGroupOptionByName(groups, '   '), undefined);
 });
 
 test('filterSkillsBySearch matches custom group and note', () => {

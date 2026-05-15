@@ -25,6 +25,17 @@ export function getSkillGroupOptions(groups: SkillGroupRecord[]): Array<{ id: st
     .map((group) => ({ id: group.id, name: group.name }));
 }
 
+export function findSkillGroupOptionByName(
+  groups: Array<{ id: string; name: string }>,
+  name: string | null | undefined,
+): { id: string; name: string } | undefined {
+  const normalizedName = normalizeSkillMetadataText(name)?.toLowerCase();
+  if (!normalizedName) {
+    return undefined;
+  }
+  return groups.find((group) => group.name.trim().toLowerCase() === normalizedName);
+}
+
 export function filterSkillsBySearch(skills: ManagedSkill[], searchText: string): ManagedSkill[] {
   const keyword = searchText.trim().toLowerCase();
   if (!keyword) {

@@ -23,6 +23,7 @@ use super::installer::{
 use super::onboarding::build_onboarding_plan;
 use super::path_executor::{
     remove_skill_target_checked, sync_skill_to_target, target_path_changed,
+    validate_skill_sync_target,
 };
 use super::skill_store;
 use super::tool_adapters::{
@@ -668,8 +669,7 @@ async fn sync_skill_to_tool_record(
 
     if let Some(existing_target) = previous_target.as_ref() {
         if target_path_changed(&existing_target.target_path, &target) {
-            remove_skill_target_checked(source_path, &existing_target.target_path)
-                .map_err(format_error)?;
+            remove_skill_target_best_effort(skill, source_path, existing_target);
         }
     }
 
@@ -687,6 +687,67 @@ async fn sync_skill_to_tool_record(
         mode_used: result.mode_used.as_str().to_string(),
         target_path: result.target_path.to_string_lossy().to_string(),
     })
+}
+
+fn disabled_previous_tools_for_skill(skill: &Skill) -> Vec<String> {
+    if skill.enabled_tools.is_empty() {
+        skill.disabled_previous_tools.clone()
+    } else {
+        skill.enabled_tools.clone()
+    }
+}
+
+fn remove_skill_target_best_effort(skill: &Skill, source_path: &Path, target: &SkillTarget) {
+    if let Err(err) = remove_skill_target_checked(source_path, &target.target_path) {
+        log::warn!(
+            "Failed to clean Skills target '{}' for skill '{}' on '{}': {}",
+            target.target_path,
+            skill.name,
+            target.tool,
+            err
+        );
+    }
+}
+
+async fn remove_skill_targets_best_effort(
+    state: &DbState,
+    skill: &Skill,
+    source_path: Option<&Path>,
+) -> Result<(), String> {
+    let targets = skill_store::get_skill_targets(state, &skill.id).await?;
+    let Some(source_path) = source_path else {
+        if !targets.is_empty() {
+            log::warn!(
+                "Skipped cleaning {} Skills target(s) for '{}' because source path could not be resolved",
+                targets.len(),
+                skill.name
+            );
+        }
+        return Ok(());
+    };
+
+    for target in targets {
+        remove_skill_target_best_effort(skill, source_path, &target);
+    }
+    Ok(())
+}
+
+async fn resolve_skill_source_path_for_cleanup<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DbState,
+    skill: &Skill,
+) -> Option<PathBuf> {
+    match resolve_skill_source_path(app, state, skill).await {
+        Ok(path) => Some(path),
+        Err(error) => {
+            log::warn!(
+                "Skipped Skills target cleanup for '{}' because source path could not be resolved: {}",
+                skill.name,
+                error
+            );
+            None
+        }
+    }
 }
 
 #[tauri::command]
@@ -741,25 +802,14 @@ pub async fn skills_unsync_from_tool<R: Runtime>(
     skillId: String,
     tool: String,
 ) -> Result<(), String> {
-    // Get custom tools for runtime adapter lookup
-    let custom_tools = skill_store::get_custom_tools(&state)
-        .await
-        .unwrap_or_default();
-
-    // If the tool is not installed, do nothing
-    if let Some(adapter) = runtime_adapter_by_key(&tool, &custom_tools) {
-        if !is_tool_installed_async(&adapter).await.unwrap_or(false) {
-            return Ok(());
-        }
-    }
-
     if let Some(target) = skill_store::get_skill_target(&state, &skillId, &tool).await? {
         let skill = skill_store::get_skill_by_id(&state, &skillId)
             .await?
             .ok_or_else(|| format!("Skill not found: {}", skillId))?;
-        let source_path = resolve_skill_source_path(&app, &state, &skill).await?;
-        // Remove the link/copy in tool directory first
-        remove_skill_target_checked(&source_path, &target.target_path).map_err(format_error)?;
+        let source_path = resolve_skill_source_path_for_cleanup(&app, &state, &skill).await;
+        if let Some(source_path) = source_path.as_deref() {
+            remove_skill_target_best_effort(&skill, source_path, &target);
+        }
         skill_store::delete_skill_target(&state, &skillId, &tool).await?;
     }
 
@@ -1185,20 +1235,16 @@ pub async fn skills_set_management_enabled<R: Runtime>(
     enabled: bool,
 ) -> Result<Vec<String>, String> {
     if !enabled {
-        if let Some(skill) = skill_store::get_skill_by_id(&state, &skillId).await? {
-            let previous_tools = if skill.enabled_tools.is_empty() {
-                skill.disabled_previous_tools.clone()
-            } else {
-                skill.enabled_tools.clone()
-            };
-            skill_store::record_disabled_previous_tools(&state, &skillId, previous_tools).await?;
-            let source_path = resolve_skill_source_path(&app, &state, &skill).await?;
-            let targets = skill_store::get_skill_targets(&state, &skillId).await?;
-            for target in targets {
-                remove_skill_target_checked(&source_path, &target.target_path)
-                    .map_err(format_error)?;
-            }
-        }
+        let skill = skill_store::get_skill_by_id(&state, &skillId)
+            .await?
+            .ok_or_else(|| format!("Skill not found: {}", skillId))?;
+        let previous_tools = disabled_previous_tools_for_skill(&skill);
+        let source_path = resolve_skill_source_path_for_cleanup(&app, &state, &skill).await;
+        remove_skill_targets_best_effort(&state, &skill, source_path.as_deref()).await?;
+        skill_store::disable_skill_with_previous_tools(&state, &skillId, previous_tools.clone())
+            .await?;
+        let _ = app.emit("skills-changed", "window");
+        return Ok(previous_tools);
     }
     let previous = skill_store::set_skill_management_enabled(&state, &skillId, enabled).await?;
     let _ = app.emit("skills-changed", "window");
@@ -1319,13 +1365,22 @@ async fn reconcile_inventory_skill_tools<R: Runtime>(
     let skill = skill_store::get_skill_by_id(state, skill_id)
         .await?
         .ok_or_else(|| format!("Skill not found: {}", skill_id))?;
-    let source_path = resolve_skill_source_path(app, state, &skill).await?;
+    let needs_new_sync = desired_tools
+        .iter()
+        .any(|tool| !current_tool_set.contains(tool));
+    let source_path = if needs_new_sync {
+        Some(resolve_skill_source_path(app, state, &skill).await?)
+    } else {
+        resolve_skill_source_path_for_cleanup(app, state, &skill).await
+    };
 
     for target in current_targets {
         if desired_tool_set.contains(&target.tool) {
             continue;
         }
-        remove_skill_target_checked(&source_path, &target.target_path).map_err(format_error)?;
+        if let Some(source_path) = source_path.as_deref() {
+            remove_skill_target_best_effort(&skill, source_path, &target);
+        }
         skill_store::delete_skill_target(state, skill_id, &target.tool).await?;
     }
 
@@ -1337,11 +1392,95 @@ async fn reconcile_inventory_skill_tools<R: Runtime>(
         return Err(format!("SKILL_DISABLED|{}", skill_id));
     }
 
+    if !needs_new_sync {
+        return Ok(());
+    }
+
+    let Some(source_path) = source_path.as_deref() else {
+        return Err(format!(
+            "Failed to resolve source path for skill: {}",
+            skill.name
+        ));
+    };
+
     for tool in desired_tools {
         if current_tool_set.contains(&tool) {
             continue;
         }
-        sync_skill_to_tool_record(state, &skill, &tool, &source_path, true, custom_tools).await?;
+        sync_skill_to_tool_record(state, &skill, &tool, source_path, true, custom_tools).await?;
+    }
+
+    Ok(())
+}
+
+async fn preflight_inventory_tool_sync(
+    skill: &Skill,
+    tool: &str,
+    source_path: &Path,
+    custom_tools: &[CustomTool],
+) -> Result<(), String> {
+    let runtime_adapter =
+        runtime_adapter_by_key(tool, custom_tools).ok_or_else(|| "unknown tool".to_string())?;
+
+    if !runtime_adapter.is_custom
+        && !is_tool_installed_async(&runtime_adapter)
+            .await
+            .unwrap_or(false)
+    {
+        let skills_path = resolve_runtime_skills_path_async(&runtime_adapter)
+            .await
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        return Err(format!(
+            "TOOL_NOT_INSTALLED|{}|{}",
+            runtime_adapter.key, skills_path
+        ));
+    }
+
+    let tool_root = resolve_runtime_skills_path_async(&runtime_adapter)
+        .await
+        .map_err(|e| format_error(e))?;
+    let target = tool_root.join(&skill.name);
+    let force_copy = tool.eq_ignore_ascii_case("cursor") || runtime_adapter.force_copy;
+    validate_skill_sync_target(source_path, &target, force_copy).map_err(format_error)
+}
+
+async fn preflight_inventory_apply<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DbState,
+    inventory: &SkillInventoryJson,
+    local_skills: &[Skill],
+    custom_tools: &[CustomTool],
+) -> Result<(), String> {
+    for item in &inventory.skills {
+        if !item.enabled {
+            continue;
+        }
+        let Some(skill) = match_inventory_skill(item, local_skills) else {
+            continue;
+        };
+        let desired_tools = normalize_tool_ids(&item.enabled_tools);
+        if desired_tools.is_empty() {
+            continue;
+        }
+
+        let current_targets = skill_store::get_skill_targets(state, &skill.id).await?;
+        let current_tool_set: HashSet<String> = current_targets
+            .iter()
+            .map(|target| target.tool.clone())
+            .collect();
+        let tools_to_sync: Vec<String> = desired_tools
+            .into_iter()
+            .filter(|tool| !current_tool_set.contains(tool))
+            .collect();
+        if tools_to_sync.is_empty() {
+            continue;
+        }
+
+        let source_path = resolve_skill_source_path(app, state, skill).await?;
+        for tool in tools_to_sync {
+            preflight_inventory_tool_sync(skill, &tool, &source_path, custom_tools).await?;
+        }
     }
 
     Ok(())
@@ -1360,6 +1499,12 @@ pub async fn skills_apply_inventory_import<R: Runtime>(
     }
 
     let inventory = parse_inventory(&inventoryJson)?;
+    let custom_tools = skill_store::get_custom_tools(&state)
+        .await
+        .unwrap_or_default();
+    let local_skills = skill_store::get_managed_skills(&state).await?;
+    preflight_inventory_apply(&app, &state, &inventory, &local_skills, &custom_tools).await?;
+
     let now = now_ms();
     let groups: Vec<SkillGroupRecord> = inventory
         .groups
@@ -1379,13 +1524,9 @@ pub async fn skills_apply_inventory_import<R: Runtime>(
     let saved_groups = skill_store::replace_skill_groups(&state, &groups).await?;
     let group_id_by_name: HashMap<String, String> = saved_groups
         .into_iter()
-        .map(|group| (group.name.to_lowercase(), group.id))
+        .map(|group| (group.name.trim().to_lowercase(), group.id))
         .collect();
-    let custom_tools = skill_store::get_custom_tools(&state)
-        .await
-        .unwrap_or_default();
 
-    let local_skills = skill_store::get_managed_skills(&state).await?;
     let mut matched_ids = HashSet::new();
     for item in &inventory.skills {
         let Some(skill) = match_inventory_skill(item, &local_skills) else {
@@ -1415,11 +1556,8 @@ pub async fn skills_apply_inventory_import<R: Runtime>(
             )
             .await?;
         } else {
-            let source_path = resolve_skill_source_path(&app, &state, &skill).await?;
-            for target in skill_store::get_skill_targets(&state, &skill.id).await? {
-                remove_skill_target_checked(&source_path, &target.target_path)
-                    .map_err(format_error)?;
-            }
+            let source_path = resolve_skill_source_path_for_cleanup(&app, &state, skill).await;
+            remove_skill_targets_best_effort(&state, skill, source_path.as_deref()).await?;
             let previous_tools = if item.previous_enabled_tools.is_empty() {
                 normalize_tool_ids(&item.enabled_tools)
             } else {
@@ -1434,11 +1572,10 @@ pub async fn skills_apply_inventory_import<R: Runtime>(
         .iter()
         .filter(|skill| !matched_ids.contains(&skill.id))
     {
-        let source_path = resolve_skill_source_path(&app, &state, skill).await?;
-        for target in skill_store::get_skill_targets(&state, &skill.id).await? {
-            remove_skill_target_checked(&source_path, &target.target_path).map_err(format_error)?;
-        }
-        skill_store::set_skill_management_enabled(&state, &skill.id, false).await?;
+        let previous_tools = disabled_previous_tools_for_skill(skill);
+        let source_path = resolve_skill_source_path_for_cleanup(&app, &state, skill).await;
+        remove_skill_targets_best_effort(&state, skill, source_path.as_deref()).await?;
+        skill_store::disable_skill_with_previous_tools(&state, &skill.id, previous_tools).await?;
         skill_store::update_skill_metadata(&state, &skill.id, None, skill.user_note.clone())
             .await?;
     }

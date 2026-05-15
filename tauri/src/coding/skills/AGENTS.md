@@ -6,6 +6,7 @@
 - 中央仓库路径只有一个权威配置入口：`skill_settings:skills.central_repo_path`；缺失或为空时 fallback 到 `app_data_dir/skills`。`skill_preferences` 只保存 UI/工具偏好，绝不能读取、默认生成或写入 `central_repo_path`，避免 `~/.skills` 等脏偏好重新成为第二事实源。
 - `skills_sync_to_tool` 的语义始终是“中央仓库 -> 工具运行时 skills 目录”。后端必须先用 `skill_id` 读取 DB 中的 skill 记录，再通过 `resolve_central_repo_path` / `resolve_skill_central_path` 解析真实 source 与 name；前端传入的 `sourcePath/name` 只能作为兼容参数，不能作为事实源。如果工具当前配置落在 WSL，该目标目录可能解析成 `\\\\wsl.localhost\\...` UNC 路径，但源目录仍不变。
 - `management_enabled=false` 是后端必须维护的同步 invariant，不只是前端展示状态。任何会写工具目录的入口（`skills_sync_to_tool`、tray toggle、全量 resync、Inventory apply）都必须先确认 Skill 已启用；禁用 Skill 的唯一恢复路径是先 enable，再走明确的工具恢复/同步流程。
+- 禁用、取消同步、Inventory apply 禁用或默认禁用本地缺失项时，数据库里的 disabled/unsynced desired state 是主状态；工具目标目录清理只能 best-effort 记录 warning，不能因为旧 target 删除失败而阻止 DB 收敛。相反，Inventory apply 如果要新增工具同步，必须在替换 group registry 或更新 skill metadata 前完成源目录、工具安装和目标路径 overlap 预检。
 - 任何会写工具目录的同步入口，在创建、覆盖或删除目标路径前，必须先校验中央仓库 source 是可解析目录（`metadata` 跟随 symlink 后仍是目录）。broken/self symlink 或非目录 source 必须返回错误，不能把 DB/UI 关联写成 ok 却留下 runtime target broken。
 - 同步入口还必须在创建、覆盖或删除目标路径前，按解析 symlink 后的真实路径拒绝 `source == target`、target 位于 source 内、或 source 位于 target 内。尤其要防止工具 skills 父目录本身被 symlink 到中央仓库时，`~/.tool/skills/{name}` 实际解析成 `central_repo/{name}`，这会把中央源删掉或写成 self symlink。
 - `skills_get_managed_skills` 会对中央仓库 source 做只读诊断，并通过 DTO `source_health/source_error` 暴露给前端。缺失、非目录、broken/self symlink 只标记为 warning 让用户手动恢复或重装，不自动删除、恢复或重同步，也不写回 `skill` 表。

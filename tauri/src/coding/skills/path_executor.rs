@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 
 use super::sync_engine::{
     ensure_source_dir, ensure_source_target_not_overlapping, sync_dir_for_tool_with_overwrite,
+    validate_sync_target_preflight,
 };
 use super::types::{SyncMode, SyncOutcome};
 use crate::coding::runtime_location;
@@ -65,8 +66,19 @@ pub fn remove_skill_target(target_path: &str) -> Result<()> {
 pub fn remove_skill_target_checked(source: &Path, target_path: &str) -> Result<()> {
     if runtime_location::parse_wsl_unc_path(target_path).is_none() {
         let target = PathBuf::from(target_path);
+        if target == source || target.starts_with(source) || source.starts_with(&target) {
+            anyhow::bail!(
+                "source and target paths overlap: source={:?}, target={:?}",
+                source,
+                target
+            );
+        }
         if !is_direct_link_target(&target) {
-            ensure_source_target_not_overlapping(source, &target)?;
+            if let Err(err) = ensure_source_target_not_overlapping(source, &target) {
+                if source.exists() {
+                    return Err(err);
+                }
+            }
         }
     }
 
@@ -95,6 +107,15 @@ fn is_direct_link_target(target: &Path) -> bool {
 pub fn sync_copy_target_path(source: &Path, target_path: &str) -> Result<SyncOutcome> {
     let target = PathBuf::from(target_path);
     sync_skill_to_target("copy", source, &target, true, true)
+}
+
+pub fn validate_skill_sync_target(source: &Path, target: &Path, force_copy: bool) -> Result<()> {
+    if parse_wsl_target_path(target).is_some() {
+        ensure_source_dir(source)?;
+        return Ok(());
+    }
+
+    validate_sync_target_preflight(source, target, force_copy)
 }
 
 pub fn target_path_changed(previous_target_path: &str, next_target: &Path) -> bool {
@@ -149,5 +170,20 @@ mod tests {
             std::fs::read_to_string(source.join("SKILL.md")).expect("source survives"),
             "---\nname: drools-rule-dev\n---\n"
         );
+    }
+
+    #[test]
+    fn checked_remove_allows_cleanup_when_source_is_missing() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("missing-source");
+        let target = temp.path().join("target-copy");
+        std::fs::create_dir(&target).expect("create target");
+        std::fs::write(target.join("SKILL.md"), "---\nname: stale\n---\n")
+            .expect("write target file");
+
+        remove_skill_target_checked(&source, &target.to_string_lossy())
+            .expect("remove stale target without source");
+
+        assert!(!target.exists());
     }
 }

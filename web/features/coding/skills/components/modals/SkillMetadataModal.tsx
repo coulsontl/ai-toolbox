@@ -4,7 +4,7 @@ import { FileTextOutlined, TagsOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import * as api from '../../services/skillsApi';
 import type { ManagedSkill } from '../../types';
-import { normalizeSkillMetadataText } from '../../utils/skillGrouping';
+import { findSkillGroupOptionByName, normalizeSkillMetadataText } from '../../utils/skillGrouping';
 import styles from './SkillMetadataModal.module.less';
 
 interface SkillMetadataModalProps {
@@ -52,7 +52,7 @@ export const SkillMetadataModal: React.FC<SkillMetadataModalProps> = ({
     setSaving(true);
     try {
       const groupId = groupName
-        ? groupOptions.find((group) => group.name === groupName)?.id
+        ? findSkillGroupOptionByName(groupOptions, groupName)?.id
           ?? await api.saveSkillGroup(groupName, null, groupOptions.length)
         : null;
       await api.updateSkillMetadata(

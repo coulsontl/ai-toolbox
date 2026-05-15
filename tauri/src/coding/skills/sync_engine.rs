@@ -135,6 +135,20 @@ pub fn sync_dir_for_tool_with_overwrite(
     sync_dir_hybrid_with_overwrite(source, target, overwrite)
 }
 
+pub(crate) fn validate_sync_target_preflight(
+    source: &Path,
+    target: &Path,
+    force_copy: bool,
+) -> Result<()> {
+    ensure_source_dir(source)?;
+
+    if !force_copy && std::fs::symlink_metadata(target).is_ok() && is_same_link(target, source) {
+        return Ok(());
+    }
+
+    ensure_source_target_not_overlapping(source, target)
+}
+
 fn ensure_parent_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("create dir {:?}", parent))?;

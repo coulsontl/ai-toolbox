@@ -51,6 +51,7 @@ import { SkillInventoryModal } from '../components/modals/SkillInventoryModal';
 import * as api from '../services/skillsApi';
 import {
   buildSkillGroups,
+  findSkillGroupOptionByName,
   filterSkillsBySearch,
   getSkillGroupOptions,
   getSkillGroupToolIds,
@@ -392,7 +393,7 @@ const SkillsPage: React.FC = () => {
   const handleConfirmBatchGroup = React.useCallback(async () => {
     const normalizedGroupName = normalizeSkillMetadataText(batchGroupValue);
     const groupId = normalizedGroupName
-      ? groupOptions.find((group) => group.name === normalizedGroupName)?.id
+      ? findSkillGroupOptionByName(groupOptions, normalizedGroupName)?.id
         ?? await api.saveSkillGroup(normalizedGroupName, null, groupOptions.length)
       : null;
     const saved = await handleBatchSetGroup(
