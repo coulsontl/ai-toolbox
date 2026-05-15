@@ -1,56 +1,46 @@
 .groupedList {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 8px;
 }
 
 .groupSection {
-  position: relative;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--color-border) 58%, transparent);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--color-bg-container) 90%, var(--color-bg-layout));
-
-  &::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    right: 18px;
-    left: 18px;
-    height: 1px;
-    background: color-mix(in srgb, var(--color-border-secondary) 44%, transparent);
-  }
+  border: 1px dashed var(--color-border-secondary);
+  border-radius: 8px;
+  background: var(--color-bg-container);
 }
 
 .groupHeader {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 10px;
   width: 100%;
   min-width: 0;
-  padding: 12px 14px 10px;
-  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 46%, transparent);
+  padding: 8px 10px;
+  border-bottom: 1px solid transparent;
 }
 
 .groupTitle {
   display: inline-flex;
-  align-items: flex-start;
-  gap: 10px;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
-  flex: 1 1 auto;
 }
 
 .groupToggle {
   display: inline-flex;
   min-width: 0;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
   border: none;
   background: transparent;
   color: var(--color-text-primary);
   cursor: pointer;
   font: inherit;
+  font-size: 13px;
+  font-weight: 600;
   text-align: left;
 
   &:focus-visible {
@@ -65,32 +55,10 @@
   transform: rotate(-90deg);
   transition: transform 0.16s ease;
   flex-shrink: 0;
-  margin-top: 4px;
 }
 
 .groupChevronOpen {
   transform: rotate(0deg);
-}
-
-.groupTitleText {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.groupPrimaryLine {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.groupNumber {
-  color: var(--color-text-tertiary);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  flex-shrink: 0;
 }
 
 .groupLabel {
@@ -98,37 +66,18 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 15px;
-  font-weight: 700;
-  line-height: 20px;
 }
 
 .groupBody {
-  padding: 14px;
+  padding: 0 10px 10px;
 }
 
 .groupCount {
-  display: inline-flex;
-  align-items: center;
-  height: 20px;
-  padding: 0 8px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-bg-selected) 52%, var(--color-bg-elevated));
-  color: var(--color-text-secondary);
-  font-size: 11px;
-  font-weight: 700;
-  flex-shrink: 0;
-}
-
-.groupNote {
-  min-width: 0;
-  max-width: min(520px, 100%);
-  color: var(--color-text-secondary);
   font-size: 12px;
-  line-height: 17px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--color-text-tertiary);
+  font-weight: normal;
+  margin-left: 4px;
+  flex-shrink: 0;
 }
 
 .groupTools {
@@ -172,10 +121,10 @@
 }
 
 .statusBadge {
-  width: 4px;
-  height: 4px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--color-status-success) 58%, var(--color-text-tertiary));
+  background: var(--color-status-success);
   flex-shrink: 0;
 }
 

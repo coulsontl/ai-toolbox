@@ -26,7 +26,6 @@ interface SkillsGroupedListProps {
   onSelectChange: (skillId: string, checked: boolean) => void;
   onSelectAllGroup: (group: SkillGroup, checked: boolean) => void;
   getGithubInfo: (url: string | null | undefined) => { label: string; href: string } | null;
-  getSkillSourceLabel: (skill: ManagedSkill) => string;
   formatRelative: (ms: number | null | undefined) => string;
   onUpdate: (skill: ManagedSkill) => void;
   onDelete: (skillId: string) => void;
@@ -51,7 +50,6 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
   onSelectChange,
   onSelectAllGroup,
   getGithubInfo,
-  getSkillSourceLabel,
   formatRelative,
   onUpdate,
   onDelete,
@@ -128,12 +126,9 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
 
   return (
     <div className={styles.groupedList}>
-      {groups.map((group, groupIndex) => {
+      {groups.map((group) => {
         const groupToolsEnabled = groupToolMode && !isSkillUngroupedCustomGroup(group);
         const isOpen = activeKeySet.has(group.key);
-        const activeSkillCount = group.skills.filter((skill) => skill.management_enabled).length;
-        const groupNote = group.note?.trim() ?? '';
-        const groupNumber = String(groupIndex + 1).padStart(2, '0');
 
         return (
           <section key={group.key} className={styles.groupSection}>
@@ -158,20 +153,9 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
                     className={`${styles.groupChevron}${isOpen ? ` ${styles.groupChevronOpen}` : ''}`}
                     aria-hidden="true"
                   />
-                  <span className={styles.groupTitleText}>
-                    <span className={styles.groupPrimaryLine}>
-                      <span className={styles.groupNumber}>{groupNumber}</span>
-                      <span className={styles.groupLabel}>{group.label}</span>
-                      <span
-                        className={styles.groupCount}
-                        title={t('skills.groupEnabledCount', { enabled: activeSkillCount, total: group.skills.length })}
-                      >
-                        {activeSkillCount}/{group.skills.length}
-                      </span>
-                    </span>
-                    {groupNote && (
-                      <span className={styles.groupNote} title={groupNote}>{groupNote}</span>
-                    )}
+                  <span className={styles.groupLabel}>{group.label}</span>
+                  <span className={styles.groupCount}>
+                    {t('skills.skillCount', { count: group.skills.length })}
                   </span>
                 </button>
               </div>
@@ -183,10 +167,7 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
                   items={group.skills}
                   getKey={(skill) => skill.id}
                   columns={columns}
-                  minColumnWidth={360}
-                  maxColumns={3}
-                  rowGap={14}
-                  defaultRowHeight={176}
+                  defaultRowHeight={108}
                   virtualize={group.skills.length > 24}
                   renderItem={(skill) => (
                     <SkillCard
@@ -201,7 +182,6 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
                       toolsReadOnly={groupToolsEnabled}
                       onSelectChange={onSelectChange}
                       getGithubInfo={getGithubInfo}
-                      getSkillSourceLabel={getSkillSourceLabel}
                       formatRelative={formatRelative}
                       onUpdate={onUpdate}
                       onDelete={onDelete}

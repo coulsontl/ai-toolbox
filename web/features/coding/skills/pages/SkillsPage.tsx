@@ -220,7 +220,6 @@ const SkillsPage: React.FC = () => {
     getAllTools,
     formatRelative,
     getGithubInfo,
-    getSkillSourceLabel,
     refresh,
   } = useSkills();
 
@@ -908,7 +907,6 @@ const SkillsPage: React.FC = () => {
             columns={gridColumns}
             dragDisabled={!isFlatReorderEnabled}
             getGithubInfo={getGithubInfo}
-            getSkillSourceLabel={getSkillSourceLabel}
             formatRelative={formatRelative}
             onUpdate={handleUpdate}
             onDelete={handleDelete}
@@ -931,7 +929,6 @@ const SkillsPage: React.FC = () => {
             onSelectChange={handleSelectChange}
             onSelectAllGroup={handleSelectAllGroup}
             getGithubInfo={getGithubInfo}
-            getSkillSourceLabel={getSkillSourceLabel}
             formatRelative={formatRelative}
             onUpdate={handleUpdate}
             onDelete={handleDelete}

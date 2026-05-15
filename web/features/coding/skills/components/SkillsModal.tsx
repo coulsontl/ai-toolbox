@@ -62,7 +62,6 @@ export const SkillsModal: React.FC<SkillsModalProps> = ({ open, onClose }) => {
     getAllTools,
     formatRelative,
     getGithubInfo,
-    getSkillSourceLabel,
     refresh,
   } = useSkills();
 
@@ -137,7 +136,6 @@ export const SkillsModal: React.FC<SkillsModalProps> = ({ open, onClose }) => {
             loading={loading || actionLoading}
             updatingSkillIds={updatingSkillIds}
             getGithubInfo={getGithubInfo}
-            getSkillSourceLabel={getSkillSourceLabel}
             formatRelative={formatRelative}
             onUpdate={handleUpdate}
             onDelete={handleDelete}

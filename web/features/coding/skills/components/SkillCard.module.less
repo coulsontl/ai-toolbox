@@ -1,37 +1,42 @@
 .skillCard {
   box-sizing: border-box;
   width: 100%;
-  min-height: 126px;
-  padding: 10px 10px 10px 12px !important;
+  min-height: 96px;
+  padding: 8px 10px !important;
   border-color: var(--color-border-card) !important;
   border-radius: 8px !important;
   background: var(--color-bg-container) !important;
   box-shadow: none !important;
 
   &:hover {
-    border-color: color-mix(in srgb, var(--color-border-secondary) 62%, var(--color-border)) !important;
+    border-color: var(--color-border-secondary) !important;
     background: var(--color-bg-elevated) !important;
   }
 }
 
 .disabledCard {
-  border-style: solid !important;
-  background: color-mix(in srgb, var(--color-bg-container) 78%, var(--color-bg-layout)) !important;
+  border-color: color-mix(in srgb, var(--color-border) 62%, var(--color-bg-layout)) !important;
+  background: color-mix(in srgb, var(--color-bg-layout) 72%, var(--color-bg-container)) !important;
 }
 
 .disabledCard .icon,
-.disabledCard .groupMeta,
-.disabledCard .sourceTypeBadge,
-.disabledCard .sourceContext,
-.disabledCard .summaryBlock,
-.disabledCard .noteBlock,
+.disabledCard .sourcePill,
+.disabledCard .time,
+.disabledCard .groupTag,
+.disabledCard .note,
 .disabledCard .toolPill,
 .disabledCard .addToolBtn {
-  opacity: 0.58;
+  opacity: 0.48;
 }
 
+.disabledCard .skillNameText {
+  color: var(--color-text-tertiary);
+  opacity: 0.7;
+}
+
+.disabledCard .detailButton,
 .disabledCard .sourceWarningMeta {
-  opacity: 0.8;
+  opacity: 0.72;
 }
 
 .sourceWarningCard {
@@ -39,57 +44,12 @@
   background: color-mix(in srgb, var(--color-status-warning) 8%, var(--color-bg-container)) !important;
 }
 
-.sourceWarningMeta {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--color-status-warning);
-  font-size: 11px;
-  font-weight: 500;
-  flex: 0 0 auto;
-  max-width: min(168px, 100%);
-
-  span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-}
-
-.titleInline {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  max-width: 100%;
-}
-
-.sourceTypeBadge {
-  display: inline-flex;
-  align-items: center;
-  height: 18px;
-  padding: 0 5px;
-  border: 1px solid var(--color-border);
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--color-bg-elevated) 78%, var(--color-bg-selected));
-  color: var(--color-text-tertiary);
-  font-size: 11px;
-  line-height: 16px;
-  font-weight: 600;
-  flex-shrink: 0;
-}
-
-.sourceTypegit {
-  color: color-mix(in srgb, var(--color-text-secondary) 78%, var(--color-status-success));
-}
-
-.sourceTypelocal {
+.icon {
   color: var(--color-text-secondary);
 }
 
-.sourceTypeimport {
-  color: color-mix(in srgb, var(--color-text-secondary) 82%, var(--color-primary, var(--color-text-primary)));
+.clickableIcon {
+  color: var(--color-text-primary);
 }
 
 .skillNameText {
@@ -101,34 +61,77 @@
   white-space: nowrap;
 }
 
-.titleCopyButton {
+.detailButton {
   display: inline-flex;
+  width: 24px;
+  height: 24px;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: 1px solid transparent;
+  border: none;
   border-radius: 5px;
   background: transparent;
   color: var(--color-text-tertiary);
   cursor: pointer;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
   flex-shrink: 0;
+
+  &:hover {
+    color: var(--color-text-primary);
+    background: var(--color-bg-hover);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-secondary);
+    outline-offset: 2px;
+  }
+}
+
+.sourcePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
   transition:
     background 0.16s ease,
     border-color 0.16s ease,
     color 0.16s ease;
+  flex: 0 1 auto;
+  min-width: 48px;
+  max-width: 100%;
 
   &:hover:not(:disabled) {
     background: var(--color-bg-hover);
-    border-color: var(--color-border);
+    border-color: var(--color-border-secondary);
     color: var(--color-text-primary);
   }
 
   &:disabled {
     cursor: default;
-    opacity: 0.46;
+    opacity: 0.6;
   }
+}
+
+.sourceText {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.copyIcon {
+  opacity: 0.6;
+  flex-shrink: 0;
 }
 
 .dot {
@@ -136,83 +139,51 @@
   flex-shrink: 0;
 }
 
-.time,
-.sourceContext,
-.groupMeta {
+.time {
   font-size: 11px;
   color: var(--color-text-secondary);
   white-space: nowrap;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex-shrink: 0;
 }
 
-.time {
-  flex: 0 0 auto;
-}
-
-.sourceContext {
-  max-width: min(190px, 48%);
-}
-
-.groupMeta {
-  max-width: min(132px, 32%);
-  color: var(--color-text-tertiary);
-}
-
-.metaLine {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  min-width: 0;
-}
-
-.infoStack {
-  display: grid;
-  gap: 6px;
-  width: 100%;
-  min-width: 0;
-  justify-items: start;
-}
-
-.summaryBlock {
-  width: 100%;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  line-height: 17px;
-  opacity: 0.74;
-}
-
-.noteBlock {
+.sourceWarningMeta {
   display: inline-flex;
   align-items: center;
-  justify-self: start;
-  max-width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  padding: 0;
-  border-radius: 0;
-  border: none;
-  background: transparent;
-  color: var(--color-text-primary);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 17px;
+  gap: 4px;
+  color: var(--color-status-warning);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
-.noteText {
-  display: block;
+.groupTag {
+  display: inline-flex;
+  align-items: center;
+  max-width: 120px;
   min-width: 0;
-  max-width: 100%;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 17px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex-shrink: 1;
+}
+
+.note {
+  min-width: 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 17px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
 }
 
 .toolPill {
@@ -233,8 +204,8 @@
   border: 1px solid;
 
   &.active {
-    background: color-mix(in srgb, var(--color-bg-elevated) 76%, var(--color-bg-selected));
-    border-color: color-mix(in srgb, var(--color-border) 74%, transparent);
+    background: var(--color-bg-elevated);
+    border-color: var(--color-border);
     color: var(--color-text-secondary);
 
     &:hover:not(:disabled) {
@@ -261,17 +232,11 @@
 }
 
 .statusBadge {
-  width: 4px;
-  height: 4px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--color-status-success) 58%, var(--color-text-tertiary));
+  background: var(--color-status-success);
   flex-shrink: 0;
-}
-
-.toolSection {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid color-mix(in srgb, var(--color-border) 54%, transparent);
 }
 
 .addToolBtn {
