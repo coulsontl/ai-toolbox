@@ -9,6 +9,9 @@ import type {
   OnboardingPlan,
   SkillRepo,
   CustomTool,
+  SkillGroupRecord,
+  SkillInventoryPreview,
+  SkillViewMode,
 } from '../types';
 
 // Tool Status
@@ -106,17 +109,73 @@ export const deleteManagedSkill = async (skillId: string): Promise<void> => {
 
 export const updateSkillMetadata = async (
   skillId: string,
-  userGroup: string | null,
+  groupId: string | null,
   userNote: string | null,
 ): Promise<void> => {
-  return invoke('skills_update_metadata', { skillId, userGroup, userNote });
+  return invoke('skills_update_metadata', { skillId, groupId, userNote });
 };
 
 export const batchUpdateSkillGroup = async (
   skillIds: string[],
-  userGroup: string | null,
+  groupId: string | null,
 ): Promise<void> => {
-  return invoke('skills_batch_update_group', { skillIds, userGroup });
+  return invoke('skills_batch_update_group', { skillIds, groupId });
+};
+
+export const getSkillGroups = async (): Promise<SkillGroupRecord[]> => {
+  return invoke<SkillGroupRecord[]>('skills_get_groups');
+};
+
+export const saveSkillGroup = async (
+  name: string,
+  note: string | null,
+  sortIndex: number,
+  id?: string,
+): Promise<string> => {
+  return invoke<string>('skills_save_group', { id, name, note, sortIndex });
+};
+
+export const deleteSkillGroup = async (groupId: string): Promise<void> => {
+  return invoke('skills_delete_group', { groupId });
+};
+
+export const setSkillManagementEnabled = async (
+  skillId: string,
+  enabled: boolean,
+): Promise<string[]> => {
+  return invoke<string[]>('skills_set_management_enabled', { skillId, enabled });
+};
+
+export const exportSkillInventory = async (): Promise<string> => {
+  return invoke<string>('skills_export_inventory');
+};
+
+export const exportSkillInventoryFile = async (): Promise<string> => {
+  return invoke<string>('skills_export_inventory_file');
+};
+
+export const previewSkillInventoryImport = async (
+  inventoryJson: string,
+): Promise<SkillInventoryPreview> => {
+  return invoke<SkillInventoryPreview>('skills_preview_inventory_import', { inventoryJson });
+};
+
+export const previewSkillInventoryImportFile = async (
+  filePath: string,
+): Promise<SkillInventoryPreview> => {
+  return invoke<SkillInventoryPreview>('skills_preview_inventory_import_file', { filePath });
+};
+
+export const applySkillInventoryImport = async (
+  inventoryJson: string,
+): Promise<SkillInventoryPreview> => {
+  return invoke<SkillInventoryPreview>('skills_apply_inventory_import', { inventoryJson });
+};
+
+export const applySkillInventoryImportFile = async (
+  filePath: string,
+): Promise<SkillInventoryPreview> => {
+  return invoke<SkillInventoryPreview>('skills_apply_inventory_import_file', { filePath });
 };
 
 // Onboarding
@@ -168,6 +227,15 @@ export const getShowSkillsInTray = async (): Promise<boolean> => {
 
 export const setShowSkillsInTray = async (enabled: boolean): Promise<void> => {
   return invoke('skills_set_show_in_tray', { enabled });
+};
+
+// Default View Mode
+export const getDefaultViewMode = async (): Promise<SkillViewMode> => {
+  return invoke<SkillViewMode>('skills_get_default_view_mode');
+};
+
+export const setDefaultViewMode = async (mode: SkillViewMode): Promise<void> => {
+  return invoke('skills_set_default_view_mode', { mode });
 };
 
 // Skill Repos

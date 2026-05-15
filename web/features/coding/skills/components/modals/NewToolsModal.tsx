@@ -30,7 +30,7 @@ export const NewToolsModal: React.FC<NewToolsModalProps> = ({ open }) => {
   const handleSyncAll = async () => {
     setLoading(true);
     try {
-      for (const skill of skills) {
+      for (const skill of skills.filter((skill) => skill.management_enabled)) {
         for (const toolKey of newlyInstalled) {
           // Check if already synced
           if (skill.targets.some((t) => t.tool === toolKey)) {

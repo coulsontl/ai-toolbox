@@ -720,6 +720,7 @@ features/
   - 中央仓库内容是否已更新。
   - 本地工具运行时目录是否因为路径变化触发了重新同步。
   - `skills-changed` 后的 WSL/SSH 后续链路是否执行，以及它们各自写入的是哪个远端目标目录。
+- 工具 skills 目录不能通过真实路径解析成中央仓库自身或其子目录。同步前必须按 symlink 解析后的路径拒绝 `source == target`、target 在 source 内、source 在 target 内；否则当 `~/.tool/skills` 父目录被 symlink 到中央仓库时，同步某个 Skill 会把中央源删掉或写成 self symlink。
 
 ## 4 Tabs WSL Direct Notes
 

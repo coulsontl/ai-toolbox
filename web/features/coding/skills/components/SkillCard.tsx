@@ -4,15 +4,16 @@ import {
   Copy,
   Eye,
   Folder,
-  Github,
   Grid2X2,
   MoreHorizontal,
   Plus,
+  Power,
   RefreshCw,
   Tags,
   Trash2,
+  TriangleAlert,
 } from 'lucide-react';
-import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
+import { openPath, openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -21,7 +22,6 @@ import {
   ManagementCardActions,
   ManagementCardCheckboxArea,
   ManagementCardDragHandle,
-  ManagementCardHeader,
   ManagementCardIcon,
   ManagementCardMain,
   ManagementCardMetaRow,
@@ -32,7 +32,26 @@ import {
   type ManagementMenuItem,
 } from '@/features/coding/shared/management';
 import type { ManagedSkill, ToolOption } from '../types';
+import { getSkillFolderOpenCandidates, getSkillManifestPath } from '../utils/skillPath';
 import styles from './SkillCard.module.less';
+
+const GitHubSourceIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <svg
+    className={className}
+    width="18"
+    height="18"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.4 5.4 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65S8.93 17.38 9 18v4" />
+    <path d="M9 18c-4.51 2-5-2-7-2" />
+  </svg>
+);
 
 interface SkillCardProps {
   skill: ManagedSkill;
@@ -40,17 +59,18 @@ interface SkillCardProps {
   loading: boolean;
   isUpdating?: boolean;
   dragDisabled?: boolean;
+  showGroupTag?: boolean;
   selectable?: boolean;
   selected?: boolean;
   toolsReadOnly?: boolean;
   onSelectChange?: (skillId: string, checked: boolean) => void;
   getGithubInfo: (url: string | null | undefined) => { label: string; href: string } | null;
-  getSkillSourceLabel: (skill: ManagedSkill) => string;
   formatRelative: (ms: number | null | undefined) => string;
   onUpdate: (skill: ManagedSkill) => void;
   onDelete: (skillId: string) => void;
   onToggleTool: (skill: ManagedSkill, toolId: string) => void;
   onEditMetadata: (skill: ManagedSkill) => void;
+  onSetManagementEnabled: (skill: ManagedSkill, enabled: boolean) => void;
 }
 
 interface SkillCardContentProps extends Omit<SkillCardProps, 'dragDisabled'> {
@@ -64,17 +84,18 @@ const SkillCardContent = React.memo(function SkillCardContent({
   allTools,
   loading,
   isUpdating = false,
+  showGroupTag = true,
   selectable,
   selected,
   toolsReadOnly,
   onSelectChange,
   getGithubInfo,
-  getSkillSourceLabel,
   formatRelative,
   onUpdate,
   onDelete,
   onToggleTool,
   onEditMetadata,
+  onSetManagementEnabled,
   dragHandle,
   containerRef,
   containerStyle,
@@ -82,6 +103,19 @@ const SkillCardContent = React.memo(function SkillCardContent({
   const { t } = useTranslation();
 
   const typeKey = skill.source_type.toLowerCase();
+  const sourceWarningMessage = skill.source_health === 'warning'
+    ? (skill.source_error || t('skills.sourceWarningFallback'))
+    : undefined;
+  const cardClassName = [
+    styles.skillCard,
+    !skill.management_enabled ? styles.disabledCard : undefined,
+    sourceWarningMessage ? styles.sourceWarningCard : undefined,
+  ].filter(Boolean).join(' ');
+  const groupLabel = skill.user_group?.trim() ?? '';
+  const userNoteText = skill.user_note?.trim() ?? '';
+  const shouldShowGroupTag = showGroupTag && groupLabel.length > 0;
+  const hasUserNote = userNoteText.length > 0;
+  const managementToggleLabel = skill.management_enabled ? t('skills.disableSkill') : t('skills.enableSkill');
 
   // These values are derived from stable inputs and are recalculated for every card.
   // Memoizing them keeps scroll and hover interactions cheaper when many cards are on screen.
@@ -109,44 +143,81 @@ const SkillCardContent = React.memo(function SkillCardContent({
     message.info(t('skills.groupTools.cardToolReadOnly'));
   }, [t]);
 
-  const handleIconClick = async () => {
-    if (github) {
-      await openUrl(github.href);
-    } else if (skill.source_type === 'local' && skill.source_ref) {
+  const openFirstPath = React.useCallback(async (paths: string[]) => {
+    for (const path of paths) {
       try {
-        await revealItemInDir(skill.source_ref);
+        await openPath(path);
+        return true;
       } catch {
+        // Try the next candidate. Some local source paths may no longer exist,
+        // while the central repository path remains the managed source of truth.
+      }
+    }
+
+    return false;
+  }, []);
+
+  const handleIconClick = async () => {
+    if (typeKey.includes('git')) {
+      const repoUrl = github?.href ?? skill.source_ref?.trim();
+      if (!repoUrl) return;
+
+      try {
+        await openUrl(repoUrl);
+      } catch {
+        message.error(t('skills.openFolderFailed'));
+      }
+      return;
+    }
+
+    if (skill.source_type === 'local') {
+      const opened = await openFirstPath(getSkillFolderOpenCandidates(skill));
+      if (!opened) {
         message.error(t('skills.openFolderFailed'));
       }
     }
   };
 
   const handleOpenCentralPath = async () => {
-    try {
-      await revealItemInDir(`${skill.central_path}\\SKILL.md`);
-    } catch {
+    const manifestPath = getSkillManifestPath(skill.central_path);
+
+    if (manifestPath) {
       try {
-        await revealItemInDir(skill.central_path);
+        await revealItemInDir(manifestPath);
+        return;
       } catch {
-        message.error(t('skills.openFolderFailed'));
+        // If SKILL.md cannot be revealed, fall back to opening the managed folder.
       }
+    }
+
+    const opened = await openFirstPath(getSkillFolderOpenCandidates({
+      source_type: 'central',
+      central_path: skill.central_path,
+    }));
+    if (!opened) {
+      message.error(t('skills.openFolderFailed'));
     }
   };
 
+  const handleToggleManagement = React.useCallback(() => {
+    if (loading || isUpdating) return;
+    onSetManagementEnabled(skill, !skill.management_enabled);
+  }, [isUpdating, loading, onSetManagementEnabled, skill]);
+
   const iconTooltip = React.useMemo(() => {
-    if (github) {
+    if (typeKey.includes('git') && (github?.href || skill.source_ref?.trim())) {
       return t('skills.openRepo');
     }
-    if (skill.source_type === 'local' && skill.source_ref) {
+    if (skill.source_type === 'local' && (skill.source_ref?.trim() || skill.central_path?.trim())) {
       return t('skills.openFolder');
     }
     return undefined;
-  }, [github, skill.source_ref, skill.source_type, t]);
+  }, [github, skill.central_path, skill.source_ref, skill.source_type, t, typeKey]);
 
   const iconClickable = !!iconTooltip;
 
   const iconNode = typeKey.includes('git') ? (
-    <Github size={18} className={`${styles.icon}${iconClickable ? ` ${styles.clickableIcon}` : ''}`} />
+    <GitHubSourceIcon className={`${styles.icon}${iconClickable ? ` ${styles.clickableIcon}` : ''}`} />
   ) : typeKey.includes('local') ? (
     <Folder size={18} className={`${styles.icon}${iconClickable ? ` ${styles.clickableIcon}` : ''}`} />
   ) : (
@@ -188,6 +259,14 @@ const SkillCardContent = React.memo(function SkillCardContent({
         icon: <Tags size={14} />,
         label: t('skills.metadata.edit'),
         onSelect: () => onEditMetadata(skill),
+        disabled: loading || isUpdating,
+      },
+      {
+        key: 'management-enabled',
+        icon: <Power size={14} />,
+        label: managementToggleLabel,
+        onSelect: handleToggleManagement,
+        disabled: loading || isUpdating,
       },
       {
         key: 'delete',
@@ -195,9 +274,10 @@ const SkillCardContent = React.memo(function SkillCardContent({
         icon: <Trash2 size={14} />,
         label: t('skills.remove'),
         onSelect: () => onDelete(skill.id),
+        disabled: loading || isUpdating,
       },
     ],
-    [onDelete, onEditMetadata, skill, t],
+    [handleToggleManagement, isUpdating, loading, managementToggleLabel, onDelete, onEditMetadata, skill, t],
   );
 
   return (
@@ -206,6 +286,7 @@ const SkillCardContent = React.memo(function SkillCardContent({
       containerStyle={containerStyle}
       selected={selected}
       selectable={selectable}
+      className={cardClassName}
     >
       {selectable && (
         <ManagementCardCheckboxArea>
@@ -225,45 +306,49 @@ const SkillCardContent = React.memo(function SkillCardContent({
         disabled={!iconClickable}
       />
       <ManagementCardMain>
-        <ManagementCardHeader
-          title={skill.name}
-          minWidth={120}
-          meta={
-            <>
-              <button
-                type="button"
-                className={styles.detailButton}
-                title={t('skills.openDataDir')}
-                aria-label={t('skills.openDataDir')}
-                onClick={handleOpenCentralPath}
+        <div className={styles.cardHeader}>
+          <span className={styles.skillNameText} title={skill.name}>{skill.name}</span>
+          <div className={styles.headerMetaCompact}>
+            <button
+              type="button"
+              className={styles.detailButton}
+              title={t('skills.openDataDir')}
+              aria-label={t('skills.openDataDir')}
+              onClick={handleOpenCentralPath}
+            >
+              <Eye size={13} aria-hidden="true" />
+            </button>
+            <button
+              className={styles.copySourceButton}
+              type="button"
+              title={copyValue ? `${t('common.copy')}: ${copyValue}` : t('common.copy')}
+              aria-label={copyValue ? `${t('common.copy')}: ${copyValue}` : t('common.copy')}
+              onClick={handleCopy}
+              disabled={!copyValue}
+            >
+              <Copy size={12} aria-hidden="true" />
+            </button>
+            {sourceWarningMessage && (
+              <span
+                className={styles.sourceWarningMeta}
+                title={sourceWarningMessage}
+                aria-label={`${t('skills.sourceWarning')}: ${sourceWarningMessage}`}
               >
-                <Eye size={13} aria-hidden="true" />
-              </button>
-              <button
-                className={styles.sourcePill}
-                type="button"
-                title={t('common.copy')}
-                aria-label={t('common.copy')}
-                onClick={handleCopy}
-                disabled={!copyValue}
-              >
-                <span className={styles.sourceText}>
-                  {github ? github.label : getSkillSourceLabel(skill)}
-                </span>
-                <Copy size={11} className={styles.copyIcon} aria-hidden="true" />
-              </button>
-              <span className={styles.dot}>•</span>
-              <span className={styles.time}>{formatRelative(skill.updated_at)}</span>
-            </>
-          }
-        />
-        {(skill.user_group || skill.user_note) && (
-          <ManagementCardMetaRow>
-            {skill.user_group && (
-              <span className={styles.groupTag} title={skill.user_group}>{skill.user_group}</span>
+                <TriangleAlert size={12} aria-hidden="true" />
+                <span>{t('skills.sourceWarning')}</span>
+              </span>
             )}
-            {skill.user_note && (
-              <span className={styles.note} title={skill.user_note}>{skill.user_note}</span>
+            <span className={styles.dot}>•</span>
+            <span className={styles.time}>{formatRelative(skill.updated_at)}</span>
+          </div>
+        </div>
+        {(shouldShowGroupTag || hasUserNote) && (
+          <ManagementCardMetaRow>
+            {shouldShowGroupTag && (
+              <span className={styles.groupTag} title={groupLabel}>{groupLabel}</span>
+            )}
+            {hasUserNote && (
+              <span className={styles.note} title={userNoteText}>{userNoteText}</span>
             )}
           </ManagementCardMetaRow>
         )}
@@ -277,8 +362,8 @@ const SkillCardContent = React.memo(function SkillCardContent({
                 type="button"
                 className={`${styles.toolPill} ${styles.active}${toolsReadOnly ? ` ${styles.readOnlyTool}` : ''}`}
                 onClick={toolsReadOnly ? handleReadOnlyToolClick : () => onToggleTool(skill, tool.id)}
-                disabled={loading || isUpdating}
-                aria-disabled={toolsReadOnly || loading || isUpdating}
+                disabled={loading || isUpdating || !skill.management_enabled}
+                aria-disabled={toolsReadOnly || loading || isUpdating || !skill.management_enabled}
               >
                 <span className={styles.statusBadge} />
                 {tool.label}
@@ -288,7 +373,7 @@ const SkillCardContent = React.memo(function SkillCardContent({
           {!toolsReadOnly && dropdownItems.length > 0 && (
             <ManagementMenu
               items={dropdownItems}
-              disabled={loading || isUpdating}
+              disabled={loading || isUpdating || !skill.management_enabled}
               title={t('skills.batch.addTool')}
               triggerClassName={styles.addToolBtn}
             >
@@ -300,7 +385,6 @@ const SkillCardContent = React.memo(function SkillCardContent({
       <ManagementCardActions>
         <ManagementMenu
           items={actionItems}
-          disabled={loading || isUpdating}
           title={t('skills.more')}
           controlSize="compact"
         >
@@ -309,7 +393,7 @@ const SkillCardContent = React.memo(function SkillCardContent({
         <ManagementIconButton
           icon={<RefreshCw size={15} aria-hidden="true" />}
           onClick={() => onUpdate(skill)}
-          disabled={loading || isUpdating}
+          disabled={loading || isUpdating || !skill.management_enabled}
           title={t('skills.updateTooltip')}
           controlSize="compact"
         />

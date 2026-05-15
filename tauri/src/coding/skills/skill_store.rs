@@ -1,20 +1,24 @@
 use serde_json::Value;
+use std::collections::HashSet;
 
 use crate::coding::db_id::{db_new_id, db_record_id};
 use crate::DbState;
 
 use super::adapter::{
-    from_db_skill, from_db_skill_preferences, from_db_skill_repo, get_sync_detail,
-    parse_sync_details, remove_sync_detail, set_sync_detail, to_clean_skill_payload,
-    to_skill_preferences_payload, to_skill_repo_payload,
+    from_db_skill, from_db_skill_group, from_db_skill_preferences, from_db_skill_repo,
+    get_sync_detail, parse_sync_details, remove_sync_detail, set_sync_detail,
+    to_clean_skill_payload, to_skill_group_payload, to_skill_preferences_payload,
+    to_skill_repo_payload,
 };
 use super::tool_adapters::CustomTool;
-use super::types::{now_ms, Skill, SkillPreferences, SkillRepo, SkillTarget};
+use super::types::{now_ms, Skill, SkillGroupRecord, SkillPreferences, SkillRepo, SkillTarget};
 
 // ==================== Skill CRUD ====================
 
 /// Get all managed skills
 pub async fn get_managed_skills(state: &DbState) -> Result<Vec<Skill>, String> {
+    migrate_legacy_skill_groups(state).await?;
+    clear_dangling_skill_groups(state).await?;
     let db = state.db();
 
     let mut result = db
@@ -24,6 +28,171 @@ pub async fn get_managed_skills(state: &DbState) -> Result<Vec<Skill>, String> {
 
     let records: Vec<Value> = result.take(0).map_err(|e| e.to_string())?;
     Ok(records.into_iter().map(from_db_skill).collect())
+}
+
+pub async fn get_skill_groups(state: &DbState) -> Result<Vec<SkillGroupRecord>, String> {
+    migrate_legacy_skill_groups(state).await?;
+    clear_dangling_skill_groups(state).await?;
+    let db = state.db();
+    let mut result = db
+        .query(
+            "SELECT *, type::string(id) as id FROM skill_group ORDER BY sort_index ASC, name ASC",
+        )
+        .await
+        .map_err(|e| format!("Failed to query skill groups: {}", e))?;
+    let records: Vec<Value> = result.take(0).map_err(|e| e.to_string())?;
+    Ok(records.into_iter().map(from_db_skill_group).collect())
+}
+
+pub async fn save_skill_group(state: &DbState, group: &SkillGroupRecord) -> Result<String, String> {
+    let db = state.db();
+    let id = if group.id.is_empty() {
+        db_new_id()
+    } else {
+        group.id.clone()
+    };
+    let record_id = db_record_id("skill_group", &id);
+    db.query(&format!("UPSERT {} CONTENT $data", record_id))
+        .bind(("data", to_skill_group_payload(group)))
+        .await
+        .map_err(|e| format!("Failed to save skill group: {}", e))?;
+    Ok(id)
+}
+
+pub async fn delete_skill_group(state: &DbState, group_id: &str) -> Result<(), String> {
+    let db = state.db();
+    let record_id = db_record_id("skill_group", group_id);
+    db.query("UPDATE skill SET group_id = NONE, user_group = NONE WHERE group_id = $group_id")
+        .bind(("group_id", group_id.to_string()))
+        .await
+        .map_err(|e| format!("Failed to clear group skills: {}", e))?;
+    db.query(&format!("DELETE {}", record_id))
+        .await
+        .map_err(|e| format!("Failed to delete skill group: {}", e))?;
+    Ok(())
+}
+
+pub async fn replace_skill_groups(
+    state: &DbState,
+    groups: &[SkillGroupRecord],
+) -> Result<Vec<SkillGroupRecord>, String> {
+    let db = state.db();
+    db.query("DELETE skill_group")
+        .await
+        .map_err(|e| format!("Failed to clear skill groups: {}", e))?;
+    let mut saved = Vec::new();
+    for group in groups {
+        let id = save_skill_group(state, group).await?;
+        let mut group = group.clone();
+        group.id = id;
+        saved.push(group);
+    }
+    Ok(saved)
+}
+
+pub async fn migrate_legacy_skill_groups(state: &DbState) -> Result<(), String> {
+    let db = state.db();
+    let mut result = db
+        .query("SELECT *, type::string(id) as id FROM skill WHERE group_id = NONE AND user_group != NONE")
+        .await
+        .map_err(|e| format!("Failed to query legacy skill groups: {}", e))?;
+    let records: Vec<Value> = result.take(0).map_err(|e| e.to_string())?;
+    if records.is_empty() {
+        return Ok(());
+    }
+
+    let existing = get_skill_groups_without_migration(state).await?;
+    let mut by_name: std::collections::HashMap<String, String> = existing
+        .into_iter()
+        .map(|group| (group.name.trim().to_lowercase(), group.id))
+        .collect();
+    let mut next_index = by_name.len() as i32;
+
+    for record in records {
+        let skill = from_db_skill(record);
+        let Some(group_name) = skill
+            .user_group
+            .as_ref()
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+        else {
+            continue;
+        };
+        let key = group_name.to_lowercase();
+        let group_id = if let Some(id) = by_name.get(&key) {
+            id.clone()
+        } else {
+            let now = now_ms();
+            let group = SkillGroupRecord {
+                id: db_new_id(),
+                name: group_name.to_string(),
+                note: None,
+                sort_index: next_index,
+                created_at: now,
+                updated_at: now,
+            };
+            next_index += 1;
+            let id = save_skill_group(state, &group).await?;
+            by_name.insert(key, id.clone());
+            id
+        };
+        let record_id = db_record_id("skill", &skill.id);
+        db.query(&format!("UPDATE {} SET group_id = $group_id", record_id))
+            .bind(("group_id", group_id))
+            .await
+            .map_err(|e| format!("Failed to migrate skill group: {}", e))?;
+    }
+    Ok(())
+}
+
+async fn clear_dangling_skill_groups(state: &DbState) -> Result<(), String> {
+    let groups = get_skill_groups_without_migration(state).await?;
+    let valid_group_ids: HashSet<String> = groups.into_iter().map(|group| group.id).collect();
+    if valid_group_ids.is_empty() {
+        let db = state.db();
+        db.query("UPDATE skill SET group_id = NONE, user_group = NONE WHERE group_id != NONE")
+            .await
+            .map_err(|e| format!("Failed to clear dangling skill groups: {}", e))?;
+        return Ok(());
+    }
+
+    let db = state.db();
+    let mut result = db
+        .query("SELECT *, type::string(id) as id FROM skill WHERE group_id != NONE")
+        .await
+        .map_err(|e| format!("Failed to query dangling skill groups: {}", e))?;
+    let records: Vec<Value> = result.take(0).map_err(|e| e.to_string())?;
+    for record in records {
+        let skill = from_db_skill(record);
+        let Some(group_id) = skill.group_id.as_ref() else {
+            continue;
+        };
+        if valid_group_ids.contains(group_id) {
+            continue;
+        }
+        let record_id = db_record_id("skill", &skill.id);
+        db.query(&format!(
+            "UPDATE {} SET group_id = NONE, user_group = NONE",
+            record_id
+        ))
+        .await
+        .map_err(|e| format!("Failed to clear dangling skill group: {}", e))?;
+    }
+    Ok(())
+}
+
+async fn get_skill_groups_without_migration(
+    state: &DbState,
+) -> Result<Vec<SkillGroupRecord>, String> {
+    let db = state.db();
+    let mut result = db
+        .query(
+            "SELECT *, type::string(id) as id FROM skill_group ORDER BY sort_index ASC, name ASC",
+        )
+        .await
+        .map_err(|e| format!("Failed to query skill groups: {}", e))?;
+    let records: Vec<Value> = result.take(0).map_err(|e| e.to_string())?;
+    Ok(records.into_iter().map(from_db_skill_group).collect())
 }
 
 /// Get a single skill by ID
@@ -115,17 +284,18 @@ pub async fn delete_skill(state: &DbState, skill_id: &str) -> Result<(), String>
 pub async fn update_skill_metadata(
     state: &DbState,
     skill_id: &str,
-    user_group: Option<String>,
+    group_id: Option<String>,
     user_note: Option<String>,
 ) -> Result<(), String> {
     let db = state.db();
     let record_id = db_record_id("skill", skill_id);
 
     db.query(&format!(
-        "UPDATE {} SET user_group = $user_group, user_note = $user_note",
+        "UPDATE {} SET group_id = $group_id, user_group = $user_group, user_note = $user_note",
         record_id
     ))
-    .bind(("user_group", user_group))
+    .bind(("group_id", group_id.clone()))
+    .bind(("user_group", group_name_for_id(state, group_id).await?))
     .bind(("user_note", user_note))
     .await
     .map_err(|e| format!("Failed to update skill metadata: {}", e))?;
@@ -137,21 +307,106 @@ pub async fn update_skill_metadata(
 pub async fn update_skills_group(
     state: &DbState,
     skill_ids: &[String],
-    user_group: Option<String>,
+    group_id: Option<String>,
 ) -> Result<(), String> {
     let db = state.db();
 
+    let user_group = group_name_for_id(state, group_id.clone()).await?;
     for skill_id in skill_ids {
         let record_id = db_record_id("skill", skill_id);
         db.query(&format!(
-            "UPDATE {} SET user_group = $user_group",
+            "UPDATE {} SET group_id = $group_id, user_group = $user_group",
             record_id
         ))
+        .bind(("group_id", group_id.clone()))
         .bind(("user_group", user_group.clone()))
         .await
         .map_err(|e| format!("Failed to update skill group: {}", e))?;
     }
 
+    Ok(())
+}
+
+async fn group_name_for_id(
+    state: &DbState,
+    group_id: Option<String>,
+) -> Result<Option<String>, String> {
+    let Some(group_id) = group_id else {
+        return Ok(None);
+    };
+    let groups = get_skill_groups_without_migration(state).await?;
+    Ok(groups
+        .into_iter()
+        .find(|group| group.id == group_id)
+        .map(|group| group.name))
+}
+
+pub async fn set_skill_management_enabled(
+    state: &DbState,
+    skill_id: &str,
+    enabled: bool,
+) -> Result<Vec<String>, String> {
+    let db = state.db();
+    let Some(skill) = get_skill_by_id(state, skill_id).await? else {
+        return Err(format!("Skill not found: {}", skill_id));
+    };
+    let record_id = db_record_id("skill", skill_id);
+    if enabled {
+        db.query(&format!(
+            "UPDATE {} SET management_enabled = true",
+            record_id
+        ))
+        .await
+        .map_err(|e| format!("Failed to enable skill: {}", e))?;
+        return Ok(skill.disabled_previous_tools);
+    }
+
+    let previous_tools = if skill.enabled_tools.is_empty() {
+        skill.disabled_previous_tools.clone()
+    } else {
+        skill.enabled_tools.clone()
+    };
+    db.query(&format!(
+        "UPDATE {} SET management_enabled = false, disabled_previous_tools = $previous_tools, enabled_tools = [], sync_details = {{}}",
+        record_id
+    ))
+    .bind(("previous_tools", previous_tools.clone()))
+    .await
+    .map_err(|e| format!("Failed to disable skill: {}", e))?;
+    Ok(previous_tools)
+}
+
+pub async fn record_disabled_previous_tools(
+    state: &DbState,
+    skill_id: &str,
+    previous_tools: Vec<String>,
+) -> Result<(), String> {
+    let db = state.db();
+    let record_id = db_record_id("skill", skill_id);
+    db.query(&format!(
+        "UPDATE {} SET disabled_previous_tools = $previous_tools",
+        record_id
+    ))
+    .bind(("previous_tools", previous_tools))
+    .await
+    .map_err(|e| format!("Failed to record previous tools: {}", e))?;
+    Ok(())
+}
+
+pub async fn disable_skill_with_previous_tools(
+    state: &DbState,
+    skill_id: &str,
+    previous_tools: Vec<String>,
+) -> Result<(), String> {
+    let db = state.db();
+    let record_id = db_record_id("skill", skill_id);
+    db.query(&format!(
+        "UPDATE {} SET management_enabled = false, disabled_previous_tools = $previous_tools, enabled_tools = [], sync_details = {{}}",
+        record_id
+    ))
+    .bind(("previous_tools", previous_tools))
+    .await
+    .map_err(|e| format!("Failed to disable skill: {}", e))?;
     Ok(())
 }
 
@@ -357,10 +612,10 @@ pub async fn get_setting(state: &DbState, key: &str) -> Result<Option<String>, S
     let prefs = get_skill_preferences(state).await?;
 
     let value = match key {
-        "central_repo_path" => Some(prefs.central_repo_path),
         "preferred_tools_v1" => prefs
             .preferred_tools
             .map(|v| serde_json::to_string(&v).unwrap_or_default()),
+        "default_view_mode" => Some(prefs.default_view_mode),
         "installed_tools_v1" => prefs
             .installed_tools
             .map(|v| serde_json::to_string(&v).unwrap_or_default()),
@@ -379,9 +634,14 @@ pub async fn set_setting(state: &DbState, key: &str, value: &str) -> Result<(), 
     prefs.updated_at = now_ms();
 
     match key {
-        "central_repo_path" => prefs.central_repo_path = value.to_string(),
         "preferred_tools_v1" => {
             prefs.preferred_tools = serde_json::from_str(value).ok();
+        }
+        "default_view_mode" => {
+            prefs.default_view_mode = match value {
+                "grouped" => "grouped".to_string(),
+                _ => "flat".to_string(),
+            };
         }
         "installed_tools_v1" => {
             prefs.installed_tools = serde_json::from_str(value).ok();
@@ -434,6 +694,20 @@ pub async fn reorder_skills(state: &DbState, ids: &[String]) -> Result<(), Strin
     Ok(())
 }
 
+pub async fn update_skill_sort_index(
+    state: &DbState,
+    skill_id: &str,
+    sort_index: i32,
+) -> Result<(), String> {
+    let db = state.db();
+    let record_id = db_record_id("skill", skill_id);
+    db.query(&format!("UPDATE {} SET sort_index = $index", record_id))
+        .bind(("index", sort_index))
+        .await
+        .map_err(|e| format!("Failed to update skill sort index: {}", e))?;
+    Ok(())
+}
+
 // ==================== CustomTool CRUD (cont.) ====================
 
 /// Get all custom tools that support Skills
@@ -468,4 +742,77 @@ pub async fn delete_custom_tool(state: &DbState, key: &str) -> Result<(), String
         .map_err(|e| format!("Failed to delete custom tool: {}", e))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+    use surrealdb::engine::local::SurrealKv;
+    use surrealdb::Surreal;
+
+    async fn create_test_db() -> (tempfile::TempDir, DbState) {
+        let temp_dir = tempfile::tempdir().expect("create temp db dir");
+        let db_path = temp_dir.path().join("surreal");
+        let db = Surreal::new::<SurrealKv>(db_path)
+            .await
+            .expect("open surreal test db");
+        db.use_ns("ai_toolbox")
+            .use_db("main")
+            .await
+            .expect("select surreal test namespace");
+        (temp_dir, DbState(db))
+    }
+
+    async fn load_raw_preferences(state: &DbState) -> Value {
+        let db = state.db();
+        let mut result = db
+            .query("SELECT *, type::string(id) as id FROM skill_preferences:`default` LIMIT 1")
+            .await
+            .expect("query preferences");
+        let records: Vec<Value> = result.take(0).expect("take preferences");
+        records.into_iter().next().expect("preferences record")
+    }
+
+    #[tokio::test]
+    async fn non_path_setting_write_does_not_create_central_repo_path() {
+        let (_temp, state) = create_test_db().await;
+
+        set_setting(&state, "default_view_mode", "grouped")
+            .await
+            .expect("save default view mode");
+
+        let record = load_raw_preferences(&state).await;
+        assert_eq!(
+            record.get("default_view_mode").and_then(Value::as_str),
+            Some("grouped")
+        );
+        assert!(record.get("central_repo_path").is_none());
+    }
+
+    #[tokio::test]
+    async fn non_path_setting_write_removes_legacy_central_repo_path() {
+        let (_temp, state) = create_test_db().await;
+        let db = state.db();
+        db.query(
+            "UPSERT skill_preferences:`default` CONTENT { central_repo_path: '/Users/ralph/.skills', default_view_mode: 'flat' }",
+        )
+        .await
+        .expect("seed legacy preferences path");
+
+        set_setting(&state, "preferred_tools_v1", "[\"codex\"]")
+            .await
+            .expect("save preferred tools");
+
+        let record = load_raw_preferences(&state).await;
+        assert!(record.get("central_repo_path").is_none());
+        assert_eq!(
+            record
+                .get("preferred_tools")
+                .and_then(Value::as_array)
+                .and_then(|items| items.first())
+                .and_then(Value::as_str),
+            Some("codex")
+        );
+    }
 }

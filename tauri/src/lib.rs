@@ -1614,6 +1614,8 @@ pub fn run() {
             coding::skills::skills_set_preferred_tools,
             coding::skills::skills_get_show_in_tray,
             coding::skills::skills_set_show_in_tray,
+            coding::skills::skills_get_default_view_mode,
+            coding::skills::skills_set_default_view_mode,
             // Skills Hub - Custom Tools
             coding::skills::skills_get_custom_tools,
             coding::skills::skills_add_custom_tool,
@@ -1627,8 +1629,18 @@ pub fn run() {
             coding::skills::skills_init_default_repos,
             // Skills Hub - Reorder
             coding::skills::skills_reorder,
+            coding::skills::skills_get_groups,
+            coding::skills::skills_save_group,
+            coding::skills::skills_delete_group,
             coding::skills::skills_update_metadata,
             coding::skills::skills_batch_update_group,
+            coding::skills::skills_set_management_enabled,
+            coding::skills::skills_export_inventory,
+            coding::skills::skills_export_inventory_file,
+            coding::skills::skills_preview_inventory_import,
+            coding::skills::skills_preview_inventory_import_file,
+            coding::skills::skills_apply_inventory_import,
+            coding::skills::skills_apply_inventory_import_file,
             // Skills Hub - Resync
             coding::skills::skills_resync_all,
             // MCP Servers

@@ -28,12 +28,12 @@ interface SkillsListProps {
   columns?: number;
   dragDisabled?: boolean;
   getGithubInfo: (url: string | null | undefined) => { label: string; href: string } | null;
-  getSkillSourceLabel: (skill: ManagedSkill) => string;
   formatRelative: (ms: number | null | undefined) => string;
   onUpdate: (skill: ManagedSkill) => void;
   onDelete: (skillId: string) => void;
   onToggleTool: (skill: ManagedSkill, toolId: string) => void;
   onEditMetadata: (skill: ManagedSkill) => void;
+  onSetManagementEnabled: (skill: ManagedSkill, enabled: boolean) => void;
   onDragEnd: (event: DragEndEvent) => void;
 }
 
@@ -45,12 +45,12 @@ export const SkillsList: React.FC<SkillsListProps> = ({
   columns,
   dragDisabled,
   getGithubInfo,
-  getSkillSourceLabel,
   formatRelative,
   onUpdate,
   onDelete,
   onToggleTool,
   onEditMetadata,
+  onSetManagementEnabled,
   onDragEnd,
 }) => {
   const { t } = useTranslation();
@@ -94,12 +94,12 @@ export const SkillsList: React.FC<SkillsListProps> = ({
           isUpdating={updatingSkillIds.includes(skill.id)}
           dragDisabled={dragDisabled}
           getGithubInfo={getGithubInfo}
-          getSkillSourceLabel={getSkillSourceLabel}
           formatRelative={formatRelative}
           onUpdate={onUpdate}
           onDelete={onDelete}
           onToggleTool={onToggleTool}
           onEditMetadata={onEditMetadata}
+          onSetManagementEnabled={onSetManagementEnabled}
         />
       ))}
     </div>
@@ -111,7 +111,10 @@ export const SkillsList: React.FC<SkillsListProps> = ({
         items={skills}
         getKey={(skill) => skill.id}
         columns={columns}
-        defaultRowHeight={84}
+        minColumnWidth={320}
+        maxColumns={3}
+        rowGap={8}
+        defaultRowHeight={108}
         renderItem={(skill) => (
           <SkillCard
             skill={skill}
@@ -120,12 +123,12 @@ export const SkillsList: React.FC<SkillsListProps> = ({
             isUpdating={updatingSkillIds.includes(skill.id)}
             dragDisabled
             getGithubInfo={getGithubInfo}
-            getSkillSourceLabel={getSkillSourceLabel}
             formatRelative={formatRelative}
             onUpdate={onUpdate}
             onDelete={onDelete}
             onToggleTool={onToggleTool}
             onEditMetadata={onEditMetadata}
+            onSetManagementEnabled={onSetManagementEnabled}
           />
         )}
       />

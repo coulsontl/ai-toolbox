@@ -6,7 +6,9 @@ use super::types::{SyncMode, SyncOutcome};
 
 /// Sync directory using hybrid approach (try symlink, fallback to copy)
 pub fn sync_dir_hybrid(source: &Path, target: &Path) -> Result<SyncOutcome> {
-    if target.exists() {
+    ensure_source_dir(source)?;
+
+    if std::fs::symlink_metadata(target).is_ok() {
         if is_same_link(target, source) {
             return Ok(SyncOutcome {
                 mode_used: SyncMode::Symlink,
@@ -14,8 +16,12 @@ pub fn sync_dir_hybrid(source: &Path, target: &Path) -> Result<SyncOutcome> {
                 replaced: false,
             });
         }
+
+        ensure_source_target_not_overlapping(source, target)?;
         anyhow::bail!("target already exists: {:?}", target);
     }
+
+    ensure_source_target_not_overlapping(source, target)?;
 
     ensure_parent_dir(target)?;
 
@@ -50,6 +56,8 @@ pub fn sync_dir_hybrid_with_overwrite(
     target: &Path,
     overwrite: bool,
 ) -> Result<SyncOutcome> {
+    ensure_source_dir(source)?;
+
     let mut did_replace = false;
     if std::fs::symlink_metadata(target).is_ok() {
         if is_same_link(target, source) {
@@ -60,6 +68,8 @@ pub fn sync_dir_hybrid_with_overwrite(
             });
         }
 
+        ensure_source_target_not_overlapping(source, target)?;
+
         if overwrite {
             remove_path_any(target)
                 .with_context(|| format!("remove existing target {:?}", target))?;
@@ -67,6 +77,8 @@ pub fn sync_dir_hybrid_with_overwrite(
         } else {
             anyhow::bail!("target already exists: {:?}", target);
         }
+    } else {
+        ensure_source_target_not_overlapping(source, target)?;
     }
 
     sync_dir_hybrid(source, target).map(|mut out| {
@@ -81,6 +93,9 @@ pub fn sync_dir_copy_with_overwrite(
     target: &Path,
     overwrite: bool,
 ) -> Result<SyncOutcome> {
+    ensure_source_dir(source)?;
+    ensure_source_target_not_overlapping(source, target)?;
+
     let mut did_replace = false;
     if std::fs::symlink_metadata(target).is_ok() {
         if overwrite {
@@ -125,6 +140,78 @@ fn ensure_parent_dir(path: &Path) -> Result<()> {
         std::fs::create_dir_all(parent).with_context(|| format!("create dir {:?}", parent))?;
     }
     Ok(())
+}
+
+pub(crate) fn ensure_source_dir(source: &Path) -> Result<()> {
+    let meta = std::fs::metadata(source)
+        .with_context(|| format!("source path is not a resolvable directory: {:?}", source))?;
+    if !meta.is_dir() {
+        anyhow::bail!("source path is not a directory: {:?}", source);
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_source_target_not_overlapping(source: &Path, target: &Path) -> Result<()> {
+    let source_real = std::fs::canonicalize(source)
+        .with_context(|| format!("canonicalize source {:?}", source))?;
+    let target_real = resolve_target_write_path(target)
+        .with_context(|| format!("resolve target write path {:?}", target))?;
+
+    if source_real == target_real {
+        anyhow::bail!(
+            "source and target resolve to the same path: source={:?}, target={:?}, resolved={:?}",
+            source,
+            target,
+            source_real
+        );
+    }
+
+    if target_real.starts_with(&source_real) {
+        anyhow::bail!(
+            "target path is inside source directory after resolving symlinks: source={:?}, target={:?}, resolved_target={:?}",
+            source,
+            target,
+            target_real
+        );
+    }
+
+    if source_real.starts_with(&target_real) {
+        anyhow::bail!(
+            "source path is inside target directory after resolving symlinks: source={:?}, target={:?}, resolved_target={:?}",
+            source,
+            target,
+            target_real
+        );
+    }
+
+    Ok(())
+}
+
+fn resolve_target_write_path(target: &Path) -> Result<PathBuf> {
+    if let Ok(real) = std::fs::canonicalize(target) {
+        return Ok(real);
+    }
+
+    let mut suffix = Vec::new();
+    let mut cursor = target;
+
+    loop {
+        if let Ok(real) = std::fs::canonicalize(cursor) {
+            let mut out = real;
+            for part in suffix.iter().rev() {
+                out.push(part);
+            }
+            return Ok(out);
+        }
+
+        let name = cursor
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("target has no resolvable parent: {:?}", target))?;
+        suffix.push(name.to_os_string());
+        cursor = cursor
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("target has no parent: {:?}", target))?;
+    }
 }
 
 fn remove_path_any(path: &Path) -> Result<()> {
@@ -356,4 +443,170 @@ pub fn remove_path(path: &str) -> Result<(), String> {
 
     std::fs::remove_file(p).map_err(|err| err.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    fn create_self_symlink(path: &Path) {
+        std::os::unix::fs::symlink(path, path).expect("create self symlink");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_engine_rejects_self_symlink_source_without_creating_target() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        create_self_symlink(&source);
+
+        let result = sync_dir_hybrid(&source, &target);
+
+        assert!(result.is_err());
+        assert!(std::fs::symlink_metadata(&target).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_engine_preserves_existing_target_when_overwrite_source_is_self_symlink() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        create_self_symlink(&source);
+        std::fs::create_dir(&target).expect("create target");
+        std::fs::write(target.join("keep.txt"), "keep").expect("write target file");
+
+        let result = sync_dir_hybrid_with_overwrite(&source, &target, true);
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_to_string(target.join("keep.txt")).expect("read preserved target"),
+            "keep"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_engine_rejects_broken_symlink_source_for_copy_without_removing_target() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("source");
+        let missing = temp.path().join("missing");
+        let target = temp.path().join("target");
+        std::os::unix::fs::symlink(&missing, &source).expect("create broken symlink");
+        std::fs::create_dir(&target).expect("create target");
+        std::fs::write(target.join("keep.txt"), "keep").expect("write target file");
+
+        let result = sync_dir_copy_with_overwrite(&source, &target, true);
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_to_string(target.join("keep.txt")).expect("read preserved target"),
+            "keep"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_engine_rejects_broken_symlink_target_without_replacing_it() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        let missing = temp.path().join("missing");
+        std::fs::create_dir(&source).expect("create source");
+        std::fs::write(source.join("SKILL.md"), "---\nname: valid\n---\n")
+            .expect("write source file");
+        std::os::unix::fs::symlink(&missing, &target).expect("create broken target symlink");
+
+        let result = sync_dir_hybrid(&source, &target);
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_link(&target).expect("target remains symlink"),
+            missing
+        );
+        assert!(std::fs::metadata(&target).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_engine_rejects_parent_symlink_target_resolving_to_source() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let central = temp.path().join("central");
+        let runtime_skills = temp.path().join("runtime-skills");
+        let source = central.join("drools-rule-dev");
+        let target = runtime_skills.join("drools-rule-dev");
+
+        std::fs::create_dir_all(&source).expect("create source");
+        std::fs::write(source.join("SKILL.md"), "---\nname: drools-rule-dev\n---\n")
+            .expect("write source file");
+        std::os::unix::fs::symlink(&central, &runtime_skills)
+            .expect("link runtime skills to central repo");
+
+        let result = sync_dir_hybrid_with_overwrite(&source, &target, true);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("same path"));
+        assert!(!source.is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(source.join("SKILL.md")).expect("source survives"),
+            "---\nname: drools-rule-dev\n---\n"
+        );
+    }
+
+    #[test]
+    fn sync_engine_rejects_target_inside_source() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("source");
+        let target = source.join("nested-target");
+
+        std::fs::create_dir(&source).expect("create source");
+        std::fs::write(source.join("SKILL.md"), "---\nname: valid\n---\n")
+            .expect("write source file");
+
+        let result = sync_dir_copy_with_overwrite(&source, &target, true);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("inside source"));
+        assert!(!target.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_engine_keeps_existing_direct_symlink_idempotent() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        std::fs::create_dir(&source).expect("create source");
+        std::fs::write(source.join("SKILL.md"), "---\nname: valid\n---\n")
+            .expect("write source file");
+        std::os::unix::fs::symlink(&source, &target).expect("create target symlink");
+
+        let outcome = sync_dir_hybrid_with_overwrite(&source, &target, true)
+            .expect("existing direct symlink is idempotent");
+
+        assert!(matches!(outcome.mode_used, SyncMode::Symlink));
+        assert!(!outcome.replaced);
+        assert_eq!(std::fs::read_link(&target).expect("target link"), source);
+    }
+
+    #[test]
+    fn sync_engine_syncs_valid_source_dir() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        std::fs::create_dir(&source).expect("create source");
+        std::fs::write(source.join("SKILL.md"), "---\nname: valid\n---\n")
+            .expect("write source file");
+
+        let outcome =
+            sync_dir_copy_with_overwrite(&source, &target, false).expect("sync valid dir");
+
+        assert!(matches!(outcome.mode_used, SyncMode::Copy));
+        assert_eq!(
+            std::fs::read_to_string(target.join("SKILL.md")).expect("read copied file"),
+            "---\nname: valid\n---\n"
+        );
+    }
 }

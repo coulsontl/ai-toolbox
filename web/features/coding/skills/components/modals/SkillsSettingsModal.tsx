@@ -3,7 +3,7 @@ import { Modal, InputNumber, Button, Checkbox, message, Form, Input, Space, Tool
 import { FolderOpenOutlined, DeleteOutlined, PlusOutlined, ClearOutlined } from '@ant-design/icons';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
-import type { ToolInfo, CustomTool } from '../../types';
+import type { ToolInfo, CustomTool, SkillViewMode } from '../../types';
 import * as api from '../../services/skillsApi';
 import { useSkillsStore } from '../../stores/skillsStore';
 import { refreshTrayMenu } from '@/services/appApi';
@@ -18,6 +18,7 @@ interface SkillsSettingsModalProps {
   cardColumnSetting?: ManagementGridColumnSetting;
   cardColumnOptions?: readonly ManagementGridColumnSetting[];
   onCardColumnSettingChange?: (value: ManagementGridColumnSetting) => void;
+  onDefaultViewModeApply?: (mode: SkillViewMode) => void;
   onClose: () => void;
 }
 
@@ -26,6 +27,7 @@ export const SkillsSettingsModal: React.FC<SkillsSettingsModalProps> = ({
   cardColumnSetting,
   cardColumnOptions,
   onCardColumnSettingChange,
+  onDefaultViewModeApply,
   onClose,
 }) => {
   const { t } = useTranslation();
@@ -42,6 +44,7 @@ export const SkillsSettingsModal: React.FC<SkillsSettingsModalProps> = ({
   const [addingTool, setAddingTool] = React.useState(false);
   const [showAddCustomModal, setShowAddCustomModal] = React.useState(false);
   const [showInTray, setShowInTray] = React.useState(false);
+  const [defaultViewMode, setDefaultViewMode] = React.useState<SkillViewMode>('flat');
   const [showClearAllModal, setShowClearAllModal] = React.useState(false);
   const [clearAllConfirmText, setClearAllConfirmText] = React.useState('');
   const [clearingAll, setClearingAll] = React.useState(false);
@@ -52,6 +55,7 @@ export const SkillsSettingsModal: React.FC<SkillsSettingsModalProps> = ({
     api.getGitCacheCleanupDays().then(setCleanupDays).catch(console.error);
     api.getGitCacheTtlSecs().then(setTtlSecs).catch(console.error);
     api.getShowSkillsInTray().then(setShowInTray).catch(console.error);
+    api.getDefaultViewMode().then(setDefaultViewMode).catch(console.error);
     loadCustomTools();
     loadSkills();
 
@@ -125,7 +129,9 @@ export const SkillsSettingsModal: React.FC<SkillsSettingsModalProps> = ({
     try {
       await api.setGitCacheCleanupDays(cleanupDays);
       await api.setPreferredTools(preferredTools);
+      await api.setDefaultViewMode(defaultViewMode);
       await loadToolStatus(); // Refresh global store
+      onDefaultViewModeApply?.(defaultViewMode);
       message.success(t('common.success'));
       onClose();
     } catch (error) {
@@ -306,6 +312,22 @@ export const SkillsSettingsModal: React.FC<SkillsSettingsModalProps> = ({
         <div className={styles.inputArea}>
           <Switch checked={showInTray} onChange={handleShowInTrayChange} />
           <p className={styles.hint}>{t('skills.showInTrayHint')}</p>
+        </div>
+      </div>
+
+      <div className={styles.section}>
+        <div className={styles.labelArea}>
+          <label className={styles.label}>{t('skills.defaultViewMode')}</label>
+        </div>
+        <div className={styles.inputArea}>
+          <Radio.Group
+            value={defaultViewMode}
+            onChange={(event) => setDefaultViewMode(event.target.value as SkillViewMode)}
+          >
+            <Radio value="flat">{t('skills.viewFlat')}</Radio>
+            <Radio value="grouped">{t('skills.viewGrouped')}</Radio>
+          </Radio.Group>
+          <p className={styles.hint}>{t('skills.defaultViewModeHint')}</p>
         </div>
       </div>
 

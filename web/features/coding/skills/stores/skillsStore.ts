@@ -4,6 +4,7 @@ import type {
   ToolStatus,
   ToolOption,
   OnboardingPlan,
+  SkillGroupRecord,
 } from '../types';
 import * as api from '../services/skillsApi';
 
@@ -13,6 +14,7 @@ interface SkillsState {
   toolStatus: ToolStatus | null;
   onboardingPlan: OnboardingPlan | null;
   centralRepoPath: string;
+  groups: SkillGroupRecord[];
 
   // UI state
   loading: boolean;
@@ -37,6 +39,7 @@ interface SkillsState {
   loadSkills: () => Promise<void>;
   loadOnboardingPlan: () => Promise<void>;
   loadCentralRepoPath: () => Promise<void>;
+  loadGroups: () => Promise<void>;
   refresh: () => Promise<void>;
   setSkills: (skills: ManagedSkill[]) => void;
 
@@ -51,6 +54,7 @@ export const useSkillsStore = create<SkillsState>()((set, get) => ({
   toolStatus: null,
   onboardingPlan: null,
   centralRepoPath: '',
+  groups: [],
 
   // UI state
   loading: false,
@@ -110,13 +114,23 @@ export const useSkillsStore = create<SkillsState>()((set, get) => ({
     }
   },
 
+  loadGroups: async () => {
+    try {
+      const groups = await api.getSkillGroups();
+      set({ groups });
+    } catch (error) {
+      console.error('Failed to load skill groups:', error);
+    }
+  },
+
   refresh: async () => {
     // Note: loadOnboardingPlan is NOT called here to avoid automatic scanning.
     // It should only be triggered manually from the ImportModal.
-    const { loadToolStatus, loadSkills, loadCentralRepoPath } = get();
+    const { loadToolStatus, loadSkills, loadCentralRepoPath, loadGroups } = get();
     await Promise.all([
       loadToolStatus(),
       loadSkills(),
+      loadGroups(),
       loadCentralRepoPath(),
     ]);
   },

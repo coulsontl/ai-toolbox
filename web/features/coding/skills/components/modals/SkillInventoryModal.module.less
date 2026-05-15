@@ -1,0 +1,114 @@
+.modal {
+  :global(.ant-modal-body) {
+    padding: 20px 24px 22px;
+  }
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sectionCard {
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-bg-elevated);
+  padding: 18px;
+}
+
+.sectionHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+
+  strong {
+    color: var(--color-text-primary);
+    font-size: 15px;
+  }
+
+  p {
+    margin: 6px 0 0;
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+}
+
+.pathRow {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 14px;
+  align-items: center;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+
+  code {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-bg-container);
+    color: var(--color-text-primary);
+    padding: 7px 9px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+}
+
+.footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 24px;
+}
+
+@media (max-width: 720px) {
+  .footer,
+  .sectionHeader {
+    flex-direction: column;
+  }
+
+  .pathRow {
+    grid-template-columns: 1fr;
+  }
+}
+
+.previewCard {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  padding: 16px;
+  color: var(--color-text-secondary);
+}
+
+.previewRow {
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+}
+
+.previewRowWarning {
+  color: var(--color-text-primary);
+  font-weight: 500;
+  background: var(--color-status-warning-bg, rgba(250, 173, 20, 0.15));
+  padding: 4px 8px;
+  border-radius: 4px;
+  margin: -4px -8px;
+}
+
+.previewErrors {
+  grid-column: 1 / -1;
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-status-error);
+  font-family: monospace;
+  white-space: pre-wrap;
+  max-height: 120px;
+  overflow-y: auto;
+}

@@ -1,3 +1,87 @@
+.skillCard {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 96px;
+  padding: 8px 10px !important;
+  border-color: var(--color-border-card) !important;
+  border-radius: 8px !important;
+  background: var(--color-bg-container) !important;
+  box-shadow: none !important;
+
+  &:hover {
+    border-color: var(--color-border-secondary) !important;
+    background: var(--color-bg-elevated) !important;
+  }
+}
+
+.disabledCard {
+  border-color: color-mix(in srgb, var(--color-border) 62%, var(--color-bg-layout)) !important;
+  background: color-mix(in srgb, var(--color-bg-layout) 72%, var(--color-bg-container)) !important;
+}
+
+.disabledCard .icon,
+.disabledCard .copySourceButton,
+.disabledCard .time,
+.disabledCard .groupTag,
+.disabledCard .note,
+.disabledCard .toolPill,
+.disabledCard .addToolBtn {
+  opacity: 0.48;
+}
+
+.disabledCard .skillNameText {
+  color: var(--color-text-tertiary);
+  opacity: 0.7;
+}
+
+.disabledCard .detailButton,
+.disabledCard .sourceWarningMeta {
+  opacity: 0.72;
+}
+
+.sourceWarningCard {
+  border-color: var(--color-status-warning) !important;
+  background: color-mix(in srgb, var(--color-status-warning) 8%, var(--color-bg-container)) !important;
+}
+
+.icon {
+  color: var(--color-text-secondary);
+}
+
+.clickableIcon {
+  color: var(--color-text-primary);
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-bottom: 7px;
+  flex-wrap: nowrap;
+}
+
+.skillNameText {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 64px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.headerMetaCompact {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  flex: 0 1 min(42%, 236px);
+  min-width: 0;
+  max-width: min(42%, 236px);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
 .detailButton {
   display: inline-flex;
   width: 24px;
@@ -25,50 +109,36 @@
   }
 }
 
-.sourcePill {
+.copySourceButton {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 22px;
-  padding: 0 7px;
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border);
-  border-radius: 999px;
-  font-size: 11px;
-  color: var(--color-text-secondary);
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-tertiary);
   cursor: pointer;
   transition:
     background 0.16s ease,
-    border-color 0.16s ease,
     color 0.16s ease;
-  flex: 0 1 auto;
-  min-width: 48px;
-  max-width: 100%;
+  flex-shrink: 0;
 
   &:hover:not(:disabled) {
-    background: var(--color-bg-hover);
-    border-color: var(--color-border-secondary);
     color: var(--color-text-primary);
+    background: var(--color-bg-hover);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-secondary);
+    outline-offset: 2px;
   }
 
   &:disabled {
     cursor: default;
     opacity: 0.6;
   }
-}
-
-.sourceText {
-  display: block;
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.copyIcon {
-  opacity: 0.6;
-  flex-shrink: 0;
 }
 
 .dot {
@@ -79,6 +149,17 @@
 .time {
   font-size: 11px;
   color: var(--color-text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.sourceWarningMeta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-status-warning);
+  font-size: 11px;
+  font-weight: 500;
   white-space: nowrap;
   flex-shrink: 0;
 }

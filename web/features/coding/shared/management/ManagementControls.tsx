@@ -136,6 +136,8 @@ export interface ManagementSegmentedOption<TValue extends string> {
   value: TValue;
   label: React.ReactNode;
   icon?: React.ReactNode;
+  disabled?: boolean;
+  title?: string;
 }
 
 interface ManagementSegmentedProps<TValue extends string> {
@@ -144,6 +146,8 @@ interface ManagementSegmentedProps<TValue extends string> {
   onChange: (value: TValue) => void;
   ariaLabel: string;
   className?: string;
+  disabled?: boolean;
+  title?: string;
 }
 
 export function ManagementSegmented<TValue extends string>({
@@ -152,12 +156,16 @@ export function ManagementSegmented<TValue extends string>({
   onChange,
   ariaLabel,
   className,
+  disabled,
+  title,
 }: ManagementSegmentedProps<TValue>) {
   return (
     <div
       className={[styles.segmented, className ?? ''].filter(Boolean).join(' ')}
       role="radiogroup"
       aria-label={ariaLabel}
+      aria-disabled={disabled || undefined}
+      title={title}
     >
       {options.map((option) => (
         <button
@@ -165,11 +173,17 @@ export function ManagementSegmented<TValue extends string>({
           type="button"
           role="radio"
           aria-checked={value === option.value}
+          title={option.title}
+          disabled={disabled || option.disabled}
           className={[
             styles.segmentedButton,
             value === option.value ? styles.segmentedButtonActive : '',
           ].filter(Boolean).join(' ')}
-          onClick={() => onChange(option.value)}
+          onClick={() => {
+            if (value !== option.value) {
+              onChange(option.value);
+            }
+          }}
         >
           {option.icon}
           {option.label}

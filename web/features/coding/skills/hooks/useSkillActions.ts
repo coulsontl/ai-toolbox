@@ -7,14 +7,11 @@ import * as api from '../services/skillsApi';
 import { useSkills } from './useSkills';
 import type { ManagedSkill, ToolOption } from '../types';
 import { showGitError, confirmTargetOverwrite } from '../utils/errorHandlers';
+import { shouldOverwriteExistingTarget, type BatchToolOptions } from '../utils/batchToolOptions';
 import { refreshTrayMenu } from '@/services/appApi';
 
 export interface UseSkillActionsOptions {
   allTools: ToolOption[];
-}
-
-interface BatchToolOptions {
-  quiet?: boolean;
 }
 
 export interface UseSkillActionsResult {
@@ -44,6 +41,7 @@ export interface UseSkillActionsResult {
     options?: BatchToolOptions,
   ) => Promise<boolean>;
   handleBatchSetGroup: (skillIds: string[], userGroup: string | null) => Promise<boolean>;
+  handleSetManagementEnabled: (skill: ManagedSkill, enabled: boolean, restoreTools?: string[]) => Promise<boolean>;
 }
 
 export function useSkillActions({ allTools }: UseSkillActionsOptions): UseSkillActionsResult {
@@ -60,6 +58,11 @@ export function useSkillActions({ allTools }: UseSkillActionsOptions): UseSkillA
     : undefined;
 
   const handleToggleTool = React.useCallback(async (skill: ManagedSkill, toolId: string) => {
+    if (!skill.management_enabled) {
+      message.info(t('skills.disabledSyncBlocked'));
+      return;
+    }
+
     const target = skill.targets.find((t) => t.tool === toolId);
     const synced = Boolean(target);
 
@@ -211,9 +214,16 @@ export function useSkillActions({ allTools }: UseSkillActionsOptions): UseSkillA
       for (const id of skillIds) {
         const skill = skills.find((s) => s.id === id);
         if (!skill) continue;
+        if (!skill.management_enabled) continue;
         const alreadySynced = skill.targets.some((t) => t.tool === toolId);
         if (alreadySynced) continue;
-        await api.syncSkillToTool(skill.central_path, skill.id, toolId, skill.name);
+        await api.syncSkillToTool(
+          skill.central_path,
+          skill.id,
+          toolId,
+          skill.name,
+          shouldOverwriteExistingTarget(options),
+        );
         successCount++;
       }
       await refresh();
@@ -265,7 +275,7 @@ export function useSkillActions({ allTools }: UseSkillActionsOptions): UseSkillA
 
   const handleBatchSetGroup = React.useCallback(async (
     skillIds: string[],
-    userGroup: string | null,
+    groupId: string | null,
   ) => {
     if (skillIds.length === 0) {
       return false;
@@ -273,7 +283,7 @@ export function useSkillActions({ allTools }: UseSkillActionsOptions): UseSkillA
 
     setActionLoading(true);
     try {
-      await api.batchUpdateSkillGroup(skillIds, userGroup);
+      await api.batchUpdateSkillGroup(skillIds, groupId);
       await refresh();
       message.success(t('skills.batch.setGroupSuccess', { count: skillIds.length }));
       return true;
@@ -284,6 +294,31 @@ export function useSkillActions({ allTools }: UseSkillActionsOptions): UseSkillA
       setActionLoading(false);
     }
   }, [refresh, t]);
+
+  const handleSetManagementEnabled = React.useCallback(async (
+    skill: ManagedSkill,
+    enabled: boolean,
+    restoreTools?: string[],
+  ) => {
+    setActionLoading(true);
+    try {
+      await api.setSkillManagementEnabled(skill.id, enabled);
+      if (enabled) {
+        for (const toolId of restoreTools ?? []) {
+          await api.syncSkillToTool(skill.central_path, skill.id, toolId, skill.name, true);
+        }
+      }
+      await refresh();
+      await refreshTrayMenu();
+      message.success(enabled ? t('skills.enabledSuccess') : t('skills.disabledSuccess'));
+      return true;
+    } catch (error) {
+      showGitError(String(error), t, allTools);
+      return false;
+    } finally {
+      setActionLoading(false);
+    }
+  }, [allTools, refresh, t]);
 
   return {
     actionLoading,
@@ -304,5 +339,6 @@ export function useSkillActions({ allTools }: UseSkillActionsOptions): UseSkillA
     handleBatchAddTool,
     handleBatchRemoveTool,
     handleBatchSetGroup,
+    handleSetManagementEnabled,
   };
 }

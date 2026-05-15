@@ -26,12 +26,12 @@ interface SkillsGroupedListProps {
   onSelectChange: (skillId: string, checked: boolean) => void;
   onSelectAllGroup: (group: SkillGroup, checked: boolean) => void;
   getGithubInfo: (url: string | null | undefined) => { label: string; href: string } | null;
-  getSkillSourceLabel: (skill: ManagedSkill) => string;
   formatRelative: (ms: number | null | undefined) => string;
   onUpdate: (skill: ManagedSkill) => void;
   onDelete: (skillId: string) => void;
   onToggleTool: (skill: ManagedSkill, toolId: string) => void;
   onEditMetadata: (skill: ManagedSkill) => void;
+  onSetManagementEnabled: (skill: ManagedSkill, enabled: boolean) => void;
   groupToolMode?: boolean;
   onAddGroupTool?: (group: SkillGroup, toolId: string) => void;
   onRemoveGroupTool?: (group: SkillGroup, toolId: string) => void;
@@ -50,12 +50,12 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
   onSelectChange,
   onSelectAllGroup,
   getGithubInfo,
-  getSkillSourceLabel,
   formatRelative,
   onUpdate,
   onDelete,
   onToggleTool,
   onEditMetadata,
+  onSetManagementEnabled,
   groupToolMode = false,
   onAddGroupTool,
   onRemoveGroupTool,
@@ -167,7 +167,7 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
                   items={group.skills}
                   getKey={(skill) => skill.id}
                   columns={columns}
-                  defaultRowHeight={84}
+                  defaultRowHeight={108}
                   virtualize={group.skills.length > 24}
                   renderItem={(skill) => (
                     <SkillCard
@@ -176,17 +176,18 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
                       loading={loading}
                       isUpdating={updatingSkillIds.includes(skill.id)}
                       dragDisabled
+                      showGroupTag={false}
                       selectable={selectionMode}
                       selected={selectedIds.has(skill.id)}
                       toolsReadOnly={groupToolsEnabled}
                       onSelectChange={onSelectChange}
                       getGithubInfo={getGithubInfo}
-                      getSkillSourceLabel={getSkillSourceLabel}
                       formatRelative={formatRelative}
                       onUpdate={onUpdate}
                       onDelete={onDelete}
                       onToggleTool={onToggleTool}
                       onEditMetadata={onEditMetadata}
+                      onSetManagementEnabled={onSetManagementEnabled}
                     />
                   )}
                 />

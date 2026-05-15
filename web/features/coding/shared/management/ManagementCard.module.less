@@ -100,12 +100,17 @@
 
 @container card (min-width: 320px) {
   .headerRow {
-    display: grid;
-    grid-template-columns: minmax(0, max-content) minmax(var(--card-header-min, 120px), 1fr);
+    flex-wrap: nowrap;
+  }
+
+  .headerMeta {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 }
 
 .name {
+  flex: 2 1 var(--card-header-min, 120px);
   min-width: 0;
   max-width: 100%;
   font-weight: 600;
@@ -119,6 +124,8 @@
 .headerMeta {
   display: flex;
   align-items: center;
+  flex: 1 1 180px;
+  flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
   max-width: 100%;

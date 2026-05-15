@@ -1,26 +1,16 @@
 use serde_json::Value;
 
 use super::tool_adapters::CustomTool;
-use super::types::{Skill, SkillPreferences, SkillRepo, SkillTarget};
+use super::types::{Skill, SkillGroupRecord, SkillPreferences, SkillRepo, SkillTarget};
 use crate::coding::db_extract_id;
 
 // ==================== Skill ====================
 
 /// Convert database record to Skill struct (wide table pattern)
 pub fn from_db_skill(value: Value) -> Skill {
-    // Parse enabled_tools: JSON array -> Vec<String>
-    let enabled_tools: Vec<String> = value
-        .get("enabled_tools")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| item.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    // Parse sync_details: JSON object -> Option<Value>
-    let sync_details = value.get("sync_details").cloned().filter(|v| !v.is_null());
+    let enabled_tools: Vec<String> = parse_string_array(value.get("enabled_tools"));
+    let disabled_previous_tools: Vec<String> =
+        parse_string_array(value.get("disabled_previous_tools"));
 
     Skill {
         id: db_extract_id(&value),
@@ -73,13 +63,33 @@ pub fn from_db_skill(value: Value) -> Skill {
             .get("user_group")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
+        group_id: value
+            .get("group_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         user_note: value
             .get("user_note")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
+        management_enabled: value
+            .get("management_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
+        disabled_previous_tools,
         enabled_tools,
-        sync_details,
+        sync_details: value.get("sync_details").cloned().filter(|v| !v.is_null()),
     }
+}
+
+fn parse_string_array(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Convert Skill to clean database payload (without id)
@@ -97,9 +107,49 @@ pub fn to_clean_skill_payload(skill: &Skill) -> Value {
         "status": skill.status,
         "sort_index": skill.sort_index,
         "user_group": skill.user_group,
+        "group_id": skill.group_id,
         "user_note": skill.user_note,
+        "management_enabled": skill.management_enabled,
+        "disabled_previous_tools": skill.disabled_previous_tools,
         "enabled_tools": skill.enabled_tools,
         "sync_details": skill.sync_details,
+    })
+}
+
+pub fn from_db_skill_group(value: Value) -> SkillGroupRecord {
+    SkillGroupRecord {
+        id: db_extract_id(&value),
+        name: value
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        note: value
+            .get("note")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        sort_index: value
+            .get("sort_index")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32,
+        created_at: value
+            .get("created_at")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0),
+        updated_at: value
+            .get("updated_at")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0),
+    }
+}
+
+pub fn to_skill_group_payload(group: &SkillGroupRecord) -> Value {
+    serde_json::json!({
+        "name": group.name,
+        "note": group.note,
+        "sort_index": group.sort_index,
+        "created_at": group.created_at,
+        "updated_at": group.updated_at,
     })
 }
 
@@ -250,8 +300,6 @@ pub fn to_skill_repo_payload(repo: &SkillRepo) -> Value {
 
 /// Convert database record to SkillPreferences struct
 pub fn from_db_skill_preferences(value: Value) -> SkillPreferences {
-    let default = SkillPreferences::default();
-
     // Parse preferred_tools: JSON array -> Option<Vec<String>>
     let preferred_tools: Option<Vec<String>> = value
         .get("preferred_tools")
@@ -274,12 +322,10 @@ pub fn from_db_skill_preferences(value: Value) -> SkillPreferences {
 
     SkillPreferences {
         id: db_extract_id(&value),
-        central_repo_path: value
-            .get("central_repo_path")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&default.central_repo_path)
-            .to_string(),
         preferred_tools,
+        default_view_mode: normalize_default_view_mode(
+            value.get("default_view_mode").and_then(|v| v.as_str()),
+        ),
         git_cache_cleanup_days: value
             .get("git_cache_cleanup_days")
             .and_then(|v| v.as_i64())
@@ -301,11 +347,18 @@ pub fn from_db_skill_preferences(value: Value) -> SkillPreferences {
     }
 }
 
+fn normalize_default_view_mode(value: Option<&str>) -> String {
+    match value {
+        Some("grouped") => "grouped".to_string(),
+        _ => "flat".to_string(),
+    }
+}
+
 /// Convert SkillPreferences to database payload
 pub fn to_skill_preferences_payload(prefs: &SkillPreferences) -> Value {
     serde_json::json!({
-        "central_repo_path": prefs.central_repo_path,
         "preferred_tools": prefs.preferred_tools,
+        "default_view_mode": normalize_default_view_mode(Some(&prefs.default_view_mode)),
         "git_cache_cleanup_days": prefs.git_cache_cleanup_days,
         "git_cache_ttl_secs": prefs.git_cache_ttl_secs,
         "known_tool_versions": prefs.known_tool_versions,
@@ -358,4 +411,63 @@ pub fn to_custom_tool_payload(tool: &CustomTool) -> Value {
         "created_at": tool.created_at,
         "force_copy": tool.force_copy,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn skill_preferences_default_view_mode_falls_back_to_flat() {
+        let missing = from_db_skill_preferences(json!({}));
+        assert_eq!(missing.default_view_mode, "flat");
+
+        let explicit_flat = from_db_skill_preferences(json!({ "default_view_mode": "flat" }));
+        assert_eq!(explicit_flat.default_view_mode, "flat");
+
+        let invalid = from_db_skill_preferences(json!({ "default_view_mode": "grid" }));
+        assert_eq!(invalid.default_view_mode, "flat");
+    }
+
+    #[test]
+    fn skill_preferences_default_view_mode_allows_grouped() {
+        let grouped = from_db_skill_preferences(json!({ "default_view_mode": "grouped" }));
+        assert_eq!(grouped.default_view_mode, "grouped");
+    }
+
+    #[test]
+    fn skill_preferences_payload_normalizes_default_view_mode() {
+        let mut prefs = SkillPreferences::default();
+        prefs.default_view_mode = "grouped".to_string();
+        let grouped_payload = to_skill_preferences_payload(&prefs);
+        assert_eq!(
+            grouped_payload
+                .get("default_view_mode")
+                .and_then(Value::as_str),
+            Some("grouped")
+        );
+
+        prefs.default_view_mode = "grid".to_string();
+        let fallback_payload = to_skill_preferences_payload(&prefs);
+        assert_eq!(
+            fallback_payload
+                .get("default_view_mode")
+                .and_then(Value::as_str),
+            Some("flat")
+        );
+    }
+
+    #[test]
+    fn skill_preferences_ignores_legacy_central_repo_path() {
+        let prefs = from_db_skill_preferences(json!({
+            "central_repo_path": "/Users/ralph/.skills",
+            "default_view_mode": "grouped",
+        }));
+
+        assert_eq!(prefs.default_view_mode, "grouped");
+
+        let payload = to_skill_preferences_payload(&prefs);
+        assert!(payload.get("central_repo_path").is_none());
+    }
 }

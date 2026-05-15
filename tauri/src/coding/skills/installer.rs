@@ -13,10 +13,12 @@ use super::central_repo::{
 use super::content_hash::hash_dir;
 use super::git_fetcher::{clone_or_pull, set_proxy, GitProxyMode};
 use super::path_executor::{
-    remove_skill_target, sync_copy_target_path, sync_skill_to_target, target_path_changed,
+    remove_skill_target_checked, sync_copy_target_path, sync_skill_to_target, target_path_changed,
 };
 use super::skill_store;
-use super::sync_engine::{copy_dir_recursive, copy_skill_dir};
+use super::sync_engine::{
+    copy_dir_recursive, copy_skill_dir, ensure_source_target_not_overlapping,
+};
 use super::tool_adapters::{
     adapter_by_key, is_tool_installed_async, resolve_runtime_skills_path_async,
     runtime_adapter_by_key, RuntimeToolAdapter,
@@ -46,6 +48,7 @@ pub async fn install_local_skill(
     let central_dir = resolve_central_repo_path(app, state).await?;
     ensure_central_repo(&central_dir)?;
     let central_path = central_dir.join(&name);
+    ensure_source_target_not_overlapping(source_path, &central_path)?;
 
     // Check if skill already exists and get its ID for update
     let existing_skill = if central_path.exists() {
@@ -90,9 +93,20 @@ pub async fn install_local_skill(
         user_group: existing_skill
             .as_ref()
             .and_then(|skill| skill.user_group.clone()),
+        group_id: existing_skill
+            .as_ref()
+            .and_then(|skill| skill.group_id.clone()),
         user_note: existing_skill
             .as_ref()
             .and_then(|skill| skill.user_note.clone()),
+        management_enabled: existing_skill
+            .as_ref()
+            .map(|skill| skill.management_enabled)
+            .unwrap_or(true),
+        disabled_previous_tools: existing_skill
+            .as_ref()
+            .map(|skill| skill.disabled_previous_tools.clone())
+            .unwrap_or_default(),
         enabled_tools: Vec::new(),
         sync_details: None,
     };
@@ -170,6 +184,7 @@ pub async fn install_local_skill_from_selection(
     let central_dir = resolve_central_repo_path(app, state).await?;
     ensure_central_repo(&central_dir)?;
     let central_path = central_dir.join(&name);
+    ensure_source_target_not_overlapping(&copy_src, &central_path)?;
 
     // Check if skill already exists and get its ID for update
     let existing_skill = if central_path.exists() {
@@ -220,9 +235,20 @@ pub async fn install_local_skill_from_selection(
         user_group: existing_skill
             .as_ref()
             .and_then(|skill| skill.user_group.clone()),
+        group_id: existing_skill
+            .as_ref()
+            .and_then(|skill| skill.group_id.clone()),
         user_note: existing_skill
             .as_ref()
             .and_then(|skill| skill.user_note.clone()),
+        management_enabled: existing_skill
+            .as_ref()
+            .map(|skill| skill.management_enabled)
+            .unwrap_or(true),
+        disabled_previous_tools: existing_skill
+            .as_ref()
+            .map(|skill| skill.disabled_previous_tools.clone())
+            .unwrap_or_default(),
         enabled_tools: Vec::new(),
         sync_details: None,
     };
@@ -366,9 +392,20 @@ pub async fn install_git_skill(
         user_group: existing_skill
             .as_ref()
             .and_then(|skill| skill.user_group.clone()),
+        group_id: existing_skill
+            .as_ref()
+            .and_then(|skill| skill.group_id.clone()),
         user_note: existing_skill
             .as_ref()
             .and_then(|skill| skill.user_note.clone()),
+        management_enabled: existing_skill
+            .as_ref()
+            .map(|skill| skill.management_enabled)
+            .unwrap_or(true),
+        disabled_previous_tools: existing_skill
+            .as_ref()
+            .map(|skill| skill.disabled_previous_tools.clone())
+            .unwrap_or_default(),
         enabled_tools: Vec::new(),
         sync_details: None,
     };
@@ -537,9 +574,20 @@ pub async fn install_git_skill_from_selection(
         user_group: existing_skill
             .as_ref()
             .and_then(|skill| skill.user_group.clone()),
+        group_id: existing_skill
+            .as_ref()
+            .and_then(|skill| skill.group_id.clone()),
         user_note: existing_skill
             .as_ref()
             .and_then(|skill| skill.user_note.clone()),
+        management_enabled: existing_skill
+            .as_ref()
+            .map(|skill| skill.management_enabled)
+            .unwrap_or(true),
+        disabled_previous_tools: existing_skill
+            .as_ref()
+            .map(|skill| skill.disabled_previous_tools.clone())
+            .unwrap_or_default(),
         enabled_tools: Vec::new(),
         sync_details: None,
     };
@@ -658,13 +706,27 @@ pub async fn update_managed_skill_from_source(
         status: "ok".to_string(),
         sort_index: record.sort_index,
         user_group: record.user_group.clone(),
+        group_id: record.group_id.clone(),
         user_note: record.user_note.clone(),
+        management_enabled: record.management_enabled,
+        disabled_previous_tools: record.disabled_previous_tools.clone(),
         enabled_tools: record.enabled_tools.clone(),
         sync_details: record.sync_details.clone(),
     };
     skill_store::upsert_skill(state, &updated)
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
+
+    if !record.management_enabled {
+        return Ok(UpdateResult {
+            skill_id: record.id,
+            name: record.name,
+            central_path,
+            content_hash,
+            source_revision: new_revision,
+            updated_targets: Vec::new(),
+        });
+    }
 
     // Re-sync copy targets (symlinks update automatically)
     let targets = skill_store::get_skill_targets(state, skill_id)
@@ -714,7 +776,7 @@ pub async fn update_managed_skill_from_source(
                 true,
                 runtime_adapter.force_copy,
             )?;
-            if let Err(err) = remove_skill_target(&t.target_path) {
+            if let Err(err) = remove_skill_target_checked(&central_path, &t.target_path) {
                 log::warn!(
                     "Failed to remove outdated skill target for '{}' ({}): {}",
                     record.name,

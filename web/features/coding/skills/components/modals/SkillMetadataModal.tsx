@@ -10,7 +10,7 @@ import styles from './SkillMetadataModal.module.less';
 interface SkillMetadataModalProps {
   open: boolean;
   skill: ManagedSkill | null;
-  groupOptions: string[];
+  groupOptions: Array<{ id: string; name: string }>;
   onClose: () => void;
   onSuccess: () => void;
 }
@@ -48,11 +48,16 @@ export const SkillMetadataModal: React.FC<SkillMetadataModalProps> = ({
       return;
     }
 
+    const groupName = normalizeSkillMetadataText(values.userGroup);
     setSaving(true);
     try {
+      const groupId = groupName
+        ? groupOptions.find((group) => group.name === groupName)?.id
+          ?? await api.saveSkillGroup(groupName, null, groupOptions.length)
+        : null;
       await api.updateSkillMetadata(
         skill.id,
-        normalizeSkillMetadataText(values.userGroup),
+        groupId,
         normalizeSkillMetadataText(values.userNote),
       );
       message.success(t('skills.metadata.saveSuccess'));
@@ -114,7 +119,7 @@ export const SkillMetadataModal: React.FC<SkillMetadataModalProps> = ({
               <AutoComplete
                 allowClear
                 autoFocus
-                options={groupOptions.map((group) => ({ value: group }))}
+                options={groupOptions.map((group) => ({ value: group.name }))}
                 placeholder={t('skills.metadata.groupPlaceholder')}
                 filterOption={(inputValue, option) =>
                   String(option?.value ?? '').toLowerCase().includes(inputValue.toLowerCase())}

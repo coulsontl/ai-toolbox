@@ -13,6 +13,10 @@ import {
   isSkillUngroupedCustomGroup,
   normalizeSkillMetadataText,
 } from '../../../../../features/coding/skills/utils/skillGrouping.ts';
+import {
+  GROUP_TOOL_BATCH_OPTIONS,
+  shouldOverwriteExistingTarget,
+} from '../../../../../features/coding/skills/utils/batchToolOptions.ts';
 import type { ManagedSkill } from '../../../../../features/coding/skills/types/index.ts';
 
 function makeSkill(overrides: Partial<ManagedSkill>): ManagedSkill {
@@ -28,7 +32,14 @@ function makeSkill(overrides: Partial<ManagedSkill>): ManagedSkill {
     status: 'ok',
     sort_index: 0,
     user_group: null,
+    group_id: null,
     user_note: null,
+    management_enabled: true,
+    disabled_previous_tools: [],
+    description: null,
+    content_hash: null,
+    source_health: 'ok',
+    source_error: null,
     enabled_tools: [],
     targets: [],
     ...overrides,
@@ -47,15 +58,16 @@ test('normalizeSkillMetadataText trims empty values to null', () => {
   assert.equal(normalizeSkillMetadataText(null), null);
 });
 
-test('getSkillGroupOptions returns sorted non-empty custom groups', () => {
-  const skills = [
-    makeSkill({ id: 'a', user_group: 'Reverse' }),
-    makeSkill({ id: 'b', user_group: 'Frontend' }),
-    makeSkill({ id: 'c', user_group: ' Reverse ' }),
-    makeSkill({ id: 'd', user_group: '' }),
+test('getSkillGroupOptions returns sorted registry groups', () => {
+  const groups = [
+    { id: 'reverse', name: 'Reverse', note: null, sort_index: 2, created_at: 1, updated_at: 1 },
+    { id: 'frontend', name: 'Frontend', note: null, sort_index: 1, created_at: 1, updated_at: 1 },
   ];
 
-  assert.deepEqual(getSkillGroupOptions(skills), ['Frontend', 'Reverse']);
+  assert.deepEqual(getSkillGroupOptions(groups), [
+    { id: 'frontend', name: 'Frontend' },
+    { id: 'reverse', name: 'Reverse' },
+  ]);
 });
 
 test('filterSkillsBySearch matches custom group and note', () => {
@@ -71,12 +83,14 @@ test('filterSkillsBySearch matches custom group and note', () => {
 
 test('buildSkillGroups groups by custom group and keeps ungrouped skills', () => {
   const skills = [
-    makeSkill({ id: 'a', user_group: 'Reverse' }),
+    makeSkill({ id: 'a', group_id: 'reverse', user_group: 'Reverse' }),
     makeSkill({ id: 'b', user_group: null }),
-    makeSkill({ id: 'c', user_group: 'Reverse' }),
+    makeSkill({ id: 'c', group_id: 'reverse', user_group: 'Reverse' }),
   ];
 
-  const groups = buildSkillGroups(skills, 'custom', labels, () => null);
+  const groups = buildSkillGroups(skills, 'custom', labels, () => null, [
+    { id: 'reverse', name: 'Reverse', note: 'Reverse tools', sort_index: 0, created_at: 1, updated_at: 1 },
+  ]);
 
   assert.equal(groups[1].key, CUSTOM_UNGROUPED_GROUP_KEY);
   assert.equal(isSkillUngroupedCustomGroup(groups[1]), true);
@@ -115,6 +129,7 @@ test('buildSkillGroups preserves source grouping behavior for git and local skil
 test('skill group tool helpers use union and detect mixed tool sets', () => {
   const group = {
     key: 'custom:Dev',
+    id: 'dev',
     label: 'Dev',
     sourceType: 'custom' as const,
     skills: [
@@ -143,6 +158,7 @@ test('skill group tool helpers use union and detect mixed tool sets', () => {
 test('skill group tool helpers treat equal sets in different order as aligned', () => {
   const group = {
     key: 'custom:Dev',
+    id: 'dev',
     label: 'Dev',
     sourceType: 'custom' as const,
     skills: [
@@ -164,4 +180,45 @@ test('skill group tool helpers treat equal sets in different order as aligned', 
   };
 
   assert.equal(isSkillGroupToolsAligned(group), true);
+});
+
+test('skill group tool helpers ignore disabled skills for group tool mode', () => {
+  const group = {
+    key: 'custom:Dev',
+    id: 'dev',
+    label: 'Dev',
+    sourceType: 'custom' as const,
+    skills: [
+      makeSkill({
+        id: 'enabled-a',
+        targets: [
+          { tool: 'claude_code', mode: 'link', status: 'ok', target_path: '', synced_at: 1 },
+        ],
+      }),
+      makeSkill({
+        id: 'enabled-b',
+        targets: [],
+      }),
+      makeSkill({
+        id: 'disabled',
+        management_enabled: false,
+        targets: [],
+      }),
+    ],
+  };
+
+  assert.deepEqual(getSkillGroupToolIds(group), ['claude_code']);
+  assert.equal(isSkillGroupToolsAligned(group), false);
+  assert.deepEqual(getSkillIdsMissingTool(group, 'claude_code'), ['enabled-b']);
+  assert.deepEqual(getSkillIdsWithTool(group, 'claude_code'), ['enabled-a']);
+});
+
+test('group tool mode writes opt into overwriting existing unmanaged targets', () => {
+  assert.equal(shouldOverwriteExistingTarget(undefined), false);
+  assert.equal(shouldOverwriteExistingTarget({ quiet: true }), false);
+  assert.equal(shouldOverwriteExistingTarget(GROUP_TOOL_BATCH_OPTIONS), true);
+  assert.deepEqual(GROUP_TOOL_BATCH_OPTIONS, {
+    quiet: true,
+    overwriteExisting: true,
+  });
 });

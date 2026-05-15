@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import {
   Modal,
   message,
@@ -6,9 +7,11 @@ import {
 import {
   ChevronsDown,
   ChevronsUp,
+  ChevronRight,
   ExternalLink,
   GripVertical,
   Import,
+  FileJson,
   LayoutGrid,
   ListTree,
   MinusCircle,
@@ -43,6 +46,9 @@ import { SkillsSettingsModal } from '../components/modals/SkillsSettingsModal';
 import { DeleteConfirmModal } from '../components/modals/DeleteConfirmModal';
 import { NewToolsModal } from '../components/modals/NewToolsModal';
 import { SkillMetadataModal } from '../components/modals/SkillMetadataModal';
+import { SkillGroupsModal } from '../components/modals/SkillGroupsModal';
+import { SkillInventoryModal } from '../components/modals/SkillInventoryModal';
+import * as api from '../services/skillsApi';
 import {
   buildSkillGroups,
   filterSkillsBySearch,
@@ -55,10 +61,145 @@ import {
   normalizeSkillMetadataText,
   type SkillGroupingMode,
 } from '../utils/skillGrouping';
-import type { ManagedSkill, SkillGroup } from '../types';
+import { GROUP_TOOL_BATCH_OPTIONS } from '../utils/batchToolOptions';
+import type { ManagedSkill, SkillEnabledFilter, SkillGroup, SkillViewMode } from '../types';
 import styles from './SkillsPage.module.less';
 
 const AUTO_EXPAND_SKILL_THRESHOLD = 20;
+
+interface ToolbarOptionsPopoverProps {
+  title: string;
+  active?: boolean;
+  activeTitle?: string;
+  children: React.ReactNode | ((controls: { close: () => void }) => React.ReactNode);
+}
+
+interface ToolbarActionItemProps {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  onClick: () => void;
+}
+
+const POPOVER_VIEWPORT_MARGIN = 12;
+const POPOVER_MAX_WIDTH = 420;
+
+const ToolbarOptionsPopover: React.FC<ToolbarOptionsPopoverProps> = ({ title, active, activeTitle, children }) => {
+  const triggerRef = React.useRef<HTMLSpanElement | null>(null);
+  const popoverRef = React.useRef<HTMLDivElement | null>(null);
+  const [open, setOpen] = React.useState(false);
+  const [position, setPosition] = React.useState({ top: 0, left: 0 });
+
+  const closePopover = React.useCallback(() => setOpen(false), []);
+
+  const updatePosition = React.useCallback(() => {
+    const triggerElement = triggerRef.current;
+    if (!triggerElement) {
+      return;
+    }
+
+    const rect = triggerElement.getBoundingClientRect();
+    const popoverWidth = popoverRef.current?.offsetWidth
+      ?? Math.min(POPOVER_MAX_WIDTH, window.innerWidth - POPOVER_VIEWPORT_MARGIN * 2);
+    const nextLeft = Math.min(
+      Math.max(POPOVER_VIEWPORT_MARGIN, rect.right - popoverWidth),
+      Math.max(POPOVER_VIEWPORT_MARGIN, window.innerWidth - popoverWidth - POPOVER_VIEWPORT_MARGIN),
+    );
+
+    const popoverHeight = popoverRef.current?.offsetHeight
+      ?? Math.min(window.innerHeight - POPOVER_VIEWPORT_MARGIN * 2, window.innerHeight);
+    const nextTop = Math.min(
+      Math.max(POPOVER_VIEWPORT_MARGIN, rect.bottom + 6),
+      Math.max(POPOVER_VIEWPORT_MARGIN, window.innerHeight - popoverHeight - POPOVER_VIEWPORT_MARGIN),
+    );
+
+    setPosition({
+      top: nextTop,
+      left: nextLeft,
+    });
+  }, []);
+
+  React.useLayoutEffect(() => {
+    if (open) {
+      updatePosition();
+    }
+  }, [open, updatePosition]);
+
+  React.useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+
+    updatePosition();
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (triggerRef.current?.contains(target) || popoverRef.current?.contains(target)) {
+        return;
+      }
+      closePopover();
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closePopover();
+      }
+    };
+
+    window.addEventListener('pointerdown', handlePointerDown, true);
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown, true);
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [closePopover, open, updatePosition]);
+
+  return (
+    <span ref={triggerRef} className={styles.toolbarOptionsHost}>
+      <ManagementIconButton
+        icon={<SlidersHorizontal size={14} aria-hidden="true" />}
+        title={activeTitle ?? title}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={activeTitle ?? title}
+        className={active ? styles.toolbarOptionsTriggerActive : undefined}
+        onClick={() => {
+          updatePosition();
+          setOpen((previousOpen) => !previousOpen);
+        }}
+        controlSize="compact"
+      />
+      {open && createPortal(
+        <div
+          ref={popoverRef}
+          className={styles.toolbarOptionsPopover}
+          role="dialog"
+          aria-label={title}
+          style={{ top: position.top, left: position.left }}
+        >
+          {typeof children === 'function' ? children({ close: closePopover }) : children}
+        </div>,
+        document.body,
+      )}
+    </span>
+  );
+};
+
+const ToolbarActionItem: React.FC<ToolbarActionItemProps> = ({ icon, title, description, onClick }) => (
+  <button type="button" className={styles.toolbarActionItem} onClick={onClick}>
+    <span className={styles.toolbarActionIcon} aria-hidden="true">{icon}</span>
+    <span className={styles.toolbarActionContent}>
+      <span className={styles.toolbarActionTitle}>{title}</span>
+      <span className={styles.toolbarActionDescription}>{description}</span>
+    </span>
+    <ChevronRight size={15} className={styles.toolbarActionArrow} aria-hidden="true" />
+  </button>
+);
 
 const SkillsPage: React.FC = () => {
   const { t } = useTranslation();
@@ -70,6 +211,7 @@ const SkillsPage: React.FC = () => {
     isSettingsModalOpen,
     setSettingsModalOpen,
     isNewToolsModalOpen,
+    groups,
     loading,
   } = useSkillsStore();
 
@@ -78,12 +220,11 @@ const SkillsPage: React.FC = () => {
     getAllTools,
     formatRelative,
     getGithubInfo,
-    getSkillSourceLabel,
     refresh,
   } = useSkills();
 
   const [searchText, setSearchText] = React.useState('');
-  const [viewMode, setViewMode] = React.useState<'flat' | 'grouped'>('flat');
+  const [viewMode, setViewMode] = React.useState<SkillViewMode>('flat');
   const [groupMode, setGroupMode] = React.useState<SkillGroupingMode>('custom');
   const [groupActiveKeys, setGroupActiveKeys] = React.useState<string[]>([]);
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set());
@@ -92,15 +233,41 @@ const SkillsPage: React.FC = () => {
   const [metadataSkill, setMetadataSkill] = React.useState<ManagedSkill | null>(null);
   const [batchGroupModalOpen, setBatchGroupModalOpen] = React.useState(false);
   const [batchGroupValue, setBatchGroupValue] = React.useState('');
+  const [groupsModalOpen, setGroupsModalOpen] = React.useState(false);
+  const [inventoryModalOpen, setInventoryModalOpen] = React.useState(false);
+  const [enabledFilter, setEnabledFilter] = React.useState<SkillEnabledFilter>('all');
   const [groupToolMode, setGroupToolMode] = React.useState(false);
   const [gridColumnSetting, setGridColumnSetting] = React.useState<ManagementGridColumnSetting>('auto');
   const deferredSearchText = React.useDeferredValue(searchText);
-  const previousViewModeRef = React.useRef<'flat' | 'grouped'>('flat');
+  const previousViewModeRef = React.useRef<SkillViewMode>('flat');
   const previousAutoExpandRef = React.useRef(false);
+  const hasUserSelectedViewModeRef = React.useRef(false);
 
   // Initialize data on mount
   React.useEffect(() => {
+    let cancelled = false;
+    api.getDefaultViewMode()
+      .then((mode) => {
+        if (!cancelled && !hasUserSelectedViewModeRef.current) {
+          setViewMode(mode);
+        }
+      })
+      .catch(console.error);
     refresh();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleViewModeChange = React.useCallback((mode: SkillViewMode) => {
+    hasUserSelectedViewModeRef.current = true;
+    setViewMode(mode);
+  }, []);
+
+  const handleDefaultViewModeApply = React.useCallback((mode: SkillViewMode) => {
+    hasUserSelectedViewModeRef.current = true;
+    setViewMode(mode);
   }, []);
 
   const allTools = getAllTools();
@@ -124,17 +291,23 @@ const SkillsPage: React.FC = () => {
     handleBatchAddTool,
     handleBatchRemoveTool,
     handleBatchSetGroup,
+    handleSetManagementEnabled,
   } = useSkillActions({ allTools });
 
   // Filter skills by search text
   const filteredSkills = React.useMemo(() => {
-    return filterSkillsBySearch(skills, deferredSearchText);
-  }, [skills, deferredSearchText]);
+    const byStatus = skills.filter((skill) => {
+      if (enabledFilter === 'enabled') return skill.management_enabled;
+      if (enabledFilter === 'disabled') return !skill.management_enabled;
+      return true;
+    });
+    return filterSkillsBySearch(byStatus, deferredSearchText);
+  }, [skills, deferredSearchText, enabledFilter]);
 
   const isSearchActive = !!searchText.trim();
   const isFlatReorderEnabled = viewMode === 'flat' && reorderMode && !isSearchActive;
   const canUseGroupToolMode = viewMode === 'grouped' && groupMode === 'custom' && !isSearchActive;
-  const groupOptions = React.useMemo(() => getSkillGroupOptions(skills), [skills]);
+  const groupOptions = React.useMemo(() => getSkillGroupOptions(groups), [groups]);
 
   React.useEffect(() => {
     if (viewMode !== 'flat' || isSearchActive) {
@@ -217,9 +390,14 @@ const SkillsPage: React.FC = () => {
   );
 
   const handleConfirmBatchGroup = React.useCallback(async () => {
+    const normalizedGroupName = normalizeSkillMetadataText(batchGroupValue);
+    const groupId = normalizedGroupName
+      ? groupOptions.find((group) => group.name === normalizedGroupName)?.id
+        ?? await api.saveSkillGroup(normalizedGroupName, null, groupOptions.length)
+      : null;
     const saved = await handleBatchSetGroup(
       selectedArray,
-      normalizeSkillMetadataText(batchGroupValue),
+      groupId,
     );
     if (!saved) {
       return;
@@ -227,7 +405,31 @@ const SkillsPage: React.FC = () => {
     setBatchGroupModalOpen(false);
     setBatchGroupValue('');
     setSelectedIds(new Set());
-  }, [batchGroupValue, handleBatchSetGroup, selectedArray]);
+  }, [batchGroupValue, groupOptions, handleBatchSetGroup, selectedArray]);
+
+  const handleSetSkillEnabled = React.useCallback((skill: ManagedSkill, enabled: boolean) => {
+    if (!enabled) {
+      Modal.confirm({
+        title: t('skills.disableConfirmTitle'),
+        content: t('skills.disableConfirmContent', { name: skill.name, count: skill.enabled_tools.length }),
+        okText: t('skills.disableSkill'),
+        cancelText: t('common.cancel'),
+        onOk: () => handleSetManagementEnabled(skill, false),
+      });
+      return;
+    }
+
+    const restoreTools = skill.disabled_previous_tools.filter((toolId) => allTools.some((tool) => tool.id === toolId));
+    Modal.confirm({
+      title: t('skills.enableConfirmTitle'),
+      content: restoreTools.length > 0
+        ? t('skills.enableConfirmContent', { count: restoreTools.length })
+        : t('skills.enableConfirmEmpty'),
+      okText: t('skills.enableSkill'),
+      cancelText: t('common.cancel'),
+      onOk: () => handleSetManagementEnabled(skill, true, restoreTools),
+    });
+  }, [allTools, handleSetManagementEnabled, t]);
 
   const groupedSkills = React.useMemo<SkillGroup[]>(() => {
     if (viewMode !== 'grouped') return [];
@@ -241,8 +443,9 @@ const SkillsPage: React.FC = () => {
         groupUngrouped: t('skills.groupUngrouped'),
       },
       getGithubInfo,
+      groups,
     );
-  }, [filteredSkills, viewMode, groupMode, getGithubInfo, t]);
+  }, [filteredSkills, viewMode, groupMode, getGithubInfo, groups, t]);
 
   const groupToolTargetGroups = React.useMemo(
     () => groupedSkills.filter((group) => !isSkillUngroupedCustomGroup(group)),
@@ -263,7 +466,11 @@ const SkillsPage: React.FC = () => {
           continue;
         }
 
-        const saved = await handleBatchAddTool(missingSkillIds, toolId, { quiet: true });
+        const saved = await handleBatchAddTool(
+          missingSkillIds,
+          toolId,
+          GROUP_TOOL_BATCH_OPTIONS,
+        );
         if (!saved) {
           return false;
         }
@@ -317,7 +524,7 @@ const SkillsPage: React.FC = () => {
     if (missingSkillIds.length === 0) {
       return;
     }
-    await handleBatchAddTool(missingSkillIds, toolId);
+    await handleBatchAddTool(missingSkillIds, toolId, GROUP_TOOL_BATCH_OPTIONS);
   }, [handleBatchAddTool]);
 
   const handleRemoveGroupTool = React.useCallback(async (group: SkillGroup, toolId: string) => {
@@ -332,65 +539,43 @@ const SkillsPage: React.FC = () => {
     await handleBatchRemoveTool(syncedSkillIds, toolId);
   }, [handleBatchRemoveTool]);
 
-  const groupControlItems = React.useMemo<ManagementMenuItem[]>(() => [
-    {
-      key: 'mode-section',
-      type: 'section',
-      label: t('skills.groupControls.modeSection'),
-    },
-    {
-      key: 'selection-mode',
-      label: selectionMode ? t('skills.batch.exitSelectionMode') : t('skills.batch.selectionMode'),
-      tooltip: t('skills.groupControls.selectionModeTip'),
-      kind: 'checkbox',
-      active: selectionMode,
-      onSelect: handleToggleSelectionMode,
-    },
-    {
-      key: 'group-tools',
-      label: t('skills.groupTools.mode'),
-      tooltip: groupMode !== 'custom'
-        ? t('skills.groupControls.groupToolsCustomOnlyTip')
-        : isSearchActive
-          ? t('skills.groupTools.disabledWhileSearching')
-          : t('skills.groupControls.groupToolsTip'),
-      kind: 'checkbox',
-      active: groupToolMode,
-      disabled: groupMode !== 'custom' || loading || actionLoading || isSearchActive,
-      onSelect: () => handleToggleGroupToolMode(!groupToolMode),
-    },
-    {
-      key: 'group-section',
-      type: 'section',
-      label: t('skills.groupControls.groupSection'),
-    },
-    {
-      key: 'group-custom',
-      label: t('skills.groupByCustom'),
-      tooltip: t('skills.groupControls.customGroupingTip'),
-      kind: 'radio',
-      active: groupMode === 'custom',
-      onSelect: () => setGroupMode('custom'),
-    },
-    {
-      key: 'group-source',
-      label: t('skills.groupBySource'),
-      tooltip: t('skills.groupControls.sourceGroupingTip'),
-      kind: 'radio',
-      active: groupMode === 'source',
-      onSelect: () => setGroupMode('source'),
-    },
-  ], [
-    actionLoading,
-    groupMode,
-    groupToolMode,
-    handleToggleGroupToolMode,
-    handleToggleSelectionMode,
-    isSearchActive,
-    loading,
-    selectionMode,
-    t,
-  ]);
+  const groupToolControlTitle = groupMode !== 'custom'
+    ? t('skills.groupControls.groupToolsCustomOnlyTip')
+    : isSearchActive
+      ? t('skills.groupTools.disabledWhileSearching')
+      : t('skills.groupControls.groupToolsTip');
+
+  const toolbarOptionStates = React.useMemo(() => {
+    const states: string[] = [];
+    if (enabledFilter !== 'all') {
+      states.push(t(`skills.enabledFilter.${enabledFilter}`));
+    }
+    if (viewMode === 'flat' && reorderMode) {
+      states.push(t('skills.reorder'));
+    }
+    if (groupMode !== 'custom') {
+      states.push(t('skills.groupBySource'));
+    }
+    if (viewMode === 'grouped' && selectionMode) {
+      states.push(t('skills.batch.bulkManage'));
+    }
+    if (viewMode === 'grouped' && groupToolMode) {
+      states.push(t('skills.groupControls.groupTools'));
+    }
+    return states;
+  }, [enabledFilter, groupMode, groupToolMode, reorderMode, selectionMode, t, viewMode]);
+
+  const toolbarOptionsActive = toolbarOptionStates.length > 0;
+  const toolbarOptionsTitle = toolbarOptionsActive
+    ? t('skills.toolbar.optionsActive', { states: toolbarOptionStates.join(' / ') })
+    : t('skills.toolbar.options');
+
+  const flatReorderDisabledHint = viewMode === 'flat' && isSearchActive
+    ? t('skills.reorderDisabledWhileSearching')
+    : null;
+  const groupToolsDisabledHint = viewMode === 'grouped' && (groupMode !== 'custom' || isSearchActive)
+    ? groupToolControlTitle
+    : null;
 
   const shouldAutoExpandGroups =
     filteredSkills.length > 0 && filteredSkills.length < AUTO_EXPAND_SKILL_THRESHOLD;
@@ -489,32 +674,154 @@ const SkillsPage: React.FC = () => {
           </ManagementButton>
         </div>
         <div className={styles.toolbarActions}>
-          {viewMode === 'flat' && (
-            <ManagementButton
-              variant={reorderMode ? 'primary' : 'ghost'}
-              controlSize="compact"
-              icon={<GripVertical size={14} aria-hidden="true" />}
-              title={
-                isSearchActive
-                  ? t('skills.reorderDisabledWhileSearching')
-                  : t('skills.reorderHint')
-              }
-              className={styles.reorderButton}
-              onClick={() => setReorderMode((prev) => !prev)}
-              disabled={isSearchActive}
-            >
-              {t('skills.reorder')}
-            </ManagementButton>
-          )}
-          {viewMode === 'grouped' && (
-            <ManagementMenu
-              items={groupControlItems}
-              title={t('skills.groupControls.title')}
-              controlSize="compact"
-            >
-              <SlidersHorizontal size={14} aria-hidden="true" />
-            </ManagementMenu>
-          )}
+          <ToolbarOptionsPopover
+            title={t('skills.toolbar.options')}
+            active={toolbarOptionsActive}
+            activeTitle={toolbarOptionsTitle}
+          >
+            {({ close }) => (
+              <>
+                <section className={styles.toolbarOptionsSection} aria-label={t('skills.toolbar.viewControls')}>
+                  <div className={styles.toolbarOptionsSectionTitle}>{t('skills.toolbar.viewFilters')}</div>
+                  {toolbarOptionsActive && (
+                    <div className={styles.toolbarActiveSummary} title={toolbarOptionStates.join(' / ')}>
+                      <span className={styles.toolbarActiveDot} aria-hidden="true" />
+                      <span className={styles.toolbarActiveText}>
+                        {t('skills.toolbar.activeSummary', { states: toolbarOptionStates.join(' / ') })}
+                      </span>
+                    </div>
+                  )}
+                  <div className={styles.toolbarOptionRow}>
+                    <span className={styles.toolbarOptionLabel}>{t('skills.enabledFilter.label')}</span>
+                    <ManagementSegmented<SkillEnabledFilter>
+                      value={enabledFilter}
+                      ariaLabel={t('skills.enabledFilter.label')}
+                      onChange={setEnabledFilter}
+                      options={[
+                        { value: 'all', label: t('skills.enabledFilter.all') },
+                        { value: 'enabled', label: t('skills.enabledFilter.enabled') },
+                        { value: 'disabled', label: t('skills.enabledFilter.disabled') },
+                      ]}
+                    />
+                  </div>
+                  {viewMode === 'flat' && (
+                    <div className={styles.toolbarOptionRow}>
+                      <span className={styles.toolbarOptionLabel}>{t('skills.toolbar.arrange')}</span>
+                      <ManagementSegmented<'browse' | 'reorder'>
+                        value={reorderMode ? 'reorder' : 'browse'}
+                        ariaLabel={t('skills.reorder')}
+                        title={isSearchActive ? t('skills.reorderDisabledWhileSearching') : t('skills.reorderHint')}
+                        disabled={isSearchActive}
+                        onChange={(nextMode) => setReorderMode(nextMode === 'reorder')}
+                        options={[
+                          { value: 'browse', label: t('skills.groupControls.browseMode') },
+                          {
+                            value: 'reorder',
+                            icon: <GripVertical size={13} aria-hidden="true" />,
+                            label: t('skills.reorder'),
+                            title: isSearchActive ? t('skills.reorderDisabledWhileSearching') : t('skills.reorderHint'),
+                          },
+                        ]}
+                      />
+                      {flatReorderDisabledHint && (
+                        <div className={styles.toolbarOptionHint}>{flatReorderDisabledHint}</div>
+                      )}
+                    </div>
+                  )}
+                  {viewMode === 'grouped' && (
+                    <>
+                      <div className={styles.toolbarOptionRow}>
+                        <span className={styles.toolbarOptionLabel}>{t('skills.groupControls.groupingLabel')}</span>
+                        <ManagementSegmented<SkillGroupingMode>
+                          value={groupMode}
+                          ariaLabel={t('skills.groupControls.groupingLabel')}
+                          onChange={setGroupMode}
+                          options={[
+                            {
+                              value: 'custom',
+                              label: t('skills.groupByCustom'),
+                              title: t('skills.groupControls.customGroupingTip'),
+                            },
+                            {
+                              value: 'source',
+                              label: t('skills.groupBySource'),
+                              title: t('skills.groupControls.sourceGroupingTip'),
+                            },
+                          ]}
+                        />
+                      </div>
+                      <div className={styles.toolbarOptionRow}>
+                        <span className={styles.toolbarOptionLabel}>{t('skills.groupControls.selectionModeLabel')}</span>
+                        <ManagementSegmented<'browse' | 'select'>
+                          value={selectionMode ? 'select' : 'browse'}
+                          ariaLabel={t('skills.groupControls.selectionModeLabel')}
+                          onChange={(nextMode) => {
+                            if ((nextMode === 'select') !== selectionMode) {
+                              handleToggleSelectionMode();
+                            }
+                          }}
+                          options={[
+                            { value: 'browse', label: t('skills.groupControls.browseMode') },
+                            {
+                              value: 'select',
+                              label: t('skills.batch.bulkManage'),
+                              title: t('skills.groupControls.selectionModeTip'),
+                            },
+                          ]}
+                        />
+                        <div className={styles.toolbarOptionInfo}>{t('skills.groupControls.selectionModeTip')}</div>
+                      </div>
+                      <div className={styles.toolbarOptionRow}>
+                        <span className={styles.toolbarOptionLabel}>{t('skills.groupControls.groupToolsLabel')}</span>
+                        <ManagementSegmented<'card' | 'group'>
+                          value={groupToolMode ? 'group' : 'card'}
+                          ariaLabel={t('skills.groupControls.groupToolsLabel')}
+                          title={groupToolControlTitle}
+                          disabled={groupMode !== 'custom' || loading || actionLoading || isSearchActive}
+                          onChange={(nextMode) => handleToggleGroupToolMode(nextMode === 'group')}
+                          options={[
+                            { value: 'card', label: t('skills.groupControls.cardTools') },
+                            {
+                              value: 'group',
+                              label: t('skills.groupControls.groupTools'),
+                              title: groupToolControlTitle,
+                            },
+                          ]}
+                        />
+                        <div className={styles.toolbarOptionInfo}>{t('skills.groupControls.groupToolsTip')}</div>
+                        {groupToolsDisabledHint && (
+                          <div className={styles.toolbarOptionHint}>{groupToolsDisabledHint}</div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </section>
+                <section className={styles.toolbarOptionsSection} aria-label={t('skills.toolbar.managementControls')}>
+                  <div className={styles.toolbarOptionsSectionTitle}>{t('skills.toolbar.management')}</div>
+                  <div className={styles.toolbarActionList}>
+                    <ToolbarActionItem
+                      icon={<Tags size={14} aria-hidden="true" />}
+                      title={t('skills.toolbar.groupManagement')}
+                      description={t('skills.toolbar.groupManagementDescription')}
+                      onClick={() => {
+                        close();
+                        setGroupsModalOpen(true);
+                      }}
+                    />
+                    <ToolbarActionItem
+                      icon={<FileJson size={14} aria-hidden="true" />}
+                      title={t('skills.toolbar.inventory')}
+                      description={t('skills.toolbar.inventoryDescription')}
+                      onClick={() => {
+                        close();
+                        setInventoryModalOpen(true);
+                      }}
+                    />
+                  </div>
+                </section>
+              </>
+            )}
+          </ToolbarOptionsPopover>
           {viewMode === 'grouped' && selectionMode && (
             <>
               <ManagementIconButton
@@ -577,10 +884,11 @@ const SkillsPage: React.FC = () => {
               />
             </>
           )}
-          <ManagementSegmented<'flat' | 'grouped'>
+          <ManagementSegmented<SkillViewMode>
             value={viewMode}
             ariaLabel={t('skills.groupedViewTip')}
-            onChange={setViewMode}
+            className={styles.viewModeSegmented}
+            onChange={handleViewModeChange}
             options={[
               { value: 'flat', icon: <LayoutGrid size={13} aria-hidden="true" />, label: t('skills.viewFlat') },
               { value: 'grouped', icon: <ListTree size={13} aria-hidden="true" />, label: t('skills.viewGrouped') },
@@ -599,12 +907,12 @@ const SkillsPage: React.FC = () => {
             columns={gridColumns}
             dragDisabled={!isFlatReorderEnabled}
             getGithubInfo={getGithubInfo}
-            getSkillSourceLabel={getSkillSourceLabel}
             formatRelative={formatRelative}
             onUpdate={handleUpdate}
             onDelete={handleDelete}
             onToggleTool={handleToggleTool}
             onEditMetadata={setMetadataSkill}
+            onSetManagementEnabled={handleSetSkillEnabled}
             onDragEnd={handleDragEnd}
           />
         ) : (
@@ -621,12 +929,12 @@ const SkillsPage: React.FC = () => {
             onSelectChange={handleSelectChange}
             onSelectAllGroup={handleSelectAllGroup}
             getGithubInfo={getGithubInfo}
-            getSkillSourceLabel={getSkillSourceLabel}
             formatRelative={formatRelative}
             onUpdate={handleUpdate}
             onDelete={handleDelete}
             onToggleTool={handleToggleTool}
             onEditMetadata={setMetadataSkill}
+            onSetManagementEnabled={handleSetSkillEnabled}
             groupToolMode={groupToolMode}
             onAddGroupTool={handleAddGroupTool}
             onRemoveGroupTool={handleRemoveGroupTool}
@@ -663,6 +971,7 @@ const SkillsPage: React.FC = () => {
           cardColumnSetting={gridColumnSetting}
           cardColumnOptions={MANAGEMENT_GRID_COLUMN_OPTIONS}
           onCardColumnSettingChange={setGridColumnSetting}
+          onDefaultViewModeApply={handleDefaultViewModeApply}
           onClose={() => setSettingsModalOpen(false)}
         />
       )}
@@ -705,7 +1014,7 @@ const SkillsPage: React.FC = () => {
           />
           <datalist id="skills-batch-group-options">
             {groupOptions.map((group) => (
-              <option key={group} value={group} />
+              <option key={group.id} value={group.name} />
             ))}
           </datalist>
           <p className={styles.batchGroupHint}>
@@ -723,6 +1032,19 @@ const SkillsPage: React.FC = () => {
           setMetadataSkill(null);
           refresh();
         }}
+      />
+
+      <SkillGroupsModal
+        open={groupsModalOpen}
+        groups={groups}
+        onClose={() => setGroupsModalOpen(false)}
+        onSuccess={refresh}
+      />
+
+      <SkillInventoryModal
+        open={inventoryModalOpen}
+        onClose={() => setInventoryModalOpen(false)}
+        onSuccess={refresh}
       />
 
       <NewToolsModal

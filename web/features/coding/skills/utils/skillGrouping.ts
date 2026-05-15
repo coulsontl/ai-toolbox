@@ -1,4 +1,4 @@
-import type { ManagedSkill, SkillGroup } from '../types';
+import type { ManagedSkill, SkillGroup, SkillGroupRecord } from '../types';
 
 export type SkillGroupingMode = 'custom' | 'source';
 
@@ -19,15 +19,10 @@ export function normalizeSkillMetadataText(value: string | null | undefined): st
   return trimmed ? trimmed : null;
 }
 
-export function getSkillGroupOptions(skills: ManagedSkill[]): string[] {
-  const groups = new Set<string>();
-  for (const skill of skills) {
-    const group = normalizeSkillMetadataText(skill.user_group);
-    if (group) {
-      groups.add(group);
-    }
-  }
-  return [...groups].sort((left, right) => left.localeCompare(right));
+export function getSkillGroupOptions(groups: SkillGroupRecord[]): Array<{ id: string; name: string }> {
+  return [...groups]
+    .sort((left, right) => left.sort_index - right.sort_index || left.name.localeCompare(right.name))
+    .map((group) => ({ id: group.id, name: group.name }));
 }
 
 export function filterSkillsBySearch(skills: ManagedSkill[], searchText: string): ManagedSkill[] {
@@ -40,6 +35,7 @@ export function filterSkillsBySearch(skills: ManagedSkill[], searchText: string)
     const searchableValues = [
       skill.name,
       skill.source_ref,
+      skill.description,
       skill.user_group,
       skill.user_note,
     ];
@@ -53,12 +49,27 @@ export function buildSkillGroups(
   mode: SkillGroupingMode,
   labels: SkillGroupLabels,
   getGithubInfo: GithubInfoResolver,
+  registryGroups: SkillGroupRecord[] = [],
 ): SkillGroup[] {
   const groupMap = new Map<string, SkillGroup>();
 
+  if (mode === 'custom') {
+    for (const group of registryGroups) {
+      groupMap.set(`custom:${group.id}`, {
+        key: `custom:${group.id}`,
+        id: group.id,
+        label: group.name,
+        note: group.note,
+        sort_index: group.sort_index,
+        sourceType: 'custom',
+        skills: [],
+      });
+    }
+  }
+
   for (const skill of skills) {
     const group = mode === 'custom'
-      ? buildCustomGroup(skill, labels)
+      ? buildCustomGroup(skill, labels, registryGroups)
       : buildSourceGroup(skill, labels, getGithubInfo);
 
     const existing = groupMap.get(group.key);
@@ -69,25 +80,46 @@ export function buildSkillGroups(
     }
   }
 
-  return Array.from(groupMap.values());
+  return Array.from(groupMap.values()).sort((left, right) => {
+    if (mode !== 'custom') return 0;
+    if (left.key === CUSTOM_UNGROUPED_GROUP_KEY) return 1;
+    if (right.key === CUSTOM_UNGROUPED_GROUP_KEY) return -1;
+    return (left.sort_index ?? 0) - (right.sort_index ?? 0) || left.label.localeCompare(right.label);
+  });
 }
 
 function buildCustomGroup(
   skill: ManagedSkill,
   labels: SkillGroupLabels,
+  registryGroups: SkillGroupRecord[],
 ): Omit<SkillGroup, 'skills'> {
-  const userGroup = normalizeSkillMetadataText(skill.user_group);
-  if (!userGroup) {
+  const registryGroup = skill.group_id
+    ? registryGroups.find((group) => group.id === skill.group_id)
+    : undefined;
+  if (registryGroup) {
+    return {
+      key: `custom:${registryGroup.id}`,
+      id: registryGroup.id,
+      label: registryGroup.name,
+      note: registryGroup.note,
+      sort_index: registryGroup.sort_index,
+      sourceType: 'custom',
+    };
+  }
+
+  if (!normalizeSkillMetadataText(skill.user_group)) {
     return {
       key: CUSTOM_UNGROUPED_GROUP_KEY,
+      id: null,
       label: labels.groupUngrouped,
       sourceType: 'custom',
     };
   }
 
   return {
-    key: `custom:${userGroup}`,
-    label: userGroup,
+    key: `custom:legacy:${skill.user_group}`,
+    id: null,
+    label: skill.user_group ?? labels.groupUngrouped,
     sourceType: 'custom',
   };
 }
@@ -102,6 +134,7 @@ function buildSourceGroup(
     if (github) {
       return {
         key: `git:${github.href}`,
+        id: null,
         label: github.label,
         sourceType: 'git',
       };
@@ -110,6 +143,7 @@ function buildSourceGroup(
     const baseUrl = skill.source_ref.replace(/\/tree\/.*$/, '');
     return {
       key: `git:${baseUrl}`,
+      id: null,
       label: baseUrl,
       sourceType: 'git',
     };
@@ -121,6 +155,7 @@ function buildSourceGroup(
     const parentPath = parts.slice(0, -1).join('/');
     return {
       key: `local:${parentPath || path}`,
+      id: null,
       label: parts[parts.length - 2] || parts[parts.length - 1] || labels.groupLocal,
       sourceType: 'local',
     };
@@ -128,6 +163,7 @@ function buildSourceGroup(
 
   return {
     key: 'import',
+    id: null,
     label: labels.groupImport,
     sourceType: 'import',
   };
@@ -143,7 +179,7 @@ export function isSkillUngroupedCustomGroup(group: SkillGroup): boolean {
 
 export function getSkillGroupToolIds(group: SkillGroup): string[] {
   const toolIds = new Set<string>();
-  for (const skill of group.skills) {
+  for (const skill of getManagementEnabledSkills(group)) {
     for (const toolId of getSkillToolIds(skill)) {
       toolIds.add(toolId);
     }
@@ -152,25 +188,30 @@ export function getSkillGroupToolIds(group: SkillGroup): string[] {
 }
 
 export function isSkillGroupToolsAligned(group: SkillGroup): boolean {
-  if (group.skills.length <= 1) {
+  const enabledSkills = getManagementEnabledSkills(group);
+  if (enabledSkills.length <= 1) {
     return true;
   }
 
-  const [firstSkill, ...restSkills] = group.skills;
+  const [firstSkill, ...restSkills] = enabledSkills;
   const firstToolKey = createToolSetKey(getSkillToolIds(firstSkill));
   return restSkills.every((skill) => createToolSetKey(getSkillToolIds(skill)) === firstToolKey);
 }
 
 export function getSkillIdsMissingTool(group: SkillGroup, toolId: string): string[] {
-  return group.skills
+  return getManagementEnabledSkills(group)
     .filter((skill) => !skill.targets.some((target) => target.tool === toolId))
     .map((skill) => skill.id);
 }
 
 export function getSkillIdsWithTool(group: SkillGroup, toolId: string): string[] {
-  return group.skills
+  return getManagementEnabledSkills(group)
     .filter((skill) => skill.targets.some((target) => target.tool === toolId))
     .map((skill) => skill.id);
+}
+
+function getManagementEnabledSkills(group: SkillGroup): ManagedSkill[] {
+  return group.skills.filter((skill) => skill.management_enabled);
 }
 
 function createToolSetKey(toolIds: string[]): string {

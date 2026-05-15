@@ -1,35 +1,45 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use serde_json::Value;
 use tauri::Manager;
 
 const CENTRAL_DIR_NAME: &str = "skills";
 
-/// Resolve the central repo path from settings or default to app_data_dir/skills
+fn central_repo_path_from_settings_record(record: &Value) -> Option<PathBuf> {
+    record
+        .get("central_repo_path")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+}
+
+async fn load_authoritative_central_repo_path(
+    state: &crate::DbState,
+) -> std::result::Result<Option<PathBuf>, String> {
+    let db = state.db();
+    let mut result = db
+        .query("SELECT *, type::string(id) as id FROM skill_settings:`skills` LIMIT 1")
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let records: Vec<serde_json::Value> = result.take(0).map_err(|e| e.to_string())?;
+
+    if let Some(record) = records.first() {
+        return Ok(central_repo_path_from_settings_record(record));
+    }
+    Ok(None)
+}
+
+/// Resolve the central repo path from the authoritative skill_settings record
+/// or default to app_data_dir/skills.
 pub async fn resolve_central_repo_path<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &crate::DbState,
 ) -> Result<PathBuf> {
     // Try to get from settings first
-    let settings_result: std::result::Result<Option<PathBuf>, String> = async {
-        let db = state.db();
-        let mut result = db
-            .query("SELECT * FROM skill_settings:`skills` LIMIT 1")
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let records: Vec<serde_json::Value> = result.take(0).map_err(|e| e.to_string())?;
-
-        if let Some(record) = records.first() {
-            if let Some(path) = record.get("central_repo_path").and_then(|v| v.as_str()) {
-                if !path.is_empty() {
-                    return Ok(Some(PathBuf::from(path)));
-                }
-            }
-        }
-        Ok(None)
-    }
-    .await;
+    let settings_result = load_authoritative_central_repo_path(state).await;
 
     if let Ok(Some(path)) = settings_result {
         return Ok(path);
@@ -41,6 +51,20 @@ pub async fn resolve_central_repo_path<R: tauri::Runtime>(
         .app_data_dir()
         .context("failed to resolve app data directory")?;
     Ok(app_data_dir.join(CENTRAL_DIR_NAME))
+}
+
+/// Save the central repo path to the same authoritative store that the resolver reads.
+pub async fn save_central_repo_path(state: &crate::DbState, path: &Path) -> Result<()> {
+    let db = state.db();
+    let now = super::types::now_ms();
+
+    db.query("UPSERT skill_settings:`skills` MERGE { central_repo_path: $path, updated_at: $now }")
+        .bind(("path", path.to_string_lossy().to_string()))
+        .bind(("now", now))
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to save central repo path: {}", e))?;
+
+    Ok(())
 }
 
 /// Ensure the central repo directory exists
@@ -198,4 +222,125 @@ pub fn expand_home_path(input: &str) -> Result<PathBuf> {
         return Ok(home.join(stripped));
     }
     Ok(PathBuf::from(trimmed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DbState;
+    use serde_json::json;
+    use surrealdb::engine::local::SurrealKv;
+    use surrealdb::Surreal;
+
+    async fn create_test_db() -> (tempfile::TempDir, DbState) {
+        let temp_dir = tempfile::tempdir().expect("create temp db dir");
+        let db_path = temp_dir.path().join("surreal");
+        let db = Surreal::new::<SurrealKv>(db_path)
+            .await
+            .expect("open surreal test db");
+        db.use_ns("ai_toolbox")
+            .use_db("main")
+            .await
+            .expect("select surreal test namespace");
+        (temp_dir, DbState(db))
+    }
+
+    #[test]
+    fn settings_record_empty_central_repo_path_is_missing() {
+        assert_eq!(central_repo_path_from_settings_record(&json!({})), None);
+        assert_eq!(
+            central_repo_path_from_settings_record(&json!({ "central_repo_path": "   " })),
+            None
+        );
+    }
+
+    #[test]
+    fn settings_record_central_repo_path_is_authoritative() {
+        let path = central_repo_path_from_settings_record(&json!({
+            "central_repo_path": "/tmp/ai-toolbox-skills",
+            "git_cache_cleanup_days": 10,
+        }));
+
+        assert_eq!(path, Some(PathBuf::from("/tmp/ai-toolbox-skills")));
+    }
+
+    #[test]
+    fn settings_record_does_not_read_skill_preferences_shape() {
+        let path = central_repo_path_from_settings_record(&json!({
+            "preferred_tools": ["codex"],
+            "default_view_mode": "grouped",
+        }));
+
+        assert_eq!(path, None);
+    }
+
+    #[tokio::test]
+    async fn saved_central_repo_path_is_read_by_authoritative_resolver_store() {
+        let temp = tempfile::tempdir().expect("central temp dir");
+        let (_db_temp, state) = create_test_db().await;
+        let central_path = temp.path().join("custom-skills");
+
+        save_central_repo_path(&state, &central_path)
+            .await
+            .expect("save central repo path");
+
+        let resolved = load_authoritative_central_repo_path(&state)
+            .await
+            .expect("load central repo path");
+        assert_eq!(resolved, Some(central_path));
+    }
+
+    #[tokio::test]
+    async fn legacy_skill_preferences_path_does_not_influence_authoritative_store() {
+        let (_db_temp, state) = create_test_db().await;
+        let db = state.db();
+        db.query(
+            "UPSERT skill_preferences:`default` CONTENT { central_repo_path: '/Users/ralph/.skills' }",
+        )
+        .await
+        .expect("seed legacy skill preferences path");
+
+        let resolved = load_authoritative_central_repo_path(&state)
+            .await
+            .expect("load central repo path");
+
+        assert_eq!(resolved, None);
+    }
+
+    #[tokio::test]
+    async fn saving_central_repo_path_preserves_other_skill_settings_fields() {
+        let temp = tempfile::tempdir().expect("central temp dir");
+        let (_db_temp, state) = create_test_db().await;
+        let db = state.db();
+        db.query(
+            "UPSERT skill_settings:`skills` CONTENT { git_cache_cleanup_days: 7, git_cache_ttl_secs: 120 }",
+        )
+        .await
+        .expect("seed existing skill settings");
+        let central_path = temp.path().join("custom-skills");
+
+        save_central_repo_path(&state, &central_path)
+            .await
+            .expect("save central repo path");
+
+        let mut result = db
+            .query("SELECT *, type::string(id) as id FROM skill_settings:`skills` LIMIT 1")
+            .await
+            .expect("query skill settings");
+        let records: Vec<Value> = result.take(0).expect("take skill settings");
+        let record = records.first().expect("skill settings record");
+
+        assert_eq!(
+            record.get("central_repo_path").and_then(Value::as_str),
+            Some(central_path.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            record.get("git_cache_cleanup_days").and_then(Value::as_i64),
+            Some(7)
+        );
+        assert_eq!(
+            record.get("git_cache_ttl_secs").and_then(Value::as_i64),
+            Some(120)
+        );
+    }
 }
