@@ -58,8 +58,8 @@ sequenceDiagram
 - Skills 管理页、列表、分组和卡片的主交互面应保持轻量原生控件风格，不要重新把 AntD `Button/Input/Segmented/Dropdown/Tooltip/Collapse/Empty/Spin/Tag/Checkbox` 引回这些高频列表 surface；复杂 modal 表单可另行按 modal 规则处理。
 - Skills 顶部工具栏的表面只保留最高频主视图切换（平铺/分组）作为 shared `ManagementSegmented`；禁用筛选、平铺排序、自定义/来源、浏览/选择、单卡/组工具等辅助查看或组织配置收进 sliders 选项浮层，并在浮层内继续使用 shared `ManagementSegmented`。分组管理和 Inventory 分组导入/导出这类组织类一次性动作放在 sliders 浮层的管理动作分区内，用按钮呈现；展开/折叠这类快捷动作保持 icon button，其他低频入口可继续放按钮或更多菜单，避免把动作误设计成状态。只要 sliders 浮层里存在非默认状态，触发按钮必须给出可见 active feedback；禁用原因要在浮层内有轻量可见提示，不能只依赖 hover title。
 - sliders 选项浮层的信息架构固定为“视图与筛选 / 数据管理”：即时生效的筛选、分组、模式切换使用轻量一体化 segmented；会打开 modal 或文件流程的分组管理、Inventory 导入导出使用列表 action item，并在点击时先关闭浮层再进入流程。不要把 action item 重新做成 segmented 或把 segmented 包进多层线框卡片。
-- Skill 卡片的所属分组只在平铺视图中作为 meta 行弱上下文展示；分组视图已有 section/header 提供归属，不要在卡片内重复。卡片里的 description 摘要和 `user_note` 管理备注应拆成不同视觉层级，渲染前先 trim，避免空白字段撑出空内容块；摘要/备注不显示显式文字 label，备注最多单行截断并保留 title，不使用竖条、引用线、色块或便签背景。
-- Skill 卡片结构长期保持 main-compatible 紧凑管理卡语言：“标题/source type/复制来源 → 来源上下文 meta → `user_note` → description → 工具属性区”。左侧主 icon 统一表示打开 AI Toolbox 托管的中央仓库 Skill（优先 `central_path/SKILL.md`，fallback 到 `central_path`），不要把 source_ref/local 原始路径当主打开入口。启用/禁用属于低频维护动作，收进更多菜单但不能禁用恢复路径；仅 Git source 在更多菜单提供打开原始来源。
+- Skill 卡片不要重复展示已有上下文：所属分组只在需要补充归属的视图中弱化呈现，分组视图已有 section/header 提供归属时不要在卡片内重复。`description` 摘要、`user_note` 管理备注等可选文本渲染前先 trim，避免空白字段撑出空内容块；具体展示层级应服从当前页面设计，不把一次性视觉回滚固化为长期卡片结构规则。
+- Skill 卡片打开路径交互必须保留安全 fallback：打开中央仓库 Skill 时优先定位 `central_path/SKILL.md`，失败或缺失时 fallback 到 `central_path`；打开原始来源时，本地来源 `source_ref` 可能已经不存在，应 fallback 到 `central_path`。启用/禁用属于低频维护动作，收进更多菜单但不能禁用恢复路径。
 
 ## 跨模块依赖
 
