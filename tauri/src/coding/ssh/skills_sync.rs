@@ -11,9 +11,9 @@ use super::commands::get_ssh_config_internal;
 use super::session::SshSession;
 use super::sync::{
     check_remote_symlink_exists, create_remote_symlink, list_remote_dir, read_remote_file_raw,
-    remove_remote_path, sync_directory, write_remote_file,
+    remove_remote_path, sync_directory_with_progress, write_remote_file,
 };
-use super::types::SyncProgress;
+use super::types::{default_directory_excludes, SyncProgress};
 use crate::coding::runtime_location;
 use crate::coding::skills::central_repo::{resolve_central_repo_path, resolve_skill_central_path};
 use crate::coding::skills::skill_store;
@@ -104,6 +104,7 @@ pub async fn sync_skills_to_ssh(
             current: 0,
             total: total_skills,
             message: format!("Skills 同步: 0/{}", total_skills),
+            current_file: None,
         },
     );
 
@@ -171,6 +172,7 @@ pub async fn sync_skills_to_ssh(
                     "Skills 同步: {}/{} - {}",
                     current_idx, total_skills, skill.name
                 ),
+                current_file: None,
             },
         );
 
@@ -215,7 +217,32 @@ pub async fn sync_skills_to_ssh(
                 source_str,
                 remote_target
             );
-            match sync_directory(&source_str, &remote_target, session).await {
+            let report_current_file = |current_file: String| {
+                let _ = app.emit(
+                    "ssh-sync-progress",
+                    SyncProgress {
+                        phase: "skills".to_string(),
+                        current_item: skill.name.clone(),
+                        current: current_idx,
+                        total: total_skills,
+                        message: format!(
+                            "Skills 同步: {}/{} - {}",
+                            current_idx, total_skills, skill.name
+                        ),
+                        current_file: Some(current_file),
+                    },
+                );
+            };
+
+            match sync_directory_with_progress(
+                &source_str,
+                &remote_target,
+                session,
+                &default_directory_excludes(),
+                Some(&report_current_file),
+            )
+            .await
+            {
                 Ok(_) => {
                     if let Err(e) = write_remote_file(session, &hash_file, local_hash).await {
                         log::warn!(

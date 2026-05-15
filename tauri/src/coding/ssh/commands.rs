@@ -484,6 +484,7 @@ pub async fn do_full_sync(
             current: 0,
             total: total_files,
             message: format!("文件同步: 0/{}", total_files),
+            current_file: None,
         },
     );
 
@@ -712,12 +713,35 @@ async fn sync_mappings_with_progress(
                 current,
                 total,
                 message: format!("文件同步: {}/{} - {}", current, total, mapping.name),
+                current_file: None,
             },
         );
 
-        match sync::sync_file_mapping(mapping, session).await {
+        let report_current_file = |current_file: String| {
+            let _ = app.emit(
+                "ssh-sync-progress",
+                SyncProgress {
+                    phase: "files".to_string(),
+                    current_item: mapping.name.clone(),
+                    current,
+                    total,
+                    message: format!("文件同步: {}/{} - {}", current, total, mapping.name),
+                    current_file: Some(current_file),
+                },
+            );
+        };
+
+        match sync::sync_file_mapping_with_progress(mapping, session, Some(&report_current_file))
+            .await
+        {
             Ok(mut files) => {
-                match reconcile_codex_prompt_files_on_ssh(mapping, session).await {
+                match reconcile_codex_prompt_files_on_ssh(
+                    mapping,
+                    session,
+                    Some(&report_current_file),
+                )
+                .await
+                {
                     Ok(prompt_files) => files.extend(prompt_files),
                     Err(error) => errors.push(format!("{}: {}", mapping.name, error)),
                 }
@@ -769,6 +793,7 @@ async fn sync_mappings_with_progress(
 async fn reconcile_codex_prompt_files_on_ssh(
     mapping: &SSHFileMapping,
     session: &SshSession,
+    current_file_reporter: Option<&(dyn Fn(String) + Send + Sync)>,
 ) -> Result<Vec<String>, String> {
     if mapping.id != "codex-prompt" || mapping.is_directory || mapping.is_pattern {
         return Ok(vec![]);
@@ -784,8 +809,15 @@ async fn reconcile_codex_prompt_files_on_ssh(
             if local_path == mapping.local_path && remote_path == mapping.remote_path {
                 continue;
             }
-            synced_files
-                .extend(sync::sync_single_file(&expanded_local_path, &remote_path, session).await?);
+            synced_files.extend(
+                sync::sync_single_file_with_progress(
+                    &expanded_local_path,
+                    &remote_path,
+                    session,
+                    current_file_reporter,
+                )
+                .await?,
+            );
         } else {
             sync::remove_remote_path(session, &remote_path).await?;
             synced_files.push(format!("removed stale Codex prompt: {}", remote_path));
@@ -1238,6 +1270,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: false,
+            directory_excludes: vec![],
         },
         SSHFileMapping {
             id: "opencode-oh-my".to_string(),
@@ -1248,6 +1281,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: false,
+            directory_excludes: vec![],
         },
         SSHFileMapping {
             id: "opencode-oh-my-slim".to_string(),
@@ -1258,6 +1292,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: false,
             is_pattern: false,
             is_directory: false,
+            directory_excludes: vec![],
         },
         SSHFileMapping {
             id: "opencode-auth".to_string(),
@@ -1268,6 +1303,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: false,
+            directory_excludes: vec![],
         },
         SSHFileMapping {
             id: "opencode-plugins".to_string(),
@@ -1278,6 +1314,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: true,
             is_directory: false,
+            directory_excludes: vec![],
         },
         SSHFileMapping {
             id: "opencode-prompt".to_string(),
@@ -1288,6 +1325,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: false,
+            directory_excludes: vec![],
         },
         // Claude Code
         SSHFileMapping {
@@ -1299,6 +1337,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: false,
+            directory_excludes: vec![],
         },
         SSHFileMapping {
             id: "claude-config".to_string(),
@@ -1309,6 +1348,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: false,
+            directory_excludes: vec![],
         },
         SSHFileMapping {
             id: "claude-prompt".to_string(),
@@ -1319,6 +1359,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: false,
+            directory_excludes: vec![],
         },
         SSHFileMapping {
             id: "claude-plugins".to_string(),
@@ -1329,6 +1370,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: true,
+            directory_excludes: super::types::default_directory_excludes(),
         },
         // Codex
         SSHFileMapping {
@@ -1340,6 +1382,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: false,
+            directory_excludes: vec![],
         },
         SSHFileMapping {
             id: "codex-config".to_string(),
@@ -1350,6 +1393,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: false,
+            directory_excludes: vec![],
         },
         SSHFileMapping {
             id: "codex-prompt".to_string(),
@@ -1360,6 +1404,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: false,
+            directory_excludes: vec![],
         },
         SSHFileMapping {
             id: "codex-plugins".to_string(),
@@ -1370,6 +1415,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: true,
+            directory_excludes: super::types::default_directory_excludes(),
         },
         // OpenClaw
         SSHFileMapping {
@@ -1381,6 +1427,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: false,
+            directory_excludes: vec![],
         },
         // Gemini CLI
         SSHFileMapping {
@@ -1392,6 +1439,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: false,
+            directory_excludes: vec![],
         },
         SSHFileMapping {
             id: "geminicli-settings".to_string(),
@@ -1402,6 +1450,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: false,
+            directory_excludes: vec![],
         },
         SSHFileMapping {
             id: "geminicli-prompt".to_string(),
@@ -1412,6 +1461,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: false,
+            directory_excludes: vec![],
         },
         SSHFileMapping {
             id: "geminicli-oauth".to_string(),
@@ -1422,6 +1472,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: false,
+            directory_excludes: vec![],
         },
     ]
 }

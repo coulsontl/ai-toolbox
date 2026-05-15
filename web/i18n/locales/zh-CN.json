@@ -536,6 +536,10 @@
 			"patternModeHint": "如 *.json",
 			"directoryMode": "目录模式",
 			"directoryModeHint": "同步整个目录及其内容",
+			"directoryExcludes": "排除目录",
+			"directoryExcludesHint": "仅在目录模式生效。按目录名递归跳过，支持回车或逗号分隔。",
+			"directoryExcludesPlaceholder": "如 cache、.venv、node_modules",
+			"noDirectoryExcludes": "不排除目录",
 			"disabled": "已禁用",
 			"lastSyncTime": "上次同步时间",
 			"never": "从未同步",
@@ -548,7 +552,8 @@
 				"preparingFiles": "文件同步: 0/{{total}}",
 				"filesWithName": "文件同步: {{current}}/{{total}} - {{name}}",
 				"preparingSkills": "Skills 同步: 0/{{total}}",
-				"skillsWithName": "Skills 同步: {{current}}/{{total}} - {{name}}"
+				"skillsWithName": "Skills 同步: {{current}}/{{total}} - {{name}}",
+				"currentFile": "当前文件：{{file}}"
 			},
 			"autoSyncHint": "OpenCode、Claude、Codex 的 MCP 和 Skills，以及 OpenClaw 的 Skills 会在同步时自动处理，无需手动添加映射。",
 			"indicator": {

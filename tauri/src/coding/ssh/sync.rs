@@ -1,6 +1,10 @@
 use super::session::{self, upload_file_via_sftp, SshSession};
-use super::types::{SSHConnection, SSHConnectionResult, SSHFileMapping, SyncResult};
-use std::path::Path;
+use super::types::{
+    normalize_directory_excludes, SSHConnection, SSHConnectionResult, SSHFileMapping, SyncResult,
+};
+use std::path::{Path, PathBuf};
+
+type CurrentFileReporter<'a> = &'a (dyn Fn(String) + Send + Sync);
 
 fn mapping_kind(mapping: &SSHFileMapping) -> &'static str {
     if mapping.is_directory {
@@ -10,6 +14,49 @@ fn mapping_kind(mapping: &SSHFileMapping) -> &'static str {
     } else {
         "file"
     }
+}
+
+fn normalize_display_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn file_name_or_path(path: &Path, fallback: &str) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(normalize_display_path)
+        .unwrap_or_else(|| normalize_display_path(fallback))
+}
+
+fn glob_static_base(pattern: &str) -> Option<PathBuf> {
+    let meta_index = pattern
+        .char_indices()
+        .find(|(_, ch)| matches!(ch, '*' | '?' | '['))
+        .map(|(index, _)| index)?;
+    let prefix = &pattern[..meta_index];
+    if prefix.is_empty() {
+        return None;
+    }
+
+    let prefix_path = Path::new(prefix);
+    if prefix.ends_with('/') || prefix.ends_with('\\') {
+        Some(prefix_path.to_path_buf())
+    } else {
+        prefix_path.parent().map(Path::to_path_buf)
+    }
+}
+
+fn pattern_file_display_path(expanded_pattern: &str, file_path: &Path) -> String {
+    if let Some(base_dir) = glob_static_base(expanded_pattern) {
+        if let Ok(relative_path) = file_path.strip_prefix(&base_dir) {
+            let display = normalize_display_path(&relative_path.to_string_lossy());
+            if !display.is_empty() {
+                return display;
+            }
+        }
+    }
+
+    file_name_or_path(file_path, &file_path.to_string_lossy())
 }
 
 // ============================================================================
@@ -54,10 +101,11 @@ pub fn expand_local_path(path: &str) -> Result<String, String> {
 // ============================================================================
 
 /// 同步单个文件到远程（通过 SFTP）
-pub async fn sync_single_file(
+pub async fn sync_single_file_with_progress(
     local_path: &str,
     remote_path: &str,
     session: &SshSession,
+    current_file_reporter: Option<CurrentFileReporter<'_>>,
 ) -> Result<Vec<String>, String> {
     let expanded = expand_local_path(local_path)?;
     log::trace!(
@@ -75,6 +123,10 @@ pub async fn sync_single_file(
             remote_path
         );
         return Ok(vec![]);
+    }
+
+    if let Some(reporter) = current_file_reporter {
+        reporter(file_name_or_path(Path::new(&expanded), local_path));
     }
 
     let remote_target = remote_path.replace("~", "$HOME");
@@ -96,17 +148,21 @@ pub async fn sync_single_file(
 
 /// 同步整个目录到远程（通过 SFTP）
 /// 使用临时目录 + mv 实现原子替换，防止上传中断导致数据丢失
-pub async fn sync_directory(
+pub async fn sync_directory_with_progress(
     local_path: &str,
     remote_path: &str,
     session: &SshSession,
+    directory_excludes: &[String],
+    current_file_reporter: Option<CurrentFileReporter<'_>>,
 ) -> Result<Vec<String>, String> {
     let expanded = expand_local_path(local_path)?;
+    let directory_excludes = normalize_directory_excludes(directory_excludes);
     log::trace!(
-        "SSH directory sync start: local_path={}, expanded_local_path={}, remote_path={}",
+        "SSH directory sync start: local_path={}, expanded_local_path={}, remote_path={}, directory_excludes={:?}",
         local_path,
         expanded,
-        remote_path
+        remote_path,
+        directory_excludes
     );
 
     if !Path::new(&expanded).exists() {
@@ -140,7 +196,14 @@ pub async fn sync_directory(
     session.exec_command(&mkdir_cmd).await?;
 
     // SFTP 递归上传到临时目录（upload_dir 内部会展开 ~ 和 $HOME）
-    session.upload_dir(&expanded, &tmp_remote_path).await?;
+    session
+        .upload_dir_with_excludes_and_progress(
+            &expanded,
+            &tmp_remote_path,
+            &directory_excludes,
+            current_file_reporter,
+        )
+        .await?;
 
     // 原子替换：rm 旧目录 + mv 临时目录到目标
     let swap_cmd = format!(
@@ -155,20 +218,22 @@ pub async fn sync_directory(
         return Err(format!("目录替换失败: {}", e));
     }
     log::trace!(
-        "SSH directory sync uploaded successfully: expanded_local_path={}, remote_path={}, tmp_remote_path={}",
+        "SSH directory sync uploaded successfully: expanded_local_path={}, remote_path={}, tmp_remote_path={}, directory_excludes={:?}",
         expanded,
         remote_path,
-        tmp_remote_path
+        tmp_remote_path,
+        directory_excludes
     );
 
     Ok(vec![format!("{} -> {}", local_path, remote_path)])
 }
 
 /// 同步符合 glob 模式的文件到远程
-pub async fn sync_pattern_files(
+pub async fn sync_pattern_files_with_progress(
     local_pattern: &str,
     remote_dir: &str,
     session: &SshSession,
+    current_file_reporter: Option<CurrentFileReporter<'_>>,
 ) -> Result<Vec<String>, String> {
     let expanded = expand_local_path(local_pattern)?;
     log::trace!(
@@ -214,6 +279,10 @@ pub async fn sync_pattern_files(
 
         let remote_dest = format!("{}/{}", remote_dir.trim_end_matches('/'), file_name);
 
+        if let Some(reporter) = current_file_reporter {
+            reporter(pattern_file_display_path(&expanded, file_path));
+        }
+
         match upload_file_via_sftp(&sftp, &file_str, &remote_dest).await {
             Ok(()) => {
                 synced.push(format!(
@@ -255,6 +324,14 @@ pub async fn sync_file_mapping(
     mapping: &SSHFileMapping,
     session: &SshSession,
 ) -> Result<Vec<String>, String> {
+    sync_file_mapping_with_progress(mapping, session, None).await
+}
+
+pub async fn sync_file_mapping_with_progress(
+    mapping: &SSHFileMapping,
+    session: &SshSession,
+    current_file_reporter: Option<CurrentFileReporter<'_>>,
+) -> Result<Vec<String>, String> {
     let kind = mapping_kind(mapping);
     log::trace!(
         "SSH sync mapping start: id={}, name={}, module={}, kind={}, local_path={}, remote_path={}",
@@ -267,11 +344,30 @@ pub async fn sync_file_mapping(
     );
 
     let result = if mapping.is_directory {
-        sync_directory(&mapping.local_path, &mapping.remote_path, session).await
+        sync_directory_with_progress(
+            &mapping.local_path,
+            &mapping.remote_path,
+            session,
+            &mapping.directory_excludes,
+            current_file_reporter,
+        )
+        .await
     } else if mapping.is_pattern {
-        sync_pattern_files(&mapping.local_path, &mapping.remote_path, session).await
+        sync_pattern_files_with_progress(
+            &mapping.local_path,
+            &mapping.remote_path,
+            session,
+            current_file_reporter,
+        )
+        .await
     } else {
-        sync_single_file(&mapping.local_path, &mapping.remote_path, session).await
+        sync_single_file_with_progress(
+            &mapping.local_path,
+            &mapping.remote_path,
+            session,
+            current_file_reporter,
+        )
+        .await
     };
 
     match &result {
@@ -553,5 +649,30 @@ pub async fn check_remote_symlink_exists(
     match session.exec_command(&command).await {
         Ok(output) => output.trim() == "yes",
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pattern_file_display_path;
+    use std::path::Path;
+
+    #[test]
+    fn pattern_file_display_path_uses_static_glob_root() {
+        let pattern = "/home/me/.config/opencode/*.mjs";
+        let file_path = Path::new("/home/me/.config/opencode/plugin.mjs");
+
+        assert_eq!(pattern_file_display_path(pattern, file_path), "plugin.mjs");
+    }
+
+    #[test]
+    fn pattern_file_display_path_preserves_nested_relative_path() {
+        let pattern = "/home/me/.config/opencode/**/*.mjs";
+        let file_path = Path::new("/home/me/.config/opencode/plugins/plugin.mjs");
+
+        assert_eq!(
+            pattern_file_display_path(pattern, file_path),
+            "plugins/plugin.mjs"
+        );
     }
 }

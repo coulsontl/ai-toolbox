@@ -95,4 +95,6 @@ export interface SyncProgress {
   total: number;
   /** Overall progress message */
   message: string;
+  /** Current file being uploaded within the current item, when available */
+  currentFile?: string;
 }
