@@ -34,6 +34,36 @@
   color: var(--color-text-secondary);
 }
 
+.advancedSettingsCollapse {
+  border: 1px solid var(--color-border) !important;
+  border-radius: 8px !important;
+  background: var(--color-bg-elevated) !important;
+
+  :global(.ant-collapse-item) {
+    border-bottom: none !important;
+  }
+
+  :global(.ant-collapse-header) {
+    align-items: center !important;
+    padding: 8px 12px !important;
+    color: var(--color-text-primary) !important;
+  }
+
+  :global(.ant-collapse-content) {
+    border-top: 1px solid var(--color-border) !important;
+    background: transparent !important;
+  }
+
+  :global(.ant-collapse-content-box) {
+    padding: 12px !important;
+    background: transparent !important;
+  }
+}
+
+.extraSettingsFormItem {
+  margin-bottom: 0;
+}
+
 .extraSettingsEditor {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace);
   font-size: 12px;

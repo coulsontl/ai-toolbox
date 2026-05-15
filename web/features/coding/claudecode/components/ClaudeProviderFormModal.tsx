@@ -1,6 +1,6 @@
 import React from 'react';
-import { Modal, Form, Input, Select, Space, Button, Alert, message, AutoComplete, Radio } from 'antd';
-import type { RadioChangeEvent } from 'antd';
+import { Modal, Form, Input, Select, Space, Button, Alert, message, AutoComplete, Radio, Collapse } from 'antd';
+import type { CollapseProps, RadioChangeEvent } from 'antd';
 import { EyeInvisibleOutlined, EyeOutlined, CloudDownloadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
@@ -11,6 +11,7 @@ import { readCurrentOpenCodeProviders } from '@/services/opencodeApi';
 import styles from './ClaudeProviderFormModal.module.less';
 
 const { TextArea } = Input;
+const ADVANCED_SETTINGS_COLLAPSE_KEY = 'advancedSettings';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -44,6 +45,20 @@ function parseExtraSettingsConfig(rawConfig?: string): string | undefined {
   }
 
   return JSON.stringify(parsed);
+}
+
+function hasExtraSettingsConfig(rawConfig?: string): boolean {
+  const trimmedConfig = rawConfig?.trim();
+  if (!trimmedConfig) {
+    return false;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmedConfig) as unknown;
+    return isPlainObject(parsed) && Object.keys(parsed).length > 0;
+  } catch {
+    return true;
+  }
 }
 
 // OpenCode 供应商展示类型
@@ -108,6 +123,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
   const [providerCategory, setProviderCategory] = React.useState<'official' | 'custom'>('custom');
   const [extraSettingsValue, setExtraSettingsValue] = React.useState<unknown>(null);
   const [extraSettingsError, setExtraSettingsError] = React.useState<string>();
+  const [advancedSettingsExpanded, setAdvancedSettingsExpanded] = React.useState(false);
   const extraSettingsRawRef = React.useRef('');
 
   const isEdit = !!provider && !isCopy;
@@ -164,6 +180,11 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
     setExtraSettingsValue(value);
   }, []);
 
+  const handleAdvancedSettingsChange = React.useCallback<NonNullable<CollapseProps['onChange']>>((keys) => {
+    const activeKeys = Array.isArray(keys) ? keys : [keys];
+    setAdvancedSettingsExpanded(activeKeys.includes(ADVANCED_SETTINGS_COLLAPSE_KEY));
+  }, []);
+
   // 加载 OpenCode 中的供应商列表
   React.useEffect(() => {
     if (mode === 'import' || isEdit) {
@@ -190,6 +211,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
         : provider.extraSettingsConfig || '';
       setExtraSettingsValue(toExtraSettingsEditorValue(nextExtraSettingsRaw));
       setExtraSettingsError(undefined);
+      setAdvancedSettingsExpanded(nextProviderCategory !== 'official' && hasExtraSettingsConfig(nextExtraSettingsRaw));
       extraSettingsRawRef.current = nextExtraSettingsRaw;
 
       form.setFieldsValue({
@@ -209,6 +231,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
       setCurrentBaseUrl('');
       setExtraSettingsValue(null);
       setExtraSettingsError(undefined);
+      setAdvancedSettingsExpanded(false);
       extraSettingsRawRef.current = '';
       form.setFieldsValue({
         category: 'custom',
@@ -226,6 +249,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
       setCurrentBaseUrl('');
       setExtraSettingsValue(null);
       setExtraSettingsError(undefined);
+      setAdvancedSettingsExpanded(false);
       extraSettingsRawRef.current = '';
       form.setFieldsValue({ category: 'custom' });
     }
@@ -353,6 +377,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
           : parseExtraSettingsConfig(extraSettingsRawRef.current);
       } catch (error) {
         setExtraSettingsError(getExtraSettingsErrorMessage(error));
+        setAdvancedSettingsExpanded(true);
         return;
       }
       const formValues: ClaudeProviderFormValues = {
@@ -378,6 +403,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
       form.resetFields();
       setExtraSettingsValue(null);
       setExtraSettingsError(undefined);
+      setAdvancedSettingsExpanded(false);
       extraSettingsRawRef.current = '';
       setSelectedProvider(null);
       setAvailableModels([]);
@@ -464,6 +490,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
       setFetchedModels([]);
       setExtraSettingsValue(null);
       setExtraSettingsError(undefined);
+      setAdvancedSettingsExpanded(false);
       extraSettingsRawRef.current = '';
       form.setFieldsValue({
         baseUrl: undefined,
@@ -576,28 +603,6 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
               )}
             </Space>
           </Form.Item>
-
-          <Form.Item
-            label={t('claudecode.provider.extraSettings')}
-            tooltip={t('claudecode.provider.extraSettingsHint')}
-            validateStatus={extraSettingsError ? 'error' : undefined}
-            help={extraSettingsError}
-          >
-            <JsonEditor
-              value={extraSettingsValue}
-              onChange={handleExtraSettingsChange}
-              onBlur={handleExtraSettingsBlur}
-              onRawChange={handleExtraSettingsRawChange}
-              onRawBlur={handleExtraSettingsRawChange}
-              mode="text"
-              height={180}
-              minHeight={140}
-              maxHeight={360}
-              resizable
-              className={styles.extraSettingsEditor}
-              placeholder={t('claudecode.provider.extraSettingsPlaceholder')}
-            />
-          </Form.Item>
         </>
       )}
 
@@ -660,6 +665,45 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
           }
         />
       </Form.Item>
+
+      {!isOfficialMode && (
+        <Form.Item wrapperCol={{ offset: labelCol.span, span: wrapperCol.span }}>
+          <Collapse
+            bordered={false}
+            className={styles.advancedSettingsCollapse}
+            activeKey={advancedSettingsExpanded ? [ADVANCED_SETTINGS_COLLAPSE_KEY] : []}
+            onChange={handleAdvancedSettingsChange}
+            items={[{
+              key: ADVANCED_SETTINGS_COLLAPSE_KEY,
+              label: t('claudecode.provider.advancedSettings'),
+              children: (
+                <Form.Item
+                  className={styles.extraSettingsFormItem}
+                  label={t('claudecode.provider.extraSettings')}
+                  tooltip={t('claudecode.provider.extraSettingsHint')}
+                  validateStatus={extraSettingsError ? 'error' : undefined}
+                  help={extraSettingsError}
+                >
+                  <JsonEditor
+                    value={extraSettingsValue}
+                    onChange={handleExtraSettingsChange}
+                    onBlur={handleExtraSettingsBlur}
+                    onRawChange={handleExtraSettingsRawChange}
+                    onRawBlur={handleExtraSettingsRawChange}
+                    mode="text"
+                    height={180}
+                    minHeight={140}
+                    maxHeight={360}
+                    resizable
+                    className={styles.extraSettingsEditor}
+                    placeholder={t('claudecode.provider.extraSettingsPlaceholder')}
+                  />
+                </Form.Item>
+              ),
+            }]}
+          />
+        </Form.Item>
+      )}
 
       <Form.Item name="notes" label={t('claudecode.provider.notes')}>
         <TextArea

@@ -65,6 +65,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   const [editorContent, setEditorContent] = useState<string | null>(null);
   // 标记用户是否正在编辑器中输入
   const isUserEditingRef = useRef(false);
+  const [isUserEditing, setIsUserEditing] = useState(false);
 
   // 规范化值为字符串
   const normalizedValue = value === undefined || value === null ? '' : value;
@@ -186,10 +187,12 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
     // 监听焦点事件，用于判断用户是否正在编辑，并动态切换行高亮
     editorInstance.onDidFocusEditorText(() => {
       isUserEditingRef.current = true;
+      setIsUserEditing(true);
       editorInstance.updateOptions({ renderLineHighlight: 'line' });
     });
     editorInstance.onDidBlurEditorText(() => {
       isUserEditingRef.current = false;
+      setIsUserEditing(false);
       editorInstance.updateOptions({ renderLineHighlight: 'none' });
       const currentContent = editorInstance.getValue();
       onRawBlur?.(currentContent);
@@ -247,25 +250,16 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
       ? normalizedValue
       : (normalizedValue === '' ? '' : JSON.stringify(normalizedValue, null, 2));
 
-    console.log('[JsonEditor] useEffect triggered', {
-      newValueStr,
-      editorContent,
-      isUserEditing: isUserEditingRef.current,
-    });
-
     // 如果编辑器当前内容与新值相同，不需要更新
     if (editorContent === newValueStr) {
-      console.log('[JsonEditor] Editor content matches new value, skipping');
       return;
     }
 
     // 如果用户正在编辑器中输入（编辑器有焦点），不要覆盖用户的输入
-    if (isUserEditingRef.current) {
-      console.log('[JsonEditor] User is editing, skipping external update');
+    if (isUserEditing) {
       return;
     }
 
-    console.log('[JsonEditor] Updating editorContent to:', newValueStr);
     setEditorContent(newValueStr);
 
     // 更新编辑器内容（如果编辑器已挂载）
@@ -275,7 +269,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
         model.setValue(newValueStr);
       }
     }
-  }, [normalizedValue, editorContent]);
+  }, [normalizedValue, editorContent, isUserEditing]);
 
   useEffect(() => {
     return () => {
@@ -323,14 +317,6 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   // editorContent 始终与编辑器实际内容同步
   const showPlaceholder = placeholder && (editorContent === null || editorContent.trim() === '');
   const displayedValue = editorContent ?? valueString;
-
-  console.log('[JsonEditor] Render', {
-    value,
-    normalizedValue,
-    valueString,
-    editorContent,
-    showPlaceholder,
-  });
 
   // Monaco theme based on app theme
   const monacoTheme = resolvedTheme === 'dark' ? 'vs-dark' : 'vs';

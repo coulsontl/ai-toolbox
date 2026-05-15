@@ -41,6 +41,7 @@ sequenceDiagram
 - 页面里的 `__local__` 不是普通新增 provider，而是当前生效本地配置的收编入口；当用户把它保存为正式 provider 时，产品语义是“把当前生效配置正式落库”，不是“基于当前配置再新建一个未应用草稿”。
 - provider 模式只允许在新增或复制时选择。编辑已保存 provider 时必须隐藏模式选择，并沿用原 provider 的 `category`，不要允许官方/自定义互相切换。
 - Extra settings JSON 允许为空或 JSON object；保存时必须保留“用户清空”的语义，不能用 truthy 判断导致旧 extra settings 留在数据库或 settings.json 中。
+- Extra settings 是高级可选配置，表单中默认折叠；编辑已有非空 `extraSettingsConfig` 时必须自动展开，避免隐藏既有配置。
 
 ## 跨模块依赖
 
