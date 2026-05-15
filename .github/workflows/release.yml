@@ -121,7 +121,7 @@ jobs:
         run: pnpm test
 
   build:
-    needs: create-release
+    needs: [create-release, test]
     permissions:
       contents: write
     strategy:
@@ -131,10 +131,10 @@ jobs:
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             bundle: nsis,msi
-          - platform: macos-latest
+          - platform: macos-15-intel
             target: x86_64-apple-darwin
             bundle: dmg,app
-          - platform: macos-latest
+          - platform: macos-15
             target: aarch64-apple-darwin
             bundle: dmg,app
           - platform: ubuntu-22.04
@@ -238,6 +238,15 @@ jobs:
             echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$TAURI_KEY_PASSWORD" >> "$GITHUB_ENV"
           fi
           echo "✅ Tauri signing key prepared"
+
+      - name: Verify Rust and Tauri toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v cargo
+          cargo --version
+          cargo metadata --manifest-path tauri/Cargo.toml --no-deps --format-version 1 >/dev/null
+          pnpm tauri --version
 
       - name: Build Tauri App
         uses: tauri-apps/tauri-action@v0
