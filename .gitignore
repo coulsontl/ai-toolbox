@@ -16,9 +16,6 @@ dist-ssr
 .sisyphus/
 .ace-tool/
 .tmp/
-.claude/
-.opencode/
-.trellis/
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -30,5 +27,3 @@ dist-ssr
 *.sln
 *.sw?
 nul
-.codex
-.agents
