@@ -3,6 +3,7 @@
 //! 维护一个进程内持久 SSH 连接，所有操作复用该连接。
 //! 网络断开后自动重连。跨平台兼容（Windows/macOS/Linux）。
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -385,13 +386,57 @@ impl SshSession {
 
     /// 通过 SFTP 递归上传目录
     pub async fn upload_dir(&self, local_path: &str, remote_path: &str) -> Result<(), String> {
+        self.upload_dir_with_excludes(local_path, remote_path, &[])
+            .await
+    }
+
+    /// 通过 SFTP 递归上传目录，并按目录名跳过 excluded folders
+    pub async fn upload_dir_with_excludes(
+        &self,
+        local_path: &str,
+        remote_path: &str,
+        excluded_names: &[String],
+    ) -> Result<(), String> {
+        self.upload_dir_with_excludes_and_progress(local_path, remote_path, excluded_names, None)
+            .await
+    }
+
+    /// 通过 SFTP 递归上传目录，并在每个实际上传文件前报告相对路径
+    pub async fn upload_dir_with_excludes_and_progress(
+        &self,
+        local_path: &str,
+        remote_path: &str,
+        excluded_names: &[String],
+        current_file_reporter: Option<&(dyn Fn(String) + Send + Sync)>,
+    ) -> Result<(), String> {
         let sftp = self.create_sftp_session().await?;
 
         // 将 ~ 展开为绝对路径
         let abs_remote_path = resolve_remote_path(&sftp, remote_path).await?;
+        let excluded_names: HashSet<String> = excluded_names.iter().cloned().collect();
+        let mut stats = DirectoryUploadStats::default();
+        let local_root = std::path::Path::new(local_path);
 
         // 递归上传
-        upload_dir_recursive(&sftp, std::path::Path::new(local_path), &abs_remote_path).await
+        upload_dir_recursive(
+            &sftp,
+            local_root,
+            local_root,
+            &abs_remote_path,
+            &excluded_names,
+            &mut stats,
+            current_file_reporter,
+        )
+        .await?;
+
+        if stats.skipped_excluded_dirs > 0 {
+            info!(
+                "SSH directory upload skipped excluded directories: local_path={}, remote_path={}, skipped_count={}, excludes={:?}",
+                local_path, remote_path, stats.skipped_excluded_dirs, excluded_names
+            );
+        }
+
+        Ok(())
     }
 
     /// 获取 user@host 字符串
@@ -518,12 +563,35 @@ pub async fn upload_file_via_sftp(
     Ok(())
 }
 
+#[derive(Default)]
+struct DirectoryUploadStats {
+    skipped_excluded_dirs: usize,
+}
+
+const MAX_EXCLUDED_DIR_TRACE_LOGS: usize = 20;
+
+fn is_excluded_dir_name(file_name: &str, excluded_names: &HashSet<String>) -> bool {
+    excluded_names.contains(file_name)
+}
+
+fn relative_upload_path(base_dir: &std::path::Path, file_path: &std::path::Path) -> String {
+    file_path
+        .strip_prefix(base_dir)
+        .unwrap_or(file_path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 /// 递归上传目录内容到远程
 /// 使用 tokio::fs::metadata 跟随符号链接，等同于 cp -rL 行为
 async fn upload_dir_recursive(
     sftp: &russh_sftp::client::SftpSession,
+    base_dir: &std::path::Path,
     local_dir: &std::path::Path,
     remote_dir: &str,
+    excluded_names: &HashSet<String>,
+    stats: &mut DirectoryUploadStats,
+    current_file_reporter: Option<&(dyn Fn(String) + Send + Sync)>,
 ) -> Result<(), String> {
     // 创建远程目录（忽略已存在的错误）
     let _ = sftp.create_dir(remote_dir).await;
@@ -546,8 +614,34 @@ async fn upload_dir_recursive(
         let remote_child = format!("{}/{}", remote_dir, file_name);
 
         if metadata.is_dir() {
-            Box::pin(upload_dir_recursive(sftp, &path, &remote_child)).await?;
+            if is_excluded_dir_name(&file_name, excluded_names) {
+                stats.skipped_excluded_dirs += 1;
+                if stats.skipped_excluded_dirs <= MAX_EXCLUDED_DIR_TRACE_LOGS {
+                    log::trace!(
+                        "SSH directory upload skipped excluded directory: local_path={}, remote_path={}, exclude_name={}",
+                        path.display(),
+                        remote_child,
+                        file_name
+                    );
+                }
+                continue;
+            }
+
+            Box::pin(upload_dir_recursive(
+                sftp,
+                base_dir,
+                &path,
+                &remote_child,
+                excluded_names,
+                stats,
+                current_file_reporter,
+            ))
+            .await?;
         } else if metadata.is_file() {
+            if let Some(reporter) = current_file_reporter {
+                reporter(relative_upload_path(base_dir, &path));
+            }
+
             let data = tokio::fs::read(&path)
                 .await
                 .map_err(|e| format!("读取文件失败 {}: {}", path.display(), e))?;
@@ -628,5 +722,30 @@ impl Drop for SshSession {
     fn drop(&mut self) {
         // 在 Drop 中不能 async，直接丢弃 handle 让 russh 自行清理
         self.handle.take();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_excluded_dir_name, relative_upload_path};
+    use std::collections::HashSet;
+    use std::path::Path;
+
+    #[test]
+    fn matches_excluded_directory_by_name_segment_only() {
+        let excluded = HashSet::from(["cache".to_string(), ".venv".to_string()]);
+
+        assert!(is_excluded_dir_name("cache", &excluded));
+        assert!(is_excluded_dir_name(".venv", &excluded));
+        assert!(!is_excluded_dir_name("plugin-cache", &excluded));
+        assert!(!is_excluded_dir_name("cache/nested", &excluded));
+    }
+
+    #[test]
+    fn reports_directory_upload_paths_relative_to_mapping_root() {
+        let base = Path::new("/tmp/plugins");
+        let file = Path::new("/tmp/plugins/marketplace/cache.json");
+
+        assert_eq!(relative_upload_path(base, file), "marketplace/cache.json");
     }
 }

@@ -125,4 +125,7 @@ pub struct SyncProgress {
     pub total: u32,
     /// Overall progress message
     pub message: String,
+    /// Current file being uploaded within the current item, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_file: Option<String>,
 }

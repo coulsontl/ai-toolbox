@@ -150,6 +150,7 @@ pub async fn sync_skills_to_wsl(state: &DbState, app: AppHandle) -> Result<(), S
             current: 0,
             total: total_skills,
             message: format!("Skills 同步: 0/{}", total_skills),
+            current_file: None,
         },
     );
 
@@ -195,6 +196,7 @@ pub async fn sync_skills_to_wsl(state: &DbState, app: AppHandle) -> Result<(), S
                     "Skills 同步: {}/{} - {}",
                     current_idx, total_skills, skill.name
                 ),
+                current_file: None,
             },
         );
 

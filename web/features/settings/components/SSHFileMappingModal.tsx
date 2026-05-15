@@ -8,9 +8,30 @@ import React, { useEffect } from 'react';
 import { Modal, Form, Input, Select, Switch, Space, Typography, Divider } from 'antd';
 import { useTranslation } from 'react-i18next';
 import { sshAddFileMapping, sshUpdateFileMapping } from '@/services/sshSyncApi';
+import { DEFAULT_SSH_DIRECTORY_EXCLUDES } from '@/types/sshsync';
 import type { SSHFileMapping } from '@/types/sshsync';
 
 const { Text } = Typography;
+
+const normalizeDirectoryExcludes = (values: unknown): string[] => {
+  const items = Array.isArray(values) ? values : [];
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const item of items) {
+    if (typeof item !== 'string') {
+      continue;
+    }
+    const name = item.trim().replace(/^[\\/]+|[\\/]+$/g, '').trim();
+    if (!name || name.includes('/') || name.includes('\\') || seen.has(name)) {
+      continue;
+    }
+    seen.add(name);
+    normalized.push(name);
+  }
+
+  return normalized;
+};
 
 interface SSHFileMappingModalProps {
   open: boolean;
@@ -21,13 +42,28 @@ interface SSHFileMappingModalProps {
 export const SSHFileMappingModal: React.FC<SSHFileMappingModalProps> = ({ open, onClose, mapping }) => {
   const { t } = useTranslation();
   const [form] = Form.useForm();
+  const isDirectory = Form.useWatch('isDirectory', form);
 
   const isEdit = mapping !== null;
+
+  const handleDirectoryModeChange = (checked: boolean) => {
+    if (!checked) {
+      return;
+    }
+
+    const currentExcludes = form.getFieldValue('directoryExcludes');
+    if (!Array.isArray(currentExcludes) || currentExcludes.length === 0) {
+      form.setFieldValue('directoryExcludes', [...DEFAULT_SSH_DIRECTORY_EXCLUDES]);
+    }
+  };
 
   useEffect(() => {
     if (open) {
       if (mapping && mapping.id) {
-        form.setFieldsValue(mapping);
+        form.setFieldsValue({
+          ...mapping,
+          directoryExcludes: mapping.directoryExcludes ?? [...DEFAULT_SSH_DIRECTORY_EXCLUDES],
+        });
       } else {
         form.resetFields();
         form.setFieldsValue({
@@ -35,6 +71,7 @@ export const SSHFileMappingModal: React.FC<SSHFileMappingModalProps> = ({ open, 
           enabled: true,
           isPattern: false,
           isDirectory: false,
+          directoryExcludes: mapping?.directoryExcludes ?? [...DEFAULT_SSH_DIRECTORY_EXCLUDES],
         });
       }
     }
@@ -48,6 +85,9 @@ export const SSHFileMappingModal: React.FC<SSHFileMappingModalProps> = ({ open, 
       const newMapping: SSHFileMapping = {
         ...values,
         id,
+        directoryExcludes: values.isDirectory
+          ? normalizeDirectoryExcludes(values.directoryExcludes)
+          : [],
       };
 
       if (isEdit && mapping?.id) {
@@ -144,8 +184,22 @@ export const SSHFileMappingModal: React.FC<SSHFileMappingModalProps> = ({ open, 
           valuePropName="checked"
           extra={t('settings.ssh.directoryModeHint')}
         >
-          <Switch />
+          <Switch onChange={handleDirectoryModeChange} />
         </Form.Item>
+
+        {isDirectory && (
+          <Form.Item
+            name="directoryExcludes"
+            label={t('settings.ssh.directoryExcludes')}
+            extra={t('settings.ssh.directoryExcludesHint')}
+          >
+            <Select
+              mode="tags"
+              tokenSeparators={[',', '\n']}
+              placeholder={t('settings.ssh.directoryExcludesPlaceholder')}
+            />
+          </Form.Item>
+        )}
       </Form>
     </Modal>
   );

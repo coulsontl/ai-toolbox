@@ -536,6 +536,10 @@
 			"patternModeHint": "e.g., *.json",
 			"directoryMode": "Directory Mode",
 			"directoryModeHint": "Sync entire directory and its contents",
+			"directoryExcludes": "Excluded directories",
+			"directoryExcludesHint": "Directory mode only. Skips matching folder names recursively. Use Enter or comma to add names.",
+			"directoryExcludesPlaceholder": "e.g., cache, .venv, node_modules",
+			"noDirectoryExcludes": "No excluded directories",
 			"disabled": "Disabled",
 			"lastSyncTime": "Last Sync Time",
 			"never": "Never",
@@ -548,7 +552,8 @@
 				"preparingFiles": "Syncing files: 0/{{total}}",
 				"filesWithName": "Syncing files: {{current}}/{{total}} - {{name}}",
 				"preparingSkills": "Syncing skills: 0/{{total}}",
-				"skillsWithName": "Syncing skills: {{current}}/{{total}} - {{name}}"
+				"skillsWithName": "Syncing skills: {{current}}/{{total}} - {{name}}",
+				"currentFile": "Current file: {{file}}"
 			},
 			"autoSyncHint": "MCP servers and Skills for OpenCode, Claude, and Codex, and Skills for OpenClaw are automatically synced — no manual mapping needed.",
 			"indicator": {

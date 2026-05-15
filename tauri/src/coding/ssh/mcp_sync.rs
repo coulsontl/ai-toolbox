@@ -68,6 +68,7 @@ pub async fn sync_mcp_to_ssh(
             current: 1,
             total: 2,
             message: "MCP 同步: Claude Code...".to_string(),
+            current_file: None,
         },
     );
 
@@ -104,6 +105,7 @@ pub async fn sync_mcp_to_ssh(
             current: 2,
             total: 2,
             message: "MCP 同步: OpenCode/Codex/Gemini CLI...".to_string(),
+            current_file: None,
         },
     );
 

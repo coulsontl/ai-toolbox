@@ -1,5 +1,8 @@
 use super::super::db_id;
-use super::types::{SSHConnection, SSHFileMapping, SSHSyncConfig};
+use super::types::{
+    default_directory_excludes, normalize_directory_excludes, SSHConnection, SSHFileMapping,
+    SSHSyncConfig,
+};
 use chrono::Local;
 use serde_json::{json, Value};
 
@@ -143,9 +146,40 @@ pub fn connection_to_db_value(conn: &SSHConnection) -> Value {
 // SSH File Mapping Adapter Functions
 // ============================================================================
 
+fn directory_excludes_from_db_value(value: &Value, is_directory: bool) -> Vec<String> {
+    if !is_directory {
+        return vec![];
+    }
+
+    let Some(raw_excludes) = value
+        .get("directory_excludes")
+        .or_else(|| value.get("directoryExcludes"))
+    else {
+        return default_directory_excludes();
+    };
+
+    let excludes = raw_excludes
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(String::from))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    normalize_directory_excludes(&excludes)
+}
+
 /// Convert database Value to SSHFileMapping
 pub fn mapping_from_db_value(value: Value) -> SSHFileMapping {
     let id = db_id::db_extract_id(&value);
+    let is_directory = value
+        .get("is_directory")
+        .or_else(|| value.get("isDirectory"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let directory_excludes = directory_excludes_from_db_value(&value, is_directory);
 
     SSHFileMapping {
         id,
@@ -180,16 +214,19 @@ pub fn mapping_from_db_value(value: Value) -> SSHFileMapping {
             .or_else(|| value.get("isPattern"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
-        is_directory: value
-            .get("is_directory")
-            .or_else(|| value.get("isDirectory"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
+        is_directory,
+        directory_excludes,
     }
 }
 
 /// Convert SSHFileMapping to database Value
 pub fn mapping_to_db_value(mapping: &SSHFileMapping) -> Value {
+    let directory_excludes = if mapping.is_directory {
+        normalize_directory_excludes(&mapping.directory_excludes)
+    } else {
+        vec![]
+    };
+
     json!({
         "name": mapping.name,
         "module": mapping.module,
@@ -198,6 +235,68 @@ pub fn mapping_to_db_value(mapping: &SSHFileMapping) -> Value {
         "enabled": mapping.enabled,
         "is_pattern": mapping.is_pattern,
         "is_directory": mapping.is_directory,
+        "directory_excludes": directory_excludes,
         "updated_at": Local::now().to_rfc3339(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mapping_from_db_value, mapping_to_db_value};
+    use serde_json::json;
+
+    #[test]
+    fn directory_mapping_without_saved_excludes_uses_defaults() {
+        let mapping = mapping_from_db_value(json!({
+            "id": "ssh_file_mapping:claude-plugins",
+            "name": "Claude Code 插件目录",
+            "module": "claude",
+            "local_path": "~/.claude/plugins",
+            "remote_path": "~/.claude/plugins",
+            "enabled": true,
+            "is_pattern": false,
+            "is_directory": true,
+        }));
+
+        assert!(mapping.directory_excludes.contains(&"cache".to_string()));
+        assert!(mapping.directory_excludes.contains(&".venv".to_string()));
+    }
+
+    #[test]
+    fn explicit_empty_directory_excludes_are_preserved() {
+        let mapping = mapping_from_db_value(json!({
+            "id": "ssh_file_mapping:custom-dir",
+            "name": "Custom Dir",
+            "module": "claude",
+            "local_path": "~/src",
+            "remote_path": "~/src",
+            "enabled": true,
+            "is_pattern": false,
+            "is_directory": true,
+            "directory_excludes": [],
+        }));
+
+        assert!(mapping.directory_excludes.is_empty());
+    }
+
+    #[test]
+    fn non_directory_mapping_does_not_persist_excludes() {
+        let mapping = mapping_from_db_value(json!({
+            "id": "ssh_file_mapping:opencode-plugins",
+            "name": "OpenCode 插件文件",
+            "module": "opencode",
+            "local_path": "~/.config/opencode/*.mjs",
+            "remote_path": "~/.config/opencode/",
+            "enabled": true,
+            "is_pattern": true,
+            "is_directory": false,
+            "directory_excludes": ["cache"],
+        }));
+
+        assert!(mapping.directory_excludes.is_empty());
+        assert_eq!(
+            mapping_to_db_value(&mapping)["directory_excludes"],
+            json!([])
+        );
+    }
 }

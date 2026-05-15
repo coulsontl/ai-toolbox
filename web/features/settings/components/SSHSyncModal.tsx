@@ -9,9 +9,6 @@ import { Modal, Switch, Select, Button, List, Space, Typography, Alert, Spin, Ta
 import { CheckCircleOutlined, CloseCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ClearOutlined, ApiOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useSSHSync } from '@/features/settings/hooks/useSSHSync';
-import { useSettingsStore } from '@/stores';
-import { SSHConnectionModal } from './SSHConnectionModal';
-import { SSHFileMappingModal } from './SSHFileMappingModal';
 import {
   isBuiltInDefaultMappingName,
   translateDefaultMappingName,
@@ -26,8 +23,12 @@ import {
   sshDeleteConnection,
   sshSetActiveConnection,
 } from '@/services/sshSyncApi';
+import { useSettingsStore } from '@/stores';
+import { DEFAULT_SSH_DIRECTORY_EXCLUDES } from '@/types/sshsync';
 import type { SSHConnection, SSHFileMapping, SSHConnectionResult } from '@/types/sshsync';
 import type { WslDirectModuleStatus } from '@/types/wslsync';
+import { SSHConnectionModal } from './SSHConnectionModal';
+import { SSHFileMappingModal } from './SSHFileMappingModal';
 
 const { Text } = Typography;
 
@@ -53,6 +54,17 @@ const AUTH_METHOD_TAG_COLORS: Record<SSHConnection['authMethod'], string> = {
   key: 'blue',
   password: 'green',
   none: 'default',
+};
+
+const CURRENT_FILE_TAIL_MAX_LENGTH = 72;
+
+const truncateTailPath = (path: string, maxLength = CURRENT_FILE_TAIL_MAX_LENGTH) => {
+  if (path.length <= maxLength) {
+    return path;
+  }
+
+  const tailLength = Math.max(1, maxLength - 3);
+  return `...${path.slice(-tailLength)}`;
 };
 
 // Map sync module keys to visibleTabs keys
@@ -119,6 +131,13 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
   const getModuleStatus = useCallback((module: string): WslDirectModuleStatus | undefined => {
     return moduleStatusMap.get(module);
   }, [moduleStatusMap]);
+
+  const getDirectoryExcludes = (mapping: SSHFileMapping): string[] => {
+    if (!mapping.isDirectory) {
+      return [];
+    }
+    return mapping.directoryExcludes ?? [...DEFAULT_SSH_DIRECTORY_EXCLUDES];
+  };
 
   const getDisplayLocalPath = useCallback((mapping: SSHFileMapping) => {
     const status = getModuleStatus(mapping.module);
@@ -367,6 +386,7 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
       enabled: true,
       isPattern: false,
       isDirectory: false,
+      directoryExcludes: [...DEFAULT_SSH_DIRECTORY_EXCLUDES],
     };
     setEditingMapping(newMapping);
     setMappingModalOpen(true);
@@ -493,9 +513,35 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
                   </Space>
                 }
                 description={
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    {getDisplayLocalPath(item)} → {item.remotePath}
-                  </Text>
+                  <Space orientation="vertical" size={2}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {getDisplayLocalPath(item)} → {item.remotePath}
+                    </Text>
+                    {item.isDirectory && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <Text type="secondary" style={{ fontSize: 12, flexShrink: 0 }}>
+                          {t('settings.ssh.directoryExcludes')}:
+                        </Text>
+                        {getDirectoryExcludes(item).length > 0 ? (
+                          <Space size={[4, 2]} wrap>
+                            {getDirectoryExcludes(item).map((exclude) => (
+                              <Tag
+                                key={exclude}
+                                color="default"
+                                style={{ marginInlineEnd: 0, fontSize: 11, lineHeight: '18px' }}
+                              >
+                                {exclude}
+                              </Tag>
+                            ))}
+                          </Space>
+                        ) : (
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            {t('settings.ssh.noDirectoryExcludes')}
+                          </Text>
+                        )}
+                      </div>
+                    )}
+                  </Space>
                 }
               />
             </List.Item>
@@ -691,12 +737,33 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
                   size="small"
                   status="active"
                 />
+                {syncProgress.currentFile && (
+                  <div style={{ marginTop: 4, minWidth: 0, maxWidth: '100%' }}>
+                    <Tooltip title={syncProgress.currentFile} placement="topLeft">
+                      <Text
+                        type="secondary"
+                        style={{
+                          display: 'block',
+                          maxWidth: '100%',
+                          fontSize: 12,
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'clip',
+                        }}
+                      >
+                        {t('settings.ssh.progress.currentFile', {
+                          file: truncateTailPath(syncProgress.currentFile),
+                        })}
+                      </Text>
+                    </Tooltip>
+                  </div>
+                )}
               </div>
             )}
             {status?.lastSyncError && (
               <Alert
                 type="error"
-                message={translateSyncMessage(status.lastSyncError, 'ssh', t)}
+                title={translateSyncMessage(status.lastSyncError, 'ssh', t)}
                 showIcon
                 style={{ marginTop: 12 }}
               />
@@ -704,10 +771,9 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
             {syncWarning && (
               <Alert
                 type="warning"
-                message={translateSyncMessage(syncWarning, 'ssh', t)}
+                title={translateSyncMessage(syncWarning, 'ssh', t)}
                 showIcon
-                closable
-                onClose={dismissSyncWarning}
+                closable={{ onClose: dismissSyncWarning }}
                 style={{ marginTop: 12 }}
               />
             )}

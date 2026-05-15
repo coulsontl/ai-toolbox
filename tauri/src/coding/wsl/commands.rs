@@ -336,6 +336,7 @@ pub(super) async fn do_full_sync(
             current: 0,
             total: total_files,
             message: format!("文件同步: 0/{}", total_files),
+            current_file: None,
         },
     );
 
@@ -489,6 +490,7 @@ fn sync_mappings_with_progress(
                 current,
                 total,
                 message: format!("文件同步: {}/{} - {}", current, total, mapping.name),
+                current_file: None,
             },
         );
 

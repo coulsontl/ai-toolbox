@@ -4,6 +4,44 @@ use serde::{Deserialize, Serialize};
 pub use super::super::wsl::{SyncProgress, SyncResult};
 use crate::coding::runtime_location::WslDirectModuleStatus;
 
+pub const DEFAULT_DIRECTORY_EXCLUDES: &[&str] = &[
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    "cache",
+];
+
+pub fn default_directory_excludes() -> Vec<String> {
+    DEFAULT_DIRECTORY_EXCLUDES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect()
+}
+
+pub fn normalize_directory_excludes(excludes: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut normalized = Vec::new();
+
+    for exclude in excludes {
+        let name = exclude
+            .trim()
+            .trim_matches(|c| c == '/' || c == '\\')
+            .trim();
+        if name.is_empty() || name.contains('/') || name.contains('\\') {
+            continue;
+        }
+        if seen.insert(name.to_string()) {
+            normalized.push(name.to_string());
+        }
+    }
+
+    normalized
+}
+
 // ============================================================================
 // SSH Connection Types
 // ============================================================================
@@ -41,6 +79,8 @@ pub struct SSHFileMapping {
     pub enabled: bool,
     pub is_pattern: bool,
     pub is_directory: bool,
+    #[serde(default)]
+    pub directory_excludes: Vec<String>,
 }
 
 // ============================================================================
@@ -79,6 +119,36 @@ impl Default for SSHSyncConfig {
             last_sync_error: None,
             module_statuses: vec![],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_directory_excludes, normalize_directory_excludes};
+
+    #[test]
+    fn normalizes_directory_excludes_by_trimming_and_deduplicating() {
+        let input = vec![
+            " cache ".to_string(),
+            "cache/".to_string(),
+            "node_modules".to_string(),
+            "nested/cache".to_string(),
+            "".to_string(),
+        ];
+
+        assert_eq!(
+            normalize_directory_excludes(&input),
+            vec!["cache".to_string(), "node_modules".to_string()]
+        );
+    }
+
+    #[test]
+    fn default_directory_excludes_cover_common_generated_directories() {
+        let excludes = default_directory_excludes();
+        assert!(excludes.contains(&".git".to_string()));
+        assert!(excludes.contains(&".venv".to_string()));
+        assert!(excludes.contains(&"node_modules".to_string()));
+        assert!(excludes.contains(&"cache".to_string()));
     }
 }
 

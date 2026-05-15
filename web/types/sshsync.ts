@@ -26,6 +26,17 @@ export interface SSHConnection {
 /**
  * SSH file mapping (global, shared across all connections)
  */
+export const DEFAULT_SSH_DIRECTORY_EXCLUDES = [
+  '.git',
+  '.venv',
+  'venv',
+  'node_modules',
+  '__pycache__',
+  '.pytest_cache',
+  '.mypy_cache',
+  'cache',
+] as const;
+
 export interface SSHFileMapping {
   id: string;
   name: string;
@@ -35,6 +46,7 @@ export interface SSHFileMapping {
   enabled: boolean;
   isPattern: boolean;
   isDirectory: boolean;
+  directoryExcludes: string[];
 }
 
 /**
@@ -43,6 +55,8 @@ export interface SSHFileMapping {
 export interface SSHSyncConfig {
   enabled: boolean;
   activeConnectionId: string;
+  syncMcp: boolean;
+  syncSkills: boolean;
   fileMappings: SSHFileMapping[];
   connections: SSHConnection[];
   lastSyncTime?: string;
@@ -90,4 +104,5 @@ export interface SyncProgress {
   current: number;
   total: number;
   message: string;
+  currentFile?: string;
 }
