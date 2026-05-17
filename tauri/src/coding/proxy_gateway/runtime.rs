@@ -791,6 +791,71 @@ base_url = "https://openai.example.com/v1"
     }
 
     #[test]
+    fn started_gateway_forwards_provider_route_with_database_context() {
+        let (base_url, captured_rx) = start_test_upstream();
+        let (_dir, db) = tauri::async_runtime::block_on(create_test_db());
+        tauri::async_runtime::block_on(async {
+            let settings_config = json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": base_url,
+                    "ANTHROPIC_AUTH_TOKEN": "provider-key"
+                },
+                "sonnetModel": "provider-sonnet"
+            })
+            .to_string();
+            db.query("CREATE claude_provider CONTENT $data")
+                .bind((
+                    "data",
+                    json!({
+                        "name": "Runtime Upstream",
+                        "category": "custom",
+                        "settings_config": settings_config,
+                        "extra_settings_config": "{}",
+                        "is_applied": true,
+                        "is_disabled": false,
+                    }),
+                ))
+                .await
+                .expect("insert provider");
+        });
+
+        let port = next_available_port();
+        let mut manager = ProxyGatewayManager::default();
+        manager
+            .start_with_db(
+                ProxyGatewaySettings {
+                    listen_port: port,
+                    ..ProxyGatewaySettings::default()
+                },
+                db,
+            )
+            .expect("start gateway");
+
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect gateway");
+        let body =
+            r#"{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"say hi"}]}"#;
+        let request = format!(
+            "POST /anthropic/v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(request.as_bytes()).expect("write request");
+
+        let mut response = String::new();
+        stream.read_to_string(&mut response).expect("read response");
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains(r#"{"ok":true}"#));
+        let captured = captured_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured upstream request");
+        assert!(captured.starts_with("POST /v1/messages HTTP/1.1"));
+        assert!(captured.contains(r#""model":"provider-sonnet""#));
+
+        manager.stop().expect("stop gateway");
+    }
+
+    #[test]
     fn route_request_fails_over_to_next_provider_after_retryable_failure() {
         let (first_base_url, first_rx) =
             start_test_upstream_with_response(429, "Too Many Requests", br#"{"error":"limited"}"#);
