@@ -48,6 +48,10 @@ const formatModelRoute = (
   return displayModel;
 };
 
+interface GatewayRequestsViewProps {
+  refreshKey?: number;
+}
+
 interface CollapsiblePreProps {
   content: string | null | undefined;
   fallback: string;
@@ -139,7 +143,7 @@ const CollapsiblePre: React.FC<CollapsiblePreProps> = ({ content, fallback }) =>
   );
 };
 
-const GatewayRequestsView: React.FC = () => {
+const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 0 }) => {
   const { t } = useTranslation();
   const [logs, setLogs] = React.useState<GatewayRequestLogSummary[]>([]);
   const [selectedTraceId, setSelectedTraceId] = React.useState<string | null>(null);
@@ -194,7 +198,7 @@ const GatewayRequestsView: React.FC = () => {
 
   React.useEffect(() => {
     void loadRequests();
-  }, [loadRequests]);
+  }, [loadRequests, refreshKey]);
 
   const renderDetailContent = () => {
     if (detailLoading) {
@@ -289,17 +293,7 @@ const GatewayRequestsView: React.FC = () => {
   };
 
   return (
-    <div className={styles.viewStack}>
-      <div className={styles.viewToolbar}>
-        <div>
-          <h2>{t('gateway.page.requests.title')}</h2>
-          <p>{t('gateway.page.requests.subtitle')}</p>
-        </div>
-        <button type="button" className={styles.toolButton} disabled={loading} onClick={() => void loadRequests()}>
-          <RefreshCw size={14} className={loading ? styles.spin : undefined} aria-hidden="true" />
-          <span>{t('common.refresh')}</span>
-        </button>
-      </div>
+    <div className={styles.viewStack} aria-busy={loading}>
       {error ? (
         <div className={styles.inlineAlert} role="alert">
           <AlertCircle size={14} aria-hidden="true" />

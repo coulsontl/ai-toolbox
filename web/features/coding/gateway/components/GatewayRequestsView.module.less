@@ -5,65 +5,6 @@
   gap: 10px;
 }
 
-.viewToolbar {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-bg-container);
-
-  h2 {
-    margin: 0;
-    color: var(--color-text-primary);
-    font-size: 14px;
-    font-weight: 650;
-    letter-spacing: 0;
-    line-height: 1.25;
-  }
-
-  p {
-    margin: 2px 0 0;
-    color: var(--color-text-tertiary);
-    font-size: 12px;
-    line-height: 1.35;
-  }
-}
-
-.toolButton {
-  display: inline-flex;
-  min-height: 30px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 0 10px;
-  border: 1px solid var(--color-border);
-  border-radius: 7px;
-  background: var(--color-bg-elevated);
-  color: var(--color-text-primary);
-  cursor: pointer;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 560;
-  transition:
-    background 0.16s ease,
-    border-color 0.16s ease,
-    opacity 0.16s ease;
-
-  &:hover:not(:disabled) {
-    border-color: var(--color-border-secondary);
-    background: var(--color-bg-hover);
-  }
-
-  &:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
-  }
-}
-
 .inlineAlert {
   display: flex;
   align-items: center;
@@ -177,11 +118,11 @@
 .requestRow {
   display: grid;
   width: 100%;
-  min-height: 54px;
+  min-height: 40px;
   grid-template-columns: 56px minmax(0, 1fr) 54px 58px;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 6px 10px;
   border: none;
   border-bottom: 1px solid var(--color-border);
   background: transparent;
@@ -216,8 +157,8 @@
 .requestMain {
   display: flex;
   min-width: 0;
-  flex-direction: column;
-  gap: 2px;
+  align-items: baseline;
+  gap: 8px;
 
   strong,
   small {
@@ -227,12 +168,16 @@
   }
 
   strong {
+    min-width: 0;
+    flex: 0 1 auto;
     color: var(--color-text-primary);
     font-size: 12px;
     font-weight: 650;
   }
 
   small {
+    min-width: 0;
+    flex: 1 1 auto;
     color: var(--color-text-tertiary);
     font-size: 11px;
   }
@@ -471,11 +416,6 @@
 }
 
 @media (max-width: 720px) {
-  .viewToolbar {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .requestRow {
     grid-template-columns: 48px minmax(0, 1fr) 44px;
   }
@@ -500,7 +440,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .toolButton,
   .iconButton,
   .preAction,
   .spin {

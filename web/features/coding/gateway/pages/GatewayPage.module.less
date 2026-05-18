@@ -13,68 +13,29 @@
   gap: 12px;
 }
 
-.statusStrip {
+.headerControls {
   display: inline-flex;
   min-width: 0;
-  flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
-  gap: 6px;
-}
-
-.statusBadge,
-.healthBadge {
-  display: inline-flex;
-  min-height: 28px;
-  align-items: center;
-  gap: 5px;
-  padding: 0 9px;
-  border: 1px solid var(--color-border);
-  border-radius: 7px;
-  background: var(--color-bg-container);
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  font-weight: 620;
-  white-space: nowrap;
-}
-
-.statusBadge_running {
-  color: var(--color-status-success);
-}
-
-.statusBadge_error,
-.healthBadgeError {
-  border-color: var(--color-status-error-border);
-  background: var(--color-status-error-bg);
-  color: var(--color-status-error);
-}
-
-.statusBadge_stopped {
-  color: var(--color-text-tertiary);
-}
-
-.controlBar {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
 .actionBar {
   display: inline-flex;
-  min-width: 0;
-  flex-wrap: wrap;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
 }
 
 .actionButton {
   display: inline-flex;
-  min-height: 32px;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 0 10px;
+  padding: 0;
   border: 1px solid var(--color-border);
   border-radius: 7px;
   background: var(--color-bg-container);
@@ -107,6 +68,13 @@
 .actionButtonPrimary {
   border-color: var(--color-border-secondary);
   background: var(--color-bg-elevated);
+}
+
+.toolbarDivider {
+  width: 1px;
+  height: 24px;
+  flex: 0 0 auto;
+  background: var(--color-border);
 }
 
 .titleBlock {
@@ -228,19 +196,20 @@
 }
 
 @media (max-width: 720px) {
-  .header,
-  .controlBar {
+  .header {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .statusStrip,
-  .actionBar {
+  .headerControls {
+    width: 100%;
+    flex-wrap: wrap;
     justify-content: flex-start;
   }
 
   .tabList {
-    width: 100%;
+    min-width: 0;
+    flex: 1 1 220px;
   }
 
   .tabButton {

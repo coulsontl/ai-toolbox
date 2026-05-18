@@ -5,65 +5,6 @@
   gap: 10px;
 }
 
-.viewToolbar {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-bg-container);
-
-  h2 {
-    margin: 0;
-    color: var(--color-text-primary);
-    font-size: 14px;
-    font-weight: 650;
-    letter-spacing: 0;
-    line-height: 1.25;
-  }
-
-  p {
-    margin: 2px 0 0;
-    color: var(--color-text-tertiary);
-    font-size: 12px;
-    line-height: 1.35;
-  }
-}
-
-.toolButton {
-  display: inline-flex;
-  min-height: 30px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 0 10px;
-  border: 1px solid var(--color-border);
-  border-radius: 7px;
-  background: var(--color-bg-elevated);
-  color: var(--color-text-primary);
-  cursor: pointer;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 560;
-  transition:
-    background 0.16s ease,
-    border-color 0.16s ease,
-    opacity 0.16s ease;
-
-  &:hover:not(:disabled) {
-    border-color: var(--color-border-secondary);
-    background: var(--color-bg-hover);
-  }
-
-  &:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
-  }
-}
-
 .inlineAlert {
   display: flex;
   align-items: center;
@@ -203,16 +144,6 @@
   background: var(--color-status-error);
 }
 
-.spin {
-  animation: gatewayStatisticsSpin 0.78s linear infinite;
-}
-
-@keyframes gatewayStatisticsSpin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 @media (max-width: 1180px) {
   .statGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -224,20 +155,7 @@
 }
 
 @media (max-width: 720px) {
-  .viewToolbar {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .statGrid {
     grid-template-columns: 1fr;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .toolButton,
-  .spin {
-    transition: none;
-    animation: none;
   }
 }

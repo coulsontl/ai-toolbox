@@ -8,7 +8,6 @@ import {
   FileText,
   Gauge,
   Network,
-  RefreshCw,
   Shield,
   Terminal,
 } from 'lucide-react';
@@ -58,7 +57,11 @@ const emptySummaryState: GatewaySummaryState = {
   modelHealthItems: [],
 };
 
-const GatewayStatisticsView: React.FC = () => {
+interface GatewayStatisticsViewProps {
+  refreshKey?: number;
+}
+
+const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKey = 0 }) => {
   const { t } = useTranslation();
   const [state, setState] = React.useState<GatewaySummaryState>(emptySummaryState);
   const [loading, setLoading] = React.useState(false);
@@ -88,7 +91,7 @@ const GatewayStatisticsView: React.FC = () => {
 
   React.useEffect(() => {
     void loadSummary();
-  }, [loadSummary]);
+  }, [loadSummary, refreshKey]);
 
   const statusKind = state.status?.running ? 'running' : state.status?.last_error ? 'error' : 'stopped';
   const activeCliCount = state.cliStatuses.filter((cliStatus) => cliStatus.can_restore_direct).length;
@@ -114,18 +117,7 @@ const GatewayStatisticsView: React.FC = () => {
   };
 
   return (
-    <div className={styles.viewStack}>
-      <div className={styles.viewToolbar}>
-        <div>
-          <h2>{t('gateway.page.statistics.title')}</h2>
-          <p>{t('gateway.page.statistics.subtitle')}</p>
-        </div>
-        <button type="button" className={styles.toolButton} disabled={loading} onClick={() => void loadSummary()}>
-          <RefreshCw size={14} className={loading ? styles.spin : undefined} aria-hidden="true" />
-          <span>{t('common.refresh')}</span>
-        </button>
-      </div>
-
+    <div className={styles.viewStack} aria-busy={loading}>
       {error ? (
         <div className={styles.inlineAlert} role="alert">
           <AlertCircle size={14} aria-hidden="true" />
@@ -211,7 +203,7 @@ const GatewayStatisticsView: React.FC = () => {
           ) : (
             <div className={styles.emptyState}>
               <Shield size={18} aria-hidden="true" />
-              <span>{t('gateway.page.statistics.empty')}</span>
+              <span>{loading ? t('common.loading') : t('gateway.page.statistics.empty')}</span>
             </div>
           )}
         </section>
@@ -244,7 +236,7 @@ const GatewayStatisticsView: React.FC = () => {
           ) : (
             <div className={styles.emptyState}>
               <Gauge size={18} aria-hidden="true" />
-              <span>{t('gateway.page.statistics.empty')}</span>
+              <span>{loading ? t('common.loading') : t('gateway.page.statistics.empty')}</span>
             </div>
           )}
         </section>

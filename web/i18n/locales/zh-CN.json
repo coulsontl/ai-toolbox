@@ -355,7 +355,8 @@
 				"forwarding": "转发",
 				"logs": "日志与统计",
 				"retry": "重试策略",
-				"circuitBreaker": "模型级熔断"
+				"circuitBreaker": "模型级熔断",
+				"resilience": "转发与容错"
 			},
 			"status": {
 				"state": "状态",

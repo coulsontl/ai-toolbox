@@ -14,8 +14,10 @@ const StatTile: React.FC<StatTileProps> = ({ icon, label, value, tone = 'default
   <section className={styles.statTile}>
     <div className={styles.statIcon}>{icon}</div>
     <div className={styles.statBody}>
-      <span className={styles.statLabel}>{label}</span>
-      <span className={joinClassNames(styles.statValue, styles[`statValue_${tone}`])}>{value}</span>
+      <div className={styles.statMain}>
+        <span className={styles.statLabel}>{label}</span>
+        <span className={joinClassNames(styles.statValue, styles[`statValue_${tone}`])}>{value}</span>
+      </div>
       {meta ? <span className={styles.statMeta}>{meta}</span> : null}
     </div>
   </section>

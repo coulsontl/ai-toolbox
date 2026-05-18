@@ -355,7 +355,8 @@
 				"forwarding": "Forwarding",
 				"logs": "Logs & metrics",
 				"retry": "Retry policy",
-				"circuitBreaker": "Model circuit breaker"
+				"circuitBreaker": "Model circuit breaker",
+				"resilience": "Forwarding & resilience"
 			},
 			"status": {
 				"state": "State",

@@ -3,13 +3,10 @@ import {
   AlertCircle,
   ArrowRightLeft,
   CircleHelp,
-  Copy,
   FileText,
   Gauge,
   Loader2,
   Network,
-  RefreshCw,
-  Shield,
   Terminal,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -26,7 +23,7 @@ import {
 } from '@/services';
 import styles from './GatewaySettingsPanel.module.less';
 
-type BusyAction = 'load' | 'autosave' | 'port' | 'copy';
+type BusyAction = 'load' | 'autosave' | 'port';
 type NoticeKind = 'success' | 'error' | 'info';
 type SupportedGatewayCliKey = Extract<GatewayCliKey, 'claude' | 'codex' | 'gemini'>;
 
@@ -273,16 +270,6 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
     [onDraftSettingsChange],
   );
 
-  const gatewayOrigin = React.useMemo(() => {
-    if (status?.base_url) {
-      return status.base_url;
-    }
-    if (draftSettings) {
-      return `http://${draftSettings.listen_host}:${draftSettings.listen_port}`;
-    }
-    return null;
-  }, [draftSettings, status?.base_url]);
-
   const cliStatusByKey = React.useMemo(() => {
     const entries = cliStatuses.map((cliStatus) => [cliStatus.cli_key, cliStatus] as const);
     return Object.fromEntries(entries) as Partial<Record<SupportedGatewayCliKey, GatewayCliTakeoverStatus>>;
@@ -365,24 +352,6 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
     }
   };
 
-  const handleCopyGatewayOrigin = async () => {
-    if (!gatewayOrigin) {
-      return;
-    }
-    setBusyAction('copy');
-    try {
-      await navigator.clipboard.writeText(gatewayOrigin);
-      setNotice({ kind: 'success', text: t('settings.gateway.notice.copied') });
-    } catch (error) {
-      setNotice({
-        kind: 'error',
-        text: t('settings.gateway.notice.copyFailed', { error: formatGatewayError(error) }),
-      });
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
   const handleLogPartToggle = (
     key: 'store_request_body' | 'store_headers' | 'store_response_body',
     checked: boolean,
@@ -439,29 +408,6 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
           </div>
         </div>
       ) : null}
-
-      <div className={styles.gatewayAddressBlock}>
-        <div className={styles.addressItem}>
-          <span className={styles.statusLabel}>{t('settings.gateway.status.address')}</span>
-          <div className={styles.addressRow}>
-            <code>{gatewayOrigin ?? '-'}</code>
-            <button
-              type="button"
-              className={styles.iconButton}
-              disabled={!gatewayOrigin || busyAction === 'copy'}
-              aria-label={t('settings.gateway.actions.copyAddress')}
-              title={t('settings.gateway.actions.copyAddress')}
-              onClick={() => void handleCopyGatewayOrigin()}
-            >
-              {busyAction === 'copy' ? (
-                <Loader2 size={14} className={styles.spin} aria-hidden="true" />
-              ) : (
-                <Copy size={14} aria-hidden="true" />
-              )}
-            </button>
-          </div>
-        </div>
-      </div>
 
       {status?.last_error ? (
         <div className={styles.inlineAlert} role="alert">
@@ -545,7 +491,7 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
           </div>
         </Section>
 
-        <Section icon={<ArrowRightLeft size={15} aria-hidden="true" />} title={t('settings.gateway.sections.forwarding')}>
+        <Section icon={<ArrowRightLeft size={15} aria-hidden="true" />} title={t('settings.gateway.sections.resilience')}>
           <div className={styles.fieldStack}>
             <FieldRow
               label={t('settings.gateway.fields.thinkingRectifier')}
@@ -555,6 +501,146 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
                 checked={draftSettings.thinking_rectifier_enabled}
                 label={draftSettings.thinking_rectifier_enabled ? t('common.enabled') : t('common.disabled')}
                 onChange={(checked) => updateDraftSetting('thinking_rectifier_enabled', checked)}
+              />
+            </FieldRow>
+
+            <div className={styles.fieldPairGrid}>
+              <FieldRow
+                label={t('settings.gateway.fields.perProviderRetry')}
+                help={t('settings.gateway.fieldHelp.perProviderRetry')}
+              >
+                <input
+                  className={styles.numberInput}
+                  type="number"
+                  min={0}
+                  value={draftSettings.per_provider_retry_count}
+                  onChange={(event) =>
+                    updateDraftSetting(
+                      'per_provider_retry_count',
+                      Math.min(
+                        toInteger(event.currentTarget.value, draftSettings.per_provider_retry_count, 0),
+                        draftSettings.max_retry_count,
+                      ),
+                    )
+                  }
+                />
+              </FieldRow>
+              <FieldRow
+                label={t('settings.gateway.fields.maxRetry')}
+                help={t('settings.gateway.fieldHelp.maxRetry')}
+              >
+                <input
+                  className={styles.numberInput}
+                  type="number"
+                  min={0}
+                  value={draftSettings.max_retry_count}
+                  onChange={(event) => {
+                    const maxRetryCount = toInteger(event.currentTarget.value, draftSettings.max_retry_count, 0);
+                    setDraftSettings((previousSettings) =>
+                      previousSettings
+                        ? {
+                            ...previousSettings,
+                            max_retry_count: maxRetryCount,
+                            per_provider_retry_count: Math.min(
+                              previousSettings.per_provider_retry_count,
+                              maxRetryCount,
+                            ),
+                          }
+                        : previousSettings,
+                    );
+                  }}
+                />
+              </FieldRow>
+            </div>
+
+            <div className={styles.fieldPairGrid}>
+              <FieldRow
+                label={t('settings.gateway.fields.failureThreshold')}
+                help={t('settings.gateway.fieldHelp.failureThreshold')}
+              >
+                <input
+                  className={styles.numberInput}
+                  type="number"
+                  min={1}
+                  value={draftSettings.model_failure_score_threshold}
+                  onChange={(event) =>
+                    updateDraftSetting(
+                      'model_failure_score_threshold',
+                      toInteger(event.currentTarget.value, draftSettings.model_failure_score_threshold, 1),
+                    )
+                  }
+                />
+              </FieldRow>
+              <FieldRow
+                label={t('settings.gateway.fields.failureWindow')}
+                help={t('settings.gateway.fieldHelp.failureWindow')}
+              >
+                <input
+                  className={styles.numberInput}
+                  type="number"
+                  min={30}
+                  value={draftSettings.model_failure_window_seconds}
+                  onChange={(event) =>
+                    updateDraftSetting(
+                      'model_failure_window_seconds',
+                      toInteger(event.currentTarget.value, draftSettings.model_failure_window_seconds, 30),
+                    )
+                  }
+                />
+              </FieldRow>
+            </div>
+
+            <div className={styles.fieldPairGrid}>
+              <FieldRow
+                label={t('settings.gateway.fields.baseCooldown')}
+                help={t('settings.gateway.fieldHelp.baseCooldown')}
+              >
+                <input
+                  className={styles.numberInput}
+                  type="number"
+                  min={30}
+                  value={draftSettings.model_base_cooldown_seconds}
+                  onChange={(event) =>
+                    updateDraftSetting(
+                      'model_base_cooldown_seconds',
+                      toInteger(event.currentTarget.value, draftSettings.model_base_cooldown_seconds, 30),
+                    )
+                  }
+                />
+              </FieldRow>
+              <FieldRow
+                label={t('settings.gateway.fields.maxCooldown')}
+                help={t('settings.gateway.fieldHelp.maxCooldown')}
+              >
+                <input
+                  className={styles.numberInput}
+                  type="number"
+                  min={60}
+                  value={draftSettings.model_max_cooldown_seconds}
+                  onChange={(event) =>
+                    updateDraftSetting(
+                      'model_max_cooldown_seconds',
+                      toInteger(event.currentTarget.value, draftSettings.model_max_cooldown_seconds, 60),
+                    )
+                  }
+                />
+              </FieldRow>
+            </div>
+            <FieldRow
+              label={t('settings.gateway.fields.probeSuccess')}
+              help={t('settings.gateway.fieldHelp.probeSuccess')}
+            >
+              <input
+                className={styles.numberInput}
+                type="number"
+                min={1}
+                value={draftSettings.half_open_success_required}
+                onChange={(event) =>
+                  updateDraftSetting(
+                    'half_open_success_required',
+                    toInteger(event.currentTarget.value, draftSettings.half_open_success_required, 1),
+                  )
+                }
               />
             </FieldRow>
           </div>
@@ -643,147 +729,6 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
                   updateDraftSetting(
                     'log_max_body_size_kb',
                     toInteger(event.currentTarget.value, draftSettings.log_max_body_size_kb, 1),
-                  )
-                }
-              />
-            </FieldRow>
-          </div>
-        </Section>
-
-        <Section icon={<RefreshCw size={15} aria-hidden="true" />} title={t('settings.gateway.sections.retry')}>
-          <div className={styles.fieldStack}>
-            <FieldRow
-              label={t('settings.gateway.fields.perProviderRetry')}
-              help={t('settings.gateway.fieldHelp.perProviderRetry')}
-            >
-              <input
-                className={styles.numberInput}
-                type="number"
-                min={0}
-                value={draftSettings.per_provider_retry_count}
-                onChange={(event) =>
-                  updateDraftSetting(
-                    'per_provider_retry_count',
-                    Math.min(
-                      toInteger(event.currentTarget.value, draftSettings.per_provider_retry_count, 0),
-                      draftSettings.max_retry_count,
-                    ),
-                  )
-                }
-              />
-            </FieldRow>
-            <FieldRow
-              label={t('settings.gateway.fields.maxRetry')}
-              help={t('settings.gateway.fieldHelp.maxRetry')}
-            >
-              <input
-                className={styles.numberInput}
-                type="number"
-                min={0}
-                value={draftSettings.max_retry_count}
-                onChange={(event) => {
-                  const maxRetryCount = toInteger(event.currentTarget.value, draftSettings.max_retry_count, 0);
-                  setDraftSettings((previousSettings) =>
-                    previousSettings
-                      ? {
-                          ...previousSettings,
-                          max_retry_count: maxRetryCount,
-                          per_provider_retry_count: Math.min(
-                            previousSettings.per_provider_retry_count,
-                            maxRetryCount,
-                          ),
-                        }
-                      : previousSettings,
-                  );
-                }}
-              />
-            </FieldRow>
-          </div>
-        </Section>
-
-        <Section icon={<Shield size={15} aria-hidden="true" />} title={t('settings.gateway.sections.circuitBreaker')}>
-          <div className={styles.fieldStack}>
-            <FieldRow
-              label={t('settings.gateway.fields.failureThreshold')}
-              help={t('settings.gateway.fieldHelp.failureThreshold')}
-            >
-              <input
-                className={styles.numberInput}
-                type="number"
-                min={1}
-                value={draftSettings.model_failure_score_threshold}
-                onChange={(event) =>
-                  updateDraftSetting(
-                    'model_failure_score_threshold',
-                    toInteger(event.currentTarget.value, draftSettings.model_failure_score_threshold, 1),
-                  )
-                }
-              />
-            </FieldRow>
-            <FieldRow
-              label={t('settings.gateway.fields.failureWindow')}
-              help={t('settings.gateway.fieldHelp.failureWindow')}
-            >
-              <input
-                className={styles.numberInput}
-                type="number"
-                min={30}
-                value={draftSettings.model_failure_window_seconds}
-                onChange={(event) =>
-                  updateDraftSetting(
-                    'model_failure_window_seconds',
-                    toInteger(event.currentTarget.value, draftSettings.model_failure_window_seconds, 30),
-                  )
-                }
-              />
-            </FieldRow>
-            <FieldRow
-              label={t('settings.gateway.fields.baseCooldown')}
-              help={t('settings.gateway.fieldHelp.baseCooldown')}
-            >
-              <input
-                className={styles.numberInput}
-                type="number"
-                min={30}
-                value={draftSettings.model_base_cooldown_seconds}
-                onChange={(event) =>
-                  updateDraftSetting(
-                    'model_base_cooldown_seconds',
-                    toInteger(event.currentTarget.value, draftSettings.model_base_cooldown_seconds, 30),
-                  )
-                }
-              />
-            </FieldRow>
-            <FieldRow
-              label={t('settings.gateway.fields.maxCooldown')}
-              help={t('settings.gateway.fieldHelp.maxCooldown')}
-            >
-              <input
-                className={styles.numberInput}
-                type="number"
-                min={60}
-                value={draftSettings.model_max_cooldown_seconds}
-                onChange={(event) =>
-                  updateDraftSetting(
-                    'model_max_cooldown_seconds',
-                    toInteger(event.currentTarget.value, draftSettings.model_max_cooldown_seconds, 60),
-                  )
-                }
-              />
-            </FieldRow>
-            <FieldRow
-              label={t('settings.gateway.fields.probeSuccess')}
-              help={t('settings.gateway.fieldHelp.probeSuccess')}
-            >
-              <input
-                className={styles.numberInput}
-                type="number"
-                min={1}
-                value={draftSettings.half_open_success_required}
-                onChange={(event) =>
-                  updateDraftSetting(
-                    'half_open_success_required',
-                    toInteger(event.currentTarget.value, draftSettings.half_open_success_required, 1),
                   )
                 }
               />

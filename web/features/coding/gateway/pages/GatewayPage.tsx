@@ -1,9 +1,7 @@
 import React from 'react';
 import {
   Activity,
-  AlertCircle,
   BarChart3,
-  CheckCircle2,
   FileText,
   Loader2,
   Network,
@@ -17,14 +15,12 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import GatewaySettingsPanel from '@/features/settings/pages/GatewaySettingsPanel';
 import {
   checkProxyGatewayHealth,
-  getProxyGatewayCliStatuses,
   getProxyGatewaySettings,
   getProxyGatewayStatus,
   preflightStopProxyGateway,
   startProxyGateway,
   stopProxyGateway,
   updateProxyGatewaySettings,
-  type ProxyGatewayHealthCheckResult,
   type ProxyGatewaySettings,
   type ProxyGatewayStatus,
 } from '@/services';
@@ -54,10 +50,13 @@ const GatewayPage: React.FC = () => {
   const location = useLocation();
   const activeTab = resolveGatewayTabFromPath(location.pathname);
   const [status, setStatus] = React.useState<ProxyGatewayStatus | null>(null);
-  const [health, setHealth] = React.useState<ProxyGatewayHealthCheckResult | null>(null);
   const [busyAction, setBusyAction] = React.useState<GatewayAction | null>('load');
   const [notice, setNotice] = React.useState<{ kind: GatewayNoticeKind; text: string } | null>(null);
-  const [contentRefreshKey, setContentRefreshKey] = React.useState(0);
+  const [tabRefreshKeys, setTabRefreshKeys] = React.useState<Record<GatewayPageTab, number>>({
+    statistics: 0,
+    requests: 0,
+    settings: 0,
+  });
   const settingsDraftRef = React.useRef<ProxyGatewaySettings | null>(null);
 
   React.useEffect(() => {
@@ -65,16 +64,6 @@ const GatewayPage: React.FC = () => {
       navigate(DEFAULT_GATEWAY_PATH, { replace: true });
     }
   }, [location.pathname, navigate]);
-
-  const refreshGatewayState = React.useCallback(async () => {
-    const nextStatus = await getProxyGatewayStatus();
-    setStatus(nextStatus);
-    await Promise.all([
-      getProxyGatewaySettings(),
-      getProxyGatewayCliStatuses(),
-    ]);
-    return nextStatus;
-  }, []);
 
   React.useEffect(() => {
     let disposed = false;
@@ -107,9 +96,34 @@ const GatewayPage: React.FC = () => {
     };
   }, [t]);
 
+  React.useEffect(() => {
+    if (notice?.kind !== 'success') {
+      return undefined;
+    }
+
+    const noticeTimer = window.setTimeout(() => {
+      setNotice((currentNotice) =>
+        currentNotice?.kind === notice.kind && currentNotice.text === notice.text
+          ? null
+          : currentNotice,
+      );
+    }, 2400);
+
+    return () => {
+      window.clearTimeout(noticeTimer);
+    };
+  }, [notice]);
+
   const handleTabChange = (tabKey: GatewayPageTab) => {
     navigate(getGatewayPathForTab(tabKey));
   };
+
+  const bumpTabRefreshKey = React.useCallback((tabKey: GatewayPageTab) => {
+    setTabRefreshKeys((currentKeys) => ({
+      ...currentKeys,
+      [tabKey]: currentKeys[tabKey] + 1,
+    }));
+  }, []);
 
   const handleSettingsDraftChange = React.useCallback((settings: ProxyGatewaySettings | null) => {
     settingsDraftRef.current = settings ? cloneGatewaySettings(settings) : null;
@@ -127,7 +141,7 @@ const GatewayPage: React.FC = () => {
       });
       const nextStatus = await startProxyGateway(nextSettings);
       setStatus(nextStatus);
-      setContentRefreshKey((currentKey) => currentKey + 1);
+      bumpTabRefreshKey(activeTab);
       setNotice({ kind: 'success', text: t('settings.gateway.notice.started') });
     } catch (error) {
       setNotice({
@@ -160,8 +174,7 @@ const GatewayPage: React.FC = () => {
       }
       const nextStatus = await stopProxyGateway();
       setStatus(nextStatus);
-      setHealth(null);
-      setContentRefreshKey((currentKey) => currentKey + 1);
+      bumpTabRefreshKey(activeTab);
       setNotice({ kind: 'success', text: t('settings.gateway.notice.stopped') });
     } catch (error) {
       setNotice({
@@ -177,7 +190,9 @@ const GatewayPage: React.FC = () => {
     setBusyAction('health');
     try {
       const nextHealth = await checkProxyGatewayHealth();
-      setHealth(nextHealth);
+      if (activeTab === 'statistics') {
+        bumpTabRefreshKey('statistics');
+      }
       setNotice({
         kind: nextHealth.ok ? 'success' : 'error',
         text: nextHealth.ok
@@ -195,12 +210,14 @@ const GatewayPage: React.FC = () => {
   };
 
   const handleRefresh = async () => {
+    const refreshTab = activeTab;
     setBusyAction('refresh');
     try {
-      await refreshGatewayState();
-      setContentRefreshKey((currentKey) => currentKey + 1);
+      setStatus(await getProxyGatewayStatus());
+      bumpTabRefreshKey(refreshTab);
       setNotice({ kind: 'success', text: t('settings.gateway.notice.refreshed') });
     } catch (error) {
+      bumpTabRefreshKey(refreshTab);
       setNotice({
         kind: 'error',
         text: t('settings.gateway.notice.loadFailed', { error: formatGatewayError(error) }),
@@ -209,12 +226,6 @@ const GatewayPage: React.FC = () => {
       setBusyAction(null);
     }
   };
-
-  const statusKind = status?.running
-    ? 'running'
-    : status?.last_error
-      ? 'error'
-      : 'stopped';
 
   return (
     <div className={styles.gatewayPage}>
@@ -228,101 +239,86 @@ const GatewayPage: React.FC = () => {
             <p>{t('gateway.page.subtitle')}</p>
           </div>
         </div>
-        <div className={styles.statusStrip}>
-          <span className={joinClassNames(styles.statusBadge, styles[`statusBadge_${statusKind}`])}>
-            {statusKind === 'running' ? (
-              <CheckCircle2 size={14} aria-hidden="true" />
-            ) : statusKind === 'error' ? (
-              <AlertCircle size={14} aria-hidden="true" />
+        <div className={styles.headerControls}>
+          <div className={styles.actionBar}>
+            {status?.running ? (
+              <button
+                type="button"
+                className={styles.actionButton}
+                disabled={Boolean(busyAction)}
+                aria-label={t('settings.gateway.actions.stop')}
+                title={t('settings.gateway.actions.stop')}
+                onClick={() => void handleStop()}
+              >
+                {busyAction === 'stop' ? (
+                  <Loader2 size={15} className={styles.spin} aria-hidden="true" />
+                ) : (
+                  <Square size={14} aria-hidden="true" />
+                )}
+              </button>
             ) : (
-              <Square size={13} aria-hidden="true" />
+              <button
+                type="button"
+                className={joinClassNames(styles.actionButton, styles.actionButtonPrimary)}
+                disabled={Boolean(busyAction)}
+                aria-label={t('settings.gateway.actions.start')}
+                title={t('settings.gateway.actions.start')}
+                onClick={() => void handleStart()}
+              >
+                {busyAction === 'start' ? (
+                  <Loader2 size={15} className={styles.spin} aria-hidden="true" />
+                ) : (
+                  <Power size={15} aria-hidden="true" />
+                )}
+              </button>
             )}
-            {t(`settings.gateway.status.${statusKind}`)}
-          </span>
-          <span className={joinClassNames(styles.healthBadge, health?.ok === false && styles.healthBadgeError)}>
-            {health
-              ? health.ok
-                ? t('settings.gateway.status.healthOk', { statusCode: health.status_code ?? '-' })
-                : t('settings.gateway.status.healthFailed')
-              : t('settings.gateway.status.healthUnknown')}
-          </span>
-        </div>
-      </div>
-
-      <div className={styles.controlBar}>
-        <div className={styles.actionBar}>
-          {status?.running ? (
             <button
               type="button"
               className={styles.actionButton}
               disabled={Boolean(busyAction)}
-              onClick={() => void handleStop()}
+              aria-label={t('settings.gateway.actions.health')}
+              title={t('settings.gateway.actions.health')}
+              onClick={() => void handleHealthCheck()}
             >
-              {busyAction === 'stop' ? (
-                <Loader2 size={14} className={styles.spin} aria-hidden="true" />
+              {busyAction === 'health' ? (
+                <Loader2 size={15} className={styles.spin} aria-hidden="true" />
               ) : (
-                <Square size={13} aria-hidden="true" />
+                <Activity size={15} aria-hidden="true" />
               )}
-              <span>{t('settings.gateway.actions.stop')}</span>
             </button>
-          ) : (
             <button
               type="button"
-              className={joinClassNames(styles.actionButton, styles.actionButtonPrimary)}
+              className={styles.actionButton}
               disabled={Boolean(busyAction)}
-              onClick={() => void handleStart()}
+              aria-label={t('common.refresh')}
+              title={t('common.refresh')}
+              onClick={() => void handleRefresh()}
             >
-              {busyAction === 'start' ? (
-                <Loader2 size={14} className={styles.spin} aria-hidden="true" />
+              {busyAction === 'refresh' || busyAction === 'load' ? (
+                <Loader2 size={15} className={styles.spin} aria-hidden="true" />
               ) : (
-                <Power size={14} aria-hidden="true" />
+                <RefreshCw size={15} aria-hidden="true" />
               )}
-              <span>{t('settings.gateway.actions.start')}</span>
             </button>
-          )}
-          <button
-            type="button"
-            className={styles.actionButton}
-            disabled={Boolean(busyAction)}
-            onClick={() => void handleHealthCheck()}
-          >
-            {busyAction === 'health' ? (
-              <Loader2 size={14} className={styles.spin} aria-hidden="true" />
-            ) : (
-              <Activity size={14} aria-hidden="true" />
-            )}
-            <span>{t('settings.gateway.actions.health')}</span>
-          </button>
-          <button
-            type="button"
-            className={styles.actionButton}
-            disabled={Boolean(busyAction)}
-            onClick={() => void handleRefresh()}
-          >
-            {busyAction === 'refresh' || busyAction === 'load' ? (
-              <Loader2 size={14} className={styles.spin} aria-hidden="true" />
-            ) : (
-              <RefreshCw size={14} aria-hidden="true" />
-            )}
-            <span>{t('common.refresh')}</span>
-          </button>
-        </div>
-        <div className={styles.tabList} role="tablist" aria-label={t('gateway.page.title')}>
-          {GATEWAY_TABS.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              role="tab"
-              aria-selected={activeTab === tab.key}
-              className={joinClassNames(styles.tabButton, activeTab === tab.key && styles.tabButtonActive)}
-              onClick={() => handleTabChange(tab.key)}
-            >
-              {tab.key === 'statistics' ? <BarChart3 size={14} aria-hidden="true" /> : null}
-              {tab.key === 'requests' ? <FileText size={14} aria-hidden="true" /> : null}
-              {tab.key === 'settings' ? <Settings size={14} aria-hidden="true" /> : null}
-              <span>{t(tab.labelKey)}</span>
-            </button>
-          ))}
+          </div>
+          <span className={styles.toolbarDivider} aria-hidden="true" />
+          <div className={styles.tabList} role="tablist" aria-label={t('gateway.page.title')}>
+            {GATEWAY_TABS.map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === tab.key}
+                className={joinClassNames(styles.tabButton, activeTab === tab.key && styles.tabButtonActive)}
+                onClick={() => handleTabChange(tab.key)}
+              >
+                {tab.key === 'statistics' ? <BarChart3 size={14} aria-hidden="true" /> : null}
+                {tab.key === 'requests' ? <FileText size={14} aria-hidden="true" /> : null}
+                {tab.key === 'settings' ? <Settings size={14} aria-hidden="true" /> : null}
+                <span>{t(tab.labelKey)}</span>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -337,11 +333,11 @@ const GatewayPage: React.FC = () => {
         </div>
       ) : null}
 
-      {activeTab === 'statistics' ? <GatewayStatisticsView key={`statistics-${contentRefreshKey}`} /> : null}
-      {activeTab === 'requests' ? <GatewayRequestsView key={`requests-${contentRefreshKey}`} /> : null}
+      {activeTab === 'statistics' ? <GatewayStatisticsView refreshKey={tabRefreshKeys.statistics} /> : null}
+      {activeTab === 'requests' ? <GatewayRequestsView refreshKey={tabRefreshKeys.requests} /> : null}
       {activeTab === 'settings' ? (
         <GatewaySettingsPanel
-          key={`settings-${contentRefreshKey}`}
+          key={`settings-${tabRefreshKeys.settings}`}
           showTitleBlock={false}
           onStatusChange={setStatus}
           onDraftSettingsChange={handleSettingsDraftChange}

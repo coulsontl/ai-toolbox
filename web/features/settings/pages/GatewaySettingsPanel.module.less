@@ -74,7 +74,6 @@
 }
 
 .button,
-.iconButton,
 .switchControl,
 .cliRow {
   font: inherit;
@@ -85,8 +84,7 @@
   }
 }
 
-.button,
-.iconButton {
+.button {
   border: 1px solid transparent;
   background: transparent;
   color: var(--color-text-secondary);
@@ -154,63 +152,8 @@
   }
 }
 
-.iconButton {
-  display: inline-flex;
-  width: 28px;
-  height: 28px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 6px;
-
-  &:hover:not(:disabled) {
-    background: var(--color-bg-hover);
-    color: var(--color-text-primary);
-  }
-}
-
 .spin {
   animation: gatewaySpin 0.78s linear infinite;
-}
-
-.gatewayAddressBlock {
-  display: block;
-}
-
-.addressItem {
-  display: flex;
-  min-width: 0;
-  min-height: 46px;
-  flex-direction: column;
-  justify-content: center;
-  gap: 4px;
-  padding: 8px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-bg-container);
-}
-
-.statusLabel {
-  color: var(--color-text-tertiary);
-  font-size: 11px;
-  font-weight: 560;
-  line-height: 1;
-}
-
-.addressRow {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 28px;
-  align-items: center;
-  gap: 6px;
-
-  code {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--color-text-primary);
-    font-size: 12px;
-    line-height: 1.45;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 }
 
 .inlineAlert,
@@ -288,6 +231,29 @@
 .fieldStack {
   display: flex;
   flex-direction: column;
+}
+
+.fieldPairGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-bottom: 1px solid var(--color-border);
+
+  &:last-child {
+    border-bottom: none;
+  }
+
+  .fieldRow {
+    grid-template-columns: minmax(108px, 0.9fr) minmax(78px, 0.55fr);
+    border-bottom: none;
+
+    &:nth-child(odd) {
+      border-right: 1px solid var(--color-border);
+    }
+  }
+
+  .numberInput {
+    max-width: none;
+  }
 }
 
 .fieldRow {
@@ -672,6 +638,23 @@
     gap: 6px;
   }
 
+  .fieldPairGrid {
+    grid-template-columns: 1fr;
+
+    .fieldRow {
+      grid-template-columns: 1fr;
+      border-bottom: 1px solid var(--color-border);
+
+      &:nth-child(odd) {
+        border-right: none;
+      }
+
+      &:last-child {
+        border-bottom: none;
+      }
+    }
+  }
+
   .logParts {
     grid-template-columns: 1fr;
   }
@@ -688,7 +671,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .button,
-  .iconButton,
   .textInput,
   .numberInput,
   .switchTrack,

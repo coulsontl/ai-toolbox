@@ -1,11 +1,11 @@
 .statTile {
   display: grid;
   min-width: 0;
-  min-height: 74px;
+  min-height: 58px;
   grid-template-columns: 28px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
-  padding: 10px;
+  padding: 8px 10px;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: var(--color-bg-container);
@@ -28,7 +28,14 @@
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 3px;
+  gap: 5px;
+}
+
+.statMain {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
 }
 
 .statLabel,
@@ -41,7 +48,12 @@
   white-space: nowrap;
 }
 
+.statLabel {
+  flex: 0 0 auto;
+}
+
 .statValue {
+  min-width: 0;
   overflow: hidden;
   color: var(--color-text-primary);
   font-size: 15px;
