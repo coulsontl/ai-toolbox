@@ -22,7 +22,7 @@ use super::types::{
 };
 use crate::coding::db_id::db_clean_id;
 use crate::http_client;
-use crate::DbState;
+use crate::SqliteDbState;
 
 const DEFAULT_CHANNEL_LIST_LIMIT: usize = 200;
 const PROVIDER_KIND_OPENAI_COMPATIBLE: &str = "openai_compatible";
@@ -194,7 +194,7 @@ impl ImageProviderAdapter {
 
     async fn execute_generation_request(
         self,
-        state: &DbState,
+        state: &SqliteDbState,
         channel: &ImageChannelDto,
         input: &CreateImageJobInput,
         request_url: &str,
@@ -1185,7 +1185,7 @@ fn remove_asset_files(app: &AppHandle, assets: &[ImageAssetRecord]) -> Result<()
 
 async fn persist_asset_file(
     app: &AppHandle,
-    state: &DbState,
+    state: &SqliteDbState,
     job_id: Option<String>,
     role: &str,
     file_name: &str,
@@ -1238,7 +1238,7 @@ async fn persist_asset_file(
 
 async fn persist_reference_assets(
     app: &AppHandle,
-    state: &DbState,
+    state: &SqliteDbState,
     job_id: &str,
     references: &[ImageReferenceInput],
 ) -> Result<Vec<ImageAssetRecord>, String> {
@@ -1262,7 +1262,7 @@ async fn persist_reference_assets(
 
 async fn execute_generation_request(
     app: Option<&AppHandle>,
-    state: &DbState,
+    state: &SqliteDbState,
     job_id: &str,
     channel: &ImageChannelDto,
     input: &CreateImageJobInput,
@@ -1285,7 +1285,7 @@ async fn execute_generation_request(
 }
 
 async fn execute_openai_compatible_generation_request(
-    state: &DbState,
+    state: &SqliteDbState,
     channel: &ImageChannelDto,
     input: &CreateImageJobInput,
     request_url: &str,
@@ -1628,7 +1628,7 @@ async fn execute_openai_compatible_generation_request(
 }
 
 async fn parse_image_response(
-    state: &DbState,
+    state: &SqliteDbState,
     timeout_seconds: u64,
     response: reqwest::Response,
     fallback_mime_type: &str,
@@ -1843,7 +1843,7 @@ async fn parse_image_response(
 }
 
 async fn execute_gemini_generation_request(
-    state: &DbState,
+    state: &SqliteDbState,
     channel: &ImageChannelDto,
     input: &CreateImageJobInput,
     request_url: &str,
@@ -2122,7 +2122,7 @@ async fn parse_gemini_image_response(
 }
 
 async fn append_image_result_from_response_item(
-    state: &DbState,
+    state: &SqliteDbState,
     timeout_seconds: u64,
     results: &mut Vec<GeneratedImageResult>,
     item: &serde_json::Value,
@@ -2212,7 +2212,7 @@ async fn append_image_result_from_response_item(
 }
 
 async fn append_images_from_responses_payload(
-    state: &DbState,
+    state: &SqliteDbState,
     timeout_seconds: u64,
     results: &mut Vec<GeneratedImageResult>,
     payload: &serde_json::Value,
@@ -2528,7 +2528,7 @@ fn read_responses_payload_from_text(
 }
 
 async fn upload_responses_input_image_as_file_id(
-    state: &DbState,
+    state: &SqliteDbState,
     channel: &ImageChannelDto,
     timeout_seconds: u64,
     reference: &ImageReferenceInput,
@@ -2607,7 +2607,7 @@ async fn upload_responses_input_image_as_file_id(
 }
 
 async fn delete_uploaded_responses_file(
-    state: &DbState,
+    state: &SqliteDbState,
     channel: &ImageChannelDto,
     timeout_seconds: u64,
     file_id: &str,
@@ -2628,7 +2628,7 @@ async fn delete_uploaded_responses_file(
 }
 
 async fn prepare_responses_reference_inputs(
-    state: &DbState,
+    state: &SqliteDbState,
     channel: &ImageChannelDto,
     timeout_seconds: u64,
     input: &CreateImageJobInput,
@@ -2676,7 +2676,7 @@ async fn prepare_responses_reference_inputs(
 }
 
 async fn execute_responses_generation_request(
-    state: &DbState,
+    state: &SqliteDbState,
     channel: &ImageChannelDto,
     input: &CreateImageJobInput,
     request_url: &str,
@@ -2959,7 +2959,7 @@ async fn execute_responses_generation_request(
 }
 
 async fn parse_responses_image_response(
-    state: &DbState,
+    state: &SqliteDbState,
     timeout_seconds: u64,
     response: reqwest::Response,
     fallback_mime_type: &str,
@@ -3073,7 +3073,7 @@ async fn parse_responses_image_response(
 
 async fn to_job_dto(
     app: &AppHandle,
-    state: &DbState,
+    state: &SqliteDbState,
     record: ImageJobRecord,
 ) -> Result<ImageJobDto, String> {
     let input_assets = store::list_image_assets_by_ids(state, &record.input_asset_ids).await?;
@@ -3110,7 +3110,7 @@ async fn to_job_dto(
 }
 
 async fn mark_job_as_error(
-    state: &DbState,
+    state: &SqliteDbState,
     job_record: &mut ImageJobRecord,
     created_at: i64,
     error_message: String,
@@ -3127,7 +3127,7 @@ async fn mark_job_as_error(
 #[tauri::command]
 pub async fn image_get_workspace(
     app: AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
 ) -> Result<ImageWorkspaceDto, String> {
     let started_at = Instant::now();
     debug!("Image workspace load start");
@@ -3170,7 +3170,7 @@ pub async fn image_get_workspace(
 
 #[tauri::command]
 pub async fn image_list_channels(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     input: Option<ListImageChannelsInput>,
 ) -> Result<Vec<ImageChannelDto>, String> {
     let limit = input
@@ -3191,7 +3191,7 @@ pub async fn image_list_channels(
 
 #[tauri::command]
 pub async fn image_update_channel(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     input: UpsertImageChannelInput,
 ) -> Result<ImageChannelDto, String> {
     validate_channel_input(&input)?;
@@ -3247,7 +3247,7 @@ pub async fn image_update_channel(
 
 #[tauri::command]
 pub async fn image_delete_channel(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     input: DeleteImageChannelInput,
 ) -> Result<(), String> {
     let clean_channel_id = db_clean_id(&input.id);
@@ -3257,7 +3257,7 @@ pub async fn image_delete_channel(
 #[tauri::command]
 pub async fn image_delete_job(
     app: AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     input: DeleteImageJobInput,
 ) -> Result<(), String> {
     let clean_job_id = db_clean_id(&input.id);
@@ -3279,7 +3279,7 @@ pub async fn image_delete_job(
 
 #[tauri::command]
 pub async fn image_reorder_channels(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     input: ReorderImageChannelsInput,
 ) -> Result<Vec<ImageChannelDto>, String> {
     let ordered_ids = input
@@ -3297,7 +3297,7 @@ pub async fn image_reorder_channels(
 #[tauri::command]
 pub async fn image_list_jobs(
     app: AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     input: Option<ListImageJobsInput>,
 ) -> Result<Vec<ImageJobDto>, String> {
     let started_at = Instant::now();
@@ -3325,7 +3325,7 @@ pub async fn image_list_jobs(
 #[tauri::command]
 pub async fn image_create_job(
     app: AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     input: CreateImageJobInput,
 ) -> Result<ImageJobDto, String> {
     let command_started_at = Instant::now();
@@ -3584,29 +3584,21 @@ pub async fn image_reveal_assets_dir(app: AppHandle) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::coding::image::types::ImageTaskParams;
-    use surrealdb::engine::local::SurrealKv;
-    use surrealdb::Surreal;
     use tempfile::TempDir;
 
     struct TestDbState {
         _temp_dir: TempDir,
-        state: DbState,
+        state: SqliteDbState,
     }
 
     async fn create_test_db_state() -> TestDbState {
         let temp_dir = tempfile::tempdir().expect("create temp db dir");
-        let db_path = temp_dir.path().join("surreal");
-        let db = Surreal::new::<SurrealKv>(db_path)
-            .await
-            .expect("open surreal test db");
-        db.use_ns("ai_toolbox")
-            .use_db("main")
-            .await
-            .expect("select surreal test namespace");
+        let db_path = temp_dir.path().join("test.db");
+        let state = SqliteDbState::open(db_path).expect("open sqlite test db");
 
         TestDbState {
             _temp_dir: temp_dir,
-            state: DbState(db),
+            state,
         }
     }
 

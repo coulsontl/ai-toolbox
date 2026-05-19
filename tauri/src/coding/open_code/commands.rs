@@ -7,7 +7,7 @@ use tauri::Emitter;
 use super::adapter;
 use super::types::*;
 use crate::coding::all_api_hub;
-use crate::coding::db_id::{db_new_id, db_record_id};
+use crate::coding::db_id::db_new_id;
 use crate::coding::prompt_file::{read_prompt_content_file, write_prompt_content_file};
 use crate::coding::runtime_location;
 use crate::coding::skills::commands::resync_all_skills_if_tool_path_changed;
@@ -15,8 +15,7 @@ use crate::db::helpers::{
     db_count, db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_patch_where_bool, db_put,
 };
 use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
-use crate::db::sqlite_state::{global_sqlite_state, SqliteDbState};
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 
 // ============================================================================
 // Helper Functions
@@ -264,7 +263,7 @@ fn dedupe_favorite_plugin_records(records: Vec<Value>) -> Vec<Value> {
 }
 
 async fn write_opencode_config_file(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     config: &OpenCodeConfig,
 ) -> Result<(), String> {
     let config_path_str = get_opencode_config_path(state).await?;
@@ -419,7 +418,7 @@ mod tests {
 }
 
 async fn get_opencode_prompt_file_path(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<std::path::PathBuf, String> {
     let config_path_str = get_opencode_config_path(state).await?;
     let config_path = Path::new(&config_path_str);
@@ -432,7 +431,7 @@ async fn get_opencode_prompt_file_path(
 }
 
 async fn get_local_prompt_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Option<OpenCodePromptConfig>, String> {
     let prompt_path = get_opencode_prompt_file_path(state).await?;
     let Some(prompt_content) = read_prompt_content_file(&prompt_path, "OpenCode")? else {
@@ -452,7 +451,7 @@ async fn get_local_prompt_config(
 }
 
 async fn write_prompt_content_to_file(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     prompt_content: Option<&str>,
 ) -> Result<(), String> {
     let prompt_path = get_opencode_prompt_file_path(state).await?;
@@ -514,7 +513,9 @@ fn put_opencode_prompt_to_sqlite(
 
 /// Get OpenCode config file path with priority: common config > system env > shell config > default
 #[tauri::command]
-pub async fn get_opencode_config_path(state: tauri::State<'_, DbState>) -> Result<String, String> {
+pub async fn get_opencode_config_path(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<String, String> {
     // 1. Check common config (highest priority)
     if let Some(common_config) = get_opencode_common_config(state.clone()).await? {
         if let Some(custom_path) = common_config.config_path {
@@ -545,7 +546,7 @@ pub async fn get_opencode_config_path(state: tauri::State<'_, DbState>) -> Resul
 /// Get OpenCode config path info including source
 #[tauri::command]
 pub async fn get_opencode_config_path_info(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<ConfigPathInfo, String> {
     // 1. Check common config (highest priority)
     if let Some(common_config) = get_opencode_common_config(state.clone()).await? {
@@ -613,7 +614,7 @@ pub fn get_default_config_path() -> Result<String, String> {
 /// Read OpenCode configuration file with detailed result
 #[tauri::command]
 pub async fn read_opencode_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<ReadConfigResult, String> {
     let config_path_str = get_opencode_config_path(state).await?;
     let config_path = Path::new(&config_path_str);
@@ -703,7 +704,9 @@ pub async fn read_opencode_config(
 
 /// Backup OpenCode configuration file by renaming it with .bak.{timestamp} suffix
 #[tauri::command]
-pub async fn backup_opencode_config(state: tauri::State<'_, DbState>) -> Result<String, String> {
+pub async fn backup_opencode_config(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<String, String> {
     let config_path_str = get_opencode_config_path(state).await?;
     let config_path = Path::new(&config_path_str);
 
@@ -726,7 +729,7 @@ pub async fn backup_opencode_config(state: tauri::State<'_, DbState>) -> Result<
 /// Save OpenCode configuration file
 #[tauri::command]
 pub async fn save_opencode_config<R: tauri::Runtime>(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle<R>,
     config: OpenCodeConfig,
 ) -> Result<(), String> {
@@ -735,7 +738,7 @@ pub async fn save_opencode_config<R: tauri::Runtime>(
 
 /// Internal function to save config and emit events
 pub async fn apply_config_internal<R: tauri::Runtime>(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: &tauri::AppHandle<R>,
     config: OpenCodeConfig,
     from_tray: bool,
@@ -751,7 +754,7 @@ pub async fn apply_config_internal<R: tauri::Runtime>(
     let _ = app.emit("wsl-sync-request-opencode", ());
 
     // Async sync providers to favorite DB in background (non-blocking)
-    let db = state.db();
+    let db = state.db().clone();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = sync_providers_from_config(&db, &config).await {
             eprintln!("Background sync_providers_from_config failed: {}", e);
@@ -767,93 +770,33 @@ pub async fn apply_config_internal<R: tauri::Runtime>(
 
 #[tauri::command]
 pub async fn list_opencode_prompt_configs(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Vec<OpenCodePromptConfig>, String> {
-    let db = state.db();
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let prompts = list_opencode_prompts_from_sqlite(sqlite_state)?;
-        if prompts.is_empty() {
-            if let Some(local_config) = get_local_prompt_config(state).await? {
-                return Ok(vec![local_config]);
-            }
-        }
-        return Ok(prompts);
-    }
-
-    let records_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM opencode_prompt_config")
-        .await
-        .map_err(|e| format!("Failed to query prompt configs: {}", e))?
-        .take(0);
-
-    match records_result {
-        Ok(records) => {
-            if records.is_empty() {
-                drop(db);
-                if let Some(local_config) = get_local_prompt_config(state).await? {
-                    return Ok(vec![local_config]);
-                }
-                return Ok(Vec::new());
-            }
-
-            let mut result: Vec<OpenCodePromptConfig> = records
-                .into_iter()
-                .map(adapter::from_db_value_prompt_config)
-                .collect();
-
-            result.sort_by(|a, b| match (a.sort_index, b.sort_index) {
-                (Some(ai), Some(bi)) => ai.cmp(&bi),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => a.name.cmp(&b.name),
-            });
-
-            Ok(result)
-        }
-        Err(e) => {
-            eprintln!("Failed to deserialize prompt configs: {}", e);
-            drop(db);
-            if let Some(local_config) = get_local_prompt_config(state).await? {
-                return Ok(vec![local_config]);
-            }
-            Ok(Vec::new())
+    let prompts = list_opencode_prompts_from_sqlite(&state)?;
+    if prompts.is_empty() {
+        if let Some(local_config) = get_local_prompt_config(state).await? {
+            return Ok(vec![local_config]);
         }
     }
+    Ok(prompts)
 }
 
 #[tauri::command]
 pub async fn create_opencode_prompt_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     input: OpenCodePromptConfigInput,
 ) -> Result<OpenCodePromptConfig, String> {
-    let db = state.db();
     let now = chrono::Local::now().to_rfc3339();
-    let next_sort_index = if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state.with_conn(|conn| {
-            Ok(db_max_i64(
-                conn,
-                DbTable::OpenCodePromptConfig,
-                &JsonFieldPath::new("sort_index")?,
-            )?
-            .map(|value| value as i32 + 1)
-            .unwrap_or(0))
-        })?
-    } else {
-        let sort_index_result: Result<Vec<Value>, _> = db
-            .query("SELECT sort_index FROM opencode_prompt_config ORDER BY sort_index DESC LIMIT 1")
-            .await
-            .map_err(|e| format!("Failed to query prompt sort index: {}", e))?
-            .take(0);
-
-        sort_index_result
-            .ok()
-            .and_then(|records| records.first().cloned())
-            .and_then(|record| record.get("sort_index").and_then(|value| value.as_i64()))
-            .map(|value| value as i32 + 1)
-            .unwrap_or(0)
-    };
+    let next_sort_index = state.with_conn(|conn| {
+        Ok(db_max_i64(
+            conn,
+            DbTable::OpenCodePromptConfig,
+            &JsonFieldPath::new("sort_index")?,
+        )?
+        .map(|value| value as i32 + 1)
+        .unwrap_or(0))
+    })?;
 
     let content = OpenCodePromptConfigContent {
         name: input.name,
@@ -864,77 +807,32 @@ pub async fn create_opencode_prompt_config(
         updated_at: now,
     };
 
-    let json_data = adapter::to_db_value_prompt_config(&content);
     let prompt_id = db_new_id();
-    let record_id = db_record_id("opencode_prompt_config", &prompt_id);
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        put_opencode_prompt_to_sqlite(sqlite_state, &prompt_id, &content)?;
-    }
-
-    db.query(&format!("CREATE {} CONTENT $data", record_id))
-        .bind(("data", json_data))
-        .await
-        .map_err(|e| format!("Failed to create prompt config: {}", e))?;
-
-    let records_result: Result<Vec<Value>, _> = db
-        .query(&format!(
-            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
-            record_id
-        ))
-        .await
-        .map_err(|e| format!("Failed to query created prompt config: {}", e))?
-        .take(0);
-    let created_config = match records_result {
-        Ok(records) => {
-            if let Some(record) = records.first() {
-                adapter::from_db_value_prompt_config(record.clone())
-            } else {
-                return Err("Failed to retrieve created prompt config".to_string());
-            }
-        }
-        Err(e) => {
-            return Err(format!(
-                "Failed to deserialize created prompt config: {}",
-                e
-            ));
-        }
-    };
+    put_opencode_prompt_to_sqlite(&state, &prompt_id, &content)?;
 
     let _ = app.emit("config-changed", "window");
 
-    if global_sqlite_state().is_some() {
-        Ok(OpenCodePromptConfig {
-            id: prompt_id,
-            name: content.name,
-            content: content.content,
-            is_applied: content.is_applied,
-            sort_index: content.sort_index,
-            created_at: Some(content.created_at),
-            updated_at: Some(content.updated_at),
-        })
-    } else {
-        Ok(created_config)
-    }
+    Ok(OpenCodePromptConfig {
+        id: prompt_id,
+        name: content.name,
+        content: content.content,
+        is_applied: content.is_applied,
+        sort_index: content.sort_index,
+        created_at: Some(content.created_at),
+        updated_at: Some(content.updated_at),
+    })
 }
 
 #[tauri::command]
 pub async fn update_opencode_prompt_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     input: OpenCodePromptConfigInput,
 ) -> Result<OpenCodePromptConfig, String> {
     let config_id = input
         .id
         .ok_or_else(|| "ID is required for update".to_string())?;
-    let db = state.db();
-    let record_id = db_record_id("opencode_prompt_config", &config_id);
-
-    let existing_prompt = if let Some(sqlite_state) = global_sqlite_state() {
-        get_opencode_prompt_from_sqlite(sqlite_state, &config_id)?
-    } else {
-        None
-    };
+    let existing_prompt = get_opencode_prompt_from_sqlite(&state, &config_id)?;
 
     let (created_at, is_applied, sort_index) = if let Some(prompt) = existing_prompt {
         (
@@ -945,42 +843,7 @@ pub async fn update_opencode_prompt_config(
             prompt.sort_index,
         )
     } else {
-        let existing_result: Result<Vec<Value>, _> = db
-            .query(&format!(
-                "SELECT created_at, is_applied, sort_index FROM {} LIMIT 1",
-                record_id
-            ))
-            .await
-            .map_err(|e| format!("Failed to query prompt config: {}", e))?
-            .take(0);
-
-        match existing_result {
-            Ok(records) => {
-                if let Some(record) = records.first() {
-                    let created_at = record
-                        .get("created_at")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_else(|| {
-                            Box::leak(chrono::Local::now().to_rfc3339().into_boxed_str())
-                        })
-                        .to_string();
-                    let is_applied = record
-                        .get("is_applied")
-                        .or_else(|| record.get("isApplied"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    let sort_index = record
-                        .get("sort_index")
-                        .or_else(|| record.get("sortIndex"))
-                        .and_then(|v| v.as_i64())
-                        .map(|v| v as i32);
-                    (created_at, is_applied, sort_index)
-                } else {
-                    return Err(format!("Prompt config '{}' not found", config_id));
-                }
-            }
-            Err(e) => return Err(format!("Failed to deserialize prompt config: {}", e)),
-        }
+        return Err(format!("Prompt config '{}' not found", config_id));
     };
 
     let now = chrono::Local::now().to_rfc3339();
@@ -992,18 +855,7 @@ pub async fn update_opencode_prompt_config(
         created_at,
         updated_at: now.clone(),
     };
-    let json_data = adapter::to_db_value_prompt_config(&content);
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        put_opencode_prompt_to_sqlite(sqlite_state, &config_id, &content)?;
-    }
-
-    db.query(&format!("UPDATE {} CONTENT $data", record_id))
-        .bind(("data", json_data))
-        .await
-        .map_err(|e| format!("Failed to update prompt config: {}", e))?;
-
-    drop(db);
+    put_opencode_prompt_to_sqlite(&state, &config_id, &content)?;
 
     if is_applied {
         write_prompt_content_to_file(state.clone(), Some(input.content.as_str())).await?;
@@ -1025,23 +877,11 @@ pub async fn update_opencode_prompt_config(
 
 #[tauri::command]
 pub async fn delete_opencode_prompt_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     id: String,
 ) -> Result<(), String> {
-    let db = state.db();
-    let record_id = db_record_id("opencode_prompt_config", &id);
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state
-            .with_conn(|conn| db_delete(conn, DbTable::OpenCodePromptConfig, &id).map(|_| ()))?;
-    }
-
-    db.query(&format!("DELETE {}", record_id))
-        .await
-        .map_err(|e| format!("Failed to delete prompt config: {}", e))?;
-
-    drop(db);
+    state.with_conn(|conn| db_delete(conn, DbTable::OpenCodePromptConfig, &id).map(|_| ()))?;
 
     let _ = app.emit("config-changed", "window");
 
@@ -1049,7 +889,7 @@ pub async fn delete_opencode_prompt_config(
 }
 
 pub async fn apply_prompt_config_internal<R: tauri::Runtime>(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: &tauri::AppHandle<R>,
     config_id: &str,
     from_tray: bool,
@@ -1067,74 +907,33 @@ pub async fn apply_prompt_config_internal<R: tauri::Runtime>(
         return Ok(());
     }
 
-    let db = state.db();
-    let record_id = db_record_id("opencode_prompt_config", config_id);
-    let prompt_config = if let Some(sqlite_state) = global_sqlite_state() {
-        get_opencode_prompt_from_sqlite(sqlite_state, config_id)?
-            .ok_or_else(|| format!("Prompt config '{}' not found", config_id))?
-    } else {
-        let records_result: Result<Vec<Value>, _> = db
-            .query(&format!(
-                "SELECT *, type::string(id) as id FROM {} LIMIT 1",
-                record_id
-            ))
-            .await
-            .map_err(|e| format!("Failed to query prompt config: {}", e))?
-            .take(0);
-
-        match records_result {
-            Ok(records) => {
-                if let Some(record) = records.first() {
-                    adapter::from_db_value_prompt_config(record.clone())
-                } else {
-                    return Err(format!("Prompt config '{}' not found", config_id));
-                }
-            }
-            Err(e) => return Err(format!("Failed to deserialize prompt config: {}", e)),
-        }
-    };
+    let prompt_config = get_opencode_prompt_from_sqlite(&state, config_id)?
+        .ok_or_else(|| format!("Prompt config '{}' not found", config_id))?;
 
     let now = chrono::Local::now().to_rfc3339();
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state.with_conn(|conn| {
-            db_patch_where_bool(
-                conn,
-                DbTable::OpenCodePromptConfig,
-                &JsonFieldPath::new("is_applied")?,
-                true,
-                &[
-                    ("is_applied", serde_json::Value::Bool(false)),
-                    ("updated_at", serde_json::Value::String(now.clone())),
-                ],
-            )?;
-            db_patch_fields(
-                conn,
-                DbTable::OpenCodePromptConfig,
-                config_id,
-                &[
-                    ("is_applied", serde_json::Value::Bool(true)),
-                    ("updated_at", serde_json::Value::String(now.clone())),
-                ],
-            )?;
-            Ok(())
-        })?;
-    }
-
-    db.query("UPDATE opencode_prompt_config SET is_applied = false, updated_at = $now WHERE is_applied = true")
-        .bind(("now", now.clone()))
-        .await
-        .map_err(|e| format!("Failed to clear prompt applied flags: {}", e))?;
-
-    db.query(&format!(
-        "UPDATE {} SET is_applied = true, updated_at = $now",
-        record_id
-    ))
-    .bind(("now", now))
-    .await
-    .map_err(|e| format!("Failed to set prompt applied flag: {}", e))?;
-
-    drop(db);
+    state.with_conn(|conn| {
+        db_patch_where_bool(
+            conn,
+            DbTable::OpenCodePromptConfig,
+            &JsonFieldPath::new("is_applied")?,
+            true,
+            &[
+                ("is_applied", serde_json::Value::Bool(false)),
+                ("updated_at", serde_json::Value::String(now.clone())),
+            ],
+        )?;
+        db_patch_fields(
+            conn,
+            DbTable::OpenCodePromptConfig,
+            config_id,
+            &[
+                ("is_applied", serde_json::Value::Bool(true)),
+                ("updated_at", serde_json::Value::String(now.clone())),
+            ],
+        )?;
+        Ok(())
+    })?;
 
     write_prompt_content_to_file(state.clone(), Some(prompt_config.content.as_str())).await?;
 
@@ -1147,7 +946,7 @@ pub async fn apply_prompt_config_internal<R: tauri::Runtime>(
 
 #[tauri::command]
 pub async fn apply_opencode_prompt_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     config_id: String,
 ) -> Result<(), String> {
@@ -1156,36 +955,24 @@ pub async fn apply_opencode_prompt_config(
 
 #[tauri::command]
 pub async fn reorder_opencode_prompt_configs(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     ids: Vec<String>,
 ) -> Result<(), String> {
-    let db = state.db();
-
     for (index, id) in ids.iter().enumerate() {
-        if let Some(sqlite_state) = global_sqlite_state() {
-            sqlite_state.with_conn(|conn| {
-                db_patch_fields(
-                    conn,
-                    DbTable::OpenCodePromptConfig,
-                    id,
-                    &[(
-                        "sort_index",
-                        serde_json::Value::Number((index as i64).into()),
-                    )],
-                )
-                .map(|_| ())
-            })?;
-        }
-
-        let record_id = db_record_id("opencode_prompt_config", id);
-        db.query(&format!("UPDATE {} SET sort_index = $index", record_id))
-            .bind(("index", index as i32))
-            .await
-            .map_err(|e| format!("Failed to update prompt sort index: {}", e))?;
+        state.with_conn(|conn| {
+            db_patch_fields(
+                conn,
+                DbTable::OpenCodePromptConfig,
+                id,
+                &[(
+                    "sort_index",
+                    serde_json::Value::Number((index as i64).into()),
+                )],
+            )
+            .map(|_| ())
+        })?;
     }
-
-    drop(db);
     let _ = app.emit("config-changed", "window");
 
     Ok(())
@@ -1193,7 +980,7 @@ pub async fn reorder_opencode_prompt_configs(
 
 #[tauri::command]
 pub async fn save_opencode_local_prompt_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     input: OpenCodePromptConfigInput,
 ) -> Result<OpenCodePromptConfig, String> {
@@ -1219,27 +1006,7 @@ pub async fn save_opencode_local_prompt_config(
 
     apply_prompt_config_internal(state.clone(), &app, &created.id, false).await?;
 
-    let db = state.db();
-    let record_id = db_record_id("opencode_prompt_config", &created.id);
-    let refreshed_result: Result<Vec<Value>, _> = db
-        .query(&format!(
-            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
-            record_id
-        ))
-        .await
-        .map_err(|e| format!("Failed to query saved local prompt config: {}", e))?
-        .take(0);
-
-    match refreshed_result {
-        Ok(records) => {
-            if let Some(record) = records.first() {
-                Ok(adapter::from_db_value_prompt_config(record.clone()))
-            } else {
-                Ok(created)
-            }
-        }
-        Err(_) => Ok(created),
-    }
+    Ok(get_opencode_prompt_from_sqlite(&state, &created.id)?.unwrap_or(created))
 }
 
 // ============================================================================
@@ -1249,49 +1016,17 @@ pub async fn save_opencode_local_prompt_config(
 /// Get OpenCode common config
 #[tauri::command]
 pub async fn get_opencode_common_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Option<OpenCodeCommonConfig>, String> {
-    let db = state.db();
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        return sqlite_state.with_conn(|conn| {
-            Ok(db_get(conn, DbTable::OpenCodeCommonConfig, "common")?.map(adapter::from_db_value))
-        });
-    }
-
-    let records_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM opencode_common_config:`common` LIMIT 1")
-        .await
-        .map_err(|e| format!("Failed to query opencode common config: {}", e))?
-        .take(0);
-
-    match records_result {
-        Ok(records) => {
-            if let Some(record) = records.first() {
-                Ok(Some(adapter::from_db_value(record.clone())))
-            } else {
-                Ok(None)
-            }
-        }
-        Err(e) => {
-            // 反序列化失败，删除旧数据以修复版本冲突
-            eprintln!(
-                "⚠️ OpenCode common config has incompatible format, cleaning up: {}",
-                e
-            );
-            let _ = db.query("DELETE opencode_common_config:`common`").await;
-            let _ =
-                runtime_location::refresh_runtime_location_cache_for_module_async(&db, "opencode")
-                    .await;
-            Ok(None)
-        }
-    }
+    state.with_conn(|conn| {
+        Ok(db_get(conn, DbTable::OpenCodeCommonConfig, "common")?.map(adapter::from_db_value))
+    })
 }
 
 /// Save OpenCode common config
 #[tauri::command]
 pub async fn save_opencode_common_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     config: OpenCodeCommonConfig,
 ) -> Result<(), String> {
@@ -1300,47 +1035,12 @@ pub async fn save_opencode_common_config(
 
     let json_data = adapter::to_db_value(&config);
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state
-            .with_conn(|conn| db_put(conn, DbTable::OpenCodeCommonConfig, "common", &json_data))?;
-    }
-
-    // Use UPSERT to handle both update and create
-    db.query("UPSERT opencode_common_config:`common` CONTENT $data")
-        .bind(("data", json_data))
-        .await
-        .map_err(|e| format!("Failed to save opencode common config: {}", e))?;
+    db.with_conn(|conn| db_put(conn, DbTable::OpenCodeCommonConfig, "common", &json_data))?;
     runtime_location::refresh_runtime_location_cache_for_module_async(&db, "opencode").await?;
 
     resync_all_skills_if_tool_path_changed(app, state.inner(), "opencode", previous_skills_path)
         .await;
 
-    Ok(())
-}
-
-pub async fn sync_sqlite_opencode_from_surreal_if_missing(
-    sqlite_state: &SqliteDbState,
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<(), String> {
-    let mut missing_tables = Vec::new();
-    for table in [
-        DbTable::OpenCodeCommonConfig,
-        DbTable::OpenCodePromptConfig,
-        DbTable::OpenCodeFavoritePlugin,
-        DbTable::OpenCodeFavoriteProvider,
-    ] {
-        let sqlite_count = sqlite_state.with_conn(|conn| db_count(conn, table))?;
-        if sqlite_count == 0 {
-            missing_tables.push(table);
-        }
-    }
-
-    if missing_tables.is_empty() {
-        return Ok(());
-    }
-
-    crate::db::surreal_import::import_tables_from_surreal(sqlite_state, db, &missing_tables)
-        .await?;
     Ok(())
 }
 
@@ -1352,7 +1052,7 @@ pub async fn sync_sqlite_opencode_from_surreal_if_missing(
 /// Returns free models where cost.input and cost.output are both 0
 #[tauri::command]
 pub async fn get_opencode_free_models(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     force_refresh: Option<bool>,
 ) -> Result<GetFreeModelsResponse, String> {
     let (free_models, from_cache, updated_at) =
@@ -1371,7 +1071,7 @@ pub async fn get_opencode_free_models(
 /// Returns the complete model information for a specific provider
 #[tauri::command]
 pub async fn get_provider_models(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     provider_id: String,
 ) -> Result<Option<ProviderModelsData>, String> {
     super::free_models::get_provider_models_internal(&state, &provider_id).await
@@ -1385,7 +1085,7 @@ pub async fn get_provider_models(
 /// Returns all available models sorted by display name
 #[tauri::command]
 pub async fn get_opencode_unified_models(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Vec<UnifiedModelOption>, String> {
     // Read auth.json to get official provider ids
     let auth_channels = super::free_models::read_auth_channels();
@@ -1413,7 +1113,7 @@ pub async fn get_opencode_unified_models(
 /// Returns providers split into standalone (not in custom config) and merged (models only)
 #[tauri::command]
 pub async fn get_opencode_auth_providers(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<GetAuthProvidersResponse, String> {
     // Read config to get custom providers
     let result = read_opencode_config(state.clone()).await?;
@@ -1444,84 +1144,150 @@ const DEFAULT_FAVORITE_PLUGINS: &[&str] = &[
 ];
 
 /// Initialize default favorite plugins if database is empty
-async fn init_default_favorite_plugins(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<(), String> {
+async fn init_default_favorite_plugins(db: &crate::db::SqliteDbState) -> Result<(), String> {
     let now = chrono::Local::now().to_rfc3339();
 
     for plugin_name in DEFAULT_FAVORITE_PLUGINS {
         let normalized_plugin_name = normalize_favorite_plugin_name(plugin_name);
-        let record_id = db_record_id("opencode_favorite_plugin", &normalized_plugin_name);
-        let query = format!(
-            "INSERT IGNORE INTO opencode_favorite_plugin {{ id: {}, plugin_name: $plugin_name, created_at: $created_at }}",
-            record_id
-        );
-        db.query(&query)
-            .bind(("plugin_name", normalized_plugin_name))
-            .bind(("created_at", now.clone()))
-            .await
-            .map_err(|e| format!("Failed to initialize favorite plugin: {}", e))?;
+        let existing = db.with_conn(|conn| {
+            db_get(
+                conn,
+                DbTable::OpenCodeFavoritePlugin,
+                &normalized_plugin_name,
+            )
+        })?;
+        if existing.is_some() {
+            continue;
+        }
+        let payload = serde_json::json!({
+            "plugin_name": normalized_plugin_name,
+            "created_at": now,
+        });
+        db.with_conn(|conn| {
+            db_put(
+                conn,
+                DbTable::OpenCodeFavoritePlugin,
+                payload
+                    .get("plugin_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                &payload,
+            )
+        })?;
     }
 
     Ok(())
+}
+
+fn favorite_plugin_order() -> OrderSpec {
+    OrderSpec::single(
+        OrderField::json_text("created_at", OrderDirection::Asc)
+            .expect("valid favorite plugin order field"),
+    )
+}
+
+fn favorite_provider_order() -> OrderSpec {
+    OrderSpec::single(
+        OrderField::json_text("created_at", OrderDirection::Asc)
+            .expect("valid favorite provider order field"),
+    )
+}
+
+fn list_favorite_plugin_records(db: &crate::db::SqliteDbState) -> Result<Vec<Value>, String> {
+    let order = favorite_plugin_order();
+    db.with_conn(|conn| db_list(conn, DbTable::OpenCodeFavoritePlugin, Some(&order)))
+}
+
+fn list_favorite_provider_records(db: &crate::db::SqliteDbState) -> Result<Vec<Value>, String> {
+    let order = favorite_provider_order();
+    db.with_conn(|conn| db_list(conn, DbTable::OpenCodeFavoriteProvider, Some(&order)))
+}
+
+fn favorite_plugin_payload(plugin_name: &str, created_at: &str) -> Value {
+    serde_json::json!({
+        "plugin_name": plugin_name,
+        "created_at": created_at,
+    })
+}
+
+fn favorite_provider_payload(
+    provider_id: &str,
+    provider_config: &OpenCodeProvider,
+    diagnostics: Option<OpenCodeDiagnosticsConfig>,
+    created_at: &str,
+    updated_at: &str,
+) -> Result<Value, String> {
+    let npm = provider_config.npm.clone().unwrap_or_default();
+    let base_url = provider_config
+        .options
+        .as_ref()
+        .and_then(|options| options.base_url.clone())
+        .unwrap_or_default();
+    let provider_config_json = serde_json::to_value(provider_config)
+        .map_err(|error| format!("Failed to serialize provider config: {}", error))?;
+
+    Ok(serde_json::json!({
+        "provider_id": provider_id,
+        "npm": npm,
+        "base_url": base_url,
+        "provider_config": provider_config_json,
+        "diagnostics": diagnostics,
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }))
+}
+
+fn find_favorite_plugin_record(
+    db: &crate::db::SqliteDbState,
+    aliases: &[String],
+) -> Result<Option<Value>, String> {
+    let records = list_favorite_plugin_records(db)?;
+    Ok(dedupe_favorite_plugin_records(records)
+        .into_iter()
+        .find(|record| {
+            let plugin_name = favorite_plugin_record_name(record);
+            aliases
+                .iter()
+                .any(|alias| is_opencode_plugin_equivalent(alias, &plugin_name))
+        }))
+}
+
+fn find_favorite_provider_record(
+    db: &crate::db::SqliteDbState,
+    provider_id: &str,
+) -> Result<Option<Value>, String> {
+    Ok(list_favorite_provider_records(db)?
+        .into_iter()
+        .find(|record| record.get("provider_id").and_then(Value::as_str) == Some(provider_id)))
 }
 
 /// List all favorite plugins
 /// Auto-initializes default plugins if database is empty
 #[tauri::command]
 pub async fn list_opencode_favorite_plugins(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Vec<OpenCodeFavoritePlugin>, String> {
     let db = state.db();
 
-    // Check if there are any records
-    let count_result: Result<Vec<Value>, _> = db
-        .query("SELECT count() FROM opencode_favorite_plugin GROUP ALL")
-        .await
-        .map_err(|e| format!("Failed to count favorite plugins: {}", e))?
-        .take(0);
-
-    let is_empty = match count_result {
-        Ok(records) => {
-            records
-                .first()
-                .and_then(|r| r.get("count"))
-                .and_then(|c| c.as_i64())
-                .unwrap_or(0)
-                == 0
-        }
-        Err(_) => true,
-    };
+    let is_empty = db.with_conn(|conn| db_count(conn, DbTable::OpenCodeFavoritePlugin))? == 0;
 
     // Initialize default plugins if empty
     if is_empty {
-        init_default_favorite_plugins(&db).await?;
+        init_default_favorite_plugins(db).await?;
     }
 
-    // Query all favorite plugins ordered by created_at
-    let records_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM opencode_favorite_plugin ORDER BY created_at ASC")
-        .await
-        .map_err(|e| format!("Failed to query favorite plugins: {}", e))?
-        .take(0);
-
-    match records_result {
-        Ok(records) => {
-            let plugins: Vec<OpenCodeFavoritePlugin> = dedupe_favorite_plugin_records(records)
-                .into_iter()
-                .map(adapter::from_db_value_favorite_plugin)
-                .collect();
-            Ok(plugins)
-        }
-        Err(e) => Err(format!("Failed to deserialize favorite plugins: {}", e)),
-    }
+    let plugins = dedupe_favorite_plugin_records(list_favorite_plugin_records(db)?)
+        .into_iter()
+        .map(adapter::from_db_value_favorite_plugin)
+        .collect();
+    Ok(plugins)
 }
 
 /// Add a favorite plugin
 /// Returns the created plugin, or existing one if already exists
 #[tauri::command]
 pub async fn add_opencode_favorite_plugin(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     plugin_name: String,
 ) -> Result<OpenCodeFavoritePlugin, String> {
     let db = state.db();
@@ -1529,78 +1295,53 @@ pub async fn add_opencode_favorite_plugin(
     let normalized_plugin_name = normalize_favorite_plugin_name(&plugin_name);
     let plugin_aliases = favorite_plugin_aliases(&plugin_name);
 
-    if plugin_aliases.len() > 1 {
-        let existing_records: Result<Vec<Value>, _> = db
-            .query(
-                "SELECT *, type::string(id) as id FROM opencode_favorite_plugin WHERE plugin_name = $primary OR plugin_name = $legacy ORDER BY created_at ASC LIMIT 1",
+    if let Some(record) = find_favorite_plugin_record(db, &plugin_aliases)? {
+        return Ok(adapter::from_db_value_favorite_plugin(record));
+    }
+
+    let payload = favorite_plugin_payload(&normalized_plugin_name, &now);
+    db.with_conn(|conn| {
+        db_put(
+            conn,
+            DbTable::OpenCodeFavoritePlugin,
+            &normalized_plugin_name,
+            &payload,
+        )
+    })?;
+
+    let record = db
+        .with_conn(|conn| {
+            db_get(
+                conn,
+                DbTable::OpenCodeFavoritePlugin,
+                &normalized_plugin_name,
             )
-            .bind(("primary", plugin_aliases[0].clone()))
-            .bind(("legacy", plugin_aliases[1].clone()))
-            .await
-            .map_err(|e| format!("Failed to query existing favorite plugin: {}", e))?
-            .take(0);
-
-        if let Ok(records) = existing_records {
-            if let Some(record) = dedupe_favorite_plugin_records(records).into_iter().next() {
-                return Ok(adapter::from_db_value_favorite_plugin(record));
-            }
-        }
-    }
-
-    // Use INSERT IGNORE to avoid duplicates
-    let record_id = db_record_id("opencode_favorite_plugin", &normalized_plugin_name);
-    let query = format!(
-        "INSERT IGNORE INTO opencode_favorite_plugin {{ id: {}, plugin_name: $plugin_name, created_at: $created_at }}",
-        record_id
-    );
-    db.query(&query)
-        .bind(("plugin_name", normalized_plugin_name.clone()))
-        .bind(("created_at", now.clone()))
-        .await
-        .map_err(|e| format!("Failed to add favorite plugin: {}", e))?;
-
-    // Fetch the record (either newly created or existing)
-    let records_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM opencode_favorite_plugin WHERE plugin_name = $plugin_name LIMIT 1")
-        .bind(("plugin_name", normalized_plugin_name))
-        .await
-        .map_err(|e| format!("Failed to fetch favorite plugin: {}", e))?
-        .take(0);
-
-    match records_result {
-        Ok(records) => {
-            if let Some(record) = records.into_iter().next() {
-                Ok(adapter::from_db_value_favorite_plugin(record))
-            } else {
-                Err("Failed to find favorite plugin after insert".to_string())
-            }
-        }
-        Err(e) => Err(format!("Failed to deserialize favorite plugin: {}", e)),
-    }
+        })?
+        .ok_or_else(|| "Failed to find favorite plugin after insert".to_string())?;
+    Ok(adapter::from_db_value_favorite_plugin(record))
 }
 
 /// Delete a favorite plugin by plugin name
 #[tauri::command]
 pub async fn delete_opencode_favorite_plugin(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     plugin_name: String,
 ) -> Result<(), String> {
     let db = state.db();
     let plugin_aliases = favorite_plugin_aliases(&plugin_name);
-
-    if plugin_aliases.len() > 1 {
-        db.query(
-            "DELETE FROM opencode_favorite_plugin WHERE plugin_name = $primary OR plugin_name = $legacy",
-        )
-        .bind(("primary", plugin_aliases[0].clone()))
-        .bind(("legacy", plugin_aliases[1].clone()))
-        .await
-        .map_err(|e| format!("Failed to delete favorite plugin: {}", e))?;
-    } else {
-        db.query("DELETE FROM opencode_favorite_plugin WHERE plugin_name = $plugin_name")
-            .bind(("plugin_name", plugin_aliases[0].clone()))
-            .await
-            .map_err(|e| format!("Failed to delete favorite plugin: {}", e))?;
+    let records = list_favorite_plugin_records(db)?;
+    for record in records {
+        let record_plugin_name = favorite_plugin_record_name(&record);
+        let should_delete = plugin_aliases
+            .iter()
+            .any(|alias| is_opencode_plugin_equivalent(alias, &record_plugin_name));
+        if !should_delete {
+            continue;
+        }
+        let Some(id) = record.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        db.with_conn(|conn| db_delete(conn, DbTable::OpenCodeFavoritePlugin, id).map(|_| ()))?;
     }
 
     Ok(())
@@ -1615,7 +1356,7 @@ pub async fn delete_opencode_favorite_plugin(
 /// - Changed records are updated
 /// - New providers are inserted
 async fn sync_providers_from_config(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     config: &OpenCodeConfig,
 ) -> Result<(), String> {
     let providers = match config.provider {
@@ -1624,14 +1365,7 @@ async fn sync_providers_from_config(
     };
 
     // Fetch all existing favorite providers in one query
-    let existing_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM opencode_favorite_provider")
-        .await
-        .map_err(|e| format!("Failed to query existing favorite providers: {}", e))?
-        .take(0);
-
-    let existing_records = existing_result
-        .map_err(|e| format!("Failed to deserialize existing favorite providers: {}", e))?;
+    let existing_records = list_favorite_provider_records(db)?;
 
     // Build a lookup map: provider_id -> (npm, base_url, provider_config_json)
     let mut existing_map: std::collections::HashMap<String, (String, String, Value)> =
@@ -1671,8 +1405,6 @@ async fn sync_providers_from_config(
         let provider_config_json = serde_json::to_value(provider_config)
             .map_err(|e| format!("Failed to serialize provider config: {}", e))?;
 
-        let record_id = db_record_id("opencode_favorite_provider", provider_id);
-
         if let Some((existing_npm, existing_base_url, existing_config)) =
             existing_map.get(provider_id)
         {
@@ -1684,33 +1416,37 @@ async fn sync_providers_from_config(
                 // Identical, skip
                 continue;
             }
-
-            // Changed, update
-            db.query(&format!(
-                "UPDATE {} SET npm = $npm, base_url = $base_url, provider_config = $provider_config, updated_at = $updated_at",
-                record_id
-            ))
-            .bind(("npm", npm))
-            .bind(("base_url", base_url))
-            .bind(("provider_config", provider_config_json))
-            .bind(("updated_at", now.clone()))
-            .await
-            .map_err(|e| format!("Failed to update favorite provider: {}", e))?;
-        } else {
-            // New provider, insert
-            db.query(&format!(
-                "CREATE {} SET provider_id = $provider_id, npm = $npm, base_url = $base_url, provider_config = $provider_config, created_at = $created_at, updated_at = $updated_at",
-                record_id
-            ))
-            .bind(("provider_id", provider_id.clone()))
-            .bind(("npm", npm))
-            .bind(("base_url", base_url))
-            .bind(("provider_config", provider_config_json))
-            .bind(("created_at", now.clone()))
-            .bind(("updated_at", now.clone()))
-            .await
-            .map_err(|e| format!("Failed to insert favorite provider: {}", e))?;
         }
+
+        let existing_record = find_favorite_provider_record(db, provider_id)?;
+        let created_at = existing_record
+            .as_ref()
+            .and_then(|record| record.get("created_at"))
+            .and_then(Value::as_str)
+            .unwrap_or(&now)
+            .to_string();
+        let record_id = existing_record
+            .as_ref()
+            .and_then(|record| record.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or(provider_id)
+            .to_string();
+        let payload = serde_json::json!({
+            "provider_id": provider_id,
+            "npm": npm,
+            "base_url": base_url,
+            "provider_config": provider_config_json,
+            "created_at": created_at,
+            "updated_at": now,
+        });
+        db.with_conn(|conn| {
+            db_put(
+                conn,
+                DbTable::OpenCodeFavoriteProvider,
+                &record_id,
+                &payload,
+            )
+        })?;
     }
 
     Ok(())
@@ -1720,33 +1456,22 @@ async fn sync_providers_from_config(
 /// Pure SELECT query - sync is handled by apply_config_internal on config save
 #[tauri::command]
 pub async fn list_opencode_favorite_providers(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Vec<OpenCodeFavoriteProvider>, String> {
     let db = state.db();
 
-    let records_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM opencode_favorite_provider ORDER BY created_at ASC")
-        .await
-        .map_err(|e| format!("Failed to query favorite providers: {}", e))?
-        .take(0);
-
-    match records_result {
-        Ok(records) => {
-            let providers: Vec<OpenCodeFavoriteProvider> = records
-                .into_iter()
-                .filter_map(adapter::from_db_value_favorite_provider)
-                .collect();
-            Ok(providers)
-        }
-        Err(e) => Err(format!("Failed to deserialize favorite providers: {}", e)),
-    }
+    let providers = list_favorite_provider_records(db)?
+        .into_iter()
+        .filter_map(adapter::from_db_value_favorite_provider)
+        .collect();
+    Ok(providers)
 }
 
 /// Upsert (create or update) a favorite provider
 /// Called automatically when user adds/modifies a provider
 #[tauri::command]
 pub async fn upsert_opencode_favorite_provider(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     provider_id: String,
     provider_config: OpenCodeProvider,
     diagnostics: Option<OpenCodeDiagnosticsConfig>,
@@ -1754,30 +1479,9 @@ pub async fn upsert_opencode_favorite_provider(
     let db = state.db();
     let now = chrono::Local::now().to_rfc3339();
 
-    // Extract npm and base_url from provider_config
-    let npm = provider_config.npm.clone().unwrap_or_default();
-    let base_url = provider_config
-        .options
-        .as_ref()
-        .and_then(|o| o.base_url.clone())
-        .unwrap_or_default();
-
-    // Serialize provider_config to JSON
-    let provider_config_json = serde_json::to_value(&provider_config)
-        .map_err(|e| format!("Failed to serialize provider config: {}", e))?;
-
     // Read existing record to preserve created_at and diagnostics if not provided
-    let existing_record: Option<OpenCodeFavoriteProvider> = db
-        .query("SELECT *, type::string(id) as id FROM opencode_favorite_provider WHERE provider_id = $provider_id LIMIT 1")
-        .bind(("provider_id", provider_id.clone()))
-        .await
-        .map_err(|e| format!("Failed to query favorite provider: {}", e))?
-        .take::<Vec<Value>>(0)
-        .ok()
-        .and_then(|records| records.into_iter().next())
+    let existing_record = find_favorite_provider_record(db, &provider_id)?
         .and_then(adapter::from_db_value_favorite_provider);
-
-    let has_existing = existing_record.is_some();
     let created_at = existing_record
         .as_ref()
         .map(|record| record.created_at.clone())
@@ -1787,71 +1491,60 @@ pub async fn upsert_opencode_favorite_provider(
             .as_ref()
             .and_then(|record| record.diagnostics.clone())
     });
+    let record_id = existing_record
+        .as_ref()
+        .map(|record| record.id.clone())
+        .unwrap_or_else(|| provider_id.clone());
+    let payload = favorite_provider_payload(
+        &provider_id,
+        &provider_config,
+        diagnostics_to_save,
+        &created_at,
+        &now,
+    )?;
 
-    if has_existing {
-        db.query("UPDATE opencode_favorite_provider SET npm = $npm, base_url = $base_url, provider_config = $provider_config, diagnostics = $diagnostics, updated_at = $updated_at WHERE provider_id = $provider_id")
-            .bind(("provider_id", provider_id.clone()))
-            .bind(("npm", npm))
-            .bind(("base_url", base_url))
-            .bind(("provider_config", provider_config_json))
-            .bind(("diagnostics", diagnostics_to_save))
-            .bind(("updated_at", now.clone()))
-            .await
-            .map_err(|e| format!("Failed to update favorite provider: {}", e))?;
-    } else {
-        let record_id = db_record_id("opencode_favorite_provider", &provider_id);
-        db.query(&format!("INSERT INTO opencode_favorite_provider {{ id: {}, provider_id: $provider_id, npm: $npm, base_url: $base_url, provider_config: $provider_config, diagnostics: $diagnostics, created_at: $created_at, updated_at: $updated_at }}", record_id))
-            .bind(("provider_id", provider_id.clone()))
-            .bind(("npm", npm))
-            .bind(("base_url", base_url))
-            .bind(("provider_config", provider_config_json))
-            .bind(("diagnostics", diagnostics_to_save))
-            .bind(("created_at", created_at))
-            .bind(("updated_at", now.clone()))
-            .await
-            .map_err(|e| format!("Failed to insert favorite provider: {}", e))?;
-    }
+    db.with_conn(|conn| {
+        db_put(
+            conn,
+            DbTable::OpenCodeFavoriteProvider,
+            &record_id,
+            &payload,
+        )
+    })?;
 
     // Fetch and return the record
-    let records_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM opencode_favorite_provider WHERE provider_id = $provider_id LIMIT 1")
-        .bind(("provider_id", provider_id))
-        .await
-        .map_err(|e| format!("Failed to fetch favorite provider: {}", e))?
-        .take(0);
-
-    match records_result {
-        Ok(records) => {
-            if let Some(record) = records.into_iter().next() {
-                adapter::from_db_value_favorite_provider(record)
-                    .ok_or_else(|| "Failed to parse favorite provider".to_string())
-            } else {
-                Err("Failed to find favorite provider after upsert".to_string())
-            }
-        }
-        Err(e) => Err(format!("Failed to deserialize favorite provider: {}", e)),
-    }
+    let record = db
+        .with_conn(|conn| db_get(conn, DbTable::OpenCodeFavoriteProvider, &record_id))?
+        .ok_or_else(|| "Failed to find favorite provider after upsert".to_string())?;
+    adapter::from_db_value_favorite_provider(record)
+        .ok_or_else(|| "Failed to parse favorite provider".to_string())
 }
 
 /// Delete a favorite provider from database
 #[tauri::command]
 pub async fn delete_opencode_favorite_provider(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     provider_id: String,
 ) -> Result<(), String> {
     let db = state.db();
 
-    db.query("DELETE FROM opencode_favorite_provider WHERE provider_id = $provider_id")
-        .bind(("provider_id", provider_id))
-        .await
-        .map_err(|e| format!("Failed to delete favorite provider: {}", e))?;
+    let records = list_favorite_provider_records(db)?;
+    for record in records {
+        if record.get("provider_id").and_then(Value::as_str) != Some(&provider_id) {
+            continue;
+        }
+        let Some(id) = record.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        db.with_conn(|conn| db_delete(conn, DbTable::OpenCodeFavoriteProvider, id).map(|_| ()))?;
+    }
 
     Ok(())
 }
 
 #[tauri::command]
 pub async fn list_opencode_all_api_hub_providers(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<OpenCodeAllApiHubProvidersResult, String> {
     let _ = state;
     let discovery = all_api_hub::list_provider_candidates()?;
@@ -1900,7 +1593,7 @@ pub async fn list_opencode_all_api_hub_providers(
 
 #[tauri::command]
 pub async fn resolve_opencode_all_api_hub_providers(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     request: ResolveOpenCodeAllApiHubProvidersRequest,
 ) -> Result<Vec<OpenCodeAllApiHubProvider>, String> {
     let providers =

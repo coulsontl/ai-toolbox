@@ -16,9 +16,13 @@ use super::types::{
     GeminiCliOfficialAccount, GeminiCliOfficialAccountContent,
     GeminiCliOfficialAccountTokenCopyInput,
 };
-use crate::coding::db_id::{db_new_id, db_record_id};
+use crate::coding::db_id::db_new_id;
 use crate::coding::runtime_location;
-use crate::db::DbState;
+use crate::db::helpers::{
+    db_delete, db_get, db_patch_fields, db_patch_where_bool, db_put, db_query_by_field,
+};
+use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::SqliteDbState;
 use crate::http_client;
 use tauri::Emitter;
 
@@ -263,7 +267,7 @@ fn wait_for_oauth_callback(state: &str) -> Result<String, String> {
 }
 
 async fn exchange_authorization_code(
-    db_state: &DbState,
+    db_state: &SqliteDbState,
     oauth_client: &GeminiOAuthClient,
     code: &str,
     redirect_uri: &str,
@@ -285,7 +289,7 @@ async fn exchange_authorization_code(
 }
 
 async fn refresh_oauth_token(
-    db_state: &DbState,
+    db_state: &SqliteDbState,
     refresh_token: &str,
 ) -> Result<OAuthTokenResponse, String> {
     let oauth_client = gemini_oauth_client();
@@ -319,7 +323,7 @@ async fn parse_token_response(response: reqwest::Response) -> Result<OAuthTokenR
         .map_err(|error| format!("Failed to parse Gemini OAuth token response: {error}"))
 }
 
-async fn fetch_user_info(db_state: &DbState, access_token: &str) -> Result<Value, String> {
+async fn fetch_user_info(db_state: &SqliteDbState, access_token: &str) -> Result<Value, String> {
     let client = http_client::client_with_timeout(db_state, 30).await?;
     let response = client
         .get(GEMINI_USER_INFO_URL)
@@ -491,7 +495,10 @@ fn runtime_oauth_creds_from_auth(auth: &Value) -> Value {
     runtime
 }
 
-async fn ensure_fresh_auth_snapshot(db_state: &DbState, auth: &Value) -> Result<Value, String> {
+async fn ensure_fresh_auth_snapshot(
+    db_state: &SqliteDbState,
+    auth: &Value,
+) -> Result<Value, String> {
     if !auth_needs_refresh(auth) {
         return Ok(auth.clone());
     }
@@ -507,9 +514,7 @@ async fn ensure_fresh_auth_snapshot(db_state: &DbState, auth: &Value) -> Result<
     ))
 }
 
-async fn read_oauth_creds_from_disk(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<Value, String> {
+async fn read_oauth_creds_from_disk(db: &crate::db::SqliteDbState) -> Result<Value, String> {
     let root_dir = runtime_location::get_gemini_cli_runtime_location_async(db)
         .await?
         .host_path;
@@ -524,7 +529,7 @@ async fn read_oauth_creds_from_disk(
 }
 
 async fn write_oauth_creds_to_disk(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     auth: &Value,
 ) -> Result<(), String> {
     let root_dir = runtime_location::get_gemini_cli_runtime_location_async(db)
@@ -737,7 +742,7 @@ fn format_remaining_percent(value: f64) -> String {
 }
 
 async fn fetch_quota_snapshot(
-    db_state: &DbState,
+    db_state: &SqliteDbState,
     auth: &Value,
 ) -> Result<GeminiQuotaSnapshot, String> {
     let access_token = auth_access_token(auth)
@@ -975,77 +980,58 @@ fn build_account_content_from_auth_snapshot(
 }
 
 async fn list_persisted_official_accounts(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     provider_id: &str,
 ) -> Result<Vec<GeminiCliOfficialAccount>, String> {
-    let result: Result<Vec<Value>, _> = db
-        .query(
-            "SELECT *, type::string(id) as id FROM gemini_cli_official_account WHERE provider_id = $provider_id ORDER BY sort_index ASC, created_at ASC",
-        )
-        .bind(("provider_id", provider_id.to_string()))
-        .await
-        .map_err(|error| format!("Failed to query Gemini official accounts: {error}"))?
-        .take(0);
-
-    result
-        .map(|records| {
-            records
-                .into_iter()
-                .map(adapter::from_db_value_official_account)
-                .collect()
-        })
-        .map_err(|error| format!("Failed to deserialize Gemini official accounts: {error}"))
+    let provider_id_value = Value::String(provider_id.to_string());
+    let provider_id_path = JsonFieldPath::new("provider_id")?;
+    let order = OrderSpec::new(vec![
+        OrderField::json_integer("sort_index", OrderDirection::Asc)?,
+        OrderField::json_text("created_at", OrderDirection::Asc)?,
+    ]);
+    db.with_conn(|conn| {
+        Ok(db_query_by_field(
+            conn,
+            DbTable::GeminiCliOfficialAccount,
+            &provider_id_path,
+            &provider_id_value,
+            Some(&order),
+            None,
+        )?
+        .into_iter()
+        .map(adapter::from_db_value_official_account)
+        .collect())
+    })
 }
 
 async fn load_official_account(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     account_id: &str,
 ) -> Result<GeminiCliOfficialAccount, String> {
-    let record_id = db_record_id("gemini_cli_official_account", account_id);
-    let result: Result<Vec<Value>, _> = db
-        .query(&format!(
-            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
-            record_id
-        ))
-        .await
-        .map_err(|error| format!("Failed to query Gemini official account: {error}"))?
-        .take(0);
-
-    result
-        .map_err(|error| format!("Failed to deserialize Gemini official account: {error}"))?
-        .first()
-        .cloned()
+    db.with_conn(|conn| db_get(conn, DbTable::GeminiCliOfficialAccount, account_id))?
         .map(adapter::from_db_value_official_account)
         .ok_or_else(|| format!("Gemini official account '{}' not found", account_id))
 }
 
 async fn save_official_account(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     content: &GeminiCliOfficialAccountContent,
 ) -> Result<GeminiCliOfficialAccount, String> {
-    let record_id = db_record_id("gemini_cli_official_account", &db_new_id());
-    db.query(&format!("CREATE {} CONTENT $data", record_id))
-        .bind(("data", adapter::to_db_value_official_account(content)))
-        .await
-        .map_err(|error| format!("Failed to create Gemini official account: {error}"))?;
-    let result: Result<Vec<Value>, _> = db
-        .query(&format!(
-            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
-            record_id
-        ))
-        .await
-        .map_err(|error| format!("Failed to query created Gemini official account: {error}"))?
-        .take(0);
-    result
-        .map_err(|error| format!("Failed to deserialize created Gemini official account: {error}"))?
-        .first()
-        .cloned()
-        .map(adapter::from_db_value_official_account)
-        .ok_or_else(|| "Failed to load created Gemini official account".to_string())
+    let account_id = db_new_id();
+    let payload = adapter::to_db_value_official_account(content);
+    db.with_conn(|conn| {
+        db_put(
+            conn,
+            DbTable::GeminiCliOfficialAccount,
+            &account_id,
+            &payload,
+        )
+    })?;
+    load_official_account(db, &account_id).await
 }
 
 async fn find_matching_official_account(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     provider_id: &str,
     auth: &Value,
 ) -> Result<Option<GeminiCliOfficialAccount>, String> {
@@ -1056,67 +1042,81 @@ async fn find_matching_official_account(
 }
 
 async fn update_official_account_apply_status(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     account_id: Option<&str>,
 ) -> Result<(), String> {
     let now = Local::now().to_rfc3339();
-    db.query(
-        "UPDATE gemini_cli_official_account SET is_applied = false, updated_at = $now WHERE is_applied = true",
-    )
-    .bind(("now", now.clone()))
-    .await
-    .map_err(|error| format!("Failed to clear Gemini official account apply state: {error}"))?;
+    db.with_conn(|conn| {
+        db_patch_where_bool(
+            conn,
+            DbTable::GeminiCliOfficialAccount,
+            &JsonFieldPath::new("is_applied")?,
+            true,
+            &[
+                ("is_applied", Value::Bool(false)),
+                ("updated_at", Value::String(now.clone())),
+            ],
+        )
+    })?;
 
     if let Some(account_id) = account_id {
-        let record_id = db_record_id("gemini_cli_official_account", account_id);
-        db.query(&format!(
-            "UPDATE {} SET is_applied = true, updated_at = $now",
-            record_id
-        ))
-        .bind(("now", now))
-        .await
-        .map_err(|error| format!("Failed to mark Gemini official account as applied: {error}"))?;
+        db.with_conn(|conn| {
+            db_patch_fields(
+                conn,
+                DbTable::GeminiCliOfficialAccount,
+                account_id,
+                &[
+                    ("is_applied", Value::Bool(true)),
+                    ("updated_at", Value::String(now)),
+                ],
+            )
+            .map(|_| ())
+        })?;
     }
     Ok(())
 }
 
 async fn persist_account_content(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     account: &GeminiCliOfficialAccount,
     content: GeminiCliOfficialAccountContent,
 ) -> Result<GeminiCliOfficialAccount, String> {
-    let record_id = db_record_id("gemini_cli_official_account", &account.id);
-    db.query(&format!("UPDATE {} CONTENT $data", record_id))
-        .bind((
-            "data",
-            adapter::to_db_value_official_account(&GeminiCliOfficialAccountContent {
-                is_applied: account.is_applied,
-                created_at: account.created_at.clone(),
-                sort_index: account.sort_index,
-                updated_at: Local::now().to_rfc3339(),
-                ..content
-            }),
-        ))
-        .await
-        .map_err(|error| format!("Failed to update Gemini official account: {error}"))?;
+    let payload = adapter::to_db_value_official_account(&GeminiCliOfficialAccountContent {
+        is_applied: account.is_applied,
+        created_at: account.created_at.clone(),
+        sort_index: account.sort_index,
+        updated_at: Local::now().to_rfc3339(),
+        ..content
+    });
+    db.with_conn(|conn| {
+        db_put(
+            conn,
+            DbTable::GeminiCliOfficialAccount,
+            &account.id,
+            &payload,
+        )
+    })?;
     load_official_account(db, &account.id).await
 }
 
 async fn persist_account_error(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     account_id: &str,
     error_message: &str,
 ) -> Result<GeminiCliOfficialAccount, String> {
     let now = Local::now().to_rfc3339();
-    let record_id = db_record_id("gemini_cli_official_account", account_id);
-    db.query(&format!(
-        "UPDATE {} SET last_error = $last_error, updated_at = $updated_at",
-        record_id
-    ))
-    .bind(("last_error", Some(error_message.to_string())))
-    .bind(("updated_at", now))
-    .await
-    .map_err(|error| format!("Failed to update Gemini official account error: {error}"))?;
+    db.with_conn(|conn| {
+        db_patch_fields(
+            conn,
+            DbTable::GeminiCliOfficialAccount,
+            account_id,
+            &[
+                ("last_error", Value::String(error_message.to_string())),
+                ("updated_at", Value::String(now)),
+            ],
+        )
+        .map(|_| ())
+    })?;
     load_official_account(db, account_id).await
 }
 
@@ -1134,7 +1134,7 @@ fn emit_sync_requests<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) {
 }
 
 pub async fn ensure_gemini_cli_provider_has_no_official_accounts(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     provider_id: &str,
 ) -> Result<(), String> {
     let accounts = list_persisted_official_accounts(db, provider_id).await?;
@@ -1150,7 +1150,7 @@ pub async fn ensure_gemini_cli_provider_has_no_official_accounts(
 
 #[tauri::command]
 pub async fn list_gemini_cli_official_accounts(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     provider_id: String,
 ) -> Result<Vec<GeminiCliOfficialAccount>, String> {
     let db = state.db();
@@ -1169,7 +1169,7 @@ pub async fn list_gemini_cli_official_accounts(
 
 #[tauri::command]
 pub async fn start_gemini_cli_official_account_oauth(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     provider_id: String,
 ) -> Result<GeminiCliOfficialAccount, String> {
@@ -1229,7 +1229,7 @@ pub async fn start_gemini_cli_official_account_oauth(
 
 #[tauri::command]
 pub async fn save_gemini_cli_official_local_account(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     provider_id: String,
 ) -> Result<GeminiCliOfficialAccount, String> {
@@ -1285,7 +1285,7 @@ pub async fn save_gemini_cli_official_local_account(
 
 #[tauri::command]
 pub async fn apply_gemini_cli_official_account(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     provider_id: String,
     account_id: String,
@@ -1348,7 +1348,7 @@ pub async fn apply_gemini_cli_official_account(
 
 #[tauri::command]
 pub async fn delete_gemini_cli_official_account(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     provider_id: String,
     account_id: String,
@@ -1364,17 +1364,16 @@ pub async fn delete_gemini_cli_official_account(
     if account.is_applied {
         return Err("The applied Gemini official account cannot be deleted".to_string());
     }
-    let record_id = db_record_id("gemini_cli_official_account", &account_id);
-    db.query(&format!("DELETE {}", record_id))
-        .await
-        .map_err(|error| format!("Failed to delete Gemini official account: {error}"))?;
+    db.with_conn(|conn| {
+        db_delete(conn, DbTable::GeminiCliOfficialAccount, &account_id).map(|_| ())
+    })?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
 
 #[tauri::command]
 pub async fn refresh_gemini_cli_official_account_limits(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     provider_id: String,
     account_id: String,
 ) -> Result<GeminiCliOfficialAccount, String> {
@@ -1453,7 +1452,7 @@ fn copy_text_to_clipboard(value: &str) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn copy_gemini_cli_official_account_token(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     input: GeminiCliOfficialAccountTokenCopyInput,
 ) -> Result<(), String> {
     let db = state.db();

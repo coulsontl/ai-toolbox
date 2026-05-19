@@ -20,22 +20,20 @@ use super::sync_engine::{
     copy_dir_recursive, copy_skill_dir, ensure_source_target_not_overlapping,
 };
 use super::tool_adapters::{
-    adapter_by_key, is_tool_installed_async, resolve_runtime_skills_path_async,
-    runtime_adapter_by_key, RuntimeToolAdapter,
+    adapter_by_key, is_tool_installed_with_state_async,
+    resolve_runtime_skills_path_with_state_async, runtime_adapter_by_key, RuntimeToolAdapter,
 };
 use super::types::{now_ms, GitSkillCandidate, InstallResult, Skill, UpdateResult};
 use crate::http_client;
-use crate::DbState;
+use crate::SqliteDbState;
 
 /// Install a skill from a local folder
 pub async fn install_local_skill(
     app: &tauri::AppHandle,
-    state: &DbState,
+    state: &SqliteDbState,
     source_path: &Path,
     overwrite: bool,
 ) -> Result<InstallResult> {
-    super::tool_adapters::set_runtime_db(state.db());
-
     if !source_path.exists() {
         anyhow::bail!("source path not found: {:?}", source_path);
     }
@@ -157,13 +155,11 @@ pub fn list_local_skills(source_path: &Path) -> Result<Vec<GitSkillCandidate>> {
 /// Install a specific skill from a local folder selection (sub-folder)
 pub async fn install_local_skill_from_selection(
     app: &tauri::AppHandle,
-    state: &DbState,
+    state: &SqliteDbState,
     source_path: &Path,
     subpath: &str,
     overwrite: bool,
 ) -> Result<InstallResult> {
-    super::tool_adapters::set_runtime_db(state.db());
-
     let copy_src = if subpath == "." {
         source_path.to_path_buf()
     } else {
@@ -268,13 +264,11 @@ pub async fn install_local_skill_from_selection(
 /// Install a skill from a Git URL
 pub async fn install_git_skill(
     app: &tauri::AppHandle,
-    state: &DbState,
+    state: &SqliteDbState,
     repo_url: &str,
     branch: Option<&str>,
     overwrite: bool,
 ) -> Result<InstallResult> {
-    super::tool_adapters::set_runtime_db(state.db());
-
     // Initialize proxy from app settings
     init_proxy_from_settings(state).await;
 
@@ -480,7 +474,7 @@ pub fn list_git_skills(
 /// Install a specific skill from a Git repo selection
 pub async fn install_git_skill_from_selection(
     app: &tauri::AppHandle,
-    state: &DbState,
+    state: &SqliteDbState,
     repo_url: &str,
     subpath: &str,
     branch: Option<&str>,
@@ -606,11 +600,9 @@ pub async fn install_git_skill_from_selection(
 /// Update a managed skill from its source
 pub async fn update_managed_skill_from_source(
     app: &tauri::AppHandle,
-    state: &DbState,
+    state: &SqliteDbState,
     skill_id: &str,
 ) -> Result<UpdateResult> {
-    super::tool_adapters::set_runtime_db(state.db());
-
     // Initialize proxy from app settings (for git source types)
     init_proxy_from_settings(state).await;
 
@@ -753,17 +745,18 @@ pub async fn update_managed_skill_from_source(
         };
 
         if !runtime_adapter.is_custom
-            && !is_tool_installed_async(&runtime_adapter)
+            && !is_tool_installed_with_state_async(state, &runtime_adapter)
                 .await
                 .unwrap_or(false)
         {
             continue;
         }
 
-        let tool_root = match resolve_runtime_skills_path_async(&runtime_adapter).await {
-            Ok(path) => path,
-            Err(_) => continue,
-        };
+        let tool_root =
+            match resolve_runtime_skills_path_with_state_async(state, &runtime_adapter).await {
+                Ok(path) => path,
+                Err(_) => continue,
+            };
         let current_target = tool_root.join(&record.name);
         let target_path_moved = target_path_changed(&t.target_path, &current_target);
         let force_copy = t.mode == "copy" || t.tool == "cursor" || custom_tool_force_copy;
@@ -1139,7 +1132,7 @@ fn repo_cache_key(clone_url: &str, branch: Option<&str>) -> String {
 }
 
 /// Initialize proxy settings from app settings database
-async fn init_proxy_from_settings(state: &DbState) {
+async fn init_proxy_from_settings(state: &SqliteDbState) {
     let proxy_result = http_client::get_proxy_from_settings(state).await.ok();
     let proxy_mode = match proxy_result {
         Some((http_client::ProxyMode::Direct, _)) => GitProxyMode::Direct,

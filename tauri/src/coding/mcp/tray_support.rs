@@ -6,7 +6,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use super::mcp_store;
 use crate::coding::tools::{custom_store, get_mcp_runtime_tools, is_tool_installed_with_db_async};
-use crate::DbState;
+use crate::SqliteDbState;
 
 /// Tray data for MCP servers section
 #[derive(Debug)]
@@ -34,7 +34,7 @@ pub struct TrayMcpToolItem {
 
 /// Check if MCP section should be shown in tray
 pub async fn is_mcp_enabled_for_tray<R: Runtime>(app: &AppHandle<R>) -> bool {
-    let state = app.state::<DbState>();
+    let state = app.state::<SqliteDbState>();
     let prefs = mcp_store::get_mcp_preferences(&state)
         .await
         .unwrap_or_default();
@@ -43,7 +43,7 @@ pub async fn is_mcp_enabled_for_tray<R: Runtime>(app: &AppHandle<R>) -> bool {
 
 /// Get MCP data for tray menu
 pub async fn get_mcp_tray_data<R: Runtime>(app: &AppHandle<R>) -> Result<TrayMcpData, String> {
-    let state = app.state::<DbState>();
+    let state = app.state::<SqliteDbState>();
 
     // Get all MCP servers
     let servers = mcp_store::get_mcp_servers(&state).await?;
@@ -91,7 +91,7 @@ pub async fn apply_mcp_tool_toggle<R: Runtime>(
     server_id: &str,
     tool_key: &str,
 ) -> Result<(), String> {
-    let state = app.state::<DbState>();
+    let state = app.state::<SqliteDbState>();
 
     // Toggle the tool
     let is_enabled = mcp_store::toggle_tool_enabled(&state, server_id, tool_key).await?;

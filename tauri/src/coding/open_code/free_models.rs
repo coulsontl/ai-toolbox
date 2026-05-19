@@ -2,7 +2,7 @@ use super::types::{
     FreeModel, GetAuthProvidersResponse, OfficialModel, OfficialProvider, OpenCodeProvider,
     ProviderModelsData, UnifiedModelOption,
 };
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 use crate::http_client;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -192,11 +192,11 @@ fn read_providers_batch_from_defaults(
 }
 
 /// Trigger a background refresh of all providers (non-blocking, debounced)
-fn trigger_background_refresh(state: &DbState) {
+fn trigger_background_refresh(state: &SqliteDbState) {
     if should_skip_refresh() {
         return;
     }
-    let db_state = DbState(state.0.clone());
+    let db_state = state.clone();
     tauri::async_runtime::spawn(async move {
         if IS_REFRESHING
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -220,7 +220,7 @@ fn trigger_background_refresh(state: &DbState) {
 // API fetch
 // ============================================================================
 
-async fn fetch_all_providers_from_api(state: &DbState) -> Result<serde_json::Value, String> {
+async fn fetch_all_providers_from_api(state: &SqliteDbState) -> Result<serde_json::Value, String> {
     let client = http_client::client_with_timeout(state, 30).await?;
 
     let response = client
@@ -241,7 +241,9 @@ async fn fetch_all_providers_from_api(state: &DbState) -> Result<serde_json::Val
     Ok(api_response)
 }
 
-pub async fn fetch_provider_data_from_api(state: &DbState) -> Result<serde_json::Value, String> {
+pub async fn fetch_provider_data_from_api(
+    state: &SqliteDbState,
+) -> Result<serde_json::Value, String> {
     let api_response = fetch_all_providers_from_api(state).await?;
     let opencode_data = api_response
         .get(OPENCODE_PROVIDER_ID)
@@ -420,14 +422,14 @@ fn mark_refresh_time() {
 // ============================================================================
 
 pub async fn read_provider_models_from_db(
-    _state: &DbState,
+    _state: &SqliteDbState,
     provider_id: &str,
 ) -> Result<Option<ProviderModelsData>, String> {
     Ok(read_provider_from_cache(provider_id))
 }
 
 pub async fn save_provider_models_to_db(
-    _state: &DbState,
+    _state: &SqliteDbState,
     data: &ProviderModelsData,
 ) -> Result<(), String> {
     let mut cache = read_cache_file().unwrap_or_else(|| ModelsCache {
@@ -454,7 +456,7 @@ async fn save_all_provider_models(
 // ============================================================================
 
 pub async fn get_free_models(
-    state: &DbState,
+    state: &SqliteDbState,
     force_refresh: bool,
 ) -> Result<(Vec<FreeModel>, bool, Option<String>), String> {
     if !force_refresh {
@@ -502,7 +504,7 @@ pub async fn get_free_models(
     }
 }
 
-async fn fetch_and_update_all_providers(state: &DbState) -> Result<usize, String> {
+async fn fetch_and_update_all_providers(state: &SqliteDbState) -> Result<usize, String> {
     let all_providers = fetch_all_providers_from_api(state).await?;
 
     let final_providers = if all_providers
@@ -551,7 +553,7 @@ pub fn init_default_provider_models() {
 }
 
 pub async fn get_provider_models_internal(
-    _state: &DbState,
+    _state: &SqliteDbState,
     provider_id: &str,
 ) -> Result<Option<ProviderModelsData>, String> {
     Ok(read_provider_from_cache(provider_id))
@@ -816,7 +818,7 @@ fn apply_model_filters(
 }
 
 pub async fn get_unified_models(
-    state: &DbState,
+    state: &SqliteDbState,
     custom_providers: Option<&IndexMap<String, OpenCodeProvider>>,
     auth_channels: &[String],
 ) -> Vec<UnifiedModelOption> {
@@ -980,7 +982,7 @@ pub async fn get_unified_models(
 // ============================================================================
 
 pub async fn get_auth_providers_data(
-    state: &DbState,
+    state: &SqliteDbState,
     custom_providers: Option<&IndexMap<String, OpenCodeProvider>>,
 ) -> GetAuthProvidersResponse {
     let auth_channels = read_auth_channels();

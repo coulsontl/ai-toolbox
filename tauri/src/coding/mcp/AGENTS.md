@@ -6,7 +6,7 @@
 
 ## Source of Truth
 
-- MCP server 主数据存于主数据库的 `mcp_server` 相关表；SQLite JSONB 迁移期优先读写 SQLite 并双写 SurrealDB。各工具配置文件中的 MCP 节点是派生结果，不是主数据。
+- MCP server 主数据存于主数据库的 `mcp_server` 相关表；必须直接读写 SQLite JSONB，旧 SurrealDB 仅用于启动时一次性导入。各工具配置文件中的 MCP 节点是派生结果，不是主数据。
 - 每个 server 的 `enabled_tools` 和 `sync_details` 描述“应该同步到哪些工具”和“最近同步结果”，不是工具配置文件的反向解析真相。
 - `user_group/user_note` 是 AI Toolbox 内部的用户管理元数据，不写入任何工具 MCP 配置，也不触发 MCP 同步。
 - WSL 自动同步感知的不是某个工具配置文件具体变了什么，而是 `mcp-changed` 事件。

@@ -1,7 +1,12 @@
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use chrono::Local;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipWriter};
 
 use super::helpers::{db_count, db_delete_all, db_put, db_transaction};
 use super::schema::{DbTable, ALL_TABLES};
@@ -45,6 +50,13 @@ pub struct MigrationPaths {
     pub migration_log: PathBuf,
     pub migration_warnings: PathBuf,
     pub migration_failures: PathBuf,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MigrationFailureState {
+    pub consecutive_failures: u32,
+    pub last_error: Option<String>,
+    pub last_failed_at: Option<String>,
 }
 
 impl MigrationPaths {
@@ -114,6 +126,104 @@ pub fn mark_sqlite_import_complete(paths: &MigrationPaths) -> Result<(), String>
             paths.complete_flag.display()
         )
     })
+}
+
+pub fn archive_legacy_database(paths: &MigrationPaths) -> Result<(), String> {
+    if !paths.legacy_database_dir.exists() {
+        remove_file_if_exists(&paths.complete_flag)?;
+        return Ok(());
+    }
+
+    if paths.legacy_archive.exists() {
+        fs::remove_file(&paths.legacy_archive).map_err(|error| {
+            format!(
+                "Failed to replace legacy database archive {}: {error}",
+                paths.legacy_archive.display()
+            )
+        })?;
+    }
+
+    if let Some(parent) = paths.legacy_archive.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Failed to create legacy database archive parent {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let archive_file = fs::File::create(&paths.legacy_archive).map_err(|error| {
+        format!(
+            "Failed to create legacy database archive {}: {error}",
+            paths.legacy_archive.display()
+        )
+    })?;
+    let mut zip = ZipWriter::new(archive_file);
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .unix_permissions(0o644);
+
+    add_directory_to_zip(
+        &mut zip,
+        &paths.legacy_database_dir,
+        &paths.legacy_database_dir,
+        options,
+    )?;
+
+    zip.finish().map_err(|error| {
+        format!(
+            "Failed to finish legacy database archive {}: {error}",
+            paths.legacy_archive.display()
+        )
+    })?;
+
+    fs::remove_dir_all(&paths.legacy_database_dir).map_err(|error| {
+        format!(
+            "Failed to remove archived legacy database directory {}: {error}",
+            paths.legacy_database_dir.display()
+        )
+    })?;
+    remove_file_if_exists(&paths.complete_flag)?;
+    Ok(())
+}
+
+pub fn read_migration_failure_state(paths: &MigrationPaths) -> MigrationFailureState {
+    fs::read_to_string(&paths.migration_failures)
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_default()
+}
+
+pub fn record_migration_failure(
+    paths: &MigrationPaths,
+    error: &str,
+) -> Result<MigrationFailureState, String> {
+    let mut state = read_migration_failure_state(paths);
+    state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+    state.last_error = Some(error.to_string());
+    state.last_failed_at = Some(Local::now().to_rfc3339());
+
+    if let Some(parent) = paths.migration_failures.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Failed to create migration failure parent directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let content = serde_json::to_string_pretty(&state)
+        .map_err(|error| format!("Failed to serialize migration failure state: {error}"))?;
+    fs::write(&paths.migration_failures, content).map_err(|error| {
+        format!(
+            "Failed to write migration failure state {}: {error}",
+            paths.migration_failures.display()
+        )
+    })?;
+    Ok(state)
+}
+
+pub fn clear_migration_failure_state(paths: &MigrationPaths) -> Result<(), String> {
+    remove_file_if_exists(&paths.migration_failures)
 }
 
 pub fn write_migration_log(paths: &MigrationPaths, message: &str) -> Result<(), String> {
@@ -274,4 +384,53 @@ fn remove_file_if_exists(path: &Path) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("Failed to remove {}: {error}", path.display())),
     }
+}
+
+fn add_directory_to_zip(
+    zip: &mut ZipWriter<fs::File>,
+    root: &Path,
+    current: &Path,
+    options: SimpleFileOptions,
+) -> Result<(), String> {
+    let mut entries: Vec<_> = fs::read_dir(current)
+        .map_err(|error| format!("Failed to read directory {}: {error}", current.display()))?
+        .filter_map(Result::ok)
+        .collect();
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        let relative = path.strip_prefix(root).map_err(|error| {
+            format!(
+                "Failed to build archive-relative path for {}: {error}",
+                path.display()
+            )
+        })?;
+        let archive_name = Path::new(LEGACY_DATABASE_DIR).join(relative);
+        let archive_name = archive_name.to_string_lossy().replace('\\', "/");
+
+        if path.is_dir() {
+            if !archive_name.is_empty() {
+                zip.add_directory(format!("{archive_name}/"), options)
+                    .map_err(|error| {
+                        format!("Failed to add directory {archive_name} to archive: {error}")
+                    })?;
+            }
+            add_directory_to_zip(zip, root, &path, options)?;
+        } else {
+            zip.start_file(&archive_name, options).map_err(|error| {
+                format!("Failed to add file {archive_name} to archive: {error}")
+            })?;
+            let mut file = fs::File::open(&path)
+                .map_err(|error| format!("Failed to open {}: {error}", path.display()))?;
+            let mut buffer = Vec::new();
+            file.read_to_end(&mut buffer)
+                .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+            zip.write_all(&buffer).map_err(|error| {
+                format!("Failed to write {archive_name} to legacy database archive: {error}")
+            })?;
+        }
+    }
+
+    Ok(())
 }

@@ -5,15 +5,13 @@ use super::routes::{build_target_url, match_gateway_route, split_request_target,
 use super::GatewayRuntimeContext;
 use crate::coding::proxy_gateway::model_health::{self, GatewayFailureKind, ModelHealthRegistry};
 use crate::coding::proxy_gateway::types::{GatewayCliKey, ProviderModelHealthKey};
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 use crate::http_client;
 use reqwest::header::{
     HeaderMap, HeaderName, HeaderValue, ACCEPT_ENCODING, AUTHORIZATION, CONNECTION, CONTENT_LENGTH,
     HOST, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE, TRAILER, TRANSFER_ENCODING, UPGRADE,
 };
 use serde_json::{json, Value};
-use surrealdb::engine::local::Db;
-use surrealdb::Surreal;
 
 #[derive(Debug)]
 struct GatewayForwardError {
@@ -78,7 +76,7 @@ pub(super) async fn route_request(
 
 async fn forward_to_upstream(
     request: &DebugHttpRequest,
-    db: &Surreal<Db>,
+    db: &SqliteDbState,
     context: &GatewayRuntimeContext,
     route: &GatewayRoute,
 ) -> DebugHttpResponse {
@@ -293,7 +291,7 @@ async fn forward_to_upstream(
 
 async fn send_upstream_request(
     request: &DebugHttpRequest,
-    db: &Surreal<Db>,
+    db: &SqliteDbState,
     route: &GatewayRoute,
     provider: &UpstreamProvider,
     requested_model: &str,
@@ -328,8 +326,7 @@ async fn send_upstream_request(
 
     log_upstream_request(request, provider, &upstream_url, &headers, &upstream_body);
 
-    let db_state = DbState(db.clone());
-    let client = http_client::client_with_timeout_no_compression(&db_state, 600)
+    let client = http_client::client_with_timeout_no_compression(db, 600)
         .await
         .map_err(|message| GatewayForwardError::new(message, GatewayFailureKind::Connection))?;
     let response = client

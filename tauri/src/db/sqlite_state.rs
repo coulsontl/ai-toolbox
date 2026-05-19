@@ -1,11 +1,9 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
 
 use super::{health, migrations};
-
-static GLOBAL_SQLITE_STATE: OnceLock<SqliteDbState> = OnceLock::new();
 
 #[derive(Clone)]
 pub struct SqliteDbState {
@@ -63,16 +61,10 @@ impl SqliteDbState {
     pub fn db_path(&self) -> &Path {
         &self.db_path
     }
-}
 
-pub fn set_global_sqlite_state(state: SqliteDbState) -> Result<(), String> {
-    GLOBAL_SQLITE_STATE
-        .set(state)
-        .map_err(|_| "Global SQLite state has already been initialized".to_string())
-}
-
-pub fn global_sqlite_state() -> Option<&'static SqliteDbState> {
-    GLOBAL_SQLITE_STATE.get()
+    pub fn db(&self) -> &Self {
+        self
+    }
 }
 
 pub fn initialize_connection(conn: &mut Connection) -> Result<(), String> {

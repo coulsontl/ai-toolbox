@@ -6,7 +6,7 @@
 
 ## Source of Truth
 
-- 长期主数据在 SQLite JSONB 表 `oh_my_openagent_config` / `oh_my_openagent_global_config`；兼容期仍保留 SurrealDB 镜像写入和旧数据导入。
+- 长期主数据在 SQLite JSONB 表 `oh_my_openagent_config` / `oh_my_openagent_global_config`；旧 SurrealDB 仅用于启动时一次性导入，不再镜像写入。
 - 当数据库为空时，页面先看到的是从本地配置文件读取出来的临时 `__local__` 记录；它只是桥接态，不是最终持久化 ID。
 - 当前生效配置文件路径由 `runtime_location::get_omo_config_path_async()` 决议，而不是写死默认文件名。
 
@@ -22,7 +22,7 @@
 sequenceDiagram
   participant UI as OpenCode Page
   participant Cmd as oh_my_openagent::commands
-  participant DB as SurrealDB
+  participant DB as SQLite JSONB
   participant File as oh-my-openagent.jsonc/json
 
   UI->>Cmd: list configs

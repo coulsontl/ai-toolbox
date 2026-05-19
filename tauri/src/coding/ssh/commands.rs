@@ -5,12 +5,10 @@ use super::types::{
 };
 use super::{adapter, session::SshSession, session::SshSessionState, sync};
 use crate::coding::claude_code::plugin_metadata_sync;
-use crate::coding::db_id::db_record_id;
 use crate::coding::runtime_location;
 use crate::db::helpers::{db_delete, db_delete_all, db_get, db_list, db_put};
 use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
-use crate::db::sqlite_state::global_sqlite_state;
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 use chrono::Local;
 use std::path::Path;
 use tauri::Emitter;
@@ -45,19 +43,13 @@ fn ssh_mapping_order() -> Result<OrderSpec, String> {
     ]))
 }
 
-fn load_ssh_config_record_from_sqlite() -> Result<Option<serde_json::Value>, String> {
-    let Some(sqlite_state) = global_sqlite_state() else {
-        return Ok(None);
-    };
-    sqlite_state.with_conn(|conn| db_get(conn, DbTable::SshSyncConfig, "config"))
+fn load_ssh_config_record(state: &SqliteDbState) -> Result<Option<serde_json::Value>, String> {
+    state.with_conn(|conn| db_get(conn, DbTable::SshSyncConfig, "config"))
 }
 
-fn load_ssh_connections_from_sqlite() -> Result<Vec<SSHConnection>, String> {
-    let Some(sqlite_state) = global_sqlite_state() else {
-        return Ok(Vec::new());
-    };
+fn load_ssh_connections(state: &SqliteDbState) -> Result<Vec<SSHConnection>, String> {
     let order = ssh_connection_order()?;
-    sqlite_state.with_conn(|conn| {
+    state.with_conn(|conn| {
         Ok(db_list(conn, DbTable::SshConnection, Some(&order))?
             .into_iter()
             .map(adapter::connection_from_db_value)
@@ -65,12 +57,9 @@ fn load_ssh_connections_from_sqlite() -> Result<Vec<SSHConnection>, String> {
     })
 }
 
-fn load_ssh_file_mappings_from_sqlite() -> Result<Vec<SSHFileMapping>, String> {
-    let Some(sqlite_state) = global_sqlite_state() else {
-        return Ok(Vec::new());
-    };
+fn load_ssh_file_mappings(state: &SqliteDbState) -> Result<Vec<SSHFileMapping>, String> {
     let order = ssh_mapping_order()?;
-    sqlite_state.with_conn(|conn| {
+    state.with_conn(|conn| {
         Ok(db_list(conn, DbTable::SshFileMapping, Some(&order))?
             .into_iter()
             .map(adapter::mapping_from_db_value)
@@ -79,68 +68,19 @@ fn load_ssh_file_mappings_from_sqlite() -> Result<Vec<SSHFileMapping>, String> {
 }
 
 /// 内部共享函数：从数据库读取完整 SSH 配置
-/// 参数 include_mappings 控制是否加载 file_mappings（mcp_sync/skills_sync 不需要）
+/// 参数 include_file_mappings 控制是否加载 file_mappings（mcp_sync/skills_sync 不需要）
 pub async fn get_ssh_config_internal(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    include_mappings: bool,
+    db: &SqliteDbState,
+    include_file_mappings: bool,
 ) -> Result<SSHSyncConfig, String> {
-    let (config_record, connections, file_mappings) = if global_sqlite_state().is_some() {
-        let mappings = if include_mappings {
-            let mappings = load_ssh_file_mappings_from_sqlite()?;
-            backfill_default_mappings(db, mappings).await
-        } else {
-            vec![]
-        };
-        (
-            load_ssh_config_record_from_sqlite()?,
-            load_ssh_connections_from_sqlite()?,
-            mappings,
-        )
+    let file_mappings = if include_file_mappings {
+        let file_mappings = load_ssh_file_mappings(db)?;
+        backfill_default_file_mappings(db, file_mappings).await
     } else {
-        let config_result: Result<Vec<serde_json::Value>, _> = db
-            .query("SELECT *, type::string(id) as id FROM ssh_sync_config:`config` LIMIT 1")
-            .await
-            .map_err(|e| format!("Failed to query SSH config: {}", e))?
-            .take(0);
-
-        let connections_result: Result<Vec<serde_json::Value>, _> = db
-            .query("SELECT *, type::string(id) as id FROM ssh_connection ORDER BY sort_order, name")
-            .await
-            .map_err(|e| format!("Failed to query SSH connections: {}", e))?
-            .take(0);
-
-        let connections = connections_result
-            .unwrap_or_default()
-            .into_iter()
-            .map(adapter::connection_from_db_value)
-            .collect();
-
-        let file_mappings = if include_mappings {
-            let result: Result<Vec<serde_json::Value>, _> = db
-                .query(
-                    "SELECT *, type::string(id) as id FROM ssh_file_mapping ORDER BY module, name",
-                )
-                .await
-                .map_err(|e| format!("Failed to query SSH file mappings: {}", e))?
-                .take(0);
-            let mappings: Vec<SSHFileMapping> = result
-                .unwrap_or_default()
-                .into_iter()
-                .map(adapter::mapping_from_db_value)
-                .collect();
-            // Auto-insert missing default mappings for upgrading users
-            backfill_default_mappings(db, mappings).await
-        } else {
-            vec![]
-        };
-        (
-            config_result
-                .ok()
-                .and_then(|records| records.first().cloned()),
-            connections,
-            file_mappings,
-        )
+        vec![]
     };
+    let config_record = load_ssh_config_record(db)?;
+    let connections = load_ssh_connections(db)?;
     let module_statuses = runtime_location::get_wsl_direct_status_map_async(db).await?;
 
     match config_record {
@@ -187,7 +127,7 @@ async fn ensure_session_matches_active_connection(
 }
 
 pub async fn restore_ssh_session_from_saved_config(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &SqliteDbState,
     session_state: &SshSessionState,
 ) -> Result<(), String> {
     let config = get_ssh_config_internal(db, false).await?;
@@ -205,17 +145,19 @@ pub async fn restore_ssh_session_from_saved_config(
 // SSH Config Commands
 // ============================================================================
 
-/// Get SSH sync configuration (config + connections + file mappings)
+/// Get SSH sync configuration (config + connections + file file_mappings)
 #[tauri::command]
-pub async fn ssh_get_config(state: tauri::State<'_, DbState>) -> Result<SSHSyncConfig, String> {
+pub async fn ssh_get_config(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<SSHSyncConfig, String> {
     let db = state.db();
-    get_ssh_config_internal(&db, true).await
+    get_ssh_config_internal(db, true).await
 }
 
 /// Save SSH sync configuration (enabled, active_connection_id, etc.)
 #[tauri::command]
 pub async fn ssh_save_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     session_state: tauri::State<'_, SshSessionState>,
     app: tauri::AppHandle,
     config: SSHSyncConfig,
@@ -223,55 +165,23 @@ pub async fn ssh_save_config(
     // Check if being enabled
     let was_enabled = {
         let db = state.db();
-        if global_sqlite_state().is_some() {
-            load_ssh_config_record_from_sqlite()?
-                .and_then(|record| record.get("enabled").and_then(|value| value.as_bool()))
-                .unwrap_or(false)
-        } else {
-            let result: Result<Vec<serde_json::Value>, _> = db
-                .query("SELECT enabled FROM ssh_sync_config:`config` LIMIT 1")
-                .await
-                .map_err(|e| format!("Failed to query SSH config: {}", e))?
-                .take(0);
-            result
-                .ok()
-                .and_then(|records| records.first().cloned())
-                .and_then(|v| v.get("enabled").and_then(|e| e.as_bool()))
-                .unwrap_or(false)
-        }
+        load_ssh_config_record(db)?
+            .and_then(|record| record.get("enabled").and_then(|value| value.as_bool()))
+            .unwrap_or(false)
     };
 
     let is_being_enabled = !was_enabled && config.enabled;
 
     {
-        let db = state.db();
-
-        // Save config
         let config_data = adapter::config_to_db_value(&config);
-        if let Some(sqlite_state) = global_sqlite_state() {
-            sqlite_state
-                .with_conn(|conn| db_put(conn, DbTable::SshSyncConfig, "config", &config_data))?;
-        }
+        state.with_conn(|conn| db_put(conn, DbTable::SshSyncConfig, "config", &config_data))?;
 
-        db.query("UPSERT ssh_sync_config:`config` CONTENT $data")
-            .bind(("data", config_data.clone()))
-            .await
-            .map_err(|e| format!("Failed to save SSH config: {}", e))?;
-
-        // Update file mappings
+        // Update file file_mappings
         for mapping in config.file_mappings.iter() {
             let mapping_data = adapter::mapping_to_db_value(mapping);
-            if let Some(sqlite_state) = global_sqlite_state() {
-                sqlite_state.with_conn(|conn| {
-                    db_put(conn, DbTable::SshFileMapping, &mapping.id, &mapping_data)
-                })?;
-            }
-
-            let record_id = db_record_id("ssh_file_mapping", &mapping.id);
-            db.query(&format!("UPSERT {} CONTENT $data", record_id))
-                .bind(("data", mapping_data))
-                .await
-                .map_err(|e| format!("Failed to save SSH file mapping: {}", e))?;
+            state.with_conn(|conn| {
+                db_put(conn, DbTable::SshFileMapping, &mapping.id, &mapping_data)
+            })?;
         }
     }
 
@@ -291,20 +201,13 @@ pub async fn ssh_save_config(
         session.disconnect().await;
 
         // 清除同步状态，避免残留错误信息
-        let db = state.db();
-        if let Some(sqlite_state) = global_sqlite_state() {
-            let mut config_data = load_ssh_config_record_from_sqlite()?
-                .unwrap_or_else(|| adapter::config_to_db_value(&SSHSyncConfig::default()));
-            if let Some(payload) = config_data.as_object_mut() {
-                payload.insert("last_sync_status".to_string(), serde_json::Value::Null);
-                payload.insert("last_sync_error".to_string(), serde_json::Value::Null);
-            }
-            sqlite_state
-                .with_conn(|conn| db_put(conn, DbTable::SshSyncConfig, "config", &config_data))?;
+        let mut config_data = load_ssh_config_record(state.db())?
+            .unwrap_or_else(|| adapter::config_to_db_value(&SSHSyncConfig::default()));
+        if let Some(payload) = config_data.as_object_mut() {
+            payload.insert("last_sync_status".to_string(), serde_json::Value::Null);
+            payload.insert("last_sync_error".to_string(), serde_json::Value::Null);
         }
-        let _ = db
-            .query("UPDATE ssh_sync_config SET last_sync_status = NONE, last_sync_error = NONE WHERE id = ssh_sync_config:`config`")
-            .await;
+        state.with_conn(|conn| db_put(conn, DbTable::SshSyncConfig, "config", &config_data))?;
     }
 
     // Emit event to refresh UI
@@ -338,51 +241,22 @@ pub async fn ssh_save_config(
 /// List all SSH connection presets
 #[tauri::command]
 pub async fn ssh_list_connections(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Vec<SSHConnection>, String> {
-    let db = state.db();
-
-    if global_sqlite_state().is_some() {
-        return load_ssh_connections_from_sqlite();
-    }
-
-    let result: Result<Vec<serde_json::Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM ssh_connection ORDER BY sort_order, name")
-        .await
-        .map_err(|e| format!("Failed to query SSH connections: {}", e))?
-        .take(0);
-
-    match result {
-        Ok(records) => Ok(records
-            .into_iter()
-            .map(adapter::connection_from_db_value)
-            .collect()),
-        Err(_) => Ok(vec![]),
-    }
+    load_ssh_connections(state.db())
 }
 
 /// Create a new SSH connection preset
 #[tauri::command]
 pub async fn ssh_create_connection(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     mut connection: SSHConnection,
 ) -> Result<(), String> {
     normalise_key_fields(&mut connection);
 
-    let db = state.db();
-
     let conn_data = adapter::connection_to_db_value(&connection);
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state
-            .with_conn(|conn| db_put(conn, DbTable::SshConnection, &connection.id, &conn_data))?;
-    }
-
-    let record_id = db_record_id("ssh_connection", &connection.id);
-    db.query(&format!("UPSERT {} CONTENT $data", record_id))
-        .bind(("data", conn_data))
-        .await
-        .map_err(|e| format!("Failed to create SSH connection: {}", e))?;
+    state.with_conn(|conn| db_put(conn, DbTable::SshConnection, &connection.id, &conn_data))?;
 
     let _ = app.emit("ssh-config-changed", ());
     Ok(())
@@ -391,25 +265,14 @@ pub async fn ssh_create_connection(
 /// Update an existing SSH connection preset
 #[tauri::command]
 pub async fn ssh_update_connection(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     mut connection: SSHConnection,
 ) -> Result<(), String> {
     normalise_key_fields(&mut connection);
 
-    let db = state.db();
-
     let conn_data = adapter::connection_to_db_value(&connection);
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state
-            .with_conn(|conn| db_put(conn, DbTable::SshConnection, &connection.id, &conn_data))?;
-    }
-
-    let record_id = db_record_id("ssh_connection", &connection.id);
-    db.query(&format!("UPSERT {} CONTENT $data", record_id))
-        .bind(("data", conn_data))
-        .await
-        .map_err(|e| format!("Failed to update SSH connection: {}", e))?;
+    state.with_conn(|conn| db_put(conn, DbTable::SshConnection, &connection.id, &conn_data))?;
 
     let _ = app.emit("ssh-config-changed", ());
     Ok(())
@@ -418,44 +281,29 @@ pub async fn ssh_update_connection(
 /// Delete an SSH connection preset
 #[tauri::command]
 pub async fn ssh_delete_connection(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     id: String,
 ) -> Result<(), String> {
-    let db = state.db();
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state.with_conn(|conn| {
-            db_delete(conn, DbTable::SshConnection, &id)?;
-            if let Some(mut config_data) = db_get(conn, DbTable::SshSyncConfig, "config")? {
-                if config_data
-                    .get("active_connection_id")
-                    .and_then(|value| value.as_str())
-                    == Some(id.as_str())
-                {
-                    if let Some(payload) = config_data.as_object_mut() {
-                        payload.insert(
-                            "active_connection_id".to_string(),
-                            serde_json::Value::String(String::new()),
-                        );
-                    }
-                    db_put(conn, DbTable::SshSyncConfig, "config", &config_data)?;
+    state.with_conn(|conn| {
+        db_delete(conn, DbTable::SshConnection, &id)?;
+        if let Some(mut config_data) = db_get(conn, DbTable::SshSyncConfig, "config")? {
+            if config_data
+                .get("active_connection_id")
+                .and_then(|value| value.as_str())
+                == Some(id.as_str())
+            {
+                if let Some(payload) = config_data.as_object_mut() {
+                    payload.insert(
+                        "active_connection_id".to_string(),
+                        serde_json::Value::String(String::new()),
+                    );
                 }
+                db_put(conn, DbTable::SshSyncConfig, "config", &config_data)?;
             }
-            Ok(())
-        })?;
-    }
-
-    let record_id = db_record_id("ssh_connection", &id);
-    db.query(&format!("DELETE {}", record_id))
-        .await
-        .map_err(|e| format!("Failed to delete SSH connection: {}", e))?;
-
-    // 如果删除的是当前活跃连接，清除 active_connection_id
-    db.query("UPDATE ssh_sync_config SET active_connection_id = '' WHERE id = ssh_sync_config:`config` AND active_connection_id = $id")
-        .bind(("id", id))
-        .await
-        .map_err(|e| format!("Failed to clear active connection: {}", e))?;
+        }
+        Ok(())
+    })?;
 
     let _ = app.emit("ssh-config-changed", ());
     Ok(())
@@ -464,30 +312,23 @@ pub async fn ssh_delete_connection(
 /// Set active connection (and optionally trigger sync)
 #[tauri::command]
 pub async fn ssh_set_active_connection(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     session_state: tauri::State<'_, SshSessionState>,
     app: tauri::AppHandle,
     connection_id: String,
 ) -> Result<(), String> {
     {
-        let db = state.db();
-        if let Some(sqlite_state) = global_sqlite_state() {
-            sqlite_state.with_conn(|conn| {
-                let mut config_data = db_get(conn, DbTable::SshSyncConfig, "config")?
-                    .unwrap_or_else(|| adapter::config_to_db_value(&SSHSyncConfig::default()));
-                if let Some(payload) = config_data.as_object_mut() {
-                    payload.insert(
-                        "active_connection_id".to_string(),
-                        serde_json::Value::String(connection_id.clone()),
-                    );
-                }
-                db_put(conn, DbTable::SshSyncConfig, "config", &config_data)
-            })?;
-        }
-        db.query("UPDATE ssh_sync_config SET active_connection_id = $id WHERE id = ssh_sync_config:`config`")
-            .bind(("id", connection_id.clone()))
-            .await
-            .map_err(|e| format!("Failed to set active connection: {}", e))?;
+        state.with_conn(|conn| {
+            let mut config_data = db_get(conn, DbTable::SshSyncConfig, "config")?
+                .unwrap_or_else(|| adapter::config_to_db_value(&SSHSyncConfig::default()));
+            if let Some(payload) = config_data.as_object_mut() {
+                payload.insert(
+                    "active_connection_id".to_string(),
+                    serde_json::Value::String(connection_id.clone()),
+                );
+            }
+            db_put(conn, DbTable::SshSyncConfig, "config", &config_data)
+        })?;
     }
 
     // 切换连接：找到目标连接并建立主连接
@@ -523,23 +364,12 @@ pub async fn ssh_test_connection(mut connection: SSHConnection) -> SSHConnection
 /// Add a new SSH file mapping
 #[tauri::command]
 pub async fn ssh_add_file_mapping(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     mapping: SSHFileMapping,
 ) -> Result<(), String> {
-    let db = state.db();
-
     let mapping_data = adapter::mapping_to_db_value(&mapping);
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state
-            .with_conn(|conn| db_put(conn, DbTable::SshFileMapping, &mapping.id, &mapping_data))?;
-    }
-
-    let record_id = db_record_id("ssh_file_mapping", &mapping.id);
-    db.query(&format!("UPSERT {} CONTENT $data", record_id))
-        .bind(("data", mapping_data))
-        .await
-        .map_err(|e| format!("Failed to add SSH file mapping: {}", e))?;
+    state.with_conn(|conn| db_put(conn, DbTable::SshFileMapping, &mapping.id, &mapping_data))?;
 
     let _ = app.emit("ssh-config-changed", ());
     Ok(())
@@ -548,23 +378,12 @@ pub async fn ssh_add_file_mapping(
 /// Update an existing SSH file mapping
 #[tauri::command]
 pub async fn ssh_update_file_mapping(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     mapping: SSHFileMapping,
 ) -> Result<(), String> {
-    let db = state.db();
-
     let mapping_data = adapter::mapping_to_db_value(&mapping);
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state
-            .with_conn(|conn| db_put(conn, DbTable::SshFileMapping, &mapping.id, &mapping_data))?;
-    }
-
-    let record_id = db_record_id("ssh_file_mapping", &mapping.id);
-    db.query(&format!("UPSERT {} CONTENT $data", record_id))
-        .bind(("data", mapping_data))
-        .await
-        .map_err(|e| format!("Failed to update SSH file mapping: {}", e))?;
+    state.with_conn(|conn| db_put(conn, DbTable::SshFileMapping, &mapping.id, &mapping_data))?;
 
     let _ = app.emit("ssh-config-changed", ());
     Ok(())
@@ -573,40 +392,23 @@ pub async fn ssh_update_file_mapping(
 /// Delete an SSH file mapping
 #[tauri::command]
 pub async fn ssh_delete_file_mapping(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     id: String,
 ) -> Result<(), String> {
-    let db = state.db();
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state.with_conn(|conn| db_delete(conn, DbTable::SshFileMapping, &id).map(|_| ()))?;
-    }
-
-    let record_id = db_record_id("ssh_file_mapping", &id);
-    db.query(&format!("DELETE {}", record_id))
-        .await
-        .map_err(|e| format!("Failed to delete SSH file mapping: {}", e))?;
+    state.with_conn(|conn| db_delete(conn, DbTable::SshFileMapping, &id).map(|_| ()))?;
 
     let _ = app.emit("ssh-config-changed", ());
     Ok(())
 }
 
-/// Reset all SSH file mappings
+/// Reset all SSH file file_mappings
 #[tauri::command]
 pub async fn ssh_reset_file_mappings(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let db = state.db();
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state.with_conn(|conn| db_delete_all(conn, DbTable::SshFileMapping).map(|_| ()))?;
-    }
-
-    db.query("DELETE ssh_file_mapping")
-        .await
-        .map_err(|e| format!("Failed to reset SSH file mappings: {}", e))?;
+    state.with_conn(|conn| db_delete_all(conn, DbTable::SshFileMapping).map(|_| ()))?;
 
     let _ = app.emit("ssh-config-changed", ());
     Ok(())
@@ -618,7 +420,7 @@ pub async fn ssh_reset_file_mappings(
 
 /// Internal full sync implementation
 pub async fn do_full_sync(
-    state: &DbState,
+    state: &SqliteDbState,
     app: &tauri::AppHandle,
     session: &SshSession,
     config: &SSHSyncConfig,
@@ -629,7 +431,7 @@ pub async fn do_full_sync(
     let enabled_mapping_count = config.file_mappings.iter().filter(|m| m.enabled).count();
     let disabled_mapping_count = total_mapping_count.saturating_sub(enabled_mapping_count);
     log::info!(
-        "SSH full sync start: module={:?}, skip_modules={:?}, mappings_total={}, mappings_enabled={}, mappings_disabled={}, sync_mcp={}, sync_skills={}",
+        "SSH full sync start: module={:?}, skip_modules={:?}, file_mappings_total={}, file_mappings_enabled={}, file_mappings_disabled={}, sync_mcp={}, sync_skills={}",
         module,
         skip_modules,
         total_mapping_count,
@@ -640,8 +442,8 @@ pub async fn do_full_sync(
     );
 
     // Emit initial progress
-    let enabled_mappings: Vec<_> = config.file_mappings.iter().filter(|m| m.enabled).collect();
-    let total_files = enabled_mappings.len() as u32;
+    let enabled_file_mappings: Vec<_> = config.file_mappings.iter().filter(|m| m.enabled).collect();
+    let total_files = enabled_file_mappings.len() as u32;
     let _ = app.emit(
         "ssh-sync-progress",
         SyncProgress {
@@ -658,13 +460,13 @@ pub async fn do_full_sync(
     let db = state.db();
     let file_mappings = resolve_dynamic_paths_with_db(&db, config.file_mappings.clone()).await;
     log::info!(
-        "SSH full sync resolved dynamic mappings: resolved_count={}",
+        "SSH full sync resolved dynamic file_mappings: resolved_count={}",
         file_mappings.len()
     );
 
-    // Sync file mappings with progress
+    // Sync file file_mappings with progress
     let mut result =
-        sync_mappings_with_progress(&file_mappings, session, module, skip_modules, app).await;
+        sync_file_mappings_with_progress(&file_mappings, session, module, skip_modules, app).await;
     log::info!(
         "SSH full sync file stage completed: synced_files={}, skipped_files={}, errors={}",
         result.synced_files.len(),
@@ -742,7 +544,7 @@ pub async fn do_full_sync(
 }
 
 async fn rewrite_claude_plugin_metadata_on_remote(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &SqliteDbState,
     session: &SshSession,
 ) -> Result<(), String> {
     let source_plugins_root = runtime_location::get_claude_plugins_dir_async(db)
@@ -798,9 +600,9 @@ async fn expand_tilde_with_remote_home(session: &SshSession, path: &str) -> Resu
     ))
 }
 
-/// Sync file mappings with progress events
-async fn sync_mappings_with_progress(
-    mappings: &[SSHFileMapping],
+/// Sync file file_mappings with progress events
+async fn sync_file_mappings_with_progress(
+    file_mappings: &[SSHFileMapping],
     session: &SshSession,
     module_filter: Option<&str>,
     skip_modules: Option<&[String]>,
@@ -809,12 +611,12 @@ async fn sync_mappings_with_progress(
     let mut synced_files = vec![];
     let mut skipped_files = vec![];
     let mut errors = vec![];
-    let mut filtered_mappings = Vec::new();
+    let mut filtered_file_mappings = Vec::new();
     let mut disabled_mapping_count = 0usize;
     let mut filtered_by_module_count = 0usize;
     let mut filtered_by_skip_modules_count = 0usize;
 
-    for mapping in mappings {
+    for mapping in file_mappings {
         if !mapping.enabled {
             disabled_mapping_count += 1;
             log::trace!(
@@ -853,14 +655,14 @@ async fn sync_mappings_with_progress(
             );
             continue;
         }
-        filtered_mappings.push(mapping);
+        filtered_file_mappings.push(mapping);
     }
 
-    let total = filtered_mappings.len() as u32;
+    let total = filtered_file_mappings.len() as u32;
     log::info!(
-        "SSH sync mapping filter summary: total_mappings={}, selected_mappings={}, disabled_mappings={}, filtered_by_module={}, filtered_by_skip_modules={}, module_filter={:?}, skip_modules={:?}",
-        mappings.len(),
-        filtered_mappings.len(),
+        "SSH sync mapping filter summary: total_file_mappings={}, selected_file_mappings={}, disabled_file_mappings={}, filtered_by_module={}, filtered_by_skip_modules={}, module_filter={:?}, skip_modules={:?}",
+        file_mappings.len(),
+        filtered_file_mappings.len(),
         disabled_mapping_count,
         filtered_by_module_count,
         filtered_by_skip_modules_count,
@@ -868,7 +670,7 @@ async fn sync_mappings_with_progress(
         skip_modules
     );
 
-    for (idx, mapping) in filtered_mappings.iter().enumerate() {
+    for (idx, mapping) in filtered_file_mappings.iter().enumerate() {
         let current = (idx + 1) as u32;
 
         let _ = app.emit(
@@ -996,7 +798,7 @@ async fn reconcile_codex_prompt_files_on_ssh(
 /// Execute SSH sync
 #[tauri::command]
 pub async fn ssh_sync(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     session_state: tauri::State<'_, SshSessionState>,
     app: tauri::AppHandle,
     module: Option<String>,
@@ -1013,7 +815,7 @@ pub async fn ssh_sync(
         .filter(|mapping| mapping.enabled)
         .count();
     log::info!(
-        "SSH sync requested: module={:?}, skip_modules={:?}, enabled={}, active_connection_id={}, active_connection_name={:?}, mappings_total={}, mappings_enabled={}",
+        "SSH sync requested: module={:?}, skip_modules={:?}, enabled={}, active_connection_id={}, active_connection_name={:?}, file_mappings_total={}, file_mappings_enabled={}",
         module,
         skip_modules,
         config.enabled,
@@ -1095,7 +897,7 @@ pub async fn ssh_sync(
     );
     if result.success && result.synced_files.is_empty() {
         log::warn!(
-            "SSH sync finished without uploading main file mappings: skipped_files={}, module={:?}, skip_modules={:?}",
+            "SSH sync finished without uploading main file file_mappings: skipped_files={}, module={:?}, skip_modules={:?}",
             result.skipped_files.len(),
             module,
             skip_modules
@@ -1107,7 +909,9 @@ pub async fn ssh_sync(
 
 /// Get SSH sync status
 #[tauri::command]
-pub async fn ssh_get_status(state: tauri::State<'_, DbState>) -> Result<SSHStatusResult, String> {
+pub async fn ssh_get_status(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<SSHStatusResult, String> {
     let config = ssh_get_config(state).await?;
 
     let active_connection_name = if config.enabled && !config.active_connection_id.is_empty() {
@@ -1146,30 +950,25 @@ pub fn ssh_get_default_mappings() -> Vec<SSHFileMapping> {
 // Internal Functions
 // ============================================================================
 
-/// Auto-insert any default mappings whose IDs are missing from the database.
-/// This ensures upgrading users get newly added default mappings (e.g. OpenClaw).
+/// Auto-insert any default file_mappings whose IDs are missing from the database.
+/// This ensures upgrading users get newly added default file_mappings (e.g. OpenClaw).
 ///
 /// Uses a version guard (`ssh_defaults_version`) so the migration runs only once
 /// per schema bump. If the user deletes a backfilled mapping afterwards, it will
 /// NOT be re-added.
-async fn backfill_default_mappings(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+async fn backfill_default_file_mappings(
+    db: &SqliteDbState,
     mut file_mappings: Vec<SSHFileMapping>,
 ) -> Vec<SSHFileMapping> {
-    // Bump this number whenever new default mappings are added.
+    // Bump this number whenever new default file_mappings are added.
     const CURRENT_DEFAULTS_VERSION: u64 = 5;
 
     // Read stored version
     let stored_version: u64 = db
-        .query("SELECT version FROM ssh_sync_config:`defaults_version` LIMIT 1")
-        .await
+        .with_conn(|conn| db_get(conn, DbTable::SshSyncConfig, "defaults_version"))
         .ok()
-        .and_then(|mut r| {
-            let vals: Result<Vec<serde_json::Value>, _> = r.take(0);
-            vals.ok()
-        })
-        .and_then(|records| records.first().cloned())
-        .and_then(|v| v.get("version").and_then(|v| v.as_u64()))
+        .flatten()
+        .and_then(|value| value.get("version").and_then(|value| value.as_u64()))
         .unwrap_or(0);
 
     if stored_version >= CURRENT_DEFAULTS_VERSION {
@@ -1183,31 +982,14 @@ async fn backfill_default_mappings(
     for default_mapping in default_file_mappings() {
         if !existing_ids.contains(&default_mapping.id) {
             let mapping_data = adapter::mapping_to_db_value(&default_mapping);
-            if let Some(sqlite_state) = global_sqlite_state() {
-                if let Err(e) = sqlite_state.with_conn(|conn| {
-                    db_put(
-                        conn,
-                        DbTable::SshFileMapping,
-                        &default_mapping.id,
-                        &mapping_data,
-                    )
-                }) {
-                    log::warn!(
-                        "Failed to backfill SQLite SSH mapping '{}': {}",
-                        default_mapping.id,
-                        e
-                    );
-                    continue;
-                }
-            }
-
-            let record_id =
-                crate::coding::db_id::db_record_id("ssh_file_mapping", &default_mapping.id);
-            if let Err(e) = db
-                .query(&format!("UPSERT {} CONTENT $data", record_id))
-                .bind(("data", mapping_data))
-                .await
-            {
+            if let Err(e) = db.with_conn(|conn| {
+                db_put(
+                    conn,
+                    DbTable::SshFileMapping,
+                    &default_mapping.id,
+                    &mapping_data,
+                )
+            }) {
                 log::warn!(
                     "Failed to backfill SSH mapping '{}': {}",
                     default_mapping.id,
@@ -1221,28 +1003,22 @@ async fn backfill_default_mappings(
     }
 
     // Mark migration as done
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let version_data = serde_json::json!({ "version": CURRENT_DEFAULTS_VERSION });
-        let _ = sqlite_state.with_conn(|conn| {
-            db_put(
-                conn,
-                DbTable::SshSyncConfig,
-                "defaults_version",
-                &version_data,
-            )
-        });
-    }
-    let _ = db
-        .query("UPSERT ssh_sync_config:`defaults_version` CONTENT { version: $v }")
-        .bind(("v", CURRENT_DEFAULTS_VERSION))
-        .await;
+    let version_data = serde_json::json!({ "version": CURRENT_DEFAULTS_VERSION });
+    let _ = db.with_conn(|conn| {
+        db_put(
+            conn,
+            DbTable::SshSyncConfig,
+            "defaults_version",
+            &version_data,
+        )
+    });
 
     file_mappings
 }
 
 /// Dynamically resolve config file paths for OpenCode and Oh My OpenAgent.
-pub fn resolve_dynamic_paths(mappings: Vec<SSHFileMapping>) -> Vec<SSHFileMapping> {
-    mappings
+pub fn resolve_dynamic_paths(file_mappings: Vec<SSHFileMapping>) -> Vec<SSHFileMapping> {
+    file_mappings
         .into_iter()
         .map(|mapping| {
             match mapping.id.as_str() {
@@ -1254,11 +1030,11 @@ pub fn resolve_dynamic_paths(mappings: Vec<SSHFileMapping>) -> Vec<SSHFileMappin
 }
 
 pub async fn resolve_dynamic_paths_with_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    mappings: Vec<SSHFileMapping>,
+    db: &SqliteDbState,
+    file_mappings: Vec<SSHFileMapping>,
 ) -> Vec<SSHFileMapping> {
-    let mut resolved = Vec::with_capacity(mappings.len());
-    for mut mapping in resolve_dynamic_paths(mappings) {
+    let mut resolved = Vec::with_capacity(file_mappings.len());
+    for mut mapping in resolve_dynamic_paths(file_mappings) {
         match mapping.id.as_str() {
             "opencode-main" => {
                 if let Ok(location) =
@@ -1430,9 +1206,7 @@ pub async fn resolve_dynamic_paths_with_db(
 }
 
 /// Update sync status in database
-pub async fn update_sync_status(state: &DbState, result: &SyncResult) -> Result<(), String> {
-    let db = state.db();
-
+pub async fn update_sync_status(state: &SqliteDbState, result: &SyncResult) -> Result<(), String> {
     let (status, error) = if result.success {
         ("success".to_string(), None)
     } else {
@@ -1442,41 +1216,27 @@ pub async fn update_sync_status(state: &DbState, result: &SyncResult) -> Result<
 
     let now = Local::now().to_rfc3339();
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let mut config_data = load_ssh_config_record_from_sqlite()?
-            .unwrap_or_else(|| adapter::config_to_db_value(&SSHSyncConfig::default()));
-        if let Some(payload) = config_data.as_object_mut() {
-            payload.insert(
-                "last_sync_time".to_string(),
-                serde_json::Value::String(now.clone()),
-            );
-            payload.insert(
-                "last_sync_status".to_string(),
-                serde_json::Value::String(status.clone()),
-            );
-            payload.insert(
-                "last_sync_error".to_string(),
-                error
-                    .clone()
-                    .map(serde_json::Value::String)
-                    .unwrap_or(serde_json::Value::Null),
-            );
-        }
-        sqlite_state
-            .with_conn(|conn| db_put(conn, DbTable::SshSyncConfig, "config", &config_data))?;
+    let mut config_data = load_ssh_config_record(state)?
+        .unwrap_or_else(|| adapter::config_to_db_value(&SSHSyncConfig::default()));
+    if let Some(payload) = config_data.as_object_mut() {
+        payload.insert("last_sync_time".to_string(), serde_json::Value::String(now));
+        payload.insert(
+            "last_sync_status".to_string(),
+            serde_json::Value::String(status),
+        );
+        payload.insert(
+            "last_sync_error".to_string(),
+            error
+                .map(serde_json::Value::String)
+                .unwrap_or(serde_json::Value::Null),
+        );
     }
-
-    db.query("UPDATE ssh_sync_config SET last_sync_time = $time, last_sync_status = $status, last_sync_error = $error WHERE id = ssh_sync_config:`config`")
-        .bind(("time", now))
-        .bind(("status", status))
-        .bind(("error", error))
-        .await
-        .map_err(|e| format!("Failed to update SSH sync status: {}", e))?;
+    state.with_conn(|conn| db_put(conn, DbTable::SshSyncConfig, "config", &config_data))?;
 
     Ok(())
 }
 
-/// Get default file mappings for SSH sync
+/// Get default file file_mappings for SSH sync
 pub fn default_file_mappings() -> Vec<SSHFileMapping> {
     vec![
         // OpenCode
@@ -1703,7 +1463,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
 /// Checks if `~/.openclaw/openclaw.json` exists on the remote.
 /// If the file is missing, creates it with an empty JSON object `{}`.
 async fn ensure_openclaw_config_on_remote(
-    state: &DbState,
+    state: &SqliteDbState,
     session: &SshSession,
 ) -> Result<(), String> {
     let remote_path = runtime_location::get_openclaw_wsl_target_path_async(&state.db()).await;

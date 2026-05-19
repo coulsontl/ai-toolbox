@@ -387,7 +387,7 @@ fn build_installed_plugin_map(root_dir: &Path) -> BTreeMap<String, (String, Path
 }
 
 pub async fn get_codex_plugin_runtime_status(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<CodexPluginRuntimeStatus, String> {
     let runtime_location = runtime_location::get_codex_runtime_location_async(db).await?;
     let mode = match runtime_location.mode {
@@ -430,7 +430,7 @@ pub async fn get_codex_plugin_runtime_status(
 }
 
 pub async fn list_codex_marketplaces(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Vec<CodexPluginMarketplace>, String> {
     let runtime_location = runtime_location::get_codex_runtime_location_async(db).await?;
     let additional_marketplace_paths =
@@ -450,7 +450,7 @@ pub async fn list_codex_marketplaces(
 }
 
 pub async fn list_codex_marketplace_plugins(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Vec<CodexMarketplacePlugin>, String> {
     let runtime_location = runtime_location::get_codex_runtime_location_async(db).await?;
     let additional_marketplace_paths =
@@ -489,7 +489,7 @@ pub async fn list_codex_marketplace_plugins(
 }
 
 pub async fn list_codex_installed_plugins(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Vec<CodexInstalledPlugin>, String> {
     let runtime_location = runtime_location::get_codex_runtime_location_async(db).await?;
     let config_path = runtime_location.host_path.join("config.toml");

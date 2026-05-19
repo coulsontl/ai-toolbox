@@ -7,7 +7,7 @@
 ## Source of Truth
 
 - 当前生效根目录优先级是：应用内 `root_dir` > 环境变量 `CLAUDE_CONFIG_DIR` > shell 配置 > 默认根目录。
-- Provider、common config 和 prompt config 的主存储是 SQLite JSONB；兼容期保留 SurrealDB 双写/导入。
+- Provider、common config 和 prompt config 的主存储是 SQLite JSONB；旧 SurrealDB 仅用于启动时一次性导入。
 - Claude Code 是“根目录模块”，`settings.json`、`CLAUDE.md`、`config.json`、`plugins/`、`skills/` 都是从当前根目录派生出来的。
 - `.claude.json` 需要按 Claude CLI 的默认/显式根目录语义单独处理：默认根目录时是用户 home 下的 `~/.claude.json`；只要根目录来自应用自定义、`CLAUDE_CONFIG_DIR` 或 shell 配置，就位于该配置目录下的 `.claude.json`。
 - `plugins/` 默认从当前根目录派生，但 `CLAUDE_CODE_PLUGIN_CACHE_DIR` 会独立覆盖 plugin runtime root；`known_marketplaces.json` 和 `installed_plugins.json` 应跟随这个目录。
@@ -46,7 +46,7 @@
 sequenceDiagram
   participant UI as Claude Page
   participant Cmd as claude_code::commands
-  participant DB as SurrealDB
+  participant DB as SQLite JSONB
   participant File as settings.json / CLAUDE.md
 
   UI->>Cmd: apply provider/common config

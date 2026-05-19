@@ -19,31 +19,20 @@ use crate::coding::runtime_location;
 use crate::coding::skills::central_repo::{resolve_central_repo_path, resolve_skill_central_path};
 use crate::coding::skills::skill_store;
 use crate::coding::tools::builtin::BUILTIN_TOOLS;
-use crate::DbState;
+use crate::db::helpers::db_get;
+use crate::db::schema::DbTable;
+use crate::SqliteDbState;
 
 const WSL_CENTRAL_DIR: &str = "~/.ai-toolbox/skills";
 static SKILLS_WSL_SYNC_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Read WSL sync config directly from database
-async fn get_wsl_config(state: &DbState) -> Result<WSLSyncConfig, String> {
+async fn get_wsl_config(state: &SqliteDbState) -> Result<WSLSyncConfig, String> {
     let db = state.db();
-
-    let config_result: Result<Vec<serde_json::Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM wsl_sync_config:`config` LIMIT 1")
-        .await
-        .map_err(|e| format!("Failed to query WSL config: {}", e))?
-        .take(0);
-
-    match config_result {
-        Ok(records) => {
-            if let Some(record) = records.first() {
-                Ok(adapter::config_from_db_value(record.clone(), vec![]))
-            } else {
-                Ok(WSLSyncConfig::default())
-            }
-        }
-        Err(_) => Ok(WSLSyncConfig::default()),
-    }
+    let record = db.with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "config"))?;
+    Ok(record
+        .map(|value| adapter::config_from_db_value(value, vec![]))
+        .unwrap_or_default())
 }
 
 /// Get the WSL skills directory path for a tool key
@@ -63,7 +52,7 @@ fn get_wsl_tool_skills_dir(tool_key: &str) -> Option<String> {
 }
 
 async fn get_wsl_tool_skills_dir_with_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     tool_key: &str,
 ) -> Option<String> {
     match tool_key {
@@ -90,7 +79,7 @@ fn get_all_skill_tool_keys() -> Vec<&'static str> {
 }
 
 /// Sync all skills to WSL (called on skills-changed event)
-pub async fn sync_skills_to_wsl(state: &DbState, app: AppHandle) -> Result<(), String> {
+pub async fn sync_skills_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<(), String> {
     let _sync_guard = SKILLS_WSL_SYNC_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()

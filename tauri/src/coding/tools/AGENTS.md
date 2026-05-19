@@ -7,7 +7,7 @@
 ## Source of Truth
 
 - 内置工具定义来自 `builtin.rs` 的静态配置。
-- 用户自定义工具来自主数据库的 `custom_tool` 表；SQLite JSONB 迁移期优先读写 SQLite 并双写 SurrealDB。这部分是 Skills/MCP 对“额外工具”的唯一持久化来源。
+- 用户自定义工具来自主数据库的 `custom_tool` 表；必须直接读写 SQLite JSONB，旧 SurrealDB 仅用于启动时一次性导入。这部分是 Skills/MCP 对“额外工具”的唯一持久化来源。
 - 对 4 个内置工具，真正的 MCP/Skills 路径不能只看静态字符串，必须优先经过 `runtime_location` 派生。
 
 ## 核心设计决策（Why）

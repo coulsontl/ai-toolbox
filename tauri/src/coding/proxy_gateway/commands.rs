@@ -12,17 +12,15 @@ use super::types::{
     ProxyGatewayPortCheckInput, ProxyGatewayPortCheckResult, ProxyGatewayRequestLogListInput,
     ProxyGatewaySettings, ProxyGatewayStatus, ProxyGatewayStopPreflight,
 };
-use crate::coding::db_id::db_extract_id;
-use crate::db::sqlite_state::SqliteDbState;
-use crate::db::DbState;
+use crate::db::helpers::db_list;
+use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
+use crate::db::SqliteDbState;
 use serde_json::Value;
 use std::collections::HashMap;
-use surrealdb::engine::local::Db;
-use surrealdb::Surreal;
 use tauri::Manager;
 
 pub async fn proxy_gateway_start_if_enabled_on_startup(
-    db_state: &DbState,
+    db_state: &SqliteDbState,
     sqlite_state: &SqliteDbState,
     gateway_state: &ProxyGatewayState,
     app: &tauri::AppHandle,
@@ -38,7 +36,7 @@ pub async fn proxy_gateway_start_if_enabled_on_startup(
         .lock()
         .map_err(|_| "Proxy gateway manager lock poisoned".to_string())?;
     manager
-        .start_with_context(settings, db_state.db(), paths)
+        .start_with_context(settings, db_state.db().clone(), paths)
         .map(Some)
 }
 
@@ -53,7 +51,6 @@ pub async fn proxy_gateway_get_settings(
 pub async fn proxy_gateway_update_settings(
     gateway_state: tauri::State<'_, ProxyGatewayState>,
     sqlite_state: tauri::State<'_, SqliteDbState>,
-    state: tauri::State<'_, DbState>,
     mut settings: ProxyGatewaySettings,
 ) -> Result<ProxyGatewaySettings, String> {
     {
@@ -67,14 +64,14 @@ pub async fn proxy_gateway_update_settings(
             manager.update_runtime_settings(settings.clone())?;
         }
     }
-    settings::save_settings_dual(&sqlite_state, &state.db(), settings).await
+    settings::save_settings(&sqlite_state, settings)
 }
 
 #[tauri::command]
 pub async fn proxy_gateway_start(
     gateway_state: tauri::State<'_, ProxyGatewayState>,
     sqlite_state: tauri::State<'_, SqliteDbState>,
-    db_state: tauri::State<'_, DbState>,
+    db_state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     settings: Option<ProxyGatewaySettings>,
 ) -> Result<ProxyGatewayStatus, String> {
@@ -88,12 +85,11 @@ pub async fn proxy_gateway_start(
             .manager
             .lock()
             .map_err(|_| "Proxy gateway manager lock poisoned".to_string())?;
-        manager.start_with_context(settings.clone(), db_state.db(), paths)?
+        manager.start_with_context(settings.clone(), db_state.db().clone(), paths)?
     };
 
     settings.enabled_on_startup = true;
-    if let Err(error) = settings::save_settings_dual(&sqlite_state, &db_state.db(), settings).await
-    {
+    if let Err(error) = settings::save_settings(&sqlite_state, settings) {
         log::warn!("Failed to persist proxy gateway startup state after start: {error}");
     }
 
@@ -104,7 +100,7 @@ pub async fn proxy_gateway_start(
 pub async fn proxy_gateway_stop(
     gateway_state: tauri::State<'_, ProxyGatewayState>,
     sqlite_state: tauri::State<'_, SqliteDbState>,
-    db_state: tauri::State<'_, DbState>,
+    db_state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
 ) -> Result<ProxyGatewayStatus, String> {
     let current_status = {
@@ -115,7 +111,7 @@ pub async fn proxy_gateway_stop(
         manager.status()
     };
     let paths = proxy_gateway_paths(&app)?;
-    let preflight = cli_proxy::stop_preflight(&db_state.db(), &paths, &current_status).await;
+    let preflight = cli_proxy::stop_preflight(db_state.db(), &paths, &current_status).await;
     if !preflight.allowed {
         return Err(preflight.message.unwrap_or_else(|| {
             "Restore gateway-taken-over CLIs to direct mode before stopping the gateway".to_string()
@@ -124,7 +120,7 @@ pub async fn proxy_gateway_stop(
 
     let mut settings = settings::load_settings_from_sqlite_state(&sqlite_state)?;
     settings.enabled_on_startup = false;
-    settings::save_settings_dual(&sqlite_state, &db_state.db(), settings).await?;
+    settings::save_settings(&sqlite_state, settings)?;
 
     let mut manager = gateway_state
         .manager
@@ -165,7 +161,7 @@ pub fn proxy_gateway_check_port_available(
 #[tauri::command]
 pub async fn proxy_gateway_cli_statuses(
     gateway_state: tauri::State<'_, ProxyGatewayState>,
-    db_state: tauri::State<'_, DbState>,
+    db_state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<GatewayCliTakeoverStatus>, String> {
     let status = {
@@ -176,13 +172,13 @@ pub async fn proxy_gateway_cli_statuses(
         manager.status()
     };
     let paths = proxy_gateway_paths(&app)?;
-    Ok(cli_proxy::cli_takeover_statuses(&db_state.db(), &paths, &status).await)
+    Ok(cli_proxy::cli_takeover_statuses(db_state.db(), &paths, &status).await)
 }
 
 #[tauri::command]
 pub async fn proxy_gateway_cli_status(
     gateway_state: tauri::State<'_, ProxyGatewayState>,
-    db_state: tauri::State<'_, DbState>,
+    db_state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     cli_key: GatewayCliKey,
 ) -> Result<GatewayCliTakeoverStatus, String> {
@@ -194,13 +190,13 @@ pub async fn proxy_gateway_cli_status(
         manager.status()
     };
     let paths = proxy_gateway_paths(&app)?;
-    Ok(cli_proxy::cli_takeover_status(&db_state.db(), &paths, cli_key, &status).await)
+    Ok(cli_proxy::cli_takeover_status(db_state.db(), &paths, cli_key, &status).await)
 }
 
 #[tauri::command]
 pub async fn proxy_gateway_takeover_cli(
     gateway_state: tauri::State<'_, ProxyGatewayState>,
-    db_state: tauri::State<'_, DbState>,
+    db_state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     cli_key: GatewayCliKey,
 ) -> Result<GatewayCliTakeoverStatus, String> {
@@ -212,13 +208,13 @@ pub async fn proxy_gateway_takeover_cli(
         manager.status()
     };
     let paths = proxy_gateway_paths(&app)?;
-    cli_proxy::takeover_cli(&db_state.db(), &paths, cli_key, &status).await
+    cli_proxy::takeover_cli(db_state.db(), &paths, cli_key, &status).await
 }
 
 #[tauri::command]
 pub async fn proxy_gateway_restore_cli_direct(
     gateway_state: tauri::State<'_, ProxyGatewayState>,
-    db_state: tauri::State<'_, DbState>,
+    db_state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     cli_key: GatewayCliKey,
 ) -> Result<GatewayCliTakeoverStatus, String> {
@@ -230,13 +226,13 @@ pub async fn proxy_gateway_restore_cli_direct(
         manager.status()
     };
     let paths = proxy_gateway_paths(&app)?;
-    cli_proxy::restore_cli_direct(&db_state.db(), &paths, cli_key, &status).await
+    cli_proxy::restore_cli_direct(db_state.db(), &paths, cli_key, &status).await
 }
 
 #[tauri::command]
 pub async fn proxy_gateway_stop_preflight(
     gateway_state: tauri::State<'_, ProxyGatewayState>,
-    db_state: tauri::State<'_, DbState>,
+    db_state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
 ) -> Result<ProxyGatewayStopPreflight, String> {
     let status = {
@@ -247,7 +243,7 @@ pub async fn proxy_gateway_stop_preflight(
         manager.status()
     };
     let paths = proxy_gateway_paths(&app)?;
-    Ok(cli_proxy::stop_preflight(&db_state.db(), &paths, &status).await)
+    Ok(cli_proxy::stop_preflight(db_state.db(), &paths, &status).await)
 }
 
 #[tauri::command]
@@ -280,7 +276,7 @@ pub fn proxy_gateway_metric_rollups(
 pub async fn proxy_gateway_model_health_entries(
     app: tauri::AppHandle,
     sqlite_state: tauri::State<'_, SqliteDbState>,
-    db_state: tauri::State<'_, DbState>,
+    db_state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Vec<GatewayModelHealthItem>, String> {
     let paths = proxy_gateway_paths(&app)?;
     let settings = settings::load_settings_from_sqlite_state(&sqlite_state)?;
@@ -309,23 +305,22 @@ fn proxy_gateway_paths(app: &tauri::AppHandle) -> Result<ProxyGatewayPaths, Stri
 }
 
 async fn load_provider_name_map(
-    db: &Surreal<Db>,
+    db: &SqliteDbState,
 ) -> Result<HashMap<(GatewayCliKey, String), String>, String> {
     let mut provider_names = HashMap::new();
     for (cli_key, table) in [
-        (GatewayCliKey::Claude, "claude_provider"),
-        (GatewayCliKey::Codex, "codex_provider"),
-        (GatewayCliKey::Gemini, "gemini_cli_provider"),
+        (GatewayCliKey::Claude, DbTable::ClaudeProvider),
+        (GatewayCliKey::Codex, DbTable::CodexProvider),
+        (GatewayCliKey::Gemini, DbTable::GeminiCliProvider),
     ] {
-        let mut result = db
-            .query(format!("SELECT name, type::string(id) as id FROM {table}"))
-            .await
-            .map_err(|error| format!("Failed to query {table} provider names: {error}"))?;
-        let records: Vec<Value> = result
-            .take(0)
-            .map_err(|error| format!("Failed to parse {table} provider names: {error}"))?;
+        let order = OrderSpec::single(OrderField::id(OrderDirection::Asc));
+        let records = db.with_conn(|conn| db_list(conn, table, Some(&order)))?;
         for record in records {
-            let id = db_extract_id(&record);
+            let id = record
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
             let name = record
                 .get("name")
                 .and_then(Value::as_str)

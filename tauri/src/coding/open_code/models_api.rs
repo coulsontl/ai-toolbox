@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 use crate::http_client;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
@@ -248,7 +248,7 @@ fn build_models_url(
 /// Fetch models list from provider API
 #[tauri::command]
 pub async fn fetch_provider_models(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     request: FetchModelsRequest,
 ) -> Result<FetchModelsResponse, String> {
     let resolved_request = resolve_provider_request(
@@ -968,7 +968,7 @@ async fn run_connectivity_test_for_model(
 
 #[tauri::command]
 pub async fn test_provider_model_connectivity(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     request: ConnectivityTestRequest,
 ) -> Result<ConnectivityTestResponse, String> {
     let timeout_secs = request.timeout_secs.unwrap_or(30);

@@ -7,8 +7,7 @@ use crate::coding::claude_code::plugin_metadata_sync;
 use crate::coding::runtime_location;
 use crate::db::helpers::{db_delete, db_delete_all, db_get, db_list, db_put};
 use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
-use crate::db::sqlite_state::global_sqlite_state;
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 use chrono::Local;
 use std::path::Path;
 use tauri::Emitter;
@@ -62,25 +61,17 @@ fn wsl_mapping_order() -> Result<OrderSpec, String> {
     ]))
 }
 
-fn load_wsl_config_from_sqlite() -> Result<WSLSyncConfig, String> {
-    let Some(sqlite_state) = global_sqlite_state() else {
-        return Ok(WSLSyncConfig::default());
-    };
-
-    sqlite_state.with_conn(|conn| {
+fn load_wsl_config(state: &SqliteDbState) -> Result<WSLSyncConfig, String> {
+    state.with_conn(|conn| {
         Ok(db_get(conn, DbTable::WslSyncConfig, "config")?
             .map(|record| adapter::config_from_db_value(record, vec![]))
             .unwrap_or_default())
     })
 }
 
-fn load_wsl_file_mappings_from_sqlite() -> Result<Vec<FileMapping>, String> {
-    let Some(sqlite_state) = global_sqlite_state() else {
-        return Ok(Vec::new());
-    };
-
+fn load_wsl_file_mappings(state: &SqliteDbState) -> Result<Vec<FileMapping>, String> {
     let order = wsl_mapping_order()?;
-    sqlite_state.with_conn(|conn| {
+    state.with_conn(|conn| {
         Ok(db_list(conn, DbTable::WslFileMapping, Some(&order))?
             .into_iter()
             .map(adapter::mapping_from_db_value)
@@ -90,53 +81,17 @@ fn load_wsl_file_mappings_from_sqlite() -> Result<Vec<FileMapping>, String> {
 
 /// Get WSL sync configuration
 #[tauri::command]
-pub async fn wsl_get_config(state: tauri::State<'_, DbState>) -> Result<WSLSyncConfig, String> {
+pub async fn wsl_get_config(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<WSLSyncConfig, String> {
     let db = state.db();
 
-    let (config, file_mappings) = if global_sqlite_state().is_some() {
-        (
-            load_wsl_config_from_sqlite().unwrap_or_default(),
-            load_wsl_file_mappings_from_sqlite().unwrap_or_default(),
-        )
-    } else {
-        // Get config
-        let config_result: Result<Vec<serde_json::Value>, _> = db
-            .query("SELECT *, type::string(id) as id FROM wsl_sync_config:`config` LIMIT 1")
-            .await
-            .map_err(|e| format!("Failed to query WSL config: {}", e))?
-            .take(0);
-
-        let config = match config_result {
-            Ok(records) => {
-                if let Some(record) = records.first() {
-                    adapter::config_from_db_value(record.clone(), vec![])
-                } else {
-                    WSLSyncConfig::default()
-                }
-            }
-            Err(_) => WSLSyncConfig::default(),
-        };
-
-        // Get file mappings
-        let mappings_result: Result<Vec<serde_json::Value>, _> = db
-            .query("SELECT *, type::string(id) as id FROM wsl_file_mapping ORDER BY module, name")
-            .await
-            .map_err(|e| format!("Failed to query file mappings: {}", e))?
-            .take(0);
-
-        let file_mappings = match mappings_result {
-            Ok(records) => records
-                .into_iter()
-                .map(adapter::mapping_from_db_value)
-                .collect(),
-            Err(_) => vec![],
-        };
-        (config, file_mappings)
-    };
+    let config = load_wsl_config(db).unwrap_or_default();
+    let file_mappings = load_wsl_file_mappings(db).unwrap_or_default();
 
     // Auto-insert missing default mappings for upgrading users
-    let file_mappings = backfill_default_mappings(&db, file_mappings).await;
-    let module_statuses = runtime_location::get_wsl_direct_status_map_async(&db).await?;
+    let file_mappings = backfill_default_mappings(db, file_mappings).await;
+    let module_statuses = runtime_location::get_wsl_direct_status_map_async(db).await?;
 
     Ok(WSLSyncConfig {
         file_mappings,
@@ -148,53 +103,24 @@ pub async fn wsl_get_config(state: tauri::State<'_, DbState>) -> Result<WSLSyncC
 /// Save WSL sync configuration
 #[tauri::command]
 pub async fn wsl_save_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     config: WSLSyncConfig,
 ) -> Result<(), String> {
     // Check if WSL sync is being enabled (was disabled, now enabled)
     let was_enabled = {
         let db = state.db();
-        if global_sqlite_state().is_some() {
-            load_wsl_config_from_sqlite()?.enabled
-        } else {
-            let result: Result<Vec<serde_json::Value>, _> = db
-                .query("SELECT enabled FROM wsl_sync_config:`config` LIMIT 1")
-                .await
-                .map_err(|e| format!("Failed to query WSL config: {}", e))?
-                .take(0);
-            result
-                .ok()
-                .and_then(|records| records.first().cloned())
-                .and_then(|v| v.get("enabled").and_then(|e| e.as_bool()))
-                .unwrap_or(false)
-        }
+        load_wsl_config(db)?.enabled
     };
 
     let is_being_enabled = !was_enabled && config.enabled;
 
     {
-        let db = state.db();
-
         // Save config
-        let existing_status = if let Some(sqlite_state) = global_sqlite_state() {
-            sqlite_state
-                .with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "config"))
-                .ok()
-                .flatten()
-        } else {
-            db.query(
-                "SELECT last_sync_time, last_sync_status, last_sync_error \
-                 FROM wsl_sync_config:`config` LIMIT 1",
-            )
-            .await
+        let existing_status = state
+            .with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "config"))
             .ok()
-            .and_then(|mut result| {
-                let rows: Result<Vec<serde_json::Value>, _> = result.take(0);
-                rows.ok()
-            })
-            .and_then(|rows| rows.first().cloned())
-        };
+            .flatten();
 
         let mut config_data = adapter::config_to_db_value(&config);
         if let Some(payload) = config_data.as_object_mut() {
@@ -221,30 +147,14 @@ pub async fn wsl_save_config(
             );
         }
 
-        if let Some(sqlite_state) = global_sqlite_state() {
-            sqlite_state
-                .with_conn(|conn| db_put(conn, DbTable::WslSyncConfig, "config", &config_data))?;
-        }
-
-        db.query("UPSERT wsl_sync_config:`config` CONTENT $data")
-            .bind(("data", config_data.clone()))
-            .await
-            .map_err(|e| format!("Failed to save WSL config: {}", e))?;
+        state.with_conn(|conn| db_put(conn, DbTable::WslSyncConfig, "config", &config_data))?;
 
         // Update file mappings - follow open_code/free_models pattern: use backtick format table:`id`
         for mapping in config.file_mappings.iter() {
             let mapping_data = adapter::mapping_to_db_value(mapping);
-            if let Some(sqlite_state) = global_sqlite_state() {
-                sqlite_state.with_conn(|conn| {
-                    db_put(conn, DbTable::WslFileMapping, &mapping.id, &mapping_data)
-                })?;
-            }
-
-            let query = format!("UPSERT wsl_file_mapping:`{}` CONTENT $data", mapping.id);
-            db.query(&query)
-                .bind(("data", mapping_data))
-                .await
-                .map_err(|e| format!("Failed to save file mapping: {}", e))?;
+            state.with_conn(|conn| {
+                db_put(conn, DbTable::WslFileMapping, &mapping.id, &mapping_data)
+            })?;
         }
     }
 
@@ -278,25 +188,12 @@ pub async fn wsl_save_config(
 /// Add a new file mapping
 #[tauri::command]
 pub async fn wsl_add_file_mapping(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     mapping: FileMapping,
 ) -> Result<(), String> {
-    let db = state.db();
-
     let mapping_data = adapter::mapping_to_db_value(&mapping);
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state
-            .with_conn(|conn| db_put(conn, DbTable::WslFileMapping, &mapping.id, &mapping_data))?;
-    }
-
-    db.query(format!(
-        "UPSERT wsl_file_mapping:`{}` CONTENT $data",
-        mapping.id
-    ))
-    .bind(("data", mapping_data))
-    .await
-    .map_err(|e| format!("Failed to add file mapping: {}", e))?;
+    state.with_conn(|conn| db_put(conn, DbTable::WslFileMapping, &mapping.id, &mapping_data))?;
 
     let _ = app.emit("wsl-config-changed", ());
 
@@ -306,25 +203,12 @@ pub async fn wsl_add_file_mapping(
 /// Update an existing file mapping
 #[tauri::command]
 pub async fn wsl_update_file_mapping(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     mapping: FileMapping,
 ) -> Result<(), String> {
-    let db = state.db();
-
     let mapping_data = adapter::mapping_to_db_value(&mapping);
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state
-            .with_conn(|conn| db_put(conn, DbTable::WslFileMapping, &mapping.id, &mapping_data))?;
-    }
-
-    db.query(format!(
-        "UPSERT wsl_file_mapping:`{}` CONTENT $data",
-        mapping.id
-    ))
-    .bind(("data", mapping_data))
-    .await
-    .map_err(|e| format!("Failed to update file mapping: {}", e))?;
+    state.with_conn(|conn| db_put(conn, DbTable::WslFileMapping, &mapping.id, &mapping_data))?;
 
     let _ = app.emit("wsl-config-changed", ());
 
@@ -334,19 +218,11 @@ pub async fn wsl_update_file_mapping(
 /// Delete a file mapping
 #[tauri::command]
 pub async fn wsl_delete_file_mapping(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     id: String,
 ) -> Result<(), String> {
-    let db = state.db();
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state.with_conn(|conn| db_delete(conn, DbTable::WslFileMapping, &id).map(|_| ()))?;
-    }
-
-    db.query(format!("DELETE wsl_file_mapping:`{}`", id))
-        .await
-        .map_err(|e| format!("Failed to delete file mapping: {}", e))?;
+    state.with_conn(|conn| db_delete(conn, DbTable::WslFileMapping, &id).map(|_| ()))?;
 
     let _ = app.emit("wsl-config-changed", ());
 
@@ -356,18 +232,10 @@ pub async fn wsl_delete_file_mapping(
 /// Delete all file mappings (reset)
 #[tauri::command]
 pub async fn wsl_reset_file_mappings(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let db = state.db();
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state.with_conn(|conn| db_delete_all(conn, DbTable::WslFileMapping).map(|_| ()))?;
-    }
-
-    db.query("DELETE wsl_file_mapping")
-        .await
-        .map_err(|e| format!("Failed to reset file mappings: {}", e))?;
+    state.with_conn(|conn| db_delete_all(conn, DbTable::WslFileMapping).map(|_| ()))?;
 
     let _ = app.emit("wsl-config-changed", ());
 
@@ -380,7 +248,7 @@ pub async fn wsl_reset_file_mappings(
 
 /// Internal full sync implementation (reusable)
 pub(super) async fn do_full_sync(
-    state: &DbState,
+    state: &SqliteDbState,
     app: &tauri::AppHandle,
     config: &WSLSyncConfig,
     module: Option<&str>,
@@ -484,7 +352,7 @@ pub(super) async fn do_full_sync(
 }
 
 async fn rewrite_claude_plugin_metadata_in_wsl(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &SqliteDbState,
     distro: &str,
 ) -> Result<(), String> {
     let source_plugins_root = runtime_location::get_claude_plugins_dir_async(db)
@@ -643,7 +511,7 @@ fn reconcile_codex_prompt_files_in_wsl(
 /// Sync all files or specific module to WSL
 #[tauri::command]
 pub async fn wsl_sync(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     module: Option<String>,
     skip_modules: Option<Vec<String>>,
@@ -672,33 +540,11 @@ pub async fn wsl_sync(
 ///
 /// Automatic triggers include startup sync and event-driven sync from
 /// model/MCP/skills changes. Manual sync is intentionally not gated by this.
-pub async fn is_wsl_auto_sync_enabled(state: &DbState) -> bool {
-    let db = state.db();
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        return sqlite_state
-            .with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "config"))
-            .ok()
-            .flatten()
-            .and_then(|record| record.get("enabled").and_then(|v| v.as_bool()))
-            .unwrap_or(false);
-    }
-
-    let query_result = db
-        .query("SELECT enabled FROM wsl_sync_config:`config` LIMIT 1")
-        .await;
-
-    let Ok(mut query_result) = query_result else {
-        return false;
-    };
-
-    let records: Result<Vec<serde_json::Value>, _> = query_result.take(0);
-    let Ok(records) = records else {
-        return false;
-    };
-
-    records
-        .first()
+pub async fn is_wsl_auto_sync_enabled(state: &SqliteDbState) -> bool {
+    state
+        .with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "config"))
+        .ok()
+        .flatten()
         .and_then(|record| record.get("enabled").and_then(|v| v.as_bool()))
         .unwrap_or(false)
 }
@@ -709,53 +555,21 @@ pub async fn is_wsl_auto_sync_enabled(state: &DbState) -> bool {
 /// actions must call this helper before clearing local state, otherwise the WSL
 /// target keeps the stale runtime file.
 pub async fn remove_auto_synced_wsl_mapping_target(
-    state: &DbState,
+    state: &SqliteDbState,
     mapping_id: &str,
 ) -> Result<bool, String> {
     let db = state.db();
 
-    let config = if global_sqlite_state().is_some() {
-        load_wsl_config_from_sqlite().unwrap_or_default()
-    } else {
-        let config_result: Result<Vec<serde_json::Value>, _> = db
-            .query("SELECT *, type::string(id) as id FROM wsl_sync_config:`config` LIMIT 1")
-            .await
-            .map_err(|e| format!("Failed to query WSL config: {}", e))?
-            .take(0);
-
-        match config_result {
-            Ok(records) => records
-                .first()
-                .map(|record| adapter::config_from_db_value(record.clone(), vec![]))
-                .unwrap_or_default(),
-            Err(_) => WSLSyncConfig::default(),
-        }
-    };
+    let config = load_wsl_config(db).unwrap_or_default();
 
     if !config.enabled {
         return Ok(false);
     }
 
-    let file_mappings = if global_sqlite_state().is_some() {
-        load_wsl_file_mappings_from_sqlite().unwrap_or_default()
-    } else {
-        let mappings_result: Result<Vec<serde_json::Value>, _> = db
-            .query("SELECT *, type::string(id) as id FROM wsl_file_mapping ORDER BY module, name")
-            .await
-            .map_err(|e| format!("Failed to query WSL file mappings: {}", e))?
-            .take(0);
+    let file_mappings = load_wsl_file_mappings(db).unwrap_or_default();
 
-        match mappings_result {
-            Ok(records) => records
-                .into_iter()
-                .map(adapter::mapping_from_db_value)
-                .collect(),
-            Err(_) => vec![],
-        }
-    };
-
-    let file_mappings = backfill_default_mappings(&db, file_mappings).await;
-    let file_mappings = resolve_dynamic_paths_with_db(&db, file_mappings).await;
+    let file_mappings = backfill_default_mappings(db, file_mappings).await;
+    let file_mappings = resolve_dynamic_paths_with_db(db, file_mappings).await;
     let Some(mapping) = file_mappings
         .into_iter()
         .find(|mapping| mapping.id == mapping_id)
@@ -786,7 +600,9 @@ pub async fn remove_auto_synced_wsl_mapping_target(
 
 /// Get current WSL sync status
 #[tauri::command]
-pub async fn wsl_get_status(state: tauri::State<'_, DbState>) -> Result<WSLStatusResult, String> {
+pub async fn wsl_get_status(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<WSLStatusResult, String> {
     let config = wsl_get_config(state).await?;
 
     let wsl_available = if config.enabled {
@@ -891,7 +707,7 @@ pub fn wsl_open_folder(_distro: String) -> Result<(), String> {
 /// per schema bump. If the user deletes a backfilled mapping afterwards, it will
 /// NOT be re-added.
 async fn backfill_default_mappings(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &SqliteDbState,
     mut file_mappings: Vec<FileMapping>,
 ) -> Vec<FileMapping> {
     // Bump this number whenever new default mappings are added.
@@ -899,15 +715,10 @@ async fn backfill_default_mappings(
 
     // Read stored version
     let stored_version: u64 = db
-        .query("SELECT version FROM wsl_sync_config:`defaults_version` LIMIT 1")
-        .await
+        .with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "defaults_version"))
         .ok()
-        .and_then(|mut r| {
-            let vals: Result<Vec<serde_json::Value>, _> = r.take(0);
-            vals.ok()
-        })
-        .and_then(|records| records.first().cloned())
-        .and_then(|v| v.get("version").and_then(|v| v.as_u64()))
+        .flatten()
+        .and_then(|value| value.get("version").and_then(|value| value.as_u64()))
         .unwrap_or(0);
 
     if stored_version >= CURRENT_DEFAULTS_VERSION {
@@ -921,29 +732,14 @@ async fn backfill_default_mappings(
     for default_mapping in default_file_mappings() {
         if !existing_ids.contains(&default_mapping.id) {
             let mapping_data = adapter::mapping_to_db_value(&default_mapping);
-            if let Some(sqlite_state) = global_sqlite_state() {
-                if let Err(e) = sqlite_state.with_conn(|conn| {
-                    db_put(
-                        conn,
-                        DbTable::WslFileMapping,
-                        &default_mapping.id,
-                        &mapping_data,
-                    )
-                }) {
-                    log::warn!(
-                        "Failed to backfill SQLite WSL mapping '{}': {}",
-                        default_mapping.id,
-                        e
-                    );
-                    continue;
-                }
-            }
-
-            let query = format!(
-                "UPSERT wsl_file_mapping:`{}` CONTENT $data",
-                default_mapping.id
-            );
-            if let Err(e) = db.query(&query).bind(("data", mapping_data)).await {
+            if let Err(e) = db.with_conn(|conn| {
+                db_put(
+                    conn,
+                    DbTable::WslFileMapping,
+                    &default_mapping.id,
+                    &mapping_data,
+                )
+            }) {
                 log::warn!(
                     "Failed to backfill WSL mapping '{}': {}",
                     default_mapping.id,
@@ -957,21 +753,15 @@ async fn backfill_default_mappings(
     }
 
     // Mark migration as done
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let version_data = serde_json::json!({ "version": CURRENT_DEFAULTS_VERSION });
-        let _ = sqlite_state.with_conn(|conn| {
-            db_put(
-                conn,
-                DbTable::WslSyncConfig,
-                "defaults_version",
-                &version_data,
-            )
-        });
-    }
-    let _ = db
-        .query("UPSERT wsl_sync_config:`defaults_version` CONTENT { version: $v }")
-        .bind(("v", CURRENT_DEFAULTS_VERSION))
-        .await;
+    let version_data = serde_json::json!({ "version": CURRENT_DEFAULTS_VERSION });
+    let _ = db.with_conn(|conn| {
+        db_put(
+            conn,
+            DbTable::WslSyncConfig,
+            "defaults_version",
+            &version_data,
+        )
+    });
 
     file_mappings
 }
@@ -995,7 +785,7 @@ pub(super) fn resolve_dynamic_paths(mappings: Vec<FileMapping>) -> Vec<FileMappi
 }
 
 pub(super) async fn resolve_dynamic_paths_with_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &SqliteDbState,
     mappings: Vec<FileMapping>,
 ) -> Vec<FileMapping> {
     let mut resolved = Vec::with_capacity(mappings.len());
@@ -1173,9 +963,10 @@ pub(super) async fn resolve_dynamic_paths_with_db(
 }
 
 /// Update sync status in database
-pub(super) async fn update_sync_status(state: &DbState, result: &SyncResult) -> Result<(), String> {
-    let db = state.db();
-
+pub(super) async fn update_sync_status(
+    state: &SqliteDbState,
+    result: &SyncResult,
+) -> Result<(), String> {
     let (status, error) = if result.success {
         ("success".to_string(), None)
     } else {
@@ -1185,37 +976,23 @@ pub(super) async fn update_sync_status(state: &DbState, result: &SyncResult) -> 
 
     let now = Local::now().to_rfc3339();
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let mut config_data = sqlite_state
-            .with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "config"))?
-            .unwrap_or_else(|| adapter::config_to_db_value(&WSLSyncConfig::default()));
-        if let Some(payload) = config_data.as_object_mut() {
-            payload.insert(
-                "last_sync_time".to_string(),
-                serde_json::Value::String(now.clone()),
-            );
-            payload.insert(
-                "last_sync_status".to_string(),
-                serde_json::Value::String(status.clone()),
-            );
-            payload.insert(
-                "last_sync_error".to_string(),
-                error
-                    .clone()
-                    .map(serde_json::Value::String)
-                    .unwrap_or(serde_json::Value::Null),
-            );
-        }
-        sqlite_state
-            .with_conn(|conn| db_put(conn, DbTable::WslSyncConfig, "config", &config_data))?;
+    let mut config_data = state
+        .with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "config"))?
+        .unwrap_or_else(|| adapter::config_to_db_value(&WSLSyncConfig::default()));
+    if let Some(payload) = config_data.as_object_mut() {
+        payload.insert("last_sync_time".to_string(), serde_json::Value::String(now));
+        payload.insert(
+            "last_sync_status".to_string(),
+            serde_json::Value::String(status),
+        );
+        payload.insert(
+            "last_sync_error".to_string(),
+            error
+                .map(serde_json::Value::String)
+                .unwrap_or(serde_json::Value::Null),
+        );
     }
-
-    db.query("UPDATE wsl_sync_config SET last_sync_time = $time, last_sync_status = $status, last_sync_error = $error WHERE id = wsl_sync_config:`config`")
-        .bind(("time", now))
-        .bind(("status", status))
-        .bind(("error", error))
-        .await
-        .map_err(|e| format!("Failed to update sync status: {}", e))?;
+    state.with_conn(|conn| db_put(conn, DbTable::WslSyncConfig, "config", &config_data))?;
 
     Ok(())
 }
@@ -1429,7 +1206,7 @@ pub fn default_file_mappings() -> Vec<FileMapping> {
 ///
 /// Reads the Windows-side ~/.claude.json status and mirrors it to WSL's ~/.claude.json,
 /// preserving all other fields in the WSL file.
-async fn sync_onboarding_to_wsl(state: &DbState, distro: &str) -> Result<(), String> {
+async fn sync_onboarding_to_wsl(state: &SqliteDbState, distro: &str) -> Result<(), String> {
     // 1. Read Windows-side onboarding status
     let db = state.db();
     let windows_config_path = runtime_location::get_claude_mcp_config_path_async(&db).await?;
@@ -1489,7 +1266,7 @@ async fn sync_onboarding_to_wsl(state: &DbState, distro: &str) -> Result<(), Str
 ///
 /// Checks if `~/.openclaw/openclaw.json` exists in the target WSL distro.
 /// If the file is missing, creates it with an empty JSON object `{}`.
-async fn ensure_openclaw_config_in_wsl(state: &DbState, distro: &str) -> Result<(), String> {
+async fn ensure_openclaw_config_in_wsl(state: &SqliteDbState, distro: &str) -> Result<(), String> {
     let db = state.db();
     let config_path = runtime_location::get_openclaw_wsl_target_path_async(&db).await;
     let content = sync::read_wsl_file(distro, config_path.as_str());

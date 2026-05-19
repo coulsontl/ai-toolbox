@@ -1,8 +1,7 @@
 use super::store;
 use super::types::AppSettings;
 use crate::auto_launch;
-use crate::db::sqlite_state::SqliteDbState;
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 use crate::tray;
 
 /// Get settings from database using adapter layer for fault tolerance
@@ -18,12 +17,10 @@ pub async fn get_settings(
 #[tauri::command]
 pub async fn save_settings(
     sqlite_state: tauri::State<'_, SqliteDbState>,
-    legacy_state: tauri::State<'_, DbState>,
     app: tauri::AppHandle,
     settings: AppSettings,
 ) -> Result<(), String> {
     store::save_settings_to_sqlite_state(&sqlite_state, &settings)?;
-    store::save_settings_to_surreal(&legacy_state.db(), &settings).await?;
 
     if let Err(err) = tray::refresh_tray_menus(&app).await {
         log::warn!("Failed to refresh tray after saving settings: {err}");

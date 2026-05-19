@@ -13,8 +13,7 @@ use super::utils::{
     resolve_restore_dir_override, resolve_skills_restore_output_path,
     restore_custom_backup_entries, restore_sqlite_database_snapshot_from_zip, RestoreResult,
 };
-use crate::db::sqlite_state::SqliteDbState;
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 use crate::http_client;
 use crate::settings::store;
 
@@ -127,7 +126,7 @@ fn analyze_reqwest_error(err: &reqwest::Error, url: &str) -> WebDAVError {
 /// Test WebDAV connection
 #[tauri::command]
 pub async fn test_webdav_connection(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     url: String,
     username: String,
     password: String,
@@ -183,7 +182,7 @@ pub async fn test_webdav_connection(
 #[tauri::command]
 pub async fn backup_to_webdav(
     app_handle: tauri::AppHandle,
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     url: String,
     username: String,
     password: String,
@@ -265,7 +264,7 @@ pub async fn backup_to_webdav(
 
 /// Internal function: List backup files from WebDAV server
 pub(crate) async fn list_webdav_backups_internal(
-    db_state: &DbState,
+    db_state: &SqliteDbState,
     url: &str,
     username: &str,
     password: &str,
@@ -376,7 +375,7 @@ pub(crate) async fn list_webdav_backups_internal(
 /// List backup files from WebDAV server
 #[tauri::command]
 pub async fn list_webdav_backups(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     url: String,
     username: String,
     password: String,
@@ -387,7 +386,7 @@ pub async fn list_webdav_backups(
 
 /// Internal function: Delete a backup file from WebDAV server
 pub(crate) async fn delete_webdav_backup_internal(
-    db_state: &DbState,
+    db_state: &SqliteDbState,
     url: &str,
     username: &str,
     password: &str,
@@ -439,7 +438,7 @@ pub(crate) async fn delete_webdav_backup_internal(
 /// Delete a backup file from WebDAV server
 #[tauri::command]
 pub async fn delete_webdav_backup(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     url: String,
     username: String,
     password: String,
@@ -453,7 +452,7 @@ pub async fn delete_webdav_backup(
 #[tauri::command]
 pub async fn restore_from_webdav(
     app_handle: tauri::AppHandle,
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     url: String,
     username: String,
     password: String,

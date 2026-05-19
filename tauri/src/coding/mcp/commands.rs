@@ -21,7 +21,7 @@ use crate::coding::tools::{
     resolve_mcp_config_path_with_db_async, runtime_tool_by_key, to_runtime_tool_dto_with_db_async,
     CustomTool, RuntimeToolDto,
 };
-use crate::DbState;
+use crate::SqliteDbState;
 
 fn normalize_optional_text(value: Option<String>) -> Option<String> {
     value.and_then(|text| {
@@ -38,7 +38,9 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
 
 /// List all MCP servers
 #[tauri::command]
-pub async fn mcp_list_servers(state: State<'_, DbState>) -> Result<Vec<McpServerDto>, String> {
+pub async fn mcp_list_servers(
+    state: State<'_, SqliteDbState>,
+) -> Result<Vec<McpServerDto>, String> {
     let servers = mcp_store::get_mcp_servers(&state).await?;
 
     Ok(servers
@@ -67,7 +69,7 @@ pub async fn mcp_list_servers(state: State<'_, DbState>) -> Result<Vec<McpServer
 #[tauri::command]
 pub async fn mcp_create_server<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     input: CreateMcpServerInput,
 ) -> Result<McpServerDto, String> {
     let now = now_ms();
@@ -153,7 +155,7 @@ pub async fn mcp_create_server<R: Runtime>(
 #[allow(non_snake_case)]
 pub async fn mcp_update_server<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     serverId: String,
     input: UpdateMcpServerInput,
 ) -> Result<McpServerDto, String> {
@@ -247,7 +249,7 @@ pub async fn mcp_update_server<R: Runtime>(
 #[allow(non_snake_case)]
 pub async fn mcp_delete_server<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     serverId: String,
 ) -> Result<(), String> {
     // Get the server first to remove from tool configs
@@ -280,7 +282,7 @@ pub async fn mcp_delete_server<R: Runtime>(
 #[allow(non_snake_case)]
 pub async fn mcp_toggle_tool<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     serverId: String,
     toolKey: String,
 ) -> Result<bool, String> {
@@ -345,7 +347,7 @@ pub async fn mcp_toggle_tool<R: Runtime>(
 /// Reorder MCP servers
 #[tauri::command]
 pub async fn mcp_reorder_servers(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     ids: Vec<String>,
 ) -> Result<(), String> {
     mcp_store::reorder_mcp_servers(&state, &ids).await
@@ -355,7 +357,7 @@ pub async fn mcp_reorder_servers(
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn mcp_update_metadata(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     serverId: String,
     userGroup: Option<String>,
     userNote: Option<String>,
@@ -376,7 +378,7 @@ pub async fn mcp_update_metadata(
 #[allow(non_snake_case)]
 pub async fn mcp_sync_to_tool<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     toolKey: String,
 ) -> Result<Vec<McpSyncResultDto>, String> {
     let custom_tools = custom_store::get_custom_tools(&state)
@@ -435,7 +437,7 @@ pub async fn mcp_sync_to_tool<R: Runtime>(
 #[tauri::command]
 pub async fn mcp_sync_all<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
 ) -> Result<Vec<McpSyncResultDto>, String> {
     let custom_tools = custom_store::get_custom_tools(&state)
         .await
@@ -503,7 +505,7 @@ pub async fn mcp_sync_all<R: Runtime>(
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn mcp_import_from_tool(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     toolKey: String,
     enabledTools: Option<Vec<String>>,
 ) -> Result<McpImportResultDto, String> {
@@ -653,7 +655,7 @@ pub async fn mcp_import_from_tool(
 
 /// Get all tools that support MCP
 #[tauri::command]
-pub async fn mcp_get_tools(state: State<'_, DbState>) -> Result<Vec<RuntimeToolDto>, String> {
+pub async fn mcp_get_tools(state: State<'_, SqliteDbState>) -> Result<Vec<RuntimeToolDto>, String> {
     let custom_tools = custom_store::get_custom_tools(&state)
         .await
         .unwrap_or_default();
@@ -672,7 +674,7 @@ pub async fn mcp_get_tools(state: State<'_, DbState>) -> Result<Vec<RuntimeToolD
 
 /// Scan all installed MCP tools and return discovered servers (excluding already imported ones)
 #[tauri::command]
-pub async fn mcp_scan_servers(state: State<'_, DbState>) -> Result<McpScanResultDto, String> {
+pub async fn mcp_scan_servers(state: State<'_, SqliteDbState>) -> Result<McpScanResultDto, String> {
     // Add 30 second timeout to prevent hanging
     match tokio::time::timeout(
         std::time::Duration::from_secs(30),
@@ -687,7 +689,7 @@ pub async fn mcp_scan_servers(state: State<'_, DbState>) -> Result<McpScanResult
     }
 }
 
-async fn mcp_scan_servers_inner(state: &DbState) -> Result<McpScanResultDto, String> {
+async fn mcp_scan_servers_inner(state: &SqliteDbState) -> Result<McpScanResultDto, String> {
     let custom_tools = custom_store::get_custom_tools(state)
         .await
         .unwrap_or_default();
@@ -805,14 +807,17 @@ async fn mcp_scan_servers_inner(state: &DbState) -> Result<McpScanResultDto, Str
 
 /// Get MCP show in tray setting
 #[tauri::command]
-pub async fn mcp_get_show_in_tray(state: State<'_, DbState>) -> Result<bool, String> {
+pub async fn mcp_get_show_in_tray(state: State<'_, SqliteDbState>) -> Result<bool, String> {
     let prefs = mcp_store::get_mcp_preferences(&state).await?;
     Ok(prefs.show_in_tray)
 }
 
 /// Set MCP show in tray setting
 #[tauri::command]
-pub async fn mcp_set_show_in_tray(state: State<'_, DbState>, enabled: bool) -> Result<(), String> {
+pub async fn mcp_set_show_in_tray(
+    state: State<'_, SqliteDbState>,
+    enabled: bool,
+) -> Result<(), String> {
     let mut prefs = mcp_store::get_mcp_preferences(&state).await?;
     prefs.show_in_tray = enabled;
     prefs.updated_at = now_ms();
@@ -821,7 +826,9 @@ pub async fn mcp_set_show_in_tray(state: State<'_, DbState>, enabled: bool) -> R
 
 /// Get MCP preferred tools
 #[tauri::command]
-pub async fn mcp_get_preferred_tools(state: State<'_, DbState>) -> Result<Vec<String>, String> {
+pub async fn mcp_get_preferred_tools(
+    state: State<'_, SqliteDbState>,
+) -> Result<Vec<String>, String> {
     let prefs = mcp_store::get_mcp_preferences(&state).await?;
     Ok(prefs.preferred_tools)
 }
@@ -829,7 +836,7 @@ pub async fn mcp_get_preferred_tools(state: State<'_, DbState>) -> Result<Vec<St
 /// Set MCP preferred tools
 #[tauri::command]
 pub async fn mcp_set_preferred_tools(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     tools: Vec<String>,
 ) -> Result<(), String> {
     let mut prefs = mcp_store::get_mcp_preferences(&state).await?;
@@ -840,7 +847,9 @@ pub async fn mcp_set_preferred_tools(
 
 /// Get sync disabled to opencode setting
 #[tauri::command]
-pub async fn mcp_get_sync_disabled_to_opencode(state: State<'_, DbState>) -> Result<bool, String> {
+pub async fn mcp_get_sync_disabled_to_opencode(
+    state: State<'_, SqliteDbState>,
+) -> Result<bool, String> {
     let prefs = mcp_store::get_mcp_preferences(&state).await?;
     Ok(prefs.sync_disabled_to_opencode)
 }
@@ -851,7 +860,7 @@ pub async fn mcp_get_sync_disabled_to_opencode(state: State<'_, DbState>) -> Res
 #[tauri::command]
 pub async fn mcp_set_sync_disabled_to_opencode<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     enabled: bool,
 ) -> Result<(), String> {
     let mut prefs = mcp_store::get_mcp_preferences(&state).await?;
@@ -880,7 +889,7 @@ pub async fn mcp_set_sync_disabled_to_opencode<R: Runtime>(
 /// If sync_disabled_to_opencode is ON and server is not linked to opencode,
 /// write it to opencode config with enabled=false.
 async fn maybe_sync_disabled_to_opencode(
-    state: &DbState,
+    state: &SqliteDbState,
     server: &McpServer,
     custom_tools: &[CustomTool],
 ) {
@@ -901,7 +910,7 @@ async fn maybe_sync_disabled_to_opencode(
 /// If sync_disabled_to_opencode is ON and server is not linked to opencode,
 /// remove it from opencode config (used when deleting a server).
 async fn maybe_remove_disabled_from_opencode(
-    state: &DbState,
+    state: &SqliteDbState,
     server: &McpServer,
     custom_tools: &[CustomTool],
 ) {
@@ -919,7 +928,7 @@ async fn maybe_remove_disabled_from_opencode(
 
 /// Helper: Sync all MCP servers NOT linked to opencode as disabled (enabled=false) in opencode config
 async fn sync_opencode_disabled(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     servers: &[McpServer],
     custom_tools: &[CustomTool],
 ) {
@@ -938,7 +947,7 @@ async fn sync_opencode_disabled(
 
 /// Helper: Remove all MCP servers NOT linked to opencode from opencode config
 async fn cleanup_opencode_disabled(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     servers: &[McpServer],
     custom_tools: &[CustomTool],
 ) {
@@ -958,7 +967,7 @@ async fn cleanup_opencode_disabled(
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn mcp_add_custom_tool(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     key: String,
     displayName: String,
     relativeDetectDir: Option<String>,
@@ -1014,7 +1023,10 @@ pub async fn mcp_add_custom_tool(
 
 /// Remove a custom tool (only if it has no Skills fields, otherwise just clear MCP fields)
 #[tauri::command]
-pub async fn mcp_remove_custom_tool(state: State<'_, DbState>, key: String) -> Result<(), String> {
+pub async fn mcp_remove_custom_tool(
+    state: State<'_, SqliteDbState>,
+    key: String,
+) -> Result<(), String> {
     // Get the existing tool
     let existing = custom_store::get_custom_tool_by_key(&state, &key).await?;
 
@@ -1045,7 +1057,9 @@ pub async fn mcp_remove_custom_tool(state: State<'_, DbState>, key: String) -> R
 
 /// List all favorite MCPs
 #[tauri::command]
-pub async fn mcp_list_favorites(state: State<'_, DbState>) -> Result<Vec<FavoriteMcpDto>, String> {
+pub async fn mcp_list_favorites(
+    state: State<'_, SqliteDbState>,
+) -> Result<Vec<FavoriteMcpDto>, String> {
     let favorites = mcp_store::get_favorite_mcps(&state).await?;
 
     Ok(favorites
@@ -1067,7 +1081,7 @@ pub async fn mcp_list_favorites(state: State<'_, DbState>) -> Result<Vec<Favorit
 /// Create or update a favorite MCP (upsert by name)
 #[tauri::command]
 pub async fn mcp_upsert_favorite(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     input: FavoriteMcpInput,
 ) -> Result<FavoriteMcpDto, String> {
     let now = now_ms();
@@ -1122,7 +1136,7 @@ pub async fn mcp_upsert_favorite(
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn mcp_delete_favorite(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     favoriteId: String,
 ) -> Result<(), String> {
     mcp_store::delete_favorite_mcp(&state, &favoriteId).await
@@ -1168,7 +1182,7 @@ const DEFAULT_FAVORITE_MCP_PRESETS: &[(&str, &str, &str)] = &[
 ];
 
 #[tauri::command]
-pub async fn mcp_init_default_favorites(state: State<'_, DbState>) -> Result<usize, String> {
+pub async fn mcp_init_default_favorites(state: State<'_, SqliteDbState>) -> Result<usize, String> {
     let prefs = mcp_store::get_mcp_preferences(&state).await?;
     let now = now_ms();
     let mut inserted_count = 0;

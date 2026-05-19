@@ -15,36 +15,36 @@ use super::types::{SSHFileMapping, SyncProgress};
 use crate::coding::mcp::command_normalize;
 use crate::coding::mcp::mcp_store;
 use crate::coding::runtime_location;
-use crate::DbState;
+use crate::db::helpers::db_list;
+use crate::db::schema::DbTable;
+use crate::SqliteDbState;
 
 /// Get file mappings from database
-async fn get_file_mappings(state: &DbState) -> Result<Vec<SSHFileMapping>, String> {
+async fn get_file_mappings(state: &SqliteDbState) -> Result<Vec<SSHFileMapping>, String> {
     let db = state.db();
-
-    let mappings_result: Result<Vec<serde_json::Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM ssh_file_mapping ORDER BY module, name")
-        .await
-        .map_err(|e| format!("Failed to query SSH file mappings: {}", e))?
-        .take(0);
-
-    match mappings_result {
-        Ok(records) => Ok(records
-            .into_iter()
-            .map(super::adapter::mapping_from_db_value)
-            .collect()),
-        Err(_) => Ok(vec![]),
-    }
+    let mut records = db.with_conn(|conn| db_list(conn, DbTable::SshFileMapping, None))?;
+    records.sort_by(|a, b| {
+        let module_a = a.get("module").and_then(Value::as_str).unwrap_or_default();
+        let module_b = b.get("module").and_then(Value::as_str).unwrap_or_default();
+        let name_a = a.get("name").and_then(Value::as_str).unwrap_or_default();
+        let name_b = b.get("name").and_then(Value::as_str).unwrap_or_default();
+        module_a.cmp(module_b).then_with(|| name_a.cmp(name_b))
+    });
+    Ok(records
+        .into_iter()
+        .map(super::adapter::mapping_from_db_value)
+        .collect())
 }
 
 /// Sync MCP configuration to SSH remote (called on mcp-changed event)
 pub async fn sync_mcp_to_ssh(
-    state: &DbState,
+    state: &SqliteDbState,
     session: &SshSession,
     app: AppHandle,
 ) -> Result<(), String> {
     let db = state.db();
     let config = super::commands::get_ssh_config_internal(&db, false).await?;
-    drop(db);
+    let _ = db;
 
     if !config.enabled {
         info!("MCP SSH sync skipped because SSH sync is disabled");
@@ -209,7 +209,7 @@ pub async fn sync_mcp_to_ssh(
 
 /// Sync MCP servers to remote Claude Code ~/.claude.json
 async fn sync_mcp_to_ssh_claude(
-    state: &DbState,
+    state: &SqliteDbState,
     session: &SshSession,
     servers: &[&crate::coding::mcp::types::McpServer],
 ) -> Result<(), String> {

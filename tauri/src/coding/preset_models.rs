@@ -1,4 +1,4 @@
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 use crate::http_client;
 use serde_json::Value;
 use std::fs;
@@ -104,7 +104,7 @@ pub fn load_cached_preset_models() -> Result<Option<Value>, String> {
 /// and return the data to the frontend.
 #[tauri::command]
 pub async fn fetch_remote_preset_models(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     url: String,
 ) -> Result<Value, String> {
     let client = http_client::client_with_timeout(&state, 30).await?;

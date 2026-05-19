@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use surrealdb::engine::local::SurrealKv;
 use surrealdb::Surreal;
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 use log::{error, info, warn};
 use simplelog::{
@@ -29,9 +30,130 @@ pub mod single_instance;
 pub mod tray;
 pub mod update;
 
-// Re-export DbState for use in other modules
-pub use db::DbState;
+// Re-export SqliteDbState for use in other modules
+pub use db::SqliteDbState;
 pub(crate) static APP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+async fn open_legacy_surreal_database(
+    db_path: &Path,
+) -> Result<Surreal<surrealdb::engine::local::Db>, String> {
+    let db = Surreal::new::<SurrealKv>(db_path.to_path_buf())
+        .await
+        .map_err(|error| format!("Failed to open legacy SurrealDB database: {error}"))?;
+    db.use_ns("ai_toolbox")
+        .use_db("main")
+        .await
+        .map_err(|error| {
+            format!("Failed to select legacy SurrealDB namespace/database: {error}")
+        })?;
+    Ok(db)
+}
+
+async fn run_one_time_legacy_database_import(
+    app_handle: &tauri::AppHandle,
+    paths: &db::surreal_import::MigrationPaths,
+    sqlite_state: &SqliteDbState,
+    startup_state: db::surreal_import::StartupMigrationState,
+) -> Result<(), String> {
+    use db::surreal_import::{
+        archive_legacy_database, clear_migration_failure_state,
+        import_all_known_tables_from_surreal, mark_sqlite_import_complete,
+        record_migration_failure, write_migration_log, StartupMigrationState,
+    };
+
+    let migration_result: Result<(), String> = async {
+        match startup_state {
+            StartupMigrationState::NewInstall | StartupMigrationState::Ready => {
+                clear_migration_failure_state(paths)?;
+                return Ok(());
+            }
+            StartupMigrationState::NeedsLegacyArchive => {
+                write_migration_log(
+                    paths,
+                    "Detected completed SQLite import with legacy database still present; archiving legacy database.",
+                )?;
+                archive_legacy_database(paths)?;
+                clear_migration_failure_state(paths)?;
+                return Ok(());
+            }
+            StartupMigrationState::IncompleteImport => {
+                return Err(
+                    "Startup migration state was not cleaned before opening SQLite".to_string(),
+                );
+            }
+            StartupMigrationState::NeedsSurrealImport => {}
+        }
+
+        write_migration_log(paths, "Starting one-time SurrealDB -> SQLite import.")?;
+        let legacy_db = open_legacy_surreal_database(&paths.legacy_database_dir).await?;
+        db_migration::run_all_db_migrations(&legacy_db)
+            .await
+            .map_err(|error| {
+                format!("Failed to run legacy SurrealDB migrations before SQLite import: {error}")
+            })?;
+
+        let report = import_all_known_tables_from_surreal(sqlite_state, &legacy_db).await?;
+        write_migration_log(
+            paths,
+            &format!(
+                "Imported {} tables and {} records from legacy SurrealDB.",
+                report.tables.len(),
+                report.total_records()
+            ),
+        )?;
+        drop(legacy_db);
+
+        mark_sqlite_import_complete(paths)?;
+        archive_legacy_database(paths)?;
+        clear_migration_failure_state(paths)?;
+        write_migration_log(paths, "SQLite import completed successfully.")?;
+        Ok(())
+    }
+    .await;
+
+    if let Err(error) = migration_result {
+        let failure_state = record_migration_failure(paths, &error).unwrap_or_default();
+        let message = format!(
+            "数据库迁移失败，已连续失败 {} 次。\n\n迁移日志：{}\n\n错误：{}",
+            failure_state.consecutive_failures,
+            paths.migration_log.display(),
+            error
+        );
+        let _ = write_migration_log(paths, &format!("Migration failed: {error}"));
+        if failure_state.consecutive_failures >= 3 {
+            app_handle
+                .dialog()
+                .message(message)
+                .title("AI Toolbox 数据库迁移失败")
+                .kind(MessageDialogKind::Error)
+                .show(|_| {});
+        }
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+fn prepare_startup_migration_state(
+    paths: &db::surreal_import::MigrationPaths,
+) -> Result<db::surreal_import::StartupMigrationState, String> {
+    use db::surreal_import::{
+        cleanup_incomplete_sqlite_database, detect_startup_migration_state, write_migration_log,
+        StartupMigrationState,
+    };
+
+    let startup_state = detect_startup_migration_state(paths);
+    if startup_state != StartupMigrationState::IncompleteImport {
+        return Ok(startup_state);
+    }
+
+    write_migration_log(
+        paths,
+        "Detected incomplete SQLite import; removing partial SQLite files before retry.",
+    )?;
+    cleanup_incomplete_sqlite_database(paths)?;
+    Ok(StartupMigrationState::NeedsSurrealImport)
+}
 
 /// Set window background color (affects macOS titlebar color)
 #[tauri::command]
@@ -719,9 +841,6 @@ pub fn run() {
                 }
             }
 
-            let db_path = app_data_dir.join("database");
-            info!("数据库路径: {:?}", db_path);
-
             // Initialize models cache directory (file-based, replaces DB table)
             coding::open_code::free_models::set_cache_dir(app_data_dir.clone());
             coding::open_code::free_models::init_default_provider_models();
@@ -731,247 +850,73 @@ pub fn run() {
             coding::preset_models::set_cache_dir(app_data_dir.clone());
             info!("预设模型缓存目录已初始化");
 
-            // Initialize SurrealDB
-            info!("正在初始化 SurrealDB...");
+            let migration_paths = db::surreal_import::MigrationPaths::new(&app_data_dir);
+            let startup_migration_state = match prepare_startup_migration_state(&migration_paths) {
+                Ok(state) => state,
+                Err(e) => {
+                    error!("数据库迁移状态准备失败: {}", e);
+                    panic!("Failed to prepare database migration state: {}", e);
+                }
+            };
+            let sqlite_db_path = migration_paths.sqlite_database_file.clone();
+            info!("正在初始化 SQLite 主数据库: {:?}", sqlite_db_path);
+            let db_state = match SqliteDbState::open(sqlite_db_path) {
+                Ok(state) => {
+                    info!("SQLite 主数据库初始化成功");
+                    state
+                }
+                Err(e) => {
+                    error!("SQLite 主数据库初始化失败: {}", e);
+                    panic!("Failed to initialize SQLite database: {}", e);
+                }
+            };
+
+            let legacy_import_result =
+                tauri::async_runtime::block_on(run_one_time_legacy_database_import(
+                    &app_handle,
+                    &migration_paths,
+                    &db_state,
+                    startup_migration_state,
+                ));
+
+            if let Err(e) = legacy_import_result {
+                error!("一次性旧库导入失败: {}", e);
+                drop(db_state);
+                if matches!(
+                    startup_migration_state,
+                    db::surreal_import::StartupMigrationState::NeedsSurrealImport
+                        | db::surreal_import::StartupMigrationState::IncompleteImport
+                ) {
+                    if let Err(cleanup_error) =
+                        db::surreal_import::cleanup_incomplete_sqlite_database(&migration_paths)
+                    {
+                        warn!("清理不完整 SQLite 数据库失败: {}", cleanup_error);
+                    }
+                }
+                panic!("Failed to migrate legacy database into SQLite: {}", e);
+            }
+
             tauri::async_runtime::block_on(async {
-                let db = match Surreal::new::<SurrealKv>(db_path.clone()).await {
-                    Ok(db) => {
-                        info!("SurrealDB 初始化成功");
-                        db
-                    }
-                    Err(e) => {
-                        error!("SurrealDB 初始化失败: {}", e);
-                        panic!("Failed to initialize SurrealDB: {}", e);
-                    }
-                };
-
-                info!("正在选择命名空间和数据库...");
-                if let Err(e) = db.use_ns("ai_toolbox").use_db("main").await {
-                    error!("选择命名空间/数据库失败: {}", e);
-                    panic!("Failed to select namespace and database: {}", e);
-                }
-                info!("命名空间和数据库选择成功");
-
-                info!("正在执行数据库迁移...");
-                if let Err(e) = db_migration::run_all_db_migrations(&db).await {
-                    error!("数据库迁移失败: {}", e);
-                    panic!("Failed to run database migrations: {}", e);
-                }
-                info!("数据库迁移执行完成");
-
-                // Clean up legacy tables before compact to reduce export size
-                let _ = db.query("REMOVE TABLE IF EXISTS provider_models").await;
-
-                // Safe compact: export → delete → reimport (surrealkv native compact is broken)
-                let db = if db::needs_compact(&db_path) {
-                    match db::safe_compact(db, &db_path).await {
-                        Ok(new_db) => new_db,
-                        Err(e) => {
-                            error!("安全压缩失败: {}", e);
-                            let db = Surreal::new::<SurrealKv>(db_path.clone())
-                                .await
-                                .expect("Failed to reopen database after compact failure");
-                            db.use_ns("ai_toolbox")
-                                .use_db("main")
-                                .await
-                                .expect("Failed to select ns/db after compact failure");
-                            db
-                        }
-                    }
-                } else {
-                    db
-                };
-
-                let db_state = DbState(db);
-
-                let sqlite_db_path = app_data_dir.join("ai-toolbox.db");
-                info!("正在初始化 SQLite 数据库: {:?}", sqlite_db_path);
-                let sqlite_state = match db::sqlite_state::SqliteDbState::open(sqlite_db_path) {
-                    Ok(state) => {
-                        info!("SQLite 数据库初始化成功");
-                        state
-                    }
-                    Err(e) => {
-                        error!("SQLite 数据库初始化失败: {}", e);
-                        panic!("Failed to initialize SQLite database: {}", e);
-                    }
-                };
-
-                if let Err(e) = settings::store::sync_sqlite_settings_from_surreal_if_missing(
-                    &sqlite_state,
-                    &db_state.db(),
-                )
-                .await
-                {
-                    error!("同步 settings 到 SQLite 失败: {}", e);
-                    panic!("Failed to sync settings into SQLite: {}", e);
-                }
-                info!("SQLite settings 初始化完成");
-
                 if let Err(e) =
-                    coding::proxy_gateway::settings::sync_sqlite_settings_from_surreal_if_missing(
-                        &sqlite_state,
-                        &db_state.db(),
-                    )
-                    .await
-                {
-                    error!("同步 proxy gateway settings 到 SQLite 失败: {}", e);
-                    panic!("Failed to sync proxy gateway settings into SQLite: {}", e);
-                }
-                info!("SQLite proxy gateway settings 初始化完成");
-
-                if let Err(e) =
-                    coding::tools::custom_store::sync_sqlite_custom_tools_from_surreal_if_missing(
-                        &sqlite_state,
-                        &db_state.db(),
-                    )
-                    .await
-                {
-                    error!("同步 custom tools 到 SQLite 失败: {}", e);
-                    panic!("Failed to sync custom tools into SQLite: {}", e);
-                }
-                info!("SQLite custom tools 初始化完成");
-
-                if let Err(e) = coding::mcp::mcp_store::sync_sqlite_mcp_from_surreal_if_missing(
-                    &sqlite_state,
-                    &db_state.db(),
-                )
-                .await
-                {
-                    error!("同步 MCP 数据到 SQLite 失败: {}", e);
-                    panic!("Failed to sync MCP data into SQLite: {}", e);
-                }
-                info!("SQLite MCP 数据初始化完成");
-
-                if let Err(e) =
-                    coding::skills::central_repo::sync_sqlite_skill_settings_from_surreal_if_missing(
-                        &sqlite_state,
-                        &db_state.db(),
-                    )
-                    .await
-                {
-                    error!("同步 skill settings 到 SQLite 失败: {}", e);
-                    panic!("Failed to sync skill settings into SQLite: {}", e);
-                }
-                info!("SQLite skill settings 初始化完成");
-
-                if let Err(e) = coding::skills::skill_store::sync_sqlite_skills_from_surreal_if_missing(
-                    &sqlite_state,
-                    &db_state.db(),
-                )
-                .await
-                {
-                    error!("同步 Skills 数据到 SQLite 失败: {}", e);
-                    panic!("Failed to sync Skills data into SQLite: {}", e);
-                }
-                info!("SQLite Skills 数据初始化完成");
-
-                if let Err(e) =
-                    coding::claude_code::sync_sqlite_claude_from_surreal_if_missing(
-                        &sqlite_state,
-                        &db_state.db(),
-                    )
-                    .await
-                {
-                    error!("同步 Claude Code 数据到 SQLite 失败: {}", e);
-                    panic!("Failed to sync Claude Code data into SQLite: {}", e);
-                }
-                info!("SQLite Claude Code 数据初始化完成");
-
-                if let Err(e) = coding::codex::sync_sqlite_codex_from_surreal_if_missing(
-                    &sqlite_state,
-                    &db_state.db(),
-                )
-                .await
-                {
-                    error!("同步 Codex 数据到 SQLite 失败: {}", e);
-                    panic!("Failed to sync Codex data into SQLite: {}", e);
-                }
-                info!("SQLite Codex 数据初始化完成");
-
-                if let Err(e) =
-                    coding::gemini_cli::sync_sqlite_gemini_cli_from_surreal_if_missing(
-                        &sqlite_state,
-                        &db_state.db(),
-                    )
-                    .await
-                {
-                    error!("同步 Gemini CLI 数据到 SQLite 失败: {}", e);
-                    panic!("Failed to sync Gemini CLI data into SQLite: {}", e);
-                }
-                info!("SQLite Gemini CLI 数据初始化完成");
-
-                if let Err(e) = coding::open_claw::sync_sqlite_openclaw_from_surreal_if_missing(
-                    &sqlite_state,
-                    &db_state.db(),
-                )
-                .await
-                {
-                    error!("同步 OpenClaw 数据到 SQLite 失败: {}", e);
-                    panic!("Failed to sync OpenClaw data into SQLite: {}", e);
-                }
-                info!("SQLite OpenClaw 数据初始化完成");
-
-                if let Err(e) = coding::open_code::sync_sqlite_opencode_from_surreal_if_missing(
-                    &sqlite_state,
-                    &db_state.db(),
-                )
-                .await
-                {
-                    error!("同步 OpenCode 数据到 SQLite 失败: {}", e);
-                    panic!("Failed to sync OpenCode data into SQLite: {}", e);
-                }
-                info!("SQLite OpenCode 数据初始化完成");
-
-                match db::surreal_import::import_missing_known_tables_from_surreal(
-                    &sqlite_state,
-                    &db_state.db(),
-                )
-                .await
-                {
-                    Ok(report) => info!(
-                        "SQLite 剩余已知表初始化完成: {} tables, {} records",
-                        report.tables.len(),
-                        report.total_records()
-                    ),
-                    Err(e) => {
-                        error!("同步剩余已知表到 SQLite 失败: {}", e);
-                        panic!("Failed to sync remaining known tables into SQLite: {}", e);
-                    }
-                }
-
-                // Skip auto-import of local settings into database on startup.
-                // Local configs are now loaded on-demand without writing to DB.
-                if let Err(e) =
-                    coding::runtime_location::refresh_runtime_location_cache_async(&db_state.db())
-                        .await
+                    coding::runtime_location::refresh_runtime_location_cache_async(&db_state).await
                 {
                     warn!("运行时路径缓存初始化失败: {}", e);
                 }
 
                 app.manage(db_state);
-                info!("数据库状态已注册到应用");
-
-                if let Err(e) = db::sqlite_state::set_global_sqlite_state(sqlite_state.clone()) {
-                    error!("注册全局 SQLite 状态失败: {}", e);
-                    panic!("Failed to register global SQLite state: {}", e);
-                }
-
-                app.manage(sqlite_state);
-                info!("SQLite 数据库状态已注册到应用");
+                info!("SQLite 主数据库状态已注册到应用");
 
                 app.manage(coding::proxy_gateway::ProxyGatewayState::default());
                 info!("网关状态已注册到应用");
 
                 let gateway_start_app = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    let db_state = gateway_start_app.state::<DbState>();
-                    let sqlite_state = gateway_start_app.state::<db::sqlite_state::SqliteDbState>();
+                    let db_state = gateway_start_app.state::<SqliteDbState>();
                     let gateway_state =
                         gateway_start_app.state::<coding::proxy_gateway::ProxyGatewayState>();
                     match coding::proxy_gateway::proxy_gateway_start_if_enabled_on_startup(
                         &db_state,
-                        &sqlite_state,
+                        &db_state,
                         &gateway_state,
                         &gateway_start_app,
                     )
@@ -1026,8 +971,7 @@ pub fn run() {
             let app_handle_clone = app_handle.clone();
             tauri::async_runtime::spawn(async move {
                 let start_minimized = {
-                    let sqlite_state =
-                        app_handle_clone.state::<db::sqlite_state::SqliteDbState>();
+                    let sqlite_state = app_handle_clone.state::<SqliteDbState>();
                     match settings::store::load_settings_from_sqlite_state(&sqlite_state) {
                         Ok(settings) => {
                             if settings.launch_on_startup {
@@ -1070,7 +1014,7 @@ pub fn run() {
                         // Spawn background task without awaiting
                         tauri::async_runtime::spawn(async move {
                             // Re-obtain state inside the spawned task
-                            let db_state = app.state::<crate::DbState>();
+                            let db_state = app.state::<crate::SqliteDbState>();
                             if !coding::wsl::is_wsl_auto_sync_enabled(&db_state).await {
                                 return;
                             }
@@ -1099,7 +1043,7 @@ pub fn run() {
                         // Spawn background task without awaiting
                         tauri::async_runtime::spawn(async move {
                             // Re-obtain state inside the spawned task
-                            let db_state = app.state::<crate::DbState>();
+                            let db_state = app.state::<crate::SqliteDbState>();
                             if !coding::wsl::is_wsl_auto_sync_enabled(&db_state).await {
                                 return;
                             }
@@ -1128,7 +1072,7 @@ pub fn run() {
                         // Spawn background task without awaiting
                         tauri::async_runtime::spawn(async move {
                             // Re-obtain state inside the spawned task
-                            let db_state = app.state::<crate::DbState>();
+                            let db_state = app.state::<crate::SqliteDbState>();
                             if !coding::wsl::is_wsl_auto_sync_enabled(&db_state).await {
                                 return;
                             }
@@ -1157,7 +1101,7 @@ pub fn run() {
                         // Spawn background task without awaiting
                         tauri::async_runtime::spawn(async move {
                             // Re-obtain state inside the spawned task
-                            let db_state = app.state::<crate::DbState>();
+                            let db_state = app.state::<crate::SqliteDbState>();
                             if !coding::wsl::is_wsl_auto_sync_enabled(&db_state).await {
                                 return;
                             }
@@ -1186,7 +1130,7 @@ pub fn run() {
                         // Spawn background task without awaiting
                         tauri::async_runtime::spawn(async move {
                             // Re-obtain state inside the spawned task
-                            let db_state = app.state::<crate::DbState>();
+                            let db_state = app.state::<crate::SqliteDbState>();
                             if !coding::wsl::is_wsl_auto_sync_enabled(&db_state).await {
                                 return;
                             }
@@ -1213,7 +1157,7 @@ pub fn run() {
                     let _ = app_mcp.listen("mcp-changed", move |_event| {
                         let app = app_mcp_clone.clone();
                         tauri::async_runtime::spawn(async move {
-                            let db_state = app.state::<crate::DbState>();
+                            let db_state = app.state::<crate::SqliteDbState>();
                             if !coding::wsl::is_wsl_auto_sync_enabled(&db_state).await {
                                 return;
                             }
@@ -1231,7 +1175,7 @@ pub fn run() {
                     let _ = app_skills.listen("skills-changed", move |_event| {
                         let app = app_skills_clone.clone();
                         tauri::async_runtime::spawn(async move {
-                            let db_state = app.state::<crate::DbState>();
+                            let db_state = app.state::<crate::SqliteDbState>();
                             if !coding::wsl::is_wsl_auto_sync_enabled(&db_state).await {
                                 return;
                             }
@@ -1254,7 +1198,7 @@ pub fn run() {
                 let app_clone = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(2)).await;
-                    let db_state = app_clone.state::<crate::DbState>();
+                    let db_state = app_clone.state::<crate::SqliteDbState>();
                     if !coding::wsl::is_wsl_auto_sync_enabled(&db_state).await {
                         return;
                     }
@@ -1270,7 +1214,7 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(3)).await;
 
-                    let db_state = app_ssh_restore.state::<DbState>();
+                    let db_state = app_ssh_restore.state::<SqliteDbState>();
                     let session_state = app_ssh_restore.state::<coding::ssh::SshSessionState>();
                     let db = db_state.db();
 
@@ -1333,7 +1277,7 @@ pub fn run() {
                     tokio::time::sleep(Duration::from_secs(5)).await;
 
                     loop {
-                        let db_state = app_clone.state::<crate::DbState>();
+                        let db_state = app_clone.state::<crate::SqliteDbState>();
                         let days =
                             coding::skills::cache_cleanup::get_git_cache_cleanup_days(&db_state)
                                 .await;
@@ -1380,7 +1324,7 @@ pub fn run() {
                         // Remove the flag file first to prevent repeated resync
                         let _ = fs::remove_file(&resync_flag);
 
-                        let db_state = app_clone.state::<crate::DbState>();
+                        let db_state = app_clone.state::<crate::SqliteDbState>();
                         if let Err(e) =
                             coding::runtime_location::refresh_runtime_location_cache_async(
                                 &db_state.db(),
@@ -1442,7 +1386,7 @@ pub fn run() {
 
                 // Check minimize_to_tray_on_close setting with default value.
                 let minimize_to_tray = app_handle
-                    .try_state::<db::sqlite_state::SqliteDbState>()
+                    .try_state::<SqliteDbState>()
                     .and_then(|sqlite_state| {
                         settings::store::load_settings_from_sqlite_state(&sqlite_state).ok()
                     })

@@ -9,7 +9,7 @@ use super::skill_store;
 use super::tool_adapters::{get_all_tool_adapters, RuntimeToolAdapter};
 use super::types::{OnboardingGroup, OnboardingPlan, OnboardingVariant};
 use crate::coding::tools::claude_plugins::PluginInfo;
-use crate::DbState;
+use crate::SqliteDbState;
 
 /// Extra skill source directories to scan during onboarding discovery.
 /// These are third-party skill stores outside the built-in tool adapters.
@@ -30,7 +30,7 @@ const EXTRA_SKILL_SOURCES: &[ExtraSkillSource] = &[ExtraSkillSource {
 /// Build an onboarding plan by scanning installed tools for existing skills
 pub async fn build_onboarding_plan(
     app: &tauri::AppHandle,
-    state: &DbState,
+    state: &SqliteDbState,
 ) -> Result<OnboardingPlan> {
     let home =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("failed to resolve home directory"))?;

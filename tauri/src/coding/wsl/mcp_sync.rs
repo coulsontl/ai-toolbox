@@ -15,51 +15,38 @@ use super::types::{FileMapping, SyncProgress, WSLSyncConfig};
 use crate::coding::mcp::command_normalize;
 use crate::coding::mcp::mcp_store;
 use crate::coding::runtime_location;
-use crate::DbState;
+use crate::db::helpers::{db_get, db_list};
+use crate::db::schema::DbTable;
+use crate::SqliteDbState;
 
 /// Read WSL sync config directly from database (without tauri::State wrapper)
-async fn get_wsl_config(state: &DbState) -> Result<WSLSyncConfig, String> {
+async fn get_wsl_config(state: &SqliteDbState) -> Result<WSLSyncConfig, String> {
     let db = state.db();
-
-    let config_result: Result<Vec<serde_json::Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM wsl_sync_config:`config` LIMIT 1")
-        .await
-        .map_err(|e| format!("Failed to query WSL config: {}", e))?
-        .take(0);
-
-    match config_result {
-        Ok(records) => {
-            if let Some(record) = records.first() {
-                Ok(adapter::config_from_db_value(record.clone(), vec![]))
-            } else {
-                Ok(WSLSyncConfig::default())
-            }
-        }
-        Err(_) => Ok(WSLSyncConfig::default()),
-    }
+    let record = db.with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "config"))?;
+    Ok(record
+        .map(|value| adapter::config_from_db_value(value, vec![]))
+        .unwrap_or_default())
 }
 
 /// Get file mappings from database
-async fn get_file_mappings(state: &DbState) -> Result<Vec<FileMapping>, String> {
+async fn get_file_mappings(state: &SqliteDbState) -> Result<Vec<FileMapping>, String> {
     let db = state.db();
-
-    let mappings_result: Result<Vec<serde_json::Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM wsl_file_mapping ORDER BY module, name")
-        .await
-        .map_err(|e| format!("Failed to query file mappings: {}", e))?
-        .take(0);
-
-    match mappings_result {
-        Ok(records) => Ok(records
-            .into_iter()
-            .map(adapter::mapping_from_db_value)
-            .collect()),
-        Err(_) => Ok(vec![]),
-    }
+    let mut records = db.with_conn(|conn| db_list(conn, DbTable::WslFileMapping, None))?;
+    records.sort_by(|a, b| {
+        let module_a = a.get("module").and_then(Value::as_str).unwrap_or_default();
+        let module_b = b.get("module").and_then(Value::as_str).unwrap_or_default();
+        let name_a = a.get("name").and_then(Value::as_str).unwrap_or_default();
+        let name_b = b.get("name").and_then(Value::as_str).unwrap_or_default();
+        module_a.cmp(module_b).then_with(|| name_a.cmp(name_b))
+    });
+    Ok(records
+        .into_iter()
+        .map(adapter::mapping_from_db_value)
+        .collect())
 }
 
 /// Sync MCP configuration to WSL (called on mcp-changed event)
-pub async fn sync_mcp_to_wsl(state: &DbState, app: AppHandle) -> Result<(), String> {
+pub async fn sync_mcp_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<(), String> {
     let config = get_wsl_config(state).await?;
 
     if !config.enabled || !config.sync_mcp {
@@ -221,7 +208,7 @@ pub async fn sync_mcp_to_wsl(state: &DbState, app: AppHandle) -> Result<(), Stri
 
 /// Sync MCP servers to WSL Claude Code ~/.claude.json
 async fn sync_mcp_to_wsl_claude(
-    state: &DbState,
+    state: &SqliteDbState,
     distro: &str,
     servers: &[&crate::coding::mcp::types::McpServer],
 ) -> Result<(), String> {

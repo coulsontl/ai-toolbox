@@ -5,8 +5,7 @@ use tauri::{Emitter, Manager};
 
 use super::utils::{create_backup_zip, get_db_path};
 use super::webdav::{delete_webdav_backup_internal, list_webdav_backups_internal};
-use crate::db::sqlite_state::SqliteDbState;
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 use crate::http_client;
 use crate::settings::store;
 
@@ -31,7 +30,7 @@ pub fn start_auto_backup_scheduler(app_handle: tauri::AppHandle) {
 
 /// Read settings from DB and check if auto-backup should run
 async fn check_and_perform_backup(app_handle: &tauri::AppHandle) -> Result<(), String> {
-    let db_state = app_handle.state::<DbState>();
+    let db_state = app_handle.state::<SqliteDbState>();
     let sqlite_state = app_handle.state::<SqliteDbState>();
     let settings = store::load_settings_from_sqlite_state(&sqlite_state)?;
 
@@ -149,7 +148,7 @@ fn is_backup_due(last_time: &Option<String>, interval_days: u32) -> bool {
 /// Perform a WebDAV backup
 async fn perform_webdav_backup(
     app_handle: &tauri::AppHandle,
-    db_state: &DbState,
+    db_state: &SqliteDbState,
     settings: &crate::settings::types::AppSettings,
 ) -> Result<(), String> {
     let db_path = get_db_path(app_handle)?;
@@ -225,23 +224,18 @@ async fn perform_local_backup(
     Ok(())
 }
 
-/// Update last_auto_backup_time in both SQLite and SurrealDB during the migration window.
+/// Update last_auto_backup_time in SQLite.
 async fn update_last_auto_backup_time(
     sqlite_state: &SqliteDbState,
-    db_state: &DbState,
+    _db_state: &SqliteDbState,
     time: &str,
 ) -> Result<(), String> {
-    store::update_last_auto_backup_time_in_sqlite_state(sqlite_state, time)?;
-
-    let db = db_state.db();
-    store::update_last_auto_backup_time_in_surreal(&db, time).await?;
-
-    Ok(())
+    store::update_last_auto_backup_time_in_sqlite_state(sqlite_state, time)
 }
 
 /// Cleanup old WebDAV backups, keeping only the latest `max_keep` files
 async fn cleanup_old_webdav_backups(
-    db_state: &DbState,
+    db_state: &SqliteDbState,
     url: &str,
     username: &str,
     password: &str,

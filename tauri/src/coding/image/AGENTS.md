@@ -6,7 +6,7 @@
 
 ## Source of Truth
 
-- 图片工作台的主数据分两层：SQLite JSONB 里的 `image_channel` / `image_job` / `image_asset` 元数据，以及 app data 下 `image-studio/assets/` 的真实图片文件；两者缺一不可。兼容期会双写 SurrealDB，备份默认包含资产文件，但用户可通过备份设置关闭 `backup_image_assets_enabled` 来减少备份体积。
+- 图片工作台的主数据分两层：SQLite JSONB 里的 `image_channel` / `image_job` / `image_asset` 元数据，以及 app data 下 `image-studio/assets/` 的真实图片文件；两者缺一不可。不再双写旧库；旧 SurrealDB 仅用于启动时一次性导入，备份默认包含资产文件，但用户可通过备份设置关闭 `backup_image_assets_enabled` 来减少备份体积。
 - 前端表单、预览 data URL 和临时引用顺序都不是业务事实源；真正的任务记录由 `image_create_job` 写库后形成。
 - 下载、历史、备份恢复消费的是落盘后的图片资产文件，不是接口响应的临时 base64。
 
@@ -31,7 +31,7 @@
 sequenceDiagram
   participant UI as Frontend
   participant Cmd as image::commands
-  participant DB as SurrealDB
+  participant DB as SQLite JSONB
   participant FS as image-studio/assets
   participant API as OpenAI-compatible images API
 
@@ -48,8 +48,8 @@ sequenceDiagram
 ## 易错点与历史坑（Gotchas）
 
 - 不要再把图片接口配置保存成单个 `image_settings` 记录；当前真实配置源已经是 `image_channel` 表。
-- 不要把 SurrealDB `type::string(id)` 返回的原样 record id 直接当成图片模块业务 id 使用。`image_channel` / `image_job` / `image_asset` 的 `id` 在 DTO 输出、更新查询、删除和排序前都应先清洗成干净 id，否则很容易出现“列表能看但编辑/删除/提交找不到记录”的假成功状态。
-- 不要对 `image_asset` 继续使用 `SELECT *, type::string(id) as id FROM $asset_ids` 这类批量查询并直接反序列化成强类型列表。Surreal 在缺失记录场景下会把单个元素变成 `NONE`，从而触发 `NONE -> string` 的转换错误，连带把本来已经成功的图片任务 DTO 回填也炸掉。资产批量读取必须能容忍缺失记录。
+- SQLite helper 返回的图片记录 `id` 已经是干净业务 id；DTO 输出、更新查询、删除和排序都应继续使用这个 id，不要重新拼接旧 record-id 形式。
+- `image_asset` 批量读取必须能容忍缺失资产记录。历史任务可能引用已被手动删除或恢复缺失的文件/记录，缺失项不能让本来已经成功的图片任务 DTO 回填整体失败。
 - `image_asset` 的安全批量读取方式是：对具体表执行 `SELECT *, type::string(id) as id FROM image_asset WHERE id INSIDE $asset_ids`，其中 `$asset_ids` 绑定为 `Vec<surrealdb::sql::Thing>` 记录引用；然后在 Rust 侧按原始输入 `asset_ids` 顺序重排结果。不要假设数据库返回顺序会自动等于输入顺序，也不要指望数据库在重复 id 场景下返回重复行。
 - 不要把 `gpt-image-2-2k` / `4k` 这类外部代理 alias 当成通用协议写死到核心数据模型里；当前只对齐标准 `gpt-image-2`。
 - 参考图提交时不能把前端 data URL 原样落表；应先解 base64、写资产文件，再把资产 ID 关联到 job。
@@ -105,5 +105,5 @@ sequenceDiagram
 
 - 至少验证：保存渠道后重新读取仍一致，且 `sort_order` 顺序稳定。
 - 至少验证：同一模型存在多个渠道时，任务提交会按传入 `channel_id` 正确路由。
-- 至少验证：创建任务后，SQLite 元数据记录和 `image-studio/assets/` 文件同时产生；兼容期 SurrealDB 双写失败不能被误判为图片文件成功。
+- 至少验证：创建任务后，SQLite 元数据记录和 `image-studio/assets/` 文件同时产生；SQLite 元数据写入失败不能被误判为图片文件成功。
 - 至少验证：从备份恢复后，历史任务引用的图片文件仍可从 app data 目录读取。

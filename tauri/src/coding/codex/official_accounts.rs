@@ -14,8 +14,12 @@ use super::commands::{
     apply_config_internal, get_codex_root_dir_from_db_async, get_codex_root_dir_without_db,
 };
 use super::types::{CodexOfficialAccount, CodexOfficialAccountContent, CodexProvider};
-use crate::coding::db_id::{db_new_id, db_record_id};
-use crate::db::DbState;
+use crate::coding::db_id::db_new_id;
+use crate::db::helpers::{
+    db_delete, db_get, db_patch_fields, db_patch_where_bool, db_put, db_query_by_field,
+};
+use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::SqliteDbState;
 use tauri::Emitter;
 
 const CODEX_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -469,9 +473,7 @@ fn auth_json_from_snapshot(snapshot: &str) -> Result<Value, String> {
         .map_err(|error| format!("Failed to parse account snapshot: {error}"))
 }
 
-async fn read_auth_json_from_disk(
-    db: Option<&surrealdb::Surreal<surrealdb::engine::local::Db>>,
-) -> Result<Value, String> {
+async fn read_auth_json_from_disk(db: Option<&crate::db::SqliteDbState>) -> Result<Value, String> {
     let root_dir = if let Some(db) = db {
         get_codex_root_dir_from_db_async(db).await?
     } else {
@@ -487,7 +489,7 @@ async fn read_auth_json_from_disk(
 }
 
 async fn write_auth_json_to_disk(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     auth: &Value,
 ) -> Result<(), String> {
     let root_dir = get_codex_root_dir_from_db_async(db).await?;
@@ -502,49 +504,37 @@ async fn write_auth_json_to_disk(
 }
 
 async fn query_provider(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     provider_id: &str,
 ) -> Result<CodexProvider, String> {
-    let provider_record_id = db_record_id("codex_provider", provider_id);
-    let result: Result<Vec<Value>, _> = db
-        .query(&format!(
-            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
-            provider_record_id
-        ))
-        .await
-        .map_err(|error| format!("Failed to query provider: {error}"))?
-        .take(0);
-
-    match result {
-        Ok(records) => records
-            .first()
-            .cloned()
-            .map(adapter::from_db_value_provider)
-            .ok_or_else(|| format!("Codex provider '{}' not found", provider_id)),
-        Err(error) => Err(format!("Failed to deserialize provider: {error}")),
-    }
+    db.with_conn(|conn| db_get(conn, DbTable::CodexProvider, provider_id))?
+        .map(adapter::from_db_value_provider)
+        .ok_or_else(|| format!("Codex provider '{}' not found", provider_id))
 }
 
 async fn list_persisted_official_accounts(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     provider_id: &str,
 ) -> Result<Vec<CodexOfficialAccount>, String> {
-    let result: Result<Vec<Value>, _> = db
-        .query(
-            "SELECT *, type::string(id) as id FROM codex_official_account WHERE provider_id = $provider_id ORDER BY sort_index ASC, created_at ASC",
-        )
-        .bind(("provider_id", provider_id.to_string()))
-        .await
-        .map_err(|error| format!("Failed to query official accounts: {error}"))?
-        .take(0);
-
-    match result {
-        Ok(records) => Ok(records
-            .into_iter()
-            .map(adapter::from_db_value_official_account)
-            .collect()),
-        Err(error) => Err(format!("Failed to deserialize official accounts: {error}")),
-    }
+    let provider_id_value = Value::String(provider_id.to_string());
+    let provider_id_path = JsonFieldPath::new("provider_id")?;
+    let order = OrderSpec::new(vec![
+        OrderField::json_integer("sort_index", OrderDirection::Asc)?,
+        OrderField::json_text("created_at", OrderDirection::Asc)?,
+    ]);
+    db.with_conn(|conn| {
+        Ok(db_query_by_field(
+            conn,
+            DbTable::CodexOfficialAccount,
+            &provider_id_path,
+            &provider_id_value,
+            Some(&order),
+            None,
+        )?
+        .into_iter()
+        .map(adapter::from_db_value_official_account)
+        .collect())
+    })
 }
 
 fn build_virtual_local_account(auth: &Value) -> CodexOfficialAccount {
@@ -952,38 +942,17 @@ fn build_account_content_from_auth_snapshot(
 }
 
 async fn save_official_account(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     content: &CodexOfficialAccountContent,
 ) -> Result<CodexOfficialAccount, String> {
-    let record_id = db_record_id("codex_official_account", &db_new_id());
-    db.query(&format!("CREATE {} CONTENT $data", record_id))
-        .bind(("data", adapter::to_db_value_official_account(content)))
-        .await
-        .map_err(|error| format!("Failed to create official account: {error}"))?;
-
-    let result: Result<Vec<Value>, _> = db
-        .query(&format!(
-            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
-            record_id
-        ))
-        .await
-        .map_err(|error| format!("Failed to query created official account: {error}"))?
-        .take(0);
-
-    match result {
-        Ok(records) => records
-            .first()
-            .cloned()
-            .map(adapter::from_db_value_official_account)
-            .ok_or_else(|| "Failed to load created official account".to_string()),
-        Err(error) => Err(format!(
-            "Failed to deserialize created official account: {error}"
-        )),
-    }
+    let account_id = db_new_id();
+    let payload = adapter::to_db_value_official_account(content);
+    db.with_conn(|conn| db_put(conn, DbTable::CodexOfficialAccount, &account_id, &payload))?;
+    load_official_account(db, &account_id).await
 }
 
 async fn find_matching_official_account(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     provider_id: &str,
     auth: &Value,
 ) -> Result<Option<CodexOfficialAccount>, String> {
@@ -994,83 +963,119 @@ async fn find_matching_official_account(
 }
 
 async fn update_official_account_apply_status(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     account_id: Option<&str>,
 ) -> Result<(), String> {
     let now = Local::now().to_rfc3339();
-    db.query(
-        "UPDATE codex_official_account SET is_applied = false, updated_at = $now WHERE is_applied = true",
-    )
-    .bind(("now", now.clone()))
-    .await
-    .map_err(|error| format!("Failed to clear official account apply state: {error}"))?;
+    db.with_conn(|conn| {
+        db_patch_where_bool(
+            conn,
+            DbTable::CodexOfficialAccount,
+            &JsonFieldPath::new("is_applied")?,
+            true,
+            &[
+                ("is_applied", Value::Bool(false)),
+                ("updated_at", Value::String(now.clone())),
+            ],
+        )
+    })?;
 
     if let Some(account_id) = account_id {
-        let record_id = db_record_id("codex_official_account", account_id);
-        db.query(&format!(
-            "UPDATE {} SET is_applied = true, updated_at = $now",
-            record_id
-        ))
-        .bind(("now", now))
-        .await
-        .map_err(|error| format!("Failed to mark official account as applied: {error}"))?;
+        db.with_conn(|conn| {
+            db_patch_fields(
+                conn,
+                DbTable::CodexOfficialAccount,
+                account_id,
+                &[
+                    ("is_applied", Value::Bool(true)),
+                    ("updated_at", Value::String(now)),
+                ],
+            )
+            .map(|_| ())
+        })?;
     }
 
     Ok(())
 }
 
 async fn load_official_account(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     account_id: &str,
 ) -> Result<CodexOfficialAccount, String> {
-    let record_id = db_record_id("codex_official_account", account_id);
-    let result: Result<Vec<Value>, _> = db
-        .query(&format!(
-            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
-            record_id
-        ))
-        .await
-        .map_err(|error| format!("Failed to query official account: {error}"))?
-        .take(0);
-
-    match result {
-        Ok(records) => records
-            .first()
-            .cloned()
-            .map(adapter::from_db_value_official_account)
-            .ok_or_else(|| format!("Official account '{}' not found", account_id)),
-        Err(error) => Err(format!("Failed to deserialize official account: {error}")),
-    }
+    db.with_conn(|conn| db_get(conn, DbTable::CodexOfficialAccount, account_id))?
+        .map(adapter::from_db_value_official_account)
+        .ok_or_else(|| format!("Official account '{}' not found", account_id))
 }
 
 async fn persist_usage_snapshot(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     account_id: &str,
     usage_snapshot: &UsageSnapshot,
     last_error: Option<&str>,
 ) -> Result<CodexOfficialAccount, String> {
     let now = Local::now().to_rfc3339();
-    let record_id = db_record_id("codex_official_account", account_id);
-    db.query(&format!(
-        "UPDATE {} SET limit_short_label = $limit_short_label, limit_5h_text = $limit_5h_text, limit_weekly_text = $limit_weekly_text, limit_5h_reset_at = $limit_5h_reset_at, limit_weekly_reset_at = $limit_weekly_reset_at, last_limits_fetched_at = $last_limits_fetched_at, last_error = $last_error, updated_at = $updated_at",
-        record_id
-    ))
-    .bind(("limit_short_label", usage_snapshot.limit_short_label.clone()))
-    .bind(("limit_5h_text", usage_snapshot.limit_5h_text.clone()))
-    .bind(("limit_weekly_text", usage_snapshot.limit_weekly_text.clone()))
-    .bind(("limit_5h_reset_at", usage_snapshot.limit_5h_reset_at))
-    .bind(("limit_weekly_reset_at", usage_snapshot.limit_weekly_reset_at))
-    .bind(("last_limits_fetched_at", Some(now.clone())))
-    .bind(("last_error", last_error.map(|value| value.to_string())))
-    .bind(("updated_at", now))
-    .await
-    .map_err(|error| format!("Failed to update official account usage: {error}"))?;
+    db.with_conn(|conn| {
+        db_patch_fields(
+            conn,
+            DbTable::CodexOfficialAccount,
+            account_id,
+            &[
+                (
+                    "limit_short_label",
+                    usage_snapshot
+                        .limit_short_label
+                        .clone()
+                        .map(Value::String)
+                        .unwrap_or(Value::Null),
+                ),
+                (
+                    "limit_5h_text",
+                    usage_snapshot
+                        .limit_5h_text
+                        .clone()
+                        .map(Value::String)
+                        .unwrap_or(Value::Null),
+                ),
+                (
+                    "limit_weekly_text",
+                    usage_snapshot
+                        .limit_weekly_text
+                        .clone()
+                        .map(Value::String)
+                        .unwrap_or(Value::Null),
+                ),
+                (
+                    "limit_5h_reset_at",
+                    usage_snapshot
+                        .limit_5h_reset_at
+                        .map(|value| serde_json::json!(value))
+                        .unwrap_or(Value::Null),
+                ),
+                (
+                    "limit_weekly_reset_at",
+                    usage_snapshot
+                        .limit_weekly_reset_at
+                        .map(|value| serde_json::json!(value))
+                        .unwrap_or(Value::Null),
+                ),
+                ("last_limits_fetched_at", Value::String(now.clone())),
+                (
+                    "last_error",
+                    last_error
+                        .map(|value| Value::String(value.to_string()))
+                        .unwrap_or(Value::Null),
+                ),
+                ("updated_at", Value::String(now)),
+            ],
+        )
+        .map(|_| ())
+    })?;
 
     load_official_account(db, account_id).await
 }
 
 async fn persist_refreshed_account_snapshot(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     account: &CodexOfficialAccount,
     refreshed_snapshot: &Value,
 ) -> Result<CodexOfficialAccount, String> {
@@ -1080,29 +1085,21 @@ async fn persist_refreshed_account_snapshot(
         None,
         Some(&account.name),
     )?;
-    let record_id = db_record_id("codex_official_account", &account.id);
-    db.query(&format!("UPDATE {} CONTENT $data", record_id))
-        .bind((
-            "data",
-            adapter::to_db_value_official_account(&CodexOfficialAccountContent {
-                is_applied: account.is_applied,
-                created_at: account.created_at.clone(),
-                updated_at: Local::now().to_rfc3339(),
-                limit_short_label: account.limit_short_label.clone(),
-                limit_5h_text: account.limit_5h_text.clone(),
-                limit_weekly_text: account.limit_weekly_text.clone(),
-                limit_5h_reset_at: account.limit_5h_reset_at,
-                limit_weekly_reset_at: account.limit_weekly_reset_at,
-                last_limits_fetched_at: account.last_limits_fetched_at.clone(),
-                last_error: account.last_error.clone(),
-                sort_index: account.sort_index,
-                ..parsed_content
-            }),
-        ))
-        .await
-        .map_err(|error| {
-            format!("Failed to persist refreshed official account snapshot: {error}")
-        })?;
+    let payload = adapter::to_db_value_official_account(&CodexOfficialAccountContent {
+        is_applied: account.is_applied,
+        created_at: account.created_at.clone(),
+        updated_at: Local::now().to_rfc3339(),
+        limit_short_label: account.limit_short_label.clone(),
+        limit_5h_text: account.limit_5h_text.clone(),
+        limit_weekly_text: account.limit_weekly_text.clone(),
+        limit_5h_reset_at: account.limit_5h_reset_at,
+        limit_weekly_reset_at: account.limit_weekly_reset_at,
+        last_limits_fetched_at: account.last_limits_fetched_at.clone(),
+        last_error: account.last_error.clone(),
+        sort_index: account.sort_index,
+        ..parsed_content
+    });
+    db.with_conn(|conn| db_put(conn, DbTable::CodexOfficialAccount, &account.id, &payload))?;
 
     load_official_account(db, &account.id).await
 }
@@ -1155,7 +1152,7 @@ fn assign_provider_id(
 
 #[tauri::command]
 pub async fn list_codex_official_accounts(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     provider_id: String,
 ) -> Result<Vec<CodexOfficialAccount>, String> {
     let db = state.db();
@@ -1174,7 +1171,7 @@ pub async fn list_codex_official_accounts(
 
 #[tauri::command]
 pub async fn start_codex_official_account_oauth(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     provider_id: String,
 ) -> Result<CodexOfficialAccount, String> {
@@ -1216,7 +1213,7 @@ pub async fn start_codex_official_account_oauth(
 
 #[tauri::command]
 pub async fn save_codex_official_local_account(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     provider_id: String,
 ) -> Result<CodexOfficialAccount, String> {
@@ -1278,7 +1275,7 @@ pub async fn save_codex_official_local_account(
 
 #[tauri::command]
 pub async fn apply_codex_official_account(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     provider_id: String,
     account_id: String,
@@ -1334,7 +1331,7 @@ pub async fn apply_codex_official_account(
 
 #[tauri::command]
 pub async fn delete_codex_official_account(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     provider_id: String,
     account_id: String,
@@ -1352,10 +1349,7 @@ pub async fn delete_codex_official_account(
         return Err("The applied official account cannot be deleted".to_string());
     }
 
-    let record_id = db_record_id("codex_official_account", &account_id);
-    db.query(&format!("DELETE {}", record_id))
-        .await
-        .map_err(|error| format!("Failed to delete official account: {error}"))?;
+    db.with_conn(|conn| db_delete(conn, DbTable::CodexOfficialAccount, &account_id).map(|_| ()))?;
 
     let _ = app.emit("config-changed", "window");
     Ok(())
@@ -1363,7 +1357,7 @@ pub async fn delete_codex_official_account(
 
 #[tauri::command]
 pub async fn refresh_codex_official_account_limits(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     provider_id: String,
     account_id: String,
 ) -> Result<CodexOfficialAccount, String> {
@@ -1420,7 +1414,7 @@ pub async fn refresh_codex_official_account_limits(
 
 #[tauri::command]
 pub async fn copy_codex_official_account_token(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     input: CodexOfficialAccountTokenCopyInput,
 ) -> Result<(), String> {
     let db = state.db();
@@ -1636,22 +1630,10 @@ mod tests {
 }
 
 pub async fn ensure_codex_provider_has_no_official_accounts(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     provider_id: &str,
 ) -> Result<(), String> {
-    let result: Result<Vec<Value>, _> = db
-        .query("SELECT count() AS count FROM codex_official_account WHERE provider_id = $provider_id GROUP ALL")
-        .bind(("provider_id", provider_id.to_string()))
-        .await
-        .map_err(|error| format!("Failed to query official account count: {error}"))?
-        .take(0);
-
-    let count = result
-        .ok()
-        .and_then(|records| records.first().cloned())
-        .and_then(|record| record.get("count").and_then(Value::as_i64))
-        .unwrap_or(0);
-    if count > 0 {
+    if codex_provider_has_official_accounts(db, provider_id).await? {
         return Err(
             "Please delete all official accounts under this provider before deleting the provider"
                 .to_string(),
@@ -1661,39 +1643,35 @@ pub async fn ensure_codex_provider_has_no_official_accounts(
 }
 
 pub async fn codex_provider_has_official_accounts(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     provider_id: &str,
 ) -> Result<bool, String> {
-    let result: Result<Vec<Value>, _> = db
-        .query("SELECT count() AS count FROM codex_official_account WHERE provider_id = $provider_id GROUP ALL")
-        .bind(("provider_id", provider_id.to_string()))
-        .await
-        .map_err(|error| format!("Failed to query official account count: {error}"))?
-        .take(0);
-
-    let count = result
-        .ok()
-        .and_then(|records| records.first().cloned())
-        .and_then(|record| record.get("count").and_then(Value::as_i64))
-        .unwrap_or(0);
-    Ok(count > 0)
+    Ok(!list_persisted_official_accounts(db, provider_id)
+        .await?
+        .is_empty())
 }
 
 pub async fn clear_all_codex_official_account_apply_status(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<(), String> {
     let now = Local::now().to_rfc3339();
-    db.query(
-        "UPDATE codex_official_account SET is_applied = false, updated_at = $now WHERE is_applied = true",
-    )
-    .bind(("now", now))
-    .await
-    .map_err(|error| format!("Failed to clear official account apply state: {error}"))?;
+    db.with_conn(|conn| {
+        db_patch_where_bool(
+            conn,
+            DbTable::CodexOfficialAccount,
+            &JsonFieldPath::new("is_applied")?,
+            true,
+            &[
+                ("is_applied", Value::Bool(false)),
+                ("updated_at", Value::String(now)),
+            ],
+        )
+    })?;
     Ok(())
 }
 
 pub async fn sync_codex_official_account_apply_status(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     provider_id: &str,
 ) -> Result<(), String> {
     let local_auth = read_auth_json_from_disk(Some(db)).await?;

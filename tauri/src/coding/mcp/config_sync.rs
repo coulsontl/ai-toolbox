@@ -18,7 +18,7 @@ use crate::coding::tools::{
 
 /// Sync an MCP server to a specific tool's config file
 pub fn sync_server_to_tool(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     server: &McpServer,
     tool: &RuntimeTool,
 ) -> Result<McpSyncDetail, String> {
@@ -26,7 +26,7 @@ pub fn sync_server_to_tool(
 }
 
 pub async fn sync_server_to_tool_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     server: &McpServer,
     tool: &RuntimeTool,
 ) -> Result<McpSyncDetail, String> {
@@ -35,7 +35,7 @@ pub async fn sync_server_to_tool_async(
 
 /// Sync an MCP server to a specific tool's config file with explicit enabled state
 pub fn sync_server_to_tool_with_enabled(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     server: &McpServer,
     tool: &RuntimeTool,
     enabled: bool,
@@ -46,7 +46,7 @@ pub fn sync_server_to_tool_with_enabled(
 }
 
 pub async fn sync_server_to_tool_with_enabled_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     server: &McpServer,
     tool: &RuntimeTool,
     enabled: bool,
@@ -59,7 +59,7 @@ pub async fn sync_server_to_tool_with_enabled_async(
 
 /// Remove an MCP server from a specific tool's config file
 pub fn remove_server_from_tool(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     server_name: &str,
     tool: &RuntimeTool,
 ) -> Result<(), String> {
@@ -69,7 +69,7 @@ pub fn remove_server_from_tool(
 }
 
 pub async fn remove_server_from_tool_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     server_name: &str,
     tool: &RuntimeTool,
 ) -> Result<(), String> {
@@ -728,7 +728,7 @@ fn build_http_config(
 
 /// Import MCP servers from a tool's config file
 pub fn import_servers_from_tool(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     tool: &RuntimeTool,
 ) -> Result<Vec<McpServer>, String> {
     let config_path = resolve_mcp_config_path_with_db(db, tool)
@@ -737,7 +737,7 @@ pub fn import_servers_from_tool(
 }
 
 pub async fn import_servers_from_tool_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     tool: &RuntimeTool,
 ) -> Result<Vec<McpServer>, String> {
     let config_path = resolve_mcp_config_path_with_db_async(db, tool)

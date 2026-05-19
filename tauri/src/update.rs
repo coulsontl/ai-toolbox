@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tauri::Emitter;
 use tauri_plugin_updater::UpdaterExt;
 
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 use crate::http_client;
 
 /// Response from GitHub latest.json
@@ -39,7 +39,7 @@ pub struct UpdateCheckResult {
 #[tauri::command]
 pub async fn check_for_updates(
     app_handle: tauri::AppHandle,
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<UpdateCheckResult, String> {
     const GITHUB_REPO: &str = "coulsontl/ai-toolbox";
     let latest_json_url = format!(
@@ -132,7 +132,7 @@ fn detect_current_platform() -> String {
 #[tauri::command]
 pub async fn install_update(
     app: tauri::AppHandle,
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<bool, String> {
     // Get proxy settings from database
     let (proxy_mode, proxy_url) = http_client::get_proxy_from_settings(&state).await?;

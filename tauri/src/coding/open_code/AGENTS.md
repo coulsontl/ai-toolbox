@@ -7,7 +7,7 @@
 ## Source of Truth
 
 - 当前生效配置文件路径的优先级是：应用内 `common_config.config_path` > 环境变量 `OPENCODE_CONFIG` > shell 配置 > 默认路径。
-- `opencode_common_config` 和 `opencode_prompt_config` 的主存储是 SQLite JSONB；兼容期保留 SurrealDB 双写/导入。
+- `opencode_common_config` 和 `opencode_prompt_config` 的主存储是 SQLite JSONB；旧 SurrealDB 仅用于启动时一次性导入。
 - OpenCode prompt 文件不是独立根目录配置，而是基于当前生效配置文件所在目录派生出的 `AGENTS.md`。
 - OpenCode 主模型和小模型的运行时值都使用 `provider_id/model_id` 格式；不要把它降成裸 `model_id`。
 - models.dev 的 `experimental.modes.*` 在 OpenCode 语义中会展开成虚拟模型，ID 形如 `${base_model_id}-${mode}`，例如 `gpt-5.5-fast`；后端统一模型列表需要透出 `base_model_id` / `experimental_mode`，供前端继承 base variants。

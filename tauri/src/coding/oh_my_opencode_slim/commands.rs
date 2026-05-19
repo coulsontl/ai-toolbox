@@ -4,19 +4,14 @@ use std::fs;
 
 use super::adapter;
 use super::types::*;
-use crate::coding::db_id::db_record_id;
 use crate::coding::runtime_location;
 use crate::db::helpers::{
     db_create, db_delete, db_get, db_list, db_patch_fields, db_patch_where_bool, db_put,
     db_query_by_bool,
 };
 use crate::db::schema::{DbTable, JsonFieldPath};
-use crate::db::sqlite_state::{global_sqlite_state, SqliteDbState};
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 use tauri::Emitter;
-
-const OH_MY_OPENCODE_SLIM_CONFIG_TABLE: &str = "oh_my_opencode_slim_config";
-const OH_MY_OPENCODE_SLIM_GLOBAL_CONFIG_TABLE: &str = "oh_my_opencode_slim_global_config";
 
 fn default_global_config() -> OhMyOpenCodeSlimGlobalConfig {
     OhMyOpenCodeSlimGlobalConfig {
@@ -85,37 +80,13 @@ fn put_global_config_to_sqlite(sqlite_state: &SqliteDbState, data: &Value) -> Re
         .with_conn(|conn| db_put(conn, DbTable::OhMyOpenCodeSlimGlobalConfig, "global", data))
 }
 
-async fn upsert_surreal_record(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    table: &str,
-    id: &str,
-    data: &Value,
-) -> Result<(), String> {
-    db.query(format!("UPSERT {}:`{}` CONTENT $data", table, id))
-        .bind(("data", data.clone()))
-        .await
-        .map_err(|e| format!("Failed to sync {table} record '{id}' to SurrealDB: {e}"))?;
-    Ok(())
-}
-
-async fn delete_surreal_record(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    table: &str,
-    id: &str,
-) -> Result<(), String> {
-    db.query(format!("DELETE {}:`{}`", table, id))
-        .await
-        .map_err(|e| format!("Failed to delete {table} record '{id}' from SurrealDB: {e}"))?;
-    Ok(())
-}
-
 fn get_default_oh_my_opencode_slim_dir() -> Result<std::path::PathBuf, String> {
     let home_dir = dirs::home_dir().ok_or("Failed to get home directory")?;
     Ok(home_dir.join(".config").join("opencode"))
 }
 
 async fn get_oh_my_opencode_slim_config_path_and_source(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<(std::path::PathBuf, &'static str), String> {
     let path = runtime_location::get_omos_config_path_async(db).await?;
     let source = if path.parent() == Some(get_default_oh_my_opencode_slim_dir()?.as_path()) {
@@ -133,61 +104,23 @@ async fn get_oh_my_opencode_slim_config_path_and_source(
 /// List all oh-my-opencode-slim configs ordered by name
 #[tauri::command]
 pub async fn list_oh_my_opencode_slim_configs(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Vec<OhMyOpenCodeSlimConfig>, String> {
     let db = state.db();
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let configs = list_configs_from_sqlite(sqlite_state)?;
-        if configs.is_empty() {
-            if let Ok(temp_config) = load_temp_config_from_file(&db).await {
-                return Ok(vec![temp_config]);
-            }
-        }
-        return Ok(configs);
-    }
-
-    let records_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM oh_my_opencode_slim_config")
-        .await
-        .map_err(|e| format!("Failed to query configs: {}", e))?
-        .take(0);
-
-    match records_result {
-        Ok(records) => {
-            // 如果数据库为空，尝试从本地配置文件加载临时配置（不写入数据库）
-            if records.is_empty() {
-                if let Ok(temp_config) = load_temp_config_from_file(&db).await {
-                    return Ok(vec![temp_config]);
-                }
-            }
-
-            let mut result: Vec<OhMyOpenCodeSlimConfig> =
-                records.into_iter().map(adapter::from_db_value).collect();
-            // Sort by sort_index (if set), then by name as fallback
-            result.sort_by(|a, b| match (a.sort_index, b.sort_index) {
-                (Some(ai), Some(bi)) => ai.cmp(&bi),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => a.name.cmp(&b.name),
-            });
-            Ok(result)
-        }
-        Err(e) => {
-            eprintln!("Failed to deserialize configs: {}", e);
-            // Try to load from local file as fallback
-            if let Ok(temp_config) = load_temp_config_from_file(&db).await {
-                return Ok(vec![temp_config]);
-            }
-            Ok(Vec::new())
+    let configs = list_configs_from_sqlite(db)?;
+    if configs.is_empty() {
+        if let Ok(temp_config) = load_temp_config_from_file(db).await {
+            return Ok(vec![temp_config]);
         }
     }
+    Ok(configs)
 }
 
 /// Helper function to get oh-my-opencode-slim config path
 /// omos 只支持 .json 格式（不支持 jsonc）
 pub async fn get_oh_my_opencode_slim_config_path(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<std::path::PathBuf, String> {
     let (config_path, _) = get_oh_my_opencode_slim_config_path_and_source(db).await?;
     Ok(config_path)
@@ -197,7 +130,7 @@ pub async fn get_oh_my_opencode_slim_config_path(
 /// This is used when the database is empty and we want to show the local config
 /// Returns a config with id "__local__" to indicate it's from local file
 async fn load_temp_config_from_file(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<OhMyOpenCodeSlimConfig, String> {
     let config_path = get_oh_my_opencode_slim_config_path(db)
         .await
@@ -266,7 +199,7 @@ async fn load_temp_config_from_file(
 /// Load a temporary global config from local file without writing to database
 /// Returns a config with id "__local__" to indicate it's from local file
 async fn load_temp_global_config_from_file(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<OhMyOpenCodeSlimGlobalConfig, String> {
     let config_path = get_oh_my_opencode_slim_config_path(db)
         .await
@@ -355,7 +288,7 @@ async fn load_temp_global_config_from_file(
 /// Create a new oh-my-opencode-slim config
 #[tauri::command]
 pub async fn create_oh_my_opencode_slim_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     input: OhMyOpenCodeSlimConfigInput,
 ) -> Result<OhMyOpenCodeSlimConfig, String> {
@@ -381,58 +314,17 @@ pub async fn create_oh_my_opencode_slim_config(
 
     let json_data = adapter::to_db_value(&content);
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let created = sqlite_state
-            .with_conn(|conn| db_create(conn, DbTable::OhMyOpenCodeSlimConfig, &json_data))?;
-        let created_config = adapter::from_db_value(created);
-        if let Err(error) = upsert_surreal_record(
-            &db,
-            OH_MY_OPENCODE_SLIM_CONFIG_TABLE,
-            &created_config.id,
-            &json_data,
-        )
-        .await
-        {
-            log::warn!(
-                "[OhMyOpenCodeSlim] Failed to mirror created config to SurrealDB: {}",
-                error
-            );
-        }
-
-        let _ = app.emit("config-changed", "window");
-        return Ok(created_config);
-    }
-
-    db.query("CREATE oh_my_opencode_slim_config CONTENT $data")
-        .bind(("data", json_data))
-        .await
-        .map_err(|e| format!("Failed to create config: {}", e))?;
-
-    let records_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM oh_my_opencode_slim_config ORDER BY created_at DESC LIMIT 1")
-        .await
-        .map_err(|e| format!("Failed to query new config: {}", e))?
-        .take(0);
-
+    let created =
+        db.with_conn(|conn| db_create(conn, DbTable::OhMyOpenCodeSlimConfig, &json_data))?;
     let _ = app.emit("config-changed", "window");
-
-    match records_result {
-        Ok(records) => {
-            if let Some(record) = records.first() {
-                Ok(adapter::from_db_value(record.clone()))
-            } else {
-                Err("Failed to retrieve created config".to_string())
-            }
-        }
-        Err(e) => Err(format!("Failed to create config: {}", e)),
-    }
+    Ok(adapter::from_db_value(created))
 }
 
 /// Update an existing oh-my-opencode-slim config
 #[tauri::command]
 #[allow(unused_variables)]
 pub async fn update_oh_my_opencode_slim_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     input: OhMyOpenCodeSlimConfigInput,
 ) -> Result<OhMyOpenCodeSlimConfig, String> {
@@ -442,166 +334,39 @@ pub async fn update_oh_my_opencode_slim_config(
         .id
         .ok_or_else(|| "ID is required for update".to_string())?;
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let existing_config =
-            get_config_from_sqlite(sqlite_state, &config_id)?.ok_or_else(|| {
-                format!(
-                    "Oh-my-opencode-slim config with ID '{}' not found",
-                    config_id
-                )
-            })?;
-
-        let now = Local::now().to_rfc3339();
-        let sanitized_agents = input
-            .agents
-            .clone()
-            .map(adapter::strip_legacy_fallback_models_from_agents);
-        let created_at = existing_config
-            .created_at
-            .clone()
-            .unwrap_or_else(|| Local::now().to_rfc3339());
-
-        let content = OhMyOpenCodeSlimConfigContent {
-            name: input.name,
-            is_applied: existing_config.is_applied,
-            is_disabled: existing_config.is_disabled,
-            agents: sanitized_agents,
-            council: input.council,
-            fallback: input.fallback,
-            other_fields: input.other_fields,
-            sort_index: existing_config.sort_index,
-            created_at,
-            updated_at: now,
-        };
-
-        let json_data = adapter::to_db_value(&content);
-        put_config_to_sqlite(sqlite_state, &config_id, &json_data)?;
-        if let Err(error) = upsert_surreal_record(
-            &db,
-            OH_MY_OPENCODE_SLIM_CONFIG_TABLE,
-            &config_id,
-            &json_data,
+    let existing_config = get_config_from_sqlite(db, &config_id)?.ok_or_else(|| {
+        format!(
+            "Oh-my-opencode-slim config with ID '{}' not found",
+            config_id
         )
-        .await
-        {
-            log::warn!(
-                "[OhMyOpenCodeSlim] Failed to mirror updated config to SurrealDB: {}",
-                error
-            );
-        }
-
-        if existing_config.is_applied {
-            if let Err(e) = apply_config_to_file(&db, &config_id).await {
-                eprintln!("Failed to auto-apply updated config: {}", e);
-            } else {
-                #[cfg(target_os = "windows")]
-                let _ = app.emit("wsl-sync-request-opencode", ());
-            }
-        }
-
-        return Ok(OhMyOpenCodeSlimConfig {
-            id: config_id,
-            name: content.name,
-            is_applied: existing_config.is_applied,
-            is_disabled: content.is_disabled,
-            agents: content.agents,
-            council: content.council,
-            fallback: content.fallback,
-            other_fields: content.other_fields,
-            sort_index: content.sort_index,
-            created_at: Some(content.created_at),
-            updated_at: Some(content.updated_at),
-        });
-    }
-
-    let record_id = db_record_id("oh_my_opencode_slim_config", &config_id);
-    let check_result: Result<Vec<Value>, _> = db
-        .query(&format!("SELECT * FROM {} LIMIT 1", record_id))
-        .await
-        .map_err(|e| format!("Failed to check config existence: {}", e))?
-        .take(0);
-
-    if let Ok(records) = check_result {
-        if records.is_empty() {
-            return Err(format!(
-                "Oh-my-opencode-slim config with ID '{}' not found",
-                config_id
-            ));
-        }
-    }
-
+    })?;
     let now = Local::now().to_rfc3339();
     let sanitized_agents = input
         .agents
         .clone()
         .map(adapter::strip_legacy_fallback_models_from_agents);
-
-    let existing_result: Result<Vec<serde_json::Value>, _> = db
-        .query(format!(
-            "SELECT created_at, type::bool(is_applied) as is_applied, sort_index FROM oh_my_opencode_slim_config:`{}` LIMIT 1",
-            config_id
-        ))
-        .await
-        .map_err(|e| format!("Failed to query config: {}", e))?
-        .take(0);
-
-    let (is_applied_value, is_disabled_value, created_at, sort_index_value) = match existing_result
-    {
-        Ok(records) => {
-            if let Some(record) = records.first() {
-                let is_applied = record
-                    .get("is_applied")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let is_disabled = record
-                    .get("is_disabled")
-                    .or_else(|| record.get("isDisabled"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let created = record
-                    .get("created_at")
-                    .and_then(|v| v.as_str())
-                    .map(String::from)
-                    .unwrap_or_else(|| Local::now().to_rfc3339());
-                let sort_index = record
-                    .get("sort_index")
-                    .or_else(|| record.get("sortIndex"))
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32);
-                (is_applied, is_disabled, created, sort_index)
-            } else {
-                (false, false, Local::now().to_rfc3339(), None)
-            }
-        }
-        Err(_) => (false, false, Local::now().to_rfc3339(), None),
-    };
+    let created_at = existing_config
+        .created_at
+        .clone()
+        .unwrap_or_else(|| Local::now().to_rfc3339());
 
     let content = OhMyOpenCodeSlimConfigContent {
         name: input.name,
-        is_applied: is_applied_value,
-        is_disabled: is_disabled_value,
+        is_applied: existing_config.is_applied,
+        is_disabled: existing_config.is_disabled,
         agents: sanitized_agents,
         council: input.council,
         fallback: input.fallback,
         other_fields: input.other_fields,
-        sort_index: sort_index_value,
+        sort_index: existing_config.sort_index,
         created_at,
         updated_at: now,
     };
 
     let json_data = adapter::to_db_value(&content);
+    put_config_to_sqlite(db, &config_id, &json_data)?;
 
-    let json_str = serde_json::to_string(&json_data)
-        .map_err(|e| format!("Failed to serialize json_data: {}", e))?;
-
-    db.query(format!(
-        "UPDATE oh_my_opencode_slim_config:`{}` CONTENT {}",
-        config_id, json_str
-    ))
-    .await
-    .map_err(|e| format!("Failed to update config: {}", e))?;
-
-    if is_applied_value {
+    if existing_config.is_applied {
         if let Err(e) = apply_config_to_file(&db, &config_id).await {
             eprintln!("Failed to auto-apply updated config: {}", e);
         } else {
@@ -613,13 +378,13 @@ pub async fn update_oh_my_opencode_slim_config(
     Ok(OhMyOpenCodeSlimConfig {
         id: config_id,
         name: content.name,
-        is_applied: is_applied_value,
+        is_applied: existing_config.is_applied,
         is_disabled: content.is_disabled,
         agents: content.agents,
         council: content.council,
         fallback: content.fallback,
         other_fields: content.other_fields,
-        sort_index: sort_index_value,
+        sort_index: content.sort_index,
         created_at: Some(content.created_at),
         updated_at: Some(content.updated_at),
     })
@@ -628,38 +393,21 @@ pub async fn update_oh_my_opencode_slim_config(
 /// Delete an oh-my-opencode-slim config
 #[tauri::command]
 pub async fn delete_oh_my_opencode_slim_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     id: String,
 ) -> Result<(), String> {
     let db = state.db();
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state.with_conn(|conn| db_delete(conn, DbTable::OhMyOpenCodeSlimConfig, &id))?;
-        if let Err(error) = delete_surreal_record(&db, OH_MY_OPENCODE_SLIM_CONFIG_TABLE, &id).await
-        {
-            log::warn!(
-                "[OhMyOpenCodeSlim] Failed to mirror deleted config to SurrealDB: {}",
-                error
-            );
-        }
-        let _ = app.emit("config-changed", "window");
-        return Ok(());
-    }
-
-    db.query(format!("DELETE oh_my_opencode_slim_config:`{}`", id))
-        .await
-        .map_err(|e| format!("Failed to delete config: {}", e))?;
-
+    db.with_conn(|conn| db_delete(conn, DbTable::OhMyOpenCodeSlimConfig, &id).map(|_| ()))?;
     let _ = app.emit("config-changed", "window");
-
     Ok(())
 }
 
 /// Clear the currently applied runtime config file without deleting the saved profile.
 #[tauri::command]
 pub async fn clear_oh_my_opencode_slim_applied_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     config_id: String,
 ) -> Result<(), String> {
@@ -669,72 +417,9 @@ pub async fn clear_oh_my_opencode_slim_applied_config(
 
     let db = state.db();
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let config = get_config_from_sqlite(sqlite_state, &config_id)?
-            .ok_or_else(|| format!("Config '{}' not found", config_id))?;
-        if !config.is_applied {
-            return Err(format!("Config '{}' is not currently applied", config_id));
-        }
-
-        let config_path = get_oh_my_opencode_slim_config_path(&db).await?;
-
-        #[cfg(target_os = "windows")]
-        crate::coding::wsl::remove_auto_synced_wsl_mapping_target(
-            state.inner(),
-            "opencode-oh-my-slim",
-        )
-        .await?;
-
-        if config_path.exists() {
-            fs::remove_file(&config_path)
-                .map_err(|e| format!("Failed to remove config file: {}", e))?;
-        }
-
-        let now = Local::now().to_rfc3339();
-        sqlite_state.with_conn(|conn| {
-            db_patch_where_bool(
-                conn,
-                DbTable::OhMyOpenCodeSlimConfig,
-                &JsonFieldPath::new("is_applied")?,
-                true,
-                &[
-                    ("is_applied", Value::Bool(false)),
-                    ("updated_at", Value::String(now.clone())),
-                ],
-            )
-            .map(|_| ())
-        })?;
-
-        let _ = db
-            .query("UPDATE oh_my_opencode_slim_config SET is_applied = false, updated_at = $now WHERE is_applied = true")
-            .bind(("now", now))
-            .await;
-
-        let _ = app.emit("config-changed", "window");
-
-        #[cfg(target_os = "windows")]
-        let _ = app.emit("wsl-sync-request-opencode", ());
-
-        return Ok(());
-    }
-
-    let record_id = db_record_id("oh_my_opencode_slim_config", &config_id);
-    let records_result: Result<Vec<Value>, _> = db
-        .query(format!(
-            "SELECT type::bool(is_applied) as is_applied FROM {} LIMIT 1",
-            record_id
-        ))
-        .await
-        .map_err(|e| format!("Failed to query applied config: {}", e))?
-        .take(0);
-
-    let is_applied = records_result
-        .map_err(|e| format!("Failed to read applied config: {}", e))?
-        .first()
-        .map(|record| adapter::get_bool_compat(record, "is_applied", "isApplied", false))
+    let config = get_config_from_sqlite(db, &config_id)?
         .ok_or_else(|| format!("Config '{}' not found", config_id))?;
-
-    if !is_applied {
+    if !config.is_applied {
         return Err(format!("Config '{}' is not currently applied", config_id));
     }
 
@@ -750,10 +435,19 @@ pub async fn clear_oh_my_opencode_slim_applied_config(
     }
 
     let now = Local::now().to_rfc3339();
-    db.query("UPDATE oh_my_opencode_slim_config SET is_applied = false, updated_at = $now WHERE is_applied = true")
-        .bind(("now", now))
-        .await
-        .map_err(|e| format!("Failed to clear applied flags: {}", e))?;
+    db.with_conn(|conn| {
+        db_patch_where_bool(
+            conn,
+            DbTable::OhMyOpenCodeSlimConfig,
+            &JsonFieldPath::new("is_applied")?,
+            true,
+            &[
+                ("is_applied", Value::Bool(false)),
+                ("updated_at", Value::String(now.clone())),
+            ],
+        )
+        .map(|_| ())
+    })?;
 
     let _ = app.emit("config-changed", "window");
 
@@ -765,7 +459,7 @@ pub async fn clear_oh_my_opencode_slim_applied_config(
 
 /// 内部函数：将指定配置应用到配置文件
 async fn apply_config_to_file(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     config_id: &str,
 ) -> Result<(), String> {
     apply_config_to_file_public(db, config_id).await
@@ -773,32 +467,11 @@ async fn apply_config_to_file(
 
 /// Public version of apply_config_to_file for tray module
 pub async fn apply_config_to_file_public(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     config_id: &str,
 ) -> Result<(), String> {
-    let agents_profile = if let Some(sqlite_state) = global_sqlite_state() {
-        get_config_from_sqlite(sqlite_state, config_id)?
-            .ok_or_else(|| format!("Config '{}' not found", config_id))?
-    } else {
-        let records_result: Result<Vec<Value>, _> = db
-            .query(format!(
-                "SELECT *, type::string(id) as id FROM oh_my_opencode_slim_config:`{}` LIMIT 1",
-                config_id
-            ))
-            .await
-            .map_err(|e| format!("Failed to query config: {}", e))?
-            .take(0);
-
-        match records_result {
-            Ok(records) => {
-                if records.is_empty() {
-                    return Err(format!("Config '{}' not found", config_id));
-                }
-                adapter::from_db_value(records[0].clone())
-            }
-            Err(e) => return Err(format!("Failed to get config: {}", e)),
-        }
-    };
+    let agents_profile = get_config_from_sqlite(db, config_id)?
+        .ok_or_else(|| format!("Config '{}' not found", config_id))?;
 
     // Check if config is disabled
     if agents_profile.is_disabled {
@@ -818,23 +491,7 @@ pub async fn apply_config_to_file_public(
     }
 
     // 获取 Global Config
-    let global_config = if let Some(sqlite_state) = global_sqlite_state() {
-        get_global_config_from_sqlite(sqlite_state)?.unwrap_or_else(default_global_config)
-    } else {
-        let global_records_result: Result<Vec<Value>, _> = db
-            .query("SELECT *, type::string(id) as id FROM oh_my_opencode_slim_global_config:`global` LIMIT 1")
-            .await
-            .map_err(|e| format!("Failed to query global config: {}", e))?
-            .take(0);
-
-        match global_records_result {
-            Ok(records) => records
-                .first()
-                .map(|record| adapter::global_config_from_db_value(record.clone()))
-                .unwrap_or_else(default_global_config),
-            Err(_) => default_global_config(),
-        }
-    };
+    let global_config = get_global_config_from_sqlite(db)?.unwrap_or_else(default_global_config);
 
     let mut final_json = serde_json::Map::new();
 
@@ -928,7 +585,7 @@ pub async fn apply_config_to_file_public(
 /// Apply an oh-my-opencode-slim config to the JSON file
 #[tauri::command]
 pub async fn apply_oh_my_opencode_slim_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     config_id: String,
 ) -> Result<(), String> {
@@ -939,7 +596,7 @@ pub async fn apply_oh_my_opencode_slim_config(
 
 /// Internal function to apply config
 pub async fn apply_config_internal<R: tauri::Runtime>(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     app: &tauri::AppHandle<R>,
     config_id: &str,
     from_tray: bool,
@@ -948,67 +605,30 @@ pub async fn apply_config_internal<R: tauri::Runtime>(
 
     let now = Local::now().to_rfc3339();
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let applied_field = JsonFieldPath::new("is_applied")?;
-        sqlite_state.with_conn(|conn| {
-            db_patch_where_bool(
-                conn,
-                DbTable::OhMyOpenCodeSlimConfig,
-                &applied_field,
-                true,
-                &[
-                    ("is_applied", Value::Bool(false)),
-                    ("updated_at", Value::String(now.clone())),
-                ],
-            )?;
-            db_patch_fields(
-                conn,
-                DbTable::OhMyOpenCodeSlimConfig,
-                config_id,
-                &[
-                    ("is_applied", Value::Bool(true)),
-                    ("updated_at", Value::String(now.clone())),
-                ],
-            )?
-            .ok_or_else(|| format!("Config '{}' not found", config_id))?;
-            Ok(())
-        })?;
-
-        let _ = db
-            .query("UPDATE oh_my_opencode_slim_config SET is_applied = false, updated_at = $now WHERE is_applied = true")
-            .bind(("now", now.clone()))
-            .await;
-        let record_id = db_record_id("oh_my_opencode_slim_config", config_id);
-        let _ = db
-            .query(&format!(
-                "UPDATE {} SET is_applied = true, updated_at = $now",
-                record_id
-            ))
-            .bind(("now", now))
-            .await;
-
-        let payload = if from_tray { "tray" } else { "window" };
-        let _ = app.emit("config-changed", payload);
-
-        #[cfg(target_os = "windows")]
-        let _ = app.emit("wsl-sync-request-opencode", ());
-
-        return Ok(());
-    }
-
-    db.query("UPDATE oh_my_opencode_slim_config SET is_applied = false, updated_at = $now WHERE is_applied = true")
-        .bind(("now", now.clone()))
-        .await
-        .map_err(|e| format!("Failed to clear applied flags: {}", e))?;
-
-    let record_id = db_record_id("oh_my_opencode_slim_config", config_id);
-    db.query(&format!(
-        "UPDATE {} SET is_applied = true, updated_at = $now",
-        record_id
-    ))
-    .bind(("now", now))
-    .await
-    .map_err(|e| format!("Failed to update applied flag: {}", e))?;
+    let applied_field = JsonFieldPath::new("is_applied")?;
+    db.with_conn(|conn| {
+        db_patch_where_bool(
+            conn,
+            DbTable::OhMyOpenCodeSlimConfig,
+            &applied_field,
+            true,
+            &[
+                ("is_applied", Value::Bool(false)),
+                ("updated_at", Value::String(now.clone())),
+            ],
+        )?;
+        db_patch_fields(
+            conn,
+            DbTable::OhMyOpenCodeSlimConfig,
+            config_id,
+            &[
+                ("is_applied", Value::Bool(true)),
+                ("updated_at", Value::String(now.clone())),
+            ],
+        )?
+        .ok_or_else(|| format!("Config '{}' not found", config_id))?;
+        Ok(())
+    })?;
 
     let payload = if from_tray { "tray" } else { "window" };
     let _ = app.emit("config-changed", payload);
@@ -1022,43 +642,21 @@ pub async fn apply_config_internal<R: tauri::Runtime>(
 /// Reorder oh-my-opencode-slim configs
 #[tauri::command]
 pub async fn reorder_oh_my_opencode_slim_configs(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     ids: Vec<String>,
 ) -> Result<(), String> {
     let db = state.db();
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        for (index, id) in ids.iter().enumerate() {
-            let updated = sqlite_state.with_conn(|conn| {
-                db_patch_fields(
-                    conn,
-                    DbTable::OhMyOpenCodeSlimConfig,
-                    id,
-                    &[("sort_index", serde_json::json!(index as i32))],
-                )
-            })?;
-            if let Some(record) = updated {
-                if let Err(error) =
-                    upsert_surreal_record(&db, OH_MY_OPENCODE_SLIM_CONFIG_TABLE, id, &record).await
-                {
-                    log::warn!(
-                        "[OhMyOpenCodeSlim] Failed to mirror reordered config to SurrealDB: {}",
-                        error
-                    );
-                }
-            }
-        }
-        return Ok(());
-    }
-
     for (index, id) in ids.iter().enumerate() {
-        db.query(format!(
-            "UPDATE oh_my_opencode_slim_config:`{}` SET sort_index = $index",
-            id
-        ))
-        .bind(("index", index as i32))
-        .await
-        .map_err(|e| format!("Failed to update sort index: {}", e))?;
+        db.with_conn(|conn| {
+            db_patch_fields(
+                conn,
+                DbTable::OhMyOpenCodeSlimConfig,
+                id,
+                &[("sort_index", serde_json::json!(index as i32))],
+            )
+            .map(|_| ())
+        })?;
     }
 
     Ok(())
@@ -1067,7 +665,7 @@ pub async fn reorder_oh_my_opencode_slim_configs(
 /// Get oh-my-opencode-slim config file path info
 #[tauri::command]
 pub async fn get_oh_my_opencode_slim_config_path_info(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<ConfigPathInfo, String> {
     let db = state.db();
     let (config_path, source) = get_oh_my_opencode_slim_config_path_and_source(&db).await?;
@@ -1082,7 +680,7 @@ pub async fn get_oh_my_opencode_slim_config_path_info(
 /// Check if local oh-my-opencode-slim config file exists
 #[tauri::command]
 pub async fn check_oh_my_opencode_slim_config_exists(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<bool, String> {
     let db = state.db();
     let config_path = get_oh_my_opencode_slim_config_path(&db).await?;
@@ -1096,79 +694,23 @@ pub async fn check_oh_my_opencode_slim_config_exists(
 /// Get oh-my-opencode-slim global config
 #[tauri::command]
 pub async fn get_oh_my_opencode_slim_global_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<OhMyOpenCodeSlimGlobalConfig, String> {
     let db = state.db();
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        if let Some(config) = get_global_config_from_sqlite(sqlite_state)? {
-            return Ok(config);
-        }
-        if let Ok(temp_config) = load_temp_global_config_from_file(&db).await {
-            return Ok(temp_config);
-        }
-        return Ok(default_global_config());
+    if let Some(config) = get_global_config_from_sqlite(db)? {
+        return Ok(config);
     }
-
-    let records_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM oh_my_opencode_slim_global_config:`global` LIMIT 1")
-        .await
-        .map_err(|e| format!("Failed to query global config: {}", e))?
-        .take(0);
-
-    match records_result {
-        Ok(records) => {
-            if let Some(record) = records.first() {
-                Ok(adapter::global_config_from_db_value(record.clone()))
-            } else {
-                // 数据库为空，尝试从本地文件加载临时配置（不写入数据库）
-                if let Ok(temp_config) = load_temp_global_config_from_file(&db).await {
-                    return Ok(temp_config);
-                }
-
-                // 返回默认配置
-                Ok(OhMyOpenCodeSlimGlobalConfig {
-                    id: "global".to_string(),
-                    sisyphus_agent: None,
-                    disabled_agents: None,
-                    disabled_mcps: None,
-                    disabled_hooks: None,
-                    lsp: None,
-                    experimental: None,
-                    council: None,
-                    other_fields: None,
-                    updated_at: None,
-                })
-            }
-        }
-        Err(e) => {
-            eprintln!("Failed to get global config: {}", e);
-            // Try to load from local file as fallback
-            if let Ok(temp_config) = load_temp_global_config_from_file(&db).await {
-                return Ok(temp_config);
-            }
-            // 返回默认配置
-            Ok(OhMyOpenCodeSlimGlobalConfig {
-                id: "global".to_string(),
-                sisyphus_agent: None,
-                disabled_agents: None,
-                disabled_mcps: None,
-                disabled_hooks: None,
-                lsp: None,
-                experimental: None,
-                council: None,
-                other_fields: None,
-                updated_at: None,
-            })
-        }
+    if let Ok(temp_config) = load_temp_global_config_from_file(db).await {
+        return Ok(temp_config);
     }
+    Ok(default_global_config())
 }
 
 /// Save oh-my-opencode-slim global config
 #[tauri::command]
 #[allow(unused_variables)]
 pub async fn save_oh_my_opencode_slim_global_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     input: OhMyOpenCodeSlimGlobalConfigInput,
 ) -> Result<OhMyOpenCodeSlimGlobalConfig, String> {
@@ -1189,97 +731,44 @@ pub async fn save_oh_my_opencode_slim_global_config(
 
     let json_data = adapter::global_config_to_db_value(&content);
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        put_global_config_to_sqlite(sqlite_state, &json_data)?;
-        if let Err(error) = upsert_surreal_record(
-            &db,
-            OH_MY_OPENCODE_SLIM_GLOBAL_CONFIG_TABLE,
-            "global",
-            &json_data,
+    put_global_config_to_sqlite(db, &json_data)?;
+
+    let applied_configs = db.with_conn(|conn| {
+        db_query_by_bool(
+            conn,
+            DbTable::OhMyOpenCodeSlimConfig,
+            &JsonFieldPath::new("is_applied")?,
+            true,
+            None,
+            Some(1),
         )
-        .await
-        {
-            log::warn!(
-                "[OhMyOpenCodeSlim] Failed to mirror global config to SurrealDB: {}",
-                error
-            );
-        }
+    })?;
 
-        let applied_configs = sqlite_state.with_conn(|conn| {
-            db_query_by_bool(
-                conn,
-                DbTable::OhMyOpenCodeSlimConfig,
-                &JsonFieldPath::new("is_applied")?,
-                true,
-                None,
-                Some(1),
-            )
-        })?;
-
-        if let Some(record) = applied_configs.first() {
-            let applied_config = adapter::from_db_value(record.clone());
-            if apply_config_to_file(&db, &applied_config.id).await.is_ok() {
-                #[cfg(target_os = "windows")]
-                let _ = app.emit("wsl-sync-request-opencode", ());
-            }
-        }
-
-        return get_global_config_from_sqlite(sqlite_state)?
-            .ok_or_else(|| "Failed to retrieve saved global config".to_string());
-    }
-
-    db.query("UPSERT oh_my_opencode_slim_global_config:`global` CONTENT $data")
-        .bind(("data", json_data))
-        .await
-        .map_err(|e| format!("Failed to save global config: {}", e))?;
-
-    let applied_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM oh_my_opencode_slim_config WHERE is_applied = true LIMIT 1")
-        .await
-        .map_err(|e| format!("Failed to query applied config: {}", e))?
-        .take(0);
-
-    if let Ok(records) = applied_result {
-        if let Some(record) = records.first() {
-            let applied_config = adapter::from_db_value(record.clone());
-            if apply_config_to_file(&db, &applied_config.id).await.is_ok() {
-                #[cfg(target_os = "windows")]
-                let _ = app.emit("wsl-sync-request-opencode", ());
-            }
+    if let Some(record) = applied_configs.first() {
+        let applied_config = adapter::from_db_value(record.clone());
+        if apply_config_to_file(&db, &applied_config.id).await.is_ok() {
+            #[cfg(target_os = "windows")]
+            let _ = app.emit("wsl-sync-request-opencode", ());
         }
     }
 
-    let records_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM oh_my_opencode_slim_global_config:`global` LIMIT 1")
-        .await
-        .map_err(|e| format!("Failed to query saved global config: {}", e))?
-        .take(0);
-
-    match records_result {
-        Ok(records) => {
-            if let Some(record) = records.first() {
-                Ok(adapter::global_config_from_db_value(record.clone()))
-            } else {
-                Err("Failed to retrieve saved global config".to_string())
-            }
-        }
-        Err(e) => Err(format!("Failed to save global config: {}", e)),
-    }
+    get_global_config_from_sqlite(db)?
+        .ok_or_else(|| "Failed to retrieve saved global config".to_string())
 }
 
 /// Toggle is_disabled status for a config
 #[tauri::command]
 pub async fn toggle_oh_my_opencode_slim_config_disabled(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     config_id: String,
     is_disabled: bool,
 ) -> Result<(), String> {
     let db = state.db();
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let now = Local::now().to_rfc3339();
-        let updated = sqlite_state.with_conn(|conn| {
+    let now = Local::now().to_rfc3339();
+    let config_value = db
+        .with_conn(|conn| {
             db_patch_fields(
                 conn,
                 DbTable::OhMyOpenCodeSlimConfig,
@@ -1289,64 +778,12 @@ pub async fn toggle_oh_my_opencode_slim_config_disabled(
                     ("updated_at", Value::String(now.clone())),
                 ],
             )
-        })?;
+        })?
+        .ok_or_else(|| format!("Config '{}' not found", config_id))?;
 
-        let Some(config_value) = updated else {
-            return Err(format!("Config '{}' not found", config_id));
-        };
-
-        if let Err(error) = upsert_surreal_record(
-            &db,
-            OH_MY_OPENCODE_SLIM_CONFIG_TABLE,
-            &config_id,
-            &config_value,
-        )
-        .await
-        {
-            log::warn!(
-                "[OhMyOpenCodeSlim] Failed to mirror disabled toggle to SurrealDB: {}",
-                error
-            );
-        }
-
-        let is_applied = adapter::get_bool_compat(&config_value, "is_applied", "isApplied", false);
-        if is_applied {
-            apply_config_internal(&db, &app, &config_id, false).await?;
-        }
-
-        return Ok(());
-    }
-
-    // Update is_disabled field in database
-    let now = Local::now().to_rfc3339();
-    db.query(format!(
-        "UPDATE oh_my_opencode_slim_config:`{}` SET is_disabled = $is_disabled, updated_at = $now",
-        config_id
-    ))
-    .bind(("is_disabled", is_disabled))
-    .bind(("now", now))
-    .await
-    .map_err(|e| format!("Failed to toggle config disabled status: {}", e))?;
-
-    // If this config is applied, re-apply config to update files
-    let records_result: Result<Vec<Value>, _> = db
-        .query(format!(
-            "SELECT *, type::string(id) as id FROM oh_my_opencode_slim_config:`{}` LIMIT 1",
-            config_id
-        ))
-        .await
-        .map_err(|e| format!("Failed to query config: {}", e))?
-        .take(0);
-
-    if let Ok(records) = records_result {
-        if let Some(config_value) = records.first() {
-            let is_applied =
-                adapter::get_bool_compat(config_value, "is_applied", "isApplied", false);
-            if is_applied {
-                // Re-apply config to update files (will check is_disabled internally)
-                apply_config_internal(&db, &app, &config_id, false).await?;
-            }
-        }
+    let is_applied = adapter::get_bool_compat(&config_value, "is_applied", "isApplied", false);
+    if is_applied {
+        apply_config_internal(&db, &app, &config_id, false).await?;
     }
 
     Ok(())
@@ -1357,7 +794,7 @@ pub async fn toggle_oh_my_opencode_slim_config_disabled(
 /// Input can include config and/or globalConfig; missing parts will be loaded from local files
 #[tauri::command]
 pub async fn save_oh_my_opencode_slim_local_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     input: OhMyOpenCodeSlimLocalConfigInput,
 ) -> Result<(), String> {
@@ -1415,125 +852,9 @@ pub async fn save_oh_my_opencode_slim_local_config(
     };
 
     let config_json = adapter::to_db_value(&config_content);
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let created_config_value = sqlite_state
-            .with_conn(|conn| db_create(conn, DbTable::OhMyOpenCodeSlimConfig, &config_json))?;
-        let created_config = adapter::from_db_value(created_config_value.clone());
-        if let Err(error) = upsert_surreal_record(
-            &db,
-            OH_MY_OPENCODE_SLIM_CONFIG_TABLE,
-            &created_config.id,
-            &config_json,
-        )
-        .await
-        {
-            log::warn!(
-                "[OhMyOpenCodeSlim] Failed to mirror saved local config to SurrealDB: {}",
-                error
-            );
-        }
-
-        // Build Global Config content
-        let global_input = input.global_config;
-        let global_sisyphus_agent = if let Some(global) = global_input.as_ref() {
-            global.sisyphus_agent.clone()
-        } else {
-            base_global
-                .as_ref()
-                .and_then(|global| global.sisyphus_agent.clone())
-        };
-        let global_disabled_agents = if let Some(global) = global_input.as_ref() {
-            global.disabled_agents.clone()
-        } else {
-            base_global
-                .as_ref()
-                .and_then(|global| global.disabled_agents.clone())
-        };
-        let global_disabled_mcps = if let Some(global) = global_input.as_ref() {
-            global.disabled_mcps.clone()
-        } else {
-            base_global
-                .as_ref()
-                .and_then(|global| global.disabled_mcps.clone())
-        };
-        let global_disabled_hooks = if let Some(global) = global_input.as_ref() {
-            global.disabled_hooks.clone()
-        } else {
-            base_global
-                .as_ref()
-                .and_then(|global| global.disabled_hooks.clone())
-        };
-        let global_lsp = if let Some(global) = global_input.as_ref() {
-            global.lsp.clone()
-        } else {
-            base_global.as_ref().and_then(|global| global.lsp.clone())
-        };
-        let global_experimental = if let Some(global) = global_input.as_ref() {
-            global.experimental.clone()
-        } else {
-            base_global
-                .as_ref()
-                .and_then(|global| global.experimental.clone())
-        };
-        let global_other_fields = if let Some(global) = global_input.as_ref() {
-            global.other_fields.clone()
-        } else {
-            base_global
-                .as_ref()
-                .and_then(|global| global.other_fields.clone())
-        };
-        let global_council = if let Some(global) = global_input.as_ref() {
-            global.council.clone()
-        } else {
-            base_global
-                .as_ref()
-                .and_then(|global| global.council.clone())
-        };
-
-        let global_content = OhMyOpenCodeSlimGlobalConfigContent {
-            sisyphus_agent: global_sisyphus_agent,
-            disabled_agents: global_disabled_agents,
-            disabled_mcps: global_disabled_mcps,
-            disabled_hooks: global_disabled_hooks,
-            lsp: global_lsp,
-            experimental: global_experimental,
-            council: global_council,
-            other_fields: global_other_fields,
-            updated_at: now,
-        };
-
-        let global_json = adapter::global_config_to_db_value(&global_content);
-        put_global_config_to_sqlite(sqlite_state, &global_json)?;
-        if let Err(error) = upsert_surreal_record(
-            &db,
-            OH_MY_OPENCODE_SLIM_GLOBAL_CONFIG_TABLE,
-            "global",
-            &global_json,
-        )
-        .await
-        {
-            log::warn!(
-                "[OhMyOpenCodeSlim] Failed to mirror saved local global config to SurrealDB: {}",
-                error
-            );
-        }
-
-        if let Err(e) = apply_config_to_file(&db, &created_config.id).await {
-            eprintln!("Failed to apply config after local save: {}", e);
-        } else {
-            #[cfg(target_os = "windows")]
-            let _ = app.emit("wsl-sync-request-opencode", ());
-        }
-
-        let _ = app.emit("config-changed", "window");
-        return Ok(());
-    }
-
-    db.query("CREATE oh_my_opencode_slim_config CONTENT $data")
-        .bind(("data", config_json))
-        .await
-        .map_err(|e| format!("Failed to create config: {}", e))?;
+    let created_config_value =
+        db.with_conn(|conn| db_create(conn, DbTable::OhMyOpenCodeSlimConfig, &config_json))?;
+    let created_config = adapter::from_db_value(created_config_value);
 
     // Build Global Config content
     let global_input = input.global_config;
@@ -1605,28 +926,13 @@ pub async fn save_oh_my_opencode_slim_local_config(
     };
 
     let global_json = adapter::global_config_to_db_value(&global_content);
-    db.query("UPSERT oh_my_opencode_slim_global_config:`global` CONTENT $data")
-        .bind(("data", global_json))
-        .await
-        .map_err(|e| format!("Failed to save global config: {}", e))?;
+    put_global_config_to_sqlite(db, &global_json)?;
 
-    // Re-apply config to files using the newly created config
-    let created_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM oh_my_opencode_slim_config ORDER BY created_at DESC LIMIT 1")
-        .await
-        .map_err(|e| format!("Failed to fetch created config: {}", e))?
-        .take(0);
-
-    if let Ok(records) = created_result {
-        if let Some(record) = records.first() {
-            let created_config = adapter::from_db_value(record.clone());
-            if let Err(e) = apply_config_to_file(&db, &created_config.id).await {
-                eprintln!("Failed to apply config after local save: {}", e);
-            } else {
-                #[cfg(target_os = "windows")]
-                let _ = app.emit("wsl-sync-request-opencode", ());
-            }
-        }
+    if let Err(e) = apply_config_to_file(&db, &created_config.id).await {
+        eprintln!("Failed to apply config after local save: {}", e);
+    } else {
+        #[cfg(target_os = "windows")]
+        let _ = app.emit("wsl-sync-request-opencode", ());
     }
 
     let _ = app.emit("config-changed", "window");

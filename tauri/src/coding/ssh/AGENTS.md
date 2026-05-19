@@ -6,7 +6,7 @@
 
 ## Source of Truth
 
-- `ssh_sync_config`、`ssh_connection`、`ssh_file_mapping` 是 SSH 配置、连接和映射的主数据；当前主存储是 SQLite JSONB，兼容期双写 SurrealDB。
+- `ssh_sync_config`、`ssh_connection`、`ssh_file_mapping` 是 SSH 配置、连接和映射的主数据；当前主存储是 SQLite JSONB，不再双写旧库。
 - SSH 设置页里显示的本地路径会根据 `module_statuses` 改写成 WSL UNC 友好展示，但真正同步路径仍由后端在执行时动态解析。
 - 当前仓库里，SSH 不应按“自动同步模块”理解。公开产品语义仍是手动同步为主。
 

@@ -10,11 +10,11 @@ use super::central_repo::{resolve_central_repo_path, resolve_skill_central_path}
 use super::path_executor::{remove_skill_target_checked, sync_skill_to_target};
 use super::skill_store;
 use super::tool_adapters::{
-    get_all_tool_adapters, is_tool_installed_async, resolve_runtime_skills_path_async,
-    runtime_adapter_by_key,
+    get_all_tool_adapters, is_tool_installed_with_state_async,
+    resolve_runtime_skills_path_with_state_async, runtime_adapter_by_key,
 };
 use super::types::{now_ms, SkillTarget};
-use crate::DbState;
+use crate::SqliteDbState;
 
 /// Item for tool selection in skill submenu
 #[derive(Debug, Clone)]
@@ -54,7 +54,7 @@ pub struct TraySkillData {
 /// Check if skills should be shown in tray menu
 /// Reads the show_skills_in_tray setting
 pub async fn is_skills_enabled_for_tray<R: Runtime>(app: &AppHandle<R>) -> bool {
-    let state = app.state::<DbState>();
+    let state = app.state::<SqliteDbState>();
     let raw = skill_store::get_setting(&state, "show_skills_in_tray")
         .await
         .ok()
@@ -68,8 +68,7 @@ pub async fn is_skills_enabled_for_tray<R: Runtime>(app: &AppHandle<R>) -> bool 
 /// Get skills tray data
 /// Returns all managed skills with their tool sync states
 pub async fn get_skills_tray_data<R: Runtime>(app: &AppHandle<R>) -> Result<TraySkillData, String> {
-    let state = app.state::<DbState>();
-    super::tool_adapters::set_runtime_db(state.db());
+    let state = app.state::<SqliteDbState>();
 
     let custom_tools = skill_store::get_custom_tools(&state)
         .await
@@ -89,7 +88,10 @@ pub async fn get_skills_tray_data<R: Runtime>(app: &AppHandle<R>) -> Result<Tray
         } else {
             let mut installed_tool_keys = Vec::new();
             for adapter in &all_adapters {
-                if is_tool_installed_async(adapter).await.unwrap_or(false) {
+                if is_tool_installed_with_state_async(state.db(), adapter)
+                    .await
+                    .unwrap_or(false)
+                {
                     installed_tool_keys.push(adapter.key.clone());
                 }
             }
@@ -98,7 +100,10 @@ pub async fn get_skills_tray_data<R: Runtime>(app: &AppHandle<R>) -> Result<Tray
     } else {
         let mut installed_tool_keys = Vec::new();
         for adapter in &all_adapters {
-            if is_tool_installed_async(adapter).await.unwrap_or(false) {
+            if is_tool_installed_with_state_async(state.db(), adapter)
+                .await
+                .unwrap_or(false)
+            {
                 installed_tool_keys.push(adapter.key.clone());
             }
         }
@@ -119,7 +124,9 @@ pub async fn get_skills_tray_data<R: Runtime>(app: &AppHandle<R>) -> Result<Tray
                 continue;
             };
 
-            let is_installed = is_tool_installed_async(adapter).await.unwrap_or(false);
+            let is_installed = is_tool_installed_with_state_async(state.db(), adapter)
+                .await
+                .unwrap_or(false);
             tool_items.push(TraySkillToolItem {
                 tool_key: tool_key.clone(),
                 display_name: adapter.display_name.clone(),
@@ -149,7 +156,7 @@ pub async fn apply_skills_tool_toggle<R: Runtime>(
     skill_id: &str,
     tool_key: &str,
 ) -> Result<(), String> {
-    let state = app.state::<DbState>();
+    let state = app.state::<SqliteDbState>();
 
     let custom_tools = skill_store::get_custom_tools(&state)
         .await
@@ -166,7 +173,7 @@ pub async fn apply_skills_tool_toggle<R: Runtime>(
         .ok_or_else(|| format!("Unknown tool: {}", tool_key))?;
 
     if !runtime_adapter.is_custom
-        && !is_tool_installed_async(&runtime_adapter)
+        && !is_tool_installed_with_state_async(state.db(), &runtime_adapter)
             .await
             .unwrap_or(false)
     {
@@ -184,7 +191,7 @@ pub async fn apply_skills_tool_toggle<R: Runtime>(
             .map_err(|e| format!("{:#}", e))?;
         skill_store::delete_skill_target(&state, skill_id, tool_key).await?;
     } else {
-        let tool_root = resolve_runtime_skills_path_async(&runtime_adapter)
+        let tool_root = resolve_runtime_skills_path_with_state_async(state.db(), &runtime_adapter)
             .await
             .map_err(|e| format!("{:#}", e))?;
         let target = tool_root.join(&skill.name);

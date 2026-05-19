@@ -2,7 +2,7 @@
 //!
 //! Provides standardized API for tray menu integration.
 
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 use tauri::{AppHandle, Manager, Runtime};
 
 /// Item for provider selection in tray menu
@@ -68,7 +68,7 @@ pub async fn apply_claude_code_provider<R: Runtime>(
     app: &AppHandle<R>,
     provider_id: &str,
 ) -> Result<(), String> {
-    let state = app.state::<DbState>();
+    let state = app.state::<SqliteDbState>();
     let db = state.db();
 
     super::commands::apply_config_internal(&db, app, provider_id, true).await?;

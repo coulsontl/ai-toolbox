@@ -2,13 +2,9 @@
 //!
 //! Provides standardized API for tray menu integration.
 
-use crate::coding::db_id::db_clean_id;
-use crate::coding::oh_my_openagent::commands::OH_MY_OPENAGENT_CONFIG_TABLE;
 use crate::db::helpers::db_list;
 use crate::db::schema::DbTable;
-use crate::db::sqlite_state::global_sqlite_state;
-use crate::db::DbState;
-use serde_json::Value;
+use crate::db::SqliteDbState;
 use tauri::{AppHandle, Manager, Runtime};
 
 fn is_oh_my_openagent_plugin(plugin_name: &str) -> bool {
@@ -44,104 +40,43 @@ pub struct TrayConfigData {
 pub async fn get_oh_my_openagent_tray_data<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<TrayConfigData, String> {
-    let state = app.state::<DbState>();
+    let state = app.state::<SqliteDbState>();
     let db = state.db();
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let mut items = sqlite_state.with_conn(|conn| {
-            db_list(conn, DbTable::OhMyOpenAgentConfig, None).map(|records| {
-                records
-                    .into_iter()
-                    .filter_map(|record| {
-                        let id = record.get("id")?.as_str()?;
-                        let name = record.get("name")?.as_str()?;
-                        let is_applied = record
-                            .get("is_applied")
-                            .or_else(|| record.get("isApplied"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-                        let is_disabled = record
-                            .get("is_disabled")
-                            .or_else(|| record.get("isDisabled"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-                        let sort_index = record
-                            .get("sort_index")
-                            .or_else(|| record.get("sortIndex"))
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0);
-
-                        Some(TrayConfigItem {
-                            id: id.to_string(),
-                            display_name: name.to_string(),
-                            is_selected: is_applied,
-                            is_disabled,
-                            sort_index,
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            })
-        })?;
-        items.sort_by_key(|config| config.sort_index);
-        return Ok(TrayConfigData {
-            title: "──── Oh My OpenAgent ────".to_string(),
-            items,
-        });
-    }
-
-    // Query configs from database
-    let records_result: Result<Vec<Value>, _> = db
-        .query(format!(
-            "SELECT *, type::string(id) as id FROM {}",
-            OH_MY_OPENAGENT_CONFIG_TABLE
-        ))
-        .await
-        .map_err(|e| format!("Failed to query configs: {}", e))?
-        .take(0);
-
-    let mut items: Vec<TrayConfigItem> = Vec::new();
-
-    match records_result {
-        Ok(records) => {
-            for record in records {
-                // 使用数据库返回的 id 字段（来自 type::string(id) as id）
-                // 注意：需要使用 db_clean_id 清理表名前缀
-                if let (Some(id), Some(name), Some(is_applied), sort_index) = (
-                    record.get("id").and_then(|v| v.as_str()),
-                    record.get("name").and_then(|v| v.as_str()),
-                    record
+    let mut items = db.with_conn(|conn| {
+        db_list(conn, DbTable::OhMyOpenAgentConfig, None).map(|records| {
+            records
+                .into_iter()
+                .filter_map(|record| {
+                    let id = record.get("id")?.as_str()?;
+                    let name = record.get("name")?.as_str()?;
+                    let is_applied = record
                         .get("is_applied")
                         .or_else(|| record.get("isApplied"))
-                        .and_then(|v| v.as_bool()),
-                    record
-                        .get("sort_index")
-                        .or_else(|| record.get("sortIndex"))
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0),
-                ) {
-                    // 读取 is_disabled 字段
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
                     let is_disabled = record
                         .get("is_disabled")
                         .or_else(|| record.get("isDisabled"))
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
+                    let sort_index = record
+                        .get("sort_index")
+                        .or_else(|| record.get("sortIndex"))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
 
-                    items.push(TrayConfigItem {
-                        id: db_clean_id(id),
+                    Some(TrayConfigItem {
+                        id: id.to_string(),
                         display_name: name.to_string(),
                         is_selected: is_applied,
                         is_disabled,
                         sort_index,
-                    });
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Failed to deserialize configs for tray: {}", e);
-        }
-    }
-
-    // Sort by sort_index
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+    })?;
     items.sort_by_key(|c| c.sort_index);
 
     let data = TrayConfigData {
@@ -157,7 +92,7 @@ pub async fn apply_oh_my_openagent_config<R: Runtime>(
     app: &AppHandle<R>,
     config_id: &str,
 ) -> Result<(), String> {
-    let state = app.state::<DbState>();
+    let state = app.state::<SqliteDbState>();
     let db = state.db();
 
     super::commands::apply_config_internal(&db, app, config_id, true).await?;
@@ -171,7 +106,7 @@ pub async fn is_enabled_for_tray<R: Runtime>(app: &AppHandle<R>) -> bool {
     use crate::coding::open_code::read_opencode_config;
     use crate::coding::open_code::types::ReadConfigResult;
 
-    let state = app.state::<DbState>();
+    let state = app.state::<SqliteDbState>();
     let config = match read_opencode_config(state).await {
         Ok(ReadConfigResult::Success { config }) => config,
         _ => return false,

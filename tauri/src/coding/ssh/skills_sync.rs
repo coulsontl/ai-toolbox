@@ -18,7 +18,7 @@ use crate::coding::runtime_location;
 use crate::coding::skills::central_repo::{resolve_central_repo_path, resolve_skill_central_path};
 use crate::coding::skills::skill_store;
 use crate::coding::tools::builtin::BUILTIN_TOOLS;
-use crate::DbState;
+use crate::SqliteDbState;
 
 const SSH_CENTRAL_DIR: &str = "~/.ai-toolbox/skills";
 
@@ -38,7 +38,7 @@ fn get_remote_tool_skills_dir(tool_key: &str) -> Option<String> {
 }
 
 async fn get_remote_tool_skills_dir_with_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     tool_key: &str,
 ) -> Option<String> {
     match tool_key {
@@ -64,13 +64,13 @@ fn get_all_skill_tool_keys() -> Vec<&'static str> {
 
 /// Sync all skills to SSH remote (called on skills-changed event)
 pub async fn sync_skills_to_ssh(
-    state: &DbState,
+    state: &SqliteDbState,
     session: &SshSession,
     app: AppHandle,
 ) -> Result<(), String> {
     let db = state.db();
     let config = get_ssh_config_internal(&db, false).await?;
-    drop(db);
+    let _ = db;
 
     if !config.enabled {
         info!("Skills SSH sync skipped: enabled={}", config.enabled);

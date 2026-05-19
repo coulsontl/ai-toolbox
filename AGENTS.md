@@ -70,7 +70,7 @@ This document provides essential information for AI coding agents working on thi
 AI Toolbox is a cross-platform desktop application built with:
 - **Frontend**: React 19 + TypeScript 5 + Ant Design 5 + Vite 7
 - **Backend**: Tauri 2.x + Rust
-- **Database**: SQLite JSONB (primary) with SurrealDB compatibility during migration
+- **Database**: SQLite JSONB primary store; SurrealDB is only used for one-time legacy import
 - **Package Manager**: pnpm
 
 ## Directory Structure
@@ -312,7 +312,7 @@ fn command_name(param: &str) -> Result<ReturnType, String> {
 - **Never call `tauri::async_runtime::block_on()` or `tokio::runtime::Handle::block_on()` inside any async call chain.**
   This includes Tauri commands, startup tasks spawned by `tauri::async_runtime::spawn`, event listeners, background sync tasks, and any helper that may be reached from those paths.
 - If a sync Rust helper needs database-backed or other async-derived data, do not hide the async query inside the sync helper. Provide a parallel `*_async` function and make async call sites use it directly.
-- When reviewing a sync helper that internally queries SurrealDB with `block_on`, treat it as **sync-boundary only**. Before reusing it, first verify whether the caller may run under Tokio/Tauri async runtime.
+- When reviewing a sync helper that internally queries the database with `block_on`, treat it as **sync-boundary only**. Before reusing it, first verify whether the caller may run under Tokio/Tauri async runtime.
 - For path/config resolution utilities, prefer this rule:
   sync callers use `*_sync` or pure sync helpers; async callers use `*_async`; do not mix them.
 - If you fix a high-value engineering pitfall that is likely to recur, you should also update this `AGENTS.md` in the same task so the rule becomes part of repo workflow guidance.
@@ -695,18 +695,20 @@ features/
 ## Important Notes
 
 1. **Strict TypeScript**: `noUnusedLocals` and `noUnusedParameters` are enabled
-2. **Database**: Uses embedded SQLite JSONB as the primary local database; SurrealDB remains only as a compatibility/import source during the migration window
+2. **Database**: Uses embedded SQLite JSONB as the primary local database; SurrealDB is legacy import-only state for users upgrading from old versions
 3. **i18n**: Supports `zh-CN` and `en-US`
 4. **Theme**: Full dark mode / light mode / system theme support implemented (see Theme System section in Code Style Guidelines)
 5. **Dev Server**: Runs on `http://127.0.0.1:5173`
 
-## SQLite JSONB Migration Notes
+## SQLite JSONB Database Notes
 
-- 主数据库迁移到 SQLite JSONB 后，新增或改造的持久化路径必须优先读写 `SqliteDbState`，并在兼容期按需双写 SurrealDB。不要再为新业务直接新增 SurrealDB-only 写入点。
+- 主数据库是 SQLite JSONB。新增或改造的持久化路径必须直接读写 `SqliteDbState`，禁止新增 SurrealDB-only 或 SurrealDB 双写路径。
 - SQLite 表结构统一遵循 `id + data(JSONB) + created_at + updated_at`，业务字段放在 JSONB `data` 中；新增/删除普通业务字段不需要 schema migration，adapter 负责默认值与兼容读取。
-- 启动阶段必须先初始化 SQLite schema，再把缺失的已知表从 SurrealDB 导入 SQLite；迁移/导入要保持幂等，旧 `{app_data_dir}/database` 在兼容期不能删除。
-- 过渡期备份必须保留旧 `db/` SurrealDB 快照，同时附带 `sqlite/ai-toolbox.db` 和 `db_manifest.json`。只有确认业务表已经全量切换并完成发布验证后，才允许把 manifest 标成纯 SQLite 并移除 SurrealDB 依赖。
-- 对已切换模块，读取路径应 SQLite-first；写入路径应先更新 SQLite，再保持 SurrealDB 双写以兼容旧版本和相邻未切换逻辑。跨表状态切换（如 applied flag）必须同时更新 SQLite，不能只更新旧库。
+- 启动阶段必须先检测旧库迁移状态，再打开 SQLite。只有旧 `{app_data_dir}/database` 存在且需要导入时，才临时打开 SurrealDB 执行一次性全量导入。
+- 旧 SurrealDB 目录在导入、计数校验和完成标记成功前绝不能删除。导入完成后压缩为 `{app_data_dir}/database.migrated.zip` 永久保留，并删除旧目录。
+- 迁移失败不能写完成标记；不完整 SQLite 文件需要清理，下次启动重试。连续 3 次失败后应向用户展示 `migration.log` 路径。
+- 备份恢复以 SQLite 单文件和 `db_manifest.json` 为准。旧 SurrealDB 备份只能作为恢复输入，恢复时导入 SQLite；新备份不要再包含旧 SurrealDB 快照作为事实源。
+- 跨表状态切换（如 applied flag）必须在 SQLite 事务或 helper 组合内完成，不能只更新运行时文件或旧库。
 
 ## Skills / WSL / SSH Quick Notes
 
@@ -784,7 +786,7 @@ features/
 
 ## Data Storage Architecture
 
-**IMPORTANT**: All data storage and retrieval must go through the service layer API and interact directly with the backend database. The current primary store is local SQLite JSONB; SurrealDB is compatibility/import state during migration.
+**IMPORTANT**: All data storage and retrieval must go through the service layer API and interact directly with the backend SQLite JSONB database. SurrealDB is only a legacy import source during startup migration.
 
 ### DO NOT use localStorage
 
@@ -820,7 +822,7 @@ export const saveSettings = async (settings: AppSettings): Promise<void> => {
 
 ### Backend Command Pattern
 
-All Tauri commands interacting with persisted JSON records must follow the **Adapter Pattern**. SQLite paths should use `db_helpers`/JSONB helpers; compatibility SurrealDB paths should continue to use raw SurrealQL patterns until they are removed.
+All Tauri commands interacting with persisted JSON records must follow the **Adapter Pattern**. Production persistence paths should use `SqliteDbState` plus `db_helpers`/JSONB helpers; raw SurrealQL belongs only in the legacy import/migration modules.
 
 #### 1. Database Naming Convention
 - **Database Fields**: Must use `snake_case`.
@@ -851,154 +853,32 @@ pub fn to_db_value(settings: &AppSettings) -> Value {
 }
 ```
 
-#### 3. Persistence Pattern (SQLite-first, Legacy SurrealDB Compatibility)
-主数据库读写必须 SQLite-first：
+#### 3. Persistence Pattern (SQLite JSONB)
+主数据库读写必须直接走 SQLite：
 
 - 普通记录优先使用 `SqliteDbState` + `db_helpers::{db_get, db_list, db_put, db_create, db_delete}`。
 - 单例记录使用固定 ID，例如 `settings/app`、`*_common_config/common`、`*_global_config/global`。
 - 写入 `data` 前仍然走 adapter，把业务结构转为 `serde_json::Value`；读取后由 adapter 补默认值。
-- SQLite helper 返回的 `Value` 已注入字符串 `id`，不要再按 SurrealDB `Thing` 处理。
-- 兼容期内需要给旧版本或未切换逻辑保留镜像时，先写 SQLite，再 best-effort 双写 SurrealDB。
-
-下面的 SurrealDB 规则只适用于兼容期镜像、旧数据导入、或尚未完成切换的遗留路径。为避免 SurrealDB versioning conflicts (`Invalid revision` errors) and deserialization failures (`invalid type: map`):
-
-1.  **Reads**: Handle the `Thing` ID type explicitly.
-    *   **Best Practice**: Use **`type::string(id)`** in your query to convert the ID to a string before returning to Rust.
-    *   **Why**: SurrealDB's default `id` is a `Thing` object (e.g., `{ tb: "table", id: "id" }`). Direct deserialization into a `String` field in Rust will fail. Explicit conversion ensures compatibility.
-    *   **Code**: `SELECT *, type::string(id) as id FROM table:id`
-    *   **IMPORTANT**: The converted ID includes the table prefix (e.g., `"claude_provider:abc123"`). When passing this ID to the frontend or using it in subsequent operations, **you must strip the table prefix** (e.g., `"abc123"`) in the adapter layer before returning to business logic.
-    *   **Use Common Utility**: Always use the `db_id` module for ID handling:
-        ```rust
-        // In adapter.rs
-        use crate::coding::db_id::db_extract_id;
-
-        pub fn from_db_value_provider(value: Value) -> ClaudeCodeProvider {
-            let id = db_extract_id(&value);
-            // ...
-        }
-        ```
-    *   **Available Functions** (`crate::coding::db_id`):
-        *   `db_extract_id(record: &Value) -> String` - Extract and clean ID from a record
-        *   `db_extract_id_opt(record: &Value) -> Option<String>` - Same but returns Option
-        *   `db_clean_id(raw_id: &str) -> String` - Clean a raw ID string
-        *   `db_build_id(table: &str, id: &str) -> String` - Build a record ID string
-        *   `db_record_id(table: &str, id: &str) -> String` - Build backtick-escaped record reference for queries (e.g., `` table:`id` ``)
-        *   `db_new_id() -> String` - Generate a new record ID (UUID v4, no hyphens)
-
-2.  **Record ID Reference in Queries**: Use `db_record_id()` to build backtick-escaped record references.
-    *   **Problem**: `type::thing('table', $id)` behavior changed across SurrealDB versions (e.g., 2.4 → 2.6), causing "not found" errors even for existing records.
-    *   **Solution**: Use `db_record_id(table, id)` which generates `` table:`id` `` format. Backtick-escaped IDs are treated as literal strings regardless of content, avoiding version-specific parsing issues.
-    *   **NEVER** use `type::thing()` in any query. Always use `db_record_id()` instead.
-    *   **Code**:
-        ```rust
-        use crate::coding::db_id::db_record_id;
-
-        // SELECT by ID
-        let record_id = db_record_id("claude_provider", &id);
-        db.query(&format!("SELECT *, type::string(id) as id FROM {} LIMIT 1", record_id))
-
-        // UPDATE by ID
-        let record_id = db_record_id("mcp_server", &server_id);
-        db.query(&format!("UPDATE {} SET enabled = $enabled", record_id))
-            .bind(("enabled", true))
-
-        // DELETE by ID
-        let record_id = db_record_id("mcp_server", server_id);
-        db.query(&format!("DELETE {}", record_id))
-        ```
-    *   **Applies to**: All queries that target a specific record by ID:
-        *   `SELECT ... FROM {record_id}`
-        *   `UPDATE {record_id} SET ...` or `UPDATE {record_id} CONTENT $data`
-        *   `DELETE {record_id}`
-        *   `CREATE {record_id} CONTENT $data`
-        *   `UPSERT {record_id} CONTENT $data` or `UPSERT {record_id} SET ...`
-
-    *   **Batch record lookup rule**: Do **NOT** use `SELECT ... FROM $ids` and then deserialize directly into a strong Rust list when any referenced record may be missing.
-        *   **Why**: SurrealDB can yield `NONE` elements for missing records, which then explode during Rust deserialization with errors like `Expected a string but cannot convert NONE into a string`.
-        *   **Safe pattern**: Query the concrete table and filter with `WHERE id INSIDE $record_refs`, where `$record_refs` is a `Vec<surrealdb::sql::Thing>` built from real record refs such as `Thing::from(("image_asset", "abc"))`.
-        *   **Ordering**: Do not assume SurrealDB preserves the input ID order. If caller-visible order matters, rebuild the output order in Rust using the original ID list.
-        *   **Duplicates**: If duplicate IDs in the input are semantically meaningful, restore duplicates during the Rust-side reorder step rather than expecting the database to return repeated rows.
-
-3.  **Record ID Generation**: Prefer SQLite helper-generated UUID IDs for primary writes.
-    *   **Preferred**: Use `db_create(conn, DbTable::X, &payload)` for new SQLite records; it generates a UUID v4 without hyphens and returns the record with clean string `id`.
-    *   **When manual IDs are needed** (e.g., singleton rows, MCP servers, skills, compatibility mirror writes): Use the shared `db_new_id()` function which generates UUID v4 without hyphens.
-    *   **NEVER** call `uuid::Uuid::new_v4()` directly in store/command files. Always use `db_new_id()` from the `db_id` module.
-    *   **Code**:
-        ```rust
-        use crate::coding::db_id::{db_record_id, db_new_id};
-
-        // Create with manual ID
-        let id = db_new_id();
-        let record_id = db_record_id("mcp_server", &id);
-        db.query(&format!("CREATE {} CONTENT $data", record_id))
-            .bind(("data", payload))
-        ```
-
-4.  **Updates**: Use **Blind Writes (Overwrite)** to bypass version checks.
-    *   **Avoid**: Do NOT send the `version` or `revision` field back to the database in the `CONTENT` block. This triggers optimistic currency control checks which often fail.
-    *   **Avoid**: Do NOT include the `id` field in the `CONTENT` block. It can cause type conflicts.
-    *   **Pattern 1 (Update by ID)**: Use `db_record_id()` to target a specific record:
-        ```rust
-        let record_id = db_record_id("claude_provider", &id);
-        db.query(&format!("UPDATE {} CONTENT $data", record_id))
-            .bind(("data", payload))
-        ```
-    *   **Pattern 2 (Create or Update)**: Use `UPSERT` with `db_record_id()` for singleton or known-ID records:
-        ```rust
-        let record_id = db_record_id("settings", "app");
-        db.query(&format!("UPSERT {} CONTENT $data", record_id))
-            .bind(("data", payload))
-        ```
-        Or use hardcoded backtick format for fixed singleton IDs: `UPSERT settings:\`app\` CONTENT $data`
-    *   **Pattern 3 (Single Field)**: `UPDATE {record_id} SET field = $value`
-    *   **Pattern 4 (Batch by condition)**: `UPDATE table SET field = $value WHERE condition = true` (no ID targeting needed)
-
-5.  **SurrealDB Wrapper Characters**: Handled automatically by `db_extract_id()` / `db_clean_id()`. No manual handling needed — these functions strip table prefixes and `⟨⟩` wrappers transparently.
+- SQLite helper 返回的 `Value` 已注入干净字符串 `id`，不要再按 SurrealDB `Thing` 或 `table:id` 处理。
+- 新建普通记录优先用 `db_create(conn, DbTable::X, &payload)`；需要手动 ID 时使用 `db_new_id()`，单例记录使用固定 ID。
+- 局部更新用 `db_patch_fields` / `db_patch_where_bool`，需要原子更新多张表时用 `db_transaction`。
+- 表名必须来自 `DbTable` 或经过 identifier 校验，不要拼接未经校验的外部输入。
+- 旧 SurrealDB 查询规则只允许存在于 `tauri/src/db/surreal_import.rs` 和 `tauri/src/db_migration/`，用于读取老用户旧库并导入 SQLite。业务模块、Tauri command、store、tray、backup、WSL/SSH 同步路径都不能新增 SurrealQL。
 
 ```rust
-// commands.rs
 #[tauri::command]
-pub async fn get_settings(state: tauri::State<'_, DbState>) -> Result<AppSettings, String> {
-    let db = state.0.lock().await;
-
-    // CRITICAL: Convert `Thing` ID to string to match Rust struct types
-    // This avoids "invalid type: map, expected a string" errors
-    let mut result = db
-        .query("SELECT *, type::string(id) as id FROM settings:`app` LIMIT 1")
-        .await
-        .map_err(|e| format!("Failed to query settings: {}", e))?;
-
-    let records: Vec<serde_json::Value> = result.take(0).map_err(|e| e.to_string())?;
-
-    if let Some(record) = records.first() {
-        Ok(adapter::from_db_value(record.clone()))
-    } else {
-        Ok(AppSettings::default())
-    }
+pub async fn get_settings(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<AppSettings, String> {
+    settings::store::load_settings_from_sqlite_state(&state)
 }
 
 #[tauri::command]
 pub async fn save_settings(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     settings: AppSettings,
 ) -> Result<(), String> {
-    let db = state.0.lock().await;
-
-    // Serialize settings but EXCLUDE sensitive system fields
-    // Ensure `adapter::to_clean_payload` removes 'id' and 'version'/'revision'
-    let json_payload = adapter::to_clean_payload(&settings);
-
-    // CRITICAL for Updates:
-    // 1. Use CONTENT with a clean payload (no version = no lock check).
-    // 2. ID is used in the query target with native format, NOT in the content.
-    // 3. Use UPSERT for singleton records to handle both create and update:
-    //    UPSERT settings:`app` CONTENT $data
-    db.query("UPSERT settings:`app` CONTENT $data")
-        .bind(("data", json_payload)) // Clean data without ID/Version
-        .await
-        .map_err(|e| format!("Failed to save settings: {}", e))?;
-
-    Ok(())
+    settings::store::save_settings_to_sqlite_state(&state, &settings)
 }
 ```
 
@@ -1035,7 +915,7 @@ All modules should implement an internal function `apply_config_internal` that h
 ```rust
 // commands.rs
 pub async fn apply_config_internal<R: tauri::Runtime>(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: &tauri::AppHandle<R>,
     config: ModuleConfig,
     from_tray: bool,
@@ -1061,7 +941,7 @@ The Tauri command called by the frontend passes `from_tray: false`:
 ```rust
 #[tauri::command]
 pub async fn save_module_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     config: ModuleConfig,
 ) -> Result<(), String> {
@@ -1079,14 +959,13 @@ pub async fn apply_module_selection<R: Runtime>(
     app: &AppHandle<R>,
     selection_id: &str,
 ) -> Result<(), String> {
-    let state = app.state::<DbState>();
-    let db = state.0.lock().await;
+    let state = app.state::<SqliteDbState>();
 
     // Build config from selection
-    let config = build_config_from_selection(&db, selection_id)?;
+    let config = build_config_from_selection(&state, selection_id)?;
 
     // Apply with from_tray: true
-    super::commands::apply_config_internal(&db, app, config, true).await?;
+    super::commands::apply_config_internal(&state, app, config, true).await?;
 
     Ok(())
 }
@@ -1270,7 +1149,7 @@ All HTTP requests in the Rust backend MUST use the unified `http_client` module 
 
 ```rust
 use crate::http_client;
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 
 // Standard request (30s timeout, auto proxy)
 let client = http_client::client(&state).await?;

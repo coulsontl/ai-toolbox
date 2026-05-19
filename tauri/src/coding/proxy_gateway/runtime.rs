@@ -25,6 +25,7 @@ use super::paths::ProxyGatewayPaths;
 #[cfg(test)]
 use super::types::GatewayCliKey;
 use super::types::{ProxyGatewayHealthCheckResult, ProxyGatewaySettings, ProxyGatewayStatus};
+use crate::db::SqliteDbState;
 use chrono::Utc;
 #[cfg(test)]
 use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, HOST};
@@ -36,8 +37,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use surrealdb::engine::local::Db;
-use surrealdb::Surreal;
 
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -73,7 +72,7 @@ impl ProxyGatewayManager {
     pub fn start_with_db(
         &mut self,
         settings: ProxyGatewaySettings,
-        db: Surreal<Db>,
+        db: SqliteDbState,
     ) -> Result<ProxyGatewayStatus, String> {
         self.start_internal(
             settings.clone(),
@@ -84,7 +83,7 @@ impl ProxyGatewayManager {
     pub fn start_with_context(
         &mut self,
         settings: ProxyGatewaySettings,
-        db: Surreal<Db>,
+        db: SqliteDbState,
         paths: ProxyGatewayPaths,
     ) -> Result<ProxyGatewayStatus, String> {
         self.start_internal(
@@ -230,7 +229,7 @@ impl Drop for ProxyGatewayRuntime {
 
 #[derive(Clone)]
 struct GatewayRuntimeContext {
-    db: Option<Surreal<Db>>,
+    db: Option<SqliteDbState>,
     paths: Option<ProxyGatewayPaths>,
     settings: Arc<RwLock<ProxyGatewaySettings>>,
 }
@@ -238,7 +237,7 @@ struct GatewayRuntimeContext {
 impl GatewayRuntimeContext {
     fn new(
         settings: ProxyGatewaySettings,
-        db: Option<Surreal<Db>>,
+        db: Option<SqliteDbState>,
         paths: Option<ProxyGatewayPaths>,
     ) -> Self {
         Self {
@@ -353,10 +352,11 @@ mod tests {
     use super::*;
     use crate::coding::proxy_gateway::request_log;
     use crate::coding::proxy_gateway::types::ProxyGatewayRequestLogListInput;
+    use crate::db::helpers::{db_create, db_put};
+    use crate::db::schema::DbTable;
+    use crate::db::SqliteDbState;
     use std::net::TcpListener;
     use std::sync::mpsc;
-    use surrealdb::engine::local::SurrealKv;
-    use surrealdb::Surreal;
 
     fn next_available_port() -> u16 {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
@@ -449,20 +449,24 @@ mod tests {
         String::from_utf8_lossy(&raw).to_string()
     }
 
-    async fn create_test_db() -> (tempfile::TempDir, Surreal<Db>) {
+    async fn create_test_db() -> (tempfile::TempDir, SqliteDbState) {
         let dir = tempfile::tempdir().expect("temp db");
-        let db = Surreal::new::<SurrealKv>(dir.path().to_path_buf())
-            .await
-            .expect("open test db");
-        db.use_ns("ai_toolbox")
-            .use_db("main")
-            .await
-            .expect("select ns db");
-        db.query("UPSERT settings:`app` CONTENT $data")
-            .bind(("data", json!({"proxy_mode": "direct"})))
-            .await
-            .expect("save app settings");
+        let db = SqliteDbState::in_memory_for_test().expect("open test db");
+        db.with_conn(|conn| {
+            db_put(
+                conn,
+                DbTable::Settings,
+                "app",
+                &json!({"proxy_mode": "direct"}),
+            )
+        })
+        .expect("save app settings");
         (dir, db)
+    }
+
+    fn insert_claude_provider(db: &SqliteDbState, data: Value) {
+        db.with_conn(|conn| db_create(conn, DbTable::ClaudeProvider, &data).map(|_| ()))
+            .expect("insert provider");
     }
 
     #[test]
@@ -754,20 +758,17 @@ base_url = "https://openai.example.com/v1"
                 "sonnetModel": "provider-sonnet"
             })
             .to_string();
-            db.query("CREATE claude_provider CONTENT $data")
-                .bind((
-                    "data",
-                    json!({
-                        "name": "Local Upstream",
-                        "category": "custom",
-                        "settings_config": settings_config,
-                        "extra_settings_config": "{}",
-                        "is_applied": true,
-                        "is_disabled": false,
-                    }),
-                ))
-                .await
-                .expect("insert provider");
+            insert_claude_provider(
+                &db,
+                json!({
+                    "name": "Local Upstream",
+                    "category": "custom",
+                    "settings_config": settings_config,
+                    "extra_settings_config": "{}",
+                    "is_applied": true,
+                    "is_disabled": false,
+                }),
+            );
         });
 
         let context = GatewayRuntimeContext::new(ProxyGatewaySettings::default(), Some(db), None);
@@ -803,20 +804,17 @@ base_url = "https://openai.example.com/v1"
                 "sonnetModel": "provider-sonnet"
             })
             .to_string();
-            db.query("CREATE claude_provider CONTENT $data")
-                .bind((
-                    "data",
-                    json!({
-                        "name": "Runtime Upstream",
-                        "category": "custom",
-                        "settings_config": settings_config,
-                        "extra_settings_config": "{}",
-                        "is_applied": true,
-                        "is_disabled": false,
-                    }),
-                ))
-                .await
-                .expect("insert provider");
+            insert_claude_provider(
+                &db,
+                json!({
+                    "name": "Runtime Upstream",
+                    "category": "custom",
+                    "settings_config": settings_config,
+                    "extra_settings_config": "{}",
+                    "is_applied": true,
+                    "is_disabled": false,
+                }),
+            );
         });
 
         let port = next_available_port();
@@ -882,36 +880,30 @@ base_url = "https://openai.example.com/v1"
                 "opusModel": "second-opus"
             })
             .to_string();
-            db.query("CREATE claude_provider CONTENT $data")
-                .bind((
-                    "data",
-                    json!({
-                        "name": "First Upstream",
-                        "category": "custom",
-                        "settings_config": first_settings_config,
-                        "extra_settings_config": "{}",
-                        "is_applied": false,
-                        "is_disabled": false,
-                        "sort_index": 0,
-                    }),
-                ))
-                .await
-                .expect("insert first provider");
-            db.query("CREATE claude_provider CONTENT $data")
-                .bind((
-                    "data",
-                    json!({
-                        "name": "Second Upstream",
-                        "category": "custom",
-                        "settings_config": second_settings_config,
-                        "extra_settings_config": "{}",
-                        "is_applied": false,
-                        "is_disabled": false,
-                        "sort_index": 1,
-                    }),
-                ))
-                .await
-                .expect("insert second provider");
+            insert_claude_provider(
+                &db,
+                json!({
+                    "name": "First Upstream",
+                    "category": "custom",
+                    "settings_config": first_settings_config,
+                    "extra_settings_config": "{}",
+                    "is_applied": false,
+                    "is_disabled": false,
+                    "sort_index": 0,
+                }),
+            );
+            insert_claude_provider(
+                &db,
+                json!({
+                    "name": "Second Upstream",
+                    "category": "custom",
+                    "settings_config": second_settings_config,
+                    "extra_settings_config": "{}",
+                    "is_applied": false,
+                    "is_disabled": false,
+                    "sort_index": 1,
+                }),
+            );
         });
 
         let context = GatewayRuntimeContext::new(ProxyGatewaySettings::default(), Some(db), None);
@@ -962,36 +954,30 @@ base_url = "https://openai.example.com/v1"
                 "sonnetModel": "second-sonnet"
             })
             .to_string();
-            db.query("CREATE claude_provider CONTENT $data")
-                .bind((
-                    "data",
-                    json!({
-                        "name": "First Upstream",
-                        "category": "custom",
-                        "settings_config": first_settings_config,
-                        "extra_settings_config": "{}",
-                        "is_applied": false,
-                        "is_disabled": false,
-                        "sort_index": 0,
-                    }),
-                ))
-                .await
-                .expect("insert first provider");
-            db.query("CREATE claude_provider CONTENT $data")
-                .bind((
-                    "data",
-                    json!({
-                        "name": "Second Upstream",
-                        "category": "custom",
-                        "settings_config": second_settings_config,
-                        "extra_settings_config": "{}",
-                        "is_applied": false,
-                        "is_disabled": false,
-                        "sort_index": 1,
-                    }),
-                ))
-                .await
-                .expect("insert second provider");
+            insert_claude_provider(
+                &db,
+                json!({
+                    "name": "First Upstream",
+                    "category": "custom",
+                    "settings_config": first_settings_config,
+                    "extra_settings_config": "{}",
+                    "is_applied": false,
+                    "is_disabled": false,
+                    "sort_index": 0,
+                }),
+            );
+            insert_claude_provider(
+                &db,
+                json!({
+                    "name": "Second Upstream",
+                    "category": "custom",
+                    "settings_config": second_settings_config,
+                    "extra_settings_config": "{}",
+                    "is_applied": false,
+                    "is_disabled": false,
+                    "sort_index": 1,
+                }),
+            );
         });
 
         let context = GatewayRuntimeContext::new(ProxyGatewaySettings::default(), Some(db), None);

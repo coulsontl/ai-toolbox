@@ -19,7 +19,7 @@ use crate::coding::runtime_location::{
     get_codex_runtime_location_async, get_gemini_cli_runtime_location_async,
     get_openclaw_runtime_location_async, get_opencode_runtime_location_async, RuntimeLocationInfo,
 };
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 
 const SESSION_CACHE_TTL: Duration = Duration::from_secs(15);
 const MAX_SESSION_CACHE_ENTRIES: usize = 16;
@@ -207,7 +207,7 @@ impl ToolSessionContext {
 
 #[tauri::command]
 pub async fn list_tool_sessions(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     tool: String,
     query: Option<String>,
     path_filter: Option<String>,
@@ -239,7 +239,7 @@ pub async fn list_tool_sessions(
 
 #[tauri::command]
 pub async fn list_tool_session_paths(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     tool: String,
     limit: Option<u32>,
     force_refresh: Option<bool>,
@@ -261,7 +261,7 @@ pub async fn list_tool_session_paths(
 
 #[tauri::command]
 pub async fn get_tool_session_detail(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     tool: String,
     source_path: String,
 ) -> Result<SessionDetail, String> {
@@ -275,7 +275,7 @@ pub async fn get_tool_session_detail(
 
 #[tauri::command]
 pub async fn delete_tool_session(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     tool: String,
     source_path: String,
 ) -> Result<(), String> {
@@ -289,7 +289,7 @@ pub async fn delete_tool_session(
 
 #[tauri::command]
 pub async fn delete_tool_sessions(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     tool: String,
     source_paths: Vec<String>,
 ) -> Result<DeleteToolSessionsResult, String> {
@@ -303,7 +303,7 @@ pub async fn delete_tool_sessions(
 
 #[tauri::command]
 pub async fn export_tool_session(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     tool: String,
     source_path: String,
     export_path: String,
@@ -321,7 +321,7 @@ pub async fn export_tool_session(
 
 #[tauri::command]
 pub async fn import_tool_session(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     tool: String,
     import_path: String,
 ) -> Result<(), String> {
@@ -338,7 +338,7 @@ pub async fn import_tool_session(
 
 #[tauri::command]
 pub async fn rename_tool_session(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     tool: String,
     source_path: String,
     title: String,
@@ -1057,7 +1057,7 @@ fn normalize_query(query: Option<String>) -> Option<String> {
 }
 
 async fn resolve_context(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     tool: SessionTool,
 ) -> Result<ToolSessionContext, String> {
     match tool {

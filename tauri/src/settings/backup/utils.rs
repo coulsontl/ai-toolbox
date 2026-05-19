@@ -32,7 +32,7 @@ pub fn add_sqlite_database_snapshot_to_zip<W: Write + Seek>(
     app_handle: &tauri::AppHandle,
     options: SimpleFileOptions,
 ) -> Result<(), String> {
-    let sqlite_state = app_handle.state::<crate::db::sqlite_state::SqliteDbState>();
+    let sqlite_state = app_handle.state::<crate::db::SqliteDbState>();
     let schema_version = sqlite_state
         .with_conn(crate::db::migrations::get_user_version)
         .unwrap_or(0);
@@ -57,7 +57,7 @@ pub fn add_sqlite_database_snapshot_to_zip<W: Write + Seek>(
     add_path_to_zip(zip, &temp_path, SQLITE_BACKUP_ZIP_PATH, options)?;
     let _ = std::fs::remove_file(&temp_path);
 
-    let manifest = build_db_manifest("hybrid", i64::from(schema_version));
+    let manifest = build_db_manifest("sqlite", i64::from(schema_version));
     add_text_to_zip(
         zip,
         DB_MANIFEST_ZIP_PATH,
@@ -102,7 +102,7 @@ pub fn restore_sqlite_database_snapshot_from_zip<R: Read + Seek>(
             .map_err(|error| format!("Failed to extract SQLite backup snapshot: {error}"))?;
     }
 
-    let sqlite_state = app_handle.state::<crate::db::sqlite_state::SqliteDbState>();
+    let sqlite_state = app_handle.state::<crate::db::SqliteDbState>();
     let restore_result = sqlite_state.with_conn_mut(|conn| {
         conn.restore(
             rusqlite::MAIN_DB,
@@ -161,7 +161,6 @@ fn build_db_manifest(engine: &str, schema_version: i64) -> serde_json::Value {
         "engine": engine,
         "schema_version": schema_version,
         "app_version": env!("CARGO_PKG_VERSION"),
-        "legacy_surrealdb_path": "db/",
         "sqlite_path": SQLITE_BACKUP_ZIP_PATH,
     })
 }
@@ -228,7 +227,7 @@ pub fn get_opencode_config_path() -> Result<Option<PathBuf>, String> {
 }
 
 pub async fn get_opencode_config_path_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Option<PathBuf>, String> {
     let location = runtime_location::get_opencode_runtime_location_async(db).await?;
     Ok(location.host_path.exists().then_some(location.host_path))
@@ -263,7 +262,7 @@ pub fn get_opencode_restore_dir() -> Result<PathBuf, String> {
 }
 
 pub async fn get_opencode_restore_dir_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<PathBuf, String> {
     runtime_location::get_opencode_config_dir_async(db).await
 }
@@ -280,7 +279,7 @@ pub fn get_claude_settings_path() -> Result<Option<PathBuf>, String> {
 }
 
 pub async fn get_claude_settings_path_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Option<PathBuf>, String> {
     let path = runtime_location::get_claude_settings_path_async(db).await?;
     Ok(path.exists().then_some(path))
@@ -299,14 +298,14 @@ pub fn get_claude_prompt_path() -> Result<Option<PathBuf>, String> {
 }
 
 pub async fn get_claude_prompt_path_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Option<PathBuf>, String> {
     let path = runtime_location::get_claude_prompt_path_async(db).await?;
     Ok(path.exists().then_some(path))
 }
 
 pub async fn get_claude_mcp_path_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Option<PathBuf>, String> {
     let path = runtime_location::get_claude_mcp_config_path_async(db).await?;
     Ok(path.exists().then_some(path))
@@ -354,7 +353,7 @@ pub fn get_opencode_auth_path() -> Result<Option<PathBuf>, String> {
 }
 
 pub async fn get_opencode_auth_path_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Option<PathBuf>, String> {
     let location = runtime_location::get_opencode_runtime_location_async(db).await?;
     if let Some(wsl) = location.wsl {
@@ -424,7 +423,7 @@ pub fn get_opencode_prompt_path() -> Result<Option<PathBuf>, String> {
 }
 
 pub async fn get_opencode_prompt_path_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Option<PathBuf>, String> {
     let path = runtime_location::get_opencode_prompt_path_async(db).await?;
     Ok(path.exists().then_some(path))
@@ -443,7 +442,7 @@ pub fn get_codex_auth_path() -> Result<Option<PathBuf>, String> {
 }
 
 pub async fn get_codex_auth_path_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Option<PathBuf>, String> {
     let path = runtime_location::get_codex_auth_path_async(db).await?;
     Ok(path.exists().then_some(path))
@@ -462,7 +461,7 @@ pub fn get_codex_config_path() -> Result<Option<PathBuf>, String> {
 }
 
 pub async fn get_codex_config_path_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Option<PathBuf>, String> {
     let path = runtime_location::get_codex_config_path_async(db).await?;
     Ok(path.exists().then_some(path))
@@ -489,7 +488,7 @@ fn get_existing_codex_prompt_paths(root_dir: &Path) -> Vec<PathBuf> {
 }
 
 pub async fn get_codex_prompt_paths_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Vec<PathBuf>, String> {
     let root_dir = runtime_location::get_codex_runtime_location_async(db)
         .await?
@@ -498,7 +497,7 @@ pub async fn get_codex_prompt_paths_from_db(
 }
 
 pub async fn get_codex_prompt_path_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Option<PathBuf>, String> {
     let path = runtime_location::get_codex_prompt_path_async(db).await?;
     Ok(path.exists().then_some(path))
@@ -514,21 +513,21 @@ pub fn get_codex_prompt_backup_zip_path(prompt_path: &Path) -> String {
 }
 
 pub async fn get_gemini_cli_env_path_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Option<PathBuf>, String> {
     let path = runtime_location::get_gemini_cli_env_path_async(db).await?;
     Ok(path.exists().then_some(path))
 }
 
 pub async fn get_gemini_cli_settings_path_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Option<PathBuf>, String> {
     let path = runtime_location::get_gemini_cli_settings_path_async(db).await?;
     Ok(path.exists().then_some(path))
 }
 
 pub async fn get_gemini_cli_prompt_path_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Option<PathBuf>, String> {
     let path = runtime_location::get_gemini_cli_prompt_path_async(db).await?;
     Ok(path.exists().then_some(path))
@@ -544,21 +543,21 @@ pub fn get_gemini_cli_prompt_backup_zip_path(prompt_path: &Path) -> String {
 }
 
 pub async fn get_gemini_cli_oauth_creds_path_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Option<PathBuf>, String> {
     let path = runtime_location::get_gemini_cli_oauth_creds_path_async(db).await?;
     Ok(path.exists().then_some(path))
 }
 
 pub async fn get_gemini_cli_tmp_dir_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Option<PathBuf>, String> {
     let path = runtime_location::get_gemini_cli_tmp_dir_async(db).await?;
     Ok(path.is_dir().then_some(path))
 }
 
 pub async fn get_openclaw_config_path_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Option<PathBuf>, String> {
     let path = runtime_location::get_openclaw_runtime_location_async(db)
         .await?
@@ -732,7 +731,7 @@ pub fn resolve_restore_dir_override(
 }
 
 pub async fn get_custom_root_dir_path_info(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     tool: &str,
 ) -> Option<String> {
     match tool {
@@ -1068,22 +1067,9 @@ fn custom_backup_payload_base(index: usize, entry_id: &str) -> String {
 }
 
 pub async fn get_backup_custom_entries_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Vec<BackupCustomEntry>, String> {
-    let mut result = db
-        .query("SELECT * OMIT id FROM settings:`app` LIMIT 1")
-        .await
-        .map_err(|e| format!("Failed to query settings: {}", e))?;
-
-    let records: Vec<serde_json::Value> = result
-        .take(0)
-        .map_err(|e| format!("Failed to parse settings: {}", e))?;
-
-    Ok(records
-        .first()
-        .map(|record| crate::settings::adapter::from_db_value(record.clone()))
-        .map(|settings| settings.backup_custom_entries)
-        .unwrap_or_default())
+    Ok(crate::settings::store::load_settings_from_sqlite_state(db)?.backup_custom_entries)
 }
 
 pub fn add_custom_backup_entries_to_zip<W: Write + std::io::Seek>(
@@ -1346,22 +1332,9 @@ pub fn restore_custom_backup_entries<R: Read + std::io::Seek>(
 }
 
 pub async fn get_backup_image_assets_enabled_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<bool, String> {
-    let mut result = db
-        .query("SELECT * OMIT id FROM settings:`app` LIMIT 1")
-        .await
-        .map_err(|e| format!("Failed to query settings: {}", e))?;
-
-    let records: Vec<serde_json::Value> = result
-        .take(0)
-        .map_err(|e| format!("Failed to parse settings: {}", e))?;
-
-    Ok(records
-        .first()
-        .map(|record| crate::settings::adapter::from_db_value(record.clone()))
-        .map(|settings| settings.backup_image_assets_enabled)
-        .unwrap_or(true))
+    Ok(crate::settings::store::load_settings_from_sqlite_state(db)?.backup_image_assets_enabled)
 }
 
 pub fn add_text_to_zip<W: Write + std::io::Seek>(
@@ -1471,7 +1444,7 @@ pub async fn create_backup_zip(
     use std::io::Cursor;
 
     let mut buffer = Cursor::new(Vec::new());
-    let db_state = app_handle.state::<crate::DbState>();
+    let db_state = app_handle.state::<crate::SqliteDbState>();
     let db = db_state.db();
 
     {
@@ -1817,12 +1790,12 @@ mod tests {
     }
 
     #[test]
-    fn database_manifest_records_hybrid_transition_snapshot() {
-        let manifest = build_db_manifest("hybrid", 1);
+    fn database_manifest_records_sqlite_snapshot() {
+        let manifest = build_db_manifest("sqlite", 1);
 
         assert_eq!(
             manifest.get("engine").and_then(|value| value.as_str()),
-            Some("hybrid")
+            Some("sqlite")
         );
         assert_eq!(
             manifest
@@ -1834,12 +1807,7 @@ mod tests {
             manifest.get("sqlite_path").and_then(|value| value.as_str()),
             Some(SQLITE_BACKUP_ZIP_PATH)
         );
-        assert_eq!(
-            manifest
-                .get("legacy_surrealdb_path")
-                .and_then(|value| value.as_str()),
-            Some("db/")
-        );
+        assert!(manifest.get("legacy_surrealdb_path").is_none());
     }
 
     #[test]

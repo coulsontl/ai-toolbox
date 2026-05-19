@@ -27,8 +27,8 @@ use super::path_executor::{
 };
 use super::skill_store;
 use super::tool_adapters::{
-    adapter_by_key, get_all_tool_adapters, is_tool_installed_async,
-    resolve_runtime_skills_path_async, runtime_adapter_by_key,
+    adapter_by_key, get_all_tool_adapters, is_tool_installed_with_state_async,
+    resolve_runtime_skills_path_with_state_async, runtime_adapter_by_key,
 };
 use super::types::{
     now_ms, CustomTool, CustomToolDto, GitSkillCandidate, InstallResultDto, ManagedSkillDto,
@@ -39,7 +39,7 @@ use super::types::{
 };
 use crate::coding::runtime_location;
 use crate::http_client;
-use crate::DbState;
+use crate::SqliteDbState;
 
 fn format_error(err: anyhow::Error) -> String {
     let first = err.to_string();
@@ -196,9 +196,9 @@ fn group_to_dto(group: SkillGroupRecord) -> SkillGroupDto {
 // --- Tool Status ---
 
 #[tauri::command]
-pub async fn skills_get_tool_status(state: State<'_, DbState>) -> Result<ToolStatusDto, String> {
-    super::tool_adapters::set_runtime_db(state.db());
-
+pub async fn skills_get_tool_status(
+    state: State<'_, SqliteDbState>,
+) -> Result<ToolStatusDto, String> {
     // Get custom tools
     let custom_tools = skill_store::get_custom_tools(&state)
         .await
@@ -211,8 +211,10 @@ pub async fn skills_get_tool_status(state: State<'_, DbState>) -> Result<ToolSta
     let mut installed: Vec<String> = Vec::new();
 
     for adapter in &all_adapters {
-        let ok = is_tool_installed_async(adapter).await.unwrap_or(false);
-        let skills_path = resolve_runtime_skills_path_async(adapter)
+        let ok = is_tool_installed_with_state_async(state.db(), adapter)
+            .await
+            .unwrap_or(false);
+        let skills_path = resolve_runtime_skills_path_with_state_async(state.db(), adapter)
             .await
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
@@ -251,7 +253,7 @@ pub async fn skills_get_tool_status(state: State<'_, DbState>) -> Result<ToolSta
     let current_set: std::collections::HashSet<String> = installed.iter().cloned().collect();
     if current_set != prev_set {
         let installed_clone = installed.clone();
-        let state_ref = DbState(state.0.clone());
+        let state_ref = state.db().clone();
         tokio::spawn(async move {
             // Small delay to let other operations complete first
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -276,7 +278,7 @@ pub async fn skills_get_tool_status(state: State<'_, DbState>) -> Result<ToolSta
 #[tauri::command]
 pub async fn skills_get_central_repo_path(
     app: tauri::AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
 ) -> Result<String, String> {
     let path = resolve_central_repo_path(&app, &state)
         .await
@@ -287,7 +289,7 @@ pub async fn skills_get_central_repo_path(
 
 #[tauri::command]
 pub async fn skills_set_central_repo_path(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     path: String,
 ) -> Result<String, String> {
     let new_base = expand_home_path(&path).map_err(|e| format_error(e))?;
@@ -309,7 +311,7 @@ pub async fn skills_set_central_repo_path(
 #[tauri::command]
 pub async fn skills_get_managed_skills(
     app: tauri::AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
 ) -> Result<Vec<ManagedSkillDto>, String> {
     let skills = skill_store::get_managed_skills(&state).await?;
     let groups = skill_store::get_skill_groups(&state).await?;
@@ -461,7 +463,7 @@ mod skill_source_tests {
 #[allow(non_snake_case)]
 pub async fn skills_install_local(
     app: tauri::AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     sourcePath: String,
     overwrite: Option<bool>,
 ) -> Result<InstallResultDto, String> {
@@ -495,7 +497,7 @@ pub async fn skills_list_local_skills(
 #[allow(non_snake_case)]
 pub async fn skills_install_local_selection(
     app: tauri::AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     sourcePath: String,
     subpath: String,
     overwrite: Option<bool>,
@@ -522,7 +524,7 @@ pub async fn skills_install_local_selection(
 #[allow(non_snake_case)]
 pub async fn skills_install_git(
     app: tauri::AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     repoUrl: String,
     branch: Option<String>,
     overwrite: Option<bool>,
@@ -549,7 +551,7 @@ pub async fn skills_install_git(
 #[allow(non_snake_case)]
 pub async fn skills_list_git_skills(
     app: tauri::AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     repoUrl: String,
     branch: Option<String>,
 ) -> Result<Vec<GitSkillCandidate>, String> {
@@ -577,7 +579,7 @@ pub async fn skills_list_git_skills(
 #[allow(non_snake_case)]
 pub async fn skills_install_git_selection(
     app: tauri::AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     repoUrl: String,
     subpath: String,
     branch: Option<String>,
@@ -606,7 +608,7 @@ pub async fn skills_install_git_selection(
 
 async fn resolve_skill_source_path<R: Runtime>(
     app: &AppHandle<R>,
-    state: &DbState,
+    state: &SqliteDbState,
     skill: &Skill,
 ) -> Result<PathBuf, String> {
     let central_dir = resolve_central_repo_path(app, state)
@@ -619,7 +621,7 @@ async fn resolve_skill_source_path<R: Runtime>(
 }
 
 async fn sync_skill_to_tool_record(
-    state: &DbState,
+    state: &SqliteDbState,
     skill: &Skill,
     tool: &str,
     source_path: &Path,
@@ -631,21 +633,22 @@ async fn sync_skill_to_tool_record(
 
     // Skip install check for custom tools - they're always considered "installed"
     if !runtime_adapter.is_custom
-        && !is_tool_installed_async(&runtime_adapter)
+        && !is_tool_installed_with_state_async(state.db(), &runtime_adapter)
             .await
             .unwrap_or(false)
     {
-        let skills_path = resolve_runtime_skills_path_async(&runtime_adapter)
-            .await
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let skills_path =
+            resolve_runtime_skills_path_with_state_async(state.db(), &runtime_adapter)
+                .await
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
         return Err(format!(
             "TOOL_NOT_INSTALLED|{}|{}",
             runtime_adapter.key, skills_path
         ));
     }
 
-    let tool_root = resolve_runtime_skills_path_async(&runtime_adapter)
+    let tool_root = resolve_runtime_skills_path_with_state_async(state.db(), &runtime_adapter)
         .await
         .map_err(|e| format_error(e))?;
     let target = tool_root.join(&skill.name);
@@ -710,7 +713,7 @@ fn remove_skill_target_best_effort(skill: &Skill, source_path: &Path, target: &S
 }
 
 async fn remove_skill_targets_best_effort(
-    state: &DbState,
+    state: &SqliteDbState,
     skill: &Skill,
     source_path: Option<&Path>,
 ) -> Result<(), String> {
@@ -734,7 +737,7 @@ async fn remove_skill_targets_best_effort(
 
 async fn resolve_skill_source_path_for_cleanup<R: Runtime>(
     app: &AppHandle<R>,
-    state: &DbState,
+    state: &SqliteDbState,
     skill: &Skill,
 ) -> Option<PathBuf> {
     match resolve_skill_source_path(app, state, skill).await {
@@ -754,7 +757,7 @@ async fn resolve_skill_source_path_for_cleanup<R: Runtime>(
 #[allow(non_snake_case)]
 pub async fn skills_sync_to_tool<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     sourcePath: String,
     skillId: String,
     tool: String,
@@ -798,7 +801,7 @@ pub async fn skills_sync_to_tool<R: Runtime>(
 #[allow(non_snake_case)]
 pub async fn skills_unsync_from_tool<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     skillId: String,
     tool: String,
 ) -> Result<(), String> {
@@ -825,7 +828,7 @@ pub async fn skills_unsync_from_tool<R: Runtime>(
 #[allow(non_snake_case)]
 pub async fn skills_update_managed(
     app: tauri::AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     skillId: String,
 ) -> Result<UpdateResultDto, String> {
     let res = update_managed_skill_from_source(&app, &state, &skillId)
@@ -848,7 +851,7 @@ pub async fn skills_update_managed(
 #[allow(non_snake_case)]
 pub async fn skills_delete_managed(
     app: tauri::AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     skillId: String,
 ) -> Result<(), String> {
     let record = skill_store::get_skill_by_id(&state, &skillId).await?;
@@ -889,7 +892,7 @@ pub async fn skills_delete_managed(
 #[tauri::command]
 pub async fn skills_get_onboarding_plan(
     app: tauri::AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
 ) -> Result<OnboardingPlan, String> {
     // Add 30 second timeout to prevent hanging on large directories
     match tokio::time::timeout(Duration::from_secs(30), build_onboarding_plan(&app, &state)).await {
@@ -904,7 +907,7 @@ pub async fn skills_get_onboarding_plan(
 #[allow(non_snake_case)]
 pub async fn skills_import_existing(
     app: tauri::AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     sourcePath: String,
     overwrite: Option<bool>,
 ) -> Result<InstallResultDto, String> {
@@ -928,13 +931,15 @@ pub async fn skills_import_existing(
 // --- Git Cache ---
 
 #[tauri::command]
-pub async fn skills_get_git_cache_cleanup_days(state: State<'_, DbState>) -> Result<i64, String> {
+pub async fn skills_get_git_cache_cleanup_days(
+    state: State<'_, SqliteDbState>,
+) -> Result<i64, String> {
     Ok(get_git_cache_cleanup_days(&state).await)
 }
 
 #[tauri::command]
 pub async fn skills_set_git_cache_cleanup_days(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     days: i64,
 ) -> Result<i64, String> {
     set_cleanup_days(&state, days)
@@ -943,7 +948,7 @@ pub async fn skills_set_git_cache_cleanup_days(
 }
 
 #[tauri::command]
-pub async fn skills_get_git_cache_ttl_secs(state: State<'_, DbState>) -> Result<i64, String> {
+pub async fn skills_get_git_cache_ttl_secs(state: State<'_, SqliteDbState>) -> Result<i64, String> {
     Ok(get_git_cache_ttl_secs(&state).await)
 }
 
@@ -967,7 +972,7 @@ pub async fn skills_get_git_cache_path(app: tauri::AppHandle) -> Result<String, 
 
 #[tauri::command]
 pub async fn skills_get_preferred_tools(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
 ) -> Result<Option<Vec<String>>, String> {
     let raw = skill_store::get_setting(&state, "preferred_tools_v1")
         .await
@@ -981,7 +986,7 @@ pub async fn skills_get_preferred_tools(
 
 #[tauri::command]
 pub async fn skills_set_preferred_tools(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     tools: Vec<String>,
 ) -> Result<(), String> {
     skill_store::set_setting(
@@ -995,7 +1000,7 @@ pub async fn skills_set_preferred_tools(
 // --- Show Skills in Tray ---
 
 #[tauri::command]
-pub async fn skills_get_show_in_tray(state: State<'_, DbState>) -> Result<bool, String> {
+pub async fn skills_get_show_in_tray(state: State<'_, SqliteDbState>) -> Result<bool, String> {
     let raw = skill_store::get_setting(&state, "show_skills_in_tray")
         .await
         .ok()
@@ -1008,7 +1013,7 @@ pub async fn skills_get_show_in_tray(state: State<'_, DbState>) -> Result<bool, 
 
 #[tauri::command]
 pub async fn skills_set_show_in_tray(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     enabled: bool,
 ) -> Result<(), String> {
     skill_store::set_setting(
@@ -1022,7 +1027,9 @@ pub async fn skills_set_show_in_tray(
 // --- Default View Mode ---
 
 #[tauri::command]
-pub async fn skills_get_default_view_mode(state: State<'_, DbState>) -> Result<String, String> {
+pub async fn skills_get_default_view_mode(
+    state: State<'_, SqliteDbState>,
+) -> Result<String, String> {
     let raw = skill_store::get_setting(&state, "default_view_mode")
         .await
         .ok()
@@ -1035,7 +1042,7 @@ pub async fn skills_get_default_view_mode(state: State<'_, DbState>) -> Result<S
 
 #[tauri::command]
 pub async fn skills_set_default_view_mode(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     mode: String,
 ) -> Result<(), String> {
     skill_store::set_setting(&state, "default_view_mode", &mode).await
@@ -1045,7 +1052,7 @@ pub async fn skills_set_default_view_mode(
 
 #[tauri::command]
 pub async fn skills_get_custom_tools(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
 ) -> Result<Vec<CustomToolDto>, String> {
     let tools = skill_store::get_custom_tools(&state).await?;
     Ok(tools
@@ -1064,7 +1071,7 @@ pub async fn skills_get_custom_tools(
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn skills_add_custom_tool(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     key: String,
     displayName: String,
     relativeSkillsDir: String,
@@ -1105,7 +1112,7 @@ pub async fn skills_add_custom_tool(
 
 #[tauri::command]
 pub async fn skills_remove_custom_tool(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     key: String,
 ) -> Result<(), String> {
     skill_store::delete_custom_tool(&state, &key).await
@@ -1147,7 +1154,9 @@ pub async fn skills_create_custom_tool_path(relativeSkillsDir: String) -> Result
 // --- Reorder Skills ---
 
 #[tauri::command]
-pub async fn skills_get_groups(state: State<'_, DbState>) -> Result<Vec<SkillGroupDto>, String> {
+pub async fn skills_get_groups(
+    state: State<'_, SqliteDbState>,
+) -> Result<Vec<SkillGroupDto>, String> {
     let groups = skill_store::get_skill_groups(&state).await?;
     Ok(groups.into_iter().map(group_to_dto).collect())
 }
@@ -1155,7 +1164,7 @@ pub async fn skills_get_groups(state: State<'_, DbState>) -> Result<Vec<SkillGro
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn skills_save_group(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     id: Option<String>,
     name: String,
     note: Option<String>,
@@ -1190,19 +1199,25 @@ pub async fn skills_save_group(
 
 #[tauri::command]
 #[allow(non_snake_case)]
-pub async fn skills_delete_group(state: State<'_, DbState>, groupId: String) -> Result<(), String> {
+pub async fn skills_delete_group(
+    state: State<'_, SqliteDbState>,
+    groupId: String,
+) -> Result<(), String> {
     skill_store::delete_skill_group(&state, &groupId).await
 }
 
 #[tauri::command]
-pub async fn skills_reorder(state: State<'_, DbState>, ids: Vec<String>) -> Result<(), String> {
+pub async fn skills_reorder(
+    state: State<'_, SqliteDbState>,
+    ids: Vec<String>,
+) -> Result<(), String> {
     skill_store::reorder_skills(&state, &ids).await
 }
 
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn skills_update_metadata(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     skillId: String,
     groupId: Option<String>,
     userNote: Option<String>,
@@ -1219,7 +1234,7 @@ pub async fn skills_update_metadata(
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn skills_batch_update_group(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     skillIds: Vec<String>,
     groupId: Option<String>,
 ) -> Result<(), String> {
@@ -1230,7 +1245,7 @@ pub async fn skills_batch_update_group(
 #[allow(non_snake_case)]
 pub async fn skills_set_management_enabled<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     skillId: String,
     enabled: bool,
 ) -> Result<Vec<String>, String> {
@@ -1254,7 +1269,7 @@ pub async fn skills_set_management_enabled<R: Runtime>(
 #[tauri::command]
 pub async fn skills_export_inventory(
     app: tauri::AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
 ) -> Result<String, String> {
     build_inventory_json(&app, &state).await
 }
@@ -1262,7 +1277,7 @@ pub async fn skills_export_inventory(
 #[tauri::command]
 pub async fn skills_export_inventory_file(
     app: tauri::AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
 ) -> Result<String, String> {
     let json = build_inventory_json(&app, &state).await?;
     let path = default_inventory_export_path()?;
@@ -1274,7 +1289,10 @@ pub async fn skills_export_inventory_file(
     Ok(path.to_string_lossy().to_string())
 }
 
-async fn build_inventory_json(app: &tauri::AppHandle, state: &DbState) -> Result<String, String> {
+async fn build_inventory_json(
+    app: &tauri::AppHandle,
+    state: &SqliteDbState,
+) -> Result<String, String> {
     let groups = skill_store::get_skill_groups(state).await?;
     let skills = skill_store::get_managed_skills(state).await?;
     let central_dir = resolve_central_repo_path(app, state)
@@ -1332,7 +1350,7 @@ fn default_inventory_export_path() -> Result<PathBuf, String> {
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn skills_preview_inventory_import(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     inventoryJson: String,
 ) -> Result<SkillInventoryPreviewDto, String> {
     preview_inventory_import(&state, &inventoryJson).await
@@ -1341,7 +1359,7 @@ pub async fn skills_preview_inventory_import(
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn skills_preview_inventory_import_file(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     filePath: String,
 ) -> Result<SkillInventoryPreviewDto, String> {
     let raw = read_inventory_file(&filePath)?;
@@ -1350,7 +1368,7 @@ pub async fn skills_preview_inventory_import_file(
 
 async fn reconcile_inventory_skill_tools<R: Runtime>(
     app: &AppHandle<R>,
-    state: &DbState,
+    state: &SqliteDbState,
     skill_id: &str,
     desired_tools: &[String],
     custom_tools: &[CustomTool],
@@ -1414,6 +1432,7 @@ async fn reconcile_inventory_skill_tools<R: Runtime>(
 }
 
 async fn preflight_inventory_tool_sync(
+    state: &SqliteDbState,
     skill: &Skill,
     tool: &str,
     source_path: &Path,
@@ -1423,21 +1442,22 @@ async fn preflight_inventory_tool_sync(
         runtime_adapter_by_key(tool, custom_tools).ok_or_else(|| "unknown tool".to_string())?;
 
     if !runtime_adapter.is_custom
-        && !is_tool_installed_async(&runtime_adapter)
+        && !is_tool_installed_with_state_async(state.db(), &runtime_adapter)
             .await
             .unwrap_or(false)
     {
-        let skills_path = resolve_runtime_skills_path_async(&runtime_adapter)
-            .await
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let skills_path =
+            resolve_runtime_skills_path_with_state_async(state.db(), &runtime_adapter)
+                .await
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
         return Err(format!(
             "TOOL_NOT_INSTALLED|{}|{}",
             runtime_adapter.key, skills_path
         ));
     }
 
-    let tool_root = resolve_runtime_skills_path_async(&runtime_adapter)
+    let tool_root = resolve_runtime_skills_path_with_state_async(state.db(), &runtime_adapter)
         .await
         .map_err(|e| format_error(e))?;
     let target = tool_root.join(&skill.name);
@@ -1447,7 +1467,7 @@ async fn preflight_inventory_tool_sync(
 
 async fn preflight_inventory_apply<R: Runtime>(
     app: &AppHandle<R>,
-    state: &DbState,
+    state: &SqliteDbState,
     inventory: &SkillInventoryJson,
     local_skills: &[Skill],
     custom_tools: &[CustomTool],
@@ -1479,7 +1499,7 @@ async fn preflight_inventory_apply<R: Runtime>(
 
         let source_path = resolve_skill_source_path(app, state, skill).await?;
         for tool in tools_to_sync {
-            preflight_inventory_tool_sync(skill, &tool, &source_path, custom_tools).await?;
+            preflight_inventory_tool_sync(state, skill, &tool, &source_path, custom_tools).await?;
         }
     }
 
@@ -1490,7 +1510,7 @@ async fn preflight_inventory_apply<R: Runtime>(
 #[allow(non_snake_case)]
 pub async fn skills_apply_inventory_import<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     inventoryJson: String,
 ) -> Result<SkillInventoryPreviewDto, String> {
     let preview = preview_inventory_import(&state, &inventoryJson).await?;
@@ -1588,7 +1608,7 @@ pub async fn skills_apply_inventory_import<R: Runtime>(
 #[allow(non_snake_case)]
 pub async fn skills_apply_inventory_import_file<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     filePath: String,
 ) -> Result<SkillInventoryPreviewDto, String> {
     let raw = read_inventory_file(&filePath)?;
@@ -1613,7 +1633,7 @@ fn parse_inventory(raw: &str) -> Result<SkillInventoryJson, String> {
 }
 
 async fn preview_inventory_import(
-    state: &DbState,
+    state: &SqliteDbState,
     raw: &str,
 ) -> Result<SkillInventoryPreviewDto, String> {
     let inventory = match parse_inventory(raw) {
@@ -1707,7 +1727,9 @@ fn match_inventory_skill<'a>(
 // --- Skill Repos (cont.) ---
 
 #[tauri::command]
-pub async fn skills_get_repos(state: State<'_, DbState>) -> Result<Vec<SkillRepoDto>, String> {
+pub async fn skills_get_repos(
+    state: State<'_, SqliteDbState>,
+) -> Result<Vec<SkillRepoDto>, String> {
     let repos = skill_store::get_skill_repos(&state).await?;
     Ok(repos
         .into_iter()
@@ -1724,7 +1746,7 @@ pub async fn skills_get_repos(state: State<'_, DbState>) -> Result<Vec<SkillRepo
 
 #[tauri::command]
 pub async fn skills_add_repo(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     owner: String,
     name: String,
     branch: Option<String>,
@@ -1742,7 +1764,7 @@ pub async fn skills_add_repo(
 
 #[tauri::command]
 pub async fn skills_remove_repo(
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
     owner: String,
     name: String,
 ) -> Result<(), String> {
@@ -1750,7 +1772,7 @@ pub async fn skills_remove_repo(
 }
 
 #[tauri::command]
-pub async fn skills_init_default_repos(state: State<'_, DbState>) -> Result<usize, String> {
+pub async fn skills_init_default_repos(state: State<'_, SqliteDbState>) -> Result<usize, String> {
     let existing = skill_store::get_skill_repos(&state).await?;
     if !existing.is_empty() {
         return Ok(0);
@@ -1783,7 +1805,7 @@ pub async fn skills_init_default_repos(state: State<'_, DbState>) -> Result<usiz
 
 pub async fn resync_all_skills_internal(
     app: tauri::AppHandle,
-    state: &DbState,
+    state: &SqliteDbState,
 ) -> Result<Vec<String>, String> {
     let custom_tools = skill_store::get_custom_tools(&state)
         .await
@@ -1815,17 +1837,18 @@ pub async fn resync_all_skills_internal(
 
             // Skip if tool not installed (for non-custom tools)
             if !runtime_adapter.is_custom
-                && !is_tool_installed_async(&runtime_adapter)
+                && !is_tool_installed_with_state_async(state, &runtime_adapter)
                     .await
                     .unwrap_or(false)
             {
                 continue;
             }
 
-            let tool_root = match resolve_runtime_skills_path_async(&runtime_adapter).await {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
+            let tool_root =
+                match resolve_runtime_skills_path_with_state_async(state, &runtime_adapter).await {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
 
             let target = tool_root.join(&skill.name);
             let previous_target = skill_store::get_skill_target(&state, &skill.id, tool_key)
@@ -1868,7 +1891,7 @@ pub async fn resync_all_skills_internal(
 
 pub async fn resync_all_skills_if_tool_path_changed(
     app: tauri::AppHandle,
-    state: &DbState,
+    state: &SqliteDbState,
     tool_key: &str,
     previous_skills_path: Option<PathBuf>,
 ) {
@@ -1900,7 +1923,7 @@ pub async fn resync_all_skills_if_tool_path_changed(
 #[tauri::command]
 pub async fn skills_resync_all(
     app: tauri::AppHandle,
-    state: State<'_, DbState>,
+    state: State<'_, SqliteDbState>,
 ) -> Result<Vec<String>, String> {
     resync_all_skills_internal(app, state.inner()).await
 }

@@ -6,7 +6,7 @@
 
 ## Source of Truth
 
-- Provider、common config、prompt config、official account 和 plugin workspace roots 的长期主数据在 SQLite JSONB；兼容期保留 SurrealDB 双写/导入。
+- Provider、common config、prompt config、official account 和 plugin workspace roots 的长期主数据在 SQLite JSONB；旧 SurrealDB 仅用于启动时一次性导入。
 
 - 当前生效根目录优先级是：应用内 `root_dir` > 环境变量 `CODEX_HOME` > shell 配置 > 默认根目录。
 - Codex 是“根目录模块”，`config.toml`、`auth.json`、prompt、`skills/` 都从当前根目录派生。
@@ -26,7 +26,7 @@ sequenceDiagram
   participant UI as Codex Page
   participant Cmd as codex::commands
   participant File as config.toml / auth.json / active prompt
-  participant DB as SurrealDB
+  participant DB as SQLite JSONB
 
   UI->>Cmd: apply provider/common config
   Cmd->>File: rewrite managed parts of config.toml and auth.json

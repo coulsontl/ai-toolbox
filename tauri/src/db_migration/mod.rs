@@ -36,9 +36,9 @@ const REGISTERED_MIGRATIONS: &[DbMigration] = &[
 
 /// Execute all registered database migrations in order.
 ///
-/// Every app startup goes through this entry point so migration behavior stays
-/// deterministic for both fresh installs and upgrades. Each migration is
-/// responsible for deciding whether it is a true upgrade or a no-op.
+/// Only the one-time legacy SurrealDB import path goes through this entry
+/// point. Normal startup opens SQLite directly and must not initialize
+/// SurrealDB.
 pub async fn run_all_db_migrations(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
 ) -> Result<(), String> {

@@ -7,6 +7,8 @@ use serde_json::Value;
 
 use crate::coding::open_code::shell_env;
 use crate::coding::{claude_code, codex, gemini_cli, open_claw, open_code};
+use crate::db::helpers::db_get;
+use crate::db::schema::DbTable;
 
 const MODULE_KEYS: [&str; 5] = ["opencode", "claude", "codex", "openclaw", "geminicli"];
 const OMO_LEGACY_BASENAME: &str = "oh-my-opencode";
@@ -217,7 +219,7 @@ fn get_cached_or_fallback_runtime_location(module: &str) -> RuntimeLocationInfo 
 }
 
 async fn get_cached_or_refresh_runtime_location_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     module: &str,
 ) -> Result<RuntimeLocationInfo, String> {
     match get_cached_runtime_location(module) {
@@ -237,7 +239,7 @@ fn clear_runtime_location_cache() {
 }
 
 pub async fn refresh_runtime_location_cache_for_module_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     module: &str,
 ) -> Result<RuntimeLocationInfo, String> {
     match normalize_module_key(module) {
@@ -273,7 +275,7 @@ pub async fn refresh_runtime_location_cache_for_module_async(
 }
 
 pub async fn refresh_runtime_location_cache_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<(), String> {
     for module in MODULE_KEYS {
         refresh_runtime_location_cache_for_module_async(db, module).await?;
@@ -283,7 +285,7 @@ pub async fn refresh_runtime_location_cache_async(
 }
 
 pub fn get_wsl_direct_status_map(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Vec<WslDirectModuleStatus>, String> {
     let _ = db;
     Ok(MODULE_KEYS
@@ -313,7 +315,7 @@ fn module_status_from_runtime_result(
 }
 
 async fn get_wsl_direct_status_with_fallback(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     module: &str,
 ) -> Result<WslDirectModuleStatus, String> {
     if !MODULE_KEYS.contains(&module) {
@@ -334,7 +336,7 @@ async fn get_wsl_direct_status_with_fallback(
 }
 
 pub async fn get_wsl_direct_status_map_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Vec<WslDirectModuleStatus>, String> {
     let mut statuses = Vec::with_capacity(MODULE_KEYS.len());
 
@@ -346,7 +348,7 @@ pub async fn get_wsl_direct_status_map_async(
 }
 
 pub fn get_wsl_direct_status_for_module(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     module: &str,
 ) -> Result<WslDirectModuleStatus, String> {
     let _ = db;
@@ -360,28 +362,26 @@ pub fn get_wsl_direct_status_for_module(
 }
 
 pub async fn get_wsl_direct_status_for_module_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     module: &str,
 ) -> Result<WslDirectModuleStatus, String> {
     get_wsl_direct_status_with_fallback(db, module).await
 }
 
 pub fn get_opencode_runtime_location_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     let _ = db;
     Ok(get_cached_or_fallback_runtime_location("opencode"))
 }
 
 pub async fn get_opencode_runtime_location_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     get_cached_or_refresh_runtime_location_async(db, "opencode").await
 }
 
-pub fn get_opencode_config_dir_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub fn get_opencode_config_dir_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     get_opencode_runtime_location_sync(db)?
         .host_path
         .parent()
@@ -390,7 +390,7 @@ pub fn get_opencode_config_dir_sync(
 }
 
 pub async fn get_opencode_config_dir_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<PathBuf, String> {
     get_opencode_runtime_location_async(db)
         .await?
@@ -400,28 +400,22 @@ pub async fn get_opencode_config_dir_async(
         .ok_or_else(|| "Failed to determine OpenCode config directory".to_string())
 }
 
-pub fn get_opencode_prompt_path_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub fn get_opencode_prompt_path_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     Ok(get_opencode_config_dir_sync(db)?.join("AGENTS.md"))
 }
 
 pub async fn get_opencode_prompt_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<PathBuf, String> {
     Ok(get_opencode_config_dir_async(db).await?.join("AGENTS.md"))
 }
 
-pub fn get_omo_config_path_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub fn get_omo_config_path_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     let dir = get_opencode_config_dir_sync(db)?;
     Ok(resolve_omo_config_path_from_dir(&dir))
 }
 
-pub async fn get_omo_config_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub async fn get_omo_config_path_async(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     let dir = get_opencode_config_dir_async(db).await?;
     Ok(resolve_omo_config_path_from_dir(&dir))
 }
@@ -440,23 +434,17 @@ fn resolve_omo_config_path_from_dir(dir: &Path) -> PathBuf {
         .unwrap_or_else(|| dir.join(format!("{OMO_CANONICAL_BASENAME}.jsonc")))
 }
 
-pub fn get_omos_config_path_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub fn get_omos_config_path_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     Ok(get_opencode_config_dir_sync(db)?.join("oh-my-opencode-slim.json"))
 }
 
-pub async fn get_omos_config_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub async fn get_omos_config_path_async(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     Ok(get_opencode_config_dir_async(db)
         .await?
         .join("oh-my-opencode-slim.json"))
 }
 
-pub fn get_opencode_wsl_target_path(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> String {
+pub fn get_opencode_wsl_target_path(db: &crate::db::SqliteDbState) -> String {
     get_opencode_runtime_location_sync(db)
         .ok()
         .and_then(|location| {
@@ -470,9 +458,7 @@ pub fn get_opencode_wsl_target_path(
         .unwrap_or_else(|| "~/.config/opencode/opencode.jsonc".to_string())
 }
 
-pub async fn get_opencode_wsl_target_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> String {
+pub async fn get_opencode_wsl_target_path_async(db: &crate::db::SqliteDbState) -> String {
     get_opencode_runtime_location_async(db)
         .await
         .ok()
@@ -487,9 +473,7 @@ pub async fn get_opencode_wsl_target_path_async(
         .unwrap_or_else(|| "~/.config/opencode/opencode.jsonc".to_string())
 }
 
-pub fn get_opencode_prompt_wsl_target_path(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> String {
+pub fn get_opencode_prompt_wsl_target_path(db: &crate::db::SqliteDbState) -> String {
     get_opencode_runtime_location_sync(db)
         .ok()
         .and_then(|location| {
@@ -512,9 +496,7 @@ pub fn get_opencode_prompt_wsl_target_path(
         .unwrap_or_else(|| "~/.config/opencode/AGENTS.md".to_string())
 }
 
-pub async fn get_opencode_prompt_wsl_target_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> String {
+pub async fn get_opencode_prompt_wsl_target_path_async(db: &crate::db::SqliteDbState) -> String {
     get_opencode_runtime_location_async(db)
         .await
         .ok()
@@ -539,31 +521,28 @@ pub async fn get_opencode_prompt_wsl_target_path_async(
 }
 
 pub fn get_claude_runtime_location_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     let _ = db;
     Ok(get_cached_or_fallback_runtime_location("claude"))
 }
 
 pub async fn get_claude_runtime_location_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     get_cached_or_refresh_runtime_location_async(db, "claude").await
 }
 
 async fn resolve_claude_runtime_location_uncached_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
-    let path_info = get_custom_path_from_query(
-        db,
-        "SELECT * OMIT id FROM claude_common_config:`common` LIMIT 1",
-        |value| {
+    let path_info =
+        get_custom_path_from_record(db, DbTable::ClaudeCommonConfig, "common", |value| {
             crate::coding::claude_code::adapter::from_db_value_common(value)
                 .root_dir
                 .filter(|path| !path.trim().is_empty())
-        },
-    )
-    .await;
+        })
+        .await;
 
     let (path, source) = if let Some(path) = path_info {
         (PathBuf::from(path), "custom".to_string())
@@ -590,16 +569,14 @@ async fn resolve_claude_runtime_location_uncached_async(
     Ok(build_runtime_location(path, source))
 }
 
-pub fn get_claude_settings_path_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub fn get_claude_settings_path_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     Ok(get_claude_runtime_location_sync(db)?
         .host_path
         .join("settings.json"))
 }
 
 pub async fn get_claude_settings_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<PathBuf, String> {
     Ok(get_claude_runtime_location_async(db)
         .await?
@@ -608,7 +585,7 @@ pub async fn get_claude_settings_path_async(
 }
 
 pub fn get_claude_plugin_config_path_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<PathBuf, String> {
     Ok(get_claude_runtime_location_sync(db)?
         .host_path
@@ -616,7 +593,7 @@ pub fn get_claude_plugin_config_path_sync(
 }
 
 pub async fn get_claude_plugin_config_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<PathBuf, String> {
     Ok(get_claude_runtime_location_async(db)
         .await?
@@ -624,9 +601,7 @@ pub async fn get_claude_plugin_config_path_async(
         .join("config.json"))
 }
 
-pub fn get_claude_plugins_dir_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub fn get_claude_plugins_dir_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     if let Some(path) = get_cached_claude_plugins_dir() {
         return Ok(path);
     }
@@ -637,7 +612,7 @@ pub fn get_claude_plugins_dir_sync(
 }
 
 pub async fn get_claude_plugins_dir_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<PathBuf, String> {
     if let Some(path) = get_cached_claude_plugins_dir() {
         return Ok(path);
@@ -649,16 +624,14 @@ pub async fn get_claude_plugins_dir_async(
     Ok(plugins_dir)
 }
 
-pub fn get_claude_prompt_path_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub fn get_claude_prompt_path_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     Ok(get_claude_runtime_location_sync(db)?
         .host_path
         .join("CLAUDE.md"))
 }
 
 pub async fn get_claude_prompt_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<PathBuf, String> {
     Ok(get_claude_runtime_location_async(db)
         .await?
@@ -666,15 +639,13 @@ pub async fn get_claude_prompt_path_async(
         .join("CLAUDE.md"))
 }
 
-pub fn get_claude_mcp_config_path_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub fn get_claude_mcp_config_path_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     let location = get_claude_runtime_location_sync(db)?;
     get_claude_mcp_config_path_from_location(&location)
 }
 
 pub async fn get_claude_mcp_config_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<PathBuf, String> {
     let location = get_claude_runtime_location_async(db).await?;
     get_claude_mcp_config_path_from_location(&location)
@@ -725,10 +696,7 @@ fn get_home_dir() -> Result<PathBuf, String> {
         .map_err(|_| "Failed to get home directory".to_string())
 }
 
-pub fn get_claude_wsl_target_path(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    file_name: &str,
-) -> String {
+pub fn get_claude_wsl_target_path(db: &crate::db::SqliteDbState, file_name: &str) -> String {
     match get_claude_runtime_location_sync(db) {
         Ok(location) => location
             .wsl
@@ -739,7 +707,7 @@ pub fn get_claude_wsl_target_path(
 }
 
 pub async fn get_claude_wsl_target_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     file_name: &str,
 ) -> String {
     match get_claude_runtime_location_async(db).await {
@@ -751,9 +719,7 @@ pub async fn get_claude_wsl_target_path_async(
     }
 }
 
-pub fn get_claude_wsl_claude_json_path(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> String {
+pub fn get_claude_wsl_claude_json_path(db: &crate::db::SqliteDbState) -> String {
     match get_claude_runtime_location_sync(db) {
         Ok(location) => get_claude_wsl_claude_json_path_from_location(&location)
             .unwrap_or_else(|| "~/.claude.json".to_string()),
@@ -761,9 +727,7 @@ pub fn get_claude_wsl_claude_json_path(
     }
 }
 
-pub async fn get_claude_wsl_claude_json_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> String {
+pub async fn get_claude_wsl_claude_json_path_async(db: &crate::db::SqliteDbState) -> String {
     match get_claude_runtime_location_async(db).await {
         Ok(location) => get_claude_wsl_claude_json_path_from_location(&location)
             .unwrap_or_else(|| "~/.claude.json".to_string()),
@@ -786,31 +750,28 @@ fn get_claude_wsl_claude_json_path_from_location(location: &RuntimeLocationInfo)
 }
 
 pub fn get_codex_runtime_location_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     let _ = db;
     Ok(get_cached_or_fallback_runtime_location("codex"))
 }
 
 pub async fn get_codex_runtime_location_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     get_cached_or_refresh_runtime_location_async(db, "codex").await
 }
 
 async fn resolve_codex_runtime_location_uncached_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
-    let path_info = get_custom_path_from_query(
-        db,
-        "SELECT * OMIT id FROM codex_common_config:`common` LIMIT 1",
-        |value| {
+    let path_info =
+        get_custom_path_from_record(db, DbTable::CodexCommonConfig, "common", |value| {
             crate::coding::codex::adapter::from_db_value_common(value)
                 .root_dir
                 .filter(|path| !path.trim().is_empty())
-        },
-    )
-    .await;
+        })
+        .await;
 
     let (path, source) = if let Some(path) = path_info {
         (PathBuf::from(path), "custom".to_string())
@@ -831,34 +792,26 @@ async fn resolve_codex_runtime_location_uncached_async(
     Ok(build_runtime_location(path, source))
 }
 
-pub fn get_codex_auth_path_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub fn get_codex_auth_path_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     Ok(get_codex_runtime_location_sync(db)?
         .host_path
         .join("auth.json"))
 }
 
-pub async fn get_codex_auth_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub async fn get_codex_auth_path_async(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     Ok(get_codex_runtime_location_async(db)
         .await?
         .host_path
         .join("auth.json"))
 }
 
-pub fn get_codex_config_path_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub fn get_codex_config_path_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     Ok(get_codex_runtime_location_sync(db)?
         .host_path
         .join("config.toml"))
 }
 
-pub async fn get_codex_config_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub async fn get_codex_config_path_async(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     Ok(get_codex_runtime_location_async(db)
         .await?
         .host_path
@@ -897,26 +850,19 @@ pub fn replace_path_file_name(path: &str, file_name: &str) -> String {
     format!("{}{}", &path[..split_index], file_name)
 }
 
-pub fn get_codex_prompt_path_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub fn get_codex_prompt_path_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     Ok(resolve_codex_prompt_file_path(
         &get_codex_runtime_location_sync(db)?.host_path,
     ))
 }
 
-pub async fn get_codex_prompt_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub async fn get_codex_prompt_path_async(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     Ok(resolve_codex_prompt_file_path(
         &get_codex_runtime_location_async(db).await?.host_path,
     ))
 }
 
-pub fn get_codex_wsl_target_path(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    file_name: &str,
-) -> String {
+pub fn get_codex_wsl_target_path(db: &crate::db::SqliteDbState, file_name: &str) -> String {
     match get_codex_runtime_location_sync(db) {
         Ok(location) => location
             .wsl
@@ -927,7 +873,7 @@ pub fn get_codex_wsl_target_path(
 }
 
 pub async fn get_codex_wsl_target_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     file_name: &str,
 ) -> String {
     match get_codex_runtime_location_async(db).await {
@@ -940,31 +886,28 @@ pub async fn get_codex_wsl_target_path_async(
 }
 
 pub fn get_gemini_cli_runtime_location_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     let _ = db;
     Ok(get_cached_or_fallback_runtime_location("geminicli"))
 }
 
 pub async fn get_gemini_cli_runtime_location_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     get_cached_or_refresh_runtime_location_async(db, "geminicli").await
 }
 
 async fn resolve_gemini_cli_runtime_location_uncached_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
-    let path_info = get_custom_path_from_query(
-        db,
-        "SELECT * OMIT id FROM gemini_cli_common_config:`common` LIMIT 1",
-        |value| {
+    let path_info =
+        get_custom_path_from_record(db, DbTable::GeminiCliCommonConfig, "common", |value| {
             crate::coding::gemini_cli::adapter::from_db_value_common(value)
                 .root_dir
                 .filter(|path| !path.trim().is_empty())
-        },
-    )
-    .await;
+        })
+        .await;
 
     let (path, source) = if let Some(path) = path_info {
         (PathBuf::from(path), "custom".to_string())
@@ -975,16 +918,14 @@ async fn resolve_gemini_cli_runtime_location_uncached_async(
     Ok(build_runtime_location(path, source))
 }
 
-pub fn get_gemini_cli_env_path_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub fn get_gemini_cli_env_path_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     Ok(get_gemini_cli_runtime_location_sync(db)?
         .host_path
         .join(".env"))
 }
 
 pub async fn get_gemini_cli_env_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<PathBuf, String> {
     Ok(get_gemini_cli_runtime_location_async(db)
         .await?
@@ -992,16 +933,14 @@ pub async fn get_gemini_cli_env_path_async(
         .join(".env"))
 }
 
-pub fn get_gemini_cli_settings_path_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub fn get_gemini_cli_settings_path_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     Ok(get_gemini_cli_runtime_location_sync(db)?
         .host_path
         .join("settings.json"))
 }
 
 pub async fn get_gemini_cli_settings_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<PathBuf, String> {
     Ok(get_gemini_cli_runtime_location_async(db)
         .await?
@@ -1009,9 +948,7 @@ pub async fn get_gemini_cli_settings_path_async(
         .join("settings.json"))
 }
 
-pub fn get_gemini_cli_prompt_path_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub fn get_gemini_cli_prompt_path_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     let location = get_gemini_cli_runtime_location_sync(db)?;
     Ok(gemini_cli::get_gemini_cli_prompt_path_from_root(
         &location.host_path,
@@ -1019,7 +956,7 @@ pub fn get_gemini_cli_prompt_path_sync(
 }
 
 pub async fn get_gemini_cli_prompt_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<PathBuf, String> {
     let location = get_gemini_cli_runtime_location_async(db).await?;
     Ok(gemini_cli::get_gemini_cli_prompt_path_from_root(
@@ -1028,7 +965,7 @@ pub async fn get_gemini_cli_prompt_path_async(
 }
 
 pub fn get_gemini_cli_oauth_creds_path_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<PathBuf, String> {
     Ok(get_gemini_cli_runtime_location_sync(db)?
         .host_path
@@ -1036,7 +973,7 @@ pub fn get_gemini_cli_oauth_creds_path_sync(
 }
 
 pub async fn get_gemini_cli_oauth_creds_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<PathBuf, String> {
     Ok(get_gemini_cli_runtime_location_async(db)
         .await?
@@ -1044,16 +981,14 @@ pub async fn get_gemini_cli_oauth_creds_path_async(
         .join("oauth_creds.json"))
 }
 
-pub fn get_gemini_cli_tmp_dir_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub fn get_gemini_cli_tmp_dir_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     Ok(get_gemini_cli_runtime_location_sync(db)?
         .host_path
         .join("tmp"))
 }
 
 pub async fn get_gemini_cli_tmp_dir_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<PathBuf, String> {
     Ok(get_gemini_cli_runtime_location_async(db)
         .await?
@@ -1061,10 +996,7 @@ pub async fn get_gemini_cli_tmp_dir_async(
         .join("tmp"))
 }
 
-pub fn get_gemini_cli_wsl_target_path(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    file_name: &str,
-) -> String {
+pub fn get_gemini_cli_wsl_target_path(db: &crate::db::SqliteDbState, file_name: &str) -> String {
     match get_gemini_cli_runtime_location_sync(db) {
         Ok(location) => location
             .wsl
@@ -1075,7 +1007,7 @@ pub fn get_gemini_cli_wsl_target_path(
 }
 
 pub async fn get_gemini_cli_wsl_target_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     file_name: &str,
 ) -> String {
     match get_gemini_cli_runtime_location_async(db).await {
@@ -1087,9 +1019,7 @@ pub async fn get_gemini_cli_wsl_target_path_async(
     }
 }
 
-pub fn get_gemini_cli_prompt_wsl_target_path(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> String {
+pub fn get_gemini_cli_prompt_wsl_target_path(db: &crate::db::SqliteDbState) -> String {
     let file_name = get_gemini_cli_prompt_path_sync(db)
         .ok()
         .and_then(|path| {
@@ -1101,9 +1031,7 @@ pub fn get_gemini_cli_prompt_wsl_target_path(
     get_gemini_cli_wsl_target_path(db, &file_name)
 }
 
-pub async fn get_gemini_cli_prompt_wsl_target_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> String {
+pub async fn get_gemini_cli_prompt_wsl_target_path_async(db: &crate::db::SqliteDbState) -> String {
     let file_name = get_gemini_cli_prompt_path_async(db)
         .await
         .ok()
@@ -1117,21 +1045,19 @@ pub async fn get_gemini_cli_prompt_wsl_target_path_async(
 }
 
 pub fn get_openclaw_runtime_location_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     let _ = db;
     Ok(get_cached_or_fallback_runtime_location("openclaw"))
 }
 
 pub async fn get_openclaw_runtime_location_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     get_cached_or_refresh_runtime_location_async(db, "openclaw").await
 }
 
-pub fn get_openclaw_wsl_target_path(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> String {
+pub fn get_openclaw_wsl_target_path(db: &crate::db::SqliteDbState) -> String {
     match get_openclaw_runtime_location_sync(db) {
         Ok(location) => location
             .wsl
@@ -1141,9 +1067,7 @@ pub fn get_openclaw_wsl_target_path(
     }
 }
 
-pub async fn get_openclaw_wsl_target_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> String {
+pub async fn get_openclaw_wsl_target_path_async(db: &crate::db::SqliteDbState) -> String {
     match get_openclaw_runtime_location_async(db).await {
         Ok(location) => location
             .wsl
@@ -1153,10 +1077,7 @@ pub async fn get_openclaw_wsl_target_path_async(
     }
 }
 
-pub fn get_tool_skills_path_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    tool_key: &str,
-) -> Option<PathBuf> {
+pub fn get_tool_skills_path_sync(db: &crate::db::SqliteDbState, tool_key: &str) -> Option<PathBuf> {
     match tool_key {
         "claude_code" => get_claude_runtime_location_sync(db)
             .ok()
@@ -1210,7 +1131,7 @@ pub fn get_tool_skills_path_sync(
 }
 
 pub async fn get_tool_skills_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     tool_key: &str,
 ) -> Option<PathBuf> {
     match tool_key {
@@ -1293,7 +1214,7 @@ fn get_claude_skills_path_from_location(location: &RuntimeLocationInfo) -> PathB
 }
 
 pub fn get_tool_mcp_config_path_sync(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     tool_key: &str,
 ) -> Option<PathBuf> {
     match tool_key {
@@ -1310,7 +1231,7 @@ pub fn get_tool_mcp_config_path_sync(
 }
 
 pub async fn get_tool_mcp_config_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     tool_key: &str,
 ) -> Option<PathBuf> {
     match tool_key {
@@ -1449,25 +1370,22 @@ fn resolve_gemini_cli_path_without_db() -> (PathBuf, String) {
 }
 
 async fn resolve_opencode_runtime_location_uncached_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     let (path, source) = resolve_opencode_config_path_async(db).await?;
     Ok(build_runtime_location(path, source))
 }
 
 async fn resolve_opencode_config_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<(PathBuf, String), String> {
-    let custom_path = get_custom_path_from_query(
-        db,
-        "SELECT *, type::string(id) as id FROM opencode_common_config:`common` LIMIT 1",
-        |value| {
+    let custom_path =
+        get_custom_path_from_record(db, DbTable::OpenCodeCommonConfig, "common", |value| {
             open_code::adapter::from_db_value(value)
                 .config_path
                 .filter(|path| !path.trim().is_empty())
-        },
-    )
-    .await;
+        })
+        .await;
 
     if let Some(path) = custom_path {
         return Ok((PathBuf::from(path), "custom".to_string()));
@@ -1492,25 +1410,22 @@ async fn resolve_opencode_config_path_async(
 }
 
 async fn resolve_openclaw_runtime_location_uncached_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     let (path, source) = resolve_openclaw_config_path_async(db).await?;
     Ok(build_runtime_location(path, source))
 }
 
 async fn resolve_openclaw_config_path_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<(PathBuf, String), String> {
-    let custom_path = get_custom_path_from_query(
-        db,
-        "SELECT *, type::string(id) as id FROM openclaw_common_config:`common` LIMIT 1",
-        |value| {
+    let custom_path =
+        get_custom_path_from_record(db, DbTable::OpenClawCommonConfig, "common", |value| {
             open_claw::adapter::from_db_value(value)
                 .config_path
                 .filter(|path| !path.trim().is_empty())
-        },
-    )
-    .await;
+        })
+        .await;
 
     if let Some(path) = custom_path {
         return Ok((PathBuf::from(path), "custom".to_string()));
@@ -1520,17 +1435,16 @@ async fn resolve_openclaw_config_path_async(
     Ok((PathBuf::from(path), "default".to_string()))
 }
 
-async fn get_custom_path_from_query<F>(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    query: &str,
+async fn get_custom_path_from_record<F>(
+    db: &crate::db::SqliteDbState,
+    table: DbTable,
+    id: &str,
     extractor: F,
 ) -> Option<String>
 where
     F: Fn(Value) -> Option<String>,
 {
-    let mut result = db.query(query).await.ok()?;
-    let records: Vec<Value> = result.take(0).ok()?;
-    let record = records.into_iter().next()?;
+    let record = db.with_conn(|conn| db_get(conn, table, id)).ok()??;
     extractor(record)
 }
 
@@ -1550,10 +1464,11 @@ mod tests {
         RuntimeLocationInfo, RuntimeLocationMode, WslLocationInfo, CODEX_DEFAULT_PROMPT_FILE_NAME,
         CODEX_OVERRIDE_PROMPT_FILE_NAME,
     };
+    use crate::db::helpers::{db_delete, db_put};
+    use crate::db::schema::DbTable;
+    use crate::db::SqliteDbState;
     use std::ffi::OsString;
     use std::path::PathBuf;
-    use surrealdb::engine::local::SurrealKv;
-    use surrealdb::Surreal;
     use tokio::sync::Mutex;
 
     static TEST_RUNTIME_LOCATION_LOCK: std::sync::LazyLock<Mutex<()>> =
@@ -1584,17 +1499,30 @@ mod tests {
         }
     }
 
-    async fn create_test_db() -> (tempfile::TempDir, Surreal<surrealdb::engine::local::Db>) {
+    async fn create_test_db() -> (tempfile::TempDir, SqliteDbState) {
         let temp_dir = tempfile::tempdir().expect("create temp db dir");
-        let db_path = temp_dir.path().join("surreal");
-        let db = Surreal::new::<SurrealKv>(db_path)
-            .await
-            .expect("open surreal test db");
-        db.use_ns("ai_toolbox")
-            .use_db("main")
-            .await
-            .expect("select surreal test namespace");
+        let db = SqliteDbState::in_memory_for_test().expect("open sqlite test db");
         (temp_dir, db)
+    }
+
+    fn save_claude_common_config(db: &SqliteDbState, root_dir: &str) {
+        db.with_conn(|conn| {
+            db_put(
+                conn,
+                DbTable::ClaudeCommonConfig,
+                "common",
+                &serde_json::json!({
+                    "config": "{}",
+                    "root_dir": root_dir,
+                }),
+            )
+        })
+        .expect("save claude common config");
+    }
+
+    fn delete_claude_common_config(db: &SqliteDbState) {
+        db.with_conn(|conn| db_delete(conn, DbTable::ClaudeCommonConfig, "common").map(|_| ()))
+            .expect("delete claude common config");
     }
 
     /// Regression for Claude marketplace `installLocation` not being expanded.
@@ -1778,16 +1706,7 @@ mod tests {
         let (temp_dir, db) = create_test_db().await;
         let custom_root = temp_dir.path().join("custom-claude");
 
-        db.query("UPSERT claude_common_config:`common` CONTENT $data")
-            .bind((
-                "data",
-                serde_json::json!({
-                    "config": "{}",
-                    "root_dir": custom_root.to_string_lossy().to_string(),
-                }),
-            ))
-            .await
-            .expect("save claude common config");
+        save_claude_common_config(&db, &custom_root.to_string_lossy());
 
         let refreshed = refresh_runtime_location_cache_for_module_async(&db, "claude")
             .await
@@ -1795,9 +1714,7 @@ mod tests {
         assert_eq!(refreshed.source, "custom");
         assert_eq!(refreshed.host_path, custom_root);
 
-        db.query("DELETE claude_common_config:`common`")
-            .await
-            .expect("delete claude common config");
+        delete_claude_common_config(&db);
 
         let sync_location = get_claude_runtime_location_sync(&db).expect("sync helper reads cache");
         let async_location = get_claude_runtime_location_async(&db)
@@ -1887,16 +1804,7 @@ mod tests {
         let (temp_dir, db) = create_test_db().await;
         let custom_root = temp_dir.path().join("custom-claude");
 
-        db.query("UPSERT claude_common_config:`common` CONTENT $data")
-            .bind((
-                "data",
-                serde_json::json!({
-                    "config": "{}",
-                    "root_dir": custom_root.to_string_lossy().to_string(),
-                }),
-            ))
-            .await
-            .expect("save claude common config");
+        save_claude_common_config(&db, &custom_root.to_string_lossy());
         refresh_runtime_location_cache_for_module_async(&db, "claude")
             .await
             .expect("refresh claude runtime cache");
@@ -1987,16 +1895,7 @@ mod tests {
         let plugin_cache_dir = temp_dir.path().join("claude-plugin-cache");
         let _env_guard = EnvVarGuard::set("CLAUDE_CODE_PLUGIN_CACHE_DIR", &plugin_cache_dir);
 
-        db.query("UPSERT claude_common_config:`common` CONTENT $data")
-            .bind((
-                "data",
-                serde_json::json!({
-                    "config": "{}",
-                    "root_dir": custom_root.to_string_lossy().to_string(),
-                }),
-            ))
-            .await
-            .expect("save claude common config");
+        save_claude_common_config(&db, &custom_root.to_string_lossy());
         refresh_runtime_location_cache_for_module_async(&db, "claude")
             .await
             .expect("refresh claude runtime cache");
@@ -2073,16 +1972,7 @@ mod tests {
         let (_temp_dir, db) = create_test_db().await;
         let wsl_root = r"\\wsl.localhost\Ubuntu\home\tester\custom-claude";
 
-        db.query("UPSERT claude_common_config:`common` CONTENT $data")
-            .bind((
-                "data",
-                serde_json::json!({
-                    "config": "{}",
-                    "root_dir": wsl_root,
-                }),
-            ))
-            .await
-            .expect("save claude common config");
+        save_claude_common_config(&db, wsl_root);
         refresh_runtime_location_cache_for_module_async(&db, "claude")
             .await
             .expect("refresh claude runtime cache");

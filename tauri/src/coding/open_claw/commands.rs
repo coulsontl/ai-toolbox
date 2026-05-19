@@ -1,4 +1,3 @@
-use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use tauri::Emitter;
@@ -8,10 +7,9 @@ use super::types::*;
 use crate::coding::all_api_hub;
 use crate::coding::runtime_location;
 use crate::coding::skills::commands::resync_all_skills_if_tool_path_changed;
-use crate::db::helpers::{db_count, db_get, db_put};
+use crate::db::helpers::{db_get, db_put};
 use crate::db::schema::DbTable;
-use crate::db::sqlite_state::{global_sqlite_state, SqliteDbState};
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 
 // ============================================================================
 // Helper Functions
@@ -34,7 +32,7 @@ fn get_default_config_path() -> Result<String, String> {
 
 /// Internal function to save config and emit events
 pub async fn apply_config_internal<R: tauri::Runtime>(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: &tauri::AppHandle<R>,
     config: OpenClawConfig,
     from_tray: bool,
@@ -68,7 +66,9 @@ pub async fn apply_config_internal<R: tauri::Runtime>(
 }
 
 /// Read and parse the config file, returning the OpenClawConfig
-async fn read_and_parse_config(state: tauri::State<'_, DbState>) -> Result<OpenClawConfig, String> {
+async fn read_and_parse_config(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<OpenClawConfig, String> {
     let result = read_openclaw_config(state).await?;
     match result {
         ReadOpenClawConfigResult::Success { config } => Ok(config),
@@ -95,7 +95,9 @@ async fn read_and_parse_config(state: tauri::State<'_, DbState>) -> Result<OpenC
 
 /// Get OpenClaw config file path with priority: common config > default
 #[tauri::command]
-pub async fn get_openclaw_config_path(state: tauri::State<'_, DbState>) -> Result<String, String> {
+pub async fn get_openclaw_config_path(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<String, String> {
     // 1. Check common config for custom path
     if let Some(common_config) = get_openclaw_common_config(state.clone()).await? {
         if let Some(custom_path) = common_config.config_path {
@@ -112,7 +114,7 @@ pub async fn get_openclaw_config_path(state: tauri::State<'_, DbState>) -> Resul
 /// Get OpenClaw config path info including source
 #[tauri::command]
 pub async fn get_openclaw_config_path_info(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<OpenClawConfigPathInfo, String> {
     // 1. Check common config for custom path
     if let Some(common_config) = get_openclaw_common_config(state.clone()).await? {
@@ -141,7 +143,7 @@ pub async fn get_openclaw_config_path_info(
 /// Read OpenClaw configuration file with detailed result
 #[tauri::command]
 pub async fn read_openclaw_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<ReadOpenClawConfigResult, String> {
     let config_path_str = get_openclaw_config_path(state).await?;
     let config_path = Path::new(&config_path_str);
@@ -182,7 +184,7 @@ pub async fn read_openclaw_config(
 /// Save OpenClaw configuration file (full replacement)
 #[tauri::command]
 pub async fn save_openclaw_config<R: tauri::Runtime>(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle<R>,
     config: OpenClawConfig,
 ) -> Result<(), String> {
@@ -191,7 +193,9 @@ pub async fn save_openclaw_config<R: tauri::Runtime>(
 
 /// Backup OpenClaw configuration file
 #[tauri::command]
-pub async fn backup_openclaw_config(state: tauri::State<'_, DbState>) -> Result<String, String> {
+pub async fn backup_openclaw_config(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<String, String> {
     let config_path_str = get_openclaw_config_path(state).await?;
     let config_path = Path::new(&config_path_str);
 
@@ -215,48 +219,17 @@ pub async fn backup_openclaw_config(state: tauri::State<'_, DbState>) -> Result<
 /// Get OpenClaw common config from database
 #[tauri::command]
 pub async fn get_openclaw_common_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Option<OpenClawCommonConfig>, String> {
-    let db = state.db();
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        return sqlite_state.with_conn(|conn| {
-            Ok(db_get(conn, DbTable::OpenClawCommonConfig, "common")?.map(adapter::from_db_value))
-        });
-    }
-
-    let records_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM openclaw_common_config:`common` LIMIT 1")
-        .await
-        .map_err(|e| format!("Failed to query openclaw common config: {}", e))?
-        .take(0);
-
-    match records_result {
-        Ok(records) => {
-            if let Some(record) = records.first() {
-                Ok(Some(adapter::from_db_value(record.clone())))
-            } else {
-                Ok(None)
-            }
-        }
-        Err(e) => {
-            eprintln!(
-                "OpenClaw common config has incompatible format, cleaning up: {}",
-                e
-            );
-            let _ = db.query("DELETE openclaw_common_config:`common`").await;
-            let _ =
-                runtime_location::refresh_runtime_location_cache_for_module_async(&db, "openclaw")
-                    .await;
-            Ok(None)
-        }
-    }
+    state.with_conn(|conn| {
+        Ok(db_get(conn, DbTable::OpenClawCommonConfig, "common")?.map(adapter::from_db_value))
+    })
 }
 
 /// Save OpenClaw common config to database
 #[tauri::command]
 pub async fn save_openclaw_common_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     config: OpenClawCommonConfig,
 ) -> Result<(), String> {
@@ -264,38 +237,12 @@ pub async fn save_openclaw_common_config(
     let previous_skills_path = runtime_location::get_tool_skills_path_async(&db, "openclaw").await;
 
     let json_data = adapter::to_db_value(&config);
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state
-            .with_conn(|conn| db_put(conn, DbTable::OpenClawCommonConfig, "common", &json_data))?;
-    }
-
-    db.query("UPSERT openclaw_common_config:`common` CONTENT $data")
-        .bind(("data", json_data))
-        .await
-        .map_err(|e| format!("Failed to save openclaw common config: {}", e))?;
+    db.with_conn(|conn| db_put(conn, DbTable::OpenClawCommonConfig, "common", &json_data))?;
     runtime_location::refresh_runtime_location_cache_for_module_async(&db, "openclaw").await?;
 
     resync_all_skills_if_tool_path_changed(app, state.inner(), "openclaw", previous_skills_path)
         .await;
 
-    Ok(())
-}
-
-pub async fn sync_sqlite_openclaw_from_surreal_if_missing(
-    sqlite_state: &SqliteDbState,
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<(), String> {
-    if sqlite_state.with_conn(|conn| db_count(conn, DbTable::OpenClawCommonConfig))? > 0 {
-        return Ok(());
-    }
-
-    crate::db::surreal_import::import_tables_from_surreal(
-        sqlite_state,
-        db,
-        &[DbTable::OpenClawCommonConfig],
-    )
-    .await?;
     Ok(())
 }
 
@@ -306,7 +253,7 @@ pub async fn sync_sqlite_openclaw_from_surreal_if_missing(
 /// Get agents.defaults from config file
 #[tauri::command]
 pub async fn get_openclaw_agents_defaults(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Option<OpenClawAgentsDefaults>, String> {
     let config = read_and_parse_config(state).await?;
     Ok(config.agents.and_then(|a| a.defaults))
@@ -315,7 +262,7 @@ pub async fn get_openclaw_agents_defaults(
 /// Set agents.defaults in config file (read-modify-write)
 #[tauri::command]
 pub async fn set_openclaw_agents_defaults<R: tauri::Runtime>(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle<R>,
     defaults: OpenClawAgentsDefaults,
 ) -> Result<(), String> {
@@ -339,7 +286,7 @@ pub async fn set_openclaw_agents_defaults<R: tauri::Runtime>(
 /// Get env section from config file
 #[tauri::command]
 pub async fn get_openclaw_env(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Option<OpenClawEnvConfig>, String> {
     let config = read_and_parse_config(state).await?;
     Ok(config.env)
@@ -348,7 +295,7 @@ pub async fn get_openclaw_env(
 /// Set env section in config file (read-modify-write)
 #[tauri::command]
 pub async fn set_openclaw_env<R: tauri::Runtime>(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle<R>,
     env: OpenClawEnvConfig,
 ) -> Result<(), String> {
@@ -364,7 +311,7 @@ pub async fn set_openclaw_env<R: tauri::Runtime>(
 /// Get tools section from config file
 #[tauri::command]
 pub async fn get_openclaw_tools(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Option<OpenClawToolsConfig>, String> {
     let config = read_and_parse_config(state).await?;
     Ok(config.tools)
@@ -373,7 +320,7 @@ pub async fn get_openclaw_tools(
 /// Set tools section in config file (read-modify-write)
 #[tauri::command]
 pub async fn set_openclaw_tools<R: tauri::Runtime>(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle<R>,
     tools: OpenClawToolsConfig,
 ) -> Result<(), String> {
@@ -384,7 +331,7 @@ pub async fn set_openclaw_tools<R: tauri::Runtime>(
 
 #[tauri::command]
 pub async fn list_openclaw_all_api_hub_providers(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<OpenClawAllApiHubProvidersResult, String> {
     let _ = state;
     let discovery = all_api_hub::list_provider_candidates()?;
@@ -433,7 +380,7 @@ pub async fn list_openclaw_all_api_hub_providers(
 
 #[tauri::command]
 pub async fn resolve_openclaw_all_api_hub_providers(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     request: ResolveOpenClawAllApiHubProvidersRequest,
 ) -> Result<Vec<OpenClawAllApiHubProvider>, String> {
     let providers =

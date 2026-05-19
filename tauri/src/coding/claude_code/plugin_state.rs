@@ -311,7 +311,7 @@ fn update_marketplace_auto_update_in_object(
 }
 
 pub async fn get_claude_plugin_runtime_status(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<ClaudePluginRuntimeStatus, String> {
     let runtime_location = runtime_location::get_claude_runtime_location_async(db).await?;
     let mode = match runtime_location.mode {
@@ -345,7 +345,7 @@ pub async fn get_claude_plugin_runtime_status(
 }
 
 pub async fn list_claude_known_marketplaces(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Vec<ClaudeKnownMarketplace>, String> {
     let runtime_location = runtime_location::get_claude_runtime_location_async(db).await?;
     let marketplaces_file: HashMap<String, KnownMarketplaceEntry> =
@@ -399,7 +399,7 @@ pub async fn list_claude_known_marketplaces(
 }
 
 pub async fn run_claude_marketplace_command_preserving_auto_update<F, Fut>(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     marketplace_command: F,
 ) -> Result<(), String>
 where
@@ -434,7 +434,7 @@ where
 }
 
 pub async fn set_claude_marketplace_auto_update_enabled(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     marketplace_name: &str,
     auto_update_enabled: bool,
 ) -> Result<(), String> {
@@ -457,7 +457,7 @@ pub async fn set_claude_marketplace_auto_update_enabled(
 }
 
 pub async fn list_claude_marketplace_plugins(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Vec<ClaudeMarketplacePlugin>, String> {
     let runtime_location = runtime_location::get_claude_runtime_location_async(db).await?;
     let marketplaces_file: HashMap<String, KnownMarketplaceEntry> =
@@ -499,7 +499,7 @@ pub async fn list_claude_marketplace_plugins(
 }
 
 pub async fn list_claude_installed_plugins(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Vec<ClaudeInstalledPlugin>, String> {
     let runtime_location = runtime_location::get_claude_runtime_location_async(db).await?;
     let installed_plugins: InstalledPluginsFile =

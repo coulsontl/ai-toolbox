@@ -6,13 +6,9 @@ use serde_json::Value;
 
 use super::types::CustomTool;
 use crate::coding::db_extract_id;
-use crate::coding::db_record_id;
-use crate::db::helpers::{db_count, db_delete, db_get, db_list, db_put};
+use crate::db::helpers::{db_delete, db_get, db_list, db_put};
 use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
-use crate::db::sqlite_state::{global_sqlite_state, SqliteDbState};
-use crate::DbState;
-use surrealdb::engine::local::Db;
-use surrealdb::Surreal;
+use crate::db::SqliteDbState;
 
 /// Convert database record to CustomTool struct
 pub fn from_db_custom_tool(value: Value) -> CustomTool {
@@ -61,35 +57,8 @@ pub fn from_db_custom_tool(value: Value) -> CustomTool {
 }
 
 /// Get all custom tools
-pub async fn get_custom_tools(state: &DbState) -> Result<Vec<CustomTool>, String> {
-    if let Some(sqlite_state) = global_sqlite_state() {
-        return get_custom_tools_from_sqlite(sqlite_state);
-    }
-
-    get_custom_tools_from_surreal(&state.db()).await
-}
-
-async fn get_custom_tools_from_surreal(db: &Surreal<Db>) -> Result<Vec<CustomTool>, String> {
-    let mut result = db
-        .query("SELECT *, type::string(id) as id FROM custom_tool ORDER BY display_name ASC")
-        .await
-        .map_err(|e| format!("Failed to query custom tools: {}", e))?;
-
-    let records: Vec<Value> = result.take(0).map_err(|e| e.to_string())?;
-
-    // Filter out any malformed records
-    Ok(records
-        .into_iter()
-        .filter_map(|v| {
-            let tool = from_db_custom_tool(v);
-            // Skip records with empty key (likely corrupted)
-            if tool.key.is_empty() {
-                None
-            } else {
-                Some(tool)
-            }
-        })
-        .collect())
+pub async fn get_custom_tools(state: &SqliteDbState) -> Result<Vec<CustomTool>, String> {
+    get_custom_tools_from_sqlite(state)
 }
 
 fn get_custom_tools_from_sqlite(sqlite_state: &SqliteDbState) -> Result<Vec<CustomTool>, String> {
@@ -110,7 +79,7 @@ fn get_custom_tools_from_sqlite(sqlite_state: &SqliteDbState) -> Result<Vec<Cust
 }
 
 /// Get custom tools that support Skills (have valid relative_skills_dir, not a root directory)
-pub async fn get_skills_custom_tools(state: &DbState) -> Result<Vec<CustomTool>, String> {
+pub async fn get_skills_custom_tools(state: &SqliteDbState) -> Result<Vec<CustomTool>, String> {
     let tools = get_custom_tools(state).await?;
     Ok(tools
         .into_iter()
@@ -126,7 +95,7 @@ pub async fn get_skills_custom_tools(state: &DbState) -> Result<Vec<CustomTool>,
 }
 
 /// Get custom tools that support MCP (have valid mcp_config_path, not a root directory)
-pub async fn get_mcp_custom_tools(state: &DbState) -> Result<Vec<CustomTool>, String> {
+pub async fn get_mcp_custom_tools(state: &SqliteDbState) -> Result<Vec<CustomTool>, String> {
     let tools = get_custom_tools(state).await?;
     Ok(tools
         .into_iter()
@@ -145,61 +114,15 @@ pub async fn get_mcp_custom_tools(state: &DbState) -> Result<Vec<CustomTool>, St
 
 /// Get a custom tool by key
 pub async fn get_custom_tool_by_key(
-    state: &DbState,
+    state: &SqliteDbState,
     key: &str,
 ) -> Result<Option<CustomTool>, String> {
-    if let Some(sqlite_state) = global_sqlite_state() {
-        return sqlite_state.with_conn(|conn| {
-            Ok(db_get(conn, DbTable::CustomTool, key)?.map(from_db_custom_tool))
-        });
-    }
-
-    get_custom_tool_by_key_from_surreal(&state.db(), key).await
-}
-
-async fn get_custom_tool_by_key_from_surreal(
-    db: &Surreal<Db>,
-    key: &str,
-) -> Result<Option<CustomTool>, String> {
-    let record_id = db_record_id("custom_tool", key);
-
-    let mut result = db
-        .query(&format!(
-            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
-            record_id
-        ))
-        .await
-        .map_err(|e| format!("Failed to query custom tool: {}", e))?;
-
-    let records: Vec<Value> = result.take(0).map_err(|e| e.to_string())?;
-
-    Ok(records.into_iter().next().map(from_db_custom_tool))
+    state.with_conn(|conn| Ok(db_get(conn, DbTable::CustomTool, key)?.map(from_db_custom_tool)))
 }
 
 /// Save a custom tool (create or update), merging with existing fields
-pub async fn save_custom_tool(state: &DbState, tool: &CustomTool) -> Result<(), String> {
-    if let Some(sqlite_state) = global_sqlite_state() {
-        save_custom_tool_to_sqlite(sqlite_state, tool)?;
-    }
-
-    save_custom_tool_to_surreal(&state.db(), tool).await
-}
-
-async fn save_custom_tool_to_surreal(db: &Surreal<Db>, tool: &CustomTool) -> Result<(), String> {
-    let record_id = db_record_id("custom_tool", &tool.key);
-    db.query(&format!("UPSERT {} SET display_name = $display_name, relative_skills_dir = $skills_dir, relative_detect_dir = $detect_dir, force_copy = $force_copy, mcp_config_path = $mcp_path, mcp_config_format = $mcp_format, mcp_field = $mcp_field, created_at = $created_at", record_id))
-        .bind(("display_name", tool.display_name.clone()))
-        .bind(("skills_dir", tool.relative_skills_dir.clone()))
-        .bind(("detect_dir", tool.relative_detect_dir.clone()))
-        .bind(("force_copy", tool.force_copy))
-        .bind(("mcp_path", tool.mcp_config_path.clone()))
-        .bind(("mcp_format", tool.mcp_config_format.clone()))
-        .bind(("mcp_field", tool.mcp_field.clone()))
-        .bind(("created_at", tool.created_at))
-        .await
-        .map_err(|e| format!("Failed to save custom tool: {}", e))?;
-
-    Ok(())
+pub async fn save_custom_tool(state: &SqliteDbState, tool: &CustomTool) -> Result<(), String> {
+    save_custom_tool_to_sqlite(state, tool)
 }
 
 fn save_custom_tool_to_sqlite(
@@ -218,7 +141,7 @@ fn save_custom_tool_to_sqlite(
 
 /// Save only skills-related fields, preserving MCP fields if they exist
 pub async fn save_custom_tool_skills_fields(
-    state: &DbState,
+    state: &SqliteDbState,
     key: &str,
     display_name: &str,
     relative_skills_dir: Option<String>,
@@ -254,7 +177,7 @@ pub async fn save_custom_tool_skills_fields(
 
 /// Save only MCP-related fields, preserving Skills fields if they exist
 pub async fn save_custom_tool_mcp_fields(
-    state: &DbState,
+    state: &SqliteDbState,
     key: &str,
     display_name: &str,
     relative_detect_dir: Option<String>,
@@ -297,49 +220,8 @@ pub async fn save_custom_tool_mcp_fields(
 }
 
 /// Delete a custom tool
-pub async fn delete_custom_tool(state: &DbState, key: &str) -> Result<(), String> {
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state.with_conn(|conn| db_delete(conn, DbTable::CustomTool, key).map(|_| ()))?;
-    }
-
-    delete_custom_tool_from_surreal(&state.db(), key).await
-}
-
-async fn delete_custom_tool_from_surreal(db: &Surreal<Db>, key: &str) -> Result<(), String> {
-    let record_id = db_record_id("custom_tool", key);
-
-    db.query(&format!("DELETE {}", record_id))
-        .await
-        .map_err(|e| format!("Failed to delete custom tool: {}", e))?;
-
-    Ok(())
-}
-
-pub async fn sync_sqlite_custom_tools_from_surreal_if_missing(
-    sqlite_state: &SqliteDbState,
-    db: &Surreal<Db>,
-) -> Result<(), String> {
-    let sqlite_count = sqlite_state.with_conn(|conn| db_count(conn, DbTable::CustomTool))?;
-    if sqlite_count > 0 {
-        return Ok(());
-    }
-
-    let tools = get_custom_tools_from_surreal(db).await?;
-    if tools.is_empty() {
-        return Ok(());
-    }
-
-    sqlite_state.with_conn(|conn| {
-        for tool in &tools {
-            db_put(
-                conn,
-                DbTable::CustomTool,
-                &tool.key,
-                &custom_tool_to_value(tool),
-            )?;
-        }
-        Ok(())
-    })
+pub async fn delete_custom_tool(state: &SqliteDbState, key: &str) -> Result<(), String> {
+    state.with_conn(|conn| db_delete(conn, DbTable::CustomTool, key).map(|_| ()))
 }
 
 fn custom_tool_to_value(tool: &CustomTool) -> Value {

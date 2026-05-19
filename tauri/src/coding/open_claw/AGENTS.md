@@ -7,7 +7,7 @@
 ## Source of Truth
 
 - OpenClaw 当前生效配置路径优先级很简单：应用内 `config_path` > 默认路径。
-- `openclaw_common_config` 的主存储是 SQLite JSONB；兼容期保留 SurrealDB 双写/导入。
+- `openclaw_common_config` 的主存储是 SQLite JSONB；旧 SurrealDB 仅用于启动时一次性导入。
 - OpenClaw 是“配置文件路径模块”，不是根目录模块；运行时相关派生都应从当前配置文件位置继续推导。
 - 页面内 provider、tools、env 等编辑最终都要回到同一份 OpenClaw 配置文件。
 

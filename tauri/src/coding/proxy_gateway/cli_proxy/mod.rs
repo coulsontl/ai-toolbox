@@ -7,13 +7,12 @@ use super::types::{
     GatewayManagedTarget, ProxyGatewayStatus, ProxyGatewayStopPreflight,
 };
 use crate::coding::runtime_location;
+use crate::db::SqliteDbState;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use surrealdb::engine::local::Db;
-use surrealdb::Surreal;
 use toml_edit::{value, DocumentMut, Item};
 
 const GATEWAY_PROVIDER_ID: &str = "ai-toolbox-gateway";
@@ -78,7 +77,7 @@ struct CliProxyTargets {
 }
 
 pub async fn cli_takeover_statuses(
-    db: &Surreal<Db>,
+    db: &SqliteDbState,
     paths: &ProxyGatewayPaths,
     gateway_status: &ProxyGatewayStatus,
 ) -> Vec<GatewayCliTakeoverStatus> {
@@ -90,7 +89,7 @@ pub async fn cli_takeover_statuses(
 }
 
 pub async fn cli_takeover_status(
-    db: &Surreal<Db>,
+    db: &SqliteDbState,
     paths: &ProxyGatewayPaths,
     cli_key: GatewayCliKey,
     gateway_status: &ProxyGatewayStatus,
@@ -242,7 +241,7 @@ pub async fn cli_takeover_status(
 }
 
 pub async fn takeover_cli(
-    db: &Surreal<Db>,
+    db: &SqliteDbState,
     paths: &ProxyGatewayPaths,
     cli_key: GatewayCliKey,
     gateway_status: &ProxyGatewayStatus,
@@ -265,7 +264,7 @@ pub async fn takeover_cli(
 }
 
 pub async fn restore_cli_direct(
-    db: &Surreal<Db>,
+    db: &SqliteDbState,
     paths: &ProxyGatewayPaths,
     cli_key: GatewayCliKey,
     gateway_status: &ProxyGatewayStatus,
@@ -296,7 +295,7 @@ pub async fn restore_cli_direct(
 }
 
 pub async fn stop_preflight(
-    db: &Surreal<Db>,
+    db: &SqliteDbState,
     paths: &ProxyGatewayPaths,
     gateway_status: &ProxyGatewayStatus,
 ) -> ProxyGatewayStopPreflight {
@@ -338,7 +337,7 @@ fn is_supported_cli(cli_key: GatewayCliKey) -> bool {
 }
 
 async fn resolve_targets(
-    db: &Surreal<Db>,
+    db: &SqliteDbState,
     cli_key: GatewayCliKey,
 ) -> Result<CliProxyTargets, String> {
     let runtime_root = match cli_key {

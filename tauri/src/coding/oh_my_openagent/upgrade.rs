@@ -7,7 +7,7 @@ use crate::coding::open_code;
 use crate::coding::runtime_location;
 use crate::coding::ssh;
 use crate::coding::wsl;
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 
 use super::types::{OhMyOpenAgentLegacyUpgradeResult, OhMyOpenAgentLegacyUpgradeStatus};
 
@@ -174,7 +174,7 @@ fn rename_wsl_file_if_needed(
 }
 
 async fn load_opencode_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Option<open_code::OpenCodeConfig>, String> {
     match open_code::read_opencode_config(state).await? {
         open_code::ReadConfigResult::Success { config } => Ok(Some(config)),
@@ -187,12 +187,14 @@ async fn load_opencode_config(
     }
 }
 
-async fn detect_legacy_plugin_usage(state: tauri::State<'_, DbState>) -> Result<bool, String> {
+async fn detect_legacy_plugin_usage(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<bool, String> {
     Ok(load_normalized_opencode_config(state).await?.is_some())
 }
 
 async fn load_normalized_opencode_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Option<open_code::OpenCodeConfig>, String> {
     let Some(mut config) = load_opencode_config(state.clone()).await? else {
         return Ok(None);
@@ -214,7 +216,7 @@ async fn load_normalized_opencode_config(
 }
 
 async fn update_custom_opencode_config_path_if_needed(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: &tauri::AppHandle,
 ) -> Result<bool, String> {
     let Some(mut common_config) = open_code::get_opencode_common_config(state.clone()).await?
@@ -236,7 +238,7 @@ async fn update_custom_opencode_config_path_if_needed(
 }
 
 async fn update_wsl_mapping_if_needed(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: &tauri::AppHandle,
     wsl_config: &wsl::WSLSyncConfig,
 ) -> Result<(bool, bool), String> {
@@ -291,7 +293,7 @@ async fn update_wsl_mapping_if_needed(
 }
 
 async fn update_ssh_mapping_if_needed(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: &tauri::AppHandle,
     ssh_config: &ssh::SSHSyncConfig,
 ) -> Result<bool, String> {
@@ -334,7 +336,7 @@ fn detect_legacy_local_config_path(config_path: &Path) -> bool {
 
 #[tauri::command]
 pub async fn get_oh_my_openagent_upgrade_status(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<OhMyOpenAgentLegacyUpgradeStatus, String> {
     let db = state.db();
     let opencode_config_path = open_code::get_opencode_config_path_info(state.clone()).await?;
@@ -372,7 +374,7 @@ pub async fn get_oh_my_openagent_upgrade_status(
 
 #[tauri::command]
 pub async fn upgrade_oh_my_openagent_legacy_setup(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
 ) -> Result<OhMyOpenAgentLegacyUpgradeResult, String> {
     let db = state.db();

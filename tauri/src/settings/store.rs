@@ -1,9 +1,9 @@
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use super::{adapter, types::AppSettings};
 use crate::db::helpers::{db_get, db_patch_fields, db_put};
 use crate::db::schema::DbTable;
-use crate::db::sqlite_state::SqliteDbState;
+use crate::db::SqliteDbState;
 
 const SETTINGS_ID: &str = "app";
 
@@ -60,86 +60,10 @@ pub fn save_settings_to_sqlite_conn(
     db_put(conn, DbTable::Settings, SETTINGS_ID, &json)
 }
 
-pub async fn load_settings_from_surreal(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<AppSettings, String> {
-    let value = load_settings_value_from_surreal(db).await?;
-    Ok(value.map(adapter::from_db_value).unwrap_or_default())
-}
-
-pub async fn save_settings_to_surreal(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    settings: &AppSettings,
-) -> Result<(), String> {
-    let json = adapter::to_db_value(settings);
-    save_settings_value_to_surreal(db, json).await
-}
-
-pub async fn update_last_auto_backup_time_in_surreal(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    time: &str,
-) -> Result<(), String> {
-    db.query("UPDATE settings:`app` SET last_auto_backup_time = $time")
-        .bind(("time", time.to_string()))
-        .await
-        .map_err(|error| format!("Failed to update last_auto_backup_time: {error}"))?;
-    Ok(())
-}
-
-pub async fn sync_sqlite_settings_from_surreal_if_missing(
-    sqlite_state: &SqliteDbState,
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<(), String> {
-    let sqlite_has_settings = sqlite_state
-        .with_conn(|conn| Ok(db_get(conn, DbTable::Settings, SETTINGS_ID)?.is_some()))?;
-    if sqlite_has_settings {
-        return Ok(());
-    }
-
-    let Some(legacy_settings) = load_settings_value_from_surreal(db).await? else {
-        return Ok(());
-    };
-
-    sqlite_state.with_conn(|conn| db_put(conn, DbTable::Settings, SETTINGS_ID, &legacy_settings))
-}
-
-async fn load_settings_value_from_surreal(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<Option<Value>, String> {
-    let mut result = db
-        .query("SELECT * OMIT id FROM settings:`app` LIMIT 1")
-        .await
-        .map_err(|error| format!("Failed to query settings: {error}"))?;
-
-    let records: Vec<Value> = result
-        .take(0)
-        .map_err(|error| format!("Failed to parse settings: {error}"))?;
-
-    Ok(records.first().cloned().map(ensure_object))
-}
-
-async fn save_settings_value_to_surreal(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    json: Value,
-) -> Result<(), String> {
-    db.query("UPSERT settings:`app` CONTENT $data")
-        .bind(("data", json))
-        .await
-        .map_err(|error| format!("Failed to save settings: {error}"))?;
-    Ok(())
-}
-
-fn ensure_object(value: Value) -> Value {
-    match value {
-        Value::Object(_) => value,
-        _ => Value::Object(Map::new()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::sqlite_state::SqliteDbState;
+    use crate::db::SqliteDbState;
 
     #[test]
     fn sqlite_settings_round_trip_uses_adapter_defaults() {

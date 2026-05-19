@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use super::open_claw::types::{OpenClawModel, OpenClawProviderConfig};
 use super::open_code::types::{OpenCodeModel, OpenCodeProvider, OpenCodeProviderOptions};
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 use crate::http_client;
 
 const KNOWN_EXTENSION_IDS: &[&str] = &[
@@ -189,7 +189,7 @@ pub fn list_provider_candidates() -> Result<AllApiHubDiscovery, String> {
 }
 
 pub async fn list_provider_candidates_with_keys(
-    db_state: &DbState,
+    db_state: &SqliteDbState,
 ) -> Result<AllApiHubDiscovery, String> {
     let mut discovery = list_provider_candidates()?;
     hydrate_missing_api_keys(db_state, &mut discovery.providers).await?;
@@ -197,7 +197,7 @@ pub async fn list_provider_candidates_with_keys(
 }
 
 pub async fn resolve_provider_candidates_with_keys(
-    db_state: &DbState,
+    db_state: &SqliteDbState,
     provider_ids: &[String],
 ) -> Result<Vec<AllApiHubProviderCandidate>, String> {
     let provider_id_set: HashSet<&str> = provider_ids.iter().map(|id| id.as_str()).collect();
@@ -210,7 +210,7 @@ pub async fn resolve_provider_candidates_with_keys(
 }
 
 pub async fn resolve_provider_candidates_models(
-    db_state: &DbState,
+    db_state: &SqliteDbState,
     provider_ids: &[String],
 ) -> Result<Vec<AllApiHubProviderModelsResult>, String> {
     let order_map: HashMap<&str, usize> = provider_ids
@@ -250,7 +250,7 @@ pub async fn resolve_provider_candidates_models(
 
 #[tauri::command]
 pub async fn get_all_api_hub_provider_models(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     request: AllApiHubProviderModelsRequest,
 ) -> Result<Vec<AllApiHubProviderModelsResult>, String> {
     resolve_provider_candidates_models(&state, &request.provider_ids).await
@@ -807,7 +807,7 @@ fn normalize_model_list(models: Vec<String>) -> Vec<String> {
 }
 
 async fn hydrate_missing_api_keys(
-    db_state: &DbState,
+    db_state: &SqliteDbState,
     providers: &mut [AllApiHubProviderCandidate],
 ) -> Result<(), String> {
     let client = http_client::client_with_timeout(db_state, 15).await?;

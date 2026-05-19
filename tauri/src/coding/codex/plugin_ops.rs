@@ -190,14 +190,14 @@ fn install_plugin_atomically(source_path: &Path, target_dir: &Path) -> Result<()
 }
 
 pub async fn ensure_codex_plugins_feature_enabled(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<(), String> {
     let config_path = crate::coding::runtime_location::get_codex_config_path_async(db).await?;
     plugin_toml::set_plugins_feature_enabled(&config_path, true)
 }
 
 pub async fn install_codex_plugin(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     plugin_id: &str,
 ) -> Result<(), String> {
     let runtime_location =
@@ -262,7 +262,7 @@ pub async fn install_codex_plugin(
 }
 
 pub async fn uninstall_codex_plugin(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     plugin_id: &str,
 ) -> Result<(), String> {
     let runtime_location =
@@ -277,7 +277,7 @@ pub async fn uninstall_codex_plugin(
 }
 
 pub async fn set_codex_plugin_enabled(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     plugin_id: &str,
     enabled: bool,
 ) -> Result<(), String> {

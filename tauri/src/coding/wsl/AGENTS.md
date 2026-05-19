@@ -6,14 +6,14 @@
 
 ## Source of Truth
 
-- `wsl_sync_config` 和 `wsl_file_mapping` 表是 WSL 同步配置的主数据；当前主存储是 SQLite JSONB，兼容期双写 SurrealDB。
+- `wsl_sync_config` 和 `wsl_file_mapping` 表是 WSL 同步配置的主数据；当前主存储是 SQLite JSONB，不再双写旧库。
 - `module_statuses` 不是前端自己推出来的，它来自 `runtime_location::get_wsl_direct_status_map_async()` 的统一后端诊断。
 - 自动同步是否发生，不由业务模块保存数据库这件事决定，而由 `lib.rs` 中对应事件监听器 + `is_wsl_auto_sync_enabled()` 决定。
 
 ## 核心设计决策（Why）
 
 - WSL 自动同步被建模为事件驱动，而不是把同步逻辑内嵌进每个工具模块，避免各工具模块各自复制“启用判断 + 调用同步”的逻辑。
-- 读写 WSL 配置时必须 SQLite-first；`last_sync_*` 状态更新、默认 mapping backfill 和用户 mapping CRUD 都要同步更新 SQLite，不能只更新兼容期 SurrealDB。
+- 读写 WSL 配置时必须直接走 SQLite；`last_sync_*` 状态更新、默认 mapping backfill 和用户 mapping CRUD 都要更新 SQLite，不能写回旧 SurrealDB。
 - `module_statuses` 由运行时路径统一产出，这样 WSL 设置页和 SSH 设置页都能基于相同事实源显示 WSL Direct 状态。
 - 启用 WSL sync 时会触发一次全量同步，减少“刚打开但远端还是旧状态”的初始分叉。
 
@@ -24,7 +24,7 @@ sequenceDiagram
   participant Tool as Tool Command
   participant App as lib.rs
   participant WSL as wsl::commands
-  participant DB as SurrealDB
+  participant DB as SQLite JSONB
 
   Tool-->>App: emit wsl-sync-request-*
   App->>WSL: check is_wsl_auto_sync_enabled

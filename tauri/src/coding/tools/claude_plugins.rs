@@ -15,9 +15,7 @@ pub struct PluginInfo {
 /// Read installed Claude Code plugins using the current runtime location.
 ///
 /// Returns an empty list when there are no installed plugins.
-pub async fn get_installed_plugins(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Vec<PluginInfo> {
+pub async fn get_installed_plugins(db: &crate::db::SqliteDbState) -> Vec<PluginInfo> {
     match plugin_state::list_claude_installed_plugins(db).await {
         Ok(plugins) => plugins
             .into_iter()

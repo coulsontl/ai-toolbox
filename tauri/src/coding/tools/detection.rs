@@ -106,7 +106,7 @@ pub fn resolve_mcp_config_path(tool: &RuntimeTool) -> Option<PathBuf> {
 }
 
 pub fn resolve_mcp_config_path_with_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     tool: &RuntimeTool,
 ) -> Option<PathBuf> {
     match tool.key.as_str() {
@@ -119,7 +119,7 @@ pub fn resolve_mcp_config_path_with_db(
 }
 
 pub async fn resolve_mcp_config_path_with_db_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     tool: &RuntimeTool,
 ) -> Option<PathBuf> {
     match tool.key.as_str() {
@@ -133,7 +133,7 @@ pub async fn resolve_mcp_config_path_with_db_async(
 }
 
 pub fn resolve_skills_path_with_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     tool: &RuntimeTool,
 ) -> Option<PathBuf> {
     match tool.key.as_str() {
@@ -146,7 +146,7 @@ pub fn resolve_skills_path_with_db(
 }
 
 pub async fn resolve_skills_path_with_db_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     tool: &RuntimeTool,
 ) -> Option<PathBuf> {
     match tool.key.as_str() {
@@ -159,10 +159,7 @@ pub async fn resolve_skills_path_with_db_async(
     }
 }
 
-pub fn is_tool_installed_with_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    tool: &RuntimeTool,
-) -> bool {
+pub fn is_tool_installed_with_db(db: &crate::db::SqliteDbState, tool: &RuntimeTool) -> bool {
     if tool.is_custom {
         return true;
     }
@@ -193,7 +190,7 @@ pub fn is_tool_installed_with_db(
 }
 
 pub async fn is_tool_installed_with_db_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     tool: &RuntimeTool,
 ) -> bool {
     if tool.is_custom {
@@ -296,7 +293,7 @@ pub fn to_runtime_tool_dto(tool: &RuntimeTool) -> RuntimeToolDto {
 }
 
 pub fn to_runtime_tool_dto_with_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     tool: &RuntimeTool,
 ) -> RuntimeToolDto {
     let installed = is_tool_installed_with_db(db, tool);
@@ -322,7 +319,7 @@ pub fn to_runtime_tool_dto_with_db(
 }
 
 pub async fn to_runtime_tool_dto_with_db_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     tool: &RuntimeTool,
 ) -> RuntimeToolDto {
     let installed = is_tool_installed_with_db_async(db, tool).await;

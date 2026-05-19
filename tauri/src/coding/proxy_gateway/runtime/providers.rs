@@ -1,8 +1,9 @@
 use crate::coding::proxy_gateway::types::GatewayCliKey;
 use crate::coding::{claude_code, codex, gemini_cli};
+use crate::db::helpers::db_list;
+use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
+use crate::db::SqliteDbState;
 use serde_json::Value;
-use surrealdb::engine::local::Db;
-use surrealdb::Surreal;
 use toml_edit::{DocumentMut, Item};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,36 +27,24 @@ pub(super) struct UpstreamModelMapping {
 }
 
 pub(super) async fn load_candidate_providers(
-    db: &Surreal<Db>,
+    db: &SqliteDbState,
     cli_key: GatewayCliKey,
 ) -> Result<Vec<UpstreamProvider>, String> {
     let table = match cli_key {
-        GatewayCliKey::Claude => "claude_provider",
-        GatewayCliKey::Codex => "codex_provider",
-        GatewayCliKey::Gemini => "gemini_cli_provider",
+        GatewayCliKey::Claude => DbTable::ClaudeProvider,
+        GatewayCliKey::Codex => DbTable::CodexProvider,
+        GatewayCliKey::Gemini => DbTable::GeminiCliProvider,
         GatewayCliKey::OpenCode => {
             return Err(
                 "OpenCode adapter is intentionally out of scope for the gateway MVP".to_string(),
             )
         }
     };
-    let mut result = db
-        .query(format!(
-            "SELECT *, type::string(id) as id FROM {table} ORDER BY sort_index ASC, updated_at DESC"
-        ))
-        .await
-        .map_err(|error| {
-            format!(
-                "Failed to query providers for {}: {error}",
-                cli_key.as_str()
-            )
-        })?;
-    let records: Vec<Value> = result.take(0).map_err(|error| {
-        format!(
-            "Failed to parse providers for {}: {error}",
-            cli_key.as_str()
-        )
-    })?;
+    let order = OrderSpec::new(vec![
+        OrderField::json_integer("sort_index", OrderDirection::Asc)?,
+        OrderField::json_text("updated_at", OrderDirection::Desc)?,
+    ]);
+    let records = db.with_conn(|conn| db_list(conn, table, Some(&order)))?;
 
     let mut providers = Vec::new();
     let mut parse_errors = Vec::new();

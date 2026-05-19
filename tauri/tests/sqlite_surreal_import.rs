@@ -1,9 +1,9 @@
 use ai_toolbox_lib::db::helpers::{db_count, db_get, db_list};
 use ai_toolbox_lib::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
-use ai_toolbox_lib::db::sqlite_state::SqliteDbState;
 use ai_toolbox_lib::db::surreal_import::{
     import_missing_known_tables_from_surreal, import_tables_from_surreal,
 };
+use ai_toolbox_lib::db::SqliteDbState;
 use serde_json::json;
 use surrealdb::engine::local::SurrealKv;
 use surrealdb::Surreal;

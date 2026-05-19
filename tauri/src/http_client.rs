@@ -7,9 +7,9 @@
 //! # Usage
 //!
 //! ```rust,no_run
-//! use ai_toolbox_lib::{http_client, DbState};
+//! use ai_toolbox_lib::{http_client, SqliteDbState};
 //!
-//! # async fn demo(state: &DbState) -> Result<(), String> {
+//! # async fn demo(state: &SqliteDbState) -> Result<(), String> {
 //! // Create client with automatic proxy configuration (30s timeout)
 //! let client = http_client::client(state).await?;
 //!
@@ -26,8 +26,7 @@
 use reqwest::{Client, Proxy};
 use std::time::Duration;
 
-use crate::db::sqlite_state::global_sqlite_state;
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 use crate::settings::store::load_settings_from_sqlite_state;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,9 +59,9 @@ impl ProxyMode {
 ///
 /// # Example
 /// ```rust,no_run
-/// use ai_toolbox_lib::{http_client, DbState};
+/// use ai_toolbox_lib::{http_client, SqliteDbState};
 ///
-/// # async fn demo(state: &DbState) -> Result<(), String> {
+/// # async fn demo(state: &SqliteDbState) -> Result<(), String> {
 /// let client = http_client::client(state).await?;
 /// let response = client
 ///     .get("https://api.example.com")
@@ -73,7 +72,7 @@ impl ProxyMode {
 /// # Ok(())
 /// # }
 /// ```
-pub async fn client(db_state: &DbState) -> Result<Client, String> {
+pub async fn client(db_state: &SqliteDbState) -> Result<Client, String> {
     client_with_timeout(db_state, 30).await
 }
 
@@ -88,15 +87,18 @@ pub async fn client(db_state: &DbState) -> Result<Client, String> {
 ///
 /// # Example
 /// ```rust,no_run
-/// use ai_toolbox_lib::{http_client, DbState};
+/// use ai_toolbox_lib::{http_client, SqliteDbState};
 ///
-/// # async fn demo(state: &DbState) -> Result<(), String> {
+/// # async fn demo(state: &SqliteDbState) -> Result<(), String> {
 /// let client = http_client::client_with_timeout(state, 60).await?;
 /// # let _ = client;
 /// # Ok(())
 /// # }
 /// ```
-pub async fn client_with_timeout(db_state: &DbState, timeout_secs: u64) -> Result<Client, String> {
+pub async fn client_with_timeout(
+    db_state: &SqliteDbState,
+    timeout_secs: u64,
+) -> Result<Client, String> {
     let (proxy_mode, proxy_url) = get_proxy_from_settings(db_state).await?;
     build_client(proxy_mode, &proxy_url, timeout_secs, false)
 }
@@ -106,7 +108,7 @@ pub async fn client_with_timeout(db_state: &DbState, timeout_secs: u64) -> Resul
 /// Use this for compatibility workarounds when an upstream gateway mishandles
 /// compressed responses for specific clients or platforms.
 pub async fn client_with_timeout_no_compression(
-    db_state: &DbState,
+    db_state: &SqliteDbState,
     timeout_secs: u64,
 ) -> Result<Client, String> {
     let (proxy_mode, proxy_url) = get_proxy_from_settings(db_state).await?;
@@ -232,38 +234,11 @@ pub async fn test_proxy(proxy_url: &str) -> Result<(), String> {
 ///
 /// # Returns
 /// Tuple of (proxy_mode, proxy_url)
-pub async fn get_proxy_from_settings(db_state: &DbState) -> Result<(ProxyMode, String), String> {
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let settings = load_settings_from_sqlite_state(sqlite_state)?;
-        return Ok((ProxyMode::parse(&settings.proxy_mode), settings.proxy_url));
-    }
-
-    let db = db_state.db();
-
-    let mut result = db
-        .query("SELECT proxy_mode, proxy_url OMIT id FROM settings:`app` LIMIT 1")
-        .await
-        .map_err(|e| format!("Failed to query proxy settings: {}", e))?;
-
-    let records: Vec<serde_json::Value> = result
-        .take(0)
-        .map_err(|e| format!("Failed to parse proxy settings: {}", e))?;
-
-    if let Some(record) = records.first() {
-        let proxy_mode = record
-            .get("proxy_mode")
-            .and_then(|v| v.as_str())
-            .map(ProxyMode::parse)
-            .unwrap_or(ProxyMode::System);
-        let proxy_url = record
-            .get("proxy_url")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        Ok((proxy_mode, proxy_url))
-    } else {
-        Ok((ProxyMode::System, String::new()))
-    }
+pub async fn get_proxy_from_settings(
+    db_state: &SqliteDbState,
+) -> Result<(ProxyMode, String), String> {
+    let settings = load_settings_from_sqlite_state(db_state)?;
+    Ok((ProxyMode::parse(&settings.proxy_mode), settings.proxy_url))
 }
 
 /// Build a reqwest::Proxy from URL string.

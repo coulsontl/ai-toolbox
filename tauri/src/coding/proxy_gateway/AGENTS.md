@@ -6,10 +6,10 @@
 
 ## Source of Truth
 
-- 全局网关设置来自 AI Toolbox 主数据库的 `proxy_gateway_settings`；SQLite JSONB 迁移期优先读写 SQLite 并双写 SurrealDB。CLI 接管状态不进数据库，以 `proxy-gateway/cli-proxy/<cli>/manifest.json` 为准。
+- 全局网关设置来自 AI Toolbox 主数据库的 `proxy_gateway_settings`；必须直接读写 SQLite JSONB，旧 SurrealDB 仅用于启动时一次性导入。CLI 接管状态不进数据库，以 `proxy-gateway/cli-proxy/<cli>/manifest.json` 为准。
 - CLI manifest 只保存接管元数据、目标文件路径、备份相对路径、hash/size 和被管理字段；不要写 provider_id、settings_config、API key 明文或上游渠道配置。
 - 被接管 CLI 的真实运行时配置仍在各 CLI 自己的 runtime root：Claude Code `settings.json`、Codex `config.toml`/`auth.json`、Gemini CLI `.env`/`settings.json`。
-- 请求日志、请求明细、模型健康和聚合统计属于本地文件状态；不要为了高频写入把这些内容塞进 SurrealDB。
+- 请求日志、请求明细、模型健康和聚合统计属于本地文件状态；不要为了高频写入把这些内容塞进 SQLite 主库。
 - `ProxyGatewaySettings.enabled_on_startup` 表示上次应用退出前的网关运行态，不是用户可见的独立开关。启动成功后置 `true`，用户手动停止成功前置 `false`，应用启动时按它自动恢复网关。
 
 ## 核心设计决策（Why）

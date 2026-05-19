@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 
 use super::plugin_types::CodexPluginWorkspaceRoot;
-use crate::coding::db_id::db_record_id;
+use crate::db::helpers::{db_get, db_put};
+use crate::db::schema::DbTable;
 
 const MARKETPLACE_RELATIVE_PATH: &str = ".agents/plugins/marketplace.json";
-const WORKSPACE_SETTINGS_TABLE: &str = "codex_plugin_workspace_roots";
 const WORKSPACE_SETTINGS_ID: &str = "settings";
 
 fn normalize_workspace_root_path(raw_path: &str) -> Result<String, String> {
@@ -98,34 +98,32 @@ fn to_db_value_workspace_root_paths(workspace_root_paths: &[String]) -> Value {
 }
 
 async fn get_stored_workspace_root_paths(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Vec<String>, String> {
-    let record_id = db_record_id(WORKSPACE_SETTINGS_TABLE, WORKSPACE_SETTINGS_ID);
-    let records: Vec<Value> = db
-        .query(format!("SELECT * OMIT id FROM {record_id} LIMIT 1"))
-        .await
-        .map_err(|error| format!("Failed to query Codex plugin workspace roots: {error}"))?
-        .take(0)
-        .map_err(|error| format!("Failed to read Codex plugin workspace roots: {error}"))?;
-
-    Ok(records
-        .first()
-        .cloned()
+    db.with_conn(|conn| {
+        Ok(db_get(
+            conn,
+            DbTable::CodexPluginWorkspaceRoots,
+            WORKSPACE_SETTINGS_ID,
+        )?
         .map(from_db_value_workspace_root_paths)
         .unwrap_or_default())
+    })
 }
 
 async fn save_workspace_root_paths(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     workspace_root_paths: &[String],
 ) -> Result<(), String> {
-    let record_id = db_record_id(WORKSPACE_SETTINGS_TABLE, WORKSPACE_SETTINGS_ID);
     let payload = to_db_value_workspace_root_paths(workspace_root_paths);
-    db.query(format!("UPSERT {record_id} CONTENT $data"))
-        .bind(("data", payload))
-        .await
-        .map_err(|error| format!("Failed to save Codex plugin workspace roots: {error}"))?;
-    Ok(())
+    db.with_conn(|conn| {
+        db_put(
+            conn,
+            DbTable::CodexPluginWorkspaceRoots,
+            WORKSPACE_SETTINGS_ID,
+            &payload,
+        )
+    })
 }
 
 pub(crate) fn describe_workspace_root(path: &str) -> CodexPluginWorkspaceRoot {
@@ -186,7 +184,7 @@ pub(crate) fn describe_workspace_root(path: &str) -> CodexPluginWorkspaceRoot {
 }
 
 pub async fn list_codex_plugin_workspace_roots(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Vec<CodexPluginWorkspaceRoot>, String> {
     let workspace_root_paths = get_stored_workspace_root_paths(db).await?;
     Ok(workspace_root_paths
@@ -196,7 +194,7 @@ pub async fn list_codex_plugin_workspace_roots(
 }
 
 pub async fn list_ready_codex_workspace_marketplace_paths(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Vec<PathBuf>, String> {
     let workspace_root_paths = get_stored_workspace_root_paths(db).await?;
     let mut marketplace_paths = Vec::new();
@@ -220,7 +218,7 @@ pub async fn list_ready_codex_workspace_marketplace_paths(
 }
 
 pub async fn add_codex_plugin_workspace_root(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     raw_path: &str,
 ) -> Result<(), String> {
     let normalized_path = normalize_workspace_root_path(raw_path)?;
@@ -240,7 +238,7 @@ pub async fn add_codex_plugin_workspace_root(
 }
 
 pub async fn remove_codex_plugin_workspace_root(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     raw_path: &str,
 ) -> Result<(), String> {
     let normalized_path = raw_path.trim();

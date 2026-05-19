@@ -18,7 +18,7 @@ use super::plugin_types::{
 use super::plugin_workspace;
 use super::types::*;
 use crate::coding::all_api_hub;
-use crate::coding::db_id::{db_new_id, db_record_id};
+use crate::coding::db_id::db_new_id;
 use crate::coding::open_code::shell_env;
 use crate::coding::prompt_file::{read_prompt_content_file, write_prompt_content_file};
 use crate::coding::runtime_location;
@@ -28,8 +28,7 @@ use crate::db::helpers::{
     db_patch_where_bool, db_put, db_query_by_bool,
 };
 use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
-use crate::db::sqlite_state::{global_sqlite_state, SqliteDbState};
-use crate::db::DbState;
+use crate::db::SqliteDbState;
 use crate::http_client;
 use chrono::Local;
 use tauri::Emitter;
@@ -122,38 +121,23 @@ pub(crate) fn get_codex_root_dir_without_db() -> Result<PathBuf, String> {
 }
 
 pub(super) async fn get_codex_custom_root_dir_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Option<PathBuf> {
-    if let Some(sqlite_state) = global_sqlite_state() {
-        if let Ok(Some(config)) = get_codex_common_from_sqlite(sqlite_state) {
-            return config
-                .root_dir
-                .filter(|dir| !dir.trim().is_empty())
-                .map(PathBuf::from);
-        }
+    if let Ok(Some(config)) = get_codex_common_from_sqlite(db) {
+        return config
+            .root_dir
+            .filter(|dir| !dir.trim().is_empty())
+            .map(PathBuf::from);
     }
-
-    let mut result = db
-        .query("SELECT * OMIT id FROM codex_common_config:`common` LIMIT 1")
-        .await
-        .ok()?;
-    let records: Vec<Value> = result.take(0).ok()?;
-    let record = records.into_iter().next()?;
-    let config = adapter::from_db_value_common(record);
-    config
-        .root_dir
-        .filter(|dir| !dir.trim().is_empty())
-        .map(PathBuf::from)
+    None
 }
 
-pub fn get_codex_root_dir_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<PathBuf, String> {
+pub fn get_codex_root_dir_from_db(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
     Ok(runtime_location::get_codex_runtime_location_sync(db)?.host_path)
 }
 
 pub(super) async fn get_codex_root_dir_from_db_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<PathBuf, String> {
     Ok(runtime_location::get_codex_runtime_location_async(db)
         .await?
@@ -161,7 +145,7 @@ pub(super) async fn get_codex_root_dir_from_db_async(
 }
 
 pub fn get_codex_root_path_info_from_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<ConfigPathInfo, String> {
     let location = runtime_location::get_codex_runtime_location_sync(db)?;
     Ok(ConfigPathInfo {
@@ -171,7 +155,7 @@ pub fn get_codex_root_path_info_from_db(
 }
 
 async fn get_codex_root_path_info_from_db_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<ConfigPathInfo, String> {
     let location = runtime_location::get_codex_runtime_location_async(db).await?;
     Ok(ConfigPathInfo {
@@ -185,13 +169,13 @@ fn get_codex_config_dir() -> Result<std::path::PathBuf, String> {
 }
 
 async fn get_codex_config_dir_from_db_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<std::path::PathBuf, String> {
     get_codex_root_dir_from_db_async(db).await
 }
 
 async fn get_codex_auth_path_from_db_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<std::path::PathBuf, String> {
     Ok(get_codex_config_dir_from_db_async(db)
         .await?
@@ -199,7 +183,7 @@ async fn get_codex_auth_path_from_db_async(
 }
 
 async fn get_codex_config_path_from_db_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<std::path::PathBuf, String> {
     Ok(get_codex_config_dir_from_db_async(db)
         .await?
@@ -213,7 +197,7 @@ fn get_codex_prompt_file_path() -> Result<std::path::PathBuf, String> {
 }
 
 async fn get_codex_prompt_file_path_from_db_async(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<std::path::PathBuf, String> {
     Ok(runtime_location::resolve_codex_prompt_file_path(
         &get_codex_config_dir_from_db_async(db).await?,
@@ -221,7 +205,7 @@ async fn get_codex_prompt_file_path_from_db_async(
 }
 
 async fn get_local_prompt_config(
-    db: Option<&surrealdb::Surreal<surrealdb::engine::local::Db>>,
+    db: Option<&crate::db::SqliteDbState>,
 ) -> Result<Option<CodexPromptConfig>, String> {
     let prompt_path = if let Some(db) = db {
         get_codex_prompt_file_path_from_db_async(db).await?
@@ -245,7 +229,7 @@ async fn get_local_prompt_config(
 }
 
 async fn read_codex_settings_from_disk(
-    db: Option<&surrealdb::Surreal<surrealdb::engine::local::Db>>,
+    db: Option<&crate::db::SqliteDbState>,
 ) -> Result<CodexSettings, String> {
     let (auth_path, config_path) = if let Some(db) = db {
         (
@@ -436,7 +420,7 @@ async fn fetch_remote_codex_model_catalog(
 
 #[tauri::command]
 pub async fn fetch_codex_official_models(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     plan_type: String,
 ) -> Result<CodexOfficialModelsResponse, String> {
     let tier = normalize_codex_model_tier(&plan_type);
@@ -479,7 +463,7 @@ pub async fn fetch_codex_official_models(
 }
 
 async fn write_prompt_content_to_file(
-    db: Option<&surrealdb::Surreal<surrealdb::engine::local::Db>>,
+    db: Option<&crate::db::SqliteDbState>,
     prompt_content: Option<&str>,
 ) -> Result<(), String> {
     let prompt_path = if let Some(db) = db {
@@ -608,60 +592,6 @@ fn put_codex_common_to_sqlite(sqlite_state: &SqliteDbState, data: &Value) -> Res
     sqlite_state.with_conn(|conn| db_put(conn, DbTable::CodexCommonConfig, "common", data))
 }
 
-async fn create_codex_provider_in_surreal(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    provider_id: &str,
-    data: Value,
-) -> Result<(), String> {
-    db.query(&format!(
-        "CREATE codex_provider:`{}` CONTENT $data",
-        provider_id
-    ))
-    .bind(("data", data))
-    .await
-    .map_err(|e| format!("Failed to create provider: {}", e))?;
-    Ok(())
-}
-
-async fn put_codex_provider_in_surreal(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    provider_id: &str,
-    data: Value,
-) -> Result<(), String> {
-    db.query(format!(
-        "UPDATE codex_provider:`{}` CONTENT $data",
-        provider_id
-    ))
-    .bind(("data", data))
-    .await
-    .map_err(|e| format!("Failed to update provider: {}", e))?;
-    Ok(())
-}
-
-async fn put_codex_prompt_in_surreal(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    config_id: &str,
-    data: Value,
-) -> Result<(), String> {
-    let record_id = db_record_id("codex_prompt_config", config_id);
-    db.query(&format!("UPSERT {} CONTENT $data", record_id))
-        .bind(("data", data))
-        .await
-        .map_err(|e| format!("Failed to save prompt config: {}", e))?;
-    Ok(())
-}
-
-async fn put_codex_common_in_surreal(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    data: Value,
-) -> Result<(), String> {
-    db.query("UPSERT codex_common_config:`common` CONTENT $data")
-        .bind(("data", data))
-        .await
-        .map_err(|e| format!("Failed to save config: {}", e))?;
-    Ok(())
-}
-
 fn emit_codex_plugin_config_changed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let _ = app.emit("config-changed", "window");
     emit_prompt_sync_requests(app);
@@ -669,7 +599,9 @@ fn emit_codex_plugin_config_changed<R: tauri::Runtime>(app: &tauri::AppHandle<R>
 
 /// Get Codex config directory path
 #[tauri::command]
-pub async fn get_codex_config_dir_path(state: tauri::State<'_, DbState>) -> Result<String, String> {
+pub async fn get_codex_config_dir_path(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<String, String> {
     let db = state.db();
     let config_dir = get_codex_config_dir_from_db_async(&db).await?;
     Ok(config_dir.to_string_lossy().to_string())
@@ -677,7 +609,7 @@ pub async fn get_codex_config_dir_path(state: tauri::State<'_, DbState>) -> Resu
 
 #[tauri::command]
 pub async fn get_codex_plugin_runtime_status(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<CodexPluginRuntimeStatus, String> {
     let db = state.db();
     plugin_state::get_codex_plugin_runtime_status(&db).await
@@ -685,7 +617,7 @@ pub async fn get_codex_plugin_runtime_status(
 
 #[tauri::command]
 pub async fn list_codex_installed_plugins(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Vec<CodexInstalledPlugin>, String> {
     let db = state.db();
     plugin_state::list_codex_installed_plugins(&db).await
@@ -693,7 +625,7 @@ pub async fn list_codex_installed_plugins(
 
 #[tauri::command]
 pub async fn list_codex_marketplaces(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Vec<CodexPluginMarketplace>, String> {
     let db = state.db();
     plugin_state::list_codex_marketplaces(&db).await
@@ -701,7 +633,7 @@ pub async fn list_codex_marketplaces(
 
 #[tauri::command]
 pub async fn list_codex_marketplace_plugins(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Vec<CodexMarketplacePlugin>, String> {
     let db = state.db();
     plugin_state::list_codex_marketplace_plugins(&db).await
@@ -709,7 +641,7 @@ pub async fn list_codex_marketplace_plugins(
 
 #[tauri::command]
 pub async fn list_codex_plugin_workspace_roots(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Vec<CodexPluginWorkspaceRoot>, String> {
     let db = state.db();
     plugin_workspace::list_codex_plugin_workspace_roots(&db).await
@@ -717,7 +649,7 @@ pub async fn list_codex_plugin_workspace_roots(
 
 #[tauri::command]
 pub async fn add_codex_plugin_workspace_root(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     input: CodexPluginWorkspaceRootInput,
 ) -> Result<(), String> {
     let db = state.db();
@@ -726,7 +658,7 @@ pub async fn add_codex_plugin_workspace_root(
 
 #[tauri::command]
 pub async fn remove_codex_plugin_workspace_root(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     input: CodexPluginWorkspaceRootInput,
 ) -> Result<(), String> {
     let db = state.db();
@@ -735,7 +667,7 @@ pub async fn remove_codex_plugin_workspace_root(
 
 #[tauri::command]
 pub async fn install_codex_plugin(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     input: CodexPluginActionInput,
 ) -> Result<(), String> {
@@ -747,7 +679,7 @@ pub async fn install_codex_plugin(
 
 #[tauri::command]
 pub async fn enable_codex_plugin(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     input: CodexPluginActionInput,
 ) -> Result<(), String> {
@@ -759,7 +691,7 @@ pub async fn enable_codex_plugin(
 
 #[tauri::command]
 pub async fn disable_codex_plugin(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     input: CodexPluginActionInput,
 ) -> Result<(), String> {
@@ -771,7 +703,7 @@ pub async fn disable_codex_plugin(
 
 #[tauri::command]
 pub async fn uninstall_codex_plugin(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     input: CodexPluginActionInput,
 ) -> Result<(), String> {
@@ -783,7 +715,7 @@ pub async fn uninstall_codex_plugin(
 
 #[tauri::command]
 pub async fn enable_codex_plugins_feature(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let db = state.db();
@@ -794,7 +726,7 @@ pub async fn enable_codex_plugins_feature(
 
 #[tauri::command]
 pub async fn get_codex_root_path_info(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<ConfigPathInfo, String> {
     let db = state.db();
     get_codex_root_path_info_from_db_async(&db).await
@@ -803,7 +735,7 @@ pub async fn get_codex_root_path_info(
 /// Get Codex config.toml file path
 #[tauri::command]
 pub async fn get_codex_config_file_path(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<String, String> {
     let db = state.db();
     let config_path = get_codex_config_path_from_db_async(&db).await?;
@@ -812,7 +744,9 @@ pub async fn get_codex_config_file_path(
 
 /// Reveal Codex config folder in file explorer
 #[tauri::command]
-pub async fn reveal_codex_config_folder(state: tauri::State<'_, DbState>) -> Result<(), String> {
+pub async fn reveal_codex_config_folder(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<(), String> {
     let db = state.db();
     let config_dir = get_codex_config_dir_from_db_async(&db).await?;
 
@@ -858,58 +792,23 @@ pub async fn reveal_codex_config_folder(state: tauri::State<'_, DbState>) -> Res
 /// If database is empty, returns a temporary provider loaded from local config files
 #[tauri::command]
 pub async fn list_codex_providers(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Vec<CodexProvider>, String> {
     let db = state.db();
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let providers = list_codex_providers_from_sqlite(sqlite_state)?;
-        if providers.is_empty() {
-            if let Ok(temp_provider) = load_temp_provider_from_files_with_db(Some(&db)).await {
-                return Ok(vec![temp_provider]);
-            }
-        }
-        return Ok(providers);
-    }
-
-    let records_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM codex_provider")
-        .await
-        .map_err(|e| format!("Failed to query providers: {}", e))?
-        .take(0);
-
-    match records_result {
-        Ok(records) => {
-            if records.is_empty() {
-                // Database is empty, try to load from local files as temporary provider
-                if let Ok(temp_provider) = load_temp_provider_from_files_with_db(Some(&db)).await {
-                    return Ok(vec![temp_provider]);
-                }
-                Ok(Vec::new())
-            } else {
-                let mut result: Vec<CodexProvider> = records
-                    .into_iter()
-                    .map(adapter::from_db_value_provider)
-                    .collect();
-                result.sort_by_key(|p| p.sort_index.unwrap_or(0));
-                Ok(result)
-            }
-        }
-        Err(e) => {
-            eprintln!("Failed to deserialize providers: {}", e);
-            // Try to load from local files as fallback
-            if let Ok(temp_provider) = load_temp_provider_from_files_with_db(Some(&db)).await {
-                return Ok(vec![temp_provider]);
-            }
-            Ok(Vec::new())
+    let providers = list_codex_providers_from_sqlite(db)?;
+    if providers.is_empty() {
+        if let Ok(temp_provider) = load_temp_provider_from_files_with_db(Some(db)).await {
+            return Ok(vec![temp_provider]);
         }
     }
+    Ok(providers)
 }
 
 /// 修复损坏的 Codex provider 数据
 /// This is used when the database is empty and we want to show the local config
 async fn load_temp_provider_from_files_with_db(
-    db: Option<&surrealdb::Surreal<surrealdb::engine::local::Db>>,
+    db: Option<&crate::db::SqliteDbState>,
 ) -> Result<CodexProvider, String> {
     let root_dir = if let Some(db) = db {
         get_codex_root_dir_from_db_async(db).await?
@@ -973,34 +872,14 @@ async fn load_temp_provider_from_files_with_db(
     })
 }
 
-async fn get_codex_common_toml(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<Option<String>, String> {
-    if let Some(sqlite_state) = global_sqlite_state() {
-        return Ok(get_codex_common_from_sqlite(sqlite_state)?
-            .map(|config| config.config)
-            .filter(|config| !config.trim().is_empty()));
-    }
-
-    let common_config_result: Result<Vec<Value>, _> = db
-        .query("SELECT * OMIT id FROM codex_common_config:`common` LIMIT 1")
-        .await
-        .map_err(|e| format!("Failed to query common config: {}", e))?
-        .take(0);
-
-    Ok(match common_config_result {
-        Ok(records) => records.first().and_then(|record| {
-            record
-                .get("config")
-                .and_then(|value| value.as_str())
-                .map(|value| value.to_string())
-        }),
-        Err(_) => None,
-    })
+async fn get_codex_common_toml(db: &crate::db::SqliteDbState) -> Result<Option<String>, String> {
+    Ok(get_codex_common_from_sqlite(db)?
+        .map(|config| config.config)
+        .filter(|config| !config.trim().is_empty()))
 }
 
 async fn normalize_provider_settings_for_storage(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     raw_settings_config: &str,
     common_config_override: Option<&str>,
 ) -> Result<String, String> {
@@ -1020,7 +899,7 @@ async fn normalize_provider_settings_for_storage(
 }
 
 async fn extract_codex_common_config_from_current_files_with_db(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<CodexCommonConfig, String> {
     let settings = read_codex_settings_from_disk(Some(db)).await?;
     let config_toml = settings.config.unwrap_or_default();
@@ -1061,70 +940,29 @@ fn extract_codex_common_config_from_settings_toml(config_toml: &str) -> Result<S
 }
 
 async fn get_applied_codex_provider(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Option<CodexProvider>, String> {
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let providers = sqlite_state.with_conn(|conn| {
-            db_query_by_bool(
-                conn,
-                DbTable::CodexProvider,
-                &JsonFieldPath::new("is_applied")?,
-                true,
-                None,
-                Some(1),
-            )
-        })?;
-        return Ok(providers
-            .into_iter()
-            .next()
-            .map(adapter::from_db_value_provider));
-    }
-
-    let applied_result: Result<Vec<Value>, _> = db
-        .query(
-            "SELECT *, type::string(id) as id FROM codex_provider WHERE is_applied = true LIMIT 1",
+    let providers = db.with_conn(|conn| {
+        db_query_by_bool(
+            conn,
+            DbTable::CodexProvider,
+            &JsonFieldPath::new("is_applied")?,
+            true,
+            None,
+            Some(1),
         )
-        .await
-        .map_err(|e| format!("Failed to query applied provider: {}", e))?
-        .take(0);
-
-    match applied_result {
-        Ok(records) => Ok(records
-            .first()
-            .map(|record| adapter::from_db_value_provider(record.clone()))),
-        Err(error) => Err(format!("Failed to deserialize applied provider: {}", error)),
-    }
+    })?;
+    Ok(providers
+        .into_iter()
+        .next()
+        .map(adapter::from_db_value_provider))
 }
 
 async fn query_codex_provider_by_id(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     provider_id: &str,
 ) -> Result<CodexProvider, String> {
-    if let Some(sqlite_state) = global_sqlite_state() {
-        return get_codex_provider_from_sqlite(sqlite_state, provider_id)?
-            .ok_or_else(|| "Provider not found".to_string());
-    }
-
-    let record_id = db_record_id("codex_provider", provider_id);
-    let provider_result: Result<Vec<Value>, _> = db
-        .query(&format!(
-            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
-            record_id
-        ))
-        .await
-        .map_err(|e| format!("Failed to query provider: {}", e))?
-        .take(0);
-
-    match provider_result {
-        Ok(records) => {
-            if let Some(record) = records.first() {
-                Ok(adapter::from_db_value_provider(record.clone()))
-            } else {
-                Err("Provider not found".to_string())
-            }
-        }
-        Err(e) => Err(format!("Failed to deserialize provider: {}", e)),
-    }
+    get_codex_provider_from_sqlite(db, provider_id)?.ok_or_else(|| "Provider not found".to_string())
 }
 
 fn parse_toml_document(raw_toml: &str, context: &str) -> Result<toml_edit::DocumentMut, String> {
@@ -1582,7 +1420,7 @@ fn build_managed_codex_config(
 }
 
 async fn get_managed_codex_config_for_provider(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     provider_settings_config: &str,
 ) -> Result<String, String> {
     let common_toml = get_codex_common_toml(db).await?;
@@ -1590,7 +1428,7 @@ async fn get_managed_codex_config_for_provider(
 }
 
 async fn get_current_applied_managed_codex_config(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<Option<String>, String> {
     let Some(applied_provider) = get_applied_codex_provider(db).await? else {
         return Ok(None);
@@ -1604,16 +1442,11 @@ async fn get_current_applied_managed_codex_config(
 /// 修复损坏的 Codex provider 数据
 /// 删除所有 provider 记录，需要重新创建
 #[tauri::command]
-pub async fn repair_codex_providers(state: tauri::State<'_, DbState>) -> Result<String, String> {
+pub async fn repair_codex_providers(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<String, String> {
     let db = state.db();
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state.with_conn(|conn| db_delete_all(conn, DbTable::CodexProvider).map(|_| ()))?;
-    }
-
-    db.query("DELETE codex_provider")
-        .await
-        .map_err(|e| format!("Failed to delete providers: {}", e))?;
+    db.with_conn(|conn| db_delete_all(conn, DbTable::CodexProvider).map(|_| ()))?;
 
     Ok("All Codex providers have been deleted. Please recreate them.".to_string())
 }
@@ -1621,7 +1454,7 @@ pub async fn repair_codex_providers(state: tauri::State<'_, DbState>) -> Result<
 /// Create a new Codex provider
 #[tauri::command]
 pub async fn create_codex_provider(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     provider: CodexProviderInput,
 ) -> Result<CodexProvider, String> {
@@ -1646,14 +1479,8 @@ pub async fn create_codex_provider(
         updated_at: now,
     };
 
-    let json_data = adapter::to_db_value_provider(&content);
     let provider_id = db_new_id();
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        put_codex_provider_to_sqlite(sqlite_state, &provider_id, &content)?;
-    }
-
-    create_codex_provider_in_surreal(&db, &provider_id, json_data).await?;
+    put_codex_provider_to_sqlite(db, &provider_id, &content)?;
 
     // Notify to refresh tray menu
     let _ = app.emit("config-changed", "window");
@@ -1679,7 +1506,7 @@ pub async fn create_codex_provider(
 /// Update an existing Codex provider
 #[tauri::command]
 pub async fn update_codex_provider(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     provider: CodexProvider,
 ) -> Result<CodexProvider, String> {
@@ -1692,37 +1519,8 @@ pub async fn update_codex_provider(
     let now = Local::now().to_rfc3339();
 
     // Get existing record to preserve created_at
-    let record_id = db_record_id("codex_provider", &id);
-    let existing_sqlite_provider = if let Some(sqlite_state) = global_sqlite_state() {
-        get_codex_provider_from_sqlite(sqlite_state, &id)?
-    } else {
-        None
-    };
-
-    let existing_result: Result<Vec<Value>, _> = if existing_sqlite_provider.is_some() {
-        Ok(Vec::new())
-    } else {
-        db.query(&format!("SELECT * OMIT id FROM {} LIMIT 1", record_id))
-            .await
-            .map_err(|e| format!("Failed to query existing provider: {}", e))?
-            .take(0)
-    };
-
-    // Check if provider exists
-    if existing_sqlite_provider.is_none() {
-        if let Ok(records) = &existing_result {
-            if records.is_empty() {
-                return Err(format!("Codex provider with ID '{}' not found", id));
-            }
-        }
-    }
-    if let Ok(records) = &existing_result {
-        if records.is_empty() {
-            if existing_sqlite_provider.is_none() {
-                return Err(format!("Codex provider with ID '{}' not found", id));
-            }
-        }
-    }
+    let existing_provider = get_codex_provider_from_sqlite(db, &id)?
+        .ok_or_else(|| format!("Codex provider with ID '{}' not found", id))?;
     if provider.category != "official" && codex_provider_has_official_accounts(&db, &id).await? {
         return Err(
             "This provider still has official accounts. Delete them before switching the provider away from official mode"
@@ -1731,49 +1529,17 @@ pub async fn update_codex_provider(
     }
 
     // Get created_at and is_disabled from existing record
-    let (created_at, existing_is_disabled) = if let Some(existing) = &existing_sqlite_provider {
-        (existing.created_at.clone(), existing.is_disabled)
-    } else if !provider.created_at.is_empty() {
-        (provider.created_at.clone(), false)
-    } else if let Ok(records) = &existing_result {
-        if let Some(record) = records.first() {
-            let created = record
-                .get("created_at")
-                .and_then(|v| v.as_str())
-                .unwrap_or(&now)
-                .to_string();
-            let is_disabled = record
-                .get("is_disabled")
-                .or_else(|| record.get("isDisabled"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            (created, is_disabled)
-        } else {
-            (now.clone(), false)
-        }
+    let (created_at, existing_is_disabled) = if !provider.created_at.is_empty() {
+        (provider.created_at.clone(), existing_provider.is_disabled)
     } else {
-        (now.clone(), false)
+        (
+            existing_provider.created_at.clone(),
+            existing_provider.is_disabled,
+        )
     };
 
     let previous_managed_config_toml = if provider.is_applied {
-        if let Some(existing) = &existing_sqlite_provider {
-            Some(get_managed_codex_config_for_provider(&db, &existing.settings_config).await?)
-        } else if let Ok(records) = &existing_result {
-            if let Some(record) = records.first() {
-                if let Some(settings_config) = record
-                    .get("settings_config")
-                    .and_then(|value| value.as_str())
-                {
-                    Some(get_managed_codex_config_for_provider(&db, settings_config).await?)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        }
+        Some(get_managed_codex_config_for_provider(&db, &existing_provider.settings_config).await?)
     } else {
         None
     };
@@ -1794,14 +1560,7 @@ pub async fn update_codex_provider(
         updated_at: now,
     };
 
-    let json_data = adapter::to_db_value_provider(&content);
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        put_codex_provider_to_sqlite(sqlite_state, &id, &content)?;
-    }
-
-    // Use database id for update
-    put_codex_provider_in_surreal(&db, &id, json_data).await?;
+    put_codex_provider_to_sqlite(db, &id, &content)?;
 
     // If this provider is applied, re-apply to config file
     if content.is_applied {
@@ -1843,131 +1602,44 @@ pub async fn update_codex_provider(
 /// Delete a Codex provider
 #[tauri::command]
 pub async fn delete_codex_provider(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     id: String,
 ) -> Result<(), String> {
     let db = state.db();
     ensure_codex_provider_has_no_official_accounts(&db, &id).await?;
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        delete_codex_provider_from_sqlite(sqlite_state, &id)?;
-    }
-
-    db.query(format!("DELETE codex_provider:`{}`", id))
-        .await
-        .map_err(|e| format!("Failed to delete codex provider: {}", e))?;
+    delete_codex_provider_from_sqlite(db, &id)?;
 
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
 
 /// Reorder Codex providers
-/// 使用 DELETE + CREATE 模式避免 SurrealDB MVCC 版本控制问题
 #[tauri::command]
 pub async fn reorder_codex_providers(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     ids: Vec<String>,
 ) -> Result<(), String> {
     let db = state.db();
     let now = Local::now().to_rfc3339();
 
     for (index, id) in ids.iter().enumerate() {
-        if let Some(sqlite_state) = global_sqlite_state() {
-            sqlite_state.with_conn(|conn| {
-                db_patch_fields(
-                    conn,
-                    DbTable::CodexProvider,
-                    id,
-                    &[
-                        (
-                            "sort_index",
-                            serde_json::Value::Number((index as i64).into()),
-                        ),
-                        ("updated_at", serde_json::Value::String(now.clone())),
-                    ],
-                )
-                .map(|_| ())
-            })?;
-        }
-
-        // 首先获取现有记录
-        let record_id = db_record_id("codex_provider", id);
-        let existing_result: Result<Vec<Value>, _> = db
-            .query(&format!(
-                "SELECT *, type::string(id) as id FROM {} LIMIT 1",
-                record_id
-            ))
-            .await
-            .map_err(|e| format!("Failed to query provider {}: {}", id, e))?
-            .take(0);
-
-        if let Ok(records) = existing_result {
-            if let Some(record) = records.first() {
-                // 构建更新后的内容
-                let content = CodexProviderContent {
-                    name: record
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    category: record
-                        .get("category")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    settings_config: record
-                        .get("settings_config")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("{}")
-                        .to_string(),
-                    source_provider_id: record
-                        .get("source_provider_id")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                    website_url: record
-                        .get("website_url")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                    notes: record
-                        .get("notes")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                    icon: record
-                        .get("icon")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                    icon_color: record
-                        .get("icon_color")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                    sort_index: Some(index as i32),
-                    is_applied: record
-                        .get("is_applied")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                    is_disabled: record
-                        .get("is_disabled")
-                        .or_else(|| record.get("isDisabled"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                    created_at: record
-                        .get("created_at")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(&now)
-                        .to_string(),
-                    updated_at: now.clone(),
-                };
-
-                let json_data = adapter::to_db_value_provider(&content);
-
-                // Use Blind Write pattern with native ID format
-                db.query(format!("UPDATE codex_provider:`{}` CONTENT $data", id))
-                    .bind(("data", json_data))
-                    .await
-                    .map_err(|e| format!("Failed to update provider {}: {}", id, e))?;
-            }
-        }
+        db.with_conn(|conn| {
+            db_patch_fields(
+                conn,
+                DbTable::CodexProvider,
+                id,
+                &[
+                    (
+                        "sort_index",
+                        serde_json::Value::Number((index as i64).into()),
+                    ),
+                    ("updated_at", serde_json::Value::String(now.clone())),
+                ],
+            )
+            .map(|_| ())
+        })?;
     }
 
     Ok(())
@@ -1977,7 +1649,7 @@ pub async fn reorder_codex_providers(
 /// 使用 DELETE + CREATE 模式避免 SurrealDB MVCC 版本控制问题
 #[tauri::command]
 pub async fn select_codex_provider(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     id: String,
 ) -> Result<(), String> {
@@ -1993,56 +1665,35 @@ pub async fn select_codex_provider(
 }
 
 /// Internal function: update is_applied status
-/// Use UPDATE with WHERE to avoid SurrealDB MVCC version control issues
 async fn update_is_applied_status(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     target_id: &str,
 ) -> Result<(), String> {
     let now = Local::now().to_rfc3339();
     let target_id = target_id.to_string(); // Clone for bind
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state.with_conn(|conn| {
-            db_patch_where_bool(
-                conn,
-                DbTable::CodexProvider,
-                &JsonFieldPath::new("is_applied")?,
-                true,
-                &[
-                    ("is_applied", serde_json::Value::Bool(false)),
-                    ("updated_at", serde_json::Value::String(now.clone())),
-                ],
-            )?;
-            db_patch_fields(
-                conn,
-                DbTable::CodexProvider,
-                &target_id,
-                &[
-                    ("is_applied", serde_json::Value::Bool(true)),
-                    ("updated_at", serde_json::Value::String(now.clone())),
-                ],
-            )?;
-            Ok(())
-        })?;
-    }
-
-    // Clear current applied status (only update the currently applied one)
-    db.query(
-        "UPDATE codex_provider SET is_applied = false, updated_at = $now WHERE is_applied = true",
-    )
-    .bind(("now", now.clone()))
-    .await
-    .map_err(|e| format!("Failed to clear applied status: {}", e))?;
-
-    // Set target provider as applied
-    let record_id = db_record_id("codex_provider", &target_id);
-    db.query(&format!(
-        "UPDATE {} SET is_applied = true, updated_at = $now",
-        record_id
-    ))
-    .bind(("now", now))
-    .await
-    .map_err(|e| format!("Failed to set applied status: {}", e))?;
+    db.with_conn(|conn| {
+        db_patch_where_bool(
+            conn,
+            DbTable::CodexProvider,
+            &JsonFieldPath::new("is_applied")?,
+            true,
+            &[
+                ("is_applied", serde_json::Value::Bool(false)),
+                ("updated_at", serde_json::Value::String(now.clone())),
+            ],
+        )?;
+        db_patch_fields(
+            conn,
+            DbTable::CodexProvider,
+            &target_id,
+            &[
+                ("is_applied", serde_json::Value::Bool(true)),
+                ("updated_at", serde_json::Value::String(now.clone())),
+            ],
+        )?;
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -2053,7 +1704,7 @@ async fn update_is_applied_status(
 
 /// Internal function: apply provider config to files
 async fn apply_config_to_file(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     provider_id: &str,
 ) -> Result<(), String> {
     apply_config_to_file_with_previous_managed_config(db, provider_id, None).await
@@ -2061,14 +1712,14 @@ async fn apply_config_to_file(
 
 /// Public version for tray module
 pub async fn apply_config_to_file_public(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     provider_id: &str,
 ) -> Result<(), String> {
     apply_config_to_file_with_previous_managed_config(db, provider_id, None).await
 }
 
 async fn apply_config_to_file_with_previous_managed_config(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     provider_id: &str,
     previous_managed_config_toml: Option<String>,
 ) -> Result<(), String> {
@@ -2131,7 +1782,7 @@ fn append_toml_configs(provider: &str, common: &str) -> Result<String, String> {
 
 /// Write auth.json and config.toml files
 async fn write_codex_config_files(
-    db: Option<&surrealdb::Surreal<surrealdb::engine::local::Db>>,
+    db: Option<&crate::db::SqliteDbState>,
     managed_auth: &serde_json::Value,
     previous_managed_config_toml: Option<&str>,
     next_managed_config_toml: &str,
@@ -2185,7 +1836,7 @@ async fn write_codex_config_files(
 /// Apply Codex config to files
 #[tauri::command]
 pub async fn apply_codex_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     provider_id: String,
 ) -> Result<(), String> {
@@ -2196,7 +1847,7 @@ pub async fn apply_codex_config(
 /// Toggle is_disabled status for a provider
 #[tauri::command]
 pub async fn toggle_codex_provider_disabled(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     provider_id: String,
     is_disabled: bool,
@@ -2205,29 +1856,18 @@ pub async fn toggle_codex_provider_disabled(
 
     // Update is_disabled field in database
     let now = Local::now().to_rfc3339();
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state.with_conn(|conn| {
-            db_patch_fields(
-                conn,
-                DbTable::CodexProvider,
-                &provider_id,
-                &[
-                    ("is_disabled", serde_json::Value::Bool(is_disabled)),
-                    ("updated_at", serde_json::Value::String(now.clone())),
-                ],
-            )
-            .map(|_| ())
-        })?;
-    }
-
-    db.query(format!(
-        "UPDATE codex_provider:`{}` SET is_disabled = $is_disabled, updated_at = $now",
-        provider_id
-    ))
-    .bind(("is_disabled", is_disabled))
-    .bind(("now", now))
-    .await
-    .map_err(|e| format!("Failed to toggle provider disabled status: {}", e))?;
+    db.with_conn(|conn| {
+        db_patch_fields(
+            conn,
+            DbTable::CodexProvider,
+            &provider_id,
+            &[
+                ("is_disabled", serde_json::Value::Bool(is_disabled)),
+                ("updated_at", serde_json::Value::String(now.clone())),
+            ],
+        )
+        .map(|_| ())
+    })?;
 
     // If this provider is applied and now disabled, re-apply config to update files
     let provider = query_codex_provider_by_id(&db, &provider_id).await.ok();
@@ -2243,9 +1883,8 @@ pub async fn toggle_codex_provider_disabled(
 }
 
 /// Internal function to apply config
-/// 使用 DELETE + CREATE 模式避免 SurrealDB MVCC 版本控制问题
 pub async fn apply_config_internal<R: tauri::Runtime>(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
     app: &tauri::AppHandle<R>,
     provider_id: &str,
     from_tray: bool,
@@ -2272,92 +1911,37 @@ pub async fn apply_config_internal<R: tauri::Runtime>(
 
 #[tauri::command]
 pub async fn list_codex_prompt_configs(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Vec<CodexPromptConfig>, String> {
     let db = state.db();
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let prompts = list_codex_prompts_from_sqlite(sqlite_state)?;
-        if prompts.is_empty() {
-            if let Some(local_config) = get_local_prompt_config(Some(&db)).await? {
-                return Ok(vec![local_config]);
-            }
-        }
-        return Ok(prompts);
-    }
-
-    let records_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM codex_prompt_config")
-        .await
-        .map_err(|e| format!("Failed to query prompt configs: {}", e))?
-        .take(0);
-
-    match records_result {
-        Ok(records) => {
-            if records.is_empty() {
-                if let Some(local_config) = get_local_prompt_config(Some(&db)).await? {
-                    return Ok(vec![local_config]);
-                }
-                return Ok(Vec::new());
-            }
-
-            let mut result: Vec<CodexPromptConfig> = records
-                .into_iter()
-                .map(adapter::from_db_value_prompt)
-                .collect();
-
-            result.sort_by(|a, b| match (a.sort_index, b.sort_index) {
-                (Some(ai), Some(bi)) => ai.cmp(&bi),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => a.name.cmp(&b.name),
-            });
-
-            Ok(result)
-        }
-        Err(e) => {
-            eprintln!("Failed to deserialize Codex prompt configs: {}", e);
-            if let Some(local_config) = get_local_prompt_config(Some(&db)).await? {
-                return Ok(vec![local_config]);
-            }
-            Ok(Vec::new())
+    let prompts = list_codex_prompts_from_sqlite(db)?;
+    if prompts.is_empty() {
+        if let Some(local_config) = get_local_prompt_config(Some(db)).await? {
+            return Ok(vec![local_config]);
         }
     }
+    Ok(prompts)
 }
 
 #[tauri::command]
 pub async fn create_codex_prompt_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     input: CodexPromptConfigInput,
 ) -> Result<CodexPromptConfig, String> {
     let db = state.db();
     let now = Local::now().to_rfc3339();
 
-    let next_sort_index = if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state.with_conn(|conn| {
-            Ok(db_max_i64(
-                conn,
-                DbTable::CodexPromptConfig,
-                &JsonFieldPath::new("sort_index")?,
-            )?
-            .map(|value| value as i32 + 1)
-            .unwrap_or(0))
-        })?
-    } else {
-        let sort_index_result: Result<Vec<Value>, _> = db
-            .query("SELECT sort_index FROM codex_prompt_config ORDER BY sort_index DESC LIMIT 1")
-            .await
-            .map_err(|e| format!("Failed to query prompt sort index: {}", e))?
-            .take(0);
-
-        sort_index_result
-            .ok()
-            .and_then(|records| records.first().cloned())
-            .and_then(|record| record.get("sort_index").and_then(|value| value.as_i64()))
-            .map(|value| value as i32 + 1)
-            .unwrap_or(0)
-    };
+    let next_sort_index = db.with_conn(|conn| {
+        Ok(db_max_i64(
+            conn,
+            DbTable::CodexPromptConfig,
+            &JsonFieldPath::new("sort_index")?,
+        )?
+        .map(|value| value as i32 + 1)
+        .unwrap_or(0))
+    })?;
 
     let content = CodexPromptConfigContent {
         name: input.name,
@@ -2368,13 +1952,8 @@ pub async fn create_codex_prompt_config(
         updated_at: now,
     };
 
-    let json_data = adapter::to_db_value_prompt(&content);
     let prompt_id = db_new_id();
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        put_codex_prompt_to_sqlite(sqlite_state, &prompt_id, &content)?;
-    }
-    put_codex_prompt_in_surreal(&db, &prompt_id, json_data).await?;
+    put_codex_prompt_to_sqlite(db, &prompt_id, &content)?;
 
     let created_config = CodexPromptConfig {
         id: prompt_id,
@@ -2393,7 +1972,7 @@ pub async fn create_codex_prompt_config(
 
 #[tauri::command]
 pub async fn update_codex_prompt_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     input: CodexPromptConfigInput,
 ) -> Result<CodexPromptConfig, String> {
@@ -2401,14 +1980,11 @@ pub async fn update_codex_prompt_config(
         .id
         .ok_or_else(|| "ID is required for update".to_string())?;
     let db = state.db();
-    let existing_prompt = if let Some(sqlite_state) = global_sqlite_state() {
-        get_codex_prompt_from_sqlite(sqlite_state, &config_id)?
-    } else {
-        None
-    };
-    let record_id = db_record_id("codex_prompt_config", &config_id);
+    let existing_prompt = get_codex_prompt_from_sqlite(db, &config_id)?
+        .ok_or_else(|| format!("Prompt config '{}' not found", config_id))?;
 
-    let (created_at, is_applied, sort_index) = if let Some(prompt) = existing_prompt {
+    let (created_at, is_applied, sort_index) = {
+        let prompt = existing_prompt;
         (
             prompt
                 .created_at
@@ -2416,41 +1992,6 @@ pub async fn update_codex_prompt_config(
             prompt.is_applied,
             prompt.sort_index,
         )
-    } else {
-        let existing_result: Result<Vec<Value>, _> = db
-            .query(&format!(
-                "SELECT created_at, is_applied, sort_index FROM {} LIMIT 1",
-                record_id
-            ))
-            .await
-            .map_err(|e| format!("Failed to query prompt config: {}", e))?
-            .take(0);
-
-        match existing_result {
-            Ok(records) => {
-                if let Some(record) = records.first() {
-                    let created_at = record
-                        .get("created_at")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_else(|| Box::leak(Local::now().to_rfc3339().into_boxed_str()))
-                        .to_string();
-                    let is_applied = record
-                        .get("is_applied")
-                        .or_else(|| record.get("isApplied"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    let sort_index = record
-                        .get("sort_index")
-                        .or_else(|| record.get("sortIndex"))
-                        .and_then(|v| v.as_i64())
-                        .map(|v| v as i32);
-                    (created_at, is_applied, sort_index)
-                } else {
-                    return Err(format!("Prompt config '{}' not found", config_id));
-                }
-            }
-            Err(e) => return Err(format!("Failed to deserialize prompt config: {}", e)),
-        }
     };
 
     let now = Local::now().to_rfc3339();
@@ -2462,16 +2003,7 @@ pub async fn update_codex_prompt_config(
         created_at,
         updated_at: now.clone(),
     };
-    let json_data = adapter::to_db_value_prompt(&content);
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        put_codex_prompt_to_sqlite(sqlite_state, &config_id, &content)?;
-    }
-
-    db.query(&format!("UPDATE {} CONTENT $data", record_id))
-        .bind(("data", json_data))
-        .await
-        .map_err(|e| format!("Failed to update prompt config: {}", e))?;
+    put_codex_prompt_to_sqlite(db, &config_id, &content)?;
 
     if is_applied {
         write_prompt_content_to_file(Some(&db), Some(input.content.as_str())).await?;
@@ -2493,34 +2025,14 @@ pub async fn update_codex_prompt_config(
 
 #[tauri::command]
 pub async fn delete_codex_prompt_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     id: String,
 ) -> Result<(), String> {
     let db = state.db();
-    let record_id = db_record_id("codex_prompt_config", &id);
-    let was_applied = if let Some(sqlite_state) = global_sqlite_state() {
-        let prompt = get_codex_prompt_from_sqlite(sqlite_state, &id)?;
-        delete_codex_prompt_from_sqlite(sqlite_state, &id)?;
-        prompt.map(|prompt| prompt.is_applied).unwrap_or(false)
-    } else {
-        db.query(&format!("SELECT is_applied FROM {} LIMIT 1", record_id))
-            .await
-            .ok()
-            .and_then(|mut result| result.take::<Vec<Value>>(0).ok())
-            .and_then(|records| records.into_iter().next())
-            .and_then(|record| {
-                record
-                    .get("is_applied")
-                    .or_else(|| record.get("isApplied"))
-                    .and_then(Value::as_bool)
-            })
-            .unwrap_or(false)
-    };
-
-    db.query(&format!("DELETE {}", record_id))
-        .await
-        .map_err(|e| format!("Failed to delete prompt config: {}", e))?;
+    let prompt = get_codex_prompt_from_sqlite(db, &id)?;
+    let was_applied = prompt.map(|prompt| prompt.is_applied).unwrap_or(false);
+    delete_codex_prompt_from_sqlite(db, &id)?;
 
     if was_applied {
         write_prompt_content_to_file(Some(&db), None).await?;
@@ -2532,7 +2044,7 @@ pub async fn delete_codex_prompt_config(
 }
 
 pub async fn apply_prompt_config_internal<R: tauri::Runtime>(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: &tauri::AppHandle<R>,
     config_id: &str,
     from_tray: bool,
@@ -2552,71 +2064,33 @@ pub async fn apply_prompt_config_internal<R: tauri::Runtime>(
     }
 
     let db = state.db();
-    let record_id = db_record_id("codex_prompt_config", config_id);
-    let prompt_config = if let Some(sqlite_state) = global_sqlite_state() {
-        get_codex_prompt_from_sqlite(sqlite_state, config_id)?
-            .ok_or_else(|| format!("Prompt config '{}' not found", config_id))?
-    } else {
-        let records_result: Result<Vec<Value>, _> = db
-            .query(&format!(
-                "SELECT *, type::string(id) as id FROM {} LIMIT 1",
-                record_id
-            ))
-            .await
-            .map_err(|e| format!("Failed to query prompt config: {}", e))?
-            .take(0);
-
-        match records_result {
-            Ok(records) => {
-                if let Some(record) = records.first() {
-                    adapter::from_db_value_prompt(record.clone())
-                } else {
-                    return Err(format!("Prompt config '{}' not found", config_id));
-                }
-            }
-            Err(e) => return Err(format!("Failed to deserialize prompt config: {}", e)),
-        }
-    };
+    let prompt_config = get_codex_prompt_from_sqlite(db, config_id)?
+        .ok_or_else(|| format!("Prompt config '{}' not found", config_id))?;
 
     let now = Local::now().to_rfc3339();
 
-    if let Some(sqlite_state) = global_sqlite_state() {
-        sqlite_state.with_conn(|conn| {
-            db_patch_where_bool(
-                conn,
-                DbTable::CodexPromptConfig,
-                &JsonFieldPath::new("is_applied")?,
-                true,
-                &[
-                    ("is_applied", serde_json::Value::Bool(false)),
-                    ("updated_at", serde_json::Value::String(now.clone())),
-                ],
-            )?;
-            db_patch_fields(
-                conn,
-                DbTable::CodexPromptConfig,
-                config_id,
-                &[
-                    ("is_applied", serde_json::Value::Bool(true)),
-                    ("updated_at", serde_json::Value::String(now.clone())),
-                ],
-            )?;
-            Ok(())
-        })?;
-    }
-
-    db.query("UPDATE codex_prompt_config SET is_applied = false, updated_at = $now WHERE is_applied = true")
-        .bind(("now", now.clone()))
-        .await
-        .map_err(|e| format!("Failed to clear prompt applied flags: {}", e))?;
-
-    db.query(&format!(
-        "UPDATE {} SET is_applied = true, updated_at = $now",
-        record_id
-    ))
-    .bind(("now", now))
-    .await
-    .map_err(|e| format!("Failed to set prompt applied flag: {}", e))?;
+    db.with_conn(|conn| {
+        db_patch_where_bool(
+            conn,
+            DbTable::CodexPromptConfig,
+            &JsonFieldPath::new("is_applied")?,
+            true,
+            &[
+                ("is_applied", serde_json::Value::Bool(false)),
+                ("updated_at", serde_json::Value::String(now.clone())),
+            ],
+        )?;
+        db_patch_fields(
+            conn,
+            DbTable::CodexPromptConfig,
+            config_id,
+            &[
+                ("is_applied", serde_json::Value::Bool(true)),
+                ("updated_at", serde_json::Value::String(now.clone())),
+            ],
+        )?;
+        Ok(())
+    })?;
     write_prompt_content_to_file(Some(&db), Some(prompt_config.content.as_str())).await?;
 
     let payload = if from_tray { "tray" } else { "window" };
@@ -2628,7 +2102,7 @@ pub async fn apply_prompt_config_internal<R: tauri::Runtime>(
 
 #[tauri::command]
 pub async fn apply_codex_prompt_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     config_id: String,
 ) -> Result<(), String> {
@@ -2637,36 +2111,28 @@ pub async fn apply_codex_prompt_config(
 
 #[tauri::command]
 pub async fn reorder_codex_prompt_configs(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     ids: Vec<String>,
 ) -> Result<(), String> {
     let db = state.db();
 
     for (index, id) in ids.iter().enumerate() {
-        if let Some(sqlite_state) = global_sqlite_state() {
-            sqlite_state.with_conn(|conn| {
-                db_patch_fields(
-                    conn,
-                    DbTable::CodexPromptConfig,
-                    id,
-                    &[(
-                        "sort_index",
-                        serde_json::Value::Number((index as i64).into()),
-                    )],
-                )
-                .map(|_| ())
-            })?;
-        }
-
-        let record_id = db_record_id("codex_prompt_config", id);
-        db.query(&format!("UPDATE {} SET sort_index = $index", record_id))
-            .bind(("index", index as i32))
-            .await
-            .map_err(|e| format!("Failed to update prompt sort index: {}", e))?;
+        db.with_conn(|conn| {
+            db_patch_fields(
+                conn,
+                DbTable::CodexPromptConfig,
+                id,
+                &[(
+                    "sort_index",
+                    serde_json::Value::Number((index as i64).into()),
+                )],
+            )
+            .map(|_| ())
+        })?;
     }
 
-    drop(db);
+    let _ = db;
     let _ = app.emit("config-changed", "window");
 
     Ok(())
@@ -2674,7 +2140,7 @@ pub async fn reorder_codex_prompt_configs(
 
 #[tauri::command]
 pub async fn save_codex_local_prompt_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     input: CodexPromptConfigInput,
 ) -> Result<CodexPromptConfig, String> {
@@ -2702,31 +2168,12 @@ pub async fn save_codex_local_prompt_config(
     apply_prompt_config_internal(state.clone(), &app, &created.id, false).await?;
 
     let db = state.db();
-    let record_id = db_record_id("codex_prompt_config", &created.id);
-    let refreshed_result: Result<Vec<Value>, _> = db
-        .query(&format!(
-            "SELECT *, type::string(id) as id FROM {} LIMIT 1",
-            record_id
-        ))
-        .await
-        .map_err(|e| format!("Failed to query saved local prompt config: {}", e))?
-        .take(0);
-
-    match refreshed_result {
-        Ok(records) => {
-            if let Some(record) = records.first() {
-                Ok(adapter::from_db_value_prompt(record.clone()))
-            } else {
-                Ok(created)
-            }
-        }
-        Err(_) => Ok(created),
-    }
+    Ok(get_codex_prompt_from_sqlite(db, &created.id)?.unwrap_or(created))
 }
 
 #[tauri::command]
 pub async fn list_codex_all_api_hub_providers(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<CodexAllApiHubProvidersResult, String> {
     let _ = state;
     let discovery = all_api_hub::list_provider_candidates()?;
@@ -2778,7 +2225,7 @@ pub async fn list_codex_all_api_hub_providers(
 
 #[tauri::command]
 pub async fn resolve_codex_all_api_hub_providers(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     request: ResolveCodexAllApiHubProvidersRequest,
 ) -> Result<Vec<CodexAllApiHubProvider>, String> {
     let providers =
@@ -2824,7 +2271,7 @@ pub async fn resolve_codex_all_api_hub_providers(
 /// Read current Codex settings from files
 #[tauri::command]
 pub async fn read_codex_settings(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<CodexSettings, String> {
     let db = state.db();
     read_codex_settings_from_disk(Some(&db)).await
@@ -3348,46 +2795,15 @@ approval_policy = "never"
 /// If database is empty, returns empty config (Codex doesn't have common config in local files)
 #[tauri::command]
 pub async fn get_codex_common_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Option<CodexCommonConfig>, String> {
     let db = state.db();
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        return get_codex_common_from_sqlite(sqlite_state);
-    }
-
-    let records_result: Result<Vec<Value>, _> = db
-        .query("SELECT *, type::string(id) as id FROM codex_common_config:`common` LIMIT 1")
-        .await
-        .map_err(|e| format!("Failed to query common config: {}", e))?
-        .take(0);
-
-    match records_result {
-        Ok(records) => {
-            if let Some(record) = records.first() {
-                Ok(Some(adapter::from_db_value_common(record.clone())))
-            } else {
-                // Database is empty, return None (Codex doesn't have common config in local files)
-                Ok(None)
-            }
-        }
-        Err(e) => {
-            // 反序列化失败，删除旧数据以修复版本冲突
-            eprintln!(
-                "⚠️ Codex common config has incompatible format, cleaning up: {}",
-                e
-            );
-            let _ = db.query("DELETE codex_common_config:`common`").await;
-            let _ = runtime_location::refresh_runtime_location_cache_for_module_async(&db, "codex")
-                .await;
-            Ok(None)
-        }
-    }
+    get_codex_common_from_sqlite(db)
 }
 
 #[tauri::command]
 pub async fn extract_codex_common_config_from_current_file(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
 ) -> Result<CodexCommonConfig, String> {
     let db = state.db();
     extract_codex_common_config_from_current_files_with_db(&db).await
@@ -3396,7 +2812,7 @@ pub async fn extract_codex_common_config_from_current_file(
 /// Save Codex common config
 #[tauri::command]
 pub async fn save_codex_common_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     input: CodexCommonConfigInput,
 ) -> Result<(), String> {
@@ -3423,13 +2839,7 @@ pub async fn save_codex_common_config(
             .or_else(|| existing_common.and_then(|config| config.root_dir))
     };
     let json_data = adapter::to_db_value_common(&input.config, root_dir.as_deref());
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        put_codex_common_to_sqlite(sqlite_state, &json_data)?;
-    }
-
-    // Use UPSERT to handle both update and create
-    put_codex_common_in_surreal(&db, json_data).await?;
+    put_codex_common_to_sqlite(db, &json_data)?;
     runtime_location::refresh_runtime_location_cache_for_module_async(&db, "codex").await?;
 
     // Re-apply current provider config to write merged config to file
@@ -3466,7 +2876,7 @@ pub async fn save_codex_common_config(
 /// Input can include provider and/or commonConfig; missing parts will be loaded from local files
 #[tauri::command]
 pub async fn save_codex_local_config(
-    state: tauri::State<'_, DbState>,
+    state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     input: CodexLocalConfigInput,
 ) -> Result<(), String> {
@@ -3544,12 +2954,8 @@ pub async fn save_codex_local_config(
         updated_at: now,
     };
 
-    let provider_json = adapter::to_db_value_provider(&provider_content);
     let provider_id = db_new_id();
-    if let Some(sqlite_state) = global_sqlite_state() {
-        put_codex_provider_to_sqlite(sqlite_state, &provider_id, &provider_content)?;
-    }
-    create_codex_provider_in_surreal(&db, &provider_id, provider_json).await?;
+    put_codex_provider_to_sqlite(db, &provider_id, &provider_content)?;
 
     let root_dir = if input.clear_root_dir {
         None
@@ -3569,10 +2975,7 @@ pub async fn save_codex_local_config(
         }
     };
     let common_json = adapter::to_db_value_common(&common_config, root_dir.as_deref());
-    if let Some(sqlite_state) = global_sqlite_state() {
-        put_codex_common_to_sqlite(sqlite_state, &common_json)?;
-    }
-    put_codex_common_in_surreal(&db, common_json).await?;
+    put_codex_common_to_sqlite(db, &common_json)?;
     runtime_location::refresh_runtime_location_cache_for_module_async(&db, "codex").await?;
 
     // Re-apply config to files using the newly created provider
@@ -3607,28 +3010,9 @@ pub async fn save_codex_local_config(
 
 /// Initialize Codex provider from existing config files
 pub async fn init_codex_provider_from_settings(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    db: &crate::db::SqliteDbState,
 ) -> Result<(), String> {
-    // Check if any providers exist by querying for one record
-    if let Some(sqlite_state) = global_sqlite_state() {
-        let has_providers =
-            sqlite_state.with_conn(|conn| db_count(conn, DbTable::CodexProvider))? > 0;
-        if has_providers {
-            return Ok(());
-        }
-    }
-
-    let check_result: Result<Vec<Value>, _> = db
-        .query("SELECT * OMIT id FROM codex_provider LIMIT 1")
-        .await
-        .map_err(|e| format!("Failed to check providers: {}", e))?
-        .take(0);
-
-    let has_providers = match check_result {
-        Ok(records) => !records.is_empty(),
-        Err(_) => false,
-    };
-
+    let has_providers = db.with_conn(|conn| db_count(conn, DbTable::CodexProvider))? > 0;
     if has_providers {
         return Ok(());
     }
@@ -3684,43 +3068,9 @@ pub async fn init_codex_provider_from_settings(
         updated_at: now,
     };
 
-    let json_data = adapter::to_db_value_provider(&content);
     let provider_id = db_new_id();
-
-    if let Some(sqlite_state) = global_sqlite_state() {
-        put_codex_provider_to_sqlite(sqlite_state, &provider_id, &content)?;
-    }
-
-    // Create new provider with auto-generated random ID
-    create_codex_provider_in_surreal(db, &provider_id, json_data).await?;
+    put_codex_provider_to_sqlite(db, &provider_id, &content)?;
 
     println!("✅ Imported Codex settings as default provider");
-    Ok(())
-}
-
-pub async fn sync_sqlite_codex_from_surreal_if_missing(
-    sqlite_state: &SqliteDbState,
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> Result<(), String> {
-    let mut missing_tables = Vec::new();
-    for table in [
-        DbTable::CodexProvider,
-        DbTable::CodexCommonConfig,
-        DbTable::CodexPromptConfig,
-        DbTable::CodexOfficialAccount,
-        DbTable::CodexPluginWorkspaceRoots,
-    ] {
-        let sqlite_count = sqlite_state.with_conn(|conn| db_count(conn, table))?;
-        if sqlite_count == 0 {
-            missing_tables.push(table);
-        }
-    }
-
-    if missing_tables.is_empty() {
-        return Ok(());
-    }
-
-    crate::db::surreal_import::import_tables_from_surreal(sqlite_state, db, &missing_tables)
-        .await?;
     Ok(())
 }

@@ -25,7 +25,7 @@ use super::utils::{
     resolve_skills_restore_output_path, restore_custom_backup_entries,
     restore_sqlite_database_snapshot_from_zip, RestoreResult,
 };
-use crate::db::sqlite_state::SqliteDbState;
+use crate::db::SqliteDbState;
 use crate::settings::store;
 
 fn get_home_dir() -> Result<PathBuf, String> {
@@ -62,7 +62,7 @@ pub async fn backup_database(
     backup_path: String,
 ) -> Result<String, String> {
     let db_path = get_db_path(&app_handle)?;
-    let db_state = app_handle.state::<crate::DbState>();
+    let db_state = app_handle.state::<crate::SqliteDbState>();
     let sqlite_state = app_handle.state::<SqliteDbState>();
     let db = db_state.db();
     let settings = store::load_settings_from_sqlite_state(&sqlite_state)?;
