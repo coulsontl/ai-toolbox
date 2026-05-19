@@ -89,7 +89,7 @@ pub enum StartupMigrationState {
 }
 
 pub fn detect_startup_migration_state(paths: &MigrationPaths) -> StartupMigrationState {
-    let has_legacy_database = paths.legacy_database_dir.exists();
+    let has_legacy_database = legacy_database_has_real_contents(&paths.legacy_database_dir);
     let has_sqlite_database = paths.sqlite_database_file.exists();
     let has_complete_flag = paths.complete_flag.exists();
 
@@ -100,6 +100,53 @@ pub fn detect_startup_migration_state(paths: &MigrationPaths) -> StartupMigratio
         (true, true, true) => StartupMigrationState::NeedsLegacyArchive,
         (false, true, _) => StartupMigrationState::Ready,
     }
+}
+
+fn legacy_database_has_real_contents(path: &Path) -> bool {
+    match legacy_database_has_real_contents_inner(path) {
+        Ok(has_contents) => has_contents,
+        Err(_) => path.exists(),
+    }
+}
+
+fn legacy_database_has_real_contents_inner(path: &Path) -> std::io::Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    if path.is_file() {
+        return Ok(!is_ignorable_legacy_database_entry(path));
+    }
+
+    if !path.is_dir() {
+        return Ok(true);
+    }
+
+    for entry_result in fs::read_dir(path)? {
+        let entry_path = entry_result?.path();
+        if is_ignorable_legacy_database_entry(&entry_path) {
+            continue;
+        }
+
+        if entry_path.is_dir() {
+            if legacy_database_has_real_contents_inner(&entry_path)? {
+                return Ok(true);
+            }
+        } else {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn is_ignorable_legacy_database_entry(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|file_name| file_name.to_str())
+        .map(|file_name| {
+            file_name == ".DS_Store" || file_name.starts_with("._") || file_name == ".backup_marker"
+        })
+        .unwrap_or(false)
 }
 
 pub fn cleanup_incomplete_sqlite_database(paths: &MigrationPaths) -> Result<(), String> {

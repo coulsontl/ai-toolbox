@@ -2,7 +2,7 @@ use ai_toolbox_lib::db::surreal_import::{
     archive_legacy_database, cleanup_incomplete_sqlite_database, clear_migration_failure_state,
     detect_startup_migration_state, mark_sqlite_import_complete, read_migration_failure_state,
     record_migration_failure, write_migration_log, write_migration_warning, MigrationPaths,
-    StartupMigrationState, LEGACY_DATABASE_DIR, SQLITE_DATABASE_FILE,
+    StartupMigrationState, SQLITE_DATABASE_FILE,
 };
 
 fn paths(temp_dir: &tempfile::TempDir) -> MigrationPaths {
@@ -24,7 +24,9 @@ fn detects_new_install_when_no_database_exists() {
 fn detects_initial_surreal_import_when_only_legacy_database_exists() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let paths = paths(&temp_dir);
-    std::fs::create_dir(paths.app_data_dir.join(LEGACY_DATABASE_DIR)).expect("legacy dir");
+    std::fs::create_dir_all(paths.legacy_database_dir.join("kv")).expect("legacy dir");
+    std::fs::write(paths.legacy_database_dir.join("kv").join("data"), b"legacy")
+        .expect("legacy data");
 
     assert_eq!(
         detect_startup_migration_state(&paths),
@@ -33,10 +35,55 @@ fn detects_initial_surreal_import_when_only_legacy_database_exists() {
 }
 
 #[test]
-fn detects_incomplete_import_when_legacy_and_sqlite_exist_without_flag() {
+fn ignores_empty_legacy_database_dir_when_sqlite_exists() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let paths = paths(&temp_dir);
     std::fs::create_dir(&paths.legacy_database_dir).expect("legacy dir");
+    std::fs::write(&paths.sqlite_database_file, b"sqlite").expect("sqlite file");
+
+    assert_eq!(
+        detect_startup_migration_state(&paths),
+        StartupMigrationState::Ready
+    );
+}
+
+#[test]
+fn ignores_placeholder_only_legacy_database_dir_when_sqlite_exists() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let paths = paths(&temp_dir);
+    std::fs::create_dir_all(paths.legacy_database_dir.join("empty")).expect("legacy dir");
+    std::fs::write(paths.legacy_database_dir.join(".DS_Store"), b"finder").expect("ds store");
+    std::fs::write(paths.legacy_database_dir.join("._metadata"), b"appledouble")
+        .expect("appledouble");
+    std::fs::write(paths.legacy_database_dir.join(".backup_marker"), b"marker")
+        .expect("backup marker");
+    std::fs::write(&paths.sqlite_database_file, b"sqlite").expect("sqlite file");
+
+    assert_eq!(
+        detect_startup_migration_state(&paths),
+        StartupMigrationState::Ready
+    );
+}
+
+#[test]
+fn ignores_empty_legacy_database_dir_for_new_install_detection() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let paths = paths(&temp_dir);
+    std::fs::create_dir(&paths.legacy_database_dir).expect("legacy dir");
+
+    assert_eq!(
+        detect_startup_migration_state(&paths),
+        StartupMigrationState::NewInstall
+    );
+}
+
+#[test]
+fn detects_incomplete_import_when_legacy_and_sqlite_exist_without_flag() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let paths = paths(&temp_dir);
+    std::fs::create_dir_all(paths.legacy_database_dir.join("kv")).expect("legacy dir");
+    std::fs::write(paths.legacy_database_dir.join("kv").join("data"), b"legacy")
+        .expect("legacy data");
     std::fs::write(&paths.sqlite_database_file, b"partial").expect("sqlite file");
 
     assert_eq!(
@@ -49,7 +96,9 @@ fn detects_incomplete_import_when_legacy_and_sqlite_exist_without_flag() {
 fn detects_legacy_archive_step_when_complete_flag_exists() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let paths = paths(&temp_dir);
-    std::fs::create_dir(&paths.legacy_database_dir).expect("legacy dir");
+    std::fs::create_dir_all(paths.legacy_database_dir.join("kv")).expect("legacy dir");
+    std::fs::write(paths.legacy_database_dir.join("kv").join("data"), b"legacy")
+        .expect("legacy data");
     std::fs::write(&paths.sqlite_database_file, b"sqlite").expect("sqlite file");
     mark_sqlite_import_complete(&paths).expect("complete flag");
 
