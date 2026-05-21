@@ -2,6 +2,7 @@ pub mod manifest;
 
 use self::manifest::{validate_backup_rel_path, CliProxyManifest, CliProxyManifestFile};
 use super::paths::ProxyGatewayPaths;
+use super::runtime::load_candidate_providers;
 use super::types::{
     GatewayCliKey, GatewayCliStatusDot, GatewayCliTakeoverState, GatewayCliTakeoverStatus,
     GatewayManagedTarget, ProxyGatewayStatus, ProxyGatewayStopPreflight,
@@ -62,6 +63,7 @@ const GEMINI_MANAGED_ENV_KEYS: [&str; 14] = [
 ];
 
 const GEMINI_SETTINGS_MANAGED_FIELDS: [&str; 1] = ["security.auth.selectedType"];
+const NO_PROXYABLE_PROVIDER_MESSAGE: &str = "No proxyable providers are configured. Official subscription providers use CLI-native OAuth and cannot be routed through the gateway.";
 
 #[derive(Debug, Clone)]
 struct CliProxyTarget {
@@ -133,7 +135,7 @@ pub async fn cli_takeover_status(
                 cli_key,
                 GatewayCliTakeoverState::Error,
                 GatewayCliStatusDot::Red,
-                gateway_status.running,
+                false,
                 false,
                 gateway_status.base_url.clone(),
                 Some(path_to_string(&targets.runtime_root)),
@@ -144,6 +146,35 @@ pub async fn cli_takeover_status(
     };
 
     let Some(manifest) = manifest.filter(|manifest| manifest.enabled) else {
+        let has_proxyable_provider = match has_proxyable_provider(db, cli_key).await {
+            Ok(has_provider) => has_provider,
+            Err(error) => {
+                return build_status(
+                    cli_key,
+                    GatewayCliTakeoverState::Error,
+                    GatewayCliStatusDot::Red,
+                    false,
+                    false,
+                    gateway_status.base_url.clone(),
+                    Some(path_to_string(&targets.runtime_root)),
+                    managed_targets,
+                    Some(error),
+                )
+            }
+        };
+        if !has_proxyable_provider {
+            return build_status(
+                cli_key,
+                GatewayCliTakeoverState::NoProxyProvider,
+                GatewayCliStatusDot::Orange,
+                false,
+                false,
+                gateway_status.base_url.clone(),
+                Some(path_to_string(&targets.runtime_root)),
+                managed_targets,
+                Some(NO_PROXYABLE_PROVIDER_MESSAGE.to_string()),
+            );
+        }
         return build_status(
             cli_key,
             GatewayCliTakeoverState::Direct,
@@ -168,7 +199,7 @@ pub async fn cli_takeover_status(
             cli_key,
             GatewayCliTakeoverState::RestoreUnavailable,
             GatewayCliStatusDot::Red,
-            gateway_status.running,
+            false,
             false,
             Some(manifest.base_origin),
             Some(path_to_string(&targets.runtime_root)),
@@ -192,6 +223,26 @@ pub async fn cli_takeover_status(
             Some("Gateway is stopped while this CLI is still routed through it".to_string()),
         );
     }
+
+    let has_proxyable_provider = match has_proxyable_provider(db, cli_key).await {
+        Ok(has_provider) => has_provider,
+        Err(error) => {
+            return build_status(
+                cli_key,
+                GatewayCliTakeoverState::Error,
+                GatewayCliStatusDot::Red,
+                false,
+                true,
+                gateway_status
+                    .base_url
+                    .clone()
+                    .or(Some(manifest.base_origin)),
+                Some(path_to_string(&targets.runtime_root)),
+                manifest_targets,
+                Some(error),
+            )
+        }
+    };
 
     let current_origin = current_cli_gateway_endpoint(cli_key, &targets)
         .ok()
@@ -224,11 +275,21 @@ pub async fn cli_takeover_status(
         )
     };
 
+    let (state, dot, message) = if !has_proxyable_provider {
+        (
+            GatewayCliTakeoverState::NoProxyProvider,
+            GatewayCliStatusDot::Orange,
+            Some(NO_PROXYABLE_PROVIDER_MESSAGE.to_string()),
+        )
+    } else {
+        (state, dot, message)
+    };
+
     build_status(
         cli_key,
         state,
         dot,
-        gateway_status.running,
+        gateway_status.running && has_proxyable_provider,
         true,
         gateway_status
             .base_url
@@ -255,6 +316,7 @@ pub async fn takeover_cli(
     if !gateway_status.running {
         return Err("Start the proxy gateway before taking over a CLI".to_string());
     }
+    ensure_proxyable_provider(db, cli_key).await?;
 
     let targets = resolve_targets(db, cli_key).await?;
     let manifest = prepare_manifest(paths, cli_key, base_origin, &targets)?;
@@ -319,6 +381,9 @@ pub async fn stop_preflight(
 }
 
 fn blocks_gateway_stop(status: &GatewayCliTakeoverStatus) -> bool {
+    if status.can_restore_direct {
+        return true;
+    }
     matches!(
         status.state,
         GatewayCliTakeoverState::TakeoverApplied
@@ -327,6 +392,23 @@ fn blocks_gateway_stop(status: &GatewayCliTakeoverStatus) -> bool {
             | GatewayCliTakeoverState::Drifted
             | GatewayCliTakeoverState::RestoreUnavailable
     )
+}
+
+async fn has_proxyable_provider(
+    db: &SqliteDbState,
+    cli_key: GatewayCliKey,
+) -> Result<bool, String> {
+    Ok(!load_candidate_providers(db, cli_key).await?.is_empty())
+}
+
+async fn ensure_proxyable_provider(
+    db: &SqliteDbState,
+    cli_key: GatewayCliKey,
+) -> Result<(), String> {
+    if has_proxyable_provider(db, cli_key).await? {
+        return Ok(());
+    }
+    Err(NO_PROXYABLE_PROVIDER_MESSAGE.to_string())
 }
 
 fn is_supported_cli(cli_key: GatewayCliKey) -> bool {
@@ -1671,5 +1753,51 @@ command = "node"
         );
 
         assert!(!blocks_gateway_stop(&status));
+    }
+
+    #[test]
+    fn stop_preflight_blocks_no_provider_only_when_cli_is_still_taken_over() {
+        let taken_over_status = build_status(
+            GatewayCliKey::Claude,
+            GatewayCliTakeoverState::NoProxyProvider,
+            GatewayCliStatusDot::Orange,
+            false,
+            true,
+            Some("http://127.0.0.1:37123".to_string()),
+            Some("runtime".to_string()),
+            Vec::new(),
+            Some(NO_PROXYABLE_PROVIDER_MESSAGE.to_string()),
+        );
+        let direct_status = build_status(
+            GatewayCliKey::Claude,
+            GatewayCliTakeoverState::NoProxyProvider,
+            GatewayCliStatusDot::Orange,
+            false,
+            false,
+            Some("http://127.0.0.1:37123".to_string()),
+            Some("runtime".to_string()),
+            Vec::new(),
+            Some(NO_PROXYABLE_PROVIDER_MESSAGE.to_string()),
+        );
+
+        assert!(blocks_gateway_stop(&taken_over_status));
+        assert!(!blocks_gateway_stop(&direct_status));
+    }
+
+    #[test]
+    fn stop_preflight_blocks_error_status_when_restore_is_available() {
+        let status = build_status(
+            GatewayCliKey::Claude,
+            GatewayCliTakeoverState::Error,
+            GatewayCliStatusDot::Red,
+            false,
+            true,
+            Some("http://127.0.0.1:37123".to_string()),
+            Some("runtime".to_string()),
+            Vec::new(),
+            Some("provider parse failed".to_string()),
+        );
+
+        assert!(blocks_gateway_stop(&status));
     }
 }

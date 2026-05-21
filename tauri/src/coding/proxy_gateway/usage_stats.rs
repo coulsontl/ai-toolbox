@@ -216,7 +216,6 @@ pub fn record_request_summary(
             .as_ref()
             .map(|pricing| {
                 calculate_cost(
-                    cli_key,
                     input_tokens as u64,
                     output_tokens as u64,
                     cache_read_tokens as u64,
@@ -1210,20 +1209,14 @@ fn to_param_refs(params: &[Box<dyn ToSql>]) -> Vec<&dyn ToSql> {
 }
 
 fn calculate_cost(
-    cli_key: GatewayCliKey,
     input_tokens: u64,
     output_tokens: u64,
     cache_read_tokens: u64,
     cache_creation_tokens: u64,
     pricing: &ModelPricing,
 ) -> CostBreakdown {
-    let billable_input_tokens = if cli_key == GatewayCliKey::Claude {
-        input_tokens
-    } else {
-        input_tokens.saturating_sub(cache_read_tokens)
-    };
     CostBreakdown {
-        input_cost_usd: token_cost(billable_input_tokens, pricing.input_cost_per_million),
+        input_cost_usd: token_cost(input_tokens, pricing.input_cost_per_million),
         output_cost_usd: token_cost(output_tokens, pricing.output_cost_per_million),
         cache_read_cost_usd: token_cost(cache_read_tokens, pricing.cache_read_cost_per_million),
         cache_creation_cost_usd: token_cost(
@@ -1487,6 +1480,7 @@ pub fn request_log_detail_from_summary(
                     upstream_request_body: None,
                     response_headers: None,
                     response_body: None,
+                    provider_attempts: Vec::new(),
                 })
             },
         )
@@ -1646,6 +1640,7 @@ mod tests {
                 "application/json".to_string(),
             )])),
             response_body: Some("{\"id\":\"msg_1\"}".to_string()),
+            provider_attempts: Vec::new(),
         }
     }
 

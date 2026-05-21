@@ -124,11 +124,12 @@
 				"lines": "{{count}} 行",
 				"expand": "展开",
 				"collapse": "收起",
-				"tokensShort": "输入 {{input}} / 输出 {{output}} / 缓存 {{cache}}",
-				"tokensValue": "输入 {{input}} / 输出 {{output}} / 缓存读 {{cacheRead}} / 缓存写 {{cacheCreation}} / 总计 {{total}}",
-				"attemptBadge": "{{count}}/{{total}} 次",
-				"providerUnselected": "未选择供应商",
-				"fields": {
+					"tokensShort": "输入 {{input}} / 输出 {{output}} / 缓存 {{cache}}",
+					"tokensValue": "输入 {{input}} / 输出 {{output}} / 缓存读 {{cacheRead}} / 缓存写 {{cacheCreation}} / 总计 {{total}}",
+					"attemptBadge": "{{count}}/{{total}} 次",
+					"attemptDetail": "#{{index}} 状态 {{status}} · {{current}}/{{total}} 次 · {{error}}",
+					"providerUnselected": "未选择供应商",
+					"fields": {
 					"traceId": "Trace ID",
 					"time": "时间",
 					"provider": "供应商",
@@ -136,12 +137,13 @@
 					"status": "状态码",
 					"duration": "耗时",
 					"firstToken": "首包延迟",
-					"streaming": "流式响应",
-					"tokens": "Token",
-					"attempts": "尝试次数",
-					"upstream": "上游地址",
-					"error": "错误分类"
-				},
+						"streaming": "流式响应",
+						"tokens": "Token",
+						"attempts": "尝试次数",
+						"attemptTimeline": "尝试链路",
+						"upstream": "上游地址",
+						"error": "错误分类"
+					},
 				"detailTabs": {
 					"record": "请求记录",
 					"body": "请求体",
@@ -169,6 +171,9 @@
 			"buttonTooltip": "查看或应用网关接管",
 			"confirmTitle": "接管 {{cli}}",
 			"confirmSubtitle": "{{cli}} 将改为通过本机网关访问模型服务。",
+			"noProxyProvider": "没有可代理的渠道。官方订阅使用 CLI 原生认证，不支持通过网关代理转发。",
+			"officialBypassedTag": "不参与代理",
+			"officialBypassedTooltip": "官方订阅使用 CLI 原生认证，不支持通过网关代理转发",
 			"targets": "将写入的运行时配置",
 			"state": {
 				"direct": "未接管",
@@ -176,6 +181,7 @@
 				"gateway_stopped": "网关已停止",
 				"outdated_origin": "网关地址已变化",
 				"drifted": "配置已偏移",
+				"no_proxy_provider": "无可代理渠道",
 				"restore_unavailable": "备份缺失",
 				"unsupported": "暂不支持",
 				"error": "状态异常"

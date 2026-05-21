@@ -1,16 +1,17 @@
-use std::fs;
-use std::io::{Read, Write};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipWriter};
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use super::helpers::{db_count, db_delete_all, db_put, db_transaction};
 use super::schema::{DbTable, ALL_TABLES};
 use super::sqlite_state::SqliteDbState;
+use crate::coding::db_clean_id;
 
 pub const LEGACY_DATABASE_DIR: &str = "database";
 pub const SQLITE_DATABASE_FILE: &str = "ai-toolbox.db";
@@ -181,15 +182,6 @@ pub fn archive_legacy_database(paths: &MigrationPaths) -> Result<(), String> {
         return Ok(());
     }
 
-    if paths.legacy_archive.exists() {
-        fs::remove_file(&paths.legacy_archive).map_err(|error| {
-            format!(
-                "Failed to replace legacy database archive {}: {error}",
-                paths.legacy_archive.display()
-            )
-        })?;
-    }
-
     if let Some(parent) = paths.legacy_archive.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -199,10 +191,12 @@ pub fn archive_legacy_database(paths: &MigrationPaths) -> Result<(), String> {
         })?;
     }
 
-    let archive_file = fs::File::create(&paths.legacy_archive).map_err(|error| {
+    let temp_archive = paths.legacy_archive.with_extension("zip.tmp");
+    remove_file_if_exists(&temp_archive)?;
+    let archive_file = fs::File::create(&temp_archive).map_err(|error| {
         format!(
             "Failed to create legacy database archive {}: {error}",
-            paths.legacy_archive.display()
+            temp_archive.display()
         )
     })?;
     let mut zip = ZipWriter::new(archive_file);
@@ -217,9 +211,33 @@ pub fn archive_legacy_database(paths: &MigrationPaths) -> Result<(), String> {
         options,
     )?;
 
-    zip.finish().map_err(|error| {
+    let archive_file = zip.finish().map_err(|error| {
         format!(
             "Failed to finish legacy database archive {}: {error}",
+            temp_archive.display()
+        )
+    })?;
+    archive_file.sync_all().map_err(|error| {
+        format!(
+            "Failed to flush legacy database archive {}: {error}",
+            temp_archive.display()
+        )
+    })?;
+    drop(archive_file);
+
+    verify_legacy_archive(&temp_archive)?;
+    if paths.legacy_archive.exists() {
+        fs::remove_file(&paths.legacy_archive).map_err(|error| {
+            format!(
+                "Failed to replace legacy database archive {}: {error}",
+                paths.legacy_archive.display()
+            )
+        })?;
+    }
+    fs::rename(&temp_archive, &paths.legacy_archive).map_err(|error| {
+        format!(
+            "Failed to move verified legacy database archive {} to {}: {error}",
+            temp_archive.display(),
             paths.legacy_archive.display()
         )
     })?;
@@ -285,7 +303,15 @@ pub async fn import_all_known_tables_from_surreal(
     sqlite_state: &SqliteDbState,
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
 ) -> Result<SurrealImportReport, String> {
-    import_tables_from_surreal(sqlite_state, db, ALL_TABLES).await
+    import_tables_from_surreal_with_warnings(sqlite_state, db, ALL_TABLES, None).await
+}
+
+pub async fn import_all_known_tables_from_surreal_with_warnings(
+    sqlite_state: &SqliteDbState,
+    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    paths: &MigrationPaths,
+) -> Result<SurrealImportReport, String> {
+    import_tables_from_surreal_with_warnings(sqlite_state, db, ALL_TABLES, Some(paths)).await
 }
 
 pub async fn import_missing_known_tables_from_surreal(
@@ -300,7 +326,7 @@ pub async fn import_missing_known_tables_from_surreal(
         }
     }
 
-    import_tables_from_surreal(sqlite_state, db, &missing_tables).await
+    import_tables_from_surreal_with_warnings(sqlite_state, db, &missing_tables, None).await
 }
 
 pub async fn import_tables_from_surreal(
@@ -308,33 +334,67 @@ pub async fn import_tables_from_surreal(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
     tables: &[DbTable],
 ) -> Result<SurrealImportReport, String> {
-    let mut table_records = Vec::with_capacity(tables.len());
+    import_tables_from_surreal_with_warnings(sqlite_state, db, tables, None).await
+}
+
+async fn import_tables_from_surreal_with_warnings(
+    sqlite_state: &SqliteDbState,
+    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    tables: &[DbTable],
+    paths: Option<&MigrationPaths>,
+) -> Result<SurrealImportReport, String> {
+    let mut reports = Vec::with_capacity(tables.len());
     for table in tables {
-        let records = read_surreal_table(db, *table).await?;
-        table_records.push((*table, records));
-    }
-
-    sqlite_state.with_conn_mut(|conn| {
-        db_transaction(conn, |tx| {
-            for (table, records) in &table_records {
-                db_delete_all(tx, *table)?;
-                for record in records {
-                    let (id, payload) = normalize_surreal_record(*table, record)?;
-                    db_put(tx, *table, &id, &payload)?;
-                }
+        let records = match read_surreal_table(db, *table).await {
+            Ok(records) => records,
+            Err(error) if is_missing_surreal_table_error(&error) => {
+                write_optional_migration_warning(
+                    paths,
+                    &format!(
+                        "Skipped missing legacy SurrealDB table {} during SQLite import: {}",
+                        table.name(),
+                        error
+                    ),
+                );
+                continue;
             }
-            Ok(())
-        })
-    })?;
+            Err(error) => return Err(error),
+        };
+        if records.is_empty() {
+            write_optional_migration_warning(
+                paths,
+                &format!(
+                    "Legacy SurrealDB table {} is empty during SQLite import.",
+                    table.name()
+                ),
+            );
+        }
 
-    let mut reports = Vec::with_capacity(table_records.len());
-    for (table, records) in table_records {
-        let sqlite_count = sqlite_state.with_conn(|conn| db_count(conn, table))?;
-        if sqlite_count != records.len() as i64 {
+        let mut imported_count = 0_i64;
+        sqlite_state.with_conn_mut(|conn| {
+            db_transaction(conn, |tx| {
+                db_delete_all(tx, *table)?;
+                for record in &records {
+                    match normalize_surreal_record(*table, record) {
+                        Ok((id, payload)) => {
+                            db_put(tx, *table, &id, &payload)?;
+                            imported_count += 1;
+                        }
+                        Err(error) => {
+                            write_optional_migration_warning(paths, &error);
+                        }
+                    }
+                }
+                Ok(())
+            })
+        })?;
+
+        let sqlite_count = sqlite_state.with_conn(|conn| db_count(conn, *table))?;
+        if sqlite_count != imported_count {
             return Err(format!(
                 "Migration count mismatch for {}: SurrealDB={}, SQLite={}",
                 table.name(),
-                records.len(),
+                imported_count,
                 sqlite_count
             ));
         }
@@ -346,6 +406,22 @@ pub async fn import_tables_from_surreal(
     }
 
     Ok(SurrealImportReport { tables: reports })
+}
+
+fn write_optional_migration_warning(paths: Option<&MigrationPaths>, message: &str) {
+    let Some(paths) = paths else {
+        return;
+    };
+    if let Err(error) = write_migration_warning(paths, message) {
+        log::warn!("Failed to write SQLite migration warning: {error}");
+    }
+}
+
+fn is_missing_surreal_table_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("table not found")
+        || normalized.contains("does not exist")
+        || normalized.contains("not found")
 }
 
 async fn read_surreal_table(
@@ -370,7 +446,7 @@ fn normalize_surreal_record(table: DbTable, record: &Value) -> Result<(String, V
         .get("id")
         .and_then(Value::as_str)
         .ok_or_else(|| format!("SurrealDB record in {} is missing string id", table.name()))?;
-    let id = clean_surreal_id(raw_id);
+    let id = db_clean_id(raw_id);
     if id.trim().is_empty() {
         return Err(format!("SurrealDB record in {} has empty id", table.name()));
     }
@@ -388,21 +464,6 @@ fn normalize_surreal_record(table: DbTable, record: &Value) -> Result<(String, V
     Ok((id, payload))
 }
 
-fn clean_surreal_id(raw_id: &str) -> String {
-    let without_prefix = if let Some(pos) = raw_id.find(':') {
-        &raw_id[pos + 1..]
-    } else {
-        raw_id
-    };
-
-    without_prefix
-        .trim_start_matches('⟨')
-        .trim_end_matches('⟩')
-        .trim_start_matches('`')
-        .trim_end_matches('`')
-        .to_string()
-}
-
 fn append_line(path: &Path, message: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
@@ -413,16 +474,13 @@ fn append_line(path: &Path, message: &str) -> Result<(), String> {
         })?;
     }
 
-    let mut existing = if path.exists() {
-        fs::read_to_string(path)
-            .map_err(|error| format!("Failed to read migration log {}: {error}", path.display()))?
-    } else {
-        String::new()
-    };
-    existing.push_str(message);
-    existing.push('\n');
-    fs::write(path, existing)
-        .map_err(|error| format!("Failed to write migration log {}: {error}", path.display()))
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| format!("Failed to open migration log {}: {error}", path.display()))?;
+    writeln!(file, "{message}")
+        .map_err(|error| format!("Failed to append migration log {}: {error}", path.display()))
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<(), String> {
@@ -431,6 +489,38 @@ fn remove_file_if_exists(path: &Path) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("Failed to remove {}: {error}", path.display())),
     }
+}
+
+fn verify_legacy_archive(path: &Path) -> Result<(), String> {
+    let file = fs::File::open(path).map_err(|error| {
+        format!(
+            "Failed to reopen legacy database archive {}: {error}",
+            path.display()
+        )
+    })?;
+    let mut archive = ZipArchive::new(file).map_err(|error| {
+        format!(
+            "Failed to validate legacy database archive {}: {error}",
+            path.display()
+        )
+    })?;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|error| {
+            format!(
+                "Failed to validate legacy database archive entry {} in {}: {error}",
+                index,
+                path.display()
+            )
+        })?;
+        std::io::copy(&mut entry, &mut std::io::sink()).map_err(|error| {
+            format!(
+                "Failed to read legacy database archive entry {} in {}: {error}",
+                index,
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn add_directory_to_zip(
@@ -470,11 +560,8 @@ fn add_directory_to_zip(
             })?;
             let mut file = fs::File::open(&path)
                 .map_err(|error| format!("Failed to open {}: {error}", path.display()))?;
-            let mut buffer = Vec::new();
-            file.read_to_end(&mut buffer)
-                .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-            zip.write_all(&buffer).map_err(|error| {
-                format!("Failed to write {archive_name} to legacy database archive: {error}")
+            std::io::copy(&mut file, zip).map_err(|error| {
+                format!("Failed to copy {archive_name} to legacy database archive: {error}")
             })?;
         }
     }

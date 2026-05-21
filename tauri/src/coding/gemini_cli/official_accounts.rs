@@ -19,7 +19,7 @@ use super::types::{
 use crate::coding::db_id::db_new_id;
 use crate::coding::runtime_location;
 use crate::db::helpers::{
-    db_delete, db_get, db_patch_fields, db_patch_where_bool, db_put, db_query_by_field,
+    db_delete, db_get, db_patch_fields, db_put, db_query_by_field, db_update_applied_status,
 };
 use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
@@ -46,6 +46,7 @@ const GEMINI_USER_INFO_URL: &str = "https://www.googleapis.com/oauth2/v1/userinf
 const GEMINI_CODE_ASSIST_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal";
 const GEMINI_OAUTH_DEFAULT_PORT: u16 = 8085;
 const GEMINI_OAUTH_CALLBACK_PATH: &str = "/oauth2callback";
+const LOCAL_PROVIDER_ID: &str = "__local__";
 const LOCAL_OFFICIAL_ACCOUNT_ID: &str = "__local__";
 const AUTH_REFRESH_LEAD_SECONDS: i64 = 5 * 60;
 
@@ -115,6 +116,14 @@ fn oauth_scopes() -> [&'static str; 3] {
         "https://www.googleapis.com/auth/userinfo.email",
         "https://www.googleapis.com/auth/userinfo.profile",
     ]
+}
+
+fn ensure_persisted_provider_id(provider_id: &str) -> Result<(), String> {
+    if provider_id == LOCAL_PROVIDER_ID {
+        Err("The local Gemini provider cannot manage official accounts".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 fn encode_url_component(value: &str) -> String {
@@ -391,7 +400,7 @@ fn auth_needs_refresh(auth: &Value) -> bool {
     }
 }
 
-fn auth_has_official_runtime(auth: &Value) -> bool {
+pub(super) fn auth_has_official_runtime(auth: &Value) -> bool {
     auth_access_token(auth).is_some() && auth_refresh_token(auth).is_some()
 }
 
@@ -514,7 +523,9 @@ async fn ensure_fresh_auth_snapshot(
     ))
 }
 
-async fn read_oauth_creds_from_disk(db: &crate::db::SqliteDbState) -> Result<Value, String> {
+pub(super) async fn read_oauth_creds_from_disk(
+    db: &crate::db::SqliteDbState,
+) -> Result<Value, String> {
     let root_dir = runtime_location::get_gemini_cli_runtime_location_async(db)
         .await?
         .host_path;
@@ -1046,33 +1057,9 @@ async fn update_official_account_apply_status(
     account_id: Option<&str>,
 ) -> Result<(), String> {
     let now = Local::now().to_rfc3339();
-    db.with_conn(|conn| {
-        db_patch_where_bool(
-            conn,
-            DbTable::GeminiCliOfficialAccount,
-            &JsonFieldPath::new("is_applied")?,
-            true,
-            &[
-                ("is_applied", Value::Bool(false)),
-                ("updated_at", Value::String(now.clone())),
-            ],
-        )
+    db.with_conn_mut(|conn| {
+        db_update_applied_status(conn, DbTable::GeminiCliOfficialAccount, account_id, &now)
     })?;
-
-    if let Some(account_id) = account_id {
-        db.with_conn(|conn| {
-            db_patch_fields(
-                conn,
-                DbTable::GeminiCliOfficialAccount,
-                account_id,
-                &[
-                    ("is_applied", Value::Bool(true)),
-                    ("updated_at", Value::String(now)),
-                ],
-            )
-            .map(|_| ())
-        })?;
-    }
     Ok(())
 }
 
@@ -1154,6 +1141,7 @@ pub async fn list_gemini_cli_official_accounts(
     provider_id: String,
 ) -> Result<Vec<GeminiCliOfficialAccount>, String> {
     let db = state.db();
+    ensure_persisted_provider_id(&provider_id)?;
     let provider = query_provider_by_id(&db, &provider_id).await?;
     let mut accounts = list_persisted_official_accounts(&db, &provider_id).await?;
     let local_auth = read_oauth_creds_from_disk(&db).await?;
@@ -1174,6 +1162,7 @@ pub async fn start_gemini_cli_official_account_oauth(
     provider_id: String,
 ) -> Result<GeminiCliOfficialAccount, String> {
     let db = state.db();
+    ensure_persisted_provider_id(&provider_id)?;
     let provider = query_provider_by_id(&db, &provider_id).await?;
     if provider.category != "official" {
         return Err("Only official Gemini providers can add official accounts".to_string());
@@ -1234,6 +1223,7 @@ pub async fn save_gemini_cli_official_local_account(
     provider_id: String,
 ) -> Result<GeminiCliOfficialAccount, String> {
     let db = state.db();
+    ensure_persisted_provider_id(&provider_id)?;
     let provider = query_provider_by_id(&db, &provider_id).await?;
     if provider.category != "official" {
         return Err("Only official Gemini providers can save local official accounts".to_string());
@@ -1291,6 +1281,7 @@ pub async fn apply_gemini_cli_official_account(
     account_id: String,
 ) -> Result<(), String> {
     let db = state.db();
+    ensure_persisted_provider_id(&provider_id)?;
     let provider = query_provider_by_id(&db, &provider_id).await?;
     if provider.category != "official" {
         return Err("Only official Gemini providers can apply official accounts".to_string());
@@ -1354,6 +1345,7 @@ pub async fn delete_gemini_cli_official_account(
     account_id: String,
 ) -> Result<(), String> {
     let db = state.db();
+    ensure_persisted_provider_id(&provider_id)?;
     if account_id == LOCAL_OFFICIAL_ACCOUNT_ID {
         return Err("The local Gemini official account cannot be deleted".to_string());
     }
@@ -1378,6 +1370,7 @@ pub async fn refresh_gemini_cli_official_account_limits(
     account_id: String,
 ) -> Result<GeminiCliOfficialAccount, String> {
     let db = state.db();
+    ensure_persisted_provider_id(&provider_id)?;
     let provider = query_provider_by_id(&db, &provider_id).await?;
     if provider.category != "official" {
         return Err(
@@ -1456,6 +1449,7 @@ pub async fn copy_gemini_cli_official_account_token(
     input: GeminiCliOfficialAccountTokenCopyInput,
 ) -> Result<(), String> {
     let db = state.db();
+    ensure_persisted_provider_id(&input.provider_id)?;
     let provider = query_provider_by_id(&db, &input.provider_id).await?;
     if provider.category != "official" {
         return Err("Only official Gemini providers can copy official account tokens".to_string());

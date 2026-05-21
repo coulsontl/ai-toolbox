@@ -1,5 +1,5 @@
 import React from 'react';
-import { Card, Space, Button, Dropdown, Tag, Typography, Switch, message } from 'antd';
+import { Card, Space, Button, Dropdown, Tag, Typography, Switch, Tooltip, message } from 'antd';
 import {
   ApiOutlined,
   CheckOutlined,
@@ -449,6 +449,11 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
                 )}
                 {isOfficialProvider && (
                   <Tag>{t('codex.provider.modeOfficial')}</Tag>
+                )}
+                {isOfficialProvider && gatewayTakeoverActive && (
+                  <Tooltip title={t('gateway.takeover.officialBypassedTooltip')}>
+                    <Tag color="gold">{t('gateway.takeover.officialBypassedTag')}</Tag>
+                  </Tooltip>
                 )}
                 {showRuntimeApplied && (
                   <Tag color="green" icon={<CheckCircleOutlined />}>

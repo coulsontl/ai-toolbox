@@ -311,6 +311,7 @@ fn command_name(param: &str) -> Result<ReturnType, String> {
 
 - 新版 Fedora/Arch/CachyOS 等发行版上，AppImage 内置的 Wayland/EGL/GBM 相关库可能与宿主 Mesa/Wayland ABI 冲突，导致 WebKitGTK webview 白屏或 EGL 初始化崩溃；这不是前端资源缺失，也不应只靠升级 Tauri 来判断解决。
 - AppImage + Wayland 的启动级兼容处理必须发生在 Tauri/WebKitGTK 初始化之前；优先用系统 `libwayland-client.so.0` 做一次性 `LD_PRELOAD` re-exec，再继续走 WebKitGTK GPU/DMABuf fallback level。
+- 系统 `libwayland-client.so.0` 搜索路径必须覆盖常见 x86_64 和 aarch64 Debian/Ubuntu multiarch 路径，不能只写 `/usr/lib64` 或 x86_64 专用路径。
 - 不要覆盖用户显式设置的 `LD_PRELOAD`，并且必须有 sentinel 环境变量防止重启循环；`AI_TOOLBOX_DISABLE_WAYLAND_WEBVIEW_WORKAROUND=1` 应禁用这类启动兼容处理。
 - Linux 发版如果新增或调整 AppImage 兼容策略，应同时确认 release workflow 的 Linux 产物覆盖 Fedora 用户可安装的 `rpm`，而不是只发布 `deb` 和 `AppImage`。
 
@@ -712,10 +713,10 @@ features/
 - 主数据库是 SQLite JSONB。新增或改造的持久化路径必须直接读写 `SqliteDbState`，禁止新增 SurrealDB-only 或 SurrealDB 双写路径。
 - SQLite 表结构统一遵循 `id + data(JSONB) + created_at + updated_at`，业务字段放在 JSONB `data` 中；新增/删除普通业务字段不需要 schema migration，adapter 负责默认值与兼容读取。
 - 启动阶段必须先检测旧库迁移状态，再打开 SQLite。只有旧 `{app_data_dir}/database` 存在且需要导入时，才临时打开 SurrealDB 执行一次性全量导入。
-- 旧 SurrealDB 目录在导入、计数校验和完成标记成功前绝不能删除。导入完成后压缩为 `{app_data_dir}/database.migrated.zip` 永久保留，并删除旧目录。
+- 旧 SurrealDB 目录在导入、计数校验和完成标记成功前绝不能删除。完成标记必须在归档旧目录前写入；如果归档中途崩溃，下次启动应进入 `NeedsLegacyArchive` 而不是清理已导入的 SQLite。导入完成后压缩为 `{app_data_dir}/database.migrated.zip` 永久保留，并删除旧目录。
 - 迁移失败不能写完成标记；不完整 SQLite 文件需要清理，下次启动重试。连续 3 次失败后应向用户展示 `migration.log` 路径。
 - 备份恢复以 SQLite 单文件和 `db_manifest.json` 为准。旧 SurrealDB 备份只能作为恢复输入，恢复时导入 SQLite；新备份不要再包含旧 SurrealDB 快照作为事实源。
-- 跨表状态切换（如 applied flag）必须在 SQLite 事务或 helper 组合内完成，不能只更新运行时文件或旧库。
+- 跨表状态切换（如 applied flag）必须在 SQLite 事务或 helper 组合内完成；单表 applied 切换优先用 `db_update_applied_status`，不能在业务层逐条 `db_patch_where_bool` 后再单独 patch 目标记录。
 
 ## Skills / WSL / SSH Quick Notes
 
@@ -868,7 +869,7 @@ pub fn to_db_value(settings: &AppSettings) -> Value {
 - 写入 `data` 前仍然走 adapter，把业务结构转为 `serde_json::Value`；读取后由 adapter 补默认值。
 - SQLite helper 返回的 `Value` 已注入干净字符串 `id`，不要再按 SurrealDB `Thing` 或 `table:id` 处理。
 - 新建普通记录优先用 `db_create(conn, DbTable::X, &payload)`；需要手动 ID 时使用 `db_new_id()`，单例记录使用固定 ID。
-- 局部更新用 `db_patch_fields` / `db_patch_where_bool`，需要原子更新多张表时用 `db_transaction`。
+- 局部更新用 `db_patch_fields`；批量谓词更新若影响互斥状态必须包在 `db_transaction` 或使用专用 helper。需要原子更新多张表时用 `db_transaction`。
 - 表名必须来自 `DbTable` 或经过 identifier 校验，不要拼接未经校验的外部输入。
 - 旧 SurrealDB 查询规则只允许存在于 `tauri/src/db/surreal_import.rs` 和 `tauri/src/db_migration/`，用于读取老用户旧库并导入 SQLite。业务模块、Tauri command、store、tray、backup、WSL/SSH 同步路径都不能新增 SurrealQL。
 

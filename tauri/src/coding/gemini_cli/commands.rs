@@ -12,8 +12,8 @@ use crate::coding::open_code::shell_env;
 use crate::coding::prompt_file::{read_prompt_content_file, write_prompt_content_file};
 use crate::coding::runtime_location;
 use crate::db::helpers::{
-    db_count, db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_patch_where_bool, db_put,
-    db_query_by_bool,
+    db_count, db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put, db_query_by_bool,
+    db_update_applied_status,
 };
 use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
@@ -57,6 +57,7 @@ const GEMINI_CLI_OFFICIAL_AUTH_TYPE: &str = "oauth-personal";
 const GEMINI_CLI_CUSTOM_AUTH_TYPE: &str = "gemini-api-key";
 pub const GEMINI_CLI_HOME_ENV_KEY: &str = "GEMINI_CLI_HOME";
 pub const DEFAULT_GEMINI_CLI_PROMPT_FILE: &str = "GEMINI.md";
+const GEMINI_CLI_NO_LOCAL_PROVIDER_CONFIG_ERROR: &str = "No Gemini CLI local provider config found";
 
 const GEMINI_CLI_MODEL_CATALOG_URLS: [&str; 2] = [
     "https://raw.githubusercontent.com/router-for-me/models/refs/heads/main/models.json",
@@ -588,13 +589,22 @@ async fn load_stored_common_config_value(
 
 async fn load_local_gemini_provider_snapshot(
     db: &crate::db::SqliteDbState,
-) -> Result<(Value, String, String), String> {
+) -> Result<(Value, String, String, bool), String> {
     let env = read_env_map_from_db_async(db).await?;
     let managed_env: BTreeMap<String, String> = env
         .into_iter()
         .filter(|(key, _)| MANAGED_ENV_KEYS.contains(&key.as_str()))
         .collect();
     let settings = read_settings_value_from_db_async(db).await?;
+    let local_auth = match super::official_accounts::read_oauth_creds_from_disk(db).await {
+        Ok(auth) => auth,
+        Err(error) => {
+            log::warn!("[GeminiCLI] Failed to read local OAuth credentials: {error}");
+            Value::Object(Map::new())
+        }
+    };
+    let has_local_official_runtime =
+        super::official_accounts::auth_has_official_runtime(&local_auth);
     let selected_auth_config = settings
         .as_ref()
         .and_then(|value| value.pointer("/security/auth/selectedType"))
@@ -608,6 +618,17 @@ async fn load_local_gemini_provider_snapshot(
                 }
             })
         })
+        .or_else(|| {
+            has_local_official_runtime.then(|| {
+                serde_json::json!({
+                    "security": {
+                        "auth": {
+                            "selectedType": GEMINI_CLI_OFFICIAL_AUTH_TYPE
+                        }
+                    }
+                })
+            })
+        })
         .unwrap_or_else(|| Value::Object(Map::new()));
 
     if managed_env.is_empty()
@@ -616,7 +637,7 @@ async fn load_local_gemini_provider_snapshot(
             .map(|m| m.is_empty())
             .unwrap_or(true)
     {
-        return Err("No Gemini CLI local provider config found".to_string());
+        return Err(GEMINI_CLI_NO_LOCAL_PROVIDER_CONFIG_ERROR.to_string());
     }
 
     let settings_config = serde_json::json!({
@@ -627,13 +648,18 @@ async fn load_local_gemini_provider_snapshot(
     let serialized_settings = serde_json::to_string(&settings_config)
         .map_err(|error| format!("Failed to serialize Gemini CLI provider: {}", error))?;
 
-    Ok((settings_config, category, serialized_settings))
+    Ok((
+        settings_config,
+        category,
+        serialized_settings,
+        has_local_official_runtime,
+    ))
 }
 
 async fn load_temp_provider_from_files_with_db(
     db: &crate::db::SqliteDbState,
 ) -> Result<GeminiCliProvider, String> {
-    let (_, category, settings_config) = load_local_gemini_provider_snapshot(db).await?;
+    let (_, category, settings_config, _) = load_local_gemini_provider_snapshot(db).await?;
     if category == "official" {
         return Err("No third-party local config found".to_string());
     }
@@ -1094,52 +1120,21 @@ pub async fn fetch_gemini_cli_official_models(
     })
 }
 
-fn first_gemini_cli_official_account_provider_id(
-    db: &crate::db::SqliteDbState,
-) -> Result<Option<String>, String> {
-    let order = OrderSpec::new(vec![
-        OrderField::json_integer("sort_index", OrderDirection::Asc)?,
-        OrderField::json_text("created_at", OrderDirection::Asc)?,
-    ]);
-    db.with_conn(|conn| {
-        Ok(
-            db_list(conn, DbTable::GeminiCliOfficialAccount, Some(&order))?
-                .into_iter()
-                .find_map(|record| {
-                    record
-                        .get("provider_id")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|provider_id| {
-                            !provider_id.is_empty() && *provider_id != "__local__"
-                        })
-                        .map(str::to_string)
-                }),
-        )
-    })
-}
-
 pub async fn import_gemini_cli_default_provider_from_local_files(
     db: &crate::db::SqliteDbState,
-    require_persisted_official_account: bool,
+    require_local_official_runtime: bool,
 ) -> Result<Option<GeminiCliProvider>, String> {
     if db.with_conn(|conn| db_count(conn, DbTable::GeminiCliProvider))? > 0 {
         return Ok(None);
     }
 
-    let (_, category, settings_config) = match load_local_gemini_provider_snapshot(db).await {
-        Ok(snapshot) => snapshot,
-        Err(error) if error == "No Gemini CLI local provider config found" => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let official_account_provider_id = if require_persisted_official_account {
-        first_gemini_cli_official_account_provider_id(db)?
-    } else {
-        None
-    };
-    if require_persisted_official_account
-        && (category != "official" || official_account_provider_id.is_none())
-    {
+    let (_, category, settings_config, has_local_official_runtime) =
+        match load_local_gemini_provider_snapshot(db).await {
+            Ok(snapshot) => snapshot,
+            Err(error) if error == GEMINI_CLI_NO_LOCAL_PROVIDER_CONFIG_ERROR => return Ok(None),
+            Err(error) => return Err(error),
+        };
+    if require_local_official_runtime && (category != "official" || !has_local_official_runtime) {
         return Ok(None);
     }
 
@@ -1161,7 +1156,7 @@ pub async fn import_gemini_cli_default_provider_from_local_files(
         updated_at: now,
     };
 
-    let provider_id = official_account_provider_id.unwrap_or_else(db_new_id);
+    let provider_id = db_new_id();
     let inserted = db.with_conn(|conn| {
         if db_count(conn, DbTable::GeminiCliProvider)? > 0 {
             return Ok(false);
@@ -1445,27 +1440,8 @@ pub async fn apply_config_internal<R: tauri::Runtime>(
     rewrite_applied_prompt_to_current_file(db).await?;
     let now = Local::now().to_rfc3339();
 
-    db.with_conn(|conn| {
-        db_patch_where_bool(
-            conn,
-            DbTable::GeminiCliProvider,
-            &JsonFieldPath::new("is_applied")?,
-            true,
-            &[
-                ("is_applied", serde_json::Value::Bool(false)),
-                ("updated_at", serde_json::Value::String(now.clone())),
-            ],
-        )?;
-        db_patch_fields(
-            conn,
-            DbTable::GeminiCliProvider,
-            provider_id,
-            &[
-                ("is_applied", serde_json::Value::Bool(true)),
-                ("updated_at", serde_json::Value::String(now.clone())),
-            ],
-        )?;
-        Ok(())
+    db.with_conn_mut(|conn| {
+        db_update_applied_status(conn, DbTable::GeminiCliProvider, Some(provider_id), &now)
     })?;
 
     let payload = if from_tray { "tray" } else { "window" };
@@ -1833,27 +1809,8 @@ pub async fn apply_prompt_config_internal<R: tauri::Runtime>(
     let prompt_config = get_gemini_prompt_from_sqlite(db, config_id)?
         .ok_or_else(|| format!("Prompt config '{}' not found", config_id))?;
     let now = Local::now().to_rfc3339();
-    db.with_conn(|conn| {
-        db_patch_where_bool(
-            conn,
-            DbTable::GeminiCliPromptConfig,
-            &JsonFieldPath::new("is_applied")?,
-            true,
-            &[
-                ("is_applied", serde_json::Value::Bool(false)),
-                ("updated_at", serde_json::Value::String(now.clone())),
-            ],
-        )?;
-        db_patch_fields(
-            conn,
-            DbTable::GeminiCliPromptConfig,
-            config_id,
-            &[
-                ("is_applied", serde_json::Value::Bool(true)),
-                ("updated_at", serde_json::Value::String(now.clone())),
-            ],
-        )?;
-        Ok(())
+    db.with_conn_mut(|conn| {
+        db_update_applied_status(conn, DbTable::GeminiCliPromptConfig, Some(config_id), &now)
     })?;
     write_prompt_content_to_file(Some(&db), Some(prompt_config.content.as_str())).await?;
     let payload = if from_tray { "tray" } else { "window" };

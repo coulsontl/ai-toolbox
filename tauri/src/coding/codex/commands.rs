@@ -5,10 +5,12 @@ use std::fs;
 use std::path::PathBuf;
 
 use super::adapter;
+use super::constants::CODEX_LOCAL_PROVIDER_ID;
 use super::history_sync;
 use super::official_accounts::{
-    clear_all_codex_official_account_apply_status, codex_provider_has_official_accounts,
-    ensure_codex_provider_has_no_official_accounts, sync_codex_official_account_apply_status,
+    auth_has_official_runtime, clear_all_codex_official_account_apply_status,
+    codex_provider_has_official_accounts, ensure_codex_provider_has_no_official_accounts,
+    sync_codex_official_account_apply_status,
 };
 use super::plugin_ops;
 use super::plugin_state;
@@ -25,8 +27,8 @@ use crate::coding::prompt_file::{read_prompt_content_file, write_prompt_content_
 use crate::coding::runtime_location;
 use crate::coding::skills::commands::resync_all_skills_if_tool_path_changed;
 use crate::db::helpers::{
-    db_count, db_delete, db_delete_all, db_get, db_list, db_max_i64, db_patch_fields,
-    db_patch_where_bool, db_put, db_query_by_bool,
+    db_count, db_delete, db_delete_all, db_get, db_list, db_max_i64, db_patch_fields, db_put,
+    db_query_by_bool, db_update_applied_status,
 };
 use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
@@ -35,6 +37,7 @@ use chrono::Local;
 use tauri::Emitter;
 
 const PROTECTED_TOP_LEVEL_TOML_KEYS: [&str; 3] = ["mcp_servers", "features", "plugins"];
+const CODEX_NO_LOCAL_PROVIDER_CONFIG_ERROR: &str = "No config files found";
 
 const CODEX_MODEL_CATALOG_URLS: [&str; 2] = [
     "https://raw.githubusercontent.com/router-for-me/models/refs/heads/main/models.json",
@@ -219,7 +222,7 @@ async fn get_local_prompt_config(
 
     let now = Local::now().to_rfc3339();
     Ok(Some(CodexPromptConfig {
-        id: "__local__".to_string(),
+        id: CODEX_LOCAL_PROVIDER_ID.to_string(),
         name: "default".to_string(),
         content: prompt_content,
         is_applied: true,
@@ -869,7 +872,7 @@ async fn load_local_codex_provider_snapshot(
     let config_path = root_dir.join("config.toml");
 
     if !auth_path.exists() && !config_path.exists() {
-        return Err("No config files found".to_string());
+        return Err(CODEX_NO_LOCAL_PROVIDER_CONFIG_ERROR.to_string());
     }
 
     let auth: serde_json::Value = if auth_path.exists() {
@@ -917,7 +920,7 @@ async fn load_temp_provider_from_files_with_db(
 
     let now = Local::now().to_rfc3339();
     Ok(CodexProvider {
-        id: "__local__".to_string(), // Special ID to indicate this is from local files
+        id: CODEX_LOCAL_PROVIDER_ID.to_string(), // Special ID to indicate this is from local files
         name: "default".to_string(),
         category,
         settings_config,
@@ -935,49 +938,23 @@ async fn load_temp_provider_from_files_with_db(
     })
 }
 
-fn first_codex_official_account_provider_id(
-    db: &crate::db::SqliteDbState,
-) -> Result<Option<String>, String> {
-    let order = OrderSpec::new(vec![
-        OrderField::json_integer("sort_index", OrderDirection::Asc)?,
-        OrderField::json_text("created_at", OrderDirection::Asc)?,
-    ]);
-    db.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::CodexOfficialAccount, Some(&order))?
-            .into_iter()
-            .find_map(|record| {
-                record
-                    .get("provider_id")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::trim)
-                    .filter(|provider_id| !provider_id.is_empty() && *provider_id != "__local__")
-                    .map(str::to_string)
-            }))
-    })
-}
-
 pub async fn import_codex_default_provider_from_local_files(
     db: &crate::db::SqliteDbState,
-    require_persisted_official_account: bool,
+    require_local_official_runtime: bool,
 ) -> Result<Option<CodexProvider>, String> {
     if db.with_conn(|conn| db_count(conn, DbTable::CodexProvider))? > 0 {
         return Ok(None);
     }
 
-    let (_, provider_settings, settings_config) =
+    let (auth, provider_settings, settings_config) =
         match load_local_codex_provider_snapshot(Some(db)).await {
             Ok(snapshot) => snapshot,
-            Err(error) if error == "No config files found" => return Ok(None),
+            Err(error) if error == CODEX_NO_LOCAL_PROVIDER_CONFIG_ERROR => return Ok(None),
             Err(error) => return Err(error),
         };
     let category = infer_codex_provider_category_from_settings(&provider_settings);
-    let official_account_provider_id = if require_persisted_official_account {
-        first_codex_official_account_provider_id(db)?
-    } else {
-        None
-    };
-    if require_persisted_official_account
-        && (category != "official" || official_account_provider_id.is_none())
+    if require_local_official_runtime
+        && (category != "official" || !auth_has_official_runtime(&auth))
     {
         return Ok(None);
     }
@@ -1000,7 +977,7 @@ pub async fn import_codex_default_provider_from_local_files(
         updated_at: now,
     };
 
-    let provider_id = official_account_provider_id.unwrap_or_else(db_new_id);
+    let provider_id = db_new_id();
     let inserted = db.with_conn(|conn| {
         if db_count(conn, DbTable::CodexProvider)? > 0 {
             return Ok(false);
@@ -1798,6 +1775,9 @@ pub async fn delete_codex_provider(
     app: tauri::AppHandle,
     id: String,
 ) -> Result<(), String> {
+    if id == CODEX_LOCAL_PROVIDER_ID {
+        return Err("Local Codex provider must be saved before it can be deleted".to_string());
+    }
     let db = state.db();
     ensure_codex_provider_has_no_official_accounts(&db, &id).await?;
 
@@ -1813,6 +1793,9 @@ pub async fn reorder_codex_providers(
     state: tauri::State<'_, SqliteDbState>,
     ids: Vec<String>,
 ) -> Result<(), String> {
+    if ids.iter().any(|id| id == CODEX_LOCAL_PROVIDER_ID) {
+        return Err("Local Codex provider must be saved before it can be reordered".to_string());
+    }
     let db = state.db();
     let now = Local::now().to_rfc3339();
 
@@ -1844,6 +1827,9 @@ pub async fn select_codex_provider(
     app: tauri::AppHandle,
     id: String,
 ) -> Result<(), String> {
+    if id == CODEX_LOCAL_PROVIDER_ID {
+        return Err("Local Codex provider must be saved before it can be selected".to_string());
+    }
     let db = state.db();
     let provider = query_codex_provider_by_id(&db, &id).await?;
     apply_config_internal(&db, &app, &id, false).await?;
@@ -1863,27 +1849,8 @@ async fn update_is_applied_status(
     let now = Local::now().to_rfc3339();
     let target_id = target_id.to_string(); // Clone for bind
 
-    db.with_conn(|conn| {
-        db_patch_where_bool(
-            conn,
-            DbTable::CodexProvider,
-            &JsonFieldPath::new("is_applied")?,
-            true,
-            &[
-                ("is_applied", serde_json::Value::Bool(false)),
-                ("updated_at", serde_json::Value::String(now.clone())),
-            ],
-        )?;
-        db_patch_fields(
-            conn,
-            DbTable::CodexProvider,
-            &target_id,
-            &[
-                ("is_applied", serde_json::Value::Bool(true)),
-                ("updated_at", serde_json::Value::String(now.clone())),
-            ],
-        )?;
-        Ok(())
+    db.with_conn_mut(|conn| {
+        db_update_applied_status(conn, DbTable::CodexProvider, Some(&target_id), &now)
     })?;
 
     Ok(())
@@ -2031,6 +1998,9 @@ pub async fn apply_codex_config(
     app: tauri::AppHandle,
     provider_id: String,
 ) -> Result<(), String> {
+    if provider_id == CODEX_LOCAL_PROVIDER_ID {
+        return Err("Local Codex provider must be saved before it can be applied".to_string());
+    }
     let db = state.db();
     apply_config_internal(&db, &app, &provider_id, false).await
 }
@@ -2043,6 +2013,9 @@ pub async fn toggle_codex_provider_disabled(
     provider_id: String,
     is_disabled: bool,
 ) -> Result<(), String> {
+    if provider_id == CODEX_LOCAL_PROVIDER_ID {
+        return Err("Local Codex provider must be saved before it can be changed".to_string());
+    }
     let db = state.db();
 
     // Update is_disabled field in database
@@ -2080,6 +2053,9 @@ pub async fn apply_config_internal<R: tauri::Runtime>(
     provider_id: &str,
     from_tray: bool,
 ) -> Result<(), String> {
+    if provider_id == CODEX_LOCAL_PROVIDER_ID {
+        return Err("Local Codex provider must be saved before it can be applied".to_string());
+    }
     // Apply config to files
     apply_config_to_file(db, provider_id).await?;
 
@@ -2240,7 +2216,7 @@ pub async fn apply_prompt_config_internal<R: tauri::Runtime>(
     config_id: &str,
     from_tray: bool,
 ) -> Result<(), String> {
-    if config_id == "__local__" {
+    if config_id == CODEX_LOCAL_PROVIDER_ID {
         let db = state.db();
         let local_prompt = get_local_prompt_config(Some(&db))
             .await?
@@ -2260,27 +2236,8 @@ pub async fn apply_prompt_config_internal<R: tauri::Runtime>(
 
     let now = Local::now().to_rfc3339();
 
-    db.with_conn(|conn| {
-        db_patch_where_bool(
-            conn,
-            DbTable::CodexPromptConfig,
-            &JsonFieldPath::new("is_applied")?,
-            true,
-            &[
-                ("is_applied", serde_json::Value::Bool(false)),
-                ("updated_at", serde_json::Value::String(now.clone())),
-            ],
-        )?;
-        db_patch_fields(
-            conn,
-            DbTable::CodexPromptConfig,
-            config_id,
-            &[
-                ("is_applied", serde_json::Value::Bool(true)),
-                ("updated_at", serde_json::Value::String(now.clone())),
-            ],
-        )?;
-        Ok(())
+    db.with_conn_mut(|conn| {
+        db_update_applied_status(conn, DbTable::CodexPromptConfig, Some(config_id), &now)
     })?;
     write_prompt_content_to_file(Some(&db), Some(prompt_config.content.as_str())).await?;
 

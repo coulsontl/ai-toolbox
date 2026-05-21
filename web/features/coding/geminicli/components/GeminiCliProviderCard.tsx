@@ -1,5 +1,5 @@
 import React from 'react';
-import { Card, Space, Button, Dropdown, Tag, Typography, Switch, message } from 'antd';
+import { Card, Space, Button, Dropdown, Tag, Typography, Switch, Tooltip, message } from 'antd';
 import type { MenuProps } from 'antd';
 import {
   CheckCircleOutlined,
@@ -439,6 +439,11 @@ const GeminiCliProviderCard: React.FC<GeminiCliProviderCardProps> = ({
                   </Text>
                 )}
                 {isOfficialProvider && <Tag>{t('geminicli.provider.modeOfficial')}</Tag>}
+                {isOfficialProvider && gatewayTakeoverActive && (
+                  <Tooltip title={t('gateway.takeover.officialBypassedTooltip')}>
+                    <Tag color="gold">{t('gateway.takeover.officialBypassedTag')}</Tag>
+                  </Tooltip>
+                )}
                 {showRuntimeApplied && (
                   <Tag color="green" icon={<CheckCircleOutlined />}>
                     {t('geminicli.provider.applied')}

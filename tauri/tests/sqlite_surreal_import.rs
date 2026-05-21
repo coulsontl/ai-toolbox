@@ -1,7 +1,8 @@
 use ai_toolbox_lib::db::helpers::{db_count, db_get, db_list};
 use ai_toolbox_lib::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
 use ai_toolbox_lib::db::surreal_import::{
-    import_missing_known_tables_from_surreal, import_tables_from_surreal,
+    import_all_known_tables_from_surreal_with_warnings, import_missing_known_tables_from_surreal,
+    import_tables_from_surreal, MigrationPaths,
 };
 use ai_toolbox_lib::db::SqliteDbState;
 use serde_json::json;
@@ -206,4 +207,28 @@ async fn missing_known_table_import_preserves_non_empty_sqlite_tables() {
         provider.get("name").and_then(|value| value.as_str()),
         Some("Surreal Provider")
     );
+}
+
+#[tokio::test]
+async fn all_known_table_import_writes_warnings_for_empty_legacy_tables() {
+    let (_surreal_temp_dir, surreal) = temp_surreal_db().await;
+    surreal
+        .query("UPSERT settings:`app` CONTENT { language: 'zh-CN' }")
+        .await
+        .expect("write surreal settings");
+    let sqlite_state = SqliteDbState::in_memory_for_test().expect("sqlite");
+    let app_data_dir = tempfile::tempdir().expect("app data dir");
+    let paths = MigrationPaths::new(app_data_dir.path());
+
+    let report =
+        import_all_known_tables_from_surreal_with_warnings(&sqlite_state, &surreal, &paths)
+            .await
+            .expect("import all known tables");
+
+    assert!(report
+        .tables
+        .iter()
+        .any(|table| table.table == DbTable::Settings.name() && table.surreal_count == 1));
+    let warnings = std::fs::read_to_string(&paths.migration_warnings).expect("warnings");
+    assert!(warnings.contains("Legacy SurrealDB table"));
 }

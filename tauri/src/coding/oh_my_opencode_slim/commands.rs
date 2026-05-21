@@ -6,8 +6,8 @@ use super::adapter;
 use super::types::*;
 use crate::coding::runtime_location;
 use crate::db::helpers::{
-    db_create, db_delete, db_get, db_list, db_patch_fields, db_patch_where_bool, db_put,
-    db_query_by_bool,
+    db_create, db_delete, db_get, db_list, db_patch_fields, db_put, db_query_by_bool,
+    db_update_applied_status,
 };
 use crate::db::schema::{DbTable, JsonFieldPath};
 use crate::db::SqliteDbState;
@@ -435,18 +435,8 @@ pub async fn clear_oh_my_opencode_slim_applied_config(
     }
 
     let now = Local::now().to_rfc3339();
-    db.with_conn(|conn| {
-        db_patch_where_bool(
-            conn,
-            DbTable::OhMyOpenCodeSlimConfig,
-            &JsonFieldPath::new("is_applied")?,
-            true,
-            &[
-                ("is_applied", Value::Bool(false)),
-                ("updated_at", Value::String(now.clone())),
-            ],
-        )
-        .map(|_| ())
+    db.with_conn_mut(|conn| {
+        db_update_applied_status(conn, DbTable::OhMyOpenCodeSlimConfig, None, &now)
     })?;
 
     let _ = app.emit("config-changed", "window");
@@ -605,29 +595,8 @@ pub async fn apply_config_internal<R: tauri::Runtime>(
 
     let now = Local::now().to_rfc3339();
 
-    let applied_field = JsonFieldPath::new("is_applied")?;
-    db.with_conn(|conn| {
-        db_patch_where_bool(
-            conn,
-            DbTable::OhMyOpenCodeSlimConfig,
-            &applied_field,
-            true,
-            &[
-                ("is_applied", Value::Bool(false)),
-                ("updated_at", Value::String(now.clone())),
-            ],
-        )?;
-        db_patch_fields(
-            conn,
-            DbTable::OhMyOpenCodeSlimConfig,
-            config_id,
-            &[
-                ("is_applied", Value::Bool(true)),
-                ("updated_at", Value::String(now.clone())),
-            ],
-        )?
-        .ok_or_else(|| format!("Config '{}' not found", config_id))?;
-        Ok(())
+    db.with_conn_mut(|conn| {
+        db_update_applied_status(conn, DbTable::OhMyOpenCodeSlimConfig, Some(config_id), &now)
     })?;
 
     let payload = if from_tray { "tray" } else { "window" };

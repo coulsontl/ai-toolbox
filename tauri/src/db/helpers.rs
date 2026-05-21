@@ -112,7 +112,12 @@ pub fn db_query_by_field(
             query_rows(conn, &sql, &[value])
         }
         Value::Array(_) | Value::Object(_) => {
-            Err("db_query_by_field does not support array/object equality yet".to_string())
+            let expected_json = serde_json::to_string(expected).map_err(|error| {
+                format!("Failed to serialize JSON field comparison value: {error}")
+            })?;
+            sql.push_str(&format!("json({field_expr}) = json(?1)"));
+            append_order_and_limit(&mut sql, order, limit);
+            query_rows(conn, &sql, &[&expected_json])
         }
     }
 }
@@ -198,6 +203,41 @@ pub fn db_patch_where_bool(
     Ok(changed)
 }
 
+pub fn db_update_applied_status(
+    conn: &mut Connection,
+    table: DbTable,
+    target_id: Option<&str>,
+    updated_at: &str,
+) -> Result<(), String> {
+    db_transaction(conn, |tx| {
+        db_patch_where_bool(
+            tx,
+            table,
+            &JsonFieldPath::new("is_applied")?,
+            true,
+            &[
+                ("is_applied", Value::Bool(false)),
+                ("updated_at", Value::String(updated_at.to_string())),
+            ],
+        )?;
+
+        if let Some(target_id) = target_id {
+            db_patch_fields(
+                tx,
+                table,
+                target_id,
+                &[
+                    ("is_applied", Value::Bool(true)),
+                    ("updated_at", Value::String(updated_at.to_string())),
+                ],
+            )?
+            .ok_or_else(|| format!("Record '{}' not found in {}", target_id, table.name()))?;
+        }
+
+        Ok(())
+    })
+}
+
 pub fn db_transaction<T>(
     conn: &mut Connection,
     operation: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, String>,
@@ -266,31 +306,68 @@ fn db_put_into_table(
     id: &str,
     data: &Value,
 ) -> Result<(), String> {
-    let data_json = serde_json::to_string(data)
-        .map_err(|error| format!("Failed to serialize JSON payload for {table_name}: {error}"))?;
     let now = now_string();
-    let created_at = data
+    let existing_created_at = conn
+        .query_row(
+            &format!("SELECT created_at FROM {table_name} WHERE id = ?1 LIMIT 1"),
+            [id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("Failed to read existing timestamp from {table_name}: {error}"))?;
+    let mut stored_data = data.clone();
+    let stored_object = stored_data
+        .as_object_mut()
+        .ok_or_else(|| format!("SQLite JSONB payload for {table_name} must be an object"))?;
+    let has_json_created_at = stored_object.contains_key("created_at");
+    let has_json_updated_at = stored_object.contains_key("updated_at");
+    let created_at = stored_object
         .get("created_at")
-        .and_then(Value::as_str)
-        .unwrap_or(&now);
-    let updated_at = data
+        .and_then(json_timestamp_to_column_string)
+        .or(existing_created_at)
+        .unwrap_or_else(|| now.clone());
+    let updated_at = stored_object
         .get("updated_at")
-        .and_then(Value::as_str)
-        .unwrap_or(&now);
+        .and_then(json_timestamp_to_column_string)
+        .unwrap_or_else(|| now.clone());
+    if !has_json_created_at {
+        stored_object.insert("created_at".to_string(), Value::String(created_at.clone()));
+    }
+    if !has_json_updated_at {
+        stored_object.insert("updated_at".to_string(), Value::String(updated_at.clone()));
+    }
+    let data_json = serde_json::to_string(&stored_data)
+        .map_err(|error| format!("Failed to serialize JSON payload for {table_name}: {error}"))?;
 
     conn.execute(
         &format!(
             "INSERT INTO {table_name} (id, data, created_at, updated_at)
              VALUES (?1, jsonb(?2), ?3, ?4)
-             ON CONFLICT(id) DO UPDATE SET
-               data = excluded.data,
-               updated_at = excluded.updated_at"
+	             ON CONFLICT(id) DO UPDATE SET
+	               data = excluded.data,
+	               created_at = excluded.created_at,
+	               updated_at = excluded.updated_at"
         ),
         (id, data_json, created_at, updated_at),
     )
     .map_err(|error| format!("Failed to write record into {table_name}: {error}"))?;
 
     Ok(())
+}
+
+fn json_timestamp_to_column_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    }
 }
 
 fn query_rows(conn: &Connection, sql: &str, params: &[&dyn ToSql]) -> Result<Vec<Value>, String> {

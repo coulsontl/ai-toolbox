@@ -83,6 +83,10 @@ const GatewayTakeoverButton: React.FC<GatewayTakeoverButtonProps> = ({ cliKey, o
   const visible = Boolean(status && (status.can_takeover || status.can_restore_direct || status.state !== 'direct'));
   const takeoverActive = isGatewayTakeoverActive(status);
   const dot = status?.dot ?? 'gray';
+  const statusMessage =
+    status?.state === 'no_proxy_provider'
+      ? t('gateway.takeover.noProxyProvider')
+      : status?.message ?? t('gateway.takeover.buttonTooltip');
 
   const handleOpen = (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -150,7 +154,7 @@ const GatewayTakeoverButton: React.FC<GatewayTakeoverButtonProps> = ({ cliKey, o
       <button
         type="button"
         className={joinClassNames(styles.button, takeoverActive && styles.buttonActive)}
-        title={status?.message ?? t('gateway.takeover.buttonTooltip')}
+        title={statusMessage}
         onClick={handleOpen}
       >
         <span className={joinClassNames(styles.dot, styles[`dot_${dot}`])} aria-hidden="true" />
@@ -178,12 +182,7 @@ const GatewayTakeoverButton: React.FC<GatewayTakeoverButtonProps> = ({ cliKey, o
                       cli: t(`settings.gateway.cli.${cliKey}`),
                     })}
                   </h3>
-                  <p>
-                    {status?.message ??
-                      t('gateway.takeover.confirmSubtitle', {
-                        cli: t(`settings.gateway.cli.${cliKey}`),
-                      })}
-                  </p>
+                  <p>{statusMessage}</p>
                 </div>
               </div>
               <button

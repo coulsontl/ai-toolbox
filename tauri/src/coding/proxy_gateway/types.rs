@@ -219,6 +219,7 @@ pub enum GatewayCliTakeoverState {
     GatewayStopped,
     OutdatedOrigin,
     Drifted,
+    NoProxyProvider,
     RestoreUnavailable,
     Unsupported,
     Error,
@@ -481,6 +482,20 @@ pub struct GatewayRequestLogSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub struct GatewayProviderAttempt {
+    pub provider_id: Option<String>,
+    pub provider_name: Option<String>,
+    pub upstream_model_id: Option<String>,
+    pub status_code: Option<u16>,
+    pub success: bool,
+    pub error_category: Option<String>,
+    pub error_message: Option<String>,
+    pub attempt_count: u32,
+    pub total_attempt_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct GatewayRequestLogDetail {
     #[serde(flatten)]
     pub summary: GatewayRequestLogSummary,
@@ -490,6 +505,8 @@ pub struct GatewayRequestLogDetail {
     pub upstream_request_body: Option<String>,
     pub response_headers: Option<BTreeMap<String, String>>,
     pub response_body: Option<String>,
+    #[serde(default)]
+    pub provider_attempts: Vec<GatewayProviderAttempt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

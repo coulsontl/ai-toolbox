@@ -1,4 +1,6 @@
-use crate::coding::proxy_gateway::types::{GatewayCliKey, ProxyGatewaySettings};
+use crate::coding::proxy_gateway::types::{
+    GatewayCliKey, GatewayProviderAttempt, ProxyGatewaySettings,
+};
 use crate::coding::proxy_gateway::usage_parser::{SseUsageCollector, TokenUsage};
 use futures_util::{Stream, StreamExt};
 use serde_json::Value;
@@ -9,6 +11,9 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time;
+
+pub(super) const MAX_REQUEST_HEADER_BYTES: usize = 64 * 1024;
+pub(super) const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 pub(super) type DebugBodyStream =
     Pin<Box<dyn Stream<Item = Result<Vec<u8>, String>> + Send + 'static>>;
@@ -50,6 +55,7 @@ pub(super) struct DebugHttpResponse {
     pub(super) error_category: Option<String>,
     pub(super) attempt_count: u32,
     pub(super) provider_attempt_count: u32,
+    pub(super) provider_attempts: Vec<GatewayProviderAttempt>,
     pub(super) failover: bool,
     pub(super) note: String,
 }
@@ -76,6 +82,12 @@ pub(super) async fn read_http_request(
             break;
         }
         raw.extend_from_slice(&buffer[..read]);
+        if raw.len() > MAX_REQUEST_HEADER_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Gateway request headers exceed the maximum allowed size",
+            ));
+        }
         header_end = find_header_end(&raw);
     }
 
@@ -99,8 +111,20 @@ pub(super) async fn read_http_request(
     let content_length = header_value(&headers, "content-length")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0);
+    if content_length > MAX_REQUEST_BODY_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Gateway request body exceeds the maximum allowed size",
+        ));
+    }
     let body_start = header_end.min(raw.len());
     let mut body = raw[body_start..].to_vec();
+    if body.len() > MAX_REQUEST_BODY_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Gateway request body exceeds the maximum allowed size",
+        ));
+    }
     while body.len() < content_length {
         let read = time::timeout(Duration::from_secs(30), stream.read(&mut buffer))
             .await
@@ -115,6 +139,12 @@ pub(super) async fn read_http_request(
         }
         raw.extend_from_slice(&buffer[..read]);
         body.extend_from_slice(&buffer[..read]);
+        if body.len() > MAX_REQUEST_BODY_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Gateway request body exceeds the maximum allowed size",
+            ));
+        }
     }
 
     Ok(DebugHttpRequest {
@@ -164,6 +194,7 @@ pub(super) fn json_response(
         error_category: None,
         attempt_count: 0,
         provider_attempt_count: 0,
+        provider_attempts: Vec::new(),
         failover: false,
         note: note.to_string(),
     }
@@ -199,6 +230,7 @@ pub(super) fn empty_response(
         error_category: None,
         attempt_count: 0,
         provider_attempt_count: 0,
+        provider_attempts: Vec::new(),
         failover: false,
         note: note.to_string(),
     }
@@ -276,22 +308,33 @@ async fn write_streaming_body(
         .max(1);
     let idle_timeout = Duration::from_secs(idle_timeout_secs);
 
+    let mut write_result: std::io::Result<()> = Ok(());
     loop {
-        let next_chunk = time::timeout(idle_timeout, body_stream.next())
-            .await
-            .map_err(|_| {
+        let next_chunk = match time::timeout(idle_timeout, body_stream.next()).await {
+            Ok(next_chunk) => next_chunk,
+            Err(_) => {
                 response.error_category = Some("stream_idle_timeout".to_string());
                 response.note = format!(
                     "upstream streaming response was idle for {} seconds",
                     idle_timeout.as_secs()
                 );
-                std::io::Error::new(std::io::ErrorKind::TimedOut, response.note.clone())
-            })?;
+                write_result = Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    response.note.clone(),
+                ));
+                break;
+            }
+        };
         let Some(chunk_result) = next_chunk else {
             break;
         };
-        let chunk =
-            chunk_result.map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+        let chunk = match chunk_result {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                write_result = Err(std::io::Error::new(std::io::ErrorKind::Other, error));
+                break;
+            }
+        };
         if chunk.is_empty() {
             continue;
         }
@@ -306,22 +349,36 @@ async fn write_streaming_body(
         response.response_body_bytes = response
             .response_body_bytes
             .saturating_add(chunk.len() as u64);
-        if let Some(collector) = usage_collector.as_mut() {
-            collector.push_chunk(&chunk);
+        if let (Some(cli_key), Some(collector)) = (response.cli_key, usage_collector.as_mut()) {
+            collector.push_chunk(cli_key, &chunk);
         }
         append_body_snapshot(response, &chunk, settings);
         let chunk_header = format!("{:X}\r\n", chunk.len());
-        stream.write_all(chunk_header.as_bytes()).await?;
-        stream.write_all(&chunk).await?;
-        stream.write_all(b"\r\n").await?;
-        stream.flush().await?;
+        if let Err(error) = stream.write_all(chunk_header.as_bytes()).await {
+            write_result = Err(error);
+            break;
+        }
+        if let Err(error) = stream.write_all(&chunk).await {
+            write_result = Err(error);
+            break;
+        }
+        if let Err(error) = stream.write_all(b"\r\n").await {
+            write_result = Err(error);
+            break;
+        }
+        if let Err(error) = stream.flush().await {
+            write_result = Err(error);
+            break;
+        }
     }
 
-    stream.write_all(b"0\r\n\r\n").await?;
+    if write_result.is_ok() {
+        write_result = stream.write_all(b"0\r\n\r\n").await;
+    }
     if let (Some(cli_key), Some(collector)) = (response.cli_key, usage_collector) {
         response.token_usage = collector.finish(cli_key);
     }
-    Ok(())
+    write_result
 }
 
 fn append_body_snapshot(

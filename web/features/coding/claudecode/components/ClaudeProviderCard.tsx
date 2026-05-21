@@ -1,5 +1,5 @@
 import React from 'react';
-import { Card, Space, Button, Dropdown, Tag, Typography, Switch, message } from 'antd';
+import { Card, Space, Button, Dropdown, Tag, Typography, Switch, Tooltip, message } from 'antd';
 import {
   ApiOutlined,
   CheckOutlined,
@@ -218,6 +218,11 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
               )}
               {isOfficialProvider && (
                 <Tag>{t('claudecode.provider.modeOfficial')}</Tag>
+              )}
+              {isOfficialProvider && gatewayTakeoverActive && (
+                <Tooltip title={t('gateway.takeover.officialBypassedTooltip')}>
+                  <Tag color="gold">{t('gateway.takeover.officialBypassedTag')}</Tag>
+                </Tooltip>
               )}
               {showRuntimeApplied && (
                 <Tag color="green" icon={<CheckCircleOutlined />}>

@@ -81,6 +81,7 @@ export type GatewayCliTakeoverState =
   | 'gateway_stopped'
   | 'outdated_origin'
   | 'drifted'
+  | 'no_proxy_provider'
   | 'restore_unavailable'
   | 'unsupported'
   | 'error';
@@ -234,12 +235,25 @@ export interface GatewayRequestLogSummary {
   first_token_ms: number | null;
 }
 
+export interface GatewayProviderAttempt {
+  provider_id: string | null;
+  provider_name: string | null;
+  upstream_model_id: string | null;
+  status_code: number | null;
+  success: boolean;
+  error_category: string | null;
+  error_message: string | null;
+  attempt_count: number;
+  total_attempt_count: number;
+}
+
 export interface GatewayRequestLogDetail extends GatewayRequestLogSummary {
   request_headers: Record<string, string> | null;
   request_body: string | null;
   upstream_request_body: string | null;
   response_headers: Record<string, string> | null;
   response_body: string | null;
+  provider_attempts: GatewayProviderAttempt[];
 }
 
 export type ModelHealthStateKind = 'healthy' | 'degraded' | 'cooling_down' | 'probing';

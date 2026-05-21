@@ -150,14 +150,20 @@ pub fn proxy_gateway_status(
 }
 
 #[tauri::command]
-pub fn proxy_gateway_health_check(
+pub async fn proxy_gateway_health_check(
     gateway_state: tauri::State<'_, ProxyGatewayState>,
 ) -> Result<ProxyGatewayHealthCheckResult, String> {
-    let manager = gateway_state
-        .manager
-        .lock()
-        .map_err(|_| "Proxy gateway manager lock poisoned".to_string())?;
-    Ok(manager.health_check())
+    let addr = {
+        let manager = gateway_state
+            .manager
+            .lock()
+            .map_err(|_| "Proxy gateway manager lock poisoned".to_string())?;
+        match manager.health_check_address() {
+            Ok(addr) => addr,
+            Err(result) => return Ok(result),
+        }
+    };
+    Ok(crate::coding::proxy_gateway::runtime::health_check_socket_async(addr).await)
 }
 
 #[tauri::command]

@@ -124,11 +124,12 @@
 				"lines": "{{count}} lines",
 				"expand": "Expand",
 				"collapse": "Collapse",
-				"tokensShort": "In {{input}} / out {{output}} / cache {{cache}}",
-				"tokensValue": "In {{input}} / out {{output}} / cache read {{cacheRead}} / cache write {{cacheCreation}} / total {{total}}",
-				"attemptBadge": "{{count}}/{{total}}x",
-				"providerUnselected": "No provider selected",
-				"fields": {
+					"tokensShort": "In {{input}} / out {{output}} / cache {{cache}}",
+					"tokensValue": "In {{input}} / out {{output}} / cache read {{cacheRead}} / cache write {{cacheCreation}} / total {{total}}",
+					"attemptBadge": "{{count}}/{{total}}x",
+					"attemptDetail": "#{{index}} status {{status}} · {{current}}/{{total}}x · {{error}}",
+					"providerUnselected": "No provider selected",
+					"fields": {
 					"traceId": "Trace ID",
 					"time": "Time",
 					"provider": "Provider",
@@ -136,12 +137,13 @@
 					"status": "Status",
 					"duration": "Duration",
 					"firstToken": "First token",
-					"streaming": "Streaming",
-					"tokens": "Tokens",
-					"attempts": "Attempts",
-					"upstream": "Upstream",
-					"error": "Error"
-				},
+						"streaming": "Streaming",
+						"tokens": "Tokens",
+						"attempts": "Attempts",
+						"attemptTimeline": "Attempt path",
+						"upstream": "Upstream",
+						"error": "Error"
+					},
 				"detailTabs": {
 					"record": "Record",
 					"body": "Request body",
@@ -169,6 +171,9 @@
 			"buttonTooltip": "View or apply gateway takeover",
 			"confirmTitle": "Take over {{cli}}",
 			"confirmSubtitle": "{{cli}} will route model traffic through the local gateway.",
+			"noProxyProvider": "No proxyable providers are configured. Official subscription providers use CLI-native OAuth and cannot be routed through the gateway.",
+			"officialBypassedTag": "Gateway Bypassed",
+			"officialBypassedTooltip": "Official subscription providers use CLI-native OAuth and cannot be routed through the gateway.",
 			"targets": "Runtime config files to update",
 			"state": {
 				"direct": "Direct",
@@ -176,6 +181,7 @@
 				"gateway_stopped": "Gateway stopped",
 				"outdated_origin": "Gateway address changed",
 				"drifted": "Config drifted",
+				"no_proxy_provider": "No proxyable provider",
 				"restore_unavailable": "Backup missing",
 				"unsupported": "Unsupported",
 				"error": "State error"

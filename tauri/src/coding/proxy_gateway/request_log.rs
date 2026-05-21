@@ -453,6 +453,7 @@ mod tests {
             upstream_request_body: Some(r#"{"model":"upstream"}"#.to_string()),
             response_headers: None,
             response_body: Some(r#"{"ok":true}"#.to_string()),
+            provider_attempts: Vec::new(),
         });
 
         let location = write_request_log(&paths, &ProxyGatewaySettings::default(), &record)

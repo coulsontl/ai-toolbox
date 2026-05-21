@@ -1,10 +1,14 @@
 use super::http_io::{DebugHttpRequest, DebugHttpResponse};
 use super::providers::UpstreamProvider;
 use crate::coding::proxy_gateway::request_log;
+use crate::coding::proxy_gateway::types::ProxyGatewaySettings;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
 
-pub(super) fn log_incoming_request(request: &DebugHttpRequest) {
+pub(super) fn log_incoming_request(request: &DebugHttpRequest, settings: &ProxyGatewaySettings) {
+    if !should_log_summary(settings) {
+        return;
+    }
     println!(
         "[proxy-gateway] request_begin id={} peer={} raw_bytes={} first_line={}",
         request.id, request.peer_addr, request.raw_len, request.first_line
@@ -13,35 +17,39 @@ pub(super) fn log_incoming_request(request: &DebugHttpRequest) {
         "[proxy-gateway] request_line id={} method={} path={} version={}",
         request.id, request.method, request.path, request.version
     );
-    println!(
-        "[proxy-gateway] request_headers_begin id={} count={}",
-        request.id,
-        request.headers.len()
-    );
-    for (name, value) in &request.headers {
+    if should_log_headers(settings) {
         println!(
-            "[proxy-gateway] request_header id={} {}: {}",
+            "[proxy-gateway] request_headers_begin id={} count={}",
             request.id,
-            name,
-            format_header_text_value_for_debug(name, value)
+            request.headers.len()
         );
+        for (name, value) in &request.headers {
+            println!(
+                "[proxy-gateway] request_header id={} {}: {}",
+                request.id,
+                name,
+                format_header_text_value_for_debug(name, value)
+            );
+        }
+        println!("[proxy-gateway] request_headers_end id={}", request.id);
     }
-    println!("[proxy-gateway] request_headers_end id={}", request.id);
-    println!(
-        "[proxy-gateway] request_body_begin id={} bytes={}",
-        request.id,
-        request.body.len()
-    );
-    if request.body.is_empty() {
-        println!("[proxy-gateway] request_body id={} <empty>", request.id);
-    } else {
+    if should_log_body(settings) {
         println!(
-            "[proxy-gateway] request_body id={}\n{}",
+            "[proxy-gateway] request_body_begin id={} bytes={}",
             request.id,
-            format_body_for_debug_log(&request.body)
+            request.body.len()
         );
+        if request.body.is_empty() {
+            println!("[proxy-gateway] request_body id={} <empty>", request.id);
+        } else {
+            println!(
+                "[proxy-gateway] request_body id={}\n{}",
+                request.id,
+                format_body_for_debug_log(&request.body)
+            );
+        }
+        println!("[proxy-gateway] request_body_end id={}", request.id);
     }
-    println!("[proxy-gateway] request_body_end id={}", request.id);
 }
 
 pub(super) fn format_body_for_debug_log(body: &[u8]) -> String {
@@ -54,23 +62,27 @@ pub(super) fn format_body_for_debug_log(body: &[u8]) -> String {
         return text.to_string();
     };
 
-    omit_large_message_fields(&mut json);
+    sanitize_debug_json(&mut json);
     serde_json::to_string_pretty(&json).unwrap_or_else(|_| text.to_string())
 }
 
-fn omit_large_message_fields(value: &mut Value) {
+fn sanitize_debug_json(value: &mut Value) {
     match value {
         Value::Object(object) => {
+            for (key, child) in object.iter_mut() {
+                if is_sensitive_json_key(key) {
+                    *child = Value::String("[REDACTED]".to_string());
+                    continue;
+                }
+                sanitize_debug_json(child);
+            }
             if let Some(messages) = object.get_mut("messages") {
                 *messages = summarize_omitted_json_value(messages);
-            }
-            for child in object.values_mut() {
-                omit_large_message_fields(child);
             }
         }
         Value::Array(items) => {
             for child in items {
-                omit_large_message_fields(child);
+                sanitize_debug_json(child);
             }
         }
         _ => {}
@@ -92,7 +104,14 @@ fn summarize_omitted_json_value(value: &Value) -> Value {
     }
 }
 
-pub(super) fn log_gateway_decision(request: &DebugHttpRequest, response: &DebugHttpResponse) {
+pub(super) fn log_gateway_decision(
+    request: &DebugHttpRequest,
+    response: &DebugHttpResponse,
+    settings: &ProxyGatewaySettings,
+) {
+    if !should_log_summary(settings) {
+        return;
+    }
     println!(
         "[proxy-gateway] route_decision id={} route={} upstream={} note={}",
         request.id,
@@ -102,28 +121,39 @@ pub(super) fn log_gateway_decision(request: &DebugHttpRequest, response: &DebugH
     );
 }
 
-pub(super) fn log_response(request: &DebugHttpRequest, response: &DebugHttpResponse) {
+pub(super) fn log_response(
+    request: &DebugHttpRequest,
+    response: &DebugHttpResponse,
+    settings: &ProxyGatewaySettings,
+) {
+    if !should_log_summary(settings) {
+        return;
+    }
     println!(
         "[proxy-gateway] response_begin id={} status={} {} body_bytes={}",
         request.id, response.status_code, response.status_text, response.response_body_bytes
     );
-    for (name, value) in &response.headers {
+    if should_log_headers(settings) {
+        for (name, value) in &response.headers {
+            println!(
+                "[proxy-gateway] response_header id={} {}: {}",
+                request.id,
+                name,
+                format_header_text_value_for_debug(name, value)
+            );
+        }
         println!(
-            "[proxy-gateway] response_header id={} {}: {}",
-            request.id,
-            name,
-            format_header_text_value_for_debug(name, value)
+            "[proxy-gateway] response_header id={} Content-Length: {}",
+            request.id, response.response_body_bytes
         );
     }
-    println!(
-        "[proxy-gateway] response_header id={} Content-Length: {}",
-        request.id, response.response_body_bytes
-    );
-    println!(
-        "[proxy-gateway] response_body id={}\n{}",
-        request.id,
-        format_body_for_debug_log(&response.body)
-    );
+    if should_log_body(settings) {
+        println!(
+            "[proxy-gateway] response_body id={}\n{}",
+            request.id,
+            format_body_for_debug_log(&response.body)
+        );
+    }
     println!("[proxy-gateway] response_end id={}", request.id);
 }
 
@@ -133,7 +163,11 @@ pub(super) fn log_upstream_request(
     upstream_url: &reqwest::Url,
     headers: &HeaderMap,
     upstream_body: &[u8],
+    settings: &ProxyGatewaySettings,
 ) {
+    if !should_log_summary(settings) {
+        return;
+    }
     println!(
         "[proxy-gateway] upstream_request_begin id={} provider_id={} provider_name={} cli={} method={} url={} body_bytes={}",
         request.id,
@@ -144,62 +178,77 @@ pub(super) fn log_upstream_request(
         upstream_url,
         upstream_body.len()
     );
-    println!(
-        "[proxy-gateway] upstream_request_headers_begin id={} count={}",
-        request.id,
-        headers.len()
-    );
-    for (name, value) in headers {
+    if should_log_headers(settings) {
         println!(
-            "[proxy-gateway] upstream_request_header id={} {}: {}",
+            "[proxy-gateway] upstream_request_headers_begin id={} count={}",
             request.id,
-            name,
-            format_header_value_for_debug(name.as_str(), value)
+            headers.len()
         );
-    }
-    println!(
-        "[proxy-gateway] upstream_request_headers_end id={}",
-        request.id
-    );
-    if upstream_body.is_empty() {
+        for (name, value) in headers {
+            println!(
+                "[proxy-gateway] upstream_request_header id={} {}: {}",
+                request.id,
+                name,
+                format_header_value_for_debug(name.as_str(), value)
+            );
+        }
         println!(
-            "[proxy-gateway] upstream_request_body id={} <empty>",
+            "[proxy-gateway] upstream_request_headers_end id={}",
             request.id
         );
-    } else {
-        println!(
-            "[proxy-gateway] upstream_request_body id={}\n{}",
-            request.id,
-            format_body_for_debug_log(upstream_body)
-        );
+    }
+    if should_log_body(settings) {
+        if upstream_body.is_empty() {
+            println!(
+                "[proxy-gateway] upstream_request_body id={} <empty>",
+                request.id
+            );
+        } else {
+            println!(
+                "[proxy-gateway] upstream_request_body id={}\n{}",
+                request.id,
+                format_body_for_debug_log(upstream_body)
+            );
+        }
     }
     println!("[proxy-gateway] upstream_request_end id={}", request.id);
 }
 
-pub(super) fn log_upstream_response(request: &DebugHttpRequest, response: &DebugHttpResponse) {
+pub(super) fn log_upstream_response(
+    request: &DebugHttpRequest,
+    response: &DebugHttpResponse,
+    settings: &ProxyGatewaySettings,
+) {
+    if !should_log_summary(settings) {
+        return;
+    }
     println!(
         "[proxy-gateway] upstream_response_begin id={} status={} {} body_bytes={}",
         request.id, response.status_code, response.status_text, response.response_body_bytes
     );
-    for (name, value) in &response.headers {
-        println!(
-            "[proxy-gateway] upstream_response_header id={} {}: {}",
-            request.id,
-            name,
-            format_header_text_value_for_debug(name, value)
-        );
+    if should_log_headers(settings) {
+        for (name, value) in &response.headers {
+            println!(
+                "[proxy-gateway] upstream_response_header id={} {}: {}",
+                request.id,
+                name,
+                format_header_text_value_for_debug(name, value)
+            );
+        }
     }
-    if response.body.is_empty() {
-        println!(
-            "[proxy-gateway] upstream_response_body id={} <empty>",
-            request.id
-        );
-    } else {
-        println!(
-            "[proxy-gateway] upstream_response_body id={}\n{}",
-            request.id,
-            format_body_for_debug_log(&response.body)
-        );
+    if should_log_body(settings) {
+        if response.body.is_empty() {
+            println!(
+                "[proxy-gateway] upstream_response_body id={} <empty>",
+                request.id
+            );
+        } else {
+            println!(
+                "[proxy-gateway] upstream_response_body id={}\n{}",
+                request.id,
+                format_body_for_debug_log(&response.body)
+            );
+        }
     }
     println!("[proxy-gateway] upstream_response_end id={}", request.id);
 }
@@ -219,6 +268,32 @@ fn format_header_text_value_for_debug(name: &str, value: &str) -> String {
 
 fn is_sensitive_header(name: &str) -> bool {
     request_log::is_sensitive_header(&name.to_ascii_lowercase())
+}
+
+fn is_sensitive_json_key(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase();
+    request_log::is_sensitive_header(&normalized)
+        || normalized.contains("api_key")
+        || normalized.contains("apikey")
+        || normalized.contains("access_token")
+        || normalized.contains("refresh_token")
+        || normalized.contains("id_token")
+        || normalized.contains("secret")
+        || normalized.contains("password")
+        || normalized == "key"
+}
+
+fn should_log_summary(settings: &ProxyGatewaySettings) -> bool {
+    settings.request_log_enabled && settings.request_log_level != "off"
+}
+
+fn should_log_headers(settings: &ProxyGatewaySettings) -> bool {
+    should_log_summary(settings)
+        && matches!(settings.request_log_level.as_str(), "headers" | "full")
+}
+
+fn should_log_body(settings: &ProxyGatewaySettings) -> bool {
+    should_log_summary(settings) && matches!(settings.request_log_level.as_str(), "body" | "full")
 }
 
 fn mask_secret(value: &str) -> String {

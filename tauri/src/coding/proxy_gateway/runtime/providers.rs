@@ -7,7 +7,7 @@ use serde_json::Value;
 use toml_edit::{DocumentMut, Item};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct UpstreamProvider {
+pub(crate) struct UpstreamProvider {
     pub(super) cli_key: GatewayCliKey,
     pub(super) id: String,
     pub(super) name: String,
@@ -19,7 +19,7 @@ pub(super) struct UpstreamProvider {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct UpstreamModelMapping {
+pub(crate) struct UpstreamModelMapping {
     pub(super) default_model: Option<String>,
     pub(super) haiku_model: Option<String>,
     pub(super) sonnet_model: Option<String>,
@@ -27,7 +27,7 @@ pub(super) struct UpstreamModelMapping {
     pub(super) reasoning_model: Option<String>,
 }
 
-pub(super) async fn load_candidate_providers(
+pub(crate) async fn load_candidate_providers(
     db: &SqliteDbState,
     cli_key: GatewayCliKey,
 ) -> Result<Vec<UpstreamProvider>, String> {
@@ -85,6 +85,9 @@ fn provider_from_record(
             if provider.is_disabled {
                 return Ok(None);
             }
+            if is_official_provider_category(&provider.category) {
+                return Ok(None);
+            }
             let settings =
                 parse_json_config(&provider.settings_config, "Claude provider settings_config")?;
             let env = settings.get("env").and_then(Value::as_object);
@@ -108,6 +111,9 @@ fn provider_from_record(
         GatewayCliKey::Codex => {
             let provider = codex::adapter::from_db_value_provider(record);
             if provider.is_disabled {
+                return Ok(None);
+            }
+            if is_official_provider_category(&provider.category) {
                 return Ok(None);
             }
             let settings =
@@ -135,6 +141,9 @@ fn provider_from_record(
             if provider.is_disabled {
                 return Ok(None);
             }
+            if is_official_provider_category(&provider.category) {
+                return Ok(None);
+            }
             let settings = parse_json_config(
                 &provider.settings_config,
                 "Gemini CLI provider settings_config",
@@ -159,6 +168,10 @@ fn provider_from_record(
         }
         GatewayCliKey::OpenCode => unreachable!("OpenCode is rejected before query"),
     }
+}
+
+fn is_official_provider_category(category: &str) -> bool {
+    category.trim().eq_ignore_ascii_case("official")
 }
 
 fn provider_meta_from_record(record: &Value) -> ProviderGatewayMeta {
@@ -342,5 +355,28 @@ mod tests {
             mapping.reasoning_model.as_deref(),
             Some("provider-reasoning")
         );
+    }
+
+    #[test]
+    fn official_providers_are_not_gateway_candidates() {
+        for cli_key in [
+            GatewayCliKey::Claude,
+            GatewayCliKey::Codex,
+            GatewayCliKey::Gemini,
+        ] {
+            let result = provider_from_record(
+                cli_key,
+                serde_json::json!({
+                    "id": format!("{}-official", cli_key.as_str()),
+                    "name": "Official",
+                    "category": "official",
+                    "settings_config": "{}",
+                    "is_disabled": false
+                }),
+            )
+            .unwrap();
+
+            assert!(result.is_none());
+        }
     }
 }

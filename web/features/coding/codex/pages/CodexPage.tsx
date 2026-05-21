@@ -65,7 +65,7 @@ import ImportConflictDialog from '../components/ImportConflictDialog';
 import ImportFromAllApiHubModal from '../components/ImportFromAllApiHubModal';
 import CodexPluginsPanel from '../components/CodexPluginsPanel';
 import CodexHistorySyncModal from '../components/CodexHistorySyncModal';
-import { shouldLoadCodexOfficialAccounts } from '../utils/localProvider';
+import { CODEX_LOCAL_PROVIDER_ID, shouldLoadCodexOfficialAccounts } from '../utils/localProvider';
 import AllApiHubIcon from '@/components/common/AllApiHubIcon';
 import CodexConfigPreviewModal from '@/components/common/CodexConfigPreviewModal';
 import SidebarSettingsModal from '@/components/common/SidebarSettingsModal';
@@ -1006,7 +1006,7 @@ const CodexPage: React.FC = () => {
       }
 
       // Check if this is a temporary provider from local files
-      const isLocalTemp = editingProvider?.id === "__local__";
+      const isLocalTemp = editingProvider?.id === CODEX_LOCAL_PROVIDER_ID;
 
       const providerInput: CodexProviderInput = {
         name: values.name,
@@ -1017,7 +1017,7 @@ const CodexPage: React.FC = () => {
         notes: values.notes,
       };
 
-      let savedProviderId = isLocalTemp ? '__local__' : '';
+      let savedProviderId = isLocalTemp ? CODEX_LOCAL_PROVIDER_ID : '';
       let savedProvider: CodexProvider | null = null;
 
       if (isLocalTemp) {
@@ -1557,7 +1557,7 @@ const CodexPage: React.FC = () => {
           onSuccess={() => {
             setCommonConfigModalOpen(false);
           }}
-          isLocalProvider={providers.some((provider) => provider.id === '__local__')}
+          isLocalProvider={providers.some((provider) => provider.id === CODEX_LOCAL_PROVIDER_ID)}
         />
 
         <RootDirectoryModal
@@ -1627,7 +1627,7 @@ const CodexPage: React.FC = () => {
                 {officialAccountDetails.account.email || officialAccountDetails.account.name}
               </Descriptions.Item>
               <Descriptions.Item label={t('codex.provider.mode')}>
-                {officialAccountDetails.account.id === '__local__'
+                {officialAccountDetails.account.id === CODEX_LOCAL_PROVIDER_ID
                   ? t('codex.provider.officialAccountLocalTag')
                   : t('codex.provider.officialAccountOauthTag')}
               </Descriptions.Item>

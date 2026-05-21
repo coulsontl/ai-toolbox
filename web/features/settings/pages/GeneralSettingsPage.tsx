@@ -426,6 +426,9 @@ const GeneralSettingsPage: React.FC = () => {
                 title: t('settings.backupSettings.restoreSuccess'),
                 content: t('settings.backupSettings.restoreSuccessReload'),
                 okText: t('common.restart'),
+                closable: false,
+                maskClosable: false,
+                keyboard: false,
                 onOk: () => {
                   restartApp();
                 },
@@ -506,6 +509,9 @@ const GeneralSettingsPage: React.FC = () => {
             title: t('settings.backupSettings.restoreSuccess'),
             content: t('settings.backupSettings.restoreSuccessReload'),
             okText: t('common.restart'),
+            closable: false,
+            maskClosable: false,
+            keyboard: false,
             onOk: () => {
               restartApp();
             },

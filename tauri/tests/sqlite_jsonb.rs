@@ -6,6 +6,7 @@ use ai_toolbox_lib::db::health;
 use ai_toolbox_lib::db::helpers::{
     db_count, db_create, db_delete, db_delete_all, db_get, db_list, db_max_i64, db_patch_fields,
     db_patch_where_bool, db_put, db_query_by_bool, db_query_by_field, db_transaction,
+    db_update_applied_status,
 };
 use ai_toolbox_lib::db::migrations::{self, TARGET_SCHEMA_VERSION};
 use ai_toolbox_lib::db::schema::{
@@ -83,6 +84,84 @@ fn put_get_stores_jsonb_blob_and_injects_metadata() {
     assert_eq!(record["unknown_field"]["kept"], true);
     assert!(record["created_at"].as_str().is_some());
     assert!(record["updated_at"].as_str().is_some());
+}
+
+#[test]
+fn put_keeps_column_and_json_timestamps_aligned_on_update() {
+    let conn = test_conn();
+    db_put(
+        &conn,
+        DbTable::Settings,
+        "app",
+        &json!({
+            "language": "zh-CN",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "updated_at": "2026-01-01T00:00:00+00:00"
+        }),
+    )
+    .expect("initial put");
+
+    db_put(
+        &conn,
+        DbTable::Settings,
+        "app",
+        &json!({"language": "en-US"}),
+    )
+    .expect("update put");
+
+    let (column_created_at, json_created_at, column_updated_at, json_updated_at): (
+        String,
+        String,
+        String,
+        String,
+    ) = conn
+        .query_row(
+            "SELECT created_at, json_extract(data, '$.created_at'),
+                    updated_at, json_extract(data, '$.updated_at')
+             FROM settings WHERE id = 'app'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("read timestamps");
+
+    assert_eq!(column_created_at, "2026-01-01T00:00:00+00:00");
+    assert_eq!(json_created_at, column_created_at);
+    assert_eq!(json_updated_at, column_updated_at);
+}
+
+#[test]
+fn put_derives_columns_from_numeric_json_timestamps_without_changing_json_type() {
+    let conn = test_conn();
+    db_put(
+        &conn,
+        DbTable::ImageAsset,
+        "asset-1",
+        &json!({
+            "role": "output",
+            "mime_type": "image/png",
+            "file_name": "asset.png",
+            "relative_path": "images/asset.png",
+            "bytes": 10,
+            "created_at": 1_777_777_777_i64
+        }),
+    )
+    .expect("put image asset");
+
+    let (column_created_at, json_created_type): (String, String) = conn
+        .query_row(
+            "SELECT created_at, json_type(data, '$.created_at')
+             FROM image_asset WHERE id = 'asset-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read numeric timestamp");
+    let record = db_get(&conn, DbTable::ImageAsset, "asset-1")
+        .expect("get image asset")
+        .expect("image asset record");
+
+    assert_eq!(column_created_at, "1777777777");
+    assert_eq!(json_created_type, "integer");
+    assert_eq!(record["created_at"].as_i64(), Some(1_777_777_777));
 }
 
 #[test]
@@ -193,6 +272,57 @@ fn query_by_bool_string_number_and_max_work() {
 }
 
 #[test]
+fn query_by_field_supports_array_and_object_values() {
+    let conn = test_conn();
+    db_put(
+        &conn,
+        DbTable::CodexProvider,
+        "one",
+        &json!({
+            "name": "one",
+            "tags": ["official", "fast"],
+            "metadata": {"tier": "pro", "enabled": true}
+        }),
+    )
+    .expect("put one");
+    db_put(
+        &conn,
+        DbTable::CodexProvider,
+        "two",
+        &json!({
+            "name": "two",
+            "tags": ["third-party"],
+            "metadata": {"tier": "free", "enabled": false}
+        }),
+    )
+    .expect("put two");
+
+    let tagged = db_query_by_field(
+        &conn,
+        DbTable::CodexProvider,
+        &JsonFieldPath::new("tags").expect("tags path"),
+        &json!(["official", "fast"]),
+        None,
+        None,
+    )
+    .expect("query array");
+    assert_eq!(tagged.len(), 1);
+    assert_eq!(tagged[0]["id"], "one");
+
+    let metadata = db_query_by_field(
+        &conn,
+        DbTable::CodexProvider,
+        &JsonFieldPath::new("metadata").expect("metadata path"),
+        &json!({"tier": "free", "enabled": false}),
+        None,
+        None,
+    )
+    .expect("query object");
+    assert_eq!(metadata.len(), 1);
+    assert_eq!(metadata[0]["id"], "two");
+}
+
+#[test]
 fn patch_preserves_unknown_fields_and_supports_nested_paths() {
     let conn = test_conn();
     db_put(
@@ -267,6 +397,47 @@ fn patch_where_bool_updates_all_matching_records() {
     )
     .expect("query applied");
     assert!(applied.is_empty());
+}
+
+#[test]
+fn update_applied_status_switches_records_inside_one_transaction() {
+    let mut conn = test_conn();
+    db_put(
+        &conn,
+        DbTable::CodexProvider,
+        "old",
+        &json!({"name": "old", "is_applied": true}),
+    )
+    .expect("put old");
+    db_put(
+        &conn,
+        DbTable::CodexProvider,
+        "new",
+        &json!({"name": "new", "is_applied": false}),
+    )
+    .expect("put new");
+
+    db_update_applied_status(
+        &mut conn,
+        DbTable::CodexProvider,
+        Some("new"),
+        "2026-01-02T00:00:00+00:00",
+    )
+    .expect("switch applied");
+
+    let applied = db_query_by_bool(
+        &conn,
+        DbTable::CodexProvider,
+        &JsonFieldPath::new("is_applied").expect("path"),
+        true,
+        None,
+        None,
+    )
+    .expect("query applied");
+
+    assert_eq!(applied.len(), 1);
+    assert_eq!(applied[0]["id"], "new");
+    assert_eq!(applied[0]["updated_at"], "2026-01-02T00:00:00+00:00");
 }
 
 #[test]

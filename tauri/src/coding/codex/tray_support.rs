@@ -6,6 +6,8 @@ use crate::coding::codex::apply_config_internal;
 use crate::db::SqliteDbState;
 use tauri::{AppHandle, Manager, Runtime};
 
+use super::constants::CODEX_LOCAL_PROVIDER_ID;
+
 /// Item for provider selection in tray menu
 #[derive(Debug, Clone)]
 pub struct TrayProviderItem {
@@ -30,7 +32,7 @@ pub async fn get_codex_tray_data<R: Runtime>(
     let providers = super::commands::list_codex_providers(app.state()).await?;
     let mut items: Vec<TrayProviderItem> = providers
         .into_iter()
-        .filter(|provider| provider.id != "__local__")
+        .filter(|provider| provider.id != CODEX_LOCAL_PROVIDER_ID)
         .map(|provider| TrayProviderItem {
             id: provider.id,
             display_name: provider.name,
@@ -97,7 +99,7 @@ pub async fn get_codex_prompt_tray_data<R: Runtime>(
 
     let items: Vec<TrayPromptItem> = configs
         .into_iter()
-        .filter(|config| config.id != "__local__")
+        .filter(|config| config.id != CODEX_LOCAL_PROVIDER_ID)
         .map(|config| TrayPromptItem {
             id: config.id,
             display_name: config.name,

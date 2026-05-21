@@ -13,10 +13,11 @@ use super::adapter;
 use super::commands::{
     apply_config_internal, get_codex_root_dir_from_db_async, get_codex_root_dir_without_db,
 };
+use super::constants::CODEX_LOCAL_PROVIDER_ID;
 use super::types::{CodexOfficialAccount, CodexOfficialAccountContent, CodexProvider};
 use crate::coding::db_id::db_new_id;
 use crate::db::helpers::{
-    db_delete, db_get, db_patch_fields, db_patch_where_bool, db_put, db_query_by_field,
+    db_delete, db_get, db_patch_fields, db_put, db_query_by_field, db_update_applied_status,
 };
 use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
@@ -28,7 +29,7 @@ const CODEX_OAUTH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 const CODEX_OAUTH_DEFAULT_PORT: u16 = 1455;
 const CODEX_OAUTH_CALLBACK_PATH: &str = "/auth/callback";
-const LOCAL_OFFICIAL_ACCOUNT_ID: &str = "__local__";
+const LOCAL_OFFICIAL_ACCOUNT_ID: &str = CODEX_LOCAL_PROVIDER_ID;
 const FIVE_HOUR_WINDOW_SECONDS: i64 = 18_000;
 const WEEK_WINDOW_SECONDS: i64 = 604_800;
 const AUTH_REFRESH_LEAD_SECONDS: i64 = 3 * 24 * 60 * 60;
@@ -116,6 +117,14 @@ struct UsageSnapshot {
 
 fn oauth_scopes() -> &'static str {
     "openid profile email offline_access api.connectors.read api.connectors.invoke"
+}
+
+fn ensure_persisted_provider_id(provider_id: &str) -> Result<(), String> {
+    if provider_id == CODEX_LOCAL_PROVIDER_ID {
+        Err("The local Codex provider cannot manage official accounts".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 fn encode_url_component(value: &str) -> String {
@@ -967,33 +976,9 @@ async fn update_official_account_apply_status(
     account_id: Option<&str>,
 ) -> Result<(), String> {
     let now = Local::now().to_rfc3339();
-    db.with_conn(|conn| {
-        db_patch_where_bool(
-            conn,
-            DbTable::CodexOfficialAccount,
-            &JsonFieldPath::new("is_applied")?,
-            true,
-            &[
-                ("is_applied", Value::Bool(false)),
-                ("updated_at", Value::String(now.clone())),
-            ],
-        )
+    db.with_conn_mut(|conn| {
+        db_update_applied_status(conn, DbTable::CodexOfficialAccount, account_id, &now)
     })?;
-
-    if let Some(account_id) = account_id {
-        db.with_conn(|conn| {
-            db_patch_fields(
-                conn,
-                DbTable::CodexOfficialAccount,
-                account_id,
-                &[
-                    ("is_applied", Value::Bool(true)),
-                    ("updated_at", Value::String(now)),
-                ],
-            )
-            .map(|_| ())
-        })?;
-    }
 
     Ok(())
 }
@@ -1154,6 +1139,7 @@ pub async fn list_codex_official_accounts_for_provider(
     db: &crate::db::SqliteDbState,
     provider_id: &str,
 ) -> Result<Vec<CodexOfficialAccount>, String> {
+    ensure_persisted_provider_id(provider_id)?;
     let provider = query_provider(db, provider_id).await?;
     let mut accounts = list_persisted_official_accounts(db, provider_id).await?;
     let local_auth = read_auth_json_from_disk(Some(db)).await?;
@@ -1183,6 +1169,7 @@ pub async fn start_codex_official_account_oauth(
     provider_id: String,
 ) -> Result<CodexOfficialAccount, String> {
     let db = state.db();
+    ensure_persisted_provider_id(&provider_id)?;
     let provider = query_provider(&db, &provider_id).await?;
     if provider.category != "official" {
         return Err("Only official Codex providers can add official accounts".to_string());
@@ -1225,6 +1212,7 @@ pub async fn save_codex_official_local_account(
     provider_id: String,
 ) -> Result<CodexOfficialAccount, String> {
     let db = state.db();
+    ensure_persisted_provider_id(&provider_id)?;
     let provider = query_provider(&db, &provider_id).await?;
     if provider.category != "official" {
         return Err("Only official Codex providers can save local official accounts".to_string());
@@ -1288,6 +1276,7 @@ pub async fn apply_codex_official_account(
     account_id: String,
 ) -> Result<(), String> {
     let db = state.db();
+    ensure_persisted_provider_id(&provider_id)?;
     let provider = query_provider(&db, &provider_id).await?;
     if provider.category != "official" {
         return Err("Only official Codex providers can apply official accounts".to_string());
@@ -1344,6 +1333,7 @@ pub async fn delete_codex_official_account(
     account_id: String,
 ) -> Result<(), String> {
     let db = state.db();
+    ensure_persisted_provider_id(&provider_id)?;
     if account_id == LOCAL_OFFICIAL_ACCOUNT_ID {
         return Err("The local official account cannot be deleted".to_string());
     }
@@ -1369,6 +1359,7 @@ pub async fn refresh_codex_official_account_limits(
     account_id: String,
 ) -> Result<CodexOfficialAccount, String> {
     let db = state.db();
+    ensure_persisted_provider_id(&provider_id)?;
     let provider = query_provider(&db, &provider_id).await?;
     if provider.category != "official" {
         return Err("Only official Codex providers can refresh official account usage".to_string());
@@ -1425,6 +1416,7 @@ pub async fn copy_codex_official_account_token(
     input: CodexOfficialAccountTokenCopyInput,
 ) -> Result<(), String> {
     let db = state.db();
+    ensure_persisted_provider_id(&input.provider_id)?;
     let provider = query_provider(&db, &input.provider_id).await?;
     if provider.category != "official" {
         return Err("Only official Codex providers can copy official account tokens".to_string());
@@ -1685,17 +1677,8 @@ pub async fn clear_all_codex_official_account_apply_status(
     db: &crate::db::SqliteDbState,
 ) -> Result<(), String> {
     let now = Local::now().to_rfc3339();
-    db.with_conn(|conn| {
-        db_patch_where_bool(
-            conn,
-            DbTable::CodexOfficialAccount,
-            &JsonFieldPath::new("is_applied")?,
-            true,
-            &[
-                ("is_applied", Value::Bool(false)),
-                ("updated_at", Value::String(now)),
-            ],
-        )
+    db.with_conn_mut(|conn| {
+        db_update_applied_status(conn, DbTable::CodexOfficialAccount, None, &now)
     })?;
     Ok(())
 }

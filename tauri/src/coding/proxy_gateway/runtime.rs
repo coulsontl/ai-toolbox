@@ -8,6 +8,8 @@ mod routes;
 mod thinking_budget;
 mod upstream;
 
+pub(crate) use self::providers::load_candidate_providers;
+
 #[cfg(test)]
 use self::debug_log::format_body_for_debug_log;
 use self::debug_log::{log_gateway_decision, log_incoming_request, log_response};
@@ -27,16 +29,17 @@ use super::listen::bind_gateway_listener;
 use super::model_health::ModelHealthRegistry;
 use super::paths::ProxyGatewayPaths;
 #[cfg(test)]
-use super::types::GatewayCliKey;
-#[cfg(test)]
 use super::types::ProviderGatewayMeta;
-use super::types::{ProxyGatewayHealthCheckResult, ProxyGatewaySettings, ProxyGatewayStatus};
+use super::types::{
+    GatewayCliKey, ProxyGatewayHealthCheckResult, ProxyGatewaySettings, ProxyGatewayStatus,
+};
 use crate::db::SqliteDbState;
 use chrono::Utc;
 #[cfg(test)]
 use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, HOST};
 #[cfg(test)]
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
@@ -45,9 +48,12 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tauri::async_runtime::JoinHandle as TauriJoinHandle;
 use tauri::AppHandle;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream as TokioTcpStream};
 
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+const MAX_CONCURRENT_CONNECTIONS: u32 = 128;
+const PROVIDER_CACHE_TTL: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
 pub struct ProxyGatewayState {
@@ -174,16 +180,22 @@ impl ProxyGatewayManager {
         }
     }
 
-    pub fn health_check(&self) -> ProxyGatewayHealthCheckResult {
-        let Some(runtime) = &self.runtime else {
-            return ProxyGatewayHealthCheckResult {
+    pub fn health_check_address(&self) -> Result<SocketAddr, ProxyGatewayHealthCheckResult> {
+        self.runtime
+            .as_ref()
+            .map(|runtime| runtime.addr)
+            .ok_or_else(|| ProxyGatewayHealthCheckResult {
                 ok: false,
                 status_code: None,
                 error: Some("Gateway is not running".to_string()),
-            };
-        };
+            })
+    }
 
-        health_check_socket(runtime.addr)
+    pub fn health_check(&self) -> ProxyGatewayHealthCheckResult {
+        match self.health_check_address() {
+            Ok(addr) => health_check_socket(addr),
+            Err(result) => result,
+        }
     }
 
     pub fn model_health_items(&self) -> Option<Vec<super::types::GatewayModelHealthItem>> {
@@ -310,6 +322,13 @@ struct GatewayRuntimeContext {
     health_registry: Option<Arc<Mutex<ModelHealthRegistry>>>,
     health_path: Option<PathBuf>,
     app_handle: Option<AppHandle>,
+    provider_cache: Arc<Mutex<HashMap<GatewayCliKey, ProviderCacheEntry>>>,
+}
+
+#[derive(Clone)]
+struct ProviderCacheEntry {
+    loaded_at: Instant,
+    providers: Vec<providers::UpstreamProvider>,
 }
 
 impl GatewayRuntimeContext {
@@ -335,6 +354,7 @@ impl GatewayRuntimeContext {
             health_registry,
             health_path,
             app_handle: None,
+            provider_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -371,6 +391,33 @@ impl GatewayRuntimeContext {
                 registry.update_settings(settings);
             }
         }
+    }
+
+    async fn load_candidate_providers(
+        &self,
+        db: &SqliteDbState,
+        cli_key: GatewayCliKey,
+    ) -> Result<Vec<providers::UpstreamProvider>, String> {
+        let now = Instant::now();
+        if let Ok(cache) = self.provider_cache.lock() {
+            if let Some(entry) = cache.get(&cli_key) {
+                if now.duration_since(entry.loaded_at) <= PROVIDER_CACHE_TTL {
+                    return Ok(entry.providers.clone());
+                }
+            }
+        }
+
+        let providers = providers::load_candidate_providers(db, cli_key).await?;
+        if let Ok(mut cache) = self.provider_cache.lock() {
+            cache.insert(
+                cli_key,
+                ProviderCacheEntry {
+                    loaded_at: now,
+                    providers: providers.clone(),
+                },
+            );
+        }
+        Ok(providers)
     }
 
     fn save_health_registry_async(&self) {
@@ -411,9 +458,18 @@ struct ActiveConnectionGuard {
 }
 
 impl ActiveConnectionGuard {
-    fn new(counter: Arc<AtomicU32>) -> Self {
-        counter.fetch_add(1, Ordering::SeqCst);
-        Self { counter }
+    fn try_new(counter: Arc<AtomicU32>, max_connections: u32) -> Option<Self> {
+        let mut current = counter.load(Ordering::SeqCst);
+        loop {
+            if current >= max_connections {
+                return None;
+            }
+            match counter.compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => return Some(Self { counter }),
+                Err(next_current) => current = next_current,
+            }
+        }
     }
 }
 
@@ -437,9 +493,10 @@ async fn run_health_server(
                     if let Err(error) =
                         handle_connection(&mut stream, peer_addr, &request_context).await
                     {
-                        println!(
+                        log::warn!(
                             "[proxy-gateway] request_error peer={} error={}",
-                            peer_addr, error
+                            peer_addr,
+                            error
                         );
                     }
                 });
@@ -459,16 +516,22 @@ async fn handle_connection(
     peer_addr: SocketAddr,
     context: &GatewayRuntimeContext,
 ) -> std::io::Result<()> {
-    let _active_connection = ActiveConnectionGuard::new(context.active_connections.clone());
+    let Some(_active_connection) = ActiveConnectionGuard::try_new(
+        context.active_connections.clone(),
+        MAX_CONCURRENT_CONNECTIONS,
+    ) else {
+        write_busy_response(stream).await?;
+        return Ok(());
+    };
     let request_id = NEXT_REQUEST_ID.fetch_add(1, Ordering::SeqCst);
     let request = read_http_request(stream, request_id, peer_addr).await?;
     let started_at = Utc::now();
     let started_instant = Instant::now();
-    log_incoming_request(&request);
+    let settings = context.settings_snapshot();
+    log_incoming_request(&request, &settings);
 
     let mut response = route_request(&request, context).await;
-    log_gateway_decision(&request, &response);
-    let settings = context.settings_snapshot();
+    log_gateway_decision(&request, &response, &settings);
     let write_result = write_response(stream, &mut response, started_instant, &settings).await;
     let ended_at = Utc::now();
     if let Err(error) = &write_result {
@@ -478,8 +541,17 @@ async fn handle_connection(
         response.note = format!("failed to write gateway response to client: {error}");
     }
     observability::record_gateway_observability(&request, &response, context, started_at, ended_at);
-    log_response(&request, &response);
+    log_response(&request, &response, &settings);
     write_result
+}
+
+async fn write_busy_response(stream: &mut TokioTcpStream) -> std::io::Result<()> {
+    stream
+        .write_all(
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 57\r\nConnection: close\r\n\r\n{\"error\":\"gateway_busy\",\"message\":\"too many connections\"}",
+        )
+        .await?;
+    stream.flush().await
 }
 
 fn health_check_socket(addr: SocketAddr) -> ProxyGatewayHealthCheckResult {
@@ -503,6 +575,56 @@ fn health_check_socket(addr: SocketAddr) -> ProxyGatewayHealthCheckResult {
 
     let mut response = String::new();
     if let Err(error) = stream.read_to_string(&mut response) {
+        return ProxyGatewayHealthCheckResult {
+            ok: false,
+            status_code: None,
+            error: Some(format!("Failed to read health response: {error}")),
+        };
+    }
+
+    let status_code = response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok());
+
+    ProxyGatewayHealthCheckResult {
+        ok: status_code == Some(200),
+        status_code,
+        error: None,
+    }
+}
+
+pub(crate) async fn health_check_socket_async(addr: SocketAddr) -> ProxyGatewayHealthCheckResult {
+    let stream = tokio::time::timeout(Duration::from_secs(2), TokioTcpStream::connect(addr)).await;
+    let Ok(Ok(mut stream)) = stream else {
+        return ProxyGatewayHealthCheckResult {
+            ok: false,
+            status_code: None,
+            error: Some("Failed to connect to gateway health endpoint".to_string()),
+        };
+    };
+
+    let request = b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    if let Err(error) = stream.write_all(request).await {
+        return ProxyGatewayHealthCheckResult {
+            ok: false,
+            status_code: None,
+            error: Some(format!("Failed to write health request: {error}")),
+        };
+    }
+
+    let mut response = String::new();
+    if let Err(error) =
+        tokio::time::timeout(Duration::from_secs(2), stream.read_to_string(&mut response))
+            .await
+            .unwrap_or_else(|_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Timed out reading health response",
+                ))
+            })
+    {
         return ProxyGatewayHealthCheckResult {
             ok: false,
             status_code: None,

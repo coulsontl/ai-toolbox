@@ -1,6 +1,8 @@
 use super::types::GatewayCliKey;
 use serde_json::Value;
 
+const MAX_SSE_USAGE_BUFFER_BYTES: usize = 256 * 1024;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TokenUsage {
     pub input_tokens: Option<u64>,
@@ -34,15 +36,22 @@ impl TokenUsage {
 #[derive(Debug, Default)]
 pub struct SseUsageCollector {
     buffer: Vec<u8>,
-    events: Vec<Value>,
+    usage: TokenUsage,
 }
 
 impl SseUsageCollector {
-    pub fn push_chunk(&mut self, chunk: &[u8]) {
+    pub fn push_chunk(&mut self, cli_key: GatewayCliKey, chunk: &[u8]) {
+        if chunk.len() > MAX_SSE_USAGE_BUFFER_BYTES {
+            self.buffer.clear();
+            return;
+        }
+        if self.buffer.len().saturating_add(chunk.len()) > MAX_SSE_USAGE_BUFFER_BYTES {
+            self.buffer.clear();
+        }
         self.buffer.extend_from_slice(chunk);
         while let Some(block) = take_sse_block(&mut self.buffer) {
             if let Some(value) = parse_sse_data_block(&block) {
-                self.events.push(value);
+                self.merge_event(cli_key, &value);
             }
         }
     }
@@ -50,10 +59,14 @@ impl SseUsageCollector {
     pub fn finish(mut self, cli_key: GatewayCliKey) -> TokenUsage {
         if !self.buffer.is_empty() {
             if let Some(value) = parse_sse_data_block(&self.buffer) {
-                self.events.push(value);
+                self.merge_event(cli_key, &value);
             }
         }
-        from_stream_events(cli_key, &self.events)
+        self.usage
+    }
+
+    fn merge_event(&mut self, cli_key: GatewayCliKey, value: &Value) {
+        self.usage.merge_max(from_json_response(cli_key, value));
     }
 }
 
@@ -63,7 +76,7 @@ pub fn from_response_body(cli_key: GatewayCliKey, body: &[u8]) -> TokenUsage {
     }
 
     let mut collector = SseUsageCollector::default();
-    collector.push_chunk(body);
+    collector.push_chunk(cli_key, body);
     collector.finish(cli_key)
 }
 
@@ -73,19 +86,6 @@ fn from_json_response(cli_key: GatewayCliKey, value: &Value) -> TokenUsage {
         GatewayCliKey::Codex | GatewayCliKey::OpenCode => openai_usage(value),
         GatewayCliKey::Gemini => gemini_usage(value),
     }
-}
-
-fn from_stream_events(cli_key: GatewayCliKey, events: &[Value]) -> TokenUsage {
-    let mut usage = TokenUsage::default();
-    for event in events {
-        let event_usage = match cli_key {
-            GatewayCliKey::Claude => claude_usage(event),
-            GatewayCliKey::Codex | GatewayCliKey::OpenCode => openai_usage(event),
-            GatewayCliKey::Gemini => gemini_usage(event),
-        };
-        usage.merge_max(event_usage);
-    }
-    usage
 }
 
 fn claude_usage(value: &Value) -> TokenUsage {
@@ -244,11 +244,6 @@ fn gemini_usage(value: &Value) -> TokenUsage {
                 "/response/usageMetadata/candidatesTokenCount",
             ],
         )
-    })
-    .or_else(|| {
-        let total = first_u64_at_paths(usage, &["/totalTokenCount"])?;
-        let input = input_tokens?;
-        total.checked_sub(input)
     });
 
     let cache_read_tokens =
@@ -382,5 +377,36 @@ data: [DONE]
         assert_eq!(usage.output_tokens, Some(7));
         assert_eq!(usage.cache_read_tokens, Some(3));
         assert_eq!(usage.total_tokens(), Some(17));
+    }
+
+    #[test]
+    fn gemini_usage_does_not_infer_output_from_total_tokens() {
+        let usage = from_response_body(
+            GatewayCliKey::Gemini,
+            br#"{"usageMetadata":{"promptTokenCount":10,"totalTokenCount":17}}"#,
+        );
+
+        assert_eq!(usage.input_tokens, Some(10));
+        assert_eq!(usage.output_tokens, None);
+        assert_eq!(usage.total_tokens(), Some(10));
+    }
+
+    #[test]
+    fn sse_usage_collector_keeps_buffer_bounded() {
+        let mut collector = SseUsageCollector::default();
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            &vec![b'a'; MAX_SSE_USAGE_BUFFER_BYTES + 1],
+        );
+        assert!(collector.buffer.is_empty());
+
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            &vec![b'a'; MAX_SSE_USAGE_BUFFER_BYTES - 1],
+        );
+        assert_eq!(collector.buffer.len(), MAX_SSE_USAGE_BUFFER_BYTES - 1);
+
+        collector.push_chunk(GatewayCliKey::Claude, b"aa");
+        assert_eq!(collector.buffer.len(), 2);
     }
 }

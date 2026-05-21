@@ -116,7 +116,7 @@ fn save_official_account(db: &SqliteDbState, provider_id: &str) {
 }
 
 #[test]
-fn official_only_import_requires_persisted_official_account() {
+fn official_only_import_uses_local_official_runtime_without_persisted_account() {
     let _lock = codex_runtime_lock();
     let root = TestCodexRoot::new();
     root.write_auth(official_auth());
@@ -124,7 +124,48 @@ fn official_only_import_requires_persisted_official_account() {
     let db = db_with_codex_root(&root.root_dir);
 
     let imported = block_on(import_codex_default_provider_from_local_files(&db, true))
-        .expect("auth file alone should be a no-op");
+        .expect("import local official runtime")
+        .expect("provider imported");
+
+    assert_ne!(imported.id, "__local__");
+    assert_eq!(imported.name, "默认配置");
+    assert_eq!(imported.category, "official");
+    assert!(imported.is_applied);
+    let count = db
+        .with_conn(|conn| db_count(conn, DbTable::CodexProvider))
+        .expect("count providers");
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn lazy_list_imports_local_official_runtime_without_persisted_account() {
+    let _lock = codex_runtime_lock();
+    let root = TestCodexRoot::new();
+    root.write_auth(official_auth());
+    root.write_config("model = \"gpt-5.2\"\n");
+    let db = db_with_codex_root(&root.root_dir);
+
+    let providers = block_on(list_codex_providers_for_db(&db)).expect("list providers");
+
+    assert_eq!(providers.len(), 1);
+    assert_ne!(providers[0].id, "__local__");
+    assert_eq!(providers[0].category, "official");
+    assert!(providers[0].is_applied);
+    let count = db
+        .with_conn(|conn| db_count(conn, DbTable::CodexProvider))
+        .expect("count providers");
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn official_only_import_requires_valid_local_official_auth() {
+    let _lock = codex_runtime_lock();
+    let root = TestCodexRoot::new();
+    root.write_config("model = \"gpt-5.2\"\n");
+    let db = db_with_codex_root(&root.root_dir);
+
+    let imported = block_on(import_codex_default_provider_from_local_files(&db, true))
+        .expect("official config without auth should be a no-op");
 
     assert!(imported.is_none());
     let count = db
@@ -134,24 +175,7 @@ fn official_only_import_requires_persisted_official_account() {
 }
 
 #[test]
-fn lazy_list_does_not_show_local_official_provider_without_persisted_account() {
-    let _lock = codex_runtime_lock();
-    let root = TestCodexRoot::new();
-    root.write_auth(official_auth());
-    root.write_config("model = \"gpt-5.2\"\n");
-    let db = db_with_codex_root(&root.root_dir);
-
-    let providers = block_on(list_codex_providers_for_db(&db)).expect("list providers");
-
-    assert!(providers.is_empty());
-    let count = db
-        .with_conn(|conn| db_count(conn, DbTable::CodexProvider))
-        .expect("count providers");
-    assert_eq!(count, 0);
-}
-
-#[test]
-fn imports_official_subscription_account_as_persisted_default_provider() {
+fn import_uses_fresh_provider_id_even_when_official_account_exists() {
     let _lock = codex_runtime_lock();
     let root = TestCodexRoot::new();
     root.write_auth(official_auth());
@@ -163,7 +187,7 @@ fn imports_official_subscription_account_as_persisted_default_provider() {
         .expect("import official provider")
         .expect("provider imported");
 
-    assert_eq!(imported.id, "persisted-official-provider");
+    assert_ne!(imported.id, "persisted-official-provider");
     assert_eq!(imported.name, "默认配置");
     assert_eq!(imported.category, "official");
     assert!(imported.is_applied);
@@ -187,7 +211,6 @@ fn startup_and_lazy_import_are_idempotent() {
     let root = TestCodexRoot::new();
     root.write_auth(official_auth());
     let db = db_with_codex_root(&root.root_dir);
-    save_official_account(&db, "persisted-official-provider");
 
     block_on(init_codex_provider_from_settings(&db)).expect("startup import");
     let second =
@@ -201,7 +224,7 @@ fn startup_and_lazy_import_are_idempotent() {
 }
 
 #[test]
-fn startup_keeps_third_party_local_config_temporary_even_with_official_account() {
+fn startup_keeps_third_party_local_config_temporary_even_with_official_runtime() {
     let _lock = codex_runtime_lock();
     let root = TestCodexRoot::new();
     root.write_auth(official_auth());
@@ -214,7 +237,6 @@ base_url = "https://example.invalid/v1"
 "#,
     );
     let db = db_with_codex_root(&root.root_dir);
-    save_official_account(&db, "persisted-official-provider");
 
     block_on(init_codex_provider_from_settings(&db)).expect("startup import");
     let count = db
@@ -295,7 +317,6 @@ fn lazy_list_imports_official_auth_as_persisted_provider_without_local_fallback_
     let root = TestCodexRoot::new();
     root.write_auth(official_auth());
     let db = db_with_codex_root(&root.root_dir);
-    save_official_account(&db, "persisted-official-provider");
 
     let providers = block_on(list_codex_providers_for_db(&db)).expect("list providers");
 
@@ -344,7 +365,6 @@ fn command_level_e2e_imported_provider_unlocks_official_local_account() {
     let root = TestCodexRoot::new();
     root.write_auth(official_auth());
     let db = db_with_codex_root(&root.root_dir);
-    save_official_account(&db, "persisted-official-provider");
 
     let providers = block_on(list_codex_providers_for_db(&db)).expect("list providers");
     let provider = providers.first().expect("provider imported by lazy list");
@@ -356,8 +376,8 @@ fn command_level_e2e_imported_provider_unlocks_official_local_account() {
 
     assert_eq!(accounts.len(), 1);
     assert_ne!(provider.id, "__local__");
-    assert_eq!(accounts[0].id, "official-account");
+    assert_eq!(accounts[0].id, "__local__");
     assert_eq!(accounts[0].provider_id, provider.id);
-    assert!(!accounts[0].is_virtual);
+    assert!(accounts[0].is_virtual);
     assert_eq!(accounts[0].email.as_deref(), Some("ralph@example.com"));
 }

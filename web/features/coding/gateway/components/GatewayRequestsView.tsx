@@ -346,6 +346,7 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
 
     if (activeDetailTab === 'record') {
       const attemptCounts = normalizeAttemptCounts(detail);
+      const providerAttempts = detail.provider_attempts ?? [];
       return (
         <div className={styles.detailGrid}>
           <span>{t('gateway.page.requests.fields.traceId')}</span>
@@ -368,6 +369,33 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
           <strong>{tokenBreakdownText(t, detail)}</strong>
           <span>{t('gateway.page.requests.fields.attempts')}</span>
           <strong>{attemptCounts.current} / {attemptCounts.total}</strong>
+          {providerAttempts.length > 0 && (
+            <>
+              <span>{t('gateway.page.requests.fields.attemptTimeline')}</span>
+              <div className={styles.attemptTimeline}>
+                {providerAttempts.map((attempt, index) => {
+                  const itemAttemptCounts = normalizeAttemptCounts(attempt);
+                  return (
+                    <div
+                      key={`${attempt.provider_id ?? 'unknown'}-${index}`}
+                      className={styles.attemptTimelineItem}
+                    >
+                      <strong>{providerDisplayName(t, attempt.provider_id, attempt.provider_name)}</strong>
+                      <small>
+                        {t('gateway.page.requests.attemptDetail', {
+                          index: index + 1,
+                          status: attempt.status_code ?? '-',
+                          current: itemAttemptCounts.current,
+                          total: itemAttemptCounts.total,
+                          error: attempt.error_category ?? '-',
+                        })}
+                      </small>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
           <span>{t('gateway.page.requests.fields.upstream')}</span>
           <code>{detail.upstream_url ?? '-'}</code>
           <span>{t('gateway.page.requests.fields.error')}</span>

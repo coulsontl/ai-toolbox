@@ -4,7 +4,7 @@ use super::header_preserving_client::{
     PreservedHeader,
 };
 use super::http_io::{empty_response, json_response, DebugHttpRequest, DebugHttpResponse};
-use super::providers::{load_candidate_providers, UpstreamModelMapping, UpstreamProvider};
+use super::providers::{UpstreamModelMapping, UpstreamProvider};
 use super::routes::{build_target_url, match_gateway_route, split_request_target, GatewayRoute};
 use super::GatewayRuntimeContext;
 use super::{cache_injector, thinking_budget};
@@ -12,7 +12,7 @@ use crate::coding::proxy_gateway::model_health::{self, GatewayFailureKind};
 #[cfg(test)]
 use crate::coding::proxy_gateway::types::ProviderGatewayMeta;
 use crate::coding::proxy_gateway::types::{
-    GatewayCliKey, GatewayFailoverEvent, ProviderModelHealthKey,
+    GatewayCliKey, GatewayFailoverEvent, GatewayProviderAttempt, ProviderModelHealthKey,
 };
 use crate::coding::proxy_gateway::usage_parser::{from_response_body, TokenUsage};
 use crate::db::SqliteDbState;
@@ -297,7 +297,7 @@ async fn forward_to_upstream(
 ) -> DebugHttpResponse {
     let requested_model =
         extract_requested_model(request, route).unwrap_or_else(|| "unknown".to_string());
-    let providers = match load_candidate_providers(db, route.cli_key).await {
+    let providers = match context.load_candidate_providers(db, route.cli_key).await {
         Ok(providers) if !providers.is_empty() => providers,
         Ok(_) => {
             let mut response = json_response(
@@ -343,6 +343,7 @@ async fn forward_to_upstream(
     let mut retry_count = 0_u32;
     let mut attempted_provider_count = 0_u32;
     let mut last_failure_response = None;
+    let mut provider_attempts = Vec::new();
     let mut skipped_by_health = Vec::new();
 
     'providers: for provider in providers {
@@ -381,6 +382,7 @@ async fn forward_to_upstream(
                 settings.thinking_budget_rectifier_enabled,
                 settings.cache_injection_enabled,
                 app_config.non_streaming_timeout_secs,
+                &settings,
             )
             .await
             {
@@ -412,19 +414,20 @@ async fn forward_to_upstream(
                                     model_health::classify_failure(failure_kind).category;
                                 health_changed |=
                                     record_health_failure(context, &health_key, failure_kind);
-                                last_failure_response =
-                                    Some(streaming_first_chunk_failure_response(
-                                        route,
-                                        &provider,
-                                        &requested_model,
-                                        &upstream_model_id,
-                                        response,
-                                        error,
-                                        category,
-                                        attempt_count,
-                                        provider_retry_count.saturating_add(1),
-                                        attempted_provider_count > 1,
-                                    ));
+                                let failure_response = streaming_first_chunk_failure_response(
+                                    route,
+                                    &provider,
+                                    &requested_model,
+                                    &upstream_model_id,
+                                    response,
+                                    error,
+                                    category,
+                                    attempt_count,
+                                    provider_retry_count.saturating_add(1),
+                                    attempted_provider_count > 1,
+                                );
+                                provider_attempts.push(provider_attempt_log(&failure_response));
+                                last_failure_response = Some(failure_response);
                                 if can_retry_current_provider(
                                     provider_retry_count,
                                     app_config.per_provider_retry_count,
@@ -444,6 +447,7 @@ async fn forward_to_upstream(
                         response.error_category = Some(category.to_string());
                         health_changed |= record_health_failure(context, &health_key, failure_kind);
                         if should_retry_failure(failure_kind) {
+                            provider_attempts.push(provider_attempt_log(&response));
                             last_failure_response = Some(response);
                             if can_retry_current_provider(
                                 provider_retry_count,
@@ -467,6 +471,8 @@ async fn forward_to_upstream(
                         last_failure_response.as_ref(),
                         &response,
                     );
+                    provider_attempts.push(provider_attempt_log(&response));
+                    response.provider_attempts = provider_attempts;
                     return response;
                 }
                 Err(error) => {
@@ -497,6 +503,7 @@ async fn forward_to_upstream(
                     response.attempt_count = attempt_count;
                     response.provider_attempt_count = provider_retry_count.saturating_add(1);
                     response.failover = attempted_provider_count > 1;
+                    provider_attempts.push(provider_attempt_log(&response));
                     last_failure_response = Some(response);
                     if can_retry_current_provider(
                         provider_retry_count,
@@ -514,7 +521,8 @@ async fn forward_to_upstream(
     }
 
     save_health_registry_if_needed(context, health_changed);
-    if let Some(response) = last_failure_response {
+    if let Some(mut response) = last_failure_response {
+        response.provider_attempts = provider_attempts;
         return response;
     }
 
@@ -533,6 +541,7 @@ async fn forward_to_upstream(
     response.cli_key = Some(route.cli_key);
     response.requested_model = Some(requested_model);
     response.error_category = Some("cooling_down".to_string());
+    response.provider_attempts = provider_attempts;
     response
 }
 
@@ -547,6 +556,7 @@ async fn send_upstream_request(
     thinking_budget_rectifier_enabled: bool,
     cache_injection_enabled: bool,
     non_streaming_timeout_secs: u64,
+    settings: &crate::coding::proxy_gateway::types::ProxyGatewaySettings,
 ) -> Result<DebugHttpResponse, GatewayForwardError> {
     let upstream_url = build_target_url(
         &provider.base_url,
@@ -592,6 +602,7 @@ async fn send_upstream_request(
         upstream_body.clone(),
         non_streaming_timeout_secs.max(1),
         header_preserving_proxy.clone(),
+        settings,
     )
     .await
     .map_err(|mut error| {
@@ -631,6 +642,7 @@ async fn send_upstream_request(
                     rectified_body.clone(),
                     non_streaming_timeout_secs.max(1),
                     header_preserving_proxy.clone(),
+                    settings,
                 )
                 .await
                 .map_err(|mut error| {
@@ -644,6 +656,7 @@ async fn send_upstream_request(
                     response,
                     rectified_body,
                     upstream_url.to_string(),
+                    settings,
                 )
                 .await;
             }
@@ -657,6 +670,7 @@ async fn send_upstream_request(
             route,
             upstream_body_snapshot,
             upstream_url.to_string(),
+            settings,
         ));
     }
 
@@ -667,6 +681,7 @@ async fn send_upstream_request(
         response,
         upstream_body_snapshot,
         upstream_url.to_string(),
+        settings,
     )
     .await
 }
@@ -681,6 +696,7 @@ async fn send_request_once(
     upstream_body: Vec<u8>,
     timeout_secs: u64,
     header_preserving_proxy: Option<Option<String>>,
+    settings: &crate::coding::proxy_gateway::types::ProxyGatewaySettings,
 ) -> Result<UpstreamResponse, GatewayForwardError> {
     log_upstream_request(
         request,
@@ -688,6 +704,7 @@ async fn send_request_once(
         upstream_url,
         &headers.map,
         &upstream_body,
+        settings,
     );
     if should_use_header_preserving_raw(upstream_url) {
         if let Some(proxy_url) = header_preserving_proxy {
@@ -731,6 +748,7 @@ async fn build_gateway_response(
     response: UpstreamResponse,
     upstream_body_snapshot: Vec<u8>,
     upstream_url: String,
+    settings: &crate::coding::proxy_gateway::types::ProxyGatewaySettings,
 ) -> Result<DebugHttpResponse, GatewayForwardError> {
     let status = response.status();
     let response_headers = filtered_response_headers(response.headers());
@@ -762,13 +780,14 @@ async fn build_gateway_response(
             error_category: None,
             attempt_count: 1,
             provider_attempt_count: 1,
+            provider_attempts: Vec::new(),
             failover: false,
             note: format!(
                 "streaming forwarded to provider id={} name={}",
                 provider.id, provider.name
             ),
         };
-        log_upstream_response(request, &gateway_response);
+        log_upstream_response(request, &gateway_response, settings);
         return Ok(gateway_response);
     }
 
@@ -802,13 +821,14 @@ async fn build_gateway_response(
         error_category: None,
         attempt_count: 1,
         provider_attempt_count: 1,
+        provider_attempts: Vec::new(),
         failover: false,
         note: format!(
             "forwarded to provider id={} name={}",
             provider.id, provider.name
         ),
     };
-    log_upstream_response(request, &gateway_response);
+    log_upstream_response(request, &gateway_response, settings);
     Ok(gateway_response)
 }
 
@@ -821,6 +841,7 @@ fn buffered_gateway_response(
     route: &GatewayRoute,
     upstream_body_snapshot: Vec<u8>,
     upstream_url: String,
+    _settings: &crate::coding::proxy_gateway::types::ProxyGatewaySettings,
 ) -> DebugHttpResponse {
     let token_usage = from_response_body(provider.cli_key, &body);
     DebugHttpResponse {
@@ -847,6 +868,7 @@ fn buffered_gateway_response(
         error_category: None,
         attempt_count: 1,
         provider_attempt_count: 1,
+        provider_attempts: Vec::new(),
         failover: false,
         note: format!(
             "forwarded to provider id={} name={}",
@@ -892,6 +914,24 @@ fn streaming_first_chunk_failure_response(
     failure_response.provider_attempt_count = provider_attempt_count;
     failure_response.failover = failover;
     failure_response
+}
+
+fn provider_attempt_log(response: &DebugHttpResponse) -> GatewayProviderAttempt {
+    GatewayProviderAttempt {
+        provider_id: response.provider_id.clone(),
+        provider_name: response.provider_name.clone(),
+        upstream_model_id: response.upstream_model_id.clone(),
+        status_code: Some(response.status_code),
+        success: (200..400).contains(&response.status_code) && response.error_category.is_none(),
+        error_category: response.error_category.clone(),
+        error_message: response
+            .error_category
+            .as_ref()
+            .map(|_| response.note.clone())
+            .filter(|message| !message.trim().is_empty()),
+        attempt_count: response.provider_attempt_count.max(1),
+        total_attempt_count: response.attempt_count.max(1),
+    }
 }
 
 fn should_stream_response(

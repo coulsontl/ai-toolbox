@@ -366,6 +366,31 @@
   }
 }
 
+.attemptTimeline {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.attemptTimelineItem {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-container);
+
+  small {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--color-text-tertiary);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
 .detailStack {
   gap: 8px;
   padding: 10px;

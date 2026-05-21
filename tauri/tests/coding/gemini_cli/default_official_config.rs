@@ -48,6 +48,11 @@ impl TestGeminiCliRoot {
         let content = serde_json::to_string_pretty(&settings).expect("serialize settings");
         std::fs::write(self.root_dir.join("settings.json"), content).expect("write settings");
     }
+
+    fn write_oauth_creds(&self, auth: Value) {
+        let content = serde_json::to_string_pretty(&auth).expect("serialize oauth creds");
+        std::fs::write(self.root_dir.join("oauth_creds.json"), content).expect("write oauth creds");
+    }
 }
 
 fn db_with_gemini_cli_root(root_dir: &std::path::Path) -> SqliteDbState {
@@ -126,7 +131,7 @@ fn save_official_account(db: &SqliteDbState, provider_id: &str) {
 }
 
 #[test]
-fn official_only_import_requires_persisted_official_account() {
+fn official_only_import_requires_local_official_runtime() {
     let _lock = gemini_cli_runtime_lock();
     let root = TestGeminiCliRoot::new();
     root.write_settings(official_settings());
@@ -146,28 +151,51 @@ fn official_only_import_requires_persisted_official_account() {
 }
 
 #[test]
-fn lazy_list_does_not_show_local_official_provider_without_persisted_account() {
+fn lazy_list_imports_local_official_runtime_without_persisted_account() {
     let _lock = gemini_cli_runtime_lock();
     let root = TestGeminiCliRoot::new();
     root.write_settings(official_settings());
     root.write_env("GEMINI_MODEL=gemini-3.1-pro-preview\n");
+    root.write_oauth_creds(official_auth_snapshot());
     let db = db_with_gemini_cli_root(&root.root_dir);
 
     let providers = block_on(list_gemini_cli_providers_for_db(&db)).expect("list providers");
 
-    assert!(providers.is_empty());
+    assert_eq!(providers.len(), 1);
+    assert_ne!(providers[0].id, "__local__");
+    assert_eq!(providers[0].category, "official");
+    assert!(providers[0].is_applied);
     let count = db
         .with_conn(|conn| db_count(conn, DbTable::GeminiCliProvider))
         .expect("count providers");
-    assert_eq!(count, 0);
+    assert_eq!(count, 1);
 }
 
 #[test]
-fn imports_official_subscription_account_as_persisted_default_provider() {
+fn imports_oauth_creds_without_settings_as_official_default_provider() {
+    let _lock = gemini_cli_runtime_lock();
+    let root = TestGeminiCliRoot::new();
+    root.write_oauth_creds(official_auth_snapshot());
+    let db = db_with_gemini_cli_root(&root.root_dir);
+
+    let imported = block_on(import_gemini_cli_default_provider_from_local_files(
+        &db, true,
+    ))
+    .expect("import official provider")
+    .expect("provider imported");
+
+    assert_ne!(imported.id, "__local__");
+    assert_eq!(imported.category, "official");
+    assert!(imported.is_applied);
+}
+
+#[test]
+fn import_uses_fresh_provider_id_even_when_official_account_exists() {
     let _lock = gemini_cli_runtime_lock();
     let root = TestGeminiCliRoot::new();
     root.write_settings(official_settings());
     root.write_env("GEMINI_MODEL=gemini-3.1-pro-preview\n");
+    root.write_oauth_creds(official_auth_snapshot());
     let db = db_with_gemini_cli_root(&root.root_dir);
     save_official_account(&db, "persisted-official-provider");
 
@@ -177,7 +205,7 @@ fn imports_official_subscription_account_as_persisted_default_provider() {
     .expect("import official provider")
     .expect("provider imported");
 
-    assert_eq!(imported.id, "persisted-official-provider");
+    assert_ne!(imported.id, "persisted-official-provider");
     assert_eq!(imported.name, "默认配置");
     assert_eq!(imported.category, "official");
     assert!(imported.is_applied);
@@ -200,8 +228,8 @@ fn startup_and_lazy_import_are_idempotent() {
     let _lock = gemini_cli_runtime_lock();
     let root = TestGeminiCliRoot::new();
     root.write_settings(official_settings());
+    root.write_oauth_creds(official_auth_snapshot());
     let db = db_with_gemini_cli_root(&root.root_dir);
-    save_official_account(&db, "persisted-official-provider");
 
     block_on(init_gemini_cli_provider_from_settings(&db)).expect("startup import");
     let second = block_on(import_gemini_cli_default_provider_from_local_files(
@@ -217,7 +245,7 @@ fn startup_and_lazy_import_are_idempotent() {
 }
 
 #[test]
-fn startup_keeps_third_party_local_config_temporary_even_with_official_account() {
+fn startup_keeps_third_party_local_config_temporary_even_with_official_runtime() {
     let _lock = gemini_cli_runtime_lock();
     let root = TestGeminiCliRoot::new();
     root.write_settings(json!({
@@ -230,8 +258,8 @@ fn startup_keeps_third_party_local_config_temporary_even_with_official_account()
     root.write_env(
         "GEMINI_API_KEY=sk-test\nGOOGLE_GEMINI_BASE_URL=https://example.invalid/v1beta\nGEMINI_MODEL=gemini-test\n",
     );
+    root.write_oauth_creds(official_auth_snapshot());
     let db = db_with_gemini_cli_root(&root.root_dir);
-    save_official_account(&db, "persisted-official-provider");
 
     block_on(init_gemini_cli_provider_from_settings(&db)).expect("startup import");
     let count = db
@@ -250,7 +278,6 @@ fn does_not_create_provider_without_local_config_files() {
     let _lock = gemini_cli_runtime_lock();
     let root = TestGeminiCliRoot::new();
     let db = db_with_gemini_cli_root(&root.root_dir);
-    save_official_account(&db, "persisted-official-provider");
 
     let imported = block_on(import_gemini_cli_default_provider_from_local_files(
         &db, true,

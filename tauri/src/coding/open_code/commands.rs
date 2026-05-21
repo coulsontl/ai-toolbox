@@ -12,7 +12,8 @@ use crate::coding::prompt_file::{read_prompt_content_file, write_prompt_content_
 use crate::coding::runtime_location;
 use crate::coding::skills::commands::resync_all_skills_if_tool_path_changed;
 use crate::db::helpers::{
-    db_count, db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_patch_where_bool, db_put,
+    db_count, db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put,
+    db_update_applied_status,
 };
 use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
@@ -912,27 +913,8 @@ pub async fn apply_prompt_config_internal<R: tauri::Runtime>(
 
     let now = chrono::Local::now().to_rfc3339();
 
-    state.with_conn(|conn| {
-        db_patch_where_bool(
-            conn,
-            DbTable::OpenCodePromptConfig,
-            &JsonFieldPath::new("is_applied")?,
-            true,
-            &[
-                ("is_applied", serde_json::Value::Bool(false)),
-                ("updated_at", serde_json::Value::String(now.clone())),
-            ],
-        )?;
-        db_patch_fields(
-            conn,
-            DbTable::OpenCodePromptConfig,
-            config_id,
-            &[
-                ("is_applied", serde_json::Value::Bool(true)),
-                ("updated_at", serde_json::Value::String(now.clone())),
-            ],
-        )?;
-        Ok(())
+    state.with_conn_mut(|conn| {
+        db_update_applied_status(conn, DbTable::OpenCodePromptConfig, Some(config_id), &now)
     })?;
 
     write_prompt_content_to_file(state.clone(), Some(prompt_config.content.as_str())).await?;

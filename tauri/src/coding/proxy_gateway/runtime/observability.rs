@@ -102,6 +102,7 @@ pub(super) fn record_gateway_observability(
                 settings.store_response_body,
                 settings.log_max_body_size_kb,
             ),
+            provider_attempts: response.provider_attempts.clone(),
         };
 
         if settings.request_log_enabled {
