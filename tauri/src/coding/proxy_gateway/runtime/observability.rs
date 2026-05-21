@@ -20,7 +20,7 @@ pub(super) fn record_gateway_observability(
         return;
     };
     let (request_path, _) = split_request_target(&request.path);
-    if request.method == "GET" && request_path == "/health" {
+    if should_skip_observability(&request.method, &request_path) {
         return;
     }
 
@@ -126,6 +126,14 @@ pub(super) fn record_gateway_observability(
     }
 }
 
+fn should_skip_observability(method: &str, request_path: &str) -> bool {
+    if method == "GET" && request_path == "/health" {
+        return true;
+    }
+    matches!(method, "GET" | "HEAD")
+        && matches!(request_path, "/anthropic" | "/openai/v1" | "/gemini/v1beta")
+}
+
 fn trace_id(request: &DebugHttpRequest) -> String {
     let run_id = TRACE_RUN_ID
         .get_or_init(|| format!("{}-{}", std::process::id(), Utc::now().timestamp_micros()));
@@ -186,5 +194,14 @@ mod tests {
         assert!(trace.starts_with("gw-"));
         assert!(trace.ends_with("-1"));
         assert_ne!(trace, "gw-1");
+    }
+
+    #[test]
+    fn skips_cli_root_probe_observability() {
+        assert!(should_skip_observability("HEAD", "/anthropic"));
+        assert!(should_skip_observability("GET", "/openai/v1"));
+        assert!(should_skip_observability("HEAD", "/gemini/v1beta"));
+        assert!(!should_skip_observability("POST", "/anthropic"));
+        assert!(!should_skip_observability("POST", "/anthropic/v1/messages"));
     }
 }

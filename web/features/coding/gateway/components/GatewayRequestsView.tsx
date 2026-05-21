@@ -100,6 +100,32 @@ const tokenBreakdownText = (
   total: formatInteger(value.total_tokens),
 });
 
+const providerDisplayName = (
+  t: ReturnType<typeof useTranslation>['t'],
+  providerId?: string | null,
+  providerName?: string | null,
+) => {
+  if (providerName) {
+    return providerName;
+  }
+  if (!providerId || providerId === 'unknown') {
+    return t('gateway.page.requests.providerUnselected');
+  }
+  return providerId;
+};
+
+const providerDisplayMeta = (
+  t: ReturnType<typeof useTranslation>['t'],
+  cliKey: GatewayCliKey,
+  providerId?: string | null,
+) => {
+  const cliLabel = t(`settings.gateway.cli.${cliKey}`);
+  if (!providerId || providerId === 'unknown') {
+    return cliLabel;
+  }
+  return `${cliLabel} · ${providerId}`;
+};
+
 const buildFilters = (draft: RequestFilterDraft): GatewayRequestLogFilters => {
   const [start, end] = draft.dateRange ?? [];
   return {
@@ -325,7 +351,7 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
           <span>{t('gateway.page.requests.fields.time')}</span>
           <strong>{formatDateTime(detail.ended_at)}</strong>
           <span>{t('gateway.page.requests.fields.provider')}</span>
-          <strong>{detail.provider_name ?? detail.provider_id ?? '-'}</strong>
+          <strong>{providerDisplayName(t, detail.provider_id, detail.provider_name)}</strong>
           <span>{t('gateway.page.requests.fields.model')}</span>
           <strong>{formatModelRoute(detail.requested_model, detail.upstream_model_id, '-')}</strong>
           <span>{t('gateway.page.requests.fields.status')}</span>
@@ -396,8 +422,8 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
       dataIndex: 'provider_name',
       render: (_, record) => (
         <div className={styles.tableMainCell}>
-          <strong>{record.provider_name ?? record.provider_id}</strong>
-          <small>{t(`settings.gateway.cli.${record.cli_key}`)} · {record.provider_id}</small>
+          <strong>{providerDisplayName(t, record.provider_id, record.provider_name)}</strong>
+          <small>{providerDisplayMeta(t, record.cli_key, record.provider_id)}</small>
         </div>
       ),
     },

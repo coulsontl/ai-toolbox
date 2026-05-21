@@ -161,8 +161,9 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
     settingsConfig.sonnetModel ||
     settingsConfig.opusModel;
   const hasConfiguredModels = Boolean(settingsConfig.model || hasModels);
-  const showRuntimeApplied = isApplied && !gatewayTakeoverActive;
-  const actionAreaWidth = showRuntimeApplied || gatewayTakeoverActive ? 40 : 112;
+  const showRuntimeApplied = isApplied;
+  const showApplyAction = !gatewayTakeoverActive && !isApplied;
+  const actionAreaWidth = showApplyAction ? 112 : 40;
 
   return (
     <div ref={setNodeRef} style={sortableStyle}>
@@ -317,7 +318,7 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
             whiteSpace: 'nowrap',
           }}
         >
-          {!gatewayTakeoverActive && !isApplied && (
+          {showApplyAction && (
             <Button
               type="link"
               size="small"

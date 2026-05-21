@@ -169,6 +169,41 @@ pub(super) fn json_response(
     }
 }
 
+pub(super) fn empty_response(
+    status_code: u16,
+    status_text: &str,
+    route_name: &str,
+    note: &str,
+) -> DebugHttpResponse {
+    DebugHttpResponse {
+        status_code,
+        status_text: status_text.to_string(),
+        headers: Vec::new(),
+        response_body_bytes: 0,
+        body: Vec::new(),
+        body_stream: None,
+        token_usage: TokenUsage::default(),
+        first_token_ms: None,
+        is_streaming: false,
+        cli_key: None,
+        route_name: route_name.to_string(),
+        provider_id: None,
+        provider_name: None,
+        provider_type: None,
+        cost_multiplier: None,
+        pricing_model_source: None,
+        requested_model: None,
+        upstream_model_id: None,
+        upstream_request_body: None,
+        upstream_url: None,
+        error_category: None,
+        attempt_count: 0,
+        provider_attempt_count: 0,
+        failover: false,
+        note: note.to_string(),
+    }
+}
+
 pub(super) async fn write_response(
     stream: &mut TcpStream,
     response: &mut DebugHttpResponse,

@@ -52,6 +52,7 @@
 				"breakdown": "维度统计",
 				"providerStats": "供应商",
 				"modelStats": "模型",
+				"providerUnselected": "未选择供应商",
 				"summaryRequests": "请求数",
 				"summaryTokens": "Token 总量",
 				"summaryCache": "缓存读取",
@@ -126,6 +127,7 @@
 				"tokensShort": "输入 {{input}} / 输出 {{output}} / 缓存 {{cache}}",
 				"tokensValue": "输入 {{input}} / 输出 {{output}} / 缓存读 {{cacheRead}} / 缓存写 {{cacheCreation}} / 总计 {{total}}",
 				"attemptBadge": "{{count}}/{{total}} 次",
+				"providerUnselected": "未选择供应商",
 				"fields": {
 					"traceId": "Trace ID",
 					"time": "时间",

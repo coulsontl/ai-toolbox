@@ -983,18 +983,16 @@ const ClaudeCodePage: React.FC = () => {
                 >
                   <LinkOutlined /> {t('claudecode.viewDocs')}
                 </Link>
-                {appliedProviderId && (
-                  <Link
-                    type="secondary"
-                    style={{ fontSize: 12, marginLeft: 16 }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handlePreviewCurrentConfig();
-                    }}
-                  >
-                    <EyeOutlined /> {t('common.previewConfig')}
-                  </Link>
-                )}
+                <Link
+                  type="secondary"
+                  style={{ fontSize: 12, marginLeft: 16 }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handlePreviewCurrentConfig();
+                  }}
+                >
+                  <EyeOutlined /> {t('common.previewConfig')}
+                </Link>
               </div>
               <Space>
                 <Text type="secondary" style={{ fontSize: 12 }}>

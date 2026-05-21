@@ -3,7 +3,7 @@ use super::header_preserving_client::{
     append_preserved_header, send_header_preserving_request, HeaderPreservingResponse,
     PreservedHeader,
 };
-use super::http_io::{json_response, DebugHttpRequest, DebugHttpResponse};
+use super::http_io::{empty_response, json_response, DebugHttpRequest, DebugHttpResponse};
 use super::providers::{load_candidate_providers, UpstreamModelMapping, UpstreamProvider};
 use super::routes::{build_target_url, match_gateway_route, split_request_target, GatewayRoute};
 use super::GatewayRuntimeContext;
@@ -249,6 +249,17 @@ pub(super) async fn route_request(
         );
     };
 
+    if is_cli_route_probe(request, &route) {
+        let mut response = empty_response(
+            204,
+            "No Content",
+            route.route_name,
+            "local CLI route probe endpoint",
+        );
+        response.cli_key = Some(route.cli_key);
+        return response;
+    }
+
     let Some(db) = context.db.as_ref() else {
         return json_response(
             503,
@@ -264,6 +275,18 @@ pub(super) async fn route_request(
     };
 
     forward_to_upstream(request, db, context, &route).await
+}
+
+fn is_cli_route_probe(request: &DebugHttpRequest, route: &GatewayRoute) -> bool {
+    if !matches!(request.method.as_str(), "GET" | "HEAD") {
+        return false;
+    }
+    match route.cli_key {
+        GatewayCliKey::Claude => route.forwarded_path == "/",
+        GatewayCliKey::Codex => route.forwarded_path == "/v1",
+        GatewayCliKey::Gemini => route.forwarded_path == "/v1beta",
+        GatewayCliKey::OpenCode => false,
+    }
 }
 
 async fn forward_to_upstream(

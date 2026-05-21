@@ -52,6 +52,7 @@
 				"breakdown": "Breakdown",
 				"providerStats": "Providers",
 				"modelStats": "Models",
+				"providerUnselected": "No provider selected",
 				"summaryRequests": "Requests",
 				"summaryTokens": "Total tokens",
 				"summaryCache": "Cache read",
@@ -126,6 +127,7 @@
 				"tokensShort": "In {{input}} / out {{output}} / cache {{cache}}",
 				"tokensValue": "In {{input}} / out {{output}} / cache read {{cacheRead}} / cache write {{cacheCreation}} / total {{total}}",
 				"attemptBadge": "{{count}}/{{total}}x",
+				"providerUnselected": "No provider selected",
 				"fields": {
 					"traceId": "Trace ID",
 					"time": "Time",

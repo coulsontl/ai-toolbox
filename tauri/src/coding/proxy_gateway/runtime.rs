@@ -1024,6 +1024,21 @@ base_url = "https://openai.example.com/v1"
     }
 
     #[test]
+    fn route_request_answers_claude_root_probe_locally() {
+        let request = debug_request("HEAD", "/anthropic", b"");
+
+        let context = GatewayRuntimeContext::new(ProxyGatewaySettings::default(), None, None);
+        let response = tauri::async_runtime::block_on(route_request(&request, &context));
+
+        assert_eq!(response.status_code, 204);
+        assert_eq!(response.body, Vec::<u8>::new());
+        assert_eq!(response.cli_key, Some(GatewayCliKey::Claude));
+        assert_eq!(response.provider_id, None);
+        assert_eq!(response.requested_model, None);
+        assert_eq!(response.attempt_count, 0);
+    }
+
+    #[test]
     fn route_request_preserves_streaming_response_body_stream() {
         let (base_url, captured_rx) = start_test_streaming_upstream();
         let body = br#"{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":"say hi"}]}"#;

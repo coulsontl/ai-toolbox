@@ -106,6 +106,32 @@ const chartData = (trends: GatewayUsageTrendPoint[]) =>
     };
   });
 
+const providerDisplayName = (
+  t: ReturnType<typeof useTranslation>['t'],
+  providerId: string,
+  providerName: string | null,
+) => {
+  if (providerName) {
+    return providerName;
+  }
+  if (providerId === 'unknown') {
+    return t('gateway.page.statistics.providerUnselected');
+  }
+  return providerId;
+};
+
+const providerDisplayMeta = (
+  t: ReturnType<typeof useTranslation>['t'],
+  cliKey: GatewayCliKey,
+  providerId: string,
+) => {
+  const cliLabel = t(`settings.gateway.cli.${cliKey}`);
+  if (providerId === 'unknown') {
+    return cliLabel;
+  }
+  return `${cliLabel} · ${providerId}`;
+};
+
 const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKey = 0 }) => {
   const { t } = useTranslation();
   const [cliFilter, setCliFilter] = React.useState<GatewayCliFilter>('all');
@@ -177,8 +203,8 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
       dataIndex: 'provider_name',
       render: (_, record) => (
         <div className={styles.tableMainCell}>
-          <strong>{record.provider_name ?? record.provider_id}</strong>
-          <small>{t(`settings.gateway.cli.${record.cli_key}`)} · {record.provider_id}</small>
+          <strong>{providerDisplayName(t, record.provider_id, record.provider_name)}</strong>
+          <small>{providerDisplayMeta(t, record.cli_key, record.provider_id)}</small>
         </div>
       ),
     },
