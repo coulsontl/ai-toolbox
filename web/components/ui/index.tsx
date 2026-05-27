@@ -63,6 +63,7 @@ type InputProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, 'size' | 'pr
   onPressEnter?: React.KeyboardEventHandler<HTMLInputElement>;
   visibilityToggle?: boolean;
   variant?: string;
+  showTime?: boolean;
 };
 
 type TextAreaProps = Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'size'> & {
@@ -99,6 +100,9 @@ type SelectProps = BaseProps & {
   allowClear?: boolean;
   placeholder?: React.ReactNode;
   disabled?: boolean;
+  loading?: boolean;
+  tokenSeparators?: string[];
+  variant?: string;
   onChange?: (value: any, option?: any) => void;
   filterOption?: (inputValue: string, option?: any) => boolean;
   onSearch?: (value: string) => void;
@@ -111,6 +115,7 @@ type CheckboxProps = BaseProps & {
   checked?: boolean;
   defaultChecked?: boolean;
   disabled?: boolean;
+  indeterminate?: boolean;
   value?: any;
   onChange?: (event: CheckboxChangeEvent) => void;
   onClick?: React.MouseEventHandler<HTMLLabelElement>;
@@ -224,6 +229,21 @@ const cx = (...classes: Array<string | false | null | undefined>) => classes.fil
 
 const toPath = (name: NamePath): Array<string | number> => Array.isArray(name) ? name : [name];
 
+const pathKey = (name: NamePath) => toPath(name).join('.');
+
+const isSamePath = (left: Array<string | number>, right: Array<string | number>) =>
+  left.length === right.length && left.every((part, index) => part === right[index]);
+
+const isPrefixPath = (prefix: Array<string | number>, path: Array<string | number>) =>
+  prefix.length <= path.length && prefix.every((part, index) => part === path[index]);
+
+const resolveNamePath = (name: NamePath | undefined, prefix: Array<string | number>) => {
+  if (name === undefined) return undefined;
+  const namePath = toPath(name);
+  if (!prefix.length || isPrefixPath(prefix, namePath)) return namePath;
+  return [...prefix, ...namePath];
+};
+
 const getIn = (source: AnyRecord, name: NamePath) => {
   let current: any = source;
   for (const part of toPath(name)) {
@@ -259,10 +279,15 @@ const setIn = (source: AnyRecord, name: NamePath, value: any) => {
 const valueFromEvent = (event: any) => {
   if (event && event.target) {
     const target = event.target;
-    if ('checked' in target && target.type === 'checkbox') return target.checked;
+    if ('checked' in target && (target.type === 'checkbox' || target.type === undefined)) return target.checked;
     return target.value;
   }
   return event;
+};
+
+type RegisteredRules = {
+  namePath: Array<string | number>;
+  rules: FormRule[];
 };
 
 class FormStore {
@@ -271,7 +296,7 @@ class FormStore {
   private listeners = new Set<() => void>();
   private submitHandler?: (values: any) => void;
   private valuesChangeHandler?: (changed: any, all: any) => void;
-  private rules = new Map<string, any[]>();
+  private rules = new Map<string, RegisteredRules>();
 
   getFieldsValue = (_names?: NamePath[] | true) => this.values;
   getFieldValue = (name: NamePath) => getIn(this.values, name);
@@ -293,18 +318,34 @@ class FormStore {
     this.valuesChangeHandler?.(setIn({}, name, value), this.values);
     this.notify();
   };
+  setFieldInitialValue = (name: NamePath, value: any) => {
+    if (getIn(this.values, name) !== undefined) return;
+    this.initialValues = setIn(this.initialValues, name, value);
+    this.values = setIn(this.values, name, value);
+    this.notify();
+  };
   resetFields = () => {
     this.values = { ...this.initialValues };
     this.notify();
   };
   validateFields = async (names?: NamePath[]): Promise<any> => {
-    const invalid = Array.from(this.rules.entries()).find(([key, rules]) => {
-      if (names && !names.some((name) => String(toPath(name).join('.')) === key)) return false;
-      const value = getIn(this.values, key.split('.'));
-      return rules.some((rule) => rule?.required && (value === undefined || value === null || value === ''));
-    });
-    if (invalid) {
-      return Promise.reject(new Error('Validation failed'));
+    const filterPaths = names?.map(toPath);
+    for (const { namePath, rules } of this.rules.values()) {
+      if (filterPaths && !filterPaths.some((filterPath) => isSamePath(filterPath, namePath) || isPrefixPath(filterPath, namePath))) {
+        continue;
+      }
+      const value = getIn(this.values, namePath);
+      for (const rule of rules) {
+        if (rule?.required) {
+          const isEmptyArray = Array.isArray(value) && value.length === 0;
+          if (value === undefined || value === null || value === '' || isEmptyArray) {
+            return Promise.reject(new Error(String(rule.message || 'Validation failed')));
+          }
+        }
+        if (rule?.validator) {
+          await rule.validator(rule, value);
+        }
+      }
     }
     return this.values;
   };
@@ -313,12 +354,13 @@ class FormStore {
       .then((values) => this.submitHandler?.(values))
       .catch(() => undefined);
   };
-  registerRules = (name: NamePath | undefined, rules?: any[]) => {
+  registerRules = (name: NamePath | undefined, rules?: FormRule[]) => {
     if (!name) {
       return () => {};
     }
-    const key = toPath(name).join('.');
-    if (rules?.length) this.rules.set(key, rules);
+    const namePath = toPath(name);
+    const key = pathKey(namePath);
+    if (rules?.length) this.rules.set(key, { namePath, rules });
     return () => {
       this.rules.delete(key);
     };
@@ -353,6 +395,7 @@ const mergeValues = (base: AnyRecord, patch: AnyRecord): AnyRecord => {
 };
 
 const FormContext = React.createContext<FormStore | null>(null);
+const FormListPrefixContext = React.createContext<Array<string | number>>([]);
 
 const useForceUpdate = () => {
   const [, setTick] = React.useState(0);
@@ -436,7 +479,7 @@ const FormComponent = <T extends AnyRecord = AnyRecord>({
     <FormContext.Provider value={store}>
       <form
         {...rest}
-        className={cx('ui-form', `ui-form-${layout}`, className)}
+        className={cx('ant-form', layout && `ant-form-${layout}`, 'ui-form', `ui-form-${layout}`, className)}
         onSubmit={(event) => {
           event.preventDefault();
           store.submit();
@@ -451,12 +494,15 @@ const FormComponent = <T extends AnyRecord = AnyRecord>({
 const FormItem = ({
   name,
   label,
+  initialValue,
   children,
   valuePropName = 'value',
   noStyle,
   required,
   rules,
   extra,
+  help,
+  hidden,
   className,
   style,
   shouldUpdate,
@@ -464,14 +510,21 @@ const FormItem = ({
   ...rest
 }: FormItemProps) => {
   const store = React.useContext(FormContext);
+  const listPrefix = React.useContext(FormListPrefixContext);
+  const resolvedName = React.useMemo(() => resolveNamePath(name, listPrefix), [name, listPrefix]);
   const forceUpdate = useForceUpdate();
   React.useEffect(() => store?.subscribe(forceUpdate), [store, forceUpdate]);
-  React.useEffect(() => store?.registerRules(name, rules || (required ? [{ required: true }] : undefined)), [store, name, rules, required]);
+  React.useEffect(() => {
+    if (!store || resolvedName === undefined || initialValue === undefined) return undefined;
+    store.setFieldInitialValue(resolvedName, initialValue);
+    return undefined;
+  }, [store, resolvedName, initialValue]);
+  React.useEffect(() => store?.registerRules(resolvedName, rules || (required ? [{ required: true }] : undefined)), [store, resolvedName, rules, required]);
 
   if (shouldUpdate && typeof children === 'function') {
     const helperStore = store || new FormStore();
     return (
-      <div className={cx(noStyle ? undefined : 'ui-form-item', className)} style={style}>
+      <div className={cx(noStyle ? undefined : 'ant-form-item ui-form-item', className)} style={style}>
         {children({
           getFieldValue: helperStore.getFieldValue,
           setFieldsValue: helperStore.setFieldsValue,
@@ -481,14 +534,14 @@ const FormItem = ({
     );
   }
 
-  const value = name && store ? store.getFieldValue(name) : undefined;
-  const controlProps = name && store
+  const value = resolvedName && store ? store.getFieldValue(resolvedName) : undefined;
+  const controlProps = resolvedName && store
     ? {
         [valuePropName]: valuePropName === 'checked' ? Boolean(value) : value,
-        onChange: (event: any) => {
-          store.setFieldValue(name, getValueFromEvent ? getValueFromEvent(event) : valueFromEvent(event));
+        onChange: (...args: any[]) => {
+          store.setFieldValue(resolvedName, getValueFromEvent ? getValueFromEvent(...args) : valueFromEvent(args[0]));
           const originalOnChange = React.isValidElement(children) ? (children.props as AnyRecord).onChange : undefined;
-          originalOnChange?.(event);
+          originalOnChange?.(...args);
         },
       }
     : {};
@@ -496,10 +549,11 @@ const FormItem = ({
 
   if (noStyle) return <>{control}</>;
   return (
-    <div {...rest} className={cx('ui-form-item', className)} style={style}>
-      {label && <label className="ui-form-label">{label}{required && <span className="ui-required">*</span>}</label>}
-      <div className="ui-form-control">
-        {control}
+    <div {...rest} hidden={hidden} className={cx('ant-form-item', 'ui-form-item', className)} style={style}>
+      {label && <div className="ant-form-item-label ui-form-item-label"><label className="ui-form-label">{label}{required && <span className="ui-required">*</span>}</label></div>}
+      <div className="ant-form-item-control ui-form-control">
+        <div className="ant-form-item-control-input">{control}</div>
+        {help && <div className="ui-form-help">{help}</div>}
         {extra && <div className="ui-form-extra">{extra}</div>}
       </div>
     </div>
@@ -508,18 +562,24 @@ const FormItem = ({
 
 const FormList = ({ name, children }: FormListProps) => {
   const store = React.useContext(FormContext);
+  const listPrefix = React.useContext(FormListPrefixContext);
+  const resolvedName = React.useMemo(() => resolveNamePath(name, listPrefix) || toPath(name), [name, listPrefix]);
   const forceUpdate = useForceUpdate();
   React.useEffect(() => store?.subscribe(forceUpdate), [store, forceUpdate]);
-  const values = (store?.getFieldValue(name) || []) as any[];
+  const values = (store?.getFieldValue(resolvedName) || []) as any[];
   const fields = values.map((_, index) => ({ key: index, name: index }));
   const operations = {
-    add: (value?: any) => store?.setFieldValue(name, [...values, value ?? undefined]),
+    add: (value?: any) => store?.setFieldValue(resolvedName, [...values, value ?? undefined]),
     remove: (index: number | number[]) => {
       const indexes = Array.isArray(index) ? index : [index];
-      store?.setFieldValue(name, values.filter((_, itemIndex) => !indexes.includes(itemIndex)));
+      store?.setFieldValue(resolvedName, values.filter((_, itemIndex) => !indexes.includes(itemIndex)));
     },
   };
-  return <>{children(fields, operations)}</>;
+  return (
+    <FormListPrefixContext.Provider value={resolvedName}>
+      {children(fields, operations)}
+    </FormListPrefixContext.Provider>
+  );
 };
 
 type FormNamespace = (<T extends AnyRecord = AnyRecord>(props: FormProps<T>) => React.ReactElement) & {
@@ -567,7 +627,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(({
     ref={ref}
     type={htmlType || 'button'}
     disabled={disabled || loading}
-    className={cx('ui-btn', type === 'primary' && 'ui-btn-primary', type === 'link' && 'ui-btn-link', danger && 'ui-btn-danger', size === 'small' && 'ui-btn-sm', block && 'ui-btn-block', ghost && 'ui-btn-ghost', shape === 'circle' && 'ui-btn-circle', className)}
+    className={cx('ant-btn', type === 'primary' && 'ant-btn-primary', (!type || type === 'default' || type === 'dashed') && 'ant-btn-default', type === 'dashed' && 'ant-btn-dashed', type === 'link' && 'ant-btn-link', type === 'text' && 'ant-btn-text', danger && 'ant-btn-dangerous', 'ui-btn', type === 'primary' && 'ui-btn-primary', type === 'link' && 'ui-btn-link', type === 'text' && 'ui-btn-text', type === 'dashed' && 'ui-btn-dashed', danger && 'ui-btn-danger', size === 'small' && 'ui-btn-sm', block && 'ui-btn-block', ghost && 'ui-btn-ghost', shape === 'circle' && 'ui-btn-circle', className)}
   >
     {loading && <span className="ui-spinner ui-spinner-inline" />}
     {icon}
@@ -656,46 +716,84 @@ const TextInput = React.forwardRef<HTMLInputElement, InputProps>(({
   addonBefore,
   prefix,
   suffix,
-  allowClear: _allowClear,
+  allowClear,
   size: _size,
   visibilityToggle: _visibilityToggle,
-  variant: _variant,
+  variant,
   onPressEnter,
   onKeyDown,
+  onChange,
+  value,
   ...rest
 }, ref) => {
-  const input = (
+  const needsAffix = Boolean(prefix || suffix || addonBefore || addonAfter || allowClear);
+  const inputElement = (
     <input
       {...rest}
       ref={ref}
-      className={cx('ui-input', status === 'error' && 'ui-input-error', (prefix || suffix || addonBefore || addonAfter) ? 'ui-input-composed' : undefined, className)}
+      value={value}
+      className={cx('ant-input', 'ui-input', variant === 'borderless' && 'ui-input-borderless', status === 'error' && 'ui-input-error', needsAffix ? 'ui-input-composed' : undefined, className)}
+      onChange={onChange}
       onKeyDown={(event) => {
         if (event.key === 'Enter') onPressEnter?.(event);
         onKeyDown?.(event);
       }}
     />
   );
+  const input = needsAffix ? (
+    <span className="ant-input-affix-wrapper ui-input-affix">
+      {prefix && <span className="ui-input-prefix">{prefix}</span>}
+      {inputElement}
+      {allowClear && value ? (
+        <button
+          type="button"
+          className="ui-input-clear"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => {
+            const event = { target: { value: '' }, currentTarget: { value: '' } } as unknown as React.ChangeEvent<HTMLInputElement>;
+            onChange?.(event);
+          }}
+        >
+          ×
+        </button>
+      ) : null}
+      {suffix && <span className="ui-input-suffix">{suffix}</span>}
+    </span>
+  ) : inputElement;
   if (!prefix && !suffix && !addonBefore && !addonAfter) return input;
   return (
     <span className="ui-input-group">
-      {addonBefore && <span className="ui-input-addon">{addonBefore}</span>}
-      <span className="ui-input-affix">
-        {prefix && <span className="ui-input-prefix">{prefix}</span>}
-        {input}
-        {suffix && <span className="ui-input-suffix">{suffix}</span>}
-      </span>
-      {addonAfter && <span className="ui-input-addon">{addonAfter}</span>}
+      {addonBefore && <span className="ant-input-group-addon ui-input-addon">{addonBefore}</span>}
+      {input}
+      {addonAfter && <span className="ant-input-group-addon ui-input-addon">{addonAfter}</span>}
     </span>
   );
 });
 TextInput.displayName = 'Input';
 
 const TextArea = React.forwardRef<HTMLTextAreaElement, TextAreaProps>(({ className, autoSize: _autoSize, showCount: _showCount, ...rest }, ref) => (
-  <textarea {...rest} ref={ref} className={cx('ui-input ui-textarea', className)} />
+  <textarea {...rest} ref={ref} className={cx('ant-input', 'ui-input ui-textarea', className)} />
 ));
 TextArea.displayName = 'Input.TextArea';
 
-const Password = React.forwardRef<HTMLInputElement, InputProps>((props, ref) => <TextInput {...props} ref={ref} type="password" />);
+const Password = React.forwardRef<HTMLInputElement, InputProps>(({ suffix, visibilityToggle = true, ...props }, ref) => {
+  const [visible, setVisible] = React.useState(false);
+  return (
+    <TextInput
+      {...props}
+      ref={ref}
+      type={visible ? 'text' : 'password'}
+      suffix={visibilityToggle === false ? suffix : (
+        <>
+          {suffix}
+          <button type="button" className="ui-input-clear" onMouseDown={(event) => event.preventDefault()} onClick={() => setVisible((current) => !current)}>
+            {visible ? 'Hide' : 'Show'}
+          </button>
+        </>
+      )}
+    />
+  );
+});
 Password.displayName = 'Input.Password';
 
 type SearchProps = InputProps & {
@@ -732,16 +830,16 @@ export const InputNumber = React.forwardRef<HTMLInputElement, InputNumberProps>(
       max={max}
       step={step}
       value={value ?? ''}
-      className={cx('ui-input ui-input-number', (addonBefore || addonAfter) ? 'ui-input-composed' : undefined, className)}
+      className={cx('ant-input-number ant-input-number-input', 'ui-input ui-input-number', (addonBefore || addonAfter) ? 'ui-input-composed' : undefined, className)}
       onChange={(event) => onChange?.(event.target.value === '' ? null : Number(event.target.value))}
     />
   );
   if (!addonBefore && !addonAfter) return input;
   return (
     <span className="ui-input-group">
-      {addonBefore && <span className="ui-input-addon">{addonBefore}</span>}
+      {addonBefore && <span className="ant-input-group-addon ui-input-addon">{addonBefore}</span>}
       {input}
-      {addonAfter && <span className="ui-input-addon">{addonAfter}</span>}
+      {addonAfter && <span className="ant-input-group-addon ui-input-addon">{addonAfter}</span>}
     </span>
   );
 });
@@ -769,21 +867,95 @@ const normalizeOptions = (options?: any[], children?: React.ReactNode) => {
 
 const SelectOption = ({ children }: AnyRecord) => <>{children}</>;
 
-const SelectComponent = ({ value, defaultValue, onChange, options, children, mode, allowClear, placeholder, disabled, className, style, ...rest }: SelectProps) => {
+const TagsSelect = ({ value, defaultValue, onChange, options, children, placeholder, disabled, className, style, tokenSeparators = [','], variant, allowClear, ...rest }: SelectProps) => {
+  const inputId = React.useId();
+  const [inputValue, setInputValue] = React.useState('');
   const normalized = normalizeOptions(options, children);
-  const selectedValues = mode === 'multiple' ? (Array.isArray(value) ? value : []) : value ?? defaultValue ?? '';
+  const separators: string[] = Array.isArray(tokenSeparators) ? tokenSeparators : [','];
+  const isControlled = value !== undefined;
+  const [innerValues, setInnerValues] = React.useState<any[]>(Array.isArray(defaultValue) ? defaultValue : []);
+  const selectedValues = isControlled
+    ? (Array.isArray(value) ? value : [])
+    : innerValues;
+  const updateValues = (next: any[]) => {
+    if (!isControlled) setInnerValues(next);
+    onChange?.(next, normalized.filter((option) => next.includes(option.value) || next.includes(String(option.value))));
+  };
+  const addValues = (rawValue: string) => {
+    const parts = separators.reduce<string[]>((items, separator) => items.flatMap((item) => item.split(separator)), [rawValue])
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (!parts.length) return;
+    const next = Array.from(new Set([...selectedValues, ...parts]));
+    updateValues(next);
+    setInputValue('');
+  };
+  const removeValue = (removedValue: any) => {
+    const next = selectedValues.filter((item: any) => item !== removedValue);
+    updateValues(next);
+  };
+  return (
+    <div className={cx('ant-select-selector', 'ui-select-tags', variant === 'borderless' && 'ui-select-borderless', disabled && 'ui-disabled', className)} style={style}>
+      {selectedValues.map((item: any) => (
+        <span className="ui-select-tag" key={String(item)}>
+          {String(item)}
+          <button type="button" disabled={disabled} onClick={() => removeValue(item)}>×</button>
+        </span>
+      ))}
+      <input
+        {...rest}
+        list={inputId}
+        disabled={disabled}
+        className="ui-select-tags-input"
+        value={inputValue}
+        placeholder={selectedValues.length ? undefined : placeholder as string | undefined}
+        onChange={(event) => setInputValue(event.target.value)}
+        onBlur={() => addValues(inputValue)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || separators.includes(event.key)) {
+            event.preventDefault();
+            addValues(inputValue);
+          }
+          if (event.key === 'Backspace' && !inputValue && selectedValues.length) {
+            removeValue(selectedValues[selectedValues.length - 1]);
+          }
+        }}
+      />
+      {allowClear && selectedValues.length > 0 && (
+        <button type="button" className="ui-select-clear" disabled={disabled} onClick={() => updateValues([])}>×</button>
+      )}
+      <datalist id={inputId}>
+        {normalized.map((option) => <option key={String(option.value)} value={String(option.value)} />)}
+      </datalist>
+    </div>
+  );
+};
+
+const SelectComponent = ({ value, defaultValue, onChange, options, children, mode, allowClear, placeholder, disabled, className, style, variant, ...rest }: SelectProps) => {
+  const normalized = normalizeOptions(options, children);
+  const isControlled = value !== undefined;
+  const [innerValue, setInnerValue] = React.useState(defaultValue ?? (mode === 'multiple' ? [] : ''));
+  const selectedValues = isControlled ? value : innerValue;
+  const emitChange = (nextValue: any, option?: any) => {
+    if (!isControlled) setInnerValue(nextValue);
+    onChange?.(nextValue, option);
+  };
+  if (mode === 'tags') {
+    return <TagsSelect value={value} defaultValue={defaultValue} onChange={onChange} options={options} disabled={disabled} placeholder={placeholder} className={className} style={style} variant={variant} allowClear={allowClear} {...rest}>{children}</TagsSelect>;
+  }
   if (mode === 'multiple') {
+    const selectedMultipleValues = Array.isArray(selectedValues) ? selectedValues : [];
     return (
       <select
         {...rest}
         multiple
         disabled={disabled}
-        value={selectedValues}
-        className={cx('ui-select-native', className)}
+        value={selectedMultipleValues}
+        className={cx('ant-select-selector', 'ui-select-native', variant === 'borderless' && 'ui-select-borderless', className)}
         style={style}
         onChange={(event) => {
           const next = Array.from(event.target.selectedOptions).map((option) => option.value);
-          onChange?.(next, normalized.filter((option) => next.includes(String(option.value))));
+          emitChange(next, normalized.filter((option) => next.includes(String(option.value))));
         }}
       >
         {normalized.map((option) => <option key={String(option.value)} value={option.value} disabled={option.disabled}>{option.label}</option>)}
@@ -796,22 +968,22 @@ const SelectComponent = ({ value, defaultValue, onChange, options, children, mod
       disabled={disabled}
       onValueChange={(nextValue) => {
         if (nextValue === '__clear__') {
-          onChange?.(undefined, undefined);
+          emitChange(undefined, undefined);
           return;
         }
         const option = normalized.find((item) => String(item.value) === nextValue);
-        onChange?.(option?.value ?? nextValue, option);
+        emitChange(option?.value ?? nextValue, option);
       }}
     >
-      <SelectPrimitive.Trigger className={cx('ui-select-trigger', className)} style={style}>
+      <SelectPrimitive.Trigger className={cx('ant-select-selector', 'ui-select-trigger', variant === 'borderless' && 'ui-select-borderless', className)} style={style}>
         <SelectPrimitive.Value placeholder={placeholder} />
       </SelectPrimitive.Trigger>
       <SelectPrimitive.Portal>
-        <SelectPrimitive.Content className="ui-select-content" position="popper">
+        <SelectPrimitive.Content className="ant-select-dropdown ui-select-content" position="popper">
           <SelectPrimitive.Viewport>
-            {allowClear && <SelectPrimitive.Item className="ui-select-item" value="__clear__">-</SelectPrimitive.Item>}
+            {allowClear && <SelectPrimitive.Item className="ant-select-item ant-select-item-option ui-select-item" value="__clear__">-</SelectPrimitive.Item>}
             {normalized.map((option) => (
-              <SelectPrimitive.Item key={String(option.value)} value={String(option.value)} disabled={option.disabled} className="ui-select-item">
+              <SelectPrimitive.Item key={String(option.value)} value={String(option.value)} disabled={option.disabled} className="ant-select-item ant-select-item-option ui-select-item">
                 <SelectPrimitive.ItemText>{option.label}</SelectPrimitive.ItemText>
               </SelectPrimitive.Item>
             ))}
@@ -824,25 +996,82 @@ const SelectComponent = ({ value, defaultValue, onChange, options, children, mod
 SelectComponent.Option = SelectOption;
 export const Select = SelectComponent as typeof SelectComponent & { Option: typeof SelectOption };
 
-export const AutoComplete = Select;
+const optionText = (value: React.ReactNode) => {
+  if (typeof value === 'string' || typeof value === 'number') return String(value);
+  return '';
+};
 
-const CheckboxComponent = ({ checked, defaultChecked, onChange, onClick, children, disabled, className, value, ...rest }: CheckboxProps) => {
+const AutoCompleteComponent = ({
+  value,
+  defaultValue,
+  onChange,
+  options,
+  children,
+  placeholder,
+  disabled,
+  className,
+  style,
+  filterOption,
+  allowClear: _allowClear,
+  onSearch,
+  variant,
+  ...rest
+}: SelectProps) => {
+  const listId = React.useId();
+  const normalized = normalizeOptions(options, children);
+  const isControlled = value !== undefined;
+  const [innerValue, setInnerValue] = React.useState(defaultValue ?? '');
+  const currentValue = isControlled ? value : innerValue;
+  const filteredOptions = filterOption && typeof currentValue === 'string'
+    ? normalized.filter((option) => filterOption(currentValue, option))
+    : normalized;
+  return (
+    <>
+      <input
+        {...rest}
+        list={listId}
+        disabled={disabled}
+        value={currentValue}
+        placeholder={placeholder as string | undefined}
+        className={cx('ant-input', 'ui-input ui-autocomplete', variant === 'borderless' && 'ui-input-borderless', className)}
+        style={style}
+        onChange={(event) => {
+          const nextValue = event.target.value;
+          if (!isControlled) setInnerValue(nextValue);
+          const option = normalized.find((item) => String(item.value) === nextValue);
+          onChange?.(nextValue, option);
+          onSearch?.(nextValue);
+        }}
+      />
+      <datalist id={listId}>
+        {filteredOptions.map((option) => (
+          <option key={String(option.value)} value={String(option.value)} label={optionText(option.label)} />
+        ))}
+      </datalist>
+    </>
+  );
+};
+AutoCompleteComponent.Option = SelectOption;
+export const AutoComplete = AutoCompleteComponent as typeof AutoCompleteComponent & { Option: typeof SelectOption };
+
+const CheckboxComponent = ({ checked, defaultChecked, indeterminate, onChange, onClick, children, disabled, className, value, ...rest }: CheckboxProps) => {
   const [innerChecked, setInnerChecked] = React.useState(Boolean(defaultChecked));
   const isChecked = checked ?? innerChecked;
   return (
-    <label className={cx('ui-checkbox-wrapper', disabled && 'ui-disabled', className)} onClick={onClick}>
+    <label className={cx('ant-checkbox-wrapper', 'ui-checkbox-wrapper', disabled && 'ui-disabled', className)} onClick={onClick}>
       <CheckboxPrimitive.Root
         {...rest}
         disabled={disabled}
         checked={isChecked}
-        className="ui-checkbox"
+        className="ant-checkbox ui-checkbox"
+        data-indeterminate={indeterminate ? 'true' : undefined}
         onCheckedChange={(nextChecked) => {
           const nextValue = nextChecked === true;
           setInnerChecked(nextValue);
-          onChange?.({ target: { checked: nextValue, value } });
+          onChange?.({ target: { checked: nextValue, value, type: 'checkbox' } as any });
         }}
       >
-        <CheckboxPrimitive.Indicator>✓</CheckboxPrimitive.Indicator>
+        <CheckboxPrimitive.Indicator>{indeterminate ? '-' : '✓'}</CheckboxPrimitive.Indicator>
       </CheckboxPrimitive.Root>
       {children && <span>{children}</span>}
     </label>
@@ -877,7 +1106,7 @@ type CheckboxComponentType = React.FC<CheckboxProps> & {
 export const Checkbox = CheckboxComponent as CheckboxComponentType;
 
 const RadioComponent = ({ value, children, className, ...rest }: RadioProps) => (
-  <RadioGroupPrimitive.Item {...rest} value={String(value)} className={cx('ui-radio', className)}>
+  <RadioGroupPrimitive.Item {...rest} value={String(value)} className={cx('ant-radio-wrapper', 'ui-radio', className)}>
     <span className="ui-radio-indicator" />
     <span>{children}</span>
   </RadioGroupPrimitive.Item>
@@ -885,7 +1114,7 @@ const RadioComponent = ({ value, children, className, ...rest }: RadioProps) => 
 RadioComponent.Group = ({ value, defaultValue, onChange, options, children, className }: RadioGroupProps) => (
   <RadioGroupPrimitive.Root
     value={value ?? defaultValue}
-    className={cx('ui-radio-group', className)}
+    className={cx('ant-radio-group', 'ui-radio-group', className)}
     onValueChange={(nextValue) => onChange?.({ target: { value: nextValue } })}
   >
     {options?.map((option: any) => <Radio key={String(option.value)} value={option.value}>{option.label}</Radio>)}
@@ -933,7 +1162,7 @@ type TagProps = React.HTMLAttributes<HTMLSpanElement> & {
 };
 
 export const Tag: React.FC<TagProps> = ({ color, bordered: _bordered, icon, closable, onClose, closeIcon, variant: _variant, className, children, ...rest }) => (
-  <span {...rest} className={cx('ui-tag', color && `ui-tag-${color}`, className)}>
+  <span {...rest} className={cx('ant-tag', 'ui-tag', color && `ui-tag-${color}`, className)}>
     {icon}{children}
     {closable && <button type="button" className="ui-tag-close" onClick={onClose}>{closeIcon || '×'}</button>}
   </span>
@@ -948,14 +1177,14 @@ type CardProps = Omit<React.HTMLAttributes<HTMLElement>, 'title'> & {
 };
 
 export const Card: React.FC<CardProps> = ({ title, extra, children, className, bodyStyle, styles, ...rest }) => (
-  <section {...rest} className={cx('ui-card', className)}>
-    {(title || extra) && <div className="ui-card-head"><div className="ui-card-title">{title}</div><div>{extra}</div></div>}
-    <div className="ui-card-body" style={{ ...bodyStyle, ...styles?.body }}>{children}</div>
+  <section {...rest} className={cx('ant-card', 'ui-card', className)}>
+    {(title || extra) && <div className="ant-card-head ui-card-head"><div className="ant-card-head-title ui-card-title">{title}</div><div className="ant-card-extra">{extra}</div></div>}
+    <div className="ant-card-body ui-card-body" style={{ ...bodyStyle, ...styles?.body }}>{children}</div>
   </section>
 );
 
-export const Empty = ({ description, image, children, className }: AnyRecord) => (
-  <div className={cx('ui-empty', className)}>
+export const Empty = ({ description, image, children, className, ...rest }: AnyRecord) => (
+  <div {...rest} className={cx('ui-empty', className)}>
     {image}
     <div>{description || 'No data'}</div>
     {children}
@@ -964,22 +1193,38 @@ export const Empty = ({ description, image, children, className }: AnyRecord) =>
 Empty.PRESENTED_IMAGE_SIMPLE = null;
 
 export const Spin = ({ spinning = true, children, className, ...rest }: AnyRecord) => (
-  <div {...rest} className={cx('ui-spin-nested-loading', className)}>
+  <div {...rest} className={cx('ant-spin-nested-loading', 'ui-spin-nested-loading', className)}>
     {spinning && <span className="ui-spinner" />}
-    <div className="ui-spin-container">{children}</div>
+    <div className="ant-spin-container ui-spin-container">{children}</div>
   </div>
 );
 
-export const Alert = ({ type = 'info', message, description, showIcon, closable: _closable, onClose: _onClose, className, action, ...rest }: AnyRecord) => (
-  <div {...rest} className={cx('ui-alert', `ui-alert-${type}`, className)}>
-    {showIcon && <span className="ui-alert-icon">!</span>}
-    <div className="ui-alert-content">
-      {message && <div className="ui-alert-message">{message}</div>}
-      {description && <div className="ui-alert-description">{description}</div>}
+export const Alert = ({ type = 'info', message, title, description, showIcon, icon, closable, onClose, className, action, closeIcon, ...rest }: AnyRecord) => {
+  const [closed, setClosed] = React.useState(false);
+  if (closed) return null;
+  return (
+    <div {...rest} className={cx('ant-alert', 'ui-alert', `ui-alert-${type}`, className)}>
+      {showIcon && <span className="ui-alert-icon">{icon || '!'}</span>}
+      <div className="ui-alert-content">
+        {(title || message) && <div className="ui-alert-message">{title || message}</div>}
+        {description && <div className="ui-alert-description">{description}</div>}
+      </div>
+      {action}
+      {closable && (
+        <button
+          type="button"
+          className="ui-alert-close"
+          onClick={(event) => {
+            setClosed(true);
+            onClose?.(event);
+          }}
+        >
+          {closeIcon || '×'}
+        </button>
+      )}
     </div>
-    {action}
-  </div>
-);
+  );
+};
 
 export const Divider = ({ children, className }: AnyRecord) => <div className={cx('ui-divider', className)}>{children && <span>{children}</span>}</div>;
 
@@ -1006,7 +1251,7 @@ export const Dropdown: React.FC<DropdownProps> = ({ menu, children, trigger: _tr
   <DropdownMenuPrimitive.Root>
     <DropdownMenuPrimitive.Trigger asChild>{React.isValidElement(children) ? children : <button type="button">{children}</button>}</DropdownMenuPrimitive.Trigger>
     <DropdownMenuPrimitive.Portal>
-      <DropdownMenuPrimitive.Content className={cx('ui-dropdown-content', overlayClassName)} align="end" sideOffset={6}>
+      <DropdownMenuPrimitive.Content className={cx('ant-dropdown-menu', 'ui-dropdown-content', overlayClassName)} align="end" sideOffset={6}>
         {menu?.items?.map((item: MenuItem) => {
           if (!item) return null;
           if (item.type === 'divider') return <DropdownMenuPrimitive.Separator key={String(item.key ?? Math.random())} className="ui-dropdown-separator" />;
@@ -1014,7 +1259,7 @@ export const Dropdown: React.FC<DropdownProps> = ({ menu, children, trigger: _tr
             <DropdownMenuPrimitive.Item
               key={String(item.key)}
               disabled={item.disabled}
-              className={cx('ui-dropdown-item', item.danger && 'ui-dropdown-danger')}
+              className={cx('ant-dropdown-menu-item', 'ui-dropdown-item', item.danger && 'ui-dropdown-danger')}
               onSelect={(event) => {
                 item.onClick?.({ key: String(item.key), domEvent: event as unknown as Event });
                 menu?.onClick?.({ key: String(item.key), domEvent: event as unknown as Event });
@@ -1033,8 +1278,8 @@ export const Dropdown: React.FC<DropdownProps> = ({ menu, children, trigger: _tr
 type ModalFooterRender = (
   originNode: React.ReactNode,
   extra: {
-    OkBtn: React.FC;
-    CancelBtn: React.FC;
+    OkBtn: React.FC<ButtonProps>;
+    CancelBtn: React.FC<ButtonProps>;
   }
 ) => React.ReactNode;
 
@@ -1047,6 +1292,9 @@ type ModalProps = BaseProps & {
   onCancel?: () => void;
   okText?: React.ReactNode;
   cancelText?: React.ReactNode;
+  okButtonProps?: ButtonProps;
+  cancelButtonProps?: ButtonProps;
+  confirmLoading?: boolean;
   closable?: boolean;
   centered?: boolean;
   width?: number | string;
@@ -1080,12 +1328,56 @@ type ModalComponent = React.FC<ModalProps> & {
   destroyAll: () => void;
 };
 
-const ModalComponent: ModalComponent = ({ open, visible, title, children, footer, onOk, onCancel, okText = 'OK', cancelText = 'Cancel', closable = true, centered: _centered, className, width, maskClosable = true, keyboard = true, ...rest }) => {
+const ModalComponent: ModalComponent = ({
+  open,
+  visible,
+  title,
+  children,
+  footer,
+  onOk,
+  onCancel,
+  okText = 'OK',
+  cancelText = 'Cancel',
+  okButtonProps,
+  cancelButtonProps,
+  confirmLoading,
+  closable = true,
+  centered: _centered,
+  className,
+  width,
+  maskClosable = true,
+  keyboard = true,
+  destroyOnClose: _destroyOnClose,
+  destroyOnHidden: _destroyOnHidden,
+  ...rest
+}) => {
   const isOpen = Boolean(open ?? visible);
-  const OkBtn = () => <Button type="primary" onClick={onOk}>{okText}</Button>;
-  const CancelBtn = () => <Button onClick={onCancel}>{cancelText}</Button>;
+  const handleCancel = () => {
+    if (confirmLoading) return;
+    onCancel?.();
+  };
+  const OkBtn: React.FC<ButtonProps> = (buttonProps = {}) => (
+    <Button
+      type="primary"
+      loading={confirmLoading}
+      onClick={onOk}
+      {...okButtonProps}
+      {...buttonProps}
+    >
+      {okText}
+    </Button>
+  );
+  const CancelBtn: React.FC<ButtonProps> = (buttonProps = {}) => (
+    <Button
+      onClick={handleCancel}
+      {...cancelButtonProps}
+      {...buttonProps}
+    >
+      {cancelText}
+    </Button>
+  );
   const defaultFooter = (
-    <div className="ui-modal-footer">
+    <div className="ant-modal-footer ui-modal-footer">
       <CancelBtn />
       <OkBtn />
     </div>
@@ -1096,12 +1388,12 @@ const ModalComponent: ModalComponent = ({ open, visible, title, children, footer
       ? footer(defaultFooter, { OkBtn, CancelBtn })
       : footer ?? defaultFooter;
   return (
-    <DialogPrimitive.Root open={isOpen} onOpenChange={(nextOpen) => !nextOpen && onCancel?.()}>
+    <DialogPrimitive.Root open={isOpen} onOpenChange={(nextOpen) => !nextOpen && handleCancel()}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="ui-modal-mask" />
         <DialogPrimitive.Content
           {...rest}
-          className={cx('ui-modal-content', className)}
+          className={cx('ant-modal-wrap', 'ui-modal-wrap', className)}
           style={{ width, maxWidth: width, ...rest.style }}
           onPointerDownOutside={(event) => {
             if (!maskClosable) event.preventDefault();
@@ -1110,12 +1402,18 @@ const ModalComponent: ModalComponent = ({ open, visible, title, children, footer
             if (!keyboard) event.preventDefault();
           }}
         >
-          <div className="ui-modal-header">
-            <DialogPrimitive.Title className="ui-modal-title">{title}</DialogPrimitive.Title>
-            {closable && <DialogPrimitive.Close asChild><button type="button" className="ui-modal-close">×</button></DialogPrimitive.Close>}
+          <div className="ant-modal ui-modal">
+            <div className="ant-modal-container ui-modal-container">
+              <div className="ant-modal-content ui-modal-content">
+                <div className="ant-modal-header ui-modal-header">
+                  <DialogPrimitive.Title className="ant-modal-title ui-modal-title">{title}</DialogPrimitive.Title>
+                  {closable && <DialogPrimitive.Close asChild><button type="button" className="ant-modal-close ui-modal-close">×</button></DialogPrimitive.Close>}
+                </div>
+                <div className="ant-modal-body ui-modal-body">{children}</div>
+                {resolvedFooter}
+              </div>
+            </div>
           </div>
-          <div className="ui-modal-body">{children}</div>
-          {resolvedFooter}
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>
@@ -1181,13 +1479,13 @@ const showStaticModal = (config: ModalStaticConfig, mode: 'confirm' | 'notice' =
   };
   const defaultFooter = mode === 'confirm'
     ? (
-      <div className="ui-modal-footer">
+      <div className="ant-modal-footer ui-modal-footer">
         <CancelBtn />
         <OkBtn />
       </div>
     )
     : (
-      <div className="ui-modal-footer">
+      <div className="ant-modal-footer ui-modal-footer">
         <OkBtn />
       </div>
     );
@@ -1224,6 +1522,7 @@ export const Modal = ModalComponent;
 type PopconfirmProps = BaseProps & {
   title?: React.ReactNode;
   description?: React.ReactNode;
+  disabled?: boolean;
   onConfirm?: (event?: React.MouseEvent) => void;
   onCancel?: (event?: React.MouseEvent) => void;
   okText?: React.ReactNode;
@@ -1241,9 +1540,11 @@ export const Popconfirm: React.FC<PopconfirmProps> = ({
   cancelText = 'Cancel',
   okButtonProps,
   cancelButtonProps,
+  disabled,
   children,
 }) => {
   const [open, setOpen] = React.useState(false);
+  if (disabled) return <>{children}</>;
   return (
     <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
       <PopoverPrimitive.Trigger asChild>{React.isValidElement(children) ? children : <button type="button">{children}</button>}</PopoverPrimitive.Trigger>
@@ -1312,7 +1613,7 @@ const CollapseComponent: CollapseComponent = ({ items, children, className, defa
             onChange?.(isOpen ? Array.from(new Set([...baseKeys, key])) : baseKeys.filter((activeItemKey) => activeItemKey !== key));
           }}
         >
-          <summary className="ant-collapse-header ui-collapse-header">{item.label || item.header}</summary>
+          <summary className="ant-collapse-header ui-collapse-header"><span className="ant-collapse-expand-icon ui-collapse-expand-icon" />{item.label || item.header}</summary>
           <div className="ant-collapse-content ui-collapse-content">
             <div className="ant-collapse-content-box ui-collapse-content-box">{item.children}</div>
           </div>
@@ -1335,8 +1636,11 @@ export const Tabs = ({ items = [], activeKey, defaultActiveKey, onChange, onTabC
   const rightExtra = extraContent
     ? extraContent.right
     : tabBarExtraContent;
+  const tabsProps = activeKey !== undefined
+    ? { value: activeKey }
+    : { defaultValue: defaultActiveKey ?? firstKey };
   return (
-    <TabsPrimitive.Root value={activeKey ?? defaultActiveKey ?? firstKey} onValueChange={onChange} className={cx('ant-tabs ui-tabs', className)} style={style}>
+    <TabsPrimitive.Root {...tabsProps} onValueChange={onChange} className={cx('ant-tabs ui-tabs', className)} style={style}>
       <div className="ui-tabs-nav-row">
         {leftExtra}
         <TabsPrimitive.List className="ant-tabs-nav ui-tabs-list">
@@ -1348,11 +1652,11 @@ export const Tabs = ({ items = [], activeKey, defaultActiveKey, onChange, onTabC
               className="ant-tabs-tab ui-tabs-trigger"
               onClick={() => onTabClick?.(item.key)}
             >
-              {item.icon}{item.label}
+              <span className="ant-tabs-tab-btn">{item.icon}{item.label}</span>
             </TabsPrimitive.Trigger>
           ))}
         </TabsPrimitive.List>
-        {extraContent && <>{rightExtra}</>}
+        {rightExtra && <>{rightExtra}</>}
       </div>
       {items.map((item) => <TabsPrimitive.Content key={item.key} value={item.key} className="ui-tabs-content">{item.children}</TabsPrimitive.Content>)}
     </TabsPrimitive.Root>
@@ -1373,49 +1677,102 @@ type SegmentedProps = BaseProps & {
 };
 
 export const Segmented: React.FC<SegmentedProps> = ({ options = [], value, onChange, className }) => (
-  <div className={cx('ui-segmented', className)}>
+  <div className={cx('ant-segmented-group', 'ui-segmented', className)}>
     {options.map((option) => {
       const itemValue = typeof option === 'object' ? option.value : option;
       const label = typeof option === 'object' ? option.label : option;
       const disabled = typeof option === 'object' ? option.disabled : false;
-      return <button key={String(itemValue)} type="button" disabled={disabled} className={cx('ui-segmented-item', value === itemValue && 'ui-segmented-active')} onClick={() => onChange?.(itemValue)}>{label}</button>;
+      return <button key={String(itemValue)} type="button" disabled={disabled} className={cx('ant-segmented-item', 'ui-segmented-item', value === itemValue && 'ui-segmented-active')} onClick={() => onChange?.(itemValue)}><span className="ant-segmented-item-label">{label}</span></button>;
     })}
   </div>
 );
 
-export const Table = <T extends AnyRecord = AnyRecord>({ columns = [], dataSource = [], rowKey, rowSelection, loading, className, onRow }: TableProps<T>) => (
-  <div className={cx('ui-table-wrap', className)}>
-    {loading && <Spin />}
-    <table className="ant-table ui-table">
-      <thead className="ant-table-thead">
-        <tr>
-          {rowSelection && <th><Checkbox checked={rowSelection.selectedRowKeys?.length === dataSource.length && dataSource.length > 0} onChange={(event: any) => rowSelection.onChange?.(event.target.checked ? dataSource.map((record, index) => getRowKey(record, index, rowKey)) : [], event.target.checked ? dataSource : [])} /></th>}
-          {columns.map((column, index) => <th key={String(column.key ?? column.dataIndex ?? index)} style={{ width: column.width, textAlign: column.align }}>{column.title}</th>)}
-        </tr>
-      </thead>
-      <tbody className="ant-table-tbody">
-        {dataSource.map((record, rowIndex) => {
-          const key = getRowKey(record, rowIndex, rowKey);
-          return (
-            <tr key={String(key)} {...onRow?.(record, rowIndex)}>
-              {rowSelection && <td><Checkbox checked={rowSelection.selectedRowKeys?.includes(key)} onChange={(event: any) => {
-                const selected = new Set(rowSelection.selectedRowKeys || []);
-                if (event.target.checked) selected.add(key);
-                else selected.delete(key);
-                const keys = Array.from(selected);
-                rowSelection.onChange?.(keys, dataSource.filter((item, index) => keys.includes(getRowKey(item, index, rowKey))));
-              }} /></td>}
-              {columns.map((column, columnIndex) => {
-                const value = column.dataIndex ? getIn(record as AnyRecord, column.dataIndex as NamePath) : undefined;
-                return <td key={String(column.key ?? column.dataIndex ?? columnIndex)} style={{ textAlign: column.align }}>{column.render ? column.render(value, record, rowIndex) : value}</td>;
-              })}
+export const Table = <T extends AnyRecord = AnyRecord>({ columns = [], dataSource = [], rowKey, rowSelection, loading, className, style, scroll, pagination, locale, bordered, onRow }: TableProps<T>) => {
+  const paginationConfig = pagination === false ? undefined : pagination;
+  const [currentPage, setCurrentPage] = React.useState(paginationConfig?.current ?? 1);
+  const pageSize = paginationConfig?.pageSize ?? (dataSource.length || 1);
+  const shouldPaginate = Boolean(paginationConfig);
+  const visibleData = shouldPaginate
+    ? dataSource.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+    : dataSource;
+  const selectedKeys = rowSelection?.selectedRowKeys || [];
+  const selectableRows = rowSelection
+    ? visibleData
+        .map((record, index) => ({ record, index, key: getRowKey(record, index, rowKey), checkboxProps: rowSelection.getCheckboxProps?.(record) || {} }))
+        .filter((row) => !row.checkboxProps.disabled)
+    : [];
+  const selectableKeys = selectableRows.map((row) => row.key);
+  const selectedSelectableCount = selectableKeys.filter((key) => selectedKeys.includes(key)).length;
+  const allSelectableChecked = selectableKeys.length > 0 && selectedSelectableCount === selectableKeys.length;
+  const partiallyChecked = selectedSelectableCount > 0 && selectedSelectableCount < selectableKeys.length;
+  return (
+    <div className={cx('ui-table-wrap', bordered && 'ui-table-bordered', className)} style={style}>
+      {loading && <Spin />}
+      <table className="ant-table ui-table" style={{ minWidth: scroll?.x }}>
+        <thead className="ant-table-thead">
+          <tr>
+            {rowSelection && (
+              <th>
+                <Checkbox
+                  checked={allSelectableChecked}
+                  indeterminate={partiallyChecked}
+                  disabled={selectableKeys.length === 0}
+                  onChange={(event: any) => {
+                    const nextKeys = event.target.checked ? selectableKeys : [];
+                    const nextRows = event.target.checked ? selectableRows.map((row) => row.record) : [];
+                    rowSelection.onChange?.(nextKeys, nextRows);
+                  }}
+                />
+              </th>
+            )}
+            {columns.map((column, index) => <th key={String(column.key ?? column.dataIndex ?? index)} style={{ width: column.width, textAlign: column.align }}>{column.title}</th>)}
+          </tr>
+        </thead>
+        <tbody className="ant-table-tbody">
+          {visibleData.map((record, rowIndex) => {
+            const key = getRowKey(record, rowIndex, rowKey);
+            const checkboxProps = rowSelection?.getCheckboxProps?.(record) || {};
+            return (
+              <tr key={String(key)} {...onRow?.(record, rowIndex)}>
+                {rowSelection && <td><Checkbox {...checkboxProps} checked={selectedKeys.includes(key)} onChange={(event: any) => {
+                  const selected = new Set(selectedKeys);
+                  if (event.target.checked) selected.add(key);
+                  else selected.delete(key);
+                  const keys = Array.from(selected);
+                  rowSelection.onChange?.(keys, dataSource.filter((item, index) => keys.includes(getRowKey(item, index, rowKey))));
+                }} /></td>}
+                {columns.map((column, columnIndex) => {
+                  const value = column.dataIndex ? getIn(record as AnyRecord, column.dataIndex as NamePath) : undefined;
+                  return <td key={String(column.key ?? column.dataIndex ?? columnIndex)} style={{ textAlign: column.align }}>{column.render ? column.render(value, record, rowIndex) : value}</td>;
+                })}
+              </tr>
+            );
+          })}
+          {visibleData.length === 0 && (
+            <tr>
+              <td className="ui-table-empty" colSpan={columns.length + (rowSelection ? 1 : 0)}>
+                {locale?.emptyText || <Empty description="No data" />}
+              </td>
             </tr>
-          );
-        })}
-      </tbody>
-    </table>
-  </div>
-);
+          )}
+        </tbody>
+      </table>
+      {shouldPaginate && dataSource.length > pageSize && (
+        <div className="ui-table-pagination">
+          <Pagination
+            current={currentPage}
+            total={dataSource.length}
+            pageSize={pageSize}
+            onChange={(page, nextPageSize) => {
+              setCurrentPage(page);
+              paginationConfig?.onChange?.(page, nextPageSize);
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+};
 
 const getRowKey = <T extends AnyRecord>(record: T, index: number, rowKey?: keyof T | ((record: T) => React.Key)) => {
   if (typeof rowKey === 'function') return rowKey(record);
@@ -1423,43 +1780,95 @@ const getRowKey = <T extends AnyRecord>(record: T, index: number, rowKey?: keyof
   return (record.key ?? record.id ?? index) as React.Key;
 };
 
-export const Progress = ({ percent = 0, status: _status, className }: AnyRecord) => (
+export const Progress = ({ percent = 0, status: _status, strokeColor, className }: AnyRecord) => (
   <ProgressPrimitive.Root className={cx('ui-progress', className)} value={percent}>
-    <ProgressPrimitive.Indicator className="ui-progress-indicator" style={{ transform: `translateX(-${100 - Number(percent)}%)` }} />
+    <ProgressPrimitive.Indicator className="ui-progress-indicator" style={{ transform: `translateX(-${100 - Number(percent)}%)`, background: strokeColor }} />
   </ProgressPrimitive.Root>
 );
 
-type DatePickerValue = string | null | undefined;
+type DatePickerValue = string | DateLikeValue | null | undefined;
 type RangePickerValue = [DatePickerValue, DatePickerValue] | null | undefined;
+type DateLikeValue = {
+  toDate: () => Date;
+  format?: (format?: string) => string;
+  valueOf?: () => number;
+};
 type DatePickerProps = BaseProps & {
   value?: DatePickerValue;
   onChange?: (date: DatePickerValue, dateString: string) => void;
+  showTime?: boolean;
+  variant?: string;
 };
 type RangePickerProps = BaseProps & {
   value?: RangePickerValue;
   onChange?: (dates: RangePickerValue, dateStrings: [string, string]) => void;
+  showTime?: boolean;
+  variant?: string;
 };
 type DatePickerComponent = React.FC<DatePickerProps> & {
   RangePicker: React.FC<RangePickerProps>;
 };
 
-const DatePickerComponent: DatePickerComponent = ({ value, onChange, className }) => (
-  <input className={cx('ui-input', className)} type="date" value={value || ''} onChange={(event) => onChange?.(event.target.value, event.target.value)} />
+const toInputDateString = (value: DatePickerValue, showTime?: boolean) => {
+  if (!value) return '';
+  if (typeof value === 'string') return showTime ? value.replace(' ', 'T').slice(0, 16) : value.slice(0, 10);
+  const date = value.toDate();
+  if (Number.isNaN(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  if (!showTime) return `${year}-${month}-${day}`;
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hour}:${minute}`;
+};
+
+const createDateLike = (value: string, showTime?: boolean): DateLikeValue | null => {
+  if (!value) return null;
+  const [datePart, timePart = '00:00'] = value.split('T');
+  const [year = '0', month = '1', day = '1'] = datePart.split('-');
+  const [hour = '0', minute = '0'] = timePart.split(':');
+  const date = showTime
+    ? new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute))
+    : new Date(Number(year), Number(month) - 1, Number(day));
+  if (Number.isNaN(date.getTime())) return null;
+  return {
+    toDate: () => new Date(date),
+    valueOf: () => date.getTime(),
+    format: () => value,
+  };
+};
+
+const DatePickerComponent: DatePickerComponent = ({ value, onChange, className, showTime, variant }: DatePickerProps) => (
+  <input
+    className={cx('ui-input', variant === 'borderless' && 'ui-input-borderless', className)}
+    type={showTime ? 'datetime-local' : 'date'}
+    value={toInputDateString(value, showTime)}
+    onChange={(event) => onChange?.(createDateLike(event.target.value, showTime), event.target.value)}
+  />
 );
-DatePickerComponent.RangePicker = ({ value, onChange, className }: RangePickerProps) => (
+DatePickerComponent.RangePicker = ({ value, onChange, className, showTime, variant }: RangePickerProps) => (
   <div className={cx('ui-range-picker', className)}>
     <input
-      className="ui-input"
-      type="date"
-      value={value?.[0] || ''}
-      onChange={(event) => onChange?.([event.target.value, value?.[1] || ''], [event.target.value, value?.[1] || ''])}
+      className={cx('ui-input', variant === 'borderless' && 'ui-input-borderless')}
+      type={showTime ? 'datetime-local' : 'date'}
+      value={toInputDateString(value?.[0], showTime)}
+      onChange={(event) => {
+        const nextStart = createDateLike(event.target.value, showTime);
+        const endString = toInputDateString(value?.[1], showTime);
+        onChange?.([nextStart, value?.[1] || null], [event.target.value, endString]);
+      }}
     />
     <span>-</span>
     <input
-      className="ui-input"
-      type="date"
-      value={value?.[1] || ''}
-      onChange={(event) => onChange?.([value?.[0] || '', event.target.value], [value?.[0] || '', event.target.value])}
+      className={cx('ui-input', variant === 'borderless' && 'ui-input-borderless')}
+      type={showTime ? 'datetime-local' : 'date'}
+      value={toInputDateString(value?.[1], showTime)}
+      onChange={(event) => {
+        const startString = toInputDateString(value?.[0], showTime);
+        const nextEnd = createDateLike(event.target.value, showTime);
+        onChange?.([value?.[0] || null, nextEnd], [startString, event.target.value]);
+      }}
     />
   </div>
 );
@@ -1523,8 +1932,24 @@ ListItem.Meta = ({ avatar, title, description }: { avatar?: React.ReactNode; tit
 ListComponent.Item = ListItem;
 export const List = ListComponent as ListComponent;
 
-export const Row = ({ children, gutter, className, ...rest }: AnyRecord) => <div {...rest} className={cx('ui-row', className)} style={{ gap: Array.isArray(gutter) ? gutter[0] : gutter }}>{children}</div>;
-export const Col = ({ children, span, className, ...rest }: AnyRecord) => <div {...rest} className={cx('ui-col', className)} style={{ flexBasis: span ? `${(span / 24) * 100}%` : undefined }}>{children}</div>;
+const spanPercent = (span?: number) => span ? `${(span / 24) * 100}%` : undefined;
+
+export const Row = ({ children, gutter, className, style, ...rest }: AnyRecord) => (
+  <div {...rest} className={cx('ui-row', className)} style={{ gap: Array.isArray(gutter) ? gutter[0] : gutter, ...style }}>{children}</div>
+);
+export const Col = ({ children, span, xs, lg, className, style, ...rest }: AnyRecord) => (
+  <div
+    {...rest}
+    className={cx('ui-col', className)}
+    style={{
+      '--ui-col-span': spanPercent(xs ?? span),
+      '--ui-col-lg-span': spanPercent(lg),
+      ...style,
+    } as React.CSSProperties}
+  >
+    {children}
+  </div>
+);
 
 type MenuComponentProps = BaseProps & MenuProps & {
   selectedKeys?: React.Key[];
@@ -1533,8 +1958,8 @@ type MenuComponentProps = BaseProps & MenuProps & {
 };
 
 export const Menu: React.FC<MenuComponentProps> = ({ items = [], onClick, className, selectedKeys = [] }) => (
-  <div className={cx('ui-menu', className)}>
-    {items.map((item: MenuItem) => <button key={String(item.key)} type="button" className={cx('ui-menu-item', selectedKeys.includes(item.key || '') && 'ui-menu-item-selected')} onClick={() => onClick?.({ key: String(item.key) })}>{item.icon}{item.label}</button>)}
+  <div className={cx('ant-menu', 'ui-menu', className)}>
+    {items.map((item: MenuItem) => <button key={String(item.key)} type="button" className={cx('ant-menu-item', 'ui-menu-item', selectedKeys.includes(item.key || '') && 'ui-menu-item-selected')} onClick={() => onClick?.({ key: String(item.key) })}>{item.icon}<span className="ant-menu-title-content">{item.label}</span></button>)}
   </div>
 );
 
@@ -1554,7 +1979,7 @@ export const Drawer = ({ open, visible, title, children, onClose, width = 420, p
 );
 
 type UploadComponentProps = BaseProps & {
-  beforeUpload?: (file: File) => boolean | Promise<boolean | void> | void;
+  beforeUpload?: (file: File, fileList?: File[]) => boolean | symbol | Promise<boolean | symbol | void> | void;
   onChange?: (info: { file: File; fileList: File[] }) => void;
   disabled?: boolean;
   multiple?: boolean;
@@ -1578,11 +2003,12 @@ const UploadComponent: UploadComponentType = ({ children, beforeUpload, onChange
         disabled={disabled}
         onChange={async (event) => {
           const files = Array.from(event.target.files || []);
-          const file = files[0];
-          if (!file) return;
-          const result = await beforeUpload?.(file);
-          onChange?.({ file, fileList: files });
-          if (result === false && inputRef.current) inputRef.current.value = '';
+          for (const file of files) {
+            const result = await beforeUpload?.(file, files);
+            if (result === UploadComponent.LIST_IGNORE) continue;
+            onChange?.({ file, fileList: files });
+          }
+          if (inputRef.current) inputRef.current.value = '';
         }}
       />
       {React.isValidElement(children)
@@ -1601,7 +2027,7 @@ export const Upload = UploadComponent;
 
 export const Image = ({ src, alt, className, classNames, preview: _preview, ...rest }: AnyRecord) => (
   <span className={cx('ui-image-root', classNames?.root)}>
-    <img {...rest} src={src} alt={alt || ''} className={cx(className, classNames?.image)} />
+    <img {...rest} src={src} alt={alt || ''} className={cx('ant-image-img', className, classNames?.image)} />
   </span>
 );
 
@@ -1615,7 +2041,10 @@ const toastRoot = () => {
   return root;
 };
 
-const showToast = (type: string, content: React.ReactNode, duration = 3000, key?: string) => {
+const toastDestroyers = new Map<string, () => void>();
+
+const showToast = (type: string, content: React.ReactNode, duration = 3, key?: string, onClose?: () => void) => {
+  if (key) message.destroy(key);
   const container = document.createElement('div');
   container.className = cx('ui-toast', `ui-toast-${type}`);
   if (key) container.dataset.key = key;
@@ -1623,28 +2052,54 @@ const showToast = (type: string, content: React.ReactNode, duration = 3000, key?
   root.render(<>{content}</>);
   toastRoot().appendChild(container);
   const close = () => {
+    if (key) toastDestroyers.delete(key);
     root.unmount();
     container.remove();
+    onClose?.();
   };
-  if (duration !== 0) window.setTimeout(close, duration);
+  if (key) toastDestroyers.set(key, close);
+  if (duration !== 0) window.setTimeout(close, duration * 1000);
   return close;
 };
 
+const normalizeMessageArgs = (type: string, args: any[]) => {
+  const [first, duration, onClose] = args;
+  if (first && typeof first === 'object' && !React.isValidElement(first) && ('content' in first || 'key' in first || 'duration' in first || 'type' in first)) {
+    return {
+      type: first.type || type,
+      content: first.content,
+      duration: first.duration,
+      key: first.key,
+      onClose: first.onClose,
+    };
+  }
+  return { type, content: first, duration, onClose };
+};
+
+const messageTypeOpen = (type: string, ...args: any[]) => {
+  const config = normalizeMessageArgs(type, args);
+  return showToast(config.type, config.content, config.duration ?? (type === 'loading' ? 0 : 3), config.key, config.onClose);
+};
+
 export const message: any = {
-  success: (content: React.ReactNode) => showToast('success', content),
-  error: (content: React.ReactNode) => showToast('error', content),
-  warning: (content: React.ReactNode) => showToast('warning', content),
-  info: (content: React.ReactNode) => showToast('info', content),
-  open: ({ content, type = 'info', duration, key }: AnyRecord) => showToast(type, content, duration, key),
-  loading: (content: React.ReactNode) => showToast('loading', content, 0),
+  success: (...args: any[]) => messageTypeOpen('success', ...args),
+  error: (...args: any[]) => messageTypeOpen('error', ...args),
+  warning: (...args: any[]) => messageTypeOpen('warning', ...args),
+  info: (...args: any[]) => messageTypeOpen('info', ...args),
+  open: (config: AnyRecord) => messageTypeOpen(config.type || 'info', config),
+  loading: (...args: any[]) => messageTypeOpen('loading', ...args),
   destroy: (key?: string) => {
-    const nodes = key ? document.querySelectorAll(`.ui-toast[data-key="${key}"]`) : document.querySelectorAll('.ui-toast');
-    nodes.forEach((node) => node.remove());
+    if (key) {
+      toastDestroyers.get(key)?.();
+      return;
+    }
+    Array.from(toastDestroyers.values()).forEach((destroy) => destroy());
+    document.querySelectorAll('.ui-toast').forEach((node) => node.remove());
   },
 };
 
 export const notification: any = {
-  info: ({ message: title, description, btn, duration }: AnyRecord) => showToast('info', <div><strong>{title}</strong><div>{description}</div>{btn}</div>, duration ? duration * 1000 : 5000),
+  info: ({ message: title, description, btn, duration }: AnyRecord) => showToast('info', <div><strong>{title}</strong><div>{description}</div>{btn}</div>, duration ?? 5),
   destroy: () => message.destroy(),
 };
 

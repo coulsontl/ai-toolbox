@@ -9,7 +9,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test:web": "node ./scripts/run-web-tests.mjs",
-    "test": "pnpm run test:web",
+    "test:ui": "vitest run --environment jsdom web/test/components/ui/uiCompatibility.test.tsx",
+    "test": "pnpm run test:web && pnpm run test:ui",
     "sync:version": "node scripts/sync-tauri-version.mjs",
     "tauri": "tauri",
     "prepare": "husky"
@@ -63,9 +64,11 @@
     "@vitejs/plugin-react": "5.1.2",
     "husky": "9.1.7",
     "jimp": "1.6.0",
+    "jsdom": "^29.1.1",
     "less": "4.5.1",
     "lint-staged": "16.2.7",
     "typescript": "5.9.3",
-    "vite": "7.3.1"
+    "vite": "7.3.1",
+    "vitest": "^4.1.7"
   }
 }

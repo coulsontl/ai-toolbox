@@ -149,8 +149,11 @@ cd tauri && cargo clippy
 # Frontend tests
 pnpm test
 
-# Run single test file
+# Run single node:test file
 node --test web/test/path/to/test.test.ts
+
+# Run UI DOM compatibility tests
+pnpm run test:ui
 
 # Rust tests
 cd tauri && cargo test
@@ -162,8 +165,10 @@ cd tauri && cargo test test_name
 ### Test Execution Rules
 
 - 对跨模块、跨层、会影响“保存/应用/同步/恢复/导入导出/配置落盘”的**大功能迭代**，不要只跑针对性测试；在交付前必须补跑当前仓库可用的全量测试集合。
-- 当前仓库前端测试统一通过 `pnpm test` 执行；该脚本会发现并运行 `web/test/**` 下的 `.test.ts` / `.spec.ts` 文件。
-- 前端测试文件必须放在 `web/test/` 下，并镜像对应功能目录结构；不要把 `.test.ts` 文件继续与实现文件并排放在 `web/features/**`、`web/components/**` 等源码目录里。
+- 当前仓库前端测试统一通过 `pnpm test` 执行；该脚本会先运行 `node:test` 单元测试，再运行 Vitest/jsdom UI DOM 兼容测试。
+- `node:test` 文件由 `scripts/run-web-tests.mjs` 发现并运行，文件名使用 `web/test/**` 下的 `.test.ts` / `.spec.ts`。
+- 需要真实 React DOM、CSS import、Radix 交互或浏览器事件的 UI 兼容测试使用 Vitest/jsdom，文件名使用 `web/test/**` 下的 `.test.tsx`。
+- 前端测试文件必须放在 `web/test/` 下，并镜像对应功能目录结构；不要把 `.test.ts` / `.test.tsx` 文件继续与实现文件并排放在 `web/features/**`、`web/components/**` 等源码目录里。
   - 例如：`web/features/coding/opencode/components/foo.ts` 对应测试应放在 `web/test/features/coding/opencode/components/foo.test.ts`
 - Rust 测试保持分层约定：
   - 依赖模块私有实现的单元测试，继续放在 `tauri/src/**` 的 `#[cfg(test)]` / `#[test]` 中
