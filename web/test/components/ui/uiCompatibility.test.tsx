@@ -2,7 +2,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { AutoComplete, Button, DatePicker, Form, Input, message, Modal, Table, Tabs, Upload } from '../../../components/ui';
+import { AutoComplete, Button, DatePicker, Form, Image, Input, message, Modal, Select, Table, Tabs, Upload } from '../../../components/ui';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -156,6 +156,50 @@ describe('local UI compatibility layer', () => {
     expect(onFinish).not.toHaveBeenCalled();
   });
 
+  it('enforces built-in Form validation rules used by feature forms', async () => {
+    let form: ReturnType<typeof Form.useForm>[0] | undefined;
+
+    const RuleForm = () => {
+      const [instance] = Form.useForm();
+      form = instance;
+      return (
+        <Form form={instance}>
+          <Form.Item name="toolKey" noStyle rules={[{ pattern: /^[a-z][a-z0-9_]*$/, message: 'invalid key' }]}>
+            <Input aria-label="tool-key" />
+          </Form.Item>
+          <Form.Item name="promptName" noStyle rules={[{ max: 4, message: 'too long' }]}>
+            <Input aria-label="prompt-name" />
+          </Form.Item>
+          <Form.Item name="sessionName" noStyle rules={[{ whitespace: true, message: 'blank name' }]}>
+            <Input aria-label="session-name" />
+          </Form.Item>
+        </Form>
+      );
+    };
+
+    const { container } = render(<RuleForm />);
+    await flush();
+
+    changeInputValue(container.querySelector('input[aria-label="tool-key"]') as HTMLInputElement, 'Bad-Key');
+    await expect(form!.validateFields([['toolKey']])).rejects.toThrow('invalid key');
+
+    changeInputValue(container.querySelector('input[aria-label="prompt-name"]') as HTMLInputElement, '12345');
+    await expect(form!.validateFields([['promptName']])).rejects.toThrow('too long');
+
+    changeInputValue(container.querySelector('input[aria-label="session-name"]') as HTMLInputElement, '   ');
+    await expect(form!.validateFields([['sessionName']])).rejects.toThrow('blank name');
+
+    changeInputValue(container.querySelector('input[aria-label="tool-key"]') as HTMLInputElement, 'valid_key');
+    changeInputValue(container.querySelector('input[aria-label="prompt-name"]') as HTMLInputElement, 'name');
+    changeInputValue(container.querySelector('input[aria-label="session-name"]') as HTMLInputElement, 'Session');
+
+    await expect(form!.validateFields()).resolves.toMatchObject({
+      toolKey: 'valid_key',
+      promptName: 'name',
+      sessionName: 'Session',
+    });
+  });
+
   it('returns date-like values from RangePicker changes', () => {
     let capturedDates: any[] | null | undefined;
     let capturedStrings: [string, string] | undefined;
@@ -229,6 +273,39 @@ describe('local UI compatibility layer', () => {
     expect(onChange).toHaveBeenCalledTimes(2);
   });
 
+  it('handles dropped files in Upload.Dragger', async () => {
+    const beforeUpload = vi.fn(() => false);
+    const onChange = vi.fn();
+
+    const { container } = render(
+      <Upload.Dragger multiple beforeUpload={beforeUpload} onChange={onChange}>
+        Drop files
+      </Upload.Dragger>,
+    );
+    const files = [new File(['image'], 'reference.png', { type: 'image/png' })];
+    const dropEvent = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvent, 'dataTransfer', { value: { files }, configurable: true });
+
+    await act(async () => {
+      container.querySelector('.ui-upload-dragger')?.dispatchEvent(dropEvent);
+    });
+
+    expect(beforeUpload).toHaveBeenCalledWith(files[0], files);
+    expect(onChange).toHaveBeenCalledWith({ file: files[0], fileList: files });
+  });
+
+  it('opens a preview layer from Image preview props', async () => {
+    const { container } = render(<Image src="generated.png" alt="Generated result" preview={{ mask: 'Preview' }} />);
+
+    expect(container.textContent).toContain('Preview');
+    clickElement(container.querySelector('.ui-image-root') as Element);
+    await flush();
+
+    const previewImage = document.body.querySelector('.ui-image-preview-img') as HTMLImageElement;
+    expect(previewImage).toBeTruthy();
+    expect(previewImage.getAttribute('src')).toBe('generated.png');
+  });
+
   it('honors rowSelection.getCheckboxProps for disabled table rows and header selection', () => {
     const onChange = vi.fn();
 
@@ -279,6 +356,54 @@ describe('local UI compatibility layer', () => {
 
     expect(onChange).toHaveBeenCalledWith('two');
     expect(twoTab.dataset.state).toBe('active');
+  });
+
+  it('preserves a no-active Tabs state when activeKey does not match an item', () => {
+    const { container } = render(
+      <Tabs
+        activeKey="__no_active_tab__"
+        items={[
+          { key: 'one', label: 'One', children: <div>One panel</div> },
+          { key: 'two', label: 'Two', children: <div>Two panel</div> },
+        ]}
+      />,
+    );
+
+    const tabTriggers = Array.from(container.querySelectorAll<HTMLButtonElement>('.ui-tabs-trigger'));
+    expect(tabTriggers.every((trigger) => trigger.dataset.state !== 'active')).toBe(true);
+    expect(container.querySelector('.ant-tabs-tab-active')).toBeNull();
+  });
+
+  it('filters searchable Select options and emits the selected option', async () => {
+    const onChange = vi.fn();
+
+    const { container } = render(
+      <Select
+        showSearch
+        optionFilterProp="label"
+        placeholder="Model"
+        options={[
+          { value: 'haiku', label: 'Claude Haiku' },
+          { value: 'sonnet', label: 'Claude Sonnet' },
+        ]}
+        onChange={onChange}
+      />,
+    );
+
+    clickElement(container.querySelector('.ui-select-trigger') as Element);
+    await flush();
+
+    const searchInput = document.body.querySelector('.ui-select-search-input') as HTMLInputElement;
+    changeInputValue(searchInput, 'sonnet');
+
+    expect(document.body.textContent).toContain('Claude Sonnet');
+    expect(document.body.textContent).not.toContain('Claude Haiku');
+
+    const sonnetOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.ui-select-item'))
+      .find((button) => button.textContent === 'Claude Sonnet') as HTMLButtonElement;
+    clickElement(sonnetOption);
+
+    expect(onChange).toHaveBeenCalledWith('sonnet', expect.objectContaining({ value: 'sonnet', label: 'Claude Sonnet' }));
   });
 
   it('supports keyed message config overloads', async () => {

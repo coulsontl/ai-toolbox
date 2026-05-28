@@ -174,7 +174,7 @@ const MainLayout: React.FC = () => {
           <div className={styles.tabsArea} style={{ WebkitAppRegion: 'no-drag' } as any}>
             <div className={`${styles.tabsWrapper} ${isNonTabPage ? styles.noActiveTab : ''}`}>
               <Tabs
-                activeKey={currentTabKey}
+                activeKey={isNonTabPage ? '__no_active_tab__' : currentTabKey}
                 onChange={handleTabChange}
                 onTabClick={handleTabClick}
                 indicator={{

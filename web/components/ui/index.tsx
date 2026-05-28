@@ -48,6 +48,11 @@ type FormRule = {
   required?: boolean;
   message?: React.ReactNode;
   validator?: (rule: FormRule, value: any) => Promise<void> | void;
+  pattern?: RegExp;
+  max?: number;
+  min?: number;
+  len?: number;
+  whitespace?: boolean;
   [key: string]: any;
 };
 type FormShouldUpdate = ((previousValues: AnyRecord, currentValues: AnyRecord) => boolean) | boolean;
@@ -104,7 +109,7 @@ type SelectProps = BaseProps & {
   tokenSeparators?: string[];
   variant?: string;
   onChange?: (value: any, option?: any) => void;
-  filterOption?: (inputValue: string, option?: any) => boolean;
+  filterOption?: boolean | ((inputValue: string, option?: any) => boolean);
   onSearch?: (value: string) => void;
   optionRender?: (option: any) => React.ReactNode;
   optionFilterProp?: string;
@@ -285,6 +290,50 @@ const valueFromEvent = (event: any) => {
   return event;
 };
 
+const validationError = (rule: FormRule) => new Error(String(rule.message || 'Validation failed'));
+
+const isEmptyFormValue = (value: any) => {
+  const isEmptyArray = Array.isArray(value) && value.length === 0;
+  return value === undefined || value === null || value === '' || isEmptyArray;
+};
+
+const getComparableSize = (value: any) => {
+  if (typeof value === 'string' || Array.isArray(value)) return value.length;
+  if (typeof value === 'number') return value;
+  return undefined;
+};
+
+const validateBuiltInRule = (rule: FormRule, value: any) => {
+  if (rule.required && isEmptyFormValue(value)) {
+    throw validationError(rule);
+  }
+  if (isEmptyFormValue(value)) {
+    return;
+  }
+  if (rule.whitespace && typeof value === 'string' && value.length > 0 && value.trim().length === 0) {
+    throw validationError(rule);
+  }
+  if (rule.pattern instanceof RegExp && typeof value === 'string') {
+    rule.pattern.lastIndex = 0;
+    if (!rule.pattern.test(value)) {
+      throw validationError(rule);
+    }
+  }
+  const comparableSize = getComparableSize(value);
+  if (comparableSize === undefined) {
+    return;
+  }
+  if (typeof rule.len === 'number' && comparableSize !== rule.len) {
+    throw validationError(rule);
+  }
+  if (typeof rule.min === 'number' && comparableSize < rule.min) {
+    throw validationError(rule);
+  }
+  if (typeof rule.max === 'number' && comparableSize > rule.max) {
+    throw validationError(rule);
+  }
+};
+
 type RegisteredRules = {
   namePath: Array<string | number>;
   rules: FormRule[];
@@ -336,12 +385,7 @@ class FormStore {
       }
       const value = getIn(this.values, namePath);
       for (const rule of rules) {
-        if (rule?.required) {
-          const isEmptyArray = Array.isArray(value) && value.length === 0;
-          if (value === undefined || value === null || value === '' || isEmptyArray) {
-            return Promise.reject(new Error(String(rule.message || 'Validation failed')));
-          }
-        }
+        validateBuiltInRule(rule, value);
         if (rule?.validator) {
           await rule.validator(rule, value);
         }
@@ -867,6 +911,131 @@ const normalizeOptions = (options?: any[], children?: React.ReactNode) => {
 
 const SelectOption = ({ children }: AnyRecord) => <>{children}</>;
 
+const optionText = (value: React.ReactNode): string => {
+  if (typeof value === 'string' || typeof value === 'number') return String(value);
+  if (Array.isArray(value)) return value.map(optionText).join(' ');
+  if (React.isValidElement(value)) return optionText((value.props as AnyRecord).children);
+  return '';
+};
+
+const getSearchOptionFilterProp = (showSearch: SelectProps['showSearch'], optionFilterProp?: string) => {
+  if (showSearch && typeof showSearch === 'object') {
+    return showSearch.optionFilterProp ?? optionFilterProp;
+  }
+  return optionFilterProp;
+};
+
+const optionMatchesSearch = (
+  inputValue: string,
+  option: SelectOptionItem,
+  filterOption: SelectProps['filterOption'],
+  optionFilterProp?: string,
+) => {
+  if (!inputValue || filterOption === false) return true;
+  if (typeof filterOption === 'function') return filterOption(inputValue, option);
+  const searchTarget = optionFilterProp
+    ? option[optionFilterProp]
+    : option.label ?? option.value;
+  return optionText(searchTarget).toLowerCase().includes(inputValue.toLowerCase());
+};
+
+const SearchableSingleSelect = ({
+  selectedValue,
+  emitChange,
+  normalized,
+  allowClear,
+  placeholder,
+  disabled,
+  className,
+  style,
+  variant,
+  filterOption,
+  optionFilterProp,
+  showSearch,
+  onSearch,
+  optionRender,
+}: SelectProps & {
+  selectedValue: any;
+  emitChange: (nextValue: any, option?: any) => void;
+  normalized: SelectOptionItem[];
+}) => {
+  const [open, setOpen] = React.useState(false);
+  const [searchValue, setSearchValue] = React.useState('');
+  const selectedOption = normalized.find((option) => String(option.value) === String(selectedValue));
+  const effectiveOptionFilterProp = getSearchOptionFilterProp(showSearch, optionFilterProp);
+  const filteredOptions = normalized.filter((option) => optionMatchesSearch(searchValue, option, filterOption, effectiveOptionFilterProp));
+  const selectedLabel = selectedOption?.label ?? selectedOption?.value;
+  const hasSelection = selectedValue !== undefined && selectedValue !== null && selectedValue !== '';
+  const updateSearchValue = (nextValue: string) => {
+    setSearchValue(nextValue);
+    onSearch?.(nextValue);
+  };
+  const clearSearchValue = () => setSearchValue('');
+  const selectOption = (option: SelectOptionItem) => {
+    emitChange(option.value, option);
+    setOpen(false);
+    clearSearchValue();
+  };
+
+  return (
+    <PopoverPrimitive.Root
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (!nextOpen) clearSearchValue();
+      }}
+    >
+      <PopoverPrimitive.Trigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          className={cx('ant-select-selector', 'ui-select-trigger', variant === 'borderless' && 'ui-select-borderless', className)}
+          style={style}
+        >
+          <span className={cx(!hasSelection && 'ui-select-placeholder')}>
+            {hasSelection ? selectedLabel : placeholder}
+          </span>
+        </button>
+      </PopoverPrimitive.Trigger>
+      <PopoverPrimitive.Portal>
+        <PopoverPrimitive.Content className="ant-select-dropdown ui-select-content ui-select-searchable-content" align="start" sideOffset={4}>
+          <input
+            className="ant-select-selection-search-input ui-select-search-input"
+            autoFocus
+            value={searchValue}
+            placeholder={typeof placeholder === 'string' ? placeholder : undefined}
+            onChange={(event) => updateSearchValue(event.target.value)}
+          />
+          {allowClear && hasSelection && (
+            <button
+              type="button"
+              className="ant-select-item ant-select-item-option ui-select-item"
+              onClick={() => {
+                emitChange(undefined, undefined);
+                setOpen(false);
+                clearSearchValue();
+              }}
+            >
+              -
+            </button>
+          )}
+          {filteredOptions.map((option) => (
+            <button
+              type="button"
+              key={String(option.value)}
+              disabled={option.disabled}
+              className={cx('ant-select-item ant-select-item-option ui-select-item', String(option.value) === String(selectedValue) && 'ui-select-item-selected')}
+              onClick={() => selectOption(option)}
+            >
+              {optionRender ? optionRender(option) : option.label}
+            </button>
+          ))}
+        </PopoverPrimitive.Content>
+      </PopoverPrimitive.Portal>
+    </PopoverPrimitive.Root>
+  );
+};
+
 const TagsSelect = ({ value, defaultValue, onChange, options, children, placeholder, disabled, className, style, tokenSeparators = [','], variant, allowClear, ...rest }: SelectProps) => {
   const inputId = React.useId();
   const [inputValue, setInputValue] = React.useState('');
@@ -931,7 +1100,26 @@ const TagsSelect = ({ value, defaultValue, onChange, options, children, placehol
   );
 };
 
-const SelectComponent = ({ value, defaultValue, onChange, options, children, mode, allowClear, placeholder, disabled, className, style, variant, ...rest }: SelectProps) => {
+const SelectComponent = ({
+  value,
+  defaultValue,
+  onChange,
+  options,
+  children,
+  mode,
+  allowClear,
+  placeholder,
+  disabled,
+  className,
+  style,
+  variant,
+  showSearch,
+  filterOption,
+  optionFilterProp,
+  onSearch,
+  optionRender,
+  ...rest
+}: SelectProps) => {
   const normalized = normalizeOptions(options, children);
   const isControlled = value !== undefined;
   const [innerValue, setInnerValue] = React.useState(defaultValue ?? (mode === 'multiple' ? [] : ''));
@@ -960,6 +1148,27 @@ const SelectComponent = ({ value, defaultValue, onChange, options, children, mod
       >
         {normalized.map((option) => <option key={String(option.value)} value={option.value} disabled={option.disabled}>{option.label}</option>)}
       </select>
+    );
+  }
+  if (showSearch || filterOption || optionFilterProp) {
+    return (
+      <SearchableSingleSelect
+        selectedValue={selectedValues}
+        emitChange={emitChange}
+        normalized={normalized}
+        allowClear={allowClear}
+        placeholder={placeholder}
+        disabled={disabled}
+        className={className}
+        style={style}
+        variant={variant}
+        showSearch={showSearch}
+        filterOption={filterOption}
+        optionFilterProp={optionFilterProp}
+        onSearch={onSearch}
+        optionRender={optionRender}
+        {...rest}
+      />
     );
   }
   return (
@@ -996,11 +1205,6 @@ const SelectComponent = ({ value, defaultValue, onChange, options, children, mod
 SelectComponent.Option = SelectOption;
 export const Select = SelectComponent as typeof SelectComponent & { Option: typeof SelectOption };
 
-const optionText = (value: React.ReactNode) => {
-  if (typeof value === 'string' || typeof value === 'number') return String(value);
-  return '';
-};
-
 const AutoCompleteComponent = ({
   value,
   defaultValue,
@@ -1022,7 +1226,7 @@ const AutoCompleteComponent = ({
   const isControlled = value !== undefined;
   const [innerValue, setInnerValue] = React.useState(defaultValue ?? '');
   const currentValue = isControlled ? value : innerValue;
-  const filteredOptions = filterOption && typeof currentValue === 'string'
+  const filteredOptions = typeof filterOption === 'function' && typeof currentValue === 'string'
     ? normalized.filter((option) => filterOption(currentValue, option))
     : normalized;
   return (
@@ -1627,6 +1831,7 @@ export const Collapse = CollapseComponent;
 
 export const Tabs = ({ items = [], activeKey, defaultActiveKey, onChange, onTabClick, className, style, tabBarExtraContent }: TabsProps) => {
   const firstKey = items[0]?.key;
+  const [innerActiveKey, setInnerActiveKey] = React.useState(defaultActiveKey ?? firstKey);
   const extraContent = tabBarExtraContent && typeof tabBarExtraContent === 'object' && !React.isValidElement(tabBarExtraContent) && !Array.isArray(tabBarExtraContent)
     ? tabBarExtraContent as { left?: React.ReactNode; right?: React.ReactNode }
     : null;
@@ -1636,11 +1841,16 @@ export const Tabs = ({ items = [], activeKey, defaultActiveKey, onChange, onTabC
   const rightExtra = extraContent
     ? extraContent.right
     : tabBarExtraContent;
+  const currentActiveKey = activeKey !== undefined ? activeKey : innerActiveKey;
+  const handleValueChange = (nextKey: string) => {
+    if (activeKey === undefined) setInnerActiveKey(nextKey);
+    onChange?.(nextKey);
+  };
   const tabsProps = activeKey !== undefined
     ? { value: activeKey }
-    : { defaultValue: defaultActiveKey ?? firstKey };
+    : { defaultValue: innerActiveKey };
   return (
-    <TabsPrimitive.Root {...tabsProps} onValueChange={onChange} className={cx('ant-tabs ui-tabs', className)} style={style}>
+    <TabsPrimitive.Root {...tabsProps} onValueChange={handleValueChange} className={cx('ant-tabs ui-tabs', className)} style={style}>
       <div className="ui-tabs-nav-row">
         {leftExtra}
         <TabsPrimitive.List className="ant-tabs-nav ui-tabs-list">
@@ -1649,12 +1859,13 @@ export const Tabs = ({ items = [], activeKey, defaultActiveKey, onChange, onTabC
               key={item.key}
               value={item.key}
               disabled={item.disabled}
-              className="ant-tabs-tab ui-tabs-trigger"
+              className={cx('ant-tabs-tab ui-tabs-trigger', currentActiveKey === item.key && 'ant-tabs-tab-active')}
               onClick={() => onTabClick?.(item.key)}
             >
               <span className="ant-tabs-tab-btn">{item.icon}{item.label}</span>
             </TabsPrimitive.Trigger>
           ))}
+          <span className="ant-tabs-ink-bar ui-tabs-ink-bar" />
         </TabsPrimitive.List>
         {rightExtra && <>{rightExtra}</>}
       </div>
@@ -1993,8 +2204,26 @@ type UploadComponentType = React.FC<UploadComponentProps> & {
 
 const UploadComponent: UploadComponentType = ({ children, beforeUpload, onChange, disabled, multiple, className }) => {
   const inputRef = React.useRef<HTMLInputElement | null>(null);
+  const processFiles = async (files: File[]) => {
+    for (const file of files) {
+      const result = await beforeUpload?.(file, files);
+      if (result === UploadComponent.LIST_IGNORE) continue;
+      onChange?.({ file, fileList: files });
+    }
+  };
   return (
-    <span className={className}>
+    <span
+      className={className}
+      onDragOver={(event) => {
+        if (disabled) return;
+        event.preventDefault();
+      }}
+      onDrop={async (event) => {
+        if (disabled) return;
+        event.preventDefault();
+        await processFiles(Array.from(event.dataTransfer.files || []));
+      }}
+    >
       <input
         ref={inputRef}
         type="file"
@@ -2003,11 +2232,7 @@ const UploadComponent: UploadComponentType = ({ children, beforeUpload, onChange
         disabled={disabled}
         onChange={async (event) => {
           const files = Array.from(event.target.files || []);
-          for (const file of files) {
-            const result = await beforeUpload?.(file, files);
-            if (result === UploadComponent.LIST_IGNORE) continue;
-            onChange?.({ file, fileList: files });
-          }
+          await processFiles(files);
           if (inputRef.current) inputRef.current.value = '';
         }}
       />
@@ -2025,11 +2250,50 @@ UploadComponent.Dragger = ({ children, className, ...props }) => (
 UploadComponent.LIST_IGNORE = Symbol('LIST_IGNORE');
 export const Upload = UploadComponent;
 
-export const Image = ({ src, alt, className, classNames, preview: _preview, ...rest }: AnyRecord) => (
-  <span className={cx('ui-image-root', classNames?.root)}>
-    <img {...rest} src={src} alt={alt || ''} className={cx('ant-image-img', className, classNames?.image)} />
-  </span>
-);
+export const Image = ({ src, alt, className, classNames, preview, ...rest }: AnyRecord) => {
+  const [innerPreviewOpen, setInnerPreviewOpen] = React.useState(false);
+  const previewConfig = preview && typeof preview === 'object' ? preview : {};
+  const previewEnabled = preview !== false && preview !== undefined;
+  const isPreviewControlled = previewConfig.visible !== undefined;
+  const previewOpen = isPreviewControlled ? Boolean(previewConfig.visible) : innerPreviewOpen;
+  const setPreviewOpen = (nextOpen: boolean) => {
+    const previousOpen = previewOpen;
+    if (!isPreviewControlled) setInnerPreviewOpen(nextOpen);
+    previewConfig.onVisibleChange?.(nextOpen, previousOpen);
+  };
+  const previewSrc = previewConfig.src ?? src;
+  const previewMask = previewConfig.mask;
+
+  return (
+    <>
+      <span
+        className={cx('ant-image', 'ui-image-root', previewEnabled && 'ui-image-preview-enabled', classNames?.root)}
+        onClick={() => previewEnabled && setPreviewOpen(true)}
+      >
+        <img {...rest} src={src} alt={alt || ''} className={cx('ant-image-img', className, classNames?.image)} />
+        {previewEnabled && previewMask !== false && (
+          <span className="ant-image-mask ui-image-mask">
+            {previewMask}
+          </span>
+        )}
+      </span>
+      {previewEnabled && (
+        <DialogPrimitive.Root open={previewOpen} onOpenChange={setPreviewOpen}>
+          <DialogPrimitive.Portal>
+            <DialogPrimitive.Overlay className="ant-image-preview-mask ui-image-preview-mask" />
+            <DialogPrimitive.Content className="ant-image-preview-wrap ui-image-preview-wrap">
+              <DialogPrimitive.Title className="ui-sr-only">{alt || 'Image preview'}</DialogPrimitive.Title>
+              <DialogPrimitive.Close asChild>
+                <button type="button" className="ant-image-preview-close ui-image-preview-close">×</button>
+              </DialogPrimitive.Close>
+              <img src={previewSrc} alt={alt || ''} className="ant-image-preview-img ui-image-preview-img" />
+            </DialogPrimitive.Content>
+          </DialogPrimitive.Portal>
+        </DialogPrimitive.Root>
+      )}
+    </>
+  );
+};
 
 const toastRoot = () => {
   let root = document.querySelector('.ui-toast-root') as HTMLDivElement | null;
