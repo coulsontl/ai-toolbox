@@ -1654,6 +1654,29 @@ h5.ant-typography,
   padding-block: 2px;
 }
 
+.ui-select-native,
+.ui-select-trigger,
+.ui-select-multiple-trigger,
+.ui-select-tags {
+  text-align: left;
+}
+
+.ui-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.ui-select-trigger > span,
+.ui-select-trigger [data-radix-select-value] {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ui-input:focus,
 .ui-select-trigger:focus,
 .ui-select-multiple-trigger:focus,
@@ -1739,11 +1762,13 @@ h5.ant-typography,
 .ui-menu-item,
 .ui-select-check-item {
   min-height: 32px;
+  justify-content: flex-start;
   border-radius: 4px;
   padding: 5px 12px;
   color: var(--color-text-primary);
   font-size: var(--ui-font-size);
   line-height: var(--ui-line-height);
+  text-align: left;
 }
 
 .ui-select-item:hover,
@@ -1825,6 +1850,25 @@ h5.ant-typography,
 .ui-switch {
   width: 44px;
   height: 22px;
+  border-color: transparent;
+  background: color-mix(in srgb, var(--color-text-primary) 25%, transparent);
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.ui-switch[data-state='checked'] {
+  border-color: var(--ant-color-primary);
+  background: var(--ant-color-primary);
+}
+
+.ui-switch-thumb {
+  width: 18px;
+  height: 18px;
+  transform: translateX(1px);
+}
+
+.ui-switch[data-state='checked'] .ui-switch-thumb {
+  transform: translateX(23px);
 }
 
 .ui-card {
@@ -2013,6 +2057,30 @@ h5.ant-typography,
   display: none;
 }
 
+.ui-collapse-expand-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+}
+
+.ui-collapse-expand-icon::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.2s;
+}
+
+.ui-collapse-item[open] > .ui-collapse-header .ui-collapse-expand-icon::before {
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
 .ui-collapse-content {
   border-top: 1px solid var(--color-border);
   background: transparent;
@@ -2069,6 +2137,10 @@ h5.ant-typography,
 
 .ui-form-item-row-offset > .ui-form-control:first-child {
   grid-column: 2;
+}
+
+.ui-form-item-row-offset {
+  column-gap: 0;
 }
 
 .ui-form-vertical .ui-form-item-row {

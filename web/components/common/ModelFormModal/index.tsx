@@ -523,42 +523,50 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
         </Form.Item>
 
         {presetsExpanded && presetModels.length > 0 && (
-          <Form.Item wrapperCol={{ offset: language === 'zh-CN' ? 4 : 6, span: 20 }} style={{ marginTop: -8 }}>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {presetModels.map((preset) => (
-                <Tag
-                  key={preset.id}
-                  style={{
-                    cursor: 'pointer',
-                    transition: 'all 0.2s',
-                  }}
-                  onClick={() => handlePresetSelect(preset)}
-                >
-                  {preset.name}
-                </Tag>
-              ))}
+          <Form.Item style={{ marginTop: -8 }}>
+            <div
+              style={{
+                marginLeft: language === 'zh-CN' ? '16.6667%' : '25%',
+                maxWidth: language === 'zh-CN' ? '83.3333%' : '75%',
+                minWidth: 0,
+              }}
+            >
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {presetModels.map((preset) => (
+                  <Tag
+                    key={preset.id}
+                    style={{
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                    }}
+                    onClick={() => handlePresetSelect(preset)}
+                  >
+                    {preset.name}
+                  </Tag>
+                ))}
+              </div>
+              {otherPresetModels.length > 0 && (
+                <>
+                  <Divider style={{ margin: '12px 0', fontSize: 12, color: 'var(--color-text-tertiary)' }}>
+                    {t('opencode.model.otherPresets')}
+                  </Divider>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {otherPresetModels.map((preset) => (
+                      <Tag
+                        key={preset.id}
+                        style={{
+                          cursor: 'pointer',
+                          transition: 'all 0.2s',
+                        }}
+                        onClick={() => handlePresetSelect(preset)}
+                      >
+                        {preset.name}
+                      </Tag>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
-            {otherPresetModels.length > 0 && (
-              <>
-                <Divider style={{ margin: '12px 0', fontSize: 12, color: 'var(--color-text-tertiary)' }}>
-                  {t('opencode.model.otherPresets')}
-                </Divider>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {otherPresetModels.map((preset) => (
-                    <Tag
-                      key={preset.id}
-                      style={{
-                        cursor: 'pointer',
-                        transition: 'all 0.2s',
-                      }}
-                      onClick={() => handlePresetSelect(preset)}
-                    >
-                      {preset.name}
-                    </Tag>
-                  ))}
-                </div>
-              </>
-            )}
           </Form.Item>
         )}
 
