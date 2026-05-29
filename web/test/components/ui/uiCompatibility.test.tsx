@@ -236,6 +236,37 @@ describe('local UI compatibility layer', () => {
     expect(onChange).toHaveBeenLastCalledWith('custom-model', undefined);
   });
 
+  it('renders multiple Select with the local styled popover instead of a native multi-select list', async () => {
+    const onChange = vi.fn();
+
+    const { container } = render(
+      <Select
+        mode="multiple"
+        value={['text']}
+        onChange={onChange}
+        options={[
+          { value: 'text', label: 'Text' },
+          { value: 'image', label: 'Image' },
+        ]}
+      />,
+    );
+
+    expect(container.querySelector('select[multiple]')).toBeNull();
+    expect(container.querySelector('.ui-select-multiple-trigger')?.textContent).toContain('Text');
+
+    clickElement(container.querySelector('.ui-select-multiple-trigger') as Element);
+    await flush();
+    clickElement(Array.from(document.body.querySelectorAll('.ui-select-check-item')).find((item) => item.textContent?.includes('Image')) as Element);
+
+    expect(onChange).toHaveBeenCalledWith(
+      ['text', 'image'],
+      expect.arrayContaining([
+        expect.objectContaining({ value: 'text' }),
+        expect.objectContaining({ value: 'image' }),
+      ]),
+    );
+  });
+
   it('passes disabled and loading props to Modal default buttons', () => {
     const onOk = vi.fn();
 

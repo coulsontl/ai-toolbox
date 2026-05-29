@@ -26,6 +26,35 @@
   :global(.ant-menu-root) {
     border-inline-end: none !important;
   }
+
+  :global(.ui-menu) {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  :global(.ant-menu-item) {
+    width: 100%;
+    min-width: 0;
+    min-height: 36px;
+    justify-content: flex-start;
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+
+  :global(.ant-menu-item-icon) {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 18px;
+  }
+
+  :global(.ant-menu-title-content) {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
 .sidebarCollapsed {
@@ -60,7 +89,7 @@
   justify-content: center;
   align-items: center;
   padding: 0 !important;
-  margin: 0 !important;
+  margin: 0 auto !important;
   display: flex;
   height: 40px;
   width: 40px !important;
@@ -74,19 +103,22 @@
   margin-inline-end: 0 !important;
   margin-left: 0 !important;
   margin-right: 0 !important;
-  width: 48px;
+  width: 40px;
+  height: 40px;
   display: flex;
   justify-content: center;
   align-items: center;
-  flex: 0 0 48px;
+  flex: 0 0 40px;
 }
 
-.sidebarCollapsed :global(.ant-menu-item .ant-menu-item-icon > span) {
+.sidebarCollapsed :global(.ant-menu-item .ant-menu-item-icon > span),
+.sidebarCollapsed :global(.ant-menu-item .ant-menu-item-icon > svg) {
   margin: 0 !important;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 100%;
+  width: 18px;
+  height: 18px;
 }
 
 .sidebarCollapsed :global(.ant-menu-title-content) {
@@ -97,7 +129,25 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   margin-bottom: 8px;
+
+  :global(.ui-typography-text) {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    line-height: 32px;
+  }
+
+  :global(.ui-btn) {
+    flex: 0 0 32px;
+    width: 32px;
+    min-height: 32px;
+    padding: 0;
+  }
 }
 
 .content {
@@ -110,4 +160,3 @@
 .content :global([data-opencode-sidebar-section="true"]) {
   scroll-margin-top: 84px;
 }
-

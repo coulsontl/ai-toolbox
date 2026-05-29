@@ -1100,6 +1100,126 @@ const TagsSelect = ({ value, defaultValue, onChange, options, children, placehol
   );
 };
 
+const getSelectValueKey = (value: any) => String(value);
+
+const MultipleSelect = ({
+  value,
+  defaultValue,
+  onChange,
+  options,
+  children,
+  placeholder,
+  disabled,
+  className,
+  style,
+  variant,
+  allowClear,
+  ...rest
+}: SelectProps) => {
+  const normalized = normalizeOptions(options, children);
+  const isControlled = value !== undefined;
+  const [innerValues, setInnerValues] = React.useState<any[]>(Array.isArray(defaultValue) ? defaultValue : []);
+  const [open, setOpen] = React.useState(false);
+  const selectedValues = isControlled
+    ? (Array.isArray(value) ? value : [])
+    : innerValues;
+  const selectedKeys = React.useMemo(
+    () => new Set(selectedValues.map(getSelectValueKey)),
+    [selectedValues],
+  );
+  const selectedOptions = normalized.filter((option) => selectedKeys.has(getSelectValueKey(option.value)));
+
+  const emitChange = (nextValues: any[]) => {
+    if (!isControlled) setInnerValues(nextValues);
+    const nextKeys = new Set(nextValues.map(getSelectValueKey));
+    onChange?.(nextValues, normalized.filter((option) => nextKeys.has(getSelectValueKey(option.value))));
+  };
+
+  const toggleOption = (option: { value: any; label: React.ReactNode; disabled?: boolean }) => {
+    if (option.disabled || disabled) return;
+    const optionKey = getSelectValueKey(option.value);
+    if (selectedKeys.has(optionKey)) {
+      emitChange(selectedValues.filter((item) => getSelectValueKey(item) !== optionKey));
+      return;
+    }
+    emitChange([...selectedValues, option.value]);
+  };
+
+  const handleClear = (event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    emitChange([]);
+  };
+
+  return (
+    <PopoverPrimitive.Root open={disabled ? false : open} onOpenChange={(nextOpen) => !disabled && setOpen(nextOpen)}>
+      <PopoverPrimitive.Trigger asChild>
+        <div
+          {...rest}
+          role="button"
+          tabIndex={disabled ? -1 : 0}
+          aria-disabled={disabled}
+          className={cx(
+            'ant-select-selector',
+            'ui-select-multiple-trigger',
+            variant === 'borderless' && 'ui-select-borderless',
+            disabled && 'ui-disabled',
+            className,
+          )}
+          style={style}
+          onKeyDown={(event) => {
+            if (disabled) return;
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              setOpen((currentOpen) => !currentOpen);
+            }
+          }}
+        >
+          <div className="ui-select-multiple-values">
+            {selectedOptions.length > 0 ? (
+              selectedOptions.map((option) => (
+                <span className="ui-select-tag" key={getSelectValueKey(option.value)}>
+                  {option.label}
+                </span>
+              ))
+            ) : (
+              <span className="ui-select-placeholder">{placeholder}</span>
+            )}
+          </div>
+          {allowClear && selectedValues.length > 0 && (
+            <span role="button" aria-label="clear" className="ui-select-clear" onClick={handleClear}>×</span>
+          )}
+          <span className="ui-select-chevron">⌄</span>
+        </div>
+      </PopoverPrimitive.Trigger>
+      <PopoverPrimitive.Portal>
+        <PopoverPrimitive.Content
+          className="ant-select-dropdown ui-select-content ui-select-multiple-content"
+          sideOffset={4}
+          align="start"
+          style={{ minWidth: 'var(--radix-popover-trigger-width)' }}
+        >
+          {normalized.map((option) => {
+            const selected = selectedKeys.has(getSelectValueKey(option.value));
+            return (
+              <button
+                key={getSelectValueKey(option.value)}
+                type="button"
+                disabled={option.disabled}
+                className={cx('ui-select-check-item', selected && 'ui-select-check-item-selected')}
+                onClick={() => toggleOption(option)}
+              >
+                <span className="ui-select-checkmark">{selected ? '✓' : ''}</span>
+                <span className="ui-select-check-label">{option.label}</span>
+              </button>
+            );
+          })}
+        </PopoverPrimitive.Content>
+      </PopoverPrimitive.Portal>
+    </PopoverPrimitive.Root>
+  );
+};
+
 const SelectComponent = ({
   value,
   defaultValue,
@@ -1132,22 +1252,22 @@ const SelectComponent = ({
     return <TagsSelect value={value} defaultValue={defaultValue} onChange={onChange} options={options} disabled={disabled} placeholder={placeholder} className={className} style={style} variant={variant} allowClear={allowClear} {...rest}>{children}</TagsSelect>;
   }
   if (mode === 'multiple') {
-    const selectedMultipleValues = Array.isArray(selectedValues) ? selectedValues : [];
     return (
-      <select
-        {...rest}
-        multiple
+      <MultipleSelect
+        value={value}
+        defaultValue={defaultValue}
+        onChange={onChange}
+        options={options}
         disabled={disabled}
-        value={selectedMultipleValues}
-        className={cx('ant-select-selector', 'ui-select-native', variant === 'borderless' && 'ui-select-borderless', className)}
+        placeholder={placeholder}
+        className={className}
         style={style}
-        onChange={(event) => {
-          const next = Array.from(event.target.selectedOptions).map((option) => option.value);
-          emitChange(next, normalized.filter((option) => next.includes(String(option.value))));
-        }}
+        variant={variant}
+        allowClear={allowClear}
+        {...rest}
       >
-        {normalized.map((option) => <option key={String(option.value)} value={option.value} disabled={option.disabled}>{option.label}</option>)}
-      </select>
+        {children}
+      </MultipleSelect>
     );
   }
   if (showSearch || filterOption || optionFilterProp) {
@@ -1586,11 +1706,23 @@ const ModalComponent: ModalComponent = ({
       <OkBtn />
     </div>
   );
+  const customFooter = typeof footer === 'function'
+    ? footer(defaultFooter, { OkBtn, CancelBtn })
+    : footer;
+  const customFooterClassName = React.isValidElement(customFooter)
+    ? (customFooter.props as { className?: unknown }).className
+    : undefined;
+  const isFooterAlreadyWrapped = typeof customFooterClassName === 'string'
+    && customFooterClassName.split(/\s+/).some((name) => name === 'ant-modal-footer' || name === 'ui-modal-footer');
   const resolvedFooter = footer === null
     ? null
-    : typeof footer === 'function'
-      ? footer(defaultFooter, { OkBtn, CancelBtn })
-      : footer ?? defaultFooter;
+    : footer === undefined
+      ? defaultFooter
+      : customFooter === null
+        ? null
+        : isFooterAlreadyWrapped
+          ? customFooter
+          : <div className="ant-modal-footer ui-modal-footer">{customFooter}</div>;
   return (
     <DialogPrimitive.Root open={isOpen} onOpenChange={(nextOpen) => !nextOpen && handleCancel()}>
       <DialogPrimitive.Portal>
@@ -1831,7 +1963,15 @@ export const Collapse = CollapseComponent;
 
 export const Tabs = ({ items = [], activeKey, defaultActiveKey, onChange, onTabClick, className, style, tabBarExtraContent }: TabsProps) => {
   const firstKey = items[0]?.key;
-  const [innerActiveKey, setInnerActiveKey] = React.useState(defaultActiveKey ?? firstKey);
+  const isControlled = activeKey !== undefined;
+  const [uncontrolledKey, setUncontrolledKey] = React.useState(defaultActiveKey ?? firstKey);
+  const currentKey = isControlled ? activeKey : uncontrolledKey;
+  React.useEffect(() => {
+    if (isControlled || !firstKey) return;
+    if (!items.some((item) => item.key === uncontrolledKey)) {
+      setUncontrolledKey(firstKey);
+    }
+  }, [firstKey, isControlled, items, uncontrolledKey]);
   const extraContent = tabBarExtraContent && typeof tabBarExtraContent === 'object' && !React.isValidElement(tabBarExtraContent) && !Array.isArray(tabBarExtraContent)
     ? tabBarExtraContent as { left?: React.ReactNode; right?: React.ReactNode }
     : null;
@@ -1841,16 +1981,12 @@ export const Tabs = ({ items = [], activeKey, defaultActiveKey, onChange, onTabC
   const rightExtra = extraContent
     ? extraContent.right
     : tabBarExtraContent;
-  const currentActiveKey = activeKey !== undefined ? activeKey : innerActiveKey;
   const handleValueChange = (nextKey: string) => {
-    if (activeKey === undefined) setInnerActiveKey(nextKey);
+    if (!isControlled) setUncontrolledKey(nextKey);
     onChange?.(nextKey);
   };
-  const tabsProps = activeKey !== undefined
-    ? { value: activeKey }
-    : { defaultValue: innerActiveKey };
   return (
-    <TabsPrimitive.Root {...tabsProps} onValueChange={handleValueChange} className={cx('ant-tabs ui-tabs', className)} style={style}>
+    <TabsPrimitive.Root value={currentKey} onValueChange={handleValueChange} className={cx('ant-tabs ui-tabs', className)} style={style}>
       <div className="ui-tabs-nav-row">
         {leftExtra}
         <TabsPrimitive.List className="ant-tabs-nav ui-tabs-list">
@@ -1859,7 +1995,7 @@ export const Tabs = ({ items = [], activeKey, defaultActiveKey, onChange, onTabC
               key={item.key}
               value={item.key}
               disabled={item.disabled}
-              className={cx('ant-tabs-tab ui-tabs-trigger', currentActiveKey === item.key && 'ant-tabs-tab-active')}
+              className={cx('ant-tabs-tab ui-tabs-trigger', currentKey === item.key && 'ant-tabs-tab-active')}
               onClick={() => onTabClick?.(item.key)}
             >
               <span className="ant-tabs-tab-btn">{item.icon}{item.label}</span>
@@ -2170,7 +2306,17 @@ type MenuComponentProps = BaseProps & MenuProps & {
 
 export const Menu: React.FC<MenuComponentProps> = ({ items = [], onClick, className, selectedKeys = [] }) => (
   <div className={cx('ant-menu', 'ui-menu', className)}>
-    {items.map((item: MenuItem) => <button key={String(item.key)} type="button" className={cx('ant-menu-item', 'ui-menu-item', selectedKeys.includes(item.key || '') && 'ui-menu-item-selected')} onClick={() => onClick?.({ key: String(item.key) })}>{item.icon}<span className="ant-menu-title-content">{item.label}</span></button>)}
+    {items.map((item: MenuItem) => (
+      <button
+        key={String(item.key)}
+        type="button"
+        className={cx('ant-menu-item', 'ui-menu-item', selectedKeys.includes(item.key || '') && 'ui-menu-item-selected')}
+        onClick={() => onClick?.({ key: String(item.key) })}
+      >
+        {item.icon && <span className="ant-menu-item-icon ui-menu-item-icon">{item.icon}</span>}
+        <span className="ant-menu-title-content">{item.label}</span>
+      </button>
+    ))}
   </div>
 );
 

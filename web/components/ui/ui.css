@@ -158,6 +158,7 @@
 .ui-input,
 .ui-select-native,
 .ui-select-trigger,
+.ui-select-multiple-trigger,
 .ui-select-tags {
   width: 100%;
   min-height: 32px;
@@ -178,6 +179,34 @@
   flex-wrap: wrap;
   gap: 4px;
   cursor: text;
+}
+
+.ui-select-multiple-trigger {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.ui-select-multiple-values {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.ui-select-placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.ui-select-chevron {
+  flex: 0 0 auto;
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+  line-height: 1;
 }
 
 .ui-select-tag {
@@ -215,6 +244,55 @@
 
 .ui-select-placeholder {
   color: var(--color-text-tertiary);
+}
+
+.ui-select-multiple-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ui-select-check-item {
+  width: 100%;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 9px;
+  padding: 5px 9px;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ui-select-check-item:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+}
+
+.ui-select-check-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.ui-select-check-item-selected {
+  background: color-mix(in srgb, var(--ant-color-primary) 10%, transparent);
+  color: var(--ant-color-primary);
+}
+
+.ui-select-checkmark {
+  width: 14px;
+  flex: 0 0 14px;
+  color: var(--ant-color-primary);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.ui-select-check-label {
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .ui-select-tags-input {
@@ -305,6 +383,7 @@
 
 .ui-input:focus,
 .ui-select-trigger:focus,
+.ui-select-multiple-trigger:focus,
 .ui-select-tags:focus-within {
   border-color: var(--ant-color-primary);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--ant-color-primary) 16%, transparent);
@@ -413,6 +492,21 @@ button.ui-select-item {
 .ui-menu-item-selected {
   color: var(--ant-color-primary);
   background: color-mix(in srgb, var(--ant-color-primary) 10%, transparent);
+}
+
+.ui-menu-item-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.ui-menu-item-icon > svg,
+.ui-menu-item-icon > span {
+  display: block;
 }
 
 .ui-dropdown-danger {
@@ -781,6 +875,8 @@ button.ui-select-item {
 .ui-modal-footer {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 12px 18px 16px;
   border-top: 1px solid var(--color-border);
@@ -864,17 +960,29 @@ button.ui-select-item {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  width: 100%;
   min-width: 0;
 }
 
 .ui-tabs-list {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   align-items: center;
   gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
   border-bottom: 1px solid var(--color-border);
 }
 
+.ui-tabs-list::-webkit-scrollbar {
+  display: none;
+}
+
 .ui-tabs-trigger {
+  flex: 0 0 auto;
   border: none;
   border-bottom: 2px solid transparent;
   background: transparent;
