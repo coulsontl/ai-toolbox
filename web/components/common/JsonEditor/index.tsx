@@ -63,6 +63,8 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const validateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [editorContent, setEditorContent] = useState<string | null>(null);
+  const editorContentRef = useRef<string | null>(null);
+  const lastExternalValueStringRef = useRef<string | null>(null);
   // 标记用户是否正在编辑器中输入
   const isUserEditingRef = useRef(false);
   const [isUserEditing, setIsUserEditing] = useState(false);
@@ -182,6 +184,8 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   ) => {
     editorRef.current = editorInstance;
     validateAndSetMarkers(valueString);
+    editorContentRef.current = valueString;
+    lastExternalValueStringRef.current = valueString;
     setEditorContent(valueString);
 
     // 监听焦点事件，用于判断用户是否正在编辑，并动态切换行高亮
@@ -214,6 +218,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
   }, [valueString, validateAndSetMarkers, onBlur, onRawBlur]);
 
   const handleChange = useCallback((newValue: string) => {
+    editorContentRef.current = newValue;
     setEditorContent(newValue);
     onRawChange?.(newValue);
 
@@ -245,13 +250,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
 
   // 当外部 value 变化时更新编辑器
   useEffect(() => {
-    // 比较是否真的变化了
-    const newValueStr = typeof normalizedValue === 'string'
-      ? normalizedValue
-      : (normalizedValue === '' ? '' : JSON.stringify(normalizedValue, null, 2));
-
-    // 如果编辑器当前内容与新值相同，不需要更新
-    if (editorContent === newValueStr) {
+    if (lastExternalValueStringRef.current === valueString) {
       return;
     }
 
@@ -260,16 +259,23 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
       return;
     }
 
-    setEditorContent(newValueStr);
+    lastExternalValueStringRef.current = valueString;
+
+    if (editorContentRef.current === valueString) {
+      return;
+    }
+
+    editorContentRef.current = valueString;
+    setEditorContent(valueString);
 
     // 更新编辑器内容（如果编辑器已挂载）
     if (editorRef.current) {
       const model = editorRef.current.getModel();
       if (model) {
-        model.setValue(newValueStr);
+        model.setValue(valueString);
       }
     }
-  }, [normalizedValue, editorContent, isUserEditing]);
+  }, [valueString, isUserEditing]);
 
   useEffect(() => {
     return () => {
