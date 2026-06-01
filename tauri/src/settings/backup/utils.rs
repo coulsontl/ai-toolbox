@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -1459,6 +1460,31 @@ pub fn add_text_to_zip<W: Write + std::io::Seek>(
     Ok(())
 }
 
+fn normalize_zip_directory_path(zip_path: &str) -> String {
+    let normalized_path = zip_path.replace('\\', "/");
+    if normalized_path.ends_with('/') {
+        normalized_path
+    } else {
+        format!("{normalized_path}/")
+    }
+}
+
+fn add_directory_to_zip_once<W: Write + Seek>(
+    zip: &mut ZipWriter<W>,
+    added_directories: &mut HashSet<String>,
+    zip_path: &str,
+    options: SimpleFileOptions,
+    context: &str,
+) -> Result<(), String> {
+    let normalized_path = normalize_zip_directory_path(zip_path);
+    if !added_directories.insert(normalized_path.clone()) {
+        return Ok(());
+    }
+
+    zip.add_directory(normalized_path, options)
+        .map_err(|e| format!("Failed to add {context}: {}", e))
+}
+
 pub fn add_image_assets_to_zip<W: Write + std::io::Seek>(
     app_handle: &tauri::AppHandle,
     zip: &mut ZipWriter<W>,
@@ -1624,6 +1650,381 @@ fn add_legacy_database_files_to_zip<W: Write + Seek>(
     Ok(has_files)
 }
 
+pub(crate) async fn write_backup_zip_contents<W: Write + Seek>(
+    zip: &mut ZipWriter<W>,
+    app_handle: &tauri::AppHandle,
+    db_path: &Path,
+    include_image_assets: bool,
+    options: SimpleFileOptions,
+) -> Result<(), String> {
+    let db_state = app_handle.state::<crate::SqliteDbState>();
+    let db = db_state.db();
+    let mut added_zip_directories = HashSet::new();
+
+    add_legacy_database_snapshot_to_zip(zip, db_path, options)?;
+
+    add_sqlite_database_snapshot_to_zip(zip, app_handle, options)?;
+
+    // Add external-configs directory
+    add_directory_to_zip_once(
+        zip,
+        &mut added_zip_directories,
+        "external-configs/",
+        options,
+        "external-configs directory",
+    )?;
+
+    if let Some(custom_dir) = get_custom_root_dir_path_info(&db, "opencode").await {
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/opencode/",
+            options,
+            "opencode directory",
+        )?;
+        add_text_to_zip(
+            zip,
+            "external-configs/opencode/root-dir.txt",
+            &custom_dir,
+            options,
+        )?;
+    }
+
+    // Backup OpenCode config if exists
+    if let Some(opencode_path) = get_opencode_config_path_from_db(&db).await? {
+        let file_name = opencode_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "opencode.json".to_string());
+        let zip_path = format!("external-configs/opencode/{}", file_name);
+
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/opencode/",
+            options,
+            "opencode directory",
+        )?;
+
+        add_file_to_zip(zip, &opencode_path, &zip_path, options)?;
+    }
+
+    // Backup OpenCode auth.json if exists
+    if let Some(opencode_auth_path) = get_opencode_auth_path_from_db(&db).await? {
+        let zip_path = "external-configs/opencode/auth.json";
+
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/opencode/",
+            options,
+            "opencode directory",
+        )?;
+
+        add_file_to_zip(zip, &opencode_auth_path, zip_path, options)?;
+    }
+
+    if let Some(opencode_prompt_path) = get_opencode_prompt_path_from_db(&db).await? {
+        let zip_path = "external-configs/opencode/AGENTS.md";
+
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/opencode/",
+            options,
+            "opencode directory",
+        )?;
+
+        add_file_to_zip(zip, &opencode_prompt_path, zip_path, options)?;
+    }
+
+    if let Some(custom_root_dir) = get_custom_root_dir_path_info(&db, "claude").await {
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/claude/",
+            options,
+            "claude directory",
+        )?;
+        add_text_to_zip(
+            zip,
+            "external-configs/claude/root-dir.txt",
+            &custom_root_dir,
+            options,
+        )?;
+    }
+
+    // Backup Claude settings.json if exists
+    if let Some(claude_path) = get_claude_settings_path_from_db(&db).await? {
+        let zip_path = "external-configs/claude/settings.json";
+
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/claude/",
+            options,
+            "claude directory",
+        )?;
+
+        add_file_to_zip(zip, &claude_path, zip_path, options)?;
+    }
+
+    if let Some(claude_prompt_path) = get_claude_prompt_path_from_db(&db).await? {
+        let zip_path = "external-configs/claude/CLAUDE.md";
+
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/claude/",
+            options,
+            "claude directory",
+        )?;
+
+        add_file_to_zip(zip, &claude_prompt_path, zip_path, options)?;
+    }
+
+    if let Some(claude_mcp_path) = get_claude_mcp_path_from_db(&db).await? {
+        let zip_path = "external-configs/claude/.claude.json";
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/claude/",
+            options,
+            "claude directory",
+        )?;
+        add_file_to_zip(zip, &claude_mcp_path, zip_path, options)?;
+    }
+
+    if let Some(custom_root_dir) = get_custom_root_dir_path_info(&db, "codex").await {
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/codex/",
+            options,
+            "codex directory",
+        )?;
+        add_text_to_zip(
+            zip,
+            "external-configs/codex/root-dir.txt",
+            &custom_root_dir,
+            options,
+        )?;
+    }
+
+    // Backup Codex auth.json if exists
+    if let Some(codex_auth_path) = get_codex_auth_path_from_db(&db).await? {
+        let zip_path = "external-configs/codex/auth.json";
+
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/codex/",
+            options,
+            "codex directory",
+        )?;
+
+        add_file_to_zip(zip, &codex_auth_path, zip_path, options)?;
+    }
+
+    // Backup Codex config.toml if exists
+    if let Some(codex_config_path) = get_codex_config_path_from_db(&db).await? {
+        let zip_path = "external-configs/codex/config.toml";
+
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/codex/",
+            options,
+            "codex directory",
+        )?;
+
+        add_file_to_zip(zip, &codex_config_path, zip_path, options)?;
+    }
+
+    for codex_prompt_path in get_codex_prompt_paths_from_db(&db).await? {
+        let zip_path = get_codex_prompt_backup_zip_path(&codex_prompt_path);
+
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/codex/",
+            options,
+            "codex directory",
+        )?;
+
+        add_file_to_zip(zip, &codex_prompt_path, &zip_path, options)?;
+    }
+
+    if let Some(custom_dir) = get_custom_root_dir_path_info(&db, "openclaw").await {
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/openclaw/",
+            options,
+            "openclaw directory",
+        )?;
+        add_text_to_zip(
+            zip,
+            "external-configs/openclaw/root-dir.txt",
+            &custom_dir,
+            options,
+        )?;
+    }
+
+    if let Some(openclaw_config_path) = get_openclaw_config_path_from_db(&db).await? {
+        let zip_path = "external-configs/openclaw/openclaw.json";
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/openclaw/",
+            options,
+            "openclaw directory",
+        )?;
+        add_file_to_zip(zip, &openclaw_config_path, zip_path, options)?;
+    }
+
+    if let Some(custom_root_dir) = get_custom_root_dir_path_info(&db, "geminicli").await {
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/geminicli/",
+            options,
+            "Gemini CLI directory",
+        )?;
+        add_text_to_zip(
+            zip,
+            "external-configs/geminicli/root-dir.txt",
+            &custom_root_dir,
+            options,
+        )?;
+    }
+
+    if let Some(gemini_env_path) = get_gemini_cli_env_path_from_db(&db).await? {
+        let zip_path = "external-configs/geminicli/.env";
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/geminicli/",
+            options,
+            "Gemini CLI directory",
+        )?;
+        add_file_to_zip(zip, &gemini_env_path, zip_path, options)?;
+    }
+
+    if let Some(gemini_settings_path) = get_gemini_cli_settings_path_from_db(&db).await? {
+        let zip_path = "external-configs/geminicli/settings.json";
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/geminicli/",
+            options,
+            "Gemini CLI directory",
+        )?;
+        add_file_to_zip(zip, &gemini_settings_path, zip_path, options)?;
+    }
+
+    if let Some(gemini_prompt_path) = get_gemini_cli_prompt_path_from_db(&db).await? {
+        let zip_path = get_gemini_cli_prompt_backup_zip_path(&gemini_prompt_path);
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/geminicli/",
+            options,
+            "Gemini CLI directory",
+        )?;
+        add_file_to_zip(zip, &gemini_prompt_path, &zip_path, options)?;
+    }
+
+    if let Some(gemini_oauth_path) = get_gemini_cli_oauth_creds_path_from_db(&db).await? {
+        let zip_path = "external-configs/geminicli/oauth_creds.json";
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/geminicli/",
+            options,
+            "Gemini CLI directory",
+        )?;
+        add_file_to_zip(zip, &gemini_oauth_path, zip_path, options)?;
+    }
+
+    if let Some(gemini_tmp_dir) = get_gemini_cli_tmp_dir_from_db(&db).await? {
+        add_directory_contents_to_zip(
+            zip,
+            &gemini_tmp_dir,
+            "external-configs/geminicli/tmp",
+            options,
+        )?;
+    }
+
+    // Backup models.dev.json cache if exists
+    if let Some(models_cache_path) = get_models_cache_file() {
+        add_file_to_zip(zip, &models_cache_path, "models.dev.json", options)?;
+    }
+
+    // Backup preset_models.json cache if exists
+    if let Some(preset_models_cache_path) = get_preset_models_cache_file() {
+        add_file_to_zip(
+            zip,
+            &preset_models_cache_path,
+            "preset_models.json",
+            options,
+        )?;
+    }
+
+    // Backup model_pricing.json cache if exists
+    if let Some(model_pricing_cache_path) = get_model_pricing_cache_file() {
+        add_file_to_zip(
+            zip,
+            &model_pricing_cache_path,
+            "model_pricing.json",
+            options,
+        )?;
+    }
+
+    // Backup skills directory if exists
+    let skills_dir = get_skills_dir(app_handle)?;
+    if skills_dir.exists() {
+        zip.add_directory("skills/", options)
+            .map_err(|e| format!("Failed to add skills directory: {}", e))?;
+
+        for entry in WalkDir::new(&skills_dir) {
+            let entry = entry.map_err(|e| format!("Failed to read skills entry: {}", e))?;
+            let path = entry.path();
+            let relative_path = path
+                .strip_prefix(&skills_dir)
+                .map_err(|e| format!("Failed to get relative path: {}", e))?;
+
+            if path.is_file() {
+                // Skip system files
+                if let Some(file_name) = path.file_name() {
+                    let name_str = file_name.to_string_lossy();
+                    if name_str == ".DS_Store" || name_str.starts_with("._") {
+                        continue;
+                    }
+                }
+
+                let relative_str = relative_path.to_string_lossy().replace('\\', "/");
+                let name = format!("skills/{}", relative_str);
+                add_file_to_zip(zip, path, &name, options)?;
+            } else if path.is_dir() && !relative_path.as_os_str().is_empty() {
+                let relative_str = relative_path.to_string_lossy().replace('\\', "/");
+                let name = format!("skills/{}/", relative_str);
+                zip.add_directory(name, options)
+                    .map_err(|e| format!("Failed to add skills subdirectory: {}", e))?;
+            }
+        }
+    }
+
+    if include_image_assets {
+        add_image_assets_to_zip(app_handle, zip, options)?;
+    }
+
+    let backup_custom_entries = get_backup_custom_entries_from_db(&db).await?;
+    add_custom_backup_entries_to_zip(zip, &backup_custom_entries, options)?;
+
+    Ok(())
+}
+
 /// Create a temporary backup zip file and return its contents as bytes
 pub async fn create_backup_zip(
     app_handle: &tauri::AppHandle,
@@ -1633,266 +2034,12 @@ pub async fn create_backup_zip(
     use std::io::Cursor;
 
     let mut buffer = Cursor::new(Vec::new());
-    let db_state = app_handle.state::<crate::SqliteDbState>();
-    let db = db_state.db();
-
     {
         let mut zip = ZipWriter::new(&mut buffer);
         let options =
             SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-
-        add_legacy_database_snapshot_to_zip(&mut zip, db_path, options)?;
-
-        add_sqlite_database_snapshot_to_zip(&mut zip, app_handle, options)?;
-
-        // Add external-configs directory
-        zip.add_directory("external-configs/", options)
-            .map_err(|e| format!("Failed to add external-configs directory: {}", e))?;
-
-        if let Some(custom_dir) = get_custom_root_dir_path_info(&db, "opencode").await {
-            zip.add_directory("external-configs/opencode/", options)
-                .map_err(|e| format!("Failed to add opencode directory: {}", e))?;
-            add_text_to_zip(
-                &mut zip,
-                "external-configs/opencode/root-dir.txt",
-                &custom_dir,
-                options,
-            )?;
-        }
-
-        // Backup OpenCode config if exists
-        if let Some(opencode_path) = get_opencode_config_path_from_db(&db).await? {
-            let file_name = opencode_path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "opencode.json".to_string());
-            let zip_path = format!("external-configs/opencode/{}", file_name);
-
-            zip.add_directory("external-configs/opencode/", options)
-                .map_err(|e| format!("Failed to add opencode directory: {}", e))?;
-
-            add_file_to_zip(&mut zip, &opencode_path, &zip_path, options)?;
-        }
-
-        // Backup OpenCode auth.json if exists
-        if let Some(opencode_auth_path) = get_opencode_auth_path_from_db(&db).await? {
-            let zip_path = "external-configs/opencode/auth.json";
-
-            // Directory may already exist from opencode config backup
-            let _ = zip.add_directory("external-configs/opencode/", options);
-
-            add_file_to_zip(&mut zip, &opencode_auth_path, zip_path, options)?;
-        }
-
-        if let Some(opencode_prompt_path) = get_opencode_prompt_path_from_db(&db).await? {
-            let zip_path = "external-configs/opencode/AGENTS.md";
-
-            let _ = zip.add_directory("external-configs/opencode/", options);
-
-            add_file_to_zip(&mut zip, &opencode_prompt_path, zip_path, options)?;
-        }
-
-        if let Some(custom_root_dir) = get_custom_root_dir_path_info(&db, "claude").await {
-            zip.add_directory("external-configs/claude/", options)
-                .map_err(|e| format!("Failed to add claude directory: {}", e))?;
-            add_text_to_zip(
-                &mut zip,
-                "external-configs/claude/root-dir.txt",
-                &custom_root_dir,
-                options,
-            )?;
-        }
-
-        // Backup Claude settings.json if exists
-        if let Some(claude_path) = get_claude_settings_path_from_db(&db).await? {
-            let zip_path = "external-configs/claude/settings.json";
-
-            zip.add_directory("external-configs/claude/", options)
-                .map_err(|e| format!("Failed to add claude directory: {}", e))?;
-
-            add_file_to_zip(&mut zip, &claude_path, zip_path, options)?;
-        }
-
-        if let Some(claude_prompt_path) = get_claude_prompt_path_from_db(&db).await? {
-            let zip_path = "external-configs/claude/CLAUDE.md";
-
-            let _ = zip.add_directory("external-configs/claude/", options);
-
-            add_file_to_zip(&mut zip, &claude_prompt_path, zip_path, options)?;
-        }
-
-        if let Some(claude_mcp_path) = get_claude_mcp_path_from_db(&db).await? {
-            let zip_path = "external-configs/claude/.claude.json";
-            let _ = zip.add_directory("external-configs/claude/", options);
-            add_file_to_zip(&mut zip, &claude_mcp_path, zip_path, options)?;
-        }
-
-        if let Some(custom_root_dir) = get_custom_root_dir_path_info(&db, "codex").await {
-            zip.add_directory("external-configs/codex/", options)
-                .map_err(|e| format!("Failed to add codex directory: {}", e))?;
-            add_text_to_zip(
-                &mut zip,
-                "external-configs/codex/root-dir.txt",
-                &custom_root_dir,
-                options,
-            )?;
-        }
-
-        // Backup Codex auth.json if exists
-        if let Some(codex_auth_path) = get_codex_auth_path_from_db(&db).await? {
-            let zip_path = "external-configs/codex/auth.json";
-
-            zip.add_directory("external-configs/codex/", options)
-                .map_err(|e| format!("Failed to add codex directory: {}", e))?;
-
-            add_file_to_zip(&mut zip, &codex_auth_path, zip_path, options)?;
-        }
-
-        // Backup Codex config.toml if exists
-        if let Some(codex_config_path) = get_codex_config_path_from_db(&db).await? {
-            let zip_path = "external-configs/codex/config.toml";
-
-            // Directory may already exist from auth.json backup
-            let _ = zip.add_directory("external-configs/codex/", options);
-
-            add_file_to_zip(&mut zip, &codex_config_path, zip_path, options)?;
-        }
-
-        for codex_prompt_path in get_codex_prompt_paths_from_db(&db).await? {
-            let zip_path = get_codex_prompt_backup_zip_path(&codex_prompt_path);
-
-            let _ = zip.add_directory("external-configs/codex/", options);
-
-            add_file_to_zip(&mut zip, &codex_prompt_path, &zip_path, options)?;
-        }
-
-        if let Some(custom_dir) = get_custom_root_dir_path_info(&db, "openclaw").await {
-            zip.add_directory("external-configs/openclaw/", options)
-                .map_err(|e| format!("Failed to add openclaw directory: {}", e))?;
-            add_text_to_zip(
-                &mut zip,
-                "external-configs/openclaw/root-dir.txt",
-                &custom_dir,
-                options,
-            )?;
-        }
-
-        if let Some(openclaw_config_path) = get_openclaw_config_path_from_db(&db).await? {
-            let zip_path = "external-configs/openclaw/openclaw.json";
-            let _ = zip.add_directory("external-configs/openclaw/", options);
-            add_file_to_zip(&mut zip, &openclaw_config_path, zip_path, options)?;
-        }
-
-        if let Some(custom_root_dir) = get_custom_root_dir_path_info(&db, "geminicli").await {
-            zip.add_directory("external-configs/geminicli/", options)
-                .map_err(|e| format!("Failed to add Gemini CLI directory: {}", e))?;
-            add_text_to_zip(
-                &mut zip,
-                "external-configs/geminicli/root-dir.txt",
-                &custom_root_dir,
-                options,
-            )?;
-        }
-
-        if let Some(gemini_env_path) = get_gemini_cli_env_path_from_db(&db).await? {
-            let zip_path = "external-configs/geminicli/.env";
-            let _ = zip.add_directory("external-configs/geminicli/", options);
-            add_file_to_zip(&mut zip, &gemini_env_path, zip_path, options)?;
-        }
-
-        if let Some(gemini_settings_path) = get_gemini_cli_settings_path_from_db(&db).await? {
-            let zip_path = "external-configs/geminicli/settings.json";
-            let _ = zip.add_directory("external-configs/geminicli/", options);
-            add_file_to_zip(&mut zip, &gemini_settings_path, zip_path, options)?;
-        }
-
-        if let Some(gemini_prompt_path) = get_gemini_cli_prompt_path_from_db(&db).await? {
-            let zip_path = get_gemini_cli_prompt_backup_zip_path(&gemini_prompt_path);
-            let _ = zip.add_directory("external-configs/geminicli/", options);
-            add_file_to_zip(&mut zip, &gemini_prompt_path, &zip_path, options)?;
-        }
-
-        if let Some(gemini_oauth_path) = get_gemini_cli_oauth_creds_path_from_db(&db).await? {
-            let zip_path = "external-configs/geminicli/oauth_creds.json";
-            let _ = zip.add_directory("external-configs/geminicli/", options);
-            add_file_to_zip(&mut zip, &gemini_oauth_path, zip_path, options)?;
-        }
-
-        if let Some(gemini_tmp_dir) = get_gemini_cli_tmp_dir_from_db(&db).await? {
-            add_directory_contents_to_zip(
-                &mut zip,
-                &gemini_tmp_dir,
-                "external-configs/geminicli/tmp",
-                options,
-            )?;
-        }
-
-        // Backup models.dev.json cache if exists
-        if let Some(models_cache_path) = get_models_cache_file() {
-            add_file_to_zip(&mut zip, &models_cache_path, "models.dev.json", options)?;
-        }
-
-        // Backup preset_models.json cache if exists
-        if let Some(preset_models_cache_path) = get_preset_models_cache_file() {
-            add_file_to_zip(
-                &mut zip,
-                &preset_models_cache_path,
-                "preset_models.json",
-                options,
-            )?;
-        }
-
-        // Backup model_pricing.json cache if exists
-        if let Some(model_pricing_cache_path) = get_model_pricing_cache_file() {
-            add_file_to_zip(
-                &mut zip,
-                &model_pricing_cache_path,
-                "model_pricing.json",
-                options,
-            )?;
-        }
-
-        // Backup skills directory if exists
-        let skills_dir = get_skills_dir(app_handle)?;
-        if skills_dir.exists() {
-            zip.add_directory("skills/", options)
-                .map_err(|e| format!("Failed to add skills directory: {}", e))?;
-
-            for entry in WalkDir::new(&skills_dir) {
-                let entry = entry.map_err(|e| format!("Failed to read skills entry: {}", e))?;
-                let path = entry.path();
-                let relative_path = path
-                    .strip_prefix(&skills_dir)
-                    .map_err(|e| format!("Failed to get relative path: {}", e))?;
-
-                if path.is_file() {
-                    // Skip system files
-                    if let Some(file_name) = path.file_name() {
-                        let name_str = file_name.to_string_lossy();
-                        if name_str == ".DS_Store" || name_str.starts_with("._") {
-                            continue;
-                        }
-                    }
-
-                    let relative_str = relative_path.to_string_lossy().replace('\\', "/");
-                    let name = format!("skills/{}", relative_str);
-                    add_file_to_zip(&mut zip, path, &name, options)?;
-                } else if path.is_dir() && !relative_path.as_os_str().is_empty() {
-                    let relative_str = relative_path.to_string_lossy().replace('\\', "/");
-                    let name = format!("skills/{}/", relative_str);
-                    zip.add_directory(name, options)
-                        .map_err(|e| format!("Failed to add skills subdirectory: {}", e))?;
-                }
-            }
-        }
-
-        if include_image_assets {
-            add_image_assets_to_zip(app_handle, &mut zip, options)?;
-        }
-
-        let backup_custom_entries = get_backup_custom_entries_from_db(&db).await?;
-        add_custom_backup_entries_to_zip(&mut zip, &backup_custom_entries, options)?;
-
+        write_backup_zip_contents(&mut zip, app_handle, db_path, include_image_assets, options)
+            .await?;
         zip.finish()
             .map_err(|e| format!("Failed to finish zip: {}", e))?;
     }
@@ -1903,13 +2050,15 @@ pub async fn create_backup_zip(
 #[cfg(test)]
 mod tests {
     use super::{
-        add_custom_backup_entries_to_zip, add_legacy_database_snapshot_to_zip, build_db_manifest,
+        add_custom_backup_entries_to_zip, add_directory_to_zip_once,
+        add_legacy_database_snapshot_to_zip, add_text_to_zip, build_db_manifest,
         get_codex_prompt_backup_zip_path, get_existing_codex_prompt_paths,
         get_gemini_cli_prompt_backup_zip_path, is_filesystem_root_directory,
         normalize_backup_storage_path, resolve_external_config_restore_output_path,
         restore_custom_backup_entries, CUSTOM_BACKUP_MANIFEST_PATH, SQLITE_BACKUP_ZIP_PATH,
     };
     use crate::settings::types::{BackupCustomEntry, BackupCustomEntryType};
+    use std::collections::HashSet;
     use std::fs;
     use std::io::{Cursor, Read};
     use std::path::Path;
@@ -1940,6 +2089,51 @@ mod tests {
             zip.finish().expect("finish zip");
         }
         buffer.into_inner()
+    }
+
+    #[test]
+    fn duplicate_zip_directory_entries_are_written_once() {
+        let mut buffer = Cursor::new(Vec::new());
+        {
+            let mut zip = ZipWriter::new(&mut buffer);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            let mut added_directories = HashSet::new();
+
+            add_directory_to_zip_once(
+                &mut zip,
+                &mut added_directories,
+                "external-configs/opencode",
+                options,
+                "opencode directory",
+            )
+            .expect("add opencode directory");
+            add_text_to_zip(
+                &mut zip,
+                "external-configs/opencode/root-dir.txt",
+                "/tmp/opencode",
+                options,
+            )
+            .expect("add root dir marker");
+            add_directory_to_zip_once(
+                &mut zip,
+                &mut added_directories,
+                "external-configs/opencode/",
+                options,
+                "opencode directory",
+            )
+            .expect("skip duplicate opencode directory");
+
+            zip.finish().expect("finish zip");
+        }
+
+        let archive = ZipArchive::new(Cursor::new(buffer.into_inner())).expect("zip archive");
+        let opencode_directory_count = archive
+            .file_names()
+            .filter(|name| *name == "external-configs/opencode/")
+            .count();
+
+        assert_eq!(opencode_directory_count, 1);
     }
 
     #[test]
