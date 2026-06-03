@@ -129,6 +129,7 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
       {groups.map((group) => {
         const groupToolsEnabled = groupToolMode && !isSkillUngroupedCustomGroup(group);
         const isOpen = activeKeySet.has(group.key);
+        const enabledSkillCount = group.skills.filter((skill) => skill.management_enabled).length;
 
         return (
           <section key={group.key} className={styles.groupSection}>
@@ -155,7 +156,10 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
                   />
                   <span className={styles.groupLabel}>{group.label}</span>
                   <span className={styles.groupCount}>
-                    {t('skills.skillCount', { count: group.skills.length })}
+                    {t('skills.groupEnabledCount', {
+                      enabled: enabledSkillCount,
+                      total: group.skills.length,
+                    })}
                   </span>
                 </button>
               </div>

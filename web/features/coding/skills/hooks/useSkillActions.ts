@@ -41,6 +41,11 @@ export interface UseSkillActionsResult {
     options?: BatchToolOptions,
   ) => Promise<boolean>;
   handleBatchSetGroup: (skillIds: string[], userGroup: string | null) => Promise<boolean>;
+  handleBatchSetManagementEnabled: (
+    skillIds: string[],
+    enabled: boolean,
+    restoreToolsBySkillId?: Record<string, string[]>,
+  ) => Promise<boolean>;
   handleSetManagementEnabled: (skill: ManagedSkill, enabled: boolean, restoreTools?: string[]) => Promise<boolean>;
 }
 
@@ -295,6 +300,56 @@ export function useSkillActions({ allTools }: UseSkillActionsOptions): UseSkillA
     }
   }, [refresh, t]);
 
+  const handleBatchSetManagementEnabled = React.useCallback(async (
+    skillIds: string[],
+    enabled: boolean,
+    restoreToolsBySkillId: Record<string, string[]> = {},
+  ) => {
+    const targetSkills = skillIds
+      .map((id) => skills.find((skill) => skill.id === id))
+      .filter((skill): skill is ManagedSkill => Boolean(skill))
+      .filter((skill) => skill.management_enabled !== enabled);
+
+    if (targetSkills.length === 0) {
+      return false;
+    }
+
+    setActionLoading(true);
+    let restoredToolCount = 0;
+    try {
+      for (const skill of targetSkills) {
+        await api.setSkillManagementEnabled(skill.id, enabled);
+        if (!enabled) {
+          continue;
+        }
+
+        for (const toolId of restoreToolsBySkillId[skill.id] ?? []) {
+          await api.syncSkillToTool(skill.central_path, skill.id, toolId, skill.name, true);
+          restoredToolCount++;
+        }
+      }
+
+      await refresh();
+      await refreshTrayMenu();
+      if (enabled) {
+        message.success(restoredToolCount > 0
+          ? t('skills.batch.enableRestoreSuccess', {
+            count: targetSkills.length,
+            tools: restoredToolCount,
+          })
+          : t('skills.batch.enableSuccess', { count: targetSkills.length }));
+      } else {
+        message.success(t('skills.batch.disableSuccess', { count: targetSkills.length }));
+      }
+      return true;
+    } catch (error) {
+      showGitError(String(error), t, allTools);
+      return false;
+    } finally {
+      setActionLoading(false);
+    }
+  }, [allTools, refresh, skills, t]);
+
   const handleSetManagementEnabled = React.useCallback(async (
     skill: ManagedSkill,
     enabled: boolean,
@@ -339,6 +394,7 @@ export function useSkillActions({ allTools }: UseSkillActionsOptions): UseSkillA
     handleBatchAddTool,
     handleBatchRemoveTool,
     handleBatchSetGroup,
+    handleBatchSetManagementEnabled,
     handleSetManagementEnabled,
   };
 }

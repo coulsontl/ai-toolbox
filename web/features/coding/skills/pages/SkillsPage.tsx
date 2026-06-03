@@ -18,6 +18,8 @@ import {
   MoreHorizontal,
   Plus,
   PlusCircle,
+  Power,
+  PowerOff,
   RefreshCw,
   SlidersHorizontal,
   Tags,
@@ -292,6 +294,7 @@ const SkillsPage: React.FC = () => {
     handleBatchAddTool,
     handleBatchRemoveTool,
     handleBatchSetGroup,
+    handleBatchSetManagementEnabled,
     handleSetManagementEnabled,
   } = useSkillActions({ allTools });
 
@@ -372,6 +375,29 @@ const SkillsPage: React.FC = () => {
   const selectedArray = React.useMemo(() => [...selectedIds], [selectedIds]);
   const hasSelection = selectedArray.length > 0;
   const installedTools = React.useMemo(() => allTools.filter((tool) => tool.installed), [allTools]);
+  const allToolIds = React.useMemo(() => new Set(allTools.map((tool) => tool.id)), [allTools]);
+  const skillById = React.useMemo(
+    () => new Map(skills.map((skill) => [skill.id, skill])),
+    [skills],
+  );
+  const selectedSkills = React.useMemo(
+    () => selectedArray
+      .map((skillId) => skillById.get(skillId))
+      .filter((skill): skill is ManagedSkill => Boolean(skill)),
+    [selectedArray, skillById],
+  );
+  const selectedEnabledSkills = React.useMemo(
+    () => selectedSkills.filter((skill) => skill.management_enabled),
+    [selectedSkills],
+  );
+  const selectedDisabledSkills = React.useMemo(
+    () => selectedSkills.filter((skill) => !skill.management_enabled),
+    [selectedSkills],
+  );
+  const selectedEnabledToolCount = React.useMemo(
+    () => selectedEnabledSkills.reduce((total, skill) => total + skill.enabled_tools.length, 0),
+    [selectedEnabledSkills],
+  );
   const gridColumns = gridColumnSetting === 'auto' ? undefined : gridColumnSetting;
   const batchAddToolItems = React.useMemo<ManagementMenuItem[]>(
     () => installedTools.map((tool) => ({
@@ -389,6 +415,113 @@ const SkillsPage: React.FC = () => {
     })),
     [handleBatchRemoveTool, installedTools, selectedArray],
   );
+  const getRestorableToolIds = React.useCallback((skill: ManagedSkill) => {
+    return skill.disabled_previous_tools.filter((toolId) => allToolIds.has(toolId));
+  }, [allToolIds]);
+
+  const buildRestoreToolsBySkillId = React.useCallback((targetSkills: ManagedSkill[]) => {
+    const restoreToolsBySkillId: Record<string, string[]> = {};
+    for (const skill of targetSkills) {
+      const restorableToolIds = getRestorableToolIds(skill);
+      if (restorableToolIds.length > 0) {
+        restoreToolsBySkillId[skill.id] = restorableToolIds;
+      }
+    }
+    return restoreToolsBySkillId;
+  }, [getRestorableToolIds]);
+
+  const selectedRestoreToolCount = React.useMemo(
+    () => selectedDisabledSkills.reduce((total, skill) => total + getRestorableToolIds(skill).length, 0),
+    [getRestorableToolIds, selectedDisabledSkills],
+  );
+
+  const handleBatchEnableSelected = React.useCallback(() => {
+    if (selectedDisabledSkills.length === 0) {
+      return;
+    }
+
+    Modal.confirm({
+      title: t('skills.batch.enableConfirmTitle'),
+      content: selectedRestoreToolCount > 0
+        ? t('skills.batch.enableConfirmContent', {
+          count: selectedDisabledSkills.length,
+          tools: selectedRestoreToolCount,
+        })
+        : t('skills.batch.enableConfirmEmpty', { count: selectedDisabledSkills.length }),
+      okText: t('skills.batch.enable'),
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        const saved = await handleBatchSetManagementEnabled(
+          selectedDisabledSkills.map((skill) => skill.id),
+          true,
+          buildRestoreToolsBySkillId(selectedDisabledSkills),
+        );
+        if (saved) {
+          setSelectedIds(new Set());
+        }
+      },
+    });
+  }, [
+    buildRestoreToolsBySkillId,
+    handleBatchSetManagementEnabled,
+    selectedDisabledSkills,
+    selectedRestoreToolCount,
+    t,
+  ]);
+
+  const handleBatchDisableSelected = React.useCallback(() => {
+    if (selectedEnabledSkills.length === 0) {
+      return;
+    }
+
+    Modal.confirm({
+      title: t('skills.batch.disableConfirmTitle'),
+      content: t('skills.batch.disableConfirmContent', {
+        count: selectedEnabledSkills.length,
+        tools: selectedEnabledToolCount,
+      }),
+      okText: t('skills.batch.disable'),
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        const saved = await handleBatchSetManagementEnabled(
+          selectedEnabledSkills.map((skill) => skill.id),
+          false,
+        );
+        if (saved) {
+          setSelectedIds(new Set());
+        }
+      },
+    });
+  }, [
+    handleBatchSetManagementEnabled,
+    selectedEnabledSkills,
+    selectedEnabledToolCount,
+    t,
+  ]);
+
+  const batchManagementStateItems = React.useMemo<ManagementMenuItem[]>(() => [
+    {
+      key: 'enable-selected',
+      icon: <Power size={14} />,
+      label: t('skills.batch.enable'),
+      disabled: selectedDisabledSkills.length === 0,
+      onSelect: handleBatchEnableSelected,
+    },
+    {
+      key: 'disable-selected',
+      danger: true,
+      icon: <PowerOff size={14} />,
+      label: t('skills.batch.disable'),
+      disabled: selectedEnabledSkills.length === 0,
+      onSelect: handleBatchDisableSelected,
+    },
+  ], [
+    handleBatchDisableSelected,
+    handleBatchEnableSelected,
+    selectedDisabledSkills.length,
+    selectedEnabledSkills.length,
+    t,
+  ]);
 
   const handleConfirmBatchGroup = React.useCallback(async () => {
     const normalizedGroupName = normalizeSkillMetadataText(batchGroupValue);
@@ -832,6 +965,14 @@ const SkillsPage: React.FC = () => {
                 onClick={() => handleBatchRefresh(selectedArray)}
                 controlSize="compact"
               />
+              <ManagementMenu
+                items={batchManagementStateItems}
+                disabled={!hasSelection || loading || actionLoading}
+                title={hasSelection ? t('skills.batch.managementState') : t('skills.batch.noneSelected')}
+                controlSize="compact"
+              >
+                <Power size={14} aria-hidden="true" />
+              </ManagementMenu>
               <ManagementMenu
                 items={batchAddToolItems}
                 disabled={!hasSelection || loading || actionLoading}
