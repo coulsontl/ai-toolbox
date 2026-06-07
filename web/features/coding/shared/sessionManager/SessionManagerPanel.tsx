@@ -5,29 +5,23 @@ import {
   ClockCircleOutlined,
   CopyOutlined,
   DeleteOutlined,
-  DownloadOutlined,
-  EditOutlined,
   ExclamationCircleOutlined,
   ImportOutlined,
   FolderOpenOutlined,
   MessageOutlined,
   ReloadOutlined,
   SearchOutlined,
-  UnorderedListOutlined,
 } from '@ant-design/icons';
 import {
   Button,
   Checkbox,
   Collapse,
-  Drawer,
   Empty,
   Form,
   Input,
   Modal,
   Select,
-  Space,
   Spin,
-  Tag,
   Typography,
   message,
 } from 'antd';
@@ -39,32 +33,29 @@ import {
   deleteToolSession,
   exportToolSession,
   getToolSessionDetail,
+  getToolSubagentSessionDetail,
   importToolSession,
+  listToolSessionSubagents,
   listToolSessions,
   renameToolSession,
 } from './sessionManagerApi';
 import type {
   DeleteToolSessionsResult,
   SessionDetail,
-  SessionMessage,
   SessionMeta,
   SessionPathOption,
-  SessionTocItem,
+  SessionSubagentMeta,
   SessionTool,
 } from './types';
 import {
   advanceVisibleContextId,
-  buildSessionTocItems,
   formatRelativeTime,
   formatSessionTitle,
-  formatTimestamp,
-  getRoleLabel,
   shortSessionId,
-  shouldCollapseMessage,
   shouldShowVisibleFeedback as shouldShowVisibleFeedbackForContext,
-  usesCompactMessageCollapse,
 } from './utils';
 import { useKeepAlive } from '@/components/layout/KeepAliveOutlet';
+import SessionDetailWorkbench from './detail/SessionDetailWorkbench';
 import styles from './SessionManagerPanel.module.less';
 
 const { Text } = Typography;
@@ -110,16 +101,14 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
   const [exporting, setExporting] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
   const [detail, setDetail] = React.useState<SessionDetail | null>(null);
-  const [detailQuery, setDetailQuery] = React.useState('');
+  const [rootDetail, setRootDetail] = React.useState<SessionDetail | null>(null);
+  const [subagentSessions, setSubagentSessions] = React.useState<SessionSubagentMeta[]>([]);
+  const [parentDetailStack, setParentDetailStack] = React.useState<SessionDetail[]>([]);
   const [renameModalOpen, setRenameModalOpen] = React.useState(false);
   const [renaming, setRenaming] = React.useState(false);
-  const [mobileTocOpen, setMobileTocOpen] = React.useState(false);
-  const [activeMessageIndex, setActiveMessageIndex] = React.useState<number | null>(null);
   const [selectionMode, setSelectionMode] = React.useState(false);
   const [selectedSourcePaths, setSelectedSourcePaths] = React.useState<string[]>([]);
   const [bulkDeleting, setBulkDeleting] = React.useState(false);
-  const messageRefs = React.useRef<Map<number, HTMLDivElement>>(new Map());
-  const [expandedMessages, setExpandedMessages] = React.useState<Record<number, boolean>>({});
   const listContextIdRef = React.useRef(0);
   const listReplaceRequestIdRef = React.useRef(0);
   const listAppendRequestIdRef = React.useRef(0);
@@ -308,30 +297,6 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
     return () => observer.disconnect();
   }, [expanded, hasMore, loadSessions, loading, loadingMore, page]);
 
-  const tocItems = React.useMemo<SessionTocItem[]>(() => {
-    return buildSessionTocItems(detail?.messages ?? []);
-  }, [detail?.messages]);
-
-  const detailSummary = detail?.meta.summary?.trim() || t('sessionManager.noSummary');
-  const totalMessageCount = detail?.messages.length ?? 0;
-
-  const filteredMessages = React.useMemo(() => {
-    const messages = detail?.messages ?? [];
-    const normalizedQuery = detailQuery.trim().toLowerCase();
-    if (!normalizedQuery) {
-      return messages.map((message, index) => ({ message, index }));
-    }
-
-    return messages
-      .map((message, index) => ({ message, index }))
-      .filter(({ message }) => {
-        return (
-          message.content.toLowerCase().includes(normalizedQuery)
-          || message.role.toLowerCase().includes(normalizedQuery)
-        );
-      });
-  }, [detail?.messages, detailQuery]);
-
   const handleRefresh = async () => {
     await loadSessions(1, false, true);
   };
@@ -403,17 +368,15 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
   const resetDetailState = React.useCallback(() => {
     detailRequestIdRef.current += 1;
     setDetail(null);
+    setRootDetail(null);
+    setSubagentSessions([]);
+    setParentDetailStack([]);
     setDetailLoading(false);
-    setDetailQuery('');
-    setExpandedMessages({});
-    setMobileTocOpen(false);
-    setActiveMessageIndex(null);
     setRenameModalOpen(false);
     setRenaming(false);
     setImporting(false);
     setExporting(false);
     renameForm.resetFields();
-    messageRefs.current.clear();
   }, [renameForm]);
 
   const fetchSessionDetail = React.useCallback(async (session: SessionMeta) => {
@@ -422,7 +385,10 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
     detailRequestIdRef.current = requestId;
 
     try {
-      const result = await getToolSessionDetail(tool, session.sourcePath);
+      const [result, subagents] = await Promise.all([
+        getToolSessionDetail(tool, session.sourcePath),
+        listToolSessionSubagents(tool, session.sourcePath),
+      ]);
       if (requestId !== detailRequestIdRef.current) {
         return;
       }
@@ -430,11 +396,9 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
         return;
       }
       setDetail(result);
-      setExpandedMessages({});
-      setDetailQuery('');
-      setMobileTocOpen(false);
-      setActiveMessageIndex(null);
-      messageRefs.current.clear();
+      setRootDetail(result);
+      setSubagentSessions(subagents);
+      setParentDetailStack([]);
     } catch (error) {
       if (requestId !== detailRequestIdRef.current) {
         return;
@@ -446,6 +410,55 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
       message.error(errorMessage || t('common.error'));
     }
   }, [captureVisibleContextId, shouldShowVisibleFeedback, t, tool]);
+
+  const handleOpenSubagentDetail = React.useCallback(async (subagent: SessionSubagentMeta) => {
+    const parentDetail = detail;
+    const parentSourcePath = rootDetail?.meta.sourcePath;
+    if (!parentDetail || !parentSourcePath) {
+      return;
+    }
+
+    const visibleContextId = captureVisibleContextId();
+    const requestId = detailRequestIdRef.current + 1;
+    detailRequestIdRef.current = requestId;
+    setDetailLoading(true);
+
+    try {
+      const result = await getToolSubagentSessionDetail(tool, parentSourcePath, subagent.sourcePath);
+      if (requestId !== detailRequestIdRef.current) {
+        return;
+      }
+      if (!shouldShowVisibleFeedback(visibleContextId)) {
+        return;
+      }
+      setParentDetailStack((current) => [...current, parentDetail]);
+      setDetail(result);
+    } catch (error) {
+      if (requestId !== detailRequestIdRef.current) {
+        return;
+      }
+      if (!shouldShowVisibleFeedback(visibleContextId)) {
+        return;
+      }
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      message.error(errorMessage || t('common.error'));
+    } finally {
+      if (requestId === detailRequestIdRef.current) {
+        setDetailLoading(false);
+      }
+    }
+  }, [captureVisibleContextId, detail, rootDetail?.meta.sourcePath, shouldShowVisibleFeedback, t, tool]);
+
+  const handleBackToParentDetail = React.useCallback(() => {
+    setParentDetailStack((current) => {
+      const nextParent = current[current.length - 1];
+      if (!nextParent) {
+        return current;
+      }
+      setDetail(nextParent);
+      return current.slice(0, -1);
+    });
+  }, []);
 
   const handleOpenDetail = async (session: SessionMeta) => {
     setDetailOpen(true);
@@ -721,122 +734,6 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
     });
   };
 
-  const scrollToMessage = (index: number) => {
-    const target = messageRefs.current.get(index);
-    if (!target) {
-      return;
-    }
-
-    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    setActiveMessageIndex(index);
-    setMobileTocOpen(false);
-    window.setTimeout(() => {
-      setActiveMessageIndex((current) => (current === index ? null : current));
-    }, 1800);
-  };
-
-  const getMessageCardRoleClassName = (role: string) => {
-    switch (role.toLowerCase()) {
-      case 'user':
-        return styles.messageCardUser;
-      case 'assistant':
-        return styles.messageCardAssistant;
-      case 'tool':
-        return styles.messageCardTool;
-      case 'system':
-        return styles.messageCardSystem;
-      default:
-        return '';
-    }
-  };
-
-  const getMessageRoleTagClassName = (role: string) => {
-    switch (role.toLowerCase()) {
-      case 'user':
-        return styles.messageRoleTagUser;
-      case 'assistant':
-        return styles.messageRoleTagAssistant;
-      case 'tool':
-        return styles.messageRoleTagTool;
-      case 'system':
-        return styles.messageRoleTagSystem;
-      default:
-        return '';
-    }
-  };
-
-  const renderMessage = (messageItem: SessionMessage, index: number) => {
-    const isCollapsible = shouldCollapseMessage(messageItem.role, messageItem.content);
-    const isExpanded = expandedMessages[index] ?? false;
-    const useCompactCollapse = usesCompactMessageCollapse(messageItem.role);
-    const messageRoleClassName = getMessageCardRoleClassName(messageItem.role);
-    const messageRoleTagClassName = getMessageRoleTagClassName(messageItem.role);
-    const messageOrder = index + 1;
-
-    return (
-      <div
-        key={`${index}-${messageItem.ts ?? 'no-ts'}`}
-        ref={(node) => {
-          if (node) {
-            messageRefs.current.set(index, node);
-          } else {
-            messageRefs.current.delete(index);
-          }
-        }}
-        className={`${styles.messageCard}${messageRoleClassName ? ` ${messageRoleClassName}` : ''}${activeMessageIndex === index ? ` ${styles.messageCardActive}` : ''}`}
-      >
-        <div className={styles.messageRail}>
-          <div className={styles.messageNode}>
-            <span>{messageOrder}</span>
-          </div>
-          <div className={styles.messageLine} />
-        </div>
-        <div className={styles.messageHeader}>
-          <div className={styles.messageHeaderLeft}>
-            <Tag
-              variant="filled"
-              className={`${styles.messageRoleTag}${messageRoleTagClassName ? ` ${messageRoleTagClassName}` : ''}`}
-            >
-              {getRoleLabel(messageItem.role, t)}
-            </Tag>
-            {messageItem.ts ? <Text className={styles.messageTimestamp}>{formatTimestamp(messageItem.ts)}</Text> : null}
-          </div>
-          <Button
-            size="small"
-            type="link"
-            className={styles.messageCopyButton}
-            icon={<CopyOutlined />}
-            onClick={() => void handleCopyText(messageItem.content, t('sessionManager.copyMessageSuccess'))}
-          >
-            {t('common.copy')}
-          </Button>
-        </div>
-        <div
-          className={`${styles.messageContent}${isCollapsible && !isExpanded ? ` ${useCompactCollapse ? styles.messageCollapsedCompact : styles.messageCollapsed}` : ''}`}
-        >
-          {messageItem.content}
-        </div>
-        {isCollapsible ? (
-          <div className={styles.messageFooter}>
-            <Button
-              type="link"
-              size="small"
-              className={styles.messageExpandButton}
-              onClick={() => {
-                setExpandedMessages((current) => ({
-                  ...current,
-                  [index]: !isExpanded,
-                }));
-              }}
-            >
-              {isExpanded ? t('sessionManager.collapseMessage') : t('sessionManager.expandMessage')}
-            </Button>
-          </div>
-        ) : null}
-      </div>
-    );
-  };
-
   return (
     <>
       <div>
@@ -1030,7 +927,7 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
           resetDetailState();
           setDetailOpen(false);
         }}
-        width={1080}
+        width={1280}
         className={styles.detailModal}
         footer={null}
         destroyOnHidden
@@ -1038,170 +935,27 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
       >
         <Spin spinning={detailLoading}>
           {detail ? (
-            <div className={styles.detailShell}>
-              <div className={styles.detailHero}>
-                <div className={styles.detailHeroTop}>
-                  <div className={styles.detailHeroMain}>
-                    <div className={styles.detailHeroTitle}>{formatSessionTitle(detail.meta)}</div>
-                    <div className={styles.detailHeroSummary}>{detailSummary}</div>
-                  </div>
-                  <Space wrap className={styles.detailHeroActions}>
-                    {canRenameSession ? (
-                      <Button
-                        className={styles.detailPrimaryAction}
-                        icon={<EditOutlined />}
-                        onClick={openRenameModal}
-                      >
-                        {t('sessionManager.rename')}
-                      </Button>
-                    ) : null}
-                    <Button
-                      className={styles.detailSecondaryAction}
-                      icon={<DownloadOutlined />}
-                      loading={exporting}
-                      disabled={exporting}
-                      onClick={() => void exportSessionDetail(detail)}
-                    >
-                      {t(exporting ? 'sessionManager.exporting' : 'sessionManager.export')}
-                    </Button>
-                    <Button
-                      className={styles.detailSecondaryAction}
-                      icon={<CopyOutlined />}
-                      disabled={!detail.meta.resumeCommand}
-                      onClick={() => {
-                        if (!detail.meta.resumeCommand) {
-                          return;
-                        }
-                        void handleCopyText(detail.meta.resumeCommand, t('sessionManager.copyResumeSuccess'));
-                      }}
-                    >
-                      {t('sessionManager.copyResume')}
-                    </Button>
-                    <Button
-                      danger
-                      className={styles.detailSecondaryAction}
-                      icon={<DeleteOutlined />}
-                      onClick={() => {
-                        handleDeleteSession(detail.meta);
-                      }}
-                    >
-                      {t('common.delete')}
-                    </Button>
-                  </Space>
-                </div>
-
-                <div className={styles.detailMetaGrid}>
-                  <div className={styles.detailMetaCard}>
-                    <span className={styles.detailMetaLabel}>{t('sessionManager.sessionId')}</span>
-                    <div className={`${styles.detailMetaValue} ${styles.detailMetaMono}`}>{detail.meta.sessionId}</div>
-                  </div>
-                  {detail.meta.projectDir ? (
-                    <div className={styles.detailMetaCard}>
-                      <span className={styles.detailMetaLabel}>{t('sessionManager.projectDir')}</span>
-                      <div className={styles.detailMetaValue}>{detail.meta.projectDir}</div>
-                    </div>
-                  ) : null}
-                  {detail.meta.createdAt ? (
-                    <div className={styles.detailMetaCard}>
-                      <span className={styles.detailMetaLabel}>{t('sessionManager.createdAt')}</span>
-                      <div className={styles.detailMetaValue}>{formatTimestamp(detail.meta.createdAt)}</div>
-                    </div>
-                  ) : null}
-                  {detail.meta.lastActiveAt ? (
-                    <div className={styles.detailMetaCard}>
-                      <span className={styles.detailMetaLabel}>{t('sessionManager.lastActiveAt')}</span>
-                      <div className={styles.detailMetaValue}>{formatTimestamp(detail.meta.lastActiveAt)}</div>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-
-              <div className={styles.detailLayout}>
-              <div className={styles.tocPane}>
-                <div className={styles.tocHeader}>
-                  <Text strong>{t('sessionManager.tocTitle')}</Text>
-                  <span className={styles.tocCount}>{tocItems.length}</span>
-                </div>
-                <div className={styles.tocList}>
-                  {tocItems.length === 0 ? (
-                    <Text type="secondary">{t('sessionManager.tocEmpty')}</Text>
-                  ) : tocItems.map((item, tocIndex) => (
-                    <button
-                      key={`${item.index}-${tocIndex}`}
-                      type="button"
-                      className={styles.tocButton}
-                      onClick={() => scrollToMessage(item.index)}
-                    >
-                      <div className={styles.tocIndex}>{tocIndex + 1}</div>
-                      <div className={styles.tocPreview}>{item.preview}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className={styles.detailMain}>
-                <div className={styles.detailToolbar}>
-                  <div className={styles.detailToolbarLeft}>
-                    <Input
-                      allowClear
-                      className={styles.detailSearchInput}
-                      prefix={<SearchOutlined />}
-                      placeholder={t('sessionManager.searchInSession')}
-                      value={detailQuery}
-                      onChange={(event) => setDetailQuery(event.target.value)}
-                    />
-                    <Button
-                      className={styles.mobileTocButton}
-                      icon={<UnorderedListOutlined />}
-                      onClick={() => setMobileTocOpen(true)}
-                    >
-                      {t('sessionManager.tocTitle')}
-                    </Button>
-                  </div>
-                  <span className={styles.detailCountBadge}>
-                    <MessageOutlined />
-                    {totalMessageCount}
-                  </span>
-                </div>
-
-                <div className={styles.messagesPanel}>
-                  <div className={styles.messagesList}>
-                    {filteredMessages.length === 0 ? (
-                      <Empty description={t('sessionManager.noMessagesMatched')} />
-                    ) : filteredMessages.map(({ message: messageItem, index }) => renderMessage(messageItem, index))}
-                  </div>
-                </div>
-              </div>
-            </div>
-            </div>
+            <SessionDetailWorkbench
+              detail={detail}
+              subagents={subagentSessions}
+              isSubagentDetail={parentDetailStack.length > 0}
+              exporting={exporting}
+              canRename={canRenameSession && parentDetailStack.length === 0}
+              canExport={parentDetailStack.length === 0}
+              canDelete={parentDetailStack.length === 0}
+              t={t}
+              onRename={openRenameModal}
+              onExport={() => void exportSessionDetail(detail)}
+              onDelete={() => handleDeleteSession(detail.meta)}
+              onOpenSubagent={handleOpenSubagentDetail}
+              onBackToParent={handleBackToParentDetail}
+              onCopyText={handleCopyText}
+            />
           ) : (
             <Empty description={t('sessionManager.emptyDetail')} />
           )}
         </Spin>
       </Modal>
-
-      <Drawer
-        open={mobileTocOpen}
-        onClose={() => setMobileTocOpen(false)}
-        title={t('sessionManager.tocTitle')}
-        placement="right"
-      >
-        <div className={styles.tocList}>
-          {tocItems.length === 0 ? (
-            <Text type="secondary">{t('sessionManager.tocEmpty')}</Text>
-          ) : tocItems.map((item, tocIndex) => (
-            <button
-              key={`${item.index}-${tocIndex}-drawer`}
-              type="button"
-              className={styles.tocButton}
-              onClick={() => scrollToMessage(item.index)}
-            >
-              <div className={styles.tocIndex}>{tocIndex + 1}</div>
-              <div className={styles.tocPreview}>{item.preview}</div>
-            </button>
-          ))}
-        </div>
-      </Drawer>
 
       <Modal
         open={renameModalOpen}

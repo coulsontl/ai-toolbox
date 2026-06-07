@@ -4,6 +4,7 @@ import type {
   DeleteToolSessionsResult,
   SessionDetail,
   SessionListPage,
+  SessionSubagentMeta,
   SessionTool,
 } from './types';
 
@@ -53,6 +54,28 @@ export const getToolSessionDetail = async (
   return await invoke<SessionDetail>('get_tool_session_detail', {
     tool,
     sourcePath,
+  });
+};
+
+export const listToolSessionSubagents = async (
+  tool: SessionTool,
+  sourcePath: string,
+): Promise<SessionSubagentMeta[]> => {
+  return await invoke<SessionSubagentMeta[]>('list_tool_session_subagents', {
+    tool,
+    sourcePath,
+  });
+};
+
+export const getToolSubagentSessionDetail = async (
+  tool: SessionTool,
+  parentSourcePath: string,
+  subagentSourcePath: string,
+): Promise<SessionDetail> => {
+  return await invoke<SessionDetail>('get_tool_subagent_session_detail', {
+    tool,
+    parentSourcePath,
+    subagentSourcePath,
   });
 };
 

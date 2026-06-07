@@ -8,6 +8,9 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::message_blocks::{
+    message_from_blocks, text_block, tool_call_block, tool_result_block, usage_from_value,
+};
 use super::utils::{
     build_resume_command, extract_prompt_title_text, extract_text, join_safe_relative,
     parse_timestamp_to_ms, path_basename, read_head_tail_lines, sanitize_path_segment,
@@ -74,7 +77,8 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
         };
 
         let payload_type = payload.get("type").and_then(Value::as_str).unwrap_or("");
-        let (role, content) = match payload_type {
+        let ts = value.get("timestamp").and_then(parse_timestamp_to_ms);
+        let mut message = match payload_type {
             "message" => {
                 let role = payload
                     .get("role")
@@ -82,32 +86,63 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
                     .unwrap_or("unknown")
                     .to_string();
                 let content = payload.get("content").map(extract_text).unwrap_or_default();
-                (role, content)
+                if content.trim().is_empty() {
+                    continue;
+                }
+                message_from_blocks(role, ts, vec![text_block(content)])
             }
             "function_call" => {
                 let name = payload
                     .get("name")
                     .and_then(Value::as_str)
                     .unwrap_or("unknown");
-                ("assistant".to_string(), format!("[Tool: {name}]"))
+                let tool_id = payload
+                    .get("call_id")
+                    .or_else(|| payload.get("callId"))
+                    .or_else(|| payload.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let input = payload
+                    .get("arguments")
+                    .or_else(|| payload.get("input"))
+                    .cloned();
+                message_from_blocks(
+                    "assistant",
+                    ts,
+                    vec![tool_call_block(tool_id, name.to_string(), input)],
+                )
             }
             "function_call_output" => {
-                let output = payload
-                    .get("output")
+                let tool_id = payload
+                    .get("call_id")
+                    .or_else(|| payload.get("callId"))
+                    .or_else(|| payload.get("id"))
                     .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                ("tool".to_string(), output)
+                    .map(str::to_string);
+                let output = payload.get("output").cloned();
+                message_from_blocks(
+                    "tool",
+                    ts,
+                    vec![tool_result_block(tool_id, None, output, None)],
+                )
             }
             _ => continue,
         };
 
-        if content.trim().is_empty() {
+        message.id = payload
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        message.message_type = Some(payload_type.to_string());
+        message.model = payload
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        message.usage = payload.get("usage").and_then(usage_from_value);
+        if message.content.trim().is_empty() {
             continue;
         }
-
-        let ts = value.get("timestamp").and_then(parse_timestamp_to_ms);
-        messages.push(SessionMessage { role, content, ts });
+        messages.push(message);
     }
 
     Ok(messages)

@@ -149,7 +149,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 24px;
+    padding: 8px;
     overflow: hidden;
   }
 
@@ -157,7 +157,7 @@
     top: auto;
     margin: 0;
     padding-bottom: 0;
-    max-width: min(1080px, calc(100vw - 48px));
+    max-width: min(1280px, calc(100vw - 16px));
   }
 
   :global(.ant-modal-container) {
@@ -172,8 +172,8 @@
     padding: 0;
     overflow: hidden;
     border-radius: 16px;
-    height: min(860px, calc(100vh - 48px));
-    max-height: calc(100vh - 48px);
+    height: min(860px, calc(100vh - 16px));
+    max-height: calc(100vh - 16px);
     background: var(--color-bg-container);
     border: 1px solid var(--color-border-card);
     box-shadow:
@@ -711,16 +711,16 @@
 @media (max-width: 768px) {
   .detailModal {
     :global(.ant-modal-wrap) {
-      padding: 12px;
+      padding: 6px;
     }
 
     :global(.ant-modal) {
-      max-width: calc(100vw - 24px);
+      max-width: calc(100vw - 12px);
     }
 
     :global(.ant-modal-content) {
-      height: calc(100vh - 24px);
-      max-height: calc(100vh - 24px);
+      height: calc(100vh - 12px);
+      max-height: calc(100vh - 12px);
     }
   }
 

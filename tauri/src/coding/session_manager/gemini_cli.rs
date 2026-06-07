@@ -4,12 +4,13 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use super::message_blocks::{message_from_blocks, text_block, tool_call_block};
 use super::utils::{
     build_resume_command, extract_prompt_title_text, extract_text,
     extract_wrapped_user_request_text, join_safe_relative, parse_timestamp_to_ms, path_basename,
     sanitize_path_segment, strip_path_prefix, text_contains_query, truncate_summary,
 };
-use super::{SessionMessage, SessionMeta};
+use super::{SessionMessage, SessionMeta, SessionSubagentMeta};
 
 const PROVIDER_ID: &str = "geminicli";
 const SESSION_FILE_PREFIX: &str = "session-";
@@ -123,7 +124,11 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
             Some(_) | None => continue,
         };
 
-        let mut content = normalize_message_content(message, role);
+        let content = normalize_message_content(message, role);
+        let mut blocks = Vec::new();
+        if !content.trim().is_empty() {
+            blocks.push(text_block(content));
+        }
         if let Some(tool_calls) = message.get("toolCalls").and_then(Value::as_array) {
             for call in tool_calls {
                 let name = call
@@ -131,27 +136,83 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
                     .or_else(|| call.get("name"))
                     .and_then(Value::as_str);
                 if let Some(name) = name {
-                    if !content.trim().is_empty() {
-                        content.push('\n');
-                    }
-                    content.push_str(&format!("[Tool: {name}]"));
+                    let tool_id = call
+                        .get("id")
+                        .or_else(|| call.get("callId"))
+                        .or_else(|| call.get("toolCallId"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    let input = call
+                        .get("args")
+                        .or_else(|| call.get("arguments"))
+                        .or_else(|| call.get("input"))
+                        .cloned();
+                    blocks.push(tool_call_block(tool_id, name.to_string(), input));
                 }
             }
         }
 
-        if content.trim().is_empty() {
+        if blocks.is_empty() {
             continue;
         }
 
         let ts = message.get("timestamp").and_then(parse_timestamp_to_ms);
-        result.push(SessionMessage {
-            role: role.to_string(),
-            content,
-            ts,
-        });
+        let mut session_message = message_from_blocks(role, ts, blocks);
+        session_message.id = message
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        session_message.message_type = message
+            .get("type")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        result.push(session_message);
     }
 
     Ok(result)
+}
+
+pub fn list_subagent_sessions(parent_session_path: &Path) -> Vec<SessionSubagentMeta> {
+    let Some(chats_dir) = parent_session_path.parent() else {
+        return Vec::new();
+    };
+    let Some(parent_session_id) = read_session_id_from_file(parent_session_path) else {
+        return Vec::new();
+    };
+    let subagent_dir = chats_dir.join(sanitize_path_segment(&parent_session_id, "session"));
+    let Ok(directory_metadata) = std::fs::symlink_metadata(&subagent_dir) else {
+        return Vec::new();
+    };
+    if directory_metadata.file_type().is_symlink() || !directory_metadata.is_dir() {
+        return Vec::new();
+    }
+
+    let Ok(entries) = std::fs::read_dir(&subagent_dir) else {
+        return Vec::new();
+    };
+    let mut files = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_metadata) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if file_metadata.file_type().is_symlink() || !file_metadata.is_file() {
+            continue;
+        }
+        if !matches!(
+            path.extension().and_then(|extension| extension.to_str()),
+            Some("json") | Some("jsonl")
+        ) {
+            continue;
+        }
+        files.push(path);
+    }
+    files.sort();
+    files.dedup();
+    files
+        .into_iter()
+        .filter_map(|path| build_subagent_meta(&path))
+        .collect()
 }
 
 pub fn scan_messages_for_query(path: &Path, query_lower: &str) -> Result<bool, String> {
@@ -257,6 +318,39 @@ fn read_session_id_from_file(path: &Path) -> Option<String> {
     read_conversation(path, false)
         .ok()
         .map(|conversation| conversation.session_id)
+}
+
+fn build_subagent_meta(path: &Path) -> Option<SessionSubagentMeta> {
+    let conversation = read_conversation(path, true).ok()?;
+    let file_stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("subagent")
+        .to_string();
+    let title = conversation
+        .summary
+        .as_deref()
+        .map(|value| truncate_summary(value, 80))
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            conversation
+                .first_user_message
+                .as_deref()
+                .and_then(|text| extract_prompt_title_text(text, 80))
+        })
+        .unwrap_or_else(|| file_stem.clone());
+    let message_count = conversation.messages.len();
+
+    Some(SessionSubagentMeta {
+        id: conversation.session_id,
+        source_path: path.to_string_lossy().to_string(),
+        title: title.clone(),
+        summary: Some(truncate_summary(&title, 160)),
+        subagent_type: conversation.kind,
+        message_count,
+        first_message_time: conversation.start_time,
+        last_message_time: conversation.last_updated.or(conversation.start_time),
+    })
 }
 
 fn delete_session_artifacts(project_temp_dir: &Path, session_id: &str) -> Result<(), String> {

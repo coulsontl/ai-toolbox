@@ -4,12 +4,16 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use super::message_blocks::{
+    message_from_blocks, redacted_thinking_block, text_block, thinking_block, tool_call_block,
+    tool_result_block, unknown_block, usage_from_value,
+};
 use super::utils::{
     build_resume_command, extract_prompt_title_text, extract_text, join_safe_relative,
     parse_timestamp_to_ms, path_basename, read_head_tail_lines, sanitize_path_segment,
     strip_path_prefix, text_contains_query, truncate_summary,
 };
-use super::{SessionMessage, SessionMeta};
+use super::{SessionMessage, SessionMessageBlock, SessionMeta, SessionSubagentMeta};
 
 const PROVIDER_ID: &str = "claudecode";
 
@@ -78,16 +82,127 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
             }
         }
 
-        let content = message.get("content").map(extract_text).unwrap_or_default();
+        let blocks = claude_content_blocks(message.get("content"));
+        let content = super::message_blocks::flatten_blocks_for_content(&blocks);
         if content.trim().is_empty() {
             continue;
         }
 
         let ts = value.get("timestamp").and_then(parse_timestamp_to_ms);
-        messages.push(SessionMessage { role, content, ts });
+        let mut session_message = message_from_blocks(role, ts, blocks);
+        session_message.id = value
+            .get("uuid")
+            .or_else(|| message.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        session_message.parent_id = value
+            .get("parentUuid")
+            .or_else(|| value.get("parent_uuid"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        session_message.message_type = value
+            .get("type")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        session_message.model = message
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        session_message.usage = message.get("usage").and_then(usage_from_value);
+        session_message.duration_ms = value
+            .get("durationMs")
+            .or_else(|| value.get("duration_ms"))
+            .and_then(Value::as_i64);
+        session_message.cost_usd = value
+            .get("costUSD")
+            .or_else(|| value.get("cost_usd"))
+            .and_then(Value::as_f64);
+        session_message.is_sidechain = value
+            .get("isSidechain")
+            .or_else(|| value.get("is_sidechain"))
+            .and_then(Value::as_bool);
+        messages.push(session_message);
     }
 
     Ok(messages)
+}
+
+pub fn list_subagent_sessions(parent_session_path: &Path) -> Vec<SessionSubagentMeta> {
+    let subagent_files = find_subagent_files(parent_session_path);
+    subagent_files
+        .into_iter()
+        .map(|path| build_subagent_meta(&path))
+        .collect()
+}
+
+fn claude_content_blocks(content: Option<&Value>) -> Vec<SessionMessageBlock> {
+    match content {
+        Some(Value::String(text)) => vec![text_block(text.clone())],
+        Some(Value::Array(items)) => items.iter().filter_map(claude_content_item_block).collect(),
+        Some(Value::Object(map)) => {
+            if let Some(text) = map.get("text").and_then(Value::as_str) {
+                vec![text_block(text.to_string())]
+            } else {
+                vec![unknown_block(
+                    extract_text(&Value::Object(map.clone())),
+                    Some(Value::Object(map.clone())),
+                )]
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn claude_content_item_block(item: &Value) -> Option<SessionMessageBlock> {
+    let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
+    match item_type {
+        "text" => item
+            .get("text")
+            .and_then(Value::as_str)
+            .map(|text| text_block(text.to_string())),
+        "thinking" => item
+            .get("thinking")
+            .or_else(|| item.get("text"))
+            .and_then(Value::as_str)
+            .map(|text| thinking_block(text.to_string())),
+        "redacted_thinking" => Some(redacted_thinking_block(
+            item.get("data")
+                .and_then(Value::as_str)
+                .unwrap_or("Redacted thinking")
+                .to_string(),
+        )),
+        "tool_use" => {
+            let tool_name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            let tool_id = item.get("id").and_then(Value::as_str).map(str::to_string);
+            let input = item.get("input").cloned();
+            Some(tool_call_block(tool_id, tool_name, input))
+        }
+        "tool_result" => {
+            let tool_id = item
+                .get("tool_use_id")
+                .or_else(|| item.get("toolUseId"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let output = item.get("content").cloned().or_else(|| Some(item.clone()));
+            let is_error = item
+                .get("is_error")
+                .or_else(|| item.get("isError"))
+                .and_then(Value::as_bool);
+            Some(tool_result_block(tool_id, None, output, is_error))
+        }
+        _ => {
+            let text = extract_text(item);
+            if text.trim().is_empty() {
+                Some(unknown_block(item.to_string(), Some(item.clone())))
+            } else {
+                Some(unknown_block(text, Some(item.clone())))
+            }
+        }
+    }
 }
 
 pub fn scan_messages_for_query(path: &Path, query_lower: &str) -> Result<bool, String> {
@@ -438,6 +553,123 @@ fn is_agent_session(path: &Path) -> bool {
         .and_then(|name| name.to_str())
         .map(|name| name.starts_with("agent-"))
         .unwrap_or(false)
+}
+
+fn find_subagent_files(parent_session_path: &Path) -> Vec<PathBuf> {
+    let Some(parent_dir) = parent_session_path.parent() else {
+        return Vec::new();
+    };
+    let Some(parent_stem) = parent_session_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+    else {
+        return Vec::new();
+    };
+
+    let candidate_dirs = [
+        parent_dir.join(parent_stem).join("subagents"),
+        parent_dir.join("subagents").join(parent_stem),
+    ];
+    let mut files = Vec::new();
+    for dir in candidate_dirs {
+        let Ok(metadata) = std::fs::symlink_metadata(&dir) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if file_metadata.file_type().is_symlink()
+                || !file_metadata.is_file()
+                || path.extension().and_then(|value| value.to_str()) != Some("jsonl")
+            {
+                continue;
+            }
+            files.push(path);
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
+fn build_subagent_meta(path: &Path) -> SessionSubagentMeta {
+    let (message_count, first_message_time, last_message_time, summary) =
+        extract_subagent_metadata(path);
+    let file_stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("subagent")
+        .to_string();
+    let id = file_stem
+        .strip_prefix("agent-")
+        .unwrap_or(&file_stem)
+        .to_string();
+    let title = summary.clone().unwrap_or_else(|| id.clone());
+
+    SessionSubagentMeta {
+        id,
+        source_path: path.to_string_lossy().to_string(),
+        title,
+        summary,
+        subagent_type: None,
+        message_count,
+        first_message_time,
+        last_message_time,
+    }
+}
+
+fn extract_subagent_metadata(path: &Path) -> (usize, Option<i64>, Option<i64>, Option<String>) {
+    let Ok(file) = File::open(path) else {
+        return (0, None, None, None);
+    };
+    let reader = BufReader::new(file);
+    let mut message_count = 0usize;
+    let mut first_message_time = None;
+    let mut last_message_time = None;
+    let mut summary = None;
+
+    for line in reader.lines().map_while(Result::ok) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if value.get("isMeta").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let Some(message) = value.get("message") else {
+            continue;
+        };
+
+        message_count += 1;
+        if let Some(timestamp) = value.get("timestamp").and_then(parse_timestamp_to_ms) {
+            first_message_time.get_or_insert(timestamp);
+            last_message_time = Some(timestamp);
+        }
+        if summary.is_none()
+            && message.get("role").and_then(Value::as_str) == Some("user")
+            && !is_tool_result_only_content(message.get("content"))
+        {
+            let text = message.get("content").map(extract_text).unwrap_or_default();
+            summary = normalize_title_text(&text);
+        }
+    }
+
+    (
+        message_count,
+        first_message_time,
+        last_message_time,
+        summary,
+    )
 }
 
 fn infer_session_id_from_filename(path: &Path) -> Option<String> {

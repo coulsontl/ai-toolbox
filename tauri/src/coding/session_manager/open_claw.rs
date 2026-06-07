@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use super::message_blocks::text_message;
 use super::utils::{
     extract_text, join_safe_relative, parse_timestamp_to_ms, path_basename, read_head_tail_lines,
     strip_path_prefix, text_contains_query, truncate_summary,
@@ -101,7 +102,7 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
         }
 
         let ts = value.get("timestamp").and_then(parse_timestamp_to_ms);
-        messages.push(SessionMessage { role, content, ts });
+        messages.push(text_message(role, content, ts));
     }
 
     Ok(messages)

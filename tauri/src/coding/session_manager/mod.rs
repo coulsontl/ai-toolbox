@@ -1,8 +1,10 @@
 mod claude_code;
 mod codex;
 mod gemini_cli;
+mod message_blocks;
 mod open_claw;
 mod open_code;
+mod tool_normalizer;
 mod utils;
 
 use std::collections::{HashMap, HashSet};
@@ -69,6 +71,69 @@ pub struct SessionMessage {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ts: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<SessionMessageBlock>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<SessionMessageUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_sidechain: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMessageBlock {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normalized_tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMessageUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +153,23 @@ pub struct SessionListPage {
 pub struct SessionDetail {
     pub meta: SessionMeta,
     pub messages: Vec<SessionMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSubagentMeta {
+    pub id: String,
+    pub source_path: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagent_type: Option<String>,
+    pub message_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_message_time: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_message_time: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,6 +356,39 @@ pub async fn get_tool_session_detail(
 }
 
 #[tauri::command]
+pub async fn list_tool_session_subagents(
+    state: tauri::State<'_, SqliteDbState>,
+    tool: String,
+    source_path: String,
+) -> Result<Vec<SessionSubagentMeta>, String> {
+    let session_tool = SessionTool::parse(tool.trim())?;
+    let context = resolve_context(&state.db(), session_tool).await?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        list_session_subagents_blocking(context, source_path)
+    })
+    .await
+    .map_err(|error| format!("Failed to list subagent sessions: {error}"))?
+}
+
+#[tauri::command]
+pub async fn get_tool_subagent_session_detail(
+    state: tauri::State<'_, SqliteDbState>,
+    tool: String,
+    parent_source_path: String,
+    subagent_source_path: String,
+) -> Result<SessionDetail, String> {
+    let session_tool = SessionTool::parse(tool.trim())?;
+    let context = resolve_context(&state.db(), session_tool).await?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        get_subagent_session_detail_blocking(context, parent_source_path, subagent_source_path)
+    })
+    .await
+    .map_err(|error| format!("Failed to load subagent session detail: {error}"))?
+}
+
+#[tauri::command]
 pub async fn delete_tool_session(
     state: tauri::State<'_, SqliteDbState>,
     tool: String,
@@ -410,6 +525,57 @@ fn get_session_detail_blocking(
     let messages = load_messages(&context, &meta.source_path)?;
 
     Ok(SessionDetail { meta, messages })
+}
+
+fn list_session_subagents_blocking(
+    context: ToolSessionContext,
+    source_path: String,
+) -> Result<Vec<SessionSubagentMeta>, String> {
+    let meta = find_session_meta(&context, &source_path)?;
+    let subagents = list_subagent_sessions(&context, &meta.source_path);
+    Ok(subagents)
+}
+
+fn get_subagent_session_detail_blocking(
+    context: ToolSessionContext,
+    parent_source_path: String,
+    subagent_source_path: String,
+) -> Result<SessionDetail, String> {
+    let parent = find_session_meta(&context, &parent_source_path)?;
+    let subagent = list_subagent_sessions(&context, &parent.source_path)
+        .into_iter()
+        .find(|item| item.source_path == subagent_source_path)
+        .ok_or_else(|| "SubAgent session not found".to_string())?;
+
+    let messages = load_messages(&context, &subagent.source_path)?;
+    let meta = SessionMeta {
+        provider_id: parent.provider_id,
+        session_id: subagent.id.clone(),
+        title: Some(subagent.title),
+        summary: subagent.summary,
+        project_dir: parent.project_dir,
+        created_at: subagent.first_message_time,
+        last_active_at: subagent.last_message_time,
+        source_path: subagent.source_path,
+        resume_command: None,
+    };
+
+    Ok(SessionDetail { meta, messages })
+}
+
+fn find_session_meta(
+    context: &ToolSessionContext,
+    source_path: &str,
+) -> Result<SessionMeta, String> {
+    get_cached_sessions(context, false)
+        .into_iter()
+        .find(|session| match context {
+            ToolSessionContext::OpenCode { .. } => {
+                open_code::same_session_source(&session.source_path, source_path)
+            }
+            _ => session.source_path == source_path,
+        })
+        .ok_or_else(|| "Session not found".to_string())
 }
 
 fn list_session_paths_blocking(
@@ -919,6 +1085,23 @@ fn load_messages(
     }
 }
 
+fn list_subagent_sessions(
+    context: &ToolSessionContext,
+    source_path: &str,
+) -> Vec<SessionSubagentMeta> {
+    match context {
+        ToolSessionContext::ClaudeCode { .. } => {
+            claude_code::list_subagent_sessions(Path::new(source_path))
+        }
+        ToolSessionContext::GeminiCli { .. } => {
+            gemini_cli::list_subagent_sessions(Path::new(source_path))
+        }
+        ToolSessionContext::Codex { .. }
+        | ToolSessionContext::OpenClaw { .. }
+        | ToolSessionContext::OpenCode { .. } => Vec::new(),
+    }
+}
+
 fn get_cached_sessions(context: &ToolSessionContext, force_refresh: bool) -> Vec<SessionMeta> {
     let cache_key = context.cache_key();
 
@@ -1262,6 +1445,16 @@ mod tests {
         }
     }
 
+    fn normalize_test_path(value: &str) -> String {
+        value.replace('\\', "/")
+    }
+
+    fn assert_project_dir_eq(actual: Option<&str>, expected: &Path) {
+        let actual = actual.map(normalize_test_path);
+        let expected = normalize_test_path(&expected.to_string_lossy());
+        assert_eq!(actual.as_deref(), Some(expected.as_str()));
+    }
+
     fn normalize_opencode_official_export_defaults(value: &mut Value) {
         let Some(info) = value.get_mut("info").and_then(Value::as_object_mut) else {
             return;
@@ -1282,6 +1475,15 @@ mod tests {
         });
         if info.get("tokens") == Some(&default_tokens) {
             info.remove("tokens");
+        }
+
+        if let Some(path) = info.get("path").and_then(Value::as_str) {
+            let normalized_path = normalize_test_path(path);
+            let normalized_path = normalized_path
+                .find("ai-toolbox-session-manager-")
+                .map(|marker_index| normalized_path[marker_index..].to_string())
+                .unwrap_or(normalized_path);
+            info.insert("path".to_string(), Value::String(normalized_path));
         }
     }
 
@@ -1691,10 +1893,7 @@ mod tests {
             .iter()
             .find(|session| session.session_id == session_id)
             .expect("codex imported session should exist");
-        assert_eq!(
-            imported_session.project_dir.as_deref(),
-            Some(project_dir.to_string_lossy().as_ref())
-        );
+        assert_project_dir_eq(imported_session.project_dir.as_deref(), &project_dir);
         assert_eq!(imported_session.title.as_deref(), Some(thread_name));
 
         let imported_messages = codex::load_messages(Path::new(&imported_session.source_path))
@@ -1803,10 +2002,7 @@ mod tests {
             .iter()
             .find(|session| session.session_id == session_id)
             .expect("claude imported session should exist");
-        assert_eq!(
-            imported_session.project_dir.as_deref(),
-            Some(project_dir.to_string_lossy().as_ref())
-        );
+        assert_project_dir_eq(imported_session.project_dir.as_deref(), &project_dir);
 
         let imported_messages =
             claude_code::load_messages(Path::new(&imported_session.source_path))
@@ -2002,10 +2198,7 @@ mod tests {
             .iter()
             .find(|session| session.session_id == session_id)
             .expect("opencode imported session should exist");
-        assert_eq!(
-            imported_session.project_dir.as_deref(),
-            Some(project_dir.to_string_lossy().as_ref())
-        );
+        assert_project_dir_eq(imported_session.project_dir.as_deref(), &project_dir);
 
         let imported_messages = open_code::load_messages(&imported_session.source_path)
             .expect("load opencode messages");
@@ -2167,10 +2360,7 @@ mod tests {
             .iter()
             .find(|session| session.session_id == session_id)
             .expect("opencode imported session should exist");
-        assert_eq!(
-            imported_session.project_dir.as_deref(),
-            Some(project_dir.to_string_lossy().as_ref())
-        );
+        assert_project_dir_eq(imported_session.project_dir.as_deref(), &project_dir);
 
         let imported_messages = open_code::load_messages(&imported_session.source_path)
             .expect("load opencode raw-import messages");
@@ -2472,6 +2662,16 @@ mod tests {
                 role: "user".to_string(),
                 content: "OpenCode explicit env export".to_string(),
                 ts: Some(1710000000000_i64),
+                id: None,
+                parent_id: None,
+                message_type: None,
+                blocks: Vec::new(),
+                model: None,
+                usage: None,
+                duration_ms: None,
+                cost_usd: None,
+                is_sidechain: None,
+                metadata: None,
             }],
             &RuntimeLocationInfo {
                 mode: crate::coding::runtime_location::RuntimeLocationMode::LocalWindows,
@@ -2534,12 +2734,32 @@ mod tests {
         }
 
         let program = String::from_utf8(output.stdout).ok()?;
-        let first_path = program
+        let candidates: Vec<PathBuf> = program
             .lines()
             .map(str::trim)
-            .find(|line| !line.is_empty())?;
+            .filter(|line| !line.is_empty())
+            .map(PathBuf::from)
+            .collect();
 
-        Some(PathBuf::from(first_path))
+        #[cfg(target_os = "windows")]
+        {
+            candidates.into_iter().find(|path| {
+                path.extension()
+                    .and_then(|extension| extension.to_str())
+                    .map(|extension| {
+                        matches!(
+                            extension.to_ascii_lowercase().as_str(),
+                            "exe" | "cmd" | "bat"
+                        )
+                    })
+                    .unwrap_or(false)
+            })
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            candidates.into_iter().next()
+        }
     }
 
     fn skip_when_opencode_cli_missing(test_name: &str) -> bool {

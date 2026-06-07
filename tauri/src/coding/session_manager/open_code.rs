@@ -6,6 +6,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 use serde_json::{Map, Value};
 
+use super::message_blocks::text_message;
 use super::utils::{
     build_resume_command, parse_timestamp_to_ms, path_basename, text_contains_query,
     truncate_summary,
@@ -998,10 +999,12 @@ fn load_messages_json(path: &Path) -> Result<Vec<SessionMessage>, String> {
 
     Ok(entries
         .into_iter()
-        .map(|(timestamp, _, role, content)| SessionMessage {
-            role,
-            content,
-            ts: if timestamp > 0 { Some(timestamp) } else { None },
+        .map(|(timestamp, _, role, content)| {
+            text_message(
+                role,
+                content,
+                if timestamp > 0 { Some(timestamp) } else { None },
+            )
         })
         .collect())
 }
@@ -1116,11 +1119,7 @@ fn load_messages_sqlite(source: &str) -> Result<Vec<SessionMessage>, String> {
             continue;
         }
 
-        messages.push(SessionMessage {
-            role,
-            content,
-            ts: Some(timestamp),
-        });
+        messages.push(text_message(role, content, Some(timestamp)));
     }
 
     Ok(messages)
