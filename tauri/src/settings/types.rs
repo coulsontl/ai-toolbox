@@ -49,6 +49,30 @@ pub struct BackupCustomEntry {
     pub enabled: bool,
 }
 
+/// Filter rule for excluding specific files from backup/restore
+///
+/// Controls whether a file from a specific tool should be excluded from
+/// the backup archive and skipped during restore.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupFileFilterRule {
+    /// Tool identifier: opencode, claude, codex, openclaw, geminicli
+    pub tool: String,
+    /// File name relative to the tool's config directory (e.g., "auth.json", ".env")
+    pub file_name: String,
+    /// Whether this filter rule is active
+    pub enabled: bool,
+}
+
+impl Default for BackupFileFilterRule {
+    fn default() -> Self {
+        Self {
+            tool: String::new(),
+            file_name: String::new(),
+            enabled: true,
+        }
+    }
+}
+
 /// Application settings
 ///
 /// Note: This struct is no longer directly serialized to/from database.
@@ -95,6 +119,8 @@ pub struct AppSettings {
     pub sidebar_hidden_by_page: HashMap<String, bool>,
     /// Allow clearing OMO/OMOS applied runtime config from OpenCode page (default: false)
     pub opencode_allow_clear_applied_oh_my_config: bool,
+    /// File filter rules for backup/restore (exclude sensitive files like auth.json)
+    pub backup_file_filter_rules: Vec<BackupFileFilterRule>,
 }
 
 impl Default for AppSettings {
@@ -134,6 +160,7 @@ impl Default for AppSettings {
             ],
             sidebar_hidden_by_page: default_sidebar_hidden_by_page(),
             opencode_allow_clear_applied_oh_my_config: false,
+            backup_file_filter_rules: default_backup_file_filter_rules(),
         }
     }
 }
@@ -146,4 +173,30 @@ pub fn default_sidebar_hidden_by_page() -> HashMap<String, bool> {
         ("openclaw".to_string(), false),
         ("geminicli".to_string(), false),
     ])
+}
+
+/// Default filter rules for sensitive credential files
+pub fn default_backup_file_filter_rules() -> Vec<BackupFileFilterRule> {
+    vec![
+        BackupFileFilterRule {
+            tool: "opencode".to_string(),
+            file_name: "auth.json".to_string(),
+            enabled: true,
+        },
+        BackupFileFilterRule {
+            tool: "codex".to_string(),
+            file_name: "auth.json".to_string(),
+            enabled: true,
+        },
+        BackupFileFilterRule {
+            tool: "geminicli".to_string(),
+            file_name: ".env".to_string(),
+            enabled: true,
+        },
+        BackupFileFilterRule {
+            tool: "geminicli".to_string(),
+            file_name: "oauth_creds.json".to_string(),
+            enabled: true,
+        },
+    ]
 }

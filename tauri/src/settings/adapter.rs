@@ -1,5 +1,6 @@
 use super::types::{
-    default_sidebar_hidden_by_page, AppSettings, BackupCustomEntry, S3Config, WebDAVConfig,
+    default_backup_file_filter_rules, default_sidebar_hidden_by_page, AppSettings,
+    BackupCustomEntry, BackupFileFilterRule, S3Config, WebDAVConfig,
 };
 /**
  * Settings Adapter Layer
@@ -57,6 +58,7 @@ pub fn from_db_value(value: Value) -> AppSettings {
             "opencode_allow_clear_applied_oh_my_config",
             false,
         ),
+        backup_file_filter_rules: get_backup_file_filter_rules(&value),
     }
 }
 
@@ -277,6 +279,21 @@ fn get_sidebar_hidden_by_page(value: &Value) -> std::collections::HashMap<String
     sidebar_hidden
 }
 
+fn get_backup_file_filter_rules(value: &Value) -> Vec<BackupFileFilterRule> {
+    value
+        .get("backup_file_filter_rules")
+        .and_then(|v| v.as_array())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    serde_json::from_value::<BackupFileFilterRule>(entry.clone()).ok()
+                })
+                .collect()
+        })
+        .unwrap_or_else(default_backup_file_filter_rules)
+}
+
 #[cfg(test)]
 mod tests {
     use super::from_db_value;
@@ -450,5 +467,47 @@ mod tests {
         }));
 
         assert!(settings.opencode_allow_clear_applied_oh_my_config);
+    }
+
+    #[test]
+    fn backup_file_filter_rules_defaults_to_sensitive_files() {
+        let settings = from_db_value(json!({}));
+
+        assert_eq!(settings.backup_file_filter_rules.len(), 4);
+        assert!(settings.backup_file_filter_rules.iter().any(|r| r.tool == "opencode"
+            && r.file_name == "auth.json"
+            && r.enabled));
+        assert!(settings.backup_file_filter_rules.iter().any(|r| r.tool == "codex"
+            && r.file_name == "auth.json"
+            && r.enabled));
+        assert!(settings.backup_file_filter_rules.iter().any(|r| r.tool == "geminicli"
+            && r.file_name == ".env"
+            && r.enabled));
+        assert!(settings.backup_file_filter_rules.iter().any(|r| r.tool == "geminicli"
+            && r.file_name == "oauth_creds.json"
+            && r.enabled));
+    }
+
+    #[test]
+    fn backup_file_filter_rules_custom_rules_override_defaults() {
+        let settings = from_db_value(json!({
+            "backup_file_filter_rules": [
+                { "tool": "opencode", "file_name": "auth.json", "enabled": false },
+                { "tool": "claude", "file_name": "settings.json", "enabled": true }
+            ],
+        }));
+
+        assert_eq!(settings.backup_file_filter_rules.len(), 2);
+        assert!(!settings.backup_file_filter_rules[0].enabled);
+        assert_eq!(settings.backup_file_filter_rules[1].tool, "claude");
+    }
+
+    #[test]
+    fn backup_file_filter_rules_empty_array_disables_all() {
+        let settings = from_db_value(json!({
+            "backup_file_filter_rules": [],
+        }));
+
+        assert!(settings.backup_file_filter_rules.is_empty());
     }
 }
