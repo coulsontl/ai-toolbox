@@ -2124,6 +2124,13 @@
     "leaveConfirm": "Leave",
     "stayOnPage": "Stay",
     "emptyText": "No providers configured yet. Click the button above to add a provider or import from OpenCode.",
+    "settings": {
+      "title": "More Options",
+      "vscode": "VSCode Integration",
+      "vscodeHint": "Enable to allow VSCode Claude Code plugin to use third-party providers",
+      "skipOnboarding": "Skip Initial Setup",
+      "skipOnboardingHint": "Skip Claude Code's initial setup confirmation on first launch"
+    },
     "provider": {
       "title": "Provider List",
       "addProvider": "Add Provider",

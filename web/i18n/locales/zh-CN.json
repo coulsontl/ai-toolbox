@@ -2121,6 +2121,13 @@
     "leaveConfirm": "离开",
     "stayOnPage": "留下",
     "emptyText": "暂无供应商配置，点击上方按钮添加供应商或从 OpenCode 导入",
+    "settings": {
+      "title": "更多选项",
+      "vscode": "VSCode 集成",
+      "vscodeHint": "启用后将允许 VSCode Claude Code 插件使用第三方供应商",
+      "skipOnboarding": "跳过初次安装确认",
+      "skipOnboardingHint": "跳过 Claude Code 首次启动时的初始设置确认"
+    },
     "provider": {
       "title": "供应商列表",
       "addProvider": "添加供应商",
