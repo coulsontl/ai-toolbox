@@ -2706,11 +2706,6 @@
     },
     "moreOptions": "更多选项",
     "settings": {
-      "title": "更多选项",
-      "vscode": "VSCode 集成",
-      "vscodeHint": "启用后将允许 VSCode Claude Code 插件使用第三方供应商",
-      "skipOnboarding": "跳过初次安装确认",
-      "skipOnboardingHint": "跳过 Claude Code 首次启动时的初始设置确认",
       "preserveOfficialAuthOnSwitch": "切换第三方时保留官方登录",
       "preserveOfficialAuthOnSwitchHint": "开启后，第三方 API Key 写入 config.toml，auth.json 保留官方 Codex 登录态；关闭时保持旧行为。",
       "preserveOfficialAuthOnSwitchEnabled": "已开启切换第三方时保留官方登录",

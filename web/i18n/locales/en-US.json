@@ -2709,11 +2709,6 @@
     },
     "moreOptions": "More Options",
     "settings": {
-      "title": "More Options",
-      "vscode": "VSCode Integration",
-      "vscodeHint": "Enable to allow VSCode Claude Code plugin to use third-party providers",
-      "skipOnboarding": "Skip Initial Setup",
-      "skipOnboardingHint": "Skip Claude Code's initial setup confirmation on first launch",
       "preserveOfficialAuthOnSwitch": "Keep official login when switching third-party providers",
       "preserveOfficialAuthOnSwitchHint": "When enabled, third-party API keys are written to config.toml while auth.json keeps the official Codex login. When disabled, the old behavior is kept.",
       "preserveOfficialAuthOnSwitchEnabled": "Official login preservation enabled for third-party switches",
