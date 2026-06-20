@@ -490,9 +490,9 @@
   {
     "model_id": "deepseek-chat",
     "display_name": "DeepSeek Chat",
-    "input_cost_per_million": "0.28",
-    "output_cost_per_million": "0.42",
-    "cache_read_cost_per_million": "0.028",
+    "input_cost_per_million": "0.27",
+    "output_cost_per_million": "1.10",
+    "cache_read_cost_per_million": "0.07",
     "cache_creation_cost_per_million": "0"
   },
   {
@@ -506,10 +506,18 @@
   {
     "model_id": "claude-fable-5",
     "display_name": "Claude Fable 5",
-    "input_cost_per_million": "8",
-    "output_cost_per_million": "40",
-    "cache_read_cost_per_million": "0.80",
-    "cache_creation_cost_per_million": "10"
+    "input_cost_per_million": "10",
+    "output_cost_per_million": "50",
+    "cache_read_cost_per_million": "1.00",
+    "cache_creation_cost_per_million": "12.50"
+  },
+  {
+    "model_id": "claude-mythos-5",
+    "display_name": "Claude Mythos 5",
+    "input_cost_per_million": "10",
+    "output_cost_per_million": "50",
+    "cache_read_cost_per_million": "1.00",
+    "cache_creation_cost_per_million": "12.50"
   },
   {
     "model_id": "gpt-5.5-minimal",
@@ -624,6 +632,14 @@
     "cache_creation_cost_per_million": "0"
   },
   {
+    "model_id": "step-3.7-flash",
+    "display_name": "Step 3.7 Flash",
+    "input_cost_per_million": "0.19",
+    "output_cost_per_million": "1.13",
+    "cache_read_cost_per_million": "0.04",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
     "model_id": "doubao-seed-code",
     "display_name": "Doubao Seed Code",
     "input_cost_per_million": "0.17",
@@ -636,7 +652,7 @@
     "display_name": "Doubao Seed 2.0 Pro",
     "input_cost_per_million": "0.47",
     "output_cost_per_million": "2.37",
-    "cache_read_cost_per_million": "0",
+    "cache_read_cost_per_million": "0.09",
     "cache_creation_cost_per_million": "0"
   },
   {
@@ -644,7 +660,7 @@
     "display_name": "Doubao Seed 2.0 Code",
     "input_cost_per_million": "0.47",
     "output_cost_per_million": "2.37",
-    "cache_read_cost_per_million": "0",
+    "cache_read_cost_per_million": "0.09",
     "cache_creation_cost_per_million": "0"
   },
   {
@@ -652,15 +668,15 @@
     "display_name": "Doubao Seed 2.0 Code Preview",
     "input_cost_per_million": "0.47",
     "output_cost_per_million": "2.37",
-    "cache_read_cost_per_million": "0",
+    "cache_read_cost_per_million": "0.09",
     "cache_creation_cost_per_million": "0"
   },
   {
     "model_id": "doubao-seed-2-0-lite",
     "display_name": "Doubao Seed 2.0 Lite",
-    "input_cost_per_million": "0.25",
-    "output_cost_per_million": "2",
-    "cache_read_cost_per_million": "0",
+    "input_cost_per_million": "0.08",
+    "output_cost_per_million": "0.50",
+    "cache_read_cost_per_million": "0.017",
     "cache_creation_cost_per_million": "0"
   },
   {
@@ -668,7 +684,7 @@
     "display_name": "Doubao Seed 2.0 Mini",
     "input_cost_per_million": "0.03",
     "output_cost_per_million": "0.31",
-    "cache_read_cost_per_million": "0",
+    "cache_read_cost_per_million": "0.0056",
     "cache_creation_cost_per_million": "0"
   },
   {
@@ -739,7 +755,7 @@
     "model_id": "kimi-k2.5",
     "display_name": "Kimi K2.5",
     "input_cost_per_million": "0.60",
-    "output_cost_per_million": "2.50",
+    "output_cost_per_million": "3.00",
     "cache_read_cost_per_million": "0.10",
     "cache_creation_cost_per_million": "0"
   },
@@ -749,6 +765,14 @@
     "input_cost_per_million": "0.95",
     "output_cost_per_million": "4.00",
     "cache_read_cost_per_million": "0.16",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "kimi-k2.7-code",
+    "display_name": "Kimi K2.7 Code",
+    "input_cost_per_million": "0.95",
+    "output_cost_per_million": "4.00",
+    "cache_read_cost_per_million": "0.19",
     "cache_creation_cost_per_million": "0"
   },
   {
@@ -778,7 +802,7 @@
   {
     "model_id": "MiniMax-M2.5",
     "display_name": "MiniMax M2.5",
-    "input_cost_per_million": "0.12",
+    "input_cost_per_million": "0.15",
     "output_cost_per_million": "0.95",
     "cache_read_cost_per_million": "0.03",
     "cache_creation_cost_per_million": "0"
@@ -818,17 +842,17 @@
   {
     "model_id": "glm-4.7",
     "display_name": "GLM-4.7",
-    "input_cost_per_million": "0.39",
-    "output_cost_per_million": "1.75",
-    "cache_read_cost_per_million": "0.04",
+    "input_cost_per_million": "0.6",
+    "output_cost_per_million": "2.2",
+    "cache_read_cost_per_million": "0.11",
     "cache_creation_cost_per_million": "0"
   },
   {
     "model_id": "glm-4.6",
     "display_name": "GLM-4.6",
-    "input_cost_per_million": "0.28",
-    "output_cost_per_million": "1.11",
-    "cache_read_cost_per_million": "0.03",
+    "input_cost_per_million": "0.6",
+    "output_cost_per_million": "2.2",
+    "cache_read_cost_per_million": "0.11",
     "cache_creation_cost_per_million": "0"
   },
   {
@@ -848,6 +872,14 @@
     "cache_creation_cost_per_million": "0"
   },
   {
+    "model_id": "glm-5.2",
+    "display_name": "GLM-5.2",
+    "input_cost_per_million": "1.4",
+    "output_cost_per_million": "4.4",
+    "cache_read_cost_per_million": "0.26",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
     "model_id": "mimo-v2-flash",
     "display_name": "MiMo V2 Flash",
     "input_cost_per_million": "0.09",
@@ -858,25 +890,41 @@
   {
     "model_id": "mimo-v2-pro",
     "display_name": "MiMo V2 Pro",
-    "input_cost_per_million": "1",
-    "output_cost_per_million": "3",
-    "cache_read_cost_per_million": "0",
+    "input_cost_per_million": "0.435",
+    "output_cost_per_million": "0.87",
+    "cache_read_cost_per_million": "0.0036",
     "cache_creation_cost_per_million": "0"
   },
   {
     "model_id": "mimo-v2.5",
     "display_name": "MiMo V2.5",
-    "input_cost_per_million": "0.09",
+    "input_cost_per_million": "0.14",
     "output_cost_per_million": "0.29",
-    "cache_read_cost_per_million": "0.009",
+    "cache_read_cost_per_million": "0.0028",
     "cache_creation_cost_per_million": "0"
   },
   {
     "model_id": "mimo-v2.5-pro",
     "display_name": "MiMo V2.5 Pro",
-    "input_cost_per_million": "1",
-    "output_cost_per_million": "3",
-    "cache_read_cost_per_million": "0",
+    "input_cost_per_million": "0.435",
+    "output_cost_per_million": "0.87",
+    "cache_read_cost_per_million": "0.0036",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "qwen3.7-max",
+    "display_name": "Qwen3.7 Max",
+    "input_cost_per_million": "2.50",
+    "output_cost_per_million": "7.50",
+    "cache_read_cost_per_million": "0.25",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "qwen3.7-plus",
+    "display_name": "Qwen3.7 Plus",
+    "input_cost_per_million": "0.40",
+    "output_cost_per_million": "1.60",
+    "cache_read_cost_per_million": "0.08",
     "cache_creation_cost_per_million": "0"
   },
   {
@@ -884,7 +932,7 @@
     "display_name": "Qwen3.6 Plus",
     "input_cost_per_million": "0.325",
     "output_cost_per_million": "1.95",
-    "cache_read_cost_per_million": "0",
+    "cache_read_cost_per_million": "0.065",
     "cache_creation_cost_per_million": "0"
   },
   {
@@ -892,7 +940,7 @@
     "display_name": "Qwen3.5 Plus",
     "input_cost_per_million": "0.26",
     "output_cost_per_million": "1.56",
-    "cache_read_cost_per_million": "0",
+    "cache_read_cost_per_million": "0.052",
     "cache_creation_cost_per_million": "0"
   },
   {
@@ -916,7 +964,7 @@
     "display_name": "Qwen3 Coder Plus",
     "input_cost_per_million": "0.65",
     "output_cost_per_million": "3.25",
-    "cache_read_cost_per_million": "0",
+    "cache_read_cost_per_million": "0.13",
     "cache_creation_cost_per_million": "0"
   },
   {
@@ -940,7 +988,7 @@
     "display_name": "Qwen3 Coder Flash",
     "input_cost_per_million": "0.195",
     "output_cost_per_million": "0.975",
-    "cache_read_cost_per_million": "0",
+    "cache_read_cost_per_million": "0.039",
     "cache_creation_cost_per_million": "0"
   },
   {
@@ -976,18 +1024,26 @@
     "cache_creation_cost_per_million": "0"
   },
   {
+    "model_id": "grok-4.3",
+    "display_name": "Grok 4.3",
+    "input_cost_per_million": "1.25",
+    "output_cost_per_million": "2.50",
+    "cache_read_cost_per_million": "0.20",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
     "model_id": "grok-4.20-0309-reasoning",
     "display_name": "Grok 4.20 Reasoning",
-    "input_cost_per_million": "2",
-    "output_cost_per_million": "6",
+    "input_cost_per_million": "1.25",
+    "output_cost_per_million": "2.50",
     "cache_read_cost_per_million": "0.20",
     "cache_creation_cost_per_million": "0"
   },
   {
     "model_id": "grok-4.20-0309-non-reasoning",
     "display_name": "Grok 4.20",
-    "input_cost_per_million": "2",
-    "output_cost_per_million": "6",
+    "input_cost_per_million": "1.25",
+    "output_cost_per_million": "2.50",
     "cache_read_cost_per_million": "0.20",
     "cache_creation_cost_per_million": "0"
   },
@@ -1064,10 +1120,18 @@
     "cache_creation_cost_per_million": "0"
   },
   {
+    "model_id": "devstral-small-2-2512",
+    "display_name": "Devstral Small 2",
+    "input_cost_per_million": "0.10",
+    "output_cost_per_million": "0.30",
+    "cache_read_cost_per_million": "0.01",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
     "model_id": "devstral-2-2512",
     "display_name": "Devstral 2",
     "input_cost_per_million": "0.40",
-    "output_cost_per_million": "0.90",
+    "output_cost_per_million": "2",
     "cache_read_cost_per_million": "0.04",
     "cache_creation_cost_per_million": "0"
   },
@@ -1088,11 +1152,27 @@
     "cache_creation_cost_per_million": "0"
   },
   {
+    "model_id": "mistral-medium-3.5",
+    "display_name": "Mistral Medium 3.5",
+    "input_cost_per_million": "1.50",
+    "output_cost_per_million": "7.50",
+    "cache_read_cost_per_million": "0",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
     "model_id": "mistral-medium-3.1",
     "display_name": "Mistral Medium 3.1",
     "input_cost_per_million": "0.40",
     "output_cost_per_million": "2",
     "cache_read_cost_per_million": "0.04",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "mistral-small-4",
+    "display_name": "Mistral Small 4",
+    "input_cost_per_million": "0.10",
+    "output_cost_per_million": "0.30",
+    "cache_read_cost_per_million": "0.01",
     "cache_creation_cost_per_million": "0"
   },
   {
@@ -1108,6 +1188,14 @@
     "display_name": "Magistral Medium",
     "input_cost_per_million": "2",
     "output_cost_per_million": "5",
+    "cache_read_cost_per_million": "0",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "magistral-small",
+    "display_name": "Magistral Small",
+    "input_cost_per_million": "0.50",
+    "output_cost_per_million": "1.50",
     "cache_read_cost_per_million": "0",
     "cache_creation_cost_per_million": "0"
   },
