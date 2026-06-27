@@ -1810,6 +1810,11 @@ pub fn run() {
             coding::session_manager::rename_tool_session,
             coding::all_api_hub::has_all_api_hub_extension,
             coding::all_api_hub::get_all_api_hub_provider_models,
+            // Magic Context
+            coding::magic_context::read_magic_context_config,
+            coding::magic_context::save_magic_context_config,
+            coding::magic_context::create_magic_context_config,
+            coding::magic_context::run_magic_context_doctor,
             // Codex
             coding::codex::get_codex_config_dir_path,
             coding::codex::get_codex_root_path_info,

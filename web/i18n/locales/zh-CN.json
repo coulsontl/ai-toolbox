@@ -3568,5 +3568,52 @@
       "openPackagesDirectory": "打开包目录",
       "packagesPathLabel": "包目录"
     }
+  },
+  "magicContext": {
+    "title": "Magic Context 配置",
+    "description": "管理 CortexKit 用户级共享配置文件；OpenCode 和 Pi 会共用这份 Magic Context 配置。",
+    "scope": {
+      "user": "用户级配置"
+    },
+    "exists": "已创建",
+    "missing": "未创建",
+    "createConfig": "创建配置",
+    "configNotFound": "配置文件尚未创建",
+    "parseError": "JSONC 解析失败",
+    "editTitle": "编辑 Magic Context 配置",
+    "commonConfig": "常用配置",
+    "fullJsonc": "完整 JSONC",
+    "invalidObject": "Magic Context 配置必须是 JSON 对象",
+    "runDoctor": "运行 doctor",
+    "doctorResultTitle": "Magic Context doctor 结果",
+    "emptyCommandOutput": "命令没有输出",
+    "fields": {
+      "enabled": "启用 Magic Context",
+      "ctxReduceEnabled": "启用上下文压缩",
+      "temporalAwareness": "时间感知",
+      "smartDrops": "智能丢弃",
+      "autoUpdate": "自动更新插件",
+      "language": "输出语言",
+      "languagePlaceholder": "例如 zh-CN 或 en-US",
+      "memoryEnabled": "启用记忆注入",
+      "memoryBudget": "记忆注入预算 tokens",
+      "historianModel": "Historian 模型",
+      "dreamerModel": "Dreamer 模型",
+      "sidekickModel": "Sidekick 模型"
+    },
+    "summary": {
+      "enabled": "总开关",
+      "memory": "记忆",
+      "historian": "Historian",
+      "dreamer": "Dreamer",
+      "sidekick": "Sidekick",
+      "ctxReduce": "上下文压缩"
+    },
+    "docs": "官方文档",
+    "sections": {
+      "agents": "后台 Agent",
+      "memory": "记忆",
+      "basic": "基础"
+    }
   }
 }

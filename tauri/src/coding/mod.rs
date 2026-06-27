@@ -5,6 +5,7 @@ pub mod codex;
 pub mod config_cleanup;
 pub mod gemini_cli;
 pub mod image;
+pub mod magic_context;
 pub mod mcp;
 pub mod oh_my_openagent;
 pub mod oh_my_opencode_slim;

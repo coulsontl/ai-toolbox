@@ -80,6 +80,16 @@ pub fn resolve_local_pi_program() -> LocalCliProgram {
     resolve_local_cli_program("pi", candidates)
 }
 
+pub fn resolve_local_npx_program() -> LocalCliProgram {
+    let mut candidates = Vec::new();
+
+    push_command_candidate(&mut candidates, "/opt/homebrew/bin", "npx");
+    push_command_candidate(&mut candidates, "/usr/local/bin", "npx");
+    append_node_global_candidates(&mut candidates, "npx");
+
+    resolve_local_cli_program("npx", candidates)
+}
+
 pub fn build_local_std_command(program_path: &Path) -> Command {
     build_local_std_command_impl(program_path)
 }

@@ -3571,5 +3571,52 @@
       "openPackagesDirectory": "Open Package Folder",
       "packagesPathLabel": "Package folder"
     }
+  },
+  "magicContext": {
+    "title": "Magic Context Config",
+    "description": "Manage the CortexKit user-level shared config used by Magic Context in both OpenCode and Pi.",
+    "scope": {
+      "user": "User config"
+    },
+    "exists": "Created",
+    "missing": "Missing",
+    "createConfig": "Create config",
+    "configNotFound": "Config file has not been created",
+    "parseError": "JSONC parse failed",
+    "editTitle": "Edit Magic Context config",
+    "commonConfig": "Common config",
+    "fullJsonc": "Full JSONC",
+    "invalidObject": "Magic Context config must be a JSON object",
+    "runDoctor": "Run doctor",
+    "doctorResultTitle": "Magic Context doctor result",
+    "emptyCommandOutput": "Command produced no output",
+    "fields": {
+      "enabled": "Enable Magic Context",
+      "ctxReduceEnabled": "Enable context reduction",
+      "temporalAwareness": "Temporal awareness",
+      "smartDrops": "Smart drops",
+      "autoUpdate": "Auto update plugin",
+      "language": "Output language",
+      "languagePlaceholder": "For example zh-CN or en-US",
+      "memoryEnabled": "Enable memory injection",
+      "memoryBudget": "Memory injection budget tokens",
+      "historianModel": "Historian model",
+      "dreamerModel": "Dreamer model",
+      "sidekickModel": "Sidekick model"
+    },
+    "summary": {
+      "enabled": "Enabled",
+      "memory": "Memory",
+      "historian": "Historian",
+      "dreamer": "Dreamer",
+      "sidekick": "Sidekick",
+      "ctxReduce": "Context reduction"
+    },
+    "docs": "Docs",
+    "sections": {
+      "agents": "Background agents",
+      "memory": "Memory",
+      "basic": "Basic"
+    }
   }
 }

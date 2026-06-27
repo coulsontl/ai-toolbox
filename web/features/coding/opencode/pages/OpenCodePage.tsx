@@ -81,6 +81,7 @@ import OhMyOpenCodeSlimConfigSelector from '../components/OhMyOpenCodeSlimConfig
 import OhMyOpenAgentSettings from '../components/OhMyOpenAgentSettings';
 import OhMyOpenCodeSlimSettings from '../components/OhMyOpenCodeSlimSettings';
 import { GlobalPromptSettings } from '@/features/coding/shared/prompt';
+import { MagicContextSettings } from '@/features/coding/shared/magicContext';
 import JsonEditor from '@/components/common/JsonEditor';
 import JsonPreviewModal from '@/components/common/JsonPreviewModal';
 import ConnectivityTestModal from '../components/ConnectivityTestModal';
@@ -126,6 +127,10 @@ const isOhMyOpenAgentPlugin = (pluginName: string): boolean => {
   }
   return baseName.includes('oh-my-openagent') || baseName.includes('oh-my-opencode');
 };
+
+const isMagicContextPlugin = (pluginName: string): boolean => (
+  getOpenCodePluginPackageName(pluginName) === '@cortexkit/opencode-magic-context'
+);
 
 const buildManagedProviderOptions = (values: ProviderFormValues): OpenCodeProvider['options'] => {
   const nextOptions: Record<string, unknown> = {
@@ -553,6 +558,10 @@ const OpenCodePage: React.FC = () => {
     return baseName.includes('oh-my-opencode-slim');
   }) ?? false;
 
+  const magicContextPluginEnabled = config?.plugin?.some((p) => {
+    return isMagicContextPlugin(getOpenCodePluginName(p));
+  }) ?? false;
+
   const sidebarSections = React.useMemo<SidebarSectionMarker[]>(() => {
     const sections: SidebarSectionMarker[] = [
       {
@@ -571,7 +580,7 @@ const OpenCodePage: React.FC = () => {
       sections.push({
         id: 'opencode-omo-configuration',
         title: t('opencode.ohMyOpenCode.title'),
-        order: 3,
+        order: 4,
       });
     }
 
@@ -579,7 +588,15 @@ const OpenCodePage: React.FC = () => {
       sections.push({
         id: 'opencode-omo-slim-configuration',
         title: t('opencode.ohMyOpenCodeSlim.title'),
-        order: 4,
+        order: 5,
+      });
+    }
+
+    if (magicContextPluginEnabled) {
+      sections.push({
+        id: 'opencode-magic-context-configuration',
+        title: t('magicContext.title'),
+        order: 3,
       });
     }
 
@@ -587,27 +604,27 @@ const OpenCodePage: React.FC = () => {
       {
         id: 'opencode-providers',
         title: t('opencode.provider.title'),
-        order: 5,
+        order: 6,
       },
       {
         id: 'opencode-official-auth-channels',
         title: t('opencode.official.title'),
-        order: 6,
+        order: 7,
       },
       {
         id: 'opencode-global-prompt',
         title: t('opencode.prompt.title'),
-        order: 7,
+        order: 8,
       },
       {
         id: 'opencode-other-configuration',
         title: t('opencode.otherConfig.title'),
-        order: 8,
+        order: 9,
       },
       {
         id: 'opencode-session-manager',
         title: t('sessionManager.title'),
-        order: 9,
+        order: 10,
       },
     );
 
@@ -617,6 +634,7 @@ const OpenCodePage: React.FC = () => {
     omoPluginEnabled,
     omoSlimConfigs.length,
     omoSlimPluginEnabled,
+    magicContextPluginEnabled,
     t,
   ]);
 
@@ -2137,14 +2155,27 @@ const OpenCodePage: React.FC = () => {
               />
             </div>
 
+            {magicContextPluginEnabled && (
+              <div
+                id="opencode-magic-context-configuration"
+                className={styles.opencodeSection}
+                data-opencode-sidebar-section="true"
+                data-sidebar-title={t('magicContext.title')}
+                data-sidebar-order={3}
+                style={{ order: 3 }}
+              >
+                <MagicContextSettings harness="opencode" />
+              </div>
+            )}
+
             {(omoPluginEnabled || omoConfigs.length > 0) && (
               <div
                 id="opencode-omo-configuration"
                 className={styles.opencodeSection}
                 data-opencode-sidebar-section="true"
                 data-sidebar-title={t('opencode.ohMyOpenCode.title')}
-                data-sidebar-order={3}
-                style={{ order: 3 }}
+                data-sidebar-order={4}
+                style={{ order: 4 }}
               >
 	                <OhMyOpenAgentSettings
 	                  key={`opencode-omo-settings-${ohMyOpenAgentSettingsRefreshKey}-${omoSettingsExpandNonce}`}
@@ -2176,8 +2207,8 @@ const OpenCodePage: React.FC = () => {
                 className={styles.opencodeSection}
                 data-opencode-sidebar-section="true"
                 data-sidebar-title={t('opencode.ohMyOpenCodeSlim.title')}
-                data-sidebar-order={4}
-                style={{ order: 4 }}
+                data-sidebar-order={5}
+                style={{ order: 5 }}
               >
 	                <OhMyOpenCodeSlimSettings
 	                  key={`opencode-omo-slim-settings-${ohMyOpenAgentSettingsRefreshKey}-${omoSlimSettingsExpandNonce}`}
@@ -2202,8 +2233,8 @@ const OpenCodePage: React.FC = () => {
               className={styles.opencodeSection}
               data-opencode-sidebar-section="true"
               data-sidebar-title={t('opencode.provider.title')}
-              data-sidebar-order={5}
-              style={{ order: 5 }}
+              data-sidebar-order={6}
+              style={{ order: 6 }}
             >
               <Collapse
                 className={styles.collapseCard}
@@ -2419,8 +2450,8 @@ const OpenCodePage: React.FC = () => {
               className={styles.opencodeSection}
               data-opencode-sidebar-section="true"
               data-sidebar-title={t('opencode.prompt.title')}
-              data-sidebar-order={7}
-              style={{ order: 7 }}
+              data-sidebar-order={8}
+              style={{ order: 8 }}
             >
               <GlobalPromptSettings
                 key={`opencode-global-prompt-${globalPromptExpandNonce}`}
@@ -2441,8 +2472,8 @@ const OpenCodePage: React.FC = () => {
               className={styles.opencodeSection}
               data-opencode-sidebar-section="true"
               data-sidebar-title={t('opencode.official.title')}
-              data-sidebar-order={6}
-              style={{ order: 6 }}
+              data-sidebar-order={7}
+              style={{ order: 7 }}
             >
               <Collapse
                 className={styles.collapseCard}
@@ -2511,8 +2542,8 @@ const OpenCodePage: React.FC = () => {
               className={styles.opencodeSection}
               data-opencode-sidebar-section="true"
               data-sidebar-title={t('opencode.otherConfig.title')}
-              data-sidebar-order={8}
-              style={{ order: 8 }}
+              data-sidebar-order={9}
+              style={{ order: 9 }}
             >
               <Collapse
                 className={styles.collapseCard}
@@ -2568,8 +2599,8 @@ const OpenCodePage: React.FC = () => {
               className={styles.opencodeSection}
               data-opencode-sidebar-section="true"
               data-sidebar-title={t('sessionManager.title')}
-              data-sidebar-order={9}
-              style={{ order: 9 }}
+              data-sidebar-order={10}
+              style={{ order: 10 }}
             >
               <SessionManagerPanel tool="opencode" expandNonce={sessionManagerExpandNonce} />
             </div>

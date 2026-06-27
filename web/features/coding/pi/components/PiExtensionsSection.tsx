@@ -26,6 +26,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 
+import { MagicContextSettings } from '@/features/coding/shared/magicContext';
 import {
   installPiExtension,
   listPiExtensions,
@@ -111,6 +112,10 @@ const isRecommendedInstalled = (
   });
 };
 
+const isMagicContextInstalled = (extensions: PiExtensionSummary[]): boolean => (
+  isRecommendedInstalled(extensions, 'npm:@cortexkit/pi-magic-context')
+);
+
 const PiExtensionsSection: React.FC = () => {
   const { t } = useTranslation();
   const { message } = App.useApp();
@@ -143,6 +148,7 @@ const PiExtensionsSection: React.FC = () => {
   }, [loadExtensions]);
 
   const extensions = data?.extensions ?? [];
+  const magicContextInstalled = isMagicContextInstalled(extensions);
 
   const handleInstall = async (source: string) => {
     const normalizedSource = source.trim();
@@ -516,6 +522,10 @@ const PiExtensionsSection: React.FC = () => {
                     },
                   ]}
                 />
+
+                {magicContextInstalled && (
+                  <MagicContextSettings harness="pi" />
+                )}
               </div>
             ),
           },
