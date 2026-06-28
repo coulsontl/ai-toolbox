@@ -1,9 +1,9 @@
 use super::chat::openai_usage_to_llm;
 use crate::coding::proxy_gateway::protocol_conversion::error::ProtocolConversionError;
 use crate::coding::proxy_gateway::protocol_conversion::llm::{
-    Choice, Function, FunctionCall, ImageUrl, Message, MessageContent, MessageContentPart, Request,
-    Response, ResponseCustomToolCall, Tool, ToolCall, Usage, TOOL_TYPE_FUNCTION,
-    TOOL_TYPE_RESPONSES_CUSTOM_TOOL,
+    ApiFormat, Choice, Function, FunctionCall, ImageUrl, Message, MessageContent,
+    MessageContentPart, Request, RequestType, Response, ResponseCustomToolCall, Tool, ToolCall,
+    Usage, TOOL_TYPE_FUNCTION, TOOL_TYPE_RESPONSES_CUSTOM_TOOL,
 };
 use crate::coding::proxy_gateway::protocol_conversion::shared::{
     stop_from_value, stop_to_value, tool_choice_from_openai, tool_choice_to_responses,
@@ -112,6 +112,8 @@ pub fn responses_request_to_llm(body: Value) -> Request {
             .map(ToString::to_string),
         metadata: metadata_from_value(body.get("metadata")),
         extra_body: body.get("extra_body").cloned(),
+        request_type: Some(RequestType::Chat),
+        api_format: Some(ApiFormat::OpenAiResponses),
         ..Default::default()
     };
     if let Some(instructions) = body.get("instructions").and_then(Value::as_str) {
@@ -133,8 +135,27 @@ pub fn responses_request_to_llm(body: Value) -> Request {
 fn append_responses_input_to_messages(input: Option<&Value>, messages: &mut Vec<Message>) {
     match input {
         Some(Value::Array(items)) => {
-            for item in items {
+            let mut index = 0;
+            while index < items.len() {
+                let item = &items[index];
+                if item.get("type").and_then(Value::as_str) == Some("reasoning") {
+                    let mut reasoning_message = responses_reasoning_message(item);
+                    if items.get(index + 1).is_some_and(|following| {
+                        merge_responses_following_item_into_reasoning_message(
+                            &mut reasoning_message,
+                            following,
+                        )
+                    }) {
+                        messages.push(reasoning_message);
+                        index += 2;
+                    } else {
+                        messages.push(reasoning_message);
+                        index += 1;
+                    }
+                    continue;
+                }
                 append_responses_item_to_messages(item, messages);
+                index += 1;
             }
         }
         Some(Value::String(text)) => messages.push(Message {
@@ -168,80 +189,166 @@ fn append_responses_item_to_messages(item: &Value, messages: &mut Vec<Message>) 
             ),
             ..Default::default()
         }),
-        Some("reasoning") => messages.push(Message {
-            role: "assistant".to_string(),
-            reasoning_content: responses_reasoning_text(item),
-            reasoning_signature: item
-                .get("encrypted_content")
-                .and_then(Value::as_str)
-                .map(ToString::to_string),
+        Some("reasoning") => messages.push(responses_reasoning_message(item)),
+        Some("input_image") => {
+            if let Some(part) = responses_input_image_part(item) {
+                messages.push(Message {
+                    role: "user".to_string(),
+                    content: MessageContent::Parts(vec![part]),
+                    ..Default::default()
+                });
+            }
+        }
+        _ => messages.push(responses_message_item_to_llm(item)),
+    }
+}
+
+fn responses_reasoning_message(item: &Value) -> Message {
+    let reasoning = responses_reasoning_text(item);
+    Message {
+        role: "assistant".to_string(),
+        reasoning_content: reasoning.clone(),
+        reasoning,
+        reasoning_signature: item
+            .get("encrypted_content")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        ..Default::default()
+    }
+}
+
+fn merge_responses_following_item_into_reasoning_message(
+    reasoning_message: &mut Message,
+    following: &Value,
+) -> bool {
+    match following.get("type").and_then(Value::as_str) {
+        Some("function_call") | Some("custom_tool_call") => {
+            reasoning_message
+                .tool_calls
+                .push(responses_call_to_tool_call(following, 0));
+            true
+        }
+        Some("message") | None => {
+            if following.get("content").is_none() {
+                return false;
+            }
+            let following_message = responses_message_item_to_llm(following);
+            merge_message_into_reasoning_message(reasoning_message, following_message);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn merge_message_into_reasoning_message(reasoning_message: &mut Message, message: Message) {
+    if reasoning_message.id.is_empty() {
+        reasoning_message.id = message.id;
+    }
+    if reasoning_message.content.is_empty() {
+        reasoning_message.content = message.content;
+    } else if !message.content.is_empty() {
+        let mut parts = message_content_into_parts(std::mem::take(&mut reasoning_message.content));
+        parts.extend(message_content_into_parts(message.content));
+        reasoning_message.content = MessageContent::Parts(parts);
+    }
+    if reasoning_message.refusal.is_empty() {
+        reasoning_message.refusal = message.refusal;
+    }
+    reasoning_message.annotations.extend(message.annotations);
+}
+
+fn message_content_into_parts(content: MessageContent) -> Vec<MessageContentPart> {
+    match content {
+        MessageContent::Text(text) if !text.is_empty() => vec![MessageContentPart {
+            part_type: "text".to_string(),
+            text: Some(text),
             ..Default::default()
-        }),
-        _ => {
-            let role = item
-                .get("role")
-                .and_then(Value::as_str)
-                .unwrap_or("user")
-                .to_string();
-            let mut parts = Vec::new();
-            let mut refusal = String::new();
-            if let Some(content) = item.get("content").and_then(Value::as_array) {
-                for part in content {
-                    match part.get("type").and_then(Value::as_str) {
-                        Some("input_text") | Some("output_text") => {
-                            parts.push(MessageContentPart {
-                                part_type: "text".to_string(),
-                                text: part
-                                    .get("text")
-                                    .and_then(Value::as_str)
-                                    .map(ToString::to_string),
-                                ..Default::default()
-                            });
-                        }
-                        Some("input_image") => {
-                            parts.push(MessageContentPart {
-                                part_type: "image_url".to_string(),
-                                image_url: part.get("image_url").and_then(Value::as_str).map(
-                                    |url| ImageUrl {
-                                        url: url.to_string(),
-                                        detail: part
-                                            .get("detail")
-                                            .and_then(Value::as_str)
-                                            .map(ToString::to_string),
-                                    },
-                                ),
-                                ..Default::default()
-                            });
-                        }
-                        Some("refusal") => {
-                            refusal = part
-                                .get("refusal")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string();
-                        }
-                        _ => {}
+        }],
+        MessageContent::Parts(parts) => parts,
+        _ => Vec::new(),
+    }
+}
+
+fn responses_message_item_to_llm(item: &Value) -> Message {
+    let role = item
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or("user")
+        .to_string();
+    let mut parts = Vec::new();
+    let mut refusal = String::new();
+    if let Some(content) = item.get("content").and_then(Value::as_array) {
+        for part in content {
+            match part.get("type").and_then(Value::as_str) {
+                Some("input_text") | Some("output_text") => {
+                    parts.push(MessageContentPart {
+                        id: part
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        part_type: "text".to_string(),
+                        text: part
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string),
+                        ..Default::default()
+                    });
+                }
+                Some("input_image") => {
+                    if let Some(part) = responses_input_image_part(part) {
+                        parts.push(part);
                     }
                 }
+                Some("refusal") => {
+                    refusal = part
+                        .get("refusal")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                }
+                _ => {}
             }
-            messages.push(Message {
-                id: item
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                role,
-                content: MessageContent::Parts(parts),
-                refusal,
-                annotations: item
-                    .get("content")
-                    .and_then(Value::as_array)
-                    .map(|content| content_annotations(content))
-                    .unwrap_or_default(),
-                ..Default::default()
-            });
         }
     }
+    Message {
+        id: item
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        role,
+        content: MessageContent::Parts(parts),
+        refusal,
+        annotations: item
+            .get("content")
+            .and_then(Value::as_array)
+            .map(|content| content_annotations(content))
+            .unwrap_or_default(),
+        ..Default::default()
+    }
+}
+
+fn responses_input_image_part(item: &Value) -> Option<MessageContentPart> {
+    item.get("image_url")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty())
+        .map(|url| MessageContentPart {
+            id: item
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            part_type: "image_url".to_string(),
+            image_url: Some(ImageUrl {
+                url: url.to_string(),
+                detail: item
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+            }),
+            ..Default::default()
+        })
 }
 
 fn responses_tool_to_llm(tool: &Value) -> Option<Tool> {
@@ -558,7 +665,8 @@ fn tool_call_to_responses_item(tool_call: ToolCall) -> Value {
             "id": call_id.clone(),
             "call_id": call_id,
             "name": custom.name,
-            "input": custom.input
+            "input": custom.input,
+            "status": "completed"
         });
     }
     json!({
@@ -566,7 +674,8 @@ fn tool_call_to_responses_item(tool_call: ToolCall) -> Value {
         "id": tool_call.id,
         "call_id": tool_call.id,
         "name": tool_call.function.name,
-        "arguments": tool_call.function.arguments
+        "arguments": tool_call.function.arguments,
+        "status": "completed"
     })
 }
 
@@ -615,8 +724,15 @@ pub fn responses_response_to_llm(body: Value) -> Response {
                     let index = tool_calls.len();
                     tool_calls.push(responses_call_to_tool_call(item, index));
                 }
+                Some("input_image") => {
+                    if let Some(part) = responses_input_image_part(item) {
+                        parts.push(part);
+                    }
+                }
                 Some("reasoning") => {
-                    message.reasoning_content = responses_reasoning_text(item);
+                    let reasoning = responses_reasoning_text(item);
+                    message.reasoning_content = reasoning.clone();
+                    message.reasoning = reasoning;
                     message.reasoning_signature = item
                         .get("encrypted_content")
                         .and_then(Value::as_str)
@@ -641,6 +757,15 @@ pub fn responses_response_to_llm(body: Value) -> Response {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
+        created: body
+            .get("created_at")
+            .or_else(|| body.get("created"))
+            .and_then(Value::as_i64)
+            .unwrap_or_default(),
+        previous_response_id: body
+            .get("previous_response_id")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
         choices: vec![Choice {
             index: 0,
             message,
@@ -656,6 +781,7 @@ pub fn responses_response_to_llm(body: Value) -> Response {
 }
 
 pub fn llm_response_to_responses(response: Response) -> Value {
+    let previous_response_id = response.previous_response_id.clone();
     let choice = response.choices.first().cloned().unwrap_or_default();
     let mut output = Vec::new();
     if let Some(reasoning) = choice
@@ -693,7 +819,7 @@ pub fn llm_response_to_responses(response: Response) -> Value {
     for tool_call in choice.message.tool_calls {
         output.push(tool_call_to_responses_item(tool_call));
     }
-    json!({
+    let mut body = json!({
         "id": response.id,
         "object": "response",
         "created_at": response.created,
@@ -701,7 +827,11 @@ pub fn llm_response_to_responses(response: Response) -> Value {
         "model": response.model,
         "output": output,
         "usage": usage_to_responses(response.usage.as_ref())
-    })
+    });
+    if let Some(previous_response_id) = previous_response_id {
+        body["previous_response_id"] = json!(previous_response_id);
+    }
+    body
 }
 
 fn metadata_from_value(value: Option<&Value>) -> HashMap<String, String> {
@@ -821,14 +951,17 @@ fn usage_to_responses(usage: Option<&Usage>) -> Value {
 
 fn responses_status_to_finish(status: Option<&str>, has_tool: bool) -> String {
     match status {
+        Some("failed") => "error".to_string(),
         Some("incomplete") => "length".to_string(),
         Some("completed") if has_tool => "tool_calls".to_string(),
+        Some("completed") => "stop".to_string(),
         _ => "stop".to_string(),
     }
 }
 
 fn finish_to_responses_status(reason: Option<&str>) -> &'static str {
     match reason {
+        Some("error") => "failed",
         Some("length") | Some("max_tokens") => "incomplete",
         _ => "completed",
     }

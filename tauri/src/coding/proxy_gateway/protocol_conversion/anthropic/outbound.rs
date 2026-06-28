@@ -120,8 +120,16 @@ pub fn llm_request_to_anthropic(request: Request) -> Value {
     if !system_chunks.is_empty() {
         body["system"] = json!(system_chunks.join("\n\n"));
     }
-    if let Some(max_tokens) = request.max_tokens.or(request.max_completion_tokens) {
-        body["max_tokens"] = json!(max_tokens);
+    body["max_tokens"] = json!(request
+        .max_tokens
+        .or(request.max_completion_tokens)
+        .unwrap_or(8192));
+    if let Some(user_id) = request
+        .metadata
+        .get("user_id")
+        .filter(|user_id| !user_id.is_empty())
+    {
+        body["metadata"] = json!({ "user_id": user_id });
     }
     if let Some(reasoning_effort) = request.reasoning_effort {
         if reasoning_effort == "none" {
@@ -267,18 +275,30 @@ fn message_content_part_to_anthropic(part: &MessageContentPart) -> Option<Value>
         }
         "image_url" | "input_image" => {
             let image = part.image_url.as_ref()?;
-            let (media_type, data) = image
+            let mut value = if let Some((media_type, data)) = image
                 .url
                 .strip_prefix("data:")
-                .and_then(|rest| rest.split_once(";base64,"))?;
-            let mut value = json!({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": media_type,
-                    "data": data
-                }
-            });
+                .and_then(|rest| rest.split_once(";base64,"))
+            {
+                json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data
+                    }
+                })
+            } else if !image.url.is_empty() {
+                json!({
+                    "type": "image",
+                    "source": {
+                        "type": "url",
+                        "url": image.url
+                    }
+                })
+            } else {
+                return None;
+            };
             if let Some(cache_control) = &part.cache_control {
                 value["cache_control"] = cache_control.clone();
             }

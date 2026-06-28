@@ -156,19 +156,26 @@ pub fn tool_choice_to_responses(choice: Option<ToolChoice>) -> Option<Value> {
 
 pub fn tool_choice_from_gemini(value: Option<&Value>) -> Option<ToolChoice> {
     let config = value?;
+    let mode = config.get("mode").and_then(Value::as_str);
     let allowed = config
         .get("allowedFunctionNames")
         .and_then(Value::as_array)
-        .and_then(|items| items.iter().find_map(Value::as_str));
-    if let Some(name) = allowed {
-        return Some(ToolChoice::Named(NamedToolChoice {
-            choice_type: "function".to_string(),
-            function: ToolFunction {
-                name: name.to_string(),
-            },
-        }));
+        .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .unwrap_or_default();
+    if mode == Some("ANY") {
+        if allowed.len() == 1 {
+            return Some(ToolChoice::Named(NamedToolChoice {
+                choice_type: "function".to_string(),
+                function: ToolFunction {
+                    name: allowed[0].to_string(),
+                },
+            }));
+        }
+        if allowed.len() > 1 {
+            return Some(ToolChoice::String("required".to_string()));
+        }
     }
-    match config.get("mode").and_then(Value::as_str) {
+    match mode {
         Some("NONE") => Some(ToolChoice::String("none".to_string())),
         Some("ANY") => Some(ToolChoice::String("required".to_string())),
         Some("AUTO") => Some(ToolChoice::String("auto".to_string())),

@@ -1,7 +1,7 @@
 use super::super::error::ProtocolConversionError;
 use super::super::llm::{
-    Choice, Function, FunctionCall, ImageUrl, Message, MessageContent, MessageContentPart, Request,
-    Response, Tool, ToolCall, Usage, TOOL_TYPE_FUNCTION,
+    ApiFormat, Choice, Function, FunctionCall, ImageUrl, Message, MessageContent,
+    MessageContentPart, Request, RequestType, Response, Tool, ToolCall, Usage, TOOL_TYPE_FUNCTION,
 };
 use super::super::shared::{
     content_text, json_string, message_parts, stop_from_value, tool_choice_from_anthropic,
@@ -58,8 +58,20 @@ pub fn anthropic_request_to_llm(body: Value) -> Request {
         stop: stop_from_value(body.get("stop_sequences")),
         tool_choice: tool_choice_from_anthropic(body.get("tool_choice")),
         reasoning_effort: anthropic_reasoning_effort(&body).map(ToString::to_string),
+        request_type: Some(RequestType::Chat),
+        api_format: Some(ApiFormat::AnthropicMessages),
         ..Default::default()
     };
+
+    if let Some(user_id) = body
+        .pointer("/metadata/user_id")
+        .and_then(Value::as_str)
+        .filter(|user_id| !user_id.is_empty())
+    {
+        request
+            .metadata
+            .insert("user_id".to_string(), user_id.to_string());
+    }
 
     if let Some(system) = body.get("system") {
         let text = content_text(Some(system));
@@ -147,6 +159,7 @@ fn append_anthropic_message_to_llm(message: &Value, message_index: usize, out: &
     let mut llm_parts = Vec::new();
     let mut tool_calls = Vec::new();
     let mut reasoning_content = None;
+    let mut reasoning = None;
     let mut reasoning_signature = None;
 
     for (index, part) in parts.iter().enumerate() {
@@ -170,6 +183,7 @@ fn append_anthropic_message_to_llm(message: &Value, message_index: usize, out: &
                     .filter(|text| !text.is_empty())
                 {
                     reasoning_content = Some(thinking.to_string());
+                    reasoning = Some(thinking.to_string());
                 }
                 reasoning_signature = part
                     .get("signature")
@@ -178,18 +192,26 @@ fn append_anthropic_message_to_llm(message: &Value, message_index: usize, out: &
             }
             Some("image") => {
                 if let Some(source) = part.get("source") {
-                    let media_type = source
-                        .get("media_type")
+                    let image_url = source
+                        .get("url")
                         .and_then(Value::as_str)
-                        .unwrap_or("image/png");
-                    let data = source
-                        .get("data")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
+                        .filter(|url| !url.is_empty())
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| {
+                            let media_type = source
+                                .get("media_type")
+                                .and_then(Value::as_str)
+                                .unwrap_or("application/octet-stream");
+                            let data = source
+                                .get("data")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default();
+                            format!("data:{media_type};base64,{data}")
+                        });
                     llm_parts.push(MessageContentPart {
                         part_type: "image_url".to_string(),
                         image_url: Some(ImageUrl {
-                            url: format!("data:{media_type};base64,{data}"),
+                            url: image_url,
                             detail: None,
                         }),
                         cache_control: part.get("cache_control").cloned(),
@@ -241,6 +263,7 @@ fn append_anthropic_message_to_llm(message: &Value, message_index: usize, out: &
         content: MessageContent::Parts(llm_parts),
         tool_calls,
         reasoning_content,
+        reasoning,
         reasoning_signature,
         transformer_metadata: anthropic_message_metadata(message_index),
         ..Default::default()
@@ -300,18 +323,26 @@ fn anthropic_content_part_to_llm(part: &Value) -> Option<MessageContentPart> {
         }),
         Some("image") => {
             let source = part.get("source")?;
-            let media_type = source
-                .get("media_type")
+            let image_url = source
+                .get("url")
                 .and_then(Value::as_str)
-                .unwrap_or("image/png");
-            let data = source
-                .get("data")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
+                .filter(|url| !url.is_empty())
+                .map(ToString::to_string)
+                .unwrap_or_else(|| {
+                    let media_type = source
+                        .get("media_type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("application/octet-stream");
+                    let data = source
+                        .get("data")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    format!("data:{media_type};base64,{data}")
+                });
             Some(MessageContentPart {
                 part_type: "image_url".to_string(),
                 image_url: Some(ImageUrl {
-                    url: format!("data:{media_type};base64,{data}"),
+                    url: image_url,
                     detail: None,
                 }),
                 cache_control: part.get("cache_control").cloned(),
@@ -394,6 +425,14 @@ fn append_llm_content_as_anthropic(content: &MessageContent, out: &mut Vec<Value
                                         "data": data
                                     }
                                 }));
+                            } else if !image.url.is_empty() {
+                                out.push(json!({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "url",
+                                        "url": image.url
+                                    }
+                                }));
                             }
                         }
                     }
@@ -444,10 +483,12 @@ pub fn anthropic_response_to_llm(body: Value) -> Response {
                     }
                 }
                 Some("thinking") => {
-                    message.reasoning_content = block
+                    let reasoning = block
                         .get("thinking")
                         .and_then(Value::as_str)
                         .map(ToString::to_string);
+                    message.reasoning_content = reasoning.clone();
+                    message.reasoning = reasoning;
                     message.reasoning_signature = block
                         .get("signature")
                         .and_then(Value::as_str)

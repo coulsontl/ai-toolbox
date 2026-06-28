@@ -44,6 +44,123 @@
 - 全量参考 fixture 矩阵主要防止 panic、解析漂移和 shape 回退；关键协议语义还必须补精确断言。目前已锁定 system/instructions/systemInstruction、base64 image、stop sequences、tool_choice、tool schema strict、多 Anthropic `tool_result` 与同消息后续文本、tool_result cache/is_error、tool_result -> Gemini functionResponse name/id、OpenAI reasoning/reasoning_content、Responses custom tool JSON/SSE、Gemini request-level `thinkingConfig`、Gemini native Google tools、Gemini schema type 归一化、Gemini thoughts usage、Gemini thought text、Responses function_call arguments.done 完整参数、finish 幂等、Chat finish `delta:{}` 和 Gemini stream 不输出 `[DONE]`。
 - 参考实现支持 Responses compact 与 custom tool；本模块不扩展 compact 协议。Responses custom tool 在聊天 request/response/stream 内通过 Chat 兼容扩展 `responses_custom_tool` 与 `response_custom_tool_call` 保留 call_id/name/input/output；转换到没有 custom tool 原生形态的目标协议时只能 best-effort 表达为普通 tool call。
 
+## 8 个转换节点对照索引
+
+这些节点来自 `docs/transform/01..08` 的 AxonHub 对照结果。后续排查协议转换时先查本节确认当前实现语义，再按需打开对应 review 文档看原始证据。若本节与旧 review 文档冲突，以当前代码、测试和本节为准。
+
+### 01 OpenAI Chat -> LLM
+
+- 入口：`openai/chat.rs::chat_request_to_llm`、`chat_response_to_llm`，stream source 为 `OpenAiChat`。
+- Request 已承载 `model`、`messages`、`max_tokens` / `max_completion_tokens`、采样参数、penalty、`seed`、`service_tier`、`logprobs` / `top_logprobs`、`user`、`logit_bias`、`verbosity`、`stream` / `stream_options`、`stop`、`tool_choice`、`tools`、`parallel_tool_calls`、`response_format`、`prompt_cache_key`、`metadata`、`extra_body`。
+- 入站 request 必须设置 `request_type=chat` 与 `api_format=openai_chat_completions`。
+- Message 支持 string/array content、text、`image_url`、`name`、`refusal`、`annotations`、tool message 的 `tool_call_id`。
+- `reasoning_content` 与 `reasoning` 入站要双向同步；只有其中一个字段时也要进入统一 reasoning。
+- `tool_calls` 与 legacy `function_call` 都要转统一 tool call；Responses custom tool 可通过 Chat 兼容扩展 `responses_custom_tool` 保留 roundtrip 语义。
+- Response 必须保留所有 choices，不再只取首个 choice；usage 支持 prompt/completion/total、cached tokens、reasoning tokens。
+- 不承载 `store`、`safety_identifier`、`modalities`、audio/video、`system_fingerprint`、response `service_tier`、citations、logprobs 明细、provider signature marker 生命周期。
+- HTTP content type/body/model/messages 校验不在本模块；由 Gateway runtime/route 层处理。
+
+### 02 OpenAI Responses -> LLM
+
+- 入口：`openai/responses/mod.rs::responses_request_to_llm`、`responses_response_to_llm`，stream source 为 `OpenAiResponses`。
+- Request 已承载 `model`、`max_output_tokens`、`reasoning.effort`、采样参数、penalty、`service_tier`、`top_logprobs`、`user`、text verbosity、`stream`、`previous_response_id`、`stop`、`tool_choice`、`parallel_tool_calls`、`text.format`、`prompt_cache_key`、`metadata`、`extra_body`。
+- 入站 request 必须设置 `request_type=chat` 与 `api_format=openai_responses`。
+- `instructions` 转 system message；`input` string/object/array 都要进入 messages。
+- `message.content` 支持 `input_text`、`output_text`、`input_image`、`refusal`，annotations 从 content 中提取；standalone `input_image` item 要转 user image message。
+- `function_call` / `function_call_output`、`custom_tool_call` / `custom_tool_call_output` 都要保留，custom tool 用 `ResponseCustomToolCall` 保留 call_id/name/input。
+- `reasoning` item 要转 assistant reasoning message，并尝试和紧随其后的 function/custom tool/message 合并到同一 assistant message。
+- `encrypted_content` 可保存到 `reasoning_signature`，但不能跨 provider 生成或伪造 signature marker。
+- Response 已承载 output message text/refusal/annotations、function/custom tool call、reasoning、usage、`created_at` / `created`、`previous_response_id`、status finish；`failed -> error`、`incomplete -> length`、tool call completed -> `tool_calls`。
+- 不承载 `store`、`safety_identifier`、background/conversation、`include`、`max_tool_calls`、`prompt_cache_retention`、`truncation`、`include_obfuscation`、compact、image generation。
+
+### 03 Anthropic Claude Messages -> LLM
+
+- 入口：`anthropic/inbound.rs::anthropic_request_to_llm`、`anthropic_response_to_llm`，stream source 为 `AnthropicMessages`。
+- Request 已承载 `model`、`max_tokens`、`temperature`、`top_p`、`stream`、`stop_sequences`、`tool_choice`、`thinking` / `output_config.effort` 到 `reasoning_effort`。
+- 入站 request 必须设置 `request_type=chat` 与 `api_format=anthropic_messages`；`metadata.user_id` 要进入统一 `metadata["user_id"]`。
+- `system` 转 system message；string/array content 都支持。
+- Content 支持 text、base64 image、URL image；缺失 `media_type` 时按 AxonHub 使用 `application/octet-stream`，不默认 `image/png`。
+- `thinking` block 同步写入 `reasoning_content` 与 `reasoning`，`signature` 只保留为私有签名字段，不做 marker 生命周期。
+- `redacted_thinking`、Anthropic native web_search、顶层/system `cache_control` 完整生命周期不在当前聊天转换范围；content part/tool result `cache_control` 已覆盖。
+- `tool_use` 转统一 tool call；`tool_result` 转 tool message，支持 string/array content、`is_error`、`cache_control`。
+- 同一 Anthropic user message 中多个 `tool_result` 与后续 text/image 必须通过 message index metadata 支持转回 Anthropic 时重新合并。
+- `BatchTool` 转非 Anthropic 目标时过滤；`tool_choice:any` 转 required，named tool choice 支持。
+- Response 支持 text、thinking、tool_use、stop reason、usage cache read/cache creation；SSE 覆盖 text/thinking/tool use/usage/finish 幂等。
+- HTTP content type、body、`max_tokens > 0`、枚举合法性、Bedrock/Vertex/LongCat 等平台差异不在本模块。
+
+### 04 Gemini Native -> LLM
+
+- 入口：`gemini/mod.rs::gemini_request_to_llm`、`gemini_response_to_llm`，stream source 为 `GeminiNative`。
+- Request 已承载 body `model`、`stream`、`generationConfig.maxOutputTokens`、temperature、`topP`、presence/frequency penalty、`seed`、`stopSequences`。
+- 入站 request 必须设置 `request_type=chat` 与 `api_format=gemini_contents`；Gemini path model/action 提取属于 runtime，不在本模块复刻。
+- `generationConfig.thinkingConfig` 转 `reasoning_effort`：`budget<=0 -> none`、`<=1024 -> low`、`<=8192 -> medium`、更高为 high；`includeThoughts=false` 和 `thinkingLevel` 也要处理。
+- `responseMimeType` / `responseSchema` / `responseJsonSchema` 转 `response_format`。
+- `systemInstruction.parts` 只取非 `thought:true` 文本，并用 `\n` 连接；role `model` 转 assistant，缺省 user。
+- Text part 支持；`thought:true` text 同步写入 `reasoning_content` 与 `reasoning`。
+- `inlineData` / `fileData` 图片进入 image URL；document 的 inline/file data 进入 `DocumentUrl` 基础映射。video/audio、`responseModalities`、`topK`、logprobs、`safetySettings`、`cachedContent`、`imageConfig` 不承载。
+- `functionCall` 转 tool call，缺 id 时生成 `gemini_synth_<index>`；`functionResponse` 转 tool message，缺 id 时可从当前请求历史 function call name 回填。
+- Function declarations 支持，schema type 要递归小写化；Google native tools `googleSearch`、`codeExecution`、`urlContext` 要保留。
+- `toolConfig.functionCallingConfig.allowedFunctionNames` 只有在 `mode:"ANY"` 下生效：单个 allowed 转 named，多个 allowed 转 required；`AUTO` 即 auto，`NONE` 即 none。
+- Response 支持 prompt block refusal、所有 candidates -> choices、text、thought text、functionCall、finish reason、usage thought tokens。
+- Gemini stream 累计文本按前缀差值输出；不实现 thoughtSignature marker/footprint。
+
+### 05 LLM -> OpenAI Chat
+
+- 入口：`openai/chat.rs::llm_request_to_chat`、`llm_response_to_chat`，stream target 为 `OpenAiChat`。
+- Request 输出 `model`、`messages`、token 字段、采样参数、penalty、`seed`、`service_tier`、logprobs、`user`、`logit_bias`、`verbosity`、`reasoning_effort`、`stream` / `stream_options`、`stop`、`tool_choice`、`tools`、`parallel_tool_calls`、`response_format`、`prompt_cache_key`、`metadata`、`extra_body`。
+- Token 字段按当前兼容策略处理：o-series/GPT-5 类模型输出 `max_completion_tokens`，其他模型输出 `max_tokens`。
+- system/developer/user/assistant/tool roles 都可输出；content 支持 text 和 `image_url`，不承载 video/audio。
+- `reasoning_content` 当前固定输出用于 reasoning 互通；没有 AxonHub 的 channel-level `ReasoningField` 配置，也不会默认剥离 reasoning。
+- Function tools 支持；Responses custom tool 兼容扩展会为 roundtrip 保留，但严格 OpenAI Chat provider 可能不接受该扩展。
+- 没有 tools 时不要输出 `parallel_tool_calls`。
+- Response 输出所有 choices、message、finish_reason、usage。
+- Chat SSE finish chunk 必须包含 `delta:{}`，并用 `[DONE]` 结束；纯 signature chunk 不存在，因为本模块不生成 provider marker signature chunk。
+- 不承载 `store`、`safety_identifier`、modalities、audio/video。
+
+### 06 LLM -> OpenAI Responses
+
+- 入口：`openai/responses/mod.rs::llm_request_to_responses`、`llm_response_to_responses`，stream target 为 `OpenAiResponses`。
+- Request 输出 `model`、`input`、`instructions`、`max_output_tokens`、temperature、`top_p`、penalty、`service_tier`、`top_logprobs`、`user`、`reasoning.effort`、`stream`、`stop`、`tool_choice`、`tools`、`parallel_tool_calls`、`text.format` / verbosity、`prompt_cache_key`、`metadata`、`extra_body`。
+- `input` 当前统一输出 array，不保留 AxonHub 的 single string input optimization。
+- system/developer 合并为 `instructions`；user/assistant text/image/refusal/annotations 输出为 message content。
+- Assistant reasoning 输出为 reasoning item；function/custom tool call 与 output 都支持，custom output 通过当前 request 内 call id 判断 item type。
+- Tool call item 必须输出 `status:"completed"`。
+- Response 输出 reasoning、message、refusal、tool calls、usage、status、`created_at`、`previous_response_id`。
+- `response_format` json_schema wrapper 与 Responses `text.format` 双向转换。
+- Strict schema normalize 不在当前实现中自动补 `additionalProperties:false` / required；只透传 schema。
+- Responses SSE 覆盖 text、reasoning、function tool、custom tool、finish，事件序列比 AxonHub 简化但要保证客户端关键事件和完成幂等。
+- 不承载 `store`、`safety_identifier`、`include`、`max_tool_calls`、`prompt_cache_retention`、`truncation`、`stream_options.include_obfuscation`、compact、image generation、encrypted-only signature。
+
+### 07 LLM -> Anthropic Claude Messages
+
+- 入口：`anthropic/outbound.rs::llm_request_to_anthropic`、`llm_response_to_anthropic`，stream target 为 `AnthropicMessages`。
+- Request 输出 `model`、`messages`、`system`、`max_tokens`、`thinking`、temperature、`top_p`、`stream`、`stop_sequences`、`tool_choice`、`tools`。
+- `max_tokens` 缺失时默认输出 `8192`，避免 Anthropic target 缺必填字段。
+- `metadata["user_id"]` 要输出到 Anthropic `metadata.user_id`。
+- URL/header/auth/Bedrock/Vertex/LongCat 平台差异不在本模块，由 Gateway runtime target protocol/header/auth 决策负责。
+- `ReasoningEffort` 可转 Anthropic thinking budget，`none` 转 disabled；不承载 `ReasoningBudget`、thinking display/adaptive、output_config metadata。
+- user/assistant text、image data URL -> base64 source、普通 image URL -> URL source 都支持。
+- Tool call 转 `tool_use`；tool result messages 聚合为 user `tool_result`，同一 Anthropic 原始 user message 的 tool_result + 后续文本可根据 message index 合并。
+- `is_error` 和 tool_result `cache_control` 支持；tool arguments 解析失败 fallback `{}`，没有 AxonHub 的 safe JSON repair。
+- `redacted_thinking`、Anthropic native web_search 不输出；thinking signature 不生成 fake signature，也不做 provider marker decode/encode。
+- Response 输出 thinking/text/image/tool_use、stop reason、usage。
+- Anthropic target SSE 必须保证 `content_block_start`、delta、`content_block_stop` 顺序完整，并保证 finish 幂等。
+
+### 08 LLM -> Gemini Native
+
+- 入口：`gemini/mod.rs::llm_request_to_gemini`、`llm_response_to_gemini`，stream target 为 `GeminiNative`。
+- Request 输出 `contents`、`systemInstruction`、`generationConfig`、`toolConfig`、`tools`。
+- `max_tokens` / `max_completion_tokens`、temperature、`top_p`、presence/frequency penalty、`seed`、`stopSequences` 支持。
+- `reasoning_effort` 输出 `thinkingConfig`，支持 none/low/medium/high/xhigh；不实现 AxonHub 针对 Gemini 3/2.5 的默认 thoughtSignature 补签。
+- `response_format` json_schema/json_object 输出 `responseMimeType` / `responseSchema`。
+- system/developer 输出 `systemInstruction`；user/assistant/tool role 映射。
+- Text 和 reasoning thought text 支持；image data URL -> `inlineData`，普通 image URL -> `fileData.fileUri`，document data URL / regular URL -> `inlineData` / `fileData`。
+- video/audio、modalities、`imageConfig`、`safetySettings`、`topK`、logprobs、`responseLogprobs` 不承载。
+- Tool call 输出 `functionCall`；tool result 输出 `functionResponse`，并可根据前序 tool call id 找 name。
+- Function declarations、`parametersJsonSchema`、Google native tools 支持；tool choice `NONE` / `ANY` / `allowedFunctionNames` 支持。
+- Response 输出所有 choices -> candidates，支持 text/thought/tool call/finish/usage。
+- Gemini target stream 不输出 OpenAI `[DONE]`，通过 Gemini finish chunk 完成。
+
 ## JSON 请求转换细节
 
 - Anthropic `system` 转 OpenAI Chat `system` message，转 Responses `instructions`，转 Gemini `systemInstruction.parts[].text`。

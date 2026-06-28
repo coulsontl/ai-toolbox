@@ -145,15 +145,20 @@ fn outbound_transformer(protocol: AiProtocol) -> Box<dyn OutboundTransformer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coding::proxy_gateway::protocol_conversion::anthropic::anthropic_request_to_llm;
     use crate::coding::proxy_gateway::protocol_conversion::gemini::{
-        gemini_request_to_llm, llm_request_to_gemini,
+        gemini_request_to_llm, gemini_response_to_llm, llm_request_to_gemini,
+        llm_response_to_gemini,
     };
     use crate::coding::proxy_gateway::protocol_conversion::llm::{
-        TOOL_TYPE_GOOGLE_CODE_EXECUTION, TOOL_TYPE_GOOGLE_SEARCH, TOOL_TYPE_GOOGLE_URL_CONTEXT,
-        TOOL_TYPE_RESPONSES_CUSTOM_TOOL,
+        ApiFormat, MessageContent, RequestType, TOOL_TYPE_GOOGLE_CODE_EXECUTION,
+        TOOL_TYPE_GOOGLE_SEARCH, TOOL_TYPE_GOOGLE_URL_CONTEXT, TOOL_TYPE_RESPONSES_CUSTOM_TOOL,
     };
     use crate::coding::proxy_gateway::protocol_conversion::openai::chat::{
-        chat_response_to_llm, llm_response_to_chat,
+        chat_request_to_llm, chat_response_to_llm, llm_response_to_chat,
+    };
+    use crate::coding::proxy_gateway::protocol_conversion::openai::responses::{
+        llm_response_to_responses, responses_request_to_llm, responses_response_to_llm,
     };
     use futures_util::{stream, StreamExt};
     use serde_json::json;
@@ -1253,6 +1258,55 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"model-a","
     }
 
     #[test]
+    fn anthropic_url_image_source_converts_both_directions() {
+        let chat = convert_request_value(
+            ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+            json!({
+                "model": "claude-3-sonnet-20240229",
+                "max_tokens": 1024,
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "image",
+                        "source": {
+                            "type": "url",
+                            "url": "https://example.com/chart.png"
+                        }
+                    }]
+                }]
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            chat["messages"][0]["content"][0]["image_url"]["url"],
+            "https://example.com/chart.png"
+        );
+
+        let anthropic = convert_request_value(
+            ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::AnthropicMessages),
+            json!({
+                "model": "claude-3-sonnet-20240229",
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.com/chart.png"}
+                    }]
+                }]
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            anthropic["messages"][0]["content"][0]["source"]["type"],
+            "url"
+        );
+        assert_eq!(
+            anthropic["messages"][0]["content"][0]["source"]["url"],
+            "https://example.com/chart.png"
+        );
+    }
+
+    #[test]
     fn anthropic_batch_tool_is_filtered_for_non_anthropic_targets() {
         let source = json!({
             "model": "claude-sonnet-4-5-20250929",
@@ -2043,6 +2097,433 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"model-a","
             .expect("tool response message");
         assert_eq!(tool_message["tool_call_id"], "lookup_weather");
         assert_eq!(tool_message["content"], "sunny");
+    }
+
+    #[test]
+    fn gemini_file_data_and_image_url_convert_both_directions() {
+        let chat = convert_request_value(
+            ConversionRoute::new(AiProtocol::GeminiNative, AiProtocol::OpenAiChat),
+            json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [{
+                        "fileData": {
+                            "mimeType": "image/png",
+                            "fileUri": "https://example.com/chart.png"
+                        }
+                    }]
+                }]
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            chat["messages"][0]["content"][0]["image_url"]["url"],
+            "https://example.com/chart.png"
+        );
+
+        let gemini = convert_request_value(
+            ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::GeminiNative),
+            json!({
+                "model": "gemini-2.5-flash",
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.com/chart.png"}
+                    }]
+                }]
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            gemini["contents"][0]["parts"][0]["fileData"]["fileUri"],
+            "https://example.com/chart.png"
+        );
+    }
+
+    #[test]
+    fn inbound_requests_mark_request_type_and_api_format() {
+        let chat = chat_request_to_llm(json!({
+            "model": "model-a",
+            "messages": [{"role": "user", "content": "hi"}]
+        }));
+        assert_eq!(chat.request_type, Some(RequestType::Chat));
+        assert_eq!(chat.api_format, Some(ApiFormat::OpenAiChatCompletions));
+
+        let responses = responses_request_to_llm(json!({
+            "model": "model-a",
+            "input": "hi"
+        }));
+        assert_eq!(responses.request_type, Some(RequestType::Chat));
+        assert_eq!(responses.api_format, Some(ApiFormat::OpenAiResponses));
+
+        let anthropic = anthropic_request_to_llm(json!({
+            "model": "model-a",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "hi"}]
+        }));
+        assert_eq!(anthropic.request_type, Some(RequestType::Chat));
+        assert_eq!(anthropic.api_format, Some(ApiFormat::AnthropicMessages));
+
+        let gemini = gemini_request_to_llm(json!({
+            "model": "model-a",
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}]
+        }));
+        assert_eq!(gemini.request_type, Some(RequestType::Chat));
+        assert_eq!(gemini.api_format, Some(ApiFormat::GeminiContents));
+    }
+
+    #[test]
+    fn chat_reasoning_field_syncs_into_llm_message() {
+        let llm = chat_request_to_llm(json!({
+            "model": "model-a",
+            "messages": [{
+                "role": "assistant",
+                "reasoning": "internal trace",
+                "content": "answer"
+            }]
+        }));
+        assert_eq!(
+            llm.messages[0].reasoning_content.as_deref(),
+            Some("internal trace")
+        );
+        assert_eq!(llm.messages[0].reasoning.as_deref(), Some("internal trace"));
+
+        let anthropic = convert_request_value(
+            ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::AnthropicMessages),
+            json!({
+                "model": "model-a",
+                "messages": [{
+                    "role": "assistant",
+                    "reasoning": "internal trace",
+                    "content": "answer"
+                }]
+            }),
+        )
+        .unwrap();
+        assert_eq!(anthropic["messages"][0]["content"][0]["type"], "thinking");
+        assert_eq!(
+            anthropic["messages"][0]["content"][0]["thinking"],
+            "internal trace"
+        );
+    }
+
+    #[test]
+    fn responses_reasoning_item_merges_following_function_call() {
+        let llm = responses_request_to_llm(json!({
+            "model": "model-a",
+            "input": [
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "need tool"}]
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_weather",
+                    "name": "lookup_weather",
+                    "arguments": "{\"city\":\"Tokyo\"}"
+                }
+            ]
+        }));
+        assert_eq!(llm.messages.len(), 1);
+        assert_eq!(llm.messages[0].role, "assistant");
+        assert_eq!(
+            llm.messages[0].reasoning_content.as_deref(),
+            Some("need tool")
+        );
+        assert_eq!(llm.messages[0].tool_calls.len(), 1);
+        assert_eq!(
+            llm.messages[0].tool_calls[0].function.name,
+            "lookup_weather"
+        );
+    }
+
+    #[test]
+    fn responses_standalone_input_image_item_converts_to_image_url() {
+        let chat = convert_request_value(
+            ConversionRoute::new(AiProtocol::OpenAiResponses, AiProtocol::OpenAiChat),
+            json!({
+                "model": "model-a",
+                "input": [{
+                    "type": "input_image",
+                    "image_url": "https://example.com/input.png",
+                    "detail": "high"
+                }]
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            chat["messages"][0]["content"][0]["image_url"]["url"],
+            "https://example.com/input.png"
+        );
+        assert_eq!(
+            chat["messages"][0]["content"][0]["image_url"]["detail"],
+            "high"
+        );
+    }
+
+    #[test]
+    fn responses_status_and_previous_response_metadata_roundtrip() {
+        let llm = responses_response_to_llm(json!({
+            "id": "resp_1",
+            "model": "model-a",
+            "created_at": 123,
+            "previous_response_id": "resp_0",
+            "status": "failed",
+            "output": []
+        }));
+        assert_eq!(llm.previous_response_id.as_deref(), Some("resp_0"));
+        assert_eq!(llm.created, 123);
+        assert_eq!(llm.choices[0].finish_reason.as_deref(), Some("error"));
+
+        let responses = llm_response_to_responses(llm);
+        assert_eq!(responses["previous_response_id"], "resp_0");
+        assert_eq!(responses["created_at"], 123);
+        assert_eq!(responses["status"], "failed");
+    }
+
+    #[test]
+    fn responses_tool_call_items_include_completed_status() {
+        let responses = convert_response_value(
+            ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::OpenAiResponses),
+            json!({
+                "id": "chat_1",
+                "object": "chat.completion",
+                "created": 123,
+                "model": "model-a",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [{
+                            "id": "call_weather",
+                            "type": "function",
+                            "function": {
+                                "name": "lookup_weather",
+                                "arguments": "{\"city\":\"Tokyo\"}"
+                            }
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            }),
+        )
+        .unwrap();
+        assert_eq!(responses["output"][0]["status"], "completed");
+    }
+
+    #[test]
+    fn chat_response_preserves_multiple_choices() {
+        let llm = chat_response_to_llm(json!({
+            "id": "chat_multi",
+            "object": "chat.completion",
+            "created": 123,
+            "model": "model-a",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "first"},
+                    "finish_reason": "stop"
+                },
+                {
+                    "index": 1,
+                    "message": {"role": "assistant", "content": "second"},
+                    "finish_reason": "length"
+                }
+            ]
+        }));
+        assert_eq!(llm.choices.len(), 2);
+        assert_eq!(llm.choices[1].index, 1);
+
+        let chat = llm_response_to_chat(llm);
+        assert_eq!(chat["choices"].as_array().unwrap().len(), 2);
+        assert_eq!(chat["choices"][1]["message"]["content"], "second");
+        assert_eq!(chat["choices"][1]["finish_reason"], "length");
+    }
+
+    #[test]
+    fn gemini_response_preserves_multiple_candidates() {
+        let llm = gemini_response_to_llm(json!({
+            "responseId": "gemini_multi",
+            "modelVersion": "gemini-2.5-flash",
+            "candidates": [
+                {
+                    "content": {"role": "model", "parts": [{"text": "first"}]},
+                    "finishReason": "STOP"
+                },
+                {
+                    "content": {"role": "model", "parts": [{"text": "second"}]},
+                    "finishReason": "MAX_TOKENS"
+                }
+            ]
+        }));
+        assert_eq!(llm.choices.len(), 2);
+        assert_eq!(llm.choices[1].finish_reason.as_deref(), Some("length"));
+
+        let gemini = llm_response_to_gemini(llm);
+        assert_eq!(gemini["candidates"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            gemini["candidates"][1]["content"]["parts"][0]["text"],
+            "second"
+        );
+        assert_eq!(gemini["candidates"][1]["finishReason"], "MAX_TOKENS");
+    }
+
+    #[test]
+    fn gemini_system_instruction_filters_thought_parts() {
+        let llm = gemini_request_to_llm(json!({
+            "systemInstruction": {
+                "parts": [
+                    {"text": "visible"},
+                    {"text": "hidden", "thought": true},
+                    {"text": "also visible"}
+                ]
+            },
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}]
+        }));
+        assert_eq!(
+            llm.messages[0].content,
+            MessageContent::Text("visible\nalso visible".to_string())
+        );
+    }
+
+    #[test]
+    fn gemini_tool_choice_allowed_names_respects_mode() {
+        let auto_chat = convert_request_value(
+            ConversionRoute::new(AiProtocol::GeminiNative, AiProtocol::OpenAiChat),
+            json!({
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "toolConfig": {
+                    "functionCallingConfig": {
+                        "mode": "AUTO",
+                        "allowedFunctionNames": ["lookup_weather"]
+                    }
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(auto_chat["tool_choice"], "auto");
+
+        let required_chat = convert_request_value(
+            ConversionRoute::new(AiProtocol::GeminiNative, AiProtocol::OpenAiChat),
+            json!({
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "toolConfig": {
+                    "functionCallingConfig": {
+                        "mode": "ANY",
+                        "allowedFunctionNames": ["lookup_weather", "lookup_time"]
+                    }
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(required_chat["tool_choice"], "required");
+    }
+
+    #[test]
+    fn anthropic_image_missing_media_type_uses_octet_stream() {
+        let chat = convert_request_value(
+            ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+            json!({
+                "model": "model-a",
+                "max_tokens": 1024,
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "data": "AAAA"
+                        }
+                    }]
+                }]
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            chat["messages"][0]["content"][0]["image_url"]["url"],
+            "data:application/octet-stream;base64,AAAA"
+        );
+    }
+
+    #[test]
+    fn anthropic_metadata_and_max_tokens_roundtrip_to_anthropic_target() {
+        let anthropic = convert_request_value(
+            ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::AnthropicMessages),
+            json!({
+                "model": "model-a",
+                "metadata": {"user_id": "user_1"},
+                "messages": [{"role": "user", "content": "hi"}]
+            }),
+        )
+        .unwrap();
+        assert_eq!(anthropic["metadata"]["user_id"], "user_1");
+        assert_eq!(anthropic["max_tokens"], 8192);
+    }
+
+    #[test]
+    fn anthropic_thinking_syncs_reasoning_fields() {
+        let llm = anthropic_request_to_llm(json!({
+            "model": "model-a",
+            "max_tokens": 1024,
+            "messages": [{
+                "role": "assistant",
+                "content": [{
+                    "type": "thinking",
+                    "thinking": "internal trace"
+                }]
+            }]
+        }));
+        assert_eq!(
+            llm.messages[0].reasoning_content.as_deref(),
+            Some("internal trace")
+        );
+        assert_eq!(llm.messages[0].reasoning.as_deref(), Some("internal trace"));
+    }
+
+    #[test]
+    fn gemini_thinking_budget_threshold_matches_axonhub() {
+        let low = gemini_request_to_llm(json!({
+            "generationConfig": {
+                "thinkingConfig": {"includeThoughts": true, "thinkingBudget": 1024}
+            },
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}]
+        }));
+        assert_eq!(low.reasoning_effort.as_deref(), Some("low"));
+
+        let medium = gemini_request_to_llm(json!({
+            "generationConfig": {
+                "thinkingConfig": {"includeThoughts": true, "thinkingBudget": 8192}
+            },
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}]
+        }));
+        assert_eq!(medium.reasoning_effort.as_deref(), Some("medium"));
+
+        let high = gemini_request_to_llm(json!({
+            "generationConfig": {
+                "thinkingConfig": {"includeThoughts": true, "thinkingBudget": 8193}
+            },
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}]
+        }));
+        assert_eq!(high.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn gemini_thought_text_syncs_reasoning_fields() {
+        let llm = gemini_request_to_llm(json!({
+            "contents": [{
+                "role": "model",
+                "parts": [
+                    {"text": "internal", "thought": true},
+                    {"text": "answer"}
+                ]
+            }]
+        }));
+        assert_eq!(
+            llm.messages[0].reasoning_content.as_deref(),
+            Some("internal")
+        );
+        assert_eq!(llm.messages[0].reasoning.as_deref(), Some("internal"));
     }
 
     #[test]

@@ -1,9 +1,9 @@
 use super::error::ProtocolConversionError;
 use super::llm::{
-    Choice, Function, FunctionCall, GoogleTools, ImageUrl, Message, MessageContent,
-    MessageContentPart, Request, Response, Stop, Tool, ToolCall, ToolChoice, Usage,
-    TOOL_TYPE_FUNCTION, TOOL_TYPE_GOOGLE_CODE_EXECUTION, TOOL_TYPE_GOOGLE_SEARCH,
-    TOOL_TYPE_GOOGLE_URL_CONTEXT,
+    ApiFormat, Choice, DocumentUrl, Function, FunctionCall, GoogleTools, ImageUrl, Message,
+    MessageContent, MessageContentPart, Request, RequestType, Response, Stop, Tool, ToolCall,
+    ToolChoice, Usage, TOOL_TYPE_FUNCTION, TOOL_TYPE_GOOGLE_CODE_EXECUTION,
+    TOOL_TYPE_GOOGLE_SEARCH, TOOL_TYPE_GOOGLE_URL_CONTEXT,
 };
 use super::shared::{json_string, stop_from_value, tool_arguments_value, tool_choice_from_gemini};
 use super::transformer::{InboundTransformer, OutboundTransformer};
@@ -60,6 +60,8 @@ pub fn gemini_request_to_llm(body: Value) -> Request {
             .unwrap_or_default()
             .to_string(),
         stream: body.get("stream").and_then(Value::as_bool),
+        request_type: Some(RequestType::Chat),
+        api_format: Some(ApiFormat::GeminiContents),
         ..Default::default()
     };
     if let Some(config) = body.get("generationConfig") {
@@ -119,9 +121,9 @@ fn reasoning_effort_from_gemini_thinking_config(config: &Value) -> Option<String
     let budget = config.get("thinkingBudget").and_then(Value::as_i64)?;
     if budget <= 0 {
         Some("none".to_string())
-    } else if budget <= 4_096 {
+    } else if budget <= 1_024 {
         Some("low".to_string())
-    } else if budget < 16_000 {
+    } else if budget <= 8_192 {
         Some("medium".to_string())
     } else {
         Some("high".to_string())
@@ -218,9 +220,10 @@ fn gemini_parts_text(parts: Option<&Value>) -> Option<String> {
     let text = parts
         .and_then(Value::as_array)?
         .iter()
+        .filter(|part| part.get("thought").and_then(Value::as_bool) != Some(true))
         .filter_map(|part| part.get("text").and_then(Value::as_str))
         .collect::<Vec<_>>()
-        .join("\n\n");
+        .join("\n");
     (!text.is_empty()).then_some(text)
 }
 
@@ -264,14 +267,25 @@ fn gemini_content_to_llm(
                     .get("data")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                parts.push(MessageContentPart {
-                    part_type: "image_url".to_string(),
-                    image_url: Some(ImageUrl {
-                        url: format!("data:{mime};base64,{data}"),
-                        detail: None,
-                    }),
-                    ..Default::default()
-                });
+                parts.push(gemini_media_part_to_llm(
+                    mime,
+                    format!("data:{mime};base64,{data}"),
+                ));
+            }
+            if let Some(file_data) = part.get("fileData").or_else(|| part.get("file_data")) {
+                let uri = file_data
+                    .get("fileUri")
+                    .or_else(|| file_data.get("file_uri"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if !uri.is_empty() {
+                    let mime = file_data
+                        .get("mimeType")
+                        .or_else(|| file_data.get("mime_type"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    parts.push(gemini_media_part_to_llm(mime, uri.to_string()));
+                }
             }
             if let Some(function_call) = part.get("functionCall") {
                 tool_calls.push(ToolCall {
@@ -319,13 +333,43 @@ fn gemini_content_to_llm(
             }
         }
     }
+    let reasoning = (!reasoning_chunks.is_empty()).then(|| reasoning_chunks.join(""));
     tool_result.unwrap_or(Message {
         role,
         content: MessageContent::Parts(parts),
         tool_calls,
-        reasoning_content: (!reasoning_chunks.is_empty()).then(|| reasoning_chunks.join("")),
+        reasoning_content: reasoning.clone(),
+        reasoning,
         ..Default::default()
     })
+}
+
+fn gemini_media_part_to_llm(mime: &str, url: String) -> MessageContentPart {
+    if is_gemini_document_mime(mime) {
+        return MessageContentPart {
+            part_type: "document".to_string(),
+            document: Some(DocumentUrl {
+                url,
+                mime_type: mime.to_string(),
+            }),
+            ..Default::default()
+        };
+    }
+
+    MessageContentPart {
+        part_type: "image_url".to_string(),
+        image_url: Some(ImageUrl { url, detail: None }),
+        ..Default::default()
+    }
+}
+
+fn is_gemini_document_mime(mime: &str) -> bool {
+    let normalized = mime.to_ascii_lowercase();
+    normalized.starts_with("application/pdf")
+        || normalized.starts_with("application/msword")
+        || normalized.starts_with("application/vnd.openxmlformats-officedocument")
+        || normalized.starts_with("application/vnd.ms-")
+        || normalized.starts_with("text/")
 }
 
 fn gemini_function_response_text(response: Option<&Value>) -> String {
@@ -579,6 +623,35 @@ fn llm_message_to_gemini_content(message: Message) -> Value {
                                         "data": data
                                     }
                                 }));
+                            } else if !image.url.is_empty() {
+                                parts.push(json!({
+                                    "fileData": {
+                                        "fileUri": image.url
+                                    }
+                                }));
+                            }
+                        }
+                    }
+                    "document" => {
+                        if let Some(document) = part.document {
+                            if let Some((mime, data)) = document
+                                .url
+                                .strip_prefix("data:")
+                                .and_then(|rest| rest.split_once(";base64,"))
+                            {
+                                parts.push(json!({
+                                    "inlineData": {
+                                        "mimeType": mime,
+                                        "data": data
+                                    }
+                                }));
+                            } else if !document.url.is_empty() {
+                                parts.push(json!({
+                                    "fileData": {
+                                        "mimeType": document.mime_type,
+                                        "fileUri": document.url
+                                    }
+                                }));
                             }
                         }
                     }
@@ -691,17 +764,39 @@ pub fn gemini_response_to_llm(body: Value) -> Response {
         };
     }
 
-    let candidate = body
+    let candidates = body
         .get("candidates")
         .and_then(Value::as_array)
-        .and_then(|candidates| candidates.first())
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    let message = gemini_content_to_llm(
-        candidate.get("content").unwrap_or(&json!({})),
-        &HashMap::new(),
-    );
-    let has_tool = !message.tool_calls.is_empty();
+        .filter(|candidates| !candidates.is_empty())
+        .map(|candidates| {
+            candidates
+                .iter()
+                .enumerate()
+                .map(|(index, candidate)| {
+                    let message = gemini_content_to_llm(
+                        candidate.get("content").unwrap_or(&json!({})),
+                        &HashMap::new(),
+                    );
+                    let has_tool = !message.tool_calls.is_empty();
+                    Choice {
+                        index,
+                        message,
+                        finish_reason: Some(gemini_finish_to_openai_finish(
+                            candidate.get("finishReason").and_then(Value::as_str),
+                            has_tool,
+                        )),
+                        ..Default::default()
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            vec![Choice {
+                message: gemini_content_to_llm(&json!({}), &HashMap::new()),
+                finish_reason: Some("stop".to_string()),
+                ..Default::default()
+            }]
+        });
     Response {
         id: body
             .get("responseId")
@@ -713,30 +808,30 @@ pub fn gemini_response_to_llm(body: Value) -> Response {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
-        choices: vec![Choice {
-            index: 0,
-            message,
-            finish_reason: Some(gemini_finish_to_openai_finish(
-                candidate.get("finishReason").and_then(Value::as_str),
-                has_tool,
-            )),
-            ..Default::default()
-        }],
+        choices: candidates,
         usage: Some(gemini_usage_to_llm(body.get("usageMetadata"))),
         ..Default::default()
     }
 }
 
 pub fn llm_response_to_gemini(response: Response) -> Value {
-    let choice = response.choices.first().cloned().unwrap_or_default();
-    let content = llm_message_to_gemini_content(choice.message.clone());
+    let choices = if response.choices.is_empty() {
+        vec![Choice::default()]
+    } else {
+        response.choices
+    };
     json!({
         "responseId": response.id,
         "modelVersion": response.model,
-        "candidates": [{
-            "content": content,
-            "finishReason": openai_finish_to_gemini_finish(choice.finish_reason.as_deref())
-        }],
+        "candidates": choices
+            .into_iter()
+            .map(|choice| {
+                json!({
+                    "content": llm_message_to_gemini_content(choice.message),
+                    "finishReason": openai_finish_to_gemini_finish(choice.finish_reason.as_deref())
+                })
+            })
+            .collect::<Vec<_>>(),
         "usageMetadata": llm_usage_to_gemini(response.usage.as_ref())
     })
 }

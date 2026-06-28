@@ -98,7 +98,10 @@
       "Read(//tmp/**)",
       "Bash(codex --version)",
       "Bash(npm uninstall *)",
-      "Bash(npm install *)"
+      "Bash(npm install *)",
+      "Read(//mnt/d/GitHub/axonhub/llm/transformer/openai/**)",
+      "Read(//mnt/d/GitHub/axonhub/llm/transformer/openai/responses/**)",
+      "Read(//mnt/d/GitHub/axonhub/llm/transformer/shared/**)"
     ]
   }
 }

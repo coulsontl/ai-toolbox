@@ -1,8 +1,8 @@
 use super::super::error::ProtocolConversionError;
 use super::super::llm::{
-    Choice, Function, FunctionCall, ImageUrl, Message, MessageContent, MessageContentPart, Request,
-    Response, ResponseCustomTool, ResponseCustomToolCall, StreamOptions, Tool, ToolCall, Usage,
-    TOOL_TYPE_FUNCTION, TOOL_TYPE_RESPONSES_CUSTOM_TOOL,
+    ApiFormat, Choice, Function, FunctionCall, ImageUrl, Message, MessageContent,
+    MessageContentPart, Request, RequestType, Response, ResponseCustomTool, ResponseCustomToolCall,
+    StreamOptions, Tool, ToolCall, Usage, TOOL_TYPE_FUNCTION, TOOL_TYPE_RESPONSES_CUSTOM_TOOL,
 };
 use super::super::shared::{
     content_text, stop_from_value, stop_to_value, tool_choice_from_openai, tool_choice_to_openai,
@@ -99,6 +99,8 @@ pub fn chat_request_to_llm(body: Value) -> Request {
             .map(ToString::to_string),
         metadata: metadata_from_value(body.get("metadata")),
         extra_body: body.get("extra_body").cloned(),
+        request_type: Some(RequestType::Chat),
+        api_format: Some(ApiFormat::OpenAiChatCompletions),
         ..Default::default()
     };
     if let Some(messages) = body.get("messages").and_then(Value::as_array) {
@@ -292,6 +294,12 @@ fn chat_message_to_llm(message: &Value) -> Message {
             ..Default::default()
         });
     }
+    let reasoning = message
+        .get("reasoning_content")
+        .or_else(|| message.get("reasoning"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+
     Message {
         role,
         content,
@@ -305,16 +313,13 @@ fn chat_message_to_llm(message: &Value) -> Message {
             .unwrap_or_default()
             .to_string(),
         tool_calls,
-        reasoning_content: message
-            .get("reasoning_content")
-            .or_else(|| message.get("reasoning"))
-            .and_then(Value::as_str)
-            .map(ToString::to_string),
         annotations: message
             .get("annotations")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default(),
+        reasoning_content: reasoning.clone(),
+        reasoning,
         ..Default::default()
     }
 }
@@ -547,13 +552,40 @@ fn llm_content_to_chat_value(content: MessageContent) -> Value {
 }
 
 pub fn chat_response_to_llm(body: Value) -> Response {
-    let choice = body
+    let choices = body
         .get("choices")
         .and_then(Value::as_array)
-        .and_then(|choices| choices.first())
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    let message = choice.get("message").cloned().unwrap_or_else(|| json!({}));
+        .filter(|choices| !choices.is_empty())
+        .map(|choices| {
+            choices
+                .iter()
+                .map(|choice| {
+                    let message = choice.get("message").cloned().unwrap_or_else(|| json!({}));
+                    Choice {
+                        index: choice.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
+                        message: chat_message_to_llm(&message),
+                        finish_reason: choice
+                            .get("finish_reason")
+                            .and_then(Value::as_str)
+                            .map(|reason| {
+                                if reason == "function_call" {
+                                    "tool_calls"
+                                } else {
+                                    reason
+                                }
+                            })
+                            .map(ToString::to_string),
+                        ..Default::default()
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            vec![Choice {
+                message: chat_message_to_llm(&json!({})),
+                ..Default::default()
+            }]
+        });
     Response {
         id: body
             .get("id")
@@ -570,22 +602,7 @@ pub fn chat_response_to_llm(body: Value) -> Response {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
-        choices: vec![Choice {
-            index: choice.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
-            message: chat_message_to_llm(&message),
-            finish_reason: choice
-                .get("finish_reason")
-                .and_then(Value::as_str)
-                .map(|reason| {
-                    if reason == "function_call" {
-                        "tool_calls"
-                    } else {
-                        reason
-                    }
-                })
-                .map(ToString::to_string),
-            ..Default::default()
-        }],
+        choices,
         usage: Some(openai_usage_to_llm(body.get("usage"))),
         ..Default::default()
     }
@@ -610,17 +627,26 @@ fn is_openai_o_series(model: &str) -> bool {
 }
 
 pub fn llm_response_to_chat(response: Response) -> Value {
-    let choice = response.choices.first().cloned().unwrap_or_default();
+    let choices = if response.choices.is_empty() {
+        vec![Choice::default()]
+    } else {
+        response.choices
+    };
     json!({
         "id": response.id,
         "object": "chat.completion",
         "created": response.created,
         "model": response.model,
-        "choices": [{
-            "index": choice.index,
-            "message": llm_message_to_chat(choice.message),
-            "finish_reason": choice.finish_reason.unwrap_or_else(|| "stop".to_string())
-        }],
+        "choices": choices
+            .into_iter()
+            .map(|choice| {
+                json!({
+                    "index": choice.index,
+                    "message": llm_message_to_chat(choice.message),
+                    "finish_reason": choice.finish_reason.unwrap_or_else(|| "stop".to_string())
+                })
+            })
+            .collect::<Vec<_>>(),
         "usage": usage_to_openai(response.usage.as_ref())
     })
 }
