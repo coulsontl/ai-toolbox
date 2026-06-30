@@ -43,7 +43,7 @@ This document provides essential information for AI coding agents working on thi
 | `tauri/src/coding/oh_my_openagent/` | Oh My OpenAgent 后端配置、临时本地态、应用链路与 OpenCode WSL 联动 |
 | `tauri/src/coding/oh_my_opencode_slim/` | Oh My OpenCode Slim 后端配置、临时本地态、应用链路与 OpenCode WSL 联动 |
 | `tauri/src/coding/proxy_gateway/` | 本机代理网关、CLI 接管 manifest、配置备份恢复与模型级健康/日志文件 |
-| `tauri/src/coding/proxy_gateway/protocol_conversion/` | 网关协议转换独立模块：Anthropic/OpenAI Chat/OpenAI Responses/Gemini Native JSON 与 SSE 互转 |
+| `tauri/src/coding/proxy_gateway/transformer/` | 网关协议转换独立模块：Anthropic/OpenAI Chat/OpenAI Responses/Gemini Native JSON 与 SSE 互转 |
 | `tauri/src/coding/session_manager/` | 会话浏览、详情、重命名、导入导出与运行时路径解析 |
 | `tauri/src/coding/skills/` | Skills 中央仓库、导入发现、同步、托盘和 WSL/SSH 相关链路 |
 | `tauri/src/coding/tools/` | Skills/MCP 共用工具适配、检测与自定义工具存储 |

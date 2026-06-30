@@ -1,4 +1,4 @@
-# Protocol Conversion Module Notes
+# Transformer Module Notes
 
 ## 一句话职责
 
@@ -14,6 +14,7 @@
 - 本模块不能依赖数据库、Tauri app handle、provider 表、Gateway runtime context、请求日志或模型健康状态。
 - SSE 转换必须边读边写，不允许为了格式转换、日志或统计先 full-buffer 整个上游流。
 - `json.rs` / `streaming.rs` 是旧实现遗留文件；新开发和测试以 `kernel.rs`、`stream.rs`、各协议 transformer、`fixtures/reference/` 和 `fixtures/live_provider/` 为准，不要把旧实现重新作为 fallback。
+- 不要新增全局递归 `omitempty` / `omit_empty` 清理函数替代 AxonHub Go struct tag。Rust 中间模型可以继续用 `#[serde(skip_serializing_if = ...)]` 表达可省略字段；但最终 provider 出站 JSON 多数是手工 `serde_json::Value` 构造，必须按目标协议逐字段 `if let Some(...)` / `if !items.is_empty()` 插入。原因是部分协议字段允许或需要显式 `null`，全局清理会误删合法语义。
 
 ## 支持矩阵
 
@@ -111,12 +112,12 @@
 ### 05 LLM -> OpenAI Chat
 
 - 入口：`openai/chat.rs::llm_request_to_chat`、`llm_response_to_chat`，stream target 为 `OpenAiChat`。
-- Request 输出 `model`、`messages`、token 字段、采样参数、penalty、`seed`、`service_tier`、logprobs、`user`、`logit_bias`、`verbosity`、`reasoning_effort`、`stream` / `stream_options`、`stop`、`tool_choice`、`tools`、`parallel_tool_calls`、`response_format`、`prompt_cache_key`、`metadata`、`extra_body`。
+- Request 输出 `model`、`messages`、token 字段、采样参数、penalty、`seed`、`service_tier`、logprobs、`user`、`logit_bias`、`verbosity`、`reasoning_effort`、`stream` / `stream_options`、`stop`、`tool_choice`、`tools`、`parallel_tool_calls`、`response_format`、`prompt_cache_key`、`extra_body`；`metadata` 只在来源也是 OpenAI Chat/Responses 时作为 OpenAI 原生字段透传，Anthropic `metadata.user_id` 只用于转回 Anthropic，不能泄漏到 OpenAI 目标。
 - Token 字段按当前兼容策略处理：o-series/GPT-5 类模型输出 `max_completion_tokens`，其他模型输出 `max_tokens`。
 - system/developer/user/assistant/tool roles 都可输出；content 支持 text 和 `image_url`，不承载 video/audio。
 - `reasoning_content` 当前固定输出用于 reasoning 互通；没有 AxonHub 的 channel-level `ReasoningField` 配置，也不会默认剥离 reasoning。
 - Function tools 支持；Responses custom tool 兼容扩展会为 roundtrip 保留，但严格 OpenAI Chat provider 可能不接受该扩展。
-- 没有 tools 时不要输出 `parallel_tool_calls`。
+- 无最终 tools 时清理 `tool_choice` / `parallel_tool_calls` 属于 Gateway runtime outbound adapter 兼容，不属于纯协议结构转换。
 - Response 输出所有 choices、message、finish_reason、usage。
 - Chat SSE finish chunk 必须包含 `delta:{}`，并用 `[DONE]` 结束；纯 signature chunk 必须跳过，不能输出空 content/tool chunk 或泄漏 provider-private signature。
 - 不承载 `store`、`safety_identifier`、modalities、audio/video。
@@ -124,11 +125,12 @@
 ### 06 LLM -> OpenAI Responses
 
 - 入口：`openai/responses/mod.rs::llm_request_to_responses`、`llm_response_to_responses`，stream target 为 `OpenAiResponses`。
-- Request 输出 `model`、`input`、`instructions`、`max_output_tokens`、temperature、`top_p`、penalty、`service_tier`、`top_logprobs`、`user`、`reasoning.effort`、`stream`、`stop`、`tool_choice`、`tools`、`parallel_tool_calls`、`text.format` / verbosity、`prompt_cache_key`、`metadata`、`extra_body`。
+- Request 输出 `model`、`input`、`instructions`、`max_output_tokens`、temperature、`top_p`、penalty、`service_tier`、`top_logprobs`、`user`、`reasoning.effort`、`stream`、`stop`、`tool_choice`、`tools`、`parallel_tool_calls`、`text.format` / verbosity、`prompt_cache_key`、`extra_body`；`metadata` 只在来源也是 OpenAI Chat/Responses 时作为 OpenAI 原生字段透传，Anthropic `metadata.user_id` 只用于转回 Anthropic，不能泄漏到 Responses target。
 - `input` 当前统一输出 array，不保留 AxonHub 的 single string input optimization。
 - system/developer 合并为 `instructions`；user/assistant text/image/refusal/annotations 输出为 message content。
 - Assistant reasoning 输出为 reasoning item；function/custom tool call 与 output 都支持，custom output 通过当前 request 内 call id 判断 item type。
-- Tool call item 必须输出 `status:"completed"`。
+- 无最终 tools 时清理 `tool_choice` / `parallel_tool_calls` 属于 Gateway runtime outbound adapter 兼容，不属于纯协议结构转换。
+- Tool call item 必须输出 `status:"completed"`。Responses `function_call.id` 是 item id，必须使用 `fc*` 形态；custom tool item id 必须使用 `ctc*` 形态；原始工具调用 id 保留在 `call_id`，不要把 Anthropic/Chat 的 `call_*` 直接写进 Responses item `id`。
 - Response 输出 reasoning、message、refusal、tool calls、usage、status、`created_at`、`previous_response_id`。
 - `response_format` json_schema wrapper 与 Responses `text.format` 双向转换。
 - Strict schema normalize 不在当前实现中自动补 `additionalProperties:false` / required；只透传 schema。
@@ -143,6 +145,7 @@
 - Request 输出 `model`、`messages`、`system`、`max_tokens`、`thinking`、temperature、`top_p`、`stream`、`stop_sequences`、`tool_choice`、`tools`。
 - `max_tokens` 缺失时默认输出 `8192`，避免 Anthropic target 缺必填字段。
 - `metadata["user_id"]` 要输出到 Anthropic `metadata.user_id`。
+- 无最终 tools 时清理 `tool_choice` 属于 Gateway runtime outbound adapter 兼容，不属于纯协议结构转换。
 - URL/header/auth/Bedrock/Vertex/LongCat 平台差异不在本模块，由 Gateway runtime target protocol/header/auth 决策负责。
 - `ReasoningEffort` 可转 Anthropic thinking budget，`none` 转 disabled；不承载 `ReasoningBudget`、thinking display/adaptive、output_config metadata。
 - user/assistant text、image data URL -> base64 source、普通 image URL -> URL source 都支持。
@@ -210,7 +213,7 @@
   - Responses `max_output_tokens` -> Anthropic `max_tokens` / Chat `max_tokens`。
   - `temperature`、`top_p`、`stream` 按目标协议保留；stop 在 Anthropic 使用 `stop_sequences`，OpenAI/Responses 使用 `stop`，Gemini 使用 `stopSequences`。
   - OpenAI Chat `response_format` 与 Responses `text.format`、Gemini `generationConfig.responseMimeType/responseSchema` 互转；Anthropic 目标没有等价 JSON schema 字段，不伪造约束。
-  - OpenAI Chat / Responses 支持的请求级 pass-through 字段必须显式接线，至少包括 `parallel_tool_calls`、`prompt_cache_key`、`metadata`、`service_tier`、`frequency_penalty`、`presence_penalty`、`top_logprobs`、`user`、`verbosity`、`logprobs`、`logit_bias`、`seed`。
+  - OpenAI Chat / Responses 支持的请求级 pass-through 字段必须显式接线，至少包括 `parallel_tool_calls`、`prompt_cache_key`、`metadata`、`service_tier`、`frequency_penalty`、`presence_penalty`、`top_logprobs`、`user`、`verbosity`、`logprobs`、`logit_bias`、`seed`。其中 `metadata` 只在 OpenAI source 之间透传；Anthropic `metadata.user_id` 不等同于 OpenAI `metadata`，不能发往 OpenAI target。
   - `extra_body` 只作为显式字段读写；不要把未知顶层字段自动合并到目标协议 body，避免把 source-only 参数误发给不支持的 provider。
 - OpenAI stream request 转 Chat target 时必须补 `stream_options.include_usage=true`，避免流式 usage 丢失。
 
@@ -323,7 +326,7 @@
 
 ## 测试覆盖矩阵
 
-- `cargo test protocol_conversion::kernel`
+- `cargo test transformer::kernel`
   - `request_conversion_covers_all_non_identity_protocol_routes`：4 个协议两两非 identity 的 12 条 request route。
   - `response_conversion_covers_all_non_identity_protocol_routes`：4 个协议两两非 identity 的 12 条 response route。
   - `sse_conversion_covers_all_non_identity_protocol_routes`：4 个协议两两非 identity 的 12 条 SSE route，覆盖 text、reasoning、tool_call、finish、UTF-8/SSE 分块。
@@ -336,18 +339,18 @@
   - `reference_all_supported_stream_fixtures_convert_to_all_targets`：43 个 supported stream fixture 全部转标准 SSE 后再转所有非 identity target。
   - `reference_*_semantics_*` 与精确回归测试：从参考实现测试翻译来的关键断言，覆盖 stop/tool_choice、图片、工具结果、reasoning、Anthropic 混合 tool_result、Responses custom tool、Gemini thinkingConfig/native tools/schema/usage、stream tool argument accumulation 与 finish 幂等。
   - `live_provider_response_fixtures_convert_to_all_targets`：真实 provider HTTP 200 响应样本转所有非 identity target，覆盖 OpenAI Chat、OpenAI Responses、Anthropic Messages、Gemini Native 的真实响应 shape、reasoning、finish/status 和 usage 边界。
-- `cargo test protocol_conversion` 是本模块当前推荐的局部验证命令；它包含 `kernel` 测试和编译边界。
+- `cargo test transformer` 是本模块当前推荐的局部验证命令；它包含 `kernel` 测试和编译边界。
 
 ## 回归测试规则
 
 - 以后任何协议转换问题，无论来自开发自测、review、真实 provider 验证还是用户反馈，都必须在同一任务内补一个最贴近失败模式的回归测试；没有测试不能宣称修复完成。
 - 外部 provider 返回 shape 导致的问题优先沉淀为 `fixtures/live_provider/` 或更小的脱敏 fixture；转换器逻辑问题优先补精确单元断言；SSE 状态机问题必须补 stream fixture 或逐事件断言。
 - 真实 provider fixture 不得包含 API key、Authorization header、query key 或用户敏感输入；动态 id/timestamp 可以稳定化，但必须保留能触发问题的协议结构、finish/status、usage 和 content/reasoning 字段。
-- 修改后至少跑 `cd tauri && cargo test protocol_conversion --no-default-features`；大范围协议转换改动还必须按根规则补跑全量测试集合。
+- 修改后至少跑 `cd tauri && cargo test transformer --no-default-features`；大范围协议转换改动还必须按根规则补跑全量测试集合。
 
 ## 最小验证
 
-- 修改 JSON 转换、SSE parser、stream state、统一模型或 transformer 后至少跑 `cd tauri && cargo test protocol_conversion --no-default-features`。
+- 修改 JSON 转换、SSE parser、stream state、统一模型或 transformer 后至少跑 `cd tauri && cargo test transformer --no-default-features`。
 - 修改 route/path/header/auth 编排后额外跑 `cd tauri && cargo test proxy_gateway::runtime::upstream` 和 `cd tauri && cargo test proxy_gateway::runtime::providers`。
 - 大范围协议转换改动交付前按根规则跑 `cd tauri && cargo test`；若同时改前端 provider 表单/i18n，再跑 `pnpm test`、`pnpm exec tsc --noEmit` 和 i18n check。
 

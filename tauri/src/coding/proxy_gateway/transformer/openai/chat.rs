@@ -5,10 +5,10 @@ use super::super::llm::{
     StreamOptions, Tool, ToolCall, Usage, TOOL_TYPE_FUNCTION, TOOL_TYPE_RESPONSES_CUSTOM_TOOL,
 };
 use super::super::shared::{
-    content_text, extract_error_message, stop_from_value, stop_to_value, tool_choice_from_openai,
-    tool_choice_to_openai,
+    content_text, extract_error_message, should_emit_openai_request_metadata, stop_from_value,
+    stop_to_value, tool_choice_from_openai, tool_choice_to_openai,
 };
-use super::super::transformer::{InboundTransformer, OutboundTransformer};
+use super::super::traits::{InboundTransformer, OutboundTransformer};
 use super::super::types::AiProtocol;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -393,50 +393,55 @@ pub fn llm_request_to_chat(request: Request) -> Value {
     if let Some(stop) = stop_to_value(request.stop) {
         body["stop"] = stop;
     }
+    let tools = request
+        .tools
+        .into_iter()
+        .filter_map(|tool| {
+            if tool.tool_type == TOOL_TYPE_RESPONSES_CUSTOM_TOOL {
+                let custom = tool.response_custom_tool?;
+                if custom.name.is_empty() {
+                    return None;
+                }
+                return Some(json!({
+                    "type": TOOL_TYPE_RESPONSES_CUSTOM_TOOL,
+                    "function": {
+                        "name": tool
+                            .function
+                            .map(|function| function.name)
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or_else(|| custom.name.clone())
+                    },
+                    "response_custom_tool": custom
+                }));
+            }
+            let function = tool.function?;
+            if function.name.is_empty() {
+                return None;
+            }
+            let mut function_object = Map::new();
+            function_object.insert("name".to_string(), json!(function.name));
+            function_object.insert("description".to_string(), json!(function.description));
+            function_object.insert(
+                "parameters".to_string(),
+                function.parameters.unwrap_or_else(|| json!({})),
+            );
+            if let Some(strict) = function.strict {
+                function_object.insert("strict".to_string(), json!(strict));
+            }
+            Some(json!({
+                "type": "function",
+                "function": Value::Object(function_object)
+            }))
+        })
+        .collect::<Vec<_>>();
+    if !tools.is_empty() {
+        body["tools"] = json!(tools);
+    }
     if let Some(tool_choice) = tool_choice_to_openai(request.tool_choice) {
         body["tool_choice"] = tool_choice;
     }
-    let has_tools = !request.tools.is_empty();
-    if !request.tools.is_empty() {
-        body["tools"] = json!(request
-            .tools
-            .into_iter()
-            .filter_map(|tool| {
-                if tool.tool_type == TOOL_TYPE_RESPONSES_CUSTOM_TOOL {
-                    let custom = tool.response_custom_tool?;
-                    return Some(json!({
-                        "type": TOOL_TYPE_RESPONSES_CUSTOM_TOOL,
-                        "function": {
-                            "name": tool
-                                .function
-                                .map(|function| function.name)
-                                .unwrap_or_default()
-                        },
-                        "response_custom_tool": custom
-                    }));
-                }
-                let function = tool.function?;
-                let mut function_object = Map::new();
-                function_object.insert("name".to_string(), json!(function.name));
-                function_object.insert("description".to_string(), json!(function.description));
-                function_object.insert(
-                    "parameters".to_string(),
-                    function.parameters.unwrap_or_else(|| json!({})),
-                );
-                if let Some(strict) = function.strict {
-                    function_object.insert("strict".to_string(), json!(strict));
-                }
-                Some(json!({
-                    "type": "function",
-                    "function": Value::Object(function_object)
-                }))
-            })
-            .collect::<Vec<_>>());
-    }
-    if has_tools {
-        if let Some(parallel_tool_calls) = request.parallel_tool_calls {
-            body["parallel_tool_calls"] = json!(parallel_tool_calls);
-        }
+    if let Some(parallel_tool_calls) = request.parallel_tool_calls {
+        body["parallel_tool_calls"] = json!(parallel_tool_calls);
     }
     if let Some(response_format) = request.response_format {
         body["response_format"] = response_format;
@@ -444,7 +449,7 @@ pub fn llm_request_to_chat(request: Request) -> Value {
     if let Some(prompt_cache_key) = request.prompt_cache_key {
         body["prompt_cache_key"] = json!(prompt_cache_key);
     }
-    if !request.metadata.is_empty() {
+    if should_emit_openai_request_metadata(request.api_format) && !request.metadata.is_empty() {
         body["metadata"] = json!(request.metadata);
     }
     if let Some(extra_body) = request.extra_body {

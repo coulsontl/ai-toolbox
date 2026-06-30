@@ -13,7 +13,7 @@ use super::shared::{
     extract_error_message, json_string, stop_from_value, tool_arguments_value,
     tool_choice_from_gemini,
 };
-use super::transformer::{InboundTransformer, OutboundTransformer};
+use super::traits::{InboundTransformer, OutboundTransformer};
 use super::types::AiProtocol;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;

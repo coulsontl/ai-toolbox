@@ -8,7 +8,7 @@ use super::super::shared::{
     content_text, extract_error_message, json_string, message_parts, stop_from_value,
     tool_choice_from_anthropic,
 };
-use super::super::transformer::InboundTransformer;
+use super::super::traits::InboundTransformer;
 use super::super::types::AiProtocol;
 use serde_json::{json, Value};
 use std::collections::HashMap;

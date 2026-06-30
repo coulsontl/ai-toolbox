@@ -1194,7 +1194,7 @@ base_url = "https://openai.example.com/v1"
             base_url: "https://api.anthropic.com".to_string(),
             api_key: "real-key".to_string(),
             target_protocol:
-                crate::coding::proxy_gateway::protocol_conversion::AiProtocol::AnthropicMessages,
+                crate::coding::proxy_gateway::transformer::AiProtocol::AnthropicMessages,
             auth_strategy: ProviderAuthStrategy::AnthropicApiKey,
             is_full_url: false,
             sort_index: None,

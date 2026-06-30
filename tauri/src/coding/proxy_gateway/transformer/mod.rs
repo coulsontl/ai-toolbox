@@ -13,7 +13,7 @@ mod openai;
 mod shared;
 mod sse;
 mod stream;
-mod transformer;
+mod traits;
 mod types;
 
 pub use error::ProtocolConversionError;

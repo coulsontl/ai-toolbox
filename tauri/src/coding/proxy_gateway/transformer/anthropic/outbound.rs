@@ -2,7 +2,7 @@ use super::super::error::ProtocolConversionError;
 use super::super::llm::{Message, MessageContent, MessageContentPart, Request, ToolCall};
 use super::super::shared::signature::{decode_signature_for, SignatureProvider};
 use super::super::shared::{stop_to_value, tool_choice_to_anthropic};
-use super::super::transformer::OutboundTransformer;
+use super::super::traits::OutboundTransformer;
 use super::super::types::AiProtocol;
 use super::inbound::{
     anthropic_request_to_llm, anthropic_response_to_llm, llm_response_to_anthropic,
@@ -172,22 +172,26 @@ pub fn llm_request_to_anthropic(request: Request) -> Value {
     if let Some(stop) = stop_to_value(request.stop) {
         body["stop_sequences"] = stop;
     }
+    let tools = request
+        .tools
+        .into_iter()
+        .filter_map(|tool| {
+            let function = tool.function?;
+            if function.name.is_empty() {
+                return None;
+            }
+            Some(json!({
+                "name": function.name,
+                "description": function.description,
+                "input_schema": function.parameters.unwrap_or_else(|| json!({}))
+            }))
+        })
+        .collect::<Vec<_>>();
+    if !tools.is_empty() {
+        body["tools"] = json!(tools);
+    }
     if let Some(tool_choice) = tool_choice_to_anthropic(request.tool_choice) {
         body["tool_choice"] = tool_choice;
-    }
-    if !request.tools.is_empty() {
-        body["tools"] = json!(request
-            .tools
-            .into_iter()
-            .filter_map(|tool| {
-                let function = tool.function?;
-                Some(json!({
-                    "name": function.name,
-                    "description": function.description,
-                    "input_schema": function.parameters.unwrap_or_else(|| json!({}))
-                }))
-            })
-            .collect::<Vec<_>>());
     }
     body
 }

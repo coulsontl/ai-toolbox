@@ -1,4 +1,4 @@
-use super::protocol_conversion::AiProtocol;
+use super::transformer::AiProtocol;
 use super::types::GatewayCliKey;
 use serde_json::Value;
 use toml_edit::{DocumentMut, Item};

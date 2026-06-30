@@ -4,7 +4,7 @@ use super::gemini::{GeminiInbound, GeminiOutbound};
 use super::openai::chat::{OpenAiChatInbound, OpenAiChatOutbound};
 use super::openai::responses::{OpenAiResponsesInbound, OpenAiResponsesOutbound};
 use super::stream::StreamKernel;
-use super::transformer::{InboundTransformer, OutboundTransformer};
+use super::traits::{InboundTransformer, OutboundTransformer};
 use super::types::{AiProtocol, ConversionRoute};
 use futures_util::{stream, Stream, StreamExt};
 use serde_json::Value;
@@ -145,23 +145,23 @@ fn outbound_transformer(protocol: AiProtocol) -> Box<dyn OutboundTransformer> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coding::proxy_gateway::protocol_conversion::anthropic::anthropic_request_to_llm;
-    use crate::coding::proxy_gateway::protocol_conversion::gemini::{
+    use crate::coding::proxy_gateway::transformer::anthropic::anthropic_request_to_llm;
+    use crate::coding::proxy_gateway::transformer::gemini::{
         gemini_request_to_llm, gemini_response_to_llm, llm_request_to_gemini,
         llm_response_to_gemini,
     };
-    use crate::coding::proxy_gateway::protocol_conversion::llm::{
+    use crate::coding::proxy_gateway::transformer::llm::{
         ApiFormat, FunctionCall, Message, MessageContent, RequestType, ToolCall,
         TOOL_TYPE_FUNCTION, TOOL_TYPE_GOOGLE_CODE_EXECUTION, TOOL_TYPE_GOOGLE_SEARCH,
         TOOL_TYPE_GOOGLE_URL_CONTEXT, TOOL_TYPE_RESPONSES_CUSTOM_TOOL,
     };
-    use crate::coding::proxy_gateway::protocol_conversion::openai::chat::{
+    use crate::coding::proxy_gateway::transformer::openai::chat::{
         chat_request_to_llm, chat_response_to_llm, llm_response_to_chat,
     };
-    use crate::coding::proxy_gateway::protocol_conversion::openai::responses::{
+    use crate::coding::proxy_gateway::transformer::openai::responses::{
         llm_response_to_responses, responses_request_to_llm, responses_response_to_llm,
     };
-    use crate::coding::proxy_gateway::protocol_conversion::shared::signature::DEFAULT_GEMINI_THOUGHT_SIGNATURE;
+    use crate::coding::proxy_gateway::transformer::shared::signature::DEFAULT_GEMINI_THOUGHT_SIGNATURE;
     use futures_util::{stream, StreamExt};
     use serde_json::json;
     use std::fs;
@@ -517,7 +517,7 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"model-a","
 
     fn fixture_path(relative_path: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("src/coding/proxy_gateway/protocol_conversion/fixtures/reference")
+            .join("src/coding/proxy_gateway/transformer/fixtures/reference")
             .join(relative_path)
     }
 
@@ -559,7 +559,7 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"model-a","
 
     fn reference_fixture_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("src/coding/proxy_gateway/protocol_conversion/fixtures/reference")
+            .join("src/coding/proxy_gateway/transformer/fixtures/reference")
     }
 
     fn collect_fixture_entries(dir: &Path, root: &Path, out: &mut Vec<String>) {
@@ -641,7 +641,7 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"model-a","
 
     fn live_provider_fixture_path(protocol_dir: &str, file_name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("src/coding/proxy_gateway/protocol_conversion/fixtures/live_provider")
+            .join("src/coding/proxy_gateway/transformer/fixtures/live_provider")
             .join(protocol_dir)
             .join(file_name)
     }
@@ -2198,13 +2198,12 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"model-a","
             ..Default::default()
         };
 
-        let gemini = llm_request_to_gemini(
-            crate::coding::proxy_gateway::protocol_conversion::llm::Request {
+        let gemini =
+            llm_request_to_gemini(crate::coding::proxy_gateway::transformer::llm::Request {
                 model: "model-a".to_string(),
                 messages: vec![message],
                 ..Default::default()
-            },
-        );
+            });
         assert_eq!(
             gemini["contents"][0]["parts"][0]["thoughtSignature"],
             DEFAULT_GEMINI_THOUGHT_SIGNATURE
@@ -2326,6 +2325,14 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"model-a","
                 && item["name"] == "apply_patch"
                 && item["input"].as_str().unwrap().contains("*** Begin Patch")
         }));
+        let custom_tool_call = responses["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["type"] == "custom_tool_call")
+            .unwrap();
+        assert_eq!(custom_tool_call["id"], "ctc_call_patch_001");
+        assert_eq!(custom_tool_call["call_id"], "call_patch_001");
         assert!(responses["input"].as_array().unwrap().iter().any(|item| {
             item["type"] == "custom_tool_call_output"
                 && item["output"] == "Patch applied successfully."
@@ -2836,6 +2843,59 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"model-a","
         .unwrap();
         assert_eq!(anthropic["metadata"]["user_id"], "user_1");
         assert_eq!(anthropic["max_tokens"], 8192);
+    }
+
+    #[test]
+    fn anthropic_metadata_does_not_leak_to_openai_targets() {
+        let anthropic = json!({
+            "model": "model-a",
+            "max_tokens": 1024,
+            "metadata": {"user_id": "user_1"},
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let chat = convert_request_value(
+            ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+            anthropic.clone(),
+        )
+        .unwrap();
+        let responses = convert_request_value(
+            ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiResponses),
+            anthropic,
+        )
+        .unwrap();
+
+        assert!(chat.get("metadata").is_none());
+        assert!(responses.get("metadata").is_none());
+    }
+
+    #[test]
+    fn anthropic_tool_use_to_responses_uses_responses_item_id() {
+        let responses = convert_request_value(
+            ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiResponses),
+            json!({
+                "model": "model-a",
+                "max_tokens": 1024,
+                "messages": [{
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "call_iAamgdUMID7fjUog5w2YxfIP",
+                        "name": "read_file",
+                        "input": {"path": "a.txt"}
+                    }]
+                }]
+            }),
+        )
+        .unwrap();
+        let function_call = responses["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["type"] == "function_call")
+            .unwrap();
+
+        assert_eq!(function_call["id"], "fc_call_iAamgdUMID7fjUog5w2YxfIP");
+        assert_eq!(function_call["call_id"], "call_iAamgdUMID7fjUog5w2YxfIP");
     }
 
     #[test]
@@ -3520,6 +3580,106 @@ data: {"type":"response.completed","response":{"id":"resp_enc","model":"model-a"
             tools[0]["functionDeclarations"][0]["parameters"]["properties"]["query"]["type"],
             "string"
         );
+    }
+
+    #[test]
+    fn gemini_to_openai_chat_does_not_leak_google_private_fields() {
+        let chat = convert_request_value(
+            ConversionRoute::new(AiProtocol::GeminiNative, AiProtocol::OpenAiChat),
+            json!({
+                "contents": [
+                    {"role": "user", "parts": [{"text": "search"}]},
+                    {
+                        "role": "model",
+                        "parts": [{
+                            "functionCall": {
+                                "id": "call_1",
+                                "name": "lookup",
+                                "args": {"query": "rust"},
+                                "thoughtSignature": "private-google-signature"
+                            },
+                            "thoughtSignature": "part-private-signature"
+                        }]
+                    }
+                ],
+                "tools": [
+                    {
+                        "functionDeclarations": [{
+                            "name": "lookup",
+                            "parameters": {"type": "object"}
+                        }]
+                    },
+                    {"googleSearch": {}},
+                    {"codeExecution": {}},
+                    {"urlContext": {}}
+                ]
+            }),
+        )
+        .unwrap();
+        let body = chat.to_string();
+
+        assert!(chat["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|tool| { tool["type"] == "function" && tool.get("function").is_some() }));
+        assert!(!body.contains("thoughtSignature"));
+        assert!(!body.contains("thought_signature"));
+        assert!(!body.contains("googleSearch"));
+        assert!(!body.contains("codeExecution"));
+        assert!(!body.contains("urlContext"));
+        assert!(!body.contains("private-google-signature"));
+    }
+
+    #[test]
+    fn openai_chat_stream_target_injects_include_usage_only_for_streaming_requests() {
+        let streaming = convert_request_value(
+            ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+            json!({
+                "model": "claude-sonnet-4-6",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": true,
+                "max_tokens": 64
+            }),
+        )
+        .unwrap();
+        assert_eq!(streaming["stream_options"]["include_usage"], true);
+
+        let non_streaming = convert_request_value(
+            ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+            json!({
+                "model": "claude-sonnet-4-6",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": false,
+                "max_tokens": 64
+            }),
+        )
+        .unwrap();
+        assert!(non_streaming.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn responses_custom_tool_extension_is_preserved_for_chat_roundtrip() {
+        let chat = convert_request_value(
+            ConversionRoute::new(AiProtocol::OpenAiResponses, AiProtocol::OpenAiChat),
+            read_fixture_json("openai_responses/custom_tool.request.json"),
+        )
+        .unwrap();
+
+        let tools = chat["tools"].as_array().unwrap();
+        assert!(tools
+            .iter()
+            .any(|tool| tool["type"] == TOOL_TYPE_RESPONSES_CUSTOM_TOOL));
+        assert!(chat["messages"].as_array().unwrap().iter().any(|message| {
+            message
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .is_some_and(|tool_calls| {
+                    tool_calls
+                        .iter()
+                        .any(|tool_call| tool_call["type"] == TOOL_TYPE_RESPONSES_CUSTOM_TOOL)
+                })
+        }));
     }
 
     #[test]

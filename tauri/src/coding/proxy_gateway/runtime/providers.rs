@@ -3,8 +3,7 @@ use crate::coding::proxy_gateway::types::{
     ProviderPriorityEntry, ProxyGatewaySettings,
 };
 use crate::coding::proxy_gateway::{
-    cli_proxy::manifest::CliProxyManifest, paths::ProxyGatewayPaths,
-    protocol_conversion::AiProtocol,
+    cli_proxy::manifest::CliProxyManifest, paths::ProxyGatewayPaths, transformer::AiProtocol,
 };
 use crate::coding::{claude_code, codex, gemini_cli};
 use crate::db::helpers::db_list;

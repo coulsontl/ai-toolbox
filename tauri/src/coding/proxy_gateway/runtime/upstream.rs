@@ -8,7 +8,7 @@ use super::routes::{build_target_url, match_gateway_route, split_request_target,
 use super::GatewayRuntimeContext;
 use super::{cache_injector, thinking_budget};
 use crate::coding::proxy_gateway::model_health::{self, GatewayFailureKind};
-use crate::coding::proxy_gateway::protocol_conversion::{
+use crate::coding::proxy_gateway::transformer::{
     convert_error_response_body, convert_request_body, convert_response_body, convert_sse_stream,
     AiProtocol, ConversionRoute,
 };
@@ -35,6 +35,7 @@ use tauri::Emitter;
 
 const ONE_M_CONTEXT_MARKER: &str = "[1m]";
 const ENCODED_ONE_M_CONTEXT_MARKER: &str = "%5b1m%5d";
+const UNSUPPORTED_IMAGE_MARKER: &str = "[Unsupported Image]";
 
 #[derive(Debug)]
 struct GatewayForwardError {
@@ -660,7 +661,12 @@ async fn send_upstream_request(
         response.headers(),
         status.as_u16(),
     );
-    if should_attempt_thinking_signature_rectifier || should_attempt_thinking_budget_rectifier {
+    let should_attempt_unsupported_media_rectifier =
+        should_attempt_unsupported_media_rectifier(status.as_u16());
+    if should_attempt_thinking_signature_rectifier
+        || should_attempt_thinking_budget_rectifier
+        || should_attempt_unsupported_media_rectifier
+    {
         let status_code = status.as_u16();
         let status_text = status.canonical_reason().unwrap_or("Unknown").to_string();
         let mut response_headers = filtered_response_headers(response.headers());
@@ -718,9 +724,42 @@ async fn send_upstream_request(
             {
                 let response = send_request_once(
                     &client,
-                    method,
+                    method.clone(),
                     &upstream_url,
-                    headers,
+                    headers.clone(),
+                    rectified_body.clone(),
+                    non_streaming_timeout_secs.max(1),
+                    header_preserving_proxy.clone(),
+                )
+                .await
+                .map_err(|mut error| {
+                    error.upstream_request_body = Some(rectified_body.clone());
+                    error
+                })?;
+                return build_gateway_response(
+                    request,
+                    route,
+                    provider,
+                    response,
+                    rectified_body,
+                    upstream_url.to_string(),
+                    conversion_route,
+                )
+                .await;
+            }
+        }
+
+        if should_attempt_unsupported_media_rectifier
+            && should_rectify_unsupported_media(status_code, &body)
+        {
+            if let Some(rectified_body) =
+                build_unsupported_media_rectified_body(&upstream_body_snapshot)?
+            {
+                let response = send_request_once(
+                    &client,
+                    method.clone(),
+                    &upstream_url,
+                    headers.clone(),
                     rectified_body.clone(),
                     non_streaming_timeout_secs.max(1),
                     header_preserving_proxy.clone(),
@@ -1117,6 +1156,151 @@ fn should_rectify_thinking_signature(status_code: u16, body: &[u8]) -> bool {
         || lower.contains("invalid request")
 }
 
+fn should_attempt_unsupported_media_rectifier(status_code: u16) -> bool {
+    matches!(status_code, 400 | 415 | 422 | 501)
+}
+
+fn should_rectify_unsupported_media(status_code: u16, body: &[u8]) -> bool {
+    if !should_attempt_unsupported_media_rectifier(status_code) {
+        return false;
+    }
+    let Some(message) = extract_error_message_from_body(body) else {
+        return false;
+    };
+    let lower = message.to_ascii_lowercase();
+    let mentions_media = [
+        "image",
+        "vision",
+        "multimodal",
+        "multi-modal",
+        "modality",
+        "modalities",
+        "media",
+        "attachment",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    let unsupported_hint = [
+        "unsupported",
+        "not supported",
+        "does not support",
+        "doesn't support",
+        "do not support",
+        "don't support",
+        "only supports text",
+        "text only",
+        "text-only",
+        "invalid content type",
+        "invalid message content",
+        "unknown variant",
+        "unknown content type",
+        "unrecognized content type",
+        "cannot process",
+        "cannot handle",
+        "can't process",
+        "can't handle",
+        "unable to process",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+
+    unsupported_hint
+        && (mentions_media
+            || lower.contains("only supports text")
+            || lower.contains("text only")
+            || lower.contains("text-only"))
+}
+
+fn build_unsupported_media_rectified_body(
+    body: &[u8],
+) -> Result<Option<Vec<u8>>, GatewayForwardError> {
+    let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
+        return Ok(None);
+    };
+    if !replace_unsupported_image_parts(&mut value) {
+        return Ok(None);
+    }
+    serde_json::to_vec(&value)
+        .map(Some)
+        .map_err(|error| GatewayForwardError {
+            message: format!("Failed to serialize unsupported media rectified body: {error}"),
+            kind: GatewayFailureKind::GatewayParse,
+            upstream_request_body: None,
+        })
+}
+
+fn replace_unsupported_image_parts(value: &mut Value) -> bool {
+    if let Some(replacement) = unsupported_image_replacement(value) {
+        *value = replacement;
+        return true;
+    }
+
+    match value {
+        Value::Object(object) => {
+            let mut changed = false;
+            for child in object.values_mut() {
+                changed |= replace_unsupported_image_parts(child);
+            }
+            changed
+        }
+        Value::Array(items) => {
+            let mut changed = false;
+            for item in items {
+                changed |= replace_unsupported_image_parts(item);
+            }
+            changed
+        }
+        _ => false,
+    }
+}
+
+fn unsupported_image_replacement(value: &Value) -> Option<Value> {
+    let object = value.as_object()?;
+
+    if let Some(content_type) = object.get("type").and_then(Value::as_str) {
+        if matches!(content_type, "image" | "image_url") {
+            return Some(unsupported_image_text_part(value, "text"));
+        }
+        if content_type == "input_image" {
+            return Some(unsupported_image_text_part(value, "input_text"));
+        }
+    }
+
+    if gemini_part_is_image(object.get("inlineData"))
+        || gemini_part_is_image(object.get("fileData"))
+        || gemini_part_is_image(object.get("inline_data"))
+        || gemini_part_is_image(object.get("file_data"))
+    {
+        return Some(json!({ "text": UNSUPPORTED_IMAGE_MARKER }));
+    }
+
+    None
+}
+
+fn unsupported_image_text_part(original: &Value, content_type: &str) -> Value {
+    let mut replacement = json!({
+        "type": content_type,
+        "text": UNSUPPORTED_IMAGE_MARKER,
+    });
+    if let Some(cache_control) = original.get("cache_control").cloned() {
+        if let Value::Object(object) = &mut replacement {
+            object.insert("cache_control".to_string(), cache_control);
+        }
+    }
+    replacement
+}
+
+fn gemini_part_is_image(part: Option<&Value>) -> bool {
+    part.and_then(Value::as_object)
+        .and_then(|object| {
+            object
+                .get("mimeType")
+                .or_else(|| object.get("mime_type"))
+                .and_then(Value::as_str)
+        })
+        .is_some_and(|mime_type| mime_type.to_ascii_lowercase().starts_with("image/"))
+}
+
 fn extract_error_message_from_body(body: &[u8]) -> Option<String> {
     if let Ok(value) = serde_json::from_slice::<Value>(body) {
         return extract_error_message_from_value(&value)
@@ -1341,10 +1525,91 @@ fn build_upstream_body(
     } else {
         rewritten_body
     };
+    let upstream_body =
+        apply_outbound_adapter_compat(upstream_body, conversion_route, target_protocol)?;
     if cache_injection_enabled && target_protocol == AiProtocol::AnthropicMessages {
         return inject_cache_control_into_body(upstream_body);
     }
     Ok(upstream_body)
+}
+
+fn apply_outbound_adapter_compat(
+    body: Vec<u8>,
+    conversion_route: Option<ConversionRoute>,
+    target_protocol: AiProtocol,
+) -> Result<Vec<u8>, GatewayForwardError> {
+    let mut value =
+        serde_json::from_slice::<Value>(&body).map_err(|error| GatewayForwardError {
+            message: format!("Failed to parse upstream request body for outbound adapter: {error}"),
+            kind: GatewayFailureKind::GatewayParse,
+            upstream_request_body: Some(body.clone()),
+        })?;
+    filter_private_outbound_fields(&mut value, false);
+
+    if let Some(route) = conversion_route {
+        if route.source != AiProtocol::GeminiNative {
+            if let Value::Object(object) = &mut value {
+                if target_protocol == AiProtocol::OpenAiChat
+                    || target_protocol == AiProtocol::OpenAiResponses
+                {
+                    remove_tool_controls_without_tools(
+                        object,
+                        &["tool_choice", "parallel_tool_calls"],
+                    );
+                } else if target_protocol == AiProtocol::AnthropicMessages {
+                    remove_tool_controls_without_tools(object, &["tool_choice"]);
+                }
+            }
+        }
+    }
+
+    serde_json::to_vec(&value).map_err(|error| GatewayForwardError {
+        message: format!("Failed to serialize outbound adapter request body: {error}"),
+        kind: GatewayFailureKind::GatewayParse,
+        upstream_request_body: None,
+    })
+}
+
+fn filter_private_outbound_fields(value: &mut Value, preserve_schema_name_keys: bool) {
+    match value {
+        Value::Object(object) => {
+            if !preserve_schema_name_keys {
+                object.retain(|key, _| !key.starts_with('_'));
+            }
+            for (key, child) in object {
+                filter_private_outbound_fields(child, is_schema_name_map(key));
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                filter_private_outbound_fields(item, false);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_schema_name_map(key: &str) -> bool {
+    matches!(
+        key,
+        "properties" | "patternProperties" | "definitions" | "$defs"
+    )
+}
+
+fn remove_tool_controls_without_tools(
+    object: &mut serde_json::Map<String, Value>,
+    control_fields: &[&str],
+) {
+    let has_tools = object
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| !tools.is_empty());
+    if has_tools {
+        return;
+    }
+    for field in control_fields {
+        object.remove(*field);
+    }
 }
 
 fn build_thinking_signature_rectified_upstream_body(
@@ -1989,7 +2254,7 @@ mod tests {
             base_url: "https://api.example.com".to_string(),
             api_key: "key".to_string(),
             target_protocol:
-                crate::coding::proxy_gateway::protocol_conversion::AiProtocol::AnthropicMessages,
+                crate::coding::proxy_gateway::transformer::AiProtocol::AnthropicMessages,
             auth_strategy: ProviderAuthStrategy::AnthropicApiKey,
             is_full_url: false,
             sort_index: Some(0),
@@ -2007,16 +2272,16 @@ mod tests {
             api_key: "key".to_string(),
             target_protocol: match cli_key {
                 GatewayCliKey::Claude => {
-                    crate::coding::proxy_gateway::protocol_conversion::AiProtocol::AnthropicMessages
+                    crate::coding::proxy_gateway::transformer::AiProtocol::AnthropicMessages
                 }
                 GatewayCliKey::Codex => {
-                    crate::coding::proxy_gateway::protocol_conversion::AiProtocol::OpenAiResponses
+                    crate::coding::proxy_gateway::transformer::AiProtocol::OpenAiResponses
                 }
                 GatewayCliKey::Gemini => {
-                    crate::coding::proxy_gateway::protocol_conversion::AiProtocol::GeminiNative
+                    crate::coding::proxy_gateway::transformer::AiProtocol::GeminiNative
                 }
                 GatewayCliKey::OpenCode => {
-                    crate::coding::proxy_gateway::protocol_conversion::AiProtocol::OpenAiChat
+                    crate::coding::proxy_gateway::transformer::AiProtocol::OpenAiChat
                 }
             },
             auth_strategy: match cli_key {
@@ -2050,7 +2315,7 @@ mod tests {
             base_url: "https://api.anthropic.com".to_string(),
             api_key: "key".to_string(),
             target_protocol:
-                crate::coding::proxy_gateway::protocol_conversion::AiProtocol::AnthropicMessages,
+                crate::coding::proxy_gateway::transformer::AiProtocol::AnthropicMessages,
             auth_strategy: ProviderAuthStrategy::AnthropicApiKey,
             is_full_url: false,
             sort_index: Some(0),
@@ -2340,6 +2605,217 @@ mod tests {
     }
 
     #[test]
+    fn outbound_adapter_drops_chat_to_responses_tool_controls_without_valid_tools() {
+        let request = debug_request(
+            br#"{
+                "model":"gpt-5.1-codex-mini",
+                "messages":[{"role":"user","content":"hi"}],
+                "tools":[{"type":"function","function":{"description":"missing name"}}],
+                "tool_choice":"auto",
+                "parallel_tool_calls":true
+            }"#,
+        );
+
+        let body = build_upstream_body(
+            &request,
+            "gpt-5.1-codex-mini",
+            "gpt-5.1-codex-mini",
+            false,
+            false,
+            GatewayCliKey::OpenCode,
+            AiProtocol::OpenAiResponses,
+            Some(ConversionRoute::new(
+                AiProtocol::OpenAiChat,
+                AiProtocol::OpenAiResponses,
+            )),
+            false,
+        )
+        .unwrap();
+        let value = serde_json::from_slice::<Value>(&body).unwrap();
+
+        assert!(value.get("tools").is_none());
+        assert!(value.get("tool_choice").is_none());
+        assert!(value.get("parallel_tool_calls").is_none());
+    }
+
+    #[test]
+    fn outbound_adapter_drops_responses_to_chat_tool_controls_without_valid_tools() {
+        let request = debug_request(
+            br#"{
+                "model":"gpt-5.1-codex-mini",
+                "input":"hi",
+                "tools":[{"type":"function","description":"missing name"}],
+                "tool_choice":"auto",
+                "parallel_tool_calls":true
+            }"#,
+        );
+
+        let body = build_upstream_body(
+            &request,
+            "gpt-5.1-codex-mini",
+            "gpt-5.1-codex-mini",
+            false,
+            false,
+            GatewayCliKey::Codex,
+            AiProtocol::OpenAiChat,
+            Some(ConversionRoute::new(
+                AiProtocol::OpenAiResponses,
+                AiProtocol::OpenAiChat,
+            )),
+            false,
+        )
+        .unwrap();
+        let value = serde_json::from_slice::<Value>(&body).unwrap();
+
+        assert!(value.get("tools").is_none());
+        assert!(value.get("tool_choice").is_none());
+        assert!(value.get("parallel_tool_calls").is_none());
+    }
+
+    #[test]
+    fn outbound_adapter_drops_chat_to_anthropic_tool_choice_without_valid_tools() {
+        let request = debug_request(
+            br#"{
+                "model":"gpt-5.1-codex-mini",
+                "messages":[{"role":"user","content":"hi"}],
+                "tools":[{"type":"function","function":{"description":"missing name"}}],
+                "tool_choice":"required"
+            }"#,
+        );
+
+        let body = build_upstream_body(
+            &request,
+            "gpt-5.1-codex-mini",
+            "claude-sonnet-4-6",
+            false,
+            false,
+            GatewayCliKey::OpenCode,
+            AiProtocol::AnthropicMessages,
+            Some(ConversionRoute::new(
+                AiProtocol::OpenAiChat,
+                AiProtocol::AnthropicMessages,
+            )),
+            false,
+        )
+        .unwrap();
+        let value = serde_json::from_slice::<Value>(&body).unwrap();
+
+        assert!(value.get("tools").is_none());
+        assert!(value.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn outbound_adapter_preserves_gemini_derived_tool_choice_without_tools() {
+        let request = debug_request(
+            br#"{
+                "contents":[{"role":"user","parts":[{"text":"hi"}]}],
+                "toolConfig":{"functionCallingConfig":{"mode":"AUTO"}}
+            }"#,
+        );
+
+        let body = build_upstream_body(
+            &request,
+            "gemini-2.5-flash",
+            "gpt-5.1-codex-mini",
+            false,
+            false,
+            GatewayCliKey::Gemini,
+            AiProtocol::OpenAiChat,
+            Some(ConversionRoute::new(
+                AiProtocol::GeminiNative,
+                AiProtocol::OpenAiChat,
+            )),
+            false,
+        )
+        .unwrap();
+        let value = serde_json::from_slice::<Value>(&body).unwrap();
+
+        assert!(value.get("tools").is_none());
+        assert_eq!(value["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn outbound_adapter_filters_private_fields_on_direct_json_body() {
+        let request = debug_request(
+            br#"{
+                "model":"gpt-5.1-codex-mini",
+                "_internal":"drop",
+                "messages":[
+                    {
+                        "role":"user",
+                        "content":"hi",
+                        "_debug":"drop"
+                    }
+                ],
+                "tools":[
+                    {
+                        "type":"function",
+                        "function":{
+                            "name":"lookup",
+                            "_internal":"drop",
+                            "parameters":{
+                                "type":"object",
+                                "_debug":"drop",
+                                "properties":{
+                                    "_id":{
+                                        "type":"string",
+                                        "_internal_note":"drop",
+                                        "properties":{
+                                            "_nested":{"type":"string"}
+                                        }
+                                    }
+                                },
+                                "$defs":{
+                                    "_shared":{
+                                        "type":"object",
+                                        "_internal_note":"drop"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ]
+            }"#,
+        );
+
+        let body = build_upstream_body(
+            &request,
+            "gpt-5.1-codex-mini",
+            "gpt-5.1-codex-mini",
+            false,
+            false,
+            GatewayCliKey::OpenCode,
+            AiProtocol::OpenAiChat,
+            None,
+            false,
+        )
+        .unwrap();
+        let value = serde_json::from_slice::<Value>(&body).unwrap();
+
+        assert!(value.get("_internal").is_none());
+        assert!(value.pointer("/messages/0/_debug").is_none());
+        assert!(value.pointer("/tools/0/function/_internal").is_none());
+        assert!(value
+            .pointer("/tools/0/function/parameters/_debug")
+            .is_none());
+        assert!(value
+            .pointer("/tools/0/function/parameters/properties/_id")
+            .is_some());
+        assert!(value
+            .pointer("/tools/0/function/parameters/properties/_id/_internal_note")
+            .is_none());
+        assert!(value
+            .pointer("/tools/0/function/parameters/properties/_id/properties/_nested")
+            .is_some());
+        assert!(value
+            .pointer("/tools/0/function/parameters/$defs/_shared")
+            .is_some());
+        assert!(value
+            .pointer("/tools/0/function/parameters/$defs/_shared/_internal_note")
+            .is_none());
+    }
+
+    #[test]
     fn thinking_signature_rectifier_strips_top_level_messages_only() {
         let request = debug_request(
             br#"{
@@ -2498,6 +2974,95 @@ mod tests {
             500,
             br#"{"error":{"message":"Invalid 'signature' in 'thinking' block"}}"#
         ));
+    }
+
+    #[test]
+    fn unsupported_media_rectifier_matches_only_media_compat_errors() {
+        assert!(should_rectify_unsupported_media(
+            400,
+            br#"{"error":{"message":"This model does not support image input"}}"#
+        ));
+        assert!(should_rectify_unsupported_media(
+            415,
+            br#"{"detail":"invalid content type for attachment"}"#
+        ));
+        assert!(should_rectify_unsupported_media(
+            422,
+            br#"{"message":"model is text-only"}"#
+        ));
+
+        assert!(!should_rectify_unsupported_media(
+            500,
+            br#"{"error":{"message":"This model does not support image input"}}"#
+        ));
+        assert!(!should_rectify_unsupported_media(
+            400,
+            br#"{"error":{"message":"Invalid JSON schema: strict must be a boolean"}}"#
+        ));
+    }
+
+    #[test]
+    fn unsupported_media_rectifier_replaces_images_and_preserves_cache_control() {
+        let rectified = build_unsupported_media_rectified_body(
+            br#"{
+                "messages":[
+                    {
+                        "role":"user",
+                        "content":[
+                            {
+                                "type":"image",
+                                "source":{"type":"base64","media_type":"image/png","data":"aaa"},
+                                "cache_control":{"type":"ephemeral"}
+                            },
+                            {"type":"image_url","image_url":{"url":"https://example.com/a.png"}},
+                            {"type":"input_image","image_url":"https://example.com/b.png"}
+                        ]
+                    }
+                ],
+                "contents":[
+                    {
+                        "parts":[
+                            {"inlineData":{"mimeType":"image/png","data":"aaa"}},
+                            {"fileData":{"mimeType":"application/pdf","fileUri":"file.pdf"}},
+                            {"fileData":{"mimeType":"image/jpeg","fileUri":"file.jpg"}}
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .unwrap()
+        .expect("image blocks should be replaced");
+        let value = serde_json::from_slice::<Value>(&rectified).unwrap();
+
+        assert_eq!(value["messages"][0]["content"][0]["type"], "text");
+        assert_eq!(
+            value["messages"][0]["content"][0]["text"],
+            UNSUPPORTED_IMAGE_MARKER
+        );
+        assert_eq!(
+            value["messages"][0]["content"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
+        assert_eq!(value["messages"][0]["content"][1]["type"], "text");
+        assert_eq!(value["messages"][0]["content"][2]["type"], "input_text");
+        assert_eq!(
+            value["contents"][0]["parts"][0]["text"],
+            UNSUPPORTED_IMAGE_MARKER
+        );
+        assert!(value["contents"][0]["parts"][1].get("fileData").is_some());
+        assert_eq!(
+            value["contents"][0]["parts"][2]["text"],
+            UNSUPPORTED_IMAGE_MARKER
+        );
+    }
+
+    #[test]
+    fn unsupported_media_rectifier_skips_body_without_images() {
+        assert!(build_unsupported_media_rectified_body(
+            br#"{"messages":[{"role":"user","content":"hi"}]}"#
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[test]

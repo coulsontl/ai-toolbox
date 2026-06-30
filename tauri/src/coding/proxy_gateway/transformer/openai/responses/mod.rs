@@ -1,21 +1,19 @@
 use super::chat::openai_usage_to_llm;
-use crate::coding::proxy_gateway::protocol_conversion::error::ProtocolConversionError;
-use crate::coding::proxy_gateway::protocol_conversion::llm::{
+use crate::coding::proxy_gateway::transformer::error::ProtocolConversionError;
+use crate::coding::proxy_gateway::transformer::llm::{
     ApiFormat, Choice, Function, FunctionCall, ImageUrl, Message, MessageContent,
     MessageContentPart, Request, RequestType, Response, ResponseCustomToolCall, Tool, ToolCall,
     Usage, TOOL_TYPE_FUNCTION, TOOL_TYPE_RESPONSES_CUSTOM_TOOL,
 };
-use crate::coding::proxy_gateway::protocol_conversion::shared::signature::{
+use crate::coding::proxy_gateway::transformer::shared::signature::{
     decode_signature_for, encode_signature, SignatureProvider,
 };
-use crate::coding::proxy_gateway::protocol_conversion::shared::{
-    extract_error_message, stop_from_value, stop_to_value, tool_choice_from_openai,
-    tool_choice_to_responses,
+use crate::coding::proxy_gateway::transformer::shared::{
+    extract_error_message, should_emit_openai_request_metadata, stop_from_value, stop_to_value,
+    tool_choice_from_openai, tool_choice_to_responses,
 };
-use crate::coding::proxy_gateway::protocol_conversion::transformer::{
-    InboundTransformer, OutboundTransformer,
-};
-use crate::coding::proxy_gateway::protocol_conversion::types::AiProtocol;
+use crate::coding::proxy_gateway::transformer::traits::{InboundTransformer, OutboundTransformer};
+use crate::coding::proxy_gateway::transformer::types::AiProtocol;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 
@@ -523,47 +521,50 @@ pub fn llm_request_to_responses(request: Request) -> Value {
     if let Some(stop) = stop_to_value(request.stop) {
         body["stop"] = stop;
     }
-    if let Some(tool_choice) = tool_choice_to_responses(request.tool_choice) {
-        body["tool_choice"] = tool_choice;
-    }
-    let has_tools = !request.tools.is_empty();
-    if !request.tools.is_empty() {
-        body["tools"] = json!(request
-            .tools
-            .into_iter()
-            .filter_map(|tool| {
-                if tool.tool_type == TOOL_TYPE_RESPONSES_CUSTOM_TOOL {
-                    return tool.response_custom_tool.map(|custom| {
+    let tools = request
+        .tools
+        .into_iter()
+        .filter_map(|tool| {
+            if tool.tool_type == TOOL_TYPE_RESPONSES_CUSTOM_TOOL {
+                return tool.response_custom_tool.and_then(|custom| {
+                    (!custom.name.is_empty()).then(|| {
                         json!({
                             "type": "custom",
                             "name": custom.name,
                             "description": custom.description,
                             "format": custom.format
                         })
-                    });
+                    })
+                });
+            }
+            if let Some(function) = tool.function {
+                if function.name.is_empty() {
+                    return None;
                 }
-                if let Some(function) = tool.function {
-                    let mut tool_object = Map::new();
-                    tool_object.insert("type".to_string(), json!("function"));
-                    tool_object.insert("name".to_string(), json!(function.name));
-                    tool_object.insert("description".to_string(), json!(function.description));
-                    tool_object.insert(
-                        "parameters".to_string(),
-                        function.parameters.unwrap_or_else(|| json!({})),
-                    );
-                    if let Some(strict) = function.strict {
-                        tool_object.insert("strict".to_string(), json!(strict));
-                    }
-                    return Some(Value::Object(tool_object));
+                let mut tool_object = Map::new();
+                tool_object.insert("type".to_string(), json!("function"));
+                tool_object.insert("name".to_string(), json!(function.name));
+                tool_object.insert("description".to_string(), json!(function.description));
+                tool_object.insert(
+                    "parameters".to_string(),
+                    function.parameters.unwrap_or_else(|| json!({})),
+                );
+                if let Some(strict) = function.strict {
+                    tool_object.insert("strict".to_string(), json!(strict));
                 }
-                None
-            })
-            .collect::<Vec<_>>());
+                return Some(Value::Object(tool_object));
+            }
+            None
+        })
+        .collect::<Vec<_>>();
+    if !tools.is_empty() {
+        body["tools"] = json!(tools);
     }
-    if has_tools {
-        if let Some(parallel_tool_calls) = request.parallel_tool_calls {
-            body["parallel_tool_calls"] = json!(parallel_tool_calls);
-        }
+    if let Some(tool_choice) = tool_choice_to_responses(request.tool_choice) {
+        body["tool_choice"] = tool_choice;
+    }
+    if let Some(parallel_tool_calls) = request.parallel_tool_calls {
+        body["parallel_tool_calls"] = json!(parallel_tool_calls);
     }
     if request.response_format.is_some() || request.verbosity.is_some() {
         let mut text = Map::new();
@@ -581,7 +582,7 @@ pub fn llm_request_to_responses(request: Request) -> Value {
     if let Some(prompt_cache_key) = request.prompt_cache_key {
         body["prompt_cache_key"] = json!(prompt_cache_key);
     }
-    if !request.metadata.is_empty() {
+    if should_emit_openai_request_metadata(request.api_format) && !request.metadata.is_empty() {
         body["metadata"] = json!(request.metadata);
     }
     if let Some(extra_body) = request.extra_body {
@@ -716,21 +717,42 @@ fn tool_call_to_responses_item(tool_call: ToolCall) -> Value {
         let call_id = custom.call_id;
         return json!({
             "type": "custom_tool_call",
-            "id": call_id.clone(),
+            "id": responses_custom_tool_call_item_id(&call_id),
             "call_id": call_id,
             "name": custom.name,
             "input": custom.input,
             "status": "completed"
         });
     }
+    let call_id = tool_call.id;
     json!({
         "type": "function_call",
-        "id": tool_call.id,
-        "call_id": tool_call.id,
+        "id": responses_function_call_item_id(&call_id),
+        "call_id": call_id,
         "name": tool_call.function.name,
         "arguments": tool_call.function.arguments,
         "status": "completed"
     })
+}
+
+fn responses_function_call_item_id(call_id: &str) -> String {
+    if call_id.starts_with("fc") {
+        call_id.to_string()
+    } else if call_id.is_empty() {
+        "fc_0".to_string()
+    } else {
+        format!("fc_{call_id}")
+    }
+}
+
+fn responses_custom_tool_call_item_id(call_id: &str) -> String {
+    if call_id.starts_with("ctc") {
+        call_id.to_string()
+    } else if call_id.is_empty() {
+        "ctc_0".to_string()
+    } else {
+        format!("ctc_{call_id}")
+    }
 }
 
 pub fn responses_response_to_llm(body: Value) -> Response {

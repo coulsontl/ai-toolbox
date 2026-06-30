@@ -5,7 +5,7 @@
 把 `docs/glm-review/` 中其他模型发现的问题、`docs/transform/` 中人工复核出的差异、以及当前实现代码里的可确认缺口合并成一份可执行修复计划。执行原则：
 
 - AxonHub 行为作为对照基准。
-- 不把 AxonHub 的平台级能力误塞进 AI Toolbox 当前无状态 `protocol_conversion` 模块。
+- 不把 AxonHub 的平台级能力误塞进 AI Toolbox 当前无状态 `transformer` 模块。
 - 能在当前中间模型和当前模块边界内修的，必须补代码和回归测试。
 - 需要新中间模型字段、会话级 footprint、provider/platform config 或 runtime header/auth 的，先作为架构任务记录清楚，不能伪实现。
 - 每完成一个阶段后必须自审 diff，再跑测试；自审发现问题必须继续修。
@@ -14,14 +14,14 @@
 
 代码位置：
 
-- `tauri/src/coding/proxy_gateway/protocol_conversion/llm/model.rs`
-- `tauri/src/coding/proxy_gateway/protocol_conversion/openai/chat.rs`
-- `tauri/src/coding/proxy_gateway/protocol_conversion/openai/responses/mod.rs`
-- `tauri/src/coding/proxy_gateway/protocol_conversion/anthropic/inbound.rs`
-- `tauri/src/coding/proxy_gateway/protocol_conversion/anthropic/outbound.rs`
-- `tauri/src/coding/proxy_gateway/protocol_conversion/gemini/mod.rs`
-- `tauri/src/coding/proxy_gateway/protocol_conversion/stream.rs`
-- `tauri/src/coding/proxy_gateway/protocol_conversion/kernel.rs`
+- `tauri/src/coding/proxy_gateway/transformer/llm/model.rs`
+- `tauri/src/coding/proxy_gateway/transformer/openai/chat.rs`
+- `tauri/src/coding/proxy_gateway/transformer/openai/responses/mod.rs`
+- `tauri/src/coding/proxy_gateway/transformer/anthropic/inbound.rs`
+- `tauri/src/coding/proxy_gateway/transformer/anthropic/outbound.rs`
+- `tauri/src/coding/proxy_gateway/transformer/gemini/mod.rs`
+- `tauri/src/coding/proxy_gateway/transformer/stream.rs`
+- `tauri/src/coding/proxy_gateway/transformer/kernel.rs`
 
 必须遵守：
 
@@ -85,7 +85,7 @@
 
 ### A1. 公开 RequestType / ApiFormat 并写入入站 request
 
-文件：`tauri/src/coding/proxy_gateway/protocol_conversion/llm/mod.rs`
+文件：`tauri/src/coding/proxy_gateway/transformer/llm/mod.rs`
 
 修改：
 
@@ -410,10 +410,10 @@
 执行顺序：
 
 1. `cargo fmt`
-2. `cd tauri && cargo test protocol_conversion --no-default-features`
-3. `git diff --check -- tauri/src/coding/proxy_gateway/protocol_conversion`
+2. `cd tauri && cargo test transformer --no-default-features`
+3. `git diff --check -- tauri/src/coding/proxy_gateway/transformer`
 4. 自审 diff，重点看：
-   - 是否把 runtime/header/auth/path 能力错误写进 protocol_conversion。
+   - 是否把 runtime/header/auth/path 能力错误写进 transformer。
    - 是否新增了 DB/Tauri app handle 依赖。
    - 是否让 source == target 也走转换。
    - 是否破坏现有 reference fixture 矩阵。
@@ -503,7 +503,7 @@ AI Toolbox 所需设计：
 - `runtime/routes.rs`
 - `runtime/upstream.rs`
 - `runtime/providers.rs`
-- 不放进 `protocol_conversion`。
+- 不放进 `transformer`。
 
 ## 执行状态
 
@@ -519,7 +519,7 @@ AI Toolbox 所需设计：
 - [x] A10 Anthropic MIME/reasoning
 - [x] A11 Gemini reasoning/budget
 - [x] B1 cargo fmt
-- [x] B2 protocol_conversion 测试
+- [x] B2 transformer 测试
 - [x] B3 diff check
 - [x] B4 自审与二次修复
 
@@ -538,11 +538,11 @@ AI Toolbox 所需设计：
 验证结果：
 
 - 已执行 `cargo fmt`，通过。
-- 已执行 `cd tauri && cargo test protocol_conversion --no-default-features`，通过：57 passed，0 failed。
+- 已执行 `cd tauri && cargo test transformer --no-default-features`，通过：57 passed，0 failed。
 - 已执行 `cd tauri && cargo test`，通过：lib 603 passed / 1 ignored，integration 112 passed，doc-tests 10 passed，0 failed。
 - 已执行 `pnpm test`，通过：164 passed，0 failed。
 - 已执行 `pnpm exec tsc --noEmit`，通过。
-- 已执行 `git diff --check -- tauri/src/coding/proxy_gateway/protocol_conversion docs/protocol-conversion-repair-plan.md`，通过。
+- 已执行 `git diff --check -- tauri/src/coding/proxy_gateway/transformer docs/protocol-conversion-repair-plan.md`，通过。
 - 已执行协议转换目录边界扫描；本轮修改没有新增 DB、Tauri app handle、provider 表、Gateway runtime、HTTP header/auth/path 依赖。唯一命中是 `kernel.rs` 既有测试 helper 的 `tauri::async_runtime::block_on`，不属于本轮新增。
 
 自审结论：

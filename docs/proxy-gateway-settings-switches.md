@@ -5,7 +5,7 @@
 ## 总体边界
 
 - 网关设置的事实源是 SQLite JSONB 中的 `proxy_gateway_settings`，前端设置页只读写后端命令返回的 DTO。
-- 协议转换模块 `protocol_conversion` 不读取设置、不依赖数据库或 Tauri context。开关控制发生在 Gateway runtime 层：runtime 先根据入站 CLI route 和 provider `apiFormat` 判断目标协议，再决定转换前或转换后应用哪些整流能力。
+- 协议转换模块 `transformer` 不读取设置、不依赖数据库或 Tauri context。开关控制发生在 Gateway runtime 层：runtime 先根据入站 CLI route 和 provider `apiFormat` 判断目标协议，再决定转换前或转换后应用哪些整流能力。
 - 协议相同的请求走直通链路，不进入结构转换器；但仍可以执行模型名改写、`[1M]` 标记剥离等 runtime 级处理。Thinking 整流属于上游 4xx 后的反应式重试，不是正常发送前的结构改写。
 
 ## 监听
@@ -32,7 +32,7 @@
 - Claude 直通到 Anthropic 或转 OpenAI Chat / OpenAI Responses / Gemini Native 时，首次请求都不会因为模型映射或协议转换而预先删除 thinking。
 - Anthropic `output_config.effort` 继续由协议转换正常映射到 OpenAI Chat `reasoning_effort` 或 Responses `reasoning.effort`。
 - 上游返回非流式 4xx 且错误内容命中 thinking/signature 兼容问题时，才对同一请求体执行 thinking/signature 清理并同渠道重试一次。
-- 非 Claude 入站请求不触发该整流；OpenAI/Gemini/Responses 协议内部的 reasoning 映射仍由 `protocol_conversion` 的正常转换语义处理。
+- 非 Claude 入站请求不触发该整流；OpenAI/Gemini/Responses 协议内部的 reasoning 映射仍由 `transformer` 的正常转换语义处理。
 
 这样可以避免正常跨协议 reasoning effort 被半截删除，同时仍能在上游明确拒绝 thinking/signature 历史时自动修复一次。
 
@@ -110,7 +110,7 @@
 
 ## 当前一致性结论
 
-- 直通链路和协议转换链路现在都由同一组 Gateway runtime 开关控制，不要求 `protocol_conversion` 模块感知设置。
+- 直通链路和协议转换链路现在都由同一组 Gateway runtime 开关控制，不要求 `transformer` 模块感知设置。
 - `Thinking 整流` 的默认值是开启；开启后，Claude 入站请求只在上游非流式 4xx 明确命中 thinking/signature 兼容问题时删除 thinking/signature 并重试一次，正常协议转换会保留 `thinking` / `output_config.effort` 的语义映射。
 - `Cache 注入` 与 `Thinking budget 修正` 按最终目标协议判断。只要目标是 Anthropic Messages，就可以覆盖 Codex/Responses -> Anthropic、Gemini -> Anthropic 等转换路由；目标不是 Anthropic Messages 时不应用。
 - Codex 新增/编辑自定义渠道时，如果 API 格式不是默认 `openai_responses`，前端会自动展开模型映射区域；切回 `openai_responses` 不会自动收起，避免覆盖用户手动展开状态。
