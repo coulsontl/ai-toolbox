@@ -1,0 +1,77 @@
+{
+  "model": "deepseek-v4-flash",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are Codex, a coding agent. Follow the user's instructions and use tools carefully."
+    },
+    {
+      "role": "developer",
+      "content": [
+        {
+          "type": "text",
+          "text": "Follow project instructions and use tools carefully."
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "查看一下项目架构和可用的skill和mcp，可以试着调用一下"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_empty_args",
+          "type": "function",
+          "function": {
+            "name": "exec_command",
+            "arguments": ""
+          }
+        },
+        {
+          "id": "call_custom",
+          "type": "responses_custom_tool",
+          "function": {
+            "name": ""
+          },
+          "response_custom_tool_call": {
+            "call_id": "call_custom",
+            "name": "apply_patch",
+            "input": "patch"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_custom",
+      "content": "patched"
+    }
+  ],
+  "verbosity": "high",
+  "reasoning_effort": "xhigh",
+  "prompt_cache_key": "fixture-cache-key",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "exec_command",
+        "parameters": {}
+      }
+    },
+    {
+      "type": "responses_custom_tool",
+      "function": {
+        "name": "apply_patch"
+      },
+      "response_custom_tool": {
+        "name": "apply_patch"
+      }
+    }
+  ],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "stream": true
+}

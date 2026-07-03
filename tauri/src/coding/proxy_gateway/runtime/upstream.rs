@@ -1716,10 +1716,11 @@ fn apply_outbound_adapter_compat_for_provider(
 
     apply_provider_body_compat_before_generic(&mut value, target_protocol, provider_kind);
 
+    if target_protocol == AiProtocol::OpenAiChat {
+        normalize_openai_chat_for_provider_compat(&mut value, provider_kind);
+    }
+
     if let Some(route) = conversion_route {
-        if target_protocol == AiProtocol::OpenAiChat {
-            normalize_converted_openai_chat_for_provider_compat(&mut value, provider_kind);
-        }
         if let Value::Object(object) = &mut value {
             if route.source != AiProtocol::GeminiNative {
                 if target_protocol == AiProtocol::OpenAiChat
@@ -1826,10 +1827,6 @@ fn apply_openai_chat_provider_body_compat_before_generic(
         Some(ProviderBodyCompat::DeepSeek) => {
             convert_response_format_json_schema_to_json_object(object);
             apply_deepseek_openai_chat_thinking_compat(object);
-            sanitize_openai_chat_tools(object);
-            if let Some(messages) = object.get_mut("messages").and_then(Value::as_array_mut) {
-                sanitize_openai_chat_messages(messages);
-            }
         }
         Some(ProviderBodyCompat::Moonshot) => {
             convert_response_format_json_schema_to_json_object(object);
@@ -2265,7 +2262,7 @@ fn strip_deepseek_disabled_thinking_effort(object: &mut serde_json::Map<String, 
     object.remove("reasoning_effort");
 }
 
-fn normalize_converted_openai_chat_for_provider_compat(
+fn normalize_openai_chat_for_provider_compat(
     value: &mut Value,
     provider_kind: Option<ProviderBodyCompat>,
 ) {
@@ -2320,6 +2317,9 @@ fn sanitize_openai_chat_messages(messages: &mut Vec<Value>) {
         }
 
         if let Value::Object(object) = &mut message {
+            if object.get("role").and_then(Value::as_str) == Some("developer") {
+                object.insert("role".to_string(), Value::String("system".to_string()));
+            }
             if object.get("role").and_then(Value::as_str) == Some("system") {
                 flatten_system_text_parts(object);
             }
@@ -2332,7 +2332,36 @@ fn sanitize_openai_chat_messages(messages: &mut Vec<Value>) {
         filtered_messages.push(message);
     }
 
-    *messages = filtered_messages;
+    *messages = collapse_openai_chat_system_messages_to_head(filtered_messages);
+}
+
+fn collapse_openai_chat_system_messages_to_head(messages: Vec<Value>) -> Vec<Value> {
+    let mut system_chunks = Vec::new();
+    let mut rest = Vec::with_capacity(messages.len());
+
+    for message in messages {
+        if message.get("role").and_then(Value::as_str) == Some("system") {
+            if let Some(content) = message.get("content").and_then(Value::as_str) {
+                if !content.trim().is_empty() {
+                    system_chunks.push(content.to_string());
+                }
+                continue;
+            }
+        }
+        rest.push(message);
+    }
+
+    if system_chunks.is_empty() {
+        return rest;
+    }
+
+    let mut normalized = Vec::with_capacity(rest.len() + 1);
+    normalized.push(json!({
+        "role": "system",
+        "content": system_chunks.join("\n\n")
+    }));
+    normalized.extend(rest);
+    normalized
 }
 
 fn is_removed_tool_result_message(message: &Value, removed_tool_call_ids: &[String]) -> bool {
@@ -3832,36 +3861,35 @@ mod tests {
     }
 
     #[test]
-    fn outbound_adapter_preserves_direct_chat_extensions_without_conversion() {
-        let body = br#"{
-            "model":"kimi-k2.7-code",
-            "_internal":"drop",
-            "messages":[{"role":"user","content":"hi"}],
-            "verbosity":"high",
-            "reasoning_effort":"high",
-            "prompt_cache_key":"cache-key",
-            "tools":[
-                {
-                    "type":"responses_custom_tool",
-                    "function":{"name":"apply_patch"},
-                    "response_custom_tool":{"name":"apply_patch"}
-                }
-            ],
-            "tool_choice":"auto",
-            "parallel_tool_calls":true
-        }"#;
+    fn outbound_adapter_normalizes_direct_chat_body_for_provider_compat() {
+        let body = include_bytes!(
+            "../transformer/fixtures/live_provider/openai_chat/codex-chat-identity-developer-empty-tool-arguments.request.json"
+        );
 
         let body =
             apply_outbound_adapter_compat(body.to_vec(), None, AiProtocol::OpenAiChat).unwrap();
         let value = serde_json::from_slice::<Value>(&body).unwrap();
 
-        assert!(value.get("_internal").is_none());
-        assert_eq!(value["verbosity"], "high");
-        assert_eq!(value["reasoning_effort"], "high");
-        assert_eq!(value["prompt_cache_key"], "cache-key");
-        assert_eq!(value["tools"][0]["type"], "responses_custom_tool");
+        assert!(value.get("verbosity").is_none());
+        assert!(value.get("reasoning_effort").is_none());
+        assert!(value.get("prompt_cache_key").is_none());
+        assert_eq!(value["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(value["tools"][0]["type"], "function");
         assert_eq!(value["tool_choice"], "auto");
         assert_eq!(value["parallel_tool_calls"], true);
+
+        let messages = value["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(
+            messages[0]["content"],
+            "You are Codex, a coding agent. Follow the user's instructions and use tools carefully.\n\nFollow project instructions and use tools carefully."
+        );
+        assert!(messages
+            .iter()
+            .all(|message| message.get("role").and_then(Value::as_str) != Some("developer")));
+        assert_eq!(messages[2]["tool_calls"][0]["function"]["arguments"], "{}");
+        assert_eq!(messages[2]["tool_calls"].as_array().unwrap().len(), 1);
+        assert_eq!(messages.len(), 3);
     }
 
     #[test]
