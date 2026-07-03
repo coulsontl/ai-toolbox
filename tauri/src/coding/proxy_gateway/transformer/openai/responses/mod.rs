@@ -122,11 +122,11 @@ pub fn responses_request_to_llm(body: Value) -> Request {
         api_format: Some(ApiFormat::OpenAiResponses),
         ..Default::default()
     };
-    if let Some(instructions) = body.get("instructions").and_then(Value::as_str) {
+    if let Some(instructions) = responses_instructions_text(body.get("instructions")) {
         if !instructions.is_empty() {
             request.messages.push(Message {
                 role: "system".to_string(),
-                content: MessageContent::Text(instructions.to_string()),
+                content: MessageContent::Text(instructions),
                 ..Default::default()
             });
         }
@@ -141,6 +141,26 @@ pub fn responses_request_to_llm(body: Value) -> Request {
         request.tools = tools.iter().filter_map(responses_tool_to_llm).collect();
     }
     request
+}
+
+fn responses_instructions_text(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(parts) => {
+            let text = parts
+                .iter()
+                .filter_map(|part| {
+                    part.get("text")
+                        .and_then(Value::as_str)
+                        .or_else(|| part.as_str())
+                })
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            Some(text)
+        }
+        other => other.as_str().map(ToString::to_string),
+    }
 }
 
 fn append_responses_input_to_messages(input: Option<&Value>, messages: &mut Vec<Message>) {
@@ -431,6 +451,17 @@ fn responses_call_to_tool_call(item: &Value, index: usize) -> ToolCall {
             ..Default::default()
         };
     }
+    let name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let arguments = sanitize_responses_function_arguments(
+        &name,
+        item.get("arguments")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    );
     ToolCall {
         id: item
             .get("call_id")
@@ -439,21 +470,24 @@ fn responses_call_to_tool_call(item: &Value, index: usize) -> ToolCall {
             .unwrap_or_default()
             .to_string(),
         tool_type: TOOL_TYPE_FUNCTION.to_string(),
-        function: FunctionCall {
-            name: item
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            arguments: item
-                .get("arguments")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        },
+        function: FunctionCall { name, arguments },
         index,
         ..Default::default()
     }
+}
+
+fn sanitize_responses_function_arguments(name: &str, arguments: &str) -> String {
+    if name != "Read" || arguments.is_empty() {
+        return arguments.to_string();
+    }
+
+    let Ok(Value::Object(mut object)) = serde_json::from_str::<Value>(arguments) else {
+        return arguments.to_string();
+    };
+    if matches!(object.get("pages"), Some(Value::String(value)) if value.is_empty()) {
+        object.remove("pages");
+    }
+    serde_json::to_string(&Value::Object(object)).unwrap_or_else(|_| arguments.to_string())
 }
 
 pub fn llm_request_to_responses(request: Request) -> Value {

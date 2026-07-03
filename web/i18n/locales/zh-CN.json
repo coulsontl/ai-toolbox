@@ -1926,9 +1926,11 @@
       "apiFormatOpenAIResponses": "OpenAI Responses",
       "apiFormatGeminiNative": "Gemini Native",
       "apiFormatHelp": "选择上游真实接口协议；与 Claude 请求协议不一致时由网关转换",
-      "providerProfile": "供应商",
+      "providerProfile": "渠道",
       "providerProfileCustom": "自定义",
-      "providerProfileHelp": "内置供应商会自动设置 API 格式和 Base URL；自定义供应商可手动配置。"
+      "providerProfileHelp": "内置渠道会填入 API 格式和 Base URL，Base URL 可按需修改；自定义渠道可手动配置。",
+      "formName": "名称",
+      "providerProfileOfficial": "官方渠道"
     },
     "model": {
       "mappingTitle": "模型映射",
@@ -2215,9 +2217,11 @@
       "apiFormatAnthropicMessages": "Anthropic Messages",
       "apiFormatHelp": "选择上游真实接口协议；与请求协议不一致时由网关转换",
       "apiFormatGeminiNative": "Gemini Native",
-      "providerProfile": "供应商",
+      "providerProfile": "渠道",
       "providerProfileCustom": "自定义",
-      "providerProfileHelp": "内置供应商会自动设置 API 格式和 Base URL；自定义供应商可手动配置。"
+      "providerProfileHelp": "内置渠道会填入 API 格式、Base URL 和模型映射，Base URL 可按需修改；自定义渠道可手动配置。",
+      "formName": "名称",
+      "providerProfileOfficial": "官方渠道"
     },
     "import": {
       "title": "从 OpenCode 导入",
@@ -2536,7 +2540,14 @@
       "apiFormatAnthropic": "Claude Messages / Anthropic",
       "apiFormatHelp": "选择上游真实接口协议；与 Gemini 请求协议不一致时由网关转换",
       "apiFormatGeminiNative": "Gemini Native",
-      "apiFormat": "上游接口协议"
+      "apiFormat": "上游接口协议",
+      "providerProfile": "渠道",
+      "providerProfileCustom": "自定义",
+      "providerProfileOfficial": "官方渠道",
+      "providerProfileHelp": "自定义渠道可选择上游接口协议；与 Gemini 请求协议不一致时由网关转换。",
+      "formName": "名称",
+      "apiFormatOpenAIChat": "OpenAI Chat Completions",
+      "apiFormatOpenAIResponses": "OpenAI Responses"
     },
     "fetchModels": {
       "button": "获取模型",

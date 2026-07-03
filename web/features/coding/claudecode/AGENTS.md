@@ -39,8 +39,9 @@ sequenceDiagram
 - Optional 字段允许清空时，前端表单不要比后端存储模型更严格，否则会形成“能读不能存”的回归。
 - 普通“新建 provider”和“复制已应用 provider”都应走普通创建语义，默认不自动应用；不要因为复制源当前已应用，就在提交对象或页面状态里把新记录当成已应用配置处理。
 - 页面里的 `__local__` 不是普通新增 provider，而是当前生效本地配置的收编入口；当用户把它保存为正式 provider 时，产品语义是“把当前生效配置正式落库”，不是“基于当前配置再新建一个未应用草稿”。
-- provider 模式只允许在空白新增 provider 时选择。复制 provider 仍走创建新记录语义，但必须隐藏模式选择并沿用源 provider 的 `category`；编辑已保存 provider 也必须隐藏模式选择，不要允许官方/自定义互相切换。
-- 自定义模式下的内置供应商 endpoint 会自动锁定 Base URL 和 API 格式，并在保存时写入 `meta.providerType` / `meta.apiFormat`；切回“自定义”时必须清掉 `providerType`，只保留用户手动选择的 `apiFormat`。
+- provider 模式只允许在空白新增 provider 时选择。模式入口并入表单顶部“渠道”选择行：空白新增可在“自定义/官方/内置渠道”之间切换；复制 provider 仍走创建新记录语义，但必须沿用源 provider 的 `category`；编辑已保存 provider 也必须保留既有 `category`，不要允许官方/自定义互相切换。
+- 自定义模式下的内置供应商 endpoint 会填入 Base URL 和 API 格式，但只锁定 API 格式，不锁定 Base URL；保存时仍按选中 endpoint 写入 `meta.providerType` / `meta.apiFormat`，但 `settingsConfig.env.ANTHROPIC_BASE_URL` 必须使用用户当前表单里的 Base URL。切回“自定义”时必须清掉 `providerType`，只保留用户手动选择的 `apiFormat`。
+- Claude 内置 endpoint 如果提供完整 `models`，按 `primary` / `haiku` / `sonnet` / `opus` 写角色模型；如果只提供单个 `model`，添加供应商时要把它作为所有角色模型的兜底值，避免切到 OpenAI Chat 这类协议后模型映射区仍保留空值或旧值。
 - Extra settings JSON 允许为空或 JSON object；保存时必须保留“用户清空”的语义，不能用 truthy 判断导致旧 extra settings 留在数据库或 settings.json 中。
 - Extra settings 是高级可选配置，表单中默认折叠；编辑或复制已有非空 JSON object `extraSettingsConfig` 时必须自动展开，避免隐藏既有配置。
 - Claude provider 模型表单以 `settingsConfig.env.ANTHROPIC_*` 为新写入来源：兜底模型写 `ANTHROPIC_MODEL`，Sonnet/Opus/Haiku 角色模型分别写 `ANTHROPIC_DEFAULT_*_MODEL`，显示名称写 `ANTHROPIC_DEFAULT_*_MODEL_NAME`。前端仍要兼容读取旧顶层 `model` / `haikuModel` / `sonnetModel` / `opusModel` / `reasoningModel`，但新表单不再提供 Reasoning 模型编辑入口，也不应新写 `ANTHROPIC_REASONING_MODEL`。

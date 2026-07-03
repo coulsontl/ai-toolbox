@@ -2,6 +2,11 @@ use super::anthropic::{AnthropicInbound, AnthropicOutbound};
 use super::error::ProtocolConversionError;
 use super::gemini::{GeminiInbound, GeminiOutbound};
 use super::openai::chat::{OpenAiChatInbound, OpenAiChatOutbound};
+use super::openai::codex_tools::{
+    apply_codex_tool_context_to_chat_request, build_codex_tool_context_from_request,
+    rewrite_response_with_codex_tool_context, rewrite_responses_request_for_chat_context,
+    CodexToolContext,
+};
 use super::openai::responses::{OpenAiResponsesInbound, OpenAiResponsesOutbound};
 use super::stream::StreamKernel;
 use super::traits::{InboundTransformer, OutboundTransformer};
@@ -13,6 +18,20 @@ use std::pin::Pin;
 
 pub type ConversionByteStream =
     Pin<Box<dyn Stream<Item = Result<Vec<u8>, String>> + Send + 'static>>;
+
+#[derive(Debug, Clone, Default)]
+pub struct ConversionContext {
+    pub codex_tool_context: Option<CodexToolContext>,
+}
+
+impl ConversionContext {
+    pub fn is_empty(&self) -> bool {
+        self.codex_tool_context
+            .as_ref()
+            .map(CodexToolContext::is_empty)
+            .unwrap_or(true)
+    }
+}
 
 pub fn convert_request_body(
     route: ConversionRoute,
@@ -28,6 +47,29 @@ pub fn convert_request_body(
         .map_err(|error| ProtocolConversionError::Transform(error.to_string()))
 }
 
+pub struct ConvertedRequestBody {
+    pub body: Vec<u8>,
+    pub context: ConversionContext,
+}
+
+pub fn convert_request_body_with_context(
+    route: ConversionRoute,
+    body: &[u8],
+) -> Result<ConvertedRequestBody, ProtocolConversionError> {
+    if route.identity() {
+        return Ok(ConvertedRequestBody {
+            body: body.to_vec(),
+            context: ConversionContext::default(),
+        });
+    }
+    let value = serde_json::from_slice::<Value>(body)
+        .map_err(|error| ProtocolConversionError::InvalidJson(error.to_string()))?;
+    let (converted, context) = convert_request_value_with_context(route, value)?;
+    let body = serde_json::to_vec(&converted)
+        .map_err(|error| ProtocolConversionError::Transform(error.to_string()))?;
+    Ok(ConvertedRequestBody { body, context })
+}
+
 pub fn convert_response_body(
     route: ConversionRoute,
     body: &[u8],
@@ -38,6 +80,21 @@ pub fn convert_response_body(
     let value = serde_json::from_slice::<Value>(body)
         .map_err(|error| ProtocolConversionError::InvalidJson(error.to_string()))?;
     let converted = convert_response_value(route, value)?;
+    serde_json::to_vec(&converted)
+        .map_err(|error| ProtocolConversionError::Transform(error.to_string()))
+}
+
+pub fn convert_response_body_with_context(
+    route: ConversionRoute,
+    body: &[u8],
+    context: Option<&ConversionContext>,
+) -> Result<Vec<u8>, ProtocolConversionError> {
+    if route.identity() {
+        return Ok(body.to_vec());
+    }
+    let value = serde_json::from_slice::<Value>(body)
+        .map_err(|error| ProtocolConversionError::InvalidJson(error.to_string()))?;
+    let converted = convert_response_value_with_context(route, value, context)?;
     serde_json::to_vec(&converted)
         .map_err(|error| ProtocolConversionError::Transform(error.to_string()))
 }
@@ -65,20 +122,74 @@ pub fn convert_request_value(
     outbound_transformer(route.target).request_from_llm(request)
 }
 
+pub fn convert_request_value_with_context(
+    route: ConversionRoute,
+    value: Value,
+) -> Result<(Value, ConversionContext), ProtocolConversionError> {
+    if route.identity() {
+        return Ok((value, ConversionContext::default()));
+    }
+    if route.source == AiProtocol::OpenAiResponses && route.target == AiProtocol::OpenAiChat {
+        let codex_tool_context = build_codex_tool_context_from_request(&value);
+        let request_for_chat =
+            rewrite_responses_request_for_chat_context(value.clone(), &codex_tool_context);
+        let request = inbound_transformer(route.source).request_to_llm(request_for_chat)?;
+        let mut converted = outbound_transformer(route.target).request_from_llm(request)?;
+        apply_codex_tool_context_to_chat_request(&mut converted, &value, &codex_tool_context);
+        let context = (!codex_tool_context.is_empty()).then_some(codex_tool_context);
+        return Ok((
+            converted,
+            ConversionContext {
+                codex_tool_context: context,
+            },
+        ));
+    }
+    let request = inbound_transformer(route.source).request_to_llm(value)?;
+    let converted = outbound_transformer(route.target).request_from_llm(request)?;
+    Ok((converted, ConversionContext::default()))
+}
+
 pub fn convert_response_value(
     route: ConversionRoute,
     value: Value,
+) -> Result<Value, ProtocolConversionError> {
+    convert_response_value_with_context(route, value, None)
+}
+
+pub fn convert_response_value_with_context(
+    route: ConversionRoute,
+    value: Value,
+    context: Option<&ConversionContext>,
 ) -> Result<Value, ProtocolConversionError> {
     if route.identity() {
         return Ok(value);
     }
     let response = outbound_transformer(route.source).response_to_llm(value)?;
-    inbound_transformer(route.target).response_from_llm(response)
+    let mut converted = inbound_transformer(route.target).response_from_llm(response)?;
+    if route.source == AiProtocol::OpenAiChat && route.target == AiProtocol::OpenAiResponses {
+        if let Some(codex_tool_context) = context.and_then(|context| {
+            context
+                .codex_tool_context
+                .as_ref()
+                .filter(|tool_context| !tool_context.is_empty())
+        }) {
+            rewrite_response_with_codex_tool_context(&mut converted, codex_tool_context);
+        }
+    }
+    Ok(converted)
 }
 
 pub fn convert_sse_stream(
     route: ConversionRoute,
     inner: ConversionByteStream,
+) -> ConversionByteStream {
+    convert_sse_stream_with_context(route, inner, None)
+}
+
+pub fn convert_sse_stream_with_context(
+    route: ConversionRoute,
+    inner: ConversionByteStream,
+    context: Option<ConversionContext>,
 ) -> ConversionByteStream {
     if route.identity() {
         return inner;
@@ -93,7 +204,7 @@ pub fn convert_sse_stream(
 
     let state = StreamState {
         inner,
-        kernel: StreamKernel::new(route),
+        kernel: StreamKernel::with_context(route, context.unwrap_or_default()),
         pending: VecDeque::new(),
         source_finished: false,
     };
@@ -455,6 +566,28 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"model-a","
         String::from_utf8(bytes).expect("converted stream should be utf8")
     }
 
+    fn collect_stream_with_context(
+        route: ConversionRoute,
+        input: String,
+        context: ConversionContext,
+    ) -> String {
+        let chunks = input
+            .as_bytes()
+            .chunks(11)
+            .map(|chunk| Ok(chunk.to_vec()))
+            .collect::<Vec<Result<Vec<u8>, String>>>();
+        let mut output =
+            convert_sse_stream_with_context(route, Box::pin(stream::iter(chunks)), Some(context));
+        let bytes = tauri::async_runtime::block_on(async move {
+            let mut bytes = Vec::new();
+            while let Some(chunk) = output.next().await {
+                bytes.extend(chunk.expect("converted stream chunk"));
+            }
+            bytes
+        });
+        String::from_utf8(bytes).expect("converted stream should be utf8")
+    }
+
     fn collect_stream_chunks(
         route: ConversionRoute,
         chunks: Vec<Result<Vec<u8>, String>>,
@@ -582,6 +715,22 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"model-a","
     fn read_reference_stream_fixture(relative_path: &str) -> String {
         let text = fs::read_to_string(fixture_path(relative_path))
             .unwrap_or_else(|error| panic!("read stream fixture {relative_path}: {error}"));
+        stream_fixture_jsonl_to_sse(relative_path, &text)
+    }
+
+    fn live_provider_stream_fixture_path(relative_path: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src/coding/proxy_gateway/transformer/fixtures/live_provider")
+            .join(relative_path)
+    }
+
+    fn read_live_provider_stream_fixture(relative_path: &str) -> String {
+        let text = fs::read_to_string(live_provider_stream_fixture_path(relative_path))
+            .unwrap_or_else(|error| panic!("read live stream fixture {relative_path}: {error}"));
+        stream_fixture_jsonl_to_sse(relative_path, &text)
+    }
+
+    fn stream_fixture_jsonl_to_sse(relative_path: &str, text: &str) -> String {
         let mut sse = String::new();
         for (line_index, line) in text.lines().enumerate() {
             if line.trim().is_empty() {
@@ -1471,6 +1620,135 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"model-a","
     }
 
     #[test]
+    fn anthropic_system_strips_leading_billing_header_for_converted_targets() {
+        let source = json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 100,
+            "system": [
+                {
+                    "type": "text",
+                    "text": "x-anthropic-billing-header: cc_version=2.1.119; cch=rotating;\n\nStable prompt part 1"
+                },
+                {
+                    "type": "text",
+                    "text": "Stable prompt part 2"
+                }
+            ],
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+
+        let chat = convert_request_value(
+            ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+            source.clone(),
+        )
+        .unwrap();
+        assert_eq!(chat["messages"][0]["role"], "system");
+        assert_eq!(
+            chat["messages"][0]["content"],
+            "Stable prompt part 1\n\nStable prompt part 2"
+        );
+        assert!(!chat.to_string().contains("x-anthropic-billing-header"));
+
+        let responses = convert_request_value(
+            ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiResponses),
+            source.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            responses["instructions"],
+            "Stable prompt part 1\n\nStable prompt part 2"
+        );
+        assert!(!responses.to_string().contains("x-anthropic-billing-header"));
+
+        let gemini = convert_request_value(
+            ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::GeminiNative),
+            source,
+        )
+        .unwrap();
+        assert_eq!(
+            gemini["systemInstruction"]["parts"][0]["text"],
+            "Stable prompt part 1\n\nStable prompt part 2"
+        );
+        assert!(!gemini.to_string().contains("x-anthropic-billing-header"));
+    }
+
+    #[test]
+    fn openai_chat_target_collapses_system_messages_to_head() {
+        let converted = convert_request_value(
+            ConversionRoute::new(AiProtocol::OpenAiResponses, AiProtocol::OpenAiChat),
+            json!({
+                "model": "gpt-5.1-codex-mini",
+                "instructions": "Top instruction",
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "hi"}]
+                    },
+                    {
+                        "type": "message",
+                        "role": "system",
+                        "content": [{"type": "input_text", "text": "Late instruction"}]
+                    }
+                ]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(converted["messages"][0]["role"], "system");
+        assert_eq!(
+            converted["messages"][0]["content"],
+            "Top instruction\n\nLate instruction"
+        );
+        assert_eq!(converted["messages"][1]["role"], "user");
+        assert_eq!(converted["messages"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn openai_responses_instruction_parts_convert_to_system_text() {
+        let converted = convert_request_value(
+            ConversionRoute::new(AiProtocol::OpenAiResponses, AiProtocol::OpenAiChat),
+            json!({
+                "model": "gpt-5.1-codex-mini",
+                "instructions": [
+                    {"type": "text", "text": "Instruction A"},
+                    {"type": "text", "text": "Instruction B"}
+                ],
+                "input": "hello"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(converted["messages"][0]["role"], "system");
+        assert_eq!(
+            converted["messages"][0]["content"],
+            "Instruction A\n\nInstruction B"
+        );
+        assert_eq!(converted["messages"][1]["role"], "user");
+    }
+
+    #[test]
+    fn anthropic_string_tool_choice_any_maps_to_openai_required() {
+        let converted = convert_request_value(
+            ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+            json!({
+                "model": "gpt-5",
+                "max_tokens": 100,
+                "tool_choice": "any",
+                "tools": [{
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "input_schema": {"type": "object"}
+                }],
+                "messages": [{"role": "user", "content": "use tool"}]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(converted["tool_choice"], "required");
+    }
+
+    #[test]
     fn anthropic_tools_without_strict_omit_strict_for_openai_targets() {
         let source = json!({
             "model": "gpt-5",
@@ -1803,10 +2081,12 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"model-a","
         let converted = OpenAiChatOutbound.request_from_llm(request).unwrap();
         let messages = converted["messages"].as_array().unwrap();
         assert_eq!(messages[0]["role"], "system");
-        assert_eq!(messages[0]["content"], "developer instructions");
-        assert_eq!(messages[1]["role"], "system");
-        assert_eq!(messages[1]["content"], "uppercased developer");
-        assert_eq!(messages[2]["role"], "user");
+        assert_eq!(
+            messages[0]["content"],
+            "developer instructions\n\nuppercased developer"
+        );
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages.len(), 2);
     }
 
     #[test]
@@ -2879,6 +3159,35 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"model-a","
     }
 
     #[test]
+    fn responses_read_tool_call_drops_empty_pages_when_converted_to_anthropic() {
+        let converted = convert_response_value(
+            ConversionRoute::new(AiProtocol::OpenAiResponses, AiProtocol::AnthropicMessages),
+            json!({
+                "id": "resp_read",
+                "object": "response",
+                "created_at": 123,
+                "model": "gpt-5.1-codex-mini",
+                "status": "completed",
+                "output": [{
+                    "type": "function_call",
+                    "id": "fc_read",
+                    "call_id": "call_read",
+                    "name": "Read",
+                    "arguments": "{\"file_path\":\"/tmp/a.md\",\"pages\":\"\"}",
+                    "status": "completed"
+                }],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(converted["content"][0]["type"], "tool_use");
+        assert_eq!(converted["content"][0]["name"], "Read");
+        assert_eq!(converted["content"][0]["input"]["file_path"], "/tmp/a.md");
+        assert!(converted["content"][0]["input"].get("pages").is_none());
+    }
+
+    #[test]
     fn chat_response_preserves_multiple_choices() {
         let llm = chat_response_to_llm(json!({
             "id": "chat_multi",
@@ -2933,6 +3242,29 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"model-a","
             "second"
         );
         assert_eq!(gemini["candidates"][1]["finishReason"], "MAX_TOKENS");
+    }
+
+    #[test]
+    fn gemini_response_empty_finish_reason_stays_absent() {
+        let llm = gemini_response_to_llm(json!({
+            "responseId": "gemini_empty_finish",
+            "modelVersion": "gemini-2.5-flash",
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "pending"}]},
+                "finishReason": ""
+            }]
+        }));
+
+        assert_eq!(llm.choices.len(), 1);
+        match &llm.choices[0].message.content {
+            MessageContent::Parts(parts) => {
+                assert_eq!(parts.len(), 1);
+                assert_eq!(parts[0].part_type, "text");
+                assert_eq!(parts[0].text.as_deref(), Some("pending"));
+            }
+            other => panic!("expected text part content, got {other:?}"),
+        }
+        assert_eq!(llm.choices[0].finish_reason, None);
     }
 
     #[test]
@@ -3355,6 +3687,181 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"model-a","
         assert_eq!(completed_output[2]["call_id"], "call_weather");
         assert_eq!(completed_output[2]["arguments"], "{\"city\":\"Tokyo\"}");
         assert_eq!(occurrence_count(&output, "event: response.completed"), 1);
+    }
+
+    #[test]
+    fn chat_stream_to_responses_ignores_empty_finish_reason_from_deepseek_log() {
+        let output = collect_stream(
+            ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::OpenAiResponses),
+            read_live_provider_stream_fixture(
+                "openai_chat/deepseek-context7-empty-finish-gw-47760-1783004708389088-14.stream.jsonl",
+            ),
+        );
+        let values = sse_data_values(&output);
+        let event_positions = |event_type: &str| {
+            values
+                .iter()
+                .enumerate()
+                .filter_map(|(index, value)| {
+                    (value.get("type").and_then(Value::as_str) == Some(event_type)).then_some(index)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let text_delta_positions = event_positions("response.output_text.delta");
+        let message_done_positions = values
+            .iter()
+            .enumerate()
+            .filter_map(|(index, value)| {
+                (value.get("type").and_then(Value::as_str) == Some("response.output_item.done")
+                    && value.pointer("/item/type").and_then(Value::as_str) == Some("message"))
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(message_done_positions.len(), 1);
+        assert!(!text_delta_positions.is_empty());
+        assert!(
+            text_delta_positions
+                .iter()
+                .all(|position| *position < message_done_positions[0]),
+            "message item must not be closed while later text delta events are still arriving"
+        );
+
+        let message_done = &values[message_done_positions[0]];
+        assert_eq!(
+            message_done["item"]["content"][0]["text"],
+            "Context7 是 HTTP"
+        );
+
+        let tool_delta_positions = event_positions("response.function_call_arguments.delta");
+        let tool_done_positions = event_positions("response.function_call_arguments.done");
+        assert_eq!(tool_done_positions.len(), 1);
+        assert!(!tool_delta_positions.is_empty());
+        assert!(
+            tool_delta_positions
+                .iter()
+                .all(|position| *position < tool_done_positions[0]),
+            "tool call must not be closed while later argument delta events are still arriving"
+        );
+
+        let expected_arguments =
+            "{\"cmd\":\"curl -H \\\"CONTEXT7_API_KEY: ctx7sk-REDACTED\\\" https://mcp.context7.com/mcp\"}";
+        let tool_done = &values[tool_done_positions[0]];
+        assert_eq!(tool_done["arguments"], expected_arguments);
+
+        let completed = values
+            .iter()
+            .find(|value| value.get("type").and_then(Value::as_str) == Some("response.completed"))
+            .expect("completed event");
+        let completed_output = completed["response"]["output"].as_array().unwrap();
+        assert_eq!(completed_output.len(), 3);
+        assert_eq!(completed_output[0]["type"], "reasoning");
+        assert_eq!(completed_output[1]["type"], "message");
+        assert_eq!(
+            completed_output[1]["content"][0]["text"],
+            "Context7 是 HTTP"
+        );
+        assert_eq!(completed_output[2]["type"], "function_call");
+        assert_eq!(completed_output[2]["name"], "exec_command");
+        assert_eq!(completed_output[2]["arguments"], expected_arguments);
+        assert_eq!(occurrence_count(&output, "event: response.completed"), 1);
+    }
+
+    #[test]
+    fn gemini_stream_to_responses_ignores_empty_finish_reason() {
+        let output = collect_stream(
+            ConversionRoute::new(AiProtocol::GeminiNative, AiProtocol::OpenAiResponses),
+            [
+                r#"data: {"responseId":"gemini_empty_finish","modelVersion":"model-a","candidates":[{"content":{"role":"model","parts":[{"text":"Hel"}]},"finishReason":""}]}
+
+"#,
+                r#"data: {"responseId":"gemini_empty_finish","modelVersion":"model-a","candidates":[{"content":{"role":"model","parts":[{"text":"Hello"}]},"finishReason":"STOP"}],"usageMetadata":{"candidatesTokenCount":5}}
+
+"#,
+            ]
+            .concat(),
+        );
+        let values = sse_data_values(&output);
+        let text_delta_positions = values
+            .iter()
+            .enumerate()
+            .filter_map(|(index, value)| {
+                (value.get("type").and_then(Value::as_str) == Some("response.output_text.delta"))
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let message_done_position = values
+            .iter()
+            .position(|value| {
+                value.get("type").and_then(Value::as_str) == Some("response.output_item.done")
+                    && value.pointer("/item/type").and_then(Value::as_str) == Some("message")
+            })
+            .expect("message done event");
+
+        assert_eq!(text_delta_positions.len(), 2);
+        assert!(text_delta_positions
+            .iter()
+            .all(|position| *position < message_done_position));
+
+        let completed = values
+            .iter()
+            .find(|value| value.get("type").and_then(Value::as_str) == Some("response.completed"))
+            .expect("completed event");
+        assert_eq!(
+            completed["response"]["output"][0]["content"][0]["text"],
+            "Hello"
+        );
+    }
+
+    #[test]
+    fn anthropic_usage_only_message_delta_does_not_finish_responses_item() {
+        let mut kernel = StreamKernel::new(ConversionRoute::new(
+            AiProtocol::AnthropicMessages,
+            AiProtocol::OpenAiResponses,
+        ));
+
+        let start = push_stream_chunk(
+            &mut kernel,
+            r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_usage_only","model":"claude","usage":{"input_tokens":2}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+
+"#,
+        );
+        assert!(start.contains("response.output_text.delta"));
+
+        let usage_only = push_stream_chunk(
+            &mut kernel,
+            r#"event: message_delta
+data: {"type":"message_delta","delta":{},"usage":{"output_tokens":5}}
+
+"#,
+        );
+        assert!(!usage_only.contains("response.output_text.done"));
+        assert!(!usage_only.contains("response.output_item.done"));
+        assert!(!usage_only.contains("response.completed"));
+
+        let done = push_stream_chunk(
+            &mut kernel,
+            r#"event: message_stop
+data: {"type":"message_stop"}
+
+"#,
+        );
+        assert!(done.contains("response.output_text.done"));
+        assert!(done.contains("response.completed"));
+        let values = sse_data_values(&done);
+        let completed = values
+            .iter()
+            .find(|value| value.get("type").and_then(Value::as_str) == Some("response.completed"))
+            .expect("completed event");
+        assert_eq!(
+            completed["response"]["output"][0]["content"][0]["text"],
+            "Hello"
+        );
+        assert_eq!(completed["response"]["usage"]["output_tokens"], 5);
     }
 
     #[test]
@@ -4495,6 +5002,224 @@ data: {"type":"response.completed","response":{"id":"resp_enc","model":"model-a"
                         .any(|tool_call| tool_call["type"] == TOOL_TYPE_RESPONSES_CUSTOM_TOOL)
                 })
         }));
+    }
+
+    #[test]
+    fn codex_context_request_exposes_tool_search_and_namespace_tools_for_chat() {
+        let request = json!({
+            "model": "gpt-5.4",
+            "tools": [{"type": "tool_search"}],
+            "input": [
+                {
+                    "type": "tool_search_call",
+                    "call_id": "call_tool_search_1",
+                    "status": "completed",
+                    "execution": "client",
+                    "arguments": {"query": "Gmail search emails", "limit": 5}
+                },
+                {
+                    "type": "tool_search_output",
+                    "call_id": "call_tool_search_1",
+                    "status": "completed",
+                    "execution": "client",
+                    "tools": [{
+                        "type": "namespace",
+                        "name": "mcp__codex_apps__gmail",
+                        "tools": [{
+                            "type": "function",
+                            "name": "_search_emails",
+                            "description": "Search Gmail.",
+                            "parameters": {"type": "object"}
+                        }]
+                    }]
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Search unread inbox mail."}]
+                }
+            ]
+        });
+
+        let (chat, context) = convert_request_value_with_context(
+            ConversionRoute::new(AiProtocol::OpenAiResponses, AiProtocol::OpenAiChat),
+            request,
+        )
+        .unwrap();
+
+        assert!(!context.is_empty());
+        let tool_names = chat["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool.pointer("/function/name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(tool_names.contains(&"tool_search"));
+        assert!(tool_names.contains(&"mcp__codex_apps__gmail___search_emails"));
+        assert_eq!(
+            chat["messages"][0]["tool_calls"][0]["function"]["name"],
+            "tool_search"
+        );
+        assert_eq!(chat["messages"][1]["role"], "tool");
+        assert_eq!(chat["messages"][1]["tool_call_id"], "call_tool_search_1");
+        assert!(chat["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("mcp__codex_apps__gmail"));
+    }
+
+    #[test]
+    fn codex_context_response_restores_namespace_and_tool_search_calls() {
+        let request = json!({
+            "model": "gpt-5.4",
+            "tools": [{"type": "tool_search"}],
+            "input": [{
+                "type": "tool_search_output",
+                "call_id": "call_tool_search_1",
+                "tools": [{
+                    "type": "namespace",
+                    "name": "mcp__codex_apps__gmail",
+                    "tools": [{
+                        "type": "function",
+                        "name": "_search_emails",
+                        "description": "Search Gmail.",
+                        "parameters": {"type": "object"}
+                    }]
+                }]
+            }]
+        });
+        let (_, context) = convert_request_value_with_context(
+            ConversionRoute::new(AiProtocol::OpenAiResponses, AiProtocol::OpenAiChat),
+            request,
+        )
+        .unwrap();
+
+        let namespace_response = convert_response_value_with_context(
+            ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::OpenAiResponses),
+            json!({
+                "id": "chatcmpl_gmail",
+                "object": "chat.completion",
+                "created": 123,
+                "model": "gpt-5.4",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [{
+                            "id": "call_gmail",
+                            "type": "function",
+                            "function": {
+                                "name": "mcp__codex_apps__gmail___search_emails",
+                                "arguments": "{\"query\":\"in:inbox\"}"
+                            }
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            }),
+            Some(&context),
+        )
+        .unwrap();
+        assert_eq!(namespace_response["output"][0]["type"], "function_call");
+        assert_eq!(
+            namespace_response["output"][0]["namespace"],
+            "mcp__codex_apps__gmail"
+        );
+        assert_eq!(namespace_response["output"][0]["name"], "_search_emails");
+
+        let tool_search_response = convert_response_value_with_context(
+            ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::OpenAiResponses),
+            json!({
+                "id": "chatcmpl_tool_search",
+                "object": "chat.completion",
+                "created": 123,
+                "model": "gpt-5.4",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [{
+                            "id": "call_tool_search_2",
+                            "type": "function",
+                            "function": {
+                                "name": "tool_search",
+                                "arguments": "{\"query\":\"Gmail search emails\",\"limit\":10}"
+                            }
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            }),
+            Some(&context),
+        )
+        .unwrap();
+        assert_eq!(
+            tool_search_response["output"][0]["type"],
+            "tool_search_call"
+        );
+        assert_eq!(
+            tool_search_response["output"][0]["arguments"]["query"],
+            "Gmail search emails"
+        );
+        assert_eq!(tool_search_response["output"][0]["arguments"]["limit"], 10);
+    }
+
+    #[test]
+    fn codex_context_stream_restores_namespace_and_tool_search_items() {
+        let request = json!({
+            "model": "gpt-5.4",
+            "tools": [{"type": "tool_search"}],
+            "input": [{
+                "type": "tool_search_output",
+                "call_id": "call_tool_search_1",
+                "tools": [{
+                    "type": "namespace",
+                    "name": "mcp__codex_apps__gmail",
+                    "tools": [{
+                        "type": "function",
+                        "name": "_search_emails",
+                        "description": "Search Gmail.",
+                        "parameters": {"type": "object"}
+                    }]
+                }]
+            }]
+        });
+        let (_, context) = convert_request_value_with_context(
+            ConversionRoute::new(AiProtocol::OpenAiResponses, AiProtocol::OpenAiChat),
+            request,
+        )
+        .unwrap();
+        let namespace_stream = [
+            r#"data: {"id":"chatcmpl_gmail","model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_gmail","type":"function","function":{"name":"mcp__codex_apps__gmail___search_emails"}}]}}]}"#,
+            "\n\n",
+            r#"data: {"id":"chatcmpl_gmail","model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"query\":\"in:inbox\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+            "\n\n",
+            "data: [DONE]\n\n",
+        ]
+        .concat();
+        let output = collect_stream_with_context(
+            ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::OpenAiResponses),
+            namespace_stream,
+            context.clone(),
+        );
+        assert!(output.contains("\"type\":\"function_call\""));
+        assert!(output.contains("\"namespace\":\"mcp__codex_apps__gmail\""));
+        assert!(output.contains("\"name\":\"_search_emails\""));
+
+        let tool_search_stream = [
+            r#"data: {"id":"chatcmpl_tool_search","model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_tool_search_2","type":"function","function":{"name":"tool_search"}}]}}]}"#,
+            "\n\n",
+            r#"data: {"id":"chatcmpl_tool_search","model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"query\":\"Gmail search emails\",\"limit\":10}"}}]},"finish_reason":"tool_calls"}]}"#,
+            "\n\n",
+            "data: [DONE]\n\n",
+        ]
+        .concat();
+        let output = collect_stream_with_context(
+            ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::OpenAiResponses),
+            tool_search_stream,
+            context,
+        );
+        assert!(output.contains("\"type\":\"tool_search_call\""));
+        assert!(output.contains("\"execution\":\"client\""));
+        assert!(output.contains("\"query\":\"Gmail search emails\""));
     }
 
     #[test]

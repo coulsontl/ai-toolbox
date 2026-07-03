@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 pub(crate) const ANTHROPIC_MESSAGE_INDEX_KEY: &str = "anthropic_message_index";
+const ANTHROPIC_BILLING_HEADER_PREFIX: &str = "x-anthropic-billing-header:";
 
 pub struct AnthropicInbound;
 
@@ -73,8 +74,7 @@ pub fn anthropic_request_to_llm(body: Value) -> Request {
     }
 
     if let Some(system) = body.get("system") {
-        let text = content_text(Some(system));
-        if !text.is_empty() {
+        for text in anthropic_system_texts(system) {
             request.messages.push(Message {
                 role: "system".to_string(),
                 content: MessageContent::Text(text),
@@ -117,6 +117,55 @@ pub fn anthropic_request_to_llm(body: Value) -> Request {
     }
 
     request
+}
+
+fn anthropic_system_texts(system: &Value) -> Vec<String> {
+    match system {
+        Value::String(text) => strip_leading_anthropic_billing_header(text)
+            .filter(|text| !text.is_empty())
+            .map(|text| vec![text.to_string()])
+            .unwrap_or_default(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .or_else(|| part.get("content"))
+                    .and_then(Value::as_str)
+            })
+            .filter_map(strip_leading_anthropic_billing_header)
+            .filter(|text| !text.is_empty())
+            .map(ToString::to_string)
+            .collect(),
+        other => other
+            .as_str()
+            .and_then(strip_leading_anthropic_billing_header)
+            .filter(|text| !text.is_empty())
+            .map(|text| vec![text.to_string()])
+            .unwrap_or_default(),
+    }
+}
+
+fn strip_leading_anthropic_billing_header(text: &str) -> Option<&str> {
+    if !text.starts_with(ANTHROPIC_BILLING_HEADER_PREFIX) {
+        return Some(text);
+    }
+
+    let bytes = text.as_bytes();
+    let line_end = bytes
+        .iter()
+        .position(|byte| *byte == b'\n' || *byte == b'\r')?;
+    let mut rest_start = line_end + 1;
+    if bytes[line_end] == b'\r' && bytes.get(line_end + 1) == Some(&b'\n') {
+        rest_start += 1;
+    }
+
+    let rest = &text[rest_start..];
+    Some(
+        rest.strip_prefix("\r\n")
+            .or_else(|| rest.strip_prefix('\n'))
+            .or_else(|| rest.strip_prefix('\r'))
+            .unwrap_or(rest),
+    )
 }
 
 fn anthropic_reasoning_effort(body: &Value) -> Option<&'static str> {

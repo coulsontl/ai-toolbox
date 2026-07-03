@@ -1,6 +1,5 @@
 import React from 'react';
-import { Modal, Form, Input, Select, Space, Button, Alert, message, AutoComplete, Radio, Checkbox, Dropdown } from 'antd';
-import type { RadioChangeEvent } from 'antd';
+import { Modal, Form, Input, Select, Space, Button, Alert, message, AutoComplete, Checkbox, Dropdown } from 'antd';
 import { EyeInvisibleOutlined, EyeOutlined, CloudDownloadOutlined, DownOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { Settings2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -86,6 +85,7 @@ function hasNonEmptyExtraSettingsObject(rawConfig?: string): boolean {
 }
 
 const DEFAULT_CLAUDE_API_FORMAT: ClaudeApiFormat = 'anthropic';
+const OFFICIAL_PROVIDER_ENDPOINT_KEY = '__official__:';
 
 function normalizeClaudeApiFormat(value?: string): ClaudeApiFormat {
   if (value === 'openai_chat' || value === 'openai_responses' || value === 'gemini_native') {
@@ -258,19 +258,32 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
     },
   ], [haikuModel, haikuModelName, opusModel, opusModelName, sonnetModel, sonnetModelName, t]);
 
-  const providerEndpointOptions = React.useMemo(() => [
-    {
+  const providerEndpointOptions = React.useMemo(() => {
+    if (isOfficialMode && !canSelectProviderCategory) {
+      return [{
+        value: OFFICIAL_PROVIDER_ENDPOINT_KEY,
+        label: t('claudecode.provider.providerProfileOfficial'),
+      }];
+    }
+
+    return [
+      {
       value: CUSTOM_PROVIDER_ENDPOINT_KEY,
       label: t('claudecode.provider.providerProfileCustom'),
-    },
-    ...getGatewayProviderProfilesForTool('claude').flatMap((profile) => {
-      const endpoints = profile.tools.claude?.endpoints || [];
-      return endpoints.map((endpoint) => ({
-        value: toGatewayProviderEndpointKey(profile.id, endpoint.id),
-        label: `${profile.label} / ${endpoint.label}`,
-      }));
-    }),
-  ], [gatewayProviderProfilesVersion, t]);
+      },
+      ...(canSelectProviderCategory ? [{
+        value: OFFICIAL_PROVIDER_ENDPOINT_KEY,
+        label: t('claudecode.provider.providerProfileOfficial'),
+      }] : []),
+      ...getGatewayProviderProfilesForTool('claude').flatMap((profile) => {
+        const endpoints = profile.tools.claude?.endpoints || [];
+        return endpoints.map((endpoint) => ({
+          value: toGatewayProviderEndpointKey(profile.id, endpoint.id),
+          label: `${profile.label} / ${endpoint.label}`,
+        }));
+      }),
+    ];
+  }, [canSelectProviderCategory, gatewayProviderProfilesVersion, isOfficialMode, t]);
 
   const getExtraSettingsErrorMessage = React.useCallback((error: unknown) => {
     if (error instanceof SyntaxError) {
@@ -361,7 +374,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
             'claude',
             providerEndpointSelection.providerEndpointId,
           );
-      const selectedBaseUrl = providerEndpoint?.baseUrl ?? baseUrl;
+      const selectedBaseUrl = baseUrl || providerEndpoint?.baseUrl || '';
       const selectedApiFormat = providerEndpoint
         ? normalizeClaudeApiFormat(providerEndpoint.apiFormat)
         : normalizeClaudeApiFormat(provider.meta?.apiFormat);
@@ -379,10 +392,12 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
       form.setFieldsValue({
         category: nextProviderCategory,
         name: provider.name,
-        providerEndpointKey: toGatewayProviderEndpointKey(
-          providerEndpointSelection.providerProfileId,
-          providerEndpointSelection.providerEndpointId,
-        ),
+        providerEndpointKey: nextProviderCategory === 'official'
+          ? OFFICIAL_PROVIDER_ENDPOINT_KEY
+          : toGatewayProviderEndpointKey(
+              providerEndpointSelection.providerProfileId,
+              providerEndpointSelection.providerEndpointId,
+            ),
         providerProfileId: providerEndpointSelection.providerProfileId,
         providerEndpointId: providerEndpointSelection.providerEndpointId,
         baseUrl: selectedBaseUrl,
@@ -544,7 +559,19 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
   };
 
   const handleProviderEndpointChange = (selectionKey: string) => {
+    if (selectionKey === OFFICIAL_PROVIDER_ENDPOINT_KEY) {
+      if (!canSelectProviderCategory) {
+        return;
+      }
+      handleCategoryChange('official');
+      return;
+    }
+
     const { providerProfileId, providerEndpointId } = parseGatewayProviderEndpointKey(selectionKey);
+    if (canSelectProviderCategory && providerCategory !== 'custom') {
+      setProviderCategory('custom');
+      form.setFieldsValue({ category: 'custom' });
+    }
 
     if (providerProfileId === CUSTOM_PROVIDER_PROFILE_ID) {
       form.setFieldsValue({
@@ -561,10 +588,11 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
       return;
     }
 
-    const nextModel = endpoint.models?.primary ?? endpoint.model ?? form.getFieldValue('model');
-    const nextHaikuModel = endpoint.models?.haiku ?? form.getFieldValue('haikuModel');
-    const nextSonnetModel = endpoint.models?.sonnet ?? form.getFieldValue('sonnetModel');
-    const nextOpusModel = endpoint.models?.opus ?? form.getFieldValue('opusModel');
+    const endpointModel = endpoint.model?.trim();
+    const nextModel = endpoint.models?.primary ?? endpointModel ?? form.getFieldValue('model');
+    const nextHaikuModel = endpoint.models?.haiku ?? endpointModel ?? form.getFieldValue('haikuModel');
+    const nextSonnetModel = endpoint.models?.sonnet ?? endpointModel ?? form.getFieldValue('sonnetModel');
+    const nextOpusModel = endpoint.models?.opus ?? endpointModel ?? form.getFieldValue('opusModel');
 
     form.setFieldsValue({
       providerEndpointKey: toGatewayProviderEndpointKey(providerProfileId, endpoint.id),
@@ -602,7 +630,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
       const normalizedApiKey = submittedValues.apiKey?.trim() || undefined;
       const selectedCategory = mode === 'import'
         ? 'custom'
-        : ((canSelectProviderCategory ? submittedValues.category : providerCategory) === 'official' ? 'official' : 'custom');
+        : (providerCategory === 'official' ? 'official' : 'custom');
       const selectedEndpoint = selectedCategory === 'official' || submittedValues.providerProfileId === CUSTOM_PROVIDER_PROFILE_ID
         ? undefined
         : findGatewayProviderEndpoint(
@@ -620,7 +648,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
           : normalizeClaudeApiFormat(submittedValues.apiFormat);
       const selectedBaseUrl = selectedCategory === 'official'
         ? undefined
-        : selectedEndpoint?.baseUrl ?? normalizedBaseUrl;
+        : normalizedBaseUrl ?? selectedEndpoint?.baseUrl;
       let extraSettingsConfig: string | undefined;
       try {
         extraSettingsConfig = selectedCategory === 'official'
@@ -941,8 +969,8 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
     </Form.Item>
   );
 
-  const handleCategoryChange = (event: RadioChangeEvent) => {
-    const nextCategory = event.target.value === 'official' ? 'official' : 'custom';
+  const handleCategoryChange = (category: string) => {
+    const nextCategory = category === 'official' ? 'official' : 'custom';
     setProviderCategory(nextCategory);
 
     if (nextCategory === 'official') {
@@ -954,12 +982,21 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
       setAdvancedSettingsExpanded(false);
       extraSettingsRawRef.current = '';
       form.setFieldsValue({
+        category: 'official',
         baseUrl: undefined,
         apiKey: undefined,
-        providerEndpointKey: CUSTOM_PROVIDER_ENDPOINT_KEY,
+        providerEndpointKey: OFFICIAL_PROVIDER_ENDPOINT_KEY,
         providerProfileId: CUSTOM_PROVIDER_PROFILE_ID,
         providerEndpointId: undefined,
         apiFormat: DEFAULT_CLAUDE_API_FORMAT,
+      });
+    } else {
+      form.setFieldsValue({
+        category: 'custom',
+        providerEndpointKey: CUSTOM_PROVIDER_ENDPOINT_KEY,
+        providerProfileId: CUSTOM_PROVIDER_PROFILE_ID,
+        providerEndpointId: undefined,
+        apiFormat: form.getFieldValue('apiFormat') || DEFAULT_CLAUDE_API_FORMAT,
       });
     }
   };
@@ -971,18 +1008,44 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
       labelCol={labelCol}
       wrapperCol={wrapperCol}
     >
-      {canSelectProviderCategory && (
-        <Form.Item
-          name="category"
-          label={t('claudecode.provider.mode')}
-          initialValue={providerCategory}
-        >
-          <Radio.Group onChange={handleCategoryChange}>
-            <Radio.Button value="official">{t('claudecode.provider.modeOfficial')}</Radio.Button>
-            <Radio.Button value="custom">{t('claudecode.provider.modeCustom')}</Radio.Button>
-          </Radio.Group>
-        </Form.Item>
-      )}
+      <Form.Item
+        label={t('claudecode.provider.providerProfile')}
+        required
+        help={<span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>{t('claudecode.provider.providerProfileHelp')}</span>}
+      >
+        <div className={isOfficialMode ? undefined : styles.providerProfileRow}>
+          <Form.Item
+            name="providerEndpointKey"
+            noStyle
+            initialValue={CUSTOM_PROVIDER_ENDPOINT_KEY}
+            rules={[{ required: true, message: t('common.error') }]}
+          >
+            <Select
+              options={providerEndpointOptions}
+              disabled={isOfficialMode && !canSelectProviderCategory}
+              onChange={handleProviderEndpointChange}
+            />
+          </Form.Item>
+          {!isOfficialMode && (
+            <Form.Item
+              name="apiFormat"
+              noStyle
+              initialValue={DEFAULT_CLAUDE_API_FORMAT}
+            >
+              <Select
+                options={apiFormatOptions}
+                disabled={!selectedIsCustomProviderProfile}
+              />
+            </Form.Item>
+          )}
+        </div>
+      </Form.Item>
+      <Form.Item name="providerProfileId" hidden initialValue={CUSTOM_PROVIDER_PROFILE_ID}>
+        <Input />
+      </Form.Item>
+      <Form.Item name="providerEndpointId" hidden>
+        <Input />
+      </Form.Item>
 
       {isOfficialMode && (
         <Form.Item wrapperCol={{ offset: labelCol.span, span: wrapperCol.span }}>
@@ -1002,7 +1065,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
 
       <Form.Item
         name="name"
-        label={t('claudecode.provider.name')}
+        label={t('claudecode.provider.formName')}
         rules={[{ required: true, message: t('common.error') }]}
       >
         <Input placeholder={t('claudecode.provider.namePlaceholder')} />
@@ -1011,49 +1074,12 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
       {!isOfficialMode && (
         <>
           <Form.Item
-            label={t('claudecode.provider.providerProfile')}
-            required
-            help={<span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>{t('claudecode.provider.providerProfileHelp')}</span>}
-          >
-            <div className={styles.providerProfileRow}>
-              <Form.Item
-                name="providerEndpointKey"
-                noStyle
-                initialValue={CUSTOM_PROVIDER_ENDPOINT_KEY}
-                rules={[{ required: true, message: t('common.error') }]}
-              >
-                <Select
-                  options={providerEndpointOptions}
-                  onChange={handleProviderEndpointChange}
-                />
-              </Form.Item>
-              <Form.Item
-                name="apiFormat"
-                noStyle
-                initialValue={DEFAULT_CLAUDE_API_FORMAT}
-              >
-                <Select
-                  options={apiFormatOptions}
-                  disabled={!selectedIsCustomProviderProfile}
-                />
-              </Form.Item>
-            </div>
-          </Form.Item>
-          <Form.Item name="providerProfileId" hidden initialValue={CUSTOM_PROVIDER_PROFILE_ID}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="providerEndpointId" hidden>
-            <Input />
-          </Form.Item>
-
-          <Form.Item
             name="baseUrl"
             label={t('claudecode.provider.baseUrl')}
             rules={[{ required: true, message: t('common.error') }]}
           >
             <Input
               placeholder={t('claudecode.provider.baseUrlPlaceholder')}
-              disabled={!selectedIsCustomProviderProfile}
               onChange={(e) => setCurrentBaseUrl(e.target.value)}
             />
           </Form.Item>
@@ -1182,7 +1208,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
           />
         )}
 
-        <Form.Item name="name" label={t('claudecode.provider.name')}>
+        <Form.Item name="name" label={t('claudecode.provider.formName')}>
           <Input placeholder={t('claudecode.provider.namePlaceholder')} disabled />
         </Form.Item>
 

@@ -8,6 +8,7 @@
 
 - 转换模块的 Source of Truth 是统一中间模型新内核：`llm::Request` / `llm::Response`、Inbound/Outbound transformer、`StreamKernel`，以及 `AiProtocol`、`ConversionRoute`、`convert_request_body`、`convert_response_body`、`convert_error_response_body` 和 `convert_sse_stream` 的行为与测试。
 - Runtime 只负责判断入站 route、读取 provider 的 target protocol、拼上游 path/header/auth、保存 `request_body` 与 `upstream_request_body` 快照；协议结构转换必须留在本目录。
+- 部分转换需要 request-scoped context，例如 Codex Responses `tool_search` / namespace / custom tool 转 OpenAI Chat 时，request 阶段要记录 Chat 展平工具名到原始 Responses tool spec 的映射，并在同一次 response/SSE 反向转换中还原。context 的生成和消费仍属于 transformer；runtime 只能携带 `ConversionContext`，不能理解或改写这些协议结构。
 - `ProviderGatewayMeta.apiFormat` 表示上游真实目标协议，不表示入站 CLI 协议。入站协议由 Gateway route 推导，二者组成 `ConversionRoute`。
 - `apiFormat` 字符串别名的唯一解析入口是 `AiProtocol::from_api_format`。Runtime provider 读取、前端/后端是否需要 Gateway 接管的判断，以及后续新增协议都必须复用它；不要在 `provider_protocol` 或 runtime 文件里复制第二套 parser。别名要同时覆盖 snake_case、slash 和 dash 形式，例如 `anthropic/messages`、`openai/responses`、`openai-chat`。
 - `source == target` 时 Gateway 必须直通，不调用结构转换；直通路径仍可做已有模型名改写、`[1M]` 标记剥离等 runtime 级处理，但不能重写协议结构。
@@ -136,6 +137,8 @@
 - Strict schema normalize 不在当前实现中自动补 `additionalProperties:false` / required；只透传 schema。
 - Responses SSE 覆盖 text、reasoning、function tool、custom tool、finish，事件序列比 AxonHub 简化但要保证客户端关键事件和完成幂等。
 - Responses target SSE 是 output item 状态机，不是独立 delta 列表。参考 AxonHub `responsesInboundStream` 与 reference fixture：`response.created` 后应有 `response.in_progress`；文本 delta 前必须先发 `response.output_item.added` 的 `message` item，再发 `response.content_part.added` 的 `output_text` part；`response.output_text.delta.item_id` 必须指向 message item id，不能用 response id。reasoning、message、tool call 首次出现时都必须分配唯一递增 `output_index`；从 reasoning 切到 message、从 message 切到 tool call 前必须先补对应的 done 事件，finish 时也要补齐未关闭 item，并让 `response.completed.response.output` 包含最终 output items。
+- Source stream 的终止字段只有非空字符串才表示终止；DeepSeek 等 OpenAI Chat 兼容接口可能在非最终 chunk 返回 `finish_reason:""`，Gemini 也可能出现空 `finishReason`。空字符串必须按“未完成”处理，不能触发 Responses target 的 `response.output_text.done`、`response.function_call_arguments.done` 或 `response.output_item.done`，否则后续 delta 会落在已关闭 item 之后，Codex UI 会显示零碎/重复记录。真实回归 fixture 保存在 `fixtures/live_provider/openai_chat/deepseek-context7-empty-finish-gw-47760-1783004708389088-14.stream.jsonl`，只保留脱敏后的 provider 行为。
+- Anthropic source stream 的 `message_delta` 可能承载 usage；只有 `delta.stop_reason` 为非空字符串时才表示终止。usage-only `message_delta` 只能暂存 usage，不能关闭 target output item；等 `message_stop` 或后续明确 finish 再完成响应。此处要对齐 AxonHub `anthropic/outbound_stream.go`：先 merge usage，`StopReason != nil` 时才输出 LLM finish。
 - `encrypted_content` 从 `reasoning_signature` 中仅按 OpenAI Responses provider marker/heuristic 还原；允许 encrypted-only reasoning item，summary 为空时仍输出 reasoning item。
 - `include` 只保留显式入站/extra_body 的 top-level include，不由转换器主动添加。
 - 不承载 `store`、`safety_identifier`、`max_tool_calls`、`prompt_cache_retention`、`truncation`、`stream_options.include_obfuscation`、compact、image generation。
@@ -176,6 +179,9 @@
 ## JSON 请求转换细节
 
 - Anthropic `system` 转 OpenAI Chat `system` message，转 Responses `instructions`，转 Gemini `systemInstruction.parts[].text`。
+- Claude Code 可能在 Anthropic `system` 开头注入动态 `x-anthropic-billing-header:` 行；转换到非 Anthropic 目标前必须只剥离开头这一个动态 attribution 行，并保留后续稳定 prompt 文本。不要删除非开头位置的同名文本，避免误删用户内容。
+- 转 OpenAI Chat target 时，多个 `system` / `developer` 消息必须合并并移动到首条 system。cc-switch 对 Anthropic->Chat 和 Responses->Chat 都这样做，第三方 Chat 兼容接口更容易接受单首位 system，而不是多条或中途 system。
+- OpenAI Responses `instructions` 不一定只是一段字符串；数组形态要按 text parts 合并为 system 文本，不能因为 `as_str()` 失败而丢失 Codex instructions。
 - OpenAI Chat `system` 和 `developer` 都汇总到 Anthropic `system` 或 Responses `instructions`，顺序保留，用空行连接。
 - Anthropic `messages[].content` 支持 string 和 block array；OpenAI/Gemini 转入时统一输出 Anthropic block array。
 - 文本映射：
@@ -191,13 +197,15 @@
   - Gemini native `googleSearch` / `codeExecution` / `urlContext` 保留为中间模型 Google tools；转回 Gemini 时继续输出对应 native tool object。
   - Gemini SDK 可能给 schema `type` 返回 `OBJECT` / `STRING` 等大写值；入站必须递归归一为小写，避免转 OpenAI/Anthropic 后 schema 不合法。
 - 工具选择映射：
-  - Anthropic `any` <-> OpenAI/Responses `required`。
+  - Anthropic `any` <-> OpenAI/Responses `required`；入站要同时兼容 `{ "type": "any" }` 和字符串 `"any"`，对齐 cc-switch。
   - Anthropic `{type:"tool", name}` <-> Chat `{type:"function", function:{name}}` <-> Responses `{type:"function", name}` <-> Gemini `allowedFunctionNames`。
 - 工具调用与工具结果：
   - Anthropic `tool_use` <-> Chat `tool_calls` / legacy `function_call` <-> Responses `function_call` <-> Gemini `functionCall`。
   - Anthropic `tool_result` <-> Chat `role:"tool"` <-> Responses `function_call_output` <-> Gemini `functionResponse`。
   - Anthropic 单条 user message 内允许多个 `tool_result` 和后续普通 text/image；入站不能在第一个 tool_result 处提前返回，出站应把连续 tool results 合并回同一个 Anthropic user content，保留 `cache_control` / `is_error`。
   - Responses `custom_tool_call` / `custom_tool_call_output` 必须和 Chat 兼容扩展 `responses_custom_tool` 双向保真；同一 request 内用前序 custom call id 判断后续 tool output 类型，不做跨请求影子状态。
+  - Codex Responses 转第三方 OpenAI Chat 时，要按 cc-switch 的 request-scoped context 暴露 `tool_search` 为普通 Chat function，把 `namespace` 子工具展平成 `namespace__tool` 名称，并把 custom tool 包装成 `{input:string}` function；Chat 响应和 SSE 必须用同一 context 还原为 Responses `tool_search_call`、带 `namespace` 的 `function_call` 或 `custom_tool_call`。不要只做请求侧展平，否则 Codex 后续工具结果会丢 namespace/type。
+  - Responses `function_call` 还原到 Anthropic `tool_use` 时，对 `Read` 工具的空字符串 `pages` 参数做窄清理，删除 `pages:""`。这是 cc-switch 为 Claude/Codex 历史工具参数做的兼容，不能扩展成全局空字段删除。
   - Gemini 缺少 functionCall id 时生成 `gemini_synth_<index>`；转回 Gemini 时不会把这个 synthetic id 作为真实 id 发上游。
   - Gemini `functionResponse.name` 和缺失的 id 通过同一请求里的历史 functionCall 做 best-effort 补全；没有历史时用 id/name fallback。不做跨请求影子状态。
 - Reasoning 映射：

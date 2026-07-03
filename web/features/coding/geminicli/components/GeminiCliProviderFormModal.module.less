@@ -1,0 +1,12 @@
+.providerProfileRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(150px, 0.8fr);
+  gap: 8px;
+  align-items: center;
+}
+
+@media (max-width: 720px) {
+  .providerProfileRow {
+    grid-template-columns: 1fr;
+  }
+}

@@ -12,8 +12,9 @@ use super::GatewayRuntimeContext;
 use super::{cache_injector, thinking_budget};
 use crate::coding::proxy_gateway::model_health::{self, GatewayFailureKind};
 use crate::coding::proxy_gateway::transformer::{
-    convert_error_response_body, convert_request_body, convert_response_body, convert_sse_stream,
-    AiProtocol, ConversionRoute,
+    convert_error_response_body, convert_request_body_with_context,
+    convert_response_body_with_context, convert_sse_stream_with_context, AiProtocol,
+    ConversionContext, ConversionRoute,
 };
 #[cfg(test)]
 use crate::coding::proxy_gateway::types::ProviderGatewayMeta;
@@ -625,7 +626,7 @@ async fn send_upstream_request(
             upstream_response_body: None,
             upstream_response_body_bytes: 0,
         })?;
-    let upstream_body = build_upstream_body_for_provider(
+    let prepared_upstream_body = build_upstream_body_for_provider(
         request,
         requested_model,
         upstream_model_id,
@@ -637,6 +638,8 @@ async fn send_upstream_request(
         provider.meta.provider_type.as_deref(),
         route_declares_streaming(route),
     )?;
+    let upstream_body = prepared_upstream_body.body;
+    let conversion_context = prepared_upstream_body.conversion_context;
     let upstream_body_snapshot = upstream_body.clone();
     let target_streaming = request_declares_streaming(request) || route_declares_streaming(route);
     let forwarded_path = upstream_forwarded_path(
@@ -709,7 +712,7 @@ async fn send_upstream_request(
         if should_attempt_thinking_signature_rectifier
             && should_rectify_thinking_signature(status_code, &body)
         {
-            if let Some(rectified_body) = build_thinking_signature_rectified_upstream_body(
+            if let Some(rectified) = build_thinking_signature_rectified_upstream_body(
                 request,
                 requested_model,
                 upstream_model_id,
@@ -721,6 +724,8 @@ async fn send_upstream_request(
                 route_declares_streaming(route),
                 &upstream_body_snapshot,
             )? {
+                let rectified_body = rectified.body;
+                let rectified_context = rectified.conversion_context;
                 let response = send_request_once(
                     &client,
                     method.clone(),
@@ -743,6 +748,7 @@ async fn send_upstream_request(
                     rectified_body,
                     upstream_url.to_string(),
                     conversion_route,
+                    Some(rectified_context),
                     upstream_response_snapshot_limit,
                 )
                 .await;
@@ -777,6 +783,7 @@ async fn send_upstream_request(
                     rectified_body,
                     upstream_url.to_string(),
                     conversion_route,
+                    Some(conversion_context.clone()),
                     upstream_response_snapshot_limit,
                 )
                 .await;
@@ -811,6 +818,7 @@ async fn send_upstream_request(
                     rectified_body,
                     upstream_url.to_string(),
                     conversion_route,
+                    Some(conversion_context.clone()),
                     upstream_response_snapshot_limit,
                 )
                 .await;
@@ -841,6 +849,7 @@ async fn send_upstream_request(
         upstream_body_snapshot,
         upstream_url.to_string(),
         conversion_route,
+        Some(conversion_context),
         upstream_response_snapshot_limit,
     )
     .await
@@ -900,6 +909,7 @@ async fn build_gateway_response(
     upstream_body_snapshot: Vec<u8>,
     upstream_url: String,
     conversion_route: Option<ConversionRoute>,
+    conversion_context: Option<ConversionContext>,
     upstream_response_snapshot_limit: Option<usize>,
 ) -> Result<DebugHttpResponse, GatewayForwardError> {
     let status = response.status();
@@ -921,7 +931,9 @@ async fn build_gateway_response(
             None => response.bytes_stream(),
         };
         let body_stream = match response_conversion_route {
-            Some(route) => convert_sse_stream(route, raw_body_stream),
+            Some(route) => {
+                convert_sse_stream_with_context(route, raw_body_stream, conversion_context.clone())
+            }
             None => raw_body_stream,
         };
         let gateway_response = DebugHttpResponse {
@@ -969,13 +981,14 @@ async fn build_gateway_response(
     let mut body = upstream_response_body.clone();
     if let Some(route) = response_conversion_route {
         if (200..400).contains(&status.as_u16()) {
-            body = convert_response_body(route, &body).map_err(|error| GatewayForwardError {
-                message: error.to_string(),
-                kind: GatewayFailureKind::GatewayParse,
-                upstream_request_body: Some(upstream_body_snapshot.clone()),
-                upstream_response_body: Some(upstream_response_body.clone()),
-                upstream_response_body_bytes,
-            })?;
+            body = convert_response_body_with_context(route, &body, conversion_context.as_ref())
+                .map_err(|error| GatewayForwardError {
+                    message: error.to_string(),
+                    kind: GatewayFailureKind::GatewayParse,
+                    upstream_request_body: Some(upstream_body_snapshot.clone()),
+                    upstream_response_body: Some(upstream_response_body.clone()),
+                    upstream_response_body_bytes,
+                })?;
             set_response_content_type(&mut response_headers, "application/json");
         } else {
             let converted_error_body = convert_error_response_body(route, &body);
@@ -1569,6 +1582,13 @@ fn build_upstream_body(
         None,
         route_streaming,
     )
+    .map(|prepared| prepared.body)
+}
+
+#[derive(Debug, Clone)]
+struct PreparedUpstreamBody {
+    body: Vec<u8>,
+    conversion_context: ConversionContext,
 }
 
 fn build_upstream_body_for_provider(
@@ -1582,20 +1602,26 @@ fn build_upstream_body_for_provider(
     conversion_route: Option<ConversionRoute>,
     provider_type: Option<&str>,
     route_streaming: bool,
-) -> Result<Vec<u8>, GatewayForwardError> {
+) -> Result<PreparedUpstreamBody, GatewayForwardError> {
     let Ok(mut value) = serde_json::from_slice::<Value>(&request.body) else {
         if let Some(route) = conversion_route {
-            return convert_request_body(route, &request.body).map_err(|error| {
-                GatewayForwardError {
+            return convert_request_body_with_context(route, &request.body)
+                .map(|converted| PreparedUpstreamBody {
+                    body: converted.body,
+                    conversion_context: converted.context,
+                })
+                .map_err(|error| GatewayForwardError {
                     message: error.to_string(),
                     kind: GatewayFailureKind::GatewayParse,
                     upstream_request_body: Some(request.body.clone()),
                     upstream_response_body: None,
                     upstream_response_body_bytes: 0,
-                }
-            });
+                });
         }
-        return Ok(request.body.clone());
+        return Ok(PreparedUpstreamBody {
+            body: request.body.clone(),
+            conversion_context: ConversionContext::default(),
+        });
     };
     let upstream_model_for_body = strip_one_m_context_marker(upstream_model_id);
     if let Some(model_value) = value.get_mut("model") {
@@ -1629,16 +1655,20 @@ fn build_upstream_body_for_provider(
         upstream_response_body: None,
         upstream_response_body_bytes: 0,
     })?;
-    let upstream_body = if let Some(route) = conversion_route {
-        convert_request_body(route, &rewritten_body).map_err(|error| GatewayForwardError {
-            message: error.to_string(),
-            kind: GatewayFailureKind::GatewayParse,
-            upstream_request_body: Some(rewritten_body.clone()),
-            upstream_response_body: None,
-            upstream_response_body_bytes: 0,
-        })?
+    let (upstream_body, conversion_context) = if let Some(route) = conversion_route {
+        let converted =
+            convert_request_body_with_context(route, &rewritten_body).map_err(|error| {
+                GatewayForwardError {
+                    message: error.to_string(),
+                    kind: GatewayFailureKind::GatewayParse,
+                    upstream_request_body: Some(rewritten_body.clone()),
+                    upstream_response_body: None,
+                    upstream_response_body_bytes: 0,
+                }
+            })?;
+        (converted.body, converted.context)
     } else {
-        rewritten_body
+        (rewritten_body, ConversionContext::default())
     };
     let upstream_body = apply_outbound_adapter_compat_for_provider(
         upstream_body,
@@ -1647,9 +1677,15 @@ fn build_upstream_body_for_provider(
         provider_type,
     )?;
     if cache_injection_enabled && target_protocol == AiProtocol::AnthropicMessages {
-        return inject_cache_control_into_body(upstream_body);
+        return inject_cache_control_into_body(upstream_body).map(|body| PreparedUpstreamBody {
+            body,
+            conversion_context,
+        });
     }
-    Ok(upstream_body)
+    Ok(PreparedUpstreamBody {
+        body: upstream_body,
+        conversion_context,
+    })
 }
 
 #[cfg(test)]
@@ -2345,6 +2381,9 @@ fn sanitize_openai_chat_tool_calls(
 ) {
     let mut should_remove_tool_calls = false;
     if let Some(Value::Array(tool_calls)) = object.get_mut("tool_calls") {
+        for tool_call in tool_calls.iter_mut() {
+            normalize_openai_chat_tool_call_arguments(tool_call);
+        }
         tool_calls.retain(|tool_call| {
             if is_supported_openai_chat_tool_call(tool_call) {
                 return true;
@@ -2356,6 +2395,19 @@ fn sanitize_openai_chat_tool_calls(
     }
     if should_remove_tool_calls {
         object.remove("tool_calls");
+    }
+}
+
+fn normalize_openai_chat_tool_call_arguments(tool_call: &mut Value) {
+    let Some(function) = tool_call.get_mut("function").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let has_non_empty_arguments = function
+        .get("arguments")
+        .and_then(Value::as_str)
+        .is_some_and(|arguments| !arguments.trim().is_empty());
+    if !has_non_empty_arguments {
+        function.insert("arguments".to_string(), Value::String("{}".to_string()));
     }
 }
 
@@ -2479,8 +2531,8 @@ fn build_thinking_signature_rectified_upstream_body(
     provider_type: Option<&str>,
     route_streaming: bool,
     original_upstream_body: &[u8],
-) -> Result<Option<Vec<u8>>, GatewayForwardError> {
-    let rectified_body = build_upstream_body_for_provider(
+) -> Result<Option<PreparedUpstreamBody>, GatewayForwardError> {
+    let prepared = build_upstream_body_for_provider(
         request,
         requested_model,
         upstream_model_id,
@@ -2493,10 +2545,10 @@ fn build_thinking_signature_rectified_upstream_body(
         route_streaming,
     )?;
 
-    if rectified_body == original_upstream_body {
+    if prepared.body == original_upstream_body {
         Ok(None)
     } else {
-        Ok(Some(rectified_body))
+        Ok(Some(prepared))
     }
 }
 
@@ -3562,7 +3614,7 @@ mod tests {
                         {
                             "id":"call_fn",
                             "type":"function",
-                            "function":{"name":"exec_command","arguments":"{}"}
+                            "function":{"name":"exec_command","arguments":""}
                         }
                     ]
                 },
@@ -3617,6 +3669,10 @@ mod tests {
             1
         );
         assert_eq!(value["messages"][2]["tool_calls"][0]["type"], "function");
+        assert_eq!(
+            value["messages"][2]["tool_calls"][0]["function"]["arguments"],
+            "{}"
+        );
         assert_eq!(value["messages"].as_array().unwrap().len(), 3);
     }
 
@@ -4063,6 +4119,11 @@ mod tests {
                             "response_custom_tool_call":{"call_id":"call_custom","name":"patch","input":"x"}
                         },
                         {
+                            "id":"call_empty_args",
+                            "type":"function",
+                            "function":{"name":"exec_command","arguments":""}
+                        },
+                        {
                             "id":"call_fn",
                             "type":"function",
                             "function":{"name":"lookup","arguments":"{}"}
@@ -4095,9 +4156,17 @@ mod tests {
         assert_eq!(value["tools"][0]["type"], "function");
         assert_eq!(
             value["messages"][1]["tool_calls"].as_array().unwrap().len(),
-            1
+            2
         );
-        assert_eq!(value["messages"][1]["tool_calls"][0]["id"], "call_fn");
+        assert_eq!(
+            value["messages"][1]["tool_calls"][0]["id"],
+            "call_empty_args"
+        );
+        assert_eq!(
+            value["messages"][1]["tool_calls"][0]["function"]["arguments"],
+            "{}"
+        );
+        assert_eq!(value["messages"][1]["tool_calls"][1]["id"], "call_fn");
         assert_eq!(value["messages"][1]["reasoning_content"], "");
         assert_eq!(value["messages"].as_array().unwrap().len(), 2);
     }
@@ -4479,6 +4548,7 @@ mod tests {
         )
         .unwrap()
         .expect("thinking/signature cleanup should change converted body");
+        let rectified_body = rectified_body.body;
         let original = serde_json::from_slice::<Value>(&original_body).unwrap();
         let rectified = serde_json::from_slice::<Value>(&rectified_body).unwrap();
 

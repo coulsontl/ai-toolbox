@@ -85,6 +85,14 @@ pub fn tool_choice_from_openai(value: Option<&Value>) -> Option<ToolChoice> {
 }
 
 pub fn tool_choice_from_anthropic(value: Option<&Value>) -> Option<ToolChoice> {
+    if let Some(Value::String(choice)) = value {
+        return match choice.as_str() {
+            "any" => Some(ToolChoice::String("required".to_string())),
+            "auto" | "none" => Some(ToolChoice::String(choice.clone())),
+            _ => None,
+        };
+    }
+
     let object = value.and_then(Value::as_object)?;
     match object.get("type").and_then(Value::as_str) {
         Some("tool") => object.get("name").and_then(Value::as_str).map(|name| {

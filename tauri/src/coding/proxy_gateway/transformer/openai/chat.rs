@@ -332,6 +332,7 @@ pub fn llm_request_to_chat(request: Request) -> Value {
         .into_iter()
         .map(llm_message_to_chat)
         .collect::<Vec<_>>();
+    let messages = normalize_chat_system_messages(messages);
     let mut body = json!({
         "model": request.model,
         "messages": messages,
@@ -457,6 +458,51 @@ pub fn llm_request_to_chat(request: Request) -> Value {
         body["extra_body"] = extra_body;
     }
     body
+}
+
+fn normalize_chat_system_messages(messages: Vec<Value>) -> Vec<Value> {
+    let mut system_chunks = Vec::new();
+    let mut rest = Vec::with_capacity(messages.len());
+
+    for message in messages {
+        if message.get("role").and_then(Value::as_str) == Some("system") {
+            if let Some(text) = chat_system_message_text(&message) {
+                if !text.trim().is_empty() {
+                    system_chunks.push(text);
+                }
+                continue;
+            }
+        }
+        rest.push(message);
+    }
+
+    if system_chunks.is_empty() {
+        return rest;
+    }
+
+    let mut normalized = Vec::with_capacity(rest.len() + 1);
+    normalized.push(json!({
+        "role": "system",
+        "content": system_chunks.join("\n\n")
+    }));
+    normalized.extend(rest);
+    normalized
+}
+
+fn chat_system_message_text(message: &Value) -> Option<String> {
+    match message.get("content")? {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(parts) => {
+            let text = parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            (!text.is_empty()).then_some(text)
+        }
+        _ => None,
+    }
 }
 
 fn llm_message_to_chat(message: Message) -> Value {

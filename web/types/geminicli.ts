@@ -1,5 +1,5 @@
 export type GeminiCliProviderCategory = 'official' | 'custom' | 'third_party' | string;
-export type GeminiCliApiFormat = 'gemini_native' | 'anthropic';
+export type GeminiCliApiFormat = 'gemini_native' | 'openai_chat' | 'openai_responses' | 'anthropic';
 
 export interface GatewayProviderMeta {
   providerType?: string;

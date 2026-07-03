@@ -1,5 +1,11 @@
 use super::gemini::gemini_stream_error;
+use super::kernel::ConversionContext;
 use super::llm::{TOOL_TYPE_FUNCTION, TOOL_TYPE_RESPONSES_CUSTOM_TOOL};
+use super::openai::codex_tools::{
+    custom_tool_input_from_chat_arguments, is_custom_tool_chat_name,
+    response_tool_added_item_from_chat_name, response_tool_done_item_from_chat_name,
+    response_tool_item_id_from_chat_name, CodexToolContext,
+};
 use super::shared::signature::{
     decode_signature_for, encode_signature, SignatureProvider, DEFAULT_GEMINI_THOUGHT_SIGNATURE,
 };
@@ -50,9 +56,15 @@ pub struct StreamKernel {
 }
 
 impl StreamKernel {
+    #[allow(dead_code)]
     pub fn new(route: ConversionRoute) -> Self {
+        Self::with_context(route, ConversionContext::default())
+    }
+
+    pub fn with_context(route: ConversionRoute, context: ConversionContext) -> Self {
         Self {
             route: Some(route),
+            target: TargetStreamState::with_conversion_context(context),
             ..Default::default()
         }
     }
@@ -142,6 +154,7 @@ struct SourceStreamState {
     gemini_accumulated_text: String,
     gemini_accumulated_reasoning: String,
     pending_chat_finish_reason: Option<String>,
+    pending_anthropic_usage: Option<Value>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -341,31 +354,29 @@ impl SourceStreamState {
                     });
                 }
             }
-            if choice
+            if let Some(finish_reason) = choice
                 .get("finish_reason")
-                .is_some_and(|value| !value.is_null())
+                .and_then(Value::as_str)
+                .filter(|reason| !reason.trim().is_empty())
+                .map(|reason| {
+                    if reason == "function_call" {
+                        "tool_calls"
+                    } else {
+                        reason
+                    }
+                })
+                .map(ToString::to_string)
             {
-                let finish_reason = choice
-                    .get("finish_reason")
-                    .and_then(Value::as_str)
-                    .map(|reason| {
-                        if reason == "function_call" {
-                            "tool_calls"
-                        } else {
-                            reason
-                        }
-                    })
-                    .map(ToString::to_string);
                 if let Some(usage) = usage.clone() {
                     self.pending_chat_finish_reason = None;
                     out.push(UnifiedStreamEvent::Finish {
-                        reason: finish_reason,
+                        reason: Some(finish_reason),
                         usage: Some(usage),
                     });
                 } else {
-                    self.pending_chat_finish_reason = finish_reason.clone();
+                    self.pending_chat_finish_reason = Some(finish_reason.clone());
                     out.push(UnifiedStreamEvent::Finish {
-                        reason: finish_reason,
+                        reason: Some(finish_reason),
                         usage: None,
                     });
                 }
@@ -665,19 +676,37 @@ impl SourceStreamState {
                 }
                 Vec::new()
             }
-            "message_delta" => vec![UnifiedStreamEvent::Finish {
-                reason: value
+            "message_delta" => {
+                if let Some(usage) = value.get("usage").cloned() {
+                    self.pending_anthropic_usage = Some(usage);
+                }
+                value
                     .pointer("/delta/stop_reason")
                     .and_then(Value::as_str)
-                    .map(|reason| match reason {
-                        "max_tokens" => "length",
-                        "tool_use" => "tool_calls",
-                        _ => "stop",
+                    .filter(|reason| !reason.trim().is_empty())
+                    .map(|reason| {
+                        let mapped_reason = match reason {
+                            "max_tokens" => "length",
+                            "tool_use" => "tool_calls",
+                            _ => "stop",
+                        };
+                        vec![UnifiedStreamEvent::Finish {
+                            reason: Some(mapped_reason.to_string()),
+                            usage: self.pending_anthropic_usage.take(),
+                        }]
                     })
-                    .map(ToString::to_string),
-                usage: value.get("usage").cloned(),
-            }],
-            "message_stop" => Vec::new(),
+                    .unwrap_or_default()
+            }
+            "message_stop" => self
+                .pending_anthropic_usage
+                .take()
+                .map(|usage| {
+                    vec![UnifiedStreamEvent::Finish {
+                        reason: None,
+                        usage: Some(usage),
+                    }]
+                })
+                .unwrap_or_default(),
             _ => Vec::new(),
         }
     }
@@ -779,19 +808,20 @@ impl SourceStreamState {
                     });
                 }
             }
-            if candidate.get("finishReason").is_some() {
+            if let Some(finish_reason) = candidate
+                .get("finishReason")
+                .and_then(Value::as_str)
+                .filter(|reason| !reason.trim().is_empty())
+            {
                 out.push(UnifiedStreamEvent::Finish {
-                    reason: candidate
-                        .get("finishReason")
-                        .and_then(Value::as_str)
-                        .map(|reason| {
-                            if reason == "MAX_TOKENS" {
-                                "length"
-                            } else {
-                                "stop"
-                            }
-                        })
-                        .map(ToString::to_string),
+                    reason: Some(
+                        if finish_reason == "MAX_TOKENS" {
+                            "length"
+                        } else {
+                            "stop"
+                        }
+                        .to_string(),
+                    ),
                     usage: value.get("usageMetadata").cloned(),
                 });
             }
@@ -968,6 +998,7 @@ struct TargetStreamState {
     gemini_seen_tool: bool,
     gemini_emitted_signature: bool,
     emitted_gemini_finish: bool,
+    codex_tool_context: Option<CodexToolContext>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -981,6 +1012,8 @@ struct TargetResponseToolState {
     output_index: usize,
     tool_type: String,
     name: String,
+    response_item_id: String,
+    response_item_name: String,
     arguments: String,
     done: bool,
 }
@@ -993,6 +1026,13 @@ struct TargetGeminiToolState {
 }
 
 impl TargetStreamState {
+    fn with_conversion_context(context: ConversionContext) -> Self {
+        Self {
+            codex_tool_context: context.codex_tool_context,
+            ..Default::default()
+        }
+    }
+
     fn write(&mut self, target: AiProtocol, event: UnifiedStreamEvent) -> Vec<Vec<u8>> {
         if let UnifiedStreamEvent::StreamError { code, message } = event {
             return self.write_stream_error(target, code, message);
@@ -1393,14 +1433,18 @@ impl TargetStreamState {
             let tool_type = tool.tool_type.clone();
             let tool_name = tool.name.clone();
             let tool_arguments = tool.arguments.clone();
-            if tool_type == TOOL_TYPE_RESPONSES_CUSTOM_TOOL {
+            let response_item_id = tool.response_item_id.clone();
+            let is_custom_tool = tool_type == TOOL_TYPE_RESPONSES_CUSTOM_TOOL
+                || is_custom_tool_chat_name(&tool_name, self.codex_tool_context.as_ref());
+            if is_custom_tool {
+                let tool_input = custom_tool_input_from_chat_arguments(&tool_arguments);
                 out.push(sse_event(
                     Some("response.custom_tool_call_input.done"),
                     &json!({
                         "type": "response.custom_tool_call_input.done",
-                        "item_id": tool_id.clone(),
+                        "item_id": response_item_id.clone(),
                         "output_index": output_index,
-                        "input": tool_arguments.clone()
+                        "input": tool_input
                     }),
                 ));
                 out.push(sse_event(
@@ -1408,14 +1452,14 @@ impl TargetStreamState {
                     &json!({
                         "type": "response.output_item.done",
                         "output_index": output_index,
-                        "item": {
-                            "id": tool_id.clone(),
-                            "type": "custom_tool_call",
-                            "status": "completed",
-                            "call_id": tool_id,
-                            "name": tool_name,
-                            "input": tool_arguments
-                        }
+                        "item": response_tool_done_item_from_chat_name(
+                            &response_item_id,
+                            "completed",
+                            &tool_id,
+                            &tool_name,
+                            &tool_arguments,
+                            self.codex_tool_context.as_ref()
+                        )
                     }),
                 ));
             } else {
@@ -1423,7 +1467,7 @@ impl TargetStreamState {
                     Some("response.function_call_arguments.done"),
                     &json!({
                         "type": "response.function_call_arguments.done",
-                        "item_id": tool_id.clone(),
+                        "item_id": response_item_id.clone(),
                         "output_index": output_index,
                         "arguments": tool_arguments.clone()
                     }),
@@ -1433,14 +1477,14 @@ impl TargetStreamState {
                     &json!({
                         "type": "response.output_item.done",
                         "output_index": output_index,
-                        "item": {
-                            "id": tool_id.clone(),
-                            "type": "function_call",
-                            "status": "completed",
-                            "call_id": tool_id,
-                            "name": tool_name,
-                            "arguments": tool_arguments
-                        }
+                        "item": response_tool_done_item_from_chat_name(
+                            &response_item_id,
+                            "completed",
+                            &tool_id,
+                            &tool_name,
+                            &tool_arguments,
+                            self.codex_tool_context.as_ref()
+                        )
                     }),
                 ));
             }
@@ -1532,25 +1576,18 @@ impl TargetStreamState {
     }
 
     fn responses_tool_output_item(&self, tool: &TargetResponseToolState) -> Value {
-        if tool.tool_type == TOOL_TYPE_RESPONSES_CUSTOM_TOOL {
-            json!({
-                "id": tool.id,
-                "type": "custom_tool_call",
-                "status": if tool.done { "completed" } else { "in_progress" },
-                "call_id": tool.id,
-                "name": tool.name,
-                "input": tool.arguments
-            })
-        } else {
-            json!({
-                "id": tool.id,
-                "type": "function_call",
-                "status": if tool.done { "completed" } else { "in_progress" },
-                "call_id": tool.id,
-                "name": tool.name,
-                "arguments": tool.arguments
-            })
-        }
+        response_tool_done_item_from_chat_name(
+            &tool.response_item_id,
+            if tool.done {
+                "completed"
+            } else {
+                "in_progress"
+            },
+            &tool.id,
+            &tool.name,
+            &tool.arguments,
+            self.codex_tool_context.as_ref(),
+        )
     }
 
     fn completed_responses_output(&self) -> Vec<Value> {
@@ -2031,6 +2068,18 @@ impl TargetStreamState {
                 out.extend(self.ensure_responses_start());
                 if !self.seen_response_tools.contains_key(&index) {
                     let output_index = self.next_responses_output_index();
+                    let response_item_id = response_tool_item_id_from_chat_name(
+                        &id,
+                        &name,
+                        self.codex_tool_context.as_ref(),
+                    );
+                    let response_item = response_tool_added_item_from_chat_name(
+                        &response_item_id,
+                        "in_progress",
+                        &id,
+                        &name,
+                        self.codex_tool_context.as_ref(),
+                    );
                     self.seen_response_tools.insert(
                         index,
                         TargetResponseToolState {
@@ -2038,62 +2087,51 @@ impl TargetStreamState {
                             output_index,
                             tool_type: tool_type.clone(),
                             name: name.clone(),
+                            response_item_id: response_item_id.clone(),
+                            response_item_name: name.clone(),
                             arguments: String::new(),
                             done: false,
                         },
                     );
-                    let item = if tool_type == TOOL_TYPE_RESPONSES_CUSTOM_TOOL {
-                        json!({
-                            "id": id.clone(),
-                            "type": "custom_tool_call",
-                            "status": "in_progress",
-                            "call_id": id.clone(),
-                            "name": name.clone(),
-                            "input": ""
-                        })
-                    } else {
-                        json!({
-                            "id": id.clone(),
-                            "type": "function_call",
-                            "status": "in_progress",
-                            "call_id": id.clone(),
-                            "name": name.clone(),
-                            "arguments": ""
-                        })
-                    };
                     out.push(sse_event(
                         Some("response.output_item.added"),
                         &json!({
                             "type": "response.output_item.added",
                             "output_index": output_index,
-                            "item": item
+                            "item": response_item
                         }),
                     ));
                 }
                 let mut item_id = id.clone();
                 let mut output_index = 0;
                 let mut state_tool_type = tool_type.clone();
+                let mut state_name = name.clone();
                 if let Some(state) = self.seen_response_tools.get_mut(&index) {
                     if !id.is_empty() {
                         state.id = id.clone();
                     }
                     if !name.is_empty() {
                         state.name = name.clone();
+                        state.response_item_name = name.clone();
                     }
                     state.arguments.push_str(&arguments);
-                    item_id = state.id.clone();
+                    item_id = state.response_item_id.clone();
                     output_index = state.output_index;
                     state_tool_type = state.tool_type.clone();
+                    state_name = state.response_item_name.clone();
                 }
                 if !arguments.is_empty() {
-                    if state_tool_type == TOOL_TYPE_RESPONSES_CUSTOM_TOOL {
+                    if state_tool_type == TOOL_TYPE_RESPONSES_CUSTOM_TOOL
+                        || is_custom_tool_chat_name(&state_name, self.codex_tool_context.as_ref())
+                    {
+                        let input = custom_tool_input_from_chat_arguments(&arguments);
                         out.push(sse_event(
                             Some("response.custom_tool_call_input.delta"),
                             &json!({
                                 "type": "response.custom_tool_call_input.delta",
                                 "item_id": item_id,
                                 "output_index": output_index,
-                                "delta": arguments
+                                "delta": input
                             }),
                         ));
                     } else {

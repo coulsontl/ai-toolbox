@@ -17,9 +17,10 @@ mod traits;
 mod types;
 
 pub use error::ProtocolConversionError;
-pub use kernel::convert_sse_stream;
 pub use kernel::{
-    convert_error_response_body, convert_request_body, convert_request_value,
-    convert_response_body, convert_response_value,
+    convert_error_response_body, convert_request_body, convert_request_body_with_context,
+    convert_request_value, convert_response_body, convert_response_body_with_context,
+    convert_response_value,
 };
+pub use kernel::{convert_sse_stream, convert_sse_stream_with_context, ConversionContext};
 pub use types::{AiProtocol, ConversionRoute};

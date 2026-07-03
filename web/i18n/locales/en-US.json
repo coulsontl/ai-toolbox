@@ -1929,9 +1929,11 @@
       "apiFormatOpenAIResponses": "OpenAI Responses",
       "apiFormatGeminiNative": "Gemini Native",
       "apiFormatHelp": "Select the upstream wire protocol; Gateway converts when it differs from Claude request protocol",
-      "providerProfile": "Provider",
+      "providerProfile": "Channel",
       "providerProfileCustom": "Custom",
-      "providerProfileHelp": "Built-in providers set API format and Base URL automatically. Custom providers can be configured manually."
+      "providerProfileHelp": "Built-in channels fill API format and Base URL, and Base URL can still be edited. Custom channels can be configured manually.",
+      "formName": "Name",
+      "providerProfileOfficial": "Official channel"
     },
     "model": {
       "mappingTitle": "Model Mapping",
@@ -2218,9 +2220,11 @@
       "apiFormatAnthropicMessages": "Anthropic Messages",
       "apiFormatHelp": "Select the upstream wire protocol; Gateway converts when it differs from the request protocol",
       "apiFormatGeminiNative": "Gemini Native",
-      "providerProfile": "Provider",
+      "providerProfile": "Channel",
       "providerProfileCustom": "Custom",
-      "providerProfileHelp": "Built-in providers set API format and Base URL automatically. Custom providers can be configured manually."
+      "providerProfileHelp": "Built-in channels fill API format, Base URL, and model mapping, and Base URL can still be edited. Custom channels can be configured manually.",
+      "formName": "Name",
+      "providerProfileOfficial": "Official channel"
     },
     "import": {
       "title": "Import from OpenCode",
@@ -2539,7 +2543,14 @@
       "apiFormatAnthropic": "Claude Messages / Anthropic",
       "apiFormatHelp": "Select the upstream wire protocol; Gateway converts when it differs from Gemini request protocol",
       "apiFormatGeminiNative": "Gemini Native",
-      "apiFormat": "Upstream API format"
+      "apiFormat": "Upstream API format",
+      "providerProfile": "Channel",
+      "providerProfileCustom": "Custom",
+      "providerProfileOfficial": "Official channel",
+      "providerProfileHelp": "Custom channels can choose the upstream API format. Gateway converts when it differs from the Gemini request protocol.",
+      "formName": "Name",
+      "apiFormatOpenAIChat": "OpenAI Chat Completions",
+      "apiFormatOpenAIResponses": "OpenAI Responses"
     },
     "fetchModels": {
       "button": "Fetch Models",

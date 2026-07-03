@@ -855,10 +855,10 @@ pub fn gemini_response_to_llm(body: Value) -> Response {
                     Choice {
                         index,
                         message,
-                        finish_reason: Some(gemini_finish_to_openai_finish(
+                        finish_reason: gemini_finish_to_openai_finish(
                             candidate.get("finishReason").and_then(Value::as_str),
                             has_tool,
-                        )),
+                        ),
                         ..Default::default()
                     }
                 })
@@ -962,16 +962,15 @@ fn llm_usage_to_gemini(usage: Option<&Usage>) -> Value {
     })
 }
 
-fn gemini_finish_to_openai_finish(reason: Option<&str>, has_tool: bool) -> String {
+fn gemini_finish_to_openai_finish(reason: Option<&str>, has_tool: bool) -> Option<String> {
+    let reason = reason.filter(|reason| !reason.trim().is_empty())?;
     match reason {
-        Some("MAX_TOKENS") => "length".to_string(),
-        Some("SAFETY")
-        | Some("RECITATION")
-        | Some("SPII")
-        | Some("BLOCKLIST")
-        | Some("PROHIBITED_CONTENT") => "refusal".to_string(),
-        _ if has_tool => "tool_calls".to_string(),
-        _ => "stop".to_string(),
+        "MAX_TOKENS" => Some("length".to_string()),
+        "SAFETY" | "RECITATION" | "SPII" | "BLOCKLIST" | "PROHIBITED_CONTENT" => {
+            Some("refusal".to_string())
+        }
+        _ if has_tool => Some("tool_calls".to_string()),
+        _ => Some("stop".to_string()),
     }
 }
 

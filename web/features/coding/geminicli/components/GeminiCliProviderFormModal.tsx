@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, AutoComplete, Button, Form, Input, message, Modal, Radio, Select, Typography } from 'antd';
+import { Alert, AutoComplete, Button, Form, Input, message, Modal, Select, Typography } from 'antd';
 import { CloudDownloadOutlined, EyeInvisibleOutlined, EyeOutlined } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
@@ -18,11 +18,14 @@ import type {
   GeminiCliProviderFormValues,
   GeminiCliSettingsConfig,
 } from '@/types/geminicli';
+import styles from './GeminiCliProviderFormModal.module.less';
 
 const { Text } = Typography;
 
 const DEFAULT_GEMINI_MODELS_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 const DEFAULT_GEMINI_API_FORMAT: GeminiCliApiFormat = 'gemini_native';
+const CUSTOM_GEMINI_CHANNEL_KEY = '__custom__';
+const OFFICIAL_GEMINI_CHANNEL_KEY = '__official__';
 
 const DEFAULT_GEMINI_MODEL_OPTIONS = [
   'auto',
@@ -51,6 +54,9 @@ const GEMINI_CLI_OFFICIAL_MODELS: FetchedModel[] = DEFAULT_GEMINI_MODEL_OPTIONS.
 }));
 
 function normalizeGeminiApiFormat(value?: string): GeminiCliApiFormat {
+  if (value === 'openai_chat' || value === 'openai_responses') {
+    return value;
+  }
   if (value === 'anthropic' || value === 'anthropic_messages') {
     return 'anthropic';
   }
@@ -326,6 +332,14 @@ const GeminiCliProviderFormModal: React.FC<GeminiCliProviderFormModalProps> = ({
       label: t('geminicli.provider.apiFormatGeminiNative'),
     },
     {
+      value: 'openai_chat',
+      label: t('geminicli.provider.apiFormatOpenAIChat'),
+    },
+    {
+      value: 'openai_responses',
+      label: t('geminicli.provider.apiFormatOpenAIResponses'),
+    },
+    {
       value: 'anthropic',
       label: t('geminicli.provider.apiFormatAnthropic'),
     },
@@ -336,6 +350,30 @@ const GeminiCliProviderFormModal: React.FC<GeminiCliProviderFormModalProps> = ({
   const canSelectProviderCategory = !provider;
   const providerCategory = provider ? (provider.category || 'custom') : selectedProviderCategory;
   const isOfficialMode = providerCategory === 'official';
+  const channelOptions = React.useMemo(() => (
+    canSelectProviderCategory
+      ? [
+          {
+            value: CUSTOM_GEMINI_CHANNEL_KEY,
+            label: t('geminicli.provider.providerProfileCustom'),
+          },
+          {
+            value: OFFICIAL_GEMINI_CHANNEL_KEY,
+            label: t('geminicli.provider.providerProfileOfficial'),
+          },
+        ]
+      : [
+          providerCategory === 'official'
+            ? {
+                value: OFFICIAL_GEMINI_CHANNEL_KEY,
+                label: t('geminicli.provider.providerProfileOfficial'),
+              }
+            : {
+                value: CUSTOM_GEMINI_CHANNEL_KEY,
+                label: t('geminicli.provider.providerProfileCustom'),
+              },
+        ]
+  ), [canSelectProviderCategory, providerCategory, t]);
   const activeFormKey = React.useMemo(() => {
     if (!open) {
       return null;
@@ -404,6 +442,9 @@ const GeminiCliProviderFormModal: React.FC<GeminiCliProviderFormModalProps> = ({
     form.setFieldsValue({
       name: isCopy ? `${provider?.name || ''} ${t('common.copy')}`.trim() : provider?.name,
       category: initialCategory,
+      channel: initialCategory === 'official'
+        ? OFFICIAL_GEMINI_CHANNEL_KEY
+        : CUSTOM_GEMINI_CHANNEL_KEY,
       apiKey: extractGeminiApiKey(initialConfig),
       baseUrl: extractEnvString(initialConfig, 'GOOGLE_GEMINI_BASE_URL'),
       modelName: extractGeminiEnvModelName(initialConfig),
@@ -431,12 +472,22 @@ const GeminiCliProviderFormModal: React.FC<GeminiCliProviderFormModalProps> = ({
     setFetchedModels([]);
     form.setFieldsValue({
       category,
+      channel: category === 'official'
+        ? OFFICIAL_GEMINI_CHANNEL_KEY
+        : CUSTOM_GEMINI_CHANNEL_KEY,
       apiKey: extractGeminiApiKey(nextConfig),
       baseUrl: extractEnvString(nextConfig, 'GOOGLE_GEMINI_BASE_URL'),
       modelName: extractGeminiEnvModelName(nextConfig),
       apiFormat: DEFAULT_GEMINI_API_FORMAT,
       settingsConfig: nextConfig,
     });
+  };
+
+  const handleChannelChange = (channel: string) => {
+    if (!canSelectProviderCategory) {
+      return;
+    }
+    handleCategoryChange(channel === OFFICIAL_GEMINI_CHANNEL_KEY ? 'official' : 'custom');
   };
 
   const handleApiKeyChange = (apiKey: string) => {
@@ -620,18 +671,38 @@ const GeminiCliProviderFormModal: React.FC<GeminiCliProviderFormModalProps> = ({
     >
       {isFormReady && (
         <Form form={form} layout="horizontal" labelCol={{ span: 5 }} wrapperCol={{ span: 19 }}>
-          {canSelectProviderCategory && (
-            <Form.Item name="category" label={t('geminicli.provider.mode')}>
-              <Radio.Group onChange={(event) => handleCategoryChange(event.target.value)}>
-                <Radio.Button value="official">{t('geminicli.provider.modeOfficial')}</Radio.Button>
-                <Radio.Button value="custom">{t('geminicli.provider.modeCustom')}</Radio.Button>
-              </Radio.Group>
-            </Form.Item>
-          )}
+          <Form.Item
+            label={t('geminicli.provider.providerProfile')}
+            required
+            help={<Text type="secondary" style={{ fontSize: 12 }}>{t('geminicli.provider.providerProfileHelp')}</Text>}
+          >
+            <div className={isOfficialMode ? undefined : styles.providerProfileRow}>
+              <Form.Item
+                name="channel"
+                noStyle
+                rules={[{ required: true, message: t('common.error') }]}
+              >
+                <Select
+                  options={channelOptions}
+                  disabled={!canSelectProviderCategory}
+                  onChange={handleChannelChange}
+                />
+              </Form.Item>
+              {!isOfficialMode && (
+                <Form.Item
+                  name="apiFormat"
+                  noStyle
+                  initialValue={DEFAULT_GEMINI_API_FORMAT}
+                >
+                  <Select options={apiFormatOptions} />
+                </Form.Item>
+              )}
+            </div>
+          </Form.Item>
 
           <Form.Item
             name="name"
-            label={t('geminicli.provider.name')}
+            label={t('geminicli.provider.formName')}
             rules={[{ required: true, message: t('geminicli.provider.nameRequired') }]}
           >
             <Input placeholder={t('geminicli.provider.namePlaceholder')} />
@@ -648,15 +719,6 @@ const GeminiCliProviderFormModal: React.FC<GeminiCliProviderFormModalProps> = ({
                   placeholder={t('geminicli.provider.baseUrlPlaceholder')}
                   onChange={(event) => handleBaseUrlChange(event.target.value)}
                 />
-              </Form.Item>
-
-              <Form.Item
-                name="apiFormat"
-                label={t('geminicli.provider.apiFormat')}
-                initialValue={DEFAULT_GEMINI_API_FORMAT}
-                help={<Text type="secondary" style={{ fontSize: 12 }}>{t('geminicli.provider.apiFormatHelp')}</Text>}
-              >
-                <Select options={apiFormatOptions} />
               </Form.Item>
 
               <Form.Item
