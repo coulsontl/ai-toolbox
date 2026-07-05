@@ -60,7 +60,16 @@ import ImportProviderModal from '@/components/common/ImportProviderModal';
 import { GlobalPromptSettings } from '@/features/coding/shared/prompt';
 import RootDirectoryModal from '@/features/coding/shared/RootDirectoryModal';
 import useRootDirectoryConfig from '@/features/coding/shared/useRootDirectoryConfig';
-import { GatewayFailoverButton } from '@/features/coding/shared/gateway';
+import {
+  firstGatewayApiFormat,
+  GatewayFailoverButton,
+  getGatewayProviderApiFormatFromMeta,
+  getGatewayProviderProfilesVersion,
+  isGatewayConfigFlagEnabled,
+  providerNeedsGatewayProxy,
+  saveProviderWithGatewayReengage,
+  subscribeGatewayProviderProfiles,
+} from '@/features/coding/shared/gateway';
 import ProviderConnectivityTestModal, {
   buildClaudeProviderConnectivityInfo,
   type ProviderConnectivityInfo,
@@ -91,7 +100,12 @@ import {
   type ClaudeFavoriteProviderPayload,
 } from '@/features/coding/shared/favoriteProviders';
 import type { OpenCodeAllApiHubProvider } from '@/services/opencodeApi';
-import type { GatewayCliTakeoverStatus } from '@/services';
+import {
+  engageProxyGatewayFailover,
+  engageProxyGatewaySingle,
+  restoreProxyGatewayCliDirect,
+  type GatewayCliTakeoverStatus,
+} from '@/services';
 import SectionSidebarLayout, {
   type SidebarSectionMarker,
 } from '@/components/layout/SectionSidebarLayout/SectionSidebarLayout';
@@ -196,6 +210,34 @@ const ClaudeCodePage: React.FC = () => {
   const [appliedProviderId, setAppliedProviderId] = React.useState<string>('');
   const [gatewayCliStatus, setGatewayCliStatus] = React.useState<GatewayCliTakeoverStatus | null>(null);
   const gatewayTakeoverActive = Boolean(gatewayCliStatus?.can_restore_direct);
+  const gatewayProviderProfilesVersion = React.useSyncExternalStore(
+    subscribeGatewayProviderProfiles,
+    getGatewayProviderProfilesVersion,
+    getGatewayProviderProfilesVersion,
+  );
+  const primaryGatewayProviderNeedsProxy = React.useMemo(() => {
+    const primaryProvider = providers.find(
+      (provider) => provider.id === gatewayCliStatus?.primary_provider_id,
+    );
+    if (!primaryProvider || primaryProvider.category === 'official' || primaryProvider.id === '__local__') {
+      return false;
+    }
+    const settingsConfig = parseClaudeSettingsConfig(primaryProvider.settingsConfig) as {
+      apiFormat?: unknown;
+      api_format?: unknown;
+      openrouter_compat_mode?: unknown;
+    };
+    const providerApiFormat = firstGatewayApiFormat(
+      getGatewayProviderApiFormatFromMeta(primaryProvider.meta, 'claude'),
+      primaryProvider.meta?.apiFormat,
+      typeof settingsConfig.apiFormat === 'string' ? settingsConfig.apiFormat : undefined,
+      typeof settingsConfig.api_format === 'string' ? settingsConfig.api_format : undefined,
+      isGatewayConfigFlagEnabled(settingsConfig.openrouter_compat_mode)
+        ? 'openai_chat'
+        : undefined,
+    );
+    return providerNeedsGatewayProxy(providerApiFormat, 'anthropic');
+  }, [gatewayCliStatus?.primary_provider_id, gatewayProviderProfilesVersion, providers]);
 
   // 模态框状态
   const [providerModalOpen, setProviderModalOpen] = React.useState(false);
@@ -812,32 +854,45 @@ const ClaudeCodePage: React.FC = () => {
 
       let savedProviderId = isLocalTemp ? '__local__' : '';
       let savedProvider: ClaudeCodeProvider | null = null;
+      const gatewayModeBeforeSave = gatewayCliStatus?.mode;
+      const shouldReengageGatewayProxy =
+        Boolean(editingProvider && !isCopyMode && !isLocalTemp && editingProvider.isApplied) &&
+        (gatewayModeBeforeSave === 'single' || gatewayModeBeforeSave === 'failover');
 
-      if (isLocalTemp) {
-        await saveClaudeLocalConfig({ provider: providerInput });
-      } else if (editingProvider && !isCopyMode) {
-        // Update existing provider
-        savedProvider = await updateClaudeProvider({
-          id: editingProvider.id,
-          name: values.name,
-          category: values.category,
-          settingsConfig: providerInput.settingsConfig,
-          extraSettingsConfig: providerInput.extraSettingsConfig || '{}',
-          sourceProviderId: values.sourceProviderId,
-          meta: values.meta,
-          notes: values.notes,
-          sortIndex: editingProvider.sortIndex,
-          isApplied: editingProvider.isApplied,
-          isDisabled: editingProvider.isDisabled,
-          createdAt: editingProvider.createdAt,
-          updatedAt: editingProvider.updatedAt,
-        });
-        savedProviderId = editingProvider.id;
-      } else {
-        // 让服务端生成 ID
-        savedProvider = await createClaudeProvider(providerInput);
-        savedProviderId = savedProvider.id;
-      }
+      await saveProviderWithGatewayReengage({
+        gatewayMode: shouldReengageGatewayProxy ? gatewayModeBeforeSave : null,
+        restoreDirect: () => restoreProxyGatewayCliDirect('claude'),
+        engageSingle: () => engageProxyGatewaySingle('claude', savedProviderId),
+        engageFailover: () => engageProxyGatewayFailover('claude'),
+        onGatewayStatusChange: setGatewayCliStatus,
+        saveProvider: async () => {
+          if (isLocalTemp) {
+            await saveClaudeLocalConfig({ provider: providerInput });
+          } else if (editingProvider && !isCopyMode) {
+            // Update existing provider
+            savedProvider = await updateClaudeProvider({
+              id: editingProvider.id,
+              name: values.name,
+              category: values.category,
+              settingsConfig: providerInput.settingsConfig,
+              extraSettingsConfig: providerInput.extraSettingsConfig || '{}',
+              sourceProviderId: values.sourceProviderId,
+              meta: values.meta,
+              notes: values.notes,
+              sortIndex: editingProvider.sortIndex,
+              isApplied: editingProvider.isApplied,
+              isDisabled: editingProvider.isDisabled,
+              createdAt: editingProvider.createdAt,
+              updatedAt: editingProvider.updatedAt,
+            });
+            savedProviderId = editingProvider.id;
+          } else {
+            // 让服务端生成 ID
+            savedProvider = await createClaudeProvider(providerInput);
+            savedProviderId = savedProvider.id;
+          }
+        },
+      });
 
       try {
         const providerForFavorite: ClaudeCodeProvider = savedProvider || {
@@ -867,6 +922,9 @@ const ClaudeCodePage: React.FC = () => {
       setProviderModalOpen(false);
       setIsCopyMode(false);
       await loadConfig();
+      if (shouldReengageGatewayProxy) {
+        await refreshTrayMenu();
+      }
     } catch (error) {
       console.error('Failed to save provider:', error);
       message.error(t('common.error'));
@@ -1059,6 +1117,7 @@ const ClaudeCodePage: React.FC = () => {
                     <GatewayFailoverButton
                       cliKey="claude"
                       status={gatewayCliStatus}
+                      primaryProviderNeedsGatewayProxy={primaryGatewayProviderNeedsProxy}
                       onStatusChange={setGatewayCliStatus}
                     />
                   </Space>

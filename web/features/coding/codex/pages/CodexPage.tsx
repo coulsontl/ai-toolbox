@@ -76,7 +76,17 @@ import ImportProviderModal from '@/components/common/ImportProviderModal';
 import { GlobalPromptSettings } from '@/features/coding/shared/prompt';
 import RootDirectoryModal from '@/features/coding/shared/RootDirectoryModal';
 import useRootDirectoryConfig from '@/features/coding/shared/useRootDirectoryConfig';
-import { GatewayFailoverButton } from '@/features/coding/shared/gateway';
+import {
+  codexWireApiFormatFromConfig,
+  firstGatewayApiFormat,
+  GatewayFailoverButton,
+  getGatewayProviderApiFormatFromMeta,
+  getGatewayProviderProfilesVersion,
+  openAiApiFormatFromBaseUrl,
+  providerNeedsGatewayProxy,
+  saveProviderWithGatewayReengage,
+  subscribeGatewayProviderProfiles,
+} from '@/features/coding/shared/gateway';
 import ProviderConnectivityTestModal, {
   buildCodexProviderConnectivityInfo,
   type ProviderConnectivityInfo,
@@ -110,7 +120,12 @@ import SectionSidebarLayout, {
   type SidebarSectionMarker,
 } from '@/components/layout/SectionSidebarLayout/SectionSidebarLayout';
 import { extractCodexBaseUrl, extractCodexModel } from '@/utils/codexConfigUtils';
-import type { GatewayCliTakeoverStatus } from '@/services';
+import {
+  engageProxyGatewayFailover,
+  engageProxyGatewaySingle,
+  restoreProxyGatewayCliDirect,
+  type GatewayCliTakeoverStatus,
+} from '@/services';
 
 const { Title, Text, Link } = Typography;
 
@@ -216,6 +231,33 @@ const CodexPage: React.FC = () => {
   const [appliedProviderId, setAppliedProviderId] = React.useState<string>('');
   const [gatewayCliStatus, setGatewayCliStatus] = React.useState<GatewayCliTakeoverStatus | null>(null);
   const gatewayTakeoverActive = Boolean(gatewayCliStatus?.can_restore_direct);
+  const gatewayProviderProfilesVersion = React.useSyncExternalStore(
+    subscribeGatewayProviderProfiles,
+    getGatewayProviderProfilesVersion,
+    getGatewayProviderProfilesVersion,
+  );
+  const primaryGatewayProviderNeedsProxy = React.useMemo(() => {
+    const primaryProvider = providers.find(
+      (provider) => provider.id === gatewayCliStatus?.primary_provider_id,
+    );
+    if (!primaryProvider || primaryProvider.category === 'official' || primaryProvider.id === CODEX_LOCAL_PROVIDER_ID) {
+      return false;
+    }
+    const settingsConfig = parseCodexSettingsConfig(primaryProvider.settingsConfig) as CodexSettingsConfig & {
+      apiFormat?: unknown;
+      api_format?: unknown;
+    };
+    const baseUrl = extractCodexBaseUrl(settingsConfig.config);
+    const providerApiFormat = firstGatewayApiFormat(
+      getGatewayProviderApiFormatFromMeta(primaryProvider.meta, 'codex'),
+      primaryProvider.meta?.apiFormat,
+      typeof settingsConfig.apiFormat === 'string' ? settingsConfig.apiFormat : undefined,
+      typeof settingsConfig.api_format === 'string' ? settingsConfig.api_format : undefined,
+      codexWireApiFormatFromConfig(settingsConfig.config),
+      openAiApiFormatFromBaseUrl(baseUrl),
+    );
+    return providerNeedsGatewayProxy(providerApiFormat, 'openai_responses');
+  }, [gatewayCliStatus?.primary_provider_id, gatewayProviderProfilesVersion, providers]);
   const [savingCodexUnifiedHistory, setSavingCodexUnifiedHistory] = React.useState(false);
   const [refreshingOfficialAccountId, setRefreshingOfficialAccountId] = React.useState<string | null>(null);
   const [savingOfficialAccountId, setSavingOfficialAccountId] = React.useState<string | null>(null);
@@ -1039,30 +1081,43 @@ const CodexPage: React.FC = () => {
 
       let savedProviderId = isLocalTemp ? CODEX_LOCAL_PROVIDER_ID : '';
       let savedProvider: CodexProvider | null = null;
+      const gatewayModeBeforeSave = gatewayCliStatus?.mode;
+      const shouldReengageGatewayProxy =
+        Boolean(editingProvider && !isCopyMode && !isLocalTemp && editingProvider.isApplied) &&
+        (gatewayModeBeforeSave === 'single' || gatewayModeBeforeSave === 'failover');
 
-      if (isLocalTemp) {
-        await saveCodexLocalConfig({ provider: providerInput });
-      } else if (editingProvider && !isCopyMode) {
-        savedProvider = await updateCodexProvider({
-          id: editingProvider.id,
-          name: values.name,
-          category: values.category,
-          settingsConfig: providerInput.settingsConfig,
-          sourceProviderId: values.sourceProviderId,
-          meta: values.meta,
-          notes: values.notes,
-          sortIndex: editingProvider.sortIndex,
-          isApplied: editingProvider.isApplied,
-          isDisabled: editingProvider.isDisabled,
-          createdAt: editingProvider.createdAt,
-          updatedAt: editingProvider.updatedAt,
-        });
-        savedProviderId = editingProvider.id;
-      } else {
-        // 让服务端生成 ID
-        savedProvider = await createCodexProvider(providerInput);
-        savedProviderId = savedProvider.id;
-      }
+      await saveProviderWithGatewayReengage({
+        gatewayMode: shouldReengageGatewayProxy ? gatewayModeBeforeSave : null,
+        restoreDirect: () => restoreProxyGatewayCliDirect('codex'),
+        engageSingle: () => engageProxyGatewaySingle('codex', savedProviderId),
+        engageFailover: () => engageProxyGatewayFailover('codex'),
+        onGatewayStatusChange: setGatewayCliStatus,
+        saveProvider: async () => {
+          if (isLocalTemp) {
+            await saveCodexLocalConfig({ provider: providerInput });
+          } else if (editingProvider && !isCopyMode) {
+            savedProvider = await updateCodexProvider({
+              id: editingProvider.id,
+              name: values.name,
+              category: values.category,
+              settingsConfig: providerInput.settingsConfig,
+              sourceProviderId: values.sourceProviderId,
+              meta: values.meta,
+              notes: values.notes,
+              sortIndex: editingProvider.sortIndex,
+              isApplied: editingProvider.isApplied,
+              isDisabled: editingProvider.isDisabled,
+              createdAt: editingProvider.createdAt,
+              updatedAt: editingProvider.updatedAt,
+            });
+            savedProviderId = editingProvider.id;
+          } else {
+            // 让服务端生成 ID
+            savedProvider = await createCodexProvider(providerInput);
+            savedProviderId = savedProvider.id;
+          }
+        },
+      });
 
       try {
         const providerForFavorite: CodexProvider = savedProvider || {
@@ -1488,6 +1543,7 @@ const CodexPage: React.FC = () => {
                     <GatewayFailoverButton
                       cliKey="codex"
                       status={gatewayCliStatus}
+                      primaryProviderNeedsGatewayProxy={primaryGatewayProviderNeedsProxy}
                       onStatusChange={setGatewayCliStatus}
                     />
                   </Space>

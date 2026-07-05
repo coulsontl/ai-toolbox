@@ -561,13 +561,7 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
       key: 'edit',
       label: t('common.edit'),
       icon: <EditOutlined />,
-      onClick: () => {
-        if (isApplied && gatewayProxyActive) {
-          message.warning(t('gateway.proxy.editLockedTooltip'));
-          return;
-        }
-        onEdit(provider);
-      },
+      onClick: () => onEdit(provider),
     },
     {
       key: 'copy',

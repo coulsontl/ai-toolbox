@@ -3,6 +3,7 @@ export {
   canApplyProviderWithGatewayProxy,
   codexWireApiFormatFromConfig,
   firstGatewayApiFormat,
+  isGatewayConfigFlagEnabled,
   normalizeGatewayApiFormat,
   openAiApiFormatFromBaseUrl,
   providerNeedsGatewayProxy,
@@ -19,3 +20,8 @@ export {
   toGatewayProviderProfileReference,
   type GatewayProviderProfileReference,
 } from './providerProfiles';
+export {
+  isGatewayReengageMode,
+  saveProviderWithGatewayReengage,
+  type GatewayReengageMode,
+} from './providerSaveReengage';

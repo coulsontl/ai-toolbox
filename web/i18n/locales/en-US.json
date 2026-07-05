@@ -241,7 +241,8 @@
       "switchPrimaryButton": "Switch proxy",
       "switchPrimaryP0Button": "Set P0",
       "switchPrimaryHint": "Restore direct mode, apply this provider, then re-enable Gateway proxy.",
-      "switchPrimaryFailoverHint": "Restore direct mode, apply this provider, then re-enable Gateway proxy and failover."
+      "switchPrimaryFailoverHint": "Restore direct mode, apply this provider, then re-enable Gateway proxy and failover.",
+      "restoreDirectProtocolConversionUnavailableHint": "This provider requires Gateway protocol conversion and cannot be restored to direct mode."
     },
     "failover": {
       "button": "Enable failover",

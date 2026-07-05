@@ -41,7 +41,15 @@ import SidebarSettingsModal from '@/components/common/SidebarSettingsModal';
 import { useKeepAlive } from '@/components/layout/KeepAliveOutlet';
 import RootDirectoryModal from '@/features/coding/shared/RootDirectoryModal';
 import useRootDirectoryConfig from '@/features/coding/shared/useRootDirectoryConfig';
-import { GatewayFailoverButton } from '@/features/coding/shared/gateway';
+import {
+  firstGatewayApiFormat,
+  GatewayFailoverButton,
+  getGatewayProviderApiFormatFromMeta,
+  getGatewayProviderProfilesVersion,
+  providerNeedsGatewayProxy,
+  saveProviderWithGatewayReengage,
+  subscribeGatewayProviderProfiles,
+} from '@/features/coding/shared/gateway';
 import { GlobalPromptSettings } from '@/features/coding/shared/prompt';
 import { SessionManagerPanel } from '@/features/coding/shared/sessionManager';
 import { TRAY_CONFIG_REFRESH_EVENT } from '@/constants/configEvents';
@@ -78,7 +86,12 @@ import type {
   GeminiCliProviderInput,
   GeminiCliSettings,
 } from '@/types/geminicli';
-import type { GatewayCliTakeoverStatus } from '@/services';
+import {
+  engageProxyGatewayFailover,
+  engageProxyGatewaySingle,
+  restoreProxyGatewayCliDirect,
+  type GatewayCliTakeoverStatus,
+} from '@/services';
 import GeminiCliProviderCard from '../components/GeminiCliProviderCard';
 import GeminiCliProviderFormModal from '../components/GeminiCliProviderFormModal';
 import GeminiCliCommonConfigModal from '../components/GeminiCliCommonConfigModal';
@@ -146,6 +159,24 @@ const GeminiCliPage: React.FC = () => {
   const [appliedProviderId, setAppliedProviderId] = React.useState('');
   const [gatewayCliStatus, setGatewayCliStatus] = React.useState<GatewayCliTakeoverStatus | null>(null);
   const gatewayTakeoverActive = Boolean(gatewayCliStatus?.can_restore_direct);
+  const gatewayProviderProfilesVersion = React.useSyncExternalStore(
+    subscribeGatewayProviderProfiles,
+    getGatewayProviderProfilesVersion,
+    getGatewayProviderProfilesVersion,
+  );
+  const primaryGatewayProviderNeedsProxy = React.useMemo(() => {
+    const primaryProvider = providers.find(
+      (provider) => provider.id === gatewayCliStatus?.primary_provider_id,
+    );
+    if (!primaryProvider || primaryProvider.category === 'official' || primaryProvider.id === GEMINI_CLI_LOCAL_PROVIDER_ID) {
+      return false;
+    }
+    const providerApiFormat = firstGatewayApiFormat(
+      getGatewayProviderApiFormatFromMeta(primaryProvider.meta, 'gemini'),
+      primaryProvider.meta?.apiFormat,
+    );
+    return providerNeedsGatewayProxy(providerApiFormat, 'gemini_native');
+  }, [gatewayCliStatus?.primary_provider_id, gatewayProviderProfilesVersion, providers]);
   const [refreshingOfficialAccountId, setRefreshingOfficialAccountId] = React.useState<string | null>(null);
   const [savingOfficialAccountId, setSavingOfficialAccountId] = React.useState<string | null>(null);
   const [officialAccountDetails, setOfficialAccountDetails] = React.useState<{
@@ -528,20 +559,34 @@ const GeminiCliPage: React.FC = () => {
       };
 
       const isLocalTemp = editingProvider?.id === GEMINI_CLI_LOCAL_PROVIDER_ID;
-      if (isLocalTemp) {
-        await saveGeminiCliLocalConfig({ provider: providerInput });
-      } else if (editingProvider && !isCopyMode) {
-        await updateGeminiCliProvider({
-          ...editingProvider,
-          name: values.name,
-          category: values.category,
-          settingsConfig: values.settingsConfig,
-          meta: values.meta,
-          notes: values.notes,
-        });
-      } else {
-        await createGeminiCliProvider(providerInput);
-      }
+      const gatewayModeBeforeSave = gatewayCliStatus?.mode;
+      const shouldReengageGatewayProxy =
+        Boolean(editingProvider && !isCopyMode && !isLocalTemp && editingProvider.isApplied) &&
+        (gatewayModeBeforeSave === 'single' || gatewayModeBeforeSave === 'failover');
+
+      await saveProviderWithGatewayReengage({
+        gatewayMode: shouldReengageGatewayProxy ? gatewayModeBeforeSave : null,
+        restoreDirect: () => restoreProxyGatewayCliDirect('gemini'),
+        engageSingle: () => engageProxyGatewaySingle('gemini', editingProvider?.id || ''),
+        engageFailover: () => engageProxyGatewayFailover('gemini'),
+        onGatewayStatusChange: setGatewayCliStatus,
+        saveProvider: async () => {
+          if (isLocalTemp) {
+            await saveGeminiCliLocalConfig({ provider: providerInput });
+          } else if (editingProvider && !isCopyMode) {
+            await updateGeminiCliProvider({
+              ...editingProvider,
+              name: values.name,
+              category: values.category,
+              settingsConfig: values.settingsConfig,
+              meta: values.meta,
+              notes: values.notes,
+            });
+          } else {
+            await createGeminiCliProvider(providerInput);
+          }
+        },
+      });
 
       message.success(t('common.success'));
       setProviderModalOpen(false);
@@ -686,6 +731,7 @@ const GeminiCliPage: React.FC = () => {
                     <GatewayFailoverButton
                       cliKey="gemini"
                       status={gatewayCliStatus}
+                      primaryProviderNeedsGatewayProxy={primaryGatewayProviderNeedsProxy}
                       onStatusChange={setGatewayCliStatus}
                     />
                   </Space>

@@ -74,10 +74,6 @@ pub async fn apply_or_switch_provider<R: Runtime>(
         return Ok(cli_proxy::cli_takeover_status(db, &paths, cli_key, &gateway_status).await);
     };
 
-    if current_status.primary_provider_id.as_deref() == Some(provider_id) {
-        return Ok(current_status);
-    }
-
     if !gateway_status.running {
         return Err("Start the proxy gateway before switching Gateway proxy providers".to_string());
     }

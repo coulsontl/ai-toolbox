@@ -63,6 +63,23 @@ export const providerNeedsGatewayProxy = (
   );
 };
 
+export const isGatewayConfigFlagEnabled = (value: unknown) => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+  if (typeof value === 'string') {
+    const normalizedValue = value.trim().toLowerCase();
+    return normalizedValue === 'true' ||
+      normalizedValue === '1' ||
+      normalizedValue === 'yes' ||
+      normalizedValue === 'on';
+  }
+  return false;
+};
+
 export const canApplyProviderWithGatewayProxy = (
   status?: GatewayCliTakeoverStatus | null,
 ) => Boolean(status?.can_takeover);

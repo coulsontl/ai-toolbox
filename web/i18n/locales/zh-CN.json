@@ -241,7 +241,8 @@
       "switchPrimaryButton": "切换代理",
       "switchPrimaryP0Button": "设为 P0",
       "switchPrimaryHint": "将先恢复直连，应用此渠道，然后重新开启网关代理",
-      "switchPrimaryFailoverHint": "将先恢复直连，应用此渠道，然后重新开启网关代理和故障转移"
+      "switchPrimaryFailoverHint": "将先恢复直连，应用此渠道，然后重新开启网关代理和故障转移",
+      "restoreDirectProtocolConversionUnavailableHint": "该渠道依赖网关协议转换，不能恢复直连"
     },
     "failover": {
       "button": "开启故障转移",

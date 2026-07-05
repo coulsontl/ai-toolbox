@@ -20,6 +20,7 @@ type NoticeKind = 'success' | 'error' | 'info';
 interface GatewayFailoverButtonProps {
   cliKey: SupportedGatewayCliKey;
   status?: GatewayCliTakeoverStatus | null;
+  primaryProviderNeedsGatewayProxy?: boolean;
   onStatusChange?: (status: GatewayCliTakeoverStatus) => void;
 }
 
@@ -40,6 +41,7 @@ const isGatewayProxyActive = (status: GatewayCliTakeoverStatus | null) =>
 const GatewayFailoverButton: React.FC<GatewayFailoverButtonProps> = ({
   cliKey,
   status: externalStatus,
+  primaryProviderNeedsGatewayProxy = false,
   onStatusChange,
 }) => {
   const { t } = useTranslation();
@@ -170,6 +172,13 @@ const GatewayFailoverButton: React.FC<GatewayFailoverButtonProps> = ({
   const handleRestoreDirect = async (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
+    if (primaryProviderNeedsGatewayProxy) {
+      setNotice({
+        kind: 'info',
+        text: t('gateway.proxy.restoreDirectProtocolConversionUnavailableHint'),
+      });
+      return;
+    }
     setBusyAction('restore');
     setNotice(null);
     try {
@@ -298,6 +307,10 @@ const GatewayFailoverButton: React.FC<GatewayFailoverButtonProps> = ({
                 <div className={joinClassNames(styles.notice, styles[`notice_${notice.kind}`])} role="status">
                   {notice.text}
                 </div>
+              ) : canRestoreDirect && primaryProviderNeedsGatewayProxy ? (
+                <div className={joinClassNames(styles.notice, styles.notice_info)} role="status">
+                  {t('gateway.proxy.restoreDirectProtocolConversionUnavailableHint')}
+                </div>
               ) : null}
             </div>
 
@@ -309,8 +322,12 @@ const GatewayFailoverButton: React.FC<GatewayFailoverButtonProps> = ({
                 <button
                   type="button"
                   className={styles.secondaryButton}
-                  disabled={busyAction !== null}
-                  title={t('gateway.proxy.restoreDirectHint')}
+                  disabled={busyAction !== null || primaryProviderNeedsGatewayProxy}
+                  title={
+                    primaryProviderNeedsGatewayProxy
+                      ? t('gateway.proxy.restoreDirectProtocolConversionUnavailableHint')
+                      : t('gateway.proxy.restoreDirectHint')
+                  }
                   onClick={handleRestoreDirect}
                 >
                   {busyAction === 'restore' ? (
