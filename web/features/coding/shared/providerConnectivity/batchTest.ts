@@ -1,91 +1,19 @@
 import type { ProviderConnectivityStatusItem } from '@/components/common/ProviderCard/types';
-import { testProviderModelConnectivity, type ConnectivityTestRequest } from '@/services/opencodeApi';
-import type { OpenCodeProvider } from '@/types/opencode';
-
-export interface ProviderConnectivityInfo {
-  providerId: string;
-  providerName: string;
-  providerConfig: OpenCodeProvider;
-  modelIds: string[];
-  reasoningEffort?: string;
-}
-
-export interface ProviderConnectivityBatchTarget {
-  providerId: string;
-  request?: ConnectivityTestRequest;
-  errorMessage?: string;
-}
-
-interface ProviderConnectivityBatchTargetOptions {
-  requireBaseUrl?: boolean;
-  requireApiKey?: boolean;
-  preferredModelId?: string;
-  prompt?: string;
-  timeoutSecs?: number;
-  errorMessages: {
-    missingBaseUrl: string;
-    missingApiKey: string;
-    missingModel: string;
-  };
-}
-
-const DEFAULT_CONNECTIVITY_PROMPT = 'say hi!';
+import { testProviderModelConnectivity } from '@/services/opencodeApi';
+import { testGatewayProviderModelConnectivity } from '@/services/proxyGatewayApi';
+export {
+  buildProviderConnectivityBatchTarget,
+  type ProviderConnectivityBatchTarget,
+  type ProviderConnectivityInfo,
+} from './batchTestTarget';
+import type { ProviderConnectivityBatchTarget } from './batchTestTarget';
 
 export const CONNECTIVITY_BATCH_CONCURRENCY = 5;
-
-export function buildProviderConnectivityBatchTarget(
-  info: ProviderConnectivityInfo,
-  options: ProviderConnectivityBatchTargetOptions,
-): ProviderConnectivityBatchTarget {
-  const providerOptions = info.providerConfig.options || {};
-  const npm = info.providerConfig.npm || '@ai-sdk/openai-compatible';
-  const baseUrl = providerOptions.baseURL?.trim() || '';
-  const apiKey = providerOptions.apiKey?.trim();
-  const modelId = options.preferredModelId && info.modelIds.includes(options.preferredModelId)
-    ? options.preferredModelId
-    : info.modelIds[0];
-
-  if (options.requireBaseUrl && !baseUrl) {
-    return {
-      providerId: info.providerId,
-      errorMessage: options.errorMessages.missingBaseUrl,
-    };
-  }
-
-  if (options.requireApiKey && !apiKey) {
-    return {
-      providerId: info.providerId,
-      errorMessage: options.errorMessages.missingApiKey,
-    };
-  }
-
-  if (!modelId) {
-    return {
-      providerId: info.providerId,
-      errorMessage: options.errorMessages.missingModel,
-    };
-  }
-
-  return {
-    providerId: info.providerId,
-    request: {
-      npm,
-      providerId: info.providerId,
-      baseUrl,
-      ...(apiKey ? { apiKey } : {}),
-      ...(info.reasoningEffort ? { reasoningEffort: info.reasoningEffort } : {}),
-      prompt: options.prompt || DEFAULT_CONNECTIVITY_PROMPT,
-      stream: true,
-      modelIds: [modelId],
-      timeoutSecs: options.timeoutSecs ?? 30,
-    },
-  };
-}
 
 export async function probeProviderConnectivity(
   target: ProviderConnectivityBatchTarget,
 ): Promise<ProviderConnectivityStatusItem> {
-  if (!target.request) {
+  if (!target.request && !target.gatewayRequest) {
     return {
       status: 'error',
       errorMessage: target.errorMessage,
@@ -93,7 +21,9 @@ export async function probeProviderConnectivity(
   }
 
   try {
-    const response = await testProviderModelConnectivity(target.request);
+    const response = target.gatewayRequest
+      ? await testGatewayProviderModelConnectivity(target.gatewayRequest)
+      : await testProviderModelConnectivity(target.request!);
     const result = response.results[0];
 
     if (!result) {

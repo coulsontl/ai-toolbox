@@ -86,6 +86,7 @@ import {
   buildProviderConnectivityBatchTarget,
   runProviderConnectivityBatch,
 } from '@/features/coding/shared/providerConnectivity/batchTest';
+import { getEnabledCustomProviderBatchCandidates } from '@/features/coding/shared/providerConnectivity/batchTestFilters';
 import type { ProviderConnectivityStatusItem } from '@/components/common/ProviderCard/types';
 import {
   buildFavoriteProviderOptions,
@@ -579,7 +580,7 @@ const ClaudeCodePage: React.FC = () => {
     }
 
     const officialProviders = providers.filter((provider) => provider.category === 'official');
-    const testableProviders = providers.filter((provider) => provider.category !== 'official');
+    const testableProviders = getEnabledCustomProviderBatchCandidates(providers);
 
     if (officialProviders.length > 0) {
       message.info(t('claudecode.provider.officialBatchSkipped', { count: officialProviders.length }));
@@ -597,6 +598,9 @@ const ClaudeCodePage: React.FC = () => {
         env?: {
           ANTHROPIC_BASE_URL?: string;
         };
+        apiFormat?: unknown;
+        api_format?: unknown;
+        openrouter_compat_mode?: unknown;
       } = {};
       try {
         settingsConfig = JSON.parse(provider.settingsConfig || '{}') as typeof settingsConfig;
@@ -604,6 +608,16 @@ const ClaudeCodePage: React.FC = () => {
         console.error('Failed to parse Claude provider settings config for batch test:', error);
       }
       const hasExplicitBaseUrl = Boolean(settingsConfig.env?.ANTHROPIC_BASE_URL?.trim());
+      const providerApiFormat = firstGatewayApiFormat(
+        getGatewayProviderApiFormatFromMeta(provider.meta, 'claude'),
+        provider.meta?.apiFormat,
+        typeof settingsConfig.apiFormat === 'string' ? settingsConfig.apiFormat : undefined,
+        typeof settingsConfig.api_format === 'string' ? settingsConfig.api_format : undefined,
+        isGatewayConfigFlagEnabled(settingsConfig.openrouter_compat_mode)
+          ? 'openai_chat'
+          : undefined,
+      );
+      const useGateway = providerNeedsGatewayProxy(providerApiFormat, 'anthropic');
 
       if (provider.category !== 'official' && !hasExplicitBaseUrl) {
         return {
@@ -614,7 +628,9 @@ const ClaudeCodePage: React.FC = () => {
 
       return buildProviderConnectivityBatchTarget(connectivityInfo, {
         requireBaseUrl: false,
-        requireApiKey: true,
+        requireApiKey: !useGateway,
+        gatewayCliKey: 'claude',
+        useGateway,
         preferredModelId: findDefaultTestModelIdForProvider(favoriteProviders, 'claudecode', provider.id),
         errorMessages: {
           missingBaseUrl: t('common.baseUrlMissing'),
@@ -660,7 +676,7 @@ const ClaudeCodePage: React.FC = () => {
     } finally {
       setBatchTestingProviders(false);
     }
-  }, [providers, t, favoriteProviders]);
+  }, [providers, t, favoriteProviders, gatewayProviderProfilesVersion]);
 
   const handleDeleteProvider = (provider: ClaudeCodeProvider) => {
     const performDelete = async () => {

@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { ConnectivityTestResponse } from './opencodeApi';
 
 const MODEL_PRICING_REMOTE_URL =
   'https://raw.githubusercontent.com/coulsontl/ai-toolbox/main/tauri/resources/model_pricing.json';
@@ -102,6 +103,15 @@ export interface ProxyGatewayHealthCheckResult {
   ok: boolean;
   status_code: number | null;
   error: string | null;
+}
+
+export interface GatewayConnectivityTestRequest {
+  cliKey: GatewayCliKey;
+  providerId: string;
+  prompt: string;
+  stream?: boolean;
+  modelIds: string[];
+  timeoutSecs?: number;
 }
 
 export type GatewayCliTakeoverState =
@@ -427,6 +437,12 @@ export const getProxyGatewayStatus = async (): Promise<ProxyGatewayStatus> => {
 
 export const checkProxyGatewayHealth = async (): Promise<ProxyGatewayHealthCheckResult> => {
   return invoke<ProxyGatewayHealthCheckResult>('proxy_gateway_health_check');
+};
+
+export const testGatewayProviderModelConnectivity = async (
+  request: GatewayConnectivityTestRequest
+): Promise<ConnectivityTestResponse> => {
+  return invoke<ConnectivityTestResponse>('proxy_gateway_test_provider_model_connectivity', { request });
 };
 
 export const checkProxyGatewayPortAvailable = async (

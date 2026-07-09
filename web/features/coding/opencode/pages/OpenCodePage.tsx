@@ -97,6 +97,7 @@ import {
   buildProviderConnectivityBatchTarget,
   runProviderConnectivityBatch,
 } from '@/features/coding/shared/providerConnectivity/batchTest';
+import { getEnabledProviderBatchEntries } from '@/features/coding/shared/providerConnectivity/batchTestFilters';
 import {
   buildFavoriteProviderStorageKey,
   dedupeOpenCodeFavoriteProviders,
@@ -1593,7 +1594,14 @@ const OpenCodePage: React.FC = () => {
       return;
     }
 
-    const targets = providerEntries.map(([providerId, provider]) => {
+    const testableProviderEntries = getEnabledProviderBatchEntries(providerEntries, disabledProviderIds);
+
+    if (testableProviderEntries.length === 0) {
+      setConnectivityStatuses({});
+      return;
+    }
+
+    const targets = testableProviderEntries.map(([providerId, provider]) => {
       const providerNpm = provider.npm || '@ai-sdk/openai-compatible';
       if (!SUPPORTED_PROVIDER_NPMS.has(providerNpm)) {
         return {
@@ -1624,7 +1632,7 @@ const OpenCodePage: React.FC = () => {
 
     setConnectivityStatuses(
       Object.fromEntries(
-        providerEntries.map(([providerId]) => [
+        testableProviderEntries.map(([providerId]) => [
           providerId,
           { status: 'running' as const },
         ]),
@@ -1658,7 +1666,7 @@ const OpenCodePage: React.FC = () => {
     } finally {
       setBatchTestingProviders(false);
     }
-  }, [providerEntries, resolvedAuthProviderIds, t, getProviderTestModelIds, favoriteProviders]);
+  }, [providerEntries, disabledProviderIds, resolvedAuthProviderIds, t, getProviderTestModelIds, favoriteProviders]);
 
   const handleSaveDiagnostics = async (diagnostics: OpenCodeDiagnosticsConfig) => {
     if (!config || !connectivityProviderId) return;

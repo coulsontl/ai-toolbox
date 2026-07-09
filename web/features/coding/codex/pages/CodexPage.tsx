@@ -103,6 +103,7 @@ import {
   buildProviderConnectivityBatchTarget,
   runProviderConnectivityBatch,
 } from '@/features/coding/shared/providerConnectivity/batchTest';
+import { getEnabledCustomProviderBatchCandidates } from '@/features/coding/shared/providerConnectivity/batchTestFilters';
 import type { ProviderConnectivityStatusItem } from '@/components/common/ProviderCard/types';
 import {
   buildFavoriteProviderOptions,
@@ -769,7 +770,7 @@ const CodexPage: React.FC = () => {
     }
 
     const officialProviders = providers.filter((provider) => provider.category === 'official');
-    const testableProviders = providers.filter((provider) => provider.category !== 'official');
+    const testableProviders = getEnabledCustomProviderBatchCandidates(providers);
 
     if (officialProviders.length > 0) {
       message.info(t('codex.provider.officialBatchSkipped', { count: officialProviders.length }));
@@ -784,6 +785,8 @@ const CodexPage: React.FC = () => {
       const connectivityInfo = buildCodexProviderConnectivityInfo(provider);
       let settingsConfig: {
         config?: string;
+        apiFormat?: unknown;
+        api_format?: unknown;
       } = {};
       try {
         settingsConfig = JSON.parse(provider.settingsConfig || '{}') as typeof settingsConfig;
@@ -793,6 +796,16 @@ const CodexPage: React.FC = () => {
       const hasExplicitBaseUrl = Boolean(
         settingsConfig.config?.match(/^\s*base_url\s*=\s*['"]/m),
       );
+      const baseUrl = extractCodexBaseUrl(settingsConfig.config);
+      const providerApiFormat = firstGatewayApiFormat(
+        getGatewayProviderApiFormatFromMeta(provider.meta, 'codex'),
+        provider.meta?.apiFormat,
+        typeof settingsConfig.apiFormat === 'string' ? settingsConfig.apiFormat : undefined,
+        typeof settingsConfig.api_format === 'string' ? settingsConfig.api_format : undefined,
+        codexWireApiFormatFromConfig(settingsConfig.config),
+        openAiApiFormatFromBaseUrl(baseUrl),
+      );
+      const useGateway = providerNeedsGatewayProxy(providerApiFormat, 'openai_responses');
 
       if (provider.category !== 'official' && !hasExplicitBaseUrl) {
         return {
@@ -804,6 +817,8 @@ const CodexPage: React.FC = () => {
       return buildProviderConnectivityBatchTarget(connectivityInfo, {
         requireBaseUrl: false,
         requireApiKey: true,
+        gatewayCliKey: 'codex',
+        useGateway,
         preferredModelId: findDefaultTestModelIdForProvider(favoriteProviders, 'codex', provider.id),
         errorMessages: {
           missingBaseUrl: t('common.baseUrlMissing'),
@@ -849,7 +864,7 @@ const CodexPage: React.FC = () => {
     } finally {
       setBatchTestingProviders(false);
     }
-  }, [providers, t, favoriteProviders]);
+  }, [providers, t, favoriteProviders, gatewayProviderProfilesVersion]);
 
   const handleDeleteProvider = (provider: CodexProvider) => {
     const performDelete = async () => {

@@ -69,6 +69,12 @@ struct CopilotTokenCacheEntry {
 static COPILOT_TOKEN_CACHE: LazyLock<Mutex<HashMap<String, CopilotTokenCacheEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+#[derive(Debug, Clone, Default)]
+pub(super) struct GatewayRequestOptions {
+    pub(super) provider_override_id: Option<String>,
+    pub(super) disable_health_mutation: bool,
+}
+
 #[derive(Debug)]
 struct GatewayForwardError {
     message: String,
@@ -516,6 +522,14 @@ pub(super) async fn route_request(
     request: &DebugHttpRequest,
     context: &GatewayRuntimeContext,
 ) -> DebugHttpResponse {
+    route_request_with_options(request, context, &GatewayRequestOptions::default()).await
+}
+
+pub(super) async fn route_request_with_options(
+    request: &DebugHttpRequest,
+    context: &GatewayRuntimeContext,
+    options: &GatewayRequestOptions,
+) -> DebugHttpResponse {
     let (request_path, _) = split_request_target(&request.path);
     if request.method == "GET" && request_path == "/health" {
         return json_response(
@@ -564,7 +578,7 @@ pub(super) async fn route_request(
         );
     };
 
-    forward_to_upstream(request, db, context, &route).await
+    forward_to_upstream(request, db, context, &route, options).await
 }
 
 fn is_cli_route_probe(request: &DebugHttpRequest, route: &GatewayRoute) -> bool {
@@ -584,10 +598,11 @@ async fn forward_to_upstream(
     db: &SqliteDbState,
     context: &GatewayRuntimeContext,
     route: &GatewayRoute,
+    options: &GatewayRequestOptions,
 ) -> DebugHttpResponse {
     let requested_model =
         extract_requested_model(request, route).unwrap_or_else(|| "unknown".to_string());
-    let provider_candidates = match context.load_candidate_providers(db, route.cli_key).await {
+    let mut provider_candidates = match context.load_candidate_providers(db, route.cli_key).await {
         Ok(provider_candidates) if !provider_candidates.providers.is_empty() => provider_candidates,
         Ok(_) => {
             let mut response = json_response(
@@ -624,10 +639,37 @@ async fn forward_to_upstream(
             return response;
         }
     };
-    let apply_family_model_mapping = !provider_candidates
-        .selection
-        .as_ref()
-        .is_some_and(|selection| selection.mode == GatewayProxyMode::Single);
+    if let Some(provider_override_id) = options.provider_override_id.as_deref() {
+        provider_candidates
+            .providers
+            .retain(|provider| provider.id == provider_override_id);
+        if provider_candidates.providers.is_empty() {
+            let mut response = json_response(
+                502,
+                "Bad Gateway",
+                json!({
+                    "error": "gateway_provider_missing",
+                    "message": format!(
+                        "Provider '{}' is not an enabled Gateway candidate for {}",
+                        provider_override_id,
+                        route.cli_key.as_str(),
+                    ),
+                }),
+                route.route_name,
+                None,
+                "test request specified a provider that is not available for this CLI route",
+            );
+            response.cli_key = Some(route.cli_key);
+            response.requested_model = Some(requested_model);
+            response.error_category = Some("provider_missing".to_string());
+            return response;
+        }
+    }
+    let apply_family_model_mapping = options.provider_override_id.is_none()
+        && !provider_candidates
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.mode == GatewayProxyMode::Single);
     let providers = provider_candidates.providers;
 
     let settings = context.settings_snapshot();
@@ -718,8 +760,10 @@ async fn forward_to_upstream(
                                 let failure_kind = error.kind;
                                 let category =
                                     model_health::classify_failure(failure_kind).category;
-                                health_changed |=
-                                    record_health_failure(context, &health_key, failure_kind);
+                                if !options.disable_health_mutation {
+                                    health_changed |=
+                                        record_health_failure(context, &health_key, failure_kind);
+                                }
                                 let failure_response = streaming_first_chunk_failure_response(
                                     route,
                                     &provider,
@@ -767,7 +811,10 @@ async fn forward_to_upstream(
                             );
                         }
                         response.error_category = Some(category.to_string());
-                        health_changed |= record_health_failure(context, &health_key, failure_kind);
+                        if !options.disable_health_mutation {
+                            health_changed |=
+                                record_health_failure(context, &health_key, failure_kind);
+                        }
                         if should_retry_failure(failure_kind) {
                             provider_attempts.push(provider_attempt_log(&response));
                             last_failure_response = Some(response);
@@ -785,7 +832,9 @@ async fn forward_to_upstream(
                             continue 'providers;
                         }
                     } else {
-                        health_changed |= record_health_success(context, &health_key);
+                        if !options.disable_health_mutation {
+                            health_changed |= record_health_success(context, &health_key);
+                        }
                     }
 
                     save_health_registry_if_needed(context, health_changed);
@@ -816,7 +865,9 @@ async fn forward_to_upstream(
                         return response;
                     }
                     let category = model_health::classify_failure(error.kind).category;
-                    health_changed |= record_health_failure(context, &health_key, error.kind);
+                    if !options.disable_health_mutation {
+                        health_changed |= record_health_failure(context, &health_key, error.kind);
+                    }
                     let mut response = json_response(
                         502,
                         "Bad Gateway",

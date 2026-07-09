@@ -10,10 +10,11 @@ use super::session_import;
 use super::settings;
 use super::types::{
     DataSourceBreakdownInput, DataSourceBreakdownItem, GatewayCliKey, GatewayCliTakeoverStatus,
-    GatewayModelHealthItem, GatewayModelStats, GatewayPaginatedRequestLogs, GatewayProviderStats,
-    GatewayRequestLogDetail, GatewayRequestLogFilters, GatewaySessionUsageImportInput,
-    GatewaySessionUsageImportResult, GatewayUsageRecordedEvent, GatewayUsageSummary,
-    GatewayUsageSummaryByCli, GatewayUsageTrendPoint, ModelPricing, ProxyGatewayHealthCheckResult,
+    GatewayConnectivityTestRequest, GatewayConnectivityTestResponse, GatewayModelHealthItem,
+    GatewayModelStats, GatewayPaginatedRequestLogs, GatewayProviderStats, GatewayRequestLogDetail,
+    GatewayRequestLogFilters, GatewaySessionUsageImportInput, GatewaySessionUsageImportResult,
+    GatewayUsageRecordedEvent, GatewayUsageSummary, GatewayUsageSummaryByCli,
+    GatewayUsageTrendPoint, ModelPricing, ProxyGatewayHealthCheckResult,
     ProxyGatewayPortCheckInput, ProxyGatewayPortCheckResult, ProxyGatewayRequestLogListInput,
     ProxyGatewaySettings, ProxyGatewayStatus, ProxyGatewayStopPreflight,
 };
@@ -955,6 +956,34 @@ pub async fn proxy_gateway_model_health_entries(
         }
     }
     Ok(items)
+}
+
+#[tauri::command]
+pub async fn proxy_gateway_test_provider_model_connectivity(
+    gateway_state: tauri::State<'_, ProxyGatewayState>,
+    db_state: tauri::State<'_, SqliteDbState>,
+    request: GatewayConnectivityTestRequest,
+) -> Result<GatewayConnectivityTestResponse, String> {
+    {
+        let manager = gateway_state
+            .manager
+            .lock()
+            .map_err(|_| "Proxy gateway manager lock poisoned".to_string())?;
+        if !manager.status().running {
+            return Err(
+                "Gateway is not running. Start Gateway before testing protocol-converted providers."
+                    .to_string(),
+            );
+        }
+    }
+
+    let settings = settings::load_settings_from_sqlite_state(&db_state)?;
+    super::runtime::test_gateway_provider_model_connectivity(
+        settings,
+        db_state.db().clone(),
+        request,
+    )
+    .await
 }
 
 fn proxy_gateway_paths(app: &tauri::AppHandle) -> Result<ProxyGatewayPaths, String> {

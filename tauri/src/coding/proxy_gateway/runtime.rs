@@ -21,28 +21,30 @@ pub(crate) use self::providers::{
 };
 
 #[cfg(test)]
-use self::http_io::{find_header_end, header_value, DebugHttpRequest};
-use self::http_io::{read_http_request, write_response};
+use self::http_io::{find_header_end, header_value};
+use self::http_io::{read_http_request, write_response, DebugHttpRequest};
 #[cfg(test)]
 use self::providers::{codex_base_url_from_config, json_object_string};
 #[cfg(test)]
 use self::routes::{build_target_url, match_gateway_route};
 #[cfg(test)]
 use self::upstream::build_upstream_headers;
-use self::upstream::route_request;
+use self::upstream::{route_request, route_request_with_options, GatewayRequestOptions};
 use super::listen::bind_gateway_listener;
 use super::model_health::ModelHealthRegistry;
 use super::paths::ProxyGatewayPaths;
 #[cfg(test)]
 use super::types::ProviderGatewayMeta;
 use super::types::{
-    GatewayCliKey, ProxyGatewayHealthCheckResult, ProxyGatewaySettings, ProxyGatewayStatus,
+    AppProxyConfig, GatewayCliKey, GatewayConnectivityTestRequest, GatewayConnectivityTestResponse,
+    GatewayConnectivityTestResult, ProxyGatewayHealthCheckResult, ProxyGatewaySettings,
+    ProxyGatewayStatus,
 };
 use crate::db::SqliteDbState;
 use chrono::Utc;
+use futures_util::StreamExt;
 #[cfg(test)]
 use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, HOST};
-#[cfg(test)]
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -75,6 +77,331 @@ impl ProxyGatewayState {
             .map_err(|_| "Proxy gateway manager lock poisoned".to_string())?;
         manager.clear_provider_cache()
     }
+}
+
+pub(crate) async fn test_gateway_provider_model_connectivity(
+    settings: ProxyGatewaySettings,
+    db: SqliteDbState,
+    request: GatewayConnectivityTestRequest,
+) -> Result<GatewayConnectivityTestResponse, String> {
+    let Some(native_protocol) = super::provider_protocol::native_cli_protocol(request.cli_key)
+    else {
+        return Err(format!(
+            "{} does not support Gateway connectivity testing",
+            request.cli_key.as_str()
+        ));
+    };
+
+    let provider = providers::load_candidate_providers_with_settings_and_selection(
+        &db,
+        request.cli_key,
+        Some(&settings),
+        None,
+    )
+    .await?
+    .into_iter()
+    .find(|provider| provider.id == request.provider_id)
+    .ok_or_else(|| {
+        format!(
+            "Provider '{}' is not an enabled Gateway candidate for {}",
+            request.provider_id,
+            request.cli_key.as_str()
+        )
+    })?;
+
+    if provider.target_protocol == native_protocol {
+        return Err(format!(
+            "Provider '{}' does not require Gateway protocol conversion",
+            provider.name
+        ));
+    }
+
+    let stream = request.stream.unwrap_or(true);
+    let timeout_secs = request.timeout_secs.unwrap_or(30).max(1);
+    let mut test_settings = settings;
+    test_settings.request_log_enabled = false;
+    test_settings.metrics_enabled = false;
+    test_settings.store_request_body = false;
+    test_settings.store_headers = false;
+    test_settings.store_response_body = false;
+    let app_config = test_settings
+        .app_configs
+        .entry(request.cli_key)
+        .or_insert_with(AppProxyConfig::default);
+    app_config.streaming_first_byte_timeout_secs = Some(timeout_secs);
+    app_config.streaming_idle_timeout_secs = Some(timeout_secs);
+    app_config.non_streaming_timeout_secs = Some(timeout_secs);
+    app_config.per_provider_retry_count = Some(0);
+    app_config.max_retry_count = Some(0);
+    app_config.retry_interval_secs = Some(0);
+
+    let context = GatewayRuntimeContext::new(test_settings.clone(), Some(db), None);
+    let options = GatewayRequestOptions {
+        provider_override_id: Some(request.provider_id.clone()),
+        disable_health_mutation: true,
+    };
+
+    let mut results = Vec::new();
+    for model_id in request.model_ids {
+        if model_id.trim().is_empty() {
+            results.push(GatewayConnectivityTestResult {
+                model_id,
+                status: "error".to_string(),
+                first_byte_ms: None,
+                total_ms: None,
+                error_message: Some("Missing model".to_string()),
+                request_url: String::new(),
+                request_headers: json!({}),
+                request_body: json!({}),
+                response_headers: None,
+                response_body: None,
+            });
+            continue;
+        }
+        let debug_request = build_gateway_connectivity_request(
+            request.cli_key,
+            &model_id,
+            &request.prompt,
+            stream,
+        )?;
+        let result = run_gateway_connectivity_request(
+            &context,
+            &options,
+            &test_settings,
+            debug_request,
+            &model_id,
+        )
+        .await;
+        results.push(result);
+    }
+
+    Ok(GatewayConnectivityTestResponse { results })
+}
+
+fn build_gateway_connectivity_request(
+    cli_key: GatewayCliKey,
+    model_id: &str,
+    prompt: &str,
+    stream: bool,
+) -> Result<DebugHttpRequest, String> {
+    let body = match cli_key {
+        GatewayCliKey::Claude => json!({
+            "model": model_id,
+            "max_tokens": 1024,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        { "type": "text", "text": prompt }
+                    ]
+                }
+            ],
+            "stream": stream,
+        }),
+        GatewayCliKey::Codex => json!({
+            "model": model_id,
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        { "type": "input_text", "text": prompt }
+                    ]
+                }
+            ],
+            "stream": stream,
+            "store": false,
+        }),
+        GatewayCliKey::Gemini => json!({
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        { "text": prompt }
+                    ]
+                }
+            ],
+        }),
+        GatewayCliKey::OpenCode => {
+            return Err(
+                "OpenCode adapter is intentionally out of scope for the gateway MVP".to_string(),
+            )
+        }
+    };
+    let body_bytes = serde_json::to_vec(&body)
+        .map_err(|error| format!("Failed to serialize gateway test body: {error}"))?;
+    let path = gateway_connectivity_path(cli_key, model_id, stream);
+    let mut headers = vec![
+        ("Host".to_string(), "127.0.0.1".to_string()),
+        (
+            "Authorization".to_string(),
+            "Bearer ai-toolbox-connectivity-test".to_string(),
+        ),
+        ("Content-Type".to_string(), "application/json".to_string()),
+        ("Content-Length".to_string(), body_bytes.len().to_string()),
+    ];
+    if stream {
+        headers.push(("Accept".to_string(), "text/event-stream".to_string()));
+    }
+
+    Ok(DebugHttpRequest {
+        id: NEXT_REQUEST_ID.fetch_add(1, Ordering::SeqCst),
+        method: "POST".to_string(),
+        path,
+        headers,
+        body: body_bytes,
+    })
+}
+
+fn gateway_connectivity_path(cli_key: GatewayCliKey, model_id: &str, stream: bool) -> String {
+    match cli_key {
+        GatewayCliKey::Claude => "/anthropic/v1/messages".to_string(),
+        GatewayCliKey::Codex => "/openai/v1/responses".to_string(),
+        GatewayCliKey::Gemini => {
+            let model = model_id
+                .trim()
+                .strip_prefix("models/")
+                .unwrap_or_else(|| model_id.trim());
+            let action = if stream {
+                "streamGenerateContent?alt=sse"
+            } else {
+                "generateContent"
+            };
+            format!(
+                "/gemini/v1beta/models/{}:{}",
+                encode_path_segment(model),
+                action
+            )
+        }
+        GatewayCliKey::OpenCode => "/".to_string(),
+    }
+}
+
+fn encode_path_segment(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(*byte as char);
+            }
+            byte => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+async fn run_gateway_connectivity_request(
+    context: &GatewayRuntimeContext,
+    options: &GatewayRequestOptions,
+    settings: &ProxyGatewaySettings,
+    request: DebugHttpRequest,
+    model_id: &str,
+) -> GatewayConnectivityTestResult {
+    let started = Instant::now();
+    let request_url = request.path.clone();
+    let request_headers = header_pairs_to_value(&request.headers);
+    let request_body = parse_json_or_raw(&request.body);
+
+    let mut response = route_request_with_options(&request, context, options).await;
+    let mut stream_error = None;
+    if let Some(body_stream) = response.body_stream.take() {
+        match drain_gateway_body_stream(body_stream, &mut response, settings, started).await {
+            Ok(()) => {}
+            Err(error) => {
+                stream_error = Some(error);
+            }
+        }
+    } else if response.first_token_ms.is_none() && !response.body.is_empty() {
+        response.first_token_ms =
+            Some(started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+    }
+
+    let total_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    let status = if response.status_code < 400 && stream_error.is_none() {
+        "success"
+    } else {
+        "error"
+    };
+    let error_message = stream_error.or_else(|| {
+        (response.status_code >= 400)
+            .then(|| format!("Gateway API error: {}", response.status_code))
+    });
+
+    GatewayConnectivityTestResult {
+        model_id: model_id.to_string(),
+        status: status.to_string(),
+        first_byte_ms: response.first_token_ms.or(Some(total_ms)),
+        total_ms: Some(total_ms),
+        error_message,
+        request_url,
+        request_headers,
+        request_body,
+        response_headers: Some(header_pairs_to_value(&response.headers)),
+        response_body: Some(parse_json_or_raw(&response.body)),
+    }
+}
+
+async fn drain_gateway_body_stream(
+    mut body_stream: http_io::DebugBodyStream,
+    response: &mut http_io::DebugHttpResponse,
+    settings: &ProxyGatewaySettings,
+    started: Instant,
+) -> Result<(), String> {
+    let idle_timeout_secs = response
+        .cli_key
+        .map(|cli_key| {
+            settings
+                .effective_app_config(cli_key)
+                .streaming_idle_timeout_secs
+        })
+        .unwrap_or(settings.streaming_idle_timeout_secs)
+        .max(1);
+    let idle_timeout = Duration::from_secs(idle_timeout_secs);
+    response.body.clear();
+    response.response_body_bytes = 0;
+
+    loop {
+        let next_chunk = tokio::time::timeout(idle_timeout, body_stream.next())
+            .await
+            .map_err(|_| {
+                format!(
+                    "Gateway stream was idle for {} seconds",
+                    idle_timeout.as_secs()
+                )
+            })?;
+        let Some(chunk_result) = next_chunk else {
+            break;
+        };
+        let chunk = chunk_result?;
+        if chunk.is_empty() {
+            continue;
+        }
+        if response.first_token_ms.is_none() {
+            response.first_token_ms =
+                Some(started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+        }
+        response.response_body_bytes = response
+            .response_body_bytes
+            .saturating_add(chunk.len() as u64);
+        response.body.extend_from_slice(&chunk);
+    }
+    Ok(())
+}
+
+fn header_pairs_to_value(headers: &[(String, String)]) -> Value {
+    let mut object = serde_json::Map::new();
+    for (name, value) in headers {
+        object.insert(name.clone(), Value::String(value.clone()));
+    }
+    Value::Object(object)
+}
+
+fn parse_json_or_raw(body: &[u8]) -> Value {
+    if body.is_empty() {
+        return Value::Null;
+    }
+    serde_json::from_slice::<Value>(body)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(body).to_string()))
 }
 
 pub struct ProxyGatewayManager {
@@ -1978,6 +2305,144 @@ data: {"type":"response.completed","response":{"id":"resp_stream","status":"comp
             .recv_timeout(Duration::from_secs(2))
             .expect("captured second upstream request");
         assert!(second_captured.contains(r#""model":"second-opus""#));
+    }
+
+    #[test]
+    fn gateway_connectivity_test_overrides_provider_without_failover() {
+        let (_first_base_url, first_rx) =
+            start_test_upstream_with_response(429, "Too Many Requests", br#"{"error":"limited"}"#);
+        let chat_body = br#"{"id":"chatcmpl_test","object":"chat.completion","created":1764561600,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
+        let (second_base_url, second_rx) = start_test_upstream_with_response(200, "OK", chat_body);
+
+        let (_dir, db) = tauri::async_runtime::block_on(create_test_db());
+        let second_provider_id = tauri::async_runtime::block_on(async {
+            let first_settings_config = json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
+                    "OPENAI_API_KEY": "first-key"
+                },
+                "apiFormat": "openai_chat"
+            })
+            .to_string();
+            let second_settings_config = json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": second_base_url,
+                    "OPENAI_API_KEY": "second-key"
+                },
+                "apiFormat": "openai_chat"
+            })
+            .to_string();
+            insert_claude_provider(
+                &db,
+                json!({
+                    "name": "First Chat Upstream",
+                    "category": "custom",
+                    "settings_config": first_settings_config,
+                    "extra_settings_config": "{}",
+                    "is_applied": false,
+                    "is_disabled": false,
+                    "sort_index": 0,
+                    "meta": {
+                        "apiFormat": "openai_chat"
+                    }
+                }),
+            );
+            insert_claude_provider(
+                &db,
+                json!({
+                    "name": "Second Chat Upstream",
+                    "category": "custom",
+                    "settings_config": second_settings_config,
+                    "extra_settings_config": "{}",
+                    "is_applied": false,
+                    "is_disabled": false,
+                    "sort_index": 1,
+                    "meta": {
+                        "apiFormat": "openai_chat"
+                    }
+                }),
+            )
+        });
+
+        let response = tauri::async_runtime::block_on(test_gateway_provider_model_connectivity(
+            ProxyGatewaySettings::default(),
+            db,
+            GatewayConnectivityTestRequest {
+                cli_key: GatewayCliKey::Claude,
+                provider_id: second_provider_id,
+                prompt: "say hi".to_string(),
+                stream: Some(false),
+                model_ids: vec!["gpt-4o".to_string()],
+                timeout_secs: Some(3),
+            },
+        ))
+        .expect("gateway connectivity test");
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].status, "success");
+        assert!(first_rx.recv_timeout(Duration::from_millis(200)).is_err());
+
+        let second_captured = second_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured second upstream request");
+        let second_captured_lower = second_captured.to_ascii_lowercase();
+        assert!(second_captured.starts_with("POST /v1/chat/completions HTTP/1.1"));
+        assert!(second_captured_lower.contains("authorization: bearer second-key"));
+        assert!(second_captured.contains(r#""model":"gpt-4o""#));
+    }
+
+    #[test]
+    fn gateway_connectivity_options_do_not_mutate_model_health() {
+        let (base_url, captured_rx) =
+            start_test_upstream_with_response(429, "Too Many Requests", br#"{"error":"limited"}"#);
+        let body =
+            br#"{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"say hi"}]}"#;
+        let request = debug_request("POST", "/anthropic/v1/messages", body);
+
+        let (_dir, db) = tauri::async_runtime::block_on(create_test_db());
+        let app_dir = tempfile::tempdir().expect("temp app dir");
+        let paths = ProxyGatewayPaths::new(app_dir.path());
+        let provider_id = tauri::async_runtime::block_on(async {
+            let settings_config = json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": base_url,
+                    "ANTHROPIC_AUTH_TOKEN": "provider-key"
+                },
+                "sonnetModel": "provider-sonnet"
+            })
+            .to_string();
+            insert_claude_provider(
+                &db,
+                json!({
+                    "name": "Limited Upstream",
+                    "category": "custom",
+                    "settings_config": settings_config,
+                    "extra_settings_config": "{}",
+                    "is_applied": true,
+                    "is_disabled": false,
+                }),
+            )
+        });
+
+        let context =
+            GatewayRuntimeContext::new(ProxyGatewaySettings::default(), Some(db), Some(paths));
+        let response = tauri::async_runtime::block_on(route_request_with_options(
+            &request,
+            &context,
+            &GatewayRequestOptions {
+                provider_override_id: Some(provider_id),
+                disable_health_mutation: true,
+            },
+        ));
+
+        assert_eq!(response.status_code, 429);
+        assert_eq!(response.error_category.as_deref(), Some("rate_limit"));
+        assert_eq!(context.health_items().unwrap_or_default().len(), 0);
+
+        let captured = captured_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured upstream request");
+        assert!(captured.contains(r#""model":"claude-sonnet-4-6""#));
     }
 
     #[test]
