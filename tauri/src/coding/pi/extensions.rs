@@ -51,9 +51,16 @@ fn apply_pi_extension_npm_compat_env(command: &mut Command) {
     }
 }
 
-fn push_pi_extension_npm_compat_env_args(command: &mut Command) {
-    for (key, value) in pi_extension_npm_compat_env() {
-        command.arg(format!("{key}={value}"));
+fn shell_quote(value: &str) -> String {
+    // If the value contains no shell metacharacters, no quoting is needed.
+    if value
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '/' || c == '_' || c == '-' || c == '.')
+    {
+        value.to_string()
+    } else {
+        // Single-quote and escape internal single quotes.
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
 }
 
@@ -82,15 +89,41 @@ fn build_pi_command(
             let wsl = runtime_location.wsl.as_ref().ok_or_else(|| {
                 "Missing WSL runtime metadata for Pi extension command".to_string()
             })?;
-            let mut command = Command::new("wsl");
-            command.args(["-d", &wsl.distro, "--exec", "env"]);
-            command.arg(format!("{}={}", PI_ENV_KEY, wsl.linux_path));
-            push_pi_extension_npm_compat_env_args(&mut command);
-            if offline {
-                command.arg("PI_OFFLINE=1");
+            // `wsl --exec` does not run any shell startup file, so CLIs
+            // installed via shell-integrated version managers (mise, asdf,
+            // nvm, volta, fnm, ...) cannot be found. We use `wsl --` to run a
+            // shell that (a) prepends common version-manager shim directories
+            // to PATH, and (b) uses the user's login shell via `$SHELL` if
+            // available, falling back to `bash -l`.
+            let linux_root = wsl.linux_user_root.as_deref().unwrap_or("");
+            let mut path_prefix = String::from("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+            if !linux_root.is_empty() {
+                path_prefix = format!(
+                    "{root}/.local/share/mise/shims:{root}/.local/bin:{root}/.volta/bin:{root}/.fnm/current/bin:{root}/.npm-global/bin:{path}",
+                    root = linux_root,
+                    path = path_prefix
+                );
             }
-            command.arg("pi");
-            command.args(args);
+            let mut env_prefix = format!(
+                "PATH={path_prefix} {pi_env_key}={linux_path}",
+                path_prefix = path_prefix,
+                pi_env_key = PI_ENV_KEY,
+                linux_path = wsl.linux_path
+            );
+            for (key, value) in pi_extension_npm_compat_env() {
+                env_prefix.push(' ');
+                env_prefix.push_str(&format!("{key}={value}"));
+            }
+            if offline {
+                env_prefix.push_str(" PI_OFFLINE=1");
+            }
+            let mut shell_cmd = format!("env {env_prefix} pi");
+            for arg in args {
+                shell_cmd.push(' ');
+                shell_cmd.push_str(&shell_quote(arg));
+            }
+            let mut command = Command::new("wsl");
+            command.args(["-d", &wsl.distro, "--exec", "bash", "-c", &shell_cmd]);
             Ok(PiCommandInvocation {
                 command,
                 local_program_label: None,
@@ -480,6 +513,21 @@ pub async fn update_pi_extensions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_quote_preserves_simple_args() {
+        assert_eq!(shell_quote("list"), "list");
+        assert_eq!(shell_quote("--no-approve"), "--no-approve");
+        assert_eq!(shell_quote("npm:context-mode"), "npm:context-mode");
+        assert_eq!(shell_quote("-l"), "-l");
+    }
+
+    #[test]
+    fn shell_quote_quotes_args_with_metacharacters() {
+        assert_eq!(shell_quote("hello world"), "'hello world'");
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+        assert_eq!(shell_quote("a$b"), "'a$b'");
+    }
 
     #[test]
     fn parses_pi_list_output_with_user_and_project_scopes() {
