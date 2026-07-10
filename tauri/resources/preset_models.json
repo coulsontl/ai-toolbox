@@ -845,6 +845,168 @@
   ],
   "@ai-sdk/openai": [
     {
+      "id": "gpt-5.6-sol",
+      "name": "GPT-5.6 Sol",
+      "contextLimit": 1050000,
+      "outputLimit": 128000,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": false,
+      "attachment": true,
+      "options": {
+        "store": false
+      },
+      "variants": {
+        "none": {
+          "reasoningEffort": "none",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "low": {
+          "reasoningEffort": "low",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "medium": {
+          "reasoningEffort": "medium",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "high": {
+          "reasoningEffort": "high",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "xhigh": {
+          "reasoningEffort": "xhigh",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "max": {
+          "reasoningEffort": "max",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        }
+      }
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "name": "GPT-5.6 Terra",
+      "contextLimit": 1050000,
+      "outputLimit": 128000,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": false,
+      "attachment": true,
+      "options": {
+        "store": false
+      },
+      "variants": {
+        "none": {
+          "reasoningEffort": "none",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "low": {
+          "reasoningEffort": "low",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "medium": {
+          "reasoningEffort": "medium",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "high": {
+          "reasoningEffort": "high",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "xhigh": {
+          "reasoningEffort": "xhigh",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "max": {
+          "reasoningEffort": "max",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        }
+      }
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "name": "GPT-5.6 Luna",
+      "contextLimit": 1050000,
+      "outputLimit": 128000,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": false,
+      "attachment": true,
+      "options": {
+        "store": false
+      },
+      "variants": {
+        "none": {
+          "reasoningEffort": "none",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "low": {
+          "reasoningEffort": "low",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "medium": {
+          "reasoningEffort": "medium",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "high": {
+          "reasoningEffort": "high",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "xhigh": {
+          "reasoningEffort": "xhigh",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "max": {
+          "reasoningEffort": "max",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        }
+      }
+    },
+    {
       "id": "gpt-5.5",
       "name": "GPT-5.5",
       "contextLimit": 400000,
