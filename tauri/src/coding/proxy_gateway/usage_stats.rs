@@ -1717,7 +1717,7 @@ fn strip_hyphenated_date_suffix(value: &str) -> Option<String> {
 }
 
 fn strip_reasoning_effort_suffix(value: &str) -> Option<String> {
-    for suffix in ["-minimal", "-low", "-medium", "-high", "-xhigh"] {
+    for suffix in ["-minimal", "-low", "-medium", "-high", "-xhigh", "-max"] {
         if let Some(stripped) = value.strip_suffix(suffix) {
             if !stripped.is_empty() {
                 return Some(stripped.to_string());
@@ -2758,6 +2758,21 @@ mod tests {
             Ok(())
         })
         .expect("canonical max model pricing should stay exact");
+    }
+
+    #[test]
+    fn model_pricing_matching_falls_back_from_appended_max_effort() {
+        let db = test_db();
+        insert_model_pricing(&db, "gpt-5.6-sol", "5", "6");
+
+        db.with_conn(|conn| {
+            let pricing = find_model_pricing(conn, "gpt-5.6-sol-max")
+                .expect("appended max effort should fall back to base model pricing");
+            assert_eq!(pricing.input_cost_per_million, Decimal::from(5));
+            assert_eq!(pricing.output_cost_per_million, Decimal::from(6));
+            Ok(())
+        })
+        .expect("appended max effort pricing should use the base model");
     }
 
     #[test]
