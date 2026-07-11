@@ -1,13 +1,13 @@
 use chrono::Local;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::adapter;
 use super::constants::{
-    builtin_provider_name, is_builtin_provider, PI_AUTH_FILE, PI_BUILTIN_PROVIDERS, PI_ENV_KEY,
-    PI_MCP_FILE, PI_MODELS_FILE, PI_PROMPT_FILE, PI_SETTINGS_FILE,
+    PI_AUTH_FILE, PI_BUILTIN_PROVIDERS, PI_ENV_KEY, PI_MCP_FILE, PI_MODELS_FILE, PI_PROMPT_FILE,
+    PI_SETTINGS_FILE, builtin_provider_name, is_builtin_provider,
 };
 use super::types::*;
 use crate::coding::db_id::db_new_id;
@@ -15,11 +15,11 @@ use crate::coding::open_code::shell_env;
 use crate::coding::prompt_file::{read_prompt_content_file, write_prompt_content_file};
 use crate::coding::runtime_location;
 use crate::coding::skills::commands::resync_all_skills_if_tool_path_changed;
+use crate::db::SqliteDbState;
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put, db_update_applied_status,
 };
 use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
-use crate::db::SqliteDbState;
 use tauri::{Emitter, Runtime};
 
 const PI_THINKING_LEVEL_KEYS: [&str; 7] =
@@ -510,6 +510,25 @@ pub async fn get_pi_settings_config(
         .map(adapter::settings_from_db_value))
 }
 
+/// Normalize a Pi root directory path for WSL UNC scenarios.
+///
+/// On Windows, the native file dialog cannot navigate into hidden (dot-prefixed)
+/// WSL directories like `.pi`, so users can only select the parent directory.
+/// Pi's config files always live in the `agent` subdirectory. This function
+/// appends `agent` when the WSL linux path ends with `/.pi`.
+fn normalize_pi_root_dir(path: &str) -> String {
+    if let Some(wsl_info) = runtime_location::parse_wsl_unc_path(path) {
+        let linux_path = wsl_info.linux_path.trim_end_matches('/');
+        if linux_path.ends_with("/.pi") {
+            let new_linux_path = format!("{}/agent", linux_path);
+            return runtime_location::build_windows_unc_path(&wsl_info.distro, &new_linux_path)
+                .to_string_lossy()
+                .to_string();
+        }
+    }
+    path.to_string()
+}
+
 #[tauri::command]
 pub async fn save_pi_settings_config(
     state: tauri::State<'_, SqliteDbState>,
@@ -527,7 +546,7 @@ pub async fn save_pi_settings_config(
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(str::to_string)
+            .map(normalize_pi_root_dir)
             .or_else(|| existing.and_then(|value| value.root_dir))
     };
     let data = adapter::settings_to_db_value(root_dir.as_deref());
@@ -1164,5 +1183,44 @@ mod tests {
                 "enabledModels": ["anthropic/*"]
             })
         );
+    }
+
+    #[test]
+    fn normalize_pi_root_dir_appends_agent_for_wsl_unc_path_ending_with_dot_pi() {
+        let path = r"\\wsl.localhost\Ubuntu\home\tester\.pi";
+        let normalized = normalize_pi_root_dir(path);
+        assert_eq!(normalized, r"\\wsl.localhost\Ubuntu\home\tester\.pi\agent");
+    }
+
+    #[test]
+    fn normalize_pi_root_dir_preserves_wsl_path_already_containing_agent() {
+        let path = r"\\wsl.localhost\Ubuntu\home\tester\.pi\agent";
+        let normalized = normalize_pi_root_dir(path);
+        assert_eq!(normalized, r"\\wsl.localhost\Ubuntu\home\tester\.pi\agent");
+    }
+
+    #[test]
+    fn normalize_pi_root_dir_preserves_non_wsl_path() {
+        let path = r"C:\Users\tester\.pi";
+        let normalized = normalize_pi_root_dir(path);
+        assert_eq!(normalized, r"C:\Users\tester\.pi");
+    }
+
+    #[test]
+    fn normalize_pi_root_dir_preserves_wsl_path_not_ending_with_dot_pi() {
+        let path = r"\\wsl.localhost\Ubuntu\home\tester\custom-agent";
+        let normalized = normalize_pi_root_dir(path);
+        assert_eq!(
+            normalized,
+            r"\\wsl.localhost\Ubuntu\home\tester\custom-agent"
+        );
+    }
+
+    #[test]
+    fn normalize_pi_root_dir_preserves_wsl_path_ending_with_dot_pi_agent() {
+        // Path already ends with agent, should not double-append
+        let path = r"\\wsl.localhost\Ubuntu\home\tester\.pi\agent";
+        let normalized = normalize_pi_root_dir(path);
+        assert_eq!(normalized, r"\\wsl.localhost\Ubuntu\home\tester\.pi\agent");
     }
 }
