@@ -88,6 +88,38 @@
     "cache_creation_cost_per_million": "3.75"
   },
   {
+    "model_id": "gpt-5.6",
+    "display_name": "GPT-5.6 Sol",
+    "input_cost_per_million": "5",
+    "output_cost_per_million": "30",
+    "cache_read_cost_per_million": "0.50",
+    "cache_creation_cost_per_million": "6.25"
+  },
+  {
+    "model_id": "gpt-5.6-sol",
+    "display_name": "GPT-5.6 Sol",
+    "input_cost_per_million": "5",
+    "output_cost_per_million": "30",
+    "cache_read_cost_per_million": "0.50",
+    "cache_creation_cost_per_million": "6.25"
+  },
+  {
+    "model_id": "gpt-5.6-terra",
+    "display_name": "GPT-5.6 Terra",
+    "input_cost_per_million": "2.50",
+    "output_cost_per_million": "15",
+    "cache_read_cost_per_million": "0.25",
+    "cache_creation_cost_per_million": "3.125"
+  },
+  {
+    "model_id": "gpt-5.6-luna",
+    "display_name": "GPT-5.6 Luna",
+    "input_cost_per_million": "1",
+    "output_cost_per_million": "6",
+    "cache_read_cost_per_million": "0.10",
+    "cache_creation_cost_per_million": "1.25"
+  },
+  {
     "model_id": "gpt-5.5",
     "display_name": "GPT-5.5",
     "input_cost_per_million": "5",
@@ -1021,6 +1053,30 @@
     "input_cost_per_million": "0.16",
     "output_cost_per_million": "0.64",
     "cache_read_cost_per_million": "0",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "grok-4.5",
+    "display_name": "Grok 4.5",
+    "input_cost_per_million": "2",
+    "output_cost_per_million": "6",
+    "cache_read_cost_per_million": "0.50",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "grok-4.5-latest",
+    "display_name": "Grok 4.5",
+    "input_cost_per_million": "2",
+    "output_cost_per_million": "6",
+    "cache_read_cost_per_million": "0.50",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "grok-build-latest",
+    "display_name": "Grok 4.5",
+    "input_cost_per_million": "2",
+    "output_cost_per_million": "6",
+    "cache_read_cost_per_million": "0.50",
     "cache_creation_cost_per_million": "0"
   },
   {

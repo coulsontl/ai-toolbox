@@ -1776,6 +1776,36 @@
       "attachment": true
     }
   ],
+  "@ai-sdk/xai": [
+    {
+      "id": "grok-4.5",
+      "name": "Grok 4.5",
+      "contextLimit": 500000,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "attachment": true,
+      "variants": {
+        "low": {
+          "reasoningEffort": "low"
+        },
+        "medium": {
+          "reasoningEffort": "medium"
+        },
+        "high": {
+          "reasoningEffort": "high"
+        }
+      }
+    }
+  ],
   "@ai-sdk/anthropic": [
     {
       "id": "claude-fable-5",

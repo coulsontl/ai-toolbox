@@ -292,6 +292,33 @@ mod tests {
     }
 
     #[test]
+    fn bundled_model_pricing_includes_gpt_5_6_and_grok_4_5() {
+        let pricing_items =
+            parse_pricing_items(BUNDLED_MODEL_PRICING_JSON, "bundled model pricing")
+                .expect("bundled pricing");
+
+        for (model_id, input, output, cache_read, cache_creation) in [
+            ("gpt-5.6", "5", "30", "0.50", "6.25"),
+            ("gpt-5.6-sol", "5", "30", "0.50", "6.25"),
+            ("gpt-5.6-terra", "2.50", "15", "0.25", "3.125"),
+            ("gpt-5.6-luna", "1", "6", "0.10", "1.25"),
+            ("grok-4.5", "2", "6", "0.50", "0"),
+            ("grok-4.5-latest", "2", "6", "0.50", "0"),
+            ("grok-build-latest", "2", "6", "0.50", "0"),
+        ] {
+            let pricing = pricing_items
+                .iter()
+                .find(|pricing| pricing.model_id == model_id)
+                .unwrap_or_else(|| panic!("bundled pricing should include {model_id}"));
+
+            assert_eq!(pricing.input_cost_per_million, input);
+            assert_eq!(pricing.output_cost_per_million, output);
+            assert_eq!(pricing.cache_read_cost_per_million, cache_read);
+            assert_eq!(pricing.cache_creation_cost_per_million, cache_creation);
+        }
+    }
+
+    #[test]
     fn seed_inserts_missing_rows_and_preserves_existing_rows() {
         let conn = Connection::open_in_memory().expect("sqlite");
         create_test_table(&conn);

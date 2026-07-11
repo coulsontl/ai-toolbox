@@ -170,6 +170,15 @@ mod tests {
             .expect("OpenAI preset group should exist")
     }
 
+    fn bundled_xai_models() -> Value {
+        let presets: Value = serde_json::from_str(DEFAULT_PRESET_MODELS_JSON)
+            .expect("bundled preset models JSON should parse");
+        presets
+            .get("@ai-sdk/xai")
+            .cloned()
+            .expect("xAI preset group should exist")
+    }
+
     fn model<'a>(models: &'a Value, model_id: &str) -> &'a Value {
         models
             .as_array()
@@ -347,6 +356,64 @@ mod tests {
                     Some("medium")
                 );
             }
+        }
+    }
+
+    #[test]
+    fn xai_presets_define_only_canonical_grok_4_5_with_supported_reasoning() {
+        const GROK_4_5_REASONING_LEVELS: [&str; 3] = ["low", "medium", "high"];
+
+        let models = bundled_xai_models();
+        let model_list = models
+            .as_array()
+            .expect("xAI preset group should be an array");
+        assert_eq!(model_list.len(), 1);
+
+        let preset = model_list.first().expect("Grok 4.5 preset should exist");
+        assert_eq!(preset.get("id").and_then(Value::as_str), Some("grok-4.5"));
+        assert_eq!(
+            preset.get("contextLimit").and_then(Value::as_u64),
+            Some(500_000)
+        );
+        assert!(preset.get("outputLimit").is_none());
+        assert_eq!(preset.get("reasoning").and_then(Value::as_bool), Some(true));
+        assert_eq!(preset.get("tool_call").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            preset.get("attachment").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(preset.get("temperature").is_none());
+        assert_eq!(
+            preset.pointer("/modalities/input"),
+            Some(&serde_json::json!(["text", "image"]))
+        );
+        assert_eq!(
+            preset.pointer("/modalities/output"),
+            Some(&serde_json::json!(["text"]))
+        );
+
+        let variants = preset
+            .get("variants")
+            .and_then(Value::as_object)
+            .expect("Grok 4.5 should define reasoning variants");
+        assert_eq!(variants.len(), GROK_4_5_REASONING_LEVELS.len());
+        for reasoning_level in GROK_4_5_REASONING_LEVELS {
+            let variant = variants
+                .get(reasoning_level)
+                .unwrap_or_else(|| panic!("Grok 4.5 should define {reasoning_level}"));
+            assert_eq!(
+                variant.get("reasoningEffort").and_then(Value::as_str),
+                Some(reasoning_level)
+            );
+        }
+
+        for alias in ["grok-4.5-latest", "grok-build-latest"] {
+            assert!(
+                model_list
+                    .iter()
+                    .all(|model| model.get("id").and_then(Value::as_str) != Some(alias)),
+                "{alias} should not duplicate the canonical Grok 4.5 preset"
+            );
         }
     }
 
