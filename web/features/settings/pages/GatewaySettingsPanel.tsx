@@ -543,6 +543,17 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
                   />
                 </FieldRow>
                 <FieldRow
+                  label={t('settings.gateway.fields.responsesEncryptedContentRectifier')}
+                  description={t('settings.gateway.hints.responsesEncryptedContentRectifier')}
+                  wide
+                >
+                  <SwitchControl
+                    checked={draftSettings.responses_encrypted_content_rectifier_enabled}
+                    label={draftSettings.responses_encrypted_content_rectifier_enabled ? t('common.enabled') : t('common.disabled')}
+                    onChange={(checked) => updateDraftAndSave('responses_encrypted_content_rectifier_enabled', checked)}
+                  />
+                </FieldRow>
+                <FieldRow
                   label={t('settings.gateway.fields.thinkingBudgetRectifier')}
                   description={t('settings.gateway.hints.thinkingBudgetRectifier')}
                   wide

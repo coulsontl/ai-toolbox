@@ -65,6 +65,31 @@ export type OpenCodePluginEntry =
   | string
   | [string, Record<string, unknown>];
 
+export type OpenCodePermissionAction = 'ask' | 'allow' | 'deny';
+
+export type OpenCodePermissionRule =
+  | OpenCodePermissionAction
+  | Record<string, OpenCodePermissionAction>;
+
+export interface OpenCodeAgentConfig {
+  model?: string;
+  variant?: string;
+  temperature?: number;
+  top_p?: number;
+  prompt?: string;
+  tools?: Record<string, boolean>;
+  disable?: boolean;
+  description?: string;
+  mode?: 'subagent' | 'primary' | 'all';
+  hidden?: boolean;
+  options?: Record<string, unknown>;
+  color?: string;
+  steps?: number;
+  maxSteps?: number;
+  permission?: Record<string, OpenCodePermissionRule> | OpenCodePermissionAction;
+  [key: string]: unknown;
+}
+
 /**
  * MCP Server Configuration
  */
@@ -85,6 +110,8 @@ export interface OpenCodeConfig {
   disabled_providers?: string[];
   model?: string;
   small_model?: string;
+  default_agent?: string;
+  agent?: Record<string, OpenCodeAgentConfig>;
   plugin?: OpenCodePluginEntry[];
   mcp?: Record<string, McpServerConfig>;
   // Preserve unknown fields from config file

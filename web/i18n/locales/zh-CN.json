@@ -517,7 +517,8 @@
         "baseCooldown": "基础冷却秒",
         "maxCooldown": "最大冷却秒",
         "probeSuccess": "探测成功次数",
-        "lossyRejection": "有损转换硬拒绝"
+        "lossyRejection": "有损转换硬拒绝",
+        "responsesEncryptedContentRectifier": "Responses 密文恢复"
       },
       "fieldHelp": {
         "perProviderRetry": "当前渠道失败后，最多在同一渠道额外重试多少次；达到后在故障转移模式下切到下一个渠道，单渠道代理则返回错误。",
@@ -539,7 +540,8 @@
         "thinkingRectifier": "开启后，Claude 入站请求遇到 thinking/signature 兼容类 4xx 错误时，会移除 thinking 内容块、signature 字段和顶层 thinking 参数，并在同一渠道重试一次；正常协议转换会保留 output_config.effort 到 reasoning effort 的映射。",
         "thinkingBudgetRectifier": "目标 Anthropic 上游遇到 budget_tokens 相关 4xx 时，自动调整后在同一渠道重试一次。",
         "cacheInjection": "为目标 Anthropic 请求注入 cache_control 标记，用于降低后续重复上下文成本。",
-        "lossyRejection": "默认关闭：检测到有损协议转换时继续尽力转发，并在响应头写入 X-Transformer-Lossy；开启后，明确不可逆的转换会在本地返回 400，不计入供应商健康和故障转移。"
+        "lossyRejection": "默认关闭：检测到有损协议转换时继续尽力转发，并在响应头写入 X-Transformer-Lossy；开启后，明确不可逆的转换会在本地返回 400，不计入供应商健康和故障转移。",
+        "responsesEncryptedContentRectifier": "最终目标为 OpenAI Responses 时，若上游明确报告 encrypted_content 无法验证或解密，会仅移除失效的加密 reasoning 项并在同一渠道重试一次。"
       },
       "perCli": {
         "firstByte": "首包",
@@ -1886,6 +1888,80 @@
       "outputLimit": "输出限制",
       "configNotFound": "未找到 auth.json 配置文件",
       "openConfigHint": "点击打开配置文件"
+    },
+    "agentSettings": {
+      "title": "Agent 模型",
+      "hint": "为主 Agent、子 Agent 和内部任务分别覆盖模型",
+      "addAgent": "添加 Agent",
+      "defaultAgent": "默认主 Agent",
+      "defaultAgentPlaceholder": "使用 OpenCode 默认值（build）",
+      "primaryAgents": "主要 Agent",
+      "subagents": "子 Agent",
+      "customAgents": "自定义 Agent",
+      "internalAgents": "内部 Agent",
+      "noCustomAgents": "暂无自定义 Agent",
+      "inheritModel": "不覆盖，由 OpenCode 继承",
+      "variantPlaceholder": "variant",
+      "variantRequiresModel": "先选择独立模型",
+      "currentConfigGroup": "当前配置",
+      "unavailableModel": "{{model}}（模型列表中不可用）",
+      "mode": {
+        "primary": "主 Agent",
+        "subagent": "子 Agent",
+        "all": "全部"
+      },
+      "disabled": "已禁用",
+      "customDescription": "自定义 Agent",
+      "descriptions": {
+        "build": "默认开发 Agent，可执行配置允许的工具。",
+        "plan": "规划与分析 Agent，默认限制编辑操作。",
+        "general": "执行复杂研究和多步骤任务的通用子 Agent。",
+        "explore": "用于快速只读探索代码库的子 Agent。",
+        "title": "生成会话标题的内部 Agent。",
+        "summary": "生成会话摘要的内部 Agent。",
+        "compaction": "压缩长上下文的内部 Agent。",
+        "scout": "只读检索外部文档和依赖源码的子 Agent。"
+      },
+      "advanced": "高级设置",
+      "restoreDefaults": "恢复 OpenCode 默认值",
+      "deleteAgent": "删除 Agent",
+      "moreActions": "{{name}} 的更多操作",
+      "resetConfirmTitle": "恢复 {{name}} 的默认配置？",
+      "resetConfirmContent": "将删除该内置 Agent 的所有覆盖字段，并恢复 OpenCode 默认行为。",
+      "deleteConfirmTitle": "删除自定义 Agent {{name}}？",
+      "deleteConfirmContent": "该 Agent 的模型、权限、Prompt 和其他配置都会从 opencode.json 中删除。",
+      "advancedTitle": "{{name}} 高级设置",
+      "advancedHint": "编辑该 Agent 的完整配置对象。未知字段会原样保留；tools 和 maxSteps 是 OpenCode 兼容的废弃字段，新配置优先使用 permission 和 steps。",
+      "validation": {
+        "json": "JSON 格式无效，请修正后再保存。",
+        "object": "Agent 配置必须是 JSON 对象。",
+        "model": "model 必须是完整的 provider/model-id 字符串。",
+        "variant": "variant 必须是字符串。",
+        "mode": "mode 只能是 primary、subagent 或 all。",
+        "steps": "steps 必须是正整数。",
+        "prompt": "prompt 必须是字符串。",
+        "description": "自定义 Agent 必须保留非空 description。"
+      },
+      "addAgentTitle": "添加自定义 Agent",
+      "agentName": "Agent 名称",
+      "agentMode": "模式",
+      "description": "说明",
+      "descriptionPlaceholder": "说明何时以及为何使用此 Agent",
+      "model": "模型",
+      "variant": "Variant",
+      "duplicateName": "该 Agent 名称已存在。",
+      "addAgentHint": "说明是 OpenCode 要求的必填项；指令、权限、Steps 和 Provider 私有参数均可在创建后继续编辑。",
+      "invalidDefaultAgent": "{{name}}（当前配置无效）",
+      "editPrompt": "编辑 Agent 指令",
+      "promptEditorTitle": "编辑 Agent 指令 · {{name}}",
+      "promptEditorHint": "内容将直接保存到 opencode.json 的 agent.{{name}}.prompt，作为该 Agent 的自定义系统指令。",
+      "savePrompt": "保存指令",
+      "promptPlaceholder": "输入该 Agent 的系统指令，支持 Markdown……",
+      "agentPrompt": "Agent 指令",
+      "promptNotSet": "未设置 Agent 指令",
+      "addPrompt": "添加指令",
+      "newAgent": "新 Agent",
+      "reservedName": "该名称属于 OpenCode 内置 Agent，请直接编辑对应的内置 Agent。"
     }
   },
   "claudecode": {

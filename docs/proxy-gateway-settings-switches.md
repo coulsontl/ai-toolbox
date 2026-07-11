@@ -22,6 +22,7 @@
 | UI | 字段 | 默认值 | 作用 |
 |---|---|---:|---|
 | Thinking 整流 | `thinking_rectifier_enabled` | `true` | 只对 Claude/Anthropic 入站请求生效。开启后，正常请求不会预先删除 `thinking` / `output_config.effort`；仅当非流式上游 HTTP 4xx 错误命中 thinking/signature 兼容问题时，runtime 才删除顶层 `thinking` 参数、`messages[].content[]` 中的 `thinking` / `redacted_thinking` 内容块，以及内容块直接携带的 `signature` 字段，并在同一渠道重试一次。不会递归扫描 metadata、tool input 或其他业务 payload。 |
+| Responses 密文恢复 | `responses_encrypted_content_rectifier_enabled` | `true` | 只对最终目标协议为 OpenAI Responses 的非流式请求生效。上游 HTTP 4xx 明确表示 `encrypted_content` 无法验证或解密时，仅从本次重试副本中删除带非空 `encrypted_content` 的 reasoning input item，并在同一渠道重试一次；不修改磁盘会话，也不受 Claude Thinking 整流开关控制。 |
 | Thinking budget 修正 | `thinking_budget_rectifier_enabled` | `true` | 目标协议为 Anthropic Messages、非流式响应、上游返回 HTTP 4xx 且错误内容命中 budget_tokens 问题时，自动调整请求体里的 thinking budget 后，在同一渠道重试一次。现在按 `provider.target_protocol == AnthropicMessages` 判断，不再只等同于 Claude CLI 入站。 |
 | Cache 注入 | `cache_injection_enabled` | `false` | 对最终发往 Anthropic Messages 上游的请求体注入 `cache_control`，用于降低重复上下文成本。runtime 会先完成模型改写和必要的协议转换，再对目标 Anthropic body 注入；因此 Codex/Responses 转 Anthropic 的请求也受此开关控制。 |
 

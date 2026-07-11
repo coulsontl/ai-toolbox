@@ -5,6 +5,8 @@ const managedConfigFields = new Set([
   'provider',
   'model',
   'small_model',
+  'default_agent',
+  'agent',
   'plugin',
   'mcp',
 ]);
@@ -41,6 +43,8 @@ export const mergeOpenCodeOtherConfigFields = (
     provider: config.provider,
     model: config.model,
     small_model: config.small_model,
+    default_agent: config.default_agent,
+    agent: config.agent,
     plugin: config.plugin,
     mcp: config.mcp,
     ...otherFields,

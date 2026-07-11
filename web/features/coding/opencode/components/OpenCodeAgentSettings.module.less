@@ -1,0 +1,341 @@
+.moduleCollapse {
+  margin-top: 12px;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+
+  :global(.ant-collapse-item) {
+    border-bottom: 0 !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+  }
+
+  :global(.ant-collapse-header) {
+    align-items: center !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    overflow: visible !important;
+  }
+
+  :global(.ant-collapse-expand-icon) {
+    color: var(--color-text-secondary);
+  }
+
+  :global(.ant-collapse-panel) {
+    border-top: 0 !important;
+    background: transparent !important;
+  }
+
+  :global(.ant-collapse-body) {
+    padding: 16px 0 0 !important;
+  }
+}
+
+.moduleCollapse:global(.ant-collapse)
+  > :global(.ant-collapse-item)
+  > :global(.ant-collapse-panel) {
+  border-top: 0 !important;
+}
+
+.moduleHeader {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.moduleHeading {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.moduleTitle {
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.moduleHint {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 20px 20px;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-bg-elevated);
+}
+
+.defaultAgentRow {
+  padding: 2px 0 8px !important;
+}
+
+.defaultAgentLabel,
+.fieldLabel {
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.requiredLabel::before {
+  margin-right: 4px;
+  color: var(--ant-color-error);
+  content: '*';
+}
+
+.defaultAgentLabel {
+  text-align: right;
+
+  &::after {
+    content: ':';
+  }
+}
+
+.defaultAgentSelect {
+  width: 100%;
+}
+
+.group {
+  min-width: 0;
+}
+
+.groupDivider {
+  margin: 6px 0 10px !important;
+  border-color: var(--color-border-secondary) !important;
+  color: var(--color-text-secondary) !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+
+  :global(.ant-divider-inner-text) {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding-inline: 14px;
+  }
+}
+
+.groupHeaderButton {
+  height: 28px;
+  margin-left: 6px;
+  padding-inline: 4px;
+  font-size: 12px;
+}
+
+.agentList {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agentRow {
+  display: grid;
+  grid-template-columns: minmax(108px, 132px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  min-height: 40px;
+  padding: 4px 0;
+}
+
+.agentIdentity {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
+  text-align: right;
+
+  &::after {
+    content: ':';
+    flex: none;
+    color: var(--color-text-primary);
+  }
+}
+
+.agentName {
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agentHelpIcon {
+  flex: none;
+  border-radius: 50%;
+  color: var(--color-text-tertiary);
+  font-size: 13px;
+  cursor: help;
+  transition: color 160ms ease;
+
+  &:hover,
+  &:focus-visible {
+    color: var(--color-text-secondary);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--ant-color-primary);
+    outline-offset: 2px;
+  }
+}
+
+.disabledIndicator {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--color-text-tertiary);
+}
+
+.modelControls {
+  display: flex !important;
+  width: 100%;
+  min-width: 0;
+}
+
+.modelSelect {
+  min-width: 0;
+  flex: 1;
+
+  :global(.ant-select-selection-placeholder) {
+    color: var(--color-text-secondary) !important;
+  }
+}
+
+.variantSelect {
+  width: 112px;
+  flex: none;
+
+  :global(.ant-select-selection-placeholder) {
+    color: var(--color-text-secondary) !important;
+  }
+}
+
+.advancedButton {
+  width: 32px;
+  height: 32px;
+  flex: none;
+}
+
+.emptyGroup {
+  padding: 8px 0 10px;
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.modalContent {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.formRow {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.modalHint {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.promptEntry {
+  display: flex;
+  min-width: 0;
+  min-height: 56px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-container);
+  color: var(--color-text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease;
+
+  &:hover {
+    border-color: var(--ant-color-primary);
+    background: var(--color-bg-hover);
+  }
+
+  &:focus-visible {
+    border-color: var(--ant-color-primary);
+    outline: 2px solid var(--ant-color-primary-border);
+    outline-offset: 1px;
+  }
+}
+
+.promptSummary,
+.promptPlaceholder {
+  display: -webkit-box;
+  overflow: hidden;
+  min-width: 0;
+  flex: 1;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.promptPlaceholder {
+  color: var(--color-text-tertiary);
+}
+
+.promptAction {
+  flex: none;
+  color: var(--ant-color-primary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+@media (max-width: 720px) {
+  .formRow,
+  .agentRow {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .defaultAgentRow {
+    gap: 8px;
+  }
+
+  .defaultAgentLabel,
+  .agentIdentity {
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  .content {
+    padding: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agentHelpIcon,
+  .promptEntry {
+    transition: none;
+  }
+}

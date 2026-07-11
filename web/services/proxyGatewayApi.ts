@@ -51,6 +51,7 @@ export interface ProxyGatewaySettings {
   store_headers: boolean;
   store_response_body: boolean;
   thinking_rectifier_enabled: boolean;
+  responses_encrypted_content_rectifier_enabled: boolean;
   thinking_budget_rectifier_enabled: boolean;
   cache_injection_enabled: boolean;
   lossy_rejection_enabled: boolean;

@@ -65,6 +65,7 @@ mod tests {
         assert_eq!(settings.max_retry_count, 8);
         assert_eq!(settings.retry_interval_secs, 1);
         assert!(settings.thinking_rectifier_enabled);
+        assert!(settings.responses_encrypted_content_rectifier_enabled);
         assert!(!settings.lossy_rejection_enabled);
     }
 
@@ -76,6 +77,25 @@ mod tests {
         .unwrap();
 
         assert!(settings.enabled_on_startup);
+    }
+
+    #[test]
+    fn thinking_and_responses_rectifier_settings_are_independent() {
+        let responses_only = settings_from_value(json!({
+            "thinking_rectifier_enabled": false,
+            "responses_encrypted_content_rectifier_enabled": true,
+        }))
+        .unwrap();
+        assert!(!responses_only.thinking_rectifier_enabled);
+        assert!(responses_only.responses_encrypted_content_rectifier_enabled);
+
+        let thinking_only = settings_from_value(json!({
+            "thinking_rectifier_enabled": true,
+            "responses_encrypted_content_rectifier_enabled": false,
+        }))
+        .unwrap();
+        assert!(thinking_only.thinking_rectifier_enabled);
+        assert!(!thinking_only.responses_encrypted_content_rectifier_enabled);
     }
 
     #[test]

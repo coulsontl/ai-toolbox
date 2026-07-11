@@ -80,6 +80,7 @@ import OhMyOpenAgentConfigSelector from '../components/OhMyOpenAgentConfigSelect
 import OhMyOpenCodeSlimConfigSelector from '../components/OhMyOpenCodeSlimConfigSelector';
 import OhMyOpenAgentSettings from '../components/OhMyOpenAgentSettings';
 import OhMyOpenCodeSlimSettings from '../components/OhMyOpenCodeSlimSettings';
+import OpenCodeAgentSettings from '../components/OpenCodeAgentSettings';
 import { GlobalPromptSettings } from '@/features/coding/shared/prompt';
 import { MagicContextSettings } from '@/features/coding/shared/magicContext';
 import JsonEditor from '@/components/common/JsonEditor';
@@ -115,6 +116,10 @@ import {
   extractOpenCodeOtherConfigFields,
   mergeOpenCodeOtherConfigFields,
 } from '@/features/coding/opencode/utils/openCodeOtherConfig';
+import {
+  getConfiguredOpenCodeAgentModelIds,
+  sanitizeOpenCodeAgentModelReferences,
+} from '@/features/coding/opencode/utils/openCodeAgentConfig';
 import { SessionManagerPanel } from '@/features/coding/shared/sessionManager';
 
 import styles from './OpenCodePage.module.less';
@@ -217,36 +222,6 @@ const reorderObject = <T,>(obj: Record<string, T>, newOrder: string[]): Record<s
 };
 
 const buildUnifiedModelId = (providerId: string, modelId: string): string => `${providerId}/${modelId}`;
-
-const sanitizeAgentsModelReferences = (
-  agents: unknown,
-  removedModelIdSet: Set<string>,
-): unknown => {
-  if (!agents || typeof agents !== 'object' || Array.isArray(agents)) {
-    return agents;
-  }
-
-  let mutated = false;
-  const nextAgents: Record<string, unknown> = {};
-
-  for (const [agentName, agent] of Object.entries(agents as Record<string, unknown>)) {
-    if (
-      agent
-      && typeof agent === 'object'
-      && !Array.isArray(agent)
-      && typeof (agent as Record<string, unknown>).model === 'string'
-      && removedModelIdSet.has((agent as Record<string, string>).model)
-    ) {
-      const { model: _removedAgentModel, ...remainingAgent } = agent as Record<string, unknown>;
-      nextAgents[agentName] = remainingAgent;
-      mutated = true;
-    } else {
-      nextAgents[agentName] = agent;
-    }
-  }
-
-  return mutated ? nextAgents : agents;
-};
 
 const SUPPORTED_PROVIDER_NPMS = new Set([
   '@ai-sdk/openai',
@@ -861,19 +836,11 @@ const OpenCodePage: React.FC = () => {
     }
 
     const removedModelIdSet = new Set(removedUnifiedModelIds);
-    const sanitizedAgents = sanitizeAgentsModelReferences(currentConfig.agents, removedModelIdSet);
-
-    const nextConfig: OpenCodeConfig = {
+    return sanitizeOpenCodeAgentModelReferences({
       ...currentConfig,
       model: currentConfig.model && removedModelIdSet.has(currentConfig.model) ? undefined : currentConfig.model,
       small_model: currentConfig.small_model && removedModelIdSet.has(currentConfig.small_model) ? undefined : currentConfig.small_model,
-    };
-
-    if (sanitizedAgents !== currentConfig.agents) {
-      nextConfig.agents = sanitizedAgents;
-    }
-
-    return nextConfig;
+    }, removedModelIdSet);
   }, []);
 
   const clearBatchDeleteState = React.useCallback((providerId?: string) => {
@@ -1791,15 +1758,19 @@ const OpenCodePage: React.FC = () => {
 
   const selectedMainModel = config?.model;
   const selectedSmallModel = config?.small_model;
+  const selectedAgentModels = React.useMemo(
+    () => new Set(getConfiguredOpenCodeAgentModelIds(config)),
+    [config],
+  );
 
   const enabledUnifiedModels = React.useMemo(() => {
     return unifiedModels.filter((m) => {
       const isProviderDisabled = disabledProviderIds.has(m.providerId);
       if (!isProviderDisabled) return true;
       // Keep current selections visible even if their provider is disabled
-      return m.id === selectedMainModel || m.id === selectedSmallModel;
+      return m.id === selectedMainModel || m.id === selectedSmallModel || selectedAgentModels.has(m.id);
     });
-  }, [unifiedModels, disabledProviderIds, selectedMainModel, selectedSmallModel]);
+  }, [unifiedModels, disabledProviderIds, selectedMainModel, selectedSmallModel, selectedAgentModels]);
 
   type ModelOption = { label: string; value: string; disabled?: boolean };
   type ModelGroup = { label: string; options: ModelOption[] };
@@ -2143,6 +2114,15 @@ const OpenCodePage: React.FC = () => {
                       </div>
                     )}
                   </Space>
+
+                  {config && (
+                    <OpenCodeAgentSettings
+                      config={config}
+                      modelOptions={omoModelGroupedOptions}
+                      modelVariantsMap={modelVariantsMap}
+                      onSave={doSaveConfig}
+                    />
+                  )}
                 </div>
               </div>
             </div>

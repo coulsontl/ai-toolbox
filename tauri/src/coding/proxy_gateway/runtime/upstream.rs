@@ -727,6 +727,7 @@ async fn forward_to_upstream(
                 &requested_model,
                 &upstream_model_id,
                 settings.thinking_rectifier_enabled,
+                settings.responses_encrypted_content_rectifier_enabled,
                 settings.thinking_budget_rectifier_enabled,
                 settings.cache_injection_enabled,
                 app_config.non_streaming_timeout_secs,
@@ -948,6 +949,7 @@ async fn send_upstream_request(
     requested_model: &str,
     upstream_model_id: &str,
     thinking_rectifier_enabled: bool,
+    responses_encrypted_content_rectifier_enabled: bool,
     thinking_budget_rectifier_enabled: bool,
     cache_injection_enabled: bool,
     non_streaming_timeout_secs: u64,
@@ -1059,6 +1061,15 @@ async fn send_upstream_request(
         response.headers(),
         status.as_u16(),
     );
+    let should_attempt_responses_encrypted_content_rectifier =
+        should_attempt_responses_encrypted_content_rectifier(
+            responses_encrypted_content_rectifier_enabled,
+            provider.target_protocol,
+            request,
+            route,
+            response.headers(),
+            status.as_u16(),
+        );
     let should_attempt_thinking_budget_rectifier = should_attempt_thinking_budget_rectifier(
         thinking_budget_rectifier_enabled,
         provider.target_protocol,
@@ -1070,6 +1081,7 @@ async fn send_upstream_request(
     let should_attempt_unsupported_media_rectifier =
         should_attempt_unsupported_media_rectifier(status.as_u16());
     if should_attempt_thinking_signature_rectifier
+        || should_attempt_responses_encrypted_content_rectifier
         || should_attempt_thinking_budget_rectifier
         || should_attempt_unsupported_media_rectifier
     {
@@ -1124,6 +1136,43 @@ async fn send_upstream_request(
                     upstream_url.to_string(),
                     conversion_route,
                     Some(rectified_context),
+                    upstream_response_snapshot_limit,
+                    Some(context),
+                    compact_compat,
+                )
+                .await;
+            }
+        }
+
+        if should_attempt_responses_encrypted_content_rectifier
+            && should_rectify_responses_encrypted_content(status_code, &body)
+        {
+            if let Some(rectified_body) =
+                build_responses_encrypted_content_rectified_body(&upstream_body_snapshot)?
+            {
+                let response = send_request_once(
+                    &client,
+                    method.clone(),
+                    &upstream_url,
+                    headers.clone(),
+                    rectified_body.clone(),
+                    non_streaming_timeout_secs.max(1),
+                    header_preserving_proxy.clone(),
+                )
+                .await
+                .map_err(|mut error| {
+                    error.upstream_request_body = Some(rectified_body.clone());
+                    error
+                })?;
+                return build_gateway_response(
+                    request,
+                    route,
+                    provider,
+                    response,
+                    rectified_body,
+                    upstream_url.to_string(),
+                    conversion_route,
+                    Some(conversion_context.clone()),
                     upstream_response_snapshot_limit,
                     Some(context),
                     compact_compat,
@@ -3540,6 +3589,73 @@ fn should_attempt_thinking_budget_rectifier(
         && target_protocol == AiProtocol::AnthropicMessages
         && !should_stream_response(request, route, headers, status_code)
         && (400..500).contains(&status_code)
+}
+
+fn should_attempt_responses_encrypted_content_rectifier(
+    enabled: bool,
+    target_protocol: AiProtocol,
+    request: &DebugHttpRequest,
+    route: &GatewayRoute,
+    headers: &HeaderMap,
+    status_code: u16,
+) -> bool {
+    enabled
+        && target_protocol == AiProtocol::OpenAiResponses
+        && !route_is_openai_responses_compact(route)
+        && !should_stream_response(request, route, headers, status_code)
+        && (400..500).contains(&status_code)
+}
+
+fn should_rectify_responses_encrypted_content(status_code: u16, body: &[u8]) -> bool {
+    if !(400..500).contains(&status_code) {
+        return false;
+    }
+    let Some(message) = extract_error_message_from_body(body) else {
+        return false;
+    };
+    let lower = message.to_ascii_lowercase();
+    let mentions_encrypted_content =
+        lower.contains("encrypted content") || lower.contains("encrypted_content");
+    let verification_failed = lower.contains("could not be verified");
+    let decryption_failed = lower.contains("could not be decrypted")
+        || lower.contains("could not be decrypted or parsed");
+
+    mentions_encrypted_content && (verification_failed || decryption_failed)
+}
+
+fn build_responses_encrypted_content_rectified_body(
+    body: &[u8],
+) -> Result<Option<Vec<u8>>, GatewayForwardError> {
+    let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
+        return Ok(None);
+    };
+    let Some(input) = value.get_mut("input").and_then(Value::as_array_mut) else {
+        return Ok(None);
+    };
+    let original_len = input.len();
+    input.retain(|item| {
+        let is_reasoning = item.get("type").and_then(Value::as_str) == Some("reasoning");
+        let has_encrypted_content = item
+            .get("encrypted_content")
+            .and_then(Value::as_str)
+            .is_some_and(|encrypted_content| !encrypted_content.trim().is_empty());
+        !(is_reasoning && has_encrypted_content)
+    });
+    if input.len() == original_len {
+        return Ok(None);
+    }
+
+    serde_json::to_vec(&value)
+        .map(Some)
+        .map_err(|error| GatewayForwardError {
+            message: format!(
+                "Failed to serialize Responses encrypted-content rectified body: {error}"
+            ),
+            kind: GatewayFailureKind::GatewayParse,
+            upstream_request_body: None,
+            upstream_response_body: None,
+            upstream_response_body_bytes: 0,
+        })
 }
 
 fn should_rectify_thinking_signature(status_code: u16, body: &[u8]) -> bool {
@@ -12390,6 +12506,221 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
         assert!(!should_rectify_thinking_signature(
             500,
             br#"{"error":{"message":"Invalid 'signature' in 'thinking' block"}}"#
+        ));
+    }
+
+    #[test]
+    fn responses_encrypted_content_rectifier_matches_only_verification_errors() {
+        assert!(should_rectify_responses_encrypted_content(
+            400,
+            br#"{"error":{"message":"The encrypted content gAAAA... could not be verified. Reason: Encrypted content could not be decrypted or parsed."}}"#
+        ));
+        assert!(should_rectify_responses_encrypted_content(
+            422,
+            br#"{"detail":"encrypted_content could not be decrypted"}"#
+        ));
+
+        assert!(!should_rectify_responses_encrypted_content(
+            400,
+            br#"{"error":{"message":"Invalid JSON schema: strict must be a boolean"}}"#
+        ));
+        assert!(!should_rectify_responses_encrypted_content(
+            500,
+            br#"{"error":{"message":"The encrypted content could not be verified"}}"#
+        ));
+    }
+
+    #[test]
+    fn responses_encrypted_content_rectifier_removes_only_encrypted_reasoning_items() {
+        let body = br#"{
+            "model":"gpt-5.6-sol",
+            "store":false,
+            "include":["reasoning.encrypted_content","file_search_call.results"],
+            "reasoning":{"effort":"xhigh","summary":"detailed"},
+            "input":[
+                {"type":"message","role":"user","content":[{"type":"input_text","text":"inspect"}]},
+                {"type":"reasoning","summary":[{"type":"summary_text","text":"private plan"}],"encrypted_content":"gAAAA-old"},
+                {"type":"message","role":"assistant","content":[{"type":"output_text","text":"visible"}]},
+                {"type":"reasoning","summary":[{"type":"summary_text","text":"public summary only"}]},
+                {"type":"reasoning","summary":[],"encrypted_content":"   "},
+                {"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}"},
+                {"type":"function_call_output","call_id":"call_1","output":"ok"},
+                {"type":"custom_tool_call","call_id":"custom_1","name":"apply_patch","input":"patch"},
+                {"type":"custom_tool_call_output","call_id":"custom_1","output":"done"}
+            ]
+        }"#;
+
+        let rectified = build_responses_encrypted_content_rectified_body(body)
+            .unwrap()
+            .expect("encrypted reasoning should be removed");
+        let value = serde_json::from_slice::<Value>(&rectified).unwrap();
+        let input = value["input"].as_array().unwrap();
+
+        assert_eq!(input.len(), 8);
+        assert_eq!(input[0]["type"], "message");
+        assert_eq!(input[1]["type"], "message");
+        assert_eq!(input[1]["content"][0]["text"], "visible");
+        assert_eq!(input[2]["type"], "reasoning");
+        assert_eq!(input[2]["summary"][0]["text"], "public summary only");
+        assert_eq!(input[3]["type"], "reasoning");
+        assert_eq!(input[3]["encrypted_content"], "   ");
+        assert_eq!(input[4]["type"], "function_call");
+        assert_eq!(input[5]["type"], "function_call_output");
+        assert_eq!(input[6]["type"], "custom_tool_call");
+        assert_eq!(input[7]["type"], "custom_tool_call_output");
+        assert_eq!(value["store"], false);
+        assert_eq!(
+            value["include"],
+            json!(["reasoning.encrypted_content", "file_search_call.results"])
+        );
+        assert_eq!(value["reasoning"]["effort"], "xhigh");
+        assert_eq!(value["reasoning"]["summary"], "detailed");
+        assert!(!value.to_string().contains("private plan"));
+        assert!(!value.to_string().contains("gAAAA-old"));
+    }
+
+    #[test]
+    fn chat_to_responses_conversion_does_not_forge_encrypted_content() {
+        let encrypted_content = concat!("g", "AAAAABfixture-openai-responses");
+        let request_body = serde_json::to_vec(&json!({
+            "model": "gpt-5.6-sol",
+            "messages": [
+                {"role": "user", "content": "inspect"},
+                {
+                    "role": "assistant",
+                    "reasoning_content": "private plan",
+                    "reasoning_signature": encrypted_content,
+                    "content": "visible"
+                },
+                {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "shell", "arguments": "{}"}
+                    }]
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "ok"}
+            ],
+            "store": false,
+            "include": ["reasoning.encrypted_content"],
+            "reasoning": {"effort": "xhigh", "summary": "detailed"}
+        }))
+        .unwrap();
+        let request = debug_request(&request_body);
+        let conversion_route = Some(ConversionRoute::new(
+            AiProtocol::OpenAiChat,
+            AiProtocol::OpenAiResponses,
+        ));
+        let original_body = build_upstream_body(
+            &request,
+            "gpt-5.6-sol",
+            "gpt-5.6-sol",
+            false,
+            false,
+            GatewayCliKey::Codex,
+            AiProtocol::OpenAiResponses,
+            conversion_route,
+            false,
+        )
+        .unwrap();
+        let original = serde_json::from_slice::<Value>(&original_body).unwrap();
+
+        let input = original["input"].as_array().unwrap();
+        assert!(!original.to_string().contains(encrypted_content));
+        assert!(!input
+            .iter()
+            .any(|item| item.get("encrypted_content").is_some()));
+        assert!(original.to_string().contains("private plan"));
+        assert!(original.to_string().contains("visible"));
+        assert!(input.iter().any(|item| {
+            item.get("type").and_then(Value::as_str) == Some("function_call")
+                && item.get("call_id").and_then(Value::as_str) == Some("call_1")
+        }));
+        assert!(input.iter().any(|item| {
+            item.get("type").and_then(Value::as_str) == Some("function_call_output")
+                && item.get("call_id").and_then(Value::as_str) == Some("call_1")
+        }));
+        assert!(
+            build_responses_encrypted_content_rectified_body(&original_body)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn responses_encrypted_content_rectifier_skips_unrelated_bodies() {
+        assert!(build_responses_encrypted_content_rectified_body(
+            br#"{"model":"gpt-5","input":[{"type":"message","role":"user","content":"hi"}]}"#
+        )
+        .unwrap()
+        .is_none());
+        assert!(
+            build_responses_encrypted_content_rectified_body(b"not-json")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn responses_encrypted_content_rectifier_uses_its_independent_runtime_switch() {
+        let request = debug_request(
+            br#"{"model":"gpt-5","input":[{"type":"reasoning","encrypted_content":"gAAAA-old"}],"stream":true}"#,
+        );
+        let route = gateway_route(GatewayCliKey::Codex, "/v1/responses");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+
+        let thinking_rectifier_enabled = false;
+        let responses_encrypted_content_rectifier_enabled = true;
+        assert!(!thinking_rectifier_enabled);
+        assert!(should_attempt_responses_encrypted_content_rectifier(
+            responses_encrypted_content_rectifier_enabled,
+            AiProtocol::OpenAiResponses,
+            &request,
+            &route,
+            &headers,
+            400,
+        ));
+        let thinking_rectifier_enabled = true;
+        let responses_encrypted_content_rectifier_enabled = false;
+        assert!(thinking_rectifier_enabled);
+        assert!(!should_attempt_responses_encrypted_content_rectifier(
+            responses_encrypted_content_rectifier_enabled,
+            AiProtocol::OpenAiResponses,
+            &request,
+            &route,
+            &headers,
+            400,
+        ));
+        assert!(!should_attempt_responses_encrypted_content_rectifier(
+            true,
+            AiProtocol::OpenAiChat,
+            &request,
+            &route,
+            &headers,
+            400,
+        ));
+        assert!(!should_attempt_responses_encrypted_content_rectifier(
+            true,
+            AiProtocol::OpenAiResponses,
+            &request,
+            &route,
+            &headers,
+            500,
+        ));
+
+        let compact_route = gateway_route(GatewayCliKey::Codex, "/v1/responses/compact");
+        assert!(!should_attempt_responses_encrypted_content_rectifier(
+            true,
+            AiProtocol::OpenAiResponses,
+            &request,
+            &compact_route,
+            &headers,
+            400,
         ));
     }
 

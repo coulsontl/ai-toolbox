@@ -470,3 +470,44 @@ pub struct OpenCodeAllApiHubProvidersResult {
 pub struct ResolveOpenCodeAllApiHubProvidersRequest {
     pub provider_ids: Vec<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::OpenCodeConfig;
+    use serde_json::{json, Value};
+
+    #[test]
+    fn opencode_config_roundtrip_preserves_agent_fields_and_unknown_options() {
+        let source = json!({
+            "$schema": "https://opencode.ai/config.json",
+            "provider": {},
+            "default_agent": "build",
+            "agent": {
+                "explore": {
+                    "model": "anthropic/claude-sonnet-5",
+                    "variant": "high",
+                    "permission": {
+                        "edit": "deny",
+                        "bash": {
+                            "*": "ask",
+                            "git diff*": "allow"
+                        }
+                    },
+                    "options": {
+                        "providerPrivateFlag": true
+                    },
+                    "futureField": {
+                        "enabled": true
+                    }
+                }
+            }
+        });
+
+        let config: OpenCodeConfig =
+            serde_json::from_value(source.clone()).expect("OpenCode config should deserialize");
+        let serialized: Value =
+            serde_json::to_value(config).expect("OpenCode config should serialize");
+
+        assert_eq!(serialized, source);
+    }
+}

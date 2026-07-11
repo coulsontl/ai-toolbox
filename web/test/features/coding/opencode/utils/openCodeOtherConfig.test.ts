@@ -21,6 +21,12 @@ test('extractOpenCodeOtherConfigFields keeps disabled_providers visible in other
     disabled_providers: ['opencode', 'opencode-go'],
     model: 'openai/gpt-5.5',
     small_model: 'openai/gpt-5.4-mini',
+    default_agent: 'build',
+    agent: {
+      explore: {
+        model: 'openai/gpt-5.4-mini',
+      },
+    },
     plugin: ['opencode-ai'],
     mcp: {
       demo: {
@@ -62,6 +68,23 @@ test('extractOpenCodeOtherConfigFields keeps mcp hidden because MCP page owns it
   });
 });
 
+test('extractOpenCodeOtherConfigFields hides agent fields because Agent settings owns them', () => {
+  const result = extractOpenCodeOtherConfigFields({
+    provider: {},
+    default_agent: 'build',
+    agent: {
+      explore: {
+        model: 'openai/gpt-5.4-mini',
+      },
+    },
+    permission: true,
+  });
+
+  assert.deepEqual(result, {
+    permission: true,
+  });
+});
+
 test('mergeOpenCodeOtherConfigFields preserves disabled_providers from other config editor', () => {
   const result = mergeOpenCodeOtherConfigFields(
     {
@@ -74,6 +97,13 @@ test('mergeOpenCodeOtherConfigFields preserves disabled_providers from other con
       },
       disabled_providers: ['old-provider'],
       model: 'openai/gpt-5.5',
+      default_agent: 'build',
+      agent: {
+        explore: {
+          model: 'openai/gpt-5.4-mini',
+          permission: { edit: 'deny' },
+        },
+      },
     },
     {
       disabled_providers: ['opencode', 'opencode-go'],
@@ -96,6 +126,13 @@ test('mergeOpenCodeOtherConfigFields preserves disabled_providers from other con
     },
     model: 'openai/gpt-5.5',
     small_model: undefined,
+    default_agent: 'build',
+    agent: {
+      explore: {
+        model: 'openai/gpt-5.4-mini',
+        permission: { edit: 'deny' },
+      },
+    },
     plugin: undefined,
     mcp: undefined,
     disabled_providers: ['opencode', 'opencode-go'],
@@ -128,6 +165,8 @@ test('mergeOpenCodeOtherConfigFields preserves mcp while saving other config fie
     provider: {},
     model: undefined,
     small_model: undefined,
+    default_agent: undefined,
+    agent: undefined,
     plugin: undefined,
     mcp: {
       demo: {
@@ -160,6 +199,8 @@ test('mergeOpenCodeOtherConfigFields clears disabled_providers when removed from
     provider: {},
     model: undefined,
     small_model: undefined,
+    default_agent: undefined,
+    agent: undefined,
     plugin: undefined,
     mcp: undefined,
     permission: {

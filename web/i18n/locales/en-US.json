@@ -517,7 +517,8 @@
         "baseCooldown": "Base cooldown sec",
         "maxCooldown": "Max cooldown sec",
         "probeSuccess": "Probe successes",
-        "lossyRejection": "Reject lossy conversions"
+        "lossyRejection": "Reject lossy conversions",
+        "responsesEncryptedContentRectifier": "Responses encrypted-content recovery"
       },
       "fieldHelp": {
         "perProviderRetry": "Extra retries allowed on the same channel after it fails; after this limit, failover mode switches to the next channel and single-channel proxy returns an error.",
@@ -539,7 +540,8 @@
         "thinkingRectifier": "When enabled, Claude inbound requests that hit thinking/signature compatibility 4xx errors will remove thinking blocks, signature fields, and the top-level thinking parameter, then retry once on the same channel. Normal protocol conversion preserves output_config.effort to reasoning effort mapping.",
         "thinkingBudgetRectifier": "When the target Anthropic upstream returns a budget_tokens-related 4xx, adjust the budget and retry once on the same channel.",
         "cacheInjection": "Inject cache_control markers into target Anthropic requests to reduce repeated context cost.",
-        "lossyRejection": "Off by default: detected lossy protocol conversions continue best-effort and add X-Transformer-Lossy to the response headers. When enabled, clearly irreversible conversions return a local 400 and do not affect provider health or failover."
+        "lossyRejection": "Off by default: detected lossy protocol conversions continue best-effort and add X-Transformer-Lossy to the response headers. When enabled, clearly irreversible conversions return a local 400 and do not affect provider health or failover.",
+        "responsesEncryptedContentRectifier": "For OpenAI Responses targets, when the upstream explicitly reports encrypted_content verification or decryption failure, remove only the invalid encrypted reasoning items and retry once on the same channel."
       },
       "perCli": {
         "firstByte": "First byte",
@@ -1889,6 +1891,80 @@
       "outputLimit": "Output Limit",
       "configNotFound": "auth.json config file not found",
       "openConfigHint": "Click to open config file"
+    },
+    "agentSettings": {
+      "title": "Agent Models",
+      "hint": "Override models for primary agents, subagents, and internal tasks",
+      "addAgent": "Add Agent",
+      "defaultAgent": "Default Primary Agent",
+      "defaultAgentPlaceholder": "Use OpenCode default (build)",
+      "primaryAgents": "Primary Agents",
+      "subagents": "Subagents",
+      "customAgents": "Custom Agents",
+      "internalAgents": "Internal Agents",
+      "noCustomAgents": "No custom agents",
+      "inheritModel": "No override; inherit from OpenCode",
+      "variantPlaceholder": "variant",
+      "variantRequiresModel": "Select an agent model first",
+      "currentConfigGroup": "Current Configuration",
+      "unavailableModel": "{{model}} (unavailable in model list)",
+      "mode": {
+        "primary": "Primary",
+        "subagent": "Subagent",
+        "all": "All"
+      },
+      "disabled": "Disabled",
+      "customDescription": "Custom agent",
+      "descriptions": {
+        "build": "Default development agent that runs tools allowed by its permissions.",
+        "plan": "Planning and analysis agent with edits restricted by default.",
+        "general": "General-purpose subagent for complex research and multi-step tasks.",
+        "explore": "Fast read-only subagent for exploring codebases.",
+        "title": "Internal agent for generating session titles.",
+        "summary": "Internal agent for generating session summaries.",
+        "compaction": "Internal agent for compacting long context.",
+        "scout": "Read-only subagent for external documentation and dependency research."
+      },
+      "advanced": "Advanced Settings",
+      "restoreDefaults": "Restore OpenCode Defaults",
+      "deleteAgent": "Delete Agent",
+      "moreActions": "More actions for {{name}}",
+      "resetConfirmTitle": "Restore defaults for {{name}}?",
+      "resetConfirmContent": "This removes all overrides for the built-in agent and restores OpenCode defaults.",
+      "deleteConfirmTitle": "Delete custom agent {{name}}?",
+      "deleteConfirmContent": "The agent model, permissions, prompt, and all other settings will be removed from opencode.json.",
+      "advancedTitle": "Advanced Settings: {{name}}",
+      "advancedHint": "Edit the complete agent configuration object. Unknown fields are preserved. tools and maxSteps are deprecated compatibility fields; prefer permission and steps for new settings.",
+      "validation": {
+        "json": "Invalid JSON. Fix the syntax before saving.",
+        "object": "Agent configuration must be a JSON object.",
+        "model": "model must be a complete provider/model-id string.",
+        "variant": "variant must be a string.",
+        "mode": "mode must be primary, subagent, or all.",
+        "steps": "steps must be a positive integer.",
+        "prompt": "prompt must be a string.",
+        "description": "Custom agents must keep a non-empty description."
+      },
+      "addAgentTitle": "Add Custom Agent",
+      "agentName": "Agent Name",
+      "agentMode": "Mode",
+      "description": "Description",
+      "descriptionPlaceholder": "Describe when and why to use this agent",
+      "model": "Model",
+      "variant": "Variant",
+      "duplicateName": "An agent with this name already exists.",
+      "addAgentHint": "Description is required by OpenCode. Instructions, permissions, steps, and provider-specific options can be edited after creation.",
+      "invalidDefaultAgent": "{{name}} (invalid current configuration)",
+      "editPrompt": "Edit Agent Instructions",
+      "promptEditorTitle": "Edit Agent Instructions · {{name}}",
+      "promptEditorHint": "This content is saved directly to agent.{{name}}.prompt in opencode.json as the agent's custom system instructions.",
+      "savePrompt": "Save Instructions",
+      "promptPlaceholder": "Enter system instructions for this agent. Markdown is supported...",
+      "agentPrompt": "Agent Instructions",
+      "promptNotSet": "No agent instructions set",
+      "addPrompt": "Add Instructions",
+      "newAgent": "New Agent",
+      "reservedName": "This name is reserved by a built-in OpenCode agent. Edit the corresponding built-in agent instead."
     }
   },
   "claudecode": {
