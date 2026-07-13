@@ -152,6 +152,7 @@ pub async fn proxy_gateway_stop(
     }
     Ok(status)
 }
+
 /// Hot-restart the running gateway without CLI stop preflight.
 ///
 /// Keeps takeover manifests and settings, rebuilds runtime state, and resets
@@ -1047,6 +1048,7 @@ fn emit_gateway_cli_wsl_sync_request(app: &tauri::AppHandle, cli_key: GatewayCli
     let event_name = match cli_key {
         GatewayCliKey::Claude => "wsl-sync-request-claude",
         GatewayCliKey::Codex => "wsl-sync-request-codex",
+        GatewayCliKey::Grok => "wsl-sync-request-grok",
         GatewayCliKey::Gemini => "wsl-sync-request-geminicli",
         GatewayCliKey::OpenCode => return,
     };
@@ -1062,6 +1064,7 @@ async fn load_provider_name_map(
     for (cli_key, table) in [
         (GatewayCliKey::Claude, DbTable::ClaudeProvider),
         (GatewayCliKey::Codex, DbTable::CodexProvider),
+        (GatewayCliKey::Grok, DbTable::GrokProvider),
         (GatewayCliKey::Gemini, DbTable::GeminiCliProvider),
     ] {
         let order = OrderSpec::single(OrderField::id(OrderDirection::Asc));

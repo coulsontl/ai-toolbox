@@ -8,7 +8,7 @@
 
 - 内置工具定义来自 `builtin.rs` 的静态配置。
 - 用户自定义工具来自主数据库的 `custom_tool` 表；必须直接读写 SQLite JSONB，旧 SurrealDB 仅用于启动时一次性导入。这部分是 Skills/MCP 对“额外工具”的唯一持久化来源。
-- 对 OpenCode、Claude Code、Codex、OpenClaw、Pi 这类 runtime root 可配置的内置工具，真正的 MCP/Skills 路径不能只看静态字符串，必须优先经过 `runtime_location` 派生。
+- 对 OpenCode、Claude Code、Codex、Grok、OpenClaw、Pi 这类 runtime root 可配置的内置工具，真正的 MCP/Skills 路径不能只看静态字符串，必须优先经过 `runtime_location` 派生。
 
 ## 核心设计决策（Why）
 

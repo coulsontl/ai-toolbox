@@ -1,6 +1,6 @@
 import type { ComponentType } from 'react';
 import { NotesPage } from '@/features/daily';
-import { OpenCodePage, ClaudeCodePage, CodexPage, GeminiCliPage, PiPage } from '@/features/coding';
+import { OpenCodePage, ClaudeCodePage, CodexPage, GrokPage, GeminiCliPage, PiPage } from '@/features/coding';
 import { OpenClawPage } from '@/features/coding/openclaw';
 import { SettingsPage } from '@/features/settings';
 import { SkillsPage } from '@/features/coding/skills';
@@ -10,6 +10,7 @@ import { GatewayPage } from '@/features/coding/gateway';
 import {
   ClaudeCodeSessionDetailPage,
   CodexSessionDetailPage,
+  GrokSessionDetailPage,
   GeminiCliSessionDetailPage,
   OpenClawSessionDetailPage,
   OpenCodeSessionDetailPage,
@@ -76,6 +77,17 @@ export const PAGE_ROUTES: RouteEntry[] = [
       contentPadding: 'compact',
       ownerTabKey: 'codex',
       parentPath: '/coding/codex',
+    },
+  },
+  { path: '/coding/grok', component: GrokPage },
+  {
+    path: '/coding/grok/sessions/detail',
+    component: GrokSessionDetailPage,
+    chrome: {
+      mode: 'secondary',
+      contentPadding: 'compact',
+      ownerTabKey: 'grok',
+      parentPath: '/coding/grok',
     },
   },
   { path: '/coding/openclaw', component: OpenClawPage },

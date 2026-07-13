@@ -15,6 +15,7 @@ export interface SessionManagerRefreshEventDetail {
 const SESSION_TOOL_BASE_PATH: Record<SessionTool, string> = {
   claudecode: '/coding/claudecode',
   codex: '/coding/codex',
+  grok: '/coding/grok',
   geminicli: '/coding/geminicli',
   openclaw: '/coding/openclaw',
   opencode: '/coding/opencode',

@@ -3,11 +3,14 @@ use chrono::Local;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
+use tempfile::NamedTempFile;
+use tokio::sync::{watch, Mutex as AsyncMutex};
 
 use super::adapter;
 use super::commands::{
@@ -21,7 +24,7 @@ use crate::db::helpers::{
 };
 use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 const CODEX_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_OAUTH_AUTH_URL: &str = "https://auth.openai.com/oauth/authorize";
@@ -29,12 +32,22 @@ const CODEX_OAUTH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 const CODEX_OAUTH_DEFAULT_PORT: u16 = 1455;
 const CODEX_OAUTH_CALLBACK_PATH: &str = "/auth/callback";
+const CODEX_DEVICE_USER_CODE_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/usercode";
+const CODEX_DEVICE_TOKEN_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/token";
+const CODEX_DEVICE_VERIFICATION_URL: &str = "https://auth.openai.com/codex/device";
+const CODEX_DEVICE_REDIRECT_URI: &str = "https://auth.openai.com/deviceauth/callback";
 const LOCAL_OFFICIAL_ACCOUNT_ID: &str = CODEX_LOCAL_PROVIDER_ID;
 const FIVE_HOUR_WINDOW_SECONDS: i64 = 18_000;
 const WEEK_WINDOW_SECONDS: i64 = 604_800;
 const MONTH_WINDOW_MIN_SECONDS: i64 = 28 * 24 * 60 * 60;
 const MONTH_WINDOW_MAX_SECONDS: i64 = 31 * 24 * 60 * 60;
 const AUTH_REFRESH_LEAD_SECONDS: i64 = 3 * 24 * 60 * 60;
+static OAUTH_REFRESH_LOCK: LazyLock<AsyncMutex<()>> = LazyLock::new(|| AsyncMutex::new(()));
+static OAUTH_REFRESH_CACHE: LazyLock<
+    AsyncMutex<HashMap<String, (std::time::Instant, OAuthTokenResponse)>>,
+> = LazyLock::new(|| AsyncMutex::new(HashMap::new()));
+static DEVICE_AUTH_SESSIONS: LazyLock<Mutex<HashMap<String, watch::Sender<bool>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,6 +78,40 @@ struct OAuthTokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     id_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexDeviceAuthStartResult {
+    pub session_id: String,
+    pub verification_uri: String,
+    pub user_code: String,
+    pub expires_at: i64,
+    pub poll_interval_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexAuthStatusEvent {
+    session_id: String,
+    status: String,
+    message: Option<String>,
+    account_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexDeviceUserCodeResponse {
+    device_auth_id: String,
+    #[serde(alias = "usercode")]
+    user_code: String,
+    #[serde(default)]
+    interval: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexDeviceTokenResponse {
+    authorization_code: String,
+    code_verifier: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -192,13 +239,26 @@ fn open_browser(url: &str) -> Result<(), String> {
         .map_err(|error| format!("Failed to open OAuth login page: {error}"))
 }
 
-fn wait_for_oauth_callback(state: &str) -> Result<String, String> {
-    let listener = TcpListener::bind(("127.0.0.1", CODEX_OAUTH_DEFAULT_PORT)).map_err(|error| {
-        format!(
-            "Failed to listen on localhost:{}: {error}",
-            CODEX_OAUTH_DEFAULT_PORT
-        )
-    })?;
+fn bind_oauth_listener() -> Result<(TcpListener, u16), String> {
+    let listener = TcpListener::bind(("127.0.0.1", CODEX_OAUTH_DEFAULT_PORT))
+        .or_else(|_| TcpListener::bind(("127.0.0.1", 0)))
+        .map_err(|error| format!("Failed to bind Codex OAuth callback listener: {error}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("Failed to resolve Codex OAuth callback port: {error}"))?
+        .port();
+    Ok((listener, port))
+}
+
+fn wait_for_oauth_callback(listener: TcpListener, state: &str) -> Result<String, String> {
+    wait_for_oauth_callback_with_timeout(listener, state, Duration::from_secs(300))
+}
+
+fn wait_for_oauth_callback_with_timeout(
+    listener: TcpListener,
+    state: &str,
+    timeout: Duration,
+) -> Result<String, String> {
     listener
         .set_nonblocking(true)
         .map_err(|error| format!("Failed to configure OAuth listener: {error}"))?;
@@ -210,7 +270,7 @@ fn wait_for_oauth_callback(state: &str) -> Result<String, String> {
         match listener.accept() {
             Ok(connection) => break connection,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                if start.elapsed() >= Duration::from_secs(300) {
+                if start.elapsed() >= timeout {
                     return Err("Timed out waiting for OAuth callback".to_string());
                 }
                 std::thread::sleep(Duration::from_millis(100));
@@ -305,14 +365,12 @@ fn url_decode(value: &str) -> String {
 }
 
 async fn exchange_authorization_code(
+    db: &SqliteDbState,
     code: &str,
     redirect_uri: &str,
     code_verifier: &str,
 ) -> Result<OAuthTokenResponse, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|error| format!("Failed to build OAuth HTTP client: {error}"))?;
+    let client = crate::http_client::client_with_timeout(db, 20).await?;
 
     client
         .post(CODEX_OAUTH_TOKEN_URL)
@@ -333,13 +391,12 @@ async fn exchange_authorization_code(
         .map_err(|error| format!("Failed to parse OAuth token response: {error}"))
 }
 
-async fn refresh_oauth_token(refresh_token: &str) -> Result<OAuthTokenResponse, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|error| format!("Failed to build OAuth refresh client: {error}"))?;
-
-    client
+async fn refresh_oauth_token(
+    db: &SqliteDbState,
+    refresh_token: &str,
+) -> Result<OAuthTokenResponse, String> {
+    let client = crate::http_client::client_with_timeout(db, 20).await?;
+    let response = client
         .post(CODEX_OAUTH_TOKEN_URL)
         .form(&OAuthRefreshRequest {
             grant_type: "refresh_token",
@@ -348,11 +405,31 @@ async fn refresh_oauth_token(refresh_token: &str) -> Result<OAuthTokenResponse, 
         })
         .send()
         .await
-        .map_err(|error| format!("Failed to refresh OAuth token: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("OAuth token refresh failed: {error}"))?
-        .json::<OAuthTokenResponse>()
+        .map_err(|error| format!("Failed to refresh OAuth token: {error}"))?;
+    let status = response.status();
+    let body = response
+        .text()
         .await
+        .map_err(|error| format!("Failed to read OAuth refresh response: {error}"))?;
+    if !status.is_success() {
+        let error_code = serde_json::from_str::<Value>(&body).ok().and_then(|value| {
+            value
+                .get("code")
+                .or_else(|| value.get("error"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+        if error_code.as_deref() == Some("refresh_token_reused")
+            || body.contains("refresh_token_reused")
+        {
+            return Err(
+                "refresh_token_reused: Codex refresh token has already been rotated; sign in again"
+                    .to_string(),
+            );
+        }
+        return Err(format!("OAuth token refresh failed ({status}): {body}"));
+    }
+    serde_json::from_str::<OAuthTokenResponse>(&body)
         .map_err(|error| format!("Failed to parse refreshed OAuth token response: {error}"))
 }
 
@@ -387,9 +464,15 @@ fn build_auth_snapshot(
     token_response: &OAuthTokenResponse,
     existing_auth: Option<&Value>,
 ) -> Result<Value, String> {
+    let existing_tokens = existing_auth.and_then(|value| value.get("tokens"));
     let id_token = token_response
         .id_token
         .as_deref()
+        .or_else(|| {
+            existing_tokens
+                .and_then(|tokens| tokens.get("id_token"))
+                .and_then(Value::as_str)
+        })
         .ok_or_else(|| "OAuth response missing id_token".to_string())?;
     let parsed = parse_id_token(id_token);
     let account_id = parsed
@@ -411,7 +494,12 @@ fn build_auth_snapshot(
         serde_json::json!({
             "id_token": id_token,
             "access_token": token_response.access_token,
-            "refresh_token": token_response.refresh_token.clone().unwrap_or_default(),
+            "refresh_token": token_response.refresh_token.clone().or_else(|| {
+                existing_tokens
+                    .and_then(|tokens| tokens.get("refresh_token"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }).unwrap_or_default(),
             "account_id": account_id,
         }),
     );
@@ -466,18 +554,41 @@ fn official_auth_needs_refresh(auth: &Value) -> bool {
     matches!(expiration, Some(expiration) if expiration <= now + AUTH_REFRESH_LEAD_SECONDS)
 }
 
-async fn ensure_fresh_official_runtime_auth(auth: &Value) -> Result<Value, String> {
+async fn ensure_fresh_official_runtime_auth(
+    db: &SqliteDbState,
+    auth: &Value,
+) -> Result<Value, String> {
     if !official_auth_needs_refresh(auth) {
         return Ok(auth.clone());
     }
 
+    let _refresh_guard = OAUTH_REFRESH_LOCK.lock().await;
+    if !official_auth_needs_refresh(auth) {
+        return Ok(auth.clone());
+    }
     let refresh_token = auth
         .pointer("/tokens/refresh_token")
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Official account is missing refresh token".to_string())?;
-    let refreshed_token_response = refresh_oauth_token(refresh_token).await?;
+    let cached_response = OAUTH_REFRESH_CACHE
+        .lock()
+        .await
+        .get(refresh_token)
+        .filter(|(created_at, _)| created_at.elapsed() <= Duration::from_secs(30))
+        .map(|(_, response)| response.clone());
+    let refreshed_token_response = match cached_response {
+        Some(response) => response,
+        None => {
+            let response = refresh_oauth_token(db, refresh_token).await?;
+            OAUTH_REFRESH_CACHE.lock().await.insert(
+                refresh_token.to_string(),
+                (std::time::Instant::now(), response.clone()),
+            );
+            response
+        }
+    };
     build_auth_snapshot(&refreshed_token_response, Some(auth))
 }
 
@@ -511,9 +622,36 @@ async fn write_auth_json_to_disk(
             .map_err(|error| format!("Failed to create Codex root directory: {error}"))?;
     }
     let auth_path = root_dir.join("auth.json");
-    let content = serde_json::to_string_pretty(auth)
+    write_auth_json_atomic(&auth_path, auth)
+}
+
+fn write_auth_json_atomic(auth_path: &std::path::Path, auth: &Value) -> Result<(), String> {
+    let root_dir = auth_path
+        .parent()
+        .ok_or_else(|| "Codex auth.json path has no parent directory".to_string())?;
+    let mut temporary = NamedTempFile::new_in(&root_dir)
+        .map_err(|error| format!("Failed to create temporary auth.json: {error}"))?;
+    serde_json::to_writer_pretty(temporary.as_file_mut(), auth)
         .map_err(|error| format!("Failed to serialize auth.json: {error}"))?;
-    fs::write(&auth_path, content).map_err(|error| format!("Failed to write auth.json: {error}"))
+    temporary
+        .write_all(b"\n")
+        .map_err(|error| format!("Failed to finalize auth.json: {error}"))?;
+    temporary
+        .persist(&auth_path)
+        .map_err(|error| format!("Failed to replace auth.json: {}", error.error))?;
+    set_codex_auth_permissions(&auth_path)
+}
+
+#[cfg(unix)]
+fn set_codex_auth_permissions(path: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("Failed to set auth.json permissions: {error}"))
+}
+
+#[cfg(not(unix))]
+fn set_codex_auth_permissions(_path: &std::path::Path) -> Result<(), String> {
+    Ok(())
 }
 
 async fn query_provider(
@@ -1164,15 +1302,12 @@ fn parse_usage_snapshot(body: &Value, plan_type: Option<&str>) -> UsageSnapshot 
 }
 
 async fn fetch_usage_snapshot(
+    db: &crate::db::SqliteDbState,
     access_token: &str,
     account_id: Option<&str>,
     plan_type: Option<&str>,
 ) -> Result<UsageSnapshot, String> {
-    let client = reqwest::Client::builder()
-        .use_rustls_tls()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|error| format!("Failed to build usage HTTP client: {error}"))?;
+    let client = crate::http_client::client_with_timeout(db, 20).await?;
 
     let mut request = client
         .get(CODEX_USAGE_URL)
@@ -1420,13 +1555,22 @@ fn merge_official_runtime_auth(existing_auth: &Value, next_auth: &Value) -> Valu
     let mut merged = existing_auth.as_object().cloned().unwrap_or_default();
     merged.remove("OPENAI_API_KEY");
 
-    let runtime_keys = ["auth_mode", "tokens", "last_refresh", "agent_identity"];
-    for key in runtime_keys {
+    for key in ["auth_mode", "last_refresh", "agent_identity"] {
         if let Some(value) = next_auth.get(key) {
             merged.insert(key.to_string(), value.clone());
-        } else {
-            merged.remove(key);
         }
+    }
+
+    if let Some(next_tokens) = next_auth.get("tokens").and_then(Value::as_object) {
+        let mut tokens = existing_auth
+            .get("tokens")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        for (key, value) in next_tokens {
+            tokens.insert(key.clone(), value.clone());
+        }
+        merged.insert("tokens".to_string(), Value::Object(tokens));
     }
 
     Value::Object(merged)
@@ -1490,6 +1634,211 @@ pub async fn list_codex_official_accounts(
 }
 
 #[tauri::command]
+pub async fn start_codex_official_account_device_auth(
+    state: tauri::State<'_, SqliteDbState>,
+    app: tauri::AppHandle,
+    provider_id: String,
+) -> Result<CodexDeviceAuthStartResult, String> {
+    ensure_persisted_provider_id(&provider_id)?;
+    let provider = query_provider(state.db(), &provider_id).await?;
+    if provider.category != "official" {
+        return Err("Only official Codex providers can add official accounts".to_string());
+    }
+    if !DEVICE_AUTH_SESSIONS
+        .lock()
+        .map_err(|_| "Codex device auth session lock is poisoned".to_string())?
+        .is_empty()
+    {
+        return Err("A Codex device authorization session is already active".to_string());
+    }
+
+    let client = crate::http_client::client_with_timeout(state.db(), 30).await?;
+    let response = client
+        .post(CODEX_DEVICE_USER_CODE_URL)
+        .json(&serde_json::json!({ "client_id": CODEX_OAUTH_CLIENT_ID }))
+        .send()
+        .await
+        .map_err(|error| format!("Failed to request Codex device code: {error}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("Failed to read Codex device code response: {error}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "Codex device code request failed ({status}): {body}"
+        ));
+    }
+    let device: CodexDeviceUserCodeResponse = serde_json::from_str(&body)
+        .map_err(|error| format!("Failed to parse Codex device code response: {error}"))?;
+    if device.device_auth_id.trim().is_empty() || device.user_code.trim().is_empty() {
+        return Err("Codex device code response is incomplete".to_string());
+    }
+    let poll_interval_seconds = match &device.interval {
+        Value::Number(value) => value.as_u64().unwrap_or(5),
+        Value::String(value) => value.parse::<u64>().unwrap_or(5),
+        _ => 5,
+    }
+    .max(1);
+    let session_id = db_new_id();
+    let expires_at = chrono::Utc::now().timestamp() + 15 * 60;
+    let (cancel_sender, cancel_receiver) = watch::channel(false);
+    DEVICE_AUTH_SESSIONS
+        .lock()
+        .map_err(|_| "Codex device auth session lock is poisoned".to_string())?
+        .insert(session_id.clone(), cancel_sender);
+
+    emit_codex_auth_status(&app, &session_id, "waiting_for_user", None, None);
+    let poll_session_id = session_id.clone();
+    let poll_user_code = device.user_code.clone();
+    tauri::async_runtime::spawn(async move {
+        poll_codex_device_auth(
+            app,
+            poll_session_id,
+            provider_id,
+            device.device_auth_id,
+            poll_user_code,
+            poll_interval_seconds,
+            expires_at,
+            cancel_receiver,
+        )
+        .await;
+    });
+
+    Ok(CodexDeviceAuthStartResult {
+        session_id,
+        verification_uri: CODEX_DEVICE_VERIFICATION_URL.to_string(),
+        user_code: device.user_code,
+        expires_at,
+        poll_interval_seconds,
+    })
+}
+
+#[tauri::command]
+pub fn cancel_codex_official_account_device_auth(session_id: String) -> Result<(), String> {
+    if let Some(sender) = DEVICE_AUTH_SESSIONS
+        .lock()
+        .map_err(|_| "Codex device auth session lock is poisoned".to_string())?
+        .remove(&session_id)
+    {
+        let _ = sender.send(true);
+    }
+    Ok(())
+}
+
+async fn poll_codex_device_auth(
+    app: tauri::AppHandle,
+    session_id: String,
+    provider_id: String,
+    device_auth_id: String,
+    user_code: String,
+    poll_interval_seconds: u64,
+    expires_at: i64,
+    mut cancel_receiver: watch::Receiver<bool>,
+) {
+    let result = async {
+        let db_state = app.state::<SqliteDbState>();
+        let db = db_state.db();
+        let client = crate::http_client::client_with_timeout(db, 30).await?;
+        loop {
+            if *cancel_receiver.borrow() {
+                return Err("cancelled".to_string());
+            }
+            if chrono::Utc::now().timestamp() >= expires_at {
+                return Err("expired".to_string());
+            }
+            let response = client
+                .post(CODEX_DEVICE_TOKEN_URL)
+                .json(&serde_json::json!({
+                    "device_auth_id": device_auth_id,
+                    "user_code": user_code,
+                }))
+                .send()
+                .await
+                .map_err(|error| format!("Failed to poll Codex device authorization: {error}"))?;
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .map_err(|error| format!("Failed to read Codex device authorization: {error}"))?;
+            if status.is_success() {
+                let token: CodexDeviceTokenResponse = serde_json::from_str(&body)
+                    .map_err(|error| format!("Invalid Codex device token response: {error}"))?;
+                if token.authorization_code.trim().is_empty()
+                    || token.code_verifier.trim().is_empty()
+                {
+                    return Err("Codex device token response is incomplete".to_string());
+                }
+                let existing_auth = read_auth_json_from_disk(Some(&db)).await?;
+                let token_response = exchange_authorization_code(
+                    db,
+                    &token.authorization_code,
+                    CODEX_DEVICE_REDIRECT_URI,
+                    &token.code_verifier,
+                )
+                .await?;
+                let auth_snapshot = build_auth_snapshot(&token_response, Some(&existing_auth))?;
+                let content = build_account_content_from_auth_snapshot(
+                    &provider_id,
+                    &auth_snapshot,
+                    None,
+                    None,
+                )?;
+                let account = save_official_account(db, &content).await?;
+                return Ok(account.id);
+            }
+            if status.as_u16() != 403 && status.as_u16() != 404 {
+                return Err(format!(
+                    "Codex device authorization failed ({status}): {body}"
+                ));
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(poll_interval_seconds)) => {}
+                changed = cancel_receiver.changed() => {
+                    if changed.is_ok() && *cancel_receiver.borrow() {
+                        return Err("cancelled".to_string());
+                    }
+                }
+            }
+        }
+    }
+    .await;
+
+    DEVICE_AUTH_SESSIONS
+        .lock()
+        .ok()
+        .and_then(|mut sessions| sessions.remove(&session_id));
+    match result {
+        Ok(account_id) => {
+            emit_codex_auth_status(&app, &session_id, "authorized", None, Some(account_id));
+            let _ = app.emit("config-changed", "window");
+        }
+        Err(error) if error == "cancelled" || error == "expired" => {
+            emit_codex_auth_status(&app, &session_id, &error, None, None);
+        }
+        Err(error) => emit_codex_auth_status(&app, &session_id, "error", Some(error), None),
+    }
+}
+
+fn emit_codex_auth_status(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    status: &str,
+    message: Option<String>,
+    account_id: Option<String>,
+) {
+    let _ = app.emit(
+        "codex-auth-status",
+        CodexAuthStatusEvent {
+            session_id: session_id.to_string(),
+            status: status.to_string(),
+            message,
+            account_id,
+        },
+    );
+}
+
+#[tauri::command]
 pub async fn start_codex_official_account_oauth(
     state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
@@ -1505,20 +1854,23 @@ pub async fn start_codex_official_account_oauth(
     let existing_auth = read_auth_json_from_disk(Some(&db)).await?;
     let oauth_state = generate_random_urlsafe(32);
     let (code_verifier, code_challenge) = generate_pkce_pair();
-    let redirect_uri = build_oauth_redirect_uri(CODEX_OAUTH_DEFAULT_PORT);
+    let (oauth_listener, callback_port) = bind_oauth_listener()?;
+    let redirect_uri = build_oauth_redirect_uri(callback_port);
     let authorize_url = build_codex_authorize_url(&redirect_uri, &oauth_state, &code_challenge);
 
     open_browser(&authorize_url)?;
     let authorization_code =
-        tokio::task::spawn_blocking(move || wait_for_oauth_callback(&oauth_state))
+        tokio::task::spawn_blocking(move || wait_for_oauth_callback(oauth_listener, &oauth_state))
             .await
             .map_err(|error| format!("OAuth callback task failed: {error}"))??;
     let token_response =
-        exchange_authorization_code(&authorization_code, &redirect_uri, &code_verifier).await?;
+        exchange_authorization_code(&db, &authorization_code, &redirect_uri, &code_verifier)
+            .await?;
     let auth_snapshot = build_auth_snapshot(&token_response, Some(&existing_auth))?;
     let plan_type = usage_plan_type_from_auth(&auth_snapshot);
     let usage_account_id = usage_account_id_from_auth(&auth_snapshot);
     let usage_snapshot = fetch_usage_snapshot(
+        &db,
         &token_response.access_token,
         usage_account_id.as_deref(),
         plan_type.as_deref(),
@@ -1574,6 +1926,7 @@ pub async fn save_codex_official_local_account(
         .filter(|value| !value.is_empty())
         .map(|access_token| async {
             fetch_usage_snapshot(
+                &db,
                 access_token,
                 usage_account_id.as_deref(),
                 usage_plan_type.as_deref(),
@@ -1630,7 +1983,7 @@ pub async fn apply_codex_official_account(
                 "Current local auth.json does not contain an official Codex login".to_string(),
             );
         }
-        let refreshed_auth = ensure_fresh_official_runtime_auth(&local_auth).await?;
+        let refreshed_auth = ensure_fresh_official_runtime_auth(&db, &local_auth).await?;
         let merged_auth = merge_official_runtime_auth(&local_auth, &refreshed_auth);
         apply_config_internal(&db, &app, &provider_id, false).await?;
         write_auth_json_to_disk(&db, &merged_auth).await?;
@@ -1646,7 +1999,7 @@ pub async fn apply_codex_official_account(
             .as_deref()
             .ok_or_else(|| "Official account snapshot is missing".to_string())?;
         let snapshot_auth = auth_json_from_snapshot(snapshot)?;
-        let refreshed_snapshot = ensure_fresh_official_runtime_auth(&snapshot_auth).await?;
+        let refreshed_snapshot = ensure_fresh_official_runtime_auth(&db, &snapshot_auth).await?;
         if refreshed_snapshot != snapshot_auth {
             let _ = persist_refreshed_account_snapshot(&db, &account, &refreshed_snapshot).await?;
         }
@@ -1716,6 +2069,7 @@ pub async fn refresh_codex_official_account_limits(
         let plan_type = usage_plan_type_from_auth(&auth);
         let usage_account_id = usage_account_id_from_auth(&auth);
         let usage_snapshot = fetch_usage_snapshot(
+            &db,
             access_token,
             usage_account_id.as_deref(),
             plan_type.as_deref(),
@@ -1753,6 +2107,7 @@ pub async fn refresh_codex_official_account_limits(
         .clone()
         .or_else(|| usage_account_id_from_auth(&auth_snapshot));
     let usage_snapshot = fetch_usage_snapshot(
+        &db,
         access_token,
         usage_account_id.as_deref(),
         account.plan_type.as_deref(),
@@ -1803,6 +2158,20 @@ pub async fn copy_codex_official_account_token(
 mod tests {
     use super::*;
 
+    fn test_id_token(account_id: &str) -> String {
+        let payload = serde_json::json!({
+            "email": "user@example.com",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": account_id
+            }
+        });
+        format!(
+            "e30.{}.sig",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(serde_json::to_vec(&payload).expect("serialize JWT payload"))
+        )
+    }
+
     #[test]
     fn auth_has_official_runtime_requires_auth_mode_and_both_tokens() {
         assert!(auth_has_official_runtime(&serde_json::json!({
@@ -1824,6 +2193,191 @@ mod tests {
             "auth_mode": "apikey"
         })));
         assert!(!auth_has_official_runtime(&serde_json::json!({})));
+    }
+
+    #[test]
+    fn refreshed_auth_preserves_rotated_fields_omitted_by_server() {
+        let existing_id_token = test_id_token("account-1");
+        let existing = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "runtime_owned": true,
+            "tokens": {
+                "id_token": existing_id_token,
+                "access_token": "old-access",
+                "refresh_token": "old-refresh",
+                "account_id": "account-1"
+            }
+        });
+        let response = OAuthTokenResponse {
+            access_token: "new-access".to_string(),
+            refresh_token: None,
+            id_token: None,
+        };
+
+        let merged = build_auth_snapshot(&response, Some(&existing)).expect("build auth snapshot");
+
+        assert_eq!(
+            merged
+                .pointer("/tokens/access_token")
+                .and_then(Value::as_str),
+            Some("new-access")
+        );
+        assert_eq!(
+            merged
+                .pointer("/tokens/refresh_token")
+                .and_then(Value::as_str),
+            Some("old-refresh")
+        );
+        assert_eq!(
+            merged.pointer("/tokens/id_token").and_then(Value::as_str),
+            Some(existing_id_token.as_str())
+        );
+        assert_eq!(
+            merged.get("runtime_owned").and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn browser_oauth_authorize_url_uses_actual_callback_port_and_official_scopes() {
+        let redirect_uri = build_oauth_redirect_uri(24680);
+        let authorize_url = build_codex_authorize_url(&redirect_uri, "state-value", "challenge");
+
+        assert_eq!(redirect_uri, "http://localhost:24680/auth/callback");
+        assert!(
+            authorize_url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A24680%2Fauth%2Fcallback")
+        );
+        assert!(authorize_url.contains(
+            "scope=openid%20profile%20email%20offline_access%20api.connectors.read%20api.connectors.invoke"
+        ));
+        assert!(authorize_url.contains("code_challenge_method=S256"));
+        assert!(authorize_url.contains("codex_cli_simplified_flow=true"));
+        assert!(authorize_url.contains("originator=codex_cli_rs"));
+    }
+
+    #[test]
+    fn browser_oauth_falls_back_when_default_port_is_occupied() {
+        let occupied_listener = TcpListener::bind(("127.0.0.1", CODEX_OAUTH_DEFAULT_PORT)).ok();
+        let (_callback_listener, callback_port) = bind_oauth_listener().expect("bind callback");
+
+        if occupied_listener.is_some() {
+            assert_ne!(callback_port, CODEX_OAUTH_DEFAULT_PORT);
+        }
+        assert_ne!(callback_port, 0);
+    }
+
+    #[test]
+    fn browser_oauth_callback_rejects_invalid_state() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind callback listener");
+        let address = listener.local_addr().expect("callback address");
+        let callback_thread =
+            std::thread::spawn(move || wait_for_oauth_callback(listener, "expected-state"));
+
+        let mut stream = std::net::TcpStream::connect(address).expect("connect callback");
+        stream
+            .write_all(
+                b"GET /auth/callback?code=auth-code&state=wrong-state HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            .expect("write callback request");
+        let error = callback_thread
+            .join()
+            .expect("callback thread")
+            .expect_err("invalid state must fail");
+        assert!(error.contains("state mismatch"));
+    }
+
+    #[test]
+    fn browser_oauth_callback_times_out_without_connection() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind callback listener");
+        let error = wait_for_oauth_callback_with_timeout(
+            listener,
+            "expected-state",
+            Duration::from_millis(10),
+        )
+        .expect_err("callback must time out");
+        assert!(error.contains("Timed out"));
+    }
+
+    #[test]
+    fn device_auth_cancel_signals_and_removes_session() {
+        let session_id = format!("test-device-session-{}", uuid::Uuid::new_v4());
+        let (cancel_sender, cancel_receiver) = watch::channel(false);
+        DEVICE_AUTH_SESSIONS
+            .lock()
+            .expect("device session lock")
+            .insert(session_id.clone(), cancel_sender);
+
+        cancel_codex_official_account_device_auth(session_id.clone()).expect("cancel device auth");
+
+        assert!(*cancel_receiver.borrow());
+        assert!(!DEVICE_AUTH_SESSIONS
+            .lock()
+            .expect("device session lock")
+            .contains_key(&session_id));
+    }
+
+    #[test]
+    fn official_runtime_merge_preserves_unknown_runtime_fields() {
+        let existing = serde_json::json!({
+            "OPENAI_API_KEY": "remove-me",
+            "auth_mode": "chatgpt",
+            "last_refresh": "runtime-refresh",
+            "runtime_root": { "keep": true },
+            "tokens": {
+                "access_token": "old-access",
+                "refresh_token": "old-refresh",
+                "runtime_token_metadata": { "keep": true }
+            }
+        });
+        let next = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "access_token": "new-access",
+                "refresh_token": "new-refresh",
+                "id_token": "new-id"
+            }
+        });
+
+        let merged = merge_official_runtime_auth(&existing, &next);
+        assert!(merged.get("OPENAI_API_KEY").is_none());
+        assert_eq!(merged["runtime_root"]["keep"], true);
+        assert_eq!(merged["last_refresh"], "runtime-refresh");
+        assert_eq!(merged["tokens"]["access_token"], "new-access");
+        assert_eq!(merged["tokens"]["runtime_token_metadata"]["keep"], true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_auth_writer_replaces_content_and_sets_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let auth_path = temp_dir.path().join("auth.json");
+        fs::write(&auth_path, "{\"old\":true}\n").expect("write old auth");
+
+        write_auth_json_atomic(
+            &auth_path,
+            &serde_json::json!({
+                "auth_mode": "chatgpt",
+                "tokens": { "access_token": "new-access" },
+                "runtime_owned": true
+            }),
+        )
+        .expect("write auth atomically");
+
+        let written: Value =
+            serde_json::from_str(&fs::read_to_string(&auth_path).expect("read written auth"))
+                .expect("parse written auth");
+        assert_eq!(written["runtime_owned"], true);
+        assert!(written.get("old").is_none());
+        assert_eq!(
+            fs::metadata(&auth_path)
+                .expect("auth metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 
     #[test]

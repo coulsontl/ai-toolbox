@@ -49,6 +49,25 @@ fn jsonb_probe_and_schema_migration_create_all_tables() {
         assert_eq!(exists, 1, "missing table {}", table.name());
     }
 
+    for index_name in [
+        "idx_grok_provider_is_applied",
+        "idx_grok_provider_sort_index",
+        "idx_grok_official_account_provider_id",
+        "idx_grok_official_account_is_applied",
+        "idx_grok_official_account_sort_index",
+        "idx_grok_prompt_config_is_applied",
+        "idx_grok_prompt_config_sort_index",
+    ] {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                [index_name],
+                |row| row.get(0),
+            )
+            .expect("query sqlite index");
+        assert_eq!(exists, 1, "missing index {index_name}");
+    }
+
     let proxy_request_log_columns = conn
         .prepare("PRAGMA table_info(proxy_request_logs)")
         .expect("prepare proxy_request_logs table info")

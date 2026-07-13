@@ -8,7 +8,7 @@ export type ClaudeProviderCategory = 'official' | 'third_party' | 'custom';
 export type ClaudeApiFormat = 'anthropic' | 'openai_chat' | 'openai_responses' | 'gemini_native';
 
 export interface GatewayProviderProfileReference {
-  tool?: 'claude' | 'codex' | 'gemini';
+  tool?: 'claude' | 'codex' | 'grok' | 'gemini';
   profileId: string;
   endpointId: string;
 }

@@ -111,7 +111,7 @@ fn from_json_response_with_provider_type(
 ) -> TokenUsage {
     match cli_key {
         GatewayCliKey::Claude => claude_usage(value, provider_type),
-        GatewayCliKey::Codex | GatewayCliKey::OpenCode => openai_usage(value),
+        GatewayCliKey::Codex | GatewayCliKey::Grok | GatewayCliKey::OpenCode => openai_usage(value),
         GatewayCliKey::Gemini => gemini_usage(value),
     }
 }

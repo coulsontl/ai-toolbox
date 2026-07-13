@@ -1368,6 +1368,7 @@ fn cli_key_from_app_type(app_type: &str) -> Option<GatewayCliKey> {
     match app_type {
         "claude" => Some(GatewayCliKey::Claude),
         "codex" => Some(GatewayCliKey::Codex),
+        "grok" => Some(GatewayCliKey::Grok),
         "gemini" => Some(GatewayCliKey::Gemini),
         "opencode" => Some(GatewayCliKey::OpenCode),
         _ => None,

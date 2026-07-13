@@ -149,6 +149,7 @@ const isModelListPath = (normalizedPath: string) => {
 const isConnectionProbePath = (normalizedPath: string) =>
   normalizedPath === '/anthropic' ||
   normalizedPath === '/openai/v1' ||
+  normalizedPath === '/grok/v1' ||
   normalizedPath === '/gemini/v1' ||
   normalizedPath === '/gemini/v1beta' ||
   normalizedPath === '/gemini/v1alpha';

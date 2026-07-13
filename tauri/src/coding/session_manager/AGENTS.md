@@ -6,7 +6,7 @@
 
 ## Source of Truth
 
-- 会话的真实来源不是数据库，而是各工具运行时目录或导出快照。
+- 会话的真实来源不是数据库，而是各工具运行时目录或导出快照。Grok 使用 `<root>/sessions/<encoded-cwd>/<session-id>/summary.json + chat_history.jsonl` 目录结构。
 - `source_path` 是会话操作的关键标识；对 OpenCode 这种特殊格式，还要经过专门的同源判断逻辑，不能简单字符串比较。
 - 当前工具的会话上下文路径必须先经 `runtime_location` 决议，再派生 sessions/projects/agents/data_root 等目录。
 
@@ -45,6 +45,11 @@ sequenceDiagram
 - Claude Code / Gemini CLI 的 SubAgent 文件会被主会话列表排除，但详情页需要通过父会话显式发现并进入子会话详情。不要放宽 `get_tool_session_detail` 让前端任意传文件路径直读；应先由 parent `source_path` 发现合法子会话，再用专用 subagent detail API 读取，保持 source_path 操作边界清晰。
 - 对 Gemini CLI resume 命令，全局扫描会跨项目列出会话；如果能解析 `.project_root` 或 `projects.json`，命令必须体现需要在项目目录下执行，例如 `cd <projectRoot> && gemini --resume <id>`。
 - 对所有可 resume 的 CLI，复制命令只有在能从工具自己的会话元数据解析出真实项目目录时，才加目录前缀。Codex 用 `cwd`，Claude Code 用 JSONL `cwd` 或 index `projectPath`，OpenCode 用 `directory`，Gemini CLI 用 `.project_root` 或 `projects.json`；不要用 sessions/projects/tmp/cache 这类运行时存储目录冒充项目目录。
+- Grok 的项目目录取自 `summary.json.info.cwd`，resume 使用 `grok --resume <session-id>`；Session Manager 不读取 `session_search.sqlite` 作为事实源，也不把整个 `sessions/` 放进普通 WSL/SSH/备份映射。
+- Grok native snapshot 必须递归保留完整 session 目录；UTF-8 文件直接存文本，非 UTF-8 文件使用带显式 `base64` encoding 的 payload，不能静默跳过 plan/rewind/signals/feedback/subagents 等伴随状态或二进制文件。
+- Grok native snapshot 属于可从外部选择的导入数据。除拒绝绝对路径、`..`、盘符和空段外，写入前还必须拒绝 sessions root 或目标相对路径中的现有 symlink component，避免合法相对路径经链接逃逸 runtime root。
+- Grok 0.2.93 的 `grok sessions` 没有 export 子命令，但根命令存在 `grok export <SESSION_ID> [OUTPUT]`。官方 Markdown 必须走该根命令；`grok import` 仍不是 native snapshot restore。导出格式明确区分共享 `ai-toolbox.session-export.v2`、官方 Markdown 和独立 `ai-toolbox.grok-native-snapshot.v1`，不要只查 `grok sessions --help` 后误判官方能力。
+- Grok 官方 Markdown 导出和 CLI 删除必须跟随会话来源执行：本机会话调用本机 Grok，WSL 会话进入对应 distro 并使用 Linux `GROK_HOME`；导出到 Windows 路径时还要转换成 WSL 可访问路径，不能把 UNC runtime root 直接交给本机 CLI。
 - resume 命令的目录前缀必须区分路径格式：Windows drive/UNC 路径用 Windows shell 兼容的 `pushd "<path>" && ...`，macOS/Linux 路径用 `cd <quoted-path> && ...`。不要把 Windows 路径塞进 POSIX 单引号命令，也不要用普通 `cd` 处理 Windows 跨盘符或 UNC 路径。
 - 导出/导入格式校验是强约束；改 schema、version、tool alias 时必须同步兼容检查。
 - 新增或调整工具消息类型时，优先扩展 normalized block 中间层和工具名归一化逻辑。不要只在某个工具 parser 里拼接 `content` 字符串，否则搜索、详情渲染、导出和后续跨 CLI 复用会再次漂移。

@@ -31,6 +31,7 @@ const CLAUDE_STANDARD_FABLE_MODEL: &str = "claude-fable-5";
 const CLAUDE_SETTINGS_KIND: &str = "claude_settings_json";
 const CODEX_CONFIG_KIND: &str = "codex_config_toml";
 const CODEX_AUTH_KIND: &str = "codex_auth_json";
+const GROK_CONFIG_KIND: &str = "grok_config_toml";
 const GEMINI_ENV_KIND: &str = "gemini_env";
 const GEMINI_SETTINGS_KIND: &str = "gemini_settings_json";
 
@@ -67,6 +68,7 @@ const CODEX_CONFIG_MANAGED_FIELDS: [&str; 2] =
     ["model_provider", "model_providers.ai-toolbox-gateway"];
 
 const CODEX_AUTH_MANAGED_FIELDS: [&str; 2] = ["OPENAI_API_KEY", "auth_mode"];
+const GROK_CONFIG_MANAGED_FIELDS: [&str; 2] = ["models.default", "model.ai-toolbox-gateway"];
 
 const GEMINI_MANAGED_ENV_KEYS: [&str; 14] = [
     "GEMINI_API_KEY",
@@ -602,6 +604,7 @@ pub fn wsl_synced_gateway_target_for_mapping(
     match mapping_id {
         "claude-settings" => Some((GatewayCliKey::Claude, CLAUDE_SETTINGS_KIND)),
         "codex-config" => Some((GatewayCliKey::Codex, CODEX_CONFIG_KIND)),
+        "grok-config" => Some((GatewayCliKey::Grok, GROK_CONFIG_KIND)),
         "geminicli-env" => Some((GatewayCliKey::Gemini, GEMINI_ENV_KIND)),
         _ => None,
     }
@@ -663,6 +666,18 @@ pub fn rewrite_wsl_synced_gateway_target_content(
                 &wsl_gateway_endpoint,
             )
         }
+        (GatewayCliKey::Grok, GROK_CONFIG_KIND)
+            if managed_file
+                .managed_fields
+                .iter()
+                .any(|field| field == "model.ai-toolbox-gateway") =>
+        {
+            rewrite_grok_wsl_gateway_content(
+                content,
+                &windows_gateway_endpoint,
+                &wsl_gateway_endpoint,
+            )
+        }
         (GatewayCliKey::Gemini, GEMINI_ENV_KIND)
             if managed_file
                 .managed_fields
@@ -715,7 +730,7 @@ pub async fn ensure_proxyable_provider(
 fn is_supported_cli(cli_key: GatewayCliKey) -> bool {
     matches!(
         cli_key,
-        GatewayCliKey::Claude | GatewayCliKey::Codex | GatewayCliKey::Gemini
+        GatewayCliKey::Claude | GatewayCliKey::Codex | GatewayCliKey::Grok | GatewayCliKey::Gemini
     )
 }
 
@@ -726,6 +741,7 @@ async fn resolve_targets(
     let location = match cli_key {
         GatewayCliKey::Claude => runtime_location::get_claude_runtime_location_async(db).await?,
         GatewayCliKey::Codex => runtime_location::get_codex_runtime_location_async(db).await?,
+        GatewayCliKey::Grok => runtime_location::get_grok_runtime_location_async(db).await?,
         GatewayCliKey::Gemini => {
             runtime_location::get_gemini_cli_runtime_location_async(db).await?
         }
@@ -756,6 +772,11 @@ async fn resolve_targets(
                 managed_fields: &CODEX_AUTH_MANAGED_FIELDS,
             },
         ],
+        GatewayCliKey::Grok => vec![CliProxyTarget {
+            kind: GROK_CONFIG_KIND,
+            path: runtime_root.join("config.toml"),
+            managed_fields: &GROK_CONFIG_MANAGED_FIELDS,
+        }],
         GatewayCliKey::Gemini => vec![
             CliProxyTarget {
                 kind: GEMINI_ENV_KIND,
@@ -1257,6 +1278,10 @@ fn apply_gateway_config(
                 codex_auth_backup_content,
             )
         }
+        GatewayCliKey::Grok => patch_grok_config(
+            required_target_path(targets, GROK_CONFIG_KIND)?,
+            &cli_gateway_endpoint(cli_key, base_origin),
+        ),
         GatewayCliKey::Gemini => {
             patch_gemini_env(
                 required_target_path(targets, GEMINI_ENV_KIND)?,
@@ -1291,6 +1316,10 @@ fn restore_gateway_config(
                 backup_content(paths, cli_key, manifest, CODEX_AUTH_KIND)?.as_deref(),
             )
         }
+        GatewayCliKey::Grok => restore_grok_config(
+            required_target_path(targets, GROK_CONFIG_KIND)?,
+            backup_content(paths, cli_key, manifest, GROK_CONFIG_KIND)?.as_deref(),
+        ),
         GatewayCliKey::Gemini => {
             restore_gemini_env(
                 required_target_path(targets, GEMINI_ENV_KIND)?,
@@ -1327,6 +1356,9 @@ fn current_cli_gateway_endpoint(
         GatewayCliKey::Codex => {
             current_codex_gateway_endpoint(required_target_path(targets, CODEX_CONFIG_KIND)?)
         }
+        GatewayCliKey::Grok => {
+            current_grok_gateway_endpoint(required_target_path(targets, GROK_CONFIG_KIND)?)
+        }
         GatewayCliKey::Gemini => {
             current_gemini_gateway_endpoint(required_target_path(targets, GEMINI_ENV_KIND)?)
         }
@@ -1339,6 +1371,7 @@ fn cli_gateway_endpoint(cli_key: GatewayCliKey, base_origin: &str) -> String {
     match cli_key {
         GatewayCliKey::Claude => format!("{base_origin}/anthropic"),
         GatewayCliKey::Codex => format!("{base_origin}/openai/v1"),
+        GatewayCliKey::Grok => format!("{base_origin}/grok/v1"),
         GatewayCliKey::Gemini => format!("{base_origin}/gemini/v1beta"),
         GatewayCliKey::OpenCode => base_origin.to_string(),
     }
@@ -1376,6 +1409,33 @@ fn current_codex_gateway_endpoint(path: &Path) -> Result<Option<String>, String>
         .and_then(|providers| providers.get(GATEWAY_PROVIDER_ID))
         .and_then(Item::as_table)
         .and_then(|provider| provider.get("base_url"))
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string))
+}
+
+fn current_grok_gateway_endpoint(path: &Path) -> Result<Option<String>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let document = parse_toml_file(path)?;
+    let selected_model = document
+        .as_table()
+        .get("models")
+        .and_then(Item::as_table)
+        .and_then(|models| models.get("default"))
+        .and_then(Item::as_str);
+    if selected_model != Some(GATEWAY_PROVIDER_ID) {
+        return Ok(None);
+    }
+    Ok(document
+        .as_table()
+        .get("model")
+        .and_then(Item::as_table)
+        .and_then(|models| models.get(GATEWAY_PROVIDER_ID))
+        .and_then(Item::as_table_like)
+        .and_then(|model| model.get("base_url"))
         .and_then(Item::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1468,6 +1528,42 @@ fn rewrite_codex_wsl_gateway_content(
     }
 
     provider_table["base_url"] = value(wsl_gateway_endpoint);
+    Ok(Some(document.to_string()))
+}
+
+fn rewrite_grok_wsl_gateway_content(
+    content: &str,
+    windows_gateway_endpoint: &str,
+    wsl_gateway_endpoint: &str,
+) -> Result<Option<String>, String> {
+    let mut document = parse_toml_document(content, "WSL Grok config")?;
+    let selected_model = document
+        .as_table()
+        .get("models")
+        .and_then(Item::as_table)
+        .and_then(|models| models.get("default"))
+        .and_then(Item::as_str);
+    if selected_model != Some(GATEWAY_PROVIDER_ID) {
+        return Ok(None);
+    }
+    let Some(model_table) = document
+        .as_table_mut()
+        .get_mut("model")
+        .and_then(Item::as_table_mut)
+        .and_then(|models| models.get_mut(GATEWAY_PROVIDER_ID))
+        .and_then(Item::as_table_like_mut)
+    else {
+        return Ok(None);
+    };
+    if model_table
+        .get("base_url")
+        .and_then(Item::as_str)
+        .map(str::trim)
+        != Some(windows_gateway_endpoint)
+    {
+        return Ok(None);
+    }
+    model_table.insert("base_url", value(wsl_gateway_endpoint));
     Ok(Some(document.to_string()))
 }
 
@@ -1661,6 +1757,79 @@ fn patch_codex_config(
         provider_table.remove("experimental_bearer_token");
     }
     write_toml_file(path, &document)
+}
+
+fn patch_grok_config(path: &Path, gateway_endpoint: &str) -> Result<(), String> {
+    let mut document = read_or_new_toml_document(path)?;
+    document["models"]["default"] = value(GATEWAY_PROVIDER_ID);
+    let model_root = document["model"].or_insert(Item::Table(toml_edit::Table::new()));
+    let model_root = model_root
+        .as_table_mut()
+        .ok_or_else(|| "Grok [model] must be a table".to_string())?;
+    let mut gateway_model = toml_edit::Table::new();
+    gateway_model["model"] = value("grok-build");
+    gateway_model["name"] = value("AI Toolbox Gateway");
+    gateway_model["base_url"] = value(gateway_endpoint);
+    gateway_model["api_key"] = value(GATEWAY_API_KEY);
+    gateway_model["api_backend"] = value("responses");
+    model_root.insert(GATEWAY_PROVIDER_ID, Item::Table(gateway_model));
+    write_toml_file(path, &document)
+}
+
+fn restore_grok_config(path: &Path, backup_content: Option<&str>) -> Result<(), String> {
+    let mut current = read_or_new_toml_document(path)?;
+    let backup = backup_content
+        .map(|content| parse_toml_document(content, "Grok gateway backup"))
+        .transpose()?;
+
+    if current
+        .as_table()
+        .get("models")
+        .and_then(Item::as_table)
+        .and_then(|models| models.get("default"))
+        .and_then(Item::as_str)
+        == Some(GATEWAY_PROVIDER_ID)
+    {
+        if let Some(models) = current
+            .as_table_mut()
+            .get_mut("models")
+            .and_then(Item::as_table_mut)
+        {
+            models.remove("default");
+        }
+    }
+    if let Some(models) = current
+        .as_table_mut()
+        .get_mut("model")
+        .and_then(Item::as_table_mut)
+    {
+        models.remove(GATEWAY_PROVIDER_ID);
+    }
+
+    if let Some(backup_document) = backup.as_ref() {
+        if let Some(default_model) = backup_document
+            .as_table()
+            .get("models")
+            .and_then(Item::as_table)
+            .and_then(|models| models.get("default"))
+            .cloned()
+        {
+            current["models"]["default"] = default_model;
+        }
+        if let Some(gateway_model) = backup_document
+            .as_table()
+            .get("model")
+            .and_then(Item::as_table)
+            .and_then(|models| models.get(GATEWAY_PROVIDER_ID))
+            .cloned()
+        {
+            current["model"][GATEWAY_PROVIDER_ID] = gateway_model;
+        }
+    }
+
+    remove_empty_toml_table(&mut current, "models");
+    remove_empty_toml_table(&mut current, "model");
+    write_toml_file(path, &current)
 }
 
 fn restore_codex_config(path: &Path, backup_content: Option<&str>) -> Result<(), String> {
@@ -3295,5 +3464,74 @@ base_url = "http://127.0.0.1:9999/v1"
         );
 
         assert!(blocks_gateway_stop(&status));
+    }
+
+    #[test]
+    fn grok_takeover_round_trip_preserves_unknown_toml_fields() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let config_path = directory.path().join("config.toml");
+        let backup = r#"
+[models]
+default = "user-model"
+fallback = "fallback-model"
+
+[model.user-model]
+model = "upstream-user-model"
+base_url = "https://api.example.com/v1"
+api_backend = "responses"
+
+[mcp_servers.filesystem]
+command = "npx"
+
+[custom]
+keep = true
+"#;
+        fs::write(&config_path, backup).expect("write fixture");
+
+        patch_grok_config(&config_path, "http://127.0.0.1:37123/grok/v1")
+            .expect("patch Grok config");
+        let patched = fs::read_to_string(&config_path).expect("read patched config");
+        assert_eq!(
+            current_grok_gateway_endpoint(&config_path).expect("read endpoint"),
+            Some("http://127.0.0.1:37123/grok/v1".to_string())
+        );
+        assert!(patched.contains("[mcp_servers.filesystem]"));
+        assert!(patched.contains("keep = true"));
+
+        restore_grok_config(&config_path, Some(backup)).expect("restore Grok config");
+        let restored = fs::read_to_string(&config_path).expect("read restored config");
+        let document = restored
+            .parse::<DocumentMut>()
+            .expect("parse restored config");
+        assert_eq!(document["models"]["default"].as_str(), Some("user-model"));
+        assert_eq!(
+            document["models"]["fallback"].as_str(),
+            Some("fallback-model")
+        );
+        assert!(document["model"].get(GATEWAY_PROVIDER_ID).is_none());
+        assert_eq!(document["custom"]["keep"].as_bool(), Some(true));
+        assert!(document.get("mcp_servers").is_some());
+    }
+
+    #[test]
+    fn grok_wsl_rewrite_changes_only_managed_gateway_model() {
+        let content = r#"
+[models]
+default = "ai-toolbox-gateway"
+
+[model.ai-toolbox-gateway]
+model = "grok-build"
+base_url = "http://127.0.0.1:37123/grok/v1"
+api_key = "ai-toolbox-gateway"
+api_backend = "responses"
+"#;
+        let rewritten = rewrite_grok_wsl_gateway_content(
+            content,
+            "http://127.0.0.1:37123/grok/v1",
+            "http://172.20.0.1:37123/grok/v1",
+        )
+        .expect("rewrite")
+        .expect("managed content");
+        assert!(rewritten.contains("http://172.20.0.1:37123/grok/v1"));
     }
 }

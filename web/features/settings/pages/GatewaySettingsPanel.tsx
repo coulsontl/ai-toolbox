@@ -28,7 +28,7 @@ import styles from './GatewaySettingsPanel.module.less';
 
 type BusyAction = 'load' | 'autosave';
 type NoticeKind = 'success' | 'error' | 'info';
-type SupportedGatewayCliKey = Extract<GatewayCliKey, 'claude' | 'codex' | 'gemini'>;
+type SupportedGatewayCliKey = Extract<GatewayCliKey, 'claude' | 'codex' | 'grok' | 'gemini'>;
 
 interface NoticeState {
   kind: NoticeKind;
@@ -48,6 +48,10 @@ const CLI_OPTIONS: CliOption[] = [
   {
     key: 'codex',
     labelKey: 'settings.gateway.cli.codex',
+  },
+  {
+    key: 'grok',
+    labelKey: 'settings.gateway.cli.grok',
   },
   {
     key: 'gemini',

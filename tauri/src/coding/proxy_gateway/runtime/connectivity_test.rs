@@ -124,7 +124,7 @@ fn build_gateway_connectivity_request(
             ],
             "stream": stream,
         }),
-        GatewayCliKey::Codex => json!({
+        GatewayCliKey::Codex | GatewayCliKey::Grok => json!({
             "model": model_id,
             "input": [
                 {
@@ -183,6 +183,7 @@ fn gateway_connectivity_path(cli_key: GatewayCliKey, model_id: &str, stream: boo
     match cli_key {
         GatewayCliKey::Claude => "/anthropic/v1/messages".to_string(),
         GatewayCliKey::Codex => "/openai/v1/responses".to_string(),
+        GatewayCliKey::Grok => "/grok/v1/responses".to_string(),
         GatewayCliKey::Gemini => {
             let model = model_id
                 .trim()

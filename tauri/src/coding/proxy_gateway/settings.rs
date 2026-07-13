@@ -110,6 +110,7 @@ mod tests {
             vec![
                 GatewayCliKey::Claude,
                 GatewayCliKey::Codex,
+                GatewayCliKey::Grok,
                 GatewayCliKey::Gemini
             ]
         );

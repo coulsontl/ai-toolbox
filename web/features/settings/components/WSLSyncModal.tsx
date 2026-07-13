@@ -26,6 +26,7 @@ const MODULE_NAMES: Record<string, string> = {
   opencode: 'OpenCode',
   claude: 'Claude',
   codex: 'Codex',
+  grok: 'Grok',
   openclaw: 'OpenClaw',
   geminicli: 'Gemini',
   pi: 'Pi',
@@ -36,6 +37,7 @@ const MODULE_COLORS: Record<string, string> = {
   opencode: 'blue',
   claude: 'purple',
   codex: 'orange',
+  grok: 'gold',
   openclaw: 'green',
   geminicli: 'cyan',
   pi: 'magenta',
@@ -46,12 +48,13 @@ const MODULE_TO_TAB: Record<string, string> = {
   opencode: 'opencode',
   claude: 'claudecode',
   codex: 'codex',
+  grok: 'grok',
   openclaw: 'openclaw',
   geminicli: 'geminicli',
   pi: 'pi',
 };
 
-const ALL_MODULE_KEYS = ['opencode', 'claude', 'codex', 'geminicli', 'openclaw', 'pi'];
+const ALL_MODULE_KEYS = ['opencode', 'claude', 'codex', 'grok', 'geminicli', 'openclaw', 'pi'];
 
 interface WSLSyncModalProps {
   open: boolean;

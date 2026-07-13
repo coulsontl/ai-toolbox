@@ -17,6 +17,7 @@
 use crate::coding::claude_code::tray_support as claude_tray;
 use crate::coding::codex::tray_support as codex_tray;
 use crate::coding::gemini_cli::tray_support as gemini_cli_tray;
+use crate::coding::grok::tray_support as grok_tray;
 use crate::coding::mcp::tray_support as mcp_tray;
 use crate::coding::oh_my_openagent::tray_support as omo_tray;
 use crate::coding::oh_my_opencode_slim::tray_support as omo_slim_tray;
@@ -44,6 +45,7 @@ struct TrayTexts {
     omo_slim_header: &'static str,
     claude_header: &'static str,
     codex_header: &'static str,
+    grok_header: &'static str,
     gemini_cli_header: &'static str,
     openclaw_header: &'static str,
     pi_header: &'static str,
@@ -72,6 +74,7 @@ fn tray_texts(language: &str) -> TrayTexts {
             omo_slim_header: "Oh My OpenCode Slim",
             claude_header: "Claude Code",
             codex_header: "Codex",
+            grok_header: "Grok",
             gemini_cli_header: "Gemini CLI",
             openclaw_header: "OpenClaw",
             pi_header: "Pi",
@@ -94,6 +97,7 @@ fn tray_texts(language: &str) -> TrayTexts {
             omo_slim_header: "Oh My OpenCode Slim",
             claude_header: "Claude Code",
             codex_header: "Codex",
+            grok_header: "Grok",
             gemini_cli_header: "Gemini CLI",
             openclaw_header: "OpenClaw",
             pi_header: "Pi",
@@ -289,6 +293,37 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                     }
                     let _ = refresh_tray_menus(&app_handle).await;
                 });
+            } else if let Some(provider_id) = event_id.strip_prefix("grok_provider_") {
+                let provider_id = provider_id.to_string();
+                let app_handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) =
+                        grok_tray::apply_grok_provider(&app_handle, &provider_id).await
+                    {
+                        eprintln!("Failed to apply Grok provider: {error}");
+                    }
+                    let _ = refresh_tray_menus(&app_handle).await;
+                });
+            } else if let Some(model_key) = event_id.strip_prefix("grok_model_") {
+                let model_key = model_key.to_string();
+                let app_handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = grok_tray::apply_grok_model(&app_handle, &model_key).await {
+                        eprintln!("Failed to apply Grok model: {error}");
+                    }
+                    let _ = refresh_tray_menus(&app_handle).await;
+                });
+            } else if let Some(config_id) = event_id.strip_prefix("grok_prompt_") {
+                let config_id = config_id.to_string();
+                let app_handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) =
+                        grok_tray::apply_grok_prompt_config(&app_handle, &config_id).await
+                    {
+                        eprintln!("Failed to apply Grok prompt: {error}");
+                    }
+                    let _ = refresh_tray_menus(&app_handle).await;
+                });
             } else if let Some(provider_id) = event_id.strip_prefix("geminicli_provider_") {
                 let provider_id = provider_id.to_string();
                 let app_handle = app.clone();
@@ -452,6 +487,7 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
                     "opencode".to_string(),
                     "claudecode".to_string(),
                     "codex".to_string(),
+                    "grok".to_string(),
                     "geminicli".to_string(),
                     "openclaw".to_string(),
                     "pi".to_string(),
@@ -472,6 +508,7 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     let claude_enabled =
         is_tab_visible("claudecode") && claude_tray::is_enabled_for_tray(app).await;
     let codex_enabled = is_tab_visible("codex") && codex_tray::is_enabled_for_tray(app).await;
+    let grok_enabled = is_tab_visible("grok") && grok_tray::is_enabled_for_tray(app).await;
     let gemini_cli_enabled =
         is_tab_visible("geminicli") && gemini_cli_tray::is_enabled_for_tray(app).await;
     let openclaw_enabled =
@@ -583,6 +620,36 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
         }
     };
     codex_prompt_data.title = texts.global_prompt.to_string();
+
+    let mut grok_data = if grok_enabled {
+        grok_tray::get_grok_tray_data(app).await?
+    } else {
+        grok_tray::TrayProviderData {
+            title: texts.grok_header.to_string(),
+            items: vec![],
+        }
+    };
+    grok_data.title = texts.grok_header.to_string();
+    let mut grok_model_data = if grok_enabled {
+        grok_tray::get_grok_model_tray_data(app).await?
+    } else {
+        grok_tray::TrayModelData {
+            title: texts.main_model.to_string(),
+            current_display: String::new(),
+            items: vec![],
+        }
+    };
+    grok_model_data.title = texts.main_model.to_string();
+    let mut grok_prompt_data = if grok_enabled {
+        grok_tray::get_grok_prompt_tray_data(app).await?
+    } else {
+        grok_tray::TrayPromptData {
+            title: texts.global_prompt.to_string(),
+            current_display: String::new(),
+            items: vec![],
+        }
+    };
+    grok_prompt_data.title = texts.global_prompt.to_string();
 
     let mut gemini_cli_data = if gemini_cli_enabled {
         gemini_cli_tray::get_gemini_cli_tray_data(app).await?
@@ -880,15 +947,20 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     // Check if modules have items (must be done before consuming items in for loops)
     let claude_has_items = claude_enabled && !claude_data.items.is_empty();
     let codex_has_items = codex_enabled && !codex_data.items.is_empty();
+    let grok_has_items = grok_enabled && !grok_data.items.is_empty();
+    let grok_has_model_items = grok_enabled && !grok_model_data.items.is_empty();
     let gemini_cli_has_items = gemini_cli_enabled && !gemini_cli_data.items.is_empty();
     let pi_has_items = pi_enabled && !pi_data.items.is_empty();
     let claude_has_prompt_items = claude_enabled && !claude_prompt_data.items.is_empty();
     let codex_has_prompt_items = codex_enabled && !codex_prompt_data.items.is_empty();
+    let grok_has_prompt_items = grok_enabled && !grok_prompt_data.items.is_empty();
     let gemini_cli_has_prompt_items =
         gemini_cli_enabled && !gemini_cli_prompt_data.items.is_empty();
     let pi_has_prompt_items = pi_enabled && !pi_prompt_data.items.is_empty();
     let claude_has_section = claude_enabled && (claude_has_items || claude_has_prompt_items);
     let codex_has_section = codex_enabled && (codex_has_items || codex_has_prompt_items);
+    let grok_has_section =
+        grok_enabled && (grok_has_items || grok_has_model_items || grok_has_prompt_items);
     let gemini_cli_has_section =
         gemini_cli_enabled && (gemini_cli_has_items || gemini_cli_has_prompt_items);
     let pi_has_section = pi_enabled && (pi_has_items || pi_has_prompt_items);
@@ -909,6 +981,21 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
             &codex_prompt_data,
             texts,
         )?)
+    } else {
+        None
+    };
+    let grok_prompt_submenu = if grok_has_prompt_items {
+        Some(build_named_prompt_submenu(
+            app,
+            "grok",
+            &grok_prompt_data,
+            texts,
+        )?)
+    } else {
+        None
+    };
+    let grok_model_submenu = if grok_has_model_items {
+        Some(build_grok_model_submenu(app, &grok_model_data, texts)?)
     } else {
         None
     };
@@ -995,6 +1082,32 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
                 .map_err(|e| e.to_string())?,
             );
             codex_items.push(menu_item);
+        }
+    }
+
+    let grok_header = if grok_has_section {
+        Some(
+            MenuItem::with_id(app, "grok_header", &grok_data.title, false, None::<&str>)
+                .map_err(|e| e.to_string())?,
+        )
+    } else {
+        None
+    };
+    let mut grok_items: Vec<Box<dyn tauri::menu::IsMenuItem<R>>> = Vec::new();
+    if grok_has_items {
+        for item in grok_data.items {
+            let item_id = format!("grok_provider_{}", item.id);
+            grok_items.push(Box::new(
+                CheckMenuItem::with_id(
+                    app,
+                    &item_id,
+                    &item.display_name,
+                    !item.is_disabled,
+                    item.is_selected,
+                    None::<&str>,
+                )
+                .map_err(|e| e.to_string())?,
+            ));
         }
     }
 
@@ -1160,6 +1273,21 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
             menu.append(submenu).map_err(|e| e.to_string())?;
         }
         for item in &codex_items {
+            menu.append(item.as_ref()).map_err(|e| e.to_string())?;
+        }
+        append_separator(&menu)?;
+    }
+    if grok_has_section {
+        if let Some(ref header) = grok_header {
+            menu.append(header).map_err(|e| e.to_string())?;
+        }
+        if let Some(ref submenu) = grok_prompt_submenu {
+            menu.append(submenu).map_err(|e| e.to_string())?;
+        }
+        if let Some(ref submenu) = grok_model_submenu {
+            menu.append(submenu).map_err(|e| e.to_string())?;
+        }
+        for item in &grok_items {
             menu.append(item.as_ref()).map_err(|e| e.to_string())?;
         }
         append_separator(&menu)?;
@@ -1530,6 +1658,40 @@ fn build_named_prompt_submenu<R: Runtime>(
     Ok(submenu)
 }
 
+fn build_grok_model_submenu<R: Runtime>(
+    app: &AppHandle<R>,
+    data: &grok_tray::TrayModelData,
+    texts: TrayTexts,
+) -> Result<Submenu<R>, String> {
+    let title = if data.current_display.is_empty() {
+        data.title.clone()
+    } else {
+        format!("{} ({})", data.title, data.current_display)
+    };
+    let submenu =
+        Submenu::with_id(app, "grok_model_submenu", &title, true).map_err(|e| e.to_string())?;
+    if data.items.is_empty() {
+        let empty_item =
+            MenuItem::with_id(app, "grok_model_empty", texts.no_model, false, None::<&str>)
+                .map_err(|e| e.to_string())?;
+        submenu.append(&empty_item).map_err(|e| e.to_string())?;
+        return Ok(submenu);
+    }
+    for item in &data.items {
+        let menu_item = CheckMenuItem::with_id(
+            app,
+            format!("grok_model_{}", item.id),
+            &item.display_name,
+            !item.is_disabled,
+            item.is_selected,
+            None::<&str>,
+        )
+        .map_err(|e| e.to_string())?;
+        submenu.append(&menu_item).map_err(|e| e.to_string())?;
+    }
+    Ok(submenu)
+}
+
 trait NamedPromptTrayItem {
     fn id(&self) -> &str;
     fn display_name(&self) -> &str;
@@ -1599,6 +1761,31 @@ impl NamedPromptTrayData for codex_tray::TrayPromptData {
         &self.current_display
     }
 
+    fn items(&self) -> &[Self::Item] {
+        &self.items
+    }
+}
+
+impl NamedPromptTrayItem for grok_tray::TrayPromptItem {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn display_name(&self) -> &str {
+        &self.display_name
+    }
+    fn is_selected(&self) -> bool {
+        self.is_selected
+    }
+}
+
+impl NamedPromptTrayData for grok_tray::TrayPromptData {
+    type Item = grok_tray::TrayPromptItem;
+    fn title(&self) -> &str {
+        &self.title
+    }
+    fn current_display(&self) -> &str {
+        &self.current_display
+    }
     fn items(&self) -> &[Self::Item] {
         &self.items
     }

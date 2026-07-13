@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::schema::{sql_string_literal, DbTable, JsonFieldPath, ALL_TABLES};
 
-pub const TARGET_SCHEMA_VERSION: i32 = 7;
+pub const TARGET_SCHEMA_VERSION: i32 = 8;
 const FUTURE_SCHEMA_ERROR_PREFIX: &str = "AI_TOOLBOX_SQLITE_SCHEMA_TOO_NEW";
 
 pub fn run_all(conn: &mut Connection) -> Result<(), String> {
@@ -28,6 +28,9 @@ pub fn run_all(conn: &mut Connection) -> Result<(), String> {
     }
     if current_version < 7 {
         run_migration_step(conn, 7, migrate_v7)?;
+    }
+    if current_version < 8 {
+        run_migration_step(conn, 8, migrate_v8)?;
     }
 
     Ok(())
@@ -162,6 +165,32 @@ fn migrate_v7(conn: &Connection) -> Result<(), String> {
     add_column_if_missing(conn, "proxy_request_logs", "route_name", "TEXT")?;
     add_column_if_missing(conn, "proxy_request_logs", "method", "TEXT")?;
     add_column_if_missing(conn, "proxy_request_logs", "path", "TEXT")
+}
+
+fn migrate_v8(conn: &Connection) -> Result<(), String> {
+    for table in [
+        DbTable::GrokProvider,
+        DbTable::GrokOfficialAccount,
+        DbTable::GrokCommonConfig,
+        DbTable::GrokPromptConfig,
+    ] {
+        create_jsonb_table(conn, table)?;
+    }
+
+    for table in [
+        DbTable::GrokProvider,
+        DbTable::GrokOfficialAccount,
+        DbTable::GrokPromptConfig,
+    ] {
+        create_json_index(conn, table, &JsonFieldPath::new("is_applied")?)?;
+        create_json_index(conn, table, &JsonFieldPath::new("sort_index")?)?;
+    }
+
+    create_json_index(
+        conn,
+        DbTable::GrokOfficialAccount,
+        &JsonFieldPath::new("provider_id")?,
+    )
 }
 
 fn create_jsonb_table(conn: &Connection, table: DbTable) -> Result<(), String> {

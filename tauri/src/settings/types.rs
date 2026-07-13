@@ -55,7 +55,7 @@ pub struct BackupCustomEntry {
 /// the backup archive and skipped during restore.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupFileFilterRule {
-    /// Tool identifier: opencode, claude, codex, openclaw, geminicli
+    /// Tool identifier: opencode, claude, codex, grok, openclaw, geminicli
     pub tool: String,
     /// File path for the tool. UI values use portable paths such as
     /// "~/.codex/auth.json"; backup-internal relative paths are normalized when matching.
@@ -161,6 +161,7 @@ impl Default for AppSettings {
                 "opencode".to_string(),
                 "claudecode".to_string(),
                 "codex".to_string(),
+                "grok".to_string(),
                 "geminicli".to_string(),
                 "openclaw".to_string(),
                 "pi".to_string(),
@@ -183,6 +184,7 @@ pub fn default_sidebar_hidden_by_page() -> HashMap<String, bool> {
         ("opencode".to_string(), false),
         ("claudecode".to_string(), false),
         ("codex".to_string(), false),
+        ("grok".to_string(), false),
         ("openclaw".to_string(), false),
         ("geminicli".to_string(), false),
         ("pi".to_string(), false),

@@ -32,6 +32,16 @@ pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
         mcp_config_format: Some("toml"),
         mcp_field: Some("mcp_servers"),
     },
+    // Grok CLI - supports both Skills and MCP
+    BuiltinTool {
+        key: "grok",
+        display_name: "Grok",
+        relative_skills_dir: Some("~/.grok/skills"),
+        relative_detect_dir: Some("~/.grok"),
+        mcp_config_path: Some("~/.grok/config.toml"),
+        mcp_config_format: Some("toml"),
+        mcp_field: Some("mcp_servers"),
+    },
     // Gemini CLI - supports both Skills and MCP
     BuiltinTool {
         key: "gemini_cli",

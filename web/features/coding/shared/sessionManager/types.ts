@@ -1,5 +1,6 @@
 export type SessionTool =
   | 'codex'
+  | 'grok'
   | 'claudecode'
   | 'geminicli'
   | 'openclaw'
@@ -9,6 +10,7 @@ export type SessionTool =
 export type SessionSourceMode = 'all' | 'local' | 'wsl';
 export type SessionListLoadMode = 'auto' | 'cache-first' | 'full' | 'refresh';
 export type SessionListCacheState = 'none' | 'quick' | 'stale' | 'fresh';
+export type SessionExportFormat = 'ai_toolbox' | 'grok_markdown' | 'grok_native';
 
 export interface SessionMeta {
   providerId: SessionTool;

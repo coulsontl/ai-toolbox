@@ -21,11 +21,12 @@ const TAB_TO_MODULE: Record<string, string> = {
   opencode: 'opencode',
   claudecode: 'claude',
   codex: 'codex',
+  grok: 'grok',
   openclaw: 'openclaw',
   geminicli: 'geminicli',
   pi: 'pi',
 };
-const ALL_CODING_MODULES = ['opencode', 'claude', 'codex', 'geminicli', 'openclaw', 'pi'];
+const ALL_CODING_MODULES = ['opencode', 'claude', 'codex', 'grok', 'geminicli', 'openclaw', 'pi'];
 
 export function useSSHSync() {
   const [config, setConfig] = useState<SSHSyncConfig | null>(null);

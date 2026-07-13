@@ -1,0 +1,353 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.hintBlock {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  border-left: 2px solid var(--color-border);
+  padding-left: 8px;
+  line-height: 1.6;
+}
+
+.runtimeCollapse {
+  border: 1px solid var(--color-border) !important;
+  border-radius: 16px !important;
+  background: var(--color-bg-elevated) !important;
+  box-shadow: none !important;
+
+  :global(.ant-collapse-item) {
+    border-bottom: none !important;
+  }
+
+  :global(.ant-collapse-header) {
+    background: transparent !important;
+    align-items: flex-start !important;
+    padding: 18px !important;
+  }
+
+  :global(.ant-collapse-content) {
+    border-top: 1px solid var(--color-border) !important;
+    background: transparent !important;
+  }
+
+  :global(.ant-collapse-content-box) {
+    padding: 18px !important;
+    background: transparent !important;
+  }
+}
+
+.runtimeCollapseHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  width: 100%;
+  padding-right: 12px;
+}
+
+.runtimeTitle {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--color-text-primary);
+}
+
+.runtimeHint {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+.runtimeTags {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.runtimeGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.runtimeItem {
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-bg-container);
+  padding: 12px 14px;
+}
+
+.runtimeLabel {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.runtimeValue {
+  display: block;
+  color: var(--color-text-primary);
+  word-break: break-all;
+}
+
+.tabsCard {
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-bg-elevated);
+  padding: 8px 18px 18px;
+}
+
+.tabsCard :global(.ant-tabs-nav) {
+  margin-bottom: 16px;
+}
+
+.tabExtra {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pluginCard {
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-bg-container);
+  padding: 14px 16px;
+}
+
+.pluginHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pluginTitleWrap {
+  min-width: 0;
+  flex: 1;
+}
+
+.pluginTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.pluginTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.pluginId {
+  font-size: 12px;
+}
+
+.pluginDescription {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+.pluginMeta {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px 16px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.pluginMetaItem {
+  min-width: 0;
+}
+
+.pluginMetaLabel {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.pluginActions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+  margin-right: -8px;
+}
+
+.ghostActionButton {
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  color: var(--color-text-secondary) !important;
+  padding-inline: 8px !important;
+
+  &:hover,
+  &:focus-visible {
+    background: var(--color-bg-hover) !important;
+    color: var(--color-text-primary) !important;
+  }
+
+  &:disabled {
+    color: var(--color-text-tertiary) !important;
+    background: transparent !important;
+  }
+}
+
+.tagList {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.discoverSection {
+  margin-top: 16px;
+}
+
+.discoverToolbar {
+  margin: 12px 0;
+}
+
+.marketplaceInlineHint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+
+.workspaceSection {
+  margin-bottom: 18px;
+}
+
+.workspaceCollapse {
+  border: 1px solid var(--color-border) !important;
+  border-radius: 16px !important;
+  background: var(--color-bg-container) !important;
+  box-shadow: none !important;
+
+  :global(.ant-collapse-item) {
+    border-bottom: none !important;
+  }
+
+  :global(.ant-collapse-header) {
+    background: transparent !important;
+    align-items: flex-start !important;
+    padding: 16px 18px !important;
+  }
+
+  :global(.ant-collapse-content) {
+    border-top: 1px solid var(--color-border) !important;
+    background: transparent !important;
+  }
+
+  :global(.ant-collapse-content-box) {
+    padding: 16px 18px 18px !important;
+    background: transparent !important;
+  }
+}
+
+.workspaceCollapseHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  width: 100%;
+  padding-right: 12px;
+}
+
+.workspaceHeaderText {
+  min-width: 0;
+  flex: 1;
+}
+
+.workspaceTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.workspaceTitle {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--color-text-primary);
+}
+
+.workspaceHint {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+.workspaceError {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+.featureAlert {
+  margin-bottom: 16px;
+}
+
+.emptyWrap {
+  padding: 20px 0 8px;
+}
+
+@media (max-width: 1080px) {
+  .runtimeGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .tabsCard {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .pluginCard {
+    padding: 14px;
+  }
+
+  .runtimeCollapse :global(.ant-collapse-header) {
+    padding: 16px !important;
+  }
+
+  .runtimeCollapse :global(.ant-collapse-content-box) {
+    padding: 16px !important;
+  }
+
+  .workspaceCollapse :global(.ant-collapse-header) {
+    padding: 16px !important;
+  }
+
+  .workspaceCollapse :global(.ant-collapse-content-box) {
+    padding: 16px !important;
+  }
+
+  .runtimeGrid {
+    grid-template-columns: 1fr;
+  }
+}

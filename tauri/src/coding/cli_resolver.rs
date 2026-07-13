@@ -81,6 +81,17 @@ pub fn resolve_local_pi_program() -> LocalCliProgram {
     resolve_local_cli_program("pi", candidates)
 }
 
+pub fn resolve_local_grok_program() -> LocalCliProgram {
+    let mut candidates = Vec::new();
+    if let Some(home_dir) = dirs::home_dir() {
+        push_command_candidate(&mut candidates, home_dir.join(".local").join("bin"), "grok");
+    }
+    push_command_candidate(&mut candidates, "/opt/homebrew/bin", "grok");
+    push_command_candidate(&mut candidates, "/usr/local/bin", "grok");
+    append_node_global_candidates(&mut candidates, "grok");
+    resolve_local_cli_program("grok", candidates)
+}
+
 pub fn resolve_local_npx_program() -> LocalCliProgram {
     let mut candidates = Vec::new();
 

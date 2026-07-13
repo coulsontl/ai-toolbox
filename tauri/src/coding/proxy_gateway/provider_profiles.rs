@@ -10,7 +10,7 @@ use std::sync::{OnceLock, RwLock};
 const CACHE_FILE_NAME: &str = "gateway_provider_profiles.json";
 const DEFAULT_GATEWAY_PROVIDER_PROFILES_JSON: &str =
     include_str!("../../../resources/gateway_provider_profiles.json");
-const SUPPORTED_PROFILE_TOOLS: [&str; 3] = ["claude", "codex", "gemini"];
+const SUPPORTED_PROFILE_TOOLS: [&str; 4] = ["claude", "codex", "grok", "gemini"];
 const SUPPORTED_COMPAT_RULES: [&str; 24] = [
     "anthropic_tool_thinking_history",
     "bailian_tool_call_merge",
@@ -408,6 +408,28 @@ mod tests {
             .unwrap()
             .remove("claude");
         catalog["profiles"][0]["tools"]["gemini"] = json!({
+            "defaultEndpointId": "openai_chat",
+            "endpoints": [
+                {
+                    "id": "openai_chat",
+                    "label": "OpenAI Chat",
+                    "apiFormat": "openai_chat",
+                    "baseUrl": "https://api.deepseek.com/v1"
+                }
+            ]
+        });
+
+        assert!(is_valid_gateway_provider_profiles(&catalog));
+    }
+
+    #[test]
+    fn grok_tool_profiles_are_valid() {
+        let mut catalog = valid_catalog();
+        catalog["profiles"][0]["tools"]
+            .as_object_mut()
+            .unwrap()
+            .remove("claude");
+        catalog["profiles"][0]["tools"]["grok"] = json!({
             "defaultEndpointId": "openai_chat",
             "endpoints": [
                 {

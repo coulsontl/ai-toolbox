@@ -10,7 +10,7 @@ use zip::{ZipArchive, ZipWriter};
 
 use crate::coding::open_code::shell_env;
 use crate::coding::skills::central_repo::{resolve_central_repo_path_sync, skill_storage_dir_name};
-use crate::coding::{claude_code, codex, gemini_cli, pi, runtime_location};
+use crate::coding::{claude_code, codex, gemini_cli, grok, pi, runtime_location};
 use crate::settings::types::{
     BackupCustomEntry, BackupCustomEntryType, BackupFileFilterPathOption, BackupFileFilterRule,
 };
@@ -288,6 +288,25 @@ pub fn get_claude_restore_dir() -> Result<PathBuf, String> {
 
 pub fn get_codex_restore_dir() -> Result<PathBuf, String> {
     codex::get_codex_root_dir_without_db()
+}
+
+pub fn get_grok_restore_dir() -> Result<PathBuf, String> {
+    grok::get_grok_root_dir_without_db()
+}
+
+pub fn harden_restored_sensitive_file(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(path, permissions).map_err(|error| {
+            format!(
+                "Failed to set secure permissions on restored sensitive file {}: {error}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 pub fn get_gemini_cli_restore_dir() -> Result<PathBuf, String> {
@@ -576,6 +595,27 @@ pub async fn get_codex_config_path_from_db(
     Ok(path.exists().then_some(path))
 }
 
+pub async fn get_grok_auth_path_from_db(
+    db: &crate::db::SqliteDbState,
+) -> Result<Option<PathBuf>, String> {
+    let path = runtime_location::get_grok_auth_path_async(db).await?;
+    Ok(path.exists().then_some(path))
+}
+
+pub async fn get_grok_config_path_from_db(
+    db: &crate::db::SqliteDbState,
+) -> Result<Option<PathBuf>, String> {
+    let path = runtime_location::get_grok_config_path_async(db).await?;
+    Ok(path.exists().then_some(path))
+}
+
+pub async fn get_grok_prompt_path_from_db(
+    db: &crate::db::SqliteDbState,
+) -> Result<Option<PathBuf>, String> {
+    let path = runtime_location::get_grok_prompt_path_async(db).await?;
+    Ok(path.exists().then_some(path))
+}
+
 /// Get Codex prompt file path if it exists
 pub fn get_codex_prompt_path() -> Result<Option<PathBuf>, String> {
     let resolved_root_dir = codex::get_codex_root_dir_without_db()?;
@@ -700,6 +740,7 @@ fn backup_filter_option_path(tool: &str, relative_path: &str) -> Option<String> 
         "claude" if relative_path == ".claude.json" => "~/.claude.json".to_string(),
         "claude" => format!("~/.claude/{relative_path}"),
         "codex" => format!("~/.codex/{relative_path}"),
+        "grok" => format!("~/.grok/{relative_path}"),
         "openclaw" => format!("~/.openclaw/{relative_path}"),
         "geminicli" => format!("~/.gemini/{relative_path}"),
         "pi" => format!("~/.pi/agent/{relative_path}"),
@@ -774,6 +815,15 @@ pub async fn list_backup_file_filter_path_options(
     }
     for prompt_path in get_codex_prompt_paths_from_db(db).await? {
         push_backup_filter_option_for_path(&mut options, &mut seen, "codex", &prompt_path);
+    }
+    if get_grok_auth_path_from_db(db).await?.is_some() {
+        push_backup_filter_option(&mut options, &mut seen, "grok", "auth.json");
+    }
+    if get_grok_config_path_from_db(db).await?.is_some() {
+        push_backup_filter_option(&mut options, &mut seen, "grok", "config.toml");
+    }
+    if get_grok_prompt_path_from_db(db).await?.is_some() {
+        push_backup_filter_option(&mut options, &mut seen, "grok", "AGENTS.md");
     }
 
     if get_openclaw_config_path_from_db(db).await?.is_some() {
@@ -958,6 +1008,22 @@ pub fn resolve_external_config_restore_output_path(
             ));
         }
         output_path.push(segment);
+        if output_path.exists()
+            && std::fs::symlink_metadata(&output_path)
+                .map_err(|error| {
+                    format!(
+                        "Failed to inspect external config restore path {}: {error}",
+                        output_path.display()
+                    )
+                })?
+                .file_type()
+                .is_symlink()
+        {
+            return Err(format!(
+                "External config restore path contains a symlink: {}",
+                output_path.display()
+            ));
+        }
         has_segment = true;
     }
 
@@ -1024,6 +1090,12 @@ pub async fn get_custom_root_dir_path_info(
             } else {
                 None
             }
+        }
+        "grok" => {
+            let location = runtime_location::get_grok_runtime_location_async(db)
+                .await
+                .ok()?;
+            (location.source == "custom").then(|| location.host_path.to_string_lossy().to_string())
         }
         "opencode" => {
             let location = runtime_location::get_opencode_runtime_location_async(db)
@@ -1840,6 +1912,7 @@ fn normalize_backup_filter_rule_path(tool: &str, file_path: &str) -> String {
         "opencode" => &["~/.config/opencode/", "~/.local/share/opencode/"],
         "claude" => &["~/.claude/"],
         "codex" => &["~/.codex/"],
+        "grok" => &["~/.grok/"],
         "openclaw" => &["~/.openclaw/"],
         "geminicli" => &["~/.gemini/"],
         "pi" => &["~/.pi/agent/"],
@@ -1947,6 +2020,18 @@ fn add_external_config_directory_contents_to_zip<W: Write + Seek>(
         } else {
             format!("{}/{}", normalized_relative_prefix, relative_str)
         };
+
+        if tool == "grok"
+            && normalized_relative_prefix == "plugins"
+            && relative_path.components().any(|component| {
+                matches!(
+                    component.as_os_str().to_string_lossy().as_ref(),
+                    ".git" | "node_modules" | "cache" | ".cache" | "build" | "dist" | "target"
+                )
+            })
+        {
+            continue;
+        }
 
         if path.is_file() {
             if let Some(file_name) = path.file_name() {
@@ -2162,6 +2247,67 @@ pub(crate) async fn write_backup_zip_contents<W: Write + Seek>(
             options,
         )?;
     }
+
+    if let Some(custom_dir) = get_custom_root_dir_path_info(&db, "grok").await {
+        add_directory_to_zip_once(
+            zip,
+            &mut added_zip_directories,
+            "external-configs/grok/",
+            options,
+            "grok directory",
+        )?;
+        add_text_to_zip(
+            zip,
+            "external-configs/grok/root-dir.txt",
+            &custom_dir,
+            options,
+        )?;
+    }
+    if let Some(path) = get_grok_auth_path_from_db(&db).await? {
+        add_external_config_file_to_zip(
+            zip,
+            &mut added_zip_directories,
+            &path,
+            "grok",
+            "auth.json",
+            filter_rules,
+            options,
+        )?;
+    }
+    if let Some(path) = get_grok_config_path_from_db(&db).await? {
+        add_external_config_file_to_zip(
+            zip,
+            &mut added_zip_directories,
+            &path,
+            "grok",
+            "config.toml",
+            filter_rules,
+            options,
+        )?;
+    }
+    if let Some(path) = get_grok_prompt_path_from_db(&db).await? {
+        add_external_config_file_to_zip(
+            zip,
+            &mut added_zip_directories,
+            &path,
+            "grok",
+            "AGENTS.md",
+            filter_rules,
+            options,
+        )?;
+    }
+    let grok_plugins_dir = runtime_location::get_grok_runtime_location_async(&db)
+        .await?
+        .host_path
+        .join("plugins");
+    add_external_config_directory_contents_to_zip(
+        zip,
+        &grok_plugins_dir,
+        "grok",
+        "plugins",
+        filter_rules,
+        options,
+    )?;
 
     if let Some(custom_dir) = get_custom_root_dir_path_info(&db, "openclaw").await {
         add_directory_to_zip_once(
@@ -2422,8 +2568,8 @@ mod tests {
         add_external_config_directory_contents_to_zip, add_external_config_file_to_zip,
         add_legacy_database_snapshot_to_zip, add_text_to_zip, build_db_manifest,
         get_codex_prompt_backup_zip_path, get_existing_codex_prompt_paths,
-        get_gemini_cli_prompt_backup_zip_path, is_filesystem_root_directory,
-        normalize_backup_storage_path, normalize_restore_entry_name,
+        get_gemini_cli_prompt_backup_zip_path, harden_restored_sensitive_file,
+        is_filesystem_root_directory, normalize_backup_storage_path, normalize_restore_entry_name,
         resolve_external_config_restore_output_path, restore_custom_backup_entries,
         should_exclude_from_backup, should_filter_external_config_entry,
         CUSTOM_BACKUP_MANIFEST_PATH, SQLITE_BACKUP_ZIP_PATH,
@@ -3036,13 +3182,73 @@ mod tests {
             .any(|name| name == "external-configs/geminicli/tmp/cache.json"));
     }
 
+    #[test]
+    fn grok_plugin_backup_excludes_generated_artifacts() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let plugins_dir = temp_dir.path().join("plugins");
+        fs::create_dir_all(plugins_dir.join("sample").join("node_modules"))
+            .expect("create node_modules");
+        fs::create_dir_all(plugins_dir.join("sample").join(".git")).expect("create git metadata");
+        fs::create_dir_all(plugins_dir.join("sample").join("dist")).expect("create dist");
+        fs::write(plugins_dir.join("sample").join("plugin.json"), "{}")
+            .expect("write plugin manifest");
+        fs::write(
+            plugins_dir
+                .join("sample")
+                .join("node_modules")
+                .join("cache.js"),
+            "generated",
+        )
+        .expect("write generated dependency");
+        fs::write(plugins_dir.join("sample").join(".git").join("HEAD"), "ref")
+            .expect("write git metadata");
+        fs::write(
+            plugins_dir.join("sample").join("dist").join("bundle.js"),
+            "built",
+        )
+        .expect("write build output");
+
+        let mut buffer = Cursor::new(Vec::new());
+        {
+            let mut zip = ZipWriter::new(&mut buffer);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            add_external_config_directory_contents_to_zip(
+                &mut zip,
+                &plugins_dir,
+                "grok",
+                "plugins",
+                &[],
+                options,
+            )
+            .expect("add Grok plugins");
+            zip.finish().expect("finish zip");
+        }
+
+        let archive = ZipArchive::new(Cursor::new(buffer.into_inner())).expect("zip archive");
+        let names = archive.file_names().map(str::to_string).collect::<Vec<_>>();
+        assert!(names
+            .iter()
+            .any(|name| name == "external-configs/grok/plugins/sample/plugin.json"));
+        assert!(!names.iter().any(|name| name.contains("node_modules")));
+        assert!(!names.iter().any(|name| name.contains("/.git/")));
+        assert!(!names.iter().any(|name| name.contains("/dist/")));
+    }
+
     /// Helper: simulate restore filtering logic for a given file path
     fn should_skip_restore_entry(
         filter_rules: &[BackupFileFilterRule],
         zip_entry_name: &str,
     ) -> bool {
         let file_name = normalize_restore_entry_name(zip_entry_name);
-        for tool in ["opencode", "claude", "codex", "openclaw", "geminicli"] {
+        for tool in [
+            "opencode",
+            "claude",
+            "codex",
+            "grok",
+            "openclaw",
+            "geminicli",
+        ] {
             let prefix = format!("external-configs/{}/", tool);
             if let Some(relative_path) = file_name.strip_prefix(&prefix) {
                 return should_filter_external_config_entry(filter_rules, tool, relative_path);
@@ -3084,6 +3290,62 @@ mod tests {
             &rules,
             "external-configs/codex/config.toml"
         ));
+    }
+
+    #[test]
+    fn restore_filter_skips_grok_auth_json_when_rule_exists() {
+        let rules = vec![BackupFileFilterRule {
+            tool: "grok".to_string(),
+            file_path: "auth.json".to_string(),
+        }];
+
+        assert!(should_skip_restore_entry(
+            &rules,
+            "external-configs/grok/auth.json"
+        ));
+        assert!(!should_skip_restore_entry(
+            &rules,
+            "external-configs/grok/config.toml"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restored_auth_files_are_hardened_to_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let auth_path = temp_dir.path().join("auth.json");
+        fs::write(&auth_path, "{}").expect("write auth file");
+        fs::set_permissions(&auth_path, fs::Permissions::from_mode(0o644))
+            .expect("set initial permissions");
+
+        harden_restored_sensitive_file(&auth_path).expect("harden auth file");
+
+        let mode = fs::metadata(&auth_path)
+            .expect("read auth metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_config_restore_path_rejects_existing_symlink_components() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let restore_dir = temp_dir.path().join("restore");
+        let outside_dir = temp_dir.path().join("outside");
+        fs::create_dir_all(&restore_dir).expect("create restore dir");
+        fs::create_dir_all(&outside_dir).expect("create outside dir");
+        symlink(&outside_dir, restore_dir.join("plugins")).expect("create symlink");
+
+        let error =
+            resolve_external_config_restore_output_path(&restore_dir, "plugins/sample/plugin.json")
+                .expect_err("symlink component must be rejected");
+        assert!(error.contains("contains a symlink"));
     }
 
     #[test]

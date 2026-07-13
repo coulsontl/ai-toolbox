@@ -57,7 +57,7 @@ async fn get_wsl_tool_skills_dir_with_db(
     tool_key: &str,
 ) -> Option<String> {
     match tool_key {
-        "claude_code" | "codex" | "opencode" | "openclaw" => {
+        "claude_code" | "codex" | "grok" | "opencode" | "openclaw" => {
             runtime_location::get_tool_skills_path_async(db, tool_key)
                 .await
                 .and_then(|path| path.to_str().and_then(runtime_location::parse_wsl_unc_path))
@@ -111,6 +111,7 @@ pub async fn sync_skills_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result
         .filter_map(|status| match status.module.as_str() {
             "claude" => Some("claude_code".to_string()),
             "codex" => Some("codex".to_string()),
+            "grok" => Some("grok".to_string()),
             "opencode" => Some("opencode".to_string()),
             "openclaw" => Some("openclaw".to_string()),
             _ => None,

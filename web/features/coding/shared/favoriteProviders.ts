@@ -2,7 +2,7 @@ import type { OpenCodeDiagnosticsConfig, OpenCodeFavoriteProvider } from '@/serv
 import type { OpenCodeProvider } from '@/types/opencode';
 import { isJsonObject } from '../../../utils/json.ts';
 
-export type FavoriteProviderSource = 'opencode' | 'claudecode' | 'codex' | 'openclaw' | 'pi';
+export type FavoriteProviderSource = 'opencode' | 'claudecode' | 'codex' | 'grok' | 'openclaw' | 'pi';
 
 export interface ClaudeFavoriteProviderPayload {
   name: string;
@@ -21,6 +21,8 @@ export interface CodexFavoriteProviderPayload {
   notes?: string;
 }
 
+export interface GrokFavoriteProviderPayload extends CodexFavoriteProviderPayload {}
+
 export interface OpenClawFavoriteProviderPayload {
   providerId: string;
   config: Record<string, unknown>;
@@ -37,6 +39,7 @@ const STORAGE_KEY_PREFIX: Record<FavoriteProviderSource, string> = {
   opencode: 'opencode',
   claudecode: 'claudecode',
   codex: 'codex',
+  grok: 'grok',
   openclaw: 'openclaw',
   pi: 'pi',
 };

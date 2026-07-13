@@ -332,7 +332,12 @@ fn build_standard_server_config(server: &crate::coding::mcp::types::McpServer) -
 fn is_mapped_mcp_config_file(mapping_id: &str) -> bool {
     matches!(
         mapping_id,
-        "opencode-main" | "opencode-oh-my" | "codex-config" | "geminicli-settings" | "pi-mcp"
+        "opencode-main"
+            | "opencode-oh-my"
+            | "codex-config"
+            | "grok-config"
+            | "geminicli-settings"
+            | "pi-mcp"
     )
 }
 

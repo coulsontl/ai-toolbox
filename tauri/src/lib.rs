@@ -1342,6 +1342,29 @@ pub fn run() {
                     std::future::pending::<()>().await;
                 });
 
+                // Grok sync listener
+                let grok_sync_app = app_handle.clone();
+                let grok_sync_listener_app = grok_sync_app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = grok_sync_app.listen("wsl-sync-request-grok", move |_event| {
+                        let app = grok_sync_listener_app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let db_state = app.state::<crate::SqliteDbState>();
+                            if !coding::wsl::is_wsl_auto_sync_enabled(&db_state).await {
+                                return;
+                            }
+                            let _ = coding::wsl::wsl_sync(
+                                db_state,
+                                app.clone(),
+                                Some("grok".to_string()),
+                                None,
+                            )
+                            .await;
+                        });
+                    });
+                    std::future::pending::<()>().await;
+                });
+
                 // OpenClaw sync listener
                 let app4 = app_handle.clone();
                 let app4_clone = app4.clone();
@@ -1877,6 +1900,8 @@ pub fn run() {
             coding::codex::list_codex_providers,
             coding::codex::list_codex_official_accounts,
             coding::codex::start_codex_official_account_oauth,
+            coding::codex::start_codex_official_account_device_auth,
+            coding::codex::cancel_codex_official_account_device_auth,
             coding::codex::save_codex_official_local_account,
             coding::codex::apply_codex_official_account,
             coding::codex::delete_codex_official_account,
@@ -1905,6 +1930,57 @@ pub fn run() {
             coding::codex::apply_codex_prompt_config,
             coding::codex::reorder_codex_prompt_configs,
             coding::codex::save_codex_local_prompt_config,
+            // Grok CLI
+            coding::grok::get_grok_config_dir_path,
+            coding::grok::get_grok_root_path_info,
+            coding::grok::get_grok_config_file_path,
+            coding::grok::reveal_grok_config_folder,
+            coding::grok::fetch_grok_official_models,
+            coding::grok::read_grok_settings,
+            coding::grok::list_grok_providers,
+            coding::grok::create_grok_provider,
+            coding::grok::update_grok_provider,
+            coding::grok::delete_grok_provider,
+            coding::grok::reorder_grok_providers,
+            coding::grok::select_grok_provider,
+            coding::grok::toggle_grok_provider_disabled,
+            coding::grok::save_grok_local_config,
+            coding::grok::list_grok_all_api_hub_providers,
+            coding::grok::resolve_grok_all_api_hub_providers,
+            coding::grok::get_grok_common_config,
+            coding::grok::extract_grok_common_config_from_current_file,
+            coding::grok::save_grok_common_config,
+            coding::grok::list_grok_prompt_configs,
+            coding::grok::create_grok_prompt_config,
+            coding::grok::update_grok_prompt_config,
+            coding::grok::delete_grok_prompt_config,
+            coding::grok::apply_grok_prompt_config,
+            coding::grok::reorder_grok_prompt_configs,
+            coding::grok::start_grok_official_account_device_auth,
+            coding::grok::cancel_grok_official_account_device_auth,
+            coding::grok::get_grok_official_account_auth_status,
+            coding::grok::list_grok_official_accounts,
+            coding::grok::save_grok_official_local_account,
+            coding::grok::apply_grok_official_account,
+            coding::grok::refresh_grok_official_account,
+            coding::grok::delete_grok_official_account,
+            coding::grok::logout_grok_official_runtime,
+            coding::grok::get_grok_plugin_runtime_status,
+            coding::grok::list_grok_installed_plugins,
+            coding::grok::list_grok_marketplaces,
+            coding::grok::list_grok_marketplace_plugins,
+            coding::grok::list_grok_plugin_workspace_roots,
+            coding::grok::add_grok_plugin_workspace_root,
+            coding::grok::remove_grok_plugin_workspace_root,
+            coding::grok::install_grok_plugin,
+            coding::grok::enable_grok_plugin,
+            coding::grok::disable_grok_plugin,
+            coding::grok::uninstall_grok_plugin,
+            coding::grok::update_grok_plugin,
+            coding::grok::get_grok_plugin_details,
+            coding::grok::validate_grok_plugin,
+            coding::grok::update_grok_plugin_marketplace,
+            coding::grok::set_grok_installed_plugins_enabled,
             // Gemini CLI
             coding::gemini_cli::get_gemini_cli_config_path,
             coding::gemini_cli::get_gemini_cli_root_path_info,

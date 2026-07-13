@@ -147,6 +147,7 @@ fn provider_table(cli_key: GatewayCliKey) -> Option<DbTable> {
     match cli_key {
         GatewayCliKey::Claude => Some(DbTable::ClaudeProvider),
         GatewayCliKey::Codex => Some(DbTable::CodexProvider),
+        GatewayCliKey::Grok => Some(DbTable::GrokProvider),
         GatewayCliKey::Gemini => Some(DbTable::GeminiCliProvider),
         GatewayCliKey::OpenCode => None,
     }
@@ -234,6 +235,16 @@ async fn apply_direct_provider<R: Runtime>(
             )
             .await
         }
+        GatewayCliKey::Grok => {
+            crate::coding::grok::commands::select_grok_provider_internal_with_sync(
+                &db,
+                app,
+                provider_id,
+                from_tray,
+                true,
+            )
+            .await
+        }
         GatewayCliKey::Gemini => {
             crate::coding::gemini_cli::commands::apply_config_internal_with_sync(
                 &db,
@@ -266,6 +277,14 @@ async fn apply_direct_provider_without_events<R: Runtime>(
         }
         GatewayCliKey::Codex => {
             crate::coding::codex::commands::apply_config_internal_without_events(
+                &db,
+                app,
+                provider_id,
+            )
+            .await
+        }
+        GatewayCliKey::Grok => {
+            crate::coding::grok::commands::select_grok_provider_internal_without_events(
                 &db,
                 app,
                 provider_id,
@@ -310,6 +329,7 @@ fn emit_gateway_cli_wsl_sync_request<R: Runtime>(app: &AppHandle<R>, cli_key: Ga
     let event_name = match cli_key {
         GatewayCliKey::Claude => "wsl-sync-request-claude",
         GatewayCliKey::Codex => "wsl-sync-request-codex",
+        GatewayCliKey::Grok => "wsl-sync-request-grok",
         GatewayCliKey::Gemini => "wsl-sync-request-geminicli",
         GatewayCliKey::OpenCode => return,
     };

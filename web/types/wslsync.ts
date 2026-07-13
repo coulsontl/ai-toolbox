@@ -8,7 +8,7 @@
 export interface FileMapping {
   id: string;
   name: string;
-  module: string; // "opencode" | "claude" | "codex" | "openclaw" | "geminicli"
+  module: string; // "opencode" | "claude" | "codex" | "grok" | "openclaw" | "geminicli"
   windowsPath: string;
   wslPath: string;
   enabled: boolean;

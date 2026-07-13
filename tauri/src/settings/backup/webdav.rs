@@ -8,8 +8,9 @@ use zip::ZipArchive;
 
 use super::utils::{
     create_backup_zip, get_claude_mcp_restore_path, get_claude_restore_dir, get_codex_restore_dir,
-    get_db_path, get_gemini_cli_restore_dir, get_image_assets_dir, get_opencode_auth_restore_path,
-    get_opencode_restore_dir, get_skills_dir, normalize_restore_entry_name, push_restore_warning,
+    get_db_path, get_gemini_cli_restore_dir, get_grok_restore_dir, get_image_assets_dir,
+    get_opencode_auth_restore_path, get_opencode_restore_dir, get_skills_dir,
+    harden_restored_sensitive_file, normalize_restore_entry_name, push_restore_warning,
     read_root_dir_override, resolve_external_config_restore_output_path,
     resolve_restore_dir_override, resolve_skills_restore_output_path,
     restore_claude_external_config_file, restore_custom_backup_entries,
@@ -585,6 +586,8 @@ pub async fn restore_from_webdav(
         read_root_dir_override(&mut archive, "external-configs/claude/root-dir.txt");
     let codex_restore_dir_override =
         read_root_dir_override(&mut archive, "external-configs/codex/root-dir.txt");
+    let grok_restore_dir_override =
+        read_root_dir_override(&mut archive, "external-configs/grok/root-dir.txt");
     let openclaw_restore_dir_override =
         read_root_dir_override(&mut archive, "external-configs/openclaw/root-dir.txt");
     let gemini_cli_restore_dir_override =
@@ -617,6 +620,11 @@ pub async fn restore_from_webdav(
         get_codex_restore_dir()?,
     );
     if let Some(warning) = codex_warning {
+        push_restore_warning(&mut restore_result, warning);
+    }
+    let (grok_restore_dir, grok_warning) =
+        resolve_restore_dir_override("grok", grok_restore_dir_override, get_grok_restore_dir()?);
+    if let Some(warning) = grok_warning {
         push_restore_warning(&mut restore_result, warning);
     }
 
@@ -780,6 +788,9 @@ pub async fn restore_from_webdav(
                     .map_err(|e| format!("Failed to create file: {}", e))?;
                 std::io::copy(&mut file, &mut outfile)
                     .map_err(|e| format!("Failed to extract file: {}", e))?;
+                if relative_path == "auth.json" {
+                    harden_restored_sensitive_file(&outpath)?;
+                }
             } else if file_name.starts_with("external-configs/codex/") {
                 // Codex settings
                 let relative_path = &file_name[23..]; // Remove "external-configs/codex/" prefix
@@ -807,6 +818,36 @@ pub async fn restore_from_webdav(
                     .map_err(|e| format!("Failed to create file: {}", e))?;
                 std::io::copy(&mut file, &mut outfile)
                     .map_err(|e| format!("Failed to extract file: {}", e))?;
+                if relative_path == "auth.json" {
+                    harden_restored_sensitive_file(&outpath)?;
+                }
+            } else if file_name.starts_with("external-configs/grok/") {
+                let relative_path = &file_name["external-configs/grok/".len()..];
+                if relative_path.is_empty()
+                    || file_name.ends_with('/')
+                    || relative_path == "root-dir.txt"
+                {
+                    continue;
+                }
+                if should_filter_external_config_entry(&filter_rules, "grok", relative_path) {
+                    continue;
+                }
+                let Some(outpath) =
+                    resolve_external_config_restore_output_path(&grok_restore_dir, relative_path)?
+                else {
+                    continue;
+                };
+                if let Some(parent) = outpath.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|e| format!("Failed to create Grok restore directory: {}", e))?;
+                }
+                let mut outfile = std::fs::File::create(&outpath)
+                    .map_err(|e| format!("Failed to create file: {}", e))?;
+                std::io::copy(&mut file, &mut outfile)
+                    .map_err(|e| format!("Failed to extract file: {}", e))?;
+                if matches!(relative_path, "auth.json" | "config.toml") {
+                    harden_restored_sensitive_file(&outpath)?;
+                }
             } else if file_name.starts_with("external-configs/geminicli/") {
                 let relative_path = &file_name["external-configs/geminicli/".len()..];
                 if relative_path.is_empty()

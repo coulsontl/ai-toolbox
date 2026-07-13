@@ -2,7 +2,7 @@ export type GeminiCliProviderCategory = 'official' | 'custom' | 'third_party' | 
 export type GeminiCliApiFormat = 'gemini_native' | 'openai_chat' | 'openai_responses' | 'anthropic';
 
 export interface GatewayProviderProfileReference {
-  tool?: 'claude' | 'codex' | 'gemini';
+  tool?: 'claude' | 'codex' | 'grok' | 'gemini';
   profileId: string;
   endpointId: string;
 }

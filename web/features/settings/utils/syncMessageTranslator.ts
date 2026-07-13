@@ -67,6 +67,18 @@ const BUILTIN_FILE_MAPPINGS = [
 		rustDefaultName: "Codex 全局提示词",
 		i18nSuffix: "codexPrompt",
 	},
+	{ id: "grok-auth", rustDefaultName: "Grok 认证", i18nSuffix: "grokAuth" },
+	{ id: "grok-config", rustDefaultName: "Grok 配置", i18nSuffix: "grokConfig" },
+	{
+		id: "grok-prompt",
+		rustDefaultName: "Grok 全局提示词",
+		i18nSuffix: "grokPrompt",
+	},
+	{
+		id: "grok-plugins",
+		rustDefaultName: "Grok 插件目录",
+		i18nSuffix: "grokPlugins",
+	},
 	{
 		id: "openclaw-config",
 		rustDefaultName: "OpenClaw 配置",

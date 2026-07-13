@@ -127,6 +127,35 @@ export const codexWireApiFormatFromConfig = (config?: string | null) => {
   }
 };
 
+export const grokWireApiFormatFromConfig = (config?: string | null) => {
+  if (!config) {
+    return null;
+  }
+
+  try {
+    const parsed = parseToml(config) as Record<string, unknown>;
+    const models = parsed.models && typeof parsed.models === 'object' && !Array.isArray(parsed.models)
+      ? parsed.models as Record<string, unknown>
+      : undefined;
+    const defaultModelKey = typeof models?.default === 'string' ? models.default.trim() : '';
+    const modelTables = parsed.model && typeof parsed.model === 'object' && !Array.isArray(parsed.model)
+      ? parsed.model as Record<string, unknown>
+      : undefined;
+    const selectedModel = defaultModelKey && modelTables?.[defaultModelKey]
+      && typeof modelTables[defaultModelKey] === 'object' && !Array.isArray(modelTables[defaultModelKey])
+      ? modelTables[defaultModelKey] as Record<string, unknown>
+      : undefined;
+    const selectedValue = selectedModel?.api_backend ?? selectedModel?.api_format;
+    if (typeof selectedValue === 'string' && selectedValue.trim()) {
+      return selectedValue.trim();
+    }
+    return null;
+  } catch {
+    const match = config.match(/^\s*(?:api_backend|api_format)\s*=\s*["']([^"']+)["']/m);
+    return match?.[1] ?? null;
+  }
+};
+
 export const openAiApiFormatFromBaseUrl = (baseUrl?: string | null) => {
   const normalizedBaseUrl = baseUrl?.trim().toLowerCase();
   if (!normalizedBaseUrl) {

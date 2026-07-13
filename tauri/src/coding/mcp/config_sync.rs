@@ -104,7 +104,14 @@ fn sync_server_to_path(
             &tool.key,
             should_wrap_cmd,
         ),
-        "toml" => sync_server_to_toml(config_path, server, field, should_wrap_cmd),
+        "toml" => sync_server_to_toml(
+            config_path,
+            server,
+            field,
+            enabled,
+            &tool.key,
+            should_wrap_cmd,
+        ),
         _ => Err(format!("Unsupported config format: {}", format)),
     }
     .map(|_| McpSyncDetail {
@@ -238,6 +245,8 @@ fn sync_server_to_toml(
     config_path: &PathBuf,
     server: &McpServer,
     field: &str,
+    enabled: bool,
+    tool_key: &str,
     should_wrap_cmd: bool,
 ) -> Result<(), String> {
     use toml_edit::Item;
@@ -276,7 +285,11 @@ fn sync_server_to_toml(
     }
 
     // Build server config using toml_edit
-    let server_table = build_toml_edit_server_config(server, should_wrap_cmd)?;
+    let server_table = if tool_key == "grok" {
+        build_grok_toml_server_config(server, enabled)?
+    } else {
+        build_toml_edit_server_config(server, should_wrap_cmd)?
+    };
 
     // Add/update server
     doc[field][&server.name] = Item::Table(server_table);
@@ -444,6 +457,103 @@ fn build_toml_edit_server_config(
     }
 
     Ok(t)
+}
+
+/// Build the official Grok MCP schema. Grok does not use Codex's `type` or
+/// `http_headers` fields and must keep npm commands unwrapped on every target.
+fn build_grok_toml_server_config(
+    server: &McpServer,
+    enabled: bool,
+) -> Result<toml_edit::Table, String> {
+    use toml_edit::{Array, Item, Table};
+
+    let mut table = Table::new();
+    match server.server_type.as_str() {
+        "stdio" => {
+            let command = server
+                .server_config
+                .get("command")
+                .and_then(Value::as_str)
+                .ok_or("stdio server requires 'command' field")?;
+            table["command"] = toml_edit::value(command);
+
+            if let Some(args) = server.server_config.get("args").and_then(Value::as_array) {
+                let mut array = Array::new();
+                for argument in args.iter().filter_map(Value::as_str) {
+                    array.push(argument);
+                }
+                table["args"] = Item::Value(toml_edit::Value::Array(array));
+            }
+            if let Some(env) = server.server_config.get("env").and_then(Value::as_object) {
+                let mut env_table = Table::new();
+                for (key, value) in env {
+                    if let Some(value) = value.as_str() {
+                        env_table[key] = toml_edit::value(value);
+                    }
+                }
+                table["env"] = Item::Table(env_table);
+            }
+            copy_grok_toml_fields(
+                &mut table,
+                &server.server_config,
+                &[
+                    "cwd",
+                    "startup_timeout_sec",
+                    "tool_timeout_sec",
+                    "tool_timeouts",
+                ],
+            )?;
+        }
+        "http" | "sse" => {
+            let url = server
+                .server_config
+                .get("url")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("{} server requires 'url' field", server.server_type))?;
+            table["url"] = toml_edit::value(url);
+            if let Some(headers) = server
+                .server_config
+                .get("headers")
+                .and_then(Value::as_object)
+            {
+                let mut headers_table = Table::new();
+                for (key, value) in headers {
+                    if let Some(value) = value.as_str() {
+                        headers_table[key] = toml_edit::value(value);
+                    }
+                }
+                table["headers"] = Item::Table(headers_table);
+            }
+            copy_grok_toml_fields(&mut table, &server.server_config, &["bearer_token_env_var"])?;
+        }
+        _ => return Err(format!("Unknown server type: {}", server.server_type)),
+    }
+    table["enabled"] = toml_edit::value(enabled);
+    Ok(table)
+}
+
+fn copy_grok_toml_fields(
+    table: &mut toml_edit::Table,
+    config: &Value,
+    field_names: &[&str],
+) -> Result<(), String> {
+    for field_name in field_names {
+        if let Some(value) = config.get(*field_name).filter(|value| !value.is_null()) {
+            table[field_name] = json_to_toml_item(value)?;
+        }
+    }
+    Ok(())
+}
+
+fn json_to_toml_item(value: &Value) -> Result<toml_edit::Item, String> {
+    let serialized = toml::to_string(&serde_json::json!({ "holder": value }))
+        .map_err(|error| format!("Failed to serialize Grok MCP field: {error}"))?;
+    let mut document = serialized
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| format!("Failed to build Grok MCP TOML field: {error}"))?;
+    document
+        .remove("holder")
+        .ok_or_else(|| "Failed to build Grok MCP TOML field".to_string())
 }
 
 /// Build JSON server configuration from McpServer
@@ -795,7 +905,7 @@ pub(crate) fn import_servers_from_path(
     match format {
         // json5 handles both standard JSON and JSONC (with comments, trailing commas)
         "json" | "jsonc" => import_servers_from_json(config_path, field, format_config),
-        "toml" => import_servers_from_toml(config_path, field),
+        "toml" => import_servers_from_toml(config_path, field, &tool.key),
         _ => Err(format!("Unsupported config format: {}", format)),
     }
 }
@@ -1035,7 +1145,11 @@ pub fn import_servers_from_plugin_mcp_json(
 }
 
 /// Import servers from TOML config file
-fn import_servers_from_toml(config_path: &PathBuf, field: &str) -> Result<Vec<McpServer>, String> {
+fn import_servers_from_toml(
+    config_path: &PathBuf,
+    field: &str,
+    tool_key: &str,
+) -> Result<Vec<McpServer>, String> {
     if field.contains('.') {
         return Err(format!(
             "Nested TOML MCP field paths are not supported: {}",
@@ -1065,7 +1179,7 @@ fn import_servers_from_toml(config_path: &PathBuf, field: &str) -> Result<Vec<Mc
             continue;
         };
 
-        // Detect server type: use "type" field, default to "stdio"
+        // Grok intentionally omits `type`; command/url is the authoritative discriminator.
         let server_type = config_table
             .get("type")
             .and_then(|v| v.as_str())
@@ -1107,16 +1221,32 @@ fn import_servers_from_toml(config_path: &PathBuf, field: &str) -> Result<Vec<Mc
                         json_config.insert("env".into(), Value::Object(env_json));
                     }
                 }
+                if tool_key == "grok" {
+                    copy_grok_import_fields(
+                        config_table,
+                        &mut json_config,
+                        &[
+                            "cwd",
+                            "enabled",
+                            "startup_timeout_sec",
+                            "tool_timeout_sec",
+                            "tool_timeouts",
+                        ],
+                    );
+                }
             }
             "http" | "sse" => {
                 if let Some(url) = config_table.get("url").and_then(|v| v.as_str()) {
                     json_config.insert("url".into(), Value::String(url.to_string()));
                 }
-                // Read from http_headers (Codex format) or headers (legacy), prefer http_headers
-                let headers_tbl = config_table
-                    .get("http_headers")
-                    .and_then(|v| v.as_table())
-                    .or_else(|| config_table.get("headers").and_then(|v| v.as_table()));
+                let headers_tbl = if tool_key == "grok" {
+                    config_table.get("headers").and_then(|v| v.as_table())
+                } else {
+                    config_table
+                        .get("http_headers")
+                        .and_then(|v| v.as_table())
+                        .or_else(|| config_table.get("headers").and_then(|v| v.as_table()))
+                };
                 if let Some(h_tbl) = headers_tbl {
                     let mut headers_json = serde_json::Map::new();
                     for (k, v) in h_tbl {
@@ -1127,6 +1257,13 @@ fn import_servers_from_toml(config_path: &PathBuf, field: &str) -> Result<Vec<Mc
                     if !headers_json.is_empty() {
                         json_config.insert("headers".into(), Value::Object(headers_json));
                     }
+                }
+                if tool_key == "grok" {
+                    copy_grok_import_fields(
+                        config_table,
+                        &mut json_config,
+                        &["bearer_token_env_var", "enabled"],
+                    );
                 }
             }
             _ => continue,
@@ -1158,6 +1295,20 @@ fn import_servers_from_toml(config_path: &PathBuf, field: &str) -> Result<Vec<Mc
     }
 
     Ok(servers)
+}
+
+fn copy_grok_import_fields(
+    source: &toml::Table,
+    target: &mut serde_json::Map<String, Value>,
+    field_names: &[&str],
+) {
+    for field_name in field_names {
+        if let Some(value) = source.get(*field_name) {
+            if let Ok(value) = serde_json::to_value(value) {
+                target.insert((*field_name).to_string(), value);
+            }
+        }
+    }
 }
 
 fn split_field_path(field: &str) -> Vec<&str> {
@@ -1355,6 +1506,72 @@ mod tests {
                 "@sammysnake/fast-context-mcp",
             ])
         );
+    }
+
+    #[test]
+    fn grok_toml_config_uses_official_fields_without_cmd_wrapper() {
+        let mut server = build_npx_stdio_server();
+        server.server_config["cwd"] = json!("/workspace");
+        server.server_config["startup_timeout_sec"] = json!(30);
+        server.server_config["tool_timeout_sec"] = json!(6000);
+        server.server_config["tool_timeouts"] = json!({ "search": 45 });
+
+        let table = build_grok_toml_server_config(&server, false).expect("build Grok MCP");
+
+        assert!(table.get("type").is_none());
+        assert_eq!(table["command"].as_str(), Some("npx"));
+        assert_eq!(table["cwd"].as_str(), Some("/workspace"));
+        assert_eq!(table["enabled"].as_bool(), Some(false));
+        assert_eq!(table["startup_timeout_sec"].as_integer(), Some(30));
+        assert_eq!(table["tool_timeout_sec"].as_integer(), Some(6000));
+        assert_eq!(table["tool_timeouts"]["search"].as_integer(), Some(45));
+    }
+
+    #[test]
+    fn grok_toml_import_preserves_remote_and_timeout_fields() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[mcp_servers.local]
+command = "npx"
+args = ["-y", "pkg"]
+cwd = "/workspace"
+enabled = false
+startup_timeout_sec = 30
+tool_timeout_sec = 6000
+
+[mcp_servers.local.tool_timeouts]
+search = 45
+
+[mcp_servers.remote]
+url = "https://example.com/mcp"
+enabled = true
+bearer_token_env_var = "MCP_TOKEN"
+
+[mcp_servers.remote.headers]
+X-Test = "yes"
+"#,
+        )
+        .expect("write fixture");
+
+        let servers =
+            import_servers_from_toml(&config_path, "mcp_servers", "grok").expect("import Grok MCP");
+        let local = servers
+            .iter()
+            .find(|server| server.name == "local")
+            .expect("local server");
+        assert_eq!(local.server_config["command"], "npx");
+        assert_eq!(local.server_config["cwd"], "/workspace");
+        assert_eq!(local.server_config["enabled"], false);
+        assert_eq!(local.server_config["tool_timeouts"]["search"], 45);
+        let remote = servers
+            .iter()
+            .find(|server| server.name == "remote")
+            .expect("remote server");
+        assert_eq!(remote.server_config["headers"]["X-Test"], "yes");
+        assert_eq!(remote.server_config["bearer_token_env_var"], "MCP_TOKEN");
     }
 
     #[test]

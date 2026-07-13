@@ -110,7 +110,7 @@ pub fn resolve_mcp_config_path_with_db(
     tool: &RuntimeTool,
 ) -> Option<PathBuf> {
     match tool.key.as_str() {
-        "opencode" | "claude_code" | "codex" | "openclaw" | "pi" => {
+        "opencode" | "claude_code" | "codex" | "grok" | "openclaw" | "pi" => {
             crate::coding::runtime_location::get_tool_mcp_config_path_sync(db, &tool.key)
                 .or_else(|| resolve_mcp_config_path(tool))
         }
@@ -123,7 +123,7 @@ pub async fn resolve_mcp_config_path_with_db_async(
     tool: &RuntimeTool,
 ) -> Option<PathBuf> {
     match tool.key.as_str() {
-        "opencode" | "claude_code" | "codex" | "openclaw" | "pi" => {
+        "opencode" | "claude_code" | "codex" | "grok" | "openclaw" | "pi" => {
             crate::coding::runtime_location::get_tool_mcp_config_path_async(db, &tool.key)
                 .await
                 .or_else(|| resolve_mcp_config_path(tool))
@@ -137,7 +137,7 @@ pub fn resolve_skills_path_with_db(
     tool: &RuntimeTool,
 ) -> Option<PathBuf> {
     match tool.key.as_str() {
-        "opencode" | "claude_code" | "codex" | "openclaw" | "pi" => {
+        "opencode" | "claude_code" | "codex" | "grok" | "openclaw" | "pi" => {
             crate::coding::runtime_location::get_tool_skills_path_sync(db, &tool.key)
                 .or_else(|| resolve_skills_path(tool))
         }
@@ -150,7 +150,7 @@ pub async fn resolve_skills_path_with_db_async(
     tool: &RuntimeTool,
 ) -> Option<PathBuf> {
     match tool.key.as_str() {
-        "opencode" | "claude_code" | "codex" | "openclaw" | "pi" => {
+        "opencode" | "claude_code" | "codex" | "grok" | "openclaw" | "pi" => {
             crate::coding::runtime_location::get_tool_skills_path_async(db, &tool.key)
                 .await
                 .or_else(|| resolve_skills_path(tool))

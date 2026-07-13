@@ -6,11 +6,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::coding::open_code::shell_env;
-use crate::coding::{claude_code, codex, gemini_cli, open_claw, open_code, pi};
+use crate::coding::{claude_code, codex, gemini_cli, grok, open_claw, open_code, pi};
 use crate::db::helpers::{db_get, db_patch_fields};
 use crate::db::schema::DbTable;
 
-const MODULE_KEYS: [&str; 6] = ["opencode", "claude", "codex", "openclaw", "geminicli", "pi"];
+const MODULE_KEYS: [&str; 7] = [
+    "opencode",
+    "claude",
+    "codex",
+    "grok",
+    "openclaw",
+    "geminicli",
+    "pi",
+];
 const OMO_LEGACY_BASENAME: &str = "oh-my-opencode";
 const OMO_CANONICAL_BASENAME: &str = "oh-my-openagent";
 pub const CODEX_DEFAULT_PROMPT_FILE_NAME: &str = "AGENTS.md";
@@ -181,6 +189,7 @@ fn normalize_module_key(module: &str) -> Option<&'static str> {
         "opencode" => Some("opencode"),
         "claude" | "claude_code" => Some("claude"),
         "codex" => Some("codex"),
+        "grok" | "grok_cli" => Some("grok"),
         "openclaw" => Some("openclaw"),
         "geminicli" | "gemini_cli" | "gemini" => Some("geminicli"),
         "pi" => Some("pi"),
@@ -259,6 +268,11 @@ pub async fn refresh_runtime_location_cache_for_module_async(
         Some("codex") => {
             let location = resolve_codex_runtime_location_uncached_async(db).await?;
             set_cached_runtime_location("codex", location.clone());
+            Ok(location)
+        }
+        Some("grok") => {
+            let location = resolve_grok_runtime_location_uncached_async(db).await?;
+            set_cached_runtime_location("grok", location.clone());
             Ok(location)
         }
         Some("openclaw") => {
@@ -891,6 +905,89 @@ pub async fn get_codex_wsl_target_path_async(
     }
 }
 
+pub fn get_grok_runtime_location_sync(
+    db: &crate::db::SqliteDbState,
+) -> Result<RuntimeLocationInfo, String> {
+    let _ = db;
+    Ok(get_cached_or_fallback_runtime_location("grok"))
+}
+
+pub async fn get_grok_runtime_location_async(
+    db: &crate::db::SqliteDbState,
+) -> Result<RuntimeLocationInfo, String> {
+    get_cached_or_refresh_runtime_location_async(db, "grok").await
+}
+
+async fn resolve_grok_runtime_location_uncached_async(
+    db: &crate::db::SqliteDbState,
+) -> Result<RuntimeLocationInfo, String> {
+    let custom_path =
+        get_custom_path_from_record(db, DbTable::GrokCommonConfig, "common", |value| {
+            crate::coding::grok::adapter::common_from_db_value(value)
+                .root_dir
+                .filter(|path| !path.trim().is_empty())
+        })
+        .await;
+    let (path, source) = if let Some(path) = custom_path {
+        (PathBuf::from(path), "custom".to_string())
+    } else {
+        resolve_grok_path_without_db()
+    };
+    Ok(build_runtime_location(path, source))
+}
+
+pub fn get_grok_config_path_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
+    Ok(get_grok_runtime_location_sync(db)?
+        .host_path
+        .join(grok::constants::GROK_CONFIG_FILE))
+}
+
+pub async fn get_grok_config_path_async(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
+    Ok(get_grok_runtime_location_async(db)
+        .await?
+        .host_path
+        .join(grok::constants::GROK_CONFIG_FILE))
+}
+
+pub fn get_grok_auth_path_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
+    Ok(get_grok_runtime_location_sync(db)?
+        .host_path
+        .join(grok::constants::GROK_AUTH_FILE))
+}
+
+pub async fn get_grok_auth_path_async(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
+    Ok(get_grok_runtime_location_async(db)
+        .await?
+        .host_path
+        .join(grok::constants::GROK_AUTH_FILE))
+}
+
+pub fn get_grok_prompt_path_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
+    Ok(get_grok_runtime_location_sync(db)?
+        .host_path
+        .join(grok::constants::GROK_PROMPT_FILE))
+}
+
+pub async fn get_grok_prompt_path_async(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
+    Ok(get_grok_runtime_location_async(db)
+        .await?
+        .host_path
+        .join(grok::constants::GROK_PROMPT_FILE))
+}
+
+pub async fn get_grok_wsl_target_path_async(
+    db: &crate::db::SqliteDbState,
+    file_name: &str,
+) -> String {
+    match get_grok_runtime_location_async(db).await {
+        Ok(location) => location
+            .wsl
+            .map(|wsl| format!("{}/{}", wsl.linux_path.trim_end_matches('/'), file_name))
+            .unwrap_or_else(|| format!("~/.grok/{file_name}")),
+        Err(_) => format!("~/.grok/{file_name}"),
+    }
+}
+
 pub fn get_gemini_cli_runtime_location_sync(
     db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
@@ -1151,6 +1248,16 @@ pub fn get_tool_skills_path_sync(db: &crate::db::SqliteDbState, tool_key: &str) 
                 location.host_path.join("skills")
             }
         }),
+        "grok" => get_grok_runtime_location_sync(db).ok().map(|location| {
+            if let Some(wsl) = location.wsl {
+                build_windows_unc_path(
+                    &wsl.distro,
+                    &expand_home_from_user_root(wsl.linux_user_root.as_deref(), "~/.grok/skills"),
+                )
+            } else {
+                location.host_path.join("skills")
+            }
+        }),
         "opencode" => get_opencode_runtime_location_sync(db).ok().map(|location| {
             if let Some(wsl) = location.wsl {
                 build_windows_unc_path(
@@ -1211,6 +1318,22 @@ pub async fn get_tool_skills_path_async(
                         &expand_home_from_user_root(
                             wsl.linux_user_root.as_deref(),
                             "~/.codex/skills",
+                        ),
+                    )
+                } else {
+                    location.host_path.join("skills")
+                }
+            }),
+        "grok" => get_grok_runtime_location_async(db)
+            .await
+            .ok()
+            .map(|location| {
+                if let Some(wsl) = location.wsl {
+                    build_windows_unc_path(
+                        &wsl.distro,
+                        &expand_home_from_user_root(
+                            wsl.linux_user_root.as_deref(),
+                            "~/.grok/skills",
                         ),
                     )
                 } else {
@@ -1314,6 +1437,7 @@ pub fn get_tool_mcp_config_path_sync(
     match tool_key {
         "claude_code" => get_claude_mcp_config_path_sync(db).ok(),
         "codex" => get_codex_config_path_sync(db).ok(),
+        "grok" => get_grok_config_path_sync(db).ok(),
         "opencode" => get_opencode_runtime_location_sync(db)
             .ok()
             .map(|location| location.host_path),
@@ -1334,6 +1458,7 @@ pub async fn get_tool_mcp_config_path_async(
     match tool_key {
         "claude_code" => get_claude_mcp_config_path_async(db).await.ok(),
         "codex" => get_codex_config_path_async(db).await.ok(),
+        "grok" => get_grok_config_path_async(db).await.ok(),
         "opencode" => get_opencode_runtime_location_async(db)
             .await
             .ok()
@@ -1375,6 +1500,7 @@ fn resolve_config_path_without_db(module: &str) -> (PathBuf, String) {
         "opencode" => resolve_opencode_path_without_db(),
         "claude" => resolve_claude_path_without_db(),
         "codex" => resolve_codex_path_without_db(),
+        "grok" => resolve_grok_path_without_db(),
         "openclaw" => resolve_openclaw_path_without_db(),
         "geminicli" => resolve_gemini_cli_path_without_db(),
         "pi" => resolve_pi_path_without_db(),
@@ -1438,6 +1564,23 @@ fn resolve_codex_path_without_db() -> (PathBuf, String) {
 
     (
         codex::get_codex_default_root_dir().unwrap_or_else(|_| PathBuf::from("~/.codex")),
+        "default".to_string(),
+    )
+}
+
+fn resolve_grok_path_without_db() -> (PathBuf, String) {
+    if let Ok(env_path) = std::env::var(grok::constants::GROK_ENV_KEY) {
+        if !env_path.trim().is_empty() {
+            return (PathBuf::from(env_path), "env".to_string());
+        }
+    }
+    if let Some(shell_path) = shell_env::get_env_from_shell_config(grok::constants::GROK_ENV_KEY) {
+        if !shell_path.trim().is_empty() {
+            return (PathBuf::from(shell_path), "shell".to_string());
+        }
+    }
+    (
+        grok::get_grok_default_root_dir().unwrap_or_else(|_| PathBuf::from("~/.grok")),
         "default".to_string(),
     )
 }

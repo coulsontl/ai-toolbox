@@ -2,6 +2,7 @@ export { default as GatewayFailoverButton } from './GatewayFailoverButton';
 export {
   canApplyProviderWithGatewayProxy,
   codexWireApiFormatFromConfig,
+  grokWireApiFormatFromConfig,
   firstGatewayApiFormat,
   isGatewayConfigFlagEnabled,
   normalizeGatewayApiFormat,

@@ -4,6 +4,7 @@ pub mod cli_resolver;
 pub mod codex;
 pub mod config_cleanup;
 pub mod gemini_cli;
+pub mod grok;
 pub mod image;
 pub mod magic_context;
 pub mod mcp;

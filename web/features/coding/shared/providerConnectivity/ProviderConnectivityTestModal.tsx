@@ -1,15 +1,21 @@
 import React from 'react';
 import type { ClaudeCodeProvider, ClaudeSettingsConfig } from '@/types/claudecode';
 import type { CodexProvider, CodexSettingsConfig } from '@/types/codex';
+import type { GrokProvider, GrokSettingsConfig } from '@/types/grok';
 import type { OpenCodeProvider } from '@/types/opencode';
 import type { OpenCodeDiagnosticsConfig } from '@/services/opencodeApi';
 import { extractCodexBaseUrl, extractCodexModel, extractCodexReasoningEffort } from '@/utils/codexConfigUtils';
+import {
+  extractGrokSettingsBaseUrl,
+  extractGrokSettingsModel,
+} from '@/utils/grokConfigUtils';
 import { getClaudeConfiguredModelIds } from '@/features/coding/claudecode/utils/claudeModelConfig';
 import ConnectivityTestModal from '@/features/coding/opencode/components/ConnectivityTestModal';
 import type { GatewayCliKey } from '@/services/proxyGatewayApi';
 
 const DEFAULT_CLAUDE_BASE_URL = 'https://api.anthropic.com/v1';
 const DEFAULT_CODEX_BASE_URL = 'https://api.openai.com/v1';
+const DEFAULT_GROK_BASE_URL = 'https://api.x.ai/v1';
 
 export interface ProviderConnectivityInfo {
   providerId: string;
@@ -25,7 +31,7 @@ interface ProviderConnectivityTestModalProps {
   onCancel: () => void;
   diagnostics?: OpenCodeDiagnosticsConfig;
   onSaveDiagnostics?: (diagnostics: OpenCodeDiagnosticsConfig) => Promise<void>;
-  gatewayCliKey?: Extract<GatewayCliKey, 'claude' | 'codex' | 'gemini'>;
+  gatewayCliKey?: Extract<GatewayCliKey, 'claude' | 'codex' | 'grok' | 'gemini'>;
   useGateway?: boolean;
 }
 
@@ -106,6 +112,32 @@ export function buildCodexProviderConnectivityInfo(provider: CodexProvider): Pro
     },
     modelIds,
     ...(reasoningEffort ? { reasoningEffort } : {}),
+  };
+}
+
+export function buildGrokProviderConnectivityInfo(provider: GrokProvider): ProviderConnectivityInfo {
+  const settingsConfig = parseJsonConfig<GrokSettingsConfig>(provider.settingsConfig, {});
+  const modelId = extractGrokSettingsModel(settingsConfig)?.trim();
+  const catalogModelIds = settingsConfig.modelCatalog?.models
+    .map((model) => model.model.trim())
+    .filter(Boolean) ?? [];
+  const modelIds = [...new Set([...(modelId ? [modelId] : []), ...catalogModelIds])];
+  const apiKey = settingsConfig.auth?.API_KEY?.trim();
+  const baseUrl = extractGrokSettingsBaseUrl(settingsConfig)?.trim() || DEFAULT_GROK_BASE_URL;
+
+  return {
+    providerId: provider.id,
+    providerName: provider.name,
+    providerConfig: {
+      npm: '@ai-sdk/openai',
+      name: provider.name,
+      options: {
+        baseURL: baseUrl,
+        ...(apiKey ? { apiKey } : {}),
+      },
+      models: buildProviderModels(modelIds),
+    },
+    modelIds,
   };
 }
 

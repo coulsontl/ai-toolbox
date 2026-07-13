@@ -47,7 +47,8 @@ function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     sidebar_hidden_by_page: {
       opencode: false,
       claudecode: false,
-      codex: false,
+    codex: false,
+    grok: false,
       openclaw: false,
       geminicli: false,
       pi: false,

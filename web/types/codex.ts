@@ -12,7 +12,7 @@ export type CodexApiFormat =
   | 'gemini_native';
 
 export interface GatewayProviderProfileReference {
-  tool?: 'claude' | 'codex' | 'gemini';
+  tool?: 'claude' | 'codex' | 'grok' | 'gemini';
   profileId: string;
   endpointId: string;
 }

@@ -28,18 +28,50 @@ pub(super) fn match_gateway_route(request_target: &str) -> Option<GatewayRoute> 
                     query,
                 })
             }
-            _ => match strip_cli_prefix(&path, "/gemini") {
-                Some(forwarded_path) if is_gemini_versioned_path(&forwarded_path) => {
+            _ => match strip_cli_prefix(&path, "/grok") {
+                Some(forwarded_path)
+                    if matches!(forwarded_path.as_str(), "/v1" | "/v1/responses") =>
+                {
                     Some(GatewayRoute {
-                        cli_key: GatewayCliKey::Gemini,
-                        route_name: "gemini",
+                        cli_key: GatewayCliKey::Grok,
+                        route_name: "grok",
                         forwarded_path,
                         query,
                     })
                 }
-                _ => None,
+                _ => match strip_cli_prefix(&path, "/gemini") {
+                    Some(forwarded_path) if is_gemini_versioned_path(&forwarded_path) => {
+                        Some(GatewayRoute {
+                            cli_key: GatewayCliKey::Gemini,
+                            route_name: "gemini",
+                            forwarded_path,
+                            query,
+                        })
+                    }
+                    _ => None,
+                },
             },
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grok_route_accepts_probe_and_responses_only() {
+        let probe = match_gateway_route("/grok/v1").expect("probe route");
+        assert_eq!(probe.cli_key, GatewayCliKey::Grok);
+        assert_eq!(probe.forwarded_path, "/v1");
+
+        let responses = match_gateway_route("/grok/v1/responses?trace=1").expect("responses route");
+        assert_eq!(responses.cli_key, GatewayCliKey::Grok);
+        assert_eq!(responses.forwarded_path, "/v1/responses");
+        assert_eq!(responses.query.as_deref(), Some("trace=1"));
+
+        assert!(match_gateway_route("/grok/v1/chat/completions").is_none());
+        assert!(match_gateway_route("/grok/v1/responses/compact").is_none());
     }
 }
 

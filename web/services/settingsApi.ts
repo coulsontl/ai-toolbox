@@ -47,7 +47,7 @@ export interface BackupFileFilterPathOption {
   file_path: string;
 }
 
-export const SIDEBAR_PAGE_KEYS = ['opencode', 'claudecode', 'codex', 'geminicli', 'openclaw', 'pi'] as const;
+export const SIDEBAR_PAGE_KEYS = ['opencode', 'claudecode', 'codex', 'grok', 'geminicli', 'openclaw', 'pi'] as const;
 
 export type SidebarPageKey = typeof SIDEBAR_PAGE_KEYS[number];
 
@@ -63,6 +63,7 @@ export const createDefaultSidebarHiddenByPage = (): SidebarHiddenByPage => ({
   opencode: false,
   claudecode: false,
   codex: false,
+  grok: false,
   openclaw: false,
   geminicli: false,
   pi: false,
@@ -157,7 +158,7 @@ export const defaultSettings: AppSettings = {
   auto_backup_max_keep: 10,
   last_auto_backup_time: null,
   auto_check_update: true,
-  visible_tabs: ['opencode', 'claudecode', 'codex', 'geminicli', 'openclaw', 'pi', 'gateway', 'image', 'ssh', 'wsl'],
+  visible_tabs: ['opencode', 'claudecode', 'codex', 'grok', 'geminicli', 'openclaw', 'pi', 'gateway', 'image', 'ssh', 'wsl'],
   sidebar_hidden_by_page: createDefaultSidebarHiddenByPage(),
   opencode_allow_clear_applied_oh_my_config: false,
   codex_preserve_official_auth_on_switch: false,

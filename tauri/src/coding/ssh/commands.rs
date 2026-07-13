@@ -1095,9 +1095,11 @@ async fn backfill_default_file_mappings(
     mut file_mappings: Vec<SSHFileMapping>,
 ) -> Vec<SSHFileMapping> {
     // Bump this number whenever new default file_mappings are added.
-    const CURRENT_DEFAULTS_VERSION: u64 = 8;
+    const CURRENT_DEFAULTS_VERSION: u64 = 9;
     const DEFAULTS_VERSION_BEFORE_AGENT_DIRECTORIES: u64 = 7;
     const DEFAULT_MAPPING_IDS_ADDED_IN_V8: &[&str] = &["opencode-agent", "opencode-agents"];
+    const DEFAULT_MAPPING_IDS_ADDED_IN_V9: &[&str] =
+        &["grok-auth", "grok-config", "grok-prompt", "grok-plugins"];
 
     // Read stored version
     let stored_version: u64 = db
@@ -1117,13 +1119,18 @@ async fn backfill_default_file_mappings(
 
     for default_mapping in default_file_mappings() {
         if !existing_ids.contains(&default_mapping.id)
-            && should_backfill_default_mapping(
+            && (should_backfill_default_mapping(
                 stored_version,
                 existing_mapping_count,
                 &default_mapping.id,
                 DEFAULTS_VERSION_BEFORE_AGENT_DIRECTORIES,
                 DEFAULT_MAPPING_IDS_ADDED_IN_V8,
-            )
+            ) || should_backfill_versioned_mapping(
+                stored_version,
+                9,
+                &default_mapping.id,
+                DEFAULT_MAPPING_IDS_ADDED_IN_V9,
+            ))
         {
             let mapping_data = adapter::mapping_to_db_value(&default_mapping);
             if let Err(e) = db.with_conn(|conn| {
@@ -1158,6 +1165,15 @@ async fn backfill_default_file_mappings(
     });
 
     file_mappings
+}
+
+fn should_backfill_versioned_mapping(
+    stored_version: u64,
+    introduced_version: u64,
+    mapping_id: &str,
+    introduced_mapping_ids: &[&str],
+) -> bool {
+    stored_version < introduced_version && introduced_mapping_ids.contains(&mapping_id)
 }
 
 fn should_backfill_default_mapping(
@@ -1299,6 +1315,30 @@ pub async fn resolve_dynamic_paths_with_db(
                     mapping.local_path = path.to_string_lossy().to_string();
                     mapping.remote_path =
                         runtime_location::get_codex_wsl_target_path_async(db, file_name).await;
+                }
+            }
+            "grok-auth" => {
+                if let Ok(path) = runtime_location::get_grok_auth_path_async(db).await {
+                    mapping.local_path = path.to_string_lossy().to_string();
+                }
+            }
+            "grok-config" => {
+                if let Ok(path) = runtime_location::get_grok_config_path_async(db).await {
+                    mapping.local_path = path.to_string_lossy().to_string();
+                }
+            }
+            "grok-prompt" => {
+                if let Ok(path) = runtime_location::get_grok_prompt_path_async(db).await {
+                    mapping.local_path = path.to_string_lossy().to_string();
+                }
+            }
+            "grok-plugins" => {
+                if let Ok(location) = runtime_location::get_grok_runtime_location_async(db).await {
+                    mapping.local_path = location
+                        .host_path
+                        .join("plugins")
+                        .to_string_lossy()
+                        .to_string();
                 }
             }
             "codex-plugins" => {
@@ -1677,6 +1717,55 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             directory_excludes: super::types::default_directory_excludes(),
             cleanup_paths: vec![],
         },
+        // Grok
+        SSHFileMapping {
+            id: "grok-auth".to_string(),
+            name: "Grok 认证".to_string(),
+            module: "grok".to_string(),
+            local_path: "~/.grok/auth.json".to_string(),
+            remote_path: "~/.grok/auth.json".to_string(),
+            enabled: true,
+            is_pattern: false,
+            is_directory: false,
+            directory_excludes: vec![],
+            cleanup_paths: vec![],
+        },
+        SSHFileMapping {
+            id: "grok-config".to_string(),
+            name: "Grok 配置".to_string(),
+            module: "grok".to_string(),
+            local_path: "~/.grok/config.toml".to_string(),
+            remote_path: "~/.grok/config.toml".to_string(),
+            enabled: true,
+            is_pattern: false,
+            is_directory: false,
+            directory_excludes: vec![],
+            cleanup_paths: vec![],
+        },
+        SSHFileMapping {
+            id: "grok-prompt".to_string(),
+            name: "Grok 全局提示词".to_string(),
+            module: "grok".to_string(),
+            local_path: "~/.grok/AGENTS.md".to_string(),
+            remote_path: "~/.grok/AGENTS.md".to_string(),
+            enabled: true,
+            is_pattern: false,
+            is_directory: false,
+            directory_excludes: vec![],
+            cleanup_paths: vec![],
+        },
+        SSHFileMapping {
+            id: "grok-plugins".to_string(),
+            name: "Grok 插件目录".to_string(),
+            module: "grok".to_string(),
+            local_path: "~/.grok/plugins".to_string(),
+            remote_path: "~/.grok/plugins".to_string(),
+            enabled: true,
+            is_pattern: false,
+            is_directory: true,
+            directory_excludes: super::types::default_directory_excludes(),
+            cleanup_paths: vec![],
+        },
         // OpenClaw
         SSHFileMapping {
             id: "openclaw-config".to_string(),
@@ -1897,7 +1986,7 @@ fn shell_path_literal(path: &str) -> String {
 mod tests {
     use super::{
         codex_config_uses_ai_toolbox_model_catalog, default_file_mappings,
-        should_backfill_default_mapping,
+        should_backfill_default_mapping, should_backfill_versioned_mapping,
     };
 
     #[test]
@@ -1972,6 +2061,30 @@ mod tests {
             "opencode-prompt",
             7,
             &["opencode-agent", "opencode-agents"],
+        ));
+    }
+
+    #[test]
+    fn defaults_backfill_v9_only_adds_grok_mappings_for_existing_v8_users() {
+        for mapping_id in ["grok-auth", "grok-config", "grok-prompt", "grok-plugins"] {
+            assert!(should_backfill_versioned_mapping(
+                8,
+                9,
+                mapping_id,
+                &["grok-auth", "grok-config", "grok-prompt", "grok-plugins"],
+            ));
+        }
+        assert!(!should_backfill_versioned_mapping(
+            8,
+            9,
+            "codex-config",
+            &["grok-auth", "grok-config", "grok-prompt", "grok-plugins"],
+        ));
+        assert!(!should_backfill_versioned_mapping(
+            9,
+            9,
+            "grok-config",
+            &["grok-auth", "grok-config", "grok-prompt", "grok-plugins"],
         ));
     }
 

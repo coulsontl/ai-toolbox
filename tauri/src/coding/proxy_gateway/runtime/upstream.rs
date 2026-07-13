@@ -588,6 +588,7 @@ fn is_cli_route_probe(request: &DebugHttpRequest, route: &GatewayRoute) -> bool 
     match route.cli_key {
         GatewayCliKey::Claude => route.forwarded_path == "/",
         GatewayCliKey::Codex => route.forwarded_path == "/v1",
+        GatewayCliKey::Grok => route.forwarded_path == "/v1",
         GatewayCliKey::Gemini => route.forwarded_path == "/v1beta",
         GatewayCliKey::OpenCode => false,
     }
@@ -6874,7 +6875,7 @@ fn source_protocol_from_route(route: &GatewayRoute) -> Option<AiProtocol> {
                 None
             }
         }
-        GatewayCliKey::Codex => {
+        GatewayCliKey::Codex | GatewayCliKey::Grok => {
             let path = route.forwarded_path.as_str();
             if path == "/v1/chat/completions" || path == "/chat/completions" {
                 Some(AiProtocol::OpenAiChat)
@@ -8541,7 +8542,7 @@ mod tests {
                 GatewayCliKey::Claude => {
                     crate::coding::proxy_gateway::transformer::AiProtocol::AnthropicMessages
                 }
-                GatewayCliKey::Codex => {
+                GatewayCliKey::Codex | GatewayCliKey::Grok => {
                     crate::coding::proxy_gateway::transformer::AiProtocol::OpenAiResponses
                 }
                 GatewayCliKey::Gemini => {
@@ -8553,7 +8554,9 @@ mod tests {
             },
             auth_strategy: match cli_key {
                 GatewayCliKey::Claude => ProviderAuthStrategy::AnthropicApiKey,
-                GatewayCliKey::Codex | GatewayCliKey::OpenCode => ProviderAuthStrategy::Bearer,
+                GatewayCliKey::Codex | GatewayCliKey::Grok | GatewayCliKey::OpenCode => {
+                    ProviderAuthStrategy::Bearer
+                }
                 GatewayCliKey::Gemini => ProviderAuthStrategy::GoogleApiKey,
             },
             is_full_url: false,

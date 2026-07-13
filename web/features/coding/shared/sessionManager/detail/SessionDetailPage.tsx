@@ -4,6 +4,7 @@ import {
   Form,
   Input,
   Modal,
+  Radio,
   message,
 } from 'antd';
 import { AlertCircle, Loader2 } from 'lucide-react';
@@ -29,6 +30,7 @@ import {
 } from '../sessionDetailNavigation';
 import type {
   SessionDetail,
+  SessionExportFormat,
   SessionMeta,
   SessionSubagentMeta,
   SessionTool,
@@ -54,9 +56,11 @@ const canRenameSession = (tool: SessionTool) => (
   tool === 'opencode' || tool === 'codex' || tool === 'pi'
 );
 
-const buildSessionExportFileName = (tool: SessionTool, session: SessionMeta) => (
-  `${tool}-session-${session.sessionId}.json`
-);
+const buildSessionExportFileName = (
+  tool: SessionTool,
+  session: SessionMeta,
+  exportFormat: SessionExportFormat,
+) => `${tool}-session-${session.sessionId}.${exportFormat === 'grok_markdown' ? 'md' : 'json'}`;
 
 const SessionDetailPage: React.FC<SessionDetailPageProps> = ({ tool }) => {
   const { t } = useTranslation();
@@ -227,13 +231,42 @@ const SessionDetailPage: React.FC<SessionDetailPageProps> = ({ tool }) => {
     const exportMessageKey = `session-export-${tool}`;
     const visibleContextId = captureVisibleContextId();
     try {
+      let exportFormat: SessionExportFormat = 'ai_toolbox';
+      if (tool === 'grok') {
+        const selectedFormat = await new Promise<SessionExportFormat | null>((resolve) => {
+          let currentFormat: SessionExportFormat = 'ai_toolbox';
+          Modal.confirm({
+            title: t('sessionManager.grokExportFormatTitle'),
+            content: (
+              <Radio.Group
+                defaultValue={currentFormat}
+                onChange={(event) => {
+                  currentFormat = event.target.value as SessionExportFormat;
+                }}
+              >
+                <Radio value="ai_toolbox">{t('sessionManager.grokExportAiToolbox')}</Radio>
+                <Radio value="grok_markdown">{t('sessionManager.grokExportMarkdown')}</Radio>
+                <Radio value="grok_native">{t('sessionManager.grokExportNative')}</Radio>
+              </Radio.Group>
+            ),
+            okText: t('common.confirm'),
+            cancelText: t('common.cancel'),
+            onOk: () => resolve(currentFormat),
+            onCancel: () => resolve(null),
+          });
+        });
+        if (!selectedFormat) {
+          return;
+        }
+        exportFormat = selectedFormat;
+      }
       const exportPath = await save({
         title: t('sessionManager.exportDialogTitle'),
-        defaultPath: buildSessionExportFileName(tool, sessionDetail.meta),
+        defaultPath: buildSessionExportFileName(tool, sessionDetail.meta, exportFormat),
         filters: [
           {
-            name: 'JSON',
-            extensions: ['json'],
+            name: exportFormat === 'grok_markdown' ? 'Markdown' : 'JSON',
+            extensions: [exportFormat === 'grok_markdown' ? 'md' : 'json'],
           },
         ],
       });
@@ -251,7 +284,7 @@ const SessionDetailPage: React.FC<SessionDetailPageProps> = ({ tool }) => {
           duration: 0,
         });
       }
-      await exportToolSession(tool, sessionDetail.meta.sourcePath, exportPath);
+      await exportToolSession(tool, sessionDetail.meta.sourcePath, exportPath, exportFormat);
       if (shouldShowVisibleFeedback(visibleContextId)) {
         message.success({
           key: exportMessageKey,
@@ -458,6 +491,7 @@ function buildRestoreLocationState(fromScrollTop?: number): { restoreScrollTop: 
 export const OpenCodeSessionDetailPage = () => <SessionDetailPage tool="opencode" />;
 export const ClaudeCodeSessionDetailPage = () => <SessionDetailPage tool="claudecode" />;
 export const CodexSessionDetailPage = () => <SessionDetailPage tool="codex" />;
+export const GrokSessionDetailPage = () => <SessionDetailPage tool="grok" />;
 export const OpenClawSessionDetailPage = () => <SessionDetailPage tool="openclaw" />;
 export const GeminiCliSessionDetailPage = () => <SessionDetailPage tool="geminicli" />;
 export const PiSessionDetailPage = () => <SessionDetailPage tool="pi" />;

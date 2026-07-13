@@ -7,7 +7,7 @@ use crate::coding::proxy_gateway::{
     cli_proxy::manifest::CliProxyManifest, paths::ProxyGatewayPaths,
     provider_profiles::load_gateway_provider_profiles_for_runtime, transformer::AiProtocol,
 };
-use crate::coding::{claude_code, codex, gemini_cli};
+use crate::coding::{claude_code, codex, gemini_cli, grok};
 use crate::db::helpers::db_list;
 use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
@@ -77,6 +77,7 @@ pub(crate) async fn load_candidate_providers_with_settings_and_selection(
     let table = match cli_key {
         GatewayCliKey::Claude => DbTable::ClaudeProvider,
         GatewayCliKey::Codex => DbTable::CodexProvider,
+        GatewayCliKey::Grok => DbTable::GrokProvider,
         GatewayCliKey::Gemini => DbTable::GeminiCliProvider,
         GatewayCliKey::OpenCode => {
             return Err(
@@ -117,6 +118,7 @@ pub(crate) async fn load_provider_by_id_for_connectivity_test(
     let table = match cli_key {
         GatewayCliKey::Claude => DbTable::ClaudeProvider,
         GatewayCliKey::Codex => DbTable::CodexProvider,
+        GatewayCliKey::Grok => DbTable::GrokProvider,
         GatewayCliKey::Gemini => DbTable::GeminiCliProvider,
         GatewayCliKey::OpenCode => {
             return Err(
@@ -324,6 +326,71 @@ fn provider_from_record(
                 sort_index: provider.sort_index,
                 meta,
                 model_mapping: UpstreamModelMapping::default(),
+            }))
+        }
+        GatewayCliKey::Grok => {
+            let provider = grok::adapter::provider_from_db_value(record);
+            if provider.is_disabled || is_official_provider_category(&provider.category) {
+                return Ok(None);
+            }
+            let settings =
+                parse_json_config(&provider.settings_config, "Grok provider settings_config")?;
+            let config_toml = settings.get("config").and_then(Value::as_str).unwrap_or("");
+            let selected_model = grok_selected_model_from_settings(&settings, config_toml);
+            let api_key = settings
+                .pointer("/auth/API_KEY")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    selected_model
+                        .as_ref()
+                        .and_then(|model| model.api_key.clone())
+                })
+                .ok_or_else(|| format!("Grok provider '{}' has no API_KEY", provider.name))?;
+            let base_url = selected_model
+                .as_ref()
+                .and_then(|model| model.base_url.clone())
+                .unwrap_or_else(|| "https://api.x.ai/v1".to_string());
+            let (base_url, is_full_url) = normalize_provider_base_url(base_url, meta.is_full_url);
+            let target_protocol = meta
+                .api_format
+                .as_deref()
+                .and_then(AiProtocol::from_api_format)
+                .or_else(|| {
+                    selected_model
+                        .as_ref()
+                        .and_then(|model| model.api_backend.as_deref())
+                        .and_then(AiProtocol::from_api_format)
+                })
+                .unwrap_or(AiProtocol::OpenAiChat);
+            let mut auth_strategy = auth_strategy_for_target_protocol(
+                target_protocol,
+                meta.api_key_field.as_deref(),
+                &api_key,
+                ProviderAuthStrategy::Bearer,
+            );
+            if target_protocol == AiProtocol::AnthropicMessages
+                && anthropic_platform_uses_bearer_auth(&meta)
+            {
+                auth_strategy = ProviderAuthStrategy::Bearer;
+            }
+            Ok(Some(UpstreamProvider {
+                cli_key,
+                id: provider.id,
+                name: provider.name,
+                base_url,
+                api_key,
+                target_protocol,
+                auth_strategy,
+                is_full_url,
+                sort_index: provider.sort_index,
+                meta,
+                model_mapping: UpstreamModelMapping {
+                    default_model: selected_model.and_then(|model| model.model_id),
+                    ..UpstreamModelMapping::default()
+                },
             }))
         }
         GatewayCliKey::Gemini => {
@@ -556,9 +623,85 @@ fn gateway_profile_tool_for_cli(cli_key: GatewayCliKey) -> Option<&'static str> 
     match cli_key {
         GatewayCliKey::Claude => Some("claude"),
         GatewayCliKey::Codex => Some("codex"),
+        GatewayCliKey::Grok => Some("grok"),
         GatewayCliKey::Gemini => Some("gemini"),
         GatewayCliKey::OpenCode => None,
     }
+}
+
+#[derive(Debug, Clone, Default)]
+struct GrokSelectedModel {
+    model_id: Option<String>,
+    base_url: Option<String>,
+    api_backend: Option<String>,
+    api_key: Option<String>,
+}
+
+fn grok_selected_model_from_settings(
+    settings: &Value,
+    config_toml: &str,
+) -> Option<GrokSelectedModel> {
+    if !config_toml.trim().is_empty() {
+        if let Some(model) = grok_selected_model_from_toml(config_toml) {
+            return Some(model);
+        }
+    }
+    let default_key = settings
+        .get("defaultModelKey")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let models = settings.pointer("/modelCatalog/models")?.as_array()?;
+    let model = default_key
+        .and_then(|key| {
+            models.iter().find(|model| {
+                model
+                    .get("key")
+                    .or_else(|| model.get("model"))
+                    .and_then(Value::as_str)
+                    == Some(key)
+            })
+        })
+        .or_else(|| models.first())?;
+    Some(GrokSelectedModel {
+        model_id: json_value_string(model, "model").or_else(|| json_value_string(model, "key")),
+        base_url: json_value_string(model, "baseUrl")
+            .or_else(|| json_value_string(model, "base_url")),
+        api_backend: json_value_string(model, "apiBackend")
+            .or_else(|| json_value_string(model, "api_backend")),
+        api_key: json_value_string(model, "apiKey").or_else(|| json_value_string(model, "api_key")),
+    })
+}
+
+fn grok_selected_model_from_toml(config_toml: &str) -> Option<GrokSelectedModel> {
+    let document = config_toml.parse::<toml_edit::DocumentMut>().ok()?;
+    let root = document.as_table();
+    let default_key = root
+        .get("models")
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|models| models.get("default"))
+        .and_then(toml_edit::Item::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let models = root.get("model").and_then(toml_edit::Item::as_table)?;
+    let table = default_key
+        .and_then(|key| models.get(key))
+        .and_then(toml_edit::Item::as_table)
+        .or_else(|| models.iter().find_map(|(_, item)| item.as_table()))?;
+    let string = |key: &str| {
+        table
+            .get(key)
+            .and_then(toml_edit::Item::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    Some(GrokSelectedModel {
+        model_id: string("model").or_else(|| default_key.map(str::to_string)),
+        base_url: string("base_url"),
+        api_backend: string("api_backend"),
+        api_key: string("api_key"),
+    })
 }
 
 fn gateway_profile_reference_matches_tool(
@@ -1115,6 +1258,33 @@ mod tests {
             .map(|provider| provider.name.as_str())
             .collect();
         assert_eq!(names, vec!["first", "second", "third"]);
+    }
+
+    #[test]
+    fn grok_selected_model_uses_default_toml_table() {
+        let config = r#"
+[models]
+default = "custom"
+
+[model.other]
+model = "other-upstream"
+base_url = "https://other.example.com/v1"
+api_backend = "chat_completions"
+
+[model.custom]
+model = "custom-upstream"
+base_url = "https://custom.example.com/v1"
+api_backend = "messages"
+api_key = "secret"
+"#;
+        let selected = grok_selected_model_from_toml(config).expect("selected model");
+        assert_eq!(selected.model_id.as_deref(), Some("custom-upstream"));
+        assert_eq!(
+            selected.base_url.as_deref(),
+            Some("https://custom.example.com/v1")
+        );
+        assert_eq!(selected.api_backend.as_deref(), Some("messages"));
+        assert_eq!(selected.api_key.as_deref(), Some("secret"));
     }
 
     #[test]

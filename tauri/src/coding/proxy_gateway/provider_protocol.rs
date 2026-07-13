@@ -7,6 +7,7 @@ pub(crate) fn native_cli_protocol(cli_key: GatewayCliKey) -> Option<AiProtocol> 
     match cli_key {
         GatewayCliKey::Claude => Some(AiProtocol::AnthropicMessages),
         GatewayCliKey::Codex => Some(AiProtocol::OpenAiResponses),
+        GatewayCliKey::Grok => Some(AiProtocol::OpenAiResponses),
         GatewayCliKey::Gemini => Some(AiProtocol::GeminiNative),
         GatewayCliKey::OpenCode => None,
     }
@@ -20,6 +21,13 @@ pub(crate) fn provider_needs_gateway_proxy(
 ) -> bool {
     if category.trim().eq_ignore_ascii_case("official") {
         return false;
+    }
+
+    // Grok CLI natively supports responses, chat_completions and messages, but
+    // not Gemini Native. Gemini endpoints still require Gateway conversion.
+    if cli_key == GatewayCliKey::Grok {
+        return provider_target_protocol(cli_key, meta, settings_config)
+            == AiProtocol::GeminiNative;
     }
 
     let Some(native_protocol) = native_cli_protocol(cli_key) else {
@@ -63,11 +71,41 @@ fn provider_target_protocol(
                     AiProtocol::OpenAiResponses
                 }
             }),
+        GatewayCliKey::Grok => protocol_from_meta_or_settings(meta, &settings)
+            .or_else(|| {
+                settings
+                    .get("config")
+                    .and_then(Value::as_str)
+                    .and_then(grok_api_backend_from_config)
+                    .and_then(|value| AiProtocol::from_api_format(&value))
+            })
+            .unwrap_or(AiProtocol::OpenAiChat),
         GatewayCliKey::Gemini => {
             protocol_from_meta_or_settings(meta, &settings).unwrap_or(AiProtocol::GeminiNative)
         }
         GatewayCliKey::OpenCode => AiProtocol::OpenAiResponses,
     }
+}
+
+pub(crate) fn grok_api_backend_from_config(config_toml: &str) -> Option<String> {
+    let document = config_toml.trim().parse::<DocumentMut>().ok()?;
+    let root = document.as_table();
+    let default_model = root
+        .get("models")
+        .and_then(Item::as_table)
+        .and_then(|models| toml_string(models, "default"));
+    let model_tables = root.get("model").and_then(Item::as_table)?;
+    default_model
+        .as_deref()
+        .and_then(|key| model_tables.get(key))
+        .and_then(Item::as_table)
+        .and_then(|model| toml_string(model, "api_backend"))
+        .or_else(|| {
+            model_tables.iter().find_map(|(_, item)| {
+                item.as_table()
+                    .and_then(|model| toml_string(model, "api_backend"))
+            })
+        })
 }
 
 fn protocol_from_meta_or_settings(meta: Option<&Value>, settings: &Value) -> Option<AiProtocol> {
@@ -221,6 +259,45 @@ mod tests {
             Some(&json!({ "apiFormat": "openai_responses" })),
             "{}",
         ));
+    }
+
+    #[test]
+    fn grok_native_protocol_variants_do_not_require_gateway_proxy() {
+        for api_backend in ["responses", "chat_completions", "messages"] {
+            let settings = json!({
+                "config": format!(
+                    "[models]\ndefault = \"custom\"\n[model.custom]\napi_backend = \"{api_backend}\"\n"
+                )
+            });
+            assert!(!provider_needs_gateway_proxy(
+                GatewayCliKey::Grok,
+                "custom",
+                None,
+                &settings.to_string(),
+            ));
+        }
+        assert!(provider_needs_gateway_proxy(
+            GatewayCliKey::Grok,
+            "custom",
+            Some(&json!({ "apiFormat": "gemini_native" })),
+            "{}",
+        ));
+    }
+
+    #[test]
+    fn grok_api_backend_comes_from_selected_model() {
+        let config = r#"
+[models]
+default = "selected"
+[model.first]
+api_backend = "responses"
+[model.selected]
+api_backend = "messages"
+"#;
+        assert_eq!(
+            grok_api_backend_from_config(config).as_deref(),
+            Some("messages")
+        );
     }
 
     #[test]

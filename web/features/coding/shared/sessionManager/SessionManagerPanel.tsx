@@ -20,6 +20,7 @@ import {
   Empty,
   Input,
   Modal,
+  Radio,
   Select,
   Spin,
   Tag,
@@ -43,6 +44,7 @@ import type {
   ExportToolSessionsResult,
   SessionListCacheState,
   SessionListLoadMode,
+  SessionExportFormat,
   SessionMeta,
   SessionPathOption,
   SessionSourceMode,
@@ -883,8 +885,9 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
   const performBulkExportSessions = async (
     exportDir: string,
     visibleContextId: number,
+    exportFormat: SessionExportFormat,
   ): Promise<ExportToolSessionsResult> => {
-    const result = await exportToolSessions(tool, selectedSourcePaths, exportDir);
+    const result = await exportToolSessions(tool, selectedSourcePaths, exportDir, exportFormat);
     const failedSourcePathSet = new Set(result.failedItems.map((item) => item.sourcePath));
 
     if (result.exportedCount > 0 && shouldShowVisibleFeedback(visibleContextId)) {
@@ -911,6 +914,36 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
   const handleBulkExportSessions = async () => {
     if (selectedSourcePaths.length === 0) {
       return;
+    }
+
+    let exportFormat: SessionExportFormat = 'ai_toolbox';
+    if (tool === 'grok') {
+      const selectedFormat = await new Promise<SessionExportFormat | null>((resolve) => {
+        let currentFormat: SessionExportFormat = 'ai_toolbox';
+        Modal.confirm({
+          title: t('sessionManager.grokExportFormatTitle'),
+          content: (
+            <Radio.Group
+              defaultValue={currentFormat}
+              onChange={(event) => {
+                currentFormat = event.target.value as SessionExportFormat;
+              }}
+            >
+              <Radio value="ai_toolbox">{t('sessionManager.grokExportAiToolbox')}</Radio>
+              <Radio value="grok_markdown">{t('sessionManager.grokExportMarkdown')}</Radio>
+              <Radio value="grok_native">{t('sessionManager.grokExportNative')}</Radio>
+            </Radio.Group>
+          ),
+          okText: t('common.confirm'),
+          cancelText: t('common.cancel'),
+          onOk: () => resolve(currentFormat),
+          onCancel: () => resolve(null),
+        });
+      });
+      if (!selectedFormat) {
+        return;
+      }
+      exportFormat = selectedFormat;
     }
 
     let selectedExportDir: string | null = null;
@@ -940,7 +973,7 @@ const SessionManagerContent: React.FC<SessionManagerContentProps> = ({
 
     try {
       setBulkExporting(true);
-      await performBulkExportSessions(selectedExportDir, visibleContextId);
+      await performBulkExportSessions(selectedExportDir, visibleContextId, exportFormat);
     } catch (error) {
       if (!shouldShowVisibleFeedback(visibleContextId)) {
         return;

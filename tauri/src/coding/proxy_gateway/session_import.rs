@@ -45,10 +45,12 @@ fn import_session_usage_blocking(
         GatewaySessionImportCli::All => vec![
             GatewayCliKey::Claude,
             GatewayCliKey::Codex,
+            GatewayCliKey::Grok,
             GatewayCliKey::Gemini,
         ],
         GatewaySessionImportCli::Claude => vec![GatewayCliKey::Claude],
         GatewaySessionImportCli::Codex => vec![GatewayCliKey::Codex],
+        GatewaySessionImportCli::Grok => vec![GatewayCliKey::Grok],
         GatewaySessionImportCli::Gemini => vec![GatewayCliKey::Gemini],
     };
     let mut total = GatewaySessionUsageImportResult::default();
@@ -100,6 +102,7 @@ fn default_session_roots(cli_key: GatewayCliKey) -> Vec<PathBuf> {
     match cli_key {
         GatewayCliKey::Claude => vec![home.join(".claude").join("projects")],
         GatewayCliKey::Codex => vec![home.join(".codex").join("sessions")],
+        GatewayCliKey::Grok => vec![home.join(".grok").join("sessions")],
         GatewayCliKey::Gemini => vec![home.join(".gemini").join("tmp")],
         GatewayCliKey::OpenCode => Vec::new(),
     }

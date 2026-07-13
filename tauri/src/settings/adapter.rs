@@ -44,6 +44,7 @@ pub fn from_db_value(value: Value) -> AppSettings {
                 "opencode",
                 "claudecode",
                 "codex",
+                "grok",
                 "geminicli",
                 "openclaw",
                 "pi",
@@ -138,6 +139,18 @@ fn get_string_array(value: &Value, key: &str, defaults: &[&str]) -> Vec<String> 
 }
 
 fn normalize_visible_tabs_order(tabs: Vec<String>) -> Vec<String> {
+    const PRE_GROK_DEFAULT_VISIBLE_TABS: &[&str] = &[
+        "opencode",
+        "claudecode",
+        "codex",
+        "geminicli",
+        "openclaw",
+        "pi",
+        "gateway",
+        "image",
+        "ssh",
+        "wsl",
+    ];
     const PRE_GEMINI_REORDER_DEFAULT_VISIBLE_TABS: &[&str] = &[
         "opencode",
         "claudecode",
@@ -173,6 +186,7 @@ fn normalize_visible_tabs_order(tabs: Vec<String>) -> Vec<String> {
         "opencode",
         "claudecode",
         "codex",
+        "grok",
         "geminicli",
         "openclaw",
         "pi",
@@ -185,6 +199,7 @@ fn normalize_visible_tabs_order(tabs: Vec<String>) -> Vec<String> {
     if string_vec_matches(&tabs, PRE_GEMINI_REORDER_DEFAULT_VISIBLE_TABS)
         || string_vec_matches(&tabs, PRE_GATEWAY_DEFAULT_VISIBLE_TABS)
         || string_vec_matches(&tabs, PRE_PI_DEFAULT_VISIBLE_TABS)
+        || string_vec_matches(&tabs, PRE_GROK_DEFAULT_VISIBLE_TABS)
     {
         return CURRENT_DEFAULT_VISIBLE_TABS
             .iter()
@@ -271,6 +286,7 @@ fn get_sidebar_hidden_by_page(value: &Value) -> std::collections::HashMap<String
             "opencode",
             "claudecode",
             "codex",
+            "grok",
             "openclaw",
             "geminicli",
             "pi",
@@ -294,6 +310,7 @@ fn get_sidebar_hidden_by_page(value: &Value) -> std::collections::HashMap<String
         "opencode",
         "claudecode",
         "codex",
+        "grok",
         "openclaw",
         "geminicli",
         "pi",
@@ -393,6 +410,7 @@ mod tests {
                 "opencode",
                 "claudecode",
                 "codex",
+                "grok",
                 "geminicli",
                 "openclaw",
                 "pi",
@@ -425,6 +443,7 @@ mod tests {
                 "opencode",
                 "claudecode",
                 "codex",
+                "grok",
                 "geminicli",
                 "openclaw",
                 "pi",
@@ -457,6 +476,7 @@ mod tests {
                 "opencode",
                 "claudecode",
                 "codex",
+                "grok",
                 "geminicli",
                 "openclaw",
                 "pi",
@@ -490,6 +510,41 @@ mod tests {
                 "claudecode",
                 "openclaw",
                 "image",
+            ]
+        );
+    }
+
+    #[test]
+    fn visible_tabs_pre_grok_default_is_migrated() {
+        let settings = from_db_value(json!({
+            "visible_tabs": [
+                "opencode",
+                "claudecode",
+                "codex",
+                "geminicli",
+                "openclaw",
+                "pi",
+                "gateway",
+                "image",
+                "ssh",
+                "wsl"
+            ],
+        }));
+
+        assert_eq!(
+            settings.visible_tabs,
+            vec![
+                "opencode",
+                "claudecode",
+                "codex",
+                "grok",
+                "geminicli",
+                "openclaw",
+                "pi",
+                "gateway",
+                "image",
+                "ssh",
+                "wsl",
             ]
         );
     }

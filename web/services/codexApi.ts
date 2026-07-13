@@ -187,6 +187,28 @@ export const startCodexOfficialAccountOauth = async (
   return await invoke<CodexOfficialAccount>('start_codex_official_account_oauth', { providerId });
 };
 
+export interface CodexDeviceAuthStartResult {
+  sessionId: string;
+  verificationUri: string;
+  userCode: string;
+  expiresAt: number;
+  pollIntervalSeconds: number;
+}
+
+export const startCodexOfficialAccountDeviceAuth = async (
+  providerId: string,
+): Promise<CodexDeviceAuthStartResult> => {
+  return await invoke<CodexDeviceAuthStartResult>('start_codex_official_account_device_auth', {
+    providerId,
+  });
+};
+
+export const cancelCodexOfficialAccountDeviceAuth = async (
+  sessionId: string,
+): Promise<void> => {
+  await invoke('cancel_codex_official_account_device_auth', { sessionId });
+};
+
 export const saveCodexOfficialLocalAccount = async (
   providerId: string,
 ): Promise<CodexOfficialAccount> => {

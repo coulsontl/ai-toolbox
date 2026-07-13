@@ -9,6 +9,7 @@ import type {
   SessionSourceMode,
   SessionSubagentMeta,
   SessionTool,
+  SessionExportFormat,
 } from './types';
 
 interface ListToolSessionsInput {
@@ -136,11 +137,13 @@ export const exportToolSession = async (
   tool: SessionTool,
   sourcePath: string,
   exportPath: string,
+  exportFormat: SessionExportFormat = 'ai_toolbox',
 ): Promise<void> => {
   await invoke('export_tool_session', {
     tool,
     sourcePath,
     exportPath,
+    exportFormat,
   });
 };
 
@@ -148,11 +151,13 @@ export const exportToolSessions = async (
   tool: SessionTool,
   sourcePaths: string[],
   exportDir: string,
+  exportFormat: SessionExportFormat = 'ai_toolbox',
 ): Promise<ExportToolSessionsResult> => {
   return await invoke<ExportToolSessionsResult>('export_tool_sessions', {
     tool,
     sourcePaths,
     exportDir,
+    exportFormat,
   });
 };
 

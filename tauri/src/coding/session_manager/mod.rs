@@ -1,6 +1,7 @@
 mod claude_code;
 mod codex;
 mod gemini_cli;
+mod grok;
 mod message_blocks;
 mod open_claw;
 mod open_code;
@@ -15,13 +16,14 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::coding::runtime_location::{
     build_windows_unc_path, expand_home_from_user_root, get_claude_runtime_location_async,
     get_codex_runtime_location_async, get_gemini_cli_runtime_location_async,
-    get_openclaw_runtime_location_async, get_opencode_runtime_location_async,
-    get_pi_runtime_location_async, RuntimeLocationInfo, RuntimeLocationMode, WslLocationInfo,
+    get_grok_runtime_location_async, get_openclaw_runtime_location_async,
+    get_opencode_runtime_location_async, get_pi_runtime_location_async, RuntimeLocationInfo,
+    RuntimeLocationMode, WslLocationInfo,
 };
 use crate::db::helpers::db_get;
 use crate::db::schema::DbTable;
@@ -39,6 +41,8 @@ const SNAPSHOT_FORMAT_GEMINI_CLI: &str = "gemini-cli-session-json";
 const SNAPSHOT_FORMAT_OPENCLAW: &str = "openclaw-agent-session";
 const SNAPSHOT_FORMAT_OPENCODE: &str = "opencode-official-export";
 const SNAPSHOT_FORMAT_PI: &str = "pi-session-jsonl";
+const SNAPSHOT_FORMAT_GROK: &str = "grok-session-directory";
+const GROK_NATIVE_EXPORT_SCHEMA: &str = "ai-toolbox.grok-native-snapshot.v1";
 
 #[derive(Debug, Clone)]
 struct SessionCacheEntry {
@@ -294,6 +298,9 @@ enum ToolSessionContext {
     Pi {
         sessions_root: PathBuf,
     },
+    Grok {
+        sessions_root: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -405,6 +412,7 @@ enum SessionTool {
     OpenClaw,
     OpenCode,
     Pi,
+    Grok,
 }
 
 impl SessionTool {
@@ -416,6 +424,7 @@ impl SessionTool {
             "openclaw" | "open_claw" => Ok(Self::OpenClaw),
             "opencode" | "open_code" => Ok(Self::OpenCode),
             "pi" => Ok(Self::Pi),
+            "grok" => Ok(Self::Grok),
             _ => Err(format!("Unsupported session tool: {raw}")),
         }
     }
@@ -428,6 +437,7 @@ impl SessionTool {
             Self::OpenClaw => "openclaw",
             Self::OpenCode => "opencode",
             Self::Pi => "pi",
+            Self::Grok => "grok",
         }
     }
 }
@@ -456,6 +466,7 @@ impl ToolSessionContext {
                 sqlite_db_path.display()
             ),
             Self::Pi { sessions_root } => format!("pi:{}", sessions_root.display()),
+            Self::Grok { sessions_root } => format!("grok:{}", sessions_root.display()),
         }
     }
 }
@@ -601,13 +612,20 @@ pub async fn export_tool_session(
     tool: String,
     source_path: String,
     export_path: String,
+    export_format: Option<String>,
 ) -> Result<(), String> {
     let session_tool = SessionTool::parse(tool.trim())?;
     let contexts = resolve_session_contexts(&state.db(), session_tool).await?;
     let normalized_tool = session_tool.as_str().to_string();
 
     tauri::async_runtime::spawn_blocking(move || {
-        export_session_blocking(contexts, normalized_tool, source_path, export_path)
+        export_session_blocking(
+            contexts,
+            normalized_tool,
+            source_path,
+            export_path,
+            export_format.as_deref().unwrap_or("ai_toolbox").to_string(),
+        )
     })
     .await
     .map_err(|error| format!("Failed to export session: {error}"))?
@@ -619,13 +637,20 @@ pub async fn export_tool_sessions(
     tool: String,
     source_paths: Vec<String>,
     export_dir: String,
+    export_format: Option<String>,
 ) -> Result<ExportToolSessionsResult, String> {
     let session_tool = SessionTool::parse(tool.trim())?;
     let contexts = resolve_session_contexts(&state.db(), session_tool).await?;
     let normalized_tool = session_tool.as_str().to_string();
 
     tauri::async_runtime::spawn_blocking(move || {
-        export_sessions_blocking(contexts, normalized_tool, source_paths, export_dir)
+        export_sessions_blocking(
+            contexts,
+            normalized_tool,
+            source_paths,
+            export_dir,
+            export_format.as_deref().unwrap_or("ai_toolbox").to_string(),
+        )
     })
     .await
     .map_err(|error| format!("Failed to export sessions: {error}"))?
@@ -1158,6 +1183,9 @@ fn delete_session_from_meta(
         ToolSessionContext::Pi { .. } => {
             pi::delete_session(Path::new(&session.source_path))?;
         }
+        ToolSessionContext::Grok { sessions_root } => {
+            grok::delete_session(sessions_root, Path::new(&session.source_path))?;
+        }
     }
 
     Ok(())
@@ -1245,12 +1273,16 @@ fn export_session_blocking(
     tool: String,
     source_path: String,
     export_path: String,
+    export_format: String,
 ) -> Result<(), String> {
     let (entry, meta) = find_session_with_context(&contexts, &source_path, false)?;
-    let messages = load_messages(&entry.context, &meta.source_path)?;
-    let session_detail = SessionDetail { meta, messages };
-    let exported_file = build_exported_session_file(&entry.context, tool, session_detail)?;
-    write_exported_session_file(&exported_file, Path::new(&export_path))
+    export_session_to_path(
+        &entry.context,
+        &tool,
+        &meta,
+        &export_format,
+        Path::new(&export_path),
+    )
 }
 
 fn export_sessions_blocking(
@@ -1258,6 +1290,7 @@ fn export_sessions_blocking(
     tool: String,
     source_paths: Vec<String>,
     export_dir: String,
+    export_format: String,
 ) -> Result<ExportToolSessionsResult, String> {
     let export_dir_ref = Path::new(&export_dir);
     std::fs::create_dir_all(export_dir_ref).map_err(|error| {
@@ -1296,21 +1329,21 @@ fn export_sessions_blocking(
         }
 
         let result = (|| -> Result<String, String> {
-            let messages = load_messages(&entry.context, &session.source_path)?;
-            let session_detail = SessionDetail {
-                meta: session.clone(),
-                messages,
-            };
-            let exported_file =
-                build_exported_session_file(&entry.context, tool.clone(), session_detail)?;
             let file_name = build_unique_export_file_name(
-                &exported_file.meta,
+                &session,
                 &tool,
                 exported_items.len() + 1,
                 &mut used_file_names,
+                export_file_extension(&tool, &export_format)?,
             );
             let export_path = export_dir_ref.join(file_name);
-            write_exported_session_file(&exported_file, &export_path)?;
+            export_session_to_path(
+                &entry.context,
+                &tool,
+                &session,
+                &export_format,
+                &export_path,
+            )?;
             Ok(export_path.to_string_lossy().to_string())
         })();
 
@@ -1355,6 +1388,88 @@ fn build_exported_session_file(
     })
 }
 
+fn export_file_extension<'a>(tool: &str, export_format: &'a str) -> Result<&'a str, String> {
+    match export_format {
+        "ai_toolbox" => Ok("json"),
+        "grok_markdown" if tool == "grok" => Ok("md"),
+        "grok_native" if tool == "grok" => Ok("json"),
+        "grok_markdown" | "grok_native" => {
+            Err("Grok-specific export formats are only available for Grok sessions".to_string())
+        }
+        _ => Err(format!(
+            "Unsupported session export format: {export_format}"
+        )),
+    }
+}
+
+fn export_session_to_path(
+    context: &ToolSessionContext,
+    tool: &str,
+    meta: &SessionMeta,
+    export_format: &str,
+    export_path: &Path,
+) -> Result<(), String> {
+    export_file_extension(tool, export_format)?;
+    match export_format {
+        "ai_toolbox" => {
+            let messages = load_messages(context, &meta.source_path)?;
+            let session_detail = SessionDetail {
+                meta: meta.clone(),
+                messages,
+            };
+            let exported_file =
+                build_exported_session_file(context, tool.to_string(), session_detail)?;
+            write_exported_session_file(&exported_file, export_path)
+        }
+        "grok_markdown" => match context {
+            ToolSessionContext::Grok { sessions_root } => {
+                grok::export_markdown(sessions_root, &meta.session_id, export_path)
+            }
+            _ => Err("Grok Markdown export requires a Grok session context".to_string()),
+        },
+        "grok_native" => match context {
+            ToolSessionContext::Grok { sessions_root } => {
+                let payload =
+                    grok::export_native_snapshot(sessions_root, Path::new(&meta.source_path))?;
+                let exported = json!({
+                    "schema": GROK_NATIVE_EXPORT_SCHEMA,
+                    "tool": "grok",
+                    "sessionId": meta.session_id,
+                    "exportedAt": Utc::now().to_rfc3339(),
+                    "nativeSnapshot": {
+                        "format": SNAPSHOT_FORMAT_GROK,
+                        "payload": payload,
+                    }
+                });
+                write_json_value_to_path(&exported, export_path)
+            }
+            _ => Err("Grok native export requires a Grok session context".to_string()),
+        },
+        _ => Err(format!(
+            "Unsupported session export format: {export_format}"
+        )),
+    }
+}
+
+fn write_json_value_to_path(value: &Value, path: &Path) -> Result<(), String> {
+    let serialized = serde_json::to_string_pretty(value)
+        .map_err(|error| format!("Failed to serialize session export: {error}"))?;
+    if let Some(parent_dir) = path.parent() {
+        std::fs::create_dir_all(parent_dir).map_err(|error| {
+            format!(
+                "Failed to create export directory {}: {error}",
+                parent_dir.display()
+            )
+        })?;
+    }
+    std::fs::write(path, serialized).map_err(|error| {
+        format!(
+            "Failed to write exported session file {}: {error}",
+            path.display()
+        )
+    })
+}
+
 fn write_exported_session_file(
     exported_file: &ExportedSessionFile,
     export_path_ref: &Path,
@@ -1386,6 +1501,7 @@ fn build_unique_export_file_name(
     tool: &str,
     index: usize,
     used_file_names: &mut HashSet<String>,
+    extension: &str,
 ) -> String {
     let title = meta
         .title
@@ -1398,10 +1514,10 @@ fn build_unique_export_file_name(
         Some(title) => format!("{index:03}-{tool}-{title}-{session_id}"),
         None => format!("{index:03}-{tool}-{session_id}"),
     };
-    let mut file_name = format!("{base_name}.json");
+    let mut file_name = format!("{base_name}.{extension}");
     let mut suffix = 2usize;
     while !used_file_names.insert(file_name.to_ascii_lowercase()) {
-        file_name = format!("{base_name}-{suffix}.json");
+        file_name = format!("{base_name}-{suffix}.{extension}");
         suffix += 1;
     }
     file_name
@@ -1468,6 +1584,10 @@ fn import_session_blocking(
     tool: String,
     import_path: String,
 ) -> Result<(), String> {
+    if tool == "grok" && try_import_grok_native_snapshot(&context, &import_path)? {
+        invalidate_cache(&context);
+        return Ok(());
+    }
     let exported_file = read_exported_session_file(&import_path)?;
     validate_exported_session_file(&exported_file, &tool)?;
 
@@ -1543,10 +1663,54 @@ fn import_session_blocking(
                 &exported_file.native_snapshot.payload,
             )?;
         }
+        ToolSessionContext::Grok { sessions_root } => {
+            ensure_snapshot_format(&exported_file.native_snapshot, SNAPSHOT_FORMAT_GROK)?;
+            grok::import_native_snapshot(
+                sessions_root,
+                &exported_file.meta.session_id,
+                &exported_file.native_snapshot.payload,
+            )?;
+        }
     }
 
     invalidate_cache(&context);
     Ok(())
+}
+
+fn try_import_grok_native_snapshot(
+    context: &ToolSessionContext,
+    import_path: &str,
+) -> Result<bool, String> {
+    let data = std::fs::read_to_string(import_path)
+        .map_err(|error| format!("Failed to read imported session file {import_path}: {error}"))?;
+    let value: Value = serde_json::from_str(&data)
+        .map_err(|error| format!("Invalid session export file {import_path}: {error}"))?;
+    if value.get("schema").and_then(Value::as_str) != Some(GROK_NATIVE_EXPORT_SCHEMA) {
+        return Ok(false);
+    }
+    let ToolSessionContext::Grok { sessions_root } = context else {
+        return Err("Grok native snapshot requires a Grok session context".to_string());
+    };
+    if value.get("tool").and_then(Value::as_str) != Some("grok") {
+        return Err("Invalid Grok native snapshot tool".to_string());
+    }
+    let session_id = value
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Grok native snapshot is missing sessionId".to_string())?;
+    let native_snapshot = value
+        .get("nativeSnapshot")
+        .ok_or_else(|| "Grok native snapshot payload is missing".to_string())?;
+    if native_snapshot.get("format").and_then(Value::as_str) != Some(SNAPSHOT_FORMAT_GROK) {
+        return Err("Unexpected Grok native snapshot format".to_string());
+    }
+    let payload = native_snapshot
+        .get("payload")
+        .ok_or_else(|| "Grok native snapshot payload is missing".to_string())?;
+    grok::import_native_snapshot(sessions_root, session_id, payload)?;
+    Ok(true)
 }
 
 fn rename_session_blocking(
@@ -1621,6 +1785,10 @@ fn build_native_snapshot(
         ToolSessionContext::Pi { sessions_root } => Ok(NativeSnapshot {
             format: SNAPSHOT_FORMAT_PI.to_string(),
             payload: pi::export_native_snapshot(sessions_root, Path::new(source_path))?,
+        }),
+        ToolSessionContext::Grok { sessions_root } => Ok(NativeSnapshot {
+            format: SNAPSHOT_FORMAT_GROK.to_string(),
+            payload: grok::export_native_snapshot(sessions_root, Path::new(source_path))?,
         }),
     }
 }
@@ -1703,6 +1871,7 @@ fn scan_sessions(context: &ToolSessionContext) -> Vec<SessionMeta> {
             ..
         } => open_code::scan_sessions(data_root, sqlite_db_path),
         ToolSessionContext::Pi { sessions_root } => pi::scan_sessions(sessions_root),
+        ToolSessionContext::Grok { sessions_root } => grok::scan_sessions(sessions_root),
     };
 
     sessions.sort_by(|left, right| {
@@ -1733,6 +1902,9 @@ fn scan_recent_sessions(context: &ToolSessionContext, limit: usize) -> Vec<Sessi
             ..
         } => open_code::scan_recent_sessions(data_root, sqlite_db_path, limit),
         ToolSessionContext::Pi { sessions_root } => pi::scan_recent_sessions(sessions_root, limit),
+        ToolSessionContext::Grok { sessions_root } => {
+            grok::scan_recent_sessions(sessions_root, limit)
+        }
     };
 
     sessions.sort_by(|left, right| {
@@ -1755,6 +1927,7 @@ fn load_messages(
         ToolSessionContext::OpenClaw { .. } => open_claw::load_messages(Path::new(source_path)),
         ToolSessionContext::OpenCode { .. } => open_code::load_messages(source_path),
         ToolSessionContext::Pi { .. } => pi::load_messages(Path::new(source_path)),
+        ToolSessionContext::Grok { .. } => grok::load_messages(Path::new(source_path)),
     }
 }
 
@@ -1772,7 +1945,8 @@ fn list_subagent_sessions(
         ToolSessionContext::Codex { .. }
         | ToolSessionContext::OpenClaw { .. }
         | ToolSessionContext::OpenCode { .. }
-        | ToolSessionContext::Pi { .. } => Vec::new(),
+        | ToolSessionContext::Pi { .. }
+        | ToolSessionContext::Grok { .. } => Vec::new(),
     }
 }
 
@@ -1882,6 +2056,9 @@ fn scan_session_content_for_query(
         ToolSessionContext::Pi { .. } => {
             pi::scan_messages_for_query(Path::new(source_path), query_lower)
         }
+        ToolSessionContext::Grok { .. } => {
+            grok::scan_messages_for_query(Path::new(source_path), query_lower)
+        }
     }
 }
 
@@ -1976,6 +2153,7 @@ fn context_wsl_info(context: &ToolSessionContext) -> Option<WslLocationInfo> {
             .clone()
             .or_else(|| path_wsl_info(&runtime_location.host_path)),
         ToolSessionContext::Pi { sessions_root } => path_wsl_info(sessions_root),
+        ToolSessionContext::Grok { sessions_root } => path_wsl_info(sessions_root),
     }
 }
 
@@ -2062,6 +2240,9 @@ fn build_default_wsl_session_context(
         }
         SessionTool::Pi => Some(ToolSessionContext::Pi {
             sessions_root: wsl_home_path(distro, linux_home, ".pi/agent/sessions"),
+        }),
+        SessionTool::Grok => Some(ToolSessionContext::Grok {
+            sessions_root: wsl_home_path(distro, linux_home, ".grok/sessions"),
         }),
     }
 }
@@ -2161,6 +2342,12 @@ async fn resolve_context(
             let runtime_location = get_pi_runtime_location_async(db).await?;
             let sessions_root = resolve_pi_sessions_root(&runtime_location)?;
             Ok(ToolSessionContext::Pi { sessions_root })
+        }
+        SessionTool::Grok => {
+            let runtime_location = get_grok_runtime_location_async(db).await?;
+            Ok(ToolSessionContext::Grok {
+                sessions_root: runtime_location.host_path.join("sessions"),
+            })
         }
     }
 }
@@ -2690,6 +2877,59 @@ mod tests {
     }
 
     #[test]
+    fn grok_native_standalone_export_import_round_trip() {
+        let test_root = TestDir::new("grok-native-round-trip");
+        let source_root = test_root.path().join("source").join("sessions");
+        let source_session = source_root.join("encoded-project").join("grok-session-1");
+        fs::create_dir_all(source_session.join("subagents")).expect("create source session");
+        fs::write(
+            source_session.join("summary.json"),
+            r#"{"info":{"id":"grok-session-1","cwd":"/workspace/demo"},"generated_title":"Grok native round trip"}"#,
+        )
+        .expect("write Grok summary");
+        fs::write(
+            source_session.join("chat_history.jsonl"),
+            "{\"type\":\"user\",\"content\":\"hello\"}\n",
+        )
+        .expect("write Grok history");
+        fs::write(source_session.join("subagents/state.bin"), [0_u8, 255, 10])
+            .expect("write Grok binary state");
+
+        let source_context = ToolSessionContext::Grok {
+            sessions_root: source_root.clone(),
+        };
+        let meta = grok::scan_sessions(&source_root)
+            .into_iter()
+            .next()
+            .expect("scan Grok session");
+        let export_path = test_root.path().join("grok-native.json");
+        export_session_to_path(&source_context, "grok", &meta, "grok_native", &export_path)
+            .expect("export Grok native snapshot");
+        let exported = read_json_file(&export_path);
+        assert_eq!(
+            exported.get("schema").and_then(Value::as_str),
+            Some(GROK_NATIVE_EXPORT_SCHEMA)
+        );
+
+        let target_root = test_root.path().join("target").join("sessions");
+        fs::create_dir_all(&target_root).expect("create target sessions root");
+        import_session_blocking(
+            ToolSessionContext::Grok {
+                sessions_root: target_root.clone(),
+            },
+            "grok".to_string(),
+            export_path.to_string_lossy().to_string(),
+        )
+        .expect("import Grok native snapshot");
+
+        assert_eq!(
+            fs::read(target_root.join("encoded-project/grok-session-1/subagents/state.bin"))
+                .expect("read imported binary state"),
+            [0_u8, 255, 10]
+        );
+    }
+
+    #[test]
     fn codex_round_trip_preserves_thread_name_index() {
         let test_root = TestDir::new("codex-thread-name");
         verify_codex_round_trip(test_root.path());
@@ -2916,6 +3156,7 @@ mod tests {
                 second_session_path.to_string_lossy().to_string(),
             ],
             export_dir.to_string_lossy().to_string(),
+            "ai_toolbox".to_string(),
         )
         .expect("bulk export should complete with partial result");
 
@@ -3151,6 +3392,7 @@ mod tests {
             "codex".to_string(),
             source_path.to_string_lossy().to_string(),
             export_file.to_string_lossy().to_string(),
+            "ai_toolbox".to_string(),
         )
         .expect("codex export should succeed");
 
@@ -3268,6 +3510,7 @@ mod tests {
             "claudecode".to_string(),
             source_path.to_string_lossy().to_string(),
             export_file.to_string_lossy().to_string(),
+            "ai_toolbox".to_string(),
         )
         .expect("claude export should succeed");
 
@@ -3435,6 +3678,7 @@ mod tests {
             "opencode".to_string(),
             source_session.source_path.clone(),
             export_file.to_string_lossy().to_string(),
+            "ai_toolbox".to_string(),
         )
         .expect("opencode export should succeed");
         drop(export_env_guards);

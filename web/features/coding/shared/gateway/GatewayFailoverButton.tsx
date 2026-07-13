@@ -13,7 +13,7 @@ import {
 import { refreshTrayMenu } from '@/services/appApi';
 import styles from './GatewayFailoverButton.module.less';
 
-type SupportedGatewayCliKey = Extract<GatewayCliKey, 'claude' | 'codex' | 'gemini'>;
+type SupportedGatewayCliKey = Extract<GatewayCliKey, 'claude' | 'codex' | 'grok' | 'gemini'>;
 type ActionKind = 'load' | 'enableFailover' | 'disableFailover' | 'restore';
 type NoticeKind = 'success' | 'error' | 'info';
 

@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 pub enum GatewayCliKey {
     Claude,
     Codex,
+    Grok,
     Gemini,
     OpenCode,
 }
@@ -16,13 +17,14 @@ impl GatewayCliKey {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Grok => "grok",
             Self::Gemini => "gemini",
             Self::OpenCode => "opencode",
         }
     }
 
     pub fn supported_mvp() -> Vec<Self> {
-        vec![Self::Claude, Self::Codex, Self::Gemini]
+        vec![Self::Claude, Self::Codex, Self::Grok, Self::Gemini]
     }
 }
 
@@ -729,6 +731,7 @@ pub enum GatewaySessionImportCli {
     All,
     Claude,
     Codex,
+    Grok,
     Gemini,
 }
 
