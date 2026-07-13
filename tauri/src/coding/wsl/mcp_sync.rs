@@ -72,6 +72,9 @@ pub async fn sync_mcp_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<()
     let skip_codex = direct_statuses
         .iter()
         .any(|status| status.module == "codex" && status.is_wsl_direct);
+    let skip_grok = direct_statuses
+        .iter()
+        .any(|status| status.module == "grok" && status.is_wsl_direct);
     let skip_geminicli = direct_statuses
         .iter()
         .any(|status| status.module == "geminicli" && status.is_wsl_direct);
@@ -116,20 +119,20 @@ pub async fn sync_mcp_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<()
         }
     }
 
-    // Emit progress for OpenCode/Codex/Gemini CLI/Pi
+    // Emit progress for OpenCode/Codex/Grok/Gemini CLI/Pi
     let _ = app.emit(
         "wsl-sync-progress",
         SyncProgress {
             phase: "mcp".to_string(),
-            current_item: "OpenCode/Codex/Gemini CLI/Pi MCP".to_string(),
+            current_item: "OpenCode/Codex/Grok/Gemini CLI/Pi MCP".to_string(),
             current: 2,
             total: 2,
-            message: "MCP 同步: OpenCode/Codex/Gemini CLI/Pi...".to_string(),
+            message: "MCP 同步: OpenCode/Codex/Grok/Gemini CLI/Pi...".to_string(),
             current_file: None,
         },
     );
 
-    // 2. OpenCode/Codex/Gemini CLI/Pi: sync config files via file mappings
+    // 2. OpenCode/Codex/Grok/Gemini CLI/Pi: sync config files via file mappings
     match get_file_mappings(state).await {
         Ok(file_mappings) => {
             let mcp_mappings: Vec<_> = file_mappings
@@ -140,6 +143,7 @@ pub async fn sync_mcp_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<()
                         &m.module,
                         skip_opencode,
                         skip_codex,
+                        skip_grok,
                         skip_geminicli,
                         skip_pi,
                     )
@@ -152,10 +156,10 @@ pub async fn sync_mcp_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<()
                 if !result.errors.is_empty() {
                     let msg = result.errors.join("; ");
                     log::warn!("MCP file mapping sync errors: {}", msg);
-                    all_errors.push(format!("OpenCode/Codex/Gemini CLI/Pi: {}", msg));
+                    all_errors.push(format!("OpenCode/Codex/Grok/Gemini CLI/Pi: {}", msg));
                     let _ = app.emit(
                         "wsl-sync-warning",
-                        format!("OpenCode/Codex/Gemini CLI/Pi 配置同步部分失败：{}", msg),
+                        format!("OpenCode/Codex/Grok/Gemini CLI/Pi 配置同步部分失败：{}", msg),
                     );
                 }
 
@@ -183,11 +187,11 @@ pub async fn sync_mcp_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<()
             }
         }
         Err(e) => {
-            log::warn!("Skipped OpenCode/Codex/Gemini CLI/Pi MCP sync: {}", e);
-            all_errors.push(format!("OpenCode/Codex/Gemini CLI/Pi: {}", e));
+            log::warn!("Skipped OpenCode/Codex/Grok/Gemini CLI/Pi MCP sync: {}", e);
+            all_errors.push(format!("OpenCode/Codex/Grok/Gemini CLI/Pi: {}", e));
             let _ = app.emit(
                 "wsl-sync-warning",
-                format!("OpenCode/Codex/Gemini CLI/Pi MCP 同步已跳过：{}", e),
+                format!("OpenCode/Codex/Grok/Gemini CLI/Pi MCP 同步已跳过：{}", e),
             );
         }
     }
@@ -336,11 +340,13 @@ fn should_skip_mapped_mcp_config_file_for_wsl_direct(
     module: &str,
     skip_opencode: bool,
     skip_codex: bool,
+    skip_grok: bool,
     skip_geminicli: bool,
     skip_pi: bool,
 ) -> bool {
     (module == "opencode" && skip_opencode)
         || (module == "codex" && skip_codex)
+        || (module == "grok" && skip_grok)
         || (module == "geminicli" && skip_geminicli)
         || (module == "pi" && skip_pi)
 }
@@ -409,13 +415,24 @@ mod tests {
     #[test]
     fn skips_pi_mcp_file_mapping_when_pi_is_wsl_direct() {
         assert!(should_skip_mapped_mcp_config_file_for_wsl_direct(
-            "pi", false, false, false, true,
+            "pi", false, false, false, false, true,
         ));
         assert!(!should_skip_mapped_mcp_config_file_for_wsl_direct(
-            "pi", false, false, false, false,
+            "pi", false, false, false, false, false,
         ));
         assert!(!should_skip_mapped_mcp_config_file_for_wsl_direct(
-            "codex", false, false, false, true,
+            "codex", false, false, false, false, true,
         ));
+    }
+
+    #[test]
+    fn skips_grok_mcp_file_mapping_when_grok_is_wsl_direct() {
+        assert!(should_skip_mapped_mcp_config_file_for_wsl_direct(
+            "grok", false, false, true, false, false,
+        ));
+        assert!(!should_skip_mapped_mcp_config_file_for_wsl_direct(
+            "grok", false, false, false, false, false,
+        ));
+        assert!(is_mapped_mcp_config_file("grok-config"));
     }
 }

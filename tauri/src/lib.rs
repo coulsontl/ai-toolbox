@@ -1956,6 +1956,7 @@ pub fn run() {
             coding::grok::delete_grok_prompt_config,
             coding::grok::apply_grok_prompt_config,
             coding::grok::reorder_grok_prompt_configs,
+            coding::grok::save_grok_local_prompt_config,
             coding::grok::start_grok_official_account_device_auth,
             coding::grok::cancel_grok_official_account_device_auth,
             coding::grok::get_grok_official_account_auth_status,

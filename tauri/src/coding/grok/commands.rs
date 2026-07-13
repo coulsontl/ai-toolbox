@@ -119,8 +119,29 @@ pub async fn reveal_grok_config_folder(
 }
 
 #[tauri::command]
-pub fn fetch_grok_official_models() -> GrokOfficialModelsResponse {
-    let models = ["grok-build"]
+pub async fn fetch_grok_official_models(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<GrokOfficialModelsResponse, String> {
+    match run_grok_models_command(state.db()).await {
+        Ok(output) => {
+            let models = parse_grok_models_output(&output);
+            if models.is_empty() {
+                Ok(bundled_grok_official_models("bundled-fallback"))
+            } else {
+                Ok(GrokOfficialModelsResponse {
+                    total: models.len(),
+                    models,
+                    source: "cli".to_string(),
+                    tier: "official".to_string(),
+                })
+            }
+        }
+        Err(_) => Ok(bundled_grok_official_models("bundled")),
+    }
+}
+
+fn bundled_grok_official_models(source: &str) -> GrokOfficialModelsResponse {
+    let models = ["grok-build", "grok-4.5"]
         .into_iter()
         .map(|model_id| GrokOfficialModel {
             id: model_id.to_string(),
@@ -132,9 +153,90 @@ pub fn fetch_grok_official_models() -> GrokOfficialModelsResponse {
     GrokOfficialModelsResponse {
         total: models.len(),
         models,
-        source: "bundled".to_string(),
+        source: source.to_string(),
         tier: "official".to_string(),
     }
+}
+
+fn parse_grok_models_output(output: &str) -> Vec<GrokOfficialModel> {
+    let mut models = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut in_available_section = false;
+
+    for raw_line in output.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.to_ascii_lowercase().starts_with("available models") {
+            in_available_section = true;
+            continue;
+        }
+        if !in_available_section {
+            continue;
+        }
+        let entry = line
+            .strip_prefix('-')
+            .or_else(|| line.strip_prefix('*'))
+            .map(str::trim)
+            .unwrap_or("");
+        if entry.is_empty() {
+            continue;
+        }
+        let model_id = entry
+            .split_whitespace()
+            .next()
+            .unwrap_or(entry)
+            .trim()
+            .to_string();
+        if model_id.is_empty() || !seen.insert(model_id.clone()) {
+            continue;
+        }
+        models.push(GrokOfficialModel {
+            id: model_id.clone(),
+            name: Some(model_id),
+            owned_by: Some("xai".to_string()),
+            created: None,
+        });
+    }
+    models
+}
+
+async fn run_grok_models_command(db: &SqliteDbState) -> Result<String, String> {
+    use crate::coding::cli_resolver::{build_local_tokio_command, resolve_local_grok_program};
+    use crate::coding::runtime_location::RuntimeLocationMode;
+    use tokio::process::Command;
+
+    let location = runtime_location::get_grok_runtime_location_async(db).await?;
+    let mut command = match location.mode {
+        RuntimeLocationMode::LocalWindows => {
+            let program = resolve_local_grok_program();
+            let mut command = build_local_tokio_command(&program.path);
+            command.arg("models").env("GROK_HOME", &location.host_path);
+            command
+        }
+        RuntimeLocationMode::WslDirect => {
+            let wsl = location.wsl.as_ref().ok_or_else(|| {
+                "Missing WSL runtime metadata for Grok models command".to_string()
+            })?;
+            let mut command = Command::new("wsl");
+            command
+                .args(["-d", &wsl.distro, "--exec", "env"])
+                .arg(format!("GROK_HOME={}", wsl.linux_path))
+                .args(["grok", "models"]);
+            command
+        }
+    };
+    let output = command
+        .output()
+        .await
+        .map_err(|error| format!("Failed to run grok models: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if output.status.success() {
+        return Ok(stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if stderr.is_empty() { stdout } else { stderr })
 }
 
 #[tauri::command]
@@ -456,7 +558,14 @@ pub async fn apply_grok_provider_to_file(
     db: &SqliteDbState,
     provider_id: &str,
 ) -> Result<Vec<String>, String> {
-    apply_grok_provider_to_file_with_previous_settings(db, provider_id, None, None).await
+    let previous_common_config = get_common_config(db)?.map(|value| value.config);
+    apply_grok_provider_to_file_with_previous_settings(
+        db,
+        provider_id,
+        None,
+        previous_common_config.as_deref(),
+    )
+    .await
 }
 
 async fn apply_grok_provider_to_file_with_previous_settings(
@@ -501,10 +610,14 @@ async fn apply_grok_provider_to_file_with_previous_settings(
                 .map(|item| (key.clone(), item))
         })
         .collect::<Vec<_>>();
-    if let Some(previous_common_config) = previous_common_config {
+    let common = get_common_config(db)?;
+    let previous_common = previous_common_config
+        .map(str::to_string)
+        .or_else(|| common.as_ref().map(|value| value.config.clone()));
+    if let Some(previous_common_config) = previous_common.as_deref() {
         remove_matching_unmanaged_config(&mut document, previous_common_config)?;
     }
-    if let Some(common) = get_common_config(db)? {
+    if let Some(common) = common {
         merge_common_config(&mut document, &common.config)?;
     }
     merge_provider_config(&mut document, &settings)?;
@@ -563,6 +676,7 @@ pub async fn extract_grok_common_config_from_current_file(
     document.remove("model");
     document.remove("mcp_servers");
     document.remove("plugins");
+    document.remove("marketplace");
     if let Some(models) = document.get_mut("models").and_then(Item::as_table_mut) {
         models.remove("default");
         if models.is_empty() {
@@ -762,15 +876,21 @@ pub async fn list_grok_prompt_configs(
     state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Vec<GrokPromptConfig>, String> {
     let order = prompt_order()?;
-    state
+    let prompts = state
         .db()
         .with_conn(|conn| db_list(conn, DbTable::GrokPromptConfig, Some(&order)))
         .map(|values| {
             values
                 .into_iter()
                 .map(adapter::prompt_from_db_value)
-                .collect()
-        })
+                .collect::<Vec<_>>()
+        })?;
+    if prompts.is_empty() {
+        if let Some(local_config) = get_local_prompt_config(state.db()).await? {
+            return Ok(vec![local_config]);
+        }
+    }
+    Ok(prompts)
 }
 
 #[tauri::command]
@@ -852,11 +972,50 @@ pub async fn delete_grok_prompt_config(
         .db()
         .with_conn(|conn| db_delete(conn, DbTable::GrokPromptConfig, &id).map(|_| ()))?;
     if applied {
+        // Normal WSL file sync skips missing sources; delete the remote target first.
+        #[cfg(target_os = "windows")]
+        {
+            let _ = crate::coding::wsl::remove_auto_synced_wsl_mapping_target(
+                state.inner(),
+                "grok-prompt",
+            )
+            .await;
+        }
         remove_file_if_exists(&get_grok_prompt_path_async(state.db()).await?)?;
         emit_grok_sync(&app);
     }
     let _ = app.emit("config-changed", "window");
     Ok(())
+}
+
+#[tauri::command]
+pub async fn save_grok_local_prompt_config(
+    state: tauri::State<'_, SqliteDbState>,
+    app: tauri::AppHandle,
+    input: GrokPromptConfigInput,
+) -> Result<GrokPromptConfig, String> {
+    let prompt_content = if input.content.trim().is_empty() {
+        get_local_prompt_config(state.db())
+            .await?
+            .map(|config| config.content)
+            .unwrap_or_default()
+    } else {
+        input.content
+    };
+
+    let created = create_grok_prompt_config(
+        state.clone(),
+        app.clone(),
+        GrokPromptConfigInput {
+            id: None,
+            name: input.name,
+            content: prompt_content,
+        },
+    )
+    .await?;
+
+    apply_grok_prompt_config_internal(state.inner(), &app, &created.id).await?;
+    Ok(get_prompt(state.db(), &created.id)?.unwrap_or(created))
 }
 
 #[tauri::command]
@@ -1277,6 +1436,9 @@ fn remove_matching_unmanaged_config(
 }
 
 fn remove_matching_table_items(target: &mut Table, previous: &Table) {
+    // Codex-style aggressive removal: once a field was managed, remove it on the
+    // next apply even if the live value diverged from the previous managed value.
+    // User-edited [model.*] tables are handled separately by remove_provider_model_tables.
     let previous_keys = previous
         .iter()
         .map(|(key, _)| key.to_string())
@@ -1291,16 +1453,38 @@ fn remove_matching_table_items(target: &mut Table, previous: &Table) {
                     remove_matching_table_items(target_table, previous_table);
                     target_table.is_empty()
                 } else {
-                    false
+                    true
                 }
             }
-            (Some(target_item), None) => target_item.to_string() == previous_item.to_string(),
+            (Some(_target_item), None) => true,
             (None, _) => false,
         };
         if remove_key {
             target.remove(&key);
         }
     }
+}
+
+async fn get_local_prompt_config(
+    db: &SqliteDbState,
+) -> Result<Option<GrokPromptConfig>, String> {
+    let prompt_path = get_grok_prompt_path_async(db).await?;
+    let Some(content) = read_optional_text(&prompt_path)? else {
+        return Ok(None);
+    };
+    if content.trim().is_empty() {
+        return Ok(None);
+    }
+    let now = Local::now().to_rfc3339();
+    Ok(Some(GrokPromptConfig {
+        id: GROK_LOCAL_PROVIDER_ID.to_string(),
+        name: "default".to_string(),
+        content,
+        is_applied: true,
+        sort_index: None,
+        created_at: Some(now.clone()),
+        updated_at: Some(now),
+    }))
 }
 
 fn merge_common_config(document: &mut DocumentMut, common: &str) -> Result<(), String> {
@@ -1700,7 +1884,7 @@ command = "npx"
     }
 
     #[test]
-    fn common_update_removes_only_previous_matching_privacy_fields() {
+    fn common_update_aggressively_removes_previously_managed_fields() {
         let previous_common = r#"
 [features]
 telemetry = false
@@ -1735,14 +1919,15 @@ user_upload = false
         assert!(document["features"].get("telemetry").is_none());
         assert!(document["features"].get("codebase_indexing").is_none());
         assert_eq!(document["features"]["user_feature"].as_bool(), Some(true));
-        assert_eq!(document["telemetry"]["trace_upload"].as_bool(), Some(true));
+        // Aggressive strategy: previously managed leaf is removed even if live value changed.
+        assert!(document["telemetry"].get("trace_upload").is_none());
         assert_eq!(document["telemetry"]["user_trace"].as_str(), Some("keep"));
         assert!(document["harness"].get("disable_codebase_upload").is_none());
         assert_eq!(document["harness"]["user_upload"].as_bool(), Some(false));
     }
 
     #[test]
-    fn provider_update_removes_cleared_previous_advanced_config() {
+    fn provider_update_aggressively_removes_cleared_previous_advanced_config() {
         let previous_settings = json!({
             "config": "[ui]\nsimple_mode = true\nkeep = false"
         });
@@ -1759,8 +1944,30 @@ runtime_owned = "preserve"
             .expect("remove previous provider config");
 
         assert!(document["ui"].get("simple_mode").is_none());
-        assert_eq!(document["ui"]["keep"].as_bool(), Some(true));
+        // Aggressive strategy: previously managed `keep` is removed even after user edits.
+        assert!(document["ui"].get("keep").is_none());
         assert_eq!(document["ui"]["runtime_owned"].as_str(), Some("preserve"));
+    }
+
+    #[test]
+    fn parse_grok_models_output_reads_available_list() {
+        let output = r#"
+Model 'custom' is using its own API key.
+
+Default model: custom
+
+Available models:
+  - grok-4.5
+  * custom (default)
+"#;
+        let models = parse_grok_models_output(output);
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["grok-4.5", "custom"]
+        );
     }
 
     #[test]

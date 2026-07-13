@@ -399,9 +399,17 @@ async fn action(
     args.extend_from_slice(tail);
     run(state.db(), &args).await?;
     let _ = app.emit("config-changed", "window");
-    let _ = app.emit("wsl-sync-request-grok", ());
+    emit_grok_sync(app);
     Ok(())
 }
+
+#[cfg(target_os = "windows")]
+fn emit_grok_sync(app: &tauri::AppHandle) {
+    let _ = app.emit("wsl-sync-request-grok", ());
+}
+
+#[cfg(not(target_os = "windows"))]
+fn emit_grok_sync(_app: &tauri::AppHandle) {}
 
 #[tauri::command]
 pub async fn install_grok_plugin(
@@ -471,7 +479,7 @@ pub async fn update_grok_plugin_marketplace(
     )
     .await?;
     let _ = app.emit("config-changed", "window");
-    let _ = app.emit("wsl-sync-request-grok", ());
+    emit_grok_sync(&app);
     Ok(())
 }
 #[tauri::command]
@@ -506,7 +514,7 @@ pub async fn add_grok_plugin_workspace_root(
 ) -> Result<(), String> {
     run(state.db(), &["plugin", "marketplace", "add", &input.path]).await?;
     let _ = app.emit("config-changed", "window");
-    let _ = app.emit("wsl-sync-request-grok", ());
+    emit_grok_sync(&app);
     Ok(())
 }
 #[tauri::command]
@@ -521,7 +529,7 @@ pub async fn remove_grok_plugin_workspace_root(
     )
     .await?;
     let _ = app.emit("config-changed", "window");
-    let _ = app.emit("wsl-sync-request-grok", ());
+    emit_grok_sync(&app);
     Ok(())
 }
 

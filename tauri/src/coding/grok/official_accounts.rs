@@ -390,7 +390,19 @@ pub async fn delete_grok_official_account(
             .as_object()
             .map(|entries| entries.keys().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
-        remove_auth_scopes(&get_grok_auth_path_async(state.db()).await?, &scope_keys)?;
+        let auth_path = get_grok_auth_path_async(state.db()).await?;
+        remove_auth_scopes(&auth_path, &scope_keys)?;
+        // If auth.json was fully removed, also clear the auto-synced WSL target.
+        if !auth_path.exists() {
+            #[cfg(target_os = "windows")]
+            {
+                let _ = crate::coding::wsl::remove_auto_synced_wsl_mapping_target(
+                    state.inner(),
+                    "grok-auth",
+                )
+                .await;
+            }
+        }
         emit_grok_sync(&app);
     }
     let _ = app.emit("config-changed", "window");
@@ -417,6 +429,14 @@ pub async fn logout_grok_official_runtime(
         _ => Vec::new(),
     };
     remove_auth_scopes(&auth_path, &scope_keys)?;
+    if !auth_path.exists() {
+        #[cfg(target_os = "windows")]
+        {
+            let _ =
+                crate::coding::wsl::remove_auto_synced_wsl_mapping_target(state.inner(), "grok-auth")
+                    .await;
+        }
+    }
     let now = Local::now().to_rfc3339();
     state.db().with_conn_mut(|conn| {
         db_update_applied_status(conn, DbTable::GrokOfficialAccount, None, &now)
