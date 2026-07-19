@@ -10,6 +10,7 @@ import {
   EyeOutlined,
   FileTextOutlined,
   FolderOpenOutlined,
+  ImportOutlined,
   MessageOutlined,
   PlusOutlined,
   SyncOutlined,
@@ -55,6 +56,8 @@ import { SessionManagerPanel } from '@/features/coding/shared/sessionManager';
 import { TRAY_CONFIG_REFRESH_EVENT } from '@/constants/configEvents';
 import { useSettingsStore } from '@/stores';
 import { refreshTrayMenu } from '@/services/appApi';
+import ImportFromCcSwitchModal from '@/features/coding/shared/ccSwitch/ImportFromCcSwitchModal';
+import { hasCcSwitchDb, type CcSwitchProviderCandidate } from '@/services/ccSwitchApi';
 import {
   createGeminiCliProvider,
   deleteGeminiCliProvider,
@@ -153,6 +156,8 @@ const GeminiCliPage: React.FC = () => {
   const [configPath, setConfigPath] = React.useState('');
   const [rootPathInfo, setRootPathInfo] = React.useState<ConfigPathInfo | null>(null);
   const [providers, setProviders] = React.useState<GeminiCliProvider[]>([]);
+  const [ccSwitchAvailable, setCcSwitchAvailable] = React.useState(false);
+  const [ccSwitchImportModalOpen, setCcSwitchImportModalOpen] = React.useState(false);
   const [officialAccountsByProviderId, setOfficialAccountsByProviderId] = React.useState<
     Record<string, GeminiCliOfficialAccount[]>
   >({});
@@ -241,6 +246,68 @@ const GeminiCliPage: React.FC = () => {
   React.useEffect(() => {
     void loadConfig();
   }, [loadConfig]);
+
+  React.useEffect(() => {
+    const checkCcSwitchAvailability = async () => {
+      try {
+        const available = await hasCcSwitchDb();
+        setCcSwitchAvailable(available);
+      } catch {
+        setCcSwitchAvailable(false);
+      }
+    };
+    void checkCcSwitchAvailability();
+  }, []);
+
+  const handleImportFromCcSwitch = React.useCallback(async (imported: CcSwitchProviderCandidate[]) => {
+    const existingSourceIds = new Set(
+      providers.map((provider) => provider.sourceProviderId).filter(Boolean),
+    );
+    const toImport = imported.filter(
+      (candidate) =>
+        candidate.sourceProviderId &&
+        !existingSourceIds.has(candidate.sourceProviderId),
+    );
+
+    let ok = 0;
+    let fail = 0;
+
+    for (const candidate of toImport) {
+      try {
+        const settingsConfig =
+          typeof candidate.settingsConfig === 'string'
+            ? candidate.settingsConfig
+            : JSON.stringify(candidate.settingsConfig);
+
+        await createGeminiCliProvider({
+          name: candidate.name,
+          category: (candidate.normalizedCategory || 'custom') as GeminiCliProviderInput['category'],
+          settingsConfig,
+          sourceProviderId: candidate.sourceProviderId,
+          websiteUrl: candidate.websiteUrl,
+          notes: candidate.notes,
+          icon: candidate.icon,
+          iconColor: candidate.iconColor,
+        });
+        ok += 1;
+      } catch (error) {
+        console.error('Failed to import Gemini CLI provider from CC Switch:', candidate.name, error);
+        fail += 1;
+      }
+    }
+
+    setCcSwitchImportModalOpen(false);
+    if (ok > 0 && fail === 0) {
+      message.success(t('common.ccSwitch.importSuccess', { count: ok }));
+    } else if (ok > 0 && fail > 0) {
+      message.warning(t('common.ccSwitch.importPartial', { ok, fail }));
+    } else if (fail > 0) {
+      message.error(t('common.error'));
+    }
+
+    await loadConfig();
+    await refreshTrayMenu();
+  }, [providers, loadConfig, t]);
 
   const hasInitializedRef = React.useRef(false);
   React.useEffect(() => {
@@ -824,6 +891,18 @@ const GeminiCliPage: React.FC = () => {
                         </SortableContext>
                       </DndContext>
                     )}
+
+                    {ccSwitchAvailable && (
+                      <div style={{ marginTop: 12 }}>
+                        <Button
+                          type="dashed"
+                          icon={<ImportOutlined />}
+                          onClick={() => setCcSwitchImportModalOpen(true)}
+                        >
+                          {t('common.ccSwitch.importFromCcSwitch')}
+                        </Button>
+                      </div>
+                    )}
                   </Spin>
                 ),
               },
@@ -865,6 +944,18 @@ const GeminiCliPage: React.FC = () => {
           }}
           onSubmit={handleProviderSubmit}
         />
+
+        {ccSwitchAvailable && (
+          <ImportFromCcSwitchModal
+            open={ccSwitchImportModalOpen}
+            appType="gemini"
+            existingProviderIds={providers
+              .map((provider) => provider.sourceProviderId)
+              .filter((id): id is string => Boolean(id))}
+            onClose={() => setCcSwitchImportModalOpen(false)}
+            onImport={handleImportFromCcSwitch}
+          />
+        )}
 
         <GeminiCliCommonConfigModal
           open={commonConfigModalOpen}

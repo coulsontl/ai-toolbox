@@ -24,9 +24,11 @@
 - MCP and Skills are separate modules. Do not add Gemini CLI page logic that manages MCP servers or skills runtime paths.
 - WSL sync is event-driven through the backend `wsl-sync-request-geminicli` listener. The frontend should refresh state after saves but should not implement its own WSL watcher.
 - SSH remains manual/config-driven through Settings mappings; do not add SSH auto-sync behavior from this page.
+- CC Switch import reuses shared `ImportFromCcSwitchModal`. The button only renders when `has_cc_switch_db` is true. Imports call `createGeminiCliProvider` with `sourceProviderId=ccs:gemini:{id}` and do not auto-apply.
 
 ## Minimal Verification
 
 - At least verify TypeScript compiles after route, service, i18n, and page registration changes.
 - At least verify the page uses `tool="geminicli"` for the shared session manager.
 - Verify the Gemini page sidebar has no standalone Usage/Quota section and that official accounts render under the Google Official provider card.
+- If `~/.cc-switch/cc-switch.db` exists, the Gemini page should show Import from CC Switch; imported providers keep env (including `GEMINI_MODEL`) and drop `mcpServers` from config.

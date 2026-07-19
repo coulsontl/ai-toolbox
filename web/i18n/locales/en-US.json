@@ -1124,6 +1124,23 @@
       "apiKeyReady": "Token Ready",
       "retryResolve": "Retry",
       "searchPlaceholder": "Search by name, domain, or model"
+    },
+    "ccSwitch": {
+      "importFromCcSwitch": "Import from CC Switch",
+      "modalTitle": "Import Providers from CC Switch",
+      "dbNotFound": "CC Switch database not found (~/.cc-switch/cc-switch.db)",
+      "dbOpenFailed": "Failed to open CC Switch database",
+      "noProviders": "No providers available to import",
+      "existingTag": "Already exists",
+      "localEndpointTag": "Local proxy",
+      "localEndpointHint": "May depend on a local CPA / CC Switch router or other gateway. Make sure it is running.",
+      "noApiKeyTag": "No API key",
+      "selectAll": "Select all",
+      "deselectAll": "Deselect all",
+      "importSelected": "Import selected",
+      "importSuccess": "Successfully imported {{count}} providers from CC Switch",
+      "importPartial": "CC Switch import finished: {{ok}} succeeded, {{fail}} failed",
+      "searchPlaceholder": "Search by name, URL, or model"
     }
   },
   "sessionManager": {
@@ -3137,7 +3154,7 @@
     "syncAll": "Sync All",
     "later": "Later",
     "importTitle": "Import Existing Skills",
-    "importSummary": "Scan installed AI tools and import existing Skills",
+    "importSummary": "Scan installed AI tools and third-party directories (including CC Switch) and import existing Skills",
     "toolsScanned": "{{count}} tool(s) scanned",
     "skillsFound": "{{count}} Skill(s) found",
     "discoveredEmpty": "No existing Skills found. Click \"Add Skill\" to create one",
@@ -3380,7 +3397,7 @@
     "limitAddMoreToPreferredToolsHint": "When enabled, the add-more menu on MCP cards only shows the preferred tools selected above. When disabled, it shows all installed tools.",
     "preferredToolsHint": "Selected tools will be the default sync targets when adding or importing MCP servers. Grayed out options require installing the corresponding tool first. Note: Amp, Kilo Code, and Roo Code sync to VSCode plugin directories by default. To sync to Cursor or other editors, please add a custom tool.",
     "importTitle": "Import Existing MCP Configs",
-    "importSummary": "Scan installed tools and import existing MCP server configurations.",
+    "importSummary": "Scan installed tools (and local CC Switch) and import existing MCP server configurations.",
     "serversFound": "{{count}} MCP server(s) found",
     "selectAll": "Select All",
     "selectedCount": "{{selected}} / {{total}} selected",

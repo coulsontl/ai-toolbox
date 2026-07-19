@@ -57,6 +57,8 @@ import ClaudePluginsPanel from '../components/ClaudePluginsPanel';
 import JsonPreviewModal from '@/components/common/JsonPreviewModal';
 import AllApiHubIcon from '@/components/common/AllApiHubIcon';
 import ImportProviderModal from '@/components/common/ImportProviderModal';
+import ImportFromCcSwitchModal from '@/features/coding/shared/ccSwitch/ImportFromCcSwitchModal';
+import { hasCcSwitchDb, type CcSwitchProviderCandidate } from '@/services/ccSwitchApi';
 import { GlobalPromptSettings } from '@/features/coding/shared/prompt';
 import RootDirectoryModal from '@/features/coding/shared/RootDirectoryModal';
 import useRootDirectoryConfig from '@/features/coding/shared/useRootDirectoryConfig';
@@ -263,6 +265,8 @@ const ClaudeCodePage: React.FC = () => {
   const [providerListCollapsed, setProviderListCollapsed] = React.useState(false);
   const [allApiHubImportModalOpen, setAllApiHubImportModalOpen] = React.useState(false);
   const [allApiHubAvailable, setAllApiHubAvailable] = React.useState(false);
+  const [ccSwitchAvailable, setCcSwitchAvailable] = React.useState(false);
+  const [ccSwitchImportModalOpen, setCcSwitchImportModalOpen] = React.useState(false);
   const [promptExpandNonce, setPromptExpandNonce] = React.useState(0);
   const [pluginListCollapsed, setPluginListCollapsed] = React.useState(true);
   const [pluginPanelRefreshToken, setPluginPanelRefreshToken] = React.useState(0);
@@ -314,7 +318,17 @@ const ClaudeCodePage: React.FC = () => {
       }
     };
 
+    const checkCcSwitchAvailability = async () => {
+      try {
+        const available = await hasCcSwitchDb();
+        setCcSwitchAvailable(available);
+      } catch {
+        setCcSwitchAvailable(false);
+      }
+    };
+
     checkAllApiHubAvailability();
+    checkCcSwitchAvailability();
   }, []);
 
   const loadFavoriteProviders = React.useCallback(async () => {
@@ -515,12 +529,14 @@ const ClaudeCodePage: React.FC = () => {
     setProviderModalOpen(true);
   };
 
-  const handleImportFromOpenCode = () => {
+  // OpenCode import entry removed; keep handler for later restore.
+  const _handleImportFromOpenCode = () => {
     setEditingProvider(null);
     setIsCopyMode(false);
     setProviderModalMode('import');
     setProviderModalOpen(true);
   };
+  void _handleImportFromOpenCode;
 
   const handleEditProvider = (provider: ClaudeCodeProvider) => {
     setEditingProvider(provider);
@@ -827,6 +843,67 @@ const ClaudeCodePage: React.FC = () => {
       message.error(t('common.error'));
     }
   };
+
+  const handleImportFromCcSwitch = React.useCallback(async (imported: CcSwitchProviderCandidate[]) => {
+    const existingSourceIds = new Set(
+      providers.map((provider) => provider.sourceProviderId).filter(Boolean),
+    );
+    const toImport = imported.filter(
+      (candidate) =>
+        candidate.sourceProviderId &&
+        !existingSourceIds.has(candidate.sourceProviderId),
+    );
+
+    let ok = 0;
+    let fail = 0;
+
+    for (const candidate of toImport) {
+      try {
+        const settingsConfig =
+          typeof candidate.settingsConfig === 'string'
+            ? candidate.settingsConfig
+            : JSON.stringify(candidate.settingsConfig);
+
+        const createdProvider = await createClaudeProvider({
+          name: candidate.name,
+          category: (candidate.normalizedCategory || 'custom') as ClaudeProviderInput['category'],
+          settingsConfig,
+          extraSettingsConfig: candidate.extraSettingsConfig || '{}',
+          sourceProviderId: candidate.sourceProviderId,
+          websiteUrl: candidate.websiteUrl,
+          notes: candidate.notes,
+          icon: candidate.icon,
+          iconColor: candidate.iconColor,
+        });
+
+        try {
+          await upsertFavoriteProvider(
+            buildFavoriteProviderStorageKey('claudecode', createdProvider.id),
+            buildClaudeFavoriteProviderConfig(createdProvider),
+          );
+        } catch (favoriteError) {
+          console.error('Failed to save Claude favorite provider from CC Switch import:', favoriteError);
+        }
+        ok += 1;
+      } catch (error) {
+        console.error('Failed to import Claude provider from CC Switch:', candidate.name, error);
+        fail += 1;
+      }
+    }
+
+    setCcSwitchImportModalOpen(false);
+    if (ok > 0 && fail === 0) {
+      message.success(t('common.ccSwitch.importSuccess', { count: ok }));
+    } else if (ok > 0 && fail > 0) {
+      message.warning(t('common.ccSwitch.importPartial', { ok, fail }));
+    } else if (fail > 0) {
+      message.error(t('common.error'));
+    }
+
+    await loadConfig();
+    await loadFavoriteProviders();
+    await refreshTrayMenu();
+  }, [providers, loadConfig, loadFavoriteProviders, t]);
 
   const handleImportFavoriteProviders = React.useCallback(async (providersToImport: OpenCodeFavoriteProvider[]) => {
     try {
@@ -1260,13 +1337,6 @@ const ClaudeCodePage: React.FC = () => {
                         >
                           {t('opencode.provider.importFavorite')}
                         </Button>
-                        <Button
-                          type="dashed"
-                          icon={<ImportOutlined />}
-                          onClick={handleImportFromOpenCode}
-                        >
-                          {t('claudecode.importFromOpenCode')}
-                        </Button>
                         {allApiHubAvailable && (
                           <Button
                             type="dashed"
@@ -1274,6 +1344,15 @@ const ClaudeCodePage: React.FC = () => {
                             onClick={() => setAllApiHubImportModalOpen(true)}
                           >
                             {t('common.allApiHub.importFromAllApiHub')}
+                          </Button>
+                        )}
+                        {ccSwitchAvailable && (
+                          <Button
+                            type="dashed"
+                            icon={<ImportOutlined />}
+                            onClick={() => setCcSwitchImportModalOpen(true)}
+                          >
+                            {t('common.ccSwitch.importFromCcSwitch')}
                           </Button>
                         )}
                       </Space>
@@ -1410,6 +1489,18 @@ const ClaudeCodePage: React.FC = () => {
             existingProviderIds={providers.map((provider) => provider.sourceProviderId || provider.id)}
             onCancel={() => setAllApiHubImportModalOpen(false)}
             onImport={handleImportFromAllApiHub}
+          />
+        )}
+
+        {ccSwitchAvailable && (
+          <ImportFromCcSwitchModal
+            open={ccSwitchImportModalOpen}
+            appType="claude"
+            existingProviderIds={providers
+              .map((provider) => provider.sourceProviderId)
+              .filter((id): id is string => Boolean(id))}
+            onClose={() => setCcSwitchImportModalOpen(false)}
+            onImport={handleImportFromCcSwitch}
           />
         )}
 

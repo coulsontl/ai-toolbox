@@ -644,12 +644,14 @@ const GrokPage: React.FC = () => {
     setProviderModalOpen(true);
   };
 
-  const handleImportFromOpenCode = () => {
+  // OpenCode import entry removed; keep handler for later restore.
+  const _handleImportFromOpenCode = () => {
     setEditingProvider(null);
     setIsCopyMode(false);
     setProviderModalMode('import');
     setProviderModalOpen(true);
   };
+  void _handleImportFromOpenCode;
 
   const handleEditProvider = (provider: GrokProvider) => {
     setEditingProvider(provider);
@@ -1479,13 +1481,6 @@ const GrokPage: React.FC = () => {
                           onClick={() => setImportModalOpen(true)}
                         >
                           {t('opencode.provider.importFavorite')}
-                        </Button>
-                        <Button
-                          type="dashed"
-                          icon={<ImportOutlined />}
-                          onClick={handleImportFromOpenCode}
-                        >
-                          {t('grok.importFromOpenCode')}
                         </Button>
                         {allApiHubAvailable && (
                           <Button

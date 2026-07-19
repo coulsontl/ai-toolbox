@@ -1,6 +1,6 @@
 import React from 'react';
 import { Modal, Form, Input, Select, Button } from 'antd';
-import { ImportOutlined, EyeOutlined, EyeInvisibleOutlined } from '@ant-design/icons';
+import { EyeOutlined, EyeInvisibleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '@/stores';
 import type { OpenClawProviderConfig } from '@/types/openclaw';
@@ -26,6 +26,7 @@ interface Props {
   existingIds: string[];
   onCancel: () => void;
   onSubmit: (values: ProviderFormValues) => void;
+  /** Kept for restore; OpenCode import entry is currently hidden. */
   onOpenImport?: () => void;
 }
 
@@ -35,7 +36,7 @@ const OpenClawProviderFormModal: React.FC<Props> = ({
   existingIds,
   onCancel,
   onSubmit,
-  onOpenImport,
+  onOpenImport: _onOpenImport,
 }) => {
   const { t } = useTranslation();
   const language = useAppStore((state) => state.language);
@@ -145,19 +146,7 @@ const OpenClawProviderFormModal: React.FC<Props> = ({
           />
         </Form.Item>
 
-        {/* Import from OpenCode button — only in add mode */}
-        {!isEdit && onOpenImport && (
-          <Form.Item wrapperCol={{ offset: language === 'zh-CN' ? 4 : 6, span: 20 }} style={{ marginBottom: 0 }}>
-            <Button
-              type="dashed"
-              icon={<ImportOutlined />}
-              onClick={onOpenImport}
-            >
-              {t('openclaw.providers.importFromOpenCode')}
-            </Button>
-          </Form.Item>
-        )}
-      </Form>
+        </Form>
     </Modal>
   );
 };

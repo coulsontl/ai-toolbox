@@ -1974,6 +1974,8 @@ pub fn run() {
             coding::session_manager::rename_tool_session,
             coding::all_api_hub::has_all_api_hub_extension,
             coding::all_api_hub::get_all_api_hub_provider_models,
+            coding::cc_switch::has_cc_switch_db,
+            coding::cc_switch::list_cc_switch_providers,
             // Magic Context
             coding::magic_context::read_magic_context_config,
             coding::magic_context::save_magic_context_config,

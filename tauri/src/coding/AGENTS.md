@@ -57,6 +57,10 @@ sequenceDiagram
 - 删除 Claude/Codex/Grok/Gemini 这类 DB-backed provider 也只删 SQLite 记录，不回滚/清空当前 `config.toml` / `settings.json` / `auth.json`。本地生效配置只在用户显式“应用”其他 provider 时改写。Pi 例外：它的 provider 事实源就是 runtime 文件，删除会按 scope 改 `auth.json` / `models.json`。
 - 新增跨工具共享规则时，优先放在共享层，不要把通用逻辑塞进某个单独工具目录，否则后续很快出现“相邻工具修了一边，另一边继续错”。
 - All API Hub 导入的浏览器扩展发现属于跨工具共享后端能力。当前应按 Chrome 优先、Edge 兜底的顺序扫描 Chromium profile 的 `Local Extension Settings`；Edge 既要兼容从 Chrome Web Store 安装的扩展 ID，也要兼容 Edge Add-ons 当前 ID。不要在 Claude/Codex/OpenCode/OpenClaw/Pi 页面各自实现浏览器发现。
+- CC Switch 导入属于跨工具共享后端能力（`cc_switch.rs`）：只读 `~/.cc-switch/cc-switch.db`，不写 CCS。
+  - **Providers**：`has_cc_switch_db`（30s 缓存）控制工具页按钮；`list_cc_switch_providers` 按 `app_type` 提取渠道。行表工具（Claude/Codex/Gemini）写入本应用 SQLite 且 `source_provider_id=ccs:{app}:{id}`、默认不 apply；map 工具（OpenClaw/OpenCode）用 CCS `raw_id` 作 key 并一次 save。Claude 侧整份拷贝 `settings_config.env`（含模型映射与自定义 env），忽略 CCS UI 杂字段与 `meta`；渠道导入剥离 provider 内嵌 MCP。
+  - **MCP**：无独立按钮。`list_cc_switch_mcp_servers` 读 `mcp_servers` 表；`mcp_scan_servers` / `mcp_import_from_tool("cc_switch")` 挂入现有「导入现有 MCP」。
+  - **Skills**：无独立按钮。`skills` onboarding 的 `EXTRA_SKILL_SOURCES` 扫 `~/.cc-switch/skills` 磁盘目录；不导 `skill_repos`。
 - 跨 WSL/SSH/备份恢复的目标端字段清理规则统一放在 `config_cleanup.rs`。平台固定规则（例如 Claude 非 Windows 目标清理 Windows-only env）和用户映射配置的 `cleanup_paths` 都只作用于目标副本或恢复后的目标数据，不能反向污染 Windows 源配置。
 - Magic Context 的 `doctor` 通过 `npx @cortexkit/magic-context@latest doctor --harness opencode|pi` 运行。本机命令解析要走 `cli_resolver.rs`，WSL Direct 要在目标 distro 内执行 `npx`，不能用 Windows home 或 Windows PATH 代表 WSL 运行环境。
 

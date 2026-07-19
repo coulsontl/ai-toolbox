@@ -1124,6 +1124,23 @@
       "apiKeyReady": "已获取 Token",
       "retryResolve": "点击重试",
       "searchPlaceholder": "搜索名称、域名或模型"
+    },
+    "ccSwitch": {
+      "importFromCcSwitch": "从 CC Switch 导入",
+      "modalTitle": "从 CC Switch 导入供应商",
+      "dbNotFound": "未找到 CC Switch 数据库（~/.cc-switch/cc-switch.db）",
+      "dbOpenFailed": "无法打开 CC Switch 数据库",
+      "noProviders": "没有可导入的供应商",
+      "existingTag": "已存在",
+      "localEndpointTag": "本机代理",
+      "localEndpointHint": "可能依赖本机 CPA / CC Switch 路由等网关，请确认服务已启动",
+      "noApiKeyTag": "无密钥",
+      "selectAll": "全选",
+      "deselectAll": "取消全选",
+      "importSelected": "导入选中",
+      "importSuccess": "成功从 CC Switch 导入 {{count}} 个供应商",
+      "importPartial": "从 CC Switch 导入完成：成功 {{ok}} 个，失败 {{fail}} 个",
+      "searchPlaceholder": "搜索名称、地址或模型"
     }
   },
   "sessionManager": {
@@ -3134,7 +3151,7 @@
     "syncAll": "全部同步",
     "later": "稍后",
     "importTitle": "导入现有 Skills",
-    "importSummary": "扫描已安装的 AI 工具，导入现有的 Skills",
+    "importSummary": "扫描已安装的 AI 工具与第三方目录（含 CC Switch），导入现有 Skills",
     "toolsScanned": "已扫描 {{count}} 个工具",
     "skillsFound": "发现 {{count}} 个 Skills",
     "discoveredEmpty": "未发现现有 Skills，你可以点击「添加 Skill」创建新的",
@@ -3377,7 +3394,7 @@
     "limitAddMoreToPreferredToolsHint": "开启后，MCP 卡片上的添加更多菜单只显示上方已勾选的常用工具；关闭后显示所有已安装工具。",
     "preferredToolsHint": "勾选的工具将作为添加或导入 MCP 时的默认同步目标。置灰选项需先安装对应工具后才能勾选。注意：Amp、Kilo Code、Roo Code 默认同步到 VSCode 的插件目录，如需同步到 Cursor 等其他编辑器，请添加自定义工具。",
     "importTitle": "导入现有 MCP 配置",
-    "importSummary": "从已安装的工具中扫描并导入已有的 MCP 服务器配置。",
+    "importSummary": "从已安装的工具（及本机 CC Switch）扫描并导入已有的 MCP 服务器配置。",
     "serversFound": "发现 {{count}} 个 MCP 服务器",
     "selectAll": "全选",
     "selectedCount": "已选 {{selected}} / {{total}}",

@@ -397,10 +397,12 @@ const OpenClawPage: React.FC = () => {
     setProviderModalOpen(true);
   };
 
-  const handleOpenImportModal = () => {
+  // OpenCode import entry removed; keep open/import handlers for later restore.
+  const _handleOpenImportModal = () => {
     setProviderModalOpen(false);
     setImportModalOpen(true);
   };
+  void _handleOpenImportModal;
 
   const handleImportFromOpenCode = async (imported: ImportedProvider[]) => {
     try {
@@ -1375,13 +1377,6 @@ const OpenClawPage: React.FC = () => {
                             >
                               {t('opencode.provider.importFavorite')}
                             </Button>
-                            <Button
-                              type="dashed"
-                              icon={<ImportOutlined />}
-                              onClick={() => setImportModalOpen(true)}
-                            >
-                              {t('openclaw.providers.importFromOpenCode')}
-                            </Button>
                             {allApiHubAvailable && (
                               <Button
                                 type="dashed"
@@ -1463,9 +1458,9 @@ const OpenClawPage: React.FC = () => {
               existingIds={providerEntries.map(([id]) => id)}
               onCancel={() => setProviderModalOpen(false)}
               onSubmit={handleProviderSubmit}
-              onOpenImport={handleOpenImportModal}
             />
 
+            {/* OpenCode import entry removed; keep modal/handler for later restore */}
             <ImportFromOpenCodeModal
               open={importModalOpen}
               existingProviderIds={providerEntries.map(([id]) => id)}

@@ -591,10 +591,14 @@ mod tests {
     #[test]
     fn marketplace_install_source_supports_relative_and_git_subdir_sources() {
         let repository_root = Path::new("/tmp/marketplace");
+        // Path::join uses platform separators (\\ on Windows); don't hardcode Unix /.
+        let expected_relative = repository_root
+            .join("./plugins/review")
+            .to_string_lossy()
+            .into_owned();
         assert_eq!(
-            marketplace_install_source(repository_root, &Value::String("./plugins/review".into()))
-                .as_deref(),
-            Some("/tmp/marketplace/./plugins/review")
+            marketplace_install_source(repository_root, &Value::String("./plugins/review".into())),
+            Some(expected_relative)
         );
         assert_eq!(
             marketplace_install_source(
@@ -628,6 +632,10 @@ mod tests {
                 "https://github.com/vercel/vercel-plugin.git@61f1903bed7b322c9745f6ba67095bc006de7e63"
             )
         );
+        let expected_local = repository_root
+            .join("./external_plugins/neon")
+            .to_string_lossy()
+            .into_owned();
         assert_eq!(
             marketplace_install_source(
                 repository_root,
@@ -635,9 +643,8 @@ mod tests {
                     "type": "local",
                     "path": "./external_plugins/neon"
                 }),
-            )
-            .as_deref(),
-            Some("/tmp/xai-official/./external_plugins/neon")
+            ),
+            Some(expected_local)
         );
     }
 

@@ -62,7 +62,7 @@ sequenceDiagram
 ## 跨模块依赖
 
 - 依赖共享 `RootDirectoryModal` / `useRootDirectoryConfig`。
-- 依赖后端 `codex::commands` 和共享 favorite provider、All API Hub 组件。
+- 依赖后端 `codex::commands` 和共享 favorite provider、All API Hub 组件、以及共享 `ImportFromCcSwitchModal`（CC Switch 只读导入；无 db 不显示按钮；Codex TOML 经白名单重建后写入）。
 - 间接受 `settings/` 和 `runtime_location` 的 WSL Direct 语义影响，但页面本身只显示 path info。
 
 ## 典型变更场景（按需）
@@ -76,5 +76,6 @@ sequenceDiagram
 
 - 至少验证：修改根目录后页面重新读取到新的路径来源。
 - 至少验证：导入同源 provider 冲突时有明确覆盖/副本分支。
+- 若本机存在 `~/.cc-switch/cc-switch.db`，Codex 页应出现「从 CC Switch 导入」；导入后带 `sourceProviderId=ccs:codex:...`、默认未应用；MCP-only 空壳不应进入列表。
 - 改历史同步 UI 时，至少验证会话管理标题栏入口、来源切换、本机/WSL 状态弹窗、同步确认、恢复最新备份强确认和 Session Manager 刷新触发。
 - 改统一会话历史 UI 时，至少验证开启/关闭确认弹窗、迁移/恢复结果提示、Gateway 接管禁用态和 settings store 刷新。

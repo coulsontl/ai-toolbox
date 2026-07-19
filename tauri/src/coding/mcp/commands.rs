@@ -542,9 +542,35 @@ pub async fn mcp_import_from_tool(
         .await
         .unwrap_or_default();
 
-    // Resolve imported servers: either from a plugin or a standard tool
+    // Resolve imported servers: CC Switch DB / plugin .mcp.json / standard tool config
     let (imported_servers, source_display_name) =
-        if let Some(plugin_id) = toolKey.strip_prefix("plugin::") {
+        if toolKey == crate::coding::cc_switch::CC_SWITCH_MCP_TOOL_KEY {
+            let candidates = crate::coding::cc_switch::list_cc_switch_mcp_servers(None)?;
+            let now = now_ms();
+            let servers = candidates
+                .into_iter()
+                .map(|c| McpServer {
+                    id: String::new(),
+                    name: c.name,
+                    server_type: c.server_type,
+                    server_config: c.server_config,
+                    enabled_tools: vec![],
+                    sync_details: None,
+                    description: c.description,
+                    user_group: None,
+                    user_note: None,
+                    tags: c.tags,
+                    timeout: None,
+                    sort_index: 0,
+                    created_at: now,
+                    updated_at: now,
+                })
+                .collect::<Vec<_>>();
+            (
+                servers,
+                crate::coding::cc_switch::CC_SWITCH_MCP_TOOL_NAME.to_string(),
+            )
+        } else if let Some(plugin_id) = toolKey.strip_prefix("plugin::") {
             // Plugin source: find the plugin and read its .mcp.json
             let plugins =
                 crate::coding::tools::claude_plugins::get_installed_plugins(&state.db()).await;
@@ -817,6 +843,35 @@ async fn mcp_scan_servers_inner(state: &SqliteDbState) -> Result<McpScanResultDt
                 Err(e) => {
                     eprintln!("Failed to scan plugin {}: {}", plugin.plugin_id, e);
                 }
+            }
+        }
+
+        // Scan CC Switch central mcp_servers table (no separate import button).
+        // Only count as a scanned source when at least one non-existing server is listed.
+        match crate::coding::cc_switch::list_cc_switch_mcp_servers(None) {
+            Ok(candidates) if !candidates.is_empty() => {
+                let tool_key = crate::coding::cc_switch::CC_SWITCH_MCP_TOOL_KEY.to_string();
+                let tool_name = crate::coding::cc_switch::CC_SWITCH_MCP_TOOL_NAME.to_string();
+                let before = servers.len();
+                for c in candidates {
+                    if existing_names.contains(&c.name) {
+                        continue;
+                    }
+                    servers.push(McpDiscoveredServerDto {
+                        name: c.name,
+                        tool_key: tool_key.clone(),
+                        tool_name: tool_name.clone(),
+                        server_type: c.server_type,
+                        server_config: c.server_config,
+                    });
+                }
+                if servers.len() > before {
+                    total_tools_scanned += 1;
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Failed to scan CC Switch MCP: {}", e);
             }
         }
 

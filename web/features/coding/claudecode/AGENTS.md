@@ -55,7 +55,7 @@ sequenceDiagram
 ## 跨模块依赖
 
 - 依赖共享 `RootDirectoryModal` / `useRootDirectoryConfig`。
-- 依赖后端 `claude_code::commands`、共享 favorite provider 和 All API Hub 导入组件。
+- 依赖后端 `claude_code::commands`、共享 favorite provider、All API Hub 导入组件，以及共享 `ImportFromCcSwitchModal`（CC Switch 只读导入；无 db 时不显示按钮）。
 - 与 `settings/` 间接共享根目录来源和 WSL Direct 语义，但本页面自己只展示 `source/path`。
 
 ## 典型变更场景（按需）
@@ -69,3 +69,4 @@ sequenceDiagram
 
 - 至少验证：修改根目录后重新加载页面能看到新的 path info。
 - 至少验证：导入 provider 冲突时会进入冲突弹窗，而不是静默覆盖。
+- 若本机存在 `~/.cc-switch/cc-switch.db`，Claude 页应出现「从 CC Switch 导入」；导入后 provider 带 `sourceProviderId=ccs:claude:...`、默认未应用；再次打开导入弹窗应标「已存在」。

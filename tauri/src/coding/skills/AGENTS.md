@@ -165,7 +165,7 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
    - 提取每个工具的 target_path 构建排除列表
 
 3. **遍历所有工具适配器**
-   - 包括 14 个内置工具 + 用户自定义工具
+   - 包括内置工具 + 用户自定义工具
    - 检查每个工具的 relative_detect_dir 是否存在（判断是否安装）
 
 4. **扫描已安装工具的 skills 目录**
@@ -173,21 +173,30 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
    - 跳过特殊目录（如 Codex 的 .system）
    - 检测是否为符号链接/接合点，记录 link_target
 
-5. **过滤已管理的技能**
+5. **扫描额外第三方 skills 目录（EXTRA_SKILL_SOURCES）**
+   - 当前包含 CC Switch：`key = "cc_switch"`，`~/.cc-switch/skills`
+   - 目录存在则按与工具 skills 目录相同规则扫描；无独立「从 CCS 导入」按钮
+   - 不读 CCS `skill_repos` 表（仅 Git 书签）；无磁盘目录的 DB 元数据行不导入
+
+6. **扫描 Claude Code 插件 skills/**
+   - 合成 tool key `plugin::{plugin_id}`，`force_copy: true`
+
+7. **过滤已管理的技能**
    - 排除 link_target 指向中央仓库的技能
    - 排除已在 sync_details 中记录的目标路径
+   - 排除已管理 skill 名称（覆盖插件等路径不匹配场景）
 
-6. **计算内容哈希**
+8. **计算内容哈希**
    - 对每个发现的技能目录计算 SHA256 哈希
    - 用于检测不同工具中同名技能是否内容一致
 
-7. **按技能名称分组**
+9. **按技能名称分组**
    - 同名技能归为一组
    - 比较组内各变体的 fingerprint
    - 如果存在不同哈希值，标记 has_conflict = true
    - 记录每个变体的 conflicting_tools 列表
 
-8. **返回 OnboardingPlan**
+10. **返回 OnboardingPlan**
    - total_tools_scanned: 扫描的工具数量
    - total_skills_found: 发现的技能总数
    - groups: 分组后的技能列表
