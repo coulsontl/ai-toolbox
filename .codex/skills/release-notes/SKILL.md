@@ -17,6 +17,8 @@ Unless the user says otherwise, assume the target output is a GitHub Release bod
 2. A flat bullet list of user-facing changes
 3. The repository-specific Mac install notice at the end
 
+**Copy-friendly final output (required):** Always present the full publishable GitHub Release body (from `## What's Changed` through the Mac install notice, including the database upgrade notice when applicable) inside a single fenced markdown code block, so the user can copy-paste it in one step. Put any research context, range notes, or caveats **outside** that code block (above or below it). Do not leave the What's Changed body as plain markdown only.
+
 Do not silently switch the task to updater notes or in-app update copy. If the repository has multiple release surfaces, identify which one the user wants before drafting. If unspecified, produce the GitHub Release body draft first and mention that updater notes may need a shorter variant.
 
 In this repository, default to Chinese release copy unless the user explicitly asks for English or another language.
@@ -163,8 +165,11 @@ Do not add this notice for ordinary data changes, seed data changes, model prese
 
 ## Output template
 
-Use this default GitHub Release body template unless the user requests another surface:
+Use this default GitHub Release body template unless the user requests another surface.
 
+In the chat reply, wrap the entire publishable body in one fenced code block labeled `md` (as shown below). Optional research notes stay outside the fence.
+
+````
 ```md
 ## What's Changed
 
@@ -176,12 +181,14 @@ Use this default GitHub Release body template unless the user requests another s
 
 ⚠️ Mac安装提示：`"应用程序"已损坏` 解决方法：`xattr -cr /Applications/AI\ Toolbox.app`
 ```
+````
 
 Template rules:
 
 - Replace placeholders with real repository data.
 - Do not copy another project's release wording.
 - Do not output placeholder bullets in the final answer.
+- Always fence the final GitHub Release body in a single ` ```md ` code block for one-click copy; keep range/research notes outside the fence.
 - Keep the Mac install notice exactly as written for this repository unless the user asks to change it.
 - Do not include `Full Changelog` by default in this repository unless the user explicitly asks for it.
 - Include the database upgrade notice only when a SQLite schema/user_version upgrade is in scope.
@@ -197,6 +204,7 @@ Template rules:
 - In this repository, prefer concise Chinese wording for the final draft unless the user requests another language.
 - When drafting the next release, it is acceptable to include not-yet-closed issues if the linked work is clearly intended for that release.
 - Favor direct short phrases that can be pasted into the release page with minimal editing.
+- Always put the publishable What's Changed body (plus required notices) in a fenced `md` code block so the user can copy it without selecting surrounding prose.
 - The final release draft should read like a polished changelog, not like traced research notes or commit summaries.
 - Do not use hedge words like `candidate`, `pending`, or similar qualifiers in the final release draft unless the user explicitly asks for that uncertainty to be surfaced.
 
@@ -287,8 +295,9 @@ Before finalizing, verify:
 3. Every `#123` actually exists.
 4. Every `by @user` is real and omitted for self-authored PRs.
 5. The Mac install notice is present at the end for GitHub Release body output.
-6. Any unreleased candidate items are worded as next-release draft content, not falsely described as already published.
-7. The final draft does not expose raw commit hashes, `(from ...)` tails, or commit-scope-first wording unless the user explicitly asks for that format.
-8. Relevant uncommitted changes are included by default for next-release drafting unless the user explicitly asks for committed-only notes.
-9. If the release includes a SQLite schema/user_version upgrade, the database upgrade notice is present before the Mac install notice.
-10. Beta-period commits between the last stable tag and `HEAD` are included in the next formal release notes, not omitted just because a beta tag exists.
+6. The full publishable body is wrapped in one fenced `md` code block for easy copy; research notes stay outside the fence.
+7. Any unreleased candidate items are worded as next-release draft content, not falsely described as already published.
+8. The final draft does not expose raw commit hashes, `(from ...)` tails, or commit-scope-first wording unless the user explicitly asks for that format.
+9. Relevant uncommitted changes are included by default for next-release drafting unless the user explicitly asks for committed-only notes.
+10. If the release includes a SQLite schema/user_version upgrade, the database upgrade notice is present before the Mac install notice.
+11. Beta-period commits between the last stable tag and `HEAD` are included in the next formal release notes, not omitted just because a beta tag exists.
