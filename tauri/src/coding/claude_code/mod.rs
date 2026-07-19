@@ -1,4 +1,5 @@
 pub mod adapter;
+pub mod cli_launch;
 pub mod commands;
 pub mod plugin_cli;
 pub mod plugin_metadata_sync;

@@ -2030,7 +2030,9 @@
       "vscode": "VSCode Integration",
       "vscodeHint": "Enable to allow VSCode Claude Code plugin to use third-party providers",
       "skipOnboarding": "Skip Initial Setup",
-      "skipOnboardingHint": "Skip Claude Code's initial setup confirmation on first launch"
+      "skipOnboardingHint": "Skip Claude Code's initial setup confirmation on first launch",
+      "cliLaunchFullAccess": "CLI Launch Full Access",
+      "cliLaunchFullAccessHint": "When enabled, each Launch CLI action appends --dangerously-skip-permissions"
     },
     "provider": {
       "title": "Provider List",
@@ -2062,6 +2064,10 @@
       "notesPlaceholder": "Optional notes",
       "apply": "Apply",
       "applied": "Applied",
+      "launchCli": "Launch CLI",
+      "launchCliHint": "Open Claude CLI with this provider's temporary settings without changing the applied config. Full Access is controlled by the More Options switch",
+      "launchCliSuccess": "Claude CLI terminal opened",
+      "launchCliFailed": "Failed to open Claude CLI: {{error}}",
       "apiFormat": "API format",
       "apiFormatAnthropic": "Anthropic Messages",
       "apiFormatOpenAIChat": "OpenAI Chat Completions",

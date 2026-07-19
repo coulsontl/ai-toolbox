@@ -132,6 +132,8 @@ pub struct AppSettings {
     pub codex_preserve_official_auth_on_switch: bool,
     /// Let official Codex sessions use the shared custom history bucket (default: false)
     pub codex_unified_session_history_enabled: bool,
+    /// Append --dangerously-skip-permissions when launching Claude provider CLI (default: false)
+    pub claude_cli_launch_full_access: bool,
     /// File filter rules for backup/restore
     pub backup_file_filter_rules: Vec<BackupFileFilterRule>,
 }
@@ -178,6 +180,7 @@ impl Default for AppSettings {
             opencode_allow_clear_applied_oh_my_config: false,
             codex_preserve_official_auth_on_switch: false,
             codex_unified_session_history_enabled: false,
+            claude_cli_launch_full_access: false,
             backup_file_filter_rules: default_backup_file_filter_rules(),
         }
     }

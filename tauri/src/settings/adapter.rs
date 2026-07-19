@@ -71,6 +71,7 @@ pub fn from_db_value(value: Value) -> AppSettings {
             "codex_unified_session_history_enabled",
             false,
         ),
+        claude_cli_launch_full_access: get_bool(&value, "claude_cli_launch_full_access", false),
         backup_file_filter_rules: get_backup_file_filter_rules(&value),
     }
 }

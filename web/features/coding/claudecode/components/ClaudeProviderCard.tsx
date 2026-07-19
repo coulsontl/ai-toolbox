@@ -8,6 +8,7 @@ import {
   CopyOutlined,
   MoreOutlined,
   HolderOutlined,
+  CodeOutlined,
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 import { BarChart2 } from 'lucide-react';
@@ -22,6 +23,7 @@ import {
   switchProxyGatewayPrimaryProvider,
   type GatewayCliTakeoverStatus,
 } from '@/services';
+import { launchClaudeProviderCli } from '@/services/claudeCodeApi';
 import { refreshTrayMenu } from '@/services/appApi';
 import AppliedTag from '@/components/common/AppliedTag';
 import ProxyTag from '@/components/common/ProxyTag';
@@ -35,6 +37,7 @@ import {
 } from '@/features/coding/shared/gateway';
 import ProviderConnectivityStatus from '@/features/coding/shared/providerConnectivity/ProviderConnectivityStatus';
 import type { ProviderConnectivityStatusItem } from '@/components/common/ProviderCard/types';
+import { useSettingsStore } from '@/stores/settingsStore';
 import {
   getClaudeConfiguredModelIds,
   getClaudeProviderModelConfig,
@@ -74,9 +77,11 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const claudeCliLaunchFullAccess = useSettingsStore((state) => state.claudeCliLaunchFullAccess);
   const [engagingGatewayProxy, setEngagingGatewayProxy] = React.useState(false);
   const [restoringDirect, setRestoringDirect] = React.useState(false);
   const [switchingGatewayProvider, setSwitchingGatewayProvider] = React.useState(false);
+  const [launchingCli, setLaunchingCli] = React.useState(false);
 
   // 拖拽排序
   const {
@@ -181,6 +186,24 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
       return;
     }
     onToggleDisabled(provider, !checked);  // Switch 的 checked 表示"启用"，所以取反
+  };
+
+  const handleLaunchCli = async () => {
+    if (provider.isDisabled) {
+      return;
+    }
+    setLaunchingCli(true);
+    try {
+      await launchClaudeProviderCli(provider.id, {
+        fullAccess: claudeCliLaunchFullAccess,
+      });
+      message.success(t('claudecode.provider.launchCliSuccess'));
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      message.error(t('claudecode.provider.launchCliFailed', { error: errorMessage }));
+    } finally {
+      setLaunchingCli(false);
+    }
   };
 
   const menuItems: MenuProps['items'] = [
@@ -550,6 +573,20 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
                 style={{ fontSize: 12, padding: '0 4px', height: 'auto', flexShrink: 0 }}
               >
                 {t('opencode.connectivity.button')}
+              </Button>
+              <Button
+                type="text"
+                size="small"
+                icon={<CodeOutlined />}
+                onClick={() => {
+                  void handleLaunchCli();
+                }}
+                loading={launchingCli}
+                disabled={provider.isDisabled}
+                title={t('claudecode.provider.launchCliHint')}
+                style={{ fontSize: 12, padding: '0 4px', height: 'auto', flexShrink: 0 }}
+              >
+                {t('claudecode.provider.launchCli')}
               </Button>
             </div>
 

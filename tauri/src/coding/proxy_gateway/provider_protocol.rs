@@ -152,6 +152,17 @@ pub(crate) fn codex_base_url_from_config(config_toml: &str) -> Option<String> {
         })
 }
 
+/// Default model from a Codex provider's stored `config.toml` fragment.
+/// `[chat].model` is kept for compatibility with older provider editor output.
+pub(crate) fn codex_model_from_config(config_toml: &str) -> Option<String> {
+    let document = config_toml.trim().parse::<DocumentMut>().ok()?;
+    let root = document.as_table();
+    root.get("chat")
+        .and_then(Item::as_table)
+        .and_then(|chat| toml_string(chat, "model"))
+        .or_else(|| toml_string(root, "model"))
+}
+
 fn codex_provider_tables(root: &toml_edit::Table) -> Option<&toml_edit::Table> {
     root.get("model_providers").and_then(Item::as_table)
 }
@@ -341,6 +352,43 @@ base_url = "https://legacy.example.com/v1/chat/completions"
             codex_base_url_from_config(config).as_deref(),
             Some("https://legacy.example.com/v1/chat/completions")
         );
+    }
+
+    #[test]
+    fn codex_model_from_config_reads_chat_model_before_root_model() {
+        let config = r#"
+model = "deepseek-v4-flash"
+model_provider = "custom"
+[chat]
+model = "qwen3-coder"
+[model_providers.custom]
+base_url = "https://api.deepseek.com/v1"
+"#;
+        assert_eq!(
+            codex_model_from_config(config).as_deref(),
+            Some("qwen3-coder")
+        );
+    }
+
+    #[test]
+    fn codex_model_from_config_falls_back_to_root_model() {
+        let config = r#"
+model = "deepseek-v4-flash"
+model_provider = "custom"
+[model_providers.custom]
+base_url = "https://api.deepseek.com/v1"
+"#;
+        assert_eq!(
+            codex_model_from_config(config).as_deref(),
+            Some("deepseek-v4-flash")
+        );
+    }
+
+    #[test]
+    fn codex_model_from_config_ignores_missing_and_empty_model() {
+        assert_eq!(codex_model_from_config("base_url = \"https://x\"\n"), None);
+        assert_eq!(codex_model_from_config("model = \"  \"\n"), None);
+        assert_eq!(codex_model_from_config("[chat]\nmodel = \"  \"\n"), None);
     }
 
     #[test]

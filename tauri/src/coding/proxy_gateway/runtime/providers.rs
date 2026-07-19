@@ -325,7 +325,10 @@ fn provider_from_record(
                 is_full_url,
                 sort_index: provider.sort_index,
                 meta,
-                model_mapping: UpstreamModelMapping::default(),
+                model_mapping: UpstreamModelMapping {
+                    default_model: codex_model_from_config(config_toml),
+                    ..UpstreamModelMapping::default()
+                },
             }))
         }
         GatewayCliKey::Grok => {
@@ -1223,6 +1226,10 @@ pub(super) fn codex_base_url_from_config(config_toml: &str) -> Option<String> {
     super::super::provider_protocol::codex_base_url_from_config(config_toml)
 }
 
+fn codex_model_from_config(config_toml: &str) -> Option<String> {
+    super::super::provider_protocol::codex_model_from_config(config_toml)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1376,6 +1383,94 @@ api_key = "secret"
             mapping.reasoning_model.as_deref(),
             Some("provider-reasoning")
         );
+    }
+
+    #[test]
+    fn codex_provider_loads_default_model_from_config_toml() {
+        let result = provider_from_record(
+            GatewayCliKey::Codex,
+            serde_json::json!({
+                "id": "codex-default-model",
+                "name": "Codex Default Model",
+                "category": "custom",
+                "settings_config": serde_json::json!({
+                    "auth": {"OPENAI_API_KEY": "test-key"},
+                    "config": r#"
+model = "deepseek-v4-flash"
+model_provider = "custom"
+[model_providers.custom]
+base_url = "https://api.deepseek.com/v1"
+"#
+                }).to_string(),
+                "is_disabled": false
+            }),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            result.model_mapping.default_model.as_deref(),
+            Some("deepseek-v4-flash")
+        );
+    }
+
+    #[test]
+    fn codex_provider_loads_default_model_from_chat_config_toml() {
+        let result = provider_from_record(
+            GatewayCliKey::Codex,
+            serde_json::json!({
+                "id": "codex-chat-model",
+                "name": "Codex Chat Model",
+                "category": "custom",
+                "settings_config": serde_json::json!({
+                    "auth": {"OPENAI_API_KEY": "test-key"},
+                    "config": r#"
+model = "stale-root-model"
+model_provider = "custom"
+[chat]
+model = "qwen3-coder"
+[model_providers.custom]
+base_url = "https://api.deepseek.com/v1"
+"#
+                }).to_string(),
+                "is_disabled": false
+            }),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            result.model_mapping.default_model.as_deref(),
+            Some("qwen3-coder")
+        );
+    }
+
+    #[test]
+    fn codex_provider_without_root_model_keeps_empty_default_model() {
+        let result = provider_from_record(
+            GatewayCliKey::Codex,
+            serde_json::json!({
+                "id": "codex-no-model",
+                "name": "Codex No Model",
+                "category": "custom",
+                "settings_config": serde_json::json!({
+                    "auth": {"OPENAI_API_KEY": "test-key"},
+                    "config": r#"
+model_provider = "custom"
+[model_providers.custom]
+base_url = "https://api.openai.com/v1"
+"#
+                }).to_string(),
+                "is_disabled": false
+            }),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.model_mapping.default_model, None);
     }
 
     #[test]

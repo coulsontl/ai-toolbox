@@ -909,6 +909,37 @@ pub async fn reveal_claude_config_folder(
     Ok(())
 }
 
+/// Launch Claude Code CLI with a temporary provider settings file.
+/// Does not rewrite the applied settings.json and does not change is_applied.
+#[tauri::command]
+pub async fn launch_claude_provider_cli(
+    state: tauri::State<'_, SqliteDbState>,
+    provider_id: String,
+    full_access: Option<bool>,
+) -> Result<(), String> {
+    let db = state.db();
+    let provider = get_claude_provider_from_sqlite(&db, &provider_id)?
+        .ok_or_else(|| format!("Provider not found: {provider_id}"))?;
+
+    if provider.is_disabled {
+        return Err(format!(
+            "Provider '{}' is disabled and cannot launch CLI",
+            provider.name
+        ));
+    }
+
+    let runtime_location =
+        runtime_location::get_claude_runtime_location_async(&db).await?;
+    let full_access = full_access.unwrap_or(false);
+
+    super::cli_launch::launch_claude_provider_cli_session(
+        &runtime_location,
+        &provider.id,
+        &provider.settings_config,
+        full_access,
+    )
+}
+
 /// Read Claude settings.json file
 #[tauri::command]
 pub async fn read_claude_settings(

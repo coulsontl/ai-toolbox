@@ -2027,7 +2027,9 @@
       "vscode": "VSCode 集成",
       "vscodeHint": "启用后将允许 VSCode Claude Code 插件使用第三方供应商",
       "skipOnboarding": "跳过初次安装确认",
-      "skipOnboardingHint": "跳过 Claude Code 首次启动时的初始设置确认"
+      "skipOnboardingHint": "跳过 Claude Code 首次启动时的初始设置确认",
+      "cliLaunchFullAccess": "CLI 启动 Full Access",
+      "cliLaunchFullAccessHint": "开启后，供应商列表中的「CLI 启动」会每次附加 --dangerously-skip-permissions"
     },
     "provider": {
       "title": "供应商列表",
@@ -2059,6 +2061,10 @@
       "notesPlaceholder": "可选备注",
       "apply": "应用",
       "applied": "已应用",
+      "launchCli": "CLI 启动",
+      "launchCliHint": "使用该供应商的临时配置打开 Claude CLI，不改写当前已应用配置。是否附加 Full Access 由顶部「更多选项」开关控制",
+      "launchCliSuccess": "已打开 Claude CLI 终端",
+      "launchCliFailed": "打开 Claude CLI 失败：{{error}}",
       "apiFormat": "API 格式",
       "apiFormatAnthropic": "Anthropic Messages",
       "apiFormatOpenAIChat": "OpenAI Chat Completions",

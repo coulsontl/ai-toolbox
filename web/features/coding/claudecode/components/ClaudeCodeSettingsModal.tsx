@@ -1,6 +1,9 @@
 import React from 'react';
-import { Modal, Switch, message } from 'antd';
+import { message } from 'antd';
 import { useTranslation } from 'react-i18next';
+import SidebarSettingsModal, {
+  SettingsToggleRow,
+} from '@/components/common/SidebarSettingsModal';
 import {
   getClaudePluginStatus,
   applyClaudePluginConfig,
@@ -8,7 +11,7 @@ import {
   applyClaudeOnboardingSkip,
   clearClaudeOnboardingSkip,
 } from '@/services/claudeCodeApi';
-import styles from './ClaudeCodeSettingsModal.module.less';
+import { useSettingsStore } from '@/stores/settingsStore';
 
 interface ClaudeCodeSettingsModalProps {
   open: boolean;
@@ -24,15 +27,21 @@ export const ClaudeCodeSettingsModal: React.FC<ClaudeCodeSettingsModalProps> = (
   onSidebarVisibleChange,
 }) => {
   const { t } = useTranslation();
+  const claudeCliLaunchFullAccess = useSettingsStore((state) => state.claudeCliLaunchFullAccess);
+  const setClaudeCliLaunchFullAccess = useSettingsStore(
+    (state) => state.setClaudeCliLaunchFullAccess,
+  );
   const [vscodeEnabled, setVscodeEnabled] = React.useState(false);
   const [skipOnboarding, setSkipOnboarding] = React.useState(false);
   const [vscodeLoading, setVscodeLoading] = React.useState(false);
   const [onboardingLoading, setOnboardingLoading] = React.useState(false);
+  const [cliLaunchFullAccessLoading, setCliLaunchFullAccessLoading] = React.useState(false);
 
-  // Load settings on mount
   React.useEffect(() => {
-    loadSettings();
-  }, []);
+    if (open) {
+      void loadSettings();
+    }
+  }, [open]);
 
   const loadSettings = async () => {
     try {
@@ -53,9 +62,7 @@ export const ClaudeCodeSettingsModal: React.FC<ClaudeCodeSettingsModalProps> = (
       await applyClaudePluginConfig(checked);
       setVscodeEnabled(checked);
       message.success(
-        checked
-          ? t('claudecode.plugin.enabled')
-          : t('claudecode.plugin.disabled')
+        checked ? t('claudecode.plugin.enabled') : t('claudecode.plugin.disabled'),
       );
     } catch (error) {
       console.error('Failed to toggle VSCode integration:', error);
@@ -83,54 +90,48 @@ export const ClaudeCodeSettingsModal: React.FC<ClaudeCodeSettingsModalProps> = (
     }
   };
 
+  const handleCliLaunchFullAccessToggle = async (checked: boolean) => {
+    setCliLaunchFullAccessLoading(true);
+    try {
+      await setClaudeCliLaunchFullAccess(checked);
+      message.success(t('common.success'));
+    } catch (error) {
+      console.error('Failed to toggle Claude CLI full access:', error);
+      message.error(t('common.error'));
+    } finally {
+      setCliLaunchFullAccessLoading(false);
+    }
+  };
+
   return (
-    <Modal
-      title={t('claudecode.settings.title')}
+    <SidebarSettingsModal
       open={open}
-      onCancel={onClose}
-      footer={null}
-      width={550}
+      onClose={onClose}
+      sidebarVisible={sidebarVisible}
+      onSidebarVisibleChange={onSidebarVisibleChange}
     >
-      <div className={styles.section}>
-        <div className={styles.labelArea}>
-          <label className={styles.label}>{t('common.showSidebar')}</label>
-        </div>
-        <div className={styles.inputArea}>
-          <Switch
-            checked={sidebarVisible}
-            onChange={onSidebarVisibleChange}
-          />
-        </div>
-      </div>
-
-      <div className={styles.section}>
-        <div className={styles.labelArea}>
-          <label className={styles.label}>{t('claudecode.settings.vscode')}</label>
-        </div>
-        <div className={styles.inputArea}>
-          <Switch
-            checked={vscodeEnabled}
-            loading={vscodeLoading}
-            onChange={handleVscodeToggle}
-          />
-          <p className={styles.hint}>{t('claudecode.settings.vscodeHint')}</p>
-        </div>
-      </div>
-
-      <div className={styles.section}>
-        <div className={styles.labelArea}>
-          <label className={styles.label}>{t('claudecode.settings.skipOnboarding')}</label>
-        </div>
-        <div className={styles.inputArea}>
-          <Switch
-            checked={skipOnboarding}
-            loading={onboardingLoading}
-            onChange={handleOnboardingToggle}
-          />
-          <p className={styles.hint}>{t('claudecode.settings.skipOnboardingHint')}</p>
-        </div>
-      </div>
-    </Modal>
+      <SettingsToggleRow
+        title={t('claudecode.settings.vscode')}
+        hint={t('claudecode.settings.vscodeHint')}
+        checked={vscodeEnabled}
+        loading={vscodeLoading}
+        onChange={handleVscodeToggle}
+      />
+      <SettingsToggleRow
+        title={t('claudecode.settings.skipOnboarding')}
+        hint={t('claudecode.settings.skipOnboardingHint')}
+        checked={skipOnboarding}
+        loading={onboardingLoading}
+        onChange={handleOnboardingToggle}
+      />
+      <SettingsToggleRow
+        title={t('claudecode.settings.cliLaunchFullAccess')}
+        hint={t('claudecode.settings.cliLaunchFullAccessHint')}
+        checked={claudeCliLaunchFullAccess}
+        loading={cliLaunchFullAccessLoading}
+        onChange={handleCliLaunchFullAccessToggle}
+      />
+    </SidebarSettingsModal>
   );
 };
 

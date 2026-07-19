@@ -666,7 +666,11 @@ async fn forward_to_upstream(
             return response;
         }
     }
-    let apply_family_model_mapping = options.provider_override_id.is_none()
+    // Connectivity tests pin a provider and model; never rewrite those requests.
+    let allow_provider_model_mapping = options.provider_override_id.is_none();
+    // Claude family + Codex default-model rewrite only run in failover mode.
+    // Grok always rewrites when allowed (CLI takeover hardcodes model=grok-build).
+    let apply_failover_model_mapping = allow_provider_model_mapping
         && !provider_candidates
             .selection
             .as_ref()
@@ -704,7 +708,8 @@ async fn forward_to_upstream(
             request,
             &requested_model,
             &provider,
-            apply_family_model_mapping,
+            apply_failover_model_mapping,
+            allow_provider_model_mapping,
         );
         let health_key = ProviderModelHealthKey {
             cli_key: route.cli_key,
@@ -4103,19 +4108,54 @@ fn resolve_upstream_model_id(
     request: &DebugHttpRequest,
     requested_model: &str,
     provider: &UpstreamProvider,
-    apply_family_model_mapping: bool,
+    apply_failover_model_mapping: bool,
+    allow_provider_model_mapping: bool,
 ) -> String {
-    if provider.cli_key != GatewayCliKey::Claude || !apply_family_model_mapping {
-        return strip_one_m_context_marker(requested_model).to_string();
+    match provider.cli_key {
+        GatewayCliKey::Claude => {
+            if !apply_failover_model_mapping {
+                return strip_one_m_context_marker(requested_model).to_string();
+            }
+            let resolved_model = resolve_claude_upstream_model_id(
+                requested_model,
+                &provider.model_mapping,
+                is_claude_reasoning_request(request, requested_model),
+            )
+            .unwrap_or_else(|| requested_model.to_string());
+            strip_one_m_context_marker(&resolved_model).to_string()
+        }
+        // Codex only rewrites in failover: CLI config already carries the real
+        // P0 model in single mode. Without a default model, passthrough.
+        GatewayCliKey::Codex => {
+            if !apply_failover_model_mapping {
+                return strip_one_m_context_marker(requested_model).to_string();
+            }
+            let resolved_model = provider
+                .model_mapping
+                .default_model
+                .as_deref()
+                .unwrap_or(requested_model);
+            strip_one_m_context_marker(resolved_model).to_string()
+        }
+        // Grok takeover always writes model=grok-build into CLI config for both
+        // single and failover. Rewrite whenever provider mapping is allowed so
+        // the real provider default reaches upstream without restarting CLI.
+        // Connectivity tests set provider_override and must keep the pinned model.
+        GatewayCliKey::Grok => {
+            if !allow_provider_model_mapping {
+                return strip_one_m_context_marker(requested_model).to_string();
+            }
+            let resolved_model = provider
+                .model_mapping
+                .default_model
+                .as_deref()
+                .unwrap_or(requested_model);
+            strip_one_m_context_marker(resolved_model).to_string()
+        }
+        GatewayCliKey::Gemini | GatewayCliKey::OpenCode => {
+            strip_one_m_context_marker(requested_model).to_string()
+        }
     }
-
-    let resolved_model = resolve_claude_upstream_model_id(
-        requested_model,
-        &provider.model_mapping,
-        is_claude_reasoning_request(request, requested_model),
-    )
-    .unwrap_or_else(|| requested_model.to_string());
-    strip_one_m_context_marker(&resolved_model).to_string()
 }
 
 fn resolve_claude_upstream_model_id(
@@ -9536,6 +9576,20 @@ mod tests {
         assert!(headers.contains_key(AUTHORIZATION));
     }
 
+    fn resolve_model(
+        requested_model: &str,
+        provider: &UpstreamProvider,
+        apply_failover_model_mapping: bool,
+    ) -> String {
+        resolve_upstream_model_id(
+            &debug_request(b"{}"),
+            requested_model,
+            provider,
+            apply_failover_model_mapping,
+            true,
+        )
+    }
+
     #[test]
     fn claude_model_mapping_uses_provider_specific_model_for_standard_name() {
         let provider = claude_provider(UpstreamModelMapping {
@@ -9544,7 +9598,7 @@ mod tests {
         });
 
         assert_eq!(
-            resolve_upstream_model_id(&debug_request(b"{}"), "claude-sonnet-4-6", &provider, true),
+            resolve_model("claude-sonnet-4-6", &provider, true),
             "provider-sonnet"
         );
     }
@@ -9558,7 +9612,7 @@ mod tests {
         });
 
         assert_eq!(
-            resolve_upstream_model_id(&debug_request(b"{}"), "claude-fable-5", &provider, true),
+            resolve_model("claude-fable-5", &provider, true),
             "provider-fable"
         );
     }
@@ -9572,7 +9626,7 @@ mod tests {
         });
 
         assert_eq!(
-            resolve_upstream_model_id(&debug_request(b"{}"), "claude-fable-5", &provider, true),
+            resolve_model("claude-fable-5", &provider, true),
             "provider-opus"
         );
     }
@@ -9585,7 +9639,7 @@ mod tests {
         });
 
         assert_eq!(
-            resolve_upstream_model_id(&debug_request(b"{}"), "claude-opus-4-7", &provider, true),
+            resolve_model("claude-opus-4-7", &provider, true),
             "provider-default"
         );
     }
@@ -9595,7 +9649,7 @@ mod tests {
         let provider = claude_provider(UpstreamModelMapping::default());
 
         assert_eq!(
-            resolve_upstream_model_id(&debug_request(b"{}"), "claude-opus-4-7", &provider, true),
+            resolve_model("claude-opus-4-7", &provider, true),
             "claude-opus-4-7"
         );
     }
@@ -9605,12 +9659,7 @@ mod tests {
         let provider = claude_provider(UpstreamModelMapping::default());
 
         assert_eq!(
-            resolve_upstream_model_id(
-                &debug_request(b"{}"),
-                "claude-sonnet-4-6[1M]",
-                &provider,
-                true,
-            ),
+            resolve_model("claude-sonnet-4-6[1M]", &provider, true),
             "claude-sonnet-4-6"
         );
     }
@@ -9623,12 +9672,7 @@ mod tests {
         });
 
         assert_eq!(
-            resolve_upstream_model_id(
-                &debug_request(b"{}"),
-                "claude-sonnet-4-6[1M]",
-                &provider,
-                true,
-            ),
+            resolve_model("claude-sonnet-4-6[1M]", &provider, true),
             "provider-sonnet"
         );
     }
@@ -9641,12 +9685,7 @@ mod tests {
         });
 
         assert_eq!(
-            resolve_upstream_model_id(
-                &debug_request(b"{}"),
-                "claude-sonnet-4-6[1M]",
-                &provider,
-                false,
-            ),
+            resolve_model("claude-sonnet-4-6[1M]", &provider, false),
             "claude-sonnet-4-6"
         );
     }
@@ -9656,8 +9695,91 @@ mod tests {
         let provider = provider_for_cli(GatewayCliKey::Codex);
 
         assert_eq!(
-            resolve_upstream_model_id(&debug_request(b"{}"), "gpt-5-codex[1M]", &provider, true),
+            resolve_model("gpt-5-codex[1M]", &provider, true),
             "gpt-5-codex"
+        );
+    }
+
+    #[test]
+    fn codex_failover_uses_provider_default_model() {
+        let mut provider = provider_for_cli(GatewayCliKey::Codex);
+        provider.model_mapping.default_model = Some("deepseek-v4-flash".to_string());
+
+        assert_eq!(
+            resolve_model("gpt-5.4-codex", &provider, true),
+            "deepseek-v4-flash"
+        );
+    }
+
+    #[test]
+    fn codex_single_mode_preserves_requested_model() {
+        let mut provider = provider_for_cli(GatewayCliKey::Codex);
+        provider.model_mapping.default_model = Some("deepseek-v4-flash".to_string());
+
+        assert_eq!(
+            resolve_model("gpt-5.4-codex", &provider, false),
+            "gpt-5.4-codex"
+        );
+    }
+
+    #[test]
+    fn codex_failover_without_default_model_passthroughs_request() {
+        let provider = provider_for_cli(GatewayCliKey::Codex);
+
+        assert_eq!(
+            resolve_model("gpt-5.4-codex", &provider, true),
+            "gpt-5.4-codex"
+        );
+    }
+
+    #[test]
+    fn codex_failover_strips_one_m_from_default_model() {
+        let mut provider = provider_for_cli(GatewayCliKey::Codex);
+        provider.model_mapping.default_model = Some("provider-model[1M]".to_string());
+
+        assert_eq!(
+            resolve_model("gpt-5.4-codex", &provider, true),
+            "provider-model"
+        );
+    }
+
+    #[test]
+    fn grok_failover_uses_provider_default_model() {
+        let mut provider = provider_for_cli(GatewayCliKey::Grok);
+        provider.model_mapping.default_model = Some("grok-3-mini".to_string());
+
+        assert_eq!(
+            resolve_model("grok-build", &provider, true),
+            "grok-3-mini"
+        );
+    }
+
+    #[test]
+    fn grok_single_mode_also_uses_provider_default_model() {
+        let mut provider = provider_for_cli(GatewayCliKey::Grok);
+        provider.model_mapping.default_model = Some("grok-3-mini".to_string());
+
+        // Grok CLI takeover hardcodes model=grok-build even in single mode.
+        assert_eq!(
+            resolve_model("grok-build", &provider, false),
+            "grok-3-mini"
+        );
+    }
+
+    #[test]
+    fn grok_provider_override_preserves_requested_model() {
+        let mut provider = provider_for_cli(GatewayCliKey::Grok);
+        provider.model_mapping.default_model = Some("grok-3-mini".to_string());
+
+        assert_eq!(
+            resolve_upstream_model_id(
+                &debug_request(b"{}"),
+                "user-pinned-model",
+                &provider,
+                false,
+                false,
+            ),
+            "user-pinned-model"
         );
     }
 
@@ -9666,12 +9788,7 @@ mod tests {
         let provider = provider_for_cli(GatewayCliKey::Gemini);
 
         assert_eq!(
-            resolve_upstream_model_id(
-                &debug_request(b"{}"),
-                "gemini-2.5-pro%5B1M%5D",
-                &provider,
-                true,
-            ),
+            resolve_model("gemini-2.5-pro%5B1M%5D", &provider, true),
             "gemini-2.5-pro"
         );
     }
@@ -9687,7 +9804,7 @@ mod tests {
             debug_request(br#"{"model":"claude-sonnet-4-6","thinking":{"type":"enabled"}}"#);
 
         assert_eq!(
-            resolve_upstream_model_id(&request, "claude-sonnet-4-6", &provider, true),
+            resolve_upstream_model_id(&request, "claude-sonnet-4-6", &provider, true, true),
             "provider-reasoning"
         );
     }

@@ -102,6 +102,20 @@ export const applyClaudeConfig = async (providerId: string): Promise<void> => {
 };
 
 /**
+ * Launch Claude Code CLI with a temporary provider settings file.
+ * Does not rewrite the applied settings.json.
+ */
+export const launchClaudeProviderCli = async (
+  providerId: string,
+  options?: { fullAccess?: boolean },
+): Promise<void> => {
+  await invoke('launch_claude_provider_cli', {
+    providerId,
+    fullAccess: options?.fullAccess ?? false,
+  });
+};
+
+/**
  * Read Claude Code settings.json
  */
 export const readClaudeSettings = async (): Promise<ClaudeSettings> => {

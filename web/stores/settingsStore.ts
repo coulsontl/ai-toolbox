@@ -84,6 +84,9 @@ interface SettingsState {
   codexPreserveOfficialAuthOnSwitch: boolean;
   codexUnifiedSessionHistoryEnabled: boolean;
 
+  // Claude Code options
+  claudeCliLaunchFullAccess: boolean;
+
   // Actions
   initSettings: () => Promise<void>;
   setBackupSettings: (config: {
@@ -114,6 +117,7 @@ interface SettingsState {
   setOpencodeAllowClearAppliedOhMyConfig: (enabled: boolean) => Promise<void>;
   setCodexPreserveOfficialAuthOnSwitch: (enabled: boolean) => Promise<void>;
   setCodexUnifiedSessionHistoryEnabled: (enabled: boolean) => void;
+  setClaudeCliLaunchFullAccess: (enabled: boolean) => Promise<void>;
 }
 
 // Convert backend snake_case to frontend camelCase
@@ -202,6 +206,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   opencodeAllowClearAppliedOhMyConfig: false,
   codexPreserveOfficialAuthOnSwitch: false,
   codexUnifiedSessionHistoryEnabled: false,
+  claudeCliLaunchFullAccess: false,
 
   initSettings: async () => {
     if (get().isInitialized) return;
@@ -234,6 +239,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         opencodeAllowClearAppliedOhMyConfig: settings.opencode_allow_clear_applied_oh_my_config ?? false,
         codexPreserveOfficialAuthOnSwitch: settings.codex_preserve_official_auth_on_switch ?? false,
         codexUnifiedSessionHistoryEnabled: settings.codex_unified_session_history_enabled ?? false,
+        claudeCliLaunchFullAccess: settings.claude_cli_launch_full_access ?? false,
         isInitialized: true,
       });
     } catch (error) {
@@ -471,5 +477,16 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   setCodexUnifiedSessionHistoryEnabled: (enabled) => {
     set({ codexUnifiedSessionHistoryEnabled: enabled });
+  },
+
+  setClaudeCliLaunchFullAccess: async (enabled) => {
+    set({ claudeCliLaunchFullAccess: enabled });
+
+    const currentSettings = await getSettings();
+    const newSettings: AppSettings = {
+      ...currentSettings,
+      claude_cli_launch_full_access: enabled,
+    };
+    await saveSettings(newSettings);
   },
 }));

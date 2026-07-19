@@ -58,6 +58,7 @@ sequenceDiagram
 
 ## 易错点与历史坑（Gotchas）
 
+- Provider 卡片上的 **CLI 启动**（`launch_claude_provider_cli`）是旁路启动，不是 apply：写系统 temp 下的极简 settings（仅 provider `env` 非空字符串），用 `claude --settings <temp>` 打开终端；不改 `settings.json`、不改 `is_applied`、不发 apply 相关联动。是否附加 `--dangerously-skip-permissions` 由前端读取 `AppSettings.claude_cli_launch_full_access` 后经 `full_access` 参数传入。无论是否有 `--settings`，本机与 WSL Direct 启动都必须注入当前 runtime root 对应的 `CLAUDE_CONFIG_DIR`，否则自定义 root / shell root 会回落到默认 `~/.claude`。包含 provider env 的临时 settings 必须使用随机文件名并按私有权限写入；Windows `.cmd` / `.bat` CLI shim 要用 `call` 返回当前 launcher，确保清理语句执行。
 - 不要把 Claude Code 当成“配置文件路径模块”。它保存的是根目录，后续文件都要从根目录派生。
 - 不要把“根目录路径等于 `~/.claude`”和“来源是默认根目录”混为一谈。实测 `CLAUDE_CONFIG_DIR=$HOME/.claude` 时，Claude Code 会使用 `$HOME/.claude/.claude.json`，而不是 `$HOME/.claude.json`。
 - 不要把 `CLAUDE_CODE_PLUGIN_CACHE_DIR` 漏掉。实测该变量存在时，marketplace 元数据会写入它指向的目录，settings 与 `.claude.json` 仍跟随 `CLAUDE_CONFIG_DIR` / 当前根目录。

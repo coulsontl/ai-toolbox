@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Empty, Space, Typography, message, Spin, Select, Collapse, Form, Tooltip, Modal, Switch } from 'antd';
+import { Button, Empty, Space, Typography, message, Spin, Select, Collapse, Form, Tooltip, Modal } from 'antd';
 import {
   PlusOutlined,
   FolderOpenOutlined,
@@ -94,7 +94,9 @@ import { openCodePromptApi } from '@/services/openCodePromptApi';
 import SectionSidebarLayout, {
   type SidebarSectionMarker,
 } from '@/components/layout/SectionSidebarLayout/SectionSidebarLayout';
-import SidebarSettingsModal from '@/components/common/SidebarSettingsModal';
+import SidebarSettingsModal, {
+  SettingsToggleRow,
+} from '@/components/common/SidebarSettingsModal';
 import {
   buildProviderConnectivityBatchTarget,
   runProviderConnectivityBatch,
@@ -2713,22 +2715,14 @@ const OpenCodePage: React.FC = () => {
               sidebarVisible={!sidebarHidden}
               onSidebarVisibleChange={(visible) => setSidebarHidden('opencode', !visible)}
             >
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
-                <div style={{ width: 180, paddingTop: 4, color: 'var(--color-text-primary)', fontWeight: 500 }}>
-                  {t('opencode.ohMyOpenCode.clearAppliedEnable')}
-                </div>
-                <div style={{ flex: 1 }}>
-                  <Switch
-                    checked={opencodeAllowClearAppliedOhMyConfig}
-                    onChange={(checked) => {
-                      void setOpencodeAllowClearAppliedOhMyConfig(checked);
-                    }}
-                  />
-                  <div style={{ marginTop: 6, color: 'var(--color-text-secondary)', fontSize: 12, lineHeight: 1.5 }}>
-                    {t('opencode.ohMyOpenCode.clearAppliedEnableHint')}
-                  </div>
-                </div>
-              </div>
+              <SettingsToggleRow
+                title={t('opencode.ohMyOpenCode.clearAppliedEnable')}
+                hint={t('opencode.ohMyOpenCode.clearAppliedEnableHint')}
+                checked={opencodeAllowClearAppliedOhMyConfig}
+                onChange={(checked) => {
+                  void setOpencodeAllowClearAppliedOhMyConfig(checked);
+                }}
+              />
             </SidebarSettingsModal>
           </div>
         </SectionSidebarLayout>

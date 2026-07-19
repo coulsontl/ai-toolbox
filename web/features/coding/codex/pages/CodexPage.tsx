@@ -1,5 +1,5 @@
 import React from 'react';
-import { Typography, Button, Space, Empty, message, Modal, Spin, Collapse, Descriptions, Switch, Checkbox } from 'antd';
+import { Typography, Button, Space, Empty, message, Modal, Spin, Collapse, Descriptions, Checkbox } from 'antd';
 import { PlusOutlined, FolderOpenOutlined, AppstoreOutlined, SyncOutlined, EyeOutlined, ExclamationCircleOutlined, LinkOutlined, EllipsisOutlined, DatabaseOutlined, ImportOutlined, FileTextOutlined, ThunderboltOutlined, EditOutlined, CopyOutlined, MessageOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
@@ -74,7 +74,9 @@ import CodexHistorySyncModal from '../components/CodexHistorySyncModal';
 import { CODEX_LOCAL_PROVIDER_ID, shouldLoadCodexOfficialAccounts } from '../utils/localProvider';
 import AllApiHubIcon from '@/components/common/AllApiHubIcon';
 import CodexConfigPreviewModal from '@/components/common/CodexConfigPreviewModal';
-import SidebarSettingsModal from '@/components/common/SidebarSettingsModal';
+import SidebarSettingsModal, {
+  SettingsToggleRow,
+} from '@/components/common/SidebarSettingsModal';
 import ImportProviderModal from '@/components/common/ImportProviderModal';
 import { GlobalPromptSettings } from '@/features/coding/shared/prompt';
 import RootDirectoryModal from '@/features/coding/shared/RootDirectoryModal';
@@ -1940,51 +1942,29 @@ const CodexPage: React.FC = () => {
           sidebarVisible={!sidebarHidden}
           onSidebarVisibleChange={(visible) => setSidebarHidden('codex', !visible)}
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
-              <div style={{ width: 180, paddingTop: 4, color: 'var(--color-text-primary)', fontWeight: 500 }}>
-                {t('codex.settings.preserveOfficialAuthOnSwitch')}
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <Switch
-                  checked={codexPreserveOfficialAuthOnSwitch}
-                  loading={savingCodexAuthPreservation}
-                  onChange={(checked) => {
-                    void handleCodexAuthPreservationChange(checked);
-                  }}
-                />
-                <Text
-                  type="secondary"
-                  style={{ display: 'block', marginTop: 6, fontSize: 12, lineHeight: 1.5 }}
-                >
-                  {t('codex.settings.preserveOfficialAuthOnSwitchHint')}
-                </Text>
-              </div>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
-              <div style={{ width: 180, paddingTop: 4, color: 'var(--color-text-primary)', fontWeight: 500 }}>
-                {t('codex.settings.unifiedSessionHistory')}
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <Switch
-                  checked={codexUnifiedSessionHistoryEnabled}
-                  loading={savingCodexUnifiedHistory}
-                  disabled={gatewayTakeoverActive}
-                  onChange={(checked) => {
-                    handleCodexUnifiedHistoryChange(checked);
-                  }}
-                />
-                <Text
-                  type="secondary"
-                  style={{ display: 'block', marginTop: 6, fontSize: 12, lineHeight: 1.5 }}
-                >
-                  {gatewayTakeoverActive
-                    ? t('codex.settings.unifiedSessionHistoryGatewayLocked')
-                    : t('codex.settings.unifiedSessionHistoryHint')}
-                </Text>
-              </div>
-            </div>
-          </div>
+          <SettingsToggleRow
+            title={t('codex.settings.preserveOfficialAuthOnSwitch')}
+            hint={t('codex.settings.preserveOfficialAuthOnSwitchHint')}
+            checked={codexPreserveOfficialAuthOnSwitch}
+            loading={savingCodexAuthPreservation}
+            onChange={(checked) => {
+              void handleCodexAuthPreservationChange(checked);
+            }}
+          />
+          <SettingsToggleRow
+            title={t('codex.settings.unifiedSessionHistory')}
+            hint={
+              gatewayTakeoverActive
+                ? t('codex.settings.unifiedSessionHistoryGatewayLocked')
+                : t('codex.settings.unifiedSessionHistoryHint')
+            }
+            checked={codexUnifiedSessionHistoryEnabled}
+            loading={savingCodexUnifiedHistory}
+            disabled={gatewayTakeoverActive}
+            onChange={(checked) => {
+              handleCodexUnifiedHistoryChange(checked);
+            }}
+          />
         </SidebarSettingsModal>
         <Modal
           open={Boolean(officialAccountDetails)}
