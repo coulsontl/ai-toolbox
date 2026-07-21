@@ -3744,6 +3744,8 @@
       "openDirectory": "打开本地扩展目录",
       "updateAll": "更新全部",
       "loadFailed": "扩展列表加载失败",
+      "cliPathLabel": "Pi CLI",
+      "cliVersionLabel": "版本",
       "pathLabel": "本地扩展目录",
       "restartHint": "安装、卸载或删除后，需要重启 Pi 会话后生效。",
       "sourcePlaceholder": "输入 npm:package、github:owner/repo、git:url 或 file:path",

@@ -244,6 +244,12 @@ pub struct PiExtensionListResult {
     pub packages_path: String,
     pub extensions: Vec<PiExtensionSummary>,
     pub raw: String,
+    /// Resolved host-side `pi` binary path (or WSL invocation label) used for extension CLI ops.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli_path: Option<String>,
+    /// Best-effort `pi --version` stdout for the resolved CLI; omitted when probing fails.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

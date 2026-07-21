@@ -33,6 +33,7 @@
 - Windows 文件夹选择器在 WSL UNC 下可能只能选到 `~/.pi`，但末段名为 `.pi` 的目录也可能是合法 custom root。Pi 设置保存和 runtime cache 刷新只有在当前目录没有 Pi runtime 数据、且其 `agent` 子目录已存在 Pi runtime 布局时，才归一化并回写为 `~/.pi/agent`；不能只凭目录名迁移。
 - WSL Direct 扩展命令需要把 mise/asdf/bun/Volta/fnm/用户 npm bin 前置到原 WSL `$PATH`。动态 root 和扩展 source 必须保持为独立进程参数，不能拼进 shell 命令字符串；否则含空格路径会拆参，Shell 元字符还会改变命令结构。
 - 本机 `pi` CLI 解析走共享 `cli_resolver`。Windows 上用 `bun install -g` 安装的 `pi` 默认在 `%USERPROFILE%\.bun\bin`（或 `$BUN_INSTALL\bin`）；GUI 启动时不一定继承终端 PATH，必须把 bun 全局 bin 纳入候选路径，不能只查 nvm/volta/fnm/npm。
+- 多路径 `pi` 时**不会**比版本选最新：先用进程 PATH 的 `which`/`where` 结果（非 Windows 取第一条，Windows 按 `.exe`/`.cmd`/… 扩展名优先级），PATH 查不到再按候选顺序（`~/.local/bin` → `/opt/homebrew/bin` → `/usr/local/bin` → node/bun 全局 bin）。扩展 list/install/remove/update 失败错误必须附带解析到的 `pi_cli=` 路径；list 成功响应应带 `cliPath`/`cliVersion` 方便对照终端里的 `where pi`。
 - `pi-deck-*` 和 `ai-toolbox-*` 本地扩展按内置/受保护处理，页面不要提供直接删除入口。
 - 保存 Other Configuration 时不要清空或覆盖 `settings.json.packages`；扩展管理区已经负责 package 安装、列表和卸载入口。
 
@@ -45,5 +46,6 @@
 - WSL Direct Pi root 或扩展 source 含空格和 Shell 元字符时，`list/install/remove/update` 的命令参数边界必须保持不变，且补充 shim 后仍保留原 WSL `$PATH`。
 - `pi list`（优先带 `--no-approve`，不支持时回退）返回的 package 扩展和 `extensions/*.ts` / `extensions/<dir>/index.ts` 本地扩展应合并展示。
 - 扩展命令遇到 `Unknown option --no-approve` 时不能把该错误直接当作最终失败；应去掉 flag 重试，并在 UI/错误里仍允许后续提示用户升级官方 Pi CLI。
+- 扩展 CLI 失败文案应包含 `pi_cli=<resolved path or wsl -d <distro> -- pi>`；list 成功时 meta 区应能看到同一路径和 `pi --version` 探测结果（探测失败可省略版本）。
 - `settings.json` 中已有 `packages` 时，`read_pi_runtime_config().other_settings` 不返回该字段，`save_pi_other_settings` 也不会删除或覆盖它。
 - Pi 0.80.6 起共享 thinking ladder 是 `off/minimal/low/medium/high/xhigh/max`。AI Toolbox 的前端选项、preset `thinkingLevelMap` 转换和后端校验白名单必须同步维护这七档；缺省的标准档 `off/minimal/low/medium/high` 按 identity mapping 支持，扩展档 `xhigh/max` 必须由模型显式提供非 `null` 映射才算支持。`ultra` 属于 Codex 的主动多智能体档位，不是 Pi thinking level，不能加入 Pi settings 或模型映射。

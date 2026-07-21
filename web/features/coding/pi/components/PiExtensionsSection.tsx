@@ -424,6 +424,18 @@ const PiExtensionsSection: React.FC<PiExtensionsSectionProps> = ({ refreshKey = 
                   />
                 )}
                 <div className={styles.metaRow}>
+                  <Text type="secondary">{t('pi.extensions.cliPathLabel')}</Text>
+                  <Text code className={styles.pathText}>
+                    {data?.cliPath || '-'}
+                  </Text>
+                  {data?.cliVersion && (
+                    <>
+                      <Text type="secondary">{t('pi.extensions.cliVersionLabel')}</Text>
+                      <Text code className={styles.pathText}>
+                        {data.cliVersion}
+                      </Text>
+                    </>
+                  )}
                   <Text type="secondary">{t('pi.extensions.pathLabel')}</Text>
                   <Text code className={styles.pathText}>
                     {data?.extensionsPath || '-'}

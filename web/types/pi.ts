@@ -95,6 +95,10 @@ export interface PiExtensionListResult {
   packagesPath: string;
   extensions: PiExtensionSummary[];
   raw: string;
+  /** Resolved host-side `pi` path (or WSL label) used for extension CLI ops. */
+  cliPath?: string;
+  /** Best-effort `pi --version` for the resolved CLI. */
+  cliVersion?: string;
 }
 
 export interface PiExtensionInstallInput {

@@ -6,6 +6,35 @@ use std::process::Command;
 
 use tokio::process::Command as TokioCommand;
 
+/// Windows CREATE_NO_WINDOW: hide console for short-lived CLI spawns from a GUI process.
+/// Prefer this over DETACHED_PROCESS when capturing stdout/stderr via `.output()`.
+#[cfg(target_os = "windows")]
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Apply CREATE_NO_WINDOW on Windows so GUI hosts do not flash a console.
+pub fn apply_create_no_window(command: &mut Command) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = command;
+    }
+}
+
+/// Apply CREATE_NO_WINDOW on Windows for tokio process commands.
+pub fn apply_create_no_window_tokio(command: &mut TokioCommand) {
+    // tokio::process::Command exposes creation_flags as an inherent Windows method.
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = command;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalCliProgram {
     pub path: PathBuf,
@@ -137,10 +166,10 @@ fn resolve_cli_from_path(command_name: &str) -> Option<PathBuf> {
     #[cfg(not(target_os = "windows"))]
     let lookup_command = "which";
 
-    let output = Command::new(lookup_command)
-        .arg(command_name)
-        .output()
-        .ok()?;
+    let mut lookup = Command::new(lookup_command);
+    lookup.arg(command_name);
+    apply_create_no_window(&mut lookup);
+    let output = lookup.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -610,6 +639,7 @@ fn build_local_std_command_impl(program_path: &Path) -> Command {
         }
         _ => Command::new(program_path),
     };
+    apply_create_no_window(&mut command);
     apply_local_std_command_environment(&mut command, program_path);
     command
 }
@@ -638,6 +668,7 @@ fn build_local_tokio_command_impl(program_path: &Path) -> TokioCommand {
         }
         _ => TokioCommand::new(program_path),
     };
+    apply_create_no_window_tokio(&mut command);
     apply_local_tokio_command_environment(&mut command, program_path);
     command
 }

@@ -3747,6 +3747,8 @@
       "openDirectory": "Open Local Extensions Folder",
       "updateAll": "Update All",
       "loadFailed": "Failed to load extensions",
+      "cliPathLabel": "Pi CLI",
+      "cliVersionLabel": "Version",
       "pathLabel": "Local extensions folder",
       "restartHint": "Restart Pi sessions after installing, uninstalling, or deleting extensions.",
       "sourcePlaceholder": "Enter npm:package, github:owner/repo, git:url, or file:path",

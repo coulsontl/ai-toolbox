@@ -5,7 +5,9 @@ use std::path::Path;
 use tauri::Emitter;
 use tokio::process::Command;
 
-use crate::coding::cli_resolver::{build_local_tokio_command, resolve_local_grok_program};
+use crate::coding::cli_resolver::{
+    apply_create_no_window_tokio, build_local_tokio_command, resolve_local_grok_program,
+};
 use crate::coding::runtime_location::{self, RuntimeLocationInfo, RuntimeLocationMode};
 use crate::db::SqliteDbState;
 
@@ -110,6 +112,7 @@ fn build_command(location: &RuntimeLocationInfo, args: &[&str]) -> Result<Comman
                 "Missing WSL runtime metadata for Grok plugin command".to_string()
             })?;
             let mut command = Command::new("wsl");
+            apply_create_no_window_tokio(&mut command);
             command
                 .args(["-d", &wsl.distro, "--exec", "env"])
                 .arg(format!("GROK_HOME={}", wsl.linux_path))

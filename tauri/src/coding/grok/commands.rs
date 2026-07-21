@@ -203,7 +203,9 @@ fn parse_grok_models_output(output: &str) -> Vec<GrokOfficialModel> {
 }
 
 async fn run_grok_models_command(db: &SqliteDbState) -> Result<String, String> {
-    use crate::coding::cli_resolver::{build_local_tokio_command, resolve_local_grok_program};
+    use crate::coding::cli_resolver::{
+        apply_create_no_window_tokio, build_local_tokio_command, resolve_local_grok_program,
+    };
     use crate::coding::runtime_location::RuntimeLocationMode;
     use tokio::process::Command;
 
@@ -220,6 +222,7 @@ async fn run_grok_models_command(db: &SqliteDbState) -> Result<String, String> {
                 "Missing WSL runtime metadata for Grok models command".to_string()
             })?;
             let mut command = Command::new("wsl");
+            apply_create_no_window_tokio(&mut command);
             command
                 .args(["-d", &wsl.distro, "--exec", "env"])
                 .arg(format!("GROK_HOME={}", wsl.linux_path))

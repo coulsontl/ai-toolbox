@@ -12,7 +12,8 @@ use super::types::{
     PiExtensionListResult, PiExtensionScope, PiExtensionSummary,
 };
 use crate::coding::cli_resolver::{
-    build_local_tokio_command, local_cli_missing_hint, resolve_local_pi_program,
+    apply_create_no_window_tokio, build_local_tokio_command, local_cli_missing_hint,
+    resolve_local_pi_program,
 };
 use crate::coding::runtime_location::{self, RuntimeLocationInfo, RuntimeLocationMode};
 use crate::db::SqliteDbState;
@@ -104,7 +105,9 @@ fn build_pi_command(
             let wsl = runtime_location.wsl.as_ref().ok_or_else(|| {
                 "Missing WSL runtime metadata for Pi extension command".to_string()
             })?;
+            let local_program_label = format!("wsl -d {} -- pi", wsl.distro);
             let mut command = Command::new("wsl");
+            apply_create_no_window_tokio(&mut command);
             command.args([
                 "-d",
                 &wsl.distro,
@@ -127,23 +130,54 @@ fn build_pi_command(
             command.args(args);
             Ok(PiCommandInvocation {
                 command,
-                local_program_label: None,
+                local_program_label: Some(local_program_label),
             })
         }
     }
 }
 
+/// Human-readable CLI label for the resolved `pi` used by extension ops.
+fn resolve_pi_cli_display_path(runtime_location: &RuntimeLocationInfo) -> Option<String> {
+    match runtime_location.mode {
+        RuntimeLocationMode::LocalWindows => {
+            Some(resolve_local_pi_program().path.display().to_string())
+        }
+        RuntimeLocationMode::WslDirect => runtime_location
+            .wsl
+            .as_ref()
+            .map(|wsl| format!("wsl -d {} -- pi", wsl.distro)),
+    }
+}
+
+/// Append resolved CLI path so multi-`pi` PATH installs are diagnosable from UI errors.
+fn annotate_pi_command_error(message: String, local_program_label: Option<&str>) -> String {
+    let Some(label) = local_program_label
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return message;
+    };
+    if message.contains(label) {
+        return message;
+    }
+    format!("{message}\npi_cli={label}")
+}
+
 fn build_pi_spawn_error(error: &std::io::Error, local_program_label: Option<&str>) -> String {
     let base_message = format!("Failed to run Pi extension command: {error}");
-    if error.kind() == std::io::ErrorKind::NotFound {
+    let with_hint = if error.kind() == std::io::ErrorKind::NotFound {
         if let Some(label) = local_program_label {
-            return format!(
+            format!(
                 "{base_message}. attempted_program={label}. {}",
                 local_cli_missing_hint("pi")
-            );
+            )
+        } else {
+            format!("{base_message}. {}", local_cli_missing_hint("pi"))
         }
-    }
-    base_message
+    } else {
+        base_message
+    };
+    annotate_pi_command_error(with_hint, local_program_label)
 }
 
 async fn run_pi_command(
@@ -168,13 +202,29 @@ async fn run_pi_command(
 
     let stderr_output = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let stdout_trimmed = stdout_output.trim().to_string();
-    Err(if !stderr_output.is_empty() {
+    let failure_message = if !stderr_output.is_empty() {
         stderr_output
     } else if !stdout_trimmed.is_empty() {
         stdout_trimmed
     } else {
         "Unknown Pi extension command failure".to_string()
-    })
+    };
+    Err(annotate_pi_command_error(
+        failure_message,
+        local_program_label.as_deref(),
+    ))
+}
+
+async fn probe_pi_cli_version(runtime_location: &RuntimeLocationInfo) -> Option<String> {
+    let version = run_pi_command(runtime_location, &["--version"], true)
+        .await
+        .ok()?;
+    let trimmed = version.lines().next().unwrap_or(version.as_str()).trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn is_unknown_no_approve_option_error(message: &str) -> bool {
@@ -477,12 +527,16 @@ pub async fn list_pi_extensions(
             .await?;
     let pi_extensions = enrich_current_versions(parse_list_output(&raw));
     let local_extensions = scan_local_extensions(&extensions_path)?;
+    let cli_path = resolve_pi_cli_display_path(&runtime_location);
+    let cli_version = probe_pi_cli_version(&runtime_location).await;
 
     Ok(PiExtensionListResult {
         extensions_path: extensions_path.to_string_lossy().to_string(),
         packages_path: packages_path.to_string_lossy().to_string(),
         extensions: merge_extensions(pi_extensions, local_extensions),
         raw,
+        cli_path,
+        cli_version,
     })
 }
 
@@ -757,6 +811,28 @@ Project packages:
         assert_eq!(
             pi_extension_npm_compat_env(),
             [(NPM_LEGACY_PEER_DEPS_ENV_KEY, NPM_LEGACY_PEER_DEPS_ENV_VALUE)]
+        );
+    }
+
+    #[test]
+    fn annotates_command_errors_with_resolved_pi_cli_path() {
+        assert_eq!(
+            annotate_pi_command_error(
+                "Unknown option --no-approve for \"list\".".to_string(),
+                Some("/opt/homebrew/bin/pi"),
+            ),
+            "Unknown option --no-approve for \"list\".\npi_cli=/opt/homebrew/bin/pi"
+        );
+        assert_eq!(
+            annotate_pi_command_error(
+                "already mentions /usr/local/bin/pi".to_string(),
+                Some("/usr/local/bin/pi"),
+            ),
+            "already mentions /usr/local/bin/pi"
+        );
+        assert_eq!(
+            annotate_pi_command_error("no label".to_string(), None),
+            "no label"
         );
     }
 }
