@@ -141,7 +141,7 @@ pub fn build_local_tokio_command(program_path: &Path) -> TokioCommand {
 
 pub fn local_cli_missing_hint(command_name: &str) -> String {
     format!(
-        "未找到 `{command_name}` CLI。AI Toolbox 已检查当前 PATH、常见安装路径，以及 nvm、volta、fnm、nvm-windows、bun 管理的全局 bin；macOS 从 Dock/Finder/Spotlight 启动时不会继承终端 shell PATH。请确认 CLI 已安装。"
+        "未找到 `{command_name}` CLI。AI Toolbox 已检查当前 PATH、常见安装路径，以及 nvm、volta、fnm、nvm-windows、bun、mise、asdf 管理的全局 bin；macOS 从 Dock/Finder/Spotlight 启动时不会继承终端 shell PATH。请确认 CLI 已安装。"
     )
 }
 
@@ -492,6 +492,7 @@ fn build_local_command_path(program_path: &Path, current_path: Option<&OsStr>) -
     }
 
     append_node_runtime_dirs(&mut dirs);
+    append_mise_asdf_runtime_dirs(&mut dirs, dirs::home_dir().as_deref());
 
     if let Some(current_path) = current_path {
         for path in env::split_paths(current_path) {
@@ -530,6 +531,36 @@ fn append_node_runtime_dirs_with_home(dirs: &mut Vec<PathBuf>, home_dir: Option<
     }
 }
 
+/// Append mise / asdf runtime dirs to the child process PATH.
+///
+/// mise/asdf shims are thin wrappers that `exec mise` / `exec asdf`, so they need the
+/// manager binary itself on PATH. GUI-launched children lack `~/.local/bin` (where mise is
+/// curl-installed) and Homebrew prefixes. Inject only when mise/asdf shims actually exist,
+/// so non-mise/asdf environments are left untouched.
+fn append_mise_asdf_runtime_dirs(dirs: &mut Vec<PathBuf>, home_dir: Option<&Path>) {
+    let Some(home) = home_dir else {
+        return;
+    };
+    let mise_data =
+        env_path("MISE_DATA_DIR").unwrap_or_else(|| home.join(".local").join("share").join("mise"));
+    let asdf_data = env_path("ASDF_DATA_DIR").unwrap_or_else(|| home.join(".asdf"));
+    let mise_shims = mise_data.join("shims");
+    let asdf_shims = asdf_data.join("shims");
+
+    if mise_shims.is_dir() {
+        push_existing_dir(dirs, mise_shims);
+        push_existing_dir(dirs, home.join(".local").join("bin"));
+        push_existing_dir(dirs, PathBuf::from("/opt/homebrew/bin"));
+        push_existing_dir(dirs, PathBuf::from("/usr/local/bin"));
+    }
+    if asdf_shims.is_dir() {
+        push_existing_dir(dirs, asdf_shims);
+        push_existing_dir(dirs, home.join(".local").join("bin"));
+        push_existing_dir(dirs, PathBuf::from("/opt/homebrew/bin"));
+        push_existing_dir(dirs, PathBuf::from("/usr/local/bin"));
+    }
+}
+
 fn append_node_global_candidates_with_home(
     candidates: &mut Vec<PathBuf>,
     command_name: &str,
@@ -562,6 +593,7 @@ fn append_node_global_candidates_with_home(
     }
 
     append_bun_candidates(candidates, command_name, home_dir);
+    append_mise_asdf_candidates(candidates, command_name, home_dir);
     append_windows_node_candidates(candidates, command_name);
 }
 
@@ -570,8 +602,7 @@ fn append_bun_candidates(
     command_name: &str,
     home_dir: Option<&Path>,
 ) {
-    for path in collect_bun_candidates(command_name, env_path("BUN_INSTALL").as_deref(), home_dir)
-    {
+    for path in collect_bun_candidates(command_name, env_path("BUN_INSTALL").as_deref(), home_dir) {
         push_unique_candidate(candidates, path);
     }
 }
@@ -596,6 +627,45 @@ fn collect_bun_candidates(
     }
 
     candidates
+}
+
+/// Append mise / asdf managed CLI candidates.
+///
+/// Covers both the version-pinned node install bin (for `mise use node` + `npm -g` installs)
+/// and the shim directory — the stable entry point for mise/asdf backend tools, including
+/// `npm:` backend packages whose real bin path embeds the package name and cannot be
+/// generalized. Respects `$MISE_DATA_DIR` / `$ASDF_DATA_DIR` with `~/.local/share/mise` /
+/// `~/.asdf` fallbacks.
+fn append_mise_asdf_candidates(
+    candidates: &mut Vec<PathBuf>,
+    command_name: &str,
+    home_dir: Option<&Path>,
+) {
+    let mise_roots = env_path("MISE_DATA_DIR")
+        .into_iter()
+        .chain(home_dir.map(|home| home.join(".local").join("share").join("mise")))
+        .collect::<Vec<_>>();
+    for root in &mise_roots {
+        append_node_version_bins(
+            candidates,
+            &root.join("installs").join("node"),
+            command_name,
+        );
+        push_command_candidate(candidates, root.join("shims"), command_name);
+    }
+
+    let asdf_roots = env_path("ASDF_DATA_DIR")
+        .into_iter()
+        .chain(home_dir.map(|home| home.join(".asdf")))
+        .collect::<Vec<_>>();
+    for root in &asdf_roots {
+        append_node_version_bins(
+            candidates,
+            &root.join("installs").join("nodejs"),
+            command_name,
+        );
+        push_command_candidate(candidates, root.join("shims"), command_name);
+    }
 }
 
 fn push_existing_dir(dirs: &mut Vec<PathBuf>, path: PathBuf) {
@@ -860,6 +930,79 @@ mod tests {
         super::append_node_runtime_dirs_with_home(&mut dirs, Some(&home_dir));
 
         assert!(dirs.contains(&node_bin));
+    }
+
+    #[test]
+    fn mise_shims_and_node_install_bins_are_candidates() {
+        let test_dir = TestDir::new("mise");
+        let home_dir = test_dir.path().join("home");
+        let shims_dir = home_dir
+            .join(".local")
+            .join("share")
+            .join("mise")
+            .join("shims");
+        let node_bin = home_dir
+            .join(".local")
+            .join("share")
+            .join("mise")
+            .join("installs")
+            .join("node")
+            .join("22.18.0")
+            .join("bin");
+        fs::create_dir_all(&shims_dir).expect("failed to create mise shims dir");
+        fs::create_dir_all(&node_bin).expect("failed to create mise node bin dir");
+
+        let mut candidates = Vec::new();
+        super::append_mise_asdf_candidates(&mut candidates, "pi", Some(&home_dir));
+
+        assert!(candidates.contains(&shims_dir.join("pi")));
+        assert!(candidates.contains(&node_bin.join("pi")));
+    }
+
+    #[test]
+    fn asdf_shims_and_node_install_bins_are_candidates() {
+        let test_dir = TestDir::new("asdf");
+        let home_dir = test_dir.path().join("home");
+        let shims_dir = home_dir.join(".asdf").join("shims");
+        let node_bin = home_dir
+            .join(".asdf")
+            .join("installs")
+            .join("nodejs")
+            .join("22.18.0")
+            .join("bin");
+        fs::create_dir_all(&shims_dir).expect("failed to create asdf shims dir");
+        fs::create_dir_all(&node_bin).expect("failed to create asdf node bin dir");
+
+        let mut candidates = Vec::new();
+        super::append_mise_asdf_candidates(&mut candidates, "pi", Some(&home_dir));
+
+        assert!(candidates.contains(&shims_dir.join("pi")));
+        assert!(candidates.contains(&node_bin.join("pi")));
+    }
+
+    #[test]
+    fn mise_runtime_dirs_added_only_when_shims_present() {
+        let test_dir = TestDir::new("mise-runtime");
+        let home_dir = test_dir.path().join("home");
+        let mise_shims = home_dir
+            .join(".local")
+            .join("share")
+            .join("mise")
+            .join("shims");
+        let local_bin = home_dir.join(".local").join("bin");
+
+        // No mise shims yet -> nothing injected.
+        let mut dirs = Vec::new();
+        super::append_mise_asdf_runtime_dirs(&mut dirs, Some(&home_dir));
+        assert!(dirs.is_empty());
+
+        // With shims present -> shims + manager bin dirs injected.
+        fs::create_dir_all(&mise_shims).expect("failed to create mise shims dir");
+        fs::create_dir_all(&local_bin).expect("failed to create local bin dir");
+        super::append_mise_asdf_runtime_dirs(&mut dirs, Some(&home_dir));
+
+        assert!(dirs.contains(&mise_shims));
+        assert!(dirs.contains(&local_bin));
     }
 
     #[cfg(target_os = "windows")]
