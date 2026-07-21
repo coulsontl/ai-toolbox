@@ -64,6 +64,7 @@ This document provides essential information for AI coding agents working on thi
 | `web/features/coding/shared/` | coding 共享前端语义：根目录弹窗、全局 prompt、favorite provider、会话面板、连通性测试 |
 | `web/features/coding/skills/` | Skills 前端页面、中央仓库视角、分组展示与批量同步交互 |
 | `web/features/settings/` | WSL/SSH 设置页、同步入口、moduleStatuses 消费和 UI 边界 |
+| `web/components/common/` | 共享编辑器与基础交互组件的性能和正确性约束 |
 | `tauri/src/settings/backup/` | 备份恢复、WebDAV、自动备份与恢复后续链路 |
 | `tauri/src/coding/image/` | Image 后端渠道配置、任务、资产落盘、图片 API 调用与备份联动 |
 
