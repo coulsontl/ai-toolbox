@@ -201,7 +201,7 @@ pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
         display_name: "Qoder",
         relative_skills_dir: Some("~/.qoder/skills"),
         relative_detect_dir: Some("%APPDATA%/Qoder"),
-        mcp_config_path: Some("%APPDATA%/Qoder/SharedClientCache/mcp.json"),
+        mcp_config_path: Some("~/.qoder/mcp.json"),
         mcp_config_format: Some("json"),
         mcp_field: Some("mcpServers"),
     },

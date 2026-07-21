@@ -11,15 +11,12 @@ fn qoder_work_builtin_tool_uses_standard_mcp_servers_field() {
 }
 
 #[test]
-fn qoder_builtin_tool_uses_appdata_mcp_path() {
+fn qoder_builtin_tool_uses_home_mcp_path() {
     let tool = builtin_tool_by_key("qoder").expect("qoder should exist");
 
     assert_eq!(tool.relative_skills_dir, Some("~/.qoder/skills"));
     assert_eq!(tool.relative_detect_dir, Some("%APPDATA%/Qoder"));
-    assert_eq!(
-        tool.mcp_config_path,
-        Some("%APPDATA%/Qoder/SharedClientCache/mcp.json")
-    );
+    assert_eq!(tool.mcp_config_path, Some("~/.qoder/mcp.json"));
     assert_eq!(tool.mcp_field, Some("mcpServers"));
 }
 

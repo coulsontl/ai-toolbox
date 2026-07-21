@@ -92,8 +92,9 @@ mod tests {
             backup_sha256: Some("abc".to_string()),
             backup_size: Some(123),
             managed_fields: vec![
-                "model_provider".to_string(),
-                "model_providers.ai-toolbox-gateway".to_string(),
+                "model_providers.custom.base_url".to_string(),
+                "model_providers.custom.wire_api".to_string(),
+                "model_providers.custom.experimental_bearer_token".to_string(),
             ],
         });
 

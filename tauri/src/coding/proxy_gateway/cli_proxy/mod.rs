@@ -64,8 +64,8 @@ const CLAUDE_MODEL_FIELD_POINTERS: [&str; 9] = [
 
 const CLAUDE_LEGACY_REASONING_MODEL_POINTER: &str = "/env/ANTHROPIC_REASONING_MODEL";
 
-const CODEX_CONFIG_MANAGED_FIELDS: [&str; 2] =
-    ["model_provider", "model_providers.ai-toolbox-gateway"];
+/// Default Codex model_provider id used by AI Toolbox / unified history.
+const DEFAULT_CODEX_PROVIDER_ID: &str = "custom";
 
 const CODEX_AUTH_MANAGED_FIELDS: [&str; 2] = ["OPENAI_API_KEY", "auth_mode"];
 const GROK_CONFIG_MANAGED_FIELDS: [&str; 2] = ["models.default", "model.ai-toolbox-gateway"];
@@ -94,7 +94,26 @@ const NO_PROXYABLE_PROVIDER_MESSAGE: &str = "No proxyable providers are configur
 struct CliProxyTarget {
     kind: &'static str,
     path: PathBuf,
-    managed_fields: &'static [&'static str],
+    managed_fields: Vec<String>,
+}
+
+fn static_managed_fields(fields: &[&str]) -> Vec<String> {
+    fields.iter().map(|field| (*field).to_string()).collect()
+}
+
+fn codex_config_managed_fields_for_provider(provider_id: &str) -> Vec<String> {
+    vec![
+        format!("model_providers.{provider_id}.base_url"),
+        format!("model_providers.{provider_id}.wire_api"),
+        format!("model_providers.{provider_id}.experimental_bearer_token"),
+    ]
+}
+
+fn is_codex_gateway_managed_fields(managed_fields: &[String]) -> bool {
+    managed_fields.iter().any(|field| {
+        field == "model_providers.ai-toolbox-gateway"
+            || (field.starts_with("model_providers.") && field.ends_with(".base_url"))
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -403,11 +422,11 @@ pub async fn engage_single_cli(
     }
     let primary_provider = load_proxyable_provider(db, cli_key, &primary_provider_id).await?;
 
-    let targets = resolve_targets(db, cli_key).await?;
+    let mut targets = resolve_targets(db, cli_key).await?;
     let settings = settings::load_settings_from_sqlite_state(db)?;
     let effective_origin =
         resolve_effective_base_origin(base_origin, targets.is_wsl_direct, &settings.wsl_host);
-    let manifest = prepare_manifest(
+    let mut manifest = prepare_manifest(
         paths,
         cli_key,
         &effective_origin,
@@ -418,7 +437,7 @@ pub async fn engage_single_cli(
     let codex_auth_backup_content = codex_auth_backup_content_for_cli(paths, cli_key, &manifest)?;
     apply_gateway_config(
         cli_key,
-        &targets,
+        &mut targets,
         &effective_origin,
         Some(&primary_provider),
         GatewayProxyMode::Single,
@@ -426,6 +445,7 @@ pub async fn engage_single_cli(
         codex_auth_backup_content.as_deref(),
         codex_auth_preservation_enabled_for_cli(db, cli_key)?,
     )?;
+    sync_manifest_managed_fields(&mut manifest, &targets);
     write_manifest(paths, cli_key, &manifest)?;
     Ok(cli_takeover_status(db, paths, cli_key, gateway_status).await)
 }
@@ -453,12 +473,12 @@ pub async fn engage_failover_cli(
     if manifest.mode == GatewayProxyMode::Single {
         let primary_provider =
             load_proxyable_provider(db, cli_key, &manifest.primary_provider_id).await?;
-        let targets = resolve_targets(db, cli_key).await?;
+        let mut targets = resolve_targets(db, cli_key).await?;
         let codex_auth_backup_content =
             codex_auth_backup_content_for_cli(paths, cli_key, &manifest)?;
         apply_gateway_config(
             cli_key,
-            &targets,
+            &mut targets,
             &manifest.base_origin,
             Some(&primary_provider),
             GatewayProxyMode::Failover,
@@ -466,6 +486,7 @@ pub async fn engage_failover_cli(
             codex_auth_backup_content.as_deref(),
             codex_auth_preservation_enabled_for_cli(db, cli_key)?,
         )?;
+        sync_manifest_managed_fields(&mut manifest, &targets);
         manifest.mode = GatewayProxyMode::Failover;
         manifest.updated_at = chrono::Utc::now().to_rfc3339();
         write_manifest(paths, cli_key, &manifest)?;
@@ -490,7 +511,7 @@ pub async fn disengage_failover_cli(
     if manifest.enabled && manifest.mode == GatewayProxyMode::Failover {
         let primary_provider =
             load_proxyable_provider(db, cli_key, &manifest.primary_provider_id).await?;
-        let targets = resolve_targets(db, cli_key).await?;
+        let mut targets = resolve_targets(db, cli_key).await?;
         let claude_backup_content = if cli_key == GatewayCliKey::Claude {
             backup_content(paths, cli_key, &manifest, CLAUDE_SETTINGS_KIND)?
                 .or_else(|| Some("{}".to_string()))
@@ -501,7 +522,7 @@ pub async fn disengage_failover_cli(
             codex_auth_backup_content_for_cli(paths, cli_key, &manifest)?;
         apply_gateway_config(
             cli_key,
-            &targets,
+            &mut targets,
             &manifest.base_origin,
             Some(&primary_provider),
             GatewayProxyMode::Single,
@@ -509,6 +530,7 @@ pub async fn disengage_failover_cli(
             codex_auth_backup_content.as_deref(),
             codex_auth_preservation_enabled_for_cli(db, cli_key)?,
         )?;
+        sync_manifest_managed_fields(&mut manifest, &targets);
         manifest.mode = GatewayProxyMode::Single;
         manifest.updated_at = chrono::Utc::now().to_rfc3339();
         write_manifest(paths, cli_key, &manifest)?;
@@ -655,10 +677,7 @@ pub fn rewrite_wsl_synced_gateway_target_content(
             )
         }
         (GatewayCliKey::Codex, CODEX_CONFIG_KIND)
-            if managed_file
-                .managed_fields
-                .iter()
-                .any(|field| field == "model_providers.ai-toolbox-gateway") =>
+            if is_codex_gateway_managed_fields(&managed_file.managed_fields) =>
         {
             rewrite_codex_wsl_gateway_content(
                 content,
@@ -758,35 +777,36 @@ async fn resolve_targets(
         GatewayCliKey::Claude => vec![CliProxyTarget {
             kind: CLAUDE_SETTINGS_KIND,
             path: runtime_root.join("settings.json"),
-            managed_fields: &CLAUDE_MANAGED_FIELDS,
+            managed_fields: static_managed_fields(&CLAUDE_MANAGED_FIELDS),
         }],
         GatewayCliKey::Codex => vec![
             CliProxyTarget {
                 kind: CODEX_CONFIG_KIND,
                 path: runtime_root.join("config.toml"),
-                managed_fields: &CODEX_CONFIG_MANAGED_FIELDS,
+                // Placeholder until patch refreshes to the live active provider id.
+                managed_fields: codex_config_managed_fields_for_provider(DEFAULT_CODEX_PROVIDER_ID),
             },
             CliProxyTarget {
                 kind: CODEX_AUTH_KIND,
                 path: runtime_root.join("auth.json"),
-                managed_fields: &CODEX_AUTH_MANAGED_FIELDS,
+                managed_fields: static_managed_fields(&CODEX_AUTH_MANAGED_FIELDS),
             },
         ],
         GatewayCliKey::Grok => vec![CliProxyTarget {
             kind: GROK_CONFIG_KIND,
             path: runtime_root.join("config.toml"),
-            managed_fields: &GROK_CONFIG_MANAGED_FIELDS,
+            managed_fields: static_managed_fields(&GROK_CONFIG_MANAGED_FIELDS),
         }],
         GatewayCliKey::Gemini => vec![
             CliProxyTarget {
                 kind: GEMINI_ENV_KIND,
                 path: runtime_root.join(".env"),
-                managed_fields: &GEMINI_MANAGED_ENV_KEYS,
+                managed_fields: static_managed_fields(&GEMINI_MANAGED_ENV_KEYS),
             },
             CliProxyTarget {
                 kind: GEMINI_SETTINGS_KIND,
                 path: runtime_root.join("settings.json"),
-                managed_fields: &GEMINI_SETTINGS_MANAGED_FIELDS,
+                managed_fields: static_managed_fields(&GEMINI_SETTINGS_MANAGED_FIELDS),
             },
         ],
         GatewayCliKey::OpenCode => Vec::new(),
@@ -1114,11 +1134,7 @@ fn prepare_manifest(
             .cloned();
         let file = match existing_file {
             Some(mut file) => {
-                file.managed_fields = target
-                    .managed_fields
-                    .iter()
-                    .map(|field| (*field).to_string())
-                    .collect();
+                file.managed_fields = target.managed_fields.clone();
                 file
             }
             None => backup_target_file(target, &backup_dir)?,
@@ -1175,11 +1191,7 @@ fn backup_target_file(
         backup_rel_path,
         backup_sha256,
         backup_size,
-        managed_fields: target
-            .managed_fields
-            .iter()
-            .map(|field| (*field).to_string())
-            .collect(),
+        managed_fields: target.managed_fields.clone(),
     })
 }
 
@@ -1243,9 +1255,21 @@ fn codex_auth_backup_content_for_cli(
     backup_content(paths, cli_key, manifest, CODEX_AUTH_KIND)
 }
 
+fn sync_manifest_managed_fields(manifest: &mut CliProxyManifest, targets: &CliProxyTargets) {
+    for target in &targets.files {
+        if let Some(file) = manifest
+            .files
+            .iter_mut()
+            .find(|file| file.kind == target.kind)
+        {
+            file.managed_fields = target.managed_fields.clone();
+        }
+    }
+}
+
 fn apply_gateway_config(
     cli_key: GatewayCliKey,
-    targets: &CliProxyTargets,
+    targets: &mut CliProxyTargets,
     base_origin: &str,
     primary_provider: Option<&UpstreamProvider>,
     mode: GatewayProxyMode,
@@ -1267,11 +1291,18 @@ fn apply_gateway_config(
             )
         }
         GatewayCliKey::Codex => {
-            patch_codex_config(
+            let provider_id = patch_codex_config(
                 required_target_path(targets, CODEX_CONFIG_KIND)?,
                 &cli_gateway_endpoint(cli_key, base_origin),
                 preserve_codex_official_auth,
             )?;
+            if let Some(target) = targets
+                .files
+                .iter_mut()
+                .find(|file| file.kind == CODEX_CONFIG_KIND)
+            {
+                target.managed_fields = codex_config_managed_fields_for_provider(&provider_id);
+            }
             patch_codex_auth(
                 required_target_path(targets, CODEX_AUTH_KIND)?,
                 preserve_codex_official_auth,
@@ -1390,29 +1421,75 @@ fn current_claude_gateway_endpoint(path: &Path) -> Result<Option<String>, String
         .map(str::to_string))
 }
 
-fn current_codex_gateway_endpoint(path: &Path) -> Result<Option<String>, String> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let document = parse_toml_file(path)?;
-    let selected_provider = document
+fn active_codex_model_provider_id(document: &DocumentMut) -> Option<String> {
+    document
         .as_table()
         .get("model_provider")
-        .and_then(Item::as_str);
-    if selected_provider != Some(GATEWAY_PROVIDER_ID) {
-        return Ok(None);
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// Active model_provider for takeover. Defaults to `custom` when unset.
+/// Legacy `ai-toolbox-gateway` is not treated as the session bucket — callers
+/// migrate off it during patch.
+fn resolve_codex_takeover_provider_id(document: &DocumentMut) -> String {
+    match active_codex_model_provider_id(document) {
+        Some(id) if id == GATEWAY_PROVIDER_ID => DEFAULT_CODEX_PROVIDER_ID.to_string(),
+        Some(id) => id,
+        None => DEFAULT_CODEX_PROVIDER_ID.to_string(),
     }
-    Ok(document
+}
+
+fn codex_provider_base_url(document: &DocumentMut, provider_id: &str) -> Option<String> {
+    document
         .as_table()
         .get("model_providers")
         .and_then(Item::as_table)
-        .and_then(|providers| providers.get(GATEWAY_PROVIDER_ID))
+        .and_then(|providers| providers.get(provider_id))
         .and_then(Item::as_table)
         .and_then(|provider| provider.get("base_url"))
         .and_then(Item::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_string))
+        .map(str::to_string)
+}
+
+fn codex_provider_exists(document: &DocumentMut, provider_id: &str) -> bool {
+    document
+        .as_table()
+        .get("model_providers")
+        .and_then(Item::as_table)
+        .and_then(|providers| providers.get(provider_id))
+        .is_some()
+}
+
+fn restorable_codex_model_provider_id(backup_document: &DocumentMut) -> Option<String> {
+    let provider_id = active_codex_model_provider_id(backup_document)?;
+    if provider_id != GATEWAY_PROVIDER_ID {
+        return Some(provider_id);
+    }
+
+    if codex_provider_exists(backup_document, DEFAULT_CODEX_PROVIDER_ID) {
+        Some(DEFAULT_CODEX_PROVIDER_ID.to_string())
+    } else {
+        None
+    }
+}
+
+fn current_codex_gateway_endpoint(path: &Path) -> Result<Option<String>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let document = parse_toml_file(path)?;
+    // Prefer active provider table (new strategy). Fall back to legacy sentinel.
+    if let Some(active_id) = active_codex_model_provider_id(&document) {
+        if let Some(base_url) = codex_provider_base_url(&document, &active_id) {
+            return Ok(Some(base_url));
+        }
+    }
+    Ok(codex_provider_base_url(&document, GATEWAY_PROVIDER_ID))
 }
 
 fn current_grok_gateway_endpoint(path: &Path) -> Result<Option<String>, String> {
@@ -1500,35 +1577,46 @@ fn rewrite_codex_wsl_gateway_content(
     wsl_gateway_endpoint: &str,
 ) -> Result<Option<String>, String> {
     let mut document = parse_toml_document(content, "WSL Codex config")?;
-    let selected_provider = document
-        .as_table()
-        .get("model_provider")
-        .and_then(Item::as_str);
-    if selected_provider != Some(GATEWAY_PROVIDER_ID) {
-        return Ok(None);
-    }
+    let mut changed = false;
 
-    let Some(provider_table) = document
-        .as_table_mut()
-        .get_mut("model_providers")
-        .and_then(Item::as_table_mut)
-        .and_then(|providers| providers.get_mut(GATEWAY_PROVIDER_ID))
-        .and_then(Item::as_table_mut)
-    else {
-        return Ok(None);
+    // New strategy: rewrite active provider base_url when it matches Windows gateway.
+    let active_ids: Vec<String> = match active_codex_model_provider_id(&document) {
+        Some(id) => vec![id],
+        None => Vec::new(),
     };
-
-    let base_url_matches = provider_table
-        .get("base_url")
-        .and_then(Item::as_str)
-        .map(str::trim)
-        == Some(windows_gateway_endpoint);
-    if !base_url_matches {
-        return Ok(None);
+    // Also rewrite legacy sentinel table if present.
+    let mut candidate_ids = active_ids;
+    if !candidate_ids.iter().any(|id| id == GATEWAY_PROVIDER_ID) {
+        candidate_ids.push(GATEWAY_PROVIDER_ID.to_string());
     }
 
-    provider_table["base_url"] = value(wsl_gateway_endpoint);
-    Ok(Some(document.to_string()))
+    for provider_id in candidate_ids {
+        let Some(provider_table) = document
+            .as_table_mut()
+            .get_mut("model_providers")
+            .and_then(Item::as_table_mut)
+            .and_then(|providers| providers.get_mut(provider_id.as_str()))
+            .and_then(Item::as_table_mut)
+        else {
+            continue;
+        };
+        if provider_table
+            .get("base_url")
+            .and_then(Item::as_str)
+            .map(str::trim)
+            != Some(windows_gateway_endpoint)
+        {
+            continue;
+        }
+        provider_table["base_url"] = value(wsl_gateway_endpoint);
+        changed = true;
+    }
+
+    if changed {
+        Ok(Some(document.to_string()))
+    } else {
+        Ok(None)
+    }
 }
 
 fn rewrite_grok_wsl_gateway_content(
@@ -1741,22 +1829,83 @@ fn patch_codex_config(
     path: &Path,
     gateway_endpoint: &str,
     preserve_official_auth: bool,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let mut document = read_or_new_toml_document(path)?;
-    document["model_provider"] = value(GATEWAY_PROVIDER_ID);
-    document["model_providers"][GATEWAY_PROVIDER_ID]["name"] = value("AI Toolbox Gateway");
-    document["model_providers"][GATEWAY_PROVIDER_ID]["base_url"] = value(gateway_endpoint);
-    document["model_providers"][GATEWAY_PROVIDER_ID]["wire_api"] = value("responses");
-    document["model_providers"][GATEWAY_PROVIDER_ID]["requires_openai_auth"] = value(true);
+    let provider_id = resolve_codex_takeover_provider_id(&document);
+
+    // Keep model_provider on the user's active id (default custom) so session
+    // history buckets stay continuous. Do not introduce ai-toolbox-gateway.
+    document["model_provider"] = value(provider_id.as_str());
+
+    if document.get("model_providers").is_none() {
+        let mut parent = toml_edit::Table::new();
+        parent.set_implicit(true);
+        document["model_providers"] = Item::Table(parent);
+    }
+
+    let providers = document["model_providers"]
+        .as_table_mut()
+        .ok_or_else(|| "Codex [model_providers] must be a table".to_string())?;
+
+    // Drop legacy sentinel so config no longer shows two providers.
+    providers.remove(GATEWAY_PROVIDER_ID);
+
+    if !providers.contains_key(provider_id.as_str()) {
+        providers.insert(provider_id.as_str(), Item::Table(toml_edit::Table::new()));
+    }
+    let provider_table = providers
+        .get_mut(provider_id.as_str())
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| format!("Codex [model_providers.{provider_id}] must be a table"))?;
+
+    provider_table["base_url"] = value(gateway_endpoint);
+    provider_table["wire_api"] = value("responses");
+    if provider_table.get("requires_openai_auth").is_none() {
+        provider_table["requires_openai_auth"] = value(true);
+    }
     if preserve_official_auth {
-        document["model_providers"][GATEWAY_PROVIDER_ID]["experimental_bearer_token"] =
-            value(GATEWAY_API_KEY);
-    } else if let Some(provider_table) =
-        document["model_providers"][GATEWAY_PROVIDER_ID].as_table_like_mut()
-    {
+        provider_table["experimental_bearer_token"] = value(GATEWAY_API_KEY);
+    } else {
         provider_table.remove("experimental_bearer_token");
     }
-    write_toml_file(path, &document)
+
+    write_toml_file(path, &document)?;
+    Ok(provider_id)
+}
+
+fn remove_codex_gateway_managed_provider(
+    document: &mut DocumentMut,
+    provider_id: &str,
+    backup_provider_keys: &BTreeSet<String>,
+) {
+    if provider_id == GATEWAY_PROVIDER_ID || backup_provider_keys.contains(provider_id) {
+        return;
+    }
+
+    let Some(providers_table) = document
+        .as_table_mut()
+        .get_mut("model_providers")
+        .and_then(Item::as_table_mut)
+    else {
+        return;
+    };
+
+    let should_remove_provider = match providers_table
+        .get_mut(provider_id)
+        .and_then(Item::as_table_mut)
+    {
+        Some(provider_table) => {
+            provider_table.remove("base_url");
+            provider_table.remove("wire_api");
+            provider_table.remove("experimental_bearer_token");
+            provider_table.remove("requires_openai_auth");
+            provider_table.is_empty()
+        }
+        None => false,
+    };
+    if should_remove_provider {
+        providers_table.remove(provider_id);
+    }
 }
 
 fn patch_grok_config(path: &Path, gateway_endpoint: &str) -> Result<(), String> {
@@ -1837,7 +1986,39 @@ fn restore_codex_config(path: &Path, backup_content: Option<&str>) -> Result<(),
     let backup = backup_content
         .map(|content| parse_toml_document(content, "Codex gateway backup"))
         .transpose()?;
+    let managed_provider_id = resolve_codex_takeover_provider_id(&current);
+    let restored_model_provider = backup.as_ref().and_then(restorable_codex_model_provider_id);
+    let backup_provider_items: Vec<(String, Item)> = backup
+        .as_ref()
+        .and_then(|backup_document| {
+            backup_document
+                .as_table()
+                .get("model_providers")
+                .and_then(Item::as_table)
+        })
+        .map(|backup_providers| {
+            backup_providers
+                .iter()
+                .filter(|(provider_key, _)| *provider_key != GATEWAY_PROVIDER_ID)
+                .map(|(provider_key, provider_item)| {
+                    (provider_key.to_string(), provider_item.clone())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let backup_provider_keys: BTreeSet<String> = backup_provider_items
+        .iter()
+        .map(|(provider_key, _)| provider_key.clone())
+        .collect();
 
+    // Always strip legacy sentinel.
+    if let Some(providers_table) = current
+        .as_table_mut()
+        .get_mut("model_providers")
+        .and_then(Item::as_table_mut)
+    {
+        providers_table.remove(GATEWAY_PROVIDER_ID);
+    }
     if current
         .as_table()
         .get("model_provider")
@@ -1847,29 +2028,24 @@ fn restore_codex_config(path: &Path, backup_content: Option<&str>) -> Result<(),
         current.as_table_mut().remove("model_provider");
     }
 
-    if let Some(providers_table) = current
-        .as_table_mut()
-        .get_mut("model_providers")
-        .and_then(Item::as_table_mut)
-    {
-        providers_table.remove(GATEWAY_PROVIDER_ID);
+    match restored_model_provider {
+        Some(model_provider) => {
+            current["model_provider"] = value(model_provider);
+        }
+        None => {
+            current.as_table_mut().remove("model_provider");
+        }
     }
 
-    if let Some(backup_document) = backup.as_ref() {
-        if let Some(model_provider) = backup_document.as_table().get("model_provider").cloned() {
-            current
-                .as_table_mut()
-                .insert("model_provider", model_provider);
-        }
-        if let Some(backup_providers) = backup_document
-            .as_table()
-            .get("model_providers")
-            .and_then(Item::as_table)
-        {
-            for (provider_key, provider_item) in backup_providers.iter() {
-                current["model_providers"][provider_key] = provider_item.clone();
-            }
-        }
+    remove_codex_gateway_managed_provider(
+        &mut current,
+        &managed_provider_id,
+        &backup_provider_keys,
+    );
+
+    // Restore each backup provider table (includes pre-takeover base_url).
+    for (provider_key, provider_item) in backup_provider_items {
+        current["model_providers"][&provider_key] = provider_item;
     }
 
     remove_empty_toml_table(&mut current, "model_providers");
@@ -2653,7 +2829,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_takeover_keeps_runtime_sections_and_restore_removes_gateway_provider() {
+    fn codex_takeover_rewrites_active_provider_base_url_without_second_provider() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.toml");
         write_text_file(
@@ -2672,19 +2848,29 @@ command = "node"
         .unwrap();
         let backup = fs::read_to_string(&config_path).unwrap();
 
-        patch_codex_config(&config_path, "http://127.0.0.1:37123/openai/v1", false).unwrap();
+        let provider_id =
+            patch_codex_config(&config_path, "http://127.0.0.1:37123/openai/v1", false).unwrap();
+        assert_eq!(provider_id, "custom");
         let patched = parse_toml_file(&config_path).unwrap();
+        assert_eq!(patched["model_provider"].as_str(), Some("custom"));
         assert_eq!(
-            patched["model_provider"].as_str(),
-            Some(GATEWAY_PROVIDER_ID)
-        );
-        assert_eq!(
-            patched["model_providers"][GATEWAY_PROVIDER_ID]["base_url"].as_str(),
+            patched["model_providers"]["custom"]["base_url"].as_str(),
             Some("http://127.0.0.1:37123/openai/v1")
         );
-        assert!(patched["model_providers"][GATEWAY_PROVIDER_ID]
+        assert_eq!(
+            patched["model_providers"]["custom"]["wire_api"].as_str(),
+            Some("responses")
+        );
+        assert_eq!(
+            patched["model_providers"]["custom"]["name"].as_str(),
+            Some("Custom")
+        );
+        assert!(patched["model_providers"]
+            .get(GATEWAY_PROVIDER_ID)
+            .is_none());
+        assert!(patched["model_providers"]["custom"]
             .as_table_like()
-            .expect("gateway provider table")
+            .expect("custom provider table")
             .get("experimental_bearer_token")
             .is_none());
         assert_eq!(
@@ -2695,12 +2881,111 @@ command = "node"
         restore_codex_config(&config_path, Some(&backup)).unwrap();
         let restored = parse_toml_file(&config_path).unwrap();
         assert_eq!(restored["model_provider"].as_str(), Some("custom"));
+        assert_eq!(
+            restored["model_providers"]["custom"]["base_url"].as_str(),
+            Some("https://old.example.com/v1")
+        );
         assert!(restored["model_providers"]
             .get(GATEWAY_PROVIDER_ID)
             .is_none());
         assert_eq!(
             restored["mcp_servers"]["keep"]["command"].as_str(),
             Some("node")
+        );
+    }
+
+    #[test]
+    fn codex_restore_removes_provider_created_when_backup_lacked_provider_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        write_text_file(
+            &config_path,
+            r#"
+[mcp_servers.keep]
+command = "node"
+"#,
+        )
+        .unwrap();
+        let backup = fs::read_to_string(&config_path).unwrap();
+
+        let provider_id =
+            patch_codex_config(&config_path, "http://127.0.0.1:37123/openai/v1", false).unwrap();
+        assert_eq!(provider_id, "custom");
+        let patched = parse_toml_file(&config_path).unwrap();
+        assert_eq!(patched["model_provider"].as_str(), Some("custom"));
+        assert_eq!(
+            patched["model_providers"]["custom"]["base_url"].as_str(),
+            Some("http://127.0.0.1:37123/openai/v1")
+        );
+
+        restore_codex_config(&config_path, Some(&backup)).unwrap();
+        let restored = parse_toml_file(&config_path).unwrap();
+        assert!(restored.as_table().get("model_provider").is_none());
+        assert!(restored.as_table().get("model_providers").is_none());
+        assert_eq!(
+            restored["mcp_servers"]["keep"]["command"].as_str(),
+            Some("node")
+        );
+    }
+
+    #[test]
+    fn codex_restore_without_backup_removes_created_gateway_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+
+        let provider_id =
+            patch_codex_config(&config_path, "http://127.0.0.1:37123/openai/v1", false).unwrap();
+        assert_eq!(provider_id, "custom");
+
+        restore_codex_config(&config_path, None).unwrap();
+        let restored = parse_toml_file(&config_path).unwrap();
+        assert!(restored.as_table().get("model_provider").is_none());
+        assert!(restored.as_table().get("model_providers").is_none());
+    }
+
+    #[test]
+    fn codex_takeover_clears_legacy_gateway_provider_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        write_text_file(
+            &config_path,
+            r#"
+model_provider = "ai-toolbox-gateway"
+
+[model_providers.custom]
+name = "Custom"
+base_url = "https://old.example.com/v1"
+
+[model_providers.ai-toolbox-gateway]
+name = "AI Toolbox Gateway"
+base_url = "http://127.0.0.1:9999/openai/v1"
+"#,
+        )
+        .unwrap();
+        let backup = fs::read_to_string(&config_path).unwrap();
+
+        let provider_id =
+            patch_codex_config(&config_path, "http://127.0.0.1:37123/openai/v1", false).unwrap();
+        assert_eq!(provider_id, "custom");
+        let patched = parse_toml_file(&config_path).unwrap();
+        assert_eq!(patched["model_provider"].as_str(), Some("custom"));
+        assert!(patched["model_providers"]
+            .get(GATEWAY_PROVIDER_ID)
+            .is_none());
+        assert_eq!(
+            patched["model_providers"]["custom"]["base_url"].as_str(),
+            Some("http://127.0.0.1:37123/openai/v1")
+        );
+
+        restore_codex_config(&config_path, Some(&backup)).unwrap();
+        let restored = parse_toml_file(&config_path).unwrap();
+        assert_eq!(restored["model_provider"].as_str(), Some("custom"));
+        assert!(restored["model_providers"]
+            .get(GATEWAY_PROVIDER_ID)
+            .is_none());
+        assert_eq!(
+            restored["model_providers"]["custom"]["base_url"].as_str(),
+            Some("https://old.example.com/v1")
         );
     }
 
@@ -2720,17 +3005,15 @@ command = "node"
         .unwrap();
         let original_auth = read_json_file(&auth_path).unwrap();
 
-        patch_codex_config(&config_path, "http://127.0.0.1:37123/openai/v1", true).unwrap();
+        let provider_id =
+            patch_codex_config(&config_path, "http://127.0.0.1:37123/openai/v1", true).unwrap();
+        assert_eq!(provider_id, "custom");
         patch_codex_auth(&auth_path, true, None).unwrap();
 
         let patched_config = parse_toml_file(&config_path).unwrap();
+        assert_eq!(patched_config["model_provider"].as_str(), Some("custom"));
         assert_eq!(
-            patched_config["model_provider"].as_str(),
-            Some(GATEWAY_PROVIDER_ID)
-        );
-        assert_eq!(
-            patched_config["model_providers"][GATEWAY_PROVIDER_ID]["experimental_bearer_token"]
-                .as_str(),
+            patched_config["model_providers"]["custom"]["experimental_bearer_token"].as_str(),
             Some(GATEWAY_API_KEY)
         );
 
@@ -2922,13 +3205,13 @@ command = "node"
             &json!({"env": {"ANTHROPIC_BASE_URL": "https://original.example.com"}}),
         )
         .unwrap();
-        let targets = CliProxyTargets {
+        let mut targets = CliProxyTargets {
             runtime_root: dir.path().join("runtime"),
             is_wsl_direct: false,
             files: vec![CliProxyTarget {
                 kind: CLAUDE_SETTINGS_KIND,
                 path: settings_path.clone(),
-                managed_fields: &CLAUDE_MANAGED_FIELDS,
+                managed_fields: static_managed_fields(&CLAUDE_MANAGED_FIELDS),
             }],
         };
         let primary_provider = claude_test_provider(
@@ -2949,7 +3232,7 @@ command = "node"
         .unwrap();
         apply_gateway_config(
             GatewayCliKey::Claude,
-            &targets,
+            &mut targets,
             "http://127.0.0.1:37123",
             Some(&primary_provider),
             GatewayProxyMode::Single,
@@ -3169,21 +3452,20 @@ command = "node"
     }
 
     #[test]
-    fn wsl_gateway_rewrite_updates_codex_gateway_provider_only() {
+    fn wsl_gateway_rewrite_updates_active_codex_provider_base_url_only() {
         let dir = tempfile::tempdir().unwrap();
         let paths = ProxyGatewayPaths::new(dir.path());
-        let manifest = test_manifest_with_file(
-            GatewayCliKey::Codex,
-            CODEX_CONFIG_KIND,
-            &CODEX_CONFIG_MANAGED_FIELDS,
-        );
+        let managed = codex_config_managed_fields_for_provider("custom");
+        let managed_refs: Vec<&str> = managed.iter().map(String::as_str).collect();
+        let manifest =
+            test_manifest_with_file(GatewayCliKey::Codex, CODEX_CONFIG_KIND, &managed_refs);
         write_manifest(&paths, GatewayCliKey::Codex, &manifest).unwrap();
 
         let content = r#"
-model_provider = "ai-toolbox-gateway"
+model_provider = "custom"
 
-[model_providers.ai-toolbox-gateway]
-name = "AI Toolbox Gateway"
+[model_providers.custom]
+name = "Custom"
 base_url = "http://127.0.0.1:37123/openai/v1"
 
 [model_providers.local]
@@ -3203,7 +3485,7 @@ base_url = "http://127.0.0.1:9999/v1"
         let rewritten_document = parse_toml_document(&rewritten, "rewritten Codex config").unwrap();
 
         assert_eq!(
-            rewritten_document["model_providers"]["ai-toolbox-gateway"]["base_url"].as_str(),
+            rewritten_document["model_providers"]["custom"]["base_url"].as_str(),
             Some("http://172.20.10.1:37123/openai/v1")
         );
         assert_eq!(
@@ -3264,7 +3546,7 @@ base_url = "http://127.0.0.1:9999/v1"
             files: vec![CliProxyTarget {
                 kind: CLAUDE_SETTINGS_KIND,
                 path: settings_path.clone(),
-                managed_fields: &CLAUDE_MANAGED_FIELDS,
+                managed_fields: static_managed_fields(&CLAUDE_MANAGED_FIELDS),
             }],
         };
 
