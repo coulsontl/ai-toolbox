@@ -16,4 +16,5 @@
 ## 最小验证
 
 - 修改 TOML tokenizer 后，运行 `web/test/components/common/TomlEditor/invalidDoubleQuoteStringPattern.test.ts`。
-- 性能回归测试必须在可终止的 Worker 中执行，避免危险正则重新出现时把完整测试进程永久卡住。
+- 语义覆盖要同时包含：未闭合串、普通 closed 串、真实 Codex `notify` 风格 Windows 路径 closed 串，以及会触发指数回溯的 adversarial closed 串。
+- 指数回溯回归必须在可终止的 Worker 中执行（超时即失败），避免危险正则重新出现时把完整测试进程永久卡住。
