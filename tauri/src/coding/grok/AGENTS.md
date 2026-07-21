@@ -32,6 +32,7 @@
 - `extract_grok_common_config_from_current_file` 只能读当前根目录 `config.toml`，不要碰 `auth.json`。WSL UNC / 网络路径上同步文件 I/O 可能长时间阻塞；extract 必须走 `coding::file_io` 的 `spawn_blocking` + 超时读，超时错误要带实际路径。
 - 不要整段删除 `[models]` 或全部 `[model.*]`。
 - 模型 schema 必须保留 `env_key`、显式 `false`、sampling、retry、timeout、reasoning、`extra_headers` 和未知合法字段。
+- 官方渠道思考等级写 `[models].default_reasoning_effort`（settings 字段 `defaultReasoningEffort`）；自定义写 `[model.<key>].reasoning_effort` + `supports_reasoning_effort`（catalog `reasoningEffort` / `supportsReasoningEffort`）。`project_provider_models` 在 official 投影/清理 global effort，在 custom 清理 residual `default_reasoning_effort`。Common / local common 提取时必须移除 `default` 与 `default_reasoning_effort`，避免 provider 字段落入 common。
 - Grok MCP 使用 `headers`，不是 Codex 的 `http_headers`；不写 `type`，Windows/WSL/SSH 都不添加 `cmd /c`。
 - Device Code 和 OAuth token 只留在后端；事件和前端 payload 不得包含 OAuth 凭据。
 - “预览当前配置”必须返回 live `config.toml` / `auth.json` 的真实内容，不做任何脱敏（包括 `api_key`、token、Authorization）。这是用户主动查看本地生效态的诊断入口。

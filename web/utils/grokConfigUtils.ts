@@ -5,6 +5,7 @@ type TomlObject = Record<string, unknown>;
 interface GrokSettingsLike {
   config?: string;
   defaultModelKey?: string;
+  defaultReasoningEffort?: string;
   modelCatalog?: {
     models?: Array<{
       key?: string;
@@ -190,6 +191,10 @@ export function extractGrokSettingsApiBackend(settings: GrokSettingsLike): strin
 }
 
 export function extractGrokSettingsReasoningEffort(settings: GrokSettingsLike): string | undefined {
+  const defaultReasoningEffort = settings.defaultReasoningEffort?.trim();
+  if (defaultReasoningEffort) {
+    return defaultReasoningEffort;
+  }
   const selectedModel = getSelectedGrokCatalogModel(settings);
   return selectedModel?.reasoningEffort?.trim() || extractGrokReasoningEffort(settings.config);
 }
@@ -234,6 +239,7 @@ export function normalizeGrokConfigForOfficialMode(configText: string): string {
   const models = isTomlObject(config.models) ? { ...config.models } : undefined;
   if (models) {
     delete models.default;
+    delete models.default_reasoning_effort;
     if (Object.keys(models).length > 0) config.models = models;
     else delete config.models;
   }

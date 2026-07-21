@@ -25,6 +25,10 @@
 - 表单「Base URL」是渠道级 SoT（模型映射 UI 不能改 per-model baseUrl）。`buildGrokSettingsConfig` 在表单 Base URL 非空时必须 **覆盖写入**全部 `modelCatalog.models[].baseUrl`；内置 endpoint 最终化也必须保留已构建 settings 里的 Base URL，不能回退成 endpoint 默认。不要只在 catalog 缺 baseUrl 时补齐，否则编辑已保存供应商改 URL 后卡片与 live `[model.<key>].base_url` 仍残留旧值（issue #256）。
 - 内置 endpoint 只锁定 API 格式；其模型目录只用于选择 endpoint 时初始化，或最终 settings 确实没有目录时兜底。提交阶段不得用 endpoint 默认目录整体覆盖当前表单目录，否则模型映射的新增、删除、显示名、上游模型和上下文窗口编辑都会静默丢失。
 - 自定义渠道的「服务端搜索」是渠道级总开关：勾选后 `buildGrokSettingsConfig` / 表单保存必须把 `supportsBackendSearch=true` **覆盖写入**全部 `modelCatalog.models[]`（含自动创建的默认映射）；取消则写 `false`。它走结构化 modelCatalog → `[model.<key>].supports_backend_search`，不要写进供应商高级 `config.toml` 或 Common Config。官方渠道不展示该开关。
+- 「思考等级 / Reasoning Effort」是渠道级设置（issue #263），只写官方 Grok Build 字段，不在 AI Toolbox 做 Claude/Gemini 协议转换：
+  - 官方：`settingsConfig.defaultReasoningEffort` → apply 投影 `[models].default_reasoning_effort`；清空选择则删除该字段。
+  - 自定义：`modelCatalog.models[].reasoningEffort` + `supportsReasoningEffort=true`（保存时覆盖全部 mapping）→ `[model.<key>].reasoning_effort` / `supports_reasoning_effort`；清空则删除这两字段。
+  - 选项集第一版：`low` / `medium` / `high`（空 = 不写入，跟随 CLI/模型默认）。Chat / Responses / Messages 共用同一配置字段，由 Grok CLI 按 `api_backend` 下发。
 - 供应商弹窗里的 `config.toml` 只承载非模型高级附加配置，UI 放在默认折叠的「高级设置」里；Base URL / API 格式 / 模型映射 / backend search 都在结构化字段。不要为了和 Codex 外观一致把 modelCatalog 再 mirror 回 TOML。
 - 账号「已应用」标签以后端 `account.isApplied` 为准；切到非官方 provider 时后端会清空全部官方账号 applied 标记（与 Codex 一致）。前端不要在自定义已应用时继续展示陈旧账号 applied。
 

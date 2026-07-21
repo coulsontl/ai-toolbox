@@ -669,7 +669,9 @@ pub async fn extract_grok_common_config_from_current_file(
     document.remove("plugins");
     document.remove("marketplace");
     if let Some(models) = document.get_mut("models").and_then(Item::as_table_mut) {
+        // Provider-owned: default model and default reasoning effort.
         models.remove("default");
+        models.remove("default_reasoning_effort");
         if models.is_empty() {
             document.remove("models");
         }
@@ -1171,6 +1173,14 @@ fn parse_local_grok_provider_snapshot(
     } else {
         "custom"
     };
+    let default_reasoning_effort = document
+        .get("models")
+        .and_then(Item::as_table)
+        .and_then(|models| models.get("default_reasoning_effort"))
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     let shared_api_key = model_api_keys
         .first()
         .and_then(|first| first.as_ref())
@@ -1192,6 +1202,10 @@ fn parse_local_grok_provider_snapshot(
         if let Some(api_key) = shared_api_key {
             settings["auth"] = json!({ "API_KEY": api_key });
         }
+    } else if let Some(effort) = default_reasoning_effort {
+        // Official local: no catalog. Lift default_reasoning_effort so edit/save can round-trip.
+        // defaultModelKey stays omitted for official local (existing semantics).
+        settings["defaultReasoningEffort"] = Value::String(effort);
     }
     let settings_config = serde_json::to_string(&settings)
         .map_err(|error| format!("Failed to serialize local Grok provider: {error}"))?;
@@ -1206,7 +1220,9 @@ fn parse_local_grok_provider_snapshot(
         .get_mut("models")
         .and_then(Item::as_table_mut)
     {
+        // Provider-owned: default model and default reasoning effort.
         models.remove("default");
+        models.remove("default_reasoning_effort");
         if models.is_empty() {
             common_document.remove("models");
         }
@@ -1583,9 +1599,14 @@ fn project_provider_models(
         .filter(|value| !value.is_empty())
         .unwrap_or("grok-4.5");
     document["models"]["default"] = value(default_model_key);
+    // Official providers own [models].default and optional default_reasoning_effort.
+    // Custom providers own per-model reasoning_effort under [model.*]; clear the global
+    // field so switching custom → official / official → custom does not leave stale effort.
     if category == "official" {
+        project_official_default_reasoning_effort(document, settings);
         return Ok(());
     }
+    clear_official_default_reasoning_effort(document);
     let api_key = settings
         .pointer("/auth/API_KEY")
         .and_then(Value::as_str)
@@ -1619,6 +1640,28 @@ fn project_provider_models(
         model_root.insert(key, Item::Table(table));
     }
     Ok(())
+}
+
+/// Project or remove `[models].default_reasoning_effort` for official providers.
+fn project_official_default_reasoning_effort(document: &mut DocumentMut, settings: &Value) {
+    let effort = settings
+        .get("defaultReasoningEffort")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(effort) = effort {
+        document["models"]["default_reasoning_effort"] = value(effort);
+        return;
+    }
+    clear_official_default_reasoning_effort(document);
+}
+
+fn clear_official_default_reasoning_effort(document: &mut DocumentMut) {
+    // document["models"]["k"] = value(...) creates an inline table under models.
+    // Assign Item::None so the key is dropped from DocumentMut::to_string().
+    if document.get("models").is_some() {
+        document["models"]["default_reasoning_effort"] = Item::None;
+    }
 }
 
 fn insert_known_model_fields(
@@ -1759,12 +1802,62 @@ mod tests {
         assert!(text.contains("supports_backend_search = false"));
         assert!(text.contains("supports_reasoning_effort = true"));
         assert!(text.contains("reasoning_effort = \"high\""));
+        assert!(!text.contains("default_reasoning_effort"));
         assert!(text.contains("stream_tool_calls = false"));
         assert!(text.contains("max_retries = 4"));
         assert!(text.contains("inference_idle_timeout_secs = 120"));
         assert!(text.contains("extra_headers"));
         assert!(text.contains("unknown_flag = false"));
         assert!(text.contains("tool_timeouts"));
+    }
+
+    #[test]
+    fn projects_official_default_reasoning_effort_and_clears_when_unset() {
+        let with_effort = json!({
+            "defaultModelKey": "grok-build",
+            "defaultReasoningEffort": "high"
+        });
+        let mut document = DocumentMut::new();
+        project_provider_models(&mut document, &with_effort, "official")
+            .expect("project official with effort");
+        let text = document.to_string();
+        assert!(text.contains("default = \"grok-build\""));
+        assert!(text.contains("default_reasoning_effort = \"high\""));
+
+        let without_effort = json!({
+            "defaultModelKey": "grok-4.5"
+        });
+        project_provider_models(&mut document, &without_effort, "official")
+            .expect("project official without effort");
+        let text = document.to_string();
+        assert!(text.contains("default = \"grok-4.5\""));
+        assert!(!text.contains("default_reasoning_effort"));
+    }
+
+    #[test]
+    fn switching_official_to_custom_clears_default_reasoning_effort() {
+        let official = json!({
+            "defaultModelKey": "grok-build",
+            "defaultReasoningEffort": "medium"
+        });
+        let mut document = DocumentMut::new();
+        project_provider_models(&mut document, &official, "official").expect("project official");
+        assert!(document.to_string().contains("default_reasoning_effort = \"medium\""));
+
+        let custom = json!({
+            "defaultModelKey": "custom",
+            "auth": { "API_KEY": "secret" },
+            "modelCatalog": { "models": [{
+                "key": "custom",
+                "model": "claude-opus-4-6",
+                "supportsReasoningEffort": true,
+                "reasoningEffort": "low"
+            }]}
+        });
+        project_provider_models(&mut document, &custom, "custom").expect("project custom");
+        let text = document.to_string();
+        assert!(!text.contains("default_reasoning_effort"));
+        assert!(text.contains("reasoning_effort = \"low\""));
     }
 
     #[test]
@@ -2304,6 +2397,7 @@ model = "b"
             r#"
 [models]
 default = "grok-build"
+default_reasoning_effort = "high"
 
 [telemetry]
 trace_upload = false
@@ -2316,6 +2410,8 @@ trace_upload = false
             serde_json::from_str(&snapshot.settings_config).expect("parse provider settings");
         assert!(settings.get("defaultModelKey").is_none());
         assert!(settings.get("modelCatalog").is_none());
+        assert_eq!(settings["defaultReasoningEffort"], "high");
         assert!(snapshot.common_config.contains("trace_upload = false"));
+        assert!(!snapshot.common_config.contains("default_reasoning_effort"));
     }
 }

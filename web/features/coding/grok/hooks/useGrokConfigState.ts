@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   extractGrokBaseUrl,
   extractGrokModel,
+  extractGrokReasoningEffort,
   normalizeQuotes,
 } from '@/utils/grokConfigUtils';
 import type {
@@ -14,7 +15,11 @@ import {
   normalizeGrokCatalogModalities,
   normalizeGrokCatalogModels,
 } from '../utils/grokCatalogModels';
-import { buildGrokSettingsConfig } from '../utils/grokSettingsConfig';
+import {
+  buildGrokSettingsConfig,
+  normalizeGrokReasoningEffort,
+  resolveGrokCatalogReasoningEffort,
+} from '../utils/grokSettingsConfig';
 
 interface UseGrokConfigStateProps {
   initialData?: {
@@ -31,6 +36,7 @@ export interface GrokSettingsConfigSnapshot {
   catalogModels?: GrokCatalogModel[];
   apiFormat?: GrokApiFormat;
   supportsBackendSearch?: boolean;
+  reasoningEffort?: string;
 }
 
 const DEFAULT_CONFIG_TOML = '';
@@ -91,6 +97,7 @@ function parseInitialGrokState(initialData?: { settingsConfig?: string }) {
       model: defaultModel,
       config: DEFAULT_CONFIG_TOML,
       catalogModels: [] as GrokCatalogModel[],
+      reasoningEffort: undefined as string | undefined,
     };
   }
 
@@ -112,6 +119,15 @@ function parseInitialGrokState(initialData?: { settingsConfig?: string }) {
       || '';
     const baseUrl = selectedCatalogModel?.baseUrl?.trim() || extractGrokBaseUrl(configStr) || '';
     const category: GrokProviderCategory = apiKey.trim() || baseUrl.trim() ? 'custom' : 'official';
+    // Official: settings.defaultReasoningEffort; custom: shared catalog effort; fall back to live TOML.
+    const reasoningEffort = normalizeGrokReasoningEffort(
+      category === 'official'
+        ? (config.defaultReasoningEffort || extractGrokReasoningEffort(configStr))
+        : (
+          resolveGrokCatalogReasoningEffort(catalogModels)
+          || extractGrokReasoningEffort(configStr)
+        ),
+    );
 
     return {
       category,
@@ -121,6 +137,7 @@ function parseInitialGrokState(initialData?: { settingsConfig?: string }) {
       model,
       config: configStr,
       catalogModels: category === 'custom' ? catalogModels : [],
+      reasoningEffort,
     };
   } catch {
     return {
@@ -131,6 +148,7 @@ function parseInitialGrokState(initialData?: { settingsConfig?: string }) {
       model: '',
       config: '',
       catalogModels: [] as GrokCatalogModel[],
+      reasoningEffort: undefined as string | undefined,
     };
   }
 }
@@ -149,6 +167,9 @@ export function useGrokConfigState({ initialData }: UseGrokConfigStateProps = {}
   const [grokAuth, setGrokAuthState] = useState<Record<string, unknown>>(parsedInitial.auth);
   const [grokCatalogModels, setGrokCatalogModels] = useState<GrokCatalogModel[]>(parsedInitial.catalogModels);
   const [providerCategory, setProviderCategoryState] = useState<GrokProviderCategory>(parsedInitial.category);
+  const [grokReasoningEffort, setGrokReasoningEffort] = useState<string | undefined>(
+    parsedInitial.reasoningEffort,
+  );
 
   // 防止循环更新的标志位
   const isUpdatingBaseUrlRef = useRef(false);
@@ -312,6 +333,7 @@ export function useGrokConfigState({ initialData }: UseGrokConfigStateProps = {}
     setGrokBaseUrlState(baseUrl);
     setGrokModelState(model);
     setGrokCatalogModels([]);
+    setGrokReasoningEffort(normalizeGrokReasoningEffort(extractGrokReasoningEffort(config)));
     setProviderCategoryState(
       apiKey.trim() || baseUrl.trim() ? 'custom' : 'official',
     );
@@ -337,6 +359,7 @@ export function useGrokConfigState({ initialData }: UseGrokConfigStateProps = {}
     setGrokConfigState(nextState.config);
     setGrokCatalogModels(nextState.catalogModels);
     setProviderCategoryState(nextState.category);
+    setGrokReasoningEffort(nextState.reasoningEffort);
   }, []);
 
   const handleProviderCategoryChange = useCallback((nextCategory: GrokProviderCategory) => {
@@ -355,6 +378,10 @@ export function useGrokConfigState({ initialData }: UseGrokConfigStateProps = {}
     }
   }, []);
 
+  const handleReasoningEffortChange = useCallback((value: string | undefined) => {
+    setGrokReasoningEffort(normalizeGrokReasoningEffort(value));
+  }, []);
+
   // 获取最终的 settingsConfig（用于保存）
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const getFinalSettingsConfig = useCallback((snapshot: GrokSettingsConfigSnapshot = {}): string => {
@@ -369,11 +396,21 @@ export function useGrokConfigState({ initialData }: UseGrokConfigStateProps = {}
       model: finalModel,
       apiFormat: snapshot.apiFormat,
       supportsBackendSearch: snapshot.supportsBackendSearch,
+      reasoningEffort: snapshot.reasoningEffort ?? grokReasoningEffort,
       config: snapshot.config ?? grokConfig,
       catalogModels: snapshot.catalogModels ?? grokCatalogModels,
       auth: grokAuth,
     });
-  }, [grokApiKey, grokAuth, grokBaseUrl, grokCatalogModels, grokModel, grokConfig, providerCategory]);
+  }, [
+    grokApiKey,
+    grokAuth,
+    grokBaseUrl,
+    grokCatalogModels,
+    grokModel,
+    grokConfig,
+    grokReasoningEffort,
+    providerCategory,
+  ]);
 
   return {
     // 状态
@@ -383,6 +420,7 @@ export function useGrokConfigState({ initialData }: UseGrokConfigStateProps = {}
     grokModel,
     grokConfig,
     grokCatalogModels,
+    grokReasoningEffort,
     providerCategory,
 
     // 标志位（用于同步控制）
@@ -395,6 +433,7 @@ export function useGrokConfigState({ initialData }: UseGrokConfigStateProps = {}
     handleModelChange,
     handleConfigChange,
     handleProviderCategoryChange,
+    handleReasoningEffortChange,
 
     // 工具方法
     setGrokConfig,

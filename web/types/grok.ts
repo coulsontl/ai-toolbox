@@ -80,6 +80,11 @@ export interface GrokSettingsConfig {
   auth?: GrokAuthConfig;
   config?: string; // TOML format string
   defaultModelKey?: string;
+  /**
+   * Official providers only. Projects to `[models].default_reasoning_effort`.
+   * Custom providers store effort on `modelCatalog.models[].reasoningEffort`.
+   */
+  defaultReasoningEffort?: string;
   modelCatalog?: GrokModelCatalog;
 }
 

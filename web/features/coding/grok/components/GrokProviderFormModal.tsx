@@ -51,6 +51,7 @@ import { useGrokConfigState } from '../hooks/useGrokConfigState';
 import {
   applyGrokEndpointSettingsConfig,
   DEFAULT_GROK_MODEL,
+  GROK_REASONING_EFFORT_OPTIONS,
   resolveGrokCatalogBackendSearchFlag,
 } from '../utils/grokSettingsConfig';
 import styles from './GrokProviderFormModal.module.less';
@@ -353,12 +354,14 @@ const GrokProviderFormModal: React.FC<GrokProviderFormModalProps> = ({
     grokModel,
     grokConfig,
     grokCatalogModels,
+    grokReasoningEffort,
     providerCategory,
     handleApiKeyChange,
     handleBaseUrlChange,
     handleModelChange,
     handleConfigChange,
     handleProviderCategoryChange,
+    handleReasoningEffortChange,
     setGrokCatalogModels,
     resetFromSettingsConfig,
     getFinalSettingsConfig,
@@ -786,6 +789,7 @@ const GrokProviderFormModal: React.FC<GrokProviderFormModalProps> = ({
         model: submittedValues.model || '',
         apiFormat: normalizeGrokApiFormat(submittedValues.apiFormat),
         supportsBackendSearch: selectedCategory === 'custom' ? supportsBackendSearch : undefined,
+        reasoningEffort: grokReasoningEffort,
         config: submittedValues.configToml || '',
         catalogModels: grokCatalogModels,
       });
@@ -1160,6 +1164,34 @@ const GrokProviderFormModal: React.FC<GrokProviderFormModalProps> = ({
           </Form.Item>
         </>
       )}
+
+      <Form.Item
+        label={t('grok.provider.reasoningEffort')}
+        help={(
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {isOfficialMode
+              ? t('grok.provider.reasoningEffortOfficialHint')
+              : t('grok.provider.reasoningEffortCustomHint')}
+          </Text>
+        )}
+      >
+        <Select
+          allowClear
+          placeholder={t('grok.provider.reasoningEffortPlaceholder')}
+          value={grokReasoningEffort}
+          onChange={(value) => handleReasoningEffortChange(
+            typeof value === 'string' ? value : undefined,
+          )}
+          options={GROK_REASONING_EFFORT_OPTIONS.map((value) => ({
+            value,
+            label: value === 'low'
+              ? t('grok.provider.reasoningEffortLow')
+              : value === 'medium'
+                ? t('grok.provider.reasoningEffortMedium')
+                : t('grok.provider.reasoningEffortHigh'),
+          }))}
+        />
+      </Form.Item>
 
       <Form.Item label={t('grok.provider.modelName')}>
         <div className={styles.modelNameControl}>

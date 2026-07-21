@@ -9,7 +9,10 @@ import {
   buildGrokSettingsConfig,
   CUSTOM_GROK_MODEL_KEY,
 } from '../../../../../features/coding/grok/utils/grokSettingsConfig.ts';
-import { extractGrokSettingsModel } from '../../../../../utils/grokConfigUtils.ts';
+import {
+  extractGrokSettingsModel,
+  extractGrokSettingsReasoningEffort,
+} from '../../../../../utils/grokConfigUtils.ts';
 
 test('Grok catalog normalization preserves the complete model payload', () => {
   const normalizedModels = normalizeGrokCatalogModels([{
@@ -262,6 +265,89 @@ test('buildGrokSettingsConfig keeps official default model independent from stal
 
   assert.equal(settingsConfig.defaultModelKey, 'grok-4.5');
   assert.equal(settingsConfig.modelCatalog, undefined);
+  assert.equal(settingsConfig.defaultReasoningEffort, undefined);
+});
+
+test('buildGrokSettingsConfig stores official defaultReasoningEffort', () => {
+  const settingsConfig = JSON.parse(buildGrokSettingsConfig({
+    category: 'official',
+    apiKey: '',
+    baseUrl: '',
+    model: 'grok-build',
+    reasoningEffort: 'high',
+    config: '',
+    catalogModels: [],
+    auth: {},
+  }));
+
+  assert.equal(settingsConfig.defaultModelKey, 'grok-build');
+  assert.equal(settingsConfig.defaultReasoningEffort, 'high');
+  assert.equal(settingsConfig.modelCatalog, undefined);
+});
+
+test('buildGrokSettingsConfig permanently clears legacy official reasoning effort', () => {
+  const settingsConfig = JSON.parse(buildGrokSettingsConfig({
+    category: 'official',
+    apiKey: '',
+    baseUrl: '',
+    model: 'grok-build',
+    reasoningEffort: undefined,
+    config: [
+      '[models]',
+      'default = "grok-build"',
+      'default_reasoning_effort = "high"',
+      '',
+      '[ui]',
+      'simple_mode = true',
+    ].join('\n'),
+    catalogModels: [],
+    auth: {},
+  }));
+
+  assert.equal(settingsConfig.defaultReasoningEffort, undefined);
+  assert.doesNotMatch(settingsConfig.config, /default_reasoning_effort/);
+  assert.match(settingsConfig.config, /\[ui\]\nsimple_mode = true/);
+  assert.equal(extractGrokSettingsReasoningEffort(settingsConfig), undefined);
+});
+
+test('buildGrokSettingsConfig projects channel reasoningEffort onto custom catalog', () => {
+  const enabledConfig = JSON.parse(buildGrokSettingsConfig({
+    category: 'custom',
+    apiKey: 'secret',
+    baseUrl: 'https://api.example.com/v1',
+    model: 'claude-opus-4-6',
+    apiFormat: 'anthropic_messages',
+    reasoningEffort: 'medium',
+    config: '',
+    catalogModels: [
+      { key: 'custom', model: 'claude-opus-4-6', reasoningEffort: 'low' },
+      { key: 'extra', model: 'claude-sonnet' },
+    ],
+    auth: {},
+  }));
+  assert.equal(enabledConfig.defaultReasoningEffort, undefined);
+  assert.equal(enabledConfig.modelCatalog.models[0].reasoningEffort, 'medium');
+  assert.equal(enabledConfig.modelCatalog.models[0].supportsReasoningEffort, true);
+  assert.equal(enabledConfig.modelCatalog.models[1].reasoningEffort, 'medium');
+  assert.equal(enabledConfig.modelCatalog.models[1].supportsReasoningEffort, true);
+
+  const clearedConfig = JSON.parse(buildGrokSettingsConfig({
+    category: 'custom',
+    apiKey: 'secret',
+    baseUrl: 'https://api.example.com/v1',
+    model: 'claude-opus-4-6',
+    apiFormat: 'anthropic_messages',
+    config: '',
+    catalogModels: [{
+      key: 'custom',
+      model: 'claude-opus-4-6',
+      supportsReasoningEffort: true,
+      reasoningEffort: 'high',
+    }],
+    auth: {},
+  }));
+  assert.equal(clearedConfig.modelCatalog.models[0].reasoningEffort, undefined);
+  assert.equal(clearedConfig.modelCatalog.models[0].supportsReasoningEffort, undefined);
 });
 
 test('buildGrokSettingsConfig projects anthropic and responses form formats', () => {
