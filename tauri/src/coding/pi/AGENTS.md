@@ -32,7 +32,7 @@
 - 不要硬编码 `~/.pi/agent/extensions`。Pi root 可能来自应用内 custom root、`PI_CODING_AGENT_DIR`、shell 配置、默认路径或 WSL Direct，扩展目录必须从当前 runtime location 派生。
 - Windows 文件夹选择器在 WSL UNC 下可能只能选到 `~/.pi`，但末段名为 `.pi` 的目录也可能是合法 custom root。Pi 设置保存和 runtime cache 刷新只有在当前目录没有 Pi runtime 数据、且其 `agent` 子目录已存在 Pi runtime 布局时，才归一化并回写为 `~/.pi/agent`；不能只凭目录名迁移。
 - WSL Direct 扩展命令需要把 mise/asdf/bun/Volta/fnm/用户 npm bin 前置到原 WSL `$PATH`。动态 root 和扩展 source 必须保持为独立进程参数，不能拼进 shell 命令字符串；否则含空格路径会拆参，Shell 元字符还会改变命令结构。
-- 本机 `pi` CLI 解析走共享 `cli_resolver`。Windows 上用 `bun install -g` 安装的 `pi` 默认在 `%USERPROFILE%\.bun\bin`（或 `$BUN_INSTALL\bin`）；GUI 启动时不一定继承终端 PATH，必须把 bun 全局 bin 纳入候选路径，不能只查 nvm/volta/fnm/npm。
+- 本机 `pi` CLI 解析走共享 `cli_resolver`。Windows 上用 `bun install -g` 安装的 `pi` 默认在 `%USERPROFILE%\.bun\bin`（或 `$BUN_INSTALL\bin`）；GUI 启动时不一定继承终端 PATH，必须把 bun 全局 bin 纳入候选路径，不能只查 nvm/volta/fnm/npm。用 mise/asdf 管理 `pi` 时（常见 `mise use -g npm:earendil-works/pi-coding-agent`）真实 bin 路径含包名无法泛化，需扫 mise/asdf shims 目录命中；shim 又依赖 mise/asdf 本体在子进程 PATH，详见共享 `tauri/src/coding/AGENTS.md` 的 mise/asdf 候选与 PATH 补齐规则。
 - 多路径 `pi` 时**不会**比版本选最新：先用进程 PATH 的 `which`/`where` 结果（非 Windows 取第一条，Windows 按 `.exe`/`.cmd`/… 扩展名优先级），PATH 查不到再按候选顺序（`~/.local/bin` → `/opt/homebrew/bin` → `/usr/local/bin` → node/bun 全局 bin）。扩展 list/install/remove/update 失败错误必须附带解析到的 `pi_cli=` 路径；list 成功响应应带 `cliPath`/`cliVersion` 方便对照终端里的 `where pi`。
 - `pi-deck-*` 和 `ai-toolbox-*` 本地扩展按内置/受保护处理，页面不要提供直接删除入口。
 - 保存 Other Configuration 时不要清空或覆盖 `settings.json.packages`；扩展管理区已经负责 package 安装、列表和卸载入口。
