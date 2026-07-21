@@ -47,6 +47,10 @@ export const getPresetThinkingLevelValue = (
   if (typeof variant.reasoningEffort === 'string') {
     return variant.reasoningEffort === 'none' ? 'none' : variant.reasoningEffort;
   }
+  // Claude / Anthropic OpenCode presets use top-level `effort` (not reasoningEffort).
+  if (typeof variant.effort === 'string') {
+    return variant.effort === 'none' ? 'none' : variant.effort;
+  }
   const thinkingConfig = asRecord(variant.thinkingConfig);
   if (typeof thinkingConfig.thinkingLevel === 'string') {
     return thinkingConfig.thinkingLevel;

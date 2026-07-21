@@ -51,6 +51,54 @@ test('buildPiThinkingLevelMapFromPreset preserves max reasoning effort', () => {
   });
 });
 
+test('buildPiThinkingLevelMapFromPreset reads Claude effort variants', () => {
+  assert.deepEqual(buildPiThinkingLevelMapFromPreset({
+    high: {
+      thinking: {
+        display: 'summarized',
+        type: 'adaptive',
+      },
+      effort: 'high',
+    },
+    low: {
+      thinking: {
+        display: 'summarized',
+        type: 'adaptive',
+      },
+      effort: 'low',
+    },
+    max: {
+      thinking: {
+        display: 'summarized',
+        type: 'adaptive',
+      },
+      effort: 'max',
+    },
+    medium: {
+      thinking: {
+        display: 'summarized',
+        type: 'adaptive',
+      },
+      effort: 'medium',
+    },
+    xhigh: {
+      thinking: {
+        display: 'summarized',
+        type: 'adaptive',
+      },
+      effort: 'xhigh',
+    },
+  }), {
+    off: null,
+    minimal: null,
+    low: 'low',
+    medium: 'medium',
+    high: 'high',
+    xhigh: 'xhigh',
+    max: 'max',
+  });
+});
+
 test('buildPiThinkingLevelMapFromPreset returns empty map when variants are empty', () => {
   assert.deepEqual(buildPiThinkingLevelMapFromPreset({}), {});
   assert.deepEqual(buildPiThinkingLevelMapFromPreset(undefined), {});
