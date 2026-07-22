@@ -456,6 +456,14 @@ fn build_toml_edit_server_config(
         _ => return Err(format!("Unknown server type: {}", server.server_type)),
     }
 
+    // Codex supports the same second-based timeout keys as Grok.
+    // Leave unset so Codex keeps its own defaults (startup 10s / tool 60s).
+    copy_optional_toml_fields(
+        &mut t,
+        &server.server_config,
+        &["startup_timeout_sec", "tool_timeout_sec"],
+    )?;
+
     Ok(t)
 }
 
@@ -493,7 +501,7 @@ fn build_grok_toml_server_config(
                 }
                 table["env"] = Item::Table(env_table);
             }
-            copy_grok_toml_fields(
+            copy_optional_toml_fields(
                 &mut table,
                 &server.server_config,
                 &[
@@ -524,7 +532,11 @@ fn build_grok_toml_server_config(
                 }
                 table["headers"] = Item::Table(headers_table);
             }
-            copy_grok_toml_fields(&mut table, &server.server_config, &["bearer_token_env_var"])?;
+            copy_optional_toml_fields(
+                &mut table,
+                &server.server_config,
+                &["bearer_token_env_var"],
+            )?;
         }
         _ => return Err(format!("Unknown server type: {}", server.server_type)),
     }
@@ -532,7 +544,7 @@ fn build_grok_toml_server_config(
     Ok(table)
 }
 
-fn copy_grok_toml_fields(
+fn copy_optional_toml_fields(
     table: &mut toml_edit::Table,
     config: &Value,
     field_names: &[&str],
@@ -547,13 +559,13 @@ fn copy_grok_toml_fields(
 
 fn json_to_toml_item(value: &Value) -> Result<toml_edit::Item, String> {
     let serialized = toml::to_string(&serde_json::json!({ "holder": value }))
-        .map_err(|error| format!("Failed to serialize Grok MCP field: {error}"))?;
+        .map_err(|error| format!("Failed to serialize MCP TOML field: {error}"))?;
     let mut document = serialized
         .parse::<toml_edit::DocumentMut>()
-        .map_err(|error| format!("Failed to build Grok MCP TOML field: {error}"))?;
+        .map_err(|error| format!("Failed to build MCP TOML field: {error}"))?;
     document
         .remove("holder")
-        .ok_or_else(|| "Failed to build Grok MCP TOML field".to_string())
+        .ok_or_else(|| "Failed to build MCP TOML field".to_string())
 }
 
 /// Build JSON server configuration from McpServer
@@ -1222,7 +1234,7 @@ fn import_servers_from_toml(
                     }
                 }
                 if tool_key == "grok" {
-                    copy_grok_import_fields(
+                    copy_optional_import_fields(
                         config_table,
                         &mut json_config,
                         &[
@@ -1259,7 +1271,7 @@ fn import_servers_from_toml(
                     }
                 }
                 if tool_key == "grok" {
-                    copy_grok_import_fields(
+                    copy_optional_import_fields(
                         config_table,
                         &mut json_config,
                         &["bearer_token_env_var", "enabled"],
@@ -1267,6 +1279,15 @@ fn import_servers_from_toml(
                 }
             }
             _ => continue,
+        }
+
+        // Codex keeps second-based timeouts in server_config so re-sync does not drop them.
+        if tool_key == "codex" {
+            copy_optional_import_fields(
+                config_table,
+                &mut json_config,
+                &["startup_timeout_sec", "tool_timeout_sec"],
+            );
         }
 
         // Unwrap cmd /c for import (normalize for database storage)
@@ -1297,7 +1318,7 @@ fn import_servers_from_toml(
     Ok(servers)
 }
 
-fn copy_grok_import_fields(
+fn copy_optional_import_fields(
     source: &toml::Table,
     target: &mut serde_json::Map<String, Value>,
     field_names: &[&str],
@@ -1506,6 +1527,75 @@ mod tests {
                 "@sammysnake/fast-context-mcp",
             ])
         );
+    }
+
+    #[test]
+    fn codex_toml_config_writes_timeout_fields() {
+        let mut server = build_npx_stdio_server();
+        server.server_config["startup_timeout_sec"] = json!(120);
+        server.server_config["tool_timeout_sec"] = json!(300);
+
+        let table = build_toml_edit_server_config(&server, false).expect("build Codex MCP");
+
+        assert_eq!(table["type"].as_str(), Some("stdio"));
+        assert_eq!(table["command"].as_str(), Some("npx"));
+        assert_eq!(table["startup_timeout_sec"].as_integer(), Some(120));
+        assert_eq!(table["tool_timeout_sec"].as_integer(), Some(300));
+    }
+
+    #[test]
+    fn codex_toml_config_omits_timeout_fields_when_unset() {
+        let server = build_npx_stdio_server();
+
+        let table = build_toml_edit_server_config(&server, false).expect("build Codex MCP");
+
+        assert!(table.get("startup_timeout_sec").is_none());
+        assert!(table.get("tool_timeout_sec").is_none());
+    }
+
+    #[test]
+    fn codex_toml_import_preserves_timeout_fields() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[mcp_servers.local]
+type = "stdio"
+command = "npx"
+args = ["-y", "pkg"]
+startup_timeout_sec = 120
+tool_timeout_sec = 300
+
+[mcp_servers.remote]
+type = "http"
+url = "https://example.com/mcp"
+startup_timeout_sec = 25
+tool_timeout_sec = 1800
+
+[mcp_servers.remote.http_headers]
+X-Test = "yes"
+"#,
+        )
+        .expect("write fixture");
+
+        let servers =
+            import_servers_from_toml(&config_path, "mcp_servers", "codex").expect("import Codex MCP");
+        let local = servers
+            .iter()
+            .find(|server| server.name == "local")
+            .expect("local server");
+        assert_eq!(local.server_config["command"], "npx");
+        assert_eq!(local.server_config["startup_timeout_sec"], 120);
+        assert_eq!(local.server_config["tool_timeout_sec"], 300);
+        let remote = servers
+            .iter()
+            .find(|server| server.name == "remote")
+            .expect("remote server");
+        assert_eq!(remote.server_config["url"], "https://example.com/mcp");
+        assert_eq!(remote.server_config["headers"]["X-Test"], "yes");
+        assert_eq!(remote.server_config["startup_timeout_sec"], 25);
+        assert_eq!(remote.server_config["tool_timeout_sec"], 1800);
     }
 
     #[test]

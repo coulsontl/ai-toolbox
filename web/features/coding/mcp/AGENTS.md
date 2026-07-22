@@ -47,6 +47,7 @@ sequenceDiagram
 - MCP 管理页可能出现几百个 server，平铺和分组展开都应使用 shared `management/VirtualGrid` 这类可视区渲染；拖拽排序模式保持完整列表渲染，避免虚拟化与 dnd-kit 排序语义冲突。
 - MCP 管理页、列表、分组和卡片的主交互面应保持轻量原生控件风格，不要重新把 AntD `Button/Input/Segmented/Dropdown/Tooltip/Collapse/Empty/Spin/Tag/Checkbox` 引回这些高频列表 surface；复杂 modal 表单可另行按 modal 规则处理。
 - 新增/编辑弹窗里 stdio 的 `args`（以及表单中的 `env`/`headers` 列表）支持 dnd-kit 拖拽排序，因为 CLI 参数顺序会影响执行；排序只改 Form.List 顺序，保存时仍按数组原样写入 `server_config`，不要在提交时 re-sort。
+- 超时设置在同一个表单区块里合并展示，但语义不能混：顶层 `timeout`（毫秒）只给 OpenCode；`server_config.startup_timeout_sec` / `tool_timeout_sec`（秒）给 Codex 与 Grok。保存时毫秒字段仍写 `timeout`，秒级字段写进 `server_config`；留空都不落盘，让各工具用默认值。
 
 ## 跨模块依赖
 

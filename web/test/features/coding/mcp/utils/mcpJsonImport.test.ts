@@ -98,3 +98,33 @@ test('parseMcpServersFromJsonValue treats command-keyed maps as named servers', 
   const urlServerConfig = servers[1].server_config as { url: string };
   assert.equal(urlServerConfig.url, 'https://example.com/mcp');
 });
+
+test('parseMcpServersFromJsonValue preserves Codex/Grok second-based timeouts', () => {
+  const servers = parseMcpServersFromJsonValue({
+    mcpServers: {
+      local: {
+        type: 'stdio',
+        command: 'npx',
+        args: ['-y', 'pkg'],
+        startup_timeout_sec: 120,
+        tool_timeout_sec: 300,
+      },
+      remote: {
+        type: 'http',
+        url: 'https://example.com/mcp',
+        startup_timeout_sec: '25',
+        tool_timeout_sec: 1800,
+      },
+    },
+  });
+
+  assert.equal(servers.length, 2);
+  const local = servers.find((server) => server.name === 'local');
+  const remote = servers.find((server) => server.name === 'remote');
+  assert.ok(local);
+  assert.ok(remote);
+  assert.equal(local.server_config.startup_timeout_sec, 120);
+  assert.equal(local.server_config.tool_timeout_sec, 300);
+  assert.equal(remote.server_config.startup_timeout_sec, 25);
+  assert.equal(remote.server_config.tool_timeout_sec, 1800);
+});

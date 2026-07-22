@@ -21,11 +21,19 @@ export interface StdioConfig {
   command: string;
   args: string[];
   env?: Record<string, string>;
+  /** Codex / Grok: startup handshake timeout in seconds */
+  startup_timeout_sec?: number;
+  /** Codex / Grok: per-tool call timeout in seconds */
+  tool_timeout_sec?: number;
 }
 
 export interface HttpConfig {
   url: string;
   headers?: Record<string, string>;
+  /** Codex / Grok: startup handshake timeout in seconds */
+  startup_timeout_sec?: number;
+  /** Codex / Grok: per-tool call timeout in seconds */
+  tool_timeout_sec?: number;
 }
 
 export interface McpSyncDetail {

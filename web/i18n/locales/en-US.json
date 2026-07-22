@@ -3437,6 +3437,11 @@
     "timeout": "Timeout",
     "timeoutHint": "MCP server connection timeout in milliseconds. Leave empty for default.",
     "timeoutScope": "Note: Currently only used by OpenCode",
+    "timeouts": "Timeouts",
+    "timeoutsHint": "Configure per tool; leave empty for each tool's defaults. OpenCode uses millisecond timeout; Codex / Grok use startup_timeout_sec / tool_timeout_sec in seconds.",
+    "timeoutOpenCodeLabel": "OpenCode connection timeout (ms)",
+    "startupTimeoutLabel": "Codex / Grok startup timeout (sec)",
+    "toolTimeoutLabel": "Codex / Grok tool call timeout (sec)",
     "exportJson": "Export JSON",
     "exportCopied": "JSON copied to clipboard",
     "importJson": {

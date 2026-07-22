@@ -34,8 +34,29 @@ export function detectMcpServerType(config: Record<string, unknown>): 'stdio' | 
   return 'stdio';
 }
 
+function optionalPositiveNumber(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === '') {
+    return undefined;
+  }
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined;
+}
+
+function optionalTimeoutFields(config: Record<string, unknown>): {
+  startup_timeout_sec?: number;
+  tool_timeout_sec?: number;
+} {
+  const startupTimeoutSec = optionalPositiveNumber(config.startup_timeout_sec);
+  const toolTimeoutSec = optionalPositiveNumber(config.tool_timeout_sec);
+  return {
+    startup_timeout_sec: startupTimeoutSec,
+    tool_timeout_sec: toolTimeoutSec,
+  };
+}
+
 export function parseMcpServerConfig(config: Record<string, unknown>): StdioConfig | HttpConfig {
   const serverType = detectMcpServerType(config);
+  const timeoutFields = optionalTimeoutFields(config);
 
   if (serverType === 'stdio') {
     let command = '';
@@ -59,6 +80,7 @@ export function parseMcpServerConfig(config: Record<string, unknown>): StdioConf
       command,
       args,
       env: env && Object.keys(env).length > 0 ? env : undefined,
+      ...timeoutFields,
     };
   }
 
@@ -69,6 +91,7 @@ export function parseMcpServerConfig(config: Record<string, unknown>): StdioConf
   return {
     url: String(remoteUrl || ''),
     headers: isJsonObject(config.headers) ? config.headers as Record<string, string> : undefined,
+    ...timeoutFields,
   };
 }
 

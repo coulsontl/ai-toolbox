@@ -3434,6 +3434,11 @@
     "timeout": "超时时间",
     "timeoutHint": "MCP 服务器连接超时时间（毫秒），留空使用默认值",
     "timeoutScope": "注意：目前仅 OpenCode 支持此参数",
+    "timeouts": "超时设置",
+    "timeoutsHint": "按工具分别配置；留空使用各工具默认值。OpenCode 使用毫秒 timeout；Codex / Grok 使用秒级 startup_timeout_sec / tool_timeout_sec。",
+    "timeoutOpenCodeLabel": "OpenCode 连接超时（ms）",
+    "startupTimeoutLabel": "Codex / Grok 启动超时（秒）",
+    "toolTimeoutLabel": "Codex / Grok 工具调用超时（秒）",
     "exportJson": "导出 JSON",
     "exportCopied": "JSON 已复制到剪贴板",
     "importJson": {
