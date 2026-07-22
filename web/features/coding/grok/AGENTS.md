@@ -72,6 +72,7 @@ sequenceDiagram
 - `modelCatalog.models` 不是只给模型下拉用的三字段列表。`supportsImage`、`vision`、`attachment`、`modalities` 这类能力字段会被 Gateway runtime 用来判断 text-only/vision 行为，前端解析和保存规范化时必须保留显式 boolean（尤其是 `false`）和 `modalities.input/output`，不能只写回 `model/displayName/contextWindow`。
 - Grok 内置 Anthropic/Claude 协议 endpoint 如果没有显式 `modelCatalog`，添加供应商时应从同一渠道的 Claude endpoint 角色模型派生初始模型映射；如果 endpoint 自带 `modelCatalog`，仍以 endpoint 自身目录为准。派生逻辑只用于补齐添加表单的初始值，不能改变 Base URL 可编辑和保存用户当前输入值的语义。
 - Gateway 现在是 direct → single → failover 三态。single 入口在已应用 provider 卡片的“网关代理”按钮；single/failover 接管期间都必须锁定其他 provider 的“应用”入口，failover 时卡片额外显示 P0/P1 优先级，切 P0 必须先恢复直连。
+- 模型列表的获取、新增、编辑、删除和设默认都会保存整个 provider。若目标 provider 已应用且 Gateway 处于 single/failover，必须复用 `saveProviderWithGatewayReengage`，按“恢复直连 → 保存 → 恢复原接管模式”执行；未应用 provider 只更新数据库，不能为此中断当前 Gateway。
 - Grok CLI 原生支持 `openai_responses` / `openai_chat` / `anthropic_messages`，**只有** `gemini_native` 才需要“应用并代理”。卡片判定必须用 `grokProviderNeedsGatewayProxy`，禁止 `providerNeedsGatewayProxy(format, 'openai_responses')`，否则 chat/claude 会被误判为需要协议转换。
 - 前端不要假设 Grok prompt 文件名永远是 `AGENTS.md`。展示路径、删除已应用 prompt 后的刷新和同步结果都以后端返回/事件为准。
 - 插件页的全部启用/全部禁用只作用于“已安装”Tab 中当前 runtime 的已安装插件，不作用于市场可安装列表。Grok 没有 Codex 的 plugins feature toggle，不得复制该开关。

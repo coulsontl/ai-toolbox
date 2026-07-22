@@ -77,6 +77,7 @@ import {
   upsertGrokCatalogModel,
   type GrokModelFormValues,
 } from '../utils/grokProviderModels';
+import { saveGrokProviderCatalogWithGatewayReengage } from '../utils/grokProviderCatalogSave';
 import FetchModelsModal from '@/components/common/FetchModelsModal';
 import type { FetchModelsApplyResult } from '@/components/common/FetchModelsModal/types';
 import AllApiHubIcon from '@/components/common/AllApiHubIcon';
@@ -498,18 +499,24 @@ const GrokPage: React.FC = () => {
     models: ReturnType<typeof getGrokProviderCatalogModels>,
     defaultModelKey?: string,
   ) => {
-    const nextSettingsConfig = buildGrokProviderSettingsWithModels(
+    const settingsConfig = buildGrokProviderSettingsWithModels(
       provider,
       models,
       defaultModelKey,
     );
-    await updateGrokProvider({
-      ...provider,
-      settingsConfig: nextSettingsConfig,
+    await saveGrokProviderCatalogWithGatewayReengage({
+      provider,
+      settingsConfig,
+      gatewayMode: gatewayCliStatus?.mode,
+      updateProvider: updateGrokProvider,
+      restoreDirect: () => restoreProxyGatewayCliDirect('grok'),
+      engageSingle: () => engageProxyGatewaySingle('grok', provider.id),
+      engageFailover: () => engageProxyGatewayFailover('grok'),
+      onGatewayStatusChange: setGatewayCliStatus,
     });
     await loadConfig(true);
     await refreshTrayMenu();
-  }, [loadConfig]);
+  }, [gatewayCliStatus?.mode, loadConfig]);
 
   const handleAddModel = React.useCallback((provider: GrokProvider) => {
     if (provider.category === 'official' || provider.id === GROK_LOCAL_PROVIDER_ID) {
