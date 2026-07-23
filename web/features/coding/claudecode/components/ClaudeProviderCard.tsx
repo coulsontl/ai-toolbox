@@ -37,6 +37,7 @@ import {
 } from '@/features/coding/shared/gateway';
 import ProviderConnectivityStatus from '@/features/coding/shared/providerConnectivity/ProviderConnectivityStatus';
 import type { ProviderConnectivityStatusItem } from '@/components/common/ProviderCard/types';
+import ProviderNameLink from '@/components/common/ProviderNameLink';
 import { useSettingsStore } from '@/stores/settingsStore';
 import {
   getClaudeConfiguredModelIds,
@@ -395,9 +396,11 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
             {/* 供应商名称、状态和 URL */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <ProviderConnectivityStatus item={connectivityStatus} />
-              <Text strong style={{ fontSize: 14 }}>
-                {provider.name}
-              </Text>
+              <ProviderNameLink
+                name={provider.name}
+                baseUrl={configuredBaseUrl}
+                style={{ fontSize: 14, fontWeight: 600 }}
+              />
               {isLocalProvider && (
                 <Text type="secondary" style={{ fontSize: 11 }}>
                   ({t('claudecode.localConfigHint')})

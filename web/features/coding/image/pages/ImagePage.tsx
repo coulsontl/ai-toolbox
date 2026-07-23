@@ -60,6 +60,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import JsonEditor from '@/components/common/JsonEditor';
 import EnabledTag from '@/components/common/EnabledTag';
+import ProviderNameLink from '@/components/common/ProviderNameLink';
 import {
   exportImageAsset,
   type CreateImageJobInput,
@@ -296,7 +297,11 @@ const SortableChannelCard: React.FC<SortableChannelCardProps> = ({
               >
                 <GripVertical size={14} />
               </div>
-              <Text strong>{channel.name}</Text>
+              <ProviderNameLink
+                name={channel.name}
+                baseUrl={channel.base_url}
+                style={{ fontWeight: 600 }}
+              />
               <span className={styles.channelBaseUrl}>{channel.base_url}</span>
               {channel.enabled ? (
                 <EnabledTag>{t('image.more.enabled')}</EnabledTag>

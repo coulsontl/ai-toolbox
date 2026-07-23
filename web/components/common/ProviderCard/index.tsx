@@ -22,6 +22,7 @@ import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
 import { CSS } from '@dnd-kit/utilities';
 import SdkTag from '@/components/common/SdkTag';
 import ModelItem from '@/components/common/ModelItem';
+import ProviderNameLink from '@/components/common/ProviderNameLink';
 import ProviderConnectivityStatus from '@/features/coding/shared/providerConnectivity/ProviderConnectivityStatus';
 import type {
   ProviderDisplayData,
@@ -31,7 +32,7 @@ import type {
   ProviderConnectivityStatusItem,
 } from './types';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 interface ProviderCardProps {
   provider: ProviderDisplayData;
@@ -340,8 +341,7 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
           <div style={{ flex: 1 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
               <div>
-                <Title
-                  level={5}
+                <div
                   style={{
                     margin: 0,
                     marginBottom: 4,
@@ -351,8 +351,12 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
                   }}
                 >
                   <ProviderConnectivityStatus item={connectivityStatus} />
-                  <span>{provider.name}</span>
-                </Title>
+                  <ProviderNameLink
+                    name={provider.name}
+                    baseUrl={provider.baseUrl}
+                    style={{ fontSize: 14, fontWeight: 600 }}
+                  />
+                </div>
                 <Space size={8} wrap>
                   {provider.name !== provider.id && (
                     <>

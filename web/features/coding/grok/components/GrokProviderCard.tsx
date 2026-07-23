@@ -38,6 +38,7 @@ import {
   extractGrokSettingsReasoningEffort,
 } from '@/utils/grokConfigUtils';
 import AppliedTag from '@/components/common/AppliedTag';
+import ProviderNameLink from '@/components/common/ProviderNameLink';
 import ProxyTag from '@/components/common/ProxyTag';
 import {
   canApplyProviderWithGatewayProxy,
@@ -674,9 +675,11 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
               {/* Provider name and status */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <ProviderConnectivityStatus item={connectivityStatus} />
-                <Text strong style={{ fontSize: 14 }}>
-                  {provider.name}
-                </Text>
+                <ProviderNameLink
+                  name={provider.name}
+                  baseUrl={baseUrl}
+                  style={{ fontSize: 14, fontWeight: 600 }}
+                />
                 {isLocalProvider && (
                   <Text type="secondary" style={{ fontSize: 11 }}>
                     ({t('grok.localConfigHint')})

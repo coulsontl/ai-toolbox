@@ -29,6 +29,7 @@ import {
 } from '@/services';
 import { refreshTrayMenu } from '@/services/appApi';
 import AppliedTag from '@/components/common/AppliedTag';
+import ProviderNameLink from '@/components/common/ProviderNameLink';
 import ProxyTag from '@/components/common/ProxyTag';
 import {
   GEMINI_CLI_LOCAL_PROVIDER_ID,
@@ -574,9 +575,11 @@ const GeminiCliProviderCard: React.FC<GeminiCliProviderCardProps> = ({
             </div>
             <Space direction="vertical" size={4} style={{ width: '100%', minWidth: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <Text strong style={{ fontSize: 14 }}>
-                  {provider.name}
-                </Text>
+                <ProviderNameLink
+                  name={provider.name}
+                  baseUrl={baseUrl}
+                  style={{ fontSize: 14, fontWeight: 600 }}
+                />
                 {isLocalProvider && (
                   <Text type="secondary" style={{ fontSize: 11 }}>
                     ({t('geminicli.localConfigHint')})
