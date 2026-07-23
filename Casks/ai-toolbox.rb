@@ -1,15 +1,15 @@
 cask "ai-toolbox" do
-  version "1.0.6"
+  version "1.0.7"
 
   on_arm do
-    sha256 "3ddc278b824b74afe59fbc40a2a593dfafbd7a7c46b644d8d8e73ce11c52cdb8"
-    url "https://github.com/coulsontl/ai-toolbox/releases/download/v#{version}/AI.Toolbox_1.0.6_aarch64.dmg",
+    sha256 "e4008da9d61c2254a21d0e622362f93a512005f81b338c90f4c288ae0e716032"
+    url "https://github.com/coulsontl/ai-toolbox/releases/download/v#{version}/AI.Toolbox_1.0.7_aarch64.dmg",
         verified: "github.com/coulsontl/ai-toolbox/"
   end
 
   on_intel do
-    sha256 "38f6b2dcada9bfe54582919310e94ddabdfeec51026c79071438181a88e6b913"
-    url "https://github.com/coulsontl/ai-toolbox/releases/download/v#{version}/AI.Toolbox_1.0.6_x64.dmg",
+    sha256 "2006122544f440e9c4764ce6f01bad6f1a7ae4ee9dbd29114672338d388da783"
+    url "https://github.com/coulsontl/ai-toolbox/releases/download/v#{version}/AI.Toolbox_1.0.7_x64.dmg",
         verified: "github.com/coulsontl/ai-toolbox/"
   end
 
