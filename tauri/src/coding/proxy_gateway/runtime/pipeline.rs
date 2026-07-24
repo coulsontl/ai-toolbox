@@ -30,10 +30,22 @@ pub(super) trait ChannelCustomizedExecutor: Send + Sync {
     fn customize_executor(&self, executor: Arc<dyn PipelineExecutor>) -> Arc<dyn PipelineExecutor>;
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(super) struct Pipeline {
     middleware: Vec<Arc<dyn Middleware>>,
     executor_customizer: Option<Arc<dyn ChannelCustomizedExecutor>>,
+}
+
+impl std::fmt::Debug for Pipeline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pipeline")
+            .field("middleware_len", &self.middleware.len())
+            .field(
+                "has_executor_customizer",
+                &self.executor_customizer.is_some(),
+            )
+            .finish()
+    }
 }
 
 impl Pipeline {

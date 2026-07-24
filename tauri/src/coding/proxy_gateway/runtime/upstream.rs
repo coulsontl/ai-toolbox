@@ -1078,6 +1078,7 @@ async fn send_upstream_request(
     let mut upstream_body = prepared_upstream_body.body;
     let conversion_context = prepared_upstream_body.conversion_context;
     let lossy_warnings = prepared_upstream_body.lossy_warnings;
+    let pipeline = prepared_upstream_body.pipeline;
     let pipeline_context = prepared_upstream_body.pipeline_context;
     let xai_namespace_restore_map = prepared_upstream_body.xai_namespace_restore_map;
     if should_filter_known_invalid_responses_ciphers(
@@ -1207,6 +1208,7 @@ async fn send_upstream_request(
                 let rectified_body = rectified.body;
                 let rectified_context = rectified.conversion_context;
                 let rectified_lossy_warnings = rectified.lossy_warnings;
+                let rectified_pipeline = rectified.pipeline;
                 let rectified_pipeline_context = rectified.pipeline_context;
                 let response = send_request_once(
                     &client,
@@ -1232,6 +1234,7 @@ async fn send_upstream_request(
                     conversion_route,
                     Some(rectified_context),
                     rectified_lossy_warnings,
+                    rectified_pipeline,
                     rectified_pipeline_context,
                     upstream_response_snapshot_limit,
                     Some(context),
@@ -1281,6 +1284,7 @@ async fn send_upstream_request(
                         conversion_route,
                         Some(conversion_context.clone()),
                         lossy_warnings.clone(),
+                        pipeline.clone(),
                         pipeline_context.clone(),
                         upstream_response_snapshot_limit,
                         Some(context),
@@ -1322,6 +1326,7 @@ async fn send_upstream_request(
                     conversion_route,
                     Some(conversion_context.clone()),
                     lossy_warnings.clone(),
+                    pipeline.clone(),
                     pipeline_context.clone(),
                     upstream_response_snapshot_limit,
                     Some(context),
@@ -1362,6 +1367,7 @@ async fn send_upstream_request(
                     conversion_route,
                     Some(conversion_context.clone()),
                     lossy_warnings.clone(),
+                    pipeline.clone(),
                     pipeline_context.clone(),
                     upstream_response_snapshot_limit,
                     Some(context),
@@ -1404,6 +1410,7 @@ async fn send_upstream_request(
         conversion_route,
         Some(conversion_context),
         lossy_warnings,
+        pipeline,
         pipeline_context,
         upstream_response_snapshot_limit,
         Some(context),
@@ -1469,6 +1476,7 @@ async fn build_gateway_response(
     conversion_route: Option<ConversionRoute>,
     conversion_context: Option<ConversionContext>,
     lossy_warnings: Vec<String>,
+    pipeline: Pipeline,
     pipeline_context: PipelineContext,
     upstream_response_snapshot_limit: Option<usize>,
     context: Option<&GatewayRuntimeContext>,
@@ -1525,21 +1533,13 @@ async fn build_gateway_response(
         if should_restore_xai_namespaces {
             body = restore_xai_namespace_json_body(&body, &xai_namespace_restore_map);
         }
-        // Client-facing reverse middleware (AxonHub-style outbound response hooks).
-        {
-            let response_pipeline = build_provider_pipeline(
-                Some(&provider.meta),
-                conversion_route,
-                provider.target_protocol,
-                true,
-            );
-            body = apply_provider_pipeline_outbound_response(
-                body,
-                &response_pipeline,
-                &pipeline_context,
-                Some(upstream_body_snapshot.clone()),
-            )?;
-        }
+        // Client-facing reverse middleware (same request-scoped pipeline + context).
+        body = apply_provider_pipeline_outbound_response(
+            body,
+            &pipeline,
+            &pipeline_context,
+            Some(upstream_body_snapshot.clone()),
+        )?;
         set_response_content_type(&mut response_headers, "application/json");
         append_compact_compat_header(&mut response_headers, compact_compat);
         record_side_store_response(
@@ -1643,16 +1643,10 @@ async fn build_gateway_response(
             context,
             response_conversion_route,
         );
-        // Client-facing reverse stream middleware (same request-scoped pipeline_context).
-        let response_pipeline = build_provider_pipeline(
-            Some(&provider.meta),
-            conversion_route,
-            provider.target_protocol,
-            true,
-        );
+        // Client-facing reverse stream middleware (same request-scoped pipeline + context).
         let body_stream = wrap_pipeline_outbound_sse_stream(
             body_stream,
-            response_pipeline,
+            pipeline.clone(),
             pipeline_context.clone(),
         );
         let gateway_response = DebugHttpResponse {
@@ -1749,21 +1743,13 @@ async fn build_gateway_response(
     if should_restore_xai_namespaces {
         body = restore_xai_namespace_json_body(&body, &xai_namespace_restore_map);
     }
-    // Client-facing reverse middleware (AxonHub-style outbound response hooks).
-    {
-        let response_pipeline = build_provider_pipeline(
-            Some(&provider.meta),
-            conversion_route,
-            provider.target_protocol,
-            true,
-        );
-        body = apply_provider_pipeline_outbound_response(
-            body,
-            &response_pipeline,
-            &pipeline_context,
-            Some(upstream_body_snapshot.clone()),
-        )?;
-    }
+    // Client-facing reverse middleware (same request-scoped pipeline + context).
+    body = apply_provider_pipeline_outbound_response(
+        body,
+        &pipeline,
+        &pipeline_context,
+        Some(upstream_body_snapshot.clone()),
+    )?;
     append_compact_compat_header(&mut response_headers, compact_compat);
     record_side_store_response(
         context,
@@ -4398,6 +4384,10 @@ struct PreparedUpstreamBody {
     conversion_context: ConversionContext,
     /// Runtime-owned lossy policy warnings (not part of transformer ConversionContext).
     lossy_warnings: Vec<String>,
+    /// Same request-scoped pipeline used for inbound/outbound request hooks.
+    /// Reused for client-facing reverse response/stream hooks so stateful middleware
+    /// stays consistent (do not rebuild a second pipeline with different skip flags).
+    pipeline: Pipeline,
     /// Same request-scoped pipeline context used for inbound/outbound request hooks.
     /// Must survive through client-facing reverse response hooks (e.g. billing_cch).
     pipeline_context: PipelineContext,
@@ -4429,6 +4419,7 @@ fn build_upstream_body_for_provider(
                     body: converted.body,
                     conversion_context: converted.context,
                     lossy_warnings: Vec::new(),
+                    pipeline: Pipeline::default(),
                     pipeline_context: PipelineContext::default(),
                     xai_namespace_restore_map: HashMap::new(),
                 })
@@ -4444,6 +4435,7 @@ fn build_upstream_body_for_provider(
             body: request.body.clone(),
             conversion_context: ConversionContext::default(),
             lossy_warnings: Vec::new(),
+            pipeline: Pipeline::default(),
             pipeline_context: PipelineContext::default(),
             xai_namespace_restore_map: HashMap::new(),
         });
@@ -4580,6 +4572,7 @@ fn build_upstream_body_for_provider(
             body,
             conversion_context,
             lossy_warnings,
+            pipeline,
             pipeline_context,
             xai_namespace_restore_map: HashMap::new(),
         });
@@ -4588,6 +4581,7 @@ fn build_upstream_body_for_provider(
         body: upstream_body,
         conversion_context,
         lossy_warnings,
+        pipeline,
         pipeline_context,
         xai_namespace_restore_map,
     })
@@ -4750,6 +4744,7 @@ fn apply_provider_pipeline_outbound_body(
 /// Non-JSON bodies pass through unchanged.
 /// Uses the same request-scoped pipeline + context as inbound/outbound request hooks
 /// so captured fields like `billing_cch` survive into the client-facing response.
+/// Do not rebuild a different pipeline here (skip flags / middleware set must match).
 fn apply_provider_pipeline_outbound_response(
     body: Vec<u8>,
     pipeline: &Pipeline,
