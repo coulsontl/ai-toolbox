@@ -1076,6 +1076,7 @@ async fn send_upstream_request(
     )?;
     let mut upstream_body = prepared_upstream_body.body;
     let conversion_context = prepared_upstream_body.conversion_context;
+    let lossy_warnings = prepared_upstream_body.lossy_warnings;
     let xai_namespace_restore_map = prepared_upstream_body.xai_namespace_restore_map;
     if should_filter_known_invalid_responses_ciphers(
         responses_encrypted_content_rectifier_enabled,
@@ -1203,6 +1204,7 @@ async fn send_upstream_request(
             )? {
                 let rectified_body = rectified.body;
                 let rectified_context = rectified.conversion_context;
+                let rectified_lossy_warnings = rectified.lossy_warnings;
                 let response = send_request_once(
                     &client,
                     method.clone(),
@@ -1226,6 +1228,7 @@ async fn send_upstream_request(
                     upstream_url.to_string(),
                     conversion_route,
                     Some(rectified_context),
+                    rectified_lossy_warnings,
                     upstream_response_snapshot_limit,
                     Some(context),
                     compact_compat,
@@ -1273,6 +1276,7 @@ async fn send_upstream_request(
                         upstream_url.to_string(),
                         conversion_route,
                         Some(conversion_context.clone()),
+                        lossy_warnings.clone(),
                         upstream_response_snapshot_limit,
                         Some(context),
                         compact_compat,
@@ -1312,6 +1316,7 @@ async fn send_upstream_request(
                     upstream_url.to_string(),
                     conversion_route,
                     Some(conversion_context.clone()),
+                    lossy_warnings.clone(),
                     upstream_response_snapshot_limit,
                     Some(context),
                     compact_compat,
@@ -1350,6 +1355,7 @@ async fn send_upstream_request(
                     upstream_url.to_string(),
                     conversion_route,
                     Some(conversion_context.clone()),
+                    lossy_warnings.clone(),
                     upstream_response_snapshot_limit,
                     Some(context),
                     compact_compat,
@@ -1390,6 +1396,7 @@ async fn send_upstream_request(
         upstream_url.to_string(),
         conversion_route,
         Some(conversion_context),
+        lossy_warnings,
         upstream_response_snapshot_limit,
         Some(context),
         compact_compat,
@@ -1453,6 +1460,7 @@ async fn build_gateway_response(
     upstream_url: String,
     conversion_route: Option<ConversionRoute>,
     conversion_context: Option<ConversionContext>,
+    lossy_warnings: Vec<String>,
     upstream_response_snapshot_limit: Option<usize>,
     context: Option<&GatewayRuntimeContext>,
     compact_compat: CodexResponsesCompactCompat,
@@ -1460,7 +1468,7 @@ async fn build_gateway_response(
 ) -> Result<DebugHttpResponse, GatewayForwardError> {
     let status = response.status();
     let mut response_headers = filtered_response_headers(response.headers());
-    append_lossy_warning_header(&mut response_headers, conversion_context.as_ref());
+    append_lossy_warning_header(&mut response_headers, &lossy_warnings);
     let provider_kind =
         ProviderBodyCompat::from_provider_meta(Some(&provider.meta), provider.target_protocol);
     let should_stream = should_stream_response(request, route, response.headers(), status.as_u16());
@@ -3006,17 +3014,14 @@ fn maybe_record_gemini_sse_stream(
 
 fn append_lossy_warning_header(
     response_headers: &mut Vec<(String, String)>,
-    conversion_context: Option<&ConversionContext>,
+    lossy_warnings: &[String],
 ) {
-    let Some(context) = conversion_context else {
-        return;
-    };
-    if context.lossy_warnings.is_empty() {
+    if lossy_warnings.is_empty() {
         return;
     }
     response_headers.push((
         "X-Transformer-Lossy".to_string(),
-        context.lossy_warnings.join(" | "),
+        lossy_warnings.join(" | "),
     ));
 }
 
@@ -4354,6 +4359,8 @@ fn build_upstream_body(
 struct PreparedUpstreamBody {
     body: Vec<u8>,
     conversion_context: ConversionContext,
+    /// Runtime-owned lossy policy warnings (not part of transformer ConversionContext).
+    lossy_warnings: Vec<String>,
     /// Request-scoped only: flat tool name → namespace identity for native xAI
     /// Responses passthrough restore. Empty when not applicable.
     xai_namespace_restore_map: HashMap<String, NamespacedName>,
@@ -4381,6 +4388,7 @@ fn build_upstream_body_for_provider(
                 .map(|converted| PreparedUpstreamBody {
                     body: converted.body,
                     conversion_context: converted.context,
+                    lossy_warnings: Vec::new(),
                     xai_namespace_restore_map: HashMap::new(),
                 })
                 .map_err(|error| GatewayForwardError {
@@ -4394,6 +4402,7 @@ fn build_upstream_body_for_provider(
         return Ok(PreparedUpstreamBody {
             body: request.body.clone(),
             conversion_context: ConversionContext::default(),
+            lossy_warnings: Vec::new(),
             xai_namespace_restore_map: HashMap::new(),
         });
     };
@@ -4457,7 +4466,7 @@ fn build_upstream_body_for_provider(
         upstream_response_body: None,
         upstream_response_body_bytes: 0,
     })?;
-    let (mut upstream_body, mut conversion_context) = if compact_compat.is_compact() {
+    let (mut upstream_body, conversion_context) = if compact_compat.is_compact() {
         compact_compat
             .convert_request_body(&rewritten_body)
             .map_err(|error| GatewayForwardError {
@@ -4482,9 +4491,9 @@ fn build_upstream_body_for_provider(
     } else {
         (rewritten_body, ConversionContext::default())
     };
-    conversion_context.lossy_warnings = lossy_warnings;
+    let mut lossy_warnings = lossy_warnings;
     if let Some(warning) = compact_compat.warning() {
-        conversion_context.lossy_warnings.push(warning.to_string());
+        lossy_warnings.push(warning.to_string());
     }
     if target_protocol == AiProtocol::GeminiNative {
         if let (Some(context), Some(provider)) = (context, provider) {
@@ -4528,12 +4537,14 @@ fn build_upstream_body_for_provider(
         return inject_cache_control_into_body(upstream_body).map(|body| PreparedUpstreamBody {
             body,
             conversion_context,
+            lossy_warnings,
             xai_namespace_restore_map: HashMap::new(),
         });
     }
     Ok(PreparedUpstreamBody {
         body: upstream_body,
         conversion_context,
+        lossy_warnings,
         xai_namespace_restore_map,
     })
 }
@@ -9296,12 +9307,9 @@ mod tests {
     #[test]
     fn lossy_warning_header_is_appended_to_allowed_response() {
         let mut headers = Vec::new();
-        let context = ConversionContext {
-            lossy_warnings: vec!["/input/0: code_interpreter_call is lossy".to_string()],
-            ..ConversionContext::default()
-        };
+        let lossy_warnings = vec!["/input/0: code_interpreter_call is lossy".to_string()];
 
-        append_lossy_warning_header(&mut headers, Some(&context));
+        append_lossy_warning_header(&mut headers, &lossy_warnings);
 
         assert_eq!(
             headers,

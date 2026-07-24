@@ -26,15 +26,9 @@ pub type ConversionByteStream =
 #[derive(Debug, Clone, Default)]
 pub struct ConversionContext {
     pub codex_tool_context: Option<CodexToolContext>,
-    /// Runtime-injected after transformer conversion (lossy policy warnings).
-    /// Not produced by transformer internals; empty during pure convert paths.
-    pub lossy_warnings: Vec<String>,
 }
 
 impl ConversionContext {
-    /// True when transformer-owned state is empty.
-    /// Note: `lossy_warnings` is runtime-injected and ignored here so pure
-    /// transformer emptiness is not polluted by post-conversion annotations.
     pub fn is_empty(&self) -> bool {
         self.codex_tool_context
             .as_ref()

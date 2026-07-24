@@ -33,6 +33,9 @@ const RESPONSES_RAW_TOOLS_METADATA_KEY: &str = "openai_responses_raw_tools";
 const RESPONSES_TOOL_SIGNATURES_METADATA_KEY: &str = "openai_responses_tool_signatures";
 const RESPONSES_RAW_TOOL_CHOICE_METADATA_KEY: &str = "openai_responses_raw_tool_choice";
 const RESPONSES_RAW_INPUT_ITEMS_METADATA_KEY: &str = "openai_responses_raw_input_items";
+/// Request top-level `reasoning.context` (e.g. `"all_turns"`), not input-item context.
+const RESPONSES_REQUEST_REASONING_CONTEXT_METADATA_KEY: &str =
+    "openai_responses_request_reasoning_context";
 
 impl InboundTransformer for OpenAiResponsesInbound {
     fn protocol(&self) -> AiProtocol {
@@ -146,6 +149,13 @@ pub fn responses_request_to_llm(body: Value) -> Request {
         request
             .transformer_metadata
             .insert(RESPONSES_INCLUDE_METADATA_KEY.to_string(), include.clone());
+    }
+    // Top-level reasoning.context (e.g. "all_turns"), distinct from input item context.
+    if let Some(context) = body.pointer("/reasoning/context") {
+        request.transformer_metadata.insert(
+            RESPONSES_REQUEST_REASONING_CONTEXT_METADATA_KEY.to_string(),
+            context.clone(),
+        );
     }
     preserve_responses_transformer_metadata(
         &body,
@@ -944,8 +954,20 @@ pub fn llm_request_to_responses(request: Request) -> Value {
     if let Some(user) = request.user {
         body["user"] = json!(user);
     }
-    if let Some(reasoning_effort) = request.reasoning_effort {
-        body["reasoning"] = json!({ "effort": reasoning_effort });
+    // Merge effort + request-level context; do not overwrite context with effort-only object.
+    let request_reasoning_context = request
+        .transformer_metadata
+        .get(RESPONSES_REQUEST_REASONING_CONTEXT_METADATA_KEY)
+        .cloned();
+    if request.reasoning_effort.is_some() || request_reasoning_context.is_some() {
+        let mut reasoning = serde_json::Map::new();
+        if let Some(effort) = request.reasoning_effort {
+            reasoning.insert("effort".to_string(), json!(effort));
+        }
+        if let Some(context) = request_reasoning_context {
+            reasoning.insert("context".to_string(), context);
+        }
+        body["reasoning"] = Value::Object(reasoning);
     }
     if let Some(stream) = request.stream {
         body["stream"] = json!(stream);
@@ -2314,6 +2336,52 @@ mod tests {
             reasoning.contains("first") && reasoning.contains("second trailing"),
             "expected both forward-merged and trailing reasoning, got {reasoning:?}"
         );
+    }
+
+    #[test]
+    fn request_top_level_reasoning_context_roundtrips_without_clobbering_effort() {
+        // Audit T-1: preserve request-level reasoning.context (e.g. "all_turns"),
+        // not just input-item context. Outbound must merge effort + context.
+        let body = json!({
+            "model": "gpt-5",
+            "reasoning": {
+                "effort": "high",
+                "context": "all_turns"
+            },
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hi"}]
+                }
+            ]
+        });
+        let request = responses_request_to_llm(body);
+        assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            request
+                .transformer_metadata
+                .get(RESPONSES_REQUEST_REASONING_CONTEXT_METADATA_KEY),
+            Some(&json!("all_turns"))
+        );
+
+        let converted = llm_request_to_responses(request);
+        assert_eq!(converted["reasoning"]["effort"], "high");
+        assert_eq!(converted["reasoning"]["context"], "all_turns");
+    }
+
+    #[test]
+    fn request_reasoning_context_only_without_effort_is_preserved() {
+        let body = json!({
+            "model": "gpt-5",
+            "reasoning": { "context": "all_turns" },
+            "input": "hello"
+        });
+        let request = responses_request_to_llm(body);
+        assert!(request.reasoning_effort.is_none());
+        let converted = llm_request_to_responses(request);
+        assert!(converted["reasoning"].get("effort").is_none());
+        assert_eq!(converted["reasoning"]["context"], "all_turns");
     }
 
     #[test]
