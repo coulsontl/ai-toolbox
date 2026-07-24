@@ -1,4 +1,3 @@
-use super::super::error::ProtocolConversionError;
 use super::super::llm::{
     ApiFormat, Choice, DocumentUrl, Function, FunctionCall, GoogleTools, ImageUrl, Message,
     MessageContent, MessageContentPart, Request, RequestType, Response, Stop, Tool, ToolCall,
@@ -14,8 +13,6 @@ use super::super::shared::{
     extract_error_type, json_string, reasoning_effort_to_budget_tokens, stop_from_value,
     tool_arguments_value, tool_choice_from_gemini,
 };
-use super::super::traits::{InboundTransformer, OutboundTransformer};
-use super::super::types::AiProtocol;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 

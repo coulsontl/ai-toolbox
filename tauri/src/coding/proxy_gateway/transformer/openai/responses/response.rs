@@ -1,36 +1,10 @@
-use super::super::chat::openai_usage_to_llm;
 use crate::coding::proxy_gateway::transformer::llm::{
-    ApiFormat, Choice, Function, FunctionCall, ImageUrl, Message, MessageContent,
-    MessageContentPart, Request, RequestType, Response, ResponseCustomToolCall, Tool, ToolCall,
-    Usage, TOOL_TYPE_FUNCTION, TOOL_TYPE_RESPONSES_CUSTOM_TOOL,
+    Choice, Message, MessageContent, MessageContentPart, Response,
 };
 use crate::coding::proxy_gateway::transformer::shared::signature::{
-    decode_signature_for, encode_signature, SignatureProvider,
+    encode_signature, SignatureProvider,
 };
-use crate::coding::proxy_gateway::transformer::shared::{
-    extract_error_code, extract_error_message, extract_error_param, extract_error_type,
-    normalize_function_parameters_owned, should_emit_openai_request_metadata, stop_from_value,
-    stop_to_value, tool_choice_from_openai, tool_choice_to_responses,
-};
-use serde_json::{json, Map, Value};
-use std::collections::HashMap;
-
-
-const RESPONSES_INCLUDE_METADATA_KEY: &str = "openai_responses_include";
-const RESPONSES_MAX_TOOL_CALLS_METADATA_KEY: &str = "openai_responses_max_tool_calls";
-const RESPONSES_PROMPT_CACHE_RETENTION_METADATA_KEY: &str =
-    "openai_responses_prompt_cache_retention";
-const RESPONSES_TRUNCATION_METADATA_KEY: &str = "openai_responses_truncation";
-const RESPONSES_COMPACTION_ENCRYPTED_CONTENT_METADATA_KEY: &str =
-    "openai_responses_compaction_encrypted_content";
-const RESPONSES_COMPACTION_CREATED_BY_METADATA_KEY: &str = "openai_responses_compaction_created_by";
-const RESPONSES_RAW_TOOLS_METADATA_KEY: &str = "openai_responses_raw_tools";
-const RESPONSES_TOOL_SIGNATURES_METADATA_KEY: &str = "openai_responses_tool_signatures";
-const RESPONSES_RAW_TOOL_CHOICE_METADATA_KEY: &str = "openai_responses_raw_tool_choice";
-const RESPONSES_RAW_INPUT_ITEMS_METADATA_KEY: &str = "openai_responses_raw_input_items";
-/// Request top-level `reasoning.context` (e.g. `"all_turns"`), not input-item context.
-const RESPONSES_REQUEST_REASONING_CONTEXT_METADATA_KEY: &str =
-    "openai_responses_request_reasoning_context";
+use serde_json::{json, Value};
 
 use super::shared::*;
 

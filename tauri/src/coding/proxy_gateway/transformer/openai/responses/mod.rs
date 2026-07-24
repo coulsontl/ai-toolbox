@@ -23,11 +23,6 @@ pub use response::{
     llm_response_to_responses, llm_response_to_responses_compact, responses_compact_response_to_llm,
     responses_response_to_llm,
 };
-#[cfg(test)]
-pub(crate) use shared::{
-    merge_raw_responses_fragments_with_signatures, RESPONSES_COMPACTION_ENCRYPTED_CONTENT_METADATA_KEY,
-    RESPONSES_REQUEST_REASONING_CONTEXT_METADATA_KEY,
-};
 
 pub struct OpenAiResponsesInbound;
 pub struct OpenAiResponsesOutbound;

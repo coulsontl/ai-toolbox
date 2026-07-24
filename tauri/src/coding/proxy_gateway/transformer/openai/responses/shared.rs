@@ -1,20 +1,17 @@
 use super::super::chat::openai_usage_to_llm;
 use crate::coding::proxy_gateway::transformer::llm::{
-    ApiFormat, Choice, Function, FunctionCall, ImageUrl, Message, MessageContent,
-    MessageContentPart, Request, RequestType, Response, ResponseCustomToolCall, Tool, ToolCall,
-    Usage, TOOL_TYPE_FUNCTION, TOOL_TYPE_RESPONSES_CUSTOM_TOOL,
+    Function, FunctionCall, ImageUrl, Message, MessageContent, MessageContentPart, Request,
+    ResponseCustomToolCall, Tool, ToolCall, Usage, TOOL_TYPE_FUNCTION,
+    TOOL_TYPE_RESPONSES_CUSTOM_TOOL,
 };
 use crate::coding::proxy_gateway::transformer::shared::signature::{
     decode_signature_for, encode_signature, SignatureProvider,
 };
 use crate::coding::proxy_gateway::transformer::shared::{
-    extract_error_code, extract_error_message, extract_error_param, extract_error_type,
-    normalize_function_parameters_owned, should_emit_openai_request_metadata, stop_from_value,
-    stop_to_value, tool_choice_from_openai, tool_choice_to_responses,
+    normalize_function_parameters_owned, tool_choice_from_openai,
 };
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-
 
 pub(crate) const RESPONSES_INCLUDE_METADATA_KEY: &str = "openai_responses_include";
 pub(crate) const RESPONSES_MAX_TOOL_CALLS_METADATA_KEY: &str = "openai_responses_max_tool_calls";
