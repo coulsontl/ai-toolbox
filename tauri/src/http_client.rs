@@ -202,6 +202,32 @@ pub fn create_client_no_proxy(timeout_secs: u64) -> Result<Client, String> {
         .map_err(|e| format!("Failed to create HTTP client: {}", e))
 }
 
+/// Create an HTTP client that honors system / environment proxy without
+/// requiring a `SqliteDbState`.
+///
+/// Unlike `create_client_no_proxy`, this does **not** call `.no_proxy()`, so
+/// reqwest reads `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` from the
+/// environment. This is the recovery-mode client used when the database is not
+/// available (e.g. startup "schema too new" path) and the in-app proxy config
+/// cannot be read. `use_rustls_tls()` is retained per the global TLS rule.
+///
+/// # Arguments
+/// * `timeout_secs` - Request timeout in seconds
+///
+/// # Returns
+/// A reqwest::Client that respects environment proxy settings
+pub fn create_client_with_env_proxy(timeout_secs: u64) -> Result<Client, String> {
+    Client::builder()
+        .use_rustls_tls()
+        .timeout(Duration::from_secs(timeout_secs))
+        .no_gzip()
+        .no_brotli()
+        .no_zstd()
+        .no_deflate()
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))
+}
+
 /// Test proxy connectivity by making a request to a test URL.
 ///
 /// This function is used by the settings page to validate proxy configuration.

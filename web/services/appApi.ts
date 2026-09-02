@@ -72,6 +72,29 @@ export const installUpdate = async (): Promise<boolean> => {
 };
 
 /**
+ * Latest release download page (used as the manual-download fallback when
+ * the in-app auto-updater is unavailable or fails).
+ */
+export const LATEST_RELEASE_URL = `${GITHUB_URL}/releases/latest`;
+
+/**
+ * Startup recovery: returns the user-facing error message if the app booted
+ * into recovery mode (SQLite schema too new), otherwise `null` (normal boot).
+ * DB-free — safe to call before the database is initialized.
+ */
+export const getStartupRecovery = async (): Promise<string | null> => {
+  return await invoke<string | null>('get_startup_recovery');
+};
+
+/**
+ * Exit the application. Used by the recovery screen when the user gives up
+ * after a failed auto-update. DB-free.
+ */
+export const exitApp = async (): Promise<void> => {
+  await invoke('exit_app');
+};
+
+/**
  * Open GitHub repository page
  */
 export const openGitHubPage = async (): Promise<void> => {

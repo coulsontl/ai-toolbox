@@ -1,9 +1,10 @@
 import React from 'react';
-import { ConfigProvider, Spin, App, theme as antdTheme, Button, Modal, Progress, Typography, Space } from 'antd';
+import { ConfigProvider, Spin, App, theme as antdTheme, Button, Modal, Typography, Space } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import enUS from 'antd/locale/en_US';
 import { emit, listen } from '@tauri-apps/api/event';
 import { TRAY_CONFIG_REFRESH_EVENT } from '@/constants/configEvents';
+import UpdateProgressModal from '@/components/common/UpdateProgressModal';
 import DeepLinkImportDialog from '@/features/shared/deepLink/DeepLinkImportDialog';
 import { useDeepLinkImport } from '@/features/shared/deepLink/useDeepLinkImport';
 import type { DeepLinkErrorPayload } from '@/services/deeplinkApi';
@@ -37,26 +38,6 @@ const antdLocales = {
 /**
  * Inner component that uses App.useApp() to get theme-aware notification
  */
-const { Text } = Typography;
-
-// 格式化文件大小
-const formatFileSize = (bytes: number) => {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
-
-// 格式化下载速度
-const formatSpeed = (bytesPerSecond: number) => {
-  if (bytesPerSecond === 0) return '0 B/s';
-  const k = 1024;
-  const sizes = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
-  const i = Math.floor(Math.log(bytesPerSecond) / Math.log(k));
-  return parseFloat((bytesPerSecond / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
-
 /**
  * Globally-mounted deep-link import dialog: listens for `deep-link-import` /
  * `deep-link-error` events from the backend and shows a confirmation modal
@@ -259,45 +240,14 @@ const AppInitializer: React.FC<{ children: React.ReactNode }> = ({ children }) =
       {/* Deep-link (`aitoolbox://`) provider import confirmation */}
       <DeepLinkImportMount />
       {/* Update Progress Modal */}
-      <Modal
-        title={i18n.t('settings.about.downloadingUpdate')}
+      <UpdateProgressModal
         open={updateModalOpen}
-        closable={false}
-        footer={null}
-      >
-        <div style={{ padding: '20px 0' }}>
-          <Progress
-            percent={updateProgress}
-            status="active"
-            strokeColor={{
-              '0%': '#108ee9',
-              '100%': '#87d068',
-            }}
-          />
-          <div style={{ marginTop: 16 }}>
-            {updateStatus === 'downloading' && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text type="secondary" style={{ fontSize: 14 }}>
-                  {formatFileSize(updateDownloaded)} / {formatFileSize(updateTotal)}
-                </Text>
-                <Text style={{ color: '#1890ff', fontSize: 14, fontWeight: 500 }}>
-                  {formatSpeed(updateSpeed)}
-                </Text>
-              </div>
-            )}
-            {updateStatus === 'installing' && (
-              <Text type="secondary" style={{ fontSize: 14 }}>
-                {i18n.t('settings.about.installingUpdate')}
-              </Text>
-            )}
-            {updateStatus === 'started' && (
-              <Text type="secondary" style={{ fontSize: 14 }}>
-                {i18n.t('settings.about.downloadingUpdate')}
-              </Text>
-            )}
-          </div>
-        </div>
-      </Modal>
+        progress={updateProgress}
+        status={updateStatus}
+        speed={updateSpeed}
+        downloaded={updateDownloaded}
+        total={updateTotal}
+      />
     </>
   );
 };

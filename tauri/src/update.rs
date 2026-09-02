@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
 use crate::db::SqliteDbState;
@@ -35,12 +35,14 @@ pub struct UpdateCheckResult {
     pub url: Option<String>,
 }
 
-/// Check for updates from GitHub releases
+/// Check for updates from GitHub releases.
+///
+/// Uses the DB-backed proxy client when the database is available (normal
+/// startup). When the database is not managed yet (recovery / "schema too
+/// new" startup path), falls back to `create_client_with_env_proxy` which
+/// honors `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` environment variables.
 #[tauri::command]
-pub async fn check_for_updates(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, SqliteDbState>,
-) -> Result<UpdateCheckResult, String> {
+pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateCheckResult, String> {
     const GITHUB_REPO: &str = "coulsontl/ai-toolbox";
     let latest_json_url = format!(
         "https://github.com/{}/releases/latest/download/latest.json",
@@ -48,18 +50,24 @@ pub async fn check_for_updates(
     );
 
     // Get current version from package info
-    let current_version = app_handle.package_info().version.to_string();
+    let current_version = app.package_info().version.to_string();
 
     // Detect current platform
     let current_platform = detect_current_platform();
 
-    // Fetch latest.json using http_client with proxy support
-    let client = http_client::client(&state).await?;
-    let response = client
-        .get(&latest_json_url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch latest.json: {}", e))?;
+    // Fetch latest.json. Prefer DB-backed proxy client; in recovery mode
+    // (DB not managed) use an env-proxy client.
+    let response = match app.try_state::<SqliteDbState>() {
+        Some(state) => {
+            let client = http_client::client(&state).await?;
+            client.get(&latest_json_url).send().await
+        }
+        None => {
+            let client = http_client::create_client_with_env_proxy(30)?;
+            client.get(&latest_json_url).send().await
+        }
+    }
+    .map_err(|e| format!("Failed to fetch latest.json: {}", e))?;
 
     if !response.status().is_success() {
         return Err(format!(
@@ -128,44 +136,20 @@ fn detect_current_platform() -> String {
     "unknown".to_string()
 }
 
-/// Install the update
-#[tauri::command]
-pub async fn install_update(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, SqliteDbState>,
-) -> Result<bool, String> {
-    // Get proxy settings from database
-    let (proxy_mode, proxy_url) = http_client::get_proxy_from_settings(&state).await?;
-
-    // Set proxy environment variables for the updater plugin
-    // (tauri-plugin-updater reads these env vars for proxy configuration)
-    let old_http_proxy = std::env::var("HTTP_PROXY").ok();
-    let old_https_proxy = std::env::var("HTTPS_PROXY").ok();
-    let old_http_proxy_lower = std::env::var("http_proxy").ok();
-    let old_https_proxy_lower = std::env::var("https_proxy").ok();
-
-    match proxy_mode {
-        http_client::ProxyMode::Direct => {
-            std::env::remove_var("HTTP_PROXY");
-            std::env::remove_var("HTTPS_PROXY");
-            std::env::remove_var("http_proxy");
-            std::env::remove_var("https_proxy");
-        }
-        http_client::ProxyMode::Custom => {
-            if !proxy_url.is_empty() {
-                std::env::set_var("HTTP_PROXY", &proxy_url);
-                std::env::set_var("HTTPS_PROXY", &proxy_url);
-                std::env::set_var("http_proxy", &proxy_url);
-                std::env::set_var("https_proxy", &proxy_url);
-            }
-        }
-        http_client::ProxyMode::System => {}
-    }
-
-    // Check for updates using the updater plugin
+/// Run the updater plugin: check for an available update and, if present,
+/// download + install it while emitting `update-download-progress` events.
+///
+/// This is DB-free; proxy handling is the caller's responsibility (the
+/// `tauri-plugin-updater` reads `HTTP_PROXY` / `HTTPS_PROXY` env vars).
+async fn run_updater_download(app: &tauri::AppHandle) -> Result<bool, String> {
     let updater = app.updater().map_err(|e| e.to_string())?;
-    let result = match updater.check().await {
-        Ok(Some(update)) => {
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| format!("Failed to check for updates: {}", e))?;
+
+    match update {
+        Some(update) => {
             // Emit download started event
             let _ = app.emit(
                 "update-download-progress",
@@ -256,9 +240,53 @@ pub async fn install_update(
                 }
             }
         }
-        Ok(None) => Err("No update available".to_string()),
-        Err(e) => Err(format!("Failed to check for updates: {}", e)),
-    };
+        None => Err("No update available".to_string()),
+    }
+}
+
+/// Install the update.
+///
+/// When the database is available (normal startup), the in-app proxy config is
+/// read from the DB and applied to `HTTP_PROXY` / `HTTPS_PROXY` env vars so
+/// the updater plugin picks it up. In recovery mode (DB not managed), env
+/// vars are left untouched and the updater inherits system / environment
+/// proxy settings.
+#[tauri::command]
+pub async fn install_update(app: tauri::AppHandle) -> Result<bool, String> {
+    // Snapshot proxy-related env vars so we can always restore them, regardless
+    // of whether we touched them (no-op restore in recovery mode).
+    let old_http_proxy = std::env::var("HTTP_PROXY").ok();
+    let old_https_proxy = std::env::var("HTTPS_PROXY").ok();
+    let old_http_proxy_lower = std::env::var("http_proxy").ok();
+    let old_https_proxy_lower = std::env::var("https_proxy").ok();
+
+    // Only apply DB-backed proxy when the database is actually available.
+    if let Some(state) = app.try_state::<SqliteDbState>() {
+        let (proxy_mode, proxy_url) = http_client::get_proxy_from_settings(&state).await?;
+
+        // Set proxy environment variables for the updater plugin
+        // (tauri-plugin-updater reads these env vars for proxy configuration)
+        match proxy_mode {
+            http_client::ProxyMode::Direct => {
+                std::env::remove_var("HTTP_PROXY");
+                std::env::remove_var("HTTPS_PROXY");
+                std::env::remove_var("http_proxy");
+                std::env::remove_var("https_proxy");
+            }
+            http_client::ProxyMode::Custom => {
+                if !proxy_url.is_empty() {
+                    std::env::set_var("HTTP_PROXY", &proxy_url);
+                    std::env::set_var("HTTPS_PROXY", &proxy_url);
+                    std::env::set_var("http_proxy", &proxy_url);
+                    std::env::set_var("https_proxy", &proxy_url);
+                }
+            }
+            http_client::ProxyMode::System => {}
+        }
+    }
+    // else: recovery mode — leave env vars as-is (system / env proxy).
+
+    let result = run_updater_download(&app).await;
 
     // Restore original environment variables
     if let old @ Some(_) = old_http_proxy {

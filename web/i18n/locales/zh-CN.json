@@ -5429,5 +5429,18 @@
     },
     "openFolder": "打开文件夹",
     "refreshConfig": "刷新配置"
+  },
+  "recovery": {
+    "title": "数据库版本过新",
+    "description": "当前数据由更高版本的 AI Toolbox 创建，需要升级到最新版本才能继续使用。",
+    "checkingLatest": "正在检查最新版本...",
+    "alreadyLatest": "已是最新版本，但仍无法读取数据库，请手动下载最新版或联系开发者。",
+    "updateFailedMessage": "自动更新失败，请前往下载页获取最新版本。",
+    "openDownloadPage": "打开下载页",
+    "exit": "退出",
+    "upgradeNow": "立即升级",
+    "retry": "重试",
+    "newVersionAvailable": "发现新版本 {{version}}，点击下方按钮进行升级。",
+    "checkFailed": "检查更新失败，请重试或前往下载页。"
   }
 }

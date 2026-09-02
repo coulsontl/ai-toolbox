@@ -5432,5 +5432,18 @@
     },
     "openFolder": "Open Folder",
     "refreshConfig": "Refresh Config"
+  },
+  "recovery": {
+    "title": "Database Version Too New",
+    "description": "Your data was created by a newer version of AI Toolbox. Update to the latest version to continue.",
+    "checkingLatest": "Checking for the latest version...",
+    "alreadyLatest": "Already on the latest version, but the database cannot be read. Please download the latest version manually or contact the developer.",
+    "updateFailedMessage": "Automatic update failed. Please get the latest version from the download page.",
+    "openDownloadPage": "Open download page",
+    "exit": "Exit",
+    "upgradeNow": "Upgrade now",
+    "retry": "Retry",
+    "newVersionAvailable": "New version {{version}} available. Click below to upgrade.",
+    "checkFailed": "Update check failed. Please retry or open the download page."
   }
 }

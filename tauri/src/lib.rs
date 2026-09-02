@@ -5,8 +5,6 @@ use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-#[cfg(not(test))]
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 #[cfg(all(test, target_os = "windows"))]
 #[link(name = "resource", kind = "static")]
@@ -29,16 +27,13 @@ pub mod db;
 pub mod http_client;
 pub mod settings;
 pub mod single_instance;
+pub mod startup_recovery;
 pub mod tray;
 pub mod update;
 
 // Re-export SqliteDbState for use in other modules
 pub use db::SqliteDbState;
 pub(crate) static APP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
-
-#[cfg(not(test))]
-const AI_TOOLBOX_LATEST_RELEASE_URL: &str =
-    "https://github.com/coulsontl/ai-toolbox/releases/latest";
 
 /// Set window background color (affects macOS titlebar color)
 #[tauri::command]
@@ -973,6 +968,7 @@ pub fn run() {
 
             let sqlite_db_path = app_data_dir.join(db::SQLITE_DATABASE_FILE);
             info!("正在初始化 SQLite 主数据库: {:?}", sqlite_db_path);
+            app.manage(startup_recovery::StartupRecovery::new());
             let db_state = match SqliteDbState::open(sqlite_db_path) {
                 Ok(state) => {
                     info!("SQLite 主数据库初始化成功");
@@ -983,35 +979,22 @@ pub fn run() {
                     if db::migrations::is_future_schema_error(&e) {
                         #[cfg(not(test))]
                         {
-                            let message = format!(
-                                "{}\n\n下载最新版：{}",
-                                db::migrations::future_schema_user_message(&e),
-                                AI_TOOLBOX_LATEST_RELEASE_URL
-                            );
-                            let exit_app_handle = app_handle.clone();
-                            app_handle
-                                .dialog()
-                                .message(message)
-                                .title("AI Toolbox 数据库版本过新")
-                                .kind(MessageDialogKind::Error)
-                                .buttons(MessageDialogButtons::OkCancelCustom(
-                                    "下载最新版".to_string(),
-                                    "退出".to_string(),
-                                ))
-                                .show(move |open_latest_release| {
-                                    if open_latest_release {
-                                        if let Err(error) = tauri_plugin_opener::open_url(
-                                            AI_TOOLBOX_LATEST_RELEASE_URL,
-                                            None::<&str>,
-                                        ) {
-                                            error!(
-                                                "打开 AI Toolbox 最新 Release 页面失败: {}",
-                                                error
-                                            );
-                                        }
-                                    }
-                                    exit_app_handle.exit(1);
-                                });
+                            // DB schema is too new to open. Instead of a native
+                            // dialog + browser, record the recovery message and
+                            // show the main window so the frontend can render the
+                            // auto-upgrade recovery screen (no DB access).
+                            let message = db::migrations::future_schema_user_message(&e);
+                            if let Some(recovery) =
+                                app_handle.try_state::<startup_recovery::StartupRecovery>()
+                            {
+                                if let Ok(mut guard) = recovery.message.lock() {
+                                    *guard = Some(message);
+                                }
+                            }
+                            if let Some(window) = app_handle.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
                             return Ok(());
                         }
                     }
@@ -1877,6 +1860,9 @@ pub fn run() {
             // Update
             update::check_for_updates,
             update::install_update,
+            // Startup recovery (DB-free; usable when database is not opened)
+            startup_recovery::get_startup_recovery,
+            startup_recovery::exit_app,
             // Settings
             settings::get_settings,
             settings::save_settings,
