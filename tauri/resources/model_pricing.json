@@ -784,6 +784,14 @@
     "cache_creation_cost_per_million": "0"
   },
   {
+    "model_id": "deepseek-v4.1-flash",
+    "display_name": "DeepSeek V4.1 Flash",
+    "input_cost_per_million": "0.15",
+    "output_cost_per_million": "0.60",
+    "cache_read_cost_per_million": "0.003",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
     "model_id": "deepseek-v4-flash",
     "display_name": "DeepSeek V4 Flash",
     "input_cost_per_million": "0.14",
