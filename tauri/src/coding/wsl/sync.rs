@@ -650,6 +650,7 @@ pub fn sync_mappings(
         synced_files,
         skipped_files,
         errors,
+        warnings: vec![],
     }
 }
 

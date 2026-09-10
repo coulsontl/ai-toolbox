@@ -292,6 +292,7 @@ pub(super) async fn do_full_sync(
                 synced_files: vec![],
                 skipped_files: vec![],
                 errors: vec![error],
+                warnings: vec![],
             };
         }
     };
@@ -307,6 +308,7 @@ pub(super) async fn do_full_sync(
                 synced_files: vec![],
                 skipped_files: vec![],
                 errors: vec![e],
+                warnings: vec![],
             };
         }
     };
@@ -563,6 +565,7 @@ fn sync_mappings_with_progress(
         synced_files,
         skipped_files,
         errors,
+        warnings: vec![],
     }
 }
 
@@ -843,6 +846,7 @@ pub async fn wsl_get_status(
         last_sync_time: config.last_sync_time,
         last_sync_status: config.last_sync_status,
         last_sync_error: config.last_sync_error,
+        last_sync_warnings: config.last_sync_warnings,
         module_statuses: config.module_statuses,
     })
 }
@@ -1589,6 +1593,27 @@ pub(super) async fn update_sync_status(
             error
                 .map(serde_json::Value::String)
                 .unwrap_or(serde_json::Value::Null),
+        );
+    }
+    state.with_conn(|conn| db_put(conn, DbTable::WslSyncConfig, "config", &config_data))?;
+
+    Ok(())
+}
+
+/// Replace the persisted Skills sync warnings. Only the Skills sync chain
+/// calls this so that unrelated silent chains (e.g. file mappings) cannot
+/// clear or mix warnings from a different sub-run.
+pub(super) async fn update_sync_warnings(
+    state: &SqliteDbState,
+    warnings: &[String],
+) -> Result<(), String> {
+    let mut config_data = state
+        .with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "config"))?
+        .unwrap_or_else(|| adapter::config_to_db_value(&WSLSyncConfig::default()));
+    if let Some(payload) = config_data.as_object_mut() {
+        payload.insert(
+            "last_sync_warnings".to_string(),
+            serde_json::to_value(warnings).unwrap_or(serde_json::Value::Array(vec![])),
         );
     }
     state.with_conn(|conn| db_put(conn, DbTable::WslSyncConfig, "config", &config_data))?;

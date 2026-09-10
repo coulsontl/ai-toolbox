@@ -797,6 +797,7 @@ async fn sync_file_mappings_with_progress(
         synced_files,
         skipped_files,
         errors,
+        warnings: vec![],
     }
 }
 
@@ -977,6 +978,7 @@ pub async fn ssh_sync(
             synced_files: vec![],
             skipped_files: vec![],
             errors: vec!["SSH 同步未启用".to_string()],
+            warnings: vec![],
         });
     }
 
@@ -994,6 +996,7 @@ pub async fn ssh_sync(
             synced_files: vec![],
             skipped_files: vec![],
             errors: vec!["另一个同步操作正在进行中".to_string()],
+            warnings: vec![],
         });
     }
 
@@ -1010,6 +1013,7 @@ pub async fn ssh_sync(
             synced_files: vec![],
             skipped_files: vec![],
             errors: vec![format!("SSH 连接失败: {}", e)],
+            warnings: vec![],
         });
     }
 
@@ -1071,6 +1075,7 @@ pub async fn ssh_get_status(
         last_sync_time: config.last_sync_time,
         last_sync_status: config.last_sync_status,
         last_sync_error: config.last_sync_error,
+        last_sync_warnings: config.last_sync_warnings,
     })
 }
 
@@ -1721,6 +1726,26 @@ pub async fn update_sync_status(state: &SqliteDbState, result: &SyncResult) -> R
             error
                 .map(serde_json::Value::String)
                 .unwrap_or(serde_json::Value::Null),
+        );
+    }
+    state.with_conn(|conn| db_put(conn, DbTable::SshSyncConfig, "config", &config_data))?;
+
+    Ok(())
+}
+
+/// Replace the persisted Skills sync warnings. Only the Skills sync chain
+/// calls this so that unrelated silent chains cannot clear or mix warnings
+/// from a different sub-run.
+pub(super) async fn update_sync_warnings(
+    state: &SqliteDbState,
+    warnings: &[String],
+) -> Result<(), String> {
+    let mut config_data = load_ssh_config_record(state)?
+        .unwrap_or_else(|| adapter::config_to_db_value(&SSHSyncConfig::default()));
+    if let Some(payload) = config_data.as_object_mut() {
+        payload.insert(
+            "last_sync_warnings".to_string(),
+            serde_json::to_value(warnings).unwrap_or(serde_json::Value::Array(vec![])),
         );
     }
     state.with_conn(|conn| db_put(conn, DbTable::SshSyncConfig, "config", &config_data))?;

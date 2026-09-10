@@ -117,6 +117,9 @@ pub struct SSHSyncConfig {
     pub last_sync_time: Option<String>,
     pub last_sync_status: String, // "success" | "error" | "never"
     pub last_sync_error: Option<String>,
+    /// Warnings from the most recent Skills sync run (kept foreign paths, etc.)
+    #[serde(default)]
+    pub last_sync_warnings: Vec<String>,
     #[serde(default)]
     pub module_statuses: Vec<WslDirectModuleStatus>,
 }
@@ -133,6 +136,7 @@ impl Default for SSHSyncConfig {
             last_sync_time: None,
             last_sync_status: "never".to_string(),
             last_sync_error: None,
+            last_sync_warnings: vec![],
             module_statuses: vec![],
         }
     }
@@ -219,4 +223,6 @@ pub struct SSHStatusResult {
     pub last_sync_time: Option<String>,
     pub last_sync_status: String,
     pub last_sync_error: Option<String>,
+    #[serde(default)]
+    pub last_sync_warnings: Vec<String>,
 }

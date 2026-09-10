@@ -40,6 +40,17 @@ pub fn config_from_db_value(value: Value, file_mappings: Vec<FileMapping>) -> WS
             .or_else(|| value.get("lastSyncError"))
             .and_then(|v| v.as_str())
             .map(String::from),
+        last_sync_warnings: value
+            .get("last_sync_warnings")
+            .or_else(|| value.get("lastSyncWarnings"))
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
         module_statuses: vec![],
     }
 }
@@ -186,8 +197,33 @@ pub fn mapping_to_db_value(mapping: &FileMapping) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{mapping_from_db_value, mapping_to_db_value};
+    use super::{config_from_db_value, mapping_from_db_value, mapping_to_db_value};
     use serde_json::json;
+
+    #[test]
+    fn config_from_legacy_record_defaults_last_sync_warnings_to_empty() {
+        let config = config_from_db_value(
+            json!({
+                "enabled": true,
+                "last_sync_status": "success",
+            }),
+            vec![],
+        );
+        assert!(config.last_sync_warnings.is_empty());
+    }
+
+    #[test]
+    fn config_from_db_value_reads_persisted_last_sync_warnings() {
+        let config = config_from_db_value(
+            json!({
+                "enabled": true,
+                "last_sync_status": "success",
+                "last_sync_warnings": ["警告A", "警告B"],
+            }),
+            vec![],
+        );
+        assert_eq!(config.last_sync_warnings, vec!["警告A".to_string(), "警告B".to_string()]);
+    }
 
     #[test]
     fn json_or_toml_file_mapping_persists_cleanup_paths() {
