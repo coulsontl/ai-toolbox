@@ -802,7 +802,12 @@
       "wslMcpSyncSkipped": "WSL MCP 同步已跳过：{{detail}}",
       "wslClaudeJsonSyncSkipped": "WSL ~/.claude.json 同步已跳过：文件解析失败，请检查该文件格式是否正确。（{{detail}}）",
       "openCodeCodexConfigSyncPartialFailed": "OpenCode/Codex 配置同步部分失败：{{detail}}",
-      "openCodeCodexMcpSyncSkipped": "OpenCode/Codex MCP 同步已跳过：{{detail}}"
+      "openCodeCodexMcpSyncSkipped": "OpenCode/Codex MCP 同步已跳过：{{detail}}",
+      "skillsForeignPathKept": "技能 '{{skill}}' 在工具 '{{tool}}' 的路径 '{{path}}' 不是 AI Toolbox 管理的链接，已保留原样",
+      "skillsLinkMaintenanceFailed": "技能 '{{skill}}' 在工具 '{{tool}}' 的链接维护失败：{{detail}}",
+      "skillsSourceMissingSkipped": "技能 '{{skill}}' 的源目录不存在，已跳过同步：{{detail}}",
+      "skillsRemoteDirCleanupFailed": "技能 '{{skill}}' 的远端目录清理失败：{{detail}}",
+      "skillsHashWriteFailed": "技能 '{{skill}}' 的同步哈希写入失败：{{detail}}"
     },
     "autoBackup": {
       "title": "自动备份",
@@ -922,7 +927,8 @@
       "runningStateTooltip": "运行状态：表示该 WSL 实例当前是否正在运行。运行中的实例可以直接使用，已停止的实例会在首次访问时自动启动",
       "autoSyncHint": "OpenCode、Claude、Codex 的 MCP 和 Skills，以及 OpenClaw 的 Skills 会在同步时自动处理，无需手动添加映射；如果某个模块的自定义配置已经直接指向 WSL，该模块会自动改为“已在 WSL 中”并跳过重复同步。",
       "inWsl": "已在 WSL 中",
-      "wslDirectHint": "该模块的自定义配置已经直接指向 WSL 内的目录，AI Toolbox 会按该 WSL 用户目录继续工作，不需要再通过此处同步。"
+      "wslDirectHint": "该模块的自定义配置已经直接指向 WSL 内的目录，AI Toolbox 会按该 WSL 用户目录继续工作，不需要再通过此处同步。",
+      "lastSyncWarnings": "上次同步警告"
     },
     "ssh": {
       "title": "SSH 配置同步设置",
@@ -1001,7 +1007,8 @@
       "autoSyncHint": "OpenCode、Claude、Codex 的 MCP 和 Skills，以及 OpenClaw 的 Skills 会在同步时自动处理，无需手动添加映射。",
       "indicator": {
         "tooltip": "点击配置 SSH 同步"
-      }
+      },
+      "lastSyncWarnings": "上次同步警告"
     },
     "webdav": {
       "url": "服务器地址",
