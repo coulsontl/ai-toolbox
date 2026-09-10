@@ -54,7 +54,11 @@ pub(crate) fn build_main_window<R: tauri::Runtime>(
         .title("AI Toolbox")
         .inner_size(width, height)
         .min_inner_size(800.0, 600.0)
-        .visible(false);
+        .visible(false)
+        // Without this, WebKitGTK/WebView2 deny navigator.clipboard to the page and
+        // Monaco's Ctrl+V paste silently fails on Linux/Windows (issue #341). macOS
+        // always allows clipboard access.
+        .enable_clipboard_access();
 
     builder = match geometry {
         Some(g) => builder.position(g.x, g.y).maximized(g.maximized),
@@ -291,6 +295,29 @@ fn is_wayland_session() -> bool {
 #[cfg(target_os = "linux")]
 fn is_appimage_runtime() -> bool {
     std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some()
+}
+
+/// Detect whether the process is running inside a WSL2 distribution (WSLg).
+///
+/// WSLg exposes a Wayland compositor (Weston) and an XWayland server, but the
+/// Wayland path lacks the text-input-v3 protocol that GTK/WebKitGTK rely on for
+/// IME input, so Chinese input methods (fcitx5/ibus) cannot deliver candidates
+/// to the webview. The XWayland path (`GDK_BACKEND=x11`, workaround level 4)
+/// does support IME, and also sidesteps the Mesa/Zink GPU failures that are
+/// typical under WSLg (issue #341).
+#[cfg(target_os = "linux")]
+fn is_wsl_runtime() -> bool {
+    // WSL2 sets WSL_DISTRO_NAME / WSL_INTEROP / ROOTFS in the environment.
+    if std::env::var_os("WSL_DISTRO_NAME").is_some()
+        || std::env::var_os("WSL_INTEROP").is_some()
+        || std::env::var_os("ROOTFS").is_some()
+    {
+        return true;
+    }
+    // Fallback: /proc/version mentions Microsoft on WSL.
+    std::fs::read_to_string("/proc/version")
+        .map(|c| c.to_lowercase().contains("microsoft"))
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "linux")]
@@ -777,6 +804,18 @@ fn setup_linux_wayland_webview_workaround() -> u8 {
     };
     let default_min_level = appimage_min_level.max(wayland_min_level);
 
+    // WSL2/WSLg: the Wayland compositor (Weston) lacks the text-input-v3
+    // protocol, so IME (Chinese input) cannot reach WebKitGTK, and the
+    // Mesa/Zink GPU path routinely fails (issue #341). Force level 4
+    // (GDK_BACKEND=x11 via XWayland) unless the user explicitly overrides
+    // the level — XWayland supports fcitx5/ibus and software rendering.
+    let wsl_min_level = if is_wsl_runtime() {
+        WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL
+    } else {
+        0
+    };
+    let default_min_level = default_min_level.max(wsl_min_level);
+
     let level = std::env::var("AI_TOOLBOX_WAYLAND_WEBVIEW_WORKAROUND_LEVEL")
         .ok()
         .and_then(|v| v.trim().parse::<u8>().ok())
@@ -791,7 +830,8 @@ fn setup_linux_wayland_webview_workaround() -> u8 {
 
     if default_min_level > 0 && level == default_min_level {
         info!(
-            "Detected AppImage runtime and/or Wayland session; using safer initial workaround level {} (DMABUF renderer disabled)",
+            "Detected AppImage runtime and/or Wayland session{}; using safer initial workaround level {} (DMABUF renderer disabled)",
+            if wsl_min_level > 0 { " and WSL2/WSLg runtime" } else { "" },
             default_min_level
         );
     }
@@ -828,7 +868,11 @@ fn setup_linux_wayland_webview_workaround() -> u8 {
     }
 
     if level >= 4 {
-        info!("Level 4: Falling back to X11 backend via GDK_BACKEND=x11 (requires XWayland)");
+        if wsl_min_level > 0 {
+            info!("Level 4 (WSL2/WSLg): Falling back to X11 backend via GDK_BACKEND=x11 (requires XWayland) so IME input works and GPU failures are avoided");
+        } else {
+            info!("Level 4: Falling back to X11 backend via GDK_BACKEND=x11 (requires XWayland)");
+        }
     }
 
     level
