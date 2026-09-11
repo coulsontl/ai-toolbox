@@ -226,6 +226,8 @@ side store、lossy 策略、rectifier、xAI restore 仍由 `upstream.rs` 请求�
 - v18 最早只创建采集账本，已有数据库可能标记 v18 却没有 latency_sample_count；必须由独立 v19 迁移补齐该列，不能只修改 v18 函数。已有非空样本数不重置。归档失败只能告警并重试，不能经 `?` 阻止新 proxy 摘要写入，也不能阻止已提交 native 用量的结果返回与刷新事件；proxy 侧失败尝试也按维护间隔限频。
 - 代理请求摘要和 Session Usage 导入成功写入 `proxy_request_logs` 后应发出 `usage-log-recorded` 事件，供前端静默刷新统计和请求列表。该事件只是“有新 usage 落库”的通知，不是统计数据源，也不要用它承载费用重算或历史 rollup 语义。
 - 模型定价匹配需要先做 ID 归一化再查表：剥离聚合商命名空间、`[1M]` 上下文标记、Bedrock/Vertex `-vN` 版本、日期/effort 后缀，并把 Claude 点号版本归一成短横线版本。部分渠道会把 `max` effort 拼进模型 ID，因此允许在完整 ID 没有精确定价时剥离 `-max` 回退基础模型；但所有候选必须先按原始完整 ID 做精确查询，使 `qwen3.7-max`、`qwen3-max`、`gpt-5.1-codex-max` 等具有独立价格的正式模型自动优先命中，不能维护易过期的手工排除名单。前缀匹配只能用于明确的模型族和足够具体的 ID，避免 `gpt-5` 这类短 base 误命中 `gpt-5-mini`/`gpt-5-pro` 变体。
+- 日期后缀兼容也覆盖合法 `MMDD`（如 `deepseek-v4-flash-0731`）；验证真实月日，不能把任意四位规格数字剥掉。完整 ID 的价格（包括显式零价格）仍优先，基础模型回退只影响未精确匹配的记录。
+- Claude Code、Claude Desktop、DSH 的缺价回填独立于普通文件指纹跳过：记录原费用来源/金额，按工具缓存来源文件、导入身份和价格表状态。活跃明细只补明确未定价项；归档必须让原生身份/指纹、工具/日期/模型分组的调用数、各类 Token 和原成本全部对账。缺少旧费用来源时，仅处理旧匹配器确实漏掉、现在可按 MMDD 找到价格的零贡献；不能把未知模型或名称含 free 当成已知免费。已定价的零或正费用都不自动重算。金额、修复前后快照与账本同事务提交，失败后重试；不新增/删除请求和 Token。Desktop 的归档贡献快照必须同步新金额，否则后续 audit 被 transcript 取代时会留下残余费用。
 - 每个 CLI 可以通过 `ProxyGatewaySettings.app_configs` 覆盖首包超时、流式 idle timeout、非流式 timeout、单 provider 重试、全局重试和重试间隔；运行时必须用 `effective_app_config(cli_key)` 读取，不能只看全局字段。
 - `runtime.rs` 只承载生命周期、async listener accept 和主流程编排。HTTP 读写放 `runtime/http_io.rs`，路由匹配和 URL 拼接放 `runtime/routes.rs`，provider 读取/解析放 `runtime/providers.rs`，上游转发和 failover 放 `runtime/upstream.rs`，请求日志/metrics 采集放 `runtime/observability.rs`，跨请求协议兼容缓存放 `runtime/side_stores/`，pipeline/middleware 扩展点放 `runtime/pipeline.rs` / `runtime/middleware.rs`。后续新增能力优先放入对应职责文件，不要重新堆回 `runtime.rs`。
 - 统计页数据源拆分 (`DataSourceBreakdown`) 来自 `proxy_request_logs.data_source`，空值归并为 `proxy`，Session Usage 导入当前统一写 `session`；它只反映已落库的请求摘要分布，不要当成网关健康指标。
@@ -238,6 +240,7 @@ side store、lossy 策略、rectifier、xAI restore 仍由 `upstream.rs` 请求�
 
 - 修改以上指标时覆盖：v16 旧行升级、正文关闭与 metrics-only 读写往返、同协议和转换请求的最终 effort、等待上游时的计数、重试不重复、60 秒边界、重启清零，以及明细/rollup 混合、CLI/时间过滤和无数据/零命中。
 - 修改本地采集时覆盖原生文件 -> SQLite -> 列表/统计往返、局部/最终用量更新、重启幂等、旧手动导入身份兼容、proxy/native 两种到达顺序、一对一去重、pending 无文件变化重查、父会话 replay、大 JSONL、只读 OpenCode WAL、账本失败回滚，以及 native-only / mixed 延迟归档前后语义。补测 21 秒落盘延迟、长请求执行区间、超过一小时的旧明细、DSH 普通恢复 marker、Grok 调用数、Hermes 累计/费用修正、Desktop 精确归档修复和旧数据不可证明时保持原值。v18/v19/v20 升级须保留旧汇总和新账本，重复升级不能清空它们；补测已标记 v18 的缺列库、完整 v18 库和归档失败仍能保存新请求/返回导入成功。
+- 成本回归覆盖带日期后缀的真实模型、精确零价保护、活跃/归档缺价补算、已知/未知费用混合、不完整分组拒绝修改、回填与账本失败回滚，以及 Desktop 补价后再退回 audit 汇总。真实数据验证在只读连接生成的副本内运行，并与使用同一价格表全新导入的结果比较，同时断言 Token 和调用数不变。
 - 去重回归同时验证不同 envelope 的相同用量不误合并、零 token 身份、旧账本重扫恢复、最终用量推翻启发式匹配，以及旧快照多身份在新行已存在时收敛。动态协议日志回归使用 `runtime::tests::copilot_failed_requests_keep_effective_protocol_and_effort`，覆盖空响应、流式首包失败和连接失败。
 
 - 修改 CLI 接管/恢复逻辑后至少跑 `cd tauri && cargo test`，并覆盖三类 CLI 文件写入、恢复、重新接管不覆盖原始备份、停止保护。

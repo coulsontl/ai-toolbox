@@ -2007,13 +2007,22 @@ fn row_decimal(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Decima
 
 fn find_model_pricing(conn: &Connection, model_id: &str) -> Option<ModelPricing> {
     let candidates = model_pricing_candidates(model_id);
-    for candidate in &candidates {
+    find_pricing_for_candidates(conn, &candidates)
+}
+
+pub(super) fn session_model_needs_short_date_fallback(conn: &Connection, model: &str) -> bool {
+    find_pricing_for_candidates(conn, &pricing_candidates_with_short_dates(model, false)).is_none()
+        && find_model_pricing(conn, model).is_some()
+}
+
+fn find_pricing_for_candidates(conn: &Connection, candidates: &[String]) -> Option<ModelPricing> {
+    for candidate in candidates {
         if let Some(pricing) = query_model_pricing_exact(conn, &candidate) {
             return Some(pricing);
         }
     }
 
-    for candidate in &candidates {
+    for candidate in candidates {
         if !should_try_pricing_prefix_match(candidate) {
             continue;
         }
@@ -2095,6 +2104,10 @@ fn row_to_model_pricing(row: &rusqlite::Row<'_>) -> rusqlite::Result<ModelPricin
 }
 
 fn model_pricing_candidates(model_id: &str) -> Vec<String> {
+    pricing_candidates_with_short_dates(model_id, true)
+}
+
+fn pricing_candidates_with_short_dates(model_id: &str, include_short_dates: bool) -> Vec<String> {
     let cleaned = clean_model_id_for_pricing(model_id);
     if is_placeholder_pricing_model(&cleaned) {
         return Vec::new();
@@ -2119,6 +2132,11 @@ fn model_pricing_candidates(model_id: &str) -> Vec<String> {
         }
         if let Some(stripped) = strip_known_model_date_suffix(&candidate) {
             queue.push(stripped);
+        }
+        if include_short_dates {
+            if let Some(stripped) = strip_month_day_suffix(&candidate) {
+                queue.push(stripped);
+            }
         }
         if let Some(stripped) = strip_reasoning_effort_suffix(&candidate) {
             queue.push(stripped);
@@ -2248,6 +2266,16 @@ fn strip_known_model_date_suffix(value: &str) -> Option<String> {
         return Some(parts.0.to_string());
     }
     None
+}
+
+fn strip_month_day_suffix(value: &str) -> Option<String> {
+    let (model, date) = value.rsplit_once('-')?;
+    if model.is_empty() || date.len() != 4 || !date.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let month = date[..2].parse().ok()?;
+    let day = date[2..].parse().ok()?;
+    chrono::NaiveDate::from_ymd_opt(2000, month, day).map(|_| model.to_string())
 }
 
 fn strip_iso_date_suffix(value: &str) -> Option<String> {
@@ -3747,6 +3775,40 @@ mod tests {
             Ok(())
         })
         .expect("pricing normalization assertions");
+    }
+
+    #[test]
+    fn model_pricing_supports_month_day_releases_and_preserves_exact_prices() {
+        let db = test_db();
+        insert_model_pricing(&db, "deepseek-v4-flash", "0.14", "0.28");
+        db.with_conn(|conn| {
+            let pricing = find_model_pricing(conn, "provider/deepseek-v4-flash-0731-high").unwrap();
+            assert_eq!(pricing.input_cost_per_million, Decimal::new(14, 2));
+            assert!(session_model_needs_short_date_fallback(
+                conn,
+                "deepseek-v4-flash-0731"
+            ));
+            assert!(find_model_pricing(conn, "deepseek-v4-flash-1331").is_none());
+            assert!(find_model_pricing(conn, "deepseek-v4-flash-0230").is_none());
+            assert!(find_model_pricing(conn, "deepseek-v4-flash-8192").is_none());
+            Ok(())
+        })
+        .unwrap();
+        insert_model_pricing(&db, "deepseek-v4-flash-0731", "0", "0");
+        db.with_conn(|conn| {
+            assert_eq!(
+                find_model_pricing(conn, "deepseek-v4-flash-0731")
+                    .unwrap()
+                    .input_cost_per_million,
+                Decimal::ZERO
+            );
+            assert!(!session_model_needs_short_date_fallback(
+                conn,
+                "deepseek-v4-flash-0731"
+            ));
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

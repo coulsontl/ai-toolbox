@@ -274,7 +274,7 @@
           "source": "Data source",
           "allSources": "All sources",
           "proxy": "Gateway",
-          "overviewHint": "Includes gateway and local usage, preferring the gateway when the same invocation is identified. Aggregates retain their native granularity; unknown call counts are not inferred. Cumulative usage is attributed to observation time."
+          "overviewHint": "Includes gateway and local usage, preferring the gateway for the same invocation. Aggregates retain native granularity; unknown call counts are not inferred, and cumulative usage is attributed to observation time. Cost includes reported amounts and available model price estimates. Missing pricing does not mean free usage."
         }
       },
       "requestRateHint": "RPM counts requests entering the gateway for the selected CLI in the last 60 seconds. It refreshes every 5 seconds, is independent of the date filter, and excludes local session imports.",

@@ -17,6 +17,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 use walkdir::WalkDir;
 
+mod cost_reconciliation;
 mod desktop;
 mod dsh;
 mod grok;
@@ -104,6 +105,10 @@ struct ImportedRecord {
     matched_proxy_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     accounting: Option<reconciliation::Contribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recorded_cost: Option<cost_reconciliation::RecordedCost>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cost_repair: Option<cost_reconciliation::CostRepair>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     retired: bool,
 }
@@ -111,6 +116,10 @@ struct ImportedRecord {
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct SourceState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cost_reconciliation_fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    cost_reconciliation_sources: Vec<String>,
     cumulative_usage: Option<hermes::Snapshot>,
     parser_revision: u32,
     modified_nanos: u64,
@@ -531,6 +540,8 @@ fn sync_sources(
                 parsers::exclude_codex_replay(&mut parsed, &parent);
             }
             let mut next_state = SourceState {
+                cost_reconciliation_fingerprint: old_state.cost_reconciliation_fingerprint.clone(),
+                cost_reconciliation_sources: old_state.cost_reconciliation_sources.clone(),
                 cumulative_usage: old_state.cumulative_usage.clone(),
                 parser_revision,
                 modified_nanos: stamp,
@@ -606,6 +617,22 @@ fn sync_sources(
     result.updated_records += reconcile_late_proxy_rows(db, &mut states, &mut claimed_proxies)?;
     result.updated_records +=
         reconciliation::retire_desktop_records(db, &mut states, retired_records)?;
+    for cli_key in [
+        GatewayUsageTool::Claude,
+        GatewayUsageTool::ClaudeDesktop,
+        GatewayUsageTool::Dsh,
+    ] {
+        match cost_reconciliation::reconcile_session_costs(db, cli_key, sources, &mut states) {
+            Ok(updated) => result.updated_records += updated,
+            Err(error) => {
+                result.failed_files += 1;
+                log::warn!(
+                    "{} session cost reconciliation will retry: {error}",
+                    cli_key.as_str()
+                );
+            }
+        }
+    }
     // Backfills can add old rows after the proxy writer's pruning throttle has
     // run. Archive them now, even when the gateway itself has never started.
     let maintenance = super::settings::load_settings_from_sqlite_state(db).and_then(|settings| {
@@ -786,9 +813,14 @@ fn persist_records(
                 reconciliation::read_contribution(&transaction, &record.request_id)?
                     .or_else(|| previous.as_ref().and_then(|item| item.accounting.clone()))
             } else { None };
+            let recorded_cost = if cost_reconciliation::supports(record.cli_key) {
+                cost_reconciliation::read_recorded_cost(&transaction, &record.request_id)?
+                    .or_else(|| previous.as_ref().and_then(|item| item.recorded_cost.clone()))
+            } else { None };
+            let cost_repair = previous.as_ref().and_then(|item| item.cost_repair.clone());
             state.records.insert(record.request_id.clone(), ImportedRecord {
                 fingerprint, envelope_id: record.usage.envelope_id.clone(), matched_proxy_id,
-                accounting, retired: false,
+                accounting, recorded_cost, cost_repair, retired: false,
             });
             if let Some(id) = adopted_alias { state.records.get_mut(&id).unwrap().retired = true; }
         }

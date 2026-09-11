@@ -17,6 +17,12 @@ pub(super) struct Contribution {
     pub archived: bool,
 }
 
+impl Contribution {
+    pub(super) fn set_cost(&mut self, cost: &str) {
+        self.cost = cost.into();
+    }
+}
+
 pub(super) fn read_contribution(
     conn: &Connection,
     request_id: &str,

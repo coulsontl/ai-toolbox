@@ -1,6 +1,9 @@
 use super::*;
 use crate::coding::proxy_gateway::types::{GatewayUsageTool, SessionUsageGranularity};
 
+#[path = "cost_tests.rs"]
+mod cost_tests;
+
 fn pi_message(id: &str, input: u64, output: u64) -> Value {
     json!({"type":"message","id":id,"timestamp":THEN,
         "message":{"role":"assistant","model":"native-test-model","provider":"historical-provider",
