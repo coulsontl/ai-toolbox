@@ -93,7 +93,8 @@
           "input": "输入",
           "output": "输出",
           "cache": "缓存",
-          "cost": "成本"
+          "cost": "成本",
+          "other": "其他用量"
         },
         "columns": {
           "provider": "供应商",
@@ -244,7 +245,37 @@
         "localSession": "Session",
         "localSessionHint": "来自 CLI 本地会话日志，不包含 HTTP 状态和耗时。成本优先使用 CLI 上报值，缺失时按模型价格估算。",
         "importPartialFailure": "部分完成：新增 {{inserted}}，更新 {{updated}}，跳过 {{skipped}}；{{count}} 项未能同步，详情见应用日志。",
-        "localSessionDetailUnavailable": "本地会话用量不包含 HTTP 请求体、响应体和 Headers 明细。"
+        "localSessionDetailUnavailable": "本地会话用量不包含 HTTP 请求体、响应体和 Headers 明细。",
+        "nativeUsage": {
+          "granularity": "统计粒度",
+          "request": "逐调用",
+          "turn": "回合汇总",
+          "session": "累计差额",
+          "provider": "原生渠道",
+          "unknown": "未记录",
+          "callCount": "原生调用数",
+          "completeness": "用量完整性",
+          "incomplete": "不完整",
+          "recorded": "按原生记录",
+          "incompleteHint": "CLI 标记用量不完整，当前只统计已记录的部分。",
+          "costSource": "费用来源",
+          "cost": {
+            "reported": "CLI 报告费用",
+            "native_estimate": "CLI 估算费用",
+            "model_pricing": "按模型定价估算",
+            "unavailable": "未记录费用且未找到模型价格"
+          },
+          "window": "累计区间",
+          "timeMeaning": "时间口径",
+          "cumulativeHint": "此条为累计值的变化。时间按来源最后观察时间归属，无法还原区间内逐请求或逐日消耗。",
+          "reportedTotal": "原生总 Token",
+          "extraShort": "其他 {{value}}",
+          "granularityHint": "本地记录可能是单次模型调用、回合汇总或会话累计差额；调用数以原生记录为准，未知时不推算。",
+          "source": "数据来源",
+          "allSources": "全部来源",
+          "proxy": "网关",
+          "overviewHint": "统计包含网关与本地用量；识别为同一次调用时优先网关。回合与累计记录保留原生粒度，调用数未知时不估算；累计用量按观察时间归属。"
+        }
       },
       "requestRateHint": "RPM 表示所选 CLI 最近 60 秒进入网关的请求数，每 5 秒刷新，不受日期筛选影响；本地会话用量不计入实时网关速率。",
       "rpm": "RPM"
@@ -614,7 +645,13 @@
         "claude_desktopDesc": "后续接管 Claude Desktop 3P 网关配置",
         "kimi": "Kimi Code",
         "kimiDesc": "Kimi CLI config.toml 接管",
-        "opencode": "OpenCode"
+        "opencode": "OpenCode",
+        "pi": "Pi",
+        "oh_my_pi": "Oh My Pi",
+        "dsh": "DSH",
+        "hermes": "Hermes",
+        "openclaw": "OpenClaw",
+        "kimi_cli": "Kimi CLI (Python)"
       },
       "cliStatus": {
         "direct": "未接管",

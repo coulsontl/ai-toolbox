@@ -92,6 +92,8 @@ test('request rate follows the CLI filter and keeps no traffic distinct from unl
   assert.equal(getGatewayRequestsPerMinute(status, 'claude_desktop'), 6);
   assert.equal(getGatewayRequestsPerMinute(status, 'codex'), 16);
   assert.equal(getGatewayRequestsPerMinute(status, 'gemini'), 0);
+  assert.equal(getGatewayRequestsPerMinute(status, 'pi'), null);
+  assert.equal(getGatewayRequestsPerMinute(status, 'hermes'), null);
   assert.equal(getGatewayRequestsPerMinute(null), null);
   assert.equal(getGatewayRequestsPerMinute(undefined, 'codex'), null);
   assert.equal(getGatewayRequestsPerMinute({ requests_per_minute: 0, requests_per_minute_by_cli: {} }, 'claude'), 0);

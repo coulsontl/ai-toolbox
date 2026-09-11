@@ -41,6 +41,7 @@
 .filterBar {
   display: flex;
   min-width: 0;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   overflow-x: auto;
@@ -65,7 +66,7 @@
 
 .filterSectionShrink {
   display: flex;
-  min-width: 0;
+  min-width: 320px;
   flex: 1 1 auto;
   align-items: center;
   gap: 4px;
@@ -108,6 +109,7 @@
 .filterActions {
   display: flex;
   min-width: max-content;
+  margin-left: auto;
   flex: 0 0 auto;
   align-items: center;
   gap: 4px;
@@ -429,6 +431,14 @@
     font-weight: 560;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .detailNote {
+    color: var(--color-text-tertiary);
+    font-size: 10px;
+    font-weight: 400;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 }
 

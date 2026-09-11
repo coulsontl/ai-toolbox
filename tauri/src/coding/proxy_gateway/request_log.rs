@@ -613,11 +613,12 @@ mod tests {
         let paths = ProxyGatewayPaths::new(dir.path());
         let now = Utc::now();
         let summary = GatewayRequestLogSummary {
+            usage_metadata: None,
             data_source: None,
             trace_id: "trace-1".to_string(),
             started_at: now,
             ended_at: now,
-            cli_key: Some(GatewayCliKey::Claude),
+            cli_key: Some(GatewayCliKey::Claude.into()),
             route_name: "anthropic".to_string(),
             method: "POST".to_string(),
             path: "/anthropic/v1/messages".to_string(),

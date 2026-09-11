@@ -1,9 +1,9 @@
 use super::request_log;
 use super::types::{
-    normalize_pricing_model_source, GatewayCliKey, GatewayModelStats, GatewayPaginatedRequestLogs,
+    normalize_pricing_model_source, GatewayModelStats, GatewayPaginatedRequestLogs,
     GatewayProviderStats, GatewayRequestLogDetail, GatewayRequestLogFilters, GatewayRequestLogItem,
     GatewayRequestLogSummary, GatewayStreamOutcome, GatewayUsageSummary, GatewayUsageSummaryByCli,
-    GatewayUsageTrendPoint, ProxyGatewaySettings,
+    GatewayUsageTool, GatewayUsageTrendPoint, ProxyGatewaySettings,
 };
 use crate::db::SqliteDbState;
 use chrono::{Duration, Local, TimeZone, Utc};
@@ -27,6 +27,7 @@ static LAST_ROLLUP_PRUNE_AT: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
 
 #[derive(Default)]
 struct TrendAccumulator {
+    extra_tokens: u64,
     request_count: u64,
     total_cost_usd: Decimal,
     input_tokens: u64,
@@ -44,7 +45,9 @@ impl TrendAccumulator {
         output_tokens: u64,
         cache_read_tokens: u64,
         cache_creation_tokens: u64,
+        extra_tokens: u64,
     ) {
+        self.extra_tokens = self.extra_tokens.saturating_add(extra_tokens);
         self.request_count = self.request_count.saturating_add(request_count);
         self.total_cost_usd += total_cost_usd;
         self.input_tokens = self.input_tokens.saturating_add(input_tokens);
@@ -60,6 +63,7 @@ impl TrendAccumulator {
             .saturating_add(self.output_tokens)
             .saturating_add(self.cache_read_tokens)
             .saturating_add(self.cache_creation_tokens)
+            .saturating_add(self.extra_tokens)
     }
 }
 
@@ -78,6 +82,7 @@ struct StatsAccumulator {
 
 #[derive(Default)]
 struct SummaryAccumulator {
+    extra_tokens: u64,
     total_requests: u64,
     success_count: u64,
     total_cost_usd: Decimal,
@@ -89,6 +94,7 @@ struct SummaryAccumulator {
 
 impl SummaryAccumulator {
     fn add(&mut self, other: SummaryAccumulator) {
+        self.extra_tokens = self.extra_tokens.saturating_add(other.extra_tokens);
         self.total_requests = self.total_requests.saturating_add(other.total_requests);
         self.success_count = self.success_count.saturating_add(other.success_count);
         self.total_cost_usd += other.total_cost_usd;
@@ -107,6 +113,7 @@ impl SummaryAccumulator {
             .saturating_add(self.output_tokens)
             .saturating_add(self.cache_read_tokens)
             .saturating_add(self.cache_creation_tokens)
+            .saturating_add(self.extra_tokens)
     }
 
     fn into_summary(self) -> GatewayUsageSummary {
@@ -229,7 +236,7 @@ pub fn record_request_summary(
     detail: &GatewayRequestLogDetail,
 ) -> Result<RecordRequestSummaryOutcome, String> {
     let summary = &detail.summary;
-    let Some(cli_key) = summary.cli_key else {
+    let Some(cli_key) = summary.cli_key.and_then(GatewayUsageTool::gateway_cli) else {
         return Ok(RecordRequestSummaryOutcome::Skipped);
     };
 
@@ -695,7 +702,7 @@ pub fn request_logs(
                     total_cost_usd, latency_ms, first_token_ms, COALESCE(duration_ms, latency_ms, 0),
                     status_code, error_message, created_at, is_streaming,
                     route_name, method, path, stream_outcome, reasoning_effort,
-                    COALESCE(data_source, 'proxy')
+                    COALESCE(data_source, 'proxy'), json(usage_metadata), extra_tokens
              FROM proxy_request_logs l
              {where_clause}
              ORDER BY created_at DESC
@@ -716,6 +723,8 @@ pub fn request_logs(
                 let cache_read_tokens = row.get::<_, i64>(7)?.max(0) as u64;
                 let cache_creation_tokens = row.get::<_, i64>(8)?.max(0) as u64;
                 Ok(Some(GatewayRequestLogItem {
+                    usage_metadata: row.get::<_, Option<String>>(23)?.and_then(|value| serde_json::from_str(&value).ok()),
+                    extra_tokens: row.get::<_, i64>(24)?.max(0) as u64,
                     data_source: row.get(22)?,
                     trace_id: row.get(0)?,
                     cli_key,
@@ -750,7 +759,8 @@ pub fn request_logs(
                     total_tokens: input_tokens
                         .saturating_add(output_tokens)
                         .saturating_add(cache_read_tokens)
-                        .saturating_add(cache_creation_tokens),
+                        .saturating_add(cache_creation_tokens)
+                        .saturating_add(row.get::<_, i64>(24)?.max(0) as u64),
                     total_cost_usd: row.get(9)?,
                     is_streaming: row.get::<_, i64>(16)? != 0,
                     first_token_ms: row
@@ -787,7 +797,7 @@ pub fn usage_summary(
     db: &SqliteDbState,
     start_date: Option<i64>,
     end_date: Option<i64>,
-    cli_key: Option<GatewayCliKey>,
+    cli_key: Option<GatewayUsageTool>,
 ) -> Result<GatewayUsageSummary, String> {
     db.with_conn(|conn| {
         let mut params = Vec::<Box<dyn ToSql>>::new();
@@ -797,13 +807,14 @@ pub fn usage_summary(
         let mut summary = conn
             .query_row(
                 &format!(
-                    "SELECT COUNT(*),
+                    "SELECT COALESCE(SUM(usage_request_count), 0),
                             COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0),
                             COALESCE(SUM(input_tokens), 0),
                             COALESCE(SUM(output_tokens), 0),
                             COALESCE(SUM(cache_read_tokens), 0),
                             COALESCE(SUM(cache_creation_tokens), 0),
-                            COALESCE(SUM(CASE WHEN (l.stream_outcome = 'completed' OR (l.stream_outcome IS NULL AND l.status_code >= 200 AND l.status_code < 400)) THEN 1 ELSE 0 END), 0)
+                            COALESCE(SUM(CASE WHEN (l.stream_outcome = 'completed' OR (l.stream_outcome IS NULL AND l.status_code >= 200 AND l.status_code < 400)) THEN l.usage_request_count ELSE 0 END), 0),
+                            COALESCE(SUM(extra_tokens), 0)
                      FROM proxy_request_logs l {detail_where}"
                 ),
                 refs.as_slice(),
@@ -821,9 +832,12 @@ pub fn usage_summary_by_cli(
     end_date: Option<i64>,
 ) -> Result<Vec<GatewayUsageSummaryByCli>, String> {
     let mut items = Vec::new();
-    for cli_key in GatewayCliKey::supported_mvp() {
+    for cli_key in GatewayUsageTool::all() {
         let summary = usage_summary(db, start_date, end_date, Some(cli_key))?;
-        if summary.total_requests > 0 || summary.total_tokens > 0 {
+        if summary.total_requests > 0
+            || summary.total_tokens > 0
+            || parse_decimal_or_default(&summary.total_cost_usd, Decimal::ZERO) != Decimal::ZERO
+        {
             items.push(GatewayUsageSummaryByCli { cli_key, summary });
         }
     }
@@ -834,7 +848,7 @@ pub fn usage_trends(
     db: &SqliteDbState,
     start_date: Option<i64>,
     end_date: Option<i64>,
-    cli_key: Option<GatewayCliKey>,
+    cli_key: Option<GatewayUsageTool>,
 ) -> Result<Vec<GatewayUsageTrendPoint>, String> {
     db.with_conn(|conn| {
         let end = end_date.unwrap_or_else(|| Utc::now().timestamp());
@@ -852,12 +866,13 @@ pub fn usage_trends(
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {bucket_expr} AS bucket,
-                        COUNT(*),
+                        COALESCE(SUM(usage_request_count), 0),
                         COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0),
                         COALESCE(SUM(input_tokens), 0),
                         COALESCE(SUM(output_tokens), 0),
                         COALESCE(SUM(cache_read_tokens), 0),
-                        COALESCE(SUM(cache_creation_tokens), 0)
+                        COALESCE(SUM(cache_creation_tokens), 0),
+                        COALESCE(SUM(extra_tokens), 0)
                  FROM proxy_request_logs l
                  {where_clause}
                  GROUP BY bucket
@@ -874,12 +889,21 @@ pub fn usage_trends(
                     row.get::<_, i64>(4)?.max(0) as u64,
                     row.get::<_, i64>(5)?.max(0) as u64,
                     row.get::<_, i64>(6)?.max(0) as u64,
+                    row.get::<_, i64>(7)?.max(0) as u64,
                 ))
             })
             .map_err(|error| format!("Failed to query proxy gateway trends: {error}"))?;
         for row in rows {
-            let (bucket, request_count, total_cost_usd, input, output, cache_read, cache_creation) =
-                row.map_err(|error| format!("Failed to read trend row: {error}"))?;
+            let (
+                bucket,
+                request_count,
+                total_cost_usd,
+                input,
+                output,
+                cache_read,
+                cache_creation,
+                extra_tokens,
+            ) = row.map_err(|error| format!("Failed to read trend row: {error}"))?;
             trend_map.entry(bucket).or_default().add(
                 request_count,
                 total_cost_usd,
@@ -887,6 +911,7 @@ pub fn usage_trends(
                 output,
                 cache_read,
                 cache_creation,
+                extra_tokens,
             );
         }
         merge_rollup_trends(conn, &mut trend_map, start, end, cli_key)?;
@@ -910,7 +935,7 @@ pub fn provider_stats(
     db: &SqliteDbState,
     start_date: Option<i64>,
     end_date: Option<i64>,
-    cli_key: Option<GatewayCliKey>,
+    cli_key: Option<GatewayUsageTool>,
 ) -> Result<Vec<GatewayProviderStats>, String> {
     db.with_conn(|conn| {
         let provider_names = load_provider_names(conn)?;
@@ -922,10 +947,10 @@ pub fn provider_stats(
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT app_type, provider_id,
-                        COUNT(*),
-                        COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens), 0),
+                        COALESCE(SUM(usage_request_count), 0),
+                        COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens + extra_tokens), 0),
                         COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0),
-                        COALESCE(SUM(CASE WHEN (l.stream_outcome = 'completed' OR (l.stream_outcome IS NULL AND l.status_code >= 200 AND l.status_code < 400)) THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN (l.stream_outcome = 'completed' OR (l.stream_outcome IS NULL AND l.status_code >= 200 AND l.status_code < 400)) THEN l.usage_request_count ELSE 0 END), 0),
                         COALESCE(SUM(CASE WHEN COALESCE(l.data_source, 'proxy') = 'proxy' THEN l.latency_ms ELSE 0 END), 0),
                         COALESCE(SUM(input_tokens), 0),
                         COALESCE(SUM(cache_read_tokens), 0),
@@ -1013,7 +1038,7 @@ pub fn model_stats(
     db: &SqliteDbState,
     start_date: Option<i64>,
     end_date: Option<i64>,
-    cli_key: Option<GatewayCliKey>,
+    cli_key: Option<GatewayUsageTool>,
 ) -> Result<Vec<GatewayModelStats>, String> {
     db.with_conn(|conn| {
         let mut stats_map = HashMap::<(String, String), StatsAccumulator>::new();
@@ -1025,8 +1050,8 @@ pub fn model_stats(
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT app_type, {model_expr} AS stats_model,
-                        COUNT(*),
-                        COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens), 0),
+                        COALESCE(SUM(usage_request_count), 0),
+                        COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens + extra_tokens), 0),
                         COALESCE(SUM(CAST(total_cost_usd AS REAL)), 0),
                         COALESCE(SUM(CASE WHEN COALESCE(l.data_source, 'proxy') = 'proxy' THEN l.latency_ms ELSE 0 END), 0),
                         COALESCE(SUM(CASE WHEN COALESCE(l.data_source, 'proxy') = 'proxy' THEN 1 ELSE 0 END), 0)
@@ -1130,7 +1155,7 @@ fn merge_rollup_trends(
     trend_map: &mut std::collections::BTreeMap<String, TrendAccumulator>,
     start: i64,
     end: i64,
-    cli_key: Option<GatewayCliKey>,
+    cli_key: Option<GatewayUsageTool>,
 ) -> Result<(), String> {
     let mut params = Vec::<Box<dyn ToSql>>::new();
     let where_clause = build_rollup_where(Some(start), Some(end), cli_key, Some("r"), &mut params);
@@ -1143,7 +1168,8 @@ fn merge_rollup_trends(
                     COALESCE(SUM(r.input_tokens), 0),
                     COALESCE(SUM(r.output_tokens), 0),
                     COALESCE(SUM(r.cache_read_tokens), 0),
-                    COALESCE(SUM(r.cache_creation_tokens), 0)
+                    COALESCE(SUM(r.cache_creation_tokens), 0),
+                    COALESCE(SUM(r.extra_tokens), 0)
              FROM usage_daily_rollups r
              {where_clause}
              GROUP BY r.date
@@ -1160,12 +1186,21 @@ fn merge_rollup_trends(
                 row.get::<_, i64>(4)?.max(0) as u64,
                 row.get::<_, i64>(5)?.max(0) as u64,
                 row.get::<_, i64>(6)?.max(0) as u64,
+                row.get::<_, i64>(7)?.max(0) as u64,
             ))
         })
         .map_err(|error| format!("Failed to query gateway rollup trends: {error}"))?;
     for row in rows {
-        let (date, request_count, total_cost, input, output, cache_read, cache_creation) =
-            row.map_err(|error| format!("Failed to read gateway rollup trend row: {error}"))?;
+        let (
+            date,
+            request_count,
+            total_cost,
+            input,
+            output,
+            cache_read,
+            cache_creation,
+            extra_tokens,
+        ) = row.map_err(|error| format!("Failed to read gateway rollup trend row: {error}"))?;
         trend_map.entry(date).or_default().add(
             request_count,
             total_cost,
@@ -1173,6 +1208,7 @@ fn merge_rollup_trends(
             output,
             cache_read,
             cache_creation,
+            extra_tokens,
         );
     }
     Ok(())
@@ -1183,7 +1219,7 @@ fn merge_rollup_provider_stats(
     stats_map: &mut HashMap<(String, String), StatsAccumulator>,
     start_date: Option<i64>,
     end_date: Option<i64>,
-    cli_key: Option<GatewayCliKey>,
+    cli_key: Option<GatewayUsageTool>,
 ) -> Result<(), String> {
     let mut params = Vec::<Box<dyn ToSql>>::new();
     let where_clause = build_rollup_where(start_date, end_date, cli_key, Some("r"), &mut params);
@@ -1192,7 +1228,7 @@ fn merge_rollup_provider_stats(
         .prepare(&format!(
             "SELECT r.app_type, r.provider_id,
                     COALESCE(SUM(r.request_count), 0),
-                    COALESCE(SUM(r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_creation_tokens), 0),
+                    COALESCE(SUM(r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_creation_tokens + r.extra_tokens), 0),
                     COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0),
                     COALESCE(SUM(r.success_count), 0),
                     COALESCE(SUM(r.avg_latency_ms * COALESCE(r.latency_sample_count, r.request_count)), 0),
@@ -1255,7 +1291,7 @@ fn merge_rollup_model_stats(
     stats_map: &mut HashMap<(String, String), StatsAccumulator>,
     start_date: Option<i64>,
     end_date: Option<i64>,
-    cli_key: Option<GatewayCliKey>,
+    cli_key: Option<GatewayUsageTool>,
 ) -> Result<(), String> {
     let mut params = Vec::<Box<dyn ToSql>>::new();
     let mut where_clause =
@@ -1269,7 +1305,7 @@ fn merge_rollup_model_stats(
         .prepare(&format!(
             "SELECT r.app_type, r.model,
                     COALESCE(SUM(r.request_count), 0),
-                    COALESCE(SUM(r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_creation_tokens), 0),
+                    COALESCE(SUM(r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_creation_tokens + r.extra_tokens), 0),
                     COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0),
                     COALESCE(SUM(r.avg_latency_ms * COALESCE(r.latency_sample_count, r.request_count)), 0),
                     COALESCE(SUM(COALESCE(r.latency_sample_count, r.request_count)), 0)
@@ -1317,7 +1353,7 @@ fn rollup_summary(
     conn: &Connection,
     start_date: Option<i64>,
     end_date: Option<i64>,
-    cli_key: Option<GatewayCliKey>,
+    cli_key: Option<GatewayUsageTool>,
 ) -> Result<SummaryAccumulator, String> {
     let mut params: Vec<Box<dyn ToSql>> = Vec::new();
     let where_clause = build_rollup_where(start_date, end_date, cli_key, None, &mut params);
@@ -1330,7 +1366,8 @@ fn rollup_summary(
                     COALESCE(SUM(output_tokens), 0),
                     COALESCE(SUM(cache_read_tokens), 0),
                     COALESCE(SUM(cache_creation_tokens), 0),
-                    COALESCE(SUM(success_count), 0)
+                    COALESCE(SUM(success_count), 0),
+                    COALESCE(SUM(extra_tokens), 0)
              FROM usage_daily_rollups {where_clause}"
         ),
         refs.as_slice(),
@@ -1347,6 +1384,7 @@ fn row_to_summary_accumulator(row: &rusqlite::Row<'_>) -> rusqlite::Result<Summa
     let cache_creation = row.get::<_, i64>(5)?.max(0) as u64;
     let success_count = row.get::<_, i64>(6)?.max(0) as u64;
     Ok(SummaryAccumulator {
+        extra_tokens: row.get::<_, i64>(7)?.max(0) as u64,
         total_requests,
         success_count,
         total_cost_usd: row_decimal(row, 1)?,
@@ -1383,7 +1421,7 @@ pub(super) fn rollup_and_prune(conn: &Connection, retain_days: i64) -> Result<()
             "INSERT OR REPLACE INTO usage_daily_rollups
             (date, app_type, provider_id, model, request_count, success_count,
              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-             total_cost_usd, avg_latency_ms, latency_sample_count)
+             total_cost_usd, avg_latency_ms, latency_sample_count, extra_tokens)
          SELECT
             agg.d, agg.app_type, agg.provider_id, agg.rollup_model,
             COALESCE(old.request_count, 0) + agg.request_count,
@@ -1398,18 +1436,20 @@ pub(super) fn rollup_and_prune(conn: &Connection, retain_days: i64) -> Result<()
                       + agg.latency_sum)
                      / (COALESCE(old.latency_sample_count, old.request_count, 0) + agg.latency_sample_count)
                 ELSE 0 END,
-            COALESCE(old.latency_sample_count, old.request_count, 0) + agg.latency_sample_count
+            COALESCE(old.latency_sample_count, old.request_count, 0) + agg.latency_sample_count,
+            COALESCE(old.extra_tokens, 0) + agg.extra_tokens
          FROM (
             SELECT date(l.created_at, 'unixepoch', 'localtime') AS d,
                    l.app_type,
                    l.provider_id,
                    {rollup_model_expr} AS rollup_model,
-                   COUNT(*) AS request_count,
-                   SUM(CASE WHEN (l.stream_outcome = 'completed' OR (l.stream_outcome IS NULL AND l.status_code >= 200 AND l.status_code < 400)) THEN 1 ELSE 0 END) AS success_count,
+                   SUM(l.usage_request_count) AS request_count,
+                   SUM(CASE WHEN (l.stream_outcome = 'completed' OR (l.stream_outcome IS NULL AND l.status_code >= 200 AND l.status_code < 400)) THEN l.usage_request_count ELSE 0 END) AS success_count,
                    COALESCE(SUM(l.input_tokens), 0) AS input_tokens,
                    COALESCE(SUM(l.output_tokens), 0) AS output_tokens,
                    COALESCE(SUM(l.cache_read_tokens), 0) AS cache_read_tokens,
                    COALESCE(SUM(l.cache_creation_tokens), 0) AS cache_creation_tokens,
+                   COALESCE(SUM(l.extra_tokens), 0) AS extra_tokens,
                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) AS total_cost,
                    COALESCE(SUM(CASE WHEN COALESCE(l.data_source, 'proxy') = 'proxy' THEN l.latency_ms ELSE 0 END), 0) * 1.0 AS latency_sum,
                    SUM(CASE WHEN COALESCE(l.data_source, 'proxy') = 'proxy' THEN 1 ELSE 0 END) AS latency_sample_count
@@ -1427,6 +1467,7 @@ pub(super) fn rollup_and_prune(conn: &Connection, retain_days: i64) -> Result<()
         [cutoff],
     )
     .map_err(|error| format!("Failed to roll up gateway logs: {error}"))?;
+    super::session_import::mark_archived_contributions(&transaction, cutoff)?;
     transaction
         .execute(
             "DELETE FROM proxy_request_logs WHERE created_at < ?1",
@@ -1483,6 +1524,17 @@ fn build_detail_where(
     params: &mut Vec<Box<dyn ToSql>>,
 ) -> Result<String, String> {
     let mut conditions = Vec::new();
+    if let Some(source) = filters.data_source.as_deref() {
+        if !matches!(source, "proxy" | "session") {
+            return Err("Unsupported usage data source".into());
+        }
+        push_condition(
+            &mut conditions,
+            params,
+            "COALESCE(l.data_source, 'proxy')",
+            source.to_string(),
+        );
+    }
     if let Some(cli_key) = filters.cli_key {
         push_condition(
             &mut conditions,
@@ -1539,6 +1591,10 @@ fn build_detail_where(
         matches.dedup();
         let mut parts = Vec::new();
         parts.push(format!("LOWER(l.provider_id) LIKE ?{}", params.len() + 1));
+        parts.push(format!(
+            "LOWER(COALESCE(json_extract(l.usage_metadata, '$.native_provider'), '')) LIKE ?{}",
+            params.len() + 1
+        ));
         params.push(Box::new(format!("%{needle}%")));
         for (app_type, provider_id) in matches {
             parts.push(format!(
@@ -1581,7 +1637,7 @@ fn build_detail_where(
 fn build_stats_where(
     start_date: Option<i64>,
     end_date: Option<i64>,
-    cli_key: Option<GatewayCliKey>,
+    cli_key: Option<GatewayUsageTool>,
     alias: &str,
     params: &mut Vec<Box<dyn ToSql>>,
 ) -> String {
@@ -1593,7 +1649,7 @@ fn build_stats_where(
 fn build_usage_stats_where(
     start_date: Option<i64>,
     end_date: Option<i64>,
-    cli_key: Option<GatewayCliKey>,
+    cli_key: Option<GatewayUsageTool>,
     alias: &str,
     include_compact: bool,
     params: &mut Vec<Box<dyn ToSql>>,
@@ -1606,7 +1662,7 @@ fn build_usage_stats_where(
 fn build_stats_conditions(
     start_date: Option<i64>,
     end_date: Option<i64>,
-    cli_key: Option<GatewayCliKey>,
+    cli_key: Option<GatewayUsageTool>,
     alias: &str,
     params: &mut Vec<Box<dyn ToSql>>,
 ) -> Vec<String> {
@@ -1646,7 +1702,7 @@ fn append_static_where_condition(where_clause: &mut String, condition: &str) {
 fn build_rollup_where(
     start_date: Option<i64>,
     end_date: Option<i64>,
-    cli_key: Option<GatewayCliKey>,
+    cli_key: Option<GatewayUsageTool>,
     alias: Option<&str>,
     params: &mut Vec<Box<dyn ToSql>>,
 ) -> String {
@@ -1858,17 +1914,10 @@ fn load_opencode_provider_names(
     Ok(())
 }
 
-fn cli_key_from_app_type(app_type: &str) -> Option<GatewayCliKey> {
-    match app_type {
-        "claude" => Some(GatewayCliKey::Claude),
-        "claude_desktop" => Some(GatewayCliKey::ClaudeDesktop),
-        "codex" => Some(GatewayCliKey::Codex),
-        "grok" => Some(GatewayCliKey::Grok),
-        "kimi" => Some(GatewayCliKey::Kimi),
-        "gemini" => Some(GatewayCliKey::Gemini),
-        "opencode" => Some(GatewayCliKey::OpenCode),
-        _ => None,
-    }
+fn cli_key_from_app_type(app_type: &str) -> Option<GatewayUsageTool> {
+    GatewayUsageTool::all()
+        .into_iter()
+        .find(|tool| tool.as_str() == app_type)
 }
 
 fn timestamp_to_utc(timestamp: i64) -> chrono::DateTime<Utc> {
@@ -1938,6 +1987,10 @@ pub(super) fn calculate_session_costs(
             )
         })
         .unwrap_or_default()
+}
+
+pub(super) fn session_model_has_pricing(conn: &Connection, model: &str) -> bool {
+    find_model_pricing(conn, model).is_some()
 }
 
 fn parse_decimal_or_default(value: &str, default: Decimal) -> Decimal {
@@ -2293,7 +2346,7 @@ pub fn request_log_detail_from_summary(
                     cost_multiplier, pricing_model_source, detail_file, detail_offset,
                     route_name, method, path, upstream_status_code,
                     stream_outcome, error_category, attempt_count, total_attempt_count, reasoning_effort,
-                    COALESCE(data_source, 'proxy')
+                    COALESCE(data_source, 'proxy'), json(usage_metadata), extra_tokens
              FROM proxy_request_logs
              WHERE request_id = ?1",
             [trace_id],
@@ -2321,9 +2374,11 @@ pub fn request_log_detail_from_summary(
                 let total_tokens = input_tokens
                     .saturating_add(output_tokens)
                     .saturating_add(cache_read_tokens)
-                    .saturating_add(cache_creation_tokens);
+                    .saturating_add(cache_creation_tokens)
+                    .saturating_add(row.get::<_, i64>(33)?.max(0) as u64);
                 Ok(GatewayRequestLogDetail {
                     summary: GatewayRequestLogSummary {
+                        usage_metadata: row.get::<_, Option<String>>(32)?.and_then(|value| serde_json::from_str(&value).ok()),
                         data_source: Some(row.get(31)?),
                         trace_id: row.get(0)?,
                         started_at,
@@ -2445,6 +2500,7 @@ pub fn request_log_location(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coding::proxy_gateway::types::GatewayCliKey;
     use crate::coding::proxy_gateway::types::{DataSourceBreakdownInput, GatewayRequestLogSummary};
     use crate::db::helpers::db_put;
     use crate::db::schema::DbTable;
@@ -2583,11 +2639,12 @@ mod tests {
         };
         GatewayRequestLogDetail {
             summary: GatewayRequestLogSummary {
+                usage_metadata: None,
                 data_source: None,
                 trace_id: trace_id.to_string(),
                 started_at: ended_at - Duration::milliseconds(1200),
                 ended_at,
-                cli_key: Some(cli_key),
+                cli_key: Some(cli_key.into()),
                 route_name: route_name.to_string(),
                 method: "POST".to_string(),
                 path: path.to_string(),
@@ -2701,7 +2758,7 @@ mod tests {
         let logs = request_logs(
             &db,
             &GatewayRequestLogFilters {
-                cli_key: Some(GatewayCliKey::Claude),
+                cli_key: Some(GatewayCliKey::Claude.into()),
                 provider_name: Some("Alpha".to_string()),
                 model: Some("sonnet".to_string()),
                 status_code: Some(200),
@@ -3227,8 +3284,8 @@ mod tests {
         )
         .expect("record grok summary");
 
-        let provider_rows =
-            provider_stats(&db, None, None, Some(GatewayCliKey::Grok)).expect("provider stats");
+        let provider_rows = provider_stats(&db, None, None, Some(GatewayCliKey::Grok.into()))
+            .expect("provider stats");
         assert_eq!(provider_rows.len(), 1);
         assert_eq!(provider_rows[0].provider_id, "provider-grok");
         assert_eq!(
@@ -3262,15 +3319,15 @@ mod tests {
             request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10).expect("request logs");
         assert_eq!(logs.total, 1);
         assert_eq!(logs.data.len(), 1);
-        assert_eq!(logs.data[0].cli_key, GatewayCliKey::Kimi);
+        assert_eq!(logs.data[0].cli_key, GatewayUsageTool::Kimi);
         assert_eq!(
             logs.data[0].provider_name.as_deref(),
             Some("AxonHub Kimi"),
             "Kimi request rows must not be dropped and must resolve display names from kimi_provider"
         );
 
-        let provider_rows =
-            provider_stats(&db, None, None, Some(GatewayCliKey::Kimi)).expect("provider stats");
+        let provider_rows = provider_stats(&db, None, None, Some(GatewayCliKey::Kimi.into()))
+            .expect("provider stats");
         assert_eq!(provider_rows.len(), 1);
         assert_eq!(
             provider_rows[0].provider_name.as_deref(),
@@ -3295,15 +3352,16 @@ mod tests {
         )
         .expect("record error");
 
-        let summary = usage_summary(&db, None, None, Some(GatewayCliKey::Claude)).expect("summary");
+        let summary =
+            usage_summary(&db, None, None, Some(GatewayCliKey::Claude.into())).expect("summary");
         assert_eq!(summary.total_requests, 2);
         assert_eq!(summary.total_input_tokens, 18);
         assert_eq!(summary.total_output_tokens, 8);
         assert_eq!(summary.total_tokens, 26);
         assert_eq!(summary.success_rate, 50.0);
 
-        let provider_rows =
-            provider_stats(&db, None, None, Some(GatewayCliKey::Claude)).expect("provider stats");
+        let provider_rows = provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into()))
+            .expect("provider stats");
         assert_eq!(provider_rows.len(), 1);
         assert_eq!(
             provider_rows[0].provider_name.as_deref(),
@@ -3313,7 +3371,7 @@ mod tests {
         assert_eq!(provider_rows[0].success_rate, 50.0);
 
         let model_rows =
-            model_stats(&db, None, None, Some(GatewayCliKey::Claude)).expect("model stats");
+            model_stats(&db, None, None, Some(GatewayCliKey::Claude.into())).expect("model stats");
         assert_eq!(model_rows.len(), 1);
         assert_eq!(model_rows[0].request_count, 2);
         assert_eq!(model_rows[0].total_tokens, 26);
@@ -3398,22 +3456,23 @@ mod tests {
             request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10).expect("request logs");
         assert_eq!(logs.total, 6);
 
-        let summary = usage_summary(&db, None, None, Some(GatewayCliKey::Claude)).expect("summary");
+        let summary =
+            usage_summary(&db, None, None, Some(GatewayCliKey::Claude.into())).expect("summary");
         assert_eq!(summary.total_requests, 3);
         assert_eq!(summary.total_input_tokens, 17);
         assert_eq!(summary.total_output_tokens, 8);
         assert_eq!(summary.total_tokens, 25);
         assert_eq!(summary.success_rate, 100.0);
 
-        let provider_rows =
-            provider_stats(&db, None, None, Some(GatewayCliKey::Claude)).expect("provider stats");
+        let provider_rows = provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into()))
+            .expect("provider stats");
         assert_eq!(provider_rows.len(), 1);
         assert_eq!(provider_rows[0].provider_id, "provider-alpha");
         assert_eq!(provider_rows[0].request_count, 3);
         assert_eq!(provider_rows[0].total_tokens, 25);
 
         let model_rows =
-            model_stats(&db, None, None, Some(GatewayCliKey::Claude)).expect("model stats");
+            model_stats(&db, None, None, Some(GatewayCliKey::Claude.into())).expect("model stats");
         let model_map = model_rows
             .iter()
             .map(|item| (item.model.as_str(), item))
@@ -3458,8 +3517,13 @@ mod tests {
             .with_ymd_and_hms(2026, 5, 20, 23, 59, 59)
             .unwrap()
             .timestamp();
-        let trend_rows =
-            usage_trends(&db, Some(start), Some(end), Some(GatewayCliKey::Claude)).expect("trends");
+        let trend_rows = usage_trends(
+            &db,
+            Some(start),
+            Some(end),
+            Some(GatewayCliKey::Claude.into()),
+        )
+        .expect("trends");
         assert_eq!(trend_rows.len(), 1);
         assert_eq!(trend_rows[0].request_count, 3);
         assert_eq!(trend_rows[0].total_tokens, 25);
@@ -3500,21 +3564,35 @@ mod tests {
             .unwrap()
             .timestamp();
 
-        let summary = usage_summary(&db, Some(start), Some(end), Some(GatewayCliKey::Claude))
-            .expect("summary");
+        let summary = usage_summary(
+            &db,
+            Some(start),
+            Some(end),
+            Some(GatewayCliKey::Claude.into()),
+        )
+        .expect("summary");
         assert_eq!(summary.total_requests, 4);
         assert_eq!(summary.total_tokens, 39);
         assert_eq!(summary.success_rate, 100.0);
 
-        let provider_rows =
-            provider_stats(&db, Some(start), Some(end), Some(GatewayCliKey::Claude))
-                .expect("provider stats");
+        let provider_rows = provider_stats(
+            &db,
+            Some(start),
+            Some(end),
+            Some(GatewayCliKey::Claude.into()),
+        )
+        .expect("provider stats");
         assert_eq!(provider_rows.len(), 1);
         assert_eq!(provider_rows[0].request_count, 4);
         assert_eq!(provider_rows[0].total_tokens, 39);
 
-        let model_rows = model_stats(&db, Some(start), Some(end), Some(GatewayCliKey::Claude))
-            .expect("model stats");
+        let model_rows = model_stats(
+            &db,
+            Some(start),
+            Some(end),
+            Some(GatewayCliKey::Claude.into()),
+        )
+        .expect("model stats");
         let model_map = model_rows
             .iter()
             .map(|item| (item.model.as_str(), item))
@@ -3551,8 +3629,13 @@ mod tests {
         assert!(!model_map.contains_key("unknown"));
         assert!(!model_map.contains_key(COMPACT_ROLLUP_MODEL));
 
-        let trend_rows =
-            usage_trends(&db, Some(start), Some(end), Some(GatewayCliKey::Claude)).expect("trends");
+        let trend_rows = usage_trends(
+            &db,
+            Some(start),
+            Some(end),
+            Some(GatewayCliKey::Claude.into()),
+        )
+        .expect("trends");
         assert_eq!(trend_rows.len(), 1);
         assert_eq!(trend_rows[0].request_count, 4);
         assert_eq!(trend_rows[0].total_tokens, 39);
@@ -3620,13 +3703,13 @@ mod tests {
             ]
         );
 
-        let summary = usage_summary(&db, None, None, Some(GatewayCliKey::Claude))
+        let summary = usage_summary(&db, None, None, Some(GatewayCliKey::Claude.into()))
             .expect("summary from rollups");
         assert_eq!(summary.total_requests, 3);
         assert_eq!(summary.total_tokens, 25);
 
         let model_rows =
-            model_stats(&db, None, None, Some(GatewayCliKey::Claude)).expect("model stats");
+            model_stats(&db, None, None, Some(GatewayCliKey::Claude.into())).expect("model stats");
         let model_map = model_rows
             .iter()
             .map(|item| (item.model.as_str(), item))
@@ -3742,7 +3825,7 @@ mod tests {
         }
 
         let mut codex_detail = make_detail("trace-codex-one", "provider-beta", 200, 4, 1);
-        codex_detail.summary.cli_key = Some(GatewayCliKey::Codex);
+        codex_detail.summary.cli_key = Some(GatewayCliKey::Codex.into());
         record_request_summary(&db, &ProxyGatewaySettings::default(), &codex_detail)
             .expect("record codex summary");
 
@@ -3764,7 +3847,7 @@ mod tests {
         let claude_sources = data_source_breakdown(
             &db,
             DataSourceBreakdownInput {
-                cli_key: Some(GatewayCliKey::Claude),
+                cli_key: Some(GatewayCliKey::Claude.into()),
                 ..DataSourceBreakdownInput::default()
             },
         )
@@ -3807,7 +3890,7 @@ mod tests {
             detail.summary.cache_creation_tokens = Some(creation);
             detail.summary.cache_read_tokens = Some(read);
             record_request_summary(&db, &settings, &detail).expect("record cache usage");
-            let rows = provider_stats(&db, None, None, Some(GatewayCliKey::Claude)).unwrap();
+            let rows = provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into())).unwrap();
             let row = rows
                 .iter()
                 .find(|row| row.provider_id == provider_id)
@@ -3855,7 +3938,7 @@ mod tests {
                 Some(if trace_id == "cache-mixed" { 20 } else { 0 });
             record_request_summary(&db, &settings, &detail).unwrap();
         }
-        let all_rows = provider_stats(&db, None, None, Some(GatewayCliKey::Claude)).unwrap();
+        let all_rows = provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into())).unwrap();
         let alpha = all_rows
             .iter()
             .find(|row| row.provider_id == "provider-alpha")
@@ -3871,22 +3954,32 @@ mod tests {
             .with_ymd_and_hms(2026, 5, 20, 23, 59, 59)
             .unwrap()
             .timestamp();
-        let filtered =
-            provider_stats(&db, Some(start), Some(end), Some(GatewayCliKey::Claude)).unwrap();
+        let filtered = provider_stats(
+            &db,
+            Some(start),
+            Some(end),
+            Some(GatewayCliKey::Claude.into()),
+        )
+        .unwrap();
         let alpha = filtered
             .iter()
             .find(|row| row.provider_id == "provider-alpha")
             .unwrap();
         assert_eq!(alpha.request_count, 2);
         assert_eq!(alpha.cache_hit_rate, Some(0.08));
-        let codex =
-            provider_stats(&db, Some(start), Some(end), Some(GatewayCliKey::Codex)).unwrap();
+        let codex = provider_stats(
+            &db,
+            Some(start),
+            Some(end),
+            Some(GatewayCliKey::Codex.into()),
+        )
+        .unwrap();
         assert_eq!(codex.len(), 1);
         assert_eq!(codex[0].cache_hit_rate, Some(1.0));
 
         db.with_conn(|conn| rollup_and_prune(conn, 30))
             .expect("roll older details into history");
-        let rolled = provider_stats(&db, None, None, Some(GatewayCliKey::Claude)).unwrap();
+        let rolled = provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into())).unwrap();
         let alpha = rolled
             .iter()
             .find(|row| row.provider_id == "provider-alpha")
@@ -4040,15 +4133,24 @@ mod tests {
             .unwrap()
             .timestamp();
 
-        let summary = usage_summary(&db, Some(start), Some(end), Some(GatewayCliKey::Claude))
-            .expect("summary");
+        let summary = usage_summary(
+            &db,
+            Some(start),
+            Some(end),
+            Some(GatewayCliKey::Claude.into()),
+        )
+        .expect("summary");
         assert_eq!(summary.total_requests, 4);
         assert_eq!(summary.total_tokens, 59);
         assert_eq!(summary.success_rate, 75.0);
 
-        let provider_rows =
-            provider_stats(&db, Some(start), Some(end), Some(GatewayCliKey::Claude))
-                .expect("provider stats");
+        let provider_rows = provider_stats(
+            &db,
+            Some(start),
+            Some(end),
+            Some(GatewayCliKey::Claude.into()),
+        )
+        .expect("provider stats");
         assert_eq!(provider_rows.len(), 1);
         assert_eq!(
             provider_rows[0].provider_name.as_deref(),
@@ -4059,15 +4161,25 @@ mod tests {
         assert_eq!(provider_rows[0].success_rate, 75.0);
         assert_eq!(provider_rows[0].avg_latency_ms, Some(300));
 
-        let model_rows = model_stats(&db, Some(start), Some(end), Some(GatewayCliKey::Claude))
-            .expect("model stats");
+        let model_rows = model_stats(
+            &db,
+            Some(start),
+            Some(end),
+            Some(GatewayCliKey::Claude.into()),
+        )
+        .expect("model stats");
         assert_eq!(model_rows.len(), 1);
         assert_eq!(model_rows[0].request_count, 4);
         assert_eq!(model_rows[0].total_tokens, 59);
         assert_eq!(model_rows[0].avg_latency_ms, Some(300));
 
-        let trend_rows =
-            usage_trends(&db, Some(start), Some(end), Some(GatewayCliKey::Claude)).expect("trends");
+        let trend_rows = usage_trends(
+            &db,
+            Some(start),
+            Some(end),
+            Some(GatewayCliKey::Claude.into()),
+        )
+        .expect("trends");
         assert_eq!(trend_rows.len(), 1);
         assert_eq!(trend_rows[0].date, "2026-05-18");
         assert_eq!(trend_rows[0].request_count, 4);
@@ -4247,13 +4359,14 @@ mod tests {
         incomplete.summary.success = false;
         record_request_summary(&db, &settings, &incomplete).expect("record incomplete");
 
-        let summary = usage_summary(&db, None, None, Some(GatewayCliKey::Claude)).expect("summary");
+        let summary =
+            usage_summary(&db, None, None, Some(GatewayCliKey::Claude.into())).expect("summary");
         assert_eq!(summary.total_requests, 2);
         assert_eq!(summary.success_rate, 50.0);
 
         // Provider stats must agree.
-        let provider_rows =
-            provider_stats(&db, None, None, Some(GatewayCliKey::Claude)).expect("provider stats");
+        let provider_rows = provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into()))
+            .expect("provider stats");
         assert_eq!(provider_rows[0].request_count, 2);
         assert_eq!(provider_rows[0].success_rate, 50.0);
     }
@@ -4274,7 +4387,8 @@ mod tests {
         failed.summary.success = false;
         record_request_summary(&db, &settings, &failed).expect("record failed");
 
-        let summary = usage_summary(&db, None, None, Some(GatewayCliKey::Claude)).expect("summary");
+        let summary =
+            usage_summary(&db, None, None, Some(GatewayCliKey::Claude.into())).expect("summary");
         assert_eq!(summary.success_rate, 50.0);
     }
 

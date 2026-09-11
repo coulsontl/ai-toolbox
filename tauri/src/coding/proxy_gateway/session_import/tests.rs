@@ -1,7 +1,11 @@
 use super::*;
+use crate::coding::proxy_gateway::types::GatewayCliKey;
 use crate::coding::proxy_gateway::{types::GatewayRequestLogFilters, usage_stats};
 use serde_json::{json, Value};
 use std::io::Write;
+
+#[path = "native_tests.rs"]
+mod native_tests;
 
 const NOW: i64 = 1_800_000_100;
 const THEN: i64 = NOW - 60;
@@ -23,10 +27,10 @@ fn claude_message(id: &str, output: u64) -> Value {
 
 fn run_sync(
     db: &SqliteDbState,
-    cli: GatewayCliKey,
+    cli: impl Into<GatewayUsageTool>,
     root: &Path,
 ) -> GatewaySessionUsageImportResult {
-    sync_sources(db, &[(cli, root.to_path_buf())], NOW).unwrap()
+    sync_sources(db, &[(cli.into(), root.to_path_buf())], NOW).unwrap()
 }
 
 fn count(db: &SqliteDbState) -> u64 {
@@ -135,9 +139,13 @@ fn claude_zero_token_responses_are_counted_once_and_can_receive_final_usage() {
         run_sync(&db, GatewayCliKey::Claude, root.path()).inserted_records,
         1
     );
-    let models =
-        usage_stats::model_stats(&db, Some(THEN - 1), Some(NOW), Some(GatewayCliKey::Claude))
-            .unwrap();
+    let models = usage_stats::model_stats(
+        &db,
+        Some(THEN - 1),
+        Some(NOW),
+        Some(GatewayCliKey::Claude.into()),
+    )
+    .unwrap();
     assert_eq!(models.len(), 1);
     assert_eq!(models[0].model, "glm-5.2");
     assert_eq!(models[0].request_count, 1);
@@ -190,7 +198,7 @@ fn parser_revision_revisits_unchanged_claude_files_without_discarding_the_ledger
     let state = load_states(&db).unwrap().remove(source_id).unwrap();
     assert_eq!(
         state.parser_revision,
-        parsers::revision(GatewayCliKey::Claude)
+        parsers::revision(GatewayCliKey::Claude.into())
     );
     assert_eq!(state.records.len(), 2);
     assert_eq!(
@@ -578,6 +586,86 @@ fn one_proxy_record_cannot_suppress_two_distinct_native_invocations() {
 }
 
 #[test]
+fn proxy_execution_interval_and_delayed_session_writes_converge() {
+    // Local Codex evidence: session timestamps precede gateway completion by
+    // 109/119 seconds inside long requests. Issue #340 also shows a 21-second
+    // delay after completion. Neither is a separate invocation.
+    for (session_offset, duration_ms) in [(-109, 151_653), (-119, 239_252), (21, 9_800)] {
+        for gateway_first in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let mut message = gemini_message("interval", 10);
+            message["timestamp"] = json!(THEN + session_offset);
+            write_jsonl(&root.path().join("session-interval.jsonl"), &[message]);
+            let db = SqliteDbState::in_memory_for_test().unwrap();
+            let insert_gateway = || {
+                insert_proxy(&db, "gateway-interval");
+                db.with_conn(|conn| {
+                    conn.execute(
+                        "UPDATE proxy_request_logs SET duration_ms = ?1 WHERE request_id = 'gateway-interval'",
+                        [duration_ms],
+                    ).map_err(|error| error.to_string())?;
+                    Ok(())
+                }).unwrap();
+            };
+            if gateway_first {
+                insert_gateway();
+            }
+            run_sync(&db, GatewayCliKey::Gemini, root.path());
+            if !gateway_first {
+                insert_gateway();
+            }
+            // Revisit an unchanged source and a native row older than one hour.
+            let result = sync_sources(
+                &db,
+                &[(GatewayCliKey::Gemini.into(), root.path().to_path_buf())],
+                NOW + 7200,
+            )
+            .unwrap();
+            assert_eq!(result.failed_files, 0);
+            assert_eq!(
+                count(&db),
+                1,
+                "offset={session_offset}, gateway_first={gateway_first}"
+            );
+            let logs = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10)
+                .unwrap();
+            assert_eq!(logs.data[0].data_source, "proxy");
+            assert_eq!(
+                run_sync(&db, GatewayCliKey::Gemini, root.path()).updated_records,
+                0
+            );
+        }
+    }
+}
+
+#[test]
+fn interval_matching_rejects_outside_timestamps_and_ambiguous_candidates() {
+    for (offset, second_proxy, expected) in [(-163, false, 2), (31, false, 2), (21, true, 3)] {
+        let root = tempfile::tempdir().unwrap();
+        let mut message = gemini_message("bounded", 10);
+        message["timestamp"] = json!(THEN + offset);
+        write_jsonl(&root.path().join("session-bounded.jsonl"), &[message]);
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        insert_proxy(&db, "gateway-one");
+        if second_proxy {
+            insert_proxy(&db, "gateway-two");
+        }
+        db.with_conn(|conn| {
+            conn.execute("UPDATE proxy_request_logs SET duration_ms = 151653", [])
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        })
+        .unwrap();
+        run_sync(&db, GatewayCliKey::Gemini, root.path());
+        assert_eq!(
+            count(&db),
+            expected,
+            "offset={offset}, second_proxy={second_proxy}"
+        );
+    }
+}
+
+#[test]
 fn final_native_usage_replaces_a_partial_row_when_the_proxy_arrives() {
     let root = tempfile::tempdir().unwrap();
     let file = root.path().join("session-test.jsonl");
@@ -754,7 +842,7 @@ fn pending_usage_is_rechecked_without_another_file_write() {
     );
     let result = sync_sources(
         &db,
-        &[(GatewayCliKey::Claude, root.path().to_path_buf())],
+        &[(GatewayCliKey::Claude.into(), root.path().to_path_buf())],
         NOW + 4,
     )
     .unwrap();

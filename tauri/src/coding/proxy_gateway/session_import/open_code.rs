@@ -1,7 +1,7 @@
 use super::{
     parsers, persist_records, GatewaySessionUsageImportResult, SourceState, SqliteDbState,
 };
-use crate::coding::proxy_gateway::types::GatewayCliKey;
+use crate::coding::proxy_gateway::types::GatewayUsageTool;
 use rusqlite::{Connection, OpenFlags};
 use std::collections::HashMap;
 use std::path::Path;
@@ -46,7 +46,7 @@ pub(super) fn sync_database(
         result.scanned_files += 1;
         let source_id = format!("opencode:session:{session_id}");
         let mut state = states.get(&source_id).cloned().unwrap_or_default();
-        let parser_revision = parsers::revision(GatewayCliKey::OpenCode);
+        let parser_revision = parsers::revision(GatewayUsageTool::OpenCode);
         if state.parser_revision == parser_revision
             && state.modified_nanos == watermark.max(0) as u64
             && !state.pending
@@ -86,7 +86,7 @@ pub(super) fn sync_database(
                 object.insert("id".to_string(), serde_json::Value::String(id));
             }
             if let Some(record) = parsers::parse_value(
-                GatewayCliKey::OpenCode,
+                GatewayUsageTool::OpenCode,
                 &value,
                 &session_id,
                 0,
@@ -95,6 +95,7 @@ pub(super) fn sync_database(
                 records.push(record);
             }
         }
+        super::adopt_known_records(&mut state, &mut records, states);
         let (state, changes) =
             persist_records(db, &source_id, state, records, claimed_proxies, now)?;
         states.insert(source_id, state);

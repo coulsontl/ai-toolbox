@@ -39,6 +39,115 @@ impl GatewayCliKey {
     }
 }
 
+/// Usage collection is independent of gateway takeover support.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayUsageTool {
+    Claude,
+    ClaudeDesktop,
+    Codex,
+    Grok,
+    Kimi,
+    Gemini,
+    #[serde(rename = "opencode", alias = "open_code")]
+    OpenCode,
+    Pi,
+    OhMyPi,
+    Dsh,
+    Hermes,
+    #[serde(rename = "openclaw", alias = "open_claw")]
+    OpenClaw,
+    KimiCli,
+}
+
+impl GatewayUsageTool {
+    pub fn all() -> Vec<Self> {
+        vec![
+            Self::Claude,
+            Self::ClaudeDesktop,
+            Self::Codex,
+            Self::Grok,
+            Self::Kimi,
+            Self::Gemini,
+            Self::OpenCode,
+            Self::Pi,
+            Self::OhMyPi,
+            Self::Dsh,
+            Self::Hermes,
+            Self::OpenClaw,
+            Self::KimiCli,
+        ]
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::ClaudeDesktop => "claude_desktop",
+            Self::Codex => "codex",
+            Self::Grok => "grok",
+            Self::Kimi => "kimi",
+            Self::Gemini => "gemini",
+            Self::OpenCode => "opencode",
+            Self::Pi => "pi",
+            Self::OhMyPi => "oh_my_pi",
+            Self::Dsh => "dsh",
+            Self::Hermes => "hermes",
+            Self::OpenClaw => "openclaw",
+            Self::KimiCli => "kimi_cli",
+        }
+    }
+
+    pub fn gateway_cli(self) -> Option<GatewayCliKey> {
+        Some(match self {
+            Self::Claude => GatewayCliKey::Claude,
+            Self::ClaudeDesktop => GatewayCliKey::ClaudeDesktop,
+            Self::Codex => GatewayCliKey::Codex,
+            Self::Grok => GatewayCliKey::Grok,
+            Self::Kimi => GatewayCliKey::Kimi,
+            Self::Gemini => GatewayCliKey::Gemini,
+            Self::OpenCode => GatewayCliKey::OpenCode,
+            _ => return None,
+        })
+    }
+}
+
+impl From<GatewayCliKey> for GatewayUsageTool {
+    fn from(value: GatewayCliKey) -> Self {
+        match value {
+            GatewayCliKey::Claude => Self::Claude,
+            GatewayCliKey::ClaudeDesktop => Self::ClaudeDesktop,
+            GatewayCliKey::Codex => Self::Codex,
+            GatewayCliKey::Grok => Self::Grok,
+            GatewayCliKey::Kimi => Self::Kimi,
+            GatewayCliKey::Gemini => Self::Gemini,
+            GatewayCliKey::OpenCode => Self::OpenCode,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionUsageGranularity {
+    #[default]
+    Request,
+    Turn,
+    Session,
+}
+
+/// Only native facts are saved here; current provider settings are not history.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "snake_case")]
+pub struct SessionUsageMetadata {
+    pub granularity: SessionUsageGranularity,
+    pub native_provider: Option<String>,
+    pub call_count: Option<u64>,
+    pub reported_total_tokens: Option<u64>,
+    pub incomplete: bool,
+    pub cost_source: Option<String>,
+    pub window_start: Option<i64>,
+    pub window_end: Option<i64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayProxyMode {
@@ -575,7 +684,8 @@ pub struct ProxyGatewayRequestLogListInput {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct GatewayRequestLogFilters {
-    pub cli_key: Option<GatewayCliKey>,
+    pub data_source: Option<String>,
+    pub cli_key: Option<GatewayUsageTool>,
     pub provider_name: Option<String>,
     pub model: Option<String>,
     pub status_code: Option<u16>,
@@ -603,9 +713,13 @@ pub struct GatewayPaginatedRequestLogs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct GatewayRequestLogItem {
+    #[serde(default)]
+    pub usage_metadata: Option<SessionUsageMetadata>,
+    #[serde(default)]
+    pub extra_tokens: u64,
     pub trace_id: String,
     pub data_source: String,
-    pub cli_key: GatewayCliKey,
+    pub cli_key: GatewayUsageTool,
     pub route_name: Option<String>,
     pub method: Option<String>,
     pub path: Option<String>,
@@ -645,7 +759,7 @@ pub struct GatewayUsageSummary {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct GatewayUsageSummaryByCli {
-    pub cli_key: GatewayCliKey,
+    pub cli_key: GatewayUsageTool,
     pub summary: GatewayUsageSummary,
 }
 
@@ -665,7 +779,7 @@ pub struct GatewayUsageTrendPoint {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct GatewayProviderStats {
-    pub cli_key: GatewayCliKey,
+    pub cli_key: GatewayUsageTool,
     pub provider_id: String,
     pub provider_name: Option<String>,
     pub request_count: u64,
@@ -680,7 +794,7 @@ pub struct GatewayProviderStats {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct GatewayModelStats {
-    pub cli_key: GatewayCliKey,
+    pub cli_key: GatewayUsageTool,
     pub model: String,
     pub request_count: u64,
     pub total_tokens: u64,
@@ -691,12 +805,14 @@ pub struct GatewayModelStats {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct GatewayRequestLogSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_metadata: Option<SessionUsageMetadata>,
     pub trace_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_source: Option<String>,
     pub started_at: DateTime<Utc>,
     pub ended_at: DateTime<Utc>,
-    pub cli_key: Option<GatewayCliKey>,
+    pub cli_key: Option<GatewayUsageTool>,
     pub route_name: String,
     pub method: String,
     pub path: String,
@@ -891,7 +1007,15 @@ pub enum GatewaySessionImportCli {
     Grok,
     Kimi,
     Gemini,
+    #[serde(rename = "opencode", alias = "open_code")]
     OpenCode,
+    Pi,
+    OhMyPi,
+    Dsh,
+    Hermes,
+    #[serde(rename = "openclaw", alias = "open_claw")]
+    OpenClaw,
+    KimiCli,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -911,7 +1035,7 @@ impl Default for GatewaySessionUsageImportInput {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "snake_case")]
 pub struct DataSourceBreakdownInput {
-    pub cli_key: Option<GatewayCliKey>,
+    pub cli_key: Option<GatewayUsageTool>,
     pub start_unix_secs: Option<i64>,
     pub end_unix_secs: Option<i64>,
 }
@@ -948,7 +1072,7 @@ impl GatewaySessionUsageImportResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "snake_case")]
 pub struct GatewayUsageRecordedEvent {
-    pub cli_key: Option<GatewayCliKey>,
+    pub cli_key: Option<GatewayUsageTool>,
     pub trace_id: Option<String>,
     pub data_source: String,
     pub inserted_records: u64,

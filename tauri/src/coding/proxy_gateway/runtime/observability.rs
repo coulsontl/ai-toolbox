@@ -136,11 +136,12 @@ pub(super) fn record_gateway_observability(
         // decide skip/collision before we write expensive JSONL detail.
         let mut detail = GatewayRequestLogDetail {
             summary: GatewayRequestLogSummary {
+                usage_metadata: None,
                 trace_id,
                 data_source: None,
                 started_at,
                 ended_at,
-                cli_key: response.cli_key,
+                cli_key: response.cli_key.map(Into::into),
                 route_name: response.route_name.clone(),
                 method: request.method.clone(),
                 path: request_log::redact_request_path(&request.path),

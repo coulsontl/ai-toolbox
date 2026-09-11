@@ -179,7 +179,8 @@ export interface ProxyGatewayRequestLogListInput {
 }
 
 export interface GatewayRequestLogFilters {
-  cli_key?: GatewayCliKey | null;
+  data_source?: 'proxy' | 'session' | null;
+  cli_key?: GatewayUsageTool | null;
   provider_name?: string | null;
   model?: string | null;
   status_code?: number | null;
@@ -204,9 +205,11 @@ export interface GatewayPaginatedRequestLogs {
 }
 
 export interface GatewayRequestLogItem {
+  usage_metadata?: SessionUsageMetadata | null;
+  extra_tokens?: number;
   trace_id: string;
   data_source: string;
-  cli_key: GatewayCliKey;
+  cli_key: GatewayUsageTool;
   route_name?: string | null;
   method?: string | null;
   path?: string | null;
@@ -244,7 +247,7 @@ export interface GatewayUsageSummary {
 }
 
 export interface GatewayUsageSummaryByCli {
-  cli_key: GatewayCliKey;
+  cli_key: GatewayUsageTool;
   summary: GatewayUsageSummary;
 }
 
@@ -260,7 +263,7 @@ export interface GatewayUsageTrendPoint {
 }
 
 export interface GatewayProviderStats {
-  cli_key: GatewayCliKey;
+  cli_key: GatewayUsageTool;
   provider_id: string;
   provider_name: string | null;
   request_count: number;
@@ -272,7 +275,7 @@ export interface GatewayProviderStats {
 }
 
 export interface GatewayModelStats {
-  cli_key: GatewayCliKey;
+  cli_key: GatewayUsageTool;
   model: string;
   request_count: number;
   total_tokens: number;
@@ -281,11 +284,12 @@ export interface GatewayModelStats {
 }
 
 export interface GatewayRequestLogSummary {
+  usage_metadata?: SessionUsageMetadata | null;
   trace_id: string;
   data_source?: string | null;
   started_at: string;
   ended_at: string;
-  cli_key: GatewayCliKey | null;
+  cli_key: GatewayUsageTool | null;
   route_name: string;
   method: string;
   path: string;
@@ -355,7 +359,7 @@ export interface GatewayModelHealthItem {
   last_error_category: string | null;
 }
 
-export type GatewaySessionImportCli = 'all' | GatewayCliKey;
+export type GatewaySessionImportCli = 'all' | GatewayUsageTool;
 
 export interface GatewaySessionUsageImportInput {
   cli_key: GatewaySessionImportCli;
@@ -371,7 +375,7 @@ export interface GatewaySessionUsageImportResult {
 }
 
 export interface DataSourceBreakdownInput {
-  cli_key?: GatewayCliKey | null;
+  cli_key?: GatewayUsageTool | null;
   start_unix_secs?: number | null;
   end_unix_secs?: number | null;
 }
@@ -563,7 +567,7 @@ export const exportProxyGatewayRequestLogDetail = async (
 export const getProxyGatewayUsageSummary = async (
   startDate?: number,
   endDate?: number,
-  cliKey?: GatewayCliKey
+  cliKey?: GatewayUsageTool
 ): Promise<GatewayUsageSummary> => {
   return invoke<GatewayUsageSummary>('proxy_gateway_usage_summary', {
     startDate: startDate ?? null,
@@ -585,7 +589,7 @@ export const getProxyGatewayUsageSummaryByCli = async (
 export const getProxyGatewayUsageTrends = async (
   startDate?: number,
   endDate?: number,
-  cliKey?: GatewayCliKey
+  cliKey?: GatewayUsageTool
 ): Promise<GatewayUsageTrendPoint[]> => {
   return invoke<GatewayUsageTrendPoint[]>('proxy_gateway_usage_trends', {
     startDate: startDate ?? null,
@@ -597,7 +601,7 @@ export const getProxyGatewayUsageTrends = async (
 export const getProxyGatewayProviderStats = async (
   startDate?: number,
   endDate?: number,
-  cliKey?: GatewayCliKey
+  cliKey?: GatewayUsageTool
 ): Promise<GatewayProviderStats[]> => {
   return invoke<GatewayProviderStats[]>('proxy_gateway_provider_stats', {
     startDate: startDate ?? null,
@@ -609,7 +613,7 @@ export const getProxyGatewayProviderStats = async (
 export const getProxyGatewayModelStats = async (
   startDate?: number,
   endDate?: number,
-  cliKey?: GatewayCliKey
+  cliKey?: GatewayUsageTool
 ): Promise<GatewayModelStats[]> => {
   return invoke<GatewayModelStats[]>('proxy_gateway_model_stats', {
     startDate: startDate ?? null,
@@ -639,3 +643,22 @@ export const getProxyGatewayDataSourceBreakdown = async (
 export const listProxyGatewayModelHealthEntries = async (): Promise<GatewayModelHealthItem[]> => {
   return invoke<GatewayModelHealthItem[]>('proxy_gateway_model_health_entries');
 };
+
+/** Collecting local usage does not enable proxy takeover for a tool. */
+export type GatewayUsageTool = GatewayCliKey | 'pi' | 'oh_my_pi' | 'dsh' | 'hermes' | 'openclaw' | 'kimi_cli';
+
+export const GATEWAY_USAGE_TOOLS: readonly GatewayUsageTool[] = [
+  'claude', 'claude_desktop', 'codex', 'grok', 'kimi', 'gemini', 'opencode',
+  'pi', 'oh_my_pi', 'dsh', 'hermes', 'openclaw', 'kimi_cli',
+];
+
+export interface SessionUsageMetadata {
+  granularity: 'request' | 'turn' | 'session';
+  native_provider?: string | null;
+  call_count?: number | null;
+  reported_total_tokens?: number | null;
+  incomplete: boolean;
+  cost_source?: string | null;
+  window_start?: number | null;
+  window_end?: number | null;
+}

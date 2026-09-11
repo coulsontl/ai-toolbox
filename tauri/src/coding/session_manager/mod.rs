@@ -2611,7 +2611,7 @@ fn resolve_opencode_state_root(location: &RuntimeLocationInfo) -> Result<PathBuf
         .join("opencode"))
 }
 
-fn resolve_pi_sessions_root(location: &RuntimeLocationInfo) -> Result<PathBuf, String> {
+pub(crate) fn resolve_pi_sessions_root(location: &RuntimeLocationInfo) -> Result<PathBuf, String> {
     const SESSION_DIR_ENV_KEY: &str = "PI_CODING_AGENT_SESSION_DIR";
 
     if let Ok(session_dir) = std::env::var(SESSION_DIR_ENV_KEY) {

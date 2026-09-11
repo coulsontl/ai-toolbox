@@ -1,5 +1,5 @@
 use super::{source_identity, SessionUsageRecord};
-use crate::coding::proxy_gateway::types::GatewayCliKey;
+use crate::coding::proxy_gateway::types::GatewayUsageTool;
 use crate::coding::proxy_gateway::usage_parser::{from_response_body, TokenUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,18 +19,21 @@ pub(super) struct CodexSnapshot {
 
 #[derive(Default)]
 pub(super) struct ParsedSession {
+    pub pending: bool,
+    pub retired_records: Vec<SessionUsageRecord>,
     pub records: Vec<SessionUsageRecord>,
     pub snapshots: Vec<CodexSnapshot>,
     pub parent_thread_id: Option<String>,
     pub started_at: Option<i64>,
 }
 
-pub(super) fn revision(cli_key: GatewayCliKey) -> u32 {
+pub(super) fn revision(cli_key: GatewayUsageTool) -> u32 {
     match cli_key {
         // Revisit cached files to retain envelope identity in the sync ledger
         // and repair matches that joined distinct, identifiable responses.
-        GatewayCliKey::Claude | GatewayCliKey::ClaudeDesktop => 2,
-        _ => 1,
+        GatewayUsageTool::Claude | GatewayUsageTool::ClaudeDesktop => 3,
+        GatewayUsageTool::Dsh => 4,
+        _ => 2,
     }
 }
 
@@ -89,11 +92,32 @@ impl Counters {
 }
 
 pub(super) fn parse_file(
-    cli_key: GatewayCliKey,
+    cli_key: GatewayUsageTool,
     path: &Path,
     fallback_timestamp: i64,
 ) -> Result<ParsedSession, String> {
-    if cli_key == GatewayCliKey::Codex {
+    match cli_key {
+        GatewayUsageTool::Pi | GatewayUsageTool::OhMyPi => {
+            return super::pi::parse(cli_key, path, fallback_timestamp)
+        }
+        GatewayUsageTool::Dsh => return super::dsh::parse(path, fallback_timestamp),
+        GatewayUsageTool::Grok => return super::grok::parse(path, fallback_timestamp),
+        GatewayUsageTool::ClaudeDesktop => return super::desktop::parse(path, fallback_timestamp),
+        GatewayUsageTool::Kimi | GatewayUsageTool::KimiCli => {
+            return super::kimi::parse(cli_key, path, fallback_timestamp)
+        }
+        GatewayUsageTool::OpenClaw => return super::open_claw::parse(path, fallback_timestamp),
+        _ => {}
+    }
+    parse_generic_file(cli_key, path, fallback_timestamp)
+}
+
+pub(super) fn parse_generic_file(
+    cli_key: GatewayUsageTool,
+    path: &Path,
+    fallback_timestamp: i64,
+) -> Result<ParsedSession, String> {
+    if cli_key == GatewayUsageTool::Codex {
         return parse_codex(path, fallback_timestamp);
     }
     let file = File::open(path).map_err(|error| error.to_string())?;
@@ -145,7 +169,7 @@ pub(super) fn parse_file(
 }
 
 fn collect_values(
-    cli_key: GatewayCliKey,
+    cli_key: GatewayUsageTool,
     path: &Path,
     value: &Value,
     session_id: &mut String,
@@ -183,6 +207,12 @@ fn collect_values(
         }
         return;
     }
+    if cli_key == GatewayUsageTool::ClaudeDesktop
+        && value.get("type").and_then(Value::as_str) != Some("assistant")
+        && value.pointer("/message/role").and_then(Value::as_str) != Some("assistant")
+    {
+        return;
+    }
     let Some(mut record) = parse_value(cli_key, value, session_id, index, fallback_timestamp)
     else {
         return;
@@ -215,13 +245,13 @@ fn collect_values(
 }
 
 pub(super) fn parse_value(
-    cli_key: GatewayCliKey,
+    cli_key: GatewayUsageTool,
     value: &Value,
     session_id: &str,
     index: usize,
     fallback_timestamp: i64,
 ) -> Option<SessionUsageRecord> {
-    let usage = if cli_key == GatewayCliKey::Gemini && value.get("tokens").is_some() {
+    let usage = if cli_key == GatewayUsageTool::Gemini && value.get("tokens").is_some() {
         if value.get("type").and_then(Value::as_str) != Some("gemini") {
             return None;
         }
@@ -237,7 +267,7 @@ pub(super) fn parse_value(
             cache_read_tokens: Some(cached),
             ..Default::default()
         }
-    } else if cli_key == GatewayCliKey::OpenCode && value.get("tokens").is_some() {
+    } else if cli_key == GatewayUsageTool::OpenCode && value.get("tokens").is_some() {
         if value.get("role").and_then(Value::as_str) != Some("assistant")
             || value.pointer("/time/completed").is_none_or(Value::is_null)
         {
@@ -267,7 +297,7 @@ pub(super) fn parse_value(
         }
     } else {
         let candidate = usage_candidate(value)?;
-        from_response_body(cli_key, &serde_json::to_vec(candidate).ok()?)
+        from_response_body(cli_key.gateway_cli()?, &serde_json::to_vec(candidate).ok()?)
     };
     let message_id = string(
         value,
@@ -298,7 +328,7 @@ pub(super) fn parse_value(
         || usage.cache_creation_tokens.is_some();
     let is_identifiable_claude_response = matches!(
         cli_key,
-        GatewayCliKey::Claude | GatewayCliKey::ClaudeDesktop
+        GatewayUsageTool::Claude | GatewayUsageTool::ClaudeDesktop
     ) && message_id.is_some()
         && !matches!(model.as_str(), "unknown" | "<synthetic>")
         && (value.get("type").and_then(Value::as_str) == Some("assistant")
@@ -308,13 +338,14 @@ pub(super) fn parse_value(
         return None;
     }
     let message_id = message_id.unwrap_or_else(|| format!("{session_id}:{index}"));
-    let request_id = if cli_key == GatewayCliKey::Claude {
+    let request_id = if cli_key == GatewayUsageTool::Claude {
         format!("SESSION:{message_id}")
     } else {
         format!("SESSION:{}:{session_id}:{message_id}", cli_key.as_str())
     };
     let created_at = timestamp(value).unwrap_or(fallback_timestamp);
     Some(SessionUsageRecord {
+        metadata: Default::default(),
         request_id,
         legacy_request_ids: Vec::new(),
         cli_key,
@@ -333,7 +364,7 @@ pub(super) fn parse_value(
 fn parse_codex(path: &Path, fallback_timestamp: i64) -> Result<ParsedSession, String> {
     let file = File::open(path).map_err(|error| error.to_string())?;
     let mut parsed = ParsedSession::default();
-    let mut thread_id = source_identity(GatewayCliKey::Codex, path);
+    let mut thread_id = source_identity(GatewayUsageTool::Codex, path);
     let mut model = "unknown".to_string();
     let mut high_water = Counters::default();
     let mut signatures_by_source = HashMap::<String, String>::new();
@@ -425,9 +456,10 @@ fn parse_codex(path: &Path, fallback_timestamp: i64) -> Result<ParsedSession, St
                 });
                 if let Some(request_id) = &request_id {
                     parsed.records.push(SessionUsageRecord {
+                        metadata: Default::default(),
                         request_id: request_id.clone(),
                         legacy_request_ids: Vec::new(),
-                        cli_key: GatewayCliKey::Codex,
+                        cli_key: GatewayUsageTool::Codex,
                         model: model.clone(),
                         usage,
                         created_at,
@@ -517,13 +549,13 @@ fn usage_candidate(value: &Value) -> Option<&Value> {
         })
 }
 
-fn number(value: &Value, keys: &[&str]) -> u64 {
+pub(super) fn number(value: &Value, keys: &[&str]) -> u64 {
     keys.iter()
         .find_map(|key| value.get(*key).and_then(Value::as_u64))
         .unwrap_or(0)
 }
 
-fn string(value: &Value, paths: &[&str]) -> Option<String> {
+pub(super) fn string(value: &Value, paths: &[&str]) -> Option<String> {
     paths
         .iter()
         .filter_map(|path| value.pointer(path).and_then(Value::as_str))
@@ -532,7 +564,7 @@ fn string(value: &Value, paths: &[&str]) -> Option<String> {
         .map(str::to_string)
 }
 
-fn timestamp(value: &Value) -> Option<i64> {
+pub(super) fn timestamp(value: &Value) -> Option<i64> {
     [
         "/timestamp",
         "/created_at",
@@ -540,12 +572,18 @@ fn timestamp(value: &Value) -> Option<i64> {
         "/time/completed",
         "/time/created",
         "/time",
+        "/ts",
+        "/at",
         "/message/created_at",
     ]
     .iter()
     .find_map(|path| {
         let value = value.pointer(path)?;
-        if let Some(value) = value.as_i64() {
+        if let Some(value) = value
+            .as_f64()
+            .filter(|value| value.is_finite())
+            .map(|value| value as i64)
+        {
             return Some(if value > 10_000_000_000 {
                 value / 1000
             } else {
@@ -556,4 +594,73 @@ fn timestamp(value: &Value) -> Option<i64> {
             .ok()
             .map(|value| value.timestamp())
     })
+}
+
+pub(super) fn read_jsonl(path: &Path, mut visit: impl FnMut(usize, Value)) -> Result<bool, String> {
+    let file = File::open(path).map_err(|error| error.to_string())?;
+    let mut reader: Box<dyn BufRead> = if path
+        .extension()
+        .is_some_and(|ext| ext == "zstd" || ext == "zst")
+    {
+        Box::new(BufReader::new(
+            zstd::stream::read::Decoder::new(file).map_err(|error| error.to_string())?,
+        ))
+    } else {
+        Box::new(BufReader::new(file))
+    };
+    let mut line = String::new();
+    let mut index = 0;
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => return Ok(false),
+            Ok(_) => {
+                match serde_json::from_str(&line) {
+                    Ok(value) => visit(index, value),
+                    Err(_) if !line.ends_with('\n') => return Ok(true),
+                    Err(error) if !line.trim().is_empty() => {
+                        return Err(format!(
+                            "Invalid session record at line {}: {error}",
+                            index + 1
+                        ))
+                    }
+                    Err(_) => {}
+                }
+                index += 1;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(true),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+}
+
+pub(super) fn native_record(
+    tool: GatewayUsageTool,
+    session: &str,
+    identity: &str,
+    model: Option<String>,
+    usage: TokenUsage,
+    created_at: i64,
+) -> SessionUsageRecord {
+    SessionUsageRecord {
+        metadata: Default::default(),
+        request_id: format!("SESSION:{}:{session}:{identity}", tool.as_str()),
+        legacy_request_ids: Vec::new(),
+        cli_key: tool,
+        model: model.unwrap_or_else(|| "unknown".into()),
+        usage,
+        created_at,
+        session_id: session.into(),
+        reported_cost_usd: None,
+    }
+}
+
+pub(super) fn reported_cost(value: Option<&Value>) -> Option<String> {
+    let value = value?;
+    let text = value
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| value.to_string());
+    let parsed = text.parse::<rust_decimal::Decimal>().ok()?;
+    (parsed > rust_decimal::Decimal::ZERO).then(|| parsed.to_string())
 }

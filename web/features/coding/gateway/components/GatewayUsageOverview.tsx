@@ -20,6 +20,8 @@ const GatewayUsageOverview: React.FC<GatewayUsageOverviewProps> = ({ summary, re
   const cacheHitPercent = cacheHitRate == null ? null : cacheHitRate * 100;
   const cacheHitRateLabel = t('gateway.page.statistics.columns.cacheHitRate');
   const requestRate = formatInteger(requestsPerMinute);
+  const extraTokens = summary ? Math.max(0, summary.total_tokens - summary.total_input_tokens
+    - summary.total_output_tokens - summary.total_cache_read_tokens - summary.total_cache_creation_tokens) : 0;
   const tokenMetrics = [
     { label: t('gateway.page.statistics.freshInput'), value: summary?.total_input_tokens, icon: ArrowDownToLine },
     { label: t('gateway.page.statistics.chart.output'), value: summary?.total_output_tokens, icon: ArrowUpFromLine },
@@ -44,6 +46,7 @@ const GatewayUsageOverview: React.FC<GatewayUsageOverviewProps> = ({ summary, re
                 </span>
               ) : null}
             </div>
+            {extraTokens > 0 && <span className={styles.label}>{t('gateway.page.requests.nativeUsage.extraShort', { value: formatInteger(extraTokens) })}</span>}
           </div>
         </div>
 
@@ -55,7 +58,7 @@ const GatewayUsageOverview: React.FC<GatewayUsageOverviewProps> = ({ summary, re
             </span>
             <strong className={styles.summaryValue}>{requestRate}</strong>
           </div>
-          <div className={styles.requestSummary}>
+          <div className={styles.requestSummary} title={t('gateway.page.requests.nativeUsage.granularityHint')}>
             <span className={styles.metricLabel}>
               <Activity size={14} aria-hidden="true" />
               {t('gateway.page.statistics.summaryRequests')}

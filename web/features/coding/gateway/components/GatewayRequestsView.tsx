@@ -25,7 +25,8 @@ import {
   getProxyGatewayRequestLogDetail,
   importProxyGatewaySessionUsage,
   listProxyGatewayRequestLogs,
-  type GatewayCliKey,
+  type GatewayUsageTool,
+  GATEWAY_USAGE_TOOLS,
   type GatewayRequestLogDetail,
   type GatewayRequestLogFilters,
   type GatewayRequestLogItem,
@@ -55,7 +56,7 @@ import styles from './GatewayRequestsView.module.less';
 const { RangePicker } = DatePicker;
 
 type RequestDetailTabKey = 'record' | 'body' | 'headers' | 'response';
-type GatewayCliFilter = 'all' | GatewayCliKey;
+type GatewayCliFilter = 'all' | GatewayUsageTool;
 
 const REQUEST_DETAIL_TABS: RequestDetailTabKey[] = ['record', 'body', 'headers', 'response'];
 const COLLAPSED_LINE_LIMIT = 10;
@@ -116,6 +117,7 @@ interface DateLike {
 
 interface RequestFilterDraft {
   cliKey: GatewayCliFilter;
+  dataSource: 'all' | 'proxy' | 'session';
   statusCode: string;
   providerName: string;
   model: string;
@@ -124,6 +126,7 @@ interface RequestFilterDraft {
 
 const defaultDraft: RequestFilterDraft = {
   cliKey: 'all',
+  dataSource: 'all',
   statusCode: 'all',
   providerName: '',
   model: '',
@@ -138,24 +141,31 @@ const tokenBreakdownText = (
     GatewayRequestLogItem | GatewayRequestLogDetail,
     'input_tokens' | 'output_tokens' | 'cache_read_tokens' | 'cache_creation_tokens' | 'total_tokens'
   >,
-) => t('gateway.page.requests.tokensValue', {
-  input: formatInteger(value.input_tokens),
-  output: formatInteger(value.output_tokens),
-  cacheRead: formatInteger(value.cache_read_tokens),
-  cacheCreation: formatInteger(value.cache_creation_tokens),
-  total: formatInteger(value.total_tokens),
-});
+) => {
+  const breakdown = t('gateway.page.requests.tokensValue', {
+    input: formatInteger(value.input_tokens),
+    output: formatInteger(value.output_tokens),
+    cacheRead: formatInteger(value.cache_read_tokens),
+    cacheCreation: formatInteger(value.cache_creation_tokens),
+    total: formatInteger(value.total_tokens),
+  });
+  const extra = (value.total_tokens ?? 0) - (value.input_tokens ?? 0) - (value.output_tokens ?? 0)
+    - (value.cache_read_tokens ?? 0) - (value.cache_creation_tokens ?? 0);
+  return extra > 0 ? `${breakdown} · ${t('gateway.page.requests.nativeUsage.extraShort', { value: formatInteger(extra) })}` : breakdown;
+};
 
 const providerDisplayName = (
   t: ReturnType<typeof useTranslation>['t'],
   providerId?: string | null,
   providerName?: string | null,
+  nativeProvider?: string | null,
 ) => {
   if (providerName) {
     return providerName;
   }
   if (providerId === 'session') {
-    return t('gateway.page.requests.localSession');
+    const source = t('gateway.page.requests.localSession');
+    return nativeProvider ? `${source} · ${nativeProvider}` : source;
   }
   if (!providerId || providerId === 'unknown') {
     return t('gateway.page.requests.providerUnselected');
@@ -165,7 +175,7 @@ const providerDisplayName = (
 
 const providerDisplayMeta = (
   t: ReturnType<typeof useTranslation>['t'],
-  cliKey: GatewayCliKey,
+  cliKey: GatewayUsageTool,
   providerId?: string | null,
 ) => {
   const cliLabel = t(`settings.gateway.cli.${cliKey}`);
@@ -185,6 +195,7 @@ const buildRequestDetailExportFileName = (detail: GatewayRequestLogDetail) => {
 const buildFilters = (draft: RequestFilterDraft): GatewayRequestLogFilters => {
   const [start, end] = draft.dateRange ?? [];
   return {
+    data_source: draft.dataSource === 'all' ? null : draft.dataSource,
     cli_key: draft.cliKey === 'all' ? null : draft.cliKey,
     status_code: draft.statusCode === 'all' ? null : Number(draft.statusCode),
     provider_name: draft.providerName.trim() || null,
@@ -526,6 +537,37 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
           <code>{requestLineText(detail, t('gateway.page.requests.requestPathUnavailable'))}</code>
           <span>{t('gateway.page.requests.fields.provider')}</span>
           <strong>{providerDisplayName(t, detail.provider_id, detail.provider_name)}</strong>
+          {detail.data_source === 'session' && (
+            <>
+              <span>{t('gateway.page.requests.nativeUsage.granularity')}</span>
+              <strong>{t(`gateway.page.requests.nativeUsage.${detail.usage_metadata?.granularity ?? 'request'}`)}</strong>
+              <span>{t('gateway.page.requests.nativeUsage.provider')}</span>
+              <strong>{detail.usage_metadata?.native_provider || t('gateway.page.requests.nativeUsage.unknown')}</strong>
+              <span>{t('gateway.page.requests.nativeUsage.callCount')}</span>
+              <strong>{formatInteger(detail.usage_metadata?.call_count ?? (detail.usage_metadata?.granularity && detail.usage_metadata.granularity !== 'request' ? null : 1))}</strong>
+              <span>{t('gateway.page.requests.nativeUsage.completeness')}</span>
+              <strong>{t(detail.usage_metadata?.incomplete ? 'gateway.page.requests.nativeUsage.incomplete' : 'gateway.page.requests.nativeUsage.recorded')}</strong>
+              <span>{t('gateway.page.requests.nativeUsage.costSource')}</span>
+              <strong>{t(`gateway.page.requests.nativeUsage.cost.${detail.usage_metadata?.cost_source ?? 'model_pricing'}`)}</strong>
+              {detail.usage_metadata?.granularity === 'session' && (
+                <>
+                  <span>{t('gateway.page.requests.nativeUsage.window')}</span>
+                  <strong>{[
+                    detail.usage_metadata.window_start,
+                    detail.usage_metadata.window_end,
+                  ].map((time) => time == null ? '-' : formatDateTime(new Date(time * 1000).toISOString())).join(' → ')}</strong>
+                  <span>{t('gateway.page.requests.nativeUsage.timeMeaning')}</span>
+                  <strong className={styles.detailNote}>{t('gateway.page.requests.nativeUsage.cumulativeHint')}</strong>
+                </>
+              )}
+              {detail.usage_metadata?.reported_total_tokens != null && (
+                <>
+                  <span>{t('gateway.page.requests.nativeUsage.reportedTotal')}</span>
+                  <strong>{formatInteger(detail.usage_metadata.reported_total_tokens)}</strong>
+                </>
+              )}
+            </>
+          )}
           <span>{t('gateway.page.requests.fields.model')}</span>
           <strong>{requestDisplay.modelApplicable
             ? formatModelWithEffort(requestDisplay.modelText, detail.reasoning_effort)
@@ -648,7 +690,7 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
       dataIndex: 'provider_name',
       render: (_, record) => (
         <div className={styles.tableMainCell}>
-          <strong title={providerDisplayName(t, record.provider_id, record.provider_name)}>{providerDisplayName(t, record.provider_id, record.provider_name)}</strong>
+          <strong title={providerDisplayName(t, record.provider_id, record.provider_name, record.usage_metadata?.native_provider)}>{providerDisplayName(t, record.provider_id, record.provider_name, record.usage_metadata?.native_provider)}</strong>
           <small>{providerDisplayMeta(t, record.cli_key, record.provider_id)}</small>
         </div>
       ),
@@ -673,7 +715,7 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
                     </span>
                   ) : null}
                 </div>
-                <small>
+                <small title={record.usage_metadata?.incomplete ? t('gateway.page.requests.nativeUsage.incompleteHint') : undefined}>
                   {requestDisplay.kind === 'model' || record.data_source === 'session'
                     ? t('gateway.page.requests.tokensShort', {
                         input: formatCompactInteger(record.input_tokens),
@@ -681,6 +723,8 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
                         cache: formatCompactInteger(record.cache_read_tokens + record.cache_creation_tokens),
                       })
                     : requestLineText(record, t('gateway.page.requests.requestPathUnavailable'))}
+                  {record.usage_metadata?.incomplete ? ` · ${t('gateway.page.requests.nativeUsage.incomplete')}` : ''}
+                  {record.extra_tokens ? ` · ${t('gateway.page.requests.nativeUsage.extraShort', { value: formatCompactInteger(record.extra_tokens) })}` : ''}
                 </small>
               </>
             );
@@ -709,8 +753,10 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
       render: (value: number, record) => isGatewayRequestUsageApplicable(record) ? (
         <div className={styles.tokenCell}>
           <span>{formatCompactInteger(value)}</span>
-          <small title={t('gateway.page.requests.tpsHint')}>
-            {formatTps(record) ?? '-'}
+          <small title={record.data_source === 'session' ? t('gateway.page.requests.nativeUsage.granularityHint') : t('gateway.page.requests.tpsHint')}>
+            {record.data_source === 'session'
+              ? t(`gateway.page.requests.nativeUsage.${record.usage_metadata?.granularity ?? 'request'}`)
+              : formatTps(record) ?? '-'}
           </small>
         </div>
       ) : '-',
@@ -751,6 +797,7 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
         <div className={styles.filterSection}>
           <Terminal className={styles.filterIcon} size={14} aria-hidden="true" />
           <Select
+            aria-label={t('gateway.page.requests.filters.allCli')}
             variant="borderless"
             size="small"
             value={draft.cliKey}
@@ -758,15 +805,27 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
             popupMatchSelectWidth={false}
             options={[
               { value: 'all', label: t('gateway.page.requests.filters.allCli') },
-              { value: 'claude', label: t('settings.gateway.cli.claude') },
-              { value: 'claude_desktop', label: t('settings.gateway.cli.claude_desktop') },
-              { value: 'codex', label: t('settings.gateway.cli.codex') },
-              { value: 'grok', label: t('settings.gateway.cli.grok') },
-              { value: 'kimi', label: t('settings.gateway.cli.kimi') },
-              { value: 'gemini', label: t('settings.gateway.cli.gemini') },
-              { value: 'opencode', label: t('settings.gateway.cli.opencode') },
+              ...GATEWAY_USAGE_TOOLS.map((tool) => ({ value: tool, label: t(`settings.gateway.cli.${tool}`) })),
             ]}
             onChange={(value) => setDraft((current) => ({ ...current, cliKey: value }))}
+          />
+        </div>
+        <div className={styles.filterDivider} />
+
+        <div className={styles.filterSection}>
+          <Select
+            aria-label={t('gateway.page.requests.nativeUsage.source')}
+            variant="borderless"
+            size="small"
+            value={draft.dataSource}
+            className={styles.statusSelect}
+            popupMatchSelectWidth={false}
+            options={[
+              { value: 'all', label: t('gateway.page.requests.nativeUsage.allSources') },
+              { value: 'proxy', label: t('gateway.page.requests.nativeUsage.proxy') },
+              { value: 'session', label: t('gateway.page.requests.localSession') },
+            ]}
+            onChange={(value) => setDraft((current) => ({ ...current, dataSource: value }))}
           />
         </div>
         <div className={styles.filterDivider} />

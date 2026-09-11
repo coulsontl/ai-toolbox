@@ -72,7 +72,7 @@ sequenceDiagram
 ## 跨模块依赖
 
 - 依赖 `runtime_location` 决议四个工具当前运行时根。
-- OpenCode data root 的解析同时由 Gateway 本地用量采集复用，必须继续共用 XDG_DATA_HOME / WSL 用户路径规则；不要在采集器里另写一套路径推断，也不要因为扫描用量而修改会话原始 SQLite。
+- Pi sessionDir 与 OpenCode data root 的解析同时由 Gateway 本地用量采集复用，必须继续共用 XDG_DATA_HOME / WSL 用户路径规则；不要在采集器里另写一套路径推断，也不要因为扫描用量而修改会话原始 SQLite。
 - 依赖 `web/features/coding/shared/sessionManager/` 作为唯一前端入口。
 - 与四个工具模块的会话子实现强耦合。
 

@@ -299,6 +299,53 @@ fn schema_migration_rejects_future_user_version() {
 }
 
 #[test]
+fn v20_usage_metadata_upgrade_preserves_logs_rollups_and_import_ledger() {
+    let mut conn = test_conn();
+    conn.execute_batch(
+        r#"ALTER TABLE proxy_request_logs DROP COLUMN usage_metadata;
+         ALTER TABLE proxy_request_logs DROP COLUMN usage_request_count;
+         ALTER TABLE proxy_request_logs DROP COLUMN extra_tokens;
+         ALTER TABLE usage_daily_rollups DROP COLUMN extra_tokens;
+         DROP INDEX idx_proxy_native_match;
+         INSERT INTO proxy_request_logs (request_id,provider_id,app_type,model,input_tokens,created_at,data_source)
+         VALUES ('old-session','session','claude','glm-5.2',0,1780000000,'session');
+         INSERT INTO usage_daily_rollups (date,app_type,provider_id,model,request_count,input_tokens,total_cost_usd,latency_sample_count)
+         VALUES ('2026-09-01','codex','provider','model',2,200,'0.012345',2);
+         INSERT INTO gateway_session_usage_state (id,data,created_at,updated_at)
+         VALUES ('claude:old',jsonb('{"records":{"old-session":{"fingerprint":"kept"}}}'),'before','before');"#,
+    ).unwrap();
+    migrations::set_user_version(&conn, 19).unwrap();
+    migrations::run_all(&mut conn).unwrap();
+    migrations::run_all(&mut conn).unwrap();
+    let preserved: (i64, i64, Option<String>) = conn.query_row(
+        "SELECT usage_request_count,extra_tokens,json(usage_metadata) FROM proxy_request_logs WHERE request_id='old-session'",
+        [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+    ).unwrap();
+    assert_eq!(preserved, (1, 0, None));
+    assert_eq!(
+        conn.query_row(
+            "SELECT total_cost_usd FROM usage_daily_rollups",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "0.012345"
+    );
+    assert_eq!(conn.query_row("SELECT json_extract(data,'$.records.old-session.fingerprint') FROM gateway_session_usage_state WHERE id='claude:old'", [], |row| row.get::<_, String>(0)).unwrap(), "kept");
+    conn.execute("UPDATE proxy_request_logs SET usage_metadata=jsonb(?1),usage_request_count=3,extra_tokens=7", [r#"{"granularity":"turn","call_count":3,"incomplete":true}"#]).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT json_extract(usage_metadata,'$.call_count') FROM proxy_request_logs",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        3
+    );
+    health::quick_check(&conn).unwrap();
+}
+
+#[test]
 fn sqlite_state_open_rejects_future_user_version_before_file_initialization() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let db_path = temp_dir.path().join("ai-toolbox.db");

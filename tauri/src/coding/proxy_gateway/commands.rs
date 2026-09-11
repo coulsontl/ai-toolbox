@@ -13,10 +13,10 @@ use super::types::{
     GatewayConnectivityTestRequest, GatewayConnectivityTestResponse, GatewayModelHealthItem,
     GatewayModelStats, GatewayPaginatedRequestLogs, GatewayProviderStats, GatewayRequestLogDetail,
     GatewayRequestLogFilters, GatewaySessionUsageImportInput, GatewaySessionUsageImportResult,
-    GatewayUsageSummary, GatewayUsageSummaryByCli, GatewayUsageTrendPoint, ModelPricing,
-    ProxyGatewayHealthCheckResult, ProxyGatewayPortCheckInput, ProxyGatewayPortCheckResult,
-    ProxyGatewayRequestLogListInput, ProxyGatewaySettings, ProxyGatewayStatus,
-    ProxyGatewayStopPreflight,
+    GatewayUsageSummary, GatewayUsageSummaryByCli, GatewayUsageTool, GatewayUsageTrendPoint,
+    ModelPricing, ProxyGatewayHealthCheckResult, ProxyGatewayPortCheckInput,
+    ProxyGatewayPortCheckResult, ProxyGatewayRequestLogListInput, ProxyGatewaySettings,
+    ProxyGatewayStatus, ProxyGatewayStopPreflight,
 };
 use super::usage_stats;
 use crate::db::helpers::db_list;
@@ -909,11 +909,12 @@ mod tests {
         let now = Utc::now();
         let detail = GatewayRequestLogDetail {
             summary: GatewayRequestLogSummary {
+                usage_metadata: None,
                 data_source: None,
                 trace_id: "trace-redact-display".to_string(),
                 started_at: now,
                 ended_at: now,
-                cli_key: Some(GatewayCliKey::Gemini),
+                cli_key: Some(GatewayCliKey::Gemini.into()),
                 route_name: "gemini".to_string(),
                 method: "GET".to_string(),
                 path: "/gemini/v1beta/models?key=secret&api%5Fkey=encoded&api-key=hyphen&client-secret=clientSecretValue&alt=sse".to_string(),
@@ -986,7 +987,7 @@ pub fn proxy_gateway_usage_summary(
     db_state: tauri::State<'_, SqliteDbState>,
     start_date: Option<i64>,
     end_date: Option<i64>,
-    cli_key: Option<GatewayCliKey>,
+    cli_key: Option<GatewayUsageTool>,
 ) -> Result<GatewayUsageSummary, String> {
     usage_stats::usage_summary(&db_state, start_date, end_date, cli_key)
 }
@@ -1005,7 +1006,7 @@ pub fn proxy_gateway_usage_trends(
     db_state: tauri::State<'_, SqliteDbState>,
     start_date: Option<i64>,
     end_date: Option<i64>,
-    cli_key: Option<GatewayCliKey>,
+    cli_key: Option<GatewayUsageTool>,
 ) -> Result<Vec<GatewayUsageTrendPoint>, String> {
     usage_stats::usage_trends(&db_state, start_date, end_date, cli_key)
 }
@@ -1015,7 +1016,7 @@ pub fn proxy_gateway_provider_stats(
     db_state: tauri::State<'_, SqliteDbState>,
     start_date: Option<i64>,
     end_date: Option<i64>,
-    cli_key: Option<GatewayCliKey>,
+    cli_key: Option<GatewayUsageTool>,
 ) -> Result<Vec<GatewayProviderStats>, String> {
     usage_stats::provider_stats(&db_state, start_date, end_date, cli_key)
 }
@@ -1025,7 +1026,7 @@ pub fn proxy_gateway_model_stats(
     db_state: tauri::State<'_, SqliteDbState>,
     start_date: Option<i64>,
     end_date: Option<i64>,
-    cli_key: Option<GatewayCliKey>,
+    cli_key: Option<GatewayUsageTool>,
 ) -> Result<Vec<GatewayModelStats>, String> {
     usage_stats::model_stats(&db_state, start_date, end_date, cli_key)
 }

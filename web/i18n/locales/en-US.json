@@ -93,7 +93,8 @@
           "input": "Input",
           "output": "Output",
           "cache": "Cache",
-          "cost": "Cost"
+          "cost": "Cost",
+          "other": "Other usage"
         },
         "columns": {
           "provider": "Provider",
@@ -244,7 +245,37 @@
         "localSession": "Session",
         "localSessionHint": "From local CLI session logs, without HTTP status or latency. Cost uses the CLI-reported value when available, otherwise model pricing.",
         "importPartialFailure": "Partially synced: {{inserted}} added, {{updated}} updated, {{skipped}} skipped; {{count}} items failed. See the application log for details.",
-        "localSessionDetailUnavailable": "Local session usage does not include HTTP request bodies, response bodies, or headers."
+        "localSessionDetailUnavailable": "Local session usage does not include HTTP request bodies, response bodies, or headers.",
+        "nativeUsage": {
+          "granularity": "Usage granularity",
+          "request": "Per call",
+          "turn": "Turn total",
+          "session": "Cumulative delta",
+          "provider": "Native provider",
+          "unknown": "Not recorded",
+          "callCount": "Native model calls",
+          "completeness": "Usage completeness",
+          "incomplete": "Incomplete",
+          "recorded": "As recorded by CLI",
+          "incompleteHint": "The CLI marked this usage incomplete. Only the recorded portion is included.",
+          "costSource": "Cost source",
+          "cost": {
+            "reported": "CLI-reported cost",
+            "native_estimate": "CLI-estimated cost",
+            "model_pricing": "Model price estimate",
+            "unavailable": "No reported cost or matching model price"
+          },
+          "window": "Cumulative window",
+          "timeMeaning": "Time attribution",
+          "cumulativeHint": "This row is a change in cumulative usage, attributed to the last observation. Individual request times and daily usage within the window are unavailable.",
+          "reportedTotal": "Native total tokens",
+          "extraShort": "Other {{value}}",
+          "granularityHint": "Local records can represent individual calls, turn totals, or cumulative session changes. Call counts come from the CLI and are not inferred when absent.",
+          "source": "Data source",
+          "allSources": "All sources",
+          "proxy": "Gateway",
+          "overviewHint": "Includes gateway and local usage, preferring the gateway when the same invocation is identified. Aggregates retain their native granularity; unknown call counts are not inferred. Cumulative usage is attributed to observation time."
+        }
       },
       "requestRateHint": "RPM counts requests entering the gateway for the selected CLI in the last 60 seconds. It refreshes every 5 seconds, is independent of the date filter, and excludes local session imports.",
       "rpm": "RPM"
@@ -614,7 +645,13 @@
         "claude_desktopDesc": "Future takeover for Claude Desktop 3P gateway config",
         "kimi": "Kimi Code",
         "kimiDesc": "Take over Kimi CLI config.toml",
-        "opencode": "OpenCode"
+        "opencode": "OpenCode",
+        "pi": "Pi",
+        "oh_my_pi": "Oh My Pi",
+        "dsh": "DSH",
+        "hermes": "Hermes",
+        "openclaw": "OpenClaw",
+        "kimi_cli": "Kimi CLI (Python)"
       },
       "cliStatus": {
         "direct": "Direct",

@@ -519,13 +519,13 @@ SQLite v17 只新增可空 `reasoning_effort`，列表和 SQLite 摘要详情回
 
 供应商 `cache_hit_rate` 在实时明细和 `usage_daily_rollups` 合并后计算：`cache_read / (fresh_input + cache_creation + cache_read)`，返回 0..1 比例；分母为零返回 `None`，零命中返回 `Some(0.0)`。前端 TPS 仅使用 output tokens；流式有首包时使用总耗时减首包等待，否则使用端到端耗时。现有 `first_token_ms` 是首个非空 chunk 写出时间，近似 TTFT，不承诺严格文字 token 计时。
 
-本地会话用量是独立的 `session_import` 采集链路，应用启动与每 60 秒同步，不依赖网关运行，也不进入 transformer 或 runtime 请求计数。Claude/Codex/Gemini/OpenCode 原生日志归一后写同一摘要表，source 为 session，缺失 HTTP 指标不推断。v18 JSONB 账本保证记录与导入状态原子提交及归档后幂等，并保存 envelope 身份；跨源匹配优先共享 envelope，明确不同的 ID 不按相同 token 合并，零用量只允许精确身份匹配。缺少共有 ID 时才使用唯一、精确非零 token 的窄时间窗匹配，最终用量更新会重验仍可读取的旧匹配。旧手动导入的多次快照保留全部来源身份，在同一事务内合并到一条记录。历史汇总保存有效延迟样本数，避免把本地未知延迟当零稀释网关平均值。采集格式、去重边界与验证维护在 [Gateway 模块约束](../tauri/src/coding/proxy_gateway/AGENTS.md)。
+本地会话用量是独立的 `session_import` 采集链路，应用启动与每 60 秒同步，不依赖网关运行，也不进入 transformer 或 runtime 请求计数。Claude/Codex/Gemini/OpenCode 及 Pi/OMP/DSH/Grok/Kimi/Hermes/OpenClaw 原生用量归一后写同一摘要表，source 为 session，缺失 HTTP 指标不推断。v18 JSONB 账本保证记录与导入状态原子提交及归档后幂等，并保存 envelope 身份；跨源匹配优先共享 envelope，明确不同的 ID 不按相同 token 合并，零用量只允许精确身份匹配。缺少共有 ID 的逐调用记录才使用唯一、精确非零 token 的实际执行区间匹配（结束时间减 duration_ms，起点前容差 10 秒，结束后落盘宽限 30 秒）；每轮重核验全部保留的 native 明细以覆盖 #340 的旧重复记录，最终用量更新会重验仍可读取的旧匹配。旧手动导入的多次快照保留全部来源身份，在同一事务内合并到一条记录。历史汇总保存有效延迟样本数，避免把本地未知延迟当零稀释网关平均值。统计工具集合与网关接管集合分开；v20 记录原生粒度、调用数及额外 Token，累计来源按变化贡献写入而不伪造逐请求。Desktop audit 的已证明重复贡献与修复快照原子回退。采集格式、去重边界与验证维护在 [Gateway 模块约束](../tauri/src/coding/proxy_gateway/AGENTS.md)。
 
 本节指标审查对照 cc-switch `6243e20a` 的 `services/session_usage*.rs`、`services/usage_stats.rs`、`database/dao/usage_rollup.rs`，以及 AxonHub `dfbe2259` 的 `internal/server/biz/usage_log.go`、`llm/pipeline/stream/usage.go` 和 `llm/transformer/openai/copilot/outbound.go`。本次仅核对相关行为，§19.4 的协议增量同步 baseline 保持原记录。
 
 延迟样本列由独立 v19 迁移补齐，兼容已经标记 v18 但只创建采集账本的开发数据库，并保留已有非空样本数。历史归档失败应记录告警并重试，不得阻止当前 proxy 摘要保存或已提交 native 用量的刷新事件。
 
-回归入口：`runtime/observability.rs::tests` 的快照方言/metrics-only 往返/60 秒边界，`runtime.rs::tests` 的真实转发、转换、Copilot 失败协议/effort 往返、进行中计数、failover 和 restart，`usage_stats.rs::tests` 的列表/详情/缓存与延迟聚合，`session_import::tests` 的原生会话导入、身份冲突、旧账本/旧快照收敛和去重，`tauri/tests/sqlite_jsonb.rs` 的 v17/v18/v19 迁移，以及前端 `gatewayFormatters.test.ts`。
+回归入口：`runtime/observability.rs::tests` 的快照方言/metrics-only 往返/60 秒边界，`runtime.rs::tests` 的真实转发、转换、Copilot 失败协议/effort 往返、进行中计数、failover 和 restart，`usage_stats.rs::tests` 的列表/详情/缓存与延迟聚合，`session_import::tests` 的原生会话导入、身份冲突、旧账本/旧快照收敛和去重，`tauri/tests/sqlite_jsonb.rs` 的 v17/v18/v19/v20 迁移，以及前端 `gatewayFormatters.test.ts`。
 
 ## 12. 上游 URL、query 与 auth
 

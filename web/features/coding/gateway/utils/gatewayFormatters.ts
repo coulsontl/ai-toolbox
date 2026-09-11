@@ -1,4 +1,4 @@
-import type { GatewayCliKey, ProxyGatewaySettings, ProxyGatewayStatus } from '@/services';
+import type { GatewayCliKey, GatewayUsageTool, ProxyGatewaySettings, ProxyGatewayStatus } from '@/services';
 
 export const joinClassNames = (...classNames: Array<string | false | null | undefined>) =>
   classNames.filter(Boolean).join(' ');
@@ -88,7 +88,7 @@ export const calculateCacheHitRate = (inputTokens: number, cacheReadTokens: numb
 
 export const getGatewayRequestsPerMinute = (
   status: Pick<ProxyGatewayStatus, 'requests_per_minute' | 'requests_per_minute_by_cli'> | null | undefined,
-  cliKey?: GatewayCliKey,
+  cliKey?: GatewayUsageTool,
 ): number | null => {
   if (!status) {
     return null;
@@ -96,9 +96,12 @@ export const getGatewayRequestsPerMinute = (
   if (!cliKey) {
     return status.requests_per_minute;
   }
+  if (['pi', 'oh_my_pi', 'dsh', 'hermes', 'openclaw', 'kimi_cli'].includes(cliKey)) {
+    return null;
+  }
   return status.requests_per_minute_by_cli == null
     ? null
-    : status.requests_per_minute_by_cli[cliKey] ?? 0;
+    : status.requests_per_minute_by_cli[cliKey as GatewayCliKey] ?? 0;
 };
 
 export const formatDateTime = (value: string | null | undefined) => {
