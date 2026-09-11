@@ -491,6 +491,55 @@ export const translateSyncMessage = (
 			(path) => t("settings.syncMessages.fileLooksBinary", { path }),
 		],
 		[
+			/^技能 '(.+)' 在工具 '(.+)' 的路径 '(.+)' 不是 AI Toolbox 管理的链接，已保留原样$/,
+			(skill, tool, path) =>
+				t("settings.syncMessages.skillsForeignPathKept", { skill, tool, path }),
+		],
+		[
+			/^技能 '(.+)' 在工具 '(.+)' 的链接维护失败：(.+)$/,
+			(skill, tool, detail) =>
+				withDetail(
+					"settings.syncMessages.skillsLinkMaintenanceFailed",
+					detail,
+					mode,
+					t,
+					{ skill, tool },
+				),
+		],
+		[
+			/^技能 '(.+)' 的源目录不存在，已跳过同步：(.+)$/,
+			(skill, detail) =>
+				withDetail(
+					"settings.syncMessages.skillsSourceMissingSkipped",
+					detail,
+					mode,
+					t,
+					{ skill },
+				),
+		],
+		[
+			/^技能 '(.+)' 的远端目录清理失败：(.+)$/,
+			(skill, detail) =>
+				withDetail(
+					"settings.syncMessages.skillsRemoteDirCleanupFailed",
+					detail,
+					mode,
+					t,
+					{ skill },
+				),
+		],
+		[
+			/^技能 '(.+)' 的同步哈希写入失败：(.+)$/,
+			(skill, detail) =>
+				withDetail(
+					"settings.syncMessages.skillsHashWriteFailed",
+					detail,
+					mode,
+					t,
+					{ skill },
+				),
+		],
+		[
 			/^MCP sync: (.+)$/,
 			(detail) =>
 				withDetail("settings.syncMessages.mcpSyncFailed", detail, mode, t),

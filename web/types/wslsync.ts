@@ -42,6 +42,7 @@ export interface WSLSyncConfig {
   lastSyncTime?: string;
   lastSyncStatus: string; // "success" | "error" | "never"
   lastSyncError?: string;
+  lastSyncWarnings?: string[];
   moduleStatuses: WslDirectModuleStatus[];
 }
 
@@ -53,6 +54,7 @@ export interface SyncResult {
   syncedFiles: string[];
   skippedFiles: string[];
   errors: string[];
+  warnings?: string[];
 }
 
 /**
@@ -80,6 +82,7 @@ export interface WSLStatusResult {
   lastSyncTime?: string;
   lastSyncStatus: string;
   lastSyncError?: string;
+  lastSyncWarnings?: string[];
   moduleStatuses: WslDirectModuleStatus[];
 }
 

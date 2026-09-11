@@ -180,6 +180,7 @@ pub async fn sync_mcp_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<()
         synced_files: vec![],
         skipped_files: vec![],
         errors: all_errors,
+        warnings: vec![],
     };
     let _ = super::commands::update_sync_status(state, &sync_result).await;
 

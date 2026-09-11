@@ -802,7 +802,12 @@
       "wslMcpSyncSkipped": "WSL MCP sync skipped: {{detail}}",
       "wslClaudeJsonSyncSkipped": "WSL ~/.claude.json sync skipped because the file could not be parsed. Please verify its format. ({{detail}})",
       "openCodeCodexConfigSyncPartialFailed": "OpenCode/Codex config sync partially failed: {{detail}}",
-      "openCodeCodexMcpSyncSkipped": "OpenCode/Codex MCP sync skipped: {{detail}}"
+      "openCodeCodexMcpSyncSkipped": "OpenCode/Codex MCP sync skipped: {{detail}}",
+      "skillsForeignPathKept": "Path '{{path}}' of skill '{{skill}}' on tool '{{tool}}' is not an AI Toolbox-managed link; it was left untouched",
+      "skillsLinkMaintenanceFailed": "Failed to maintain the link of skill '{{skill}}' on tool '{{tool}}': {{detail}}",
+      "skillsSourceMissingSkipped": "Source directory of skill '{{skill}}' does not exist; sync skipped: {{detail}}",
+      "skillsRemoteDirCleanupFailed": "Failed to clean up the remote directory of skill '{{skill}}': {{detail}}",
+      "skillsHashWriteFailed": "Failed to write the sync hash of skill '{{skill}}': {{detail}}"
     },
     "autoBackup": {
       "title": "Auto Backup",
@@ -922,7 +927,8 @@
       "runningStateTooltip": "Running State: Indicates whether the WSL instance is currently running. Running instances are ready to use; stopped instances will start automatically on first access",
       "autoSyncHint": "MCP servers and Skills for OpenCode, Claude, and Codex, and Skills for OpenClaw are automatically synced — no manual mapping needed. If a module already points directly to a WSL config directory, it is treated as already running inside WSL and duplicate sync is skipped.",
       "inWsl": "In WSL",
-      "wslDirectHint": "This module already points at a config directory inside WSL. AI Toolbox will continue using that WSL user directory directly, so another sync from this dialog is unnecessary."
+      "wslDirectHint": "This module already points at a config directory inside WSL. AI Toolbox will continue using that WSL user directory directly, so another sync from this dialog is unnecessary.",
+      "lastSyncWarnings": "Last sync warnings"
     },
     "ssh": {
       "title": "SSH Config Sync Settings",
@@ -1001,7 +1007,8 @@
       "autoSyncHint": "MCP servers and Skills for OpenCode, Claude, and Codex, and Skills for OpenClaw are automatically synced — no manual mapping needed.",
       "indicator": {
         "tooltip": "Click to configure SSH sync"
-      }
+      },
+      "lastSyncWarnings": "Last sync warnings"
     },
     "webdav": {
       "url": "Server URL",

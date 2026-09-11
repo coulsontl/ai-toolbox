@@ -63,6 +63,7 @@ export interface SSHSyncConfig {
   lastSyncTime?: string;
   lastSyncStatus: string; // "success" | "error" | "never"
   lastSyncError?: string;
+  lastSyncWarnings?: string[];
   moduleStatuses: WslDirectModuleStatus[];
 }
 
@@ -84,6 +85,7 @@ export interface SSHStatusResult {
   lastSyncTime?: string;
   lastSyncStatus: string;
   lastSyncError?: string;
+  lastSyncWarnings?: string[];
 }
 
 /**
@@ -94,6 +96,7 @@ export interface SyncResult {
   syncedFiles: string[];
   skippedFiles: string[];
   errors: string[];
+  warnings?: string[];
 }
 
 /**

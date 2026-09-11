@@ -49,6 +49,17 @@ pub fn config_from_db_value(
             .or_else(|| value.get("lastSyncError"))
             .and_then(|v| v.as_str())
             .map(String::from),
+        last_sync_warnings: value
+            .get("last_sync_warnings")
+            .or_else(|| value.get("lastSyncWarnings"))
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
         module_statuses: vec![],
     }
 }
@@ -297,8 +308,37 @@ pub fn mapping_to_db_value(mapping: &SSHFileMapping) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{mapping_from_db_value, mapping_to_db_value};
+    use super::{config_from_db_value, mapping_from_db_value, mapping_to_db_value};
     use serde_json::json;
+
+    #[test]
+    fn ssh_config_from_legacy_record_defaults_last_sync_warnings_to_empty() {
+        let config = config_from_db_value(
+            json!({
+                "enabled": true,
+                "active_connection_id": "conn-1",
+                "last_sync_status": "success",
+            }),
+            vec![],
+            vec![],
+        );
+        assert!(config.last_sync_warnings.is_empty());
+    }
+
+    #[test]
+    fn ssh_config_from_db_value_reads_persisted_last_sync_warnings() {
+        let config = config_from_db_value(
+            json!({
+                "enabled": true,
+                "active_connection_id": "conn-1",
+                "last_sync_status": "success",
+                "last_sync_warnings": ["kept foreign path"],
+            }),
+            vec![],
+            vec![],
+        );
+        assert_eq!(config.last_sync_warnings, vec!["kept foreign path".to_string()]);
+    }
 
     #[test]
     fn directory_mapping_without_saved_excludes_uses_generic_defaults() {

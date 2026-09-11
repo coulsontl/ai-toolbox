@@ -810,6 +810,34 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
                 style={{ marginTop: 12 }}
               />
             )}
+            {status?.lastSyncWarnings && status.lastSyncWarnings.length > 0 && (
+              <Alert
+                type="warning"
+                showIcon
+                title={t('settings.ssh.lastSyncWarnings')}
+                description={
+                  <ul
+                    style={{
+                      margin: 0,
+                      paddingLeft: 18,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 4,
+                    }}
+                  >
+                    {status.lastSyncWarnings.map((warning) => (
+                      <li
+                        key={warning}
+                        style={{ fontSize: 12, lineHeight: 1.5, wordBreak: 'break-all' }}
+                      >
+                        {translateSyncMessage(warning, 'ssh', t)}
+                      </li>
+                    ))}
+                  </ul>
+                }
+                style={{ marginTop: 12 }}
+              />
+            )}
             {syncWarning && (
               <Alert
                 type="warning"

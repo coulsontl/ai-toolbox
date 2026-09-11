@@ -24,6 +24,62 @@ use crate::SqliteDbState;
 
 const SSH_CENTRAL_DIR: &str = "~/.ai-toolbox/skills";
 
+/// Record a user-facing non-fatal notice: append to the run's warning list and
+/// emit `ssh-sync-warning` so the manual-sync modal shows it live.
+fn record_warning(warnings: &mut Vec<String>, app: &AppHandle, message: String) {
+    warnings.push(message.clone());
+    let _ = app.emit("ssh-sync-warning", message);
+}
+
+/// Prefer the built-in display name in user-facing warnings.
+fn tool_display_name(tool_key: &str) -> String {
+    BUILTIN_TOOLS
+        .iter()
+        .find(|t| t.key == tool_key)
+        .map(|t| t.display_name.to_string())
+        .unwrap_or_else(|| tool_key.to_string())
+}
+
+/// Warn that creating/refreshing/removing a tool symlink failed.
+fn warn_link_maintenance_failed(
+    warnings: &mut Vec<String>,
+    app: &AppHandle,
+    skill: &str,
+    tool_key: &str,
+    detail: impl std::fmt::Display,
+) {
+    record_warning(
+        warnings,
+        app,
+        format!(
+            "技能 '{}' 在工具 '{}' 的链接维护失败：{}",
+            skill,
+            tool_display_name(tool_key),
+            detail
+        ),
+    );
+}
+
+/// Warn that a real directory or foreign symlink was left untouched.
+fn warn_foreign_path_kept(
+    warnings: &mut Vec<String>,
+    app: &AppHandle,
+    skill: &str,
+    tool_key: &str,
+    link_path: &str,
+) {
+    record_warning(
+        warnings,
+        app,
+        format!(
+            "技能 '{}' 在工具 '{}' 的路径 '{}' 不是 AI Toolbox 管理的链接，已保留原样",
+            skill,
+            tool_display_name(tool_key),
+            link_path
+        ),
+    );
+}
+
 /// Get the remote skills directory path for a tool key
 fn get_remote_tool_skills_dir(tool_key: &str) -> Option<String> {
     BUILTIN_TOOLS
@@ -120,6 +176,7 @@ pub async fn sync_skills_to_ssh(
 
     // 2. Collect local skill names
     let local_skill_names: HashSet<String> = skills.iter().map(|s| s.name.clone()).collect();
+    let mut warnings: Vec<String> = Vec::new();
 
     // 3. Delete skills in remote that no longer exist locally.
     // Only app-managed symlinks into the central repo are removed; real
@@ -145,6 +202,13 @@ pub async fn sync_skills_to_ssh(
                             link_path,
                             error
                         );
+                        warn_link_maintenance_failed(
+                            &mut warnings,
+                            &app,
+                            remote_skill,
+                            tool_key,
+                            &error,
+                        );
                     } else if inspect_remote_path_kind(session, &link_path, SSH_CENTRAL_DIR).await
                         == RemotePathKind::Foreign
                     {
@@ -153,6 +217,13 @@ pub async fn sync_skills_to_ssh(
                             tool_key,
                             remote_skill,
                             link_path
+                        );
+                        warn_foreign_path_kept(
+                            &mut warnings,
+                            &app,
+                            remote_skill,
+                            tool_key,
+                            &link_path,
                         );
                     }
                 }
@@ -164,6 +235,14 @@ pub async fn sync_skills_to_ssh(
                     remote_skill,
                     skill_path,
                     error
+                );
+                record_warning(
+                    &mut warnings,
+                    &app,
+                    format!(
+                        "技能 '{}' 的远端目录清理失败：{}",
+                        remote_skill, error
+                    ),
                 );
             }
         }
@@ -197,6 +276,15 @@ pub async fn sync_skills_to_ssh(
                 "Skills SSH sync: skip '{}', source not found: {}",
                 skill.name,
                 source.display()
+            );
+            record_warning(
+                &mut warnings,
+                &app,
+                format!(
+                    "技能 '{}' 的源目录不存在，已跳过同步：{}",
+                    skill.name,
+                    source.display()
+                ),
             );
             continue;
         }
@@ -332,6 +420,13 @@ pub async fn sync_skills_to_ssh(
                                 link_path,
                                 error
                             );
+                            warn_link_maintenance_failed(
+                                &mut warnings,
+                                &app,
+                                &skill.name,
+                                tool_key,
+                                &error,
+                            );
                         }
                     }
                     RemotePathKind::Managed => {
@@ -347,6 +442,13 @@ pub async fn sync_skills_to_ssh(
                                     link_path,
                                     error
                                 );
+                                warn_link_maintenance_failed(
+                                    &mut warnings,
+                                    &app,
+                                    &skill.name,
+                                    tool_key,
+                                    &error,
+                                );
                             }
                         }
                     }
@@ -356,6 +458,13 @@ pub async fn sync_skills_to_ssh(
                             tool_key,
                             skill.name,
                             link_path
+                        );
+                        warn_foreign_path_kept(
+                            &mut warnings,
+                            &app,
+                            &skill.name,
+                            tool_key,
+                            &link_path,
                         );
                     }
                 }
@@ -386,6 +495,13 @@ pub async fn sync_skills_to_ssh(
                             link_path,
                             error
                         );
+                        warn_link_maintenance_failed(
+                            &mut warnings,
+                            &app,
+                            &skill.name,
+                            tool_key,
+                            &error,
+                        );
                     } else if inspect_remote_path_kind(session, &link_path, SSH_CENTRAL_DIR).await
                         == RemotePathKind::Foreign
                     {
@@ -394,6 +510,13 @@ pub async fn sync_skills_to_ssh(
                             tool_key,
                             skill.name,
                             link_path
+                        );
+                        warn_foreign_path_kept(
+                            &mut warnings,
+                            &app,
+                            &skill.name,
+                            tool_key,
+                            &link_path,
                         );
                     }
                 }
@@ -407,6 +530,8 @@ pub async fn sync_skills_to_ssh(
         skills.len(),
         all_errors.len()
     );
+
+    let _ = super::commands::update_sync_warnings(state, &warnings).await;
 
     if !all_errors.is_empty() {
         return Err(all_errors.join("; "));
