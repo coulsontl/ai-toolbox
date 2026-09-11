@@ -771,9 +771,9 @@ pub async fn save_pi_auth_provider(
 }
 
 #[tauri::command]
-pub async fn save_pi_models_provider(
+pub async fn save_pi_models_provider<R: tauri::Runtime>(
     state: tauri::State<'_, SqliteDbState>,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
     input: PiModelsProviderInput,
 ) -> Result<PiRuntimeConfig, String> {
     let provider_key = input.provider_key.trim();

@@ -54,6 +54,7 @@ import {
   reorderGrokProviders,
   type GrokDeviceAuthStartResult,
 } from '@/services/grokApi';
+import { useProviderSharing } from '@/features/coding/shared/providerShare';
 import { grokPromptApi } from '@/services/grokPromptApi';
 import { refreshTrayMenu, hasAllApiHubExtension } from '@/services/appApi';
 import { useKeepAlive } from '@/components/layout/KeepAliveOutlet';
@@ -202,6 +203,7 @@ let rememberedGrokSessionSourceMode: SessionSourceMode = 'all';
 
 const GrokPage: React.FC = () => {
   const { t } = useTranslation();
+  const { shareProvider, shareModal } = useProviderSharing('grok', () => loadConfig());
   const { isActive } = useKeepAlive();
   const {
     sidebarHiddenByPage,
@@ -1966,6 +1968,7 @@ const GrokPage: React.FC = () => {
                                 onEdit={handleEditProvider}
                                 onDelete={handleDeleteProvider}
                                 onCopy={handleCopyProvider}
+                                onShare={shareProvider}
                                 onTest={handleTestProvider}
                                 onSelect={handleSelectProvider}
                                 onToggleDisabled={handleToggleDisabled}
@@ -2358,6 +2361,8 @@ const GrokPage: React.FC = () => {
           )}
         </Modal>
       </div>
+
+      {shareModal}
     </SectionSidebarLayout>
   );
 };

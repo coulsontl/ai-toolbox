@@ -1,0 +1,49 @@
+.description {
+  display: block;
+  margin-bottom: 16px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.form {
+  display: grid;
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  font-size: 13px;
+
+  > :last-child { min-width: 0; }
+}
+
+.hint {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.feedback {
+  margin-top: 16px;
+  display: grid;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+
+.shareLink { margin-top: 12px; }
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+@media (max-width: 540px) {
+  .field { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+}

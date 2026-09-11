@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
+use super::portable::SharedConnection;
 use super::utils::tolerant_base64_decode;
 
 /// The scheme registered in `tauri.conf.json` (`plugins.deep-link.desktop.schemes`).
@@ -17,11 +18,21 @@ pub const VERSION: &str = "v1";
 /// The mandatory path.
 pub const PATH: &str = "/import";
 
-/// Apps supported by the v1 deep-link import (env-shaped row-table tools).
-/// `grok` is intentionally absent — its settings shape (`defaultModelKey` +
-/// `modelCatalog`) is materially more complex and has no precedent in
-/// `cc_switch.rs`; deferred to a follow-up.
-pub const SUPPORTED_APPS: &[&str] = &["claude", "codex", "gemini"];
+/// Public app IDs. Keep the original v1 IDs for existing links.
+pub const SUPPORTED_APPS: &[&str] = &[
+    "claude",
+    "claudedesktop",
+    "codex",
+    "grok",
+    "kimi",
+    "gemini",
+    "opencode",
+    "openclaw",
+    "pi",
+    "omp",
+    "hermes",
+    "dsh",
+];
 
 /// The only resource type supported in v1.
 pub const SUPPORTED_RESOURCE: &str = "provider";
@@ -59,6 +70,8 @@ pub struct DeepLinkImportRequest {
     /// Decoded Claude `extra_settings_config` override.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra: Option<String>,
+    #[serde(flatten)]
+    pub connection: SharedConnection,
     /// The original URL (kept so the frontend/dialog can show it if needed;
     /// the backend logs the *redacted* form separately).
     #[serde(rename = "rawUrl")]
@@ -83,8 +96,10 @@ pub enum DeepLinkError {
     BadPath { expected: String },
     #[error("unsupported resource (only 'provider' is supported)")]
     UnsupportedResource,
-    #[error("unsupported app '{0}' (v1 supports claude/codex/gemini; grok is deferred)")]
+    #[error("unsupported app '{0}'")]
     UnsupportedApp(String),
+    #[error("invalid provider connection data: {0}")]
+    InvalidConnection(String),
     #[error("unsupported parameter '{0}'")]
     UnsupportedParam(&'static str),
     #[error("missing required parameter '{0}'")]
@@ -216,6 +231,29 @@ pub fn parse_deeplink_url(raw: &str) -> Result<DeepLinkImportRequest, DeepLinkEr
         _ => None,
     };
 
+    let mut connection_fields = serde_json::Map::new();
+    for key in [
+        "sourceApp",
+        "baseUrlStyle",
+        "apiFormat",
+        "apiVersion",
+        "providerType",
+        "apiKeyField",
+    ] {
+        if let Some(value) = get(key).filter(|value| !value.trim().is_empty()) {
+            connection_fields.insert(key.to_string(), serde_json::Value::String(value));
+        }
+    }
+    for key in ["models", "modelRoles", "headers", "gatewayProfile"] {
+        if let Some(value) = get(key).filter(|value| !value.trim().is_empty()) {
+            let value = serde_json::from_str(&value)
+                .map_err(|_| DeepLinkError::InvalidConnection(format!("invalid {key}")))?;
+            connection_fields.insert(key.to_string(), value);
+        }
+    }
+    let connection = serde_json::from_value(serde_json::Value::Object(connection_fields))
+        .map_err(|error| DeepLinkError::InvalidConnection(error.to_string()))?;
+
     Ok(DeepLinkImportRequest {
         resource,
         app,
@@ -231,6 +269,7 @@ pub fn parse_deeplink_url(raw: &str) -> Result<DeepLinkImportRequest, DeepLinkEr
         source_provider_id,
         config,
         extra,
+        connection,
         raw_url: raw.to_string(),
     })
 }
@@ -267,14 +306,54 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_unknown_app_and_grok() {
-        let url = "aitoolbox://v1/import?resource=provider&app=openclaw&name=Test";
+    fn parse_rejects_unknown_app() {
+        let url = "aitoolbox://v1/import?resource=provider&app=unknown-tool&name=Test";
         let err = parse_deeplink_url(url).unwrap_err();
         assert!(matches!(err, DeepLinkError::UnsupportedApp(_)));
+    }
 
-        let url = "aitoolbox://v1/import?resource=provider&app=grok&name=Test";
-        let err = parse_deeplink_url(url).unwrap_err();
-        assert!(matches!(err, DeepLinkError::UnsupportedApp(_)));
+    #[test]
+    fn parse_accepts_all_portable_targets_and_extended_connection_fields() {
+        for app in SUPPORTED_APPS {
+            let mut url = Url::parse("aitoolbox://v1/import").unwrap();
+            url.query_pairs_mut().extend_pairs([
+                ("resource", "provider"),
+                ("app", *app),
+                ("sourceApp", "opencode"),
+                ("name", "Relay + 中文"),
+                ("apiFormat", "anthropic_messages"),
+                ("apiKeyField", "x-api-key"),
+                (
+                    "models",
+                    r#"[{"id":"vendor/a+b","contextWindow":64000,"input":["text","image"]}]"#,
+                ),
+                ("modelRoles", r#"{"sonnet":"vendor/a+b"}"#),
+                (
+                    "headers",
+                    r#"[{"op":"set","name":"X-Project","value":"a+b & c"}]"#,
+                ),
+            ]);
+            let parsed = parse_deeplink_url(url.as_str()).unwrap();
+            assert_eq!(parsed.app, *app);
+            assert_eq!(parsed.connection.source_app.as_deref(), Some("opencode"));
+            assert_eq!(parsed.connection.models[0].id, "vendor/a+b");
+            assert_eq!(parsed.connection.headers[0].value, "a+b & c");
+        }
+    }
+
+    #[test]
+    fn parse_rejects_malformed_portable_json() {
+        for (field, value) in [
+            ("models", "{"),
+            ("models", r#"[{"name":"missing id"}]"#),
+            ("headers", "false"),
+            ("gatewayProfile", "[]"),
+        ] {
+            let mut url =
+                Url::parse("aitoolbox://v1/import?resource=provider&app=pi&name=Relay").unwrap();
+            url.query_pairs_mut().append_pair(field, value);
+            assert!(parse_deeplink_url(url.as_str()).is_err(), "{field}");
+        }
     }
 
     #[test]

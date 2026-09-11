@@ -172,9 +172,9 @@ pub async fn list_claude_desktop_providers(
 
 /// Create a new Claude Desktop provider.
 #[tauri::command]
-pub async fn create_claude_desktop_provider(
+pub async fn create_claude_desktop_provider<R: tauri::Runtime>(
     state: tauri::State<'_, SqliteDbState>,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
     provider: ClaudeDesktopProviderInput,
 ) -> Result<ClaudeDesktopProvider, String> {
     let db = state.db();

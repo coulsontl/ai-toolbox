@@ -11,7 +11,7 @@ import {
   HolderOutlined,
   GlobalOutlined,
 } from '@ant-design/icons';
-import { BarChart2 } from 'lucide-react';
+import { BarChart2, Share2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useSortable } from '@dnd-kit/sortable';
@@ -59,6 +59,7 @@ interface KimiProviderCardProps {
   onToggleDisabled: (provider: KimiProvider, isDisabled: boolean) => void | Promise<void>;
   onTest?: (provider: KimiProvider) => void;
   onCopy?: (provider: KimiProvider) => void;
+  onShare?: (provider: KimiProvider) => void;
   connectivityStatus?: ProviderConnectivityStatusItem;
   selectable?: boolean;
   selected?: boolean;
@@ -77,6 +78,7 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
   onToggleDisabled,
   onTest,
   onCopy,
+  onShare,
   connectivityStatus,
   selectable = false,
   selected = false,
@@ -313,6 +315,10 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
       icon: <CopyOutlined />,
       onClick: () => onCopy?.(provider),
     },
+    ...(onShare ? [{
+      key: 'share', label: t('common.share'), icon: <Share2 size={14} />,
+      onClick: () => onShare(provider),
+    }] : []),
     ...(isLocalProvider
       ? []
       : [

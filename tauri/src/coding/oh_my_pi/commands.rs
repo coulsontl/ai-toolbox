@@ -810,9 +810,9 @@ pub async fn save_omp_other_settings(
 }
 
 #[tauri::command]
-pub async fn save_omp_models_provider(
+pub async fn save_omp_models_provider<R: tauri::Runtime>(
     state: tauri::State<'_, SqliteDbState>,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
     input: OmpModelsProviderInput,
 ) -> Result<OmpRuntimeConfig, String> {
     let provider_key = input.provider_key.trim();

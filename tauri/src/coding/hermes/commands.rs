@@ -1002,9 +1002,9 @@ pub async fn read_hermes_runtime_config(
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn save_hermes_models_provider(
+pub async fn save_hermes_models_provider<R: tauri::Runtime>(
     state: tauri::State<'_, SqliteDbState>,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
     input: HermesModelsProviderInput,
 ) -> Result<HermesRuntimeConfig, String> {
     let provider_key = input.provider_key.trim();

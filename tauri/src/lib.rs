@@ -2211,6 +2211,8 @@ pub fn run() {
             coding::cc_switch::list_cc_switch_providers,
             coding::deeplink::mark_deeplink_frontend_ready,
             coding::deeplink::import_from_deeplink_unified,
+            coding::deeplink::preview_deeplink_import,
+            coding::deeplink::get_provider_share_defaults,
             // Magic Context
             coding::magic_context::read_magic_context_config,
             coding::magic_context::save_magic_context_config,

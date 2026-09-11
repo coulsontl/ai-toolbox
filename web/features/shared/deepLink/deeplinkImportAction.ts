@@ -2,20 +2,18 @@ import { router } from '@/app/routes';
 import {
   importFromDeeplinkUnified,
   type DeepLinkImportRequest,
+  type DeepLinkImportResult,
+  type ImportConflictPolicy,
 } from '@/services/deeplinkApi';
 import { refreshTrayMenu } from '@/services/appApi';
 import { DEEP_LINK_IMPORT_COMPLETED } from '@/constants/configEvents';
+import { PROVIDER_SHARE_TOOLS } from './providerTransfer';
 
 /**
  * Map a deep-link `app` to the router path of its CLI tab, so that after a
  * successful import we can switch to that tab and let the user see the result.
- * `grok` is mapped for completeness even though v1 rejects it at parse time.
  */
-const APP_ROUTE_PATH: Record<string, string> = {
-  claude: '/coding/claudecode',
-  codex: '/coding/codex',
-  gemini: '/coding/geminicli',
-};
+const APP_ROUTE_PATH = Object.fromEntries(PROVIDER_SHARE_TOOLS.map((tool) => [tool.app, tool.path]));
 
 /**
  * Persist a deep-link provider request and run the shared post-import
@@ -25,8 +23,8 @@ const APP_ROUTE_PATH: Record<string, string> = {
  * Shared by the deep-link import confirmation dialog (external `aitoolbox://`
  * links) and the provider share modal's "import to this device" action.
  */
-export async function importDeepLinkRequest(request: DeepLinkImportRequest): Promise<void> {
-  const result = await importFromDeeplinkUnified(request);
+export async function importDeepLinkRequest(request: DeepLinkImportRequest, conflictPolicy: ImportConflictPolicy = 'skip'): Promise<DeepLinkImportResult> {
+  const result = await importFromDeeplinkUnified(request, conflictPolicy);
 
   // Switch to the imported tool's tab so the user sees the result. The
   // matching page (kept alive under KeepAliveOutlet) refreshes its provider
@@ -34,7 +32,11 @@ export async function importDeepLinkRequest(request: DeepLinkImportRequest): Pro
   // to it triggers its initial loadConfig on mount.
   const targetPath = APP_ROUTE_PATH[result.app];
   if (targetPath) {
-    await router.navigate(targetPath);
+    try {
+      await router.navigate(targetPath);
+    } catch (navigationError) {
+      console.error('Failed to navigate after provider import:', navigationError);
+    }
   }
   window.dispatchEvent(
     new CustomEvent(DEEP_LINK_IMPORT_COMPLETED, {
@@ -47,4 +49,5 @@ export async function importDeepLinkRequest(request: DeepLinkImportRequest): Pro
   } catch (trayError) {
     console.error('Failed to refresh tray menu after deep-link import:', trayError);
   }
+  return result;
 }

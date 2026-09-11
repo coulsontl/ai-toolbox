@@ -9,15 +9,17 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import type { ProviderShareApp, SharedConnectionFields } from '../features/shared/deepLink/providerTransfer';
 
-/** The app targeted by the deep link (v1 supports the three env-shaped tools). */
-export type DeepLinkApp = 'claude' | 'codex' | 'gemini';
+/** The app targeted by the deep link. */
+export type DeepLinkApp = ProviderShareApp;
+export type ImportConflictPolicy = 'skip' | 'copy';
 
 /** Normalized provider category, matching the backend's `normalize_category`. */
 export type DeepLinkCategory = 'official' | 'third_party' | 'custom';
 
 /** A parsed deep-link import request (mirrors the Rust `DeepLinkImportRequest`). */
-export interface DeepLinkImportRequest {
+export interface DeepLinkImportRequest extends SharedConnectionFields {
   resource: 'provider';
   app: DeepLinkApp;
   name: string;
@@ -48,7 +50,24 @@ export interface DeepLinkImportResult {
   type: 'provider';
   app: DeepLinkApp;
   id: string;
+  name: string;
+  status: 'created' | 'skipped';
+  requiresGateway: boolean;
 }
+
+export interface DeepLinkImportPreview {
+  apiFormat: string;
+  baseUrl?: string;
+  requiresGateway: boolean;
+  writesRuntimeFiles: boolean;
+  profilePreserved: boolean;
+}
+
+export const previewDeepLinkImport = (request: DeepLinkImportRequest) =>
+  invoke<DeepLinkImportPreview>('preview_deeplink_import', { request });
+
+export const getProviderShareDefaults = (sourceApp: ProviderShareApp, providerId: string) =>
+  invoke<SharedConnectionFields & { credentialUnavailable: boolean }>('get_provider_share_defaults', { sourceApp, providerId });
 
 /**
  * Tell the backend that the frontend listener is attached and drain the latest
@@ -65,6 +84,7 @@ export const markDeepLinkFrontendReady =
  */
 export const importFromDeeplinkUnified = async (
   request: DeepLinkImportRequest,
+  conflictPolicy: ImportConflictPolicy = 'skip',
 ): Promise<DeepLinkImportResult> => {
-  return await invoke<DeepLinkImportResult>('import_from_deeplink_unified', { request });
+  return await invoke<DeepLinkImportResult>('import_from_deeplink_unified', { request, conflictPolicy });
 };

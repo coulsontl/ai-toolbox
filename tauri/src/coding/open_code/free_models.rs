@@ -105,6 +105,14 @@ fn read_provider_from_defaults(provider_id: &str) -> Option<ProviderModelsData> 
     read_providers_batch_from_defaults(&provider_ids).remove(provider_id)
 }
 
+/// Read public channel metadata for an explicit share action. No refresh or
+/// credential lookup is triggered by this helper.
+pub fn provider_metadata_for_sharing(provider_id: &str) -> Option<serde_json::Value> {
+    read_provider_from_cache(provider_id)
+        .or_else(|| read_provider_from_defaults(provider_id))
+        .map(|provider| provider.value)
+}
+
 /// Extract a provider from an already-loaded cache (no file IO)
 fn extract_provider_from_cache(
     cache: &ModelsCache,
@@ -622,6 +630,21 @@ pub fn resolve_auth_credential(provider_id: &str) -> Option<String> {
     auth_map.get(provider_id).and_then(extract_auth_credential)
 }
 
+/// Subscription access/refresh tokens are not portable API keys.
+pub fn shareable_auth_key(provider_id: &str) -> Result<(Option<String>, bool), String> {
+    let auth_map = read_auth_map()?;
+    Ok(shareable_auth_entry(auth_map.get(provider_id)))
+}
+
+fn shareable_auth_entry(entry: Option<&AuthEntry>) -> (Option<String>, bool) {
+    match entry {
+        Some(entry) if matches!(entry.auth_type.as_str(), "api" | "api_key") =>
+            (entry.key.as_deref().map(str::trim).filter(|key| !key.is_empty()).map(str::to_string), false),
+        Some(_) => (None, true),
+        None => (None, false),
+    }
+}
+
 pub fn read_auth_channels() -> Vec<String> {
     let auth_map = match read_auth_map() {
         Ok(map) => map,
@@ -1081,6 +1104,15 @@ pub async fn get_auth_providers_data(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn sharing_only_exports_api_key_auth_and_never_oauth_tokens() {
+        let api: AuthEntry = serde_json::from_value(json!({ "type": "api", "key": "test-api-key" })).unwrap();
+        assert_eq!(shareable_auth_entry(Some(&api)), (Some("test-api-key".to_string()), false));
+        let oauth: AuthEntry = serde_json::from_value(json!({ "type": "oauth", "key": "not-an-api-key", "access": "access-secret", "refresh": "refresh-secret" })).unwrap();
+        assert_eq!(shareable_auth_entry(Some(&oauth)), (None, true));
+        assert_eq!(shareable_auth_entry(None), (None, false));
+    }
 
     fn collect_model_ids_and_names(provider_data: &serde_json::Value) -> Vec<(String, String)> {
         let models_obj = provider_data

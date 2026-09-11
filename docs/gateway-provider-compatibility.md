@@ -53,6 +53,8 @@
 
 ### 1.4 target protocol 推导
 
+供应商分享导入保留实际上游协议和 API-key/Bearer 认证语义；有匹配目标 endpoint 时保存 `gatewayProfile` 引用，不复制 profile 派生兼容快照。没有匹配 endpoint 时，只有通用协议可表达的连接才能降为 custom；依赖特殊 adapter 的 native 目标在预览阶段拒绝。OpenCode 与原生 Anthropic/Google SDK 的版本路径适配归分享配置层，不改变 runtime URL/IR/SSE 职责。入口及回归见 `coding/deeplink/importer.rs`、`tauri/tests/coding/deeplink/provider_transfer.rs` 与 [`deep-link-import.md`](deep-link-import.md)。
+
 - Claude：effective `apiFormat` -> settings `api_format/apiFormat` -> `openrouter_compat_mode=true` -> 默认 `AnthropicMessages`。
 - Codex：effective `apiFormat` -> settings `api_format/apiFormat` -> `config.toml` 的 `wire_api/api_format` -> base URL 是否 `/chat/completions` -> 默认 `OpenAiResponses`。
 - Grok：effective `apiFormat` -> selected model `api_backend` -> 默认 `OpenAiChat`。

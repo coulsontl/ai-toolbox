@@ -805,10 +805,50 @@ fn providers_dict_mut(config: &mut Value) -> Result<&mut Map<String, Value>, Str
     Ok(providers.as_object_mut().unwrap())
 }
 
+fn write_provider_with_credential(
+    config_path: &Path,
+    config: &Value,
+    credentials_path: &Path,
+    credential: &DshCredentialInput,
+) -> Result<(), String> {
+    fn snapshot(path: &Path) -> Result<Option<Vec<u8>>, String> {
+        match fs::read(path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!("Failed to read {}: {error}", path.display())),
+        }
+    }
+    let previous_config = snapshot(config_path)?;
+    let previous_credentials = snapshot(credentials_path)?;
+    let mut credentials = CredentialsDocument::read(credentials_path)?;
+    if credential.ref_name.trim().is_empty() {
+        return Err("Credential ref is required".to_string());
+    }
+    credentials.set_ref(credential.ref_name.trim(), Some(credential.value.trim()));
+    let result = credentials.write(credentials_path)
+        .and_then(|()| write_yaml_object(config_path, config));
+    if let Err(error) = result {
+        let mut failures = Vec::new();
+        for (path, previous) in [(config_path, previous_config), (credentials_path, previous_credentials)] {
+            let restore = match previous {
+                Some(bytes) => fs::write(path, bytes),
+                None => match fs::remove_file(path) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    result => result,
+                },
+            };
+            if let Err(restore_error) = restore { failures.push(format!("{}: {restore_error}", path.display())); }
+        }
+        set_credentials_file_permissions(credentials_path);
+        return Err(if failures.is_empty() { error } else { format!("{error}; rollback failed: {}", failures.join("; ")) });
+    }
+    Ok(())
+}
+
 #[tauri::command]
-pub async fn save_dsh_models_provider(
+pub async fn save_dsh_models_provider<R: tauri::Runtime>(
     state: tauri::State<'_, SqliteDbState>,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
     input: DshModelsProviderInput,
 ) -> Result<DshRuntimeConfig, String> {
     let provider_key = input.provider_key.trim();
@@ -831,7 +871,12 @@ pub async fn save_dsh_models_provider(
     let providers = providers_dict_mut(&mut config)?;
     providers.insert(provider_key.to_string(), payload);
 
-    write_yaml_object(&config_path, &config)?;
+    if let Some(credential) = &input.credential {
+        let credentials_path = get_dsh_credentials_path_async(&db).await?;
+        write_provider_with_credential(&config_path, &config, &credentials_path, credential)?;
+    } else {
+        write_yaml_object(&config_path, &config)?;
+    }
     emit_config_changed(&app, "window");
     read_dsh_runtime_config(state).await
 }
@@ -1648,6 +1693,29 @@ mod tests {
         assert_eq!(read.refs.get("NEW_KEY"), Some(&json!("sk-new")));
         let text = fs::read_to_string(&path).expect("text");
         assert!(text.contains("version: 1"), "stamped: {text}");
+    }
+
+    #[test]
+    fn provider_and_credential_write_rolls_back_both_files_when_config_write_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("settings.yaml");
+        let credentials_path = dir.path().join(".credentials.yaml");
+        let original_config = b"# Keep the original bytes\nagent: { enabled: true }\n";
+        let original_credentials = b"version: 1\nrefs: { OLD_KEY: keep-key }\nrecords: { login: { key: keep-login } }\n";
+        fs::write(&config_path, original_config).unwrap();
+        fs::write(&credentials_path, original_credentials).unwrap();
+        let input = DshCredentialInput { ref_name: "NEW_KEY".to_string(), value: "new-key".to_string() };
+        // The second writer rejects a non-mapping after the credential write.
+        let result = write_provider_with_credential(&config_path, &Value::Null, &credentials_path, &input);
+        assert!(result.is_err());
+        assert_eq!(fs::read(&config_path).unwrap(), original_config);
+        assert_eq!(fs::read(&credentials_path).unwrap(), original_credentials);
+
+        let new_config = dir.path().join("new/settings.yaml");
+        let new_credentials = dir.path().join("new/.credentials.yaml");
+        assert!(write_provider_with_credential(&new_config, &Value::Null, &new_credentials, &input).is_err());
+        assert!(!new_config.exists());
+        assert!(!new_credentials.exists());
     }
 
     #[test]

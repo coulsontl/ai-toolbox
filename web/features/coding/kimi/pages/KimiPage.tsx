@@ -39,6 +39,7 @@ import { useTranslation } from 'react-i18next';
 import SectionSidebarLayout, {
   type SidebarSectionMarker,
 } from '@/components/layout/SectionSidebarLayout/SectionSidebarLayout';
+import { useProviderSharing } from '@/features/coding/shared/providerShare';
 import SidebarSettingsModal from '@/components/common/SidebarSettingsModal';
 import CliManualPathSetting from '@/components/common/CliManualPathSetting';
 import RootDirectoryModal from '@/features/coding/shared/RootDirectoryModal';
@@ -148,6 +149,7 @@ const KIMI_OFFICIAL_PROVIDER_TEMPLATE: KimiProviderInput = {
 
 const KimiPage: React.FC = () => {
   const { t } = useTranslation();
+  const { shareProvider, shareModal } = useProviderSharing('kimi', () => loadConfig());
   const { modal } = App.useApp();
   const { sidebarHiddenByPage, setSidebarHidden } = useSettingsStore();
   const [loading, setLoading] = React.useState(false);
@@ -907,6 +909,7 @@ const KimiPage: React.FC = () => {
                                   onToggleDisabled={handleToggleDisabled}
                                   onTest={handleTestProvider}
                                   onCopy={handleCopyProvider}
+                                  onShare={shareProvider}
                                   connectivityStatus={connectivityStatuses[provider.id]}
                                   selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
                                   selected={providerBatch.selectedIds.has(provider.id)}
@@ -1106,6 +1109,8 @@ const KimiPage: React.FC = () => {
         data={previewData}
         onClose={() => setPreviewModalOpen(false)}
       />
+
+      {shareModal}
     </SectionSidebarLayout>
   );
 };

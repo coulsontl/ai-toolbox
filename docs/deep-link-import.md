@@ -1,367 +1,134 @@
-# Deep-Link Provider 导入使用说明
+# 供应商分享与跨工具导入
 
-ai-toolbox 支持通过 `aitoolbox://` 自定义协议链接一键导入供应商（provider）。点击链接后，应用会被唤起并弹出确认对话框（API 密钥脱敏展示），用户确认后即写入对应工具的供应商表。本文同时介绍面向终端用户的用法与面向开发者/二次开发者的实现细节。
+AI Toolbox 可以把当前供应商复用到其他 Coding 工具。分享弹窗提取 API 地址、密钥、实际协议和模型，按目标工具生成配置；可以直接导入本机，也可以复制 `aitoolbox://` 链接在另一台设备上确认导入。
 
-## 目录
+这是一次配置复制。后续修改源供应商的 Key 或模型不会自动同步到已导入的副本。
 
-- [快速开始](#快速开始)
-- [面向用户](#面向用户)
-  - [链接格式](#链接格式)
-  - [各工具示例](#各工具示例)
-  - [确认流程](#确认流程)
-  - [常见问题](#常见问题)
-- [面向开发者](#面向开发者)
-  - [架构总览](#架构总览)
-  - [URL 字段参考](#url-字段参考)
-  - [各工具 settings_config 形态](#各工具-settings_config-形态)
-  - [config / extra 高级覆盖](#config--extra-高级覆盖)
-  - [错误处理与日志脱敏](#错误处理与日志脱敏)
-  - [冷启动竞态与回放](#冷启动竞态与回放)
-  - [平台差异](#平台差异)
-  - [扩展指南](#扩展指南)
-  - [验证清单](#验证清单)
+## 使用流程
 
----
+1. 在供应商卡片点击「分享」。支持 Claude Code、Claude Desktop、Codex、Grok CLI、Kimi Code、Gemini CLI、OpenCode、OpenClaw、Pi、Oh My Pi、Hermes 和 DeepSeek Harness。
+2. 一个模型目录包含不同 URL、协议或 Key 时，先选择「源连接」，同一连接的模型一起带入。
+3. 选择目标工具，检查名称、协议、Key、地址、模型列表和默认模型。地址适配后会显示目标工具使用的地址。
+4. 选择重名策略：默认跳过已有项，也可以创建自动编号的副本。分享导入没有覆盖操作。
+5. 点击「导入到本机」或「复制链接」。外部链接只唤起确认弹窗，点击「导入」才保存。
 
-## 快速开始
+数据库型工具保存为未应用的供应商；文件型工具加入当前配置文件，保留原有默认模型、其他供应商及未知配置。导入成功后导航到目标工具并刷新页面和托盘。
 
-最简单的导入链接：
+## 目标与保存语义
 
-```
-aitoolbox://v1/import?resource=provider&app=codex&name=OpenRouter&category=third_party&apiKey=sk-or-xxx&baseUrl=https://openrouter.ai/api/v1&model=gpt-5
-```
-
-把这段链接放进 HTML `<a href="...">`、Markdown、或直接在浏览器地址栏粘贴访问，即可唤起 AI Toolbox 并弹出导入确认框。
-
----
-
-## 面向用户
-
-### 链接格式
-
-```
-aitoolbox://v1/import?resource=provider&app=<工具>&name=<名称>&category=<类别>&<其它参数>
-```
-
-- **协议**：`aitoolbox`（固定）
-- **版本**：`v1`（固定，放在 `://` 后第一段，用于后续不兼容升级）
-- **路径**：`/import`（固定）
-- **必填参数**：`resource`、`app`、`name`、`category`
-- 其余参数全部可选，值需要 URL 编码（如空格 `%20`、冒号 `%3A`、斜杠 `%2F`）
-
-#### 必填参数
-
-| 参数 | 取值 | 说明 |
+| app | 工具 | 保存位置与模型适配 |
 |---|---|---|
-| `resource` | `provider` | v1 仅支持供应商导入。`mcp`/`prompt`/`skill` 留待后续。 |
-| `app` | `claude` / `codex` / `gemini` | 目标工具。`grok` 暂不支持（见下方「平台差异」节）。 |
-| `name` | 任意非空字符串 | 供应商显示名称。 |
-| `category` | `official` / `third_party` / `custom` / `aggregator` | 类别。`aggregator` 会被规范化为 `third_party`，未知值默认 `custom`。 |
+| claude | Claude Code | 独立供应商记录；环境变量、默认模型和角色模型 |
+| claudedesktop | Claude Desktop | 独立供应商记录；Desktop 模型路由和显示名称 |
+| codex | Codex | 独立供应商记录；auth、TOML、模型目录；默认模型独立于目录顺序 |
+| grok | Grok CLI | 独立供应商记录；defaultModelKey 和含连接信息的模型目录 |
+| kimi | Kimi Code | 独立供应商记录；providerConfigs 和模型目录 |
+| gemini | Gemini CLI | 独立供应商记录；环境变量和默认模型 |
+| opencode | OpenCode | 当前 opencode.json/jsonc；SDK、options、模型字典 |
+| openclaw | OpenClaw | 当前 openclaw.json 的模型供应商 |
+| pi | Pi | 当前根目录的 models.json |
+| omp | Oh My Pi | 当前根目录的 models.yml |
+| hermes | Hermes | 当前 config.yaml 的 custom_providers |
+| dsh | DeepSeek Harness | 当前 settings.yaml 与 .credentials.yaml |
 
-#### 可选参数（工具通用）
+共享通用连接字段和目标能表达的模型名称、上下文、输出上限、推理、输入能力。权限、MCP、插件、提示词和工具专用高级配置不在分享范围内。
 
-| 参数 | 说明 |
+上游协议保持不变。目标只能使用另一种协议时，数据库型工具保留上游元数据并提示需要 Gateway；导入不会自动启用代理。Kimi 的直接客户端配置使用 openai_legacy，其他上游协议交给 Gateway；能力字段映射为 image_in、video_in、thinking。
+
+内置 gatewayProfile 优先映射同一 profile、同一协议的目标 endpoint，保存引用而非兼容参数快照。目标没有对应 endpoint 时，仅在通用协议可用的情况下回退为自定义配置并提示；依赖特定网关适配器的组合会被拒绝。
+
+原生文件型目标只接受静态请求头。DSH/Hermes 不导入自定义请求头或 Anthropic Bearer 认证；DSH 不接收 Gemini Native 路由。这些情况会在预览时说明原因。
+
+OAuth、订阅登录的 access/refresh token，以及环境变量、文件或命令引用，不会被当作可分享的 API Key。需要独立 API Key 的来源会提示补填。OpenCode 官方卡片只读取选中渠道的 API-key 认证；内置元数据从本地模型缓存或 bundled defaults 补齐，不联网刷新，不以收藏历史代替当前配置。
+
+链接包含密钥，只应发给可信接收者。链接超过 8,000 字符时停止复制并提示减少模型数量；直接导入本机不受此 URL 长度限制。
+
+## URL 协议
+
+继续使用 aitoolbox://v1/import。旧的 Claude/Codex/Gemini 链接仍可导入。
+
+```text
+aitoolbox://v1/import?resource=provider&sourceApp=opencode&app=codex&name=Relay&category=custom&apiFormat=openai_chat&apiKey=test-key&baseUrl=https%3A%2F%2Frelay.example%2Fv1&model=vendor%2Fmodel
+```
+
+参数值使用 URLSearchParams / application/x-www-form-urlencoded 编码；加号、中文、模型 ID 内的斜杠、JSON 和地址查询串都按参数值编码。
+
+| 参数 | 语义 |
 |---|---|
-| `apiKey` | API 密钥 / 认证令牌。 |
-| `baseUrl` | 基础地址，必须是 `http` 或 `https`。 |
-| `model` | 默认模型 ID。 |
-| `homepage` | 供应商主页，必须是 `http`/`https`。 |
-| `notes` | 备注。 |
-| `icon` | 图标名称。 |
-| `iconColor` | 图标颜色（CSS 颜色值）。 |
-| `sourceProviderId` | 来源 ID，用于去重（如 `ccs:codex:xxx`）。 |
-| `config` | Base64 编码的工具特定 JSON/TOML，**直接覆盖** builder 产出的 `settings_config`。 |
-| `extra` | Base64 编码的 JSON，仅 Claude 用，作为 `extra_settings_config`。 |
+| resource | 必须为 provider |
+| app | 必填，目标工具 ID，见上表 |
+| name | 必填，非空名称 |
+| category | 可选，默认 custom；兼容 official、third_party、aggregator 等旧值 |
+| sourceApp | 新链接的源工具 ID，用于 SDK 地址适配；旧链接省略时保持原地址语义 |
+| baseUrlStyle | 源连接地址为 root 或 versioned；区分同一工具原生 SDK 与 Gateway 配置的版本路径语义 |
+| apiFormat | anthropic_messages、openai_chat、openai_responses、gemini_native、ollama/chat |
+| apiVersion | 可选的 Gemini API 版本，和 SDK 的 Base URL 分开处理 |
+| apiKey / baseUrl | 凭据和 http(s) 地址；新分享需要可解析的 Base URL |
+| model | 默认模型的真实上游 ID |
+| models | JSON 数组：id、name、contextWindow、maxTokens、reasoning、input |
+| modelRoles | JSON 对象：Claude 的 sonnet、opus、fable、haiku 到模型 ID 的映射 |
+| headers | JSON 数组：静态 set 或网关支持的 delete/rename/copy 操作 |
+| gatewayProfile | JSON 对象：tool、profileId、endpointId |
+| providerType / apiKeyField | 明确保存的兼容信息及认证方式，不复制 profile 派生快照 |
+| sourceProviderId | 来源标识，用于数据库型目标去重 |
+| homepage / notes / icon / iconColor | 描述信息；主页只接受 http(s) |
+| config / extra | 仅兼容旧链接的 Base64 配置覆盖，不由新分享生成，不能跨目标工具导入 |
 
-### 各工具示例
+endpoints 仍被明确拒绝，没有未经实现的多地址持久化语义。
 
-#### Claude Code
+## 地址、认证与模型
 
-```
-aitoolbox://v1/import?resource=provider&app=claude&name=My%20Claude&category=custom&apiKey=sk-ant-xxxxxxxx&baseUrl=https%3A%2F%2Fapi.example.com&model=claude-sonnet-4&homepage=https%3A%2F%2Fexample.com
-```
+OpenCode 的 AI SDK Anthropic/Google Base URL 包含版本路径，原生 Anthropic/Google SDK 自行拼接版本。分享保留源地址，在后端预览和保存时执行同一适配：
 
-导入后该供应商的环境变量为：`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL`。
+- OpenCode https://relay.example/anthropic/v1 到 Claude：去掉末尾版本路径，得到 https://relay.example/anthropic。
+- Claude https://relay.example/anthropic 到 OpenCode：加上 /v1。
+- OpenCode https://relay.example/google/v1alpha 到 Gemini CLI：Base URL 为 https://relay.example/google，另写 GOOGLE_GENAI_API_VERSION=v1alpha。
+- 不改 OpenAI 的版本路径；保留代理前缀、查询字符串及明确的 ## 完整 URL 覆盖语义。
 
-#### Codex
+Claude 的 ANTHROPIC_API_KEY 和 ANTHROPIC_AUTH_TOKEN 分别表示 API-key 与 Bearer 认证；OpenCode Anthropic 分别写 options.apiKey 和 options.authToken，不能同时写两者。
 
-```
-aitoolbox://v1/import?resource=provider&app=codex&name=OpenRouter&category=third_party&apiKey=sk-or-xxx&baseUrl=https%3A%2F%2Fopenrouter.ai%2Fapi%2Fv1&model=gpt-5&homepage=https%3A%2F%2Fopenrouter.ai
-```
+OpenCode 本地模型 alias 通过模型 id 转成真实上游 ID；provider_id/model_id 只在第一个斜杠处分割。Codex 目录第一项不是用户的默认模型。Claude 的 [1M] 后缀不会附着到其他工具的模型 ID。
 
-导入后 `auth.OPENAI_API_KEY` 取 `apiKey`，并生成最小 TOML `config`（含 `model_provider`、`model`、`[model_providers.<slug>]` 的 `name`/`base_url`）。`slug` 由 `name` 小写化、非字母数字替换为 `-` 得到。
+Desktop 对 Claude 原生模型保留安全 ID；其他模型用 Claude 可接受的路由 ID 映射到上游，放在 meta.claudeDesktopModelRoutes 并要求 Gateway。
 
-#### Gemini CLI
+核对来源：
 
-```
-aitoolbox://v1/import?resource=provider&app=gemini&name=Proxy%20Gemini&category=custom&apiKey=AIzaXXXX&baseUrl=https%3A%2F%2Fgemini-proxy.example.com&model=gemini-2.5-pro
-```
+- [AI SDK Anthropic](https://ai-sdk.dev/providers/ai-sdk-providers/anthropic)
+- [AI SDK Google](https://ai-sdk.dev/providers/ai-sdk-providers/google)
+- [Google GenAI URL 构造](https://github.com/googleapis/js-genai/blob/main/src/_api_client.ts)
+- [Gemini CLI Content Generator](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/core/contentGenerator.ts)
+- [Kimi ProviderType 与 ModelCapability](https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/llm.py)
 
-导入后环境变量为：`GEMINI_API_KEY`、`GOOGLE_GEMINI_BASE_URL`、`GEMINI_MODEL`。
+## 实现与持久化边界
 
-### 确认流程
+协议事实源是 tauri/src/coding/deeplink/parser.rs。前端 providerTransfer.ts 从当前供应商快照提取字段，providerShareUrl.ts 负责纯 URL 编码，分享和外链导入复用 ProviderTransferModal。
 
-1. 点击链接（应用未运行则先启动；运行中则聚焦窗口）。
-2. 弹出「通过链接导入供应商」对话框，展示：工具、名称、类别、**脱敏 API 密钥（仅前 4 位 + 20 个星号）**、基础地址、模型、主页、备注。
-3. 点「导入」才真正写入数据库；点「取消」或关闭对话框则什么都不发生。
-4. 导入成功后弹出成功提示，对应工具页面（若已打开）自动刷新供应商列表，托盘菜单同步刷新。
+preview_deeplink_import 与 import_from_deeplink_unified 共用 prepare_import 校验和适配函数。保存入口在共享导入锁内查重和自动命名，再调用各模块原有 create/save 命令。确认之前无持久化。
 
-> 安全设计：后端只负责解析链接并把请求发给前端，**绝不**在收到链接时自动写库。是否写入完全由用户在对话框里点「导入」决定。
+查重使用同名、数据库来源标识或文件型目标的稳定 ID。文件型新 ID 带 -shared，避免遮蔽同名内置渠道而意外改变当前默认配置；非 ASCII 名称加确定性摘要，避免不同中文名称都变成 provider。
 
-### 常见问题
+DSH 先快照旧配置和凭据原字节，再写新凭据和供应商。失败恢复两份文件；凭据只新增独立 ref，保留 records 和已有 refs，成功后才通知配置变更。
 
-**点了链接没反应？**
-- Windows/Linux 开发版（非安装包）需运行时注册协议，应用启动时会自动 `register_all()`；如果是从源码直接跑 `cargo run`，确保应用至少启动过一次。
-- macOS 的自定义协议仅在**安装版**（`.app` 放入 `/Applications`）生效，开发版直接跑无法接收 deep-link。
-- 浏览器可能拦截自定义协议，留意地址栏是否出现「打开 AI Toolbox?」的确认提示。
+旧 config/extra 由 parser 容忍式 Base64 解码。Claude/Gemini 的 config 覆盖 settings JSON，Codex 的 config 覆盖 TOML；它们不是加密数据。携带这些字段时，前端锁定目标和连接字段，后端校验原目标，继续复用原保存验证。
 
-**为什么 Grok 不支持？**
-Grok 的供应商配置形态（`defaultModelKey` + `modelCatalog`）与其它三个 env 型工具差异较大，且非官方类别一旦设了默认模型就必须带非空 `modelCatalog`，构造起来更复杂。v1 暂时只支持 `claude`/`codex`/`gemini`，Grok 留待后续单独打磨。
+## 唤起与验证
 
-**链接里的密钥会被记录到日志吗？**
-不会。后端日志里对 deep-link URL 做了脱敏：所有 query 参数的值一律替换为 `***REDACTED***`，只保留键名。
+系统入口仍由 tauri-plugin-deep-link 汇合到 on_open_url。前端未 ready 时使用 latest-wins pending slot；普通热链接不写 pending。轻量模式重建 WebView 后重新握手，避免丢链接或重复回放。
 
-**冷启动时链接会丢失吗？**
-不会。应用冷启动收到链接时前端对话框还没挂载监听，后端会把请求暂存到一个 pending slot。前端监听器挂载完成后调用 `mark_deeplink_frontend_ready`，原子标记 listener ready 并取走 pending 请求，确保冷启动也能弹出确认框。
+Windows/Linux 安装版使用系统协议注册，开发模式启动时 register_all()；macOS 需要安装版 .app 的 CFBundleURLTypes。Windows/Linux 第二实例经 single-instance 转发 argv，macOS 使用 RunEvent::Opened。
 
----
+日志中的 deep-link query 值统一替换为 ***REDACTED***，清除 userinfo 和 fragment。解析、取消和预览都不写配置。
 
-## 面向开发者
-
-### 架构总览
-
-实现灵感来自 cc-switch（CCS），但适配 ai-toolbox 的**分表 provider 模型**（claude/codex/gemini/grok 各有独立 `*_provider` 表 + `create_*_provider` 命令）。
-
-关键事实：`tauri-plugin-deep-link` 插件自身已把三个 URL 入口统一成一个 `deep-link://new-url` 事件——所以 ai-toolbox 只需在 `on_open_url` 一处接收即可，比 CCS 手写三入口更简洁。
-
-```
-用户点击 aitoolbox:// 链接
-        │
-        ▼
-┌────────────────────────────────────────────────────────┐
-│ OS 层：交给已注册的协议处理器                           │
-│  • macOS: AppleEvent (kAEOpenURL) → RunEvent::Opened   │
-│  • Win/Linux 冷启动: argv → 插件 init_deep_link         │
-│  • Win/Linux 第二实例: argv 由 single-instance 的       │
-│    deep-link feature 转发给运行中实例                   │
-└────────────────────────────────────────────────────────┘
-        │ 统一为 deep-link://new-url 事件
-        ▼
-install_deeplink_handlers → on_open_url 回调
-        │
-        ▼
-handle_deeplink_url(app, url, focus_window)        [只解析，不写库]
-        ├─ parse_deeplink_url(url) → DeepLinkImportRequest
-        │     ├─ 校验 scheme/version/path/resource/app 白名单
-        │     ├─ http/https 校验 baseUrl/homepage
-        │     ├─ 明确拒绝 v1 尚不持久化的 endpoints
-        │     └─ 容忍式 Base64 解码 config/extra
-        ├─ 前端未 ready 时存入 DeepLinkState.pending（latest-wins）
-        ├─ emit("deep-link-import", request) → 前端对话框
-        └─ (失败) emit("deep-link-error", {url 脱敏, error})
-        │
-        ▼
-前端 AppInitializer → useDeepLinkImport 监听
-  → DeepLinkImportDialog 展示脱敏详情
-        │ 用户点「导入」
-        ▼
-importFromDeeplinkUnified(request) → invoke("import_from_deeplink_unified")
-        │
-        ▼
-build_and_create_provider(db_state, app, request)    [唯一写库点]
-  ├─ build_claude/codex/gemini_settings(req) → settings_config JSON 字符串
-  └─ create_*_provider_inner(state, app, input) → 写库 + emit config-changed
-        │
-        ▼
-前端：dispatchEvent(DEEP_LINK_IMPORT_COMPLETED)
-  → 对应工具页面 loadConfig(true) 刷新；refreshTrayMenu()
+```text
+pnpm test
+pnpm exec tsc --noEmit
+pnpm build
+cd tauri
+cargo test --lib coding::deeplink
+cargo test --test deeplink
+cargo test
 ```
 
-### URL 字段参考
+跨工具集成用例使用 MockRuntime、隔离 SQLite 和临时配置目录，调用真实统一导入入口，再读取供应商或文件；覆盖 12 个目标、重复导入、默认模型保留、坏配置和凭据保留。运行时路径缓存是进程级单例，因此使用独立 deeplink 测试二进制，并在配置测试目录后刷新缓存。
 
-完整字段见 `tauri/src/coding/deeplink/parser.rs` 的 `DeepLinkImportRequest`。该结构 `Serialize` 为 camelCase 后通过 Tauri 事件传给前端：
-
-```rust
-pub struct DeepLinkImportRequest {
-    pub resource: String,
-    pub app: String,
-    pub name: String,
-    pub category: String,
-    pub api_key: Option<String>,
-    pub base_url: Option<String>,
-    pub model: Option<String>,
-    pub homepage: Option<String>,
-    pub notes: Option<String>,
-    pub icon: Option<String>,
-    pub icon_color: Option<String>,
-    pub source_provider_id: Option<String>,
-    pub config: Option<String>,   // 解码后的字符串，前端永不收到原始 base64
-    pub extra: Option<String>,    // 解码后的字符串
-    pub raw_url: String,
-}
-```
-
-`config` 与 `extra` 在 parser 内部解码为明文再序列化出去——原始 base64 不会越过 IPC 边界，保持密文材料显式可控。
-
-### 各工具 settings_config 形态
-
-四个工具的 `*ProviderInput.settings_config` 都是 **JSON 字符串**（不是对象）。其形态与 `tauri/src/coding/cc_switch.rs` 里 `extract_*_candidate` 产出的完全一致。
-
-#### Claude（`build_claude_settings`）
-
-```json
-{
-  "env": {
-    "ANTHROPIC_AUTH_TOKEN": "<apiKey>",
-    "ANTHROPIC_BASE_URL": "<baseUrl>",
-    "ANTHROPIC_MODEL": "<model>"
-  }
-}
-```
-
-`extra_settings_config` 默认 `"{}"`，可用 `extra` 参数覆盖。
-
-#### Codex（`build_codex_settings`）
-
-```json
-{
-  "auth": { "OPENAI_API_KEY": "<apiKey>" },
-  "config": "<TOML 字符串>"
-}
-```
-
-TOML 形如（`<slug>` 由 name 转换而来）：
-
-```toml
-model_provider = "<slug>"
-model = "<model>"
-
-[model_providers.<slug>]
-name = "<name>"
-base_url = "<baseUrl>"
-```
-
-例：`name=OpenRouter` → `slug=openrouter` → `[model_providers.openrouter]`。
-
-#### Gemini（`build_gemini_settings`）
-
-```json
-{
-  "env": {
-    "GEMINI_API_KEY": "<apiKey>",
-    "GOOGLE_GEMINI_BASE_URL": "<baseUrl>",
-    "GEMINI_MODEL": "<model>"
-  },
-  "config": {}
-}
-```
-
-#### Grok
-
-v1 **不支持**。`app=grok` 在 parser 阶段即被 `DeepLinkError::UnsupportedApp` 拒绝。Grok 的 `settings_config` 形态是 `{defaultModelKey, auth.API_KEY, modelCatalog.models[], config?(TOML)}`，且 `grok/commands.rs:validate_provider_settings` 强制「非 official 类别 + 有 defaultModelKey ⇒ 必须带非空 modelCatalog」。当前 `cc_switch.rs` 里也没有 `extract_grok_candidate`，连现有 cc-switch 导入都绕开了它。后续如需支持，要在 `provider.rs` 新增 `build_grok_settings` 合成最小 modelCatalog 条目（`apiBackend: "responses"`、`envKey: "XAI_API_KEY"`），并放开 parser 的 `SUPPORTED_APPS`。
-
-### config / extra 高级覆盖
-
-`config` 参数提供一个 escape hatch：当扁平的 `apiKey/baseUrl/model` 不够用时，可直接传一个完整的 `settings_config`（Claude/Gemini）或完整 TOML `config`（Codex），builder 会**整段使用**它而非自行装配。
-
-例（Claude，传一个自定义 env 块）：
-
-```
-aitoolbox://v1/import?resource=provider&app=claude&name=Custom&category=custom&config=<base64>{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-xxx","ANTHROPIC_BASE_URL":"https://api.x.com"}}
-```
-
-`extra` 仅对 Claude 有效，作为 `extra_settings_config`（用于存放 permissions 等 settings.json 顶级字段）。
-
-> 注意：使用 `config` 覆盖时，builder 不会再注入 `apiKey/baseUrl/model`——你需要自行在 config 里包含它们。前端对话框展示的脱敏字段仍取自 URL 的扁平参数（可能为空），用户看到的可能与实际写入的不同。生产环境建议优先用扁平参数，仅在确有需要时用 `config`/`extra`。
-
-### 错误处理与日志脱敏
-
-解析失败时后端 emit `deep-link-error`，payload `{ url: 脱敏URL, error: 错误信息 }`，前端右上角 toast 提示。常见错误：
-
-| 错误 | 触发条件 |
-|---|---|
-| `BadScheme` | scheme 非 `aitoolbox` |
-| `BadVersion` | host 非 `v1` |
-| `BadPath` | path 非 `/import` |
-| `UnsupportedResource` | `resource` 非 `provider` |
-| `UnsupportedApp` | `app` 不在 `claude/codex/gemini`（含 `grok`） |
-| `UnsupportedParam("endpoints")` | `endpoints` 暂无明确持久化语义，v1 拒绝而不是静默丢弃 |
-| `MissingParam("name")` | 缺 `name` 或为空 |
-| `InvalidUrl { field, detail }` | `baseUrl`/`homepage` 非 http/https |
-| `InvalidBase64("config"` / `"extra")` | base64 解码失败 |
-
-日志脱敏由 `utils::redact_url_for_log` 实现：重解析 URL，把所有 query value 替换为 `***REDACTED***`，去掉 userinfo/fragment，只保留 `scheme://host/path?k=***REDACTED***&...`。
-
-### 冷启动竞态与回放
-
-冷启动时序：
-1. OS 启动应用并把 URL 放 argv（Win/Linux）或通过 `RunEvent::Opened`（macOS）。
-2. 插件在 `setup` 阶段 `init_deep_link` → `handle_cli_arguments` 立刻 emit `deep-link://new-url`。
-3. `on_open_url` 收到 → `handle_deeplink_url` 把请求存进 `DeepLinkState.pending` 队列 + emit `deep-link-import`。
-4. 但前端 `AppInitializer` 的 `deep-link-import` 监听尚未挂载 → 这次 emit 丢失。
-5. 前端 listener attach 完成后调用 `mark_deeplink_frontend_ready` → 后端标记 frontend ready 并返回 pending 请求 → 对话框出现。
-
-热启动时 listener 已 ready，后端只发 live `deep-link-import`，不再写 pending，因此不会在后续 ready 信号或重挂载时重复回放。pending 采用 **latest-wins**，即前端 ready 前多个 URL 先后到达只保留最后一个。如需多 URL 堆叠，将来改为 `Vec`。
-
-### 平台差异
-
-| 平台 | scheme 注册 | URL 入口 |
-|---|---|---|
-| Windows（安装版） | NSIS/MSI 从 tauri.conf.json 写注册表 | macOS 同理走 AppleEvent |
-| Windows（dev/`cargo run`） | `app.deep_link().register_all()` 写 `HKCU\Software\Classes\aitoolbox` | argv（单参数 URL） |
-| Linux（安装版） | bundle 写 `.desktop` mime | argv |
-| Linux（dev） | `register_all()` 写 `~/.local/share/.../applications/*-handler.desktop` + `xdg-mime` | argv |
-| macOS | `Info.plist` 的 `CFBundleURLTypes`（需安装版构建） | `RunEvent::Opened`（插件 on_event 转发） |
-
-`tauri-plugin-single-instance` 的 `deep-link` cargo feature 让第二实例的 argv 在我们自己的回调运行之前先被插件 `handle_cli_arguments` 处理并转发给运行中实例，从而把「第二实例」也归到 `on_open_url`。故 `lib.rs` 里 single-instance 的 user callback 保持只做 show+focus，无需手动扫 argv。
-
-### 扩展指南
-
-#### 新增一个 app（如未来支持 opencode）
-
-1. `parser.rs`：把 app 加入 `SUPPORTED_APPS`。
-2. `provider.rs`：新增 `build_<app>_settings(req)` 产出该工具的 `settings_config`；在 `build_and_create_provider` 的 match 加一支，构造对应 `*ProviderInput` 并调用 `create_<app>_provider_inner`。
-3. 若该 tool 的 `create_*_provider` 还未抽出 inner 函数，按 `create_claude_provider_inner` 的模式重构。
-4. 前端 `deeplinkApi.ts` 的 `DeepLinkApp` 类型加新值，`DeepLinkImportDialog.tsx` 的 `APP_LABEL_KEYS` 加映射，i18n 加 `appXxx`。
-5. 对应工具页面加 `DEEP_LINK_IMPORT_COMPLETED` 监听（`detail.app === '<app>'`）。
-
-#### 新增一种 resource（如 mcp/prompt/skill）
-
-1. `parser.rs`：放开 `SUPPORTED_RESOURCE` 校验或新增 `match` 分支，定义各自的必填字段与校验。
-2. `DeepLinkImportRequest` 增补该 resource 专有字段。
-3. `provider.rs` 新建对应模块文件（如 `mcp.rs`），在 `build_and_create_provider` 按 `resource` 分发。
-4. `import_from_deeplink_unified` 命令的 `resource` 校验放开。
-5. 前端 `DeepLinkImportRequest` 类型与 `DeepLinkImportDialog` 增分支展示；`DeepLinkImportResult.type` 增值并对应刷新逻辑。
-
-涉及代码位置速查：
-
-| 关注点 | 文件 |
-|---|---|
-| 协议注册 | `tauri/tauri.conf.json`、`tauri/capabilities/default.json` |
-| 插件接线 | `tauri/src/lib.rs`（builder、setup、generate_handler!） |
-| URL 解析/校验 | `tauri/src/coding/deeplink/parser.rs` |
-| settings_config 装配/分发 | `tauri/src/coding/deeplink/provider.rs` |
-| 漏斗/队列/命令/回放 | `tauri/src/coding/deeplink/mod.rs` |
-| 内部写库复用点 | 各 `tauri/src/coding/<tool>/commands.rs` 的 `create_*_provider_inner` |
-| 前端 API 封装 | `web/services/deeplinkApi.ts` |
-| 前端事件监听 | `web/features/shared/deepLink/useDeepLinkImport.ts` |
-| 前端确认对话框 | `web/features/shared/deepLink/DeepLinkImportDialog.tsx` |
-| 全局挂载 | `web/app/providers.tsx`（`DeepLinkImportMount`） |
-| 页面刷新事件 | `web/constants/configEvents.ts`、四个工具页面 |
-| i18n | `web/i18n/locales/{zh-CN,en-US}.json` 的 `common.deepLink.*` |
-
-### 验证清单
-
-**前置**：`pnpm tauri dev`。Windows/Linux dev 下 `register_all()` 会自动注册 scheme；macOS 需装 installed 构建测 deep-link。
-
-1. **热启动（每工具）**：应用运行中，浏览器/CLI 触发示例链接 → 窗口聚焦 → 确认弹窗显示脱敏密钥 → 确认 → `*_provider` 表新增行、`settings_config` 形态正确 → 成功 toast → 页面刷新。
-2. **冷启动**：退出应用再触发链接 → 应用启动后弹窗出现（frontend listener ready command drain pending）→ 导入成功。
-3. **第二实例（Win/Linux）**：运行中，终端执行 `ai-toolbox.exe "aitoolbox://v1/import?..."` → 第二实例退出、原窗口聚焦、弹窗出现。
-4. **macOS 冷启动**：装 installed 构建，退出，浏览器点链接 → 应用启动、Dock 激活、弹窗出现。
-5. **错误链接**：`v2`→`BadVersion`；`resource=mcp`→`UnsupportedResource`；`app=grok`→`UnsupportedApp`；`endpoints=https://x`→`UnsupportedParam`；缺 `name`→`MissingParam`；`baseUrl=ftp://x`→`InvalidUrl`；均走 `deep-link-error`、toast 提示、无弹窗。
-6. **config 覆盖**：Claude 链接带 `config=<base64 {"env":{...}}>` → 导入后 `settings_config` 为解码内容；带 `extra=...` → `extra_settings_config` 为解码 JSON。
-7. **日志脱敏**：触发带 `apiKey=secret` 的错误链接，查后端日志 → `apiKey=***REDACTED***`。
-8. **不确认不写库**：触发链接后不点导入 → `*_provider` 表无变化。
-9. **托盘刷新**：导入后托盘菜单含新供应商。
-10. **回归**：现有 cc-switch 导入（Claude/Codex/Gemini 页 ImportFromCcSwitchModal）不受 inner 重构影响。
-11. **自动化**：`cargo test --lib`（含 `deeplink::*` 的 23 个单测）、`pnpm test:web`、`pnpm i18n:check` 全绿。
+GUI 验收检查分享入口、目标切换、错误反馈、未确认不写入和成功刷新；OS 冷启动/第二实例与真实第三方接口连通性属于独立的平台集成检查。

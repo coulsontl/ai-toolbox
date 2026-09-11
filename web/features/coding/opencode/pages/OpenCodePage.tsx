@@ -44,6 +44,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
+import { useProviderSharing } from '@/features/coding/shared/providerShare';
 import { readOpenCodeConfigWithResult, saveOpenCodeConfig, getOpenCodeConfigPathInfo, getOpenCodeUnifiedModels, getOpenCodeAuthProviders, getOpenCodeAuthConfigPath, getOpenCodePreview, listFavoriteProviders, upsertFavoriteProvider, deleteFavoriteProvider, buildModelVariantsMap, getOpenCodeFreeModels, type ConfigPathInfo, type UnifiedModelOption, type GetAuthProvidersResponse, type OpenCodeFavoriteProvider, type OpenCodeDiagnosticsConfig, type OpenCodePreviewData } from '@/services/opencodeApi';
 import { listOhMyOpenAgentConfigs, applyOhMyOpenAgentConfig } from '@/services/ohMyOpenAgentApi';
 import { listOhMyOpenCodeSlimConfigs } from '@/services/ohMyOpenCodeSlimApi';
@@ -316,6 +317,7 @@ const buildFetchedOpenCodeModel = (
 
 const OpenCodePage: React.FC = () => {
   const { t } = useTranslation();
+  const { shareProvider, shareModal } = useProviderSharing('opencode', () => loadConfig());
   const { openCodeConfigRefreshKey, omoConfigRefreshKey, omosConfigRefreshKey, incrementOpenCodeConfigRefresh, incrementOmoConfigRefresh, incrementOmosConfigRefresh } = useRefreshStore();
   const {
     sidebarHiddenByPage,
@@ -2502,6 +2504,11 @@ const OpenCodePage: React.FC = () => {
                                     sortableId={providerId}
                                     onEdit={() => handleEditProvider(providerId)}
                                     onCopy={() => handleCopyProvider(providerId)}
+                                    onShare={() => shareProvider({
+                                      id: providerId, name: provider.name || providerId, category: 'custom',
+                                      settingsConfig: JSON.stringify(provider),
+                                      defaultModel: config?.model?.startsWith(providerId + '/') ? config.model.slice(providerId.length + 1) : undefined,
+                                    })}
                                     onDelete={() => handleDeleteProvider(providerId)}
                                     deleteDisabledReason={deleteDisabledReason}
                                     selectable={providerBatch.selectionMode && providerBatch.isSelectable(providerId)}
@@ -2699,6 +2706,10 @@ const OpenCodePage: React.FC = () => {
                                 i18nPrefix="opencode"
                                 isDisabled={disabledProviderIds.has(provider.id)}
                                 onToggleDisabled={() => handleToggleProviderDisabled(provider.id)}
+                                onShare={() => shareProvider({
+                                  id: provider.id, name: provider.name, category: 'official', settingsConfig: '{}',
+                                  defaultModel: config?.model?.startsWith(provider.id + '/') ? config.model.slice(provider.id.length + 1) : undefined,
+                                })}
                               />
                             ))
                           ) : (
@@ -2939,6 +2950,8 @@ const OpenCodePage: React.FC = () => {
               />
             </SidebarSettingsModal>
           </div>
+
+          {shareModal}
         </SectionSidebarLayout>
       )}
     </div>

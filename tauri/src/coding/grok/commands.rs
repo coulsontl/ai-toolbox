@@ -305,9 +305,9 @@ pub async fn create_grok_provider(
 
 /// Pure async core of `create_grok_provider`, callable in-process (e.g. from
 /// the deep-link import path) without a `tauri::State` wrapper.
-pub async fn create_grok_provider_inner(
+pub async fn create_grok_provider_inner<R: tauri::Runtime>(
     state: &SqliteDbState,
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<R>,
     provider: GrokProviderInput,
 ) -> Result<GrokProvider, String> {
     validate_provider_settings(&provider.settings_config, &provider.category)?;

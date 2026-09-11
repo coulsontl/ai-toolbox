@@ -1,5 +1,6 @@
 import type React from 'react';
-import { Card, Collapse, Tag, Typography, Space, Switch, Tooltip } from 'antd';
+import { Button, Card, Collapse, Tag, Typography, Space, Switch, Tooltip } from 'antd';
+import { Share2 } from 'lucide-react';
 import { SafetyOutlined, LockOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { OfficialModel } from '@/services/opencodeApi';
@@ -91,6 +92,7 @@ interface OfficialProviderCardProps {
   isDisabled?: boolean;
   /** Toggle callback for disabled state. */
   onToggleDisabled?: () => void;
+  onShare?: () => void;
 }
 
 /**
@@ -104,6 +106,7 @@ const OfficialProviderCard: React.FC<OfficialProviderCardProps> = ({
   i18nPrefix = 'opencode',
   isDisabled,
   onToggleDisabled,
+  onShare,
 }) => {
   const { t } = useTranslation();
 
@@ -151,6 +154,9 @@ const OfficialProviderCard: React.FC<OfficialProviderCardProps> = ({
             </div>
           </div>
           <Space size={8}>
+            {onShare && <Tooltip title={t('common.share')}>
+              <Button type="text" size="small" aria-label={t('common.share')} icon={<Share2 size={14} />} onClick={onShare} />
+            </Tooltip>}
             <Tag color="warning" icon={<LockOutlined />} style={{ fontSize: 11 }}>
               {t(`${i18nPrefix}.official.authProvider`)}
             </Tag>

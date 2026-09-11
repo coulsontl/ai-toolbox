@@ -212,6 +212,9 @@ pub struct DshModelSettingsInput {
 pub struct DshModelsProviderInput {
     pub provider_key: String,
     pub provider: Value,
+    /// Optional credential written together with the route (shared imports).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<DshCredentialInput>,
 }
 
 /// Input for `save_dsh_credential`: writes `REF: value` into `.credentials.yaml`.

@@ -10,7 +10,7 @@ import {
   HolderOutlined,
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
-import { BarChart2 } from 'lucide-react';
+import { BarChart2, Share2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useSortable } from '@dnd-kit/sortable';
@@ -64,6 +64,7 @@ interface ClaudeDesktopProviderCardProps {
   onEdit: (provider: ClaudeDesktopProvider) => void;
   onDelete: (provider: ClaudeDesktopProvider) => void;
   onCopy: (provider: ClaudeDesktopProvider) => void;
+  onShare?: (provider: ClaudeDesktopProvider) => void;
   onTest: (provider: ClaudeDesktopProvider) => void;
   onSelect: (provider: ClaudeDesktopProvider) => void;
   onToggleDisabled: (provider: ClaudeDesktopProvider, isDisabled: boolean) => void;
@@ -82,6 +83,7 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
   onEdit,
   onDelete,
   onCopy,
+  onShare,
   onTest,
   onSelect,
   onToggleDisabled,
@@ -265,6 +267,10 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
       icon: <CopyOutlined />,
       onClick: () => onCopy(provider),
     },
+    ...(onShare ? [{
+      key: 'share', label: t('common.share'), icon: <Share2 size={14} />,
+      onClick: () => onShare(provider),
+    }] : []),
     {
       type: 'divider' as const,
     },

@@ -27,6 +27,8 @@
 
 ## Gotchas
 
+- 分享导入同时写供应商和独立凭据 ref 时，使用 `save_dsh_models_provider` 的 credential 输入在同一链路保存；先快照两份文件，任一步失败恢复旧字节或删除原不存在的文件，成功后再发事件。不要改成前端先保存 Key 再独立保存供应商，否则后一步失败会遗留凭据或破坏共享引用。
+
 - 保存或清除配置目录后，必须先刷新 `runtime_location` 的 dsh 缓存，再发 `wsl-config-changed` 和原有配置/自动同步事件。issue #331 曾因映射能解析 UNC、状态接口却没有 dsh，导致 Linux `cp` 收到 `//wsl.localhost/...` 并报 cannot stat。只修路径字符串转换不能解决重复同步。
 - provider 视图的凭据回填顺序镜像 pi-ai 运行时解析顺序：先查 `records["llm-pi-ai/<route>"]`（api-key 记录取 `key` 字段回填；grant 或 env-only 记录仅标记已配置、不显示值），无记录才回查 `apiKeyEnv` 指向的 ref。因此经 dsh 官方 UI 登录的渠道在卡片上也能正确显示「已配置」。
 - `delete_dsh_credential` 对不存在的 ref 是幂等 no-op（不再报错）：有效凭据可能在 records 里，清空 key 的 UI 流程必须能成功返回。

@@ -1,128 +1,14 @@
-//! Per-app `settings_config` builders + dispatch to the refactored
-//! `create_*_provider_inner` functions.
-//!
-//! Each builder produces the JSON **string** that the tool's
-//! `*ProviderInput::settings_config` field expects — the same shape that
-//! `cc_switch::extract_*_candidate` produces (see `cc_switch.rs:175-477`).
-//! `config`/`extra` URL params act as escape hatches that override the
-//! builder's output verbatim.
+//! Per-tool builders for portable provider imports.
 
-use serde::Serialize;
 use serde_json::{json, Map, Value};
-use tauri::AppHandle;
-
-use crate::coding::claude_code::commands::create_claude_provider_inner;
-use crate::coding::claude_code::types::ClaudeCodeProviderInput;
-use crate::coding::codex::commands::create_codex_provider_inner;
-use crate::coding::codex::types::CodexProviderInput;
-use crate::coding::gemini_cli::commands::create_gemini_cli_provider_inner;
-use crate::coding::gemini_cli::types::GeminiCliProviderInput;
-use crate::db::SqliteDbState;
 
 use super::parser::DeepLinkImportRequest;
-
-/// Answer returned to the frontend after a successful import. The frontend
-/// uses `app` to dispatch a per-tool page refresh and `id` for any follow-up.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DeepLinkImportResult {
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub app: String,
-    pub id: String,
-}
-
-/// Build the provider's `settings_config` (and Claude's
-/// `extra_settings_config`) and persist via the matching
-/// `create_*_provider_inner`. Dispatches by `request.app`.
-pub async fn build_and_create_provider(
-    state: &SqliteDbState,
-    app: &AppHandle,
-    request: &DeepLinkImportRequest,
-) -> Result<DeepLinkImportResult, String> {
-    match request.app.as_str() {
-        "claude" => {
-            let (settings_config, extra_settings_config) = build_claude_settings(request)?;
-            let input = ClaudeCodeProviderInput {
-                id: None,
-                name: request.name.clone(),
-                category: request.category.clone(),
-                settings_config,
-                extra_settings_config,
-                extra_settings_merge_strategy: None,
-                source_provider_id: request.source_provider_id.clone(),
-                website_url: request.homepage.clone(),
-                notes: request.notes.clone(),
-                icon: request.icon.clone(),
-                icon_color: request.icon_color.clone(),
-                sort_index: None,
-                meta: None,
-            };
-            let provider = create_claude_provider_inner(state, app, input).await?;
-            Ok(DeepLinkImportResult {
-                kind: "provider".to_string(),
-                app: "claude".to_string(),
-                id: provider.id,
-            })
-        }
-        "codex" => {
-            let settings_config = build_codex_settings(request)?;
-            let input = CodexProviderInput {
-                id: None,
-                name: request.name.clone(),
-                category: request.category.clone(),
-                settings_config,
-                source_provider_id: request.source_provider_id.clone(),
-                website_url: request.homepage.clone(),
-                notes: request.notes.clone(),
-                icon: request.icon.clone(),
-                icon_color: request.icon_color.clone(),
-                sort_index: None,
-                meta: None,
-                is_disabled: None,
-            };
-            let provider = create_codex_provider_inner(state, app, input).await?;
-            Ok(DeepLinkImportResult {
-                kind: "provider".to_string(),
-                app: "codex".to_string(),
-                id: provider.id,
-            })
-        }
-        "gemini" => {
-            let settings_config = build_gemini_settings(request)?;
-            let input = GeminiCliProviderInput {
-                id: None,
-                name: request.name.clone(),
-                category: request.category.clone(),
-                settings_config,
-                source_provider_id: request.source_provider_id.clone(),
-                website_url: request.homepage.clone(),
-                notes: request.notes.clone(),
-                icon: request.icon.clone(),
-                icon_color: request.icon_color.clone(),
-                sort_index: None,
-                meta: None,
-                is_disabled: None,
-            };
-            let provider = create_gemini_cli_provider_inner(state, app, input).await?;
-            Ok(DeepLinkImportResult {
-                kind: "provider".to_string(),
-                app: "gemini".to_string(),
-                id: provider.id,
-            })
-        }
-        // `grok` is deferred — its settings shape (defaultModelKey +
-        // modelCatalog) is materially more complex and has no precedent in
-        // cc_switch.rs. The parser already rejects it as `UnsupportedApp`,
-        // so this arm is unreachable in v1; kept for completeness.
-        other => Err(format!("deep-link: app '{other}' is not supported in v1")),
-    }
-}
+use super::portable::{model_catalog, static_headers, uses_bearer_auth};
 
 /// `{"env": {ANTHROPIC_AUTH_TOKEN?, ANTHROPIC_BASE_URL?, ANTHROPIC_MODEL?}}`.
 /// If `config` is provided, it overrides the built `settings_config` verbatim.
 /// `extra` (decoded) becomes `extra_settings_config`, defaulting to `"{}"`.
-fn build_claude_settings(
+pub(super) fn build_claude_settings(
     request: &DeepLinkImportRequest,
 ) -> Result<(String, Option<String>), String> {
     let settings_config = match request.config.as_deref() {
@@ -131,7 +17,22 @@ fn build_claude_settings(
             let mut env = Map::new();
             if let Some(api_key) = &request.api_key {
                 env.insert(
-                    "ANTHROPIC_AUTH_TOKEN".to_string(),
+                    if request
+                        .connection
+                        .api_key_field
+                        .as_deref()
+                        .is_some_and(|field| {
+                            matches!(
+                                field.to_ascii_lowercase().as_str(),
+                                "x-api-key" | "api_key" | "anthropic_api_key"
+                            )
+                        })
+                    {
+                        "ANTHROPIC_API_KEY"
+                    } else {
+                        "ANTHROPIC_AUTH_TOKEN"
+                    }
+                    .to_string(),
                     Value::String(api_key.clone()),
                 );
             }
@@ -143,6 +44,21 @@ fn build_claude_settings(
             }
             if let Some(model) = &request.model {
                 env.insert("ANTHROPIC_MODEL".to_string(), Value::String(model.clone()));
+            }
+            if request.extra.is_none() {
+                let fallback = if request.connection.model_roles.is_empty() {
+                    request.model.as_ref()
+                } else {
+                    None
+                };
+                for role in ["haiku", "sonnet", "opus", "fable"] {
+                    if let Some(model) = request.connection.model_roles.get(role).or(fallback) {
+                        env.insert(
+                            format!("ANTHROPIC_DEFAULT_{}_MODEL", role.to_uppercase()),
+                            json!(model),
+                        );
+                    }
+                }
             }
             serde_json::to_string(&json!({ "env": Value::Object(env) }))
                 .map_err(|e| format!("deep-link: failed to serialize claude settings: {e}"))?
@@ -161,8 +77,13 @@ fn build_claude_settings(
 /// The TOML contains `model_provider = "<slug>"`, optional `model`, and a
 /// `[model_providers.<slug>]` table with `name`/`base_url`. If `config` is
 /// provided, it is used as the TOML `config` string verbatim.
-fn build_codex_settings(request: &DeepLinkImportRequest) -> Result<String, String> {
+pub(super) fn build_codex_settings(request: &DeepLinkImportRequest) -> Result<String, String> {
     let slug = slugify(&request.name);
+    let slug = if matches!(slug.as_str(), "openai" | "ollama" | "lmstudio") {
+        format!("shared-{slug}")
+    } else {
+        slug
+    };
 
     let config_toml = match request.config.as_deref() {
         Some(cfg) if !cfg.trim().is_empty() => cfg.to_string(),
@@ -177,6 +98,10 @@ fn build_codex_settings(request: &DeepLinkImportRequest) -> Result<String, Strin
             }
 
             let mut provider_table = toml::map::Map::new();
+            provider_table.insert(
+                "wire_api".to_string(),
+                toml::Value::String("responses".to_string()),
+            );
             provider_table.insert(
                 "name".to_string(),
                 toml::Value::String(request.name.clone()),
@@ -204,16 +129,20 @@ fn build_codex_settings(request: &DeepLinkImportRequest) -> Result<String, Strin
         auth.insert("OPENAI_API_KEY".to_string(), Value::String(api_key.clone()));
     }
 
-    serde_json::to_string(&json!({
+    let mut settings = json!({
         "auth": Value::Object(auth),
         "config": config_toml,
-    }))
-    .map_err(|e| format!("deep-link: failed to serialize codex settings: {e}"))
+    });
+    if !request.connection.models.is_empty() {
+        settings["modelCatalog"] = json!({ "models": model_catalog(&request.connection.models) });
+    }
+    serde_json::to_string(&settings)
+        .map_err(|e| format!("deep-link: failed to serialize codex settings: {e}"))
 }
 
 /// `{"env": {GEMINI_API_KEY?, GOOGLE_GEMINI_BASE_URL?, GEMINI_MODEL?}, "config": {}}`.
 /// If `config` is provided, it overrides the built `settings_config` verbatim.
-fn build_gemini_settings(request: &DeepLinkImportRequest) -> Result<String, String> {
+pub(super) fn build_gemini_settings(request: &DeepLinkImportRequest) -> Result<String, String> {
     let settings_config = match request.config.as_deref() {
         Some(cfg) if !cfg.trim().is_empty() => cfg.to_string(),
         _ => {
@@ -230,6 +159,12 @@ fn build_gemini_settings(request: &DeepLinkImportRequest) -> Result<String, Stri
             if let Some(model) = &request.model {
                 env.insert("GEMINI_MODEL".to_string(), Value::String(model.clone()));
             }
+            if let Some(version) = &request.connection.api_version {
+                env.insert("GOOGLE_GENAI_API_VERSION".to_string(), json!(version));
+            }
+            if uses_bearer_auth(request.connection.api_key_field.as_deref()) {
+                env.insert("GEMINI_API_KEY_AUTH_MECHANISM".to_string(), json!("bearer"));
+            }
             serde_json::to_string(&json!({
                 "env": Value::Object(env),
                 "config": Value::Object(Map::new()),
@@ -240,9 +175,34 @@ fn build_gemini_settings(request: &DeepLinkImportRequest) -> Result<String, Stri
     Ok(settings_config)
 }
 
+pub(super) fn build_desktop_routes(request: &DeepLinkImportRequest) -> Value {
+    let mut routes = Map::new();
+    for (index, model) in request.connection.models.iter().enumerate() {
+        let id = if crate::coding::claude_desktop::config_writer::is_claude_safe_model_id(&model.id)
+        {
+            model.id.clone()
+        } else {
+            format!("claude-sonnet-share-{}", index + 1)
+        };
+        let mut route =
+            json!({ "model": model.id, "labelOverride": model.name.as_ref().unwrap_or(&model.id) });
+        let role = request
+            .connection
+            .model_roles
+            .iter()
+            .find_map(|(role, id)| (id == &model.id).then_some(role.as_str()))
+            .or_else(|| (request.model.as_ref() == Some(&model.id)).then_some("sonnet"));
+        if let Some(role) = role {
+            route["tierAlias"] = json!(role);
+        }
+        routes.insert(id, route);
+    }
+    Value::Object(routes)
+}
+
 /// Lowercase, replace non-[a-z0-9] runs with `-`, trim leading/trailing `-`.
 /// Used as the codex `model_provider` id and `[model_providers.<id>]` key.
-fn slugify(name: &str) -> String {
+pub(super) fn slugify(name: &str) -> String {
     let mut slug = String::new();
     let mut prev_dash = true; // suppress leading dashes
     for c in name.chars() {
@@ -262,6 +222,214 @@ fn slugify(name: &str) -> String {
     } else {
         slug
     }
+}
+
+pub(super) fn build_catalog_settings(request: &DeepLinkImportRequest) -> Result<String, String> {
+    let format = request
+        .connection
+        .api_format
+        .as_deref()
+        .unwrap_or("openai_chat");
+    let models: Vec<Value> = request
+        .connection
+        .models
+        .iter()
+        .enumerate()
+        .map(|(index, model)| {
+            let key = format!("model-{}", index + 1);
+            let mut entry = json!({ "key": key, "model": model.id });
+            if let Some(name) = &model.name {
+                entry["displayName"] = json!(name);
+            }
+            if request.app == "kimi" {
+                entry["provider"] = json!("custom");
+                entry["maxContextSize"] = json!(model.context_window.unwrap_or(262_144));
+                let mut capabilities = Vec::new();
+                if let Some(input) = &model.input {
+                    if input.iter().any(|kind| kind == "image") {
+                        capabilities.push("image_in");
+                    }
+                    if input.iter().any(|kind| kind == "video") {
+                        capabilities.push("video_in");
+                    }
+                }
+                if model.reasoning == Some(true) {
+                    capabilities.push("thinking");
+                }
+                if !capabilities.is_empty() {
+                    entry["capabilities"] = json!(capabilities);
+                }
+            } else {
+                entry["apiBackend"] = json!(match format {
+                    "openai_responses" => "responses",
+                    "anthropic_messages" => "messages",
+                    _ => "chat_completions",
+                });
+                if let Some(url) = &request.base_url {
+                    entry["baseUrl"] = json!(url);
+                }
+                if let Some(window) = model.context_window {
+                    entry["contextWindow"] = json!(window);
+                }
+                if let Some(input) = &model.input {
+                    entry["modalities"] = json!({ "input": input });
+                }
+            }
+            entry
+        })
+        .collect();
+    let default_key = request
+        .model
+        .as_ref()
+        .and_then(|default| {
+            models
+                .iter()
+                .find(|model| model["model"].as_str() == Some(default))
+        })
+        .or_else(|| models.first())
+        .and_then(|model| model["key"].as_str());
+    let mut settings = json!({ "auth": {}, "modelCatalog": { "models": models } });
+    if let Some(key) = &request.api_key {
+        settings["auth"]["API_KEY"] = json!(key);
+    }
+    if let Some(key) = default_key {
+        settings["defaultModelKey"] = json!(key);
+    }
+    if request.app == "kimi" {
+        settings["providerConfigs"] = json!({ "custom": { "type": "openai_legacy" } });
+        if let Some(url) = &request.base_url {
+            settings["providerConfigs"]["custom"]["base_url"] = json!(url);
+        }
+    }
+    serde_json::to_string(&settings).map_err(|error| error.to_string())
+}
+
+pub(super) fn build_native_provider(request: &DeepLinkImportRequest) -> Result<Value, String> {
+    let format = request
+        .connection
+        .api_format
+        .as_deref()
+        .unwrap_or("openai_chat");
+    let api = match format {
+        "anthropic_messages" => "anthropic-messages",
+        "openai_responses" => "openai-responses",
+        "gemini_native" => "google-generative-ai",
+        _ => "openai-completions",
+    };
+    let headers = static_headers(&request.connection.headers)?;
+    if request.app == "opencode" {
+        let npm = match format {
+            "anthropic_messages" => "@ai-sdk/anthropic",
+            "openai_responses" => "@ai-sdk/openai",
+            "gemini_native" => "@ai-sdk/google",
+            _ => "@ai-sdk/openai-compatible",
+        };
+        let mut provider = json!({ "name": request.name, "npm": npm, "options": {}, "models": {} });
+        if let Some(url) = &request.base_url {
+            provider["options"]["baseURL"] = json!(url);
+        }
+        if let Some(key) = &request.api_key {
+            let field = if format == "anthropic_messages"
+                && uses_bearer_auth(request.connection.api_key_field.as_deref())
+            {
+                "authToken"
+            } else {
+                "apiKey"
+            };
+            provider["options"][field] = json!(key);
+        }
+        if !headers.is_empty() {
+            provider["options"]["headers"] = json!(headers);
+        }
+        for model in &request.connection.models {
+            let mut entry = json!({ "name": model.name.as_ref().unwrap_or(&model.id) });
+            if let (Some(context), Some(output)) = (model.context_window, model.max_tokens) {
+                entry["limit"] = json!({ "context": context, "output": output });
+            }
+            if let Some(input) = &model.input {
+                entry["modalities"] = json!({ "input": input, "output": ["text"] });
+            }
+            if let Some(reasoning) = model.reasoning {
+                entry["reasoning"] = json!(reasoning);
+            }
+            provider["models"][&model.id] = entry;
+        }
+        return Ok(provider);
+    }
+    if request.app == "hermes" {
+        let mode = match format {
+            "anthropic_messages" => "anthropic",
+            "openai_responses" => "openai-responses",
+            "gemini_native" => "google",
+            _ => "openai",
+        };
+        let mut models = request.connection.models.clone();
+        if let Some(default) = &request.model {
+            if let Some(index) = models.iter().position(|model| &model.id == default) {
+                let model = models.remove(index);
+                models.insert(0, model);
+            }
+        }
+        let models: Vec<Value> = models
+            .iter()
+            .map(|model| {
+                let mut entry = json!({ "id": model.id });
+                if let Some(context) = model.context_window {
+                    entry["context_length"] = json!(context);
+                }
+                if let Some(tokens) = model.max_tokens {
+                    entry["max_tokens"] = json!(tokens);
+                }
+                if let Some(name) = &model.name {
+                    entry["name"] = json!(name);
+                }
+                entry
+            })
+            .collect();
+        let mut provider =
+            json!({ "api_mode": mode, "models": models, "display_name": request.name });
+        if let Some(url) = &request.base_url {
+            provider["base_url"] = json!(url);
+        }
+        if let Some(key) = &request.api_key {
+            provider["api_key"] = json!(key);
+        }
+        return Ok(provider);
+    }
+    let mut models = request.connection.models.clone();
+    for model in &mut models {
+        if let Some(input) = &mut model.input {
+            input.retain(|kind| matches!(kind.as_str(), "text" | "image"));
+            if input.is_empty() {
+                model.input = None;
+            }
+        }
+    }
+    let mut provider = json!({ "api": api, "models": models });
+    if let Some(url) = &request.base_url {
+        provider[if request.app == "dsh" {
+            "baseURL"
+        } else {
+            "baseUrl"
+        }] = json!(url);
+    }
+    if request.app != "dsh" {
+        if let Some(key) = &request.api_key {
+            provider["apiKey"] = json!(key);
+        }
+    }
+    if !headers.is_empty() {
+        provider["headers"] = json!(headers);
+    }
+    if format == "anthropic_messages"
+        && uses_bearer_auth(request.connection.api_key_field.as_deref())
+    {
+        provider["authHeader"] = json!(true);
+    }
+    if request.app == "dsh" {
+        provider["displayName"] = json!(request.name);
+    }
+    Ok(provider)
 }
 
 #[cfg(test)]
@@ -412,5 +580,37 @@ base_url = "https://override.example.com"
         let v: Value = serde_json::from_str(&settings).unwrap();
         assert!(v["env"].as_object().unwrap().is_empty());
         assert_eq!(extra.as_deref(), Some("{}"));
+    }
+
+    #[test]
+    fn native_model_metadata_obeys_target_limit_and_modality_shapes() {
+        let mut request = req_for("opencode");
+        request.connection.api_format = Some("openai_chat".to_string());
+        request.connection.models = serde_json::from_value(json!([
+            { "id": "complete", "contextWindow": 64000, "maxTokens": 8000, "input": ["text", "image", "audio"] },
+            { "id": "context-only", "contextWindow": 128000 },
+            { "id": "output-only", "maxTokens": 16000 }
+        ])).unwrap();
+        let opencode = build_native_provider(&request).unwrap();
+        assert_eq!(
+            opencode["models"]["complete"]["limit"],
+            json!({ "context": 64000, "output": 8000 })
+        );
+        assert_eq!(
+            opencode["models"]["complete"]["modalities"]["output"],
+            json!(["text"])
+        );
+        assert!(opencode["models"]["context-only"].get("limit").is_none());
+        assert!(opencode["models"]["output-only"].get("limit").is_none());
+        for target in ["pi", "omp", "openclaw", "dsh"] {
+            request.app = target.to_string();
+            let provider = build_native_provider(&request).unwrap();
+            assert_eq!(
+                provider["models"][0]["input"],
+                json!(["text", "image"]),
+                "{target}"
+            );
+            assert_eq!(provider["models"][1]["contextWindow"], 128000, "{target}");
+        }
     }
 }

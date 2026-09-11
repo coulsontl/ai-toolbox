@@ -1274,9 +1274,9 @@ pub async fn create_gemini_cli_provider(
 
 /// Pure async core of `create_gemini_cli_provider`, callable in-process (e.g.
 /// from the deep-link import path) without a `tauri::State` wrapper.
-pub async fn create_gemini_cli_provider_inner(
+pub async fn create_gemini_cli_provider_inner<R: tauri::Runtime>(
     state: &SqliteDbState,
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<R>,
     provider: GeminiCliProviderInput,
 ) -> Result<GeminiCliProvider, String> {
     let db = state.db();

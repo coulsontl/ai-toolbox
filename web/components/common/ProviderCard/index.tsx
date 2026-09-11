@@ -2,6 +2,7 @@ import type React from 'react';
 import { Button, Card, Empty, Space, Typography, Popconfirm, Collapse, Tag, Switch, Tooltip } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, HolderOutlined, CopyOutlined, LockOutlined, SafetyOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { Share2 } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -47,6 +48,7 @@ interface ProviderCardProps {
   /** Provider action callbacks */
   onEdit?: () => void;
   onCopy?: () => void;
+  onShare?: () => void;
   onDelete?: () => void;
   /** Whether the built-in delete Popconfirm should wrap the delete button. */
   deleteConfirm?: boolean;
@@ -106,6 +108,7 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
   sortableId,
   onEdit,
   onCopy,
+  onShare,
   onDelete,
   deleteConfirm = true,
   deleteDisabledReason,
@@ -432,6 +435,11 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
                     icon={<CopyOutlined />}
                     onClick={onCopy}
                   />
+                )}
+                {onShare && (
+                  <Tooltip title={t('common.share')}>
+                    <Button size="small" aria-label={t('common.share')} icon={<Share2 size={14} />} onClick={onShare} />
+                  </Tooltip>
                 )}
                 {onDelete && deleteDisabledReason ? (
                   <Tooltip title={deleteDisabledReason}>

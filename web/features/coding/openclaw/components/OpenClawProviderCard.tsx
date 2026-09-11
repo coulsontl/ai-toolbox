@@ -18,6 +18,7 @@ interface Props {
   modelsDraggable?: boolean;
   onReorderModels?: (modelIds: string[]) => void;
   onEdit: () => void;
+  onShare?: () => void;
   onDelete: () => void;
   onAddModel: () => void;
   onEditModel: (model: OpenClawModel) => void;
@@ -63,6 +64,7 @@ const OpenClawProviderCard: React.FC<Props> = ({
   modelsDraggable,
   onReorderModels,
   onEdit,
+  onShare,
   onDelete,
   onAddModel,
   onEditModel,
@@ -108,6 +110,7 @@ const OpenClawProviderCard: React.FC<Props> = ({
       modelsDraggable={modelsDraggable}
       onReorderModels={onReorderModels}
       onEdit={onEdit}
+      onShare={onShare}
       onDelete={onDelete}
       deleteDisabledReason={deleteDisabledReason}
       selectable={selectable}

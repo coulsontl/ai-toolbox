@@ -43,6 +43,7 @@ import {
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 
+import { useProviderSharing } from '@/features/coding/shared/providerShare';
 import AllApiHubIcon from '@/components/common/AllApiHubIcon';
 import ImportProviderModal from '@/components/common/ImportProviderModal';
 import JsonEditor from '@/components/common/JsonEditor';
@@ -543,6 +544,7 @@ const dedupeOmpFavoriteProviders = (
 
 const OhMyPiPage: React.FC = () => {
   const { t } = useTranslation();
+  const { shareProvider, shareModal } = useProviderSharing('omp', () => loadConfig());
   const { sidebarHiddenByPage, setSidebarHidden } = useSettingsStore();
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
@@ -1815,6 +1817,12 @@ const OhMyPiPage: React.FC = () => {
         models={modelDisplayList}
         onEdit={() => openProviderModal(provider)}
         onCopy={() => openProviderModal(provider, { copy: true })}
+        onShare={() => shareProvider({
+          id: provider.providerKey, name: provider.displayName, category: 'custom',
+          settingsConfig: JSON.stringify(providerConfig), credential: provider.credential,
+          credentialUnavailable: provider.credentialKind === 'oauth' || provider.credentialKind === 'env_possible',
+          defaultModel: provider.isDefault ? runtimeConfig?.modelSettings.modelId ?? undefined : undefined,
+        })}
         onDelete={canDeleteProvider ? () => handleDeleteSupplier(provider) : undefined}
         deleteConfirm={false}
         deleteDisabledReason={deleteDisabledReason}
@@ -2527,6 +2535,8 @@ const OhMyPiPage: React.FC = () => {
         >
           <CliManualPathSetting commandName="omp" labelKey="subModules.ohMyPi" toolNameKey="subModules.ohMyPiFull" />
         </SidebarSettingsModal>
+
+        {shareModal}
       </SectionSidebarLayout>
     </Spin>
   );

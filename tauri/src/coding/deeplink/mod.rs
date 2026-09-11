@@ -16,8 +16,11 @@
 //!    [`mark_deeplink_frontend_ready`] to atomically mark the listener ready and
 //!    drain the pending slot.
 
+mod importer;
 pub mod parser;
+pub mod portable;
 mod provider;
+mod source;
 mod utils;
 
 use std::sync::Mutex;
@@ -26,8 +29,9 @@ use log::warn;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 
+pub use importer::*;
 pub use parser::{DeepLinkError, DeepLinkErrorPayload, DeepLinkImportRequest};
-pub use provider::{build_and_create_provider, DeepLinkImportResult};
+pub use source::*;
 
 use crate::db::SqliteDbState;
 
@@ -153,10 +157,11 @@ pub fn mark_deeplink_frontend_ready(
 /// dialog. The only place that writes to the DB. Dispatches by `resource`
 /// (only `provider` in v1) and then by `app` to the per-tool builder.
 #[tauri::command]
-pub async fn import_from_deeplink_unified(
+pub async fn import_from_deeplink_unified<R: tauri::Runtime>(
     state: tauri::State<'_, SqliteDbState>,
-    app: AppHandle,
+    app: AppHandle<R>,
     request: DeepLinkImportRequest,
+    conflict_policy: Option<ImportConflictPolicy>,
 ) -> Result<DeepLinkImportResult, String> {
     if request.resource != parser::SUPPORTED_RESOURCE {
         return Err(format!(
@@ -165,12 +170,9 @@ pub async fn import_from_deeplink_unified(
         ));
     }
     if !parser::SUPPORTED_APPS.contains(&request.app.as_str()) {
-        return Err(format!(
-            "deep-link: unsupported app '{}'; v1 supports claude/codex/gemini",
-            request.app
-        ));
+        return Err(format!("deep-link: unsupported app '{}'", request.app));
     }
-    build_and_create_provider(&state, &app, &request).await
+    build_and_create_provider(state, &app, &request, conflict_policy.unwrap_or_default()).await
 }
 
 #[cfg(test)]

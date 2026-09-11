@@ -1,4 +1,5 @@
 import React from 'react';
+import { useProviderSharing } from '@/features/coding/shared/providerShare';
 import AllApiHubIcon from '@/components/common/AllApiHubIcon';
 import { Typography, Button, Space, Empty, message, Modal, Spin, Collapse } from 'antd';
 import {
@@ -345,6 +346,7 @@ function buildDesktopFavoriteProviderConfig(provider: ClaudeDesktopProvider): Op
 
 const ClaudeDesktopPage: React.FC = () => {
   const { t } = useTranslation();
+  const { shareProvider, shareModal } = useProviderSharing('claudedesktop', () => loadConfig());
   const { claudeProviderRefreshKey } = useRefreshStore();
   const { sidebarHiddenByPage, setSidebarHidden } = useSettingsStore();
   const [loading, setLoading] = React.useState(false);
@@ -1145,6 +1147,7 @@ const ClaudeDesktopPage: React.FC = () => {
                                 onEdit={handleEditProvider}
                                 onDelete={handleDeleteProvider}
                                 onCopy={handleCopyProvider}
+                                onShare={shareProvider}
                                 onTest={handleTestProvider}
                                 onSelect={handleSelectProvider}
                                 onToggleDisabled={handleToggleDisabled}
@@ -1337,6 +1340,8 @@ const ClaudeDesktopPage: React.FC = () => {
           await setSidebarHidden('claudedesktop', !visible);
         }}
       />
+
+      {shareModal}
     </SectionSidebarLayout>
   );
 };

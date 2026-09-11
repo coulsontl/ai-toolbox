@@ -4,9 +4,8 @@
  * The share URL carries only the generic connection fields (name / category /
  * apiKey / baseUrl / model / homepage / notes / icon / iconColor) — never the
  * tool-specific `config` / `extra` blobs. The receiving side's import builders
- * (`build_claude/codex/gemini_settings` in `tauri/src/coding/deeplink/provider.rs`)
- * rebuild the tool-specific settings shape from these generic fields, so one
- * URL can be imported into any of the three supported apps regardless of which
+ * (in `tauri/src/coding/deeplink/provider.rs`) rebuild the tool-specific settings
+ * shape from these generic fields, so one URL can target any supported app regardless of which
  * tool the provider originally belongs to.
  *
  * URL format mirrors `tauri/src/coding/deeplink/parser.rs` (`SCHEME`, `VERSION`,
@@ -18,8 +17,9 @@
 import { extractCodexBaseUrl, extractCodexModel } from '../../../utils/codexConfigUtils';
 import { getClaudeConfiguredModelIds } from '../../coding/claudecode/utils/claudeModelConfig';
 import type { ClaudeSettingsConfig } from '../../../types/claudecode';
+import type { ProviderShareApp, SharedConnectionFields } from './providerTransfer';
 
-export type ProviderShareApp = 'claude' | 'codex' | 'gemini';
+export type { ProviderShareApp } from './providerTransfer';
 
 export interface ProviderConnectionFields {
   apiKey?: string;
@@ -27,7 +27,7 @@ export interface ProviderConnectionFields {
   model?: string;
 }
 
-export interface ProviderShareUrlInput extends ProviderConnectionFields {
+export interface ProviderShareUrlInput extends SharedConnectionFields {
   /** Target tool the receiving side imports into (`app` query param). */
   app: ProviderShareApp;
   name: string;
@@ -36,6 +36,7 @@ export interface ProviderShareUrlInput extends ProviderConnectionFields {
   notes?: string;
   icon?: string;
   iconColor?: string;
+  sourceProviderId?: string;
 }
 
 const SHARE_SCHEME = 'aitoolbox';
@@ -86,7 +87,7 @@ function firstClaudeModel(parsed: Record<string, unknown>): string | undefined {
  * cannot be located are omitted — the deep-link import treats them as absent.
  */
 export function extractProviderConnectionFields(
-  sourceApp: ProviderShareApp,
+  sourceApp: 'claude' | 'codex' | 'gemini',
   settingsConfig: string | undefined,
 ): ProviderConnectionFields {
   const parsed = parseJsonObject(settingsConfig);
@@ -182,6 +183,13 @@ export function buildProviderShareUrl(input: ProviderShareUrlInput): string {
   if (input.notes?.trim()) params.set('notes', input.notes.trim());
   if (input.icon?.trim()) params.set('icon', input.icon.trim());
   if (input.iconColor?.trim()) params.set('iconColor', input.iconColor.trim());
+  for (const key of ['sourceApp', 'baseUrlStyle', 'apiFormat', 'apiVersion', 'sourceProviderId', 'providerType', 'apiKeyField'] as const) {
+    if (input[key]?.trim()) params.set(key, input[key].trim());
+  }
+  for (const key of ['models', 'modelRoles', 'headers', 'gatewayProfile'] as const) {
+    const value = input[key];
+    if (value && Object.keys(value).length > 0) params.set(key, JSON.stringify(value));
+  }
 
   return `${SHARE_SCHEME}://${SHARE_VERSION}${SHARE_PATH}?${params.toString()}`;
 }

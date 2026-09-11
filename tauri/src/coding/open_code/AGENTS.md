@@ -45,6 +45,8 @@ sequenceDiagram
 
 ## 易错点与历史坑（Gotchas）
 
+- 官方卡片分享只读取选中 provider 的 API-key 认证，不能复用会 fallback 到 OAuth access 的连通性 `resolve_auth_credential`。默认 URL/SDK/模型从本地 cache/bundled metadata 补齐；用户当前配置优先，分享不触发远端刷新。
+
 - 不要把 OpenCode prompt 路径写死成 `~/.config/opencode/AGENTS.md`。应始终先走当前配置路径决议，再取同目录下的 `AGENTS.md`。
 - 前端显示的 `configPathInfo.source` 只是“路径来自哪里”，不是 WSL Direct 判断。WSL Direct 统一看 `runtime_location` / `module_statuses`。
 - 不要把 OpenCode 的模型值只当成 `model_id`。tray、统一模型列表和配置文件都约定使用 `provider_id/model_id`，少一段就会导致选中态和写回都失真。

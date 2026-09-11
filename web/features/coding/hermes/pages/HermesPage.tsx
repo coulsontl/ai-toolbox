@@ -1,4 +1,5 @@
 import React from 'react';
+import { useProviderSharing } from '@/features/coding/shared/providerShare';
 import AllApiHubIcon from '@/components/common/AllApiHubIcon';
 import {
   Button,
@@ -219,6 +220,7 @@ const resolveHermesFavoriteProviderPayload = (
 
 const HermesPage: React.FC = () => {
   const { t } = useTranslation();
+  const { shareProvider, shareModal } = useProviderSharing('hermes', () => loadConfig());
   const { sidebarHiddenByPage, setSidebarHidden } = useSettingsStore();
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
@@ -1388,6 +1390,13 @@ const HermesPage: React.FC = () => {
         models={modelDisplayList}
         onEdit={isReadOnly ? undefined : () => setProviderModal({ provider })}
         onCopy={isReadOnly ? undefined : () => setProviderModal({ provider: undefined })}
+        onShare={() => shareProvider({
+          id: provider.providerKey, name: provider.displayName, category: 'custom',
+          settingsConfig: JSON.stringify({ ...provider.provider, api_mode: provider.apiMode ?? provider.provider?.api_mode }),
+          credential: provider.credential,
+          credentialUnavailable: provider.isBuiltin,
+          defaultModel: provider.isDefault ? runtimeConfig?.modelSettings.defaultModel ?? undefined : undefined,
+        })}
         onDelete={isReadOnly ? undefined : () => handleDeleteProvider(provider)}
         deleteConfirm={false}
         deleteDisabledReason={deleteDisabledReason}
@@ -2033,6 +2042,8 @@ const HermesPage: React.FC = () => {
         >
           <CliManualPathSetting commandName="hermes" labelKey="subModules.hermes" />
         </SidebarSettingsModal>
+
+        {shareModal}
       </SectionSidebarLayout>
     </Spin>
   );

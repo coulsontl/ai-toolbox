@@ -6,6 +6,8 @@
 
 ## Source of Truth
 
+- 跨工具分享生成的直接聊天连接使用 Kimi 原生 `openai_legacy` provider type；`openai_responses`、`anthropic`、`gemini` 是其他协议的原生枚举，不能把通用展示词 `openai` 当作新增连接的 CLI type。分享模型的图片/视频能力分别写 `image_in` / `video_in`，协议与认证适配见 `coding/deeplink/AGENTS.md`。
+
 - Provider、common config、prompt 和 official account 长期主数据在 SQLite JSONB。
 - 当前运行时根目录由 `runtime_location` 按应用内 `root_dir`、`KIMI_CODE_HOME`、shell 配置、`~/.kimi-code` 的顺序解析。
 - 备份/恢复链路归属于 DB 型 CLI（`OPTIONAL_BACKUP_CLI_TOOLS`），受 `backup_cli_config_files_enabled` 门控；备份时打包 `config.toml`、`AGENTS.md`、`credentials/` 官方凭据和 `plugins/`，恢复时由 `settings::backup` 恢复或由 `reapply_applied_runtime` 从 SQLite 重新应用。

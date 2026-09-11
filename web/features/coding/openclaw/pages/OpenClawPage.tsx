@@ -68,6 +68,7 @@ import {
   type OpenCodeDiagnosticsConfig,
   type OpenCodeFavoriteProvider,
 } from '@/services/opencodeApi';
+import { useProviderSharing } from '@/features/coding/shared/providerShare';
 import { findPresetModelById } from '@/constants/presetModels';
 import {
   buildFetchedOpenClawModel,
@@ -200,6 +201,7 @@ const buildOpenClawFavoriteProviderConfig = (
 
 const OpenClawPage: React.FC = () => {
   const { t } = useTranslation();
+  const { shareProvider, shareModal } = useProviderSharing('openclaw', () => loadConfig());
   const { openClawConfigRefreshKey } = useRefreshStore();
   const {
     sidebarHiddenByPage,
@@ -1705,6 +1707,11 @@ const OpenClawPage: React.FC = () => {
                                   modelsDraggable
                                   onReorderModels={(modelIds) => handleReorderModels(providerId, modelIds)}
                                   onEdit={() => handleEditProvider(providerId, providerConfig)}
+                                  onShare={() => shareProvider({
+                                    id: providerId, name: providerId, category: 'custom',
+                                    settingsConfig: JSON.stringify(providerConfig),
+                                    defaultModel: agentsDefaults?.model?.primary?.startsWith(providerId + '/') ? agentsDefaults.model.primary.slice(providerId.length + 1) : undefined,
+                                  })}
                                   onDelete={() => handleDeleteProvider(providerId)}
                                   deleteDisabledReason={
                                     agentsDefaults?.model?.primary?.split('/')[0] === providerId
@@ -2000,6 +2007,8 @@ const OpenClawPage: React.FC = () => {
           </>
         )}
       </div>
+
+      {shareModal}
     </SectionSidebarLayout>
   );
 };

@@ -210,9 +210,9 @@ pub fn list_kimi_providers_for_db(db: &SqliteDbState) -> Result<Vec<KimiProvider
 }
 
 #[tauri::command]
-pub async fn create_kimi_provider(
+pub async fn create_kimi_provider<R: tauri::Runtime>(
     state: tauri::State<'_, SqliteDbState>,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
     provider: KimiProviderInput,
 ) -> Result<KimiProvider, String> {
     validate_provider_settings(&provider.settings_config, &provider.category)?;

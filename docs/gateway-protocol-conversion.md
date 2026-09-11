@@ -125,6 +125,8 @@ Copilot 是一个 runtime 特例：`effective_upstream_provider_for_request()` �
 
 ## 5. ConversionRoute 决策
 
+跨工具供应商分享由 `coding/deeplink` 适配配置字段，保持上游实际 `apiFormat`，不在分享层实现请求或 SSE 转换。导入目标的 native protocol 不匹配时，预览提示需要 Gateway；数据库记录保存对应 meta，启用后继续走本节的统一转换链路。内置 profile 只映射同一 profile/协议的目标 endpoint 引用，协议、SDK 地址和持久化边界见 [`deep-link-import.md`](deep-link-import.md)。
+
 `runtime/upstream.rs::conversion_route()` 的逻辑非常窄：
 
 ```rust
