@@ -631,6 +631,16 @@ export function VirtualGrid<TItem>({
     const resizeObserver = new ResizeObserver(updateMetrics);
     resizeObserver.observe(containerElement);
     if (virtualize && scrollElement instanceof HTMLElement) {
+      // Earlier sections can move the grid without resizing it or scrolling.
+      // Observe the layout chain so those changes also refresh its offset.
+      let layoutElement = containerElement.parentElement;
+      while (layoutElement) {
+        resizeObserver.observe(layoutElement);
+        if (layoutElement === scrollElement) {
+          break;
+        }
+        layoutElement = layoutElement.parentElement;
+      }
       scrollElement.addEventListener('scroll', updateMetrics, { passive: true });
     }
     window.addEventListener('resize', updateMetrics);
@@ -661,6 +671,11 @@ export function VirtualGrid<TItem>({
   }, []);
 
   const updateMeasuredRowHeight = React.useCallback((rowIndex: number, rowHeight: number) => {
+    // KeepAlive hides cached pages with display:none. Preserve their last
+    // visible measurements instead of collapsing the virtual scroll range.
+    if (rowHeight <= 0) {
+      return;
+    }
     setRowHeights((previousHeights) => {
       if (previousHeights[rowIndex] === rowHeight) {
         return previousHeights;
