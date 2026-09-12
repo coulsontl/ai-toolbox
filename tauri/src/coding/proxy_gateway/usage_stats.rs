@@ -2010,8 +2010,9 @@ fn find_model_pricing(conn: &Connection, model_id: &str) -> Option<ModelPricing>
     find_pricing_for_candidates(conn, &candidates)
 }
 
-pub(super) fn session_model_needs_short_date_fallback(conn: &Connection, model: &str) -> bool {
-    find_pricing_for_candidates(conn, &pricing_candidates_with_short_dates(model, false)).is_none()
+pub(super) fn session_model_needs_legacy_fallback(conn: &Connection, model: &str) -> bool {
+    find_pricing_for_candidates(conn, &pricing_candidates_with_legacy_aliases(model, false))
+        .is_none()
         && find_model_pricing(conn, model).is_some()
 }
 
@@ -2104,10 +2105,13 @@ fn row_to_model_pricing(row: &rusqlite::Row<'_>) -> rusqlite::Result<ModelPricin
 }
 
 fn model_pricing_candidates(model_id: &str) -> Vec<String> {
-    pricing_candidates_with_short_dates(model_id, true)
+    pricing_candidates_with_legacy_aliases(model_id, true)
 }
 
-fn pricing_candidates_with_short_dates(model_id: &str, include_short_dates: bool) -> Vec<String> {
+fn pricing_candidates_with_legacy_aliases(
+    model_id: &str,
+    include_legacy_aliases: bool,
+) -> Vec<String> {
     let cleaned = clean_model_id_for_pricing(model_id);
     if is_placeholder_pricing_model(&cleaned) {
         return Vec::new();
@@ -2133,9 +2137,14 @@ fn pricing_candidates_with_short_dates(model_id: &str, include_short_dates: bool
         if let Some(stripped) = strip_known_model_date_suffix(&candidate) {
             queue.push(stripped);
         }
-        if include_short_dates {
+        if include_legacy_aliases {
             if let Some(stripped) = strip_month_day_suffix(&candidate) {
                 queue.push(stripped);
+            }
+            if candidate.starts_with("claude-") || candidate.starts_with("deepseek-") {
+                if let Some(stripped) = candidate.strip_suffix("-thinking") {
+                    queue.push(stripped.to_string());
+                }
             }
         }
         if let Some(stripped) = strip_reasoning_effort_suffix(&candidate) {
@@ -3784,7 +3793,7 @@ mod tests {
         db.with_conn(|conn| {
             let pricing = find_model_pricing(conn, "provider/deepseek-v4-flash-0731-high").unwrap();
             assert_eq!(pricing.input_cost_per_million, Decimal::new(14, 2));
-            assert!(session_model_needs_short_date_fallback(
+            assert!(session_model_needs_legacy_fallback(
                 conn,
                 "deepseek-v4-flash-0731"
             ));
@@ -3802,9 +3811,59 @@ mod tests {
                     .input_cost_per_million,
                 Decimal::ZERO
             );
-            assert!(!session_model_needs_short_date_fallback(
+            assert!(!session_model_needs_legacy_fallback(
                 conn,
                 "deepseek-v4-flash-0731"
+            ));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn model_pricing_resolves_known_thinking_aliases_without_overriding_exact_or_free_models() {
+        let db = test_db();
+        insert_model_pricing(&db, "claude-opus-4-5-20251101", "5", "25");
+        insert_model_pricing(&db, "deepseek-v3.2", "0.28", "0.42");
+        insert_model_pricing(&db, "grok-4.5", "2", "6");
+        db.with_conn(|conn| {
+            let opus = "provider/gemini-claude-opus-4-5-thinking";
+            assert_eq!(
+                find_model_pricing(conn, opus)
+                    .unwrap()
+                    .input_cost_per_million,
+                Decimal::new(5, 0)
+            );
+            assert!(session_model_needs_legacy_fallback(conn, opus));
+            assert_eq!(
+                find_model_pricing(conn, "deepseek-v3.2-thinking")
+                    .unwrap()
+                    .input_cost_per_million,
+                Decimal::new(28, 2)
+            );
+            assert!(find_model_pricing(conn, "deepseek-v3.2-free").is_none());
+            assert!(find_model_pricing(conn, "grok-4.5-thinking").is_none());
+            Ok(())
+        })
+        .unwrap();
+        insert_model_pricing(&db, "claude-opus-4-5-thinking", "0", "0");
+        insert_model_pricing(&db, "deepseek-v3.2-thinking", "1", "2");
+        db.with_conn(|conn| {
+            assert_eq!(
+                find_model_pricing(conn, "gemini-claude-opus-4-5-thinking")
+                    .unwrap()
+                    .input_cost_per_million,
+                Decimal::ZERO
+            );
+            assert_eq!(
+                find_model_pricing(conn, "deepseek-v3.2-thinking")
+                    .unwrap()
+                    .input_cost_per_million,
+                Decimal::ONE
+            );
+            assert!(!session_model_needs_legacy_fallback(
+                conn,
+                "deepseek-v3.2-thinking"
             ));
             Ok(())
         })

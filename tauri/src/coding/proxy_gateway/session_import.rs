@@ -509,6 +509,7 @@ fn sync_sources(
         .collect::<HashMap<_, _>>();
     let mut result = GatewaySessionUsageImportResult::default();
     let mut retired_records = Vec::new();
+    let mut failed_tools = HashSet::new();
     for (cli_key, path) in files {
         result.scanned_files += 1;
         let source_id = format!("{}:{}", cli_key.as_str(), source_identity(cli_key, &path));
@@ -569,6 +570,7 @@ fn sync_sources(
             Ok(None) => {}
             Err(error) => {
                 result.failed_files += 1;
+                failed_tools.insert(cli_key);
                 log::warn!("Skipping local session usage {}: {error}", path.display());
             }
         }
@@ -579,6 +581,7 @@ fn sync_sources(
                 Ok(changes) => result.merge(changes),
                 Err(error) => {
                     result.failed_files += 1;
+                    failed_tools.insert(*cli_key);
                     log::warn!("OpenClaw session usage sync failed: {error}");
                 }
             }
@@ -594,6 +597,7 @@ fn sync_sources(
                 Ok(changes) => result.merge(changes),
                 Err(error) => {
                     result.failed_files += 1;
+                    failed_tools.insert(*cli_key);
                     log::warn!("Hermes session usage sync failed: {error}");
                 }
             }
@@ -609,6 +613,7 @@ fn sync_sources(
                 Ok(changes) => result.merge(changes),
                 Err(error) => {
                     result.failed_files += 1;
+                    failed_tools.insert(*cli_key);
                     log::warn!("OpenCode session usage sync failed: {error}");
                 }
             }
@@ -617,11 +622,12 @@ fn sync_sources(
     result.updated_records += reconcile_late_proxy_rows(db, &mut states, &mut claimed_proxies)?;
     result.updated_records +=
         reconciliation::retire_desktop_records(db, &mut states, retired_records)?;
-    for cli_key in [
-        GatewayUsageTool::Claude,
-        GatewayUsageTool::ClaudeDesktop,
-        GatewayUsageTool::Dsh,
-    ] {
+    for cli_key in GatewayUsageTool::all()
+        .into_iter()
+        // Do not reparse a failed source and count its failure twice. Other
+        // tools can still reconcile, and this tool retries on the next sync.
+        .filter(|tool| cost_reconciliation::supports(*tool) && !failed_tools.contains(tool))
+    {
         match cost_reconciliation::reconcile_session_costs(db, cli_key, sources, &mut states) {
             Ok(updated) => result.updated_records += updated,
             Err(error) => {

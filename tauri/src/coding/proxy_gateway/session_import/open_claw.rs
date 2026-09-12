@@ -229,92 +229,109 @@ pub(super) fn sync_databases(
     now: i64,
 ) -> Result<GatewaySessionUsageImportResult, String> {
     let mut result = GatewaySessionUsageImportResult::default();
-    for entry in WalkDir::new(root)
+    for path in database_files(root) {
+        let sessions = read_database(&path, Some(states))?;
+        result.scanned_files += 1;
+        for (source_id, records) in sessions {
+            result.merge(persist_snapshot(
+                db, &source_id, records, states, claims, now,
+            )?);
+        }
+    }
+    Ok(result)
+}
+
+pub(super) fn database_files(root: &Path) -> Vec<PathBuf> {
+    WalkDir::new(root)
         .into_iter()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_file() && entry.file_name() == "openclaw-agent.sqlite")
-    {
-        let source = open_read_only(entry.path())?;
-        result.scanned_files += 1;
-        let mut query = source.prepare("SELECT session_id, seq, event_json, created_at FROM transcript_events ORDER BY session_id, seq").map_err(|error| error.to_string())?;
+        .map(|entry| entry.into_path())
+        .collect()
+}
+
+fn read_database(
+    path: &Path,
+    states: Option<&HashMap<String, SourceState>>,
+) -> Result<Vec<(String, Vec<SessionUsageRecord>)>, String> {
+    let source = open_read_only(path)?;
+    let mut snapshots = Vec::new();
+    let mut query = source.prepare("SELECT session_id, seq, event_json, created_at FROM transcript_events ORDER BY session_id, seq").map_err(|error| error.to_string())?;
+    let rows = query
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?.max(0) as u64,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    let mut sessions = BTreeMap::<String, BTreeMap<String, SessionUsageRecord>>::new();
+    for row in rows {
+        let (session, seq, json, time) = row.map_err(|error| error.to_string())?;
+        let event = serde_json::from_str::<Value>(&json).map_err(|error| error.to_string())?;
+        if let Some(record) = parse_entry(&session, seq as usize, &event, time / 1000) {
+            sessions
+                .entry(session)
+                .or_default()
+                .insert(record.request_id.clone(), record);
+        }
+    }
+    for (session, records) in sessions {
+        snapshots.push((
+            format!("openclaw:sqlite:{session}"),
+            records.into_values().collect(),
+        ));
+    }
+    if !columns(&source, "session_transcript_archives")?.is_empty() {
+        let mut query = source.prepare("SELECT session_id, generation, encoding, archive_blob, created_at FROM session_transcript_archives").map_err(|error| error.to_string())?;
         let rows = query
             .query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?.max(0) as u64,
+                    row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, i64>(4)?,
                 ))
             })
             .map_err(|error| error.to_string())?;
-        let mut sessions = BTreeMap::<String, BTreeMap<String, SessionUsageRecord>>::new();
         for row in rows {
-            let (session, seq, json, time) = row.map_err(|error| error.to_string())?;
-            let event = serde_json::from_str::<Value>(&json).map_err(|error| error.to_string())?;
-            if let Some(record) = parse_entry(&session, seq as usize, &event, time / 1000) {
-                sessions
-                    .entry(session)
-                    .or_default()
-                    .insert(record.request_id.clone(), record);
+            let (session, generation, encoding, blob, time) =
+                row.map_err(|error| error.to_string())?;
+            let source_id = format!("openclaw:archive:{session}:{generation}");
+            if states
+                .and_then(|states| states.get(&source_id))
+                .is_some_and(|state| !state.pending)
+            {
+                continue;
             }
-        }
-        for (session, records) in sessions {
-            result.merge(persist_snapshot(
-                db,
-                &format!("openclaw:sqlite:{session}"),
-                records.into_values().collect(),
-                states,
-                claims,
-                now,
-            )?);
-        }
-        if !columns(&source, "session_transcript_archives")?.is_empty() {
-            let mut query = source.prepare("SELECT session_id, generation, encoding, archive_blob, created_at FROM session_transcript_archives").map_err(|error| error.to_string())?;
-            let rows = query
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, Vec<u8>>(3)?,
-                        row.get::<_, i64>(4)?,
-                    ))
-                })
-                .map_err(|error| error.to_string())?;
-            for row in rows {
-                let (session, generation, encoding, blob, time) =
-                    row.map_err(|error| error.to_string())?;
-                let source_id = format!("openclaw:archive:{session}:{generation}");
-                if states.get(&source_id).is_some_and(|state| !state.pending) {
-                    continue;
+            let reader: Box<dyn BufRead> = match encoding.as_str() {
+                "identity" => Box::new(BufReader::new(Cursor::new(blob))),
+                "zstd" => Box::new(BufReader::new(
+                    zstd::stream::read::Decoder::new(Cursor::new(blob))
+                        .map_err(|error| error.to_string())?,
+                )),
+                _ => return Err(format!("Unsupported OpenClaw archive encoding: {encoding}")),
+            };
+            let mut records = BTreeMap::new();
+            for (index, line) in reader.lines().enumerate() {
+                let event: Value = serde_json::from_str(&line.map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?;
+                if let Some(record) = parse_entry(&session, index, &event, time / 1000) {
+                    records.insert(record.request_id.clone(), record);
                 }
-                let reader: Box<dyn BufRead> = match encoding.as_str() {
-                    "identity" => Box::new(BufReader::new(Cursor::new(blob))),
-                    "zstd" => Box::new(BufReader::new(
-                        zstd::stream::read::Decoder::new(Cursor::new(blob))
-                            .map_err(|error| error.to_string())?,
-                    )),
-                    _ => return Err(format!("Unsupported OpenClaw archive encoding: {encoding}")),
-                };
-                let mut records = BTreeMap::new();
-                for (index, line) in reader.lines().enumerate() {
-                    let event: Value =
-                        serde_json::from_str(&line.map_err(|error| error.to_string())?)
-                            .map_err(|error| error.to_string())?;
-                    if let Some(record) = parse_entry(&session, index, &event, time / 1000) {
-                        records.insert(record.request_id.clone(), record);
-                    }
-                }
-                result.merge(persist_snapshot(
-                    db,
-                    &source_id,
-                    records.into_values().collect(),
-                    states,
-                    claims,
-                    now,
-                )?);
             }
+            snapshots.push((source_id, records.into_values().collect()));
         }
     }
-    Ok(result)
+    Ok(snapshots)
+}
+
+pub(super) fn cost_records(path: &Path) -> Result<Vec<SessionUsageRecord>, String> {
+    Ok(read_database(path, None)?
+        .into_iter()
+        .flat_map(|(_, records)| records)
+        .collect())
 }

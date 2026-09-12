@@ -4,6 +4,9 @@ use crate::coding::proxy_gateway::types::{GatewayUsageSummary, ModelPricing};
 
 const COST_MODEL: &str = "cost-test-model-0731";
 
+#[path = "cross_cli_cost_tests.rs"]
+mod cross_cli;
+
 fn cost_pricing(db: &SqliteDbState, model: &str, input: &str, output: &str, cache: &str) {
     pricing::upsert_model_pricing(
         db,

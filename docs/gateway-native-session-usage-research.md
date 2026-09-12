@@ -270,3 +270,35 @@ DSH 原始 usage 只有输入、输出、缓存读取计数，没有费用字段
 最终验证：新增 10 项自动化回归通过；2 项真实数据库副本核对另行显式运行通过。全量 `cargo test --jobs 2` 在独立 target 中通过：1,937 项单元测试、136 项集成测试、10 项文档测试，7 项默认忽略。`pnpm test` 530 项通过，`pnpm exec tsc --noEmit` 和 `pnpm build` 通过。全量过程中发现并修正了费用缓存重复计算导入失败数的问题；旧明细 `usage_metadata=NULL` 的补价与来源回写也已有回归。
 
 提交 `121ab219` 对应的最终代码已再次通过 DSH 真实副本核对，金额保持 `$37.669858`、二次同步更新 0 条。合入本机主工作区后，运行中的开发版自动加载修复；只读查询真实主库确认最近 30 天 DSH 已由 `$0.000000` 补算为 `$37.669858`，3,849 次调用、723,958,157 Token 不变。其中 `deepseek-v4-flash-0731` 的 3,640 次贡献已补价，`ox-alpha-free` 的 209 次贡献仍缺价格。主库变更由应用正常同步执行，验证脚本没有直接写入主库。
+
+## 2026-09-12 其它 CLI 成本复查
+
+本次将成本核查扩展到全部已接入 CLI，并重新只读检查本地原始用量。OpenCode、Pi、OMP、Grok、Gemini 的本机样本均早于最近 30 天；以下数值是这些工具的既有历史，不能与 DSH 最近 30 天的数据直接混为同一时间范围。
+
+源码更新前再次确认工作区干净，Pi 快进到 `71dca87`、OMP 到 `73b993d7d5`、OpenCode dev 到 `95daf9067`；Kimi Code、Gemini、Codex 也完成快进，Grok 与 Python Kimi 已是当前远端版本。Hermes/OpenClaw 的两次拉取分别遇到 HTTP/2 reset 和 HTTP/1.1 TLS EOF，保留此前 `fad7cfc` / `c9b30878` checkout，不声称已核对其最新远端版本。CCS 继续只读参考：它同样在 OpenCode/Pi 原生费用非正时尝试模型价格估算。
+
+OpenCode 的原生 message `cost` 和 Pi 的 `usage.cost.total` 可以是缺少 CLI 价格时的默认零值；本机 Pi 的 34 条记录原生费用全为 0，但应用已正确估算其中 Grok 的 29 条。OMP 的有效 GLM 调用原生金额为 `$0.0279402`，按现有六位小数汇总为 `$0.027940`；另一条是全零失败调用。本轮没有把默认零值当成真实免费，也没有修改 CLI 的原始文件或价格配置。
+
+确认并修复了三类缺口：
+
+- **OpenCode 模型别名漏匹配**：Claude/DeepSeek 的 `-thinking` 模式别名可在没有精确定价时回退基础模型；`gemini-claude-…-thinking` 先去既有渠道包装再匹配。精确价格（包括零价）优先，`-free` 不剥离，不泛化到其它模型族。
+- **其它工具缺少后补价格链路**：先前仅 Claude/Desktop/DSH 参与历史成本核对。现已覆盖全部按记录采集的工具，并为 OpenCode SQLite、OpenClaw SQLite/压缩归档复用普通导入解析器；缓存同时考虑数据库 WAL。继续保存费用来源、严格对账旧归档及事务提交，不重插 Token/调用数。
+- **Hermes 将缺价的默认零额当成已知估算**：现区分 `unknown`、原生估算、实际费用和 `included`，只为未定价贡献补模型估算；后来原生累计金额覆盖估算时仅计差额。明确零价也持久化结算状态，后续价格变化不重算旧贡献。旧快照缺少未定价贡献记录时不反推历史总量；遗留未知模型保持未知。
+
+OpenCode 需要补价的三组本机记录如下，费用均为本地模型价格估算：
+
+| 原生模型 | 调用数 | Token | 补算金额 |
+|---|---:|---:|---:|
+| `deepseek-v3.2-thinking` | 166 | 623,406 | $0.174078 |
+| `gemini-claude-opus-4-5-thinking` | 2,001 | 148,503,313 | $758.732765 |
+| `gemini-claude-sonnet-4-5-thinking` | 700 | 61,563,194 | $188.593170 |
+
+在只读备份生成的数据库副本中，OpenCode 修复 2,867 条贡献，全部历史的可估算金额由 **$161.086112 → $1,108.586125**；6,641 次调用、459,369,042 Token 不变。将同一价格表复制到全新临时库导入，其调用数、Token、金额完全一致。Pi 为 34 次、2,938,766 Token、**$3.886024**；OMP 为 2 次、19,863 Token、**$0.027940**；两者副本不需要改价，也都与全新导入完全一致。各工具再次核对更新 0 条。
+
+Pi 的 `sensenova-6.7-flash-lite`（5 次、128,000 Token）仍缺价格；OpenCode 的 `*-free` 和 Grok 的 `grok-4.5-build-free` 也没有据名称补造价格。Grok/Gemini/Codex 副本复查没有新增费用回填。Hermes、OpenClaw、两种 Kimi 本机仍没有有效用量样本，使用源码对应的合成 JSONL/SQLite/WAL 用例验证；OMP 非默认 SQL/Redis session storage 仍不在文件采集范围。
+
+新增回归先在旧实现上复现了 Pi/OMP、OpenCode legacy/SQLite、OpenClaw 归档和 Hermes 五组失败，再验证修复。用例覆盖全部文件适配器后补价格、原生粒度、已有正费用和精确零价保护、thinking 别名、不变的 SQLite 水位、压缩归档，以及 Hermes `unknown → 模型估算 → actual/included` 和后补零价结算。真实副本核对使用 `cost_tests::cross_cli::local_other_cli_costs_on_a_snapshot`，只写临时库。
+
+旧归档如果没有费用来源证据，仅对可证明的日期/thinking 匹配缺陷回填；其它旧零金额不会因为后来添加价格就被强行重算。从本版本采集并保存费用来源的记录，可以在后补价格时核对回填。当前 CLI 配置不能代替历史费用来源。
+
+最终自查还修正了单个来源已失败、费用维护又重复计数同一失败的问题：该工具的补价延后到下轮，其它工具继续补价，成功导入的用量不丢失。新增 9 项自动化回归通过；3 项真实成本副本核对另行运行通过，Claude/Desktop/DSH 已有金额保持不变。衔接最新 main 的独立会话列表和 Skills 同步改动后，全量 Rust 测试通过（1,950 项单元、136 项集成、10 项文档测试，8 项默认忽略），前端 `pnpm test` 538 项通过，`pnpm exec tsc --noEmit` 与 `pnpm build` 通过；构建仅保留已有 chunk 提示。

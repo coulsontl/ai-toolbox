@@ -1,5 +1,6 @@
 use super::{
-    parsers, persist_records, GatewaySessionUsageImportResult, SourceState, SqliteDbState,
+    parsers, persist_records, GatewaySessionUsageImportResult, SessionUsageRecord, SourceState,
+    SqliteDbState,
 };
 use crate::coding::proxy_gateway::types::GatewayUsageTool;
 use rusqlite::{Connection, OpenFlags};
@@ -56,45 +57,9 @@ pub(super) fn sync_database(
         state.parser_revision = parser_revision;
         state.modified_nanos = watermark.max(0) as u64;
         state.pending = false;
-        let mut query = source.prepare("SELECT id, data, time_created FROM message WHERE session_id = ?1 ORDER BY time_created")
-            .map_err(|error| error.to_string())?;
-        let messages = query
-            .query_map([&session_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            })
-            .map_err(|error| error.to_string())?;
-        let mut records = Vec::new();
-        for message in messages {
-            let (id, data, created_at) = message.map_err(|error| error.to_string())?;
-            let mut value: serde_json::Value =
-                serde_json::from_str(&data).map_err(|error| error.to_string())?;
-            if value.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
-                continue;
-            }
-            if value
-                .pointer("/time/completed")
-                .is_none_or(serde_json::Value::is_null)
-            {
-                state.pending = true;
-                continue;
-            }
-            if let Some(object) = value.as_object_mut() {
-                object.insert("id".to_string(), serde_json::Value::String(id));
-            }
-            if let Some(record) = parsers::parse_value(
-                GatewayUsageTool::OpenCode,
-                &value,
-                &session_id,
-                0,
-                created_at / 1000,
-            ) {
-                records.push(record);
-            }
-        }
+        let parsed = read_session(&source, &session_id)?;
+        state.pending = parsed.pending;
+        let mut records = parsed.records;
         super::adopt_known_records(&mut state, &mut records, states);
         let (state, changes) =
             persist_records(db, &source_id, state, records, claimed_proxies, now)?;
@@ -102,4 +67,64 @@ pub(super) fn sync_database(
         result.merge(changes);
     }
     Ok(result)
+}
+
+fn read_session(source: &Connection, session_id: &str) -> Result<parsers::ParsedSession, String> {
+    let mut query = source.prepare("SELECT id, data, time_created FROM message WHERE session_id = ?1 ORDER BY time_created")
+        .map_err(|error| error.to_string())?;
+    let messages = query
+        .query_map([session_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    let mut parsed = parsers::ParsedSession::default();
+    for message in messages {
+        let (id, data, created_at) = message.map_err(|error| error.to_string())?;
+        let mut value: serde_json::Value =
+            serde_json::from_str(&data).map_err(|error| error.to_string())?;
+        if value.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
+            continue;
+        }
+        if value
+            .pointer("/time/completed")
+            .is_none_or(serde_json::Value::is_null)
+        {
+            parsed.pending = true;
+            continue;
+        }
+        if let Some(object) = value.as_object_mut() {
+            object.insert("id".to_string(), serde_json::Value::String(id));
+        }
+        if let Some(record) = parsers::parse_value(
+            GatewayUsageTool::OpenCode,
+            &value,
+            session_id,
+            0,
+            created_at / 1000,
+        ) {
+            parsed.records.push(record);
+        }
+    }
+    Ok(parsed)
+}
+
+pub(super) fn cost_records(path: &Path) -> Result<Vec<SessionUsageRecord>, String> {
+    let source = super::hermes::open_read_only(path)?;
+    let mut query = source
+        .prepare("SELECT id FROM session ORDER BY id")
+        .map_err(|error| error.to_string())?;
+    let sessions = query
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    let mut records = Vec::new();
+    for session in sessions {
+        // Unfinished messages do not prevent pricing completed, committed ones.
+        records
+            .extend(read_session(&source, &session.map_err(|error| error.to_string())?)?.records);
+    }
+    Ok(records)
 }

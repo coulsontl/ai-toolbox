@@ -18,6 +18,8 @@ pub(super) struct Snapshot {
     calls: u64,
     cost: String,
     last_seen: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unpriced_tokens: Option<[u64; 4]>,
 }
 
 struct ModelUsage {
@@ -117,6 +119,13 @@ fn read_usage(source: &Connection, table: &str) -> Result<Vec<ModelUsage>, Strin
             let status: String = row.get(15)?;
             let is_actual =
                 actual > 0.0 || matches!(status.as_str(), "actual" | "reported" | "known");
+            let cost_source = if status == "included" || is_actual {
+                "reported"
+            } else if estimated > 0.0 || status == "estimated" {
+                "native_estimate"
+            } else {
+                "unavailable"
+            };
             let provider: String = row.get(11)?;
             let route: String = row.get(12)?;
             let mode: String = row.get(13)?;
@@ -147,17 +156,19 @@ fn read_usage(source: &Connection, table: &str) -> Result<Vec<ModelUsage>, Strin
                         row.get::<_, i64>(7)?.max(0) as u64,
                     ],
                     calls: row.get::<_, i64>(8)?.max(0) as u64,
-                    cost: Decimal::from_f64_retain(if is_actual { actual } else { estimated })
-                        .unwrap_or_default()
-                        .to_string(),
+                    cost: Decimal::from_f64_retain(if status == "included" {
+                        0.0
+                    } else if is_actual {
+                        actual
+                    } else {
+                        estimated
+                    })
+                    .unwrap_or_default()
+                    .to_string(),
                     last_seen: row.get::<_, Option<f64>>(3)?.map(|value| value as i64),
+                    unpriced_tokens: None,
                 },
-                cost_source: if is_actual {
-                    "reported"
-                } else {
-                    "native_estimate"
-                }
-                .into(),
+                cost_source: cost_source.into(),
             })
         })
         .map_err(|error| error.to_string())?
@@ -259,9 +270,51 @@ pub(super) fn sync_database(
         }
         row.snapshot.calls = row.snapshot.calls.max(previous.calls);
         let calls = row.snapshot.calls - previous.calls;
+        if row.cost_source == "unavailable" {
+            let mut unpriced = previous.unpriced_tokens.unwrap_or_default();
+            for (pending, added) in unpriced.iter_mut().zip(delta) {
+                *pending = pending.saturating_add(added);
+            }
+            let estimate = db.with_conn(|conn| {
+                Ok(
+                    super::super::usage_stats::session_model_has_pricing(conn, &row.model).then(
+                        || {
+                            super::calculate_session_costs(
+                                conn,
+                                &row.model,
+                                unpriced[0],
+                                unpriced[1],
+                                unpriced[2],
+                                unpriced[3],
+                            )
+                            .total()
+                        },
+                    ),
+                )
+            })?;
+            row.snapshot.cost = (previous.cost.parse::<Decimal>().unwrap_or_default()
+                + estimate.unwrap_or_default())
+            .to_string();
+            row.snapshot.unpriced_tokens = if estimate.is_some() {
+                row.cost_source = "model_pricing".into();
+                None
+            } else {
+                unpriced
+                    .iter()
+                    .any(|tokens| *tokens > 0)
+                    .then_some(unpriced)
+            };
+        }
         let cost = row.snapshot.cost.parse::<Decimal>().unwrap_or_default()
             - previous.cost.parse::<Decimal>().unwrap_or_default();
         if delta.iter().all(|value| *value == 0) && calls == 0 && cost.is_zero() {
+            // Learning an explicit zero price still resolves pending usage.
+            // Persist that fact even though no monetary adjustment is needed.
+            if row.snapshot.unpriced_tokens != previous.unpriced_tokens {
+                state.cumulative_usage = Some(row.snapshot);
+                db.with_conn(|conn| super::save_state(conn, &source_id, &state))?;
+                states.insert(source_id, state);
+            }
             continue;
         }
         // Two models can have identical counters. Cost corrections can also

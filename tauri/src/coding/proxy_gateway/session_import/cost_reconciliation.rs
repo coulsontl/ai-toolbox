@@ -12,10 +12,9 @@ use std::fs;
 use std::path::PathBuf;
 
 pub(super) fn supports(tool: GatewayUsageTool) -> bool {
-    matches!(
-        tool,
-        GatewayUsageTool::Claude | GatewayUsageTool::ClaudeDesktop | GatewayUsageTool::Dsh
-    )
+    // Hermes prices cumulative deltas in its adapter so a later native total
+    // can replace earlier estimates without charging both values.
+    tool != GatewayUsageTool::Hermes
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -36,11 +35,17 @@ pub(super) fn read_recorded_cost(
 ) -> Result<Option<RecordedCost>, String> {
     conn.query_row(
         "SELECT total_cost_usd, json_extract(usage_metadata, '$.cost_source')
-         FROM proxy_request_logs WHERE request_id = ?1 AND data_source = 'session' AND app_type IN ('claude','claude_desktop','dsh')",
-        [request_id], |row| Ok(RecordedCost {
-            total_usd: row.get(0)?, source: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-        }),
-    ).optional().map_err(|error| error.to_string())
+         FROM proxy_request_logs WHERE request_id = ?1 AND data_source = 'session'",
+        [request_id],
+        |row| {
+            Ok(RecordedCost {
+                total_usd: row.get(0)?,
+                source: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            })
+        },
+    )
+    .optional()
+    .map_err(|error| error.to_string())
 }
 
 struct Candidate {
@@ -54,6 +59,8 @@ struct SourceStamp {
     path: PathBuf,
     size: u64,
     modified: u64,
+    database: bool,
+    wal_stamp: Option<(u64, u64)>,
 }
 
 fn source_fingerprint(
@@ -63,23 +70,28 @@ fn source_fingerprint(
     prices: &[[String; 5]],
 ) -> Result<String, String> {
     let mut signature = Sha256::new();
-    signature.update(b"native-cost-reconciliation-v2");
+    signature.update(b"native-cost-reconciliation-v3");
     signature.update(serde_json::to_vec(prices).map_err(|error| error.to_string())?);
     for file in files {
         // Inventory changes discover restored or newly imported history. Only
         // files with unresolved costs need content-change invalidation; normal
         // traffic must not reparse every historical Claude transcript.
-        let stamp = relevant
-            .contains(&file.source_id)
-            .then_some((file.size, file.modified));
+        let stamp = relevant.contains(&file.source_id).then_some((
+            file.size,
+            file.modified,
+            file.wal_stamp,
+        ));
         signature.update(
             serde_json::to_vec(&(file.path.to_string_lossy(), stamp))
                 .map_err(|error| error.to_string())?,
         );
     }
+    let has_relevant_database = files
+        .iter()
+        .any(|file| file.database && relevant.contains(&file.source_id));
     for (source_id, state) in imported
         .iter()
-        .filter(|(id, _)| relevant.contains(id.as_str()))
+        .filter(|(id, _)| has_relevant_database || relevant.contains(id.as_str()))
     {
         for (id, record) in &state.records {
             signature.update(
@@ -140,34 +152,63 @@ pub(super) fn reconcile_session_costs(
 ) -> Result<u64, String> {
     let source_prefix = format!("{}:", cli_key.as_str());
     let cache_id = format!("cost-reconciliation:{}", cli_key.as_str());
-    let mut files = sources
-        .iter()
-        .filter(|(tool, _)| *tool == cli_key)
-        .flat_map(|(tool, root)| {
-            session_files(*tool, root)
+    let mut files = Vec::new();
+    for (_, root) in sources.iter().filter(|(tool, _)| *tool == cli_key) {
+        files.extend(
+            session_files(cli_key, root)
                 .into_iter()
-                .map(move |path| (*tool, path))
-        })
-        .collect::<Vec<_>>();
-    files.sort_by(|left, right| {
-        left.0
-            .as_str()
-            .cmp(right.0.as_str())
-            .then_with(|| left.1.cmp(&right.1))
-    });
+                .map(|path| (path, false)),
+        );
+        match cli_key {
+            GatewayUsageTool::OpenCode => {
+                let path = root.join("opencode.db");
+                if path.is_file() {
+                    files.push((path, true));
+                }
+            }
+            GatewayUsageTool::OpenClaw => files.extend(
+                super::open_claw::database_files(root)
+                    .into_iter()
+                    .map(|path| (path, true)),
+            ),
+            _ => {}
+        }
+    }
+    // Database records retain the same precedence as ordinary native sync.
+    files.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
     files.dedup();
     if files.is_empty() {
         return Ok(0);
     }
     let files = files
         .into_iter()
-        .map(|(tool, path)| {
+        .map(|(path, database)| {
             let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+            let source_id = if database {
+                format!(
+                    "{}:database:{:x}",
+                    cli_key.as_str(),
+                    Sha256::digest(path.to_string_lossy().as_bytes())
+                )
+            } else {
+                format!("{}:{}", cli_key.as_str(), source_identity(cli_key, &path))
+            };
+            let wal_stamp = if database {
+                let mut wal_path = path.as_os_str().to_os_string();
+                wal_path.push("-wal");
+                fs::metadata(PathBuf::from(wal_path))
+                    .ok()
+                    .map(|metadata| (metadata.len(), modified_nanos(&metadata)))
+            } else {
+                None
+            };
             Ok(SourceStamp {
-                source_id: format!("{}:{}", tool.as_str(), source_identity(tool, &path)),
+                source_id,
                 path,
                 size: metadata.len(),
                 modified: modified_nanos(&metadata),
+                database,
+                wal_stamp,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -207,8 +248,19 @@ pub(super) fn reconcile_session_costs(
     let mut price_matches = HashMap::new();
     let mut native = BTreeMap::new();
     for file in &files {
-        let parsed =
-            parsers::parse_file(cli_key, &file.path, (file.modified / 1_000_000_000) as i64)?;
+        let parsed = if file.database {
+            let records = match cli_key {
+                GatewayUsageTool::OpenCode => super::open_code::cost_records(&file.path)?,
+                GatewayUsageTool::OpenClaw => super::open_claw::cost_records(&file.path)?,
+                _ => return Err("Unsupported native cost database".into()),
+            };
+            parsers::ParsedSession {
+                records,
+                ..Default::default()
+            }
+        } else {
+            parsers::parse_file(cli_key, &file.path, (file.modified / 1_000_000_000) as i64)?
+        };
         // Desktop audit fallbacks intentionally remain pending to discover a
         // later transcript. Their final result records can still be priced.
         if parsed.pending && cli_key != GatewayUsageTool::ClaudeDesktop {
@@ -246,7 +298,7 @@ pub(super) fn reconcile_session_costs(
                         let matched = db.with_conn(|conn| {
                             Ok((
                                 usage_stats::session_model_has_pricing(conn, &record.model),
-                                usage_stats::session_model_needs_short_date_fallback(
+                                usage_stats::session_model_needs_legacy_fallback(
                                     conn,
                                     &record.model,
                                 ),
@@ -288,7 +340,7 @@ pub(super) fn reconcile_session_costs(
                     cost.source = previous.recorded_cost.as_ref().map(|known| known.source.clone()).unwrap_or_default();
                 }
                 if cost.source.is_empty() && record.reported_cost_usd.is_none()
-                    && usage_stats::session_model_needs_short_date_fallback(&transaction, &record.model) {
+                    && usage_stats::session_model_needs_legacy_fallback(&transaction, &record.model) {
                     cost.source = "unavailable".into();
                 }
                 if let Some(replacement) = replacement_cost(&transaction, &record, &cost) {
@@ -312,8 +364,8 @@ pub(super) fn reconcile_session_costs(
             }
             let cost = previous.recorded_cost.clone().or_else(|| {
                 // Legacy ledgers have no price provenance. Limit inference to
-                // the proven MMDD matching defect, whose old resolver fails.
-                (record.reported_cost_usd.is_none() && usage_stats::session_model_needs_short_date_fallback(&transaction, &record.model))
+                // the proven date/thinking aliases that the old resolver missed.
+                (record.reported_cost_usd.is_none() && usage_stats::session_model_needs_legacy_fallback(&transaction, &record.model))
                     .then(|| RecordedCost { source: "unavailable".into(), total_usd: "0".into() })
             });
             let Some(cost) = cost else { continue; };
