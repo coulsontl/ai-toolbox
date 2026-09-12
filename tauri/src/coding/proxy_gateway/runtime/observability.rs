@@ -579,8 +579,9 @@ mod tests {
                 started_at + chrono::Duration::milliseconds(1200),
             );
 
-            let logs = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10)
-                .unwrap();
+            let logs =
+                usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
+                    .unwrap();
             assert_eq!(logs.total, 1);
             assert_eq!(logs.data[0].reasoning_effort.as_deref(), Some("high"));
             let trace_id = &logs.data[0].trace_id;

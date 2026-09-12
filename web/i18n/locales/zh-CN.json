@@ -599,7 +599,8 @@
         "maxCooldown": "最大冷却秒",
         "probeSuccess": "探测成功次数",
         "lossyRejection": "有损转换硬拒绝",
-        "responsesEncryptedContentRectifier": "Responses 密文恢复"
+        "responsesEncryptedContentRectifier": "Responses 密文恢复",
+        "sessionUsage": "本地会话统计"
       },
       "fieldHelp": {
         "perProviderRetry": "当前渠道失败后，最多在同一渠道额外重试多少次；达到后在故障转移模式下切到下一个渠道，单渠道代理则返回错误。",
@@ -623,7 +624,10 @@
         "thinkingBudgetRectifier": "目标 Anthropic 上游遇到 budget_tokens 相关 4xx 时，自动调整后在同一渠道重试一次。",
         "cacheInjection": "为目标 Anthropic 请求注入 cache_control 标记，用于降低后续重复上下文成本。",
         "lossyRejection": "默认关闭：检测到有损协议转换时继续尽力转发，并在响应头写入 X-Transformer-Lossy；开启后，明确不可逆的转换会在本地返回 400，不计入供应商健康和故障转移。",
-        "responsesEncryptedContentRectifier": "最终目标为 OpenAI Responses 时，若上游明确报告 encrypted_content 无法验证或解密，会仅移除失效的加密 reasoning 项并在同一渠道重试一次。"
+        "responsesEncryptedContentRectifier": "最终目标为 OpenAI Responses 时，若上游明确报告 encrypted_content 无法验证或解密，会仅移除失效的加密 reasoning 项并在同一渠道重试一次。",
+        "sessionUsage": "是否在统计和请求记录中包含未经过网关的本地会话用量。关闭后不再采集新的本地会话数据，已有数据保留，重新开启后立即恢复显示。",
+        "requestLog": "把每个请求的明细保存为本地文件（包含下方勾选的 Headers、请求体、响应，受体积上限和保留天数约束），供请求详情查看；关闭后请求详情只能显示摘要信息。",
+        "metrics": "把请求的 token、费用、耗时等摘要写入数据库，作为统计页和请求列表的数据来源；只要本项或请求记录任一开启，摘要就会随请求记录。"
       },
       "perCli": {
         "firstByte": "首包",

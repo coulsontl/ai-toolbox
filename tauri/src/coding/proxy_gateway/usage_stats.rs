@@ -676,12 +676,13 @@ pub fn request_logs(
     filters: &GatewayRequestLogFilters,
     page: u32,
     page_size: u32,
+    include_session: bool,
 ) -> Result<GatewayPaginatedRequestLogs, String> {
     db.with_conn(|conn| {
         let provider_names = load_provider_names(conn)?;
         let page_size = page_size.clamp(1, MAX_PAGE_SIZE);
         let mut params: Vec<Box<dyn ToSql>> = Vec::new();
-        let where_clause = build_detail_where(filters, &provider_names, &mut params)?;
+        let where_clause = build_detail_where(filters, &provider_names, include_session, &mut params)?;
 
         let count_sql = format!("SELECT COUNT(*) FROM proxy_request_logs l {where_clause}");
         let count_refs = to_param_refs(&params);
@@ -798,11 +799,12 @@ pub fn usage_summary(
     start_date: Option<i64>,
     end_date: Option<i64>,
     cli_key: Option<GatewayUsageTool>,
+    include_session: bool,
 ) -> Result<GatewayUsageSummary, String> {
     db.with_conn(|conn| {
         let mut params = Vec::<Box<dyn ToSql>>::new();
         let detail_where =
-            build_usage_stats_where(start_date, end_date, cli_key, "l", true, &mut params);
+            build_usage_stats_where(start_date, end_date, cli_key, "l", true, include_session, &mut params);
         let refs = to_param_refs(&params);
         let mut summary = conn
             .query_row(
@@ -821,7 +823,7 @@ pub fn usage_summary(
                 row_to_summary_accumulator,
             )
             .map_err(|error| format!("Failed to summarize proxy gateway usage: {error}"))?;
-        summary.add(rollup_summary(conn, start_date, end_date, cli_key)?);
+        summary.add(rollup_summary(conn, start_date, end_date, cli_key, include_session)?);
         Ok(summary.into_summary())
     })
 }
@@ -830,10 +832,11 @@ pub fn usage_summary_by_cli(
     db: &SqliteDbState,
     start_date: Option<i64>,
     end_date: Option<i64>,
+    include_session: bool,
 ) -> Result<Vec<GatewayUsageSummaryByCli>, String> {
     let mut items = Vec::new();
     for cli_key in GatewayUsageTool::all() {
-        let summary = usage_summary(db, start_date, end_date, Some(cli_key))?;
+        let summary = usage_summary(db, start_date, end_date, Some(cli_key), include_session)?;
         if summary.total_requests > 0
             || summary.total_tokens > 0
             || parse_decimal_or_default(&summary.total_cost_usd, Decimal::ZERO) != Decimal::ZERO
@@ -849,6 +852,7 @@ pub fn usage_trends(
     start_date: Option<i64>,
     end_date: Option<i64>,
     cli_key: Option<GatewayUsageTool>,
+    include_session: bool,
 ) -> Result<Vec<GatewayUsageTrendPoint>, String> {
     db.with_conn(|conn| {
         let end = end_date.unwrap_or_else(|| Utc::now().timestamp());
@@ -860,8 +864,15 @@ pub fn usage_trends(
         };
         let mut trend_map = std::collections::BTreeMap::<String, TrendAccumulator>::new();
         let mut params = Vec::<Box<dyn ToSql>>::new();
-        let where_clause =
-            build_usage_stats_where(Some(start), Some(end), cli_key, "l", true, &mut params);
+        let where_clause = build_usage_stats_where(
+            Some(start),
+            Some(end),
+            cli_key,
+            "l",
+            true,
+            include_session,
+            &mut params,
+        );
         let refs = to_param_refs(&params);
         let mut stmt = conn
             .prepare(&format!(
@@ -914,7 +925,7 @@ pub fn usage_trends(
                 extra_tokens,
             );
         }
-        merge_rollup_trends(conn, &mut trend_map, start, end, cli_key)?;
+        merge_rollup_trends(conn, &mut trend_map, start, end, cli_key, include_session)?;
         Ok(trend_map
             .into_iter()
             .map(|(date, item)| GatewayUsageTrendPoint {
@@ -936,13 +947,14 @@ pub fn provider_stats(
     start_date: Option<i64>,
     end_date: Option<i64>,
     cli_key: Option<GatewayUsageTool>,
+    include_session: bool,
 ) -> Result<Vec<GatewayProviderStats>, String> {
     db.with_conn(|conn| {
         let provider_names = load_provider_names(conn)?;
         let mut stats_map = HashMap::<(String, String), StatsAccumulator>::new();
         let mut params = Vec::<Box<dyn ToSql>>::new();
         let where_clause =
-            build_usage_stats_where(start_date, end_date, cli_key, "l", true, &mut params);
+            build_usage_stats_where(start_date, end_date, cli_key, "l", true, include_session, &mut params);
         let refs = to_param_refs(&params);
         let mut stmt = conn
             .prepare(&format!(
@@ -1009,7 +1021,7 @@ pub fn provider_stats(
                 );
             item.add_input_usage(input_tokens, cache_read_tokens, cache_creation_tokens);
         }
-        merge_rollup_provider_stats(conn, &mut stats_map, start_date, end_date, cli_key)?;
+        merge_rollup_provider_stats(conn, &mut stats_map, start_date, end_date, cli_key, include_session)?;
         let mut items = stats_map
             .into_iter()
             .filter_map(|((app_type, provider_id), item)| {
@@ -1039,12 +1051,13 @@ pub fn model_stats(
     start_date: Option<i64>,
     end_date: Option<i64>,
     cli_key: Option<GatewayUsageTool>,
+    include_session: bool,
 ) -> Result<Vec<GatewayModelStats>, String> {
     db.with_conn(|conn| {
         let mut stats_map = HashMap::<(String, String), StatsAccumulator>::new();
         let mut params = Vec::<Box<dyn ToSql>>::new();
         let where_clause =
-            build_usage_stats_where(start_date, end_date, cli_key, "l", false, &mut params);
+            build_usage_stats_where(start_date, end_date, cli_key, "l", false, include_session, &mut params);
         let model_expr = model_stats_detail_model_expression("l");
         let refs = to_param_refs(&params);
         let mut stmt = conn
@@ -1085,7 +1098,7 @@ pub fn model_stats(
                 .or_default()
                 .add(request_count, 0, total_tokens, total_cost, latency_weighted_sum, latency_sample_count);
         }
-        merge_rollup_model_stats(conn, &mut stats_map, start_date, end_date, cli_key)?;
+        merge_rollup_model_stats(conn, &mut stats_map, start_date, end_date, cli_key, include_session)?;
         let mut items = stats_map
             .into_iter()
             .filter_map(|((app_type, model), item)| {
@@ -1108,6 +1121,7 @@ pub fn model_stats(
 pub fn data_source_breakdown(
     db: &SqliteDbState,
     input: super::types::DataSourceBreakdownInput,
+    include_session: bool,
 ) -> Result<Vec<super::types::DataSourceBreakdownItem>, String> {
     db.with_conn(|conn| {
         let mut params = Vec::<Box<dyn ToSql>>::new();
@@ -1116,6 +1130,7 @@ pub fn data_source_breakdown(
             input.end_unix_secs,
             input.cli_key,
             "l",
+            include_session,
             &mut params,
         );
         let refs = to_param_refs(&params);
@@ -1156,9 +1171,17 @@ fn merge_rollup_trends(
     start: i64,
     end: i64,
     cli_key: Option<GatewayUsageTool>,
+    include_session: bool,
 ) -> Result<(), String> {
     let mut params = Vec::<Box<dyn ToSql>>::new();
-    let where_clause = build_rollup_where(Some(start), Some(end), cli_key, Some("r"), &mut params);
+    let where_clause = build_rollup_where(
+        Some(start),
+        Some(end),
+        cli_key,
+        Some("r"),
+        include_session,
+        &mut params,
+    );
     let refs = to_param_refs(&params);
     let mut stmt = conn
         .prepare(&format!(
@@ -1220,9 +1243,17 @@ fn merge_rollup_provider_stats(
     start_date: Option<i64>,
     end_date: Option<i64>,
     cli_key: Option<GatewayUsageTool>,
+    include_session: bool,
 ) -> Result<(), String> {
     let mut params = Vec::<Box<dyn ToSql>>::new();
-    let where_clause = build_rollup_where(start_date, end_date, cli_key, Some("r"), &mut params);
+    let where_clause = build_rollup_where(
+        start_date,
+        end_date,
+        cli_key,
+        Some("r"),
+        include_session,
+        &mut params,
+    );
     let refs = to_param_refs(&params);
     let mut stmt = conn
         .prepare(&format!(
@@ -1292,10 +1323,17 @@ fn merge_rollup_model_stats(
     start_date: Option<i64>,
     end_date: Option<i64>,
     cli_key: Option<GatewayUsageTool>,
+    include_session: bool,
 ) -> Result<(), String> {
     let mut params = Vec::<Box<dyn ToSql>>::new();
-    let mut where_clause =
-        build_rollup_where(start_date, end_date, cli_key, Some("r"), &mut params);
+    let mut where_clause = build_rollup_where(
+        start_date,
+        end_date,
+        cli_key,
+        Some("r"),
+        include_session,
+        &mut params,
+    );
     append_static_where_condition(
         &mut where_clause,
         &format!("r.model != '{COMPACT_ROLLUP_MODEL}'"),
@@ -1354,9 +1392,17 @@ fn rollup_summary(
     start_date: Option<i64>,
     end_date: Option<i64>,
     cli_key: Option<GatewayUsageTool>,
+    include_session: bool,
 ) -> Result<SummaryAccumulator, String> {
     let mut params: Vec<Box<dyn ToSql>> = Vec::new();
-    let where_clause = build_rollup_where(start_date, end_date, cli_key, None, &mut params);
+    let where_clause = build_rollup_where(
+        start_date,
+        end_date,
+        cli_key,
+        None,
+        include_session,
+        &mut params,
+    );
     let refs = to_param_refs(&params);
     conn.query_row(
         &format!(
@@ -1521,9 +1567,15 @@ fn local_midnight_cutoff(retain_days: i64) -> Result<i64, String> {
 fn build_detail_where(
     filters: &GatewayRequestLogFilters,
     provider_names: &ProviderNameMap,
+    include_session: bool,
     params: &mut Vec<Box<dyn ToSql>>,
 ) -> Result<String, String> {
     let mut conditions = Vec::new();
+    if !include_session {
+        // The display toggle wins over an explicit session source filter, so a
+        // disabled toggle turns that filter into a real empty state.
+        conditions.push(session_usage_detail_condition("l"));
+    }
     if let Some(source) = filters.data_source.as_deref() {
         if !matches!(source, "proxy" | "session") {
             return Err("Unsupported usage data source".into());
@@ -1639,11 +1691,28 @@ fn build_stats_where(
     end_date: Option<i64>,
     cli_key: Option<GatewayUsageTool>,
     alias: &str,
+    include_session: bool,
     params: &mut Vec<Box<dyn ToSql>>,
 ) -> String {
-    format_where_clause(build_stats_conditions(
-        start_date, end_date, cli_key, alias, params,
-    ))
+    let mut conditions = build_stats_conditions(start_date, end_date, cli_key, alias, params);
+    if !include_session {
+        conditions.push(session_usage_detail_condition(alias));
+    }
+    format_where_clause(conditions)
+}
+
+/// Imported session rows are identified by `data_source`; proxy rows that
+/// upgraded a session placeholder rewrite this column, so it stays authoritative.
+fn session_usage_detail_condition(alias: &str) -> String {
+    format!("COALESCE({alias}.data_source, 'proxy') <> 'session'")
+}
+
+/// Rollups do not carry `data_source`, but every imported session row keeps the
+/// reserved provider id `session` (legacy imports included), and proxy rows
+/// always carry a real provider id, so this column separates the two sources.
+fn session_usage_rollup_condition(alias: Option<&str>) -> String {
+    let prefix = alias.map(|value| format!("{value}.")).unwrap_or_default();
+    format!("{prefix}provider_id <> 'session'")
 }
 
 fn build_usage_stats_where(
@@ -1652,10 +1721,14 @@ fn build_usage_stats_where(
     cli_key: Option<GatewayUsageTool>,
     alias: &str,
     include_compact: bool,
+    include_session: bool,
     params: &mut Vec<Box<dyn ToSql>>,
 ) -> String {
     let mut conditions = build_stats_conditions(start_date, end_date, cli_key, alias, params);
     conditions.push(usage_applicable_detail_condition(alias, include_compact));
+    if !include_session {
+        conditions.push(session_usage_detail_condition(alias));
+    }
     format_where_clause(conditions)
 }
 
@@ -1704,6 +1777,7 @@ fn build_rollup_where(
     end_date: Option<i64>,
     cli_key: Option<GatewayUsageTool>,
     alias: Option<&str>,
+    include_session: bool,
     params: &mut Vec<Box<dyn ToSql>>,
 ) -> String {
     let prefix = alias.map(|value| format!("{value}.")).unwrap_or_default();
@@ -1732,6 +1806,9 @@ fn build_rollup_where(
         "({} OR {prefix}provider_id = 'session')",
         valid_model_sql_condition(alias)
     ));
+    if !include_session {
+        conditions.push(session_usage_rollup_condition(alias));
+    }
     format_where_clause(conditions)
 }
 
@@ -2803,6 +2880,7 @@ mod tests {
             },
             0,
             10,
+            true,
         )
         .expect("request logs");
 
@@ -2869,6 +2947,7 @@ mod tests {
             },
             0,
             10,
+            true,
         )
         .expect("request logs");
 
@@ -2907,7 +2986,7 @@ mod tests {
         let chat = make_detail("trace-chat", "provider-alpha", 200, 10, 20);
         record_request_summary(&db, &settings, &chat).expect("record chat");
 
-        let all_logs = request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10)
+        let all_logs = request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
             .expect("all request logs");
         assert_eq!(all_logs.total, 4);
 
@@ -2919,6 +2998,7 @@ mod tests {
             },
             0,
             10,
+            true,
         )
         .expect("filtered request logs");
 
@@ -3321,7 +3401,7 @@ mod tests {
         )
         .expect("record grok summary");
 
-        let provider_rows = provider_stats(&db, None, None, Some(GatewayCliKey::Grok.into()))
+        let provider_rows = provider_stats(&db, None, None, Some(GatewayCliKey::Grok.into()), true)
             .expect("provider stats");
         assert_eq!(provider_rows.len(), 1);
         assert_eq!(provider_rows[0].provider_id, "provider-grok");
@@ -3352,8 +3432,8 @@ mod tests {
         )
         .expect("record kimi summary");
 
-        let logs =
-            request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10).expect("request logs");
+        let logs = request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
+            .expect("request logs");
         assert_eq!(logs.total, 1);
         assert_eq!(logs.data.len(), 1);
         assert_eq!(logs.data[0].cli_key, GatewayUsageTool::Kimi);
@@ -3363,7 +3443,7 @@ mod tests {
             "Kimi request rows must not be dropped and must resolve display names from kimi_provider"
         );
 
-        let provider_rows = provider_stats(&db, None, None, Some(GatewayCliKey::Kimi.into()))
+        let provider_rows = provider_stats(&db, None, None, Some(GatewayCliKey::Kimi.into()), true)
             .expect("provider stats");
         assert_eq!(provider_rows.len(), 1);
         assert_eq!(
@@ -3389,16 +3469,17 @@ mod tests {
         )
         .expect("record error");
 
-        let summary =
-            usage_summary(&db, None, None, Some(GatewayCliKey::Claude.into())).expect("summary");
+        let summary = usage_summary(&db, None, None, Some(GatewayCliKey::Claude.into()), true)
+            .expect("summary");
         assert_eq!(summary.total_requests, 2);
         assert_eq!(summary.total_input_tokens, 18);
         assert_eq!(summary.total_output_tokens, 8);
         assert_eq!(summary.total_tokens, 26);
         assert_eq!(summary.success_rate, 50.0);
 
-        let provider_rows = provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into()))
-            .expect("provider stats");
+        let provider_rows =
+            provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into()), true)
+                .expect("provider stats");
         assert_eq!(provider_rows.len(), 1);
         assert_eq!(
             provider_rows[0].provider_name.as_deref(),
@@ -3407,8 +3488,8 @@ mod tests {
         assert_eq!(provider_rows[0].request_count, 2);
         assert_eq!(provider_rows[0].success_rate, 50.0);
 
-        let model_rows =
-            model_stats(&db, None, None, Some(GatewayCliKey::Claude.into())).expect("model stats");
+        let model_rows = model_stats(&db, None, None, Some(GatewayCliKey::Claude.into()), true)
+            .expect("model stats");
         assert_eq!(model_rows.len(), 1);
         assert_eq!(model_rows[0].request_count, 2);
         assert_eq!(model_rows[0].total_tokens, 26);
@@ -3489,27 +3570,28 @@ mod tests {
         )
         .expect("record no-model compact request");
 
-        let logs =
-            request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10).expect("request logs");
+        let logs = request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
+            .expect("request logs");
         assert_eq!(logs.total, 6);
 
-        let summary =
-            usage_summary(&db, None, None, Some(GatewayCliKey::Claude.into())).expect("summary");
+        let summary = usage_summary(&db, None, None, Some(GatewayCliKey::Claude.into()), true)
+            .expect("summary");
         assert_eq!(summary.total_requests, 3);
         assert_eq!(summary.total_input_tokens, 17);
         assert_eq!(summary.total_output_tokens, 8);
         assert_eq!(summary.total_tokens, 25);
         assert_eq!(summary.success_rate, 100.0);
 
-        let provider_rows = provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into()))
-            .expect("provider stats");
+        let provider_rows =
+            provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into()), true)
+                .expect("provider stats");
         assert_eq!(provider_rows.len(), 1);
         assert_eq!(provider_rows[0].provider_id, "provider-alpha");
         assert_eq!(provider_rows[0].request_count, 3);
         assert_eq!(provider_rows[0].total_tokens, 25);
 
-        let model_rows =
-            model_stats(&db, None, None, Some(GatewayCliKey::Claude.into())).expect("model stats");
+        let model_rows = model_stats(&db, None, None, Some(GatewayCliKey::Claude.into()), true)
+            .expect("model stats");
         let model_map = model_rows
             .iter()
             .map(|item| (item.model.as_str(), item))
@@ -3559,6 +3641,7 @@ mod tests {
             Some(start),
             Some(end),
             Some(GatewayCliKey::Claude.into()),
+            true,
         )
         .expect("trends");
         assert_eq!(trend_rows.len(), 1);
@@ -3606,6 +3689,7 @@ mod tests {
             Some(start),
             Some(end),
             Some(GatewayCliKey::Claude.into()),
+            true,
         )
         .expect("summary");
         assert_eq!(summary.total_requests, 4);
@@ -3617,6 +3701,7 @@ mod tests {
             Some(start),
             Some(end),
             Some(GatewayCliKey::Claude.into()),
+            true,
         )
         .expect("provider stats");
         assert_eq!(provider_rows.len(), 1);
@@ -3628,6 +3713,7 @@ mod tests {
             Some(start),
             Some(end),
             Some(GatewayCliKey::Claude.into()),
+            true,
         )
         .expect("model stats");
         let model_map = model_rows
@@ -3671,6 +3757,7 @@ mod tests {
             Some(start),
             Some(end),
             Some(GatewayCliKey::Claude.into()),
+            true,
         )
         .expect("trends");
         assert_eq!(trend_rows.len(), 1);
@@ -3740,13 +3827,13 @@ mod tests {
             ]
         );
 
-        let summary = usage_summary(&db, None, None, Some(GatewayCliKey::Claude.into()))
+        let summary = usage_summary(&db, None, None, Some(GatewayCliKey::Claude.into()), true)
             .expect("summary from rollups");
         assert_eq!(summary.total_requests, 3);
         assert_eq!(summary.total_tokens, 25);
 
-        let model_rows =
-            model_stats(&db, None, None, Some(GatewayCliKey::Claude.into())).expect("model stats");
+        let model_rows = model_stats(&db, None, None, Some(GatewayCliKey::Claude.into()), true)
+            .expect("model stats");
         let model_map = model_rows
             .iter()
             .map(|item| (item.model.as_str(), item))
@@ -3957,7 +4044,7 @@ mod tests {
         set_request_data_source(&db, "trace-session-three", "session");
         set_request_data_source(&db, "trace-codex-one", "session");
 
-        let all_sources = data_source_breakdown(&db, DataSourceBreakdownInput::default())
+        let all_sources = data_source_breakdown(&db, DataSourceBreakdownInput::default(), true)
             .expect("all data source breakdown");
         let all_rows: Vec<_> = all_sources
             .iter()
@@ -3971,6 +4058,7 @@ mod tests {
                 cli_key: Some(GatewayCliKey::Claude.into()),
                 ..DataSourceBreakdownInput::default()
             },
+            true,
         )
         .expect("claude data source breakdown");
         let claude_rows: Vec<_> = claude_sources
@@ -3989,6 +4077,7 @@ mod tests {
                 ),
                 ..DataSourceBreakdownInput::default()
             },
+            true,
         )
         .expect("future data source breakdown");
         assert!(after_known_records.is_empty());
@@ -4011,7 +4100,8 @@ mod tests {
             detail.summary.cache_creation_tokens = Some(creation);
             detail.summary.cache_read_tokens = Some(read);
             record_request_summary(&db, &settings, &detail).expect("record cache usage");
-            let rows = provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into())).unwrap();
+            let rows =
+                provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into()), true).unwrap();
             let row = rows
                 .iter()
                 .find(|row| row.provider_id == provider_id)
@@ -4059,7 +4149,8 @@ mod tests {
                 Some(if trace_id == "cache-mixed" { 20 } else { 0 });
             record_request_summary(&db, &settings, &detail).unwrap();
         }
-        let all_rows = provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into())).unwrap();
+        let all_rows =
+            provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into()), true).unwrap();
         let alpha = all_rows
             .iter()
             .find(|row| row.provider_id == "provider-alpha")
@@ -4080,6 +4171,7 @@ mod tests {
             Some(start),
             Some(end),
             Some(GatewayCliKey::Claude.into()),
+            true,
         )
         .unwrap();
         let alpha = filtered
@@ -4093,6 +4185,7 @@ mod tests {
             Some(start),
             Some(end),
             Some(GatewayCliKey::Codex.into()),
+            true,
         )
         .unwrap();
         assert_eq!(codex.len(), 1);
@@ -4100,7 +4193,8 @@ mod tests {
 
         db.with_conn(|conn| rollup_and_prune(conn, 30))
             .expect("roll older details into history");
-        let rolled = provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into())).unwrap();
+        let rolled =
+            provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into()), true).unwrap();
         let alpha = rolled
             .iter()
             .find(|row| row.provider_id == "provider-alpha")
@@ -4133,11 +4227,11 @@ mod tests {
             if archived {
                 db.with_conn(|conn| rollup_and_prune(conn, 30)).unwrap();
             }
-            let models = model_stats(&db, None, None, None).unwrap();
+            let models = model_stats(&db, None, None, None, true).unwrap();
             assert_eq!(models.len(), 1);
             assert_eq!(models[0].request_count, 3);
             assert_eq!(models[0].avg_latency_ms, Some(301));
-            let providers = provider_stats(&db, None, None, None).unwrap();
+            let providers = provider_stats(&db, None, None, None, true).unwrap();
             assert_eq!(
                 providers
                     .iter()
@@ -4152,7 +4246,7 @@ mod tests {
         live.summary.duration_ms = 600;
         record_request_summary(&db, &settings, &live).unwrap();
         assert_eq!(
-            model_stats(&db, None, None, None).unwrap()[0].avg_latency_ms,
+            model_stats(&db, None, None, None, true).unwrap()[0].avg_latency_ms,
             Some(400)
         );
     }
@@ -4198,7 +4292,7 @@ mod tests {
             result,
             RecordRequestSummaryOutcome::Written { .. }
         ));
-        let logs = request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10).unwrap();
+        let logs = request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
         assert_eq!(logs.total, 2);
         assert!(logs.data.iter().any(
             |row| row.trace_id == "current-after-maintenance-failure" && row.total_tokens == 70
@@ -4234,9 +4328,95 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            usage_summary(&db, None, None, None).unwrap().total_requests,
+            usage_summary(&db, None, None, None, true)
+                .unwrap()
+                .total_requests,
             1
         );
+    }
+
+    #[test]
+    fn session_usage_toggle_filters_details_and_rollups() {
+        let db = test_db();
+        insert_provider(&db, "provider-alpha", "Alpha Provider");
+        record_request_summary(
+            &db,
+            &ProxyGatewaySettings::default(),
+            &make_detail("trace-proxy", "provider-alpha", 200, 10, 20),
+        )
+        .expect("record proxy");
+        record_request_summary(
+            &db,
+            &ProxyGatewaySettings::default(),
+            &make_detail("trace-session", "provider-alpha", 200, 30, 40),
+        )
+        .expect("record session");
+        set_request_data_source(&db, "trace-session", "session");
+        insert_rollup(&db);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO usage_daily_rollups (
+                    date, app_type, provider_id, model, request_count, success_count,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                    total_cost_usd, avg_latency_ms
+                ) VALUES (
+                    '2026-05-18', 'claude', 'session', 'unknown',
+                    7, 7, 70, 0, 0, 0, '0.000000', 0
+                )",
+                [],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        })
+        .expect("insert session rollup");
+
+        let start = Utc
+            .with_ymd_and_hms(2026, 5, 17, 0, 0, 0)
+            .unwrap()
+            .timestamp();
+        let end = Utc
+            .with_ymd_and_hms(2026, 5, 21, 23, 59, 59)
+            .unwrap()
+            .timestamp();
+
+        // Default view (toggle on): proxy + session details, both rollup rows.
+        let included = usage_summary(&db, Some(start), Some(end), None, true).unwrap();
+        assert_eq!(included.total_requests, 2 + 4 + 7);
+        let included_providers = provider_stats(&db, Some(start), Some(end), None, true).unwrap();
+        assert_eq!(included_providers.len(), 2);
+        let included_models = model_stats(&db, Some(start), Some(end), None, true).unwrap();
+        assert!(included_models.iter().any(|row| row.model == "unknown"));
+        let included_trends = usage_trends(&db, Some(start), Some(end), None, true).unwrap();
+        let total: u64 = included_trends.iter().map(|row| row.request_count).sum();
+        assert_eq!(total, 2 + 4 + 7);
+        let included_logs =
+            request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+        assert_eq!(included_logs.total, 2);
+
+        // Toggle off: only proxy details and the proxy rollup row remain.
+        let excluded = usage_summary(&db, Some(start), Some(end), None, false).unwrap();
+        assert_eq!(excluded.total_requests, 1 + 4);
+        let excluded_providers = provider_stats(&db, Some(start), Some(end), None, false).unwrap();
+        assert_eq!(excluded_providers.len(), 1);
+        assert_eq!(excluded_providers[0].provider_id, "provider-alpha");
+        let excluded_models = model_stats(&db, Some(start), Some(end), None, false).unwrap();
+        assert!(excluded_models.iter().all(|row| row.model != "unknown"));
+        let excluded_trends = usage_trends(&db, Some(start), Some(end), None, false).unwrap();
+        let total: u64 = excluded_trends.iter().map(|row| row.request_count).sum();
+        assert_eq!(total, 1 + 4);
+        let excluded_logs =
+            request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, false).unwrap();
+        assert_eq!(excluded_logs.total, 1);
+        assert_eq!(excluded_logs.data[0].data_source, "proxy");
+
+        // An explicit session source filter becomes a real empty state when the
+        // display toggle is off.
+        let filters = GatewayRequestLogFilters {
+            data_source: Some("session".into()),
+            ..GatewayRequestLogFilters::default()
+        };
+        assert_eq!(request_logs(&db, &filters, 0, 10, false).unwrap().total, 0);
+        assert_eq!(request_logs(&db, &filters, 0, 10, true).unwrap().total, 1);
     }
 
     #[test]
@@ -4259,6 +4439,7 @@ mod tests {
             Some(start),
             Some(end),
             Some(GatewayCliKey::Claude.into()),
+            true,
         )
         .expect("summary");
         assert_eq!(summary.total_requests, 4);
@@ -4270,6 +4451,7 @@ mod tests {
             Some(start),
             Some(end),
             Some(GatewayCliKey::Claude.into()),
+            true,
         )
         .expect("provider stats");
         assert_eq!(provider_rows.len(), 1);
@@ -4287,6 +4469,7 @@ mod tests {
             Some(start),
             Some(end),
             Some(GatewayCliKey::Claude.into()),
+            true,
         )
         .expect("model stats");
         assert_eq!(model_rows.len(), 1);
@@ -4299,6 +4482,7 @@ mod tests {
             Some(start),
             Some(end),
             Some(GatewayCliKey::Claude.into()),
+            true,
         )
         .expect("trends");
         assert_eq!(trend_rows.len(), 1);
@@ -4368,6 +4552,7 @@ mod tests {
             },
             0,
             10,
+            true,
         )
         .expect("request logs");
 
@@ -4410,6 +4595,7 @@ mod tests {
             },
             0,
             10,
+            true,
         )
         .expect("request logs");
         assert_eq!(logs.total, 1);
@@ -4454,6 +4640,7 @@ mod tests {
             },
             0,
             10,
+            true,
         )
         .expect("request logs");
         assert_eq!(logs.total, 1);
@@ -4480,14 +4667,15 @@ mod tests {
         incomplete.summary.success = false;
         record_request_summary(&db, &settings, &incomplete).expect("record incomplete");
 
-        let summary =
-            usage_summary(&db, None, None, Some(GatewayCliKey::Claude.into())).expect("summary");
+        let summary = usage_summary(&db, None, None, Some(GatewayCliKey::Claude.into()), true)
+            .expect("summary");
         assert_eq!(summary.total_requests, 2);
         assert_eq!(summary.success_rate, 50.0);
 
         // Provider stats must agree.
-        let provider_rows = provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into()))
-            .expect("provider stats");
+        let provider_rows =
+            provider_stats(&db, None, None, Some(GatewayCliKey::Claude.into()), true)
+                .expect("provider stats");
         assert_eq!(provider_rows[0].request_count, 2);
         assert_eq!(provider_rows[0].success_rate, 50.0);
     }
@@ -4508,8 +4696,8 @@ mod tests {
         failed.summary.success = false;
         record_request_summary(&db, &settings, &failed).expect("record failed");
 
-        let summary =
-            usage_summary(&db, None, None, Some(GatewayCliKey::Claude.into())).expect("summary");
+        let summary = usage_summary(&db, None, None, Some(GatewayCliKey::Claude.into()), true)
+            .expect("summary");
         assert_eq!(summary.success_rate, 50.0);
     }
 
@@ -4535,8 +4723,8 @@ mod tests {
         let _ = failed;
         record_request_summary(&db, &settings, &failed).expect("record failed");
 
-        let logs =
-            request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10).expect("request logs");
+        let logs = request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
+            .expect("request logs");
         // Both rows survive (the replay idempotency did not swallow the failed one).
         assert_eq!(logs.total, 2);
     }

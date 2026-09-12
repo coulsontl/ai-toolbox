@@ -138,6 +138,13 @@ pub async fn import_session_usage(
     db: SqliteDbState,
     input: GatewaySessionUsageImportInput,
 ) -> Result<GatewaySessionUsageImportResult, String> {
+    // Single gating point shared by the Tauri command and the 60s background
+    // scheduler. Skipping here leaves the per-file ledger snapshots frozen, so
+    // re-enabling later rescans the files and picks up everything recorded
+    // while the toggle was off (as long as the CLI files still exist).
+    if !super::settings::load_settings_from_sqlite_state(&db)?.session_usage_enabled {
+        return Ok(GatewaySessionUsageImportResult::default());
+    }
     // Manual sync, page activation and the background timer share one writer.
     let guard = sync_mutex().lock().await;
     let result = tauri::async_runtime::spawn_blocking(move || {

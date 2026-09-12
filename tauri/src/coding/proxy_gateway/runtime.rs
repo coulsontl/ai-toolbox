@@ -1261,6 +1261,7 @@ data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}
             &super::super::types::GatewayRequestLogFilters::default(),
             0,
             10,
+            true,
         )
         .unwrap();
         assert_eq!(logs.total, 1);

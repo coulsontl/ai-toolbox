@@ -310,6 +310,9 @@ pub struct ProxyGatewaySettings {
     pub request_log_enabled: bool,
     pub request_log_level: String,
     pub metrics_enabled: bool,
+    /// Whether locally-imported CLI session usage (requests that bypassed the
+    /// gateway) participates in usage statistics and the request list.
+    pub session_usage_enabled: bool,
     pub store_request_body: bool,
     pub store_headers: bool,
     pub store_response_body: bool,
@@ -350,6 +353,7 @@ impl Default for ProxyGatewaySettings {
             request_log_enabled: true,
             request_log_level: "summary".to_string(),
             metrics_enabled: true,
+            session_usage_enabled: true,
             store_request_body: false,
             store_headers: false,
             store_response_body: false,

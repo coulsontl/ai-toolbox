@@ -417,6 +417,7 @@ pub fn proxy_gateway_request_logs(
         &filters.unwrap_or_default(),
         page.unwrap_or(0),
         page_size,
+        session_usage_enabled(&db_state)?,
     )
 }
 
@@ -993,7 +994,8 @@ pub fn proxy_gateway_usage_summary(
     end_date: Option<i64>,
     cli_key: Option<GatewayUsageTool>,
 ) -> Result<GatewayUsageSummary, String> {
-    usage_stats::usage_summary(&db_state, start_date, end_date, cli_key)
+    let include_session = session_usage_enabled(&db_state)?;
+    usage_stats::usage_summary(&db_state, start_date, end_date, cli_key, include_session)
 }
 
 #[tauri::command]
@@ -1002,7 +1004,8 @@ pub fn proxy_gateway_usage_summary_by_cli(
     start_date: Option<i64>,
     end_date: Option<i64>,
 ) -> Result<Vec<GatewayUsageSummaryByCli>, String> {
-    usage_stats::usage_summary_by_cli(&db_state, start_date, end_date)
+    let include_session = session_usage_enabled(&db_state)?;
+    usage_stats::usage_summary_by_cli(&db_state, start_date, end_date, include_session)
 }
 
 #[tauri::command]
@@ -1012,7 +1015,8 @@ pub fn proxy_gateway_usage_trends(
     end_date: Option<i64>,
     cli_key: Option<GatewayUsageTool>,
 ) -> Result<Vec<GatewayUsageTrendPoint>, String> {
-    usage_stats::usage_trends(&db_state, start_date, end_date, cli_key)
+    let include_session = session_usage_enabled(&db_state)?;
+    usage_stats::usage_trends(&db_state, start_date, end_date, cli_key, include_session)
 }
 
 #[tauri::command]
@@ -1022,7 +1026,8 @@ pub fn proxy_gateway_provider_stats(
     end_date: Option<i64>,
     cli_key: Option<GatewayUsageTool>,
 ) -> Result<Vec<GatewayProviderStats>, String> {
-    usage_stats::provider_stats(&db_state, start_date, end_date, cli_key)
+    let include_session = session_usage_enabled(&db_state)?;
+    usage_stats::provider_stats(&db_state, start_date, end_date, cli_key, include_session)
 }
 
 #[tauri::command]
@@ -1032,7 +1037,8 @@ pub fn proxy_gateway_model_stats(
     end_date: Option<i64>,
     cli_key: Option<GatewayUsageTool>,
 ) -> Result<Vec<GatewayModelStats>, String> {
-    usage_stats::model_stats(&db_state, start_date, end_date, cli_key)
+    let include_session = session_usage_enabled(&db_state)?;
+    usage_stats::model_stats(&db_state, start_date, end_date, cli_key, include_session)
 }
 
 #[tauri::command]
@@ -1040,7 +1046,8 @@ pub fn proxy_gateway_data_source_breakdown(
     db_state: tauri::State<'_, SqliteDbState>,
     input: Option<DataSourceBreakdownInput>,
 ) -> Result<Vec<DataSourceBreakdownItem>, String> {
-    usage_stats::data_source_breakdown(&db_state, input.unwrap_or_default())
+    let include_session = session_usage_enabled(&db_state)?;
+    usage_stats::data_source_breakdown(&db_state, input.unwrap_or_default(), include_session)
 }
 
 #[tauri::command]
@@ -1049,9 +1056,16 @@ pub async fn proxy_gateway_import_session_usage(
     db_state: tauri::State<'_, SqliteDbState>,
     input: GatewaySessionUsageImportInput,
 ) -> Result<GatewaySessionUsageImportResult, String> {
+    // Gating by `session_usage_enabled` lives inside `import_session_usage`, so
+    // the 60s background scheduler and this command share one authority.
     let result = session_import::import_session_usage(db_state.db().clone(), input).await?;
     session_import::notify_usage_changed(&app, &result);
     Ok(result)
+}
+
+/// Reads the local-session-usage display toggle from gateway settings.
+fn session_usage_enabled(db_state: &SqliteDbState) -> Result<bool, String> {
+    Ok(settings::load_settings_from_sqlite_state(db_state)?.session_usage_enabled)
 }
 
 #[tauri::command]

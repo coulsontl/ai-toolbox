@@ -43,7 +43,7 @@ fn write_cost_session(path: &Path, messages: &[Value]) {
 }
 
 fn cost_summary(db: &SqliteDbState) -> GatewayUsageSummary {
-    usage_stats::usage_summary(db, None, None, Some(GatewayUsageTool::Dsh)).unwrap()
+    usage_stats::usage_summary(db, None, None, Some(GatewayUsageTool::Dsh), true).unwrap()
 }
 
 fn remove_old_cost_provenance(db: &SqliteDbState) {
@@ -96,8 +96,9 @@ fn dsh_missing_costs_backfill_live_and_legacy_archived_usage_without_recounting(
             .count();
         assert_eq!(repaired, 2);
         if !archived {
-            let logs = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10)
-                .unwrap();
+            let logs =
+                usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
+                    .unwrap();
             assert!(logs.data.iter().all(|row| row
                 .usage_metadata
                 .as_ref()
@@ -234,7 +235,7 @@ fn claude_dated_model_costs_repair_archives_without_recounting() {
         1
     );
     let summary =
-        usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::Claude)).unwrap();
+        usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::Claude), true).unwrap();
     assert_eq!(summary.total_requests, 1);
     assert_eq!(summary.total_tokens, 3_100_000);
     assert_eq!(summary.total_cost_usd, "2.800000");
@@ -303,7 +304,8 @@ fn legacy_live_costs_without_metadata_can_recover() {
         run_sync(&db, GatewayUsageTool::Claude, root.path()).updated_records,
         1
     );
-    let logs = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10).unwrap();
+    let logs =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
     assert_eq!(logs.total, 1);
     assert_eq!(logs.data[0].total_tokens, 3_100_000);
     assert_eq!(logs.data[0].total_cost_usd, "2.800000");
@@ -337,7 +339,7 @@ fn desktop_pricing_repair_updates_the_snapshot_used_to_retire_audit_totals() {
         1
     );
     assert_eq!(
-        usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::ClaudeDesktop))
+        usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::ClaudeDesktop), true)
             .unwrap()
             .total_cost_usd,
         "2.800000"
@@ -350,7 +352,8 @@ fn desktop_pricing_repair_updates_the_snapshot_used_to_retire_audit_totals() {
     );
     run_sync(&db, GatewayUsageTool::ClaudeDesktop, root.path());
     let summary =
-        usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::ClaudeDesktop)).unwrap();
+        usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::ClaudeDesktop), true)
+            .unwrap();
     assert_eq!(summary.total_cost_usd, "2.800000");
     assert_eq!(summary.total_tokens, 3_100_000);
     assert_eq!(summary.total_requests, 1);
@@ -380,11 +383,11 @@ fn local_cost_reconciliation_all_sources_on_a_snapshot() {
             .into_iter()
             .map(|path| (tool, path))
             .collect::<Vec<_>>();
-        let before = usage_stats::usage_summary(&db, None, None, Some(tool)).unwrap();
+        let before = usage_stats::usage_summary(&db, None, None, Some(tool), true).unwrap();
         let started = std::time::Instant::now();
         let repaired =
             cost_reconciliation::reconcile_session_costs(&db, tool, &sources, &mut states).unwrap();
-        let after = usage_stats::usage_summary(&db, None, None, Some(tool)).unwrap();
+        let after = usage_stats::usage_summary(&db, None, None, Some(tool), true).unwrap();
         println!(
             "{}: before={} after={} repaired={} elapsed_ms={}",
             tool.as_str(),

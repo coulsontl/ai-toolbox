@@ -1,7 +1,7 @@
 use super::*;
 
 fn summary_for(db: &SqliteDbState, tool: GatewayUsageTool) -> GatewayUsageSummary {
-    usage_stats::usage_summary(db, None, None, Some(tool)).unwrap()
+    usage_stats::usage_summary(db, None, None, Some(tool), true).unwrap()
 }
 
 fn unpriced_pi_message(id: &str, model: &str, time: i64) -> Value {
@@ -374,8 +374,9 @@ fn hermes_resolved_zero_prices_and_old_estimates_survive_later_price_changes() {
         let db = SqliteDbState::in_memory_for_test().unwrap();
         run_sync(&db, GatewayUsageTool::Hermes, root.path());
         if status != "unknown" {
-            let logs = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10)
-                .unwrap();
+            let logs =
+                usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
+                    .unwrap();
             assert_eq!(
                 logs.data[0]
                     .usage_metadata

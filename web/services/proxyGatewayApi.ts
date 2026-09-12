@@ -54,6 +54,8 @@ export interface ProxyGatewaySettings {
   request_log_enabled: boolean;
   request_log_level: string;
   metrics_enabled: boolean;
+  /** Whether locally imported CLI session usage shows up in stats and requests. */
+  session_usage_enabled: boolean;
   store_request_body: boolean;
   store_headers: boolean;
   store_response_body: boolean;

@@ -34,7 +34,7 @@ fn run_sync(
 }
 
 fn count(db: &SqliteDbState) -> u64 {
-    usage_stats::usage_summary(db, None, None, None)
+    usage_stats::usage_summary(db, None, None, None, true)
         .unwrap()
         .total_requests
 }
@@ -60,7 +60,7 @@ fn claude_sync_is_incremental_updates_final_usage_and_prices_without_gateway() {
         run_sync(&db, GatewayCliKey::Claude, root.path()).inserted_records,
         1
     );
-    let summary = usage_stats::usage_summary(&db, None, None, None).unwrap();
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
     assert_eq!(summary.total_tokens, 210);
     assert_eq!(summary.total_cost_usd, "0.000306");
     assert_eq!(
@@ -76,7 +76,8 @@ fn claude_sync_is_incremental_updates_final_usage_and_prices_without_gateway() {
         1
     );
     assert_eq!(count(&db), 1);
-    let logs = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10).unwrap();
+    let logs =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
     assert_eq!(logs.data[0].output_tokens, 30);
     assert_eq!(logs.data[0].data_source, "session");
     let detail = usage_stats::request_log_detail_from_summary(&db, "SESSION:msg-1")
@@ -93,11 +94,12 @@ fn claude_sync_is_incremental_updates_final_usage_and_prices_without_gateway() {
         },
         0,
         10,
+        true,
     )
     .unwrap();
     assert_eq!(http_successes.total, 0);
     assert_eq!(
-        usage_stats::usage_summary(&db, None, None, None)
+        usage_stats::usage_summary(&db, None, None, None, true)
             .unwrap()
             .total_cost_usd,
         "0.000386"
@@ -144,6 +146,7 @@ fn claude_zero_token_responses_are_counted_once_and_can_receive_final_usage() {
         Some(THEN - 1),
         Some(NOW),
         Some(GatewayCliKey::Claude.into()),
+        true,
     )
     .unwrap();
     assert_eq!(models.len(), 1);
@@ -164,7 +167,7 @@ fn claude_zero_token_responses_are_counted_once_and_can_receive_final_usage() {
         run_sync(&db, GatewayCliKey::Claude, root.path()).updated_records,
         1
     );
-    let summary = usage_stats::usage_summary(&db, None, None, None).unwrap();
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
     assert_eq!(summary.total_requests, 1);
     assert_eq!(summary.total_tokens, 120);
 }
@@ -296,7 +299,7 @@ fn codex_prefers_per_request_usage_and_ignores_repeated_snapshot_lanes() {
     let db = SqliteDbState::in_memory_for_test().unwrap();
     let result = run_sync(&db, GatewayCliKey::Codex, root.path());
     assert_eq!(result.inserted_records, 2);
-    let summary = usage_stats::usage_summary(&db, None, None, None).unwrap();
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
     assert_eq!(summary.total_input_tokens, 75);
     assert_eq!(summary.total_cache_read_tokens, 75);
     assert_eq!(summary.total_output_tokens, 15);
@@ -329,7 +332,7 @@ fn codex_child_does_not_rebill_the_parent_replay_prefix() {
         2
     );
     assert_eq!(
-        usage_stats::usage_summary(&db, None, None, None)
+        usage_stats::usage_summary(&db, None, None, None, true)
             .unwrap()
             .total_tokens,
         165
@@ -389,7 +392,7 @@ fn gemini_json_and_jsonl_use_fresh_input_and_keep_paid_rewound_messages() {
         run_sync(&db, GatewayCliKey::Gemini, root.path()).inserted_records,
         3
     );
-    let summary = usage_stats::usage_summary(&db, None, None, None).unwrap();
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
     assert_eq!(summary.total_input_tokens, 60);
     assert_eq!(summary.total_cache_read_tokens, 240);
     assert_eq!(summary.total_output_tokens, 55);
@@ -468,7 +471,7 @@ fn distinct_claude_envelopes_are_not_merged_when_usage_matches() {
                 "gateway_first={gateway_first}, zero_usage={zero_usage}"
             );
             assert_eq!(
-                usage_stats::usage_summary(&db, None, None, None)
+                usage_stats::usage_summary(&db, None, None, None, true)
                     .unwrap()
                     .total_tokens,
                 (input + output + read + creation) as u64 * 2,
@@ -531,7 +534,7 @@ fn final_usage_rechecks_an_earlier_heuristic_proxy_match() {
         run_sync(&db, GatewayCliKey::Gemini, root.path()).inserted_records,
         1
     );
-    let summary = usage_stats::usage_summary(&db, None, None, None).unwrap();
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
     assert_eq!(summary.total_requests, 2);
     assert_eq!(summary.total_output_tokens, 50);
     assert_eq!(
@@ -563,7 +566,8 @@ fn gateway_and_session_usage_converge_in_either_arrival_order() {
         run_sync(&db, GatewayCliKey::Gemini, root.path());
         assert_eq!(count(&db), 1, "gateway_first={gateway_first}");
         let logs =
-            usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10).unwrap();
+            usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
+                .unwrap();
         assert_eq!(logs.data[0].data_source, "proxy");
     }
 }
@@ -627,8 +631,9 @@ fn proxy_execution_interval_and_delayed_session_writes_converge() {
                 1,
                 "offset={session_offset}, gateway_first={gateway_first}"
             );
-            let logs = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10)
-                .unwrap();
+            let logs =
+                usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
+                    .unwrap();
             assert_eq!(logs.data[0].data_source, "proxy");
             assert_eq!(
                 run_sync(&db, GatewayCliKey::Gemini, root.path()).updated_records,
@@ -703,11 +708,12 @@ fn final_native_usage_replaces_a_partial_row_when_the_proxy_arrives() {
         run_sync(&db, GatewayCliKey::Gemini, root.path()).updated_records,
         0
     );
-    let logs = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10).unwrap();
+    let logs =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
     assert_eq!(logs.data[0].data_source, "proxy");
     assert_eq!(logs.data[0].output_tokens, 15);
     assert_eq!(
-        usage_stats::usage_summary(&db, None, None, None)
+        usage_stats::usage_summary(&db, None, None, None, true)
             .unwrap()
             .total_cost_usd,
         "0.012345"
@@ -770,7 +776,7 @@ fn legacy_manual_import_is_adopted_without_duplicate_usage() {
         .with_conn(|conn| usage_stats::request_exists(conn, &legacy_id))
         .unwrap());
     assert_eq!(
-        usage_stats::usage_summary(&db, None, None, None)
+        usage_stats::usage_summary(&db, None, None, None, true)
             .unwrap()
             .total_tokens,
         110
@@ -818,7 +824,7 @@ fn legacy_snapshot_rows_converge_when_the_canonical_record_already_exists() {
         run_sync(&db, GatewayCliKey::Gemini, root.path());
         assert_eq!(count(&db), 1, "canonical_exists={canonical_exists}");
         assert_eq!(
-            usage_stats::usage_summary(&db, None, None, None)
+            usage_stats::usage_summary(&db, None, None, None, true)
                 .unwrap()
                 .total_tokens,
             120,
@@ -864,13 +870,14 @@ fn native_history_is_automatically_archived_without_gateway_and_not_reimported()
         1
     );
     assert_eq!(count(&db), 1);
-    let logs = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10).unwrap();
+    let logs =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
     assert!(logs.data.is_empty());
-    let models = usage_stats::model_stats(&db, None, None, None).unwrap();
+    let models = usage_stats::model_stats(&db, None, None, None, true).unwrap();
     assert_eq!(models[0].model, "unknown");
     assert_eq!(models[0].avg_latency_ms, None);
     assert_eq!(models[0].total_tokens, 210);
-    let providers = usage_stats::provider_stats(&db, None, None, None).unwrap();
+    let providers = usage_stats::provider_stats(&db, None, None, None, true).unwrap();
     assert_eq!(providers[0].avg_latency_ms, None);
     assert_eq!(providers[0].cache_hit_rate, Some(0.4));
 
@@ -882,7 +889,7 @@ fn native_history_is_automatically_archived_without_gateway_and_not_reimported()
     );
     assert_eq!(count(&db), 2);
     assert_eq!(
-        usage_stats::usage_summary(&db, None, None, None)
+        usage_stats::usage_summary(&db, None, None, None, true)
             .unwrap()
             .total_output_tokens,
         40
@@ -915,7 +922,7 @@ fn opencode_reads_wal_updates_and_deduplicates_legacy_json_without_writing_nativ
     let db = SqliteDbState::in_memory_for_test().unwrap();
     run_sync(&db, GatewayCliKey::OpenCode, root.path());
     assert_eq!(count(&db), 1);
-    let summary = usage_stats::usage_summary(&db, None, None, None).unwrap();
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
     assert_eq!(summary.total_input_tokens, 100);
     assert_eq!(summary.total_output_tokens, 15);
     assert_eq!(summary.total_cost_usd, "0.001200");
@@ -932,7 +939,7 @@ fn opencode_reads_wal_updates_and_deduplicates_legacy_json_without_writing_nativ
         1
     );
     assert_eq!(
-        usage_stats::usage_summary(&db, None, None, None)
+        usage_stats::usage_summary(&db, None, None, None, true)
             .unwrap()
             .total_output_tokens,
         25

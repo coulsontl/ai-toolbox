@@ -557,7 +557,7 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
                 <div className={styles.subGroupLabel}>{t('settings.gateway.subGroups.rectifier')}</div>
                 <FieldRow
                   label={t('settings.gateway.fields.thinkingRectifier')}
-                  description={t('settings.gateway.hints.thinkingRectifier')}
+                  help={t('settings.gateway.hints.thinkingRectifier')}
                   wide
                 >
                   <SwitchControl
@@ -568,7 +568,7 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
                 </FieldRow>
                 <FieldRow
                   label={t('settings.gateway.fields.responsesEncryptedContentRectifier')}
-                  description={t('settings.gateway.hints.responsesEncryptedContentRectifier')}
+                  help={t('settings.gateway.hints.responsesEncryptedContentRectifier')}
                   wide
                 >
                   <SwitchControl
@@ -579,7 +579,7 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
                 </FieldRow>
                 <FieldRow
                   label={t('settings.gateway.fields.thinkingBudgetRectifier')}
-                  description={t('settings.gateway.hints.thinkingBudgetRectifier')}
+                  help={t('settings.gateway.hints.thinkingBudgetRectifier')}
                   wide
                 >
                   <SwitchControl
@@ -590,7 +590,7 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
                 </FieldRow>
                 <FieldRow
                   label={t('settings.gateway.fields.lossyRejection')}
-                  description={t('settings.gateway.hints.lossyRejection')}
+                  help={t('settings.gateway.hints.lossyRejection')}
                   wide
                 >
                   <SwitchControl
@@ -601,7 +601,7 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
                 </FieldRow>
                 <FieldRow
                   label={t('settings.gateway.fields.cacheInjection')}
-                  description={t('settings.gateway.hints.cacheInjection')}
+                  help={t('settings.gateway.hints.cacheInjection')}
                   wide
                 >
                   <SwitchControl
@@ -993,18 +993,41 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
 
           <Section icon={<FileText size={15} aria-hidden="true" />} title={t('settings.gateway.sections.logs')}>
             <div className={styles.fieldStack}>
-              <FieldRow label={t('settings.gateway.fields.requestLog')} wide>
+              <FieldRow
+                label={t('settings.gateway.fields.requestLog')}
+                help={t('settings.gateway.hints.requestLog')}
+                wide
+              >
                 <SwitchControl
                   checked={draftSettings.request_log_enabled}
                   label={draftSettings.request_log_enabled ? t('common.enabled') : t('common.disabled')}
                   onChange={handleRequestLogEnabledToggle}
                 />
               </FieldRow>
-              <FieldRow label={t('settings.gateway.fields.metrics')} wide>
+              <FieldRow
+                label={t('settings.gateway.fields.metrics')}
+                help={t('settings.gateway.hints.metrics')}
+                wide
+              >
                 <SwitchControl
                   checked={draftSettings.metrics_enabled}
                   label={draftSettings.metrics_enabled ? t('common.enabled') : t('common.disabled')}
                   onChange={(checked) => updateDraftAndSave('metrics_enabled', checked)}
+                />
+              </FieldRow>
+              <FieldRow
+                label={t('settings.gateway.fields.sessionUsage')}
+                help={t('settings.gateway.hints.sessionUsage')}
+                wide
+              >
+                <SwitchControl
+                  checked={draftSettings.session_usage_enabled}
+                  label={
+                    draftSettings.session_usage_enabled
+                      ? t('common.enabled')
+                      : t('common.disabled')
+                  }
+                  onChange={(checked) => updateDraftAndSave('session_usage_enabled', checked)}
                 />
               </FieldRow>
               <div className={styles.logParts} aria-label={t('settings.gateway.fields.detailStorage')}>

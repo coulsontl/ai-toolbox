@@ -44,6 +44,7 @@ fn pi_and_omp_usage_round_trip_preserves_native_tokens_cost_and_tool_identity() 
             },
             0,
             10,
+            true,
         )
         .unwrap();
         assert_eq!(logs.total, 3);
@@ -70,10 +71,10 @@ fn pi_and_omp_usage_round_trip_preserves_native_tokens_cost_and_tool_identity() 
         assert_eq!(detail.summary.cli_key, Some(tool));
         assert_eq!(detail.summary.total_tokens, Some(240));
         assert_eq!(detail.summary.status_code, None);
-        let summary = usage_stats::usage_summary(&db, None, None, Some(tool)).unwrap();
+        let summary = usage_stats::usage_summary(&db, None, None, Some(tool), true).unwrap();
         assert_eq!(summary.total_tokens, 252);
         assert_eq!(summary.total_requests, 3);
-        assert!(usage_stats::usage_summary_by_cli(&db, None, None)
+        assert!(usage_stats::usage_summary_by_cli(&db, None, None, true)
             .unwrap()
             .iter()
             .any(|entry| entry.cli_key == tool));
@@ -86,13 +87,13 @@ fn pi_and_omp_usage_round_trip_preserves_native_tokens_cost_and_tool_identity() 
         })
         .unwrap();
         assert_eq!(
-            usage_stats::usage_summary(&db, None, None, Some(tool))
+            usage_stats::usage_summary(&db, None, None, Some(tool), true)
                 .unwrap()
                 .total_tokens,
             252
         );
         assert_eq!(
-            usage_stats::model_stats(&db, None, None, Some(tool))
+            usage_stats::model_stats(&db, None, None, Some(tool), true)
                 .unwrap()
                 .iter()
                 .map(|row| row.total_tokens)
@@ -129,7 +130,7 @@ fn pi_fork_does_not_reimport_archived_parent_usage_or_zeroed_omp_cost() {
         run_sync(&db, tool, root.path());
         assert_eq!(count(&db), 2);
         assert_eq!(
-            usage_stats::usage_summary(&db, None, None, Some(tool))
+            usage_stats::usage_summary(&db, None, None, Some(tool), true)
                 .unwrap()
                 .total_tokens,
             315
@@ -176,7 +177,7 @@ fn dsh_v0_and_v3_generations_keep_retry_and_summary_usage_once() {
         1
     );
     assert_eq!(
-        usage_stats::usage_summary(&db, None, None, None)
+        usage_stats::usage_summary(&db, None, None, None, true)
             .unwrap()
             .total_tokens,
         210
@@ -203,7 +204,7 @@ fn dsh_v0_and_v3_generations_keep_retry_and_summary_usage_once() {
     assert_eq!(result.failed_files, 0);
     assert_eq!(count(&db), 3);
     assert_eq!(
-        usage_stats::usage_summary(&db, None, None, None)
+        usage_stats::usage_summary(&db, None, None, None, true)
             .unwrap()
             .total_tokens,
         332
@@ -266,7 +267,7 @@ fn dsh_resume_markers_preserve_paid_history_while_tagged_seed_excludes_inheritan
         run_sync(&db, GatewayUsageTool::Dsh, root.path());
         assert_eq!(count(&db), if inherited { 1 } else { 2 });
         assert_eq!(
-            usage_stats::usage_summary(&db, None, None, None)
+            usage_stats::usage_summary(&db, None, None, None, true)
                 .unwrap()
                 .total_tokens,
             if inherited { 105 } else { 315 }
@@ -333,7 +334,7 @@ fn dsh_parser_upgrade_backfills_resume_history_without_rebilling_old_identities(
         run_sync(&db, GatewayUsageTool::Dsh, root.path());
         assert_eq!(count(&db), 2, "archived={archived}");
         assert_eq!(
-            usage_stats::usage_summary(&db, None, None, None)
+            usage_stats::usage_summary(&db, None, None, None, true)
                 .unwrap()
                 .total_tokens,
             315
@@ -372,11 +373,12 @@ fn grok_turns_preserve_model_call_counts_and_ignore_total_and_subagent_mirrors()
         2
     );
     let summary =
-        usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::Grok)).unwrap();
+        usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::Grok), true).unwrap();
     assert_eq!(summary.total_requests, 5);
     assert_eq!(summary.total_tokens, 135);
     assert_eq!(summary.total_output_tokens, 25);
-    let logs = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10).unwrap();
+    let logs =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
     assert_eq!(logs.total, 2);
     assert!(logs
         .data
@@ -423,7 +425,7 @@ fn desktop_transcript_replaces_audit_fallback_before_and_after_archival() {
         desktop_fixture(root.path(), false, time);
         run_sync(&db, GatewayUsageTool::ClaudeDesktop, root.path());
         assert_eq!(
-            usage_stats::usage_summary(&db, None, None, None)
+            usage_stats::usage_summary(&db, None, None, None, true)
                 .unwrap()
                 .total_tokens,
             210
@@ -431,7 +433,7 @@ fn desktop_transcript_replaces_audit_fallback_before_and_after_archival() {
         desktop_fixture(root.path(), true, time);
         run_sync(&db, GatewayUsageTool::ClaudeDesktop, root.path());
         assert_eq!(
-            usage_stats::usage_summary(&db, None, None, None)
+            usage_stats::usage_summary(&db, None, None, None, true)
                 .unwrap()
                 .total_tokens,
             210,
@@ -518,12 +520,13 @@ fn kimi_wire_and_store_mirrors_use_the_same_native_event_identity() {
     assert_eq!(result.failed_files, 0);
     assert_eq!(count(&db), 1);
     assert_eq!(
-        usage_stats::usage_summary(&db, None, None, None)
+        usage_stats::usage_summary(&db, None, None, None, true)
             .unwrap()
             .total_tokens,
         115
     );
-    let logs = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10).unwrap();
+    let logs =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
     assert_eq!(logs.data[0].upstream_model_id, "kimi-test");
     assert_eq!(
         run_sync(&db, GatewayUsageTool::Kimi, root.path()).inserted_records,
@@ -564,6 +567,7 @@ fn python_kimi_status_updates_and_nested_subagents_preserve_usage_without_guessi
         },
         0,
         10,
+        true,
     )
     .unwrap();
     assert_eq!(logs.data[0].total_tokens, 115);
@@ -588,7 +592,7 @@ fn hermes_cumulative_wal_updates_charge_only_deltas_and_reconcile_actual_cost() 
         run_sync(&db, GatewayUsageTool::Hermes, root.path()).inserted_records,
         1
     );
-    let first = usage_stats::usage_summary(&db, None, None, None).unwrap();
+    let first = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
     assert_eq!(first.total_tokens, 210);
     assert_eq!(first.total_requests, 3);
     assert_eq!(first.total_cost_usd, "0.030000");
@@ -601,25 +605,26 @@ fn hermes_cumulative_wal_updates_charge_only_deltas_and_reconcile_actual_cost() 
         run_sync(&db, GatewayUsageTool::Hermes, root.path()).inserted_records,
         1
     );
-    let summary = usage_stats::usage_summary(&db, None, None, None).unwrap();
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
     assert_eq!(summary.total_tokens, 235);
     assert_eq!(summary.total_requests, 4);
     assert_eq!(summary.total_cost_usd, "0.040000");
     // Final actual billing is smaller than the original estimate.
     source.execute("UPDATE session_model_usage SET actual_cost_usd = 0.035, cost_status = 'actual', last_seen = ?1", [THEN+20]).unwrap();
     run_sync(&db, GatewayUsageTool::Hermes, root.path());
-    let corrected = usage_stats::usage_summary(&db, None, None, None).unwrap();
+    let corrected = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
     assert_eq!(corrected.total_requests, 4);
     assert_eq!(corrected.total_tokens, 235);
     assert_eq!(corrected.total_cost_usd, "0.035000");
     let correction_only =
-        usage_stats::usage_summary_by_cli(&db, Some(THEN + 20), Some(THEN + 20)).unwrap();
+        usage_stats::usage_summary_by_cli(&db, Some(THEN + 20), Some(THEN + 20), true).unwrap();
     assert_eq!(correction_only.len(), 1);
     assert_eq!(correction_only[0].cli_key, GatewayUsageTool::Hermes);
     assert_eq!(correction_only[0].summary.total_requests, 0);
     assert_eq!(correction_only[0].summary.total_tokens, 0);
     assert_eq!(correction_only[0].summary.total_cost_usd, "-0.005000");
-    let logs = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10).unwrap();
+    let logs =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
     assert!(logs
         .data
         .iter()
@@ -662,7 +667,7 @@ fn hermes_equal_model_counters_and_repeated_cost_corrections_stay_independent() 
             run_sync(&db, GatewayUsageTool::Hermes, root.path()).inserted_records,
             1
         );
-        let summary = usage_stats::usage_summary(&db, None, None, None).unwrap();
+        let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
         assert_eq!(summary.total_requests, 2);
         assert_eq!(summary.total_tokens, 240);
         assert_eq!(summary.total_cost_usd, total);
@@ -671,7 +676,7 @@ fn hermes_equal_model_counters_and_repeated_cost_corrections_stay_independent() 
             0
         );
     }
-    let models = usage_stats::model_stats(&db, None, None, None).unwrap();
+    let models = usage_stats::model_stats(&db, None, None, None, true).unwrap();
     assert_eq!(models.len(), 2);
     assert!(models.iter().all(|model| model.total_tokens == 120));
 }
@@ -696,7 +701,7 @@ fn hermes_richer_schema_does_not_rebill_an_imported_legacy_total() {
     run_sync(&db, GatewayUsageTool::Hermes, root.path());
     assert_eq!(count(&db), 3);
     assert_eq!(
-        usage_stats::usage_summary(&db, None, None, None)
+        usage_stats::usage_summary(&db, None, None, None, true)
             .unwrap()
             .total_tokens,
         122
@@ -753,7 +758,7 @@ fn openclaw_prefers_sqlite_and_deduplicates_file_and_database_archives() {
     assert_eq!(result.failed_files, 0);
     assert_eq!(count(&db), 2);
     assert_eq!(
-        usage_stats::usage_summary(&db, None, None, None)
+        usage_stats::usage_summary(&db, None, None, None, true)
             .unwrap()
             .total_tokens,
         227
@@ -762,7 +767,7 @@ fn openclaw_prefers_sqlite_and_deduplicates_file_and_database_archives() {
     run_sync(&db, GatewayUsageTool::OpenClaw, root.path());
     assert_eq!(count(&db), 2);
     assert_eq!(
-        usage_stats::usage_summary(&db, None, None, None)
+        usage_stats::usage_summary(&db, None, None, None, true)
             .unwrap()
             .total_tokens,
         237
@@ -788,7 +793,7 @@ fn usage_source_and_historical_provider_filters_round_trip() {
         provider_name: Some("historical-provider".into()),
         ..Default::default()
     };
-    let logs = usage_stats::request_logs(&db, &filters, 0, 10).unwrap();
+    let logs = usage_stats::request_logs(&db, &filters, 0, 10, true).unwrap();
     assert_eq!(logs.total, 1);
     assert_eq!(logs.data[0].cli_key, GatewayUsageTool::Pi);
     assert_eq!(
@@ -799,7 +804,8 @@ fn usage_source_and_historical_provider_filters_round_trip() {
                 ..Default::default()
             },
             0,
-            10
+            10,
+            true,
         )
         .unwrap()
         .total,
@@ -827,7 +833,7 @@ fn local_native_sources_read_only_smoke() {
     .collect::<Vec<_>>();
     let result = sync_sources(&db, &sources, Utc::now().timestamp()).unwrap();
     assert_eq!(result.failed_files, 0);
-    let before = usage_stats::usage_summary_by_cli(&db, None, None).unwrap();
+    let before = usage_stats::usage_summary_by_cli(&db, None, None, true).unwrap();
     for item in &before {
         println!(
             "{}: calls={} tokens={}",
@@ -839,7 +845,7 @@ fn local_native_sources_read_only_smoke() {
     let repeated = sync_sources(&db, &sources, Utc::now().timestamp()).unwrap();
     assert_eq!(repeated.inserted_records, 0);
     assert_eq!(
-        usage_stats::usage_summary_by_cli(&db, None, None).unwrap(),
+        usage_stats::usage_summary_by_cli(&db, None, None, true).unwrap(),
         before
     );
     println!(
@@ -866,7 +872,7 @@ fn local_database_reconciliation_on_a_snapshot() {
     source.backup(rusqlite::MAIN_DB, &copy, None).unwrap();
     drop(source);
     let db = SqliteDbState::open(copy).unwrap();
-    let before = usage_stats::usage_summary(&db, None, None, None).unwrap();
+    let before = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
     let proxy_count = |db: &SqliteDbState| {
         db.with_conn(|conn| {
         conn.query_row("SELECT COUNT(*) FROM proxy_request_logs WHERE COALESCE(data_source,'proxy')='proxy'",[],|row| row.get::<_,u32>(0)).map_err(|error|error.to_string())
@@ -885,7 +891,7 @@ fn local_database_reconciliation_on_a_snapshot() {
         })
         .collect();
     let reconciled = reconcile_late_proxy_rows(&db, &mut states, &mut claims).unwrap();
-    let after = usage_stats::usage_summary(&db, None, None, None).unwrap();
+    let after = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
     assert_eq!(proxy_count(&db), before_proxies);
     assert_eq!(before.total_requests - after.total_requests, reconciled);
     assert_eq!(
@@ -913,15 +919,17 @@ fn local_dsh_parser_upgrade_on_a_snapshot() {
         .into_iter()
         .map(|root| (GatewayUsageTool::Dsh, root))
         .collect::<Vec<_>>();
-    let before = usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::Dsh)).unwrap();
+    let before =
+        usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::Dsh), true).unwrap();
     let fresh = SqliteDbState::in_memory_for_test().unwrap();
     let now = Utc::now().timestamp();
     assert_eq!(sync_sources(&fresh, &sources, now).unwrap().failed_files, 0);
     let expected =
-        usage_stats::usage_summary(&fresh, None, None, Some(GatewayUsageTool::Dsh)).unwrap();
+        usage_stats::usage_summary(&fresh, None, None, Some(GatewayUsageTool::Dsh), true).unwrap();
     let upgraded = sync_sources(&db, &sources, now).unwrap();
     assert_eq!(upgraded.failed_files, 0);
-    let after = usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::Dsh)).unwrap();
+    let after =
+        usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::Dsh), true).unwrap();
     println!("dsh_snapshot_before_calls={} before_tokens={} after_calls={} after_tokens={} fresh_calls={} fresh_tokens={} inserted={}", before.total_requests, before.total_tokens, after.total_requests, after.total_tokens, expected.total_requests, expected.total_tokens, upgraded.inserted_records);
     assert_eq!(after.total_requests, expected.total_requests);
     assert_eq!(after.total_tokens, expected.total_tokens);
@@ -930,7 +938,7 @@ fn local_dsh_parser_upgrade_on_a_snapshot() {
         0
     );
     assert_eq!(
-        usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::Dsh)).unwrap(),
+        usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::Dsh), true).unwrap(),
         after
     );
 }

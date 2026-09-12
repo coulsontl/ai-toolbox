@@ -103,11 +103,33 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn legacy_settings_without_session_usage_toggle_default_to_enabled() {
+        // A settings record written before `session_usage_enabled` existed must
+        // load with the toggle defaulting to on, and the next save persists it.
+        let loaded = settings_from_value(json!({
+            "listen_host": "127.0.0.1",
+            "listen_port": 37123,
+            "request_log_enabled": true,
+            "metrics_enabled": false,
+            "enabled_cli_keys": ["claude"],
+        }))
+        .unwrap();
+        assert!(loaded.session_usage_enabled);
+
+        let sqlite_state = SqliteDbState::in_memory_for_test().expect("sqlite");
+        let saved = save_settings_to_sqlite_state(&sqlite_state, loaded).unwrap();
+        assert!(saved.session_usage_enabled);
+        let reloaded = load_settings_from_sqlite_state(&sqlite_state).unwrap();
+        assert!(reloaded.session_usage_enabled);
+    }
+
+    #[test]
     fn missing_settings_fields_use_defaults() {
         let settings = settings_from_value(json!({})).unwrap();
         assert_eq!(settings.listen_host, "127.0.0.1");
         assert_eq!(settings.listen_port, 37123);
         assert!(settings.metrics_enabled);
+        assert!(settings.session_usage_enabled);
         assert!(!settings.enabled_on_startup);
         assert_eq!(settings.per_provider_retry_count, 0);
         assert_eq!(settings.max_retry_count, 8);

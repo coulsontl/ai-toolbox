@@ -599,7 +599,8 @@
         "maxCooldown": "Max cooldown sec",
         "probeSuccess": "Probe successes",
         "lossyRejection": "Reject lossy conversions",
-        "responsesEncryptedContentRectifier": "Responses encrypted-content recovery"
+        "responsesEncryptedContentRectifier": "Responses encrypted-content recovery",
+        "sessionUsage": "Local session usage"
       },
       "fieldHelp": {
         "perProviderRetry": "Extra retries allowed on the same channel after it fails; after this limit, failover mode switches to the next channel and single-channel proxy returns an error.",
@@ -623,7 +624,10 @@
         "thinkingBudgetRectifier": "When the target Anthropic upstream returns a budget_tokens-related 4xx, adjust the budget and retry once on the same channel.",
         "cacheInjection": "Inject cache_control markers into target Anthropic requests to reduce repeated context cost.",
         "lossyRejection": "Off by default: detected lossy protocol conversions continue best-effort and add X-Transformer-Lossy to the response headers. When enabled, clearly irreversible conversions return a local 400 and do not affect provider health or failover.",
-        "responsesEncryptedContentRectifier": "For OpenAI Responses targets, when the upstream explicitly reports encrypted_content verification or decryption failure, remove only the invalid encrypted reasoning items and retry once on the same channel."
+        "responsesEncryptedContentRectifier": "For OpenAI Responses targets, when the upstream explicitly reports encrypted_content verification or decryption failure, remove only the invalid encrypted reasoning items and retry once on the same channel.",
+        "sessionUsage": "Include local CLI session usage (requests that bypassed the gateway) in statistics and the request list. When off, new local session data is not collected; existing data is kept and reappears once this is turned back on.",
+        "requestLog": "Save each request's detail file locally (including the Headers, request body and response parts selected below, subject to size limits and retention), used by the request detail view; when off, request details can only show summary fields.",
+        "metrics": "Write per-request token, cost and latency summaries into the local database for the statistics page and request list; summaries are recorded while either this or request logging is on."
       },
       "perCli": {
         "firstByte": "First byte",
