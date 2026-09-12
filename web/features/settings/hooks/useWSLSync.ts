@@ -161,6 +161,9 @@ const loadStatusShared = async (force = false) => {
       const data = await wslGetStatus();
       if (requestId === statusRequestSeq) {
         setGlobalStatus(data);
+        if (globalSyncWarning && data.lastSyncWarnings?.includes(globalSyncWarning)) {
+          setGlobalSyncWarning(null);
+        }
       }
     } catch (error) {
       console.error('Failed to load WSL status:', error);
@@ -206,6 +209,9 @@ const setupWslEventListeners = () => {
   });
 
   listen<SyncProgress>('wsl-sync-progress', (event) => {
+    if (event.payload.phase === 'skills' && event.payload.current === 0) {
+      setGlobalSyncWarning(null);
+    }
     setGlobalSyncProgress(event.payload);
   }).catch((error) => {
     listenersSetup = false;
@@ -284,6 +290,7 @@ export function useWSLSync() {
   const sync = useCallback(async (module?: string) => {
     try {
       setSyncing(true);
+      setGlobalSyncWarning(null);
       setGlobalSyncProgress(null); // Clear previous progress
       // Compute skip modules from visibleTabs
       const { visibleTabs } = useSettingsStore.getState();

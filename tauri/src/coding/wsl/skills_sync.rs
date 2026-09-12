@@ -132,12 +132,19 @@ fn get_all_skill_tool_keys() -> Vec<&'static str> {
 
 /// Sync all skills to WSL (called on skills-changed event)
 pub async fn sync_skills_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<(), String> {
+    let mut warnings = Vec::new();
+    sync_skills_to_wsl_with_warnings(state, app, &mut warnings).await
+}
+
+pub(super) async fn sync_skills_to_wsl_with_warnings(
+    state: &SqliteDbState,
+    app: AppHandle,
+    warnings: &mut Vec<String>,
+) -> Result<(), String> {
     let _sync_guard = SKILLS_WSL_SYNC_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
         .await;
-    let mut warnings: Vec<String> = Vec::new();
-
     let config = get_wsl_config(state).await?;
 
     if !config.enabled || !config.sync_skills {
@@ -219,13 +226,7 @@ pub async fn sync_skills_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result
                             link_path,
                             error
                         );
-                        warn_link_maintenance_failed(
-                            &mut warnings,
-                            &app,
-                            wsl_skill,
-                            tool_key,
-                            &error,
-                        );
+                        warn_link_maintenance_failed(warnings, &app, wsl_skill, tool_key, &error);
                     } else if inspect_wsl_path_kind(&distro, &link_path, WSL_CENTRAL_DIR)
                         == WslPathKind::Foreign
                     {
@@ -234,19 +235,24 @@ pub async fn sync_skills_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result
                             link_path,
                             WSL_CENTRAL_DIR
                         );
-                        warn_foreign_path_kept(
-                            &mut warnings,
-                            &app,
-                            wsl_skill,
-                            tool_key,
-                            &link_path,
-                        );
+                        warn_foreign_path_kept(warnings, &app, wsl_skill, tool_key, &link_path);
                     }
                 }
             }
             // Remove from central repo
             let skill_path = format!("{}/{}", WSL_CENTRAL_DIR, wsl_skill);
-            let _ = remove_wsl_path(&distro, &skill_path);
+            if let Err(error) = remove_wsl_path(&distro, &skill_path) {
+                log::warn!(
+                    "Skills WSL sync: failed to remove orphan directory '{}': {}",
+                    skill_path,
+                    error
+                );
+                record_warning(
+                    warnings,
+                    &app,
+                    format!("技能 '{}' 的远端目录清理失败：{}", wsl_skill, error),
+                );
+            }
         }
     }
 
@@ -280,7 +286,7 @@ pub async fn sync_skills_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result
                 source.display()
             );
             record_warning(
-                &mut warnings,
+                warnings,
                 &app,
                 format!(
                     "技能 '{}' 的源目录不存在，已跳过同步：{}",
@@ -351,7 +357,7 @@ pub async fn sync_skills_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result
                             error
                         );
                         record_warning(
-                            &mut warnings,
+                            warnings,
                             &app,
                             format!("技能 '{}' 的同步哈希写入失败：{}", skill.name, error),
                         );
@@ -369,7 +375,7 @@ pub async fn sync_skills_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result
                         warnings: warnings.clone(),
                     };
                     let _ = super::commands::update_sync_status(state, &sync_result).await;
-                    let _ = super::commands::update_sync_warnings(state, &warnings).await;
+                    let _ = super::commands::update_sync_warnings(state, warnings).await;
                     let _ = app.emit("wsl-sync-completed", &sync_result);
                     return Err(error_message);
                 }
@@ -395,7 +401,7 @@ pub async fn sync_skills_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result
                                 error
                             );
                             warn_link_maintenance_failed(
-                                &mut warnings,
+                                warnings,
                                 &app,
                                 &skill.name,
                                 tool_key,
@@ -416,7 +422,7 @@ pub async fn sync_skills_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result
                                     error
                                 );
                                 warn_link_maintenance_failed(
-                                    &mut warnings,
+                                    warnings,
                                     &app,
                                     &skill.name,
                                     tool_key,
@@ -433,13 +439,7 @@ pub async fn sync_skills_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result
                             skill.name,
                             tool_key
                         );
-                        warn_foreign_path_kept(
-                            &mut warnings,
-                            &app,
-                            &skill.name,
-                            tool_key,
-                            &link_path,
-                        );
+                        warn_foreign_path_kept(warnings, &app, &skill.name, tool_key, &link_path);
                     }
                 }
             } else {
@@ -449,7 +449,7 @@ pub async fn sync_skills_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result
                     tool_key
                 );
                 warn_link_maintenance_failed(
-                    &mut warnings,
+                    warnings,
                     &app,
                     &skill.name,
                     tool_key,
@@ -477,13 +477,7 @@ pub async fn sync_skills_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result
                             link_path,
                             error
                         );
-                        warn_link_maintenance_failed(
-                            &mut warnings,
-                            &app,
-                            &skill.name,
-                            tool_key,
-                            &error,
-                        );
+                        warn_link_maintenance_failed(warnings, &app, &skill.name, tool_key, &error);
                     } else if inspect_wsl_path_kind(&distro, &link_path, WSL_CENTRAL_DIR)
                         == WslPathKind::Foreign
                     {
@@ -493,13 +487,7 @@ pub async fn sync_skills_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result
                             skill.name,
                             tool_key
                         );
-                        warn_foreign_path_kept(
-                            &mut warnings,
-                            &app,
-                            &skill.name,
-                            tool_key,
-                            &link_path,
-                        );
+                        warn_foreign_path_kept(warnings, &app, &skill.name, tool_key, &link_path);
                     }
                 }
             }
@@ -521,7 +509,7 @@ pub async fn sync_skills_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result
         warnings: warnings.clone(),
     };
     let _ = super::commands::update_sync_status(state, &sync_result).await;
-    let _ = super::commands::update_sync_warnings(state, &warnings).await;
+    let _ = super::commands::update_sync_warnings(state, warnings).await;
 
     // Emit event for UI feedback
     let _ = app.emit("wsl-skills-sync-completed", ());

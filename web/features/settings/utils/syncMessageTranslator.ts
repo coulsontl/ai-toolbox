@@ -220,6 +220,41 @@ const withDetail = (
 		detail: translateSyncMessage(detail, mode, t),
 	});
 
+const translateSkillsWarning = (value: string, mode: SyncMode, t: TFunction): string | null => {
+	const patterns: Array<[RegExp, (...args: string[]) => string]> = [
+		[
+			/^技能 '(.+)' 在工具 '(.+)' 的路径 '(.+)' 不是 AI Toolbox 管理的链接，已保留原样$/s,
+			(skill, tool, path) =>
+				t("settings.syncMessages.skillsForeignPathKept", { skill, tool, path }),
+		],
+		[
+			/^技能 '(.+)' 在工具 '(.+)' 的链接维护失败：(.+)$/s,
+			(skill, tool, detail) =>
+				withDetail("settings.syncMessages.skillsLinkMaintenanceFailed", detail, mode, t, { skill, tool }),
+		],
+		[
+			/^技能 '(.+)' 的源目录不存在，已跳过同步：(.+)$/s,
+			(skill, path) =>
+				t("settings.syncMessages.skillsSourceMissingSkipped", { skill, detail: path }),
+		],
+		[
+			/^技能 '(.+)' 的远端目录清理失败：(.+)$/s,
+			(skill, detail) =>
+				withDetail("settings.syncMessages.skillsRemoteDirCleanupFailed", detail, mode, t, { skill }),
+		],
+		[
+			/^技能 '(.+)' 的同步哈希写入失败：(.+)$/s,
+			(skill, detail) =>
+				withDetail("settings.syncMessages.skillsHashWriteFailed", detail, mode, t, { skill }),
+		],
+	];
+	for (const [pattern, formatter] of patterns) {
+		const match = value.match(pattern);
+		if (match) return formatter(...match.slice(1));
+	}
+	return null;
+};
+
 export const translateDefaultMappingName = (value: string, t: TFunction) => {
 	if (!value) {
 		return value;
@@ -248,6 +283,11 @@ export const translateSyncMessage = (
 	}
 
 	const trimmed = value.trim();
+
+	// A Skills warning is one message even when a path contains "; " or a
+	// command's diagnostic spans multiple lines. Parse it before joined errors.
+	const skillsWarning = translateSkillsWarning(trimmed, mode, t);
+	if (skillsWarning !== null) return skillsWarning;
 
 	if (trimmed.includes("; ")) {
 		return translateJoinedParts(trimmed, mode, t);
@@ -490,55 +530,7 @@ export const translateSyncMessage = (
 			/^文件 (.+) 内容疑似二进制或已损坏，请检查文件内容是否正确$/,
 			(path) => t("settings.syncMessages.fileLooksBinary", { path }),
 		],
-		[
-			/^技能 '(.+)' 在工具 '(.+)' 的路径 '(.+)' 不是 AI Toolbox 管理的链接，已保留原样$/,
-			(skill, tool, path) =>
-				t("settings.syncMessages.skillsForeignPathKept", { skill, tool, path }),
-		],
-		[
-			/^技能 '(.+)' 在工具 '(.+)' 的链接维护失败：(.+)$/,
-			(skill, tool, detail) =>
-				withDetail(
-					"settings.syncMessages.skillsLinkMaintenanceFailed",
-					detail,
-					mode,
-					t,
-					{ skill, tool },
-				),
-		],
-		[
-			/^技能 '(.+)' 的源目录不存在，已跳过同步：(.+)$/,
-			(skill, detail) =>
-				withDetail(
-					"settings.syncMessages.skillsSourceMissingSkipped",
-					detail,
-					mode,
-					t,
-					{ skill },
-				),
-		],
-		[
-			/^技能 '(.+)' 的远端目录清理失败：(.+)$/,
-			(skill, detail) =>
-				withDetail(
-					"settings.syncMessages.skillsRemoteDirCleanupFailed",
-					detail,
-					mode,
-					t,
-					{ skill },
-				),
-		],
-		[
-			/^技能 '(.+)' 的同步哈希写入失败：(.+)$/,
-			(skill, detail) =>
-				withDetail(
-					"settings.syncMessages.skillsHashWriteFailed",
-					detail,
-					mode,
-					t,
-					{ skill },
-				),
-		],
+		[/^无法解析 Skills 目标目录$/, () => t("settings.syncMessages.skillsTargetDirectoryUnresolved")],
 		[
 			/^MCP sync: (.+)$/,
 			(detail) =>

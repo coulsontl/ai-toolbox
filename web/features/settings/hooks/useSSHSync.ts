@@ -86,6 +86,7 @@ export function useSSHSync() {
     try {
       const data = await sshGetStatus();
       setStatus(data);
+      setSyncWarning((warning) => warning && data.lastSyncWarnings?.includes(warning) ? null : warning);
     } catch (error) {
       console.error('Failed to load SSH status:', error);
     }
@@ -114,6 +115,7 @@ export function useSSHSync() {
   const sync = useCallback(async (module?: string) => {
     try {
       setSyncing(true);
+      setSyncWarning(null);
       setSyncProgress(null);
       // Compute skip modules from visibleTabs
       const { visibleTabs } = useSettingsStore.getState();
@@ -168,6 +170,9 @@ export function useSSHSync() {
     });
 
     const unlistenProgress = listen<SyncProgress>('ssh-sync-progress', (event) => {
+      if (event.payload.phase === 'skills' && event.payload.current === 0) {
+        setSyncWarning(null);
+      }
       setSyncProgress(event.payload);
     });
 

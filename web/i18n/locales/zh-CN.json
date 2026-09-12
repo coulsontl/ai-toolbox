@@ -844,7 +844,8 @@
       "skillsLinkMaintenanceFailed": "技能 '{{skill}}' 在工具 '{{tool}}' 的链接维护失败：{{detail}}",
       "skillsSourceMissingSkipped": "技能 '{{skill}}' 的源目录不存在，已跳过同步：{{detail}}",
       "skillsRemoteDirCleanupFailed": "技能 '{{skill}}' 的远端目录清理失败：{{detail}}",
-      "skillsHashWriteFailed": "技能 '{{skill}}' 的同步哈希写入失败：{{detail}}"
+      "skillsHashWriteFailed": "技能 '{{skill}}' 的同步哈希写入失败：{{detail}}",
+      "skillsTargetDirectoryUnresolved": "无法解析 Skills 目标目录"
     },
     "autoBackup": {
       "title": "自动备份",
@@ -965,7 +966,7 @@
       "autoSyncHint": "OpenCode、Claude、Codex 的 MCP 和 Skills，以及 OpenClaw 的 Skills 会在同步时自动处理，无需手动添加映射；如果某个模块的自定义配置已经直接指向 WSL，该模块会自动改为“已在 WSL 中”并跳过重复同步。",
       "inWsl": "已在 WSL 中",
       "wslDirectHint": "该模块的自定义配置已经直接指向 WSL 内的目录，AI Toolbox 会按该 WSL 用户目录继续工作，不需要再通过此处同步。",
-      "lastSyncWarnings": "上次同步警告"
+      "lastSyncWarnings": "上次 Skills 同步警告"
     },
     "ssh": {
       "title": "SSH 配置同步设置",
@@ -1045,7 +1046,7 @@
       "indicator": {
         "tooltip": "点击配置 SSH 同步"
       },
-      "lastSyncWarnings": "上次同步警告"
+      "lastSyncWarnings": "上次 Skills 同步警告"
     },
     "webdav": {
       "url": "服务器地址",

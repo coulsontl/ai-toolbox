@@ -125,6 +125,16 @@ pub async fn sync_skills_to_ssh(
     session: &SshSession,
     app: AppHandle,
 ) -> Result<(), String> {
+    let mut warnings = Vec::new();
+    sync_skills_to_ssh_with_warnings(state, session, app, &mut warnings).await
+}
+
+pub(super) async fn sync_skills_to_ssh_with_warnings(
+    state: &SqliteDbState,
+    session: &SshSession,
+    app: AppHandle,
+    warnings: &mut Vec<String>,
+) -> Result<(), String> {
     let db = state.db();
     let config = get_ssh_config_internal(&db, false).await?;
     let _ = db;
@@ -176,7 +186,6 @@ pub async fn sync_skills_to_ssh(
 
     // 2. Collect local skill names
     let local_skill_names: HashSet<String> = skills.iter().map(|s| s.name.clone()).collect();
-    let mut warnings: Vec<String> = Vec::new();
 
     // 3. Delete skills in remote that no longer exist locally.
     // Only app-managed symlinks into the central repo are removed; real
@@ -203,7 +212,7 @@ pub async fn sync_skills_to_ssh(
                             error
                         );
                         warn_link_maintenance_failed(
-                            &mut warnings,
+                            warnings,
                             &app,
                             remote_skill,
                             tool_key,
@@ -218,13 +227,7 @@ pub async fn sync_skills_to_ssh(
                             remote_skill,
                             link_path
                         );
-                        warn_foreign_path_kept(
-                            &mut warnings,
-                            &app,
-                            remote_skill,
-                            tool_key,
-                            &link_path,
-                        );
+                        warn_foreign_path_kept(warnings, &app, remote_skill, tool_key, &link_path);
                     }
                 }
             }
@@ -237,12 +240,9 @@ pub async fn sync_skills_to_ssh(
                     error
                 );
                 record_warning(
-                    &mut warnings,
+                    warnings,
                     &app,
-                    format!(
-                        "技能 '{}' 的远端目录清理失败：{}",
-                        remote_skill, error
-                    ),
+                    format!("技能 '{}' 的远端目录清理失败：{}", remote_skill, error),
                 );
             }
         }
@@ -278,7 +278,7 @@ pub async fn sync_skills_to_ssh(
                 source.display()
             );
             record_warning(
-                &mut warnings,
+                warnings,
                 &app,
                 format!(
                     "技能 '{}' 的源目录不存在，已跳过同步：{}",
@@ -382,6 +382,11 @@ pub async fn sync_skills_to_ssh(
                             skill.name,
                             e
                         );
+                        record_warning(
+                            warnings,
+                            &app,
+                            format!("技能 '{}' 的同步哈希写入失败：{}", skill.name, e),
+                        );
                     }
                     synced_count += 1;
                 }
@@ -421,7 +426,7 @@ pub async fn sync_skills_to_ssh(
                                 error
                             );
                             warn_link_maintenance_failed(
-                                &mut warnings,
+                                warnings,
                                 &app,
                                 &skill.name,
                                 tool_key,
@@ -443,7 +448,7 @@ pub async fn sync_skills_to_ssh(
                                     error
                                 );
                                 warn_link_maintenance_failed(
-                                    &mut warnings,
+                                    warnings,
                                     &app,
                                     &skill.name,
                                     tool_key,
@@ -459,15 +464,17 @@ pub async fn sync_skills_to_ssh(
                             skill.name,
                             link_path
                         );
-                        warn_foreign_path_kept(
-                            &mut warnings,
-                            &app,
-                            &skill.name,
-                            tool_key,
-                            &link_path,
-                        );
+                        warn_foreign_path_kept(warnings, &app, &skill.name, tool_key, &link_path);
                     }
                 }
+            } else {
+                warn_link_maintenance_failed(
+                    warnings,
+                    &app,
+                    &skill.name,
+                    tool_key,
+                    "无法解析 Skills 目标目录",
+                );
             }
         }
 
@@ -495,13 +502,7 @@ pub async fn sync_skills_to_ssh(
                             link_path,
                             error
                         );
-                        warn_link_maintenance_failed(
-                            &mut warnings,
-                            &app,
-                            &skill.name,
-                            tool_key,
-                            &error,
-                        );
+                        warn_link_maintenance_failed(warnings, &app, &skill.name, tool_key, &error);
                     } else if inspect_remote_path_kind(session, &link_path, SSH_CENTRAL_DIR).await
                         == RemotePathKind::Foreign
                     {
@@ -511,13 +512,7 @@ pub async fn sync_skills_to_ssh(
                             skill.name,
                             link_path
                         );
-                        warn_foreign_path_kept(
-                            &mut warnings,
-                            &app,
-                            &skill.name,
-                            tool_key,
-                            &link_path,
-                        );
+                        warn_foreign_path_kept(warnings, &app, &skill.name, tool_key, &link_path);
                     }
                 }
             }
@@ -531,7 +526,7 @@ pub async fn sync_skills_to_ssh(
         all_errors.len()
     );
 
-    let _ = super::commands::update_sync_warnings(state, &warnings).await;
+    let _ = super::commands::update_sync_warnings(state, warnings).await;
 
     if !all_errors.is_empty() {
         return Err(all_errors.join("; "));

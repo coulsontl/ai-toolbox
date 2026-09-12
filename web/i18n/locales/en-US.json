@@ -844,7 +844,8 @@
       "skillsLinkMaintenanceFailed": "Failed to maintain the link of skill '{{skill}}' on tool '{{tool}}': {{detail}}",
       "skillsSourceMissingSkipped": "Source directory of skill '{{skill}}' does not exist; sync skipped: {{detail}}",
       "skillsRemoteDirCleanupFailed": "Failed to clean up the remote directory of skill '{{skill}}': {{detail}}",
-      "skillsHashWriteFailed": "Failed to write the sync hash of skill '{{skill}}': {{detail}}"
+      "skillsHashWriteFailed": "Failed to write the sync hash of skill '{{skill}}': {{detail}}",
+      "skillsTargetDirectoryUnresolved": "Unable to resolve the Skills target directory"
     },
     "autoBackup": {
       "title": "Auto Backup",
@@ -965,7 +966,7 @@
       "autoSyncHint": "MCP servers and Skills for OpenCode, Claude, and Codex, and Skills for OpenClaw are automatically synced — no manual mapping needed. If a module already points directly to a WSL config directory, it is treated as already running inside WSL and duplicate sync is skipped.",
       "inWsl": "In WSL",
       "wslDirectHint": "This module already points at a config directory inside WSL. AI Toolbox will continue using that WSL user directory directly, so another sync from this dialog is unnecessary.",
-      "lastSyncWarnings": "Last sync warnings"
+      "lastSyncWarnings": "Last Skills sync warnings"
     },
     "ssh": {
       "title": "SSH Config Sync Settings",
@@ -1045,7 +1046,7 @@
       "indicator": {
         "tooltip": "Click to configure SSH sync"
       },
-      "lastSyncWarnings": "Last sync warnings"
+      "lastSyncWarnings": "Last Skills sync warnings"
     },
     "webdav": {
       "url": "Server URL",

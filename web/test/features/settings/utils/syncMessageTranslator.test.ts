@@ -83,3 +83,48 @@ test('unrecognized sync messages pass through unchanged', () => {
   const raw = 'Skills WSL sync: some internal english log line';
   assert.equal(translateSyncMessage(raw, 'wsl', stubT), raw);
 });
+
+test('skills warnings preserve quotes and semicolons inside skill names and paths', () => {
+  const skill = "reviewer's skill; notes";
+  const path = `/home/test/.claude/skills/${skill}`;
+  for (const mode of ['wsl', 'ssh'] as const) {
+    assert.equal(
+      translateSyncMessage(
+        `技能 '${skill}' 在工具 'Claude Code' 的路径 '${path}' 不是 AI Toolbox 管理的链接，已保留原样`,
+        mode,
+        stubT,
+      ),
+      'settings.syncMessages.skillsForeignPathKept?' +
+        JSON.stringify({ skill, tool: 'Claude Code', path }),
+    );
+  }
+});
+
+test('skills warning translations retain multiline command diagnostics', () => {
+  const detail = "Permission denied\nUnable to update target; retry later";
+  const cases = [
+    {
+      message: `技能 'demo' 在工具 'Claude Code' 的链接维护失败：${detail}`,
+      key: 'skillsLinkMaintenanceFailed',
+      vars: { skill: 'demo', tool: 'Claude Code', detail },
+    },
+    {
+      message: `技能 'demo' 的远端目录清理失败：${detail}`,
+      key: 'skillsRemoteDirCleanupFailed',
+      vars: { skill: 'demo', detail },
+    },
+    {
+      message: `技能 'demo' 的同步哈希写入失败：${detail}`,
+      key: 'skillsHashWriteFailed',
+      vars: { skill: 'demo', detail },
+    },
+  ];
+  for (const mode of ['wsl', 'ssh'] as const) {
+    for (const { message, key, vars } of cases) {
+      assert.equal(
+        translateSyncMessage(message, mode, stubT),
+        `settings.syncMessages.${key}?${JSON.stringify(vars)}`,
+      );
+    }
+  }
+});
