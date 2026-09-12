@@ -27,7 +27,7 @@ use crate::db::helpers::{
 };
 use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
 /// Serializes all read-modify-write passes over the live config.toml. Each
 /// pass builds the next document from its own read snapshot; two concurrent
@@ -42,11 +42,9 @@ use tauri::{Emitter, Manager};
 /// this lock.
 static CONFIG_WRITE_LOCK: LazyLock<AsyncMutex<()>> = LazyLock::new(|| AsyncMutex::new(()));
 
-pub(super) fn kimi_gateway_takeover_active<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
-    app.path()
-        .app_data_dir()
-        .map(|data_dir| ensure_gateway_direct_for_paths(&ProxyGatewayPaths::new(data_dir)).is_err())
-        .unwrap_or(false)
+pub(super) fn kimi_gateway_takeover_active<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> bool {
+    let paths = ProxyGatewayPaths::new(crate::app_paths::resolved_data_dir());
+    ensure_gateway_direct_for_paths(&paths).is_err()
 }
 
 /// Gate shared by every Kimi command that would rewrite `<root>/config.toml`:

@@ -47,6 +47,8 @@ sequenceDiagram
 
 ## 易错点与历史坑（Gotchas）
 
+- 自定义应用数据目录时，资产文件与 `convertFileSrc` 访问白名单必须一起切换；`lib.rs` 在建窗前通过 `app_paths::configure_image_asset_scope` 只授权当前根下的 `image-studio/assets`。静态 `$APPDATA` scope 不会随应用自定义 resolver 变化，不能重新依赖它或把整个数据根（含数据库/bootstrap）都开放。
+
 - 不要再把图片接口配置保存成单个 `image_settings` 记录；当前真实配置源已经是 `image_channel` 表。
 - SQLite helper 返回的图片记录 `id` 已经是干净业务 id；DTO 输出、更新查询、删除和排序都应继续使用这个 id，不要重新拼接旧 record-id 形式。
 - `image_asset` 批量读取必须能容忍缺失资产记录。历史任务可能引用已被手动删除或恢复缺失的文件/记录，缺失项不能让本来已经成功的图片任务 DTO 回填整体失败。

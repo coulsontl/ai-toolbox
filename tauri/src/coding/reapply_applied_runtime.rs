@@ -286,12 +286,9 @@ async fn probe_runtime_path(path: PathBuf) -> Result<(), String> {
     }
 }
 
-fn gateway_locked<R: Runtime>(app: &AppHandle<R>, cli_key: GatewayCliKey) -> bool {
-    app.path()
-        .app_data_dir()
-        .map(ProxyGatewayPaths::new)
-        .map(|paths| cli_proxy::provider_switch_locked_by_manifest(&paths, cli_key))
-        .unwrap_or(false)
+fn gateway_locked<R: Runtime>(_app: &AppHandle<R>, cli_key: GatewayCliKey) -> bool {
+    let paths = ProxyGatewayPaths::new(crate::app_paths::resolved_data_dir());
+    cli_proxy::provider_switch_locked_by_manifest(&paths, cli_key)
 }
 
 fn record_id(record: &serde_json::Value) -> Option<String> {

@@ -21,12 +21,8 @@ const SQLITE_BACKUP_ZIP_PATH: &str = "sqlite/ai-toolbox.db";
 const DB_MANIFEST_ZIP_PATH: &str = "db_manifest.json";
 
 /// Get database directory path
-pub fn get_db_path(app_handle: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    use tauri::Manager;
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+pub fn get_db_path(_app_handle: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let app_data_dir = crate::app_paths::resolved_data_dir();
     Ok(app_data_dir.join("database"))
 }
 
@@ -1485,22 +1481,38 @@ pub fn clear_restored_cli_custom_roots(db: &crate::db::SqliteDbState) -> Result<
 }
 
 pub fn write_post_restore_flags(
-    app_handle: &tauri::AppHandle,
+    _app_handle: &tauri::AppHandle,
     need_reapply: bool,
     restored_wsl_modules: &[String],
 ) -> Result<(), String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = crate::app_paths::resolved_data_dir();
+    write_post_restore_flags_in(&app_data_dir, need_reapply, restored_wsl_modules)
+}
+
+fn write_post_restore_flags_in(
+    app_data_dir: &Path,
+    need_reapply: bool,
+    restored_wsl_modules: &[String],
+) -> Result<(), String> {
     let resync_flag = app_data_dir.join(RESYNC_REQUIRED_FLAG_FILENAME);
-    let _ = std::fs::write(
+    std::fs::write(
         &resync_flag,
         build_post_restore_resync_flag(restored_wsl_modules),
-    );
+    )
+    .map_err(|error| {
+        format!(
+            "Failed to write restore sync flag {}: {error}",
+            resync_flag.display()
+        )
+    })?;
     if need_reapply {
         let reapply_flag = app_data_dir.join(REAPPLY_APPLIED_FLAG_FILENAME);
-        let _ = std::fs::write(&reapply_flag, "1");
+        std::fs::write(&reapply_flag, "1").map_err(|error| {
+            format!(
+                "Failed to write restore reapply flag {}: {error}",
+                reapply_flag.display()
+            )
+        })?;
     }
     Ok(())
 }
@@ -1774,12 +1786,8 @@ pub fn get_skills_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> 
         .map_err(|error| format!("Failed to get skills directory: {error:#}"))
 }
 
-pub fn get_image_assets_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
-    use tauri::Manager;
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+pub fn get_image_assets_dir(_app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = crate::app_paths::resolved_data_dir();
     Ok(app_data_dir.join("image-studio").join("assets"))
 }
 
@@ -3490,6 +3498,33 @@ pub async fn create_backup_zip(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn restore_flags_are_readable_from_the_selected_data_root_and_failures_are_reported() {
+        let temporary = tempfile::tempdir().unwrap();
+        let selected_root = temporary.path().join("custom-data");
+        std::fs::create_dir_all(&selected_root).unwrap();
+        super::write_post_restore_flags_in(
+            &selected_root,
+            true,
+            &["codex".into(), "hermes".into()],
+        )
+        .unwrap();
+        let resync = selected_root.join(super::RESYNC_REQUIRED_FLAG_FILENAME);
+        assert_eq!(
+            super::read_post_restore_resync_wsl_modules(&resync),
+            vec!["codex", "hermes"]
+        );
+        let reapply = crate::coding::reapply_applied_runtime::reapply_flag_path(&selected_root);
+        assert_eq!(std::fs::read_to_string(reapply).unwrap(), "1");
+        assert!(!temporary
+            .path()
+            .join(super::RESYNC_REQUIRED_FLAG_FILENAME)
+            .exists());
+        assert!(
+            super::write_post_restore_flags_in(&selected_root.join("missing"), true, &[]).is_err()
+        );
+    }
+
     use super::{
         add_custom_backup_entries_to_zip, add_directory_to_zip_once,
         add_external_config_directory_contents_to_zip, add_external_config_file_to_zip,

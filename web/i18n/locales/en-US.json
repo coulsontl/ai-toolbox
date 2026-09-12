@@ -1135,6 +1135,25 @@
       "viewReleaseNotes": "View Release Notes",
       "autoCheckUpdate": "Auto check for updates",
       "scoopUpdateHint": "New version {{version}} found. This app is installed via Scoop; run `scoop update ai-toolbox` to upgrade."
+    },
+    "dataDir": {
+      "title": "Data Directory",
+      "current": "Current path",
+      "custom": "Custom",
+      "defaultTag": "Default",
+      "change": "Change directory",
+      "reset": "Reset to default",
+      "hint": "Takes effect after a restart; existing data is not moved automatically. Restore gateway-managed tools to direct mode, back up, change the directory, restart, then restore. Only contents included in the backup are restored; separately configured Skills and external tool directories keep their own settings.",
+      "restartPrompt": "The data directory has been updated. A restart is required to apply it. Restart now?",
+      "selectFolder": "Select data directory",
+      "resetPrompt": "Reset to the default data directory. A restart is required to apply it. Restart now?",
+      "loadFailed": "Failed to load data directory info",
+      "nextStart": "Next start",
+      "pending": "Restart required",
+      "restartLater": "Restart later",
+      "saveFailed": "Could not save the data directory: {{error}}",
+      "restartFailed": "Directory settings are saved, but restart failed: {{error}}. Please quit and reopen the app.",
+      "cancelChange": "Cancel directory change"
     }
   },
   "theme": {

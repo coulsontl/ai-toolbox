@@ -39,7 +39,7 @@ use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, Orde
 use crate::db::SqliteDbState;
 use crate::http_client;
 use chrono::Local;
-use tauri::{Emitter, Manager, Runtime};
+use tauri::{Emitter, Runtime};
 
 const PROTECTED_TOP_LEVEL_TOML_KEYS: [&str; 2] = ["mcp_servers", "plugins"];
 const PROTECTED_FEATURE_TOML_KEYS: [&str; 1] = ["plugins"];
@@ -763,12 +763,9 @@ fn emit_codex_runtime_config_changed<R: Runtime>(app: &tauri::AppHandle<R>) {
     let _ = app.emit("wsl-sync-request-codex", ());
 }
 
-fn codex_gateway_takeover_active<R: Runtime>(app: &tauri::AppHandle<R>) -> bool {
-    app.path()
-        .app_data_dir()
-        .map(ProxyGatewayPaths::new)
-        .map(|paths| cli_proxy::provider_switch_locked_by_manifest(&paths, GatewayCliKey::Codex))
-        .unwrap_or(false)
+fn codex_gateway_takeover_active<R: Runtime>(_app: &tauri::AppHandle<R>) -> bool {
+    let paths = ProxyGatewayPaths::new(crate::app_paths::resolved_data_dir());
+    cli_proxy::provider_switch_locked_by_manifest(&paths, GatewayCliKey::Codex)
 }
 
 fn ensure_codex_provider_native_for_direct(

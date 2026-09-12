@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
 // Module declarations
+pub mod app_paths;
 pub mod auto_launch;
 pub mod coding;
 pub mod db;
@@ -59,6 +60,13 @@ pub(crate) fn build_main_window<R: tauri::Runtime>(
         // Monaco's Ctrl+V paste silently fails on Linux/Windows (issue #341). macOS
         // always allows clipboard access.
         .enable_clipboard_access();
+
+    // Keep the native WebView profile with custom app data too. Leaving this
+    // unset without an override preserves Tauri's original platform defaults.
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    if app_paths::get_override_info().is_custom {
+        builder = builder.data_directory(app_paths::resolved_data_dir().join("webview"));
+    }
 
     builder = match geometry {
         Some(g) => builder.position(g.x, g.y).maximized(g.maximized),
@@ -177,14 +185,7 @@ fn init_logging() -> Option<std::path::PathBuf> {
     }
 
     // 正式版本：日志写入文件
-    let log_dir = dirs::data_dir()
-        .map(|p| p.join("com.ai-toolbox").join("logs"))
-        .or_else(|| dirs::home_dir().map(|p| p.join(".ai-toolbox").join("logs")));
-
-    let log_dir = match log_dir {
-        Some(dir) => dir,
-        None => return None,
-    };
+    let log_dir = app_paths::resolved_data_dir().join("logs");
 
     if let Err(e) = fs::create_dir_all(&log_dir) {
         eprintln!("无法创建日志目录: {}", e);
@@ -259,9 +260,7 @@ fn setup_panic_hook() {
         error!("PANIC 发生: {} at {}", msg, location);
 
         // 尝试将错误写入单独的崩溃日志文件
-        if let Some(log_dir) = dirs::data_dir()
-            .map(|p| p.join("com.ai-toolbox").join("logs"))
-            .or_else(|| dirs::home_dir().map(|p| p.join(".ai-toolbox").join("logs")))
+        let log_dir = app_paths::resolved_data_dir().join("logs");
         {
             let crash_file = log_dir.join("CRASH.log");
             let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
@@ -469,9 +468,7 @@ const WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL: u8 = 4;
 
 #[cfg(target_os = "linux")]
 fn wayland_webview_workaround_level_path() -> Option<std::path::PathBuf> {
-    let base_dir = dirs::data_dir()
-        .map(|p| p.join("com.ai-toolbox"))
-        .or_else(|| dirs::home_dir().map(|p| p.join(".ai-toolbox")))?;
+    let base_dir = app_paths::resolved_data_dir();
     Some(
         base_dir
             .join("runtime")
@@ -880,6 +877,13 @@ fn setup_linux_wayland_webview_workaround() -> u8 {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Resolve the app data directory *before* anything else: logging, panic
+    // dumps and the Wayland workaround-level file all derive from it, and the
+    // main SQLite DB is opened from it later in setup(). Reading the bootstrap
+    // override here means a custom data path takes effect for the whole
+    // session, including diagnostics files.
+    app_paths::init_resolved_data_dir();
+
     // 初始化日志系统
     let log_file = init_logging();
     if let Some(ref path) = log_file {
@@ -993,21 +997,14 @@ pub fn run() {
             }
 
             // Create main window with platform-specific configuration
+            app_paths::configure_image_asset_scope(&app_handle, &app_paths::resolved_data_dir())?;
             info!("正在创建主窗口...");
             let _window = build_main_window(&app_handle, None).expect("Failed to create main window");
 
             // Create app data directory
             info!("正在获取应用数据目录...");
-            let app_data_dir = match app_handle.path().app_data_dir() {
-                Ok(dir) => {
-                    info!("应用数据目录: {:?}", dir);
-                    dir
-                }
-                Err(e) => {
-                    error!("无法获取应用数据目录: {}", e);
-                    panic!("Failed to get app data dir: {}", e);
-                }
-            };
+            let app_data_dir = app_paths::resolved_data_dir();
+            info!("应用数据目录: {:?}", app_data_dir);
 
             if !app_data_dir.exists() {
                 info!("创建应用数据目录...");
@@ -1600,7 +1597,8 @@ pub fn run() {
                     // A restore-specific recovery task starts one second later and owns the
                     // ordering of local re-apply -> Skills -> MCP -> WSL. Do not race it with the
                     // normal startup full sync while either restore flag is still present.
-                    if let Ok(app_data_dir) = app_clone.path().app_data_dir() {
+                    {
+                        let app_data_dir = app_paths::resolved_data_dir();
                         let resync_flag = app_data_dir
                             .join(settings::backup::utils::RESYNC_REQUIRED_FLAG_FILENAME);
                         let reapply_flag =
@@ -1725,10 +1723,7 @@ pub fn run() {
                     // Delay to ensure database is fully initialized
                     tokio::time::sleep(Duration::from_secs(3)).await;
 
-                    let app_data_dir = match app_clone.path().app_data_dir() {
-                        Ok(dir) => dir,
-                        Err(_) => return,
-                    };
+                    let app_data_dir = app_paths::resolved_data_dir();
                     let resync_flag =
                         app_data_dir.join(settings::backup::utils::RESYNC_REQUIRED_FLAG_FILENAME);
                     let reapply_flag =
@@ -2020,6 +2015,9 @@ pub fn run() {
             settings::backup::restore_database,
             settings::backup::get_database_path,
             settings::backup::open_app_data_dir,
+            // Custom data directory (issue #345)
+            app_paths::get_app_data_dir_info,
+            app_paths::set_app_data_dir_override,
             // Backup - WebDAV
             settings::backup::backup_to_webdav,
             settings::backup::list_webdav_backups,

@@ -28,14 +28,11 @@ use crate::db::helpers::{
 };
 use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
-fn claude_gateway_takeover_active<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
-    app.path()
-        .app_data_dir()
-        .map(ProxyGatewayPaths::new)
-        .map(|paths| cli_proxy::provider_switch_locked_by_manifest(&paths, GatewayCliKey::Claude))
-        .unwrap_or(false)
+fn claude_gateway_takeover_active<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> bool {
+    let paths = ProxyGatewayPaths::new(crate::app_paths::resolved_data_dir());
+    cli_proxy::provider_switch_locked_by_manifest(&paths, GatewayCliKey::Claude)
 }
 
 fn ensure_claude_gateway_direct<R: tauri::Runtime>(

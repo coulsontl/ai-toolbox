@@ -45,6 +45,8 @@ sequenceDiagram
 
 ## 易错点与历史坑（Gotchas）
 
+- 数据目录覆盖从固定默认位置的 `app_paths.json` 启动引导；备份包不包含/恢复该文件。DB、图片资产、默认 Skills 路径及恢复 flags 都使用本次运行已冻结的数据根目录，保存下次启动目录后仍写当前目录。本地/WebDAV 恢复标记写失败必须上报，不能成功返回却不触发后续同步。独立自定义 Skills 仓库仍由 `skill_settings` 决定，不因应用目录变化被重置。
+
 - 不要把备份理解成“只有数据库”。`external-configs/` 下的 OpenCode/Claude/Codex/OpenClaw 配置、prompt、auth 等同样关键。
 - 不要把 SSH/WSL 映射当作自定义备份项来源。SSH/WSL 是同步规则；自定义备份项是备份恢复规则，两者状态语义不同。
 - 关闭 `backup_image_assets_enabled` 只跳过图片资产文件，不会跳过数据库里的 `image_job` / `image_asset` 元数据；恢复后历史记录可能存在但图片文件不可读，这是用户显式选择的体积取舍。

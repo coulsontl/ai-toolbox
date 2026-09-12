@@ -26,7 +26,7 @@ use chrono::Utc;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
 pub async fn proxy_gateway_start_if_enabled_on_startup(
     db_state: &SqliteDbState,
@@ -290,6 +290,8 @@ pub async fn proxy_gateway_engage_single(
     cli_key: GatewayCliKey,
     provider_id: String,
 ) -> Result<GatewayCliTakeoverStatus, String> {
+    let _data_dir_transition = crate::app_paths::DATA_DIR_CHANGE_LOCK.lock().await;
+    crate::app_paths::ensure_no_pending_data_dir_change()?;
     let status = {
         let manager = gateway_state
             .manager
@@ -312,6 +314,8 @@ pub async fn proxy_gateway_engage_failover(
     app: tauri::AppHandle,
     cli_key: GatewayCliKey,
 ) -> Result<GatewayCliTakeoverStatus, String> {
+    let _data_dir_transition = crate::app_paths::DATA_DIR_CHANGE_LOCK.lock().await;
+    crate::app_paths::ensure_no_pending_data_dir_change()?;
     let status = {
         let manager = gateway_state
             .manager
@@ -1145,10 +1149,8 @@ pub async fn proxy_gateway_test_provider_model_connectivity(
 }
 
 fn proxy_gateway_paths(app: &tauri::AppHandle) -> Result<ProxyGatewayPaths, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("Failed to resolve app data directory: {error}"))?;
+    let app_data_dir = crate::app_paths::resolved_data_dir();
+    let _ = app; // data dir is resolved from the bootstrap override cache
     Ok(ProxyGatewayPaths::new(app_data_dir))
 }
 

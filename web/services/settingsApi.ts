@@ -357,6 +357,35 @@ export const restartApp = async (): Promise<void> => {
   await invoke('restart_app');
 };
 
+/** Custom data-directory configuration (issue #345). */
+export interface AppDataDirInfo {
+  /** The override path stored in the bootstrap file, if any (null = default). */
+  override: string | null;
+  /** The directory actually in effect for the current running session. */
+  effective: string;
+  /** The platform-default directory (no override). */
+  default: string;
+  /** These describe the running session and the separately saved next start. */
+  is_custom: boolean;
+  next_start: string;
+  restart_required: boolean;
+}
+
+/**
+ * Read the current data-directory configuration for the settings UI.
+ */
+export const getAppDataDirInfo = async (): Promise<AppDataDirInfo> => {
+  return invoke<AppDataDirInfo>('get_app_data_dir_info');
+};
+
+/**
+ * Set or clear the custom data directory. Requires a restart to take effect.
+ * Pass null/empty to revert to the platform default.
+ */
+export const setAppDataDirOverride = async (path: string | null): Promise<AppDataDirInfo> => {
+  return invoke<AppDataDirInfo>('set_app_data_dir_override', { path });
+};
+
 /**
  * Test proxy connection
  */

@@ -85,6 +85,8 @@ sequenceDiagram
 
 ## 易错点与历史坑（Gotchas）
 
+- 应用数据目录切换会让新进程读不到旧目录的接管 manifest/原始备份，因此 `app_paths` 保存前必须通过 `ensure_data_dir_can_change` 确认所有可接管 CLI 已恢复直连；损坏或不可读 manifest 同样拒绝。保存与 `engage_single` / `engage_failover` 命令及整个 `provider_switch` 编排共用 `DATA_DIR_CHANGE_LOCK`，不能只锁最终 engage，否则中间 restore/apply 阶段可能被切目录打断。待重启目录变更存在时，在任何运行时配置写入前拒绝新的接管；显式恢复直连继续可用。
+
 - 不要用 `enabled_cli_keys` 表示“当前已接管”。它只是旧设置兼容字段；实际接管状态看 manifest。
 - 不要把 UI 的停止前检查当成安全边界。全局停止保护必须在 `proxy_gateway_stop` 后端命令里执行。
 - 接管状态必须先读取 enabled manifest，再处理 provider 候选加载错误。只要 manifest 表示 CLI 已被接管，即使 provider 表损坏、API key 缺失或 settings_config 解析失败，也必须保留恢复直连入口并阻止停止网关。

@@ -25,7 +25,7 @@ use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use chrono::Local;
 use std::path::Path;
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
 // ============================================================================
 // WSL Detection Commands
@@ -462,7 +462,7 @@ struct GatewayWslRewriteContext {
 
 fn build_gateway_wsl_rewrite_context(
     db: &SqliteDbState,
-    app: &tauri::AppHandle,
+    _app: &tauri::AppHandle,
 ) -> Option<GatewayWslRewriteContext> {
     let settings = match proxy_gateway_settings::load_settings_from_sqlite_state(db) {
         Ok(settings) => settings,
@@ -475,13 +475,7 @@ fn build_gateway_wsl_rewrite_context(
         return None;
     }
 
-    let app_data_dir = match app.path().app_data_dir() {
-        Ok(path) => path,
-        Err(error) => {
-            log::warn!("Gateway WSL endpoint rewrite skipped: {}", error);
-            return None;
-        }
-    };
+    let app_data_dir = crate::app_paths::resolved_data_dir();
 
     Some(GatewayWslRewriteContext {
         paths: ProxyGatewayPaths::new(app_data_dir),

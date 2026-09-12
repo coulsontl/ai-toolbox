@@ -970,10 +970,8 @@ pub fn get_database_path(app_handle: tauri::AppHandle) -> Result<String, String>
 /// Open the app data directory in the file explorer
 #[tauri::command]
 pub fn open_app_data_dir(app_handle: tauri::AppHandle) -> Result<(), String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let _ = app_handle;
+    let app_data_dir = crate::app_paths::resolved_data_dir();
 
     // Ensure directory exists
     if !app_data_dir.exists() {

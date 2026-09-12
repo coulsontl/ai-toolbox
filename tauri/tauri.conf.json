@@ -15,9 +15,7 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": [
-          "$APPDATA/image-studio/assets/**"
-        ]
+        "scope": []
       }
     }
   },

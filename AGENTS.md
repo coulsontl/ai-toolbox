@@ -651,6 +651,14 @@ features/
 
 ## Data Storage Architecture
 
+### Application Data Directory Bootstrap
+
+- 应用自身的数据根目录统一经 `app_paths::resolved_data_dir()` 读取；瞬时缓存统一经 `resolved_cache_dir()`。两者在进程首次访问时一起冻结，设置页保存只改变下次启动目录，禁止单独重读 bootstrap 让某个缓存提前切换。
+- `app_paths.json` 是启动主库前所需的唯一目录覆盖配置，固定留在平台默认应用数据目录，不放 SQLite、不随覆盖目录移动、也不由数据库备份恢复覆盖。保存必须先验证目标目录可创建/可写，再同目录原子替换 bootstrap；失败保留旧设置。选中默认目录等同清除覆盖。
+- 自定义目录不能只替换 Rust 的 `app_data_dir()` 调用：同时检查 Tauri asset protocol scope、WebView profile、恢复标记的读写、网关 manifest 和缓存路径。默认 data/cache 路径必须与当前 Tauri resolver 保持一致，用 MockRuntime 回归验证；不改变外部 CLI 的目录解析规则。
+- 更改应用数据目录前必须先恢复所有 Gateway CLI 直连；接管 manifest 与原始备份不自动迁移。目录保存和完整的 Gateway 接管/切换编排共用互斥，待重启期间禁止新增接管，避免丢失原始恢复依据。
+- “备份 → 切目录 → 重启 → 恢复”只迁移备份包实际覆盖的数据，不是整个目录的镜像迁移；独立自定义的 Skills 中央仓库和外部工具目录仍遵循各自设置。
+
 **IMPORTANT**: All data storage and retrieval must go through the service layer API and interact directly with the backend SQLite JSONB database. SurrealDB is only a legacy import source during startup migration.
 
 ### DO NOT use localStorage

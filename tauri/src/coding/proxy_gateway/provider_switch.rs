@@ -14,6 +14,8 @@ pub async fn apply_or_switch_provider<R: Runtime>(
     provider_id: &str,
     from_tray: bool,
 ) -> Result<GatewayCliTakeoverStatus, String> {
+    // Keep restore -> apply -> re-engage atomic with respect to a data-root switch.
+    let _data_dir_transition = crate::app_paths::DATA_DIR_CHANGE_LOCK.lock().await;
     let gateway_state = app.state::<ProxyGatewayState>();
     let _switch_guard = gateway_state.provider_switch_lock.lock().await;
     let db_state = app.state::<SqliteDbState>();
@@ -29,6 +31,7 @@ pub async fn apply_or_switch_provider<R: Runtime>(
             }));
         }
         if provider_needs_gateway_proxy_for_switch(db, cli_key, provider_id)? {
+            crate::app_paths::ensure_no_pending_data_dir_change()?;
             if !gateway_status.running {
                 return Err(
                     "Start the proxy gateway before applying a non-native protocol provider"
@@ -83,6 +86,7 @@ pub async fn apply_or_switch_provider<R: Runtime>(
         }));
     }
 
+    crate::app_paths::ensure_no_pending_data_dir_change()?;
     cli_proxy::ensure_proxyable_provider(db, cli_key, provider_id).await?;
     cli_proxy::restore_cli_direct(db, &paths, cli_key, &gateway_status).await?;
     let event_plan = gateway_takeover_switch_event_plan(from_tray);
@@ -352,10 +356,8 @@ fn current_gateway_status(gateway_state: &ProxyGatewayState) -> Result<ProxyGate
 }
 
 fn proxy_gateway_paths<R: Runtime>(app: &AppHandle<R>) -> Result<ProxyGatewayPaths, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("Failed to resolve app data directory: {error}"))?;
+    let app_data_dir = crate::app_paths::resolved_data_dir();
+    let _ = app; // data dir is resolved from the bootstrap override cache
     Ok(ProxyGatewayPaths::new(app_data_dir))
 }
 

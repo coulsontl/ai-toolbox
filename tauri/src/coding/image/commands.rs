@@ -11,7 +11,7 @@ use log::{debug, error, warn};
 use reqwest::multipart::{Form, Part};
 use serde::Serialize;
 use serde_json::json;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 use super::store;
 use super::types::{
@@ -294,10 +294,8 @@ fn generated_image_result(bytes: Vec<u8>, mime_type: String) -> GeneratedImageRe
 }
 
 fn image_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let _ = app;
+    let app_data_dir = crate::app_paths::resolved_data_dir();
     Ok(app_data_dir.join("image-studio"))
 }
 

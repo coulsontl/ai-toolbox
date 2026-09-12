@@ -177,3 +177,37 @@
   font-size: 10px;
   overflow-wrap: anywhere;
 }
+
+.dataDirIcon {
+  color: var(--ant-color-primary);
+}
+
+.dataDirSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.dataDirRow {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.dataDirValue {
+  min-width: 0;
+  overflow-wrap: anywhere;
+
+  > :not(:first-child) {
+    margin-inline-start: 6px;
+  }
+}
+
+.dataDirHint {
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}

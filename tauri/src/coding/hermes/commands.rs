@@ -20,7 +20,7 @@ use crate::db::helpers::{
 };
 use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
-use tauri::{Emitter, Manager, Runtime};
+use tauri::{Emitter, Runtime};
 
 /// Top-level YAML keys managed by this module (or by Hermes itself) and thus
 /// hidden from / preserved across the "Other settings" editor.
@@ -442,7 +442,7 @@ const HERMES_CONFIG_BACKUP_RETAIN: usize = 10;
 /// `HERMES_CONFIG_BACKUP_RETAIN` copies are kept. No-op when the file is
 /// missing or blank.
 fn backup_hermes_config<R: Runtime>(
-    app: &tauri::AppHandle<R>,
+    _app: &tauri::AppHandle<R>,
     config_path: &Path,
 ) -> Result<(), String> {
     if !config_path.exists() {
@@ -454,10 +454,7 @@ fn backup_hermes_config<R: Runtime>(
         return Ok(());
     }
 
-    let backup_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("Failed to resolve app data dir: {error}"))?
+    let backup_dir = crate::app_paths::resolved_data_dir()
         .join("backups")
         .join("hermes");
     fs::create_dir_all(&backup_dir).map_err(|error| {

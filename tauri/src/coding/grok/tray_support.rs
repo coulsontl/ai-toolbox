@@ -55,12 +55,9 @@ pub struct TrayPromptData {
     pub items: Vec<TrayPromptItem>,
 }
 
-fn gateway_provider_switch_locked<R: Runtime>(app: &AppHandle<R>) -> bool {
-    app.path()
-        .app_data_dir()
-        .map(ProxyGatewayPaths::new)
-        .map(|paths| cli_proxy::provider_switch_locked_by_manifest(&paths, GatewayCliKey::Grok))
-        .unwrap_or(false)
+fn gateway_provider_switch_locked<R: Runtime>(_app: &AppHandle<R>) -> bool {
+    let paths = ProxyGatewayPaths::new(crate::app_paths::resolved_data_dir());
+    cli_proxy::provider_switch_locked_by_manifest(&paths, GatewayCliKey::Grok)
 }
 
 fn gateway_running<R: Runtime>(app: &AppHandle<R>) -> bool {

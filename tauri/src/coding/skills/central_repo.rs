@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
-use tauri::Manager;
 
 use crate::coding::tools::resolve_storage_path;
 use crate::db::helpers::{db_get, db_put};
@@ -57,10 +56,8 @@ pub fn resolve_central_repo_path_sync<R: tauri::Runtime>(
 pub fn resolve_default_central_repo_path<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<PathBuf> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .context("failed to resolve app data directory")?;
+    let _ = app;
+    let app_data_dir = crate::app_paths::resolved_data_dir();
     Ok(app_data_dir.join(CENTRAL_DIR_NAME))
 }
 

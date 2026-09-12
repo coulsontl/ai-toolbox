@@ -13,7 +13,7 @@ use crate::coding::proxy_gateway::{
 use crate::db::helpers::{db_delete, db_get, db_list, db_put};
 use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
-use tauri::{Emitter, Manager, Runtime};
+use tauri::{Emitter, Runtime};
 
 // ============================================================================
 // SQLite CRUD wrappers
@@ -537,14 +537,9 @@ fn gateway_origin_from_settings(db: &SqliteDbState) -> Result<String, String> {
 }
 
 /// Whether the local gateway has taken over the Claude Desktop config files.
-fn claude_desktop_gateway_takeover_active<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
-    app.path()
-        .app_data_dir()
-        .map(ProxyGatewayPaths::new)
-        .map(|paths| {
-            cli_proxy::provider_switch_locked_by_manifest(&paths, GatewayCliKey::ClaudeDesktop)
-        })
-        .unwrap_or(false)
+fn claude_desktop_gateway_takeover_active<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> bool {
+    let paths = ProxyGatewayPaths::new(crate::app_paths::resolved_data_dir());
+    cli_proxy::provider_switch_locked_by_manifest(&paths, GatewayCliKey::ClaudeDesktop)
 }
 
 /// Reject a plain (direct) apply while the gateway is taking over Claude

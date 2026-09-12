@@ -36,6 +36,9 @@ sequenceDiagram
 
 ## 易错点与历史坑（Gotchas）
 
+- 数据目录设置区必须分别呈现本进程 `effective/is_custom` 与下次启动 `next_start/restart_required`；不能用保存的 override 标记当前目录，也不能把“稍后重启”说成撤销保存。待生效状态常驻提供重启和撤销入口。目录选择、保存和重置须互斥；后端保存成功响应直接返回最新状态，失败保留当前路径并呈现具体错误。
+- 自定义数据目录只切换应用自己的数据根目录，不自动迁移数据，不覆盖外部 CLI/独立 Skills 路径。迁移引导要先恢复 Gateway 直连，并明确备份范围；重启失败要保留待生效状态且可重试。
+
 - WSL 设置页里 `isWslDirect` 模块需要禁用相关映射编辑和手动同步入口；SSH 设置页不要照抄这套禁用逻辑。
 - dsh/Hermes 也消费同一 `moduleStatuses`，不能因工具自行解析配置目录而漏掉 Direct 状态。保存/清除目录会发出 `wsl-config-changed` 刷新设置页；后端在同步开始时仍会重读 Direct 集合，首次启用不能依赖 UI 快照。
 - SSH 设置页可以显示 WSL UNC 本地路径，但这只是展示优化，不代表 SSH 模块也具备 WSL 那套自动同步语义。

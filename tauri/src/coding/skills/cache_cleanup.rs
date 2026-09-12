@@ -1,9 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
-use tauri::Manager;
 
 use super::central_repo::{merge_skill_settings_sqlite, read_skill_settings_i64_from_sqlite};
 
@@ -55,13 +54,10 @@ pub async fn get_git_cache_ttl_secs(state: &crate::SqliteDbState) -> i64 {
 
 /// Cleanup old git cache directories
 pub fn cleanup_git_cache_dirs<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+    _app: &tauri::AppHandle<R>,
     max_age: Duration,
 ) -> Result<usize> {
-    let cache_dir = app
-        .path()
-        .app_cache_dir()
-        .context("failed to resolve app cache dir")?;
+    let cache_dir = crate::app_paths::resolved_cache_dir();
     cleanup_git_cache_dirs_in(&cache_dir, max_age)
 }
 

@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
 use super::adapter;
 use super::types::*;
@@ -55,10 +55,8 @@ pub async fn apply_config_internal<R: tauri::Runtime>(
         }
     }
 
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to resolve app data dir: {}", e))?;
+    let app_data_dir = crate::app_paths::resolved_data_dir();
+    let _ = app;
     let backup_dir = app_data_dir.join("backups").join("openclaw");
 
     let mut new_value =
@@ -235,10 +233,8 @@ pub async fn backup_openclaw_config<R: tauri::Runtime>(
     let source = fs::read_to_string(config_path)
         .map_err(|e| format!("Failed to read config file: {}", e))?;
 
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to resolve app data dir: {}", e))?;
+    let app_data_dir = crate::app_paths::resolved_data_dir();
+    let _ = app;
     let backup_path = super::roundtrip::create_openclaw_backup(
         &source,
         &app_data_dir.join("backups").join("openclaw"),

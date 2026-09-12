@@ -707,6 +707,20 @@ pub fn provider_switch_locked_by_manifest(
     }
 }
 
+/// A new data root cannot recover runtime files using manifests left in the old root.
+pub(crate) fn ensure_data_dir_can_change(paths: &ProxyGatewayPaths) -> Result<(), String> {
+    for cli_key in GatewayCliKey::supported_mvp() {
+        let manifest = read_manifest(paths, cli_key).map_err(|error| error.to_string())?;
+        if manifest.is_some_and(|manifest| manifest.enabled) {
+            return Err(format!(
+                "请先将 {} 恢复为直连，再备份并更改应用数据目录；网关接管记录不会自动迁移",
+                cli_key.as_str(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn wsl_synced_gateway_target_for_mapping(
     mapping_id: &str,
 ) -> Option<(GatewayCliKey, &'static str)> {
@@ -3051,6 +3065,31 @@ fn path_to_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_directory_switch_requires_all_cli_takeovers_to_be_restored() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = ProxyGatewayPaths::new(temporary.path());
+        assert!(ensure_data_dir_can_change(&paths).is_ok());
+        for cli_key in GatewayCliKey::supported_mvp() {
+            let mut manifest = CliProxyManifest::new(
+                cli_key,
+                "http://127.0.0.1:8080".into(),
+                "test".into(),
+                GatewayProxyMode::Single,
+                "provider".into(),
+            );
+            write_manifest(&paths, cli_key, &manifest).unwrap();
+            assert!(ensure_data_dir_can_change(&paths)
+                .unwrap_err()
+                .contains(cli_key.as_str()));
+            manifest.enabled = false;
+            write_manifest(&paths, cli_key, &manifest).unwrap();
+            assert!(ensure_data_dir_can_change(&paths).is_ok());
+        }
+        fs::write(paths.manifest_path(GatewayCliKey::Codex), "{broken").unwrap();
+        assert!(ensure_data_dir_can_change(&paths).is_err());
+    }
     use serde_json::json;
 
     fn claude_test_provider(

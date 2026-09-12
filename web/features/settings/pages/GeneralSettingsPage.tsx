@@ -1,5 +1,6 @@
 import React from 'react';
-import { Typography, Button, Select, Space, message, Modal, Table, Switch, Input, Row, Col, Card, Divider, Checkbox } from 'antd';
+import { App, Typography, Button, Select, Space, message, Modal, Table, Switch, Input, Row, Col, Card, Divider, Checkbox } from 'antd';
+import { FolderOpen } from 'lucide-react';
 import {
   EditOutlined,
   CloudUploadOutlined,
@@ -56,10 +57,14 @@ import {
   installUpdate,
   testProxyConnection,
   type UpdateInfo,
+  type AppDataDirInfo,
+  getAppDataDirInfo,
+  setAppDataDirOverride,
   GITHUB_REPO,
 } from '@/services';
 import { restartApp } from '@/services/settingsApi';
 import { listen } from '@tauri-apps/api/event';
+import { open as openFolderDialog } from '@tauri-apps/plugin-dialog';
 import styles from './GeneralSettingsPage.module.less';
 
 const { Text } = Typography;
@@ -168,6 +173,7 @@ const SortableCodingChip: React.FC<SortableCodingChipProps> = ({ id, label, chec
 
 const GeneralSettingsPage: React.FC = () => {
   const { t } = useTranslation();
+  const { modal } = App.useApp();
   const { language, setLanguage } = useAppStore();
   const { mode: themeMode, setMode: setThemeMode } = useThemeStore();
   const {
@@ -232,10 +238,33 @@ const GeneralSettingsPage: React.FC = () => {
   const [updateTotal, setUpdateTotal] = React.useState<number>(0);
   const [updateModalOpen, setUpdateModalOpen] = React.useState(false);
 
+  // Data directory (custom path override, issue #345)
+  const [dataDirInfo, setDataDirInfo] = React.useState<AppDataDirInfo | null>(null);
+  const [dataDirBusy, setDataDirBusy] = React.useState(false);
+  const [dataDirError, setDataDirError] = React.useState<string | null>(null);
+  const dataDirOperation = React.useRef(false);
+
   // Load app version on mount
   React.useEffect(() => {
     getAppVersion().then(setAppVersion).catch(console.error);
   }, []);
+
+  // Load data directory info on mount
+  React.useEffect(() => {
+    let disposed = false;
+    getAppDataDirInfo()
+      .then((info) => {
+        if (!disposed) {
+          setDataDirInfo(info);
+          setDataDirError(null);
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to load data dir info:', error);
+        if (!disposed) setDataDirError(t('settings.dataDir.loadFailed'));
+      });
+    return () => { disposed = true; };
+  }, [t]);
 
   // Auto check for updates on mount
   React.useEffect(() => {
@@ -603,6 +632,54 @@ const GeneralSettingsPage: React.FC = () => {
     } catch (error) {
       console.error('Failed to open data directory:', error);
       message.error(t('settings.openDataDirFailed'));
+    }
+  };
+
+  const promptRestart = () => {
+    const restartDialog = modal.confirm({
+      title: t('common.restart'),
+      content: t('settings.dataDir.restartPrompt'),
+      okText: t('common.restart'),
+      cancelText: t('settings.dataDir.restartLater'),
+      onOk: async () => {
+        try {
+          await restartApp();
+        } catch (error) {
+          const errorMessage = t('settings.dataDir.restartFailed', { error: String(error) });
+          setDataDirError(errorMessage);
+          restartDialog.update({ content: errorMessage });
+          throw error;
+        }
+      },
+    });
+  };
+
+  const handleDataDirChange = async (action: 'select' | 'reset' | 'cancel' = 'select') => {
+    if (dataDirOperation.current) return;
+    dataDirOperation.current = true;
+    setDataDirBusy(true);
+    setDataDirError(null);
+    try {
+      let selected = action === 'cancel' && dataDirInfo?.is_custom ? dataDirInfo.effective : null;
+      if (action === 'select') {
+        const result = await openFolderDialog({
+          title: t('settings.dataDir.selectFolder'),
+          defaultPath: dataDirInfo?.next_start,
+          multiple: false,
+          directory: true,
+        });
+        if (typeof result !== 'string') return;
+        selected = result;
+      }
+      const info = await setAppDataDirOverride(selected);
+      setDataDirInfo(info);
+      if (info.restart_required) promptRestart();
+    } catch (error) {
+      console.error('Failed to set data directory:', error);
+      setDataDirError(t('settings.dataDir.saveFailed', { error: String(error) }));
+    } finally {
+      dataDirOperation.current = false;
+      setDataDirBusy(false);
     }
   };
 
@@ -1005,10 +1082,69 @@ const GeneralSettingsPage: React.FC = () => {
 
             <Divider />
 
+            {/* Data Directory (custom path override, issue #345) */}
+            <SectionTitle
+              icon={<FolderOpen size={16} aria-hidden="true" className={styles.dataDirIcon} />}
+              title={t('settings.dataDir.title')}
+              extra={
+                <Space size={4} wrap>
+                  <Button
+                    type="link"
+                    loading={dataDirBusy}
+                    disabled={!dataDirInfo || dataDirBusy || restoreLoading}
+                    onClick={() => void handleDataDirChange()}
+                  >
+                    {t('settings.dataDir.change')}
+                  </Button>
+                  <Button
+                    type="link"
+                    disabled={!dataDirInfo?.override || dataDirBusy || restoreLoading}
+                    onClick={() => void handleDataDirChange('reset')}
+                  >
+                    {t('settings.dataDir.reset')}
+                  </Button>
+                </Space>
+              }
+            />
+            <div className={styles.dataDirSection} aria-busy={dataDirBusy || (!dataDirInfo && !dataDirError)}>
+              <div className={styles.dataDirRow}>
+                <Text type="secondary">{t('settings.dataDir.current')}</Text>
+                <div className={styles.dataDirValue}>
+                  <span>{dataDirInfo?.effective || (dataDirError ? '—' : t('common.loading'))}</span>
+                  {dataDirInfo && (
+                    <Text type="secondary">
+                      ({dataDirInfo.is_custom ? t('settings.dataDir.custom') : t('settings.dataDir.defaultTag')})
+                    </Text>
+                  )}
+                </div>
+              </div>
+              {dataDirInfo?.restart_required && (
+                <div className={styles.dataDirRow} role="status">
+                  <Text type="secondary">{t('settings.dataDir.nextStart')}</Text>
+                  <div className={styles.dataDirValue}>
+                    <span>{dataDirInfo.next_start}</span>
+                    <Text type="warning">{t('settings.dataDir.pending')}</Text>
+                    <Button type="link" size="small" onClick={promptRestart} disabled={dataDirBusy || restoreLoading}>
+                      {t('common.restart')}
+                    </Button>
+                    <Button type="link" size="small" onClick={() => void handleDataDirChange('cancel')} disabled={dataDirBusy || restoreLoading}>
+                      {t('settings.dataDir.cancelChange')}
+                    </Button>
+                  </div>
+                </div>
+              )}
+              <Text type="secondary" className={styles.dataDirHint}>
+                {t('settings.dataDir.hint')}
+              </Text>
+              {dataDirError && <Text type="danger" role="alert" className={styles.dataDirHint}>{dataDirError}</Text>}
+            </div>
+
+            <Divider />
+
             {/* Backup Settings */}
-            <SectionTitle 
-              icon={<CloudSyncOutlined style={{ color: '#52c41a' }} />} 
-              title={t('settings.cards.backup')} 
+            <SectionTitle
+              icon={<CloudSyncOutlined style={{ color: '#52c41a' }} />}
+              title={t('settings.cards.backup')}
               extra={
                 <Button
                   type="text"

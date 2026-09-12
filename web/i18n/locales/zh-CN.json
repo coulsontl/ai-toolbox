@@ -1135,6 +1135,25 @@
       "viewReleaseNotes": "查看更新内容",
       "autoCheckUpdate": "自动检查更新",
       "scoopUpdateHint": "发现新版本 {{version}}。当前应用通过 Scoop 安装，请使用 `scoop update ai-toolbox` 升级"
+    },
+    "dataDir": {
+      "title": "数据目录",
+      "current": "当前路径",
+      "custom": "自定义",
+      "defaultTag": "默认",
+      "change": "更改目录",
+      "reset": "重置为默认",
+      "hint": "重启后生效，原有数据不会自动迁移。迁移前先恢复网关直连，再备份、切换目录、重启并恢复。仅迁移备份包涵盖的内容；独立设置的 Skills 中央仓库和外部工具目录保持各自设置。",
+      "restartPrompt": "已更新数据目录设置，需要重启应用才能生效。是否立即重启？",
+      "selectFolder": "选择数据目录",
+      "resetPrompt": "已重置为默认数据目录，需要重启应用才能生效。是否立即重启？",
+      "loadFailed": "读取数据目录信息失败",
+      "nextStart": "下次启动目录",
+      "pending": "待重启生效",
+      "restartLater": "稍后重启",
+      "saveFailed": "无法保存数据目录：{{error}}",
+      "restartFailed": "目录设置已保存，但重启失败：{{error}}。请手动退出并重新打开应用。",
+      "cancelChange": "撤销目录变更"
     }
   },
   "theme": {
