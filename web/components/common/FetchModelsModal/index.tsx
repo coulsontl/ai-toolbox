@@ -4,6 +4,7 @@ import { CloudDownloadOutlined, ReloadOutlined, SearchOutlined, UndoOutlined } f
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 import type { FetchModelsModalProps, FetchedModel, ApiType, FetchModelsResponse } from './types';
+import { createFetchedModelsComparator } from './sort';
 import styles from './index.module.less';
 
 const { Text } = Typography;
@@ -17,6 +18,7 @@ const FetchModelsModal: React.FC<FetchModelsModalProps> = ({
   headers,
   sdkType,
   existingModelIds,
+  priorityOwnedBy,
   onCancel,
   onSuccess,
 }) => {
@@ -37,16 +39,25 @@ const FetchModelsModal: React.FC<FetchModelsModalProps> = ({
   // Only show Native option for Google and Anthropic SDKs
   const supportsNative = sdkType === '@ai-sdk/google' || sdkType === '@ai-sdk/anthropic';
 
+  // Sort models grouped by owner so models read vendor-by-vendor instead of
+  // raw API order; consumers can pin specific owners (e.g. Codex pins openai)
+  const sortComparator = React.useMemo(
+    () => createFetchedModelsComparator(priorityOwnedBy),
+    [priorityOwnedBy],
+  );
+
   // Filter models based on search text
   const filteredModels = React.useMemo(() => {
-    if (!searchText) return models;
     const lowerSearch = searchText.toLowerCase();
-    return models.filter(m =>
-      m.id.toLowerCase().includes(lowerSearch) ||
-      (m.name && m.name.toLowerCase().includes(lowerSearch)) ||
-      (m.ownedBy && m.ownedBy.toLowerCase().includes(lowerSearch))
-    );
-  }, [models, searchText]);
+    const list = searchText
+      ? models.filter(m =>
+          m.id.toLowerCase().includes(lowerSearch) ||
+          (m.name && m.name.toLowerCase().includes(lowerSearch)) ||
+          (m.ownedBy && m.ownedBy.toLowerCase().includes(lowerSearch))
+        )
+      : models;
+    return [...list].sort(sortComparator);
+  }, [models, searchText, sortComparator]);
 
   // Calculate the default URL based on baseUrl, apiType, and sdkType
   const calculatedUrl = React.useMemo(() => {
@@ -125,12 +136,17 @@ const FetchModelsModal: React.FC<FetchModelsModalProps> = ({
 
   // Confirm and add selected models
   const handleConfirm = () => {
-    const selectedModels = models.filter((m) => selectedRowKeys.includes(m.id));
+    // Select from the full sorted list, not the search-filtered view, so rows
+    // hidden by an active search filter are not silently dropped; the sorted
+    // order keeps the applied order in line with what was displayed.
+    const sortedModels = [...models].sort(sortComparator);
+    const selectedModels = sortedModels.filter((m) => selectedRowKeys.includes(m.id));
     const fetchedModelIds = new Set(models.map((model) => model.id));
     const removedModelIds = removeMissingModels
       ? existingModelIds.filter((modelId) => !fetchedModelIds.has(modelId))
       : [];
-    onSuccess({ selectedModels, removedModelIds });
+    const orderedModelIds = sortedModels.map((model) => model.id);
+    onSuccess({ selectedModels, removedModelIds, orderedModelIds });
   };
 
   // Table columns

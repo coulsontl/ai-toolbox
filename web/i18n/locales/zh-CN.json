@@ -2627,6 +2627,8 @@
       "modelNamePlaceholder": "如：gpt-4o",
       "modelNameHelp": "指定使用的模型，将自动更新到 config.toml 中",
       "modelMapping": "模型映射",
+      "modelMappingImport": "导入模型映射",
+      "modelMappingImportSuccess": "已导入 {{count}} 个模型映射",
       "modelMappingHint": "添加后会生成 Codex model_catalog_json，让这些模型出现在 Codex 的模型列表中；上下文窗口不填时，依次取 config.toml 的 model_context_window、Codex 内置默认值 272000。",
       "modelMappingAdd": "添加模型映射",
       "modelMappingDisplayName": "菜单显示名",
