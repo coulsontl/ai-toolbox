@@ -2630,6 +2630,8 @@
       "modelNamePlaceholder": "e.g., gpt-4o",
       "modelNameHelp": "Specify the model to use, it will be automatically updated to config.toml",
       "modelMapping": "Model Mapping",
+      "modelMappingImport": "Import Mappings",
+      "modelMappingImportSuccess": "Imported {{count}} model mappings",
       "modelMappingHint": "When added, AI Toolbox generates Codex model_catalog_json so these models appear in Codex's model list. If omitted, the context window falls back to config.toml model_context_window, then Codex's built-in default 272000.",
       "modelMappingAdd": "Add Model Mapping",
       "modelMappingDisplayName": "Menu Display Name",

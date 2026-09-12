@@ -13,9 +13,11 @@
 
 - TOML 双引号字符串的“未闭合”规则中，转义分支 `\\.` 与普通字符分支必须互斥。普通字符分支必须排除反斜杠，使用 `[^"\\]`，不能退回会同时匹配反斜杠的 `[^\"]`。
 - 不要只用普通短配置验证 tokenizer。Codex `notify` 等配置会把 JSON 嵌入 TOML 字符串，形成包含大量反斜杠和转义引号的超长单行。
+- `FetchModelsModal` 的展示顺序统一按 `sort.ts` 的 owner 分组排序（locale 钉死 `en` 保证确定性）；`priorityOwnedBy` 是可选 prop，消费方（如 Codex 置顶 openai）自选，**不得**把具体厂商偏好写进默认行为。`onSuccess` 的 `orderedModelIds` 是完整列表的显示顺序（含未勾选项），供消费方对齐自身列表/映射顺序；`selectedModels` 必须从**完整列表**的排序结果里过滤（现在 `handleConfirm` 的做法），不能从搜索过滤后的视图取——否则搜索状态下确认会静默丢弃被过滤隐藏的已勾选模型。
 
 ## 最小验证
 
 - 修改 TOML tokenizer 后，运行 `web/test/components/common/TomlEditor/invalidDoubleQuoteStringPattern.test.ts`。
 - 语义覆盖要同时包含：未闭合串、普通 closed 串、真实 Codex `notify` 风格 Windows 路径 closed 串，以及会触发指数回溯的 adversarial closed 串。
 - 指数回溯回归必须在可终止的 Worker 中执行（超时即失败），避免危险正则重新出现时把完整测试进程永久卡住。
+- 修改 `FetchModelsModal` 排序或 `onSuccess` 契约后，运行 `web/test/components/common/FetchModelsModal/sort.test.ts`，并确认 `onSuccess` 新增字段对所有消费方（OpenCode/Grok/Pi/DSH/Hermes/OhMyPi/OpenClaw 页面与 Codex 表单）是纯增量。

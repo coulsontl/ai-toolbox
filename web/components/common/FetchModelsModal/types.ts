@@ -23,6 +23,10 @@ export interface FetchModelsResponse {
 export interface FetchModelsApplyResult {
   selectedModels: FetchedModel[];
   removedModelIds: string[];
+  /** All fetched model ids in display order (grouped by owner), including
+   * unselected ones, so consumers can normalize their list/mapping ordering
+   * to match what the modal showed. */
+  orderedModelIds: string[];
 }
 
 /** Props for FetchModelsModal component */
@@ -35,6 +39,9 @@ export interface FetchModelsModalProps {
   headers?: Record<string, string>;
   sdkType?: string;
   existingModelIds: string[];
+  /** Owner groups (ownedBy values) pinned to the front of the sorted list,
+   * in order. Optional; defaults to plain alphabetical owner grouping. */
+  priorityOwnedBy?: string[];
   onCancel: () => void;
   onSuccess: (result: FetchModelsApplyResult) => void;
 }

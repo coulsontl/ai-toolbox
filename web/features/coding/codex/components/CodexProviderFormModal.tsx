@@ -6,6 +6,7 @@ import {
   DownOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
+  ImportOutlined,
   PlusOutlined,
   RightOutlined,
 } from '@ant-design/icons';
@@ -58,6 +59,9 @@ import {
   setCodexModel,
 } from '@/utils/codexConfigUtils';
 import TomlEditor from '@/components/common/TomlEditor';
+import FetchModelsModal from '@/components/common/FetchModelsModal';
+import type { FetchModelsApplyResult } from '@/components/common/FetchModelsModal/types';
+import { importModelsIntoCatalog, type CatalogContextWindowResolver } from '../utils/codexCatalogModels';
 import { parse as parseToml } from 'smol-toml';
 import { useCodexConfigState } from '../hooks/useCodexConfigState';
 import styles from './CodexProviderFormModal.module.less';
@@ -81,6 +85,9 @@ const CODEX_OFFICIAL_FALLBACK_MODELS: FetchedModel[] = [
 
 const DEFAULT_CODEX_API_FORMAT: CodexApiFormat = 'openai_responses';
 const OFFICIAL_PROVIDER_ENDPOINT_KEY = '__official__:';
+
+// Codex 的模型选择器把 openai 渠道的模型置顶展示（stable reference for React memo deps）。
+const CODEX_PRIORITY_OWNED_BY = ['openai'];
 
 function normalizeCodexApiFormat(value?: string): CodexApiFormat {
   if (value === 'openai_chat' || value === 'anthropic_messages' || value === 'gemini_native') {
@@ -309,6 +316,7 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
   const [processedBaseUrl, setProcessedBaseUrl] = React.useState<string>('');
   const [fetchedModels, setFetchedModels] = React.useState<FetchedModel[]>([]);
   const [loadingModels, setLoadingModels] = React.useState(false);
+  const [importModelsModalOpen, setImportModelsModalOpen] = React.useState(false);
   const [modelMappingExpanded, setModelMappingExpanded] = React.useState(false);
   // 当前表单的 baseUrl（仅用于辅助匹配 OpenCode 导入候选）
   const [currentBaseUrl, setCurrentBaseUrl] = React.useState<string>('');
@@ -942,6 +950,24 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
     }
   };
 
+  // 「导入模型映射」：复用 FetchModelsModal 让用户从供应商接口勾选模型，
+  // 合并进映射行（已有行保留自定义，新行按 preset 精确匹配补上下文窗口）。
+  const resolveCatalogContextWindow = React.useCallback<CatalogContextWindowResolver>((modelId) => {
+    const preset = findPresetModelById(modelId);
+    return typeof preset?.contextLimit === 'number' && preset.contextLimit > 0
+      ? preset.contextLimit
+      : undefined;
+  }, []);
+
+  const handleImportModelsSuccess = React.useCallback(({ selectedModels, removedModelIds, orderedModelIds }: FetchModelsApplyResult) => {
+    setImportModelsModalOpen(false);
+    setCodexCatalogModels((prev) => importModelsIntoCatalog(prev, selectedModels, removedModelIds, orderedModelIds, resolveCatalogContextWindow));
+    setModelMappingExpanded(true);
+    if (selectedModels.length > 0) {
+      message.success(t('codex.provider.modelMappingImportSuccess', { count: selectedModels.length }));
+    }
+  }, [resolveCatalogContextWindow, setCodexCatalogModels, t]);
+
   const handleAddModelMapping = React.useCallback(() => {
     setModelMappingExpanded(true);
     setCodexCatalogModels((prev) => [
@@ -1162,6 +1188,14 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
           >
             {t('codex.fetchModels.button')}
           </Button>
+          {!isOfficialMode && (
+            <Button
+              icon={<ImportOutlined />}
+              onClick={() => setImportModelsModalOpen(true)}
+            >
+              {t('codex.provider.modelMappingImport')}
+            </Button>
+          )}
           {!isOfficialMode && (
             <Button
               icon={modelMappingExpanded ? <DownOutlined /> : <RightOutlined />}
@@ -1514,6 +1548,18 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
       cancelText={t('common.cancel')}
     >
       {isEdit || mode === 'manual' ? renderManualTab() : renderImportTab()}
+      <FetchModelsModal
+        open={importModelsModalOpen}
+        providerId={provider?.id ?? ''}
+        providerName={provider?.name ?? (form.getFieldValue('name') as string | undefined) ?? ''}
+        baseUrl={codexBaseUrl}
+        apiKey={codexApiKey || undefined}
+        sdkType="@ai-sdk/openai"
+        existingModelIds={codexCatalogModels.map((item) => item.model)}
+        priorityOwnedBy={CODEX_PRIORITY_OWNED_BY}
+        onCancel={() => setImportModelsModalOpen(false)}
+        onSuccess={handleImportModelsSuccess}
+      />
     </Modal>
   );
 };
