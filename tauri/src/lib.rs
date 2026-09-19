@@ -40,6 +40,41 @@ pub mod update;
 pub use db::SqliteDbState;
 pub(crate) static APP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+const DEFAULT_APP_WINDOW_TITLE: &str = "AI Toolbox";
+const APP_WINDOW_TITLE_ENV: &str = "AI_TOOLBOX_WINDOW_TITLE";
+
+fn configured_window_title(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_APP_WINDOW_TITLE)
+        .to_string()
+}
+
+fn app_window_title() -> String {
+    configured_window_title(std::env::var(APP_WINDOW_TITLE_ENV).ok().as_deref())
+}
+
+#[cfg(test)]
+mod app_identity_tests {
+    use super::*;
+
+    #[test]
+    fn window_title_defaults_to_ai_toolbox() {
+        assert_eq!(configured_window_title(None), "AI Toolbox");
+        assert_eq!(configured_window_title(Some("")), "AI Toolbox");
+        assert_eq!(configured_window_title(Some("   ")), "AI Toolbox");
+    }
+
+    #[test]
+    fn window_title_accepts_an_isolated_test_brand() {
+        assert_eq!(
+            configured_window_title(Some("  AI Router Test  ")),
+            "AI Router Test"
+        );
+    }
+}
+
 /// Create the main window. Shared by startup and lightweight-mode rebuild so
 /// both paths produce the same window. `geometry` (logical units) restores the
 /// pre-destroy window placement; `None` centers a default-sized window.
@@ -54,7 +89,7 @@ pub(crate) fn build_main_window<R: tauri::Runtime>(
         .unwrap_or((1200.0, 800.0));
 
     let mut builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
-        .title("AI Toolbox")
+        .title(app_window_title())
         .inner_size(width, height)
         .min_inner_size(800.0, 600.0)
         .visible(false)
