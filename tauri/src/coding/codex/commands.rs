@@ -2967,6 +2967,10 @@ fn codex_model_catalog_from_specs(
 struct AggregateCatalogEntry {
     /// The configured aggregate slug — what Codex shows and sends back verbatim.
     slug: String,
+    /// Site that owns this entry. Used only while building the catalog to turn a
+    /// provider-level auto-review model id into an exact aggregate slug on the
+    /// same site.
+    site_id: Option<String>,
     /// `<site label> · <model>` for the model picker.
     display_name: String,
     /// Hidden entries are addressable but never listed: Codex's spawn_agent
@@ -3051,12 +3055,15 @@ fn codex_aggregate_catalog_entries(
     // Codex's `spawn_agent`, `[agents] default_subagent_model`, auto-review and
     // memory extraction all send bare names. They are published as hidden
     // entries so they never consume one of the five visible model hints.
-    let mut bare_models: Vec<String> = Vec::new();
+    let mut bare_models: Vec<(String, String)> = Vec::new();
 
     for (site_id, site_label, settings_config) in sites {
         if site_id.trim().is_empty() {
             continue;
         }
+        let site_auto_review_model = settings_config
+            .as_object()
+            .and_then(resolve_codex_auto_review_model_override);
         let Some(models) = settings_config
             .get("modelCatalog")
             .and_then(|catalog| catalog.get("models"))
@@ -3095,6 +3102,7 @@ fn codex_aggregate_catalog_entries(
 
             entries.push(AggregateCatalogEntry {
                 slug,
+                site_id: Some(site_id.clone()),
                 hidden: false,
                 display_name: format!("{site_label} · {model_display_name}"),
                 context_window: parse_codex_positive_u64(
@@ -3136,13 +3144,62 @@ fn codex_aggregate_catalog_entries(
                             .collect::<Vec<_>>()
                     })
                     .filter(|tiers| !tiers.is_empty()),
-                auto_review_model_override: None,
+                // Temporarily keep the upstream id. After the full slug table is
+                // allocated, it is rewritten to the exact aggregate slug for
+                // this same site.
+                auto_review_model_override: site_auto_review_model.clone(),
             });
 
-            if !bare_models.iter().any(|existing| existing == model) {
-                bare_models.push(model.to_string());
+            if !bare_models.iter().any(|(existing, _)| existing == model) {
+                bare_models.push((model.to_string(), site_id.clone()));
             }
         }
+    }
+
+    // Single-provider catalogs attach `auto_review_model_override` to every
+    // model row. Aggregate mode used to drop it entirely, which made Codex fall
+    // back to its built-in `gpt-5.6-luna`; on old aggregate catalogs that bare
+    // slug did not exist, so guardian/summary generation could not start.
+    //
+    // Preserve the provider setting, but make it *site exact*: if site A's main
+    // model says `codex-auto-review`, Codex must request site A's published
+    // aggregate slug for that model instead of a bare name that might drift to
+    // site B.
+    let slug_by_pair = slug_table
+        .iter()
+        .map(|entry| {
+            (
+                (entry.site_id.as_str(), entry.upstream_model.as_str()),
+                entry.slug.as_str(),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let declared_models = slug_table
+        .iter()
+        .map(|entry| entry.upstream_model.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for entry in &mut entries {
+        let Some(raw_override) = entry.auto_review_model_override.clone() else {
+            continue;
+        };
+        entry.auto_review_model_override = entry
+            .site_id
+            .as_deref()
+            .and_then(|site_id| {
+                slug_by_pair
+                    .get(&(site_id, raw_override.as_str()))
+                    .map(|slug| (*slug).to_string())
+            })
+            // A cross-site bare fallback is still safe because the aggregate
+            // catalog publishes hidden bare-name entries for every declared
+            // model. If no selected site declares the override, omit it and let
+            // Codex use its built-in fallback instead of advertising a model
+            // that the gateway would inevitably 404.
+            .or_else(|| {
+                declared_models
+                    .contains(raw_override.as_str())
+                    .then_some(raw_override)
+            });
     }
 
     // Hidden bare-name aliases go *after* the whole visible table: the order is
@@ -3152,7 +3209,7 @@ fn codex_aggregate_catalog_entries(
         .iter()
         .map(|entry| (entry.slug.as_str(), entry.upstream_model.as_str()))
         .collect::<std::collections::BTreeMap<_, _>>();
-    for model in bare_models {
+    for (model, first_site_id) in bare_models {
         match visible_slugs.get(model.as_str()) {
             // `model_only` (or a user alias) already publishes this exact slug
             // for the same upstream model, so the bare name is already
@@ -3170,13 +3227,28 @@ fn codex_aggregate_catalog_entries(
         }
         entries.push(AggregateCatalogEntry {
             slug: model.clone(),
+            site_id: Some(first_site_id.clone()),
             hidden: true,
             display_name: model,
             context_window: None,
             reasoning_levels: None,
             default_reasoning_level: None,
             service_tiers: None,
-            auto_review_model_override: None,
+            auto_review_model_override: sites
+                .iter()
+                .find(|(site_id, _, _)| site_id == &first_site_id)
+                .and_then(|(_, _, settings)| settings.as_object())
+                .and_then(resolve_codex_auto_review_model_override)
+                .and_then(|raw_override| {
+                    slug_by_pair
+                        .get(&(first_site_id.as_str(), raw_override.as_str()))
+                        .map(|slug| (*slug).to_string())
+                        .or_else(|| {
+                            declared_models
+                                .contains(raw_override.as_str())
+                                .then_some(raw_override)
+                        })
+                }),
         });
     }
 
@@ -5523,6 +5595,87 @@ approval_policy = "never"
             // Hidden entries must never occupy a visible picker/hint slot.
             assert!(entry["priority"].as_u64().unwrap() >= 9000);
         }
+    }
+
+    #[test]
+    fn aggregate_catalog_preserves_auto_review_as_an_exact_same_site_slug() {
+        let sites = vec![
+            (
+                "site-a".to_string(),
+                "Site A".to_string(),
+                json!({
+                    "autoReviewModelOverride": "codex-auto-review",
+                    "modelCatalog": {
+                        "models": [
+                            { "model": "gpt-5.6-luna" },
+                            { "model": "codex-auto-review" }
+                        ]
+                    }
+                }),
+            ),
+            aggregate_site(
+                "site-b",
+                "Site B",
+                json!([
+                    { "model": "gpt-5.6-luna" },
+                    { "model": "codex-auto-review" }
+                ]),
+            ),
+        ];
+
+        let (entries, _) = codex_aggregate_catalog_entries(&sites, &aggregate_naming(".")).unwrap();
+        let catalog = aggregate_catalog_from_entries(&entries, 200000);
+        let models = catalog["models"].as_array().unwrap();
+
+        let site_a_main = models
+            .iter()
+            .find(|model| model["slug"] == "site-a.gpt-5.6-luna")
+            .unwrap();
+        assert_eq!(
+            site_a_main["auto_review_model_override"].as_str(),
+            Some("site-a.codex-auto-review")
+        );
+
+        // Site B has no override configured, so it must not inherit site A's.
+        let site_b_main = models
+            .iter()
+            .find(|model| model["slug"] == "site-b.gpt-5.6-luna")
+            .unwrap();
+        assert!(site_b_main.get("auto_review_model_override").is_none());
+
+        // The hidden bare entry takes metadata from its first declaring site,
+        // matching the rest of the bare-entry metadata contract.
+        let bare = models
+            .iter()
+            .find(|model| model["slug"] == "gpt-5.6-luna")
+            .unwrap();
+        assert_eq!(bare["visibility"], "hide");
+        assert_eq!(
+            bare["auto_review_model_override"].as_str(),
+            Some("site-a.codex-auto-review")
+        );
+    }
+
+    #[test]
+    fn aggregate_catalog_omits_an_auto_review_model_no_site_declares() {
+        let sites = vec![(
+            "site-a".to_string(),
+            "Site A".to_string(),
+            json!({
+                "autoReviewModelOverride": "missing-review-model",
+                "modelCatalog": {
+                    "models": [{ "model": "gpt-5.6-luna" }]
+                }
+            }),
+        )];
+
+        let (entries, _) = codex_aggregate_catalog_entries(&sites, &aggregate_naming(".")).unwrap();
+        let catalog = aggregate_catalog_from_entries(&entries, 200000);
+        let models = catalog["models"].as_array().unwrap();
+
+        assert!(models
+            .iter()
+            .all(|model| model.get("auto_review_model_override").is_none()));
     }
 
     #[test]
