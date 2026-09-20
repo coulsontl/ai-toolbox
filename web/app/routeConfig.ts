@@ -7,6 +7,7 @@ import { SkillsPage } from '@/features/coding/skills';
 import { McpPage } from '@/features/coding/mcp';
 import { ImagePage } from '@/features/coding/image';
 import { GatewayPage } from '@/features/coding/gateway';
+import { MiniBrowserPage } from '@/features/mini-browser';
 import {
   ClaudeCodeSessionDetailPage,
   ClaudeDesktopSessionDetailPage,
@@ -187,5 +188,6 @@ export const PAGE_ROUTES: RouteEntry[] = [
   { path: '/skills', component: SkillsPage },
   { path: '/mcp', component: McpPage },
   { path: '/gateway', routePath: '/gateway/*', component: GatewayPage },
+  { path: '/mini-browser', component: MiniBrowserPage },
   { path: '/images', component: ImagePage },
 ];

@@ -1,0 +1,337 @@
+.page {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.titleBlock {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+
+  h1 {
+    margin: 0;
+    color: var(--color-text-primary);
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 0;
+    line-height: 1.25;
+  }
+
+  p {
+    margin: 2px 0 0;
+    color: var(--color-text-tertiary);
+    font-size: 12px;
+    line-height: 1.35;
+  }
+}
+
+.titleIcon {
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--ant-color-primary) 18%, var(--color-border));
+  border-radius: 8px;
+  color: var(--ant-color-primary);
+}
+
+.headerControls {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  margin-left: auto;
+  gap: 8px;
+}
+
+.statusPill {
+  display: inline-flex;
+  min-height: 34px;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 560;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+
+  strong {
+    color: var(--color-text-primary);
+    font-size: 12px;
+    font-weight: 650;
+  }
+}
+
+.statusDot,
+.statusDotActive {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--color-text-tertiary);
+}
+
+.statusDotActive {
+  background: var(--color-status-success);
+}
+
+.hint {
+  margin-bottom: 0;
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+}
+
+.siteList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.section {
+  min-width: 0;
+}
+
+.sectionTitle {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.emptyHint {
+  margin-bottom: 0;
+  font-size: 12px;
+}
+
+/* ---- open window strip ---- */
+
+.tabStrip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 6px;
+}
+
+.tab {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+}
+
+.tabMain {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-secondary);
+    outline-offset: 2px;
+  }
+}
+
+.tabName {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tabUrl {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tabClose {
+  display: flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+
+  &:hover {
+    color: var(--color-status-error);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-secondary);
+    outline-offset: 2px;
+  }
+}
+
+/* ---- site + account management ---- */
+
+.siteBlock {
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-card);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+}
+
+.siteHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.siteTitle {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+
+  span {
+    max-width: 420px;
+    overflow: hidden;
+    color: var(--color-text-tertiary);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.siteActions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.accountList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.accountRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+  border-top: 1px dashed var(--color-border-secondary);
+}
+
+.accountInfo {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+}
+
+.accountName {
+  max-width: 190px;
+}
+
+.statusOpen,
+.statusClosed {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+.statusOpen {
+  color: var(--color-status-success);
+}
+
+.statusClosed {
+  color: var(--color-text-tertiary);
+}
+
+.accountMeta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.accountUrl {
+  max-width: 320px;
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountActions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.accountForm {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.saveSiteRow {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.manualRow {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .headerControls {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+
+  .siteActions {
+    flex-wrap: wrap;
+  }
+}

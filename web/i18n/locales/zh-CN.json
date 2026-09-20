@@ -6091,7 +6091,7 @@
     "closeWindow": "关闭浏览器窗口",
     "openFailed": "打开失败：{{error}}",
     "siteName": "站点名称",
-    "siteNamePlaceholder": "例如：思源后台",
+    "siteNamePlaceholder": "留空则用网址（例如 relay.example.com）",
     "saveSite": "保存站点",
     "removeSite": "删除",
     "siteRequired": "请填写站点名称并输入有效网址",
@@ -6120,6 +6120,7 @@
     "removeSiteConfirm": "删除该站点及它的全部账号？登录状态也会一起清除。",
     "siteSection": "中转站与账号",
     "statusClosed": "未打开",
-    "statusOpened": "已打开"
+    "statusOpened": "已打开",
+    "subtitle": "中转站与账号都在这里管理，网站仍在独立窗口打开。"
   }
 }
