@@ -3,24 +3,8 @@ import test from 'node:test';
 
 import {
   areMiniBrowserBoundsEqual,
-  miniBrowserGridColumns,
   toMiniBrowserBounds,
 } from '../../../../features/mini-browser/utils/miniBrowserEmbed';
-
-// ---- grid shape ------------------------------------------------------------
-
-test('mini browser embeds one account full width and keeps larger counts readable', () => {
-  // A single account must not waste half of the area on an empty column.
-  assert.equal(miniBrowserGridColumns(0), 1);
-  assert.equal(miniBrowserGridColumns(1), 1);
-  // Two to four accounts tile into a square-ish 2-column grid.
-  assert.equal(miniBrowserGridColumns(2), 2);
-  assert.equal(miniBrowserGridColumns(3), 2);
-  assert.equal(miniBrowserGridColumns(4), 2);
-  // From five on, three columns keep the cells wider than they are tall.
-  assert.equal(miniBrowserGridColumns(5), 3);
-  assert.equal(miniBrowserGridColumns(9), 3);
-});
 
 // ---- DOM rect -> logical bounds -------------------------------------------
 

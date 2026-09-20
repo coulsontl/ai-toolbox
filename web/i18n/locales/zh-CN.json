@@ -6149,6 +6149,13 @@
     "embedTitle": "内嵌浏览区",
     "embedEmpty": "内嵌区还没有打开任何账号。在左侧点「打开」，或用「一键打开全部账号」。",
     "embedNotice": "网页由原生子浏览器渲染，永远盖在本页之上：所以内嵌区里只有网页本身，本页的弹窗出现时会先隐藏网页。",
-    "embedNotReady": "内嵌区还没准备好，请稍后再试"
+    "embedNotReady": "内嵌区还没准备好，请稍后再试",
+    "statusActive": "当前标签",
+    "statusTab": "已开标签",
+    "openNewTab": "打开标签",
+    "tabDormant": "未加载",
+    "tabDormantTitle": "这个标签还没加载",
+    "tabDormantHint": "上次留下的标签已恢复。点下面的按钮或上面的标签即可打开，打开时会回到你上次停留的页面。",
+    "tabLoad": "打开这个标签页"
   }
 }

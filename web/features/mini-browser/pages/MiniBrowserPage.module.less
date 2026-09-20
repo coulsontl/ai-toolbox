@@ -142,80 +142,198 @@
   font-size: 12px;
 }
 
-/* ---- embed area ---- */
+/* ---- browser pane: tab strip over one native page ---- */
 
 /*
- * The embed area is chrome only: every cell inside it stays empty, because the
- * native webview is painted above the DOM and would cover anything drawn there.
+ * The pane is chrome only. Exactly one native page is visible at a time and it
+ * is pinned to `.embedHost`, which stays empty: the native view is painted above
+ * the DOM, so anything drawn inside that rectangle would only be covered.
  */
-.embedArea {
+.browserPane {
   position: relative;
+  display: grid;
   min-width: 0;
   min-height: 0;
+  grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid var(--color-border-card);
   border-radius: 10px;
   background: var(--color-bg-container);
 }
 
-.embedGrid {
-  display: grid;
-  width: 100%;
-  height: 100%;
-  gap: 4px;
-  padding: 4px;
-  box-sizing: border-box;
-}
-
-/*
- * One grid slot: a label strip plus the measured placeholder.
- *
- * The strip lives outside the rectangle handed to the backend, so it stays
- * readable next to a native page that would otherwise cover anything drawn in
- * the same space — with several accounts side by side, that strip is what tells
- * the cells apart.
- */
-.embedSlot {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+.tabStrip {
+  display: flex;
   min-width: 0;
-  min-height: 0;
-  gap: 2px;
+  align-items: flex-end;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 6px 6px 0;
+  border-bottom: 1px solid var(--color-border-secondary);
+  background: var(--color-bg-elevated);
+
+  /* A thin strip: a wrapped tab row would move the native page's target. */
+  scrollbar-width: thin;
 }
 
-.embedSlotHeader {
+.tab,
+.tabActive {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 220px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px 0 6px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+
+  &:hover {
+    background: color-mix(in srgb, var(--ant-color-primary) 8%, transparent);
+  }
+}
+
+.tabActive {
+  border-color: var(--color-border-secondary);
+  background: var(--color-bg-container);
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.tabButton {
+  display: inline-flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-secondary);
+    outline-offset: -2px;
+  }
+}
+
+.tabName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tabDotLoaded,
+.tabDotDormant {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+/* Loaded means the native page exists; dormant means the tab is only a row. */
+.tabDotLoaded {
+  background: var(--color-status-success);
+}
+
+.tabDotDormant {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--color-text-tertiary);
+}
+
+.tabSpinner {
+  flex: 0 0 auto;
+  color: var(--ant-color-primary);
+  animation: miniBrowserSpin 900ms linear infinite;
+}
+
+@keyframes miniBrowserSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tabClose {
+  display: flex;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+
+  &:hover {
+    color: var(--color-status-error);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-secondary);
+    outline-offset: 1px;
+  }
+}
+
+.addressBar {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 6px;
-  padding: 0 2px;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border-secondary);
+  background: var(--color-bg-container);
 }
 
-.embedSlotName {
-  max-width: 45%;
-  overflow: hidden;
-  color: var(--color-text-primary);
-  font-size: 11px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.embedSlotUrl {
+.addressText {
   min-width: 0;
   flex: 1;
-  overflow: hidden;
-  color: var(--color-text-tertiary);
+  color: var(--color-text-secondary);
   font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.embedCell {
+.addressHint {
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+
+.embedStage {
+  position: relative;
   min-width: 0;
   min-height: 0;
+}
+
+.embedHost {
+  width: 100%;
+  height: 100%;
   /* Deliberately blank: filled by the native child webview, not by the DOM. */
   background: transparent;
+}
+
+/*
+ * Placeholder for a restored tab that has not been loaded yet.
+ *
+ * It sits where the native page will be painted. Once the page opens, the host
+ * is covered by it, so the overlay is removed as soon as the tab is loaded.
+ */
+.dormantOverlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px;
+  background: var(--color-bg-container);
+  text-align: center;
 }
 
 .embedEmpty {
@@ -316,31 +434,12 @@
   color: var(--color-status-success);
 }
 
-.statusClosed {
-  color: var(--color-text-tertiary);
+.statusTab {
+  color: var(--ant-color-primary);
 }
 
-.cellClose {
-  display: flex;
-  width: 20px;
-  height: 20px;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
+.statusClosed {
   color: var(--color-text-tertiary);
-  cursor: pointer;
-
-  &:hover {
-    color: var(--color-status-error);
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--color-border-secondary);
-    outline-offset: 2px;
-  }
 }
 
 .accountMeta {

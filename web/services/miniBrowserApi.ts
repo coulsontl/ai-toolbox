@@ -42,6 +42,80 @@ export const MINI_BROWSER_SITES_STORAGE_KEY = 'ai-router.mini-browser.sites';
 
 export const MINI_BROWSER_ACCOUNTS_STORAGE_KEY = 'ai-router.mini-browser.accounts';
 
+/**
+ * Where the panel keeps what the user left behind.
+ *
+ * `openTabs` is the set of accounts that had a tab, `activeProfile` the one
+ * that was in front, and `lastUrl` the address each account was actually
+ * showing. They live in localStorage next to the sites for the same reason:
+ * the browser panel is a view over the user's own shortcuts, and the backend
+ * only knows about pages that are open right now.
+ */
+export const MINI_BROWSER_PREFS_STORAGE_KEY = 'ai-router.mini-browser.prefs';
+
+export interface MiniBrowserPrefs {
+  /** Profile ids that had a tab when the panel was last left. */
+  openTabs: string[];
+  /** Profile id of the tab that was in front, or `null`. */
+  activeProfile: string | null;
+  /** Last address seen per profile, so a tab reopens where it was left. */
+  lastUrl: Record<string, string>;
+}
+
+export const EMPTY_MINI_BROWSER_PREFS: MiniBrowserPrefs = {
+  openTabs: [],
+  activeProfile: null,
+  lastUrl: {},
+};
+
+/**
+ * Keep a stored `lastUrl` mapping usable.
+ *
+ * Only absolute http/https addresses are kept: anything else (a stale
+ * `javascript:` entry, a half-typed string) would be rejected by the backend,
+ * and silently dropping it makes the tab fall back to the site address instead
+ * of failing to open.
+ */
+const parseMiniBrowserLastUrl = (raw: unknown): Record<string, string> => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const entries = Object.entries(raw as Record<string, unknown>);
+  const kept: Array<[string, string]> = [];
+  for (const [profileId, value] of entries) {
+    if (typeof value !== 'string' || profileId.length === 0) continue;
+    const normalised = normaliseMiniBrowserUrl(value);
+    if (normalised) kept.push([profileId, normalised]);
+  }
+  return Object.fromEntries(kept);
+};
+
+export const parseMiniBrowserPrefs = (raw: unknown): MiniBrowserPrefs => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { openTabs: [], activeProfile: null, lastUrl: {} };
+  }
+  const record = raw as Record<string, unknown>;
+  const openTabs = Array.isArray(record.openTabs)
+    ? record.openTabs.filter((id): id is string => typeof id === 'string' && id.length > 0)
+    : [];
+  const activeProfile =
+    typeof record.activeProfile === 'string' && record.activeProfile.length > 0
+      ? record.activeProfile
+      : null;
+  return {
+    openTabs: [...new Set(openTabs)],
+    // An active tab that is not in the list is a contradiction; drop it rather
+    // than render a tab strip with nothing highlighted.
+    activeProfile: activeProfile && openTabs.includes(activeProfile) ? activeProfile : null,
+    lastUrl: parseMiniBrowserLastUrl(record.lastUrl),
+  };
+};
+
+export const loadMiniBrowserPrefs = (): MiniBrowserPrefs =>
+  parseMiniBrowserPrefs(readStoredJson(MINI_BROWSER_PREFS_STORAGE_KEY));
+
+export const saveMiniBrowserPrefs = (prefs: MiniBrowserPrefs): void => {
+  localStorage.setItem(MINI_BROWSER_PREFS_STORAGE_KEY, JSON.stringify(prefs));
+};
+
 /** Keeps stored values usable even when a previous version wrote something else. */
 const parseMiniBrowserSites = (raw: unknown): MiniBrowserSite[] => {
   if (!Array.isArray(raw)) return [];

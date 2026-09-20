@@ -1,20 +1,6 @@
 import type { MiniBrowserBounds } from '@/services/miniBrowserApi';
 
 /**
- * How many embedded cells to draw for a given number of open accounts.
- *
- * One account fills the whole area: a 1x1 grid would waste half the width on an
- * empty column. Two to four accounts use a square-ish 2-column grid, and five or
- * more fall back to three columns so the cells stay usable instead of shrinking
- * into strips. The value is the number of grid columns.
- */
-export const miniBrowserGridColumns = (openCount: number): number => {
-  if (openCount <= 1) return 1;
-  if (openCount <= 4) return 2;
-  return 3;
-};
-
-/**
  * Round a DOM rectangle into the logical-pixel bounds the backend expects.
  *
  * `getBoundingClientRect()` is the source of truth so the placeholder cell and
@@ -23,6 +9,10 @@ export const miniBrowserGridColumns = (openCount: number): number => {
  * (a rounded size plus a rounded origin can otherwise leave a one-pixel seam).
  * Non-finite or empty rectangles return `null` so callers skip the invoke
  * instead of sending a rectangle the backend would reject.
+ *
+ * The value is in logical pixels: `getBoundingClientRect()` is already in CSS
+ * pixels, and the backend's `set_bounds` converts logical units to device pixels
+ * with the window's scale factor, so no scaling may happen here as well.
  */
 export const toMiniBrowserBounds = (
   rect: { left: number; top: number; width: number; height: number },

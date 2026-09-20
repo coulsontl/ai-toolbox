@@ -6152,6 +6152,13 @@
     "embedTitle": "Embedded area",
     "embedEmpty": "No account is open in the embedded area yet. Use Open on the left, or Open every account.",
     "embedNotice": "The page is rendered by a native child webview that always paints above this page: the embedded area shows only the web page itself, and it is hidden while a dialog of this page is open.",
-    "embedNotReady": "The embedded area is not ready yet; please try again"
+    "embedNotReady": "The embedded area is not ready yet; please try again",
+    "statusActive": "Active tab",
+    "statusTab": "Tab open",
+    "openNewTab": "Open tab",
+    "tabDormant": "not loaded",
+    "tabDormantTitle": "This tab is not loaded yet",
+    "tabDormantHint": "Tabs from your last session are restored. Open this one to resume exactly where you left off.",
+    "tabLoad": "Load this tab"
   }
 }
