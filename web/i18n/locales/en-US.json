@@ -6105,9 +6105,9 @@
   },
   "miniBrowser": {
     "button": "Browser",
-    "tooltip": "Open the built-in browser to check a relay's console and API balance",
+    "tooltip": "Open the built-in browser: pages are embedded in the main window, so you can check a relay console and API balance without leaving it",
     "title": "Built-in browser",
-    "hint": "Enter the relay console address (usually the site domain plus /console). It opens in a separate native window, leaves the main window untouched, and remembers your sign-in. Each account gets its own window and login state; multi-account isolation is not yet verified on a real machine (Windows is the acceptance target, macOS is unverified).",
+    "hint": "Enter the relay console address (usually the site domain plus /console). The page is embedded in the right half of the main window instead of opening a new window, and your sign-in is remembered. Each account keeps its own login state; multi-account isolation is not yet verified on a real machine (Windows is the acceptance target, macOS is unverified).",
     "urlLabel": "Address",
     "urlPlaceholder": "relay.example.com/console",
     "urlRequired": "Enter an address first",
@@ -6126,8 +6126,8 @@
     "accountNamePlaceholder": "e.g. Primary",
     "accountNameRequired": "Enter an account name",
     "addAccount": "Add account",
-    "closeAllWindows": "Close all windows",
-    "closeTab": "Close this account window",
+    "closeAllWindows": "Close all embedded pages",
+    "closeTab": "Close this embedded page",
     "confirmAddAccount": "Save account",
     "focusAccount": "Focus window",
     "manualSection": "Open a URL once",
@@ -6140,13 +6140,18 @@
     "openAllAccounts": "Open every account",
     "openAllDone": "Every account was opened",
     "openSiteDefault": "Open default account",
-    "openTabs": "Open windows",
+    "openTabs": "Open pages",
     "removeAccount": "Remove account",
     "removeAccountConfirm": "Remove this account? Its saved login is cleared too.",
     "removeSiteConfirm": "Remove this site and all of its accounts? Their saved logins are cleared too.",
     "siteSection": "Sites and accounts",
     "statusClosed": "Not open",
     "statusOpened": "Open",
-    "subtitle": "Manage relays and accounts here; sites still open in their own windows."
+    "subtitle": "Manage sites and accounts on the left; pages are embedded on the right, so every action stays in this one window.",
+    "statusEmbedded": "Embedded",
+    "embedTitle": "Embedded area",
+    "embedEmpty": "No account is open in the embedded area yet. Use Open on the left, or Open every account.",
+    "embedNotice": "The page is rendered by a native child webview that always paints above this page: the embedded area shows only the web page itself, and it is hidden while a dialog of this page is open.",
+    "embedNotReady": "The embedded area is not ready yet; please try again"
   }
 }

@@ -11,25 +11,32 @@
 //! ships a second browser engine. The window is created on first use and
 //! destroyed when closed, so an unused toolbox pays nothing.
 //!
-//! Security: this window loads third-party pages, so it must never be able to
+//! Security: this browser loads third-party pages, so it must never be able to
 //! reach the app's own commands. Two properties hold that line:
 //! 1. It is created from Rust, and its labels (`mini-browser` and every
 //!    `mini-browser-<profile>` derived from a saved account) are deliberately
-//!    absent from `capabilities/default.json`, whose `windows` list is
-//!    `["main"]`. The app's ACL therefore grants it no command access.
+//!    absent from `capabilities/default.json`, which grants access to the
+//!    `main` *webview* only. The app's ACL therefore grants the browser no
+//!    command access, standalone window and embedded child webview alike.
 //! 2. Navigation is restricted to `http`/`https` by [`is_navigable_url`], so a
 //!    page cannot walk the window into `file://` or `javascript:` territory.
 //!
-//! Multiple accounts: every saved account gets its own window and its own
-//! webview data directory, so two logins for the same relay never share cookies.
-//! The profile id is part of both the window label and the directory name, so it
-//! is validated before either is built (see [`validate_profile`]).
+//! Two presentation modes share one implementation:
+//! - a standalone window per account (`mini_browser_open`, the original mode);
+//! - a child webview of the main window (`mini_browser_open_embedded`).
+//! Both use the same label rule and the same data directory per account, so
+//! switching modes keeps the login state.
+//!
+//! Multiple accounts: every saved account gets its own window/webview and its
+//! own webview data directory, so two logins for the same relay never share
+//! cookies. The profile id is part of both the label and the directory name, so
+//! it is validated before either is built (see [`validate_profile`]).
 //! That directory is handed to the platform webview as its own profile, and
 //! WebView2 (Windows) and WKWebView (macOS) honour it differently: per-account
 //! isolation is verified on Windows only, is unverified on macOS, and Windows
 //! stays the acceptance target for this feature.
 
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// Window label used when a caller passes no profile id. Opening the browser
 /// twice without a profile navigates that one window instead of stacking
@@ -39,6 +46,11 @@ pub const MINI_BROWSER_LABEL: &str = "mini-browser";
 /// Prefix for profile-scoped labels: `mini-browser-<profile>`. One window and
 /// one data directory per saved account.
 pub const MINI_BROWSER_LABEL_PREFIX: &str = "mini-browser-";
+
+/// Label of the window the app itself renders in. Embedded browsers are child
+/// webviews of that window, which is why their label starts with the browser
+/// prefix while their host window stays `main`.
+const MAIN_WINDOW_LABEL: &str = "main";
 
 /// Saved-page list is bounded so a runaway caller cannot grow it forever.
 const MAX_URL_LEN: usize = 2048;
@@ -164,14 +176,24 @@ pub struct MiniBrowserWindowInfo {
 /// Every open mini browser window, profile-scoped and legacy alike.
 fn open_window_infos<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec<MiniBrowserWindowInfo> {
     let mut windows = app
-        .webview_windows()
+        // Manager::webviews() rather than webview_windows(): an embedded
+        // browser is a child webview of `main`, which webview_windows() cannot
+        // see. Both modes are just webviews whose label carries the prefix.
+        .webviews()
         .into_iter()
         .filter(|(label, _)| label.starts_with(MINI_BROWSER_LABEL))
-        .map(|(label, window)| {
-            let url = window.url().map(|url| url.to_string()).unwrap_or_default();
-            // A loaded page may have replaced the title; fall back to the
-            // address so the tab strip never renders an empty row.
-            let title = window.title().unwrap_or_else(|_| url.clone());
+        .map(|(label, webview)| {
+            let url = webview.url().map(|url| url.to_string()).unwrap_or_default();
+            let window = webview.window();
+            // A standalone browser owns its window, so the window title follows
+            // the page (with the address as a fallback, so the tab strip never
+            // renders an empty row). An embedded browser shares the main window,
+            // which has no per-browser title, so the address is the label.
+            let title = if window.label() == label {
+                window.title().unwrap_or_else(|_| url.clone())
+            } else {
+                url.clone()
+            };
             let profile_id = label
                 .strip_prefix(MINI_BROWSER_LABEL_PREFIX)
                 .map(|profile| profile.to_string());
@@ -187,6 +209,30 @@ fn open_window_infos<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec<MiniBr
     windows
 }
 
+/// Close one mini browser for its validated profile label, whichever mode it is
+/// in.
+///
+/// A standalone browser is its own window, so the window is closed (which tears
+/// down both). An embedded browser is a child webview of the main window: only
+/// that webview is closed, which is what "close this tab" means there. In both
+/// cases the webview leaves the manager, so the profile stops being reported as
+/// open.
+fn close_browser<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str) -> Result<(), String> {
+    let Some(webview) = app.get_webview(label) else {
+        return Ok(());
+    };
+    let window = webview.window();
+    if window.label() == label {
+        window
+            .close()
+            .map_err(|error| format!("Failed to close the browser window: {error}"))
+    } else {
+        webview
+            .close()
+            .map_err(|error| format!("Failed to close the embedded browser: {error}"))
+    }
+}
+
 /// Bring an existing window forward, or create it with its own data directory.
 fn open_window<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -196,15 +242,27 @@ fn open_window<R: tauri::Runtime>(
     let profile = checked_profile(profile)?;
     let label = window_label(profile);
 
-    // Reuse the existing window when present: one window per account, and the
-    // legacy no-profile window keeps its old single-window semantics.
-    if let Some(existing) = app.get_webview_window(&label) {
+    // Reuse the existing browser when present: one browser per account, and the
+    // legacy no-profile window keeps its old single-window semantics. This also
+    // covers the embedded mode: a browser already embedded in the main window is
+    // navigated rather than duplicated (a second webview with the same label
+    // would be rejected).
+    if let Some(existing) = app.get_webview(&label) {
         existing
             .navigate(url)
-            .map_err(|error| format!("Failed to navigate the browser window: {error}"))?;
-        let _ = existing.show();
-        let _ = existing.unminimize();
-        let _ = existing.set_focus();
+            .map_err(|error| format!("Failed to navigate the browser: {error}"))?;
+        let window = existing.window();
+        if window.label() == label {
+            // Standalone: the webview fills its own window, so bring the window
+            // forward.
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        } else {
+            // Embedded: the page shares the main window, so leave its bounds and
+            // visibility to whoever positioned it (the embedded commands).
+            let _ = window.set_focus();
+        }
         return Ok(());
     }
 
@@ -237,12 +295,7 @@ fn close_profile_window<R: tauri::Runtime>(
     profile: Option<&str>,
 ) -> Result<(), String> {
     let profile = checked_profile(profile)?;
-    if let Some(window) = app.get_webview_window(&window_label(profile)) {
-        window
-            .close()
-            .map_err(|error| format!("Failed to close the browser window: {error}"))?;
-    }
-    Ok(())
+    close_browser(app, &window_label(profile))
 }
 
 /// Open a page in the embedded browser, creating the window if needed.
@@ -277,10 +330,12 @@ pub fn mini_browser_current_url<R: tauri::Runtime>(
     profile_id: Option<String>,
 ) -> Result<Option<String>, String> {
     let profile = checked_profile(profile_id.as_deref())?;
-    let Some(window) = app.get_webview_window(&window_label(profile)) else {
+    // get_webview, not get_webview_window: an embedded browser is a child
+    // webview of `main`, and the URL is a webview property either way.
+    let Some(webview) = app.get_webview(&window_label(profile)) else {
         return Ok(None);
     };
-    window
+    webview
         .url()
         .map(|url| Some(url.to_string()))
         .map_err(|error| format!("Failed to read the browser address: {error}"))
@@ -293,7 +348,7 @@ pub fn mini_browser_is_open<R: tauri::Runtime>(
     profile_id: Option<String>,
 ) -> bool {
     checked_profile(profile_id.as_deref())
-        .map(|profile| app.get_webview_window(&window_label(profile)).is_some())
+        .map(|profile| app.get_webview(&window_label(profile)).is_some())
         .unwrap_or(false)
 }
 
@@ -301,16 +356,14 @@ pub fn mini_browser_is_open<R: tauri::Runtime>(
 #[tauri::command]
 pub fn mini_browser_close<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
     let labels = app
-        .webview_windows()
+        // webviews(), not webview_windows(): the latter misses embedded child
+        // webviews, which "close the browser" must close too.
+        .webviews()
         .into_keys()
         .filter(|label| label.starts_with(MINI_BROWSER_LABEL))
         .collect::<Vec<_>>();
     for label in labels {
-        if let Some(window) = app.get_webview_window(&label) {
-            window
-                .close()
-                .map_err(|error| format!("Failed to close the browser window: {error}"))?;
-        }
+        close_browser(&app, &label)?;
     }
     Ok(())
 }
@@ -324,6 +377,141 @@ pub fn mini_browser_close_window<R: tauri::Runtime>(
     close_profile_window(&app, Some(&profile_id))
 }
 
+/// Embedded mode: the browser is a child webview of the main window instead of
+/// its own top-level window. Everything else — profile validation, the label
+/// rule, the per-account data directory, the http/https navigation guard — is
+/// shared with the standalone mode above, so switching modes keeps the login
+/// state and the frontend contract.
+///
+/// Look up the webview for a validated profile *only* if it is hosted by the
+/// main window. A same-labelled standalone browser window is a different thing:
+/// it cannot be repositioned inside another window.
+fn embedded_webview<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+) -> Option<tauri::Webview<R>> {
+    let webview = app.get_webview(label)?;
+    (webview.window().label() == MAIN_WINDOW_LABEL).then_some(webview)
+}
+
+/// Bounds of an embedded browser, in logical units relative to the main
+/// window's client area.
+fn embedded_bounds(x: f64, y: f64, width: f64, height: f64) -> tauri::Rect {
+    tauri::Rect {
+        position: LogicalPosition::new(x, y).into(),
+        size: LogicalSize::new(width, height).into(),
+    }
+}
+
+/// Reposition the embedded browser for one account. Errors when that account
+/// has no embedded browser (never opened, or closed).
+#[tauri::command]
+pub fn mini_browser_set_bounds<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    profile_id: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let profile = checked_profile(Some(&profile_id))?;
+    let label = window_label(profile);
+    let Some(webview) = embedded_webview(&app, &label) else {
+        return Err(format!("No embedded browser is open for '{profile_id}'"));
+    };
+    webview
+        .set_bounds(embedded_bounds(x, y, width, height))
+        .map_err(|error| format!("Failed to resize the embedded browser: {error}"))
+}
+
+/// Show or hide the embedded browser for one account. Hiding keeps the webview
+/// (and its login state) alive, which is what the tab strip needs when it
+/// switches accounts. Errors when that account has no embedded browser.
+#[tauri::command]
+pub fn mini_browser_set_visible<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    profile_id: String,
+    visible: bool,
+) -> Result<(), String> {
+    let profile = checked_profile(Some(&profile_id))?;
+    let label = window_label(profile);
+    let Some(webview) = embedded_webview(&app, &label) else {
+        return Err(format!("No embedded browser is open for '{profile_id}'"));
+    };
+    if visible {
+        webview
+            .show()
+            .map_err(|error| format!("Failed to show the embedded browser: {error}"))
+    } else {
+        webview
+            .hide()
+            .map_err(|error| format!("Failed to hide the embedded browser: {error}"))
+    }
+}
+
+/// Open a page in a child webview of the main window, creating it if needed.
+///
+/// Async for the same reason as [`mini_browser_open`]: creating a webview from
+/// a synchronous command can deadlock WebView2 on Windows.
+#[tauri::command]
+pub async fn mini_browser_open_embedded<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    profile_id: String,
+    url: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let normalised = normalise_browser_url(&url)?;
+    let parsed = tauri::Url::parse(&normalised).map_err(|error| format!("Invalid URL: {error}"))?;
+    let profile = checked_profile(Some(&profile_id))?;
+    let label = window_label(profile);
+
+    if let Some(existing) = embedded_webview(&app, &label) {
+        existing
+            .navigate(parsed)
+            .map_err(|error| format!("Failed to navigate the embedded browser: {error}"))?;
+        existing
+            .set_bounds(embedded_bounds(x, y, width, height))
+            .map_err(|error| format!("Failed to resize the embedded browser: {error}"))?;
+        let _ = existing.show();
+        return Ok(());
+    }
+
+    // A standalone browser window may already own this profile. Reuse it rather
+    // than building a second webview on a label that is already taken (that
+    // would fail with `WebviewLabelAlreadyExists`).
+    if let Some(standalone) = app.get_webview(&label) {
+        standalone
+            .navigate(parsed)
+            .map_err(|error| format!("Failed to navigate the browser window: {error}"))?;
+        let _ = standalone.show();
+        let _ = standalone.window().set_focus();
+        return Ok(());
+    }
+
+    let Some(main) = crate::main_window(&app) else {
+        return Err("The main window is not available".to_string());
+    };
+
+    let builder = tauri::WebviewBuilder::new(&label, WebviewUrl::External(parsed))
+        // Same directory rule as the standalone window, so a profile keeps its
+        // cookies when the presentation mode changes.
+        .data_directory(profile_data_dir(&profile_id))
+        // Reject non-web schemes here too: this also covers redirects and
+        // `target=_blank`, so the page cannot walk itself into `file://`.
+        .on_navigation(is_navigable_url);
+
+    main.add_child(
+        builder,
+        LogicalPosition::new(x, y),
+        LogicalSize::new(width, height),
+    )
+    .map_err(|error| format!("Failed to open the embedded browser: {error}"))?;
+    Ok(())
+}
+
 /// Show and focus the window belonging to one account.
 #[tauri::command]
 pub fn mini_browser_focus_window<R: tauri::Runtime>(
@@ -331,9 +519,19 @@ pub fn mini_browser_focus_window<R: tauri::Runtime>(
     profile_id: String,
 ) -> Result<(), String> {
     let profile = checked_profile(Some(&profile_id))?;
-    let Some(window) = app.get_webview_window(&window_label(profile)) else {
+    let label = window_label(profile);
+    let Some(webview) = app.get_webview(&label) else {
         return Ok(());
     };
+    let window = webview.window();
+    if window.label() != label {
+        // Embedded: the page shares the main window, so "focus" can only reveal
+        // it and bring that window forward.
+        let _ = webview.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        return Ok(());
+    }
     let _ = window.show();
     let _ = window.unminimize();
     let _ = window.set_focus();

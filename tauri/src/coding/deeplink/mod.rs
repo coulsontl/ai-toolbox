@@ -118,7 +118,7 @@ fn focus_main_window(app: &AppHandle) {
         }
         return;
     }
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = crate::main_window(app) {
         #[cfg(target_os = "macos")]
         {
             use tauri::ActivationPolicy;

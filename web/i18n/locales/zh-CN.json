@@ -6102,9 +6102,9 @@
   },
   "miniBrowser": {
     "button": "浏览器",
-    "tooltip": "打开内置浏览器，查看中转站后台与 API 余额",
+    "tooltip": "打开内置浏览器，网页内嵌在主窗口内，查看中转站后台与 API 余额",
     "title": "内置浏览器",
-    "hint": "输入中转站后台地址（例如「站点域名 + /console」）。用独立的原生窗口打开，不影响主窗口状态，登录信息会被记住。每个账号使用独立窗口与登录状态；多号隔离尚未真机验证（Windows 为验收目标，macOS 未验证）。",
+    "hint": "输入中转站后台地址（例如「站点域名 + /console」）。网页内嵌在主窗口右侧，不再新建窗口，登录信息会被记住。每个账号使用独立的登录状态；多号隔离尚未真机验证（Windows 为验收目标，macOS 未验证）。",
     "urlLabel": "网址",
     "urlPlaceholder": "relay.example.com/console",
     "urlRequired": "请先输入网址",
@@ -6123,8 +6123,8 @@
     "accountNamePlaceholder": "例如：主号",
     "accountNameRequired": "请填写账号名称",
     "addAccount": "添加账号",
-    "closeAllWindows": "关闭全部窗口",
-    "closeTab": "关闭该账号窗口",
+    "closeAllWindows": "关闭全部内嵌页面",
+    "closeTab": "关闭这个内嵌页面",
     "confirmAddAccount": "保存账号",
     "focusAccount": "切到该窗口",
     "manualSection": "临时打开网址",
@@ -6137,13 +6137,18 @@
     "openAllAccounts": "一键打开全部账号",
     "openAllDone": "已打开全部账号",
     "openSiteDefault": "打开默认账号",
-    "openTabs": "已打开的窗口",
+    "openTabs": "已打开的页面",
     "removeAccount": "删除账号",
     "removeAccountConfirm": "删除该账号？它的登录状态也会一起清除。",
     "removeSiteConfirm": "删除该站点及它的全部账号？登录状态也会一起清除。",
     "siteSection": "中转站与账号",
     "statusClosed": "未打开",
     "statusOpened": "已打开",
-    "subtitle": "中转站与账号都在这里管理，网站仍在独立窗口打开。"
+    "subtitle": "左侧管理站点与账号，网页内嵌在右侧，全部操作只在这一个窗口内完成。",
+    "statusEmbedded": "已内嵌",
+    "embedTitle": "内嵌浏览区",
+    "embedEmpty": "内嵌区还没有打开任何账号。在左侧点「打开」，或用「一键打开全部账号」。",
+    "embedNotice": "网页由原生子浏览器渲染，永远盖在本页之上：所以内嵌区里只有网页本身，本页的弹窗出现时会先隐藏网页。",
+    "embedNotReady": "内嵌区还没准备好，请稍后再试"
   }
 }

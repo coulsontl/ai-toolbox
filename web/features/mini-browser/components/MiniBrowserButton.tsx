@@ -9,12 +9,13 @@ import styles from './MiniBrowserButton.module.less';
 /**
  * Toolbar entry for the embedded browser.
  *
- * The browser windows themselves are native webviews created by the backend
- * (see `tauri/src/mini_browser.rs`) and stay in their own top-level windows.
- * This entry only navigates the main window to the standalone workbench page
- * (`pages/MiniBrowserPage.tsx`: saved sites, accounts and the open-window
- * strip). It used to open a Modal, which could not hold the management surface
- * as comfortably as a route.
+ * The pages themselves are native child webviews created by the backend (see
+ * `tauri/src/mini_browser.rs`) and are embedded inside this main window by the
+ * workbench page, so opening an address no longer creates a separate window.
+ * This entry only navigates the main window to that standalone workbench
+ * (`pages/MiniBrowserPage.tsx`: saved sites, accounts and the embed area). It
+ * used to open a Modal, which could not hold the management surface as
+ * comfortably as a route.
  */
 export const MiniBrowserButton: React.FC = () => {
   const { t } = useTranslation();

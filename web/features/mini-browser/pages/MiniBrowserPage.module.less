@@ -1,8 +1,19 @@
+/*
+ * Layout: a fixed-height page split into a control column and the embed area.
+ *
+ * The page owns its height (`100vh` minus the app header offset) instead of
+ * growing with its content, because the embedded native webviews are pinned to
+ * rectangles measured from this page: if the page itself scrolled, every
+ * scroll would move those rectangles and the native views would have to chase
+ * them. Only the control column scrolls; the embed area never does.
+ */
 .page {
-  display: flex;
-  min-height: 0;
-  flex-direction: column;
-  gap: 16px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  height: calc(100vh - var(--content-top-offset) - 48px);
+  min-height: 480px;
+  min-width: 0;
 }
 
 .header {
@@ -95,16 +106,24 @@
   background: var(--color-status-success);
 }
 
-.hint {
-  margin-bottom: 0;
-  color: var(--color-text-tertiary);
-  font-size: 12px;
+/* ---- left control column + right embed area ---- */
+
+.body {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
+  gap: 12px;
 }
 
-.siteList {
+.sidebar {
   display: flex;
+  min-width: 0;
+  min-height: 0;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .section {
@@ -117,58 +136,74 @@
   font-size: 13px;
 }
 
-.emptyHint {
+.hint {
   margin-bottom: 0;
+  color: var(--color-text-tertiary);
   font-size: 12px;
 }
 
-/* ---- open window strip ---- */
+/* ---- embed area ---- */
 
-.tabStrip {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 6px;
+/*
+ * The embed area is chrome only: every cell inside it stays empty, because the
+ * native webview is painted above the DOM and would cover anything drawn there.
+ */
+.embedArea {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border-card);
+  border-radius: 10px;
+  background: var(--color-bg-container);
 }
 
-.tab {
+.embedGrid {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  gap: 4px;
+  padding: 4px;
+  box-sizing: border-box;
+}
+
+/*
+ * One grid slot: a label strip plus the measured placeholder.
+ *
+ * The strip lives outside the rectangle handed to the backend, so it stays
+ * readable next to a native page that would otherwise cover anything drawn in
+ * the same space — with several accounts side by side, that strip is what tells
+ * the cells apart.
+ */
+.embedSlot {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  gap: 2px;
+}
+
+.embedSlotHeader {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 4px;
-  padding: 6px 8px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-bg-elevated);
+  gap: 6px;
+  padding: 0 2px;
 }
 
-.tabMain {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  flex-direction: column;
-  align-items: flex-start;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  text-align: left;
-
-  &:focus-visible {
-    outline: 2px solid var(--color-border-secondary);
-    outline-offset: 2px;
-  }
-}
-
-.tabName {
-  max-width: 100%;
+.embedSlotName {
+  max-width: 45%;
   overflow: hidden;
-  font-size: 12px;
+  color: var(--color-text-primary);
+  font-size: 11px;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.tabUrl {
-  max-width: 100%;
+.embedSlotUrl {
+  min-width: 0;
+  flex: 1;
   overflow: hidden;
   color: var(--color-text-tertiary);
   font-size: 11px;
@@ -176,30 +211,37 @@
   white-space: nowrap;
 }
 
-.tabClose {
+.embedCell {
+  min-width: 0;
+  min-height: 0;
+  /* Deliberately blank: filled by the native child webview, not by the DOM. */
+  background: transparent;
+}
+
+.embedEmpty {
   display: flex;
-  width: 24px;
-  height: 24px;
-  flex: 0 0 auto;
+  height: 100%;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--color-text-tertiary);
-  cursor: pointer;
+  gap: 4px;
+  padding: 24px;
+  text-align: center;
+}
 
-  &:hover {
-    color: var(--color-status-error);
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--color-border-secondary);
-    outline-offset: 2px;
-  }
+.embedEmptyText {
+  max-width: 420px;
+  margin-bottom: 0;
+  font-size: 12px;
 }
 
 /* ---- site + account management ---- */
+
+.siteList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
 
 .siteBlock {
   padding: 10px 12px;
@@ -234,6 +276,7 @@
 .siteActions {
   display: flex;
   flex-shrink: 0;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -246,10 +289,8 @@
 
 .accountRow {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 4px;
   padding: 4px 0;
   border-top: 1px dashed var(--color-border-secondary);
 }
@@ -257,7 +298,6 @@
 .accountInfo {
   display: flex;
   min-width: 0;
-  flex: 1;
   align-items: center;
   gap: 6px;
 }
@@ -280,15 +320,39 @@
   color: var(--color-text-tertiary);
 }
 
+.cellClose {
+  display: flex;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+
+  &:hover {
+    color: var(--color-status-error);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-secondary);
+    outline-offset: 2px;
+  }
+}
+
 .accountMeta {
   display: flex;
   min-width: 0;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
 }
 
 .accountUrl {
-  max-width: 320px;
+  min-width: 0;
   overflow: hidden;
   color: var(--color-text-tertiary);
   font-size: 11px;
@@ -319,6 +383,18 @@
   gap: 8px;
 }
 
+.emptyHint {
+  margin-bottom: 0;
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, auto) minmax(240px, 1fr);
+  }
+}
+
 @media (max-width: 720px) {
   .header {
     align-items: flex-start;
@@ -329,9 +405,5 @@
     width: 100%;
     margin-left: 0;
     justify-content: flex-start;
-  }
-
-  .siteActions {
-    flex-wrap: wrap;
   }
 }

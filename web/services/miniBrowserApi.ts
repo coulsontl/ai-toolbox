@@ -111,6 +111,17 @@ export const createMiniBrowserProfileId = (): string => {
 };
 
 /**
+ * Profile used by the page's "open a URL once" box.
+ *
+ * A one-off address has no saved account, but the embedded command still needs
+ * a profile id, so it gets this fixed one. That keeps the one-off page inside
+ * the main window (instead of the legacy separate window) and gives it its own
+ * stable cookies. It collides with a saved account only if an account was
+ * literally called `manual`, which the id generator cannot produce.
+ */
+export const MINI_BROWSER_ONEOFF_PROFILE_ID = 'manual';
+
+/**
  * Derive a profile id from an existing stored id, deterministically.
  *
  * A site id written by an older version is a UUID, so this returns it
@@ -228,6 +239,21 @@ const profileArgs = (profileId?: string): { profileId?: string } =>
   profileId ? { profileId } : {};
 
 /**
+ * Logical-pixel rectangle for the embedded page.
+ *
+ * The origin is the top-left corner of the main window's content area, which is
+ * the same coordinate space as `getBoundingClientRect()` while the window is at
+ * 100% scale — callers pass `left` / `top` / `width` / `height` straight
+ * through, and `x` / `y` match the backend's naming.
+ */
+export interface MiniBrowserBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
  * Open a URL in the embedded browser, creating its window on first use.
  *
  * Passing `profileId` opens (or reuses) that account's own window and login
@@ -274,6 +300,59 @@ export const focusMiniBrowserWindow = async (profileId: string): Promise<void> =
 /** Every open mini browser window, for the panel's tab strip. */
 export const listMiniBrowserWindows = async (): Promise<MiniBrowserWindowInfo[]> => {
   return await invoke<MiniBrowserWindowInfo[]>('mini_browser_list_windows');
+};
+
+/**
+ * Open (or navigate) an account's page inside the main window.
+ *
+ * The native child webview is always painted above the React DOM, so `bounds`
+ * must describe an empty rectangle the page keeps free of its own content: it
+ * comes from the placeholder cell's `getBoundingClientRect()`.
+ */
+export const openMiniBrowserEmbedded = async (
+  profileId: string,
+  url: string,
+  bounds: MiniBrowserBounds,
+): Promise<void> => {
+  await invoke('mini_browser_open_embedded', {
+    profileId,
+    url,
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+  });
+};
+
+/**
+ * Move (or resize) an already embedded page.
+ *
+ * Called after any layout change: window resize, panel scroll, grid re-flow.
+ */
+export const setMiniBrowserBounds = async (
+  profileId: string,
+  bounds: MiniBrowserBounds,
+): Promise<void> => {
+  await invoke('mini_browser_set_bounds', {
+    profileId,
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+  });
+};
+
+/**
+ * Show or hide an embedded page without closing it.
+ *
+ * Hiding is the only way a React modal, dropdown or popover can be seen over an
+ * embedded page, because a native child webview ignores `z-index` entirely.
+ */
+export const setMiniBrowserVisible = async (
+  profileId: string,
+  visible: boolean,
+): Promise<void> => {
+  await invoke('mini_browser_set_visible', { profileId, visible });
 };
 
 /**

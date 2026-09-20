@@ -75,6 +75,17 @@ mod app_identity_tests {
     }
 }
 
+/// The app's own window.
+///
+/// Deliberately `Window` and not `WebviewWindow`: once the mini browser is
+/// embedded, `main` hosts child webviews, and `Manager::get_webview_window`
+/// returns `None` for any window that is not a single-webview window
+/// (`Window::is_webview_window()`). Callers that only need window-level
+/// behaviour (show / hide / focus / size / position) must use this helper.
+pub(crate) fn main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<tauri::Window<R>> {
+    app.get_window("main")
+}
+
 /// Create the main window. Shared by startup and lightweight-mode rebuild so
 /// both paths produce the same window. `geometry` (logical units) restores the
 /// pre-destroy window placement; `None` centers a default-sized window.
@@ -1002,7 +1013,7 @@ pub fn run() {
                 }
                 return;
             }
-            if let Some(window) = app.get_webview_window("main") {
+            if let Some(window) = main_window(app) {
                 // macOS: Switch back to Regular mode to show in Dock
                 #[cfg(target_os = "macos")]
                 {
@@ -1099,7 +1110,7 @@ pub fn run() {
                                     *guard = Some(message);
                                 }
                             }
-                            if let Some(window) = app_handle.get_webview_window("main") {
+                            if let Some(window) = main_window(&app_handle) {
                                 let _ = window.show();
                                 let _ = window.set_focus();
                             }
@@ -1278,7 +1289,7 @@ pub fn run() {
                     }
                 } else if !start_minimized {
                     // Show window unless start_minimized is enabled
-                    if let Some(window) = app_handle_clone.get_webview_window("main") {
+                    if let Some(window) = main_window(&app_handle_clone) {
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
@@ -1982,7 +1993,7 @@ pub fn run() {
                         }
                     } else {
                         // Hide window instead of closing
-                        if let Some(window) = app_handle.get_webview_window("main") {
+                        if let Some(window) = main_window(&app_handle) {
                             let _ = window.hide();
 
                             // macOS: Switch to Accessory mode to hide from Dock
@@ -2018,6 +2029,10 @@ pub fn run() {
             mini_browser::mini_browser_focus_window,
             mini_browser::mini_browser_list_windows,
             mini_browser::mini_browser_clear_profile,
+            // Mini browser (embedded in the main window)
+            mini_browser::mini_browser_open_embedded,
+            mini_browser::mini_browser_set_bounds,
+            mini_browser::mini_browser_set_visible,
             // Update
             update::check_for_updates,
             update::install_update,
@@ -2755,7 +2770,7 @@ pub fn run() {
                     use tauri::ActivationPolicy;
                     // Switch back to Regular mode to show in Dock
                     let _ = app_handle.set_activation_policy(ActivationPolicy::Regular);
-                    if let Some(window) = app_handle.get_webview_window("main") {
+                    if let Some(window) = main_window(app_handle) {
                         let _ = window.show();
                         let _ = window.set_focus();
                     } else if lightweight::is_lightweight_mode() {

@@ -58,7 +58,7 @@ fn take_saved_geometry() -> Option<WindowGeometry> {
         .and_then(|mut guard| guard.take())
 }
 
-fn capture_window_geometry<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Option<WindowGeometry> {
+fn capture_window_geometry<R: Runtime>(window: &tauri::Window<R>) -> Option<WindowGeometry> {
     // A never-shown window (e.g. start-lightweight startup) has no meaningful
     // geometry worth restoring on rebuild.
     if !window.is_visible().unwrap_or(false) {
@@ -89,10 +89,7 @@ fn refresh_tray_menus_async<R: Runtime>(app: &tauri::AppHandle<R>) {
     });
 }
 
-fn show_and_focus_main_window<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    window: &tauri::WebviewWindow<R>,
-) {
+fn show_and_focus_main_window<R: Runtime>(app: &tauri::AppHandle<R>, window: &tauri::Window<R>) {
     #[cfg(target_os = "macos")]
     {
         use tauri::ActivationPolicy;
@@ -116,7 +113,7 @@ pub fn enter_lightweight_mode<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
         .map(|state| state.mark_frontend_not_ready())
         .unwrap_or(false);
 
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = crate::main_window(app) {
         store_saved_geometry(capture_window_geometry(&window));
 
         #[cfg(target_os = "macos")]
@@ -144,7 +141,7 @@ pub fn enter_lightweight_mode<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
 /// Rebuild the main window from its saved geometry and leave lightweight mode.
 /// When the window is already alive this only brings it to the front.
 pub fn exit_lightweight_mode<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = crate::main_window(app) {
         show_and_focus_main_window(app, &window);
         LIGHTWEIGHT_MODE.store(false, Ordering::Release);
         refresh_tray_menus_async(app);
@@ -155,7 +152,7 @@ pub fn exit_lightweight_mode<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<()
     crate::build_main_window(app, geometry)
         .map_err(|e| format!("Failed to rebuild main window: {e}"))?;
 
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = crate::main_window(app) {
         show_and_focus_main_window(app, &window);
     }
     LIGHTWEIGHT_MODE.store(false, Ordering::Release);
