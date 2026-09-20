@@ -126,6 +126,8 @@ export const MiniBrowserPage: React.FC = () => {
   const lastBoundsRef = React.useRef(new Map<string, MiniBrowserBounds>());
   const embeddedProfilesRef = React.useRef<string[]>([]);
   const knownWindowsRef = React.useRef(new Set<string>());
+  /** Profiles whose native page is being torn down right now. */
+  const closingRef = React.useRef(new Set<string>());
   const prefsRef = React.useRef(prefs);
   const isActiveRef = React.useRef(isActive);
   const syncTimerRef = React.useRef<number | null>(null);
@@ -306,9 +308,14 @@ export const MiniBrowserPage: React.FC = () => {
     const known = new Set(accounts.map((account) => account.id));
     known.add(MINI_BROWSER_ONEOFF_PROFILE_ID);
     const live = knownWindowsRef.current;
+    const closing = closingRef.current;
     const current = prefsRef.current;
-    const kept = current.openTabs.filter((profileId) => known.has(profileId) || live.has(profileId));
-    const additions = [...live].filter((profileId) => !kept.includes(profileId));
+    const kept = current.openTabs.filter(
+      (profileId) => (known.has(profileId) && !closing.has(profileId)) || live.has(profileId),
+    );
+    const additions = [...live].filter(
+      (profileId) => !kept.includes(profileId) && !closing.has(profileId),
+    );
     if (kept.length === current.openTabs.length && additions.length === 0) return;
 
     const openTabs = [...kept, ...additions];
@@ -318,11 +325,11 @@ export const MiniBrowserPage: React.FC = () => {
         current.activeProfile && openTabs.includes(current.activeProfile)
           ? current.activeProfile
           : openTabs[0] ?? null,
-      lastUrl: Object.fromEntries(
-        Object.entries(current.lastUrl).filter(([profileId]) =>
-          openTabs.includes(profileId),
-        ),
-      ),
+      // The remembered address is deliberately *not* pruned with the tab: the
+      // user's place on a relay console is a habit, not a property of the tab,
+      // so closing a tab and reopening that account later must still resume
+      // there. Deleted accounts are pruned where they are deleted.
+      lastUrl: current.lastUrl,
     });
   }, [accounts, openWindows, persistPrefs]);
 
@@ -518,8 +525,15 @@ export const MiniBrowserPage: React.FC = () => {
         previous.includes(profileId) ? previous : [...previous, profileId],
       );
       try {
-        await openMiniBrowserEmbedded(profileId, targetUrl, bounds);
-        lastBoundsRef.current.set(profileId, bounds);
+        /*
+         * A webview is created visible, so a tab that is loading behind the
+         * active one is born at the parked rectangle and hidden immediately:
+         * creating it at the real rectangle would paint a page the user did not
+         * ask for over the current one for the length of the open call.
+         */
+        const placedAt = reveal ? bounds : PARKED_BOUNDS;
+        await openMiniBrowserEmbedded(profileId, targetUrl, placedAt);
+        lastBoundsRef.current.set(profileId, placedAt);
         setEmbeddedUrls((previous) => ({ ...previous, [profileId]: targetUrl }));
         setEmbeddedProfiles((previous) =>
           previous.includes(profileId) ? previous : [...previous, profileId],
@@ -588,10 +602,18 @@ export const MiniBrowserPage: React.FC = () => {
           Object.entries(previous).filter(([candidate]) => candidate !== profileId),
         ),
       );
-      // Hiding first makes the close reliable: the native page is gone from the
-      // user's point of view immediately, even if the backend teardown is slow.
-      await setMiniBrowserVisible(profileId, false).catch(() => undefined);
-      await closeMiniBrowserWindow(profileId).catch(() => undefined);
+      // Marked as closing so the poll below cannot add the tab back from a
+      // window list that still contains it for a moment.
+      closingRef.current.add(profileId);
+      try {
+        // Hiding first makes the close reliable: the native page is gone from
+        // the user's point of view immediately, even if the backend teardown is
+        // slow.
+        await setMiniBrowserVisible(profileId, false).catch(() => undefined);
+        await closeMiniBrowserWindow(profileId).catch(() => undefined);
+      } finally {
+        closingRef.current.delete(profileId);
+      }
       await refresh();
     },
     [persistPrefs, refresh],
