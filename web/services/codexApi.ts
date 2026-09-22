@@ -226,6 +226,16 @@ export const saveCodexOfficialLocalAccount = async (
   return await invoke<CodexOfficialAccount>('save_codex_official_local_account', { providerId });
 };
 
+export const importCodexOfficialAccountFromAuthJson = async (
+  providerId: string,
+  authJson: string,
+): Promise<CodexOfficialAccount> => {
+  return await invoke<CodexOfficialAccount>('import_codex_official_account_auth_json', {
+    providerId,
+    authJson,
+  });
+};
+
 export const applyCodexOfficialAccount = async (
   providerId: string,
   accountId: string,

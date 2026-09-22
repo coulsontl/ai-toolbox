@@ -44,6 +44,7 @@ sequenceDiagram
 - `__local__` 还没有正式 provider 数据库记录，不能进入依赖持久化 provider ID 的官方账号管理链路；页面应先让用户保存收编，再展示或调用官方账号接口。
 - 官方订阅模型列表只是辅助填写 `model` 字段。账号套餐、quota 和真实可调用性以 Codex 官方账号明细/运行时请求为准，前端不应在模型下拉阶段做额外拦截。
 - 官方账号额度窗口由后端解析并投影；页面只展示返回的 `5h`、weekly、monthly 明细，不根据套餐、字段顺序或文案自行推断。
+- 页面粘贴导入 `auth.json` 时只把内容提交给后端保存为账号快照；运行时 `auth.json` 只有在用户点击“应用”后才会更新。
 - 官方账号卡片的额度摘要仍以百分比为主；重置信息（各窗口重置时间、剩余时长、重置卡数量）另起 10px 辅助文字一行，统一走 `utils/codexQuotaDisplay.ts`。剩余时长由绝对时间戳在渲染时计算，不要把相对文案落库或写进类型；重置卡数量只展示后端 `resetCreditsAvailable` 投影，前端不自行请求明细或推断。
 - provider 模式只允许在空白新增 provider 时选择。模式入口并入表单顶部“渠道”选择行：空白新增可在“自定义/官方/内置渠道”之间切换；复制 provider 仍走创建新记录语义，但必须沿用源 provider 的 `category`；编辑已保存 provider 也必须保留既有 `category`，不要允许官方/自定义互相切换。
 - 自定义模式下的内置供应商 endpoint 会填入 Base URL、API 格式和模型映射，但只锁定 API 格式，不锁定 Base URL；保存内置 endpoint 时只写 `meta.gatewayProfile={tool:"codex",profileId,endpointId}` 引用，`settingsConfig.config` 中的 `base_url` 必须使用用户当前表单里的 Base URL。切回普通“自定义”时必须清掉 `gatewayProfile`，只保留用户手动选择的 `apiFormat`；不要把 `providerType` / `apiKeyField` / `reasoningField` / `defaultMaxTokens` / 图片策略这类 profile 派生快照写进 provider meta。

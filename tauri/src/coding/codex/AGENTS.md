@@ -23,6 +23,7 @@
 - 启动初始化和 provider 列表懒加载必须使用同一套 official-only 判断；如果本地同时存在官方登录态和三方 `base_url` / API key 配置，应保留 `__local__` 临时 provider 语义，不要在启动阶段持久化默认 provider。
 - `__local__` 临时 provider 只用于三方/自定义本地配置。不要把纯官方订阅本地运行态显示成 `default（来自本地）`，否则用户删除持久化官方订阅后会看到无法删除的官方订阅临时卡片。
 - official account 命令必须区分 `provider_id == "__local__"` 和 `account_id == "__local__"`：前者是临时 provider，后端必须拒绝 OAuth/apply/delete/refresh/copy 等 official-account 管理入口；后者是在真实持久化 official provider 下展示本机运行时登录态的虚拟账号。
+- 从页面粘贴导入的 `auth.json` 只保存为官方账号快照，不覆盖当前 live `auth.json`；只有用户显式应用该账号时才写入运行时文件。
 - Official OAuth freshness: apply 路径已有 `ensure_fresh_official_runtime_auth`（lead 3 天）。启动 / 周期巡检由 `coding::auth_refresh` 调用 `refresh_applied_codex_accounts_if_needed`（所有已入库官方账号，排除 `__local__` 虚拟账号；默认 interval 12h）。未应用账号只把新 token 写回 SQLite；**仅 applied** 才写 live `auth.json`，写后须 `config-changed` + `wsl-sync-request-codex`（与 apply 对齐）。额度 `wham/usage` 不进该调度器。
 
 ## 关键流程

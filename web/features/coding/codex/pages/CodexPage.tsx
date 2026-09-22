@@ -1,5 +1,5 @@
 import React from 'react';
-import { Typography, Button, Space, Empty, message, Modal, Spin, Collapse, Descriptions, Checkbox, Drawer } from 'antd';
+import { Typography, Button, Space, Empty, message, Modal, Spin, Collapse, Descriptions, Checkbox, Drawer, Input } from 'antd';
 import { PlusOutlined, FolderOpenOutlined, AppstoreOutlined, SyncOutlined, EyeOutlined, ExclamationCircleOutlined, LinkOutlined, EllipsisOutlined, DatabaseOutlined, ImportOutlined, FileTextOutlined, ThunderboltOutlined, EditOutlined, CopyOutlined, MessageOutlined, BulbOutlined, CheckSquareOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
@@ -43,6 +43,7 @@ import {
   startCodexOfficialAccountDeviceAuth,
   type CodexDeviceAuthStartResult,
   saveCodexOfficialLocalAccount,
+  importCodexOfficialAccountFromAuthJson,
   applyCodexOfficialAccount,
   deleteCodexOfficialAccount,
   refreshCodexOfficialAccountLimits,
@@ -876,6 +877,49 @@ const CodexPage: React.FC = () => {
             }}
           >
             {t('codex.provider.deviceAuth')}
+          </Button>
+          <Button
+            block
+            onClick={() => {
+              loginMethodModal.destroy();
+              let authJson = '';
+              Modal.confirm({
+                title: t('codex.provider.authJsonImportTitle'),
+                icon: null,
+                okText: t('common.confirm'),
+                cancelText: t('common.cancel'),
+                width: 640,
+                content: (
+                  <Input.TextArea
+                    autoFocus
+                    autoSize={{ minRows: 10, maxRows: 18 }}
+                    placeholder={t('codex.provider.authJsonImportPlaceholder')}
+                    onChange={(event) => {
+                      authJson = event.target.value;
+                    }}
+                  />
+                ),
+                onOk: async () => {
+                  if (!authJson.trim()) {
+                    message.error(t('codex.provider.authJsonImportEmpty'));
+                    return;
+                  }
+                  try {
+                    await importCodexOfficialAccountFromAuthJson(provider.id, authJson);
+                    message.success(t('codex.provider.authJsonImportSuccess'));
+                    await loadConfig();
+                    await refreshTrayMenu();
+                  } catch (error) {
+                    console.error('Failed to import Codex auth.json account:', error);
+                    const errorMsg = error instanceof Error ? error.message : String(error);
+                    message.error(errorMsg || t('common.error'));
+                    throw error;
+                  }
+                },
+              });
+            }}
+          >
+            {t('codex.provider.authJsonImport')}
           </Button>
         </Space>
       ),

@@ -2302,6 +2302,7 @@ pub fn run() {
             coding::codex::start_codex_official_account_device_auth,
             coding::codex::cancel_codex_official_account_device_auth,
             coding::codex::save_codex_official_local_account,
+            coding::codex::import_codex_official_account_auth_json,
             coding::codex::apply_codex_official_account,
             coding::codex::delete_codex_official_account,
             coding::codex::refresh_codex_official_account_limits,

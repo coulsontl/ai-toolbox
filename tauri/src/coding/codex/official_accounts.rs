@@ -599,6 +599,22 @@ fn auth_json_from_snapshot(snapshot: &str) -> Result<Value, String> {
         .map_err(|error| format!("Failed to parse account snapshot: {error}"))
 }
 
+fn parse_imported_auth_json(content: &str) -> Result<Value, String> {
+    let content = content.trim();
+    if content.is_empty() {
+        return Err("Codex auth.json content is empty".to_string());
+    }
+    let auth = serde_json::from_str::<Value>(content)
+        .map_err(|error| format!("Failed to parse auth.json: {error}"))?;
+    if !auth.is_object() {
+        return Err("Codex auth.json must be a JSON object".to_string());
+    }
+    if !auth_has_official_runtime(&auth) {
+        return Err("auth.json does not contain an official Codex login".to_string());
+    }
+    Ok(auth)
+}
+
 async fn read_auth_json_from_disk(db: Option<&crate::db::SqliteDbState>) -> Result<Value, String> {
     let root_dir = if let Some(db) = db {
         get_codex_root_dir_from_db_async(db).await?
@@ -1993,6 +2009,60 @@ pub async fn save_codex_official_local_account(
 }
 
 #[tauri::command]
+pub async fn import_codex_official_account_auth_json(
+    state: tauri::State<'_, SqliteDbState>,
+    app: tauri::AppHandle,
+    provider_id: String,
+    auth_json: String,
+) -> Result<CodexOfficialAccount, String> {
+    let db = state.db();
+    ensure_persisted_provider_id(&provider_id)?;
+    let provider = query_provider(&db, &provider_id).await?;
+    if provider.category != "official" {
+        return Err("Only official Codex providers can import official accounts".to_string());
+    }
+
+    let auth = parse_imported_auth_json(&auth_json)?;
+    if let Some(existing_account) =
+        find_matching_official_account(&db, &provider_id, &auth).await?
+    {
+        let _ = app.emit("config-changed", "window");
+        return load_official_account(&db, &existing_account.id).await;
+    }
+
+    let usage_plan_type = usage_plan_type_from_auth(&auth);
+    let usage_account_id = usage_account_id_from_auth(&auth);
+    let usage_snapshot = auth
+        .pointer("/tokens/access_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|access_token| async {
+            fetch_usage_snapshot(
+                &db,
+                access_token,
+                usage_account_id.as_deref(),
+                usage_plan_type.as_deref(),
+            )
+            .await
+        });
+    let usage_snapshot = match usage_snapshot {
+        Some(request) => request.await.ok(),
+        None => None,
+    };
+
+    let content = build_account_content_from_auth_snapshot(
+        &provider_id,
+        &auth,
+        usage_snapshot.as_ref(),
+        None,
+    )?;
+    let account = save_official_account(&db, &content).await?;
+    let _ = app.emit("config-changed", "window");
+    Ok(account)
+}
+
+#[tauri::command]
 pub async fn apply_codex_official_account(
     state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
@@ -2315,6 +2385,29 @@ mod tests {
             "auth_mode": "apikey"
         })));
         assert!(!auth_has_official_runtime(&serde_json::json!({})));
+    }
+
+    #[test]
+    fn imported_auth_json_requires_a_valid_official_login_object() {
+        let valid = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "access_token": "access-token",
+                "refresh_token": "refresh-token"
+            }
+        })
+        .to_string();
+
+        let parsed = parse_imported_auth_json(&format!("\n {valid} \n"))
+            .expect("valid auth.json should parse");
+        assert_eq!(parsed["auth_mode"], "chatgpt");
+        assert!(parse_imported_auth_json("").is_err());
+        assert!(parse_imported_auth_json("[]").is_err());
+        assert!(parse_imported_auth_json("not-json").is_err());
+        assert!(parse_imported_auth_json(
+            r#"{"auth_mode":"chatgpt","tokens":{"access_token":"only"}}"#
+        )
+        .is_err());
     }
 
     #[test]
