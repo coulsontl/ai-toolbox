@@ -197,6 +197,10 @@
   }
 }
 
+/* Pins directly under the collapse header (top: 0, z-index 6 in App.css).
+   The 48px is that header's rendered height: antd's `12px 16px` header
+   padding + the `size="small"` controls in `headerExtra` (24-25px). Widen
+   the header content and this must grow with it. */
 .toolbar {
   position: sticky;
   top: 48px;
@@ -205,10 +209,9 @@
   gap: 12px;
   align-items: center;
   justify-content: space-between;
-  margin: 0 -20px 12px;
-  padding: 8px 20px;
+  margin-bottom: 12px;
+  /* Opaque: matches the card body, so rows scroll under the frozen bar. */
   background: var(--color-bg-container);
-  box-shadow: 0 1px 0 var(--color-border-card);
 }
 
 .toolbarMain {

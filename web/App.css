@@ -125,16 +125,26 @@ body {
 }
 
 /* Global Collapse card style.
-   overflow must stay visible on page-level cards so section headers can
-   `position: sticky`. Hidden overflow clips the sticky containing block,
-   which is why provider/session toolbars used to scroll away. Modal and
-   drawer collapses keep hidden overflow so radius clipping still works. */
+   Page-level cards must be `clip`, not `hidden` or `visible`:
+   - `hidden` makes the card a scroll container, so the sticky section
+     headers inside it pin to a box that never scrolls (they scrolled away
+     with the card — the bug this pattern exists to avoid);
+   - `visible` keeps sticky working but drops the card's rounded clipping.
+     Page-level cards have a single item, which is antd's `:first-child`
+     *and* `:last-child`, so the later `0 0 8px 8px` radius wins and the
+     header's own opaque background paints square top corners over the
+     card's 12px radius.
+   `clip` clips like `hidden` (radius included) without creating a scroll
+   container. `visible` stays first as the fallback for engines without
+   `overflow: clip`. Modal and drawer collapses keep `hidden` so their
+   radius clipping is unaffected. */
 .ant-collapse {
   background: var(--color-bg-container);
   border: none;
   border-radius: 12px;
   box-shadow: var(--shadow-container);
   overflow: visible;
+  overflow: clip;
 }
 
 .ant-collapse > .ant-collapse-item {
@@ -150,20 +160,50 @@ body {
    pads by `--content-top-offset`, so sticky `top` is 0 relative to that
    content box — adding the offset again leaves a blank band under the
    app header. Native sticky unfreezes when the item scrolls out.
-   Nested / modal / drawer headers stay in flow so they do not stack. */
-.ant-collapse > .ant-collapse-item > .ant-collapse-header {
+   Nested / modal / drawer headers stay in flow so they do not stack.
+
+   Frozen-bar z-index ladder (keep this ordering when adding bars):
+     8 Skills / MCP toolbar  >  7 page headers (Gateway, Image)
+     >  6 this collapse header  >  5 SessionManager list toolbar
+   Each level only has to beat the one below it, so a page-level bar can
+   never be covered by the section bar inside it.
+
+   `.ant-collapse-header` is repeated on every selector below on purpose:
+   antd injects its own `.ant-collapse > .ant-collapse-item >
+   .ant-collapse-header { position: relative }` at runtime, i.e. after this
+   stylesheet, so an equal-specificity `sticky` loses and the header never
+   freezes. The doubled class outranks it without `!important`, and keeps
+   the unfold rules below (nested / modal / drawer) ahead of it. */
+.ant-collapse > .ant-collapse-item > .ant-collapse-header.ant-collapse-header {
   position: sticky;
   top: 0;
   z-index: 6;
+  /* Background only: the frozen header must stay opaque so scrolled content
+     cannot show through. No divider or shadow decoration — the panel's own
+     `border-top` already draws the header/content line. */
   background: var(--color-bg-container);
-  box-shadow: 0 1px 0 var(--color-border-card);
 }
 
-.ant-collapse .ant-collapse > .ant-collapse-item > .ant-collapse-header,
-.ant-modal .ant-collapse > .ant-collapse-item > .ant-collapse-header,
-.ant-drawer .ant-collapse > .ant-collapse-item > .ant-collapse-header {
+.ant-collapse .ant-collapse > .ant-collapse-item > .ant-collapse-header.ant-collapse-header,
+.ant-modal .ant-collapse > .ant-collapse-item > .ant-collapse-header.ant-collapse-header,
+.ant-drawer .ant-collapse > .ant-collapse-item > .ant-collapse-header.ant-collapse-header {
   position: static;
-  box-shadow: none;
+}
+
+/* antd rounds a card as `:first-child` (top) then `:last-child` (bottom),
+   and a single-item card matches both — the later `0 0 8px 8px` wins, so
+   antd leaves the *top* corners square, where the header paints its own
+   opaque background. Pin the header to the card radius (the card is 12px,
+   larger than antd's `borderRadiusLG`, so a mismatch errs inward and stays
+   invisible). Only the collapsed last item ends at the card's bottom edge. */
+.ant-collapse > .ant-collapse-item:first-child > .ant-collapse-header.ant-collapse-header {
+  border-top-left-radius: 12px;
+  border-top-right-radius: 12px;
+}
+
+.ant-collapse > .ant-collapse-item:last-child:not(.ant-collapse-item-active) > .ant-collapse-header.ant-collapse-header {
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 12px;
 }
 
 .ant-modal .ant-collapse,
@@ -177,6 +217,22 @@ body {
   border-top: 1px solid var(--color-border-card-subtle);
 }
 
+/* antd animates the panel element itself (`PanelContent` receives the
+   motion className), so `.ant-motion-collapse { overflow: hidden }` is
+   what clips the body while the height/opacity transition runs. The
+   `overflow: visible` above outranks it (0,3,0 > 0,2,0), so the clip has
+   to be re-asserted for the motion class; the card's `clip` catches the
+   same spill, but at a coarser box. The panel is not on the sticky path
+   (header and panel are siblings inside the item), so this costs nothing. */
+.ant-collapse > .ant-collapse-item > .ant-collapse-panel.ant-motion-collapse,
+.ant-collapse > .ant-collapse-item > .ant-collapse-panel.ant-motion-collapse-legacy {
+  overflow: hidden;
+}
+
+/* Legacy (antd v5) DOM. The classes below no longer exist in the antd v6
+   DOM (`.ant-collapse-panel > .ant-collapse-body`), so this rule is a
+   no-op and the real body padding is antd's default `16px 16px`. Do not
+   derive bleed/offset numbers from it. */
 .ant-collapse > .ant-collapse-item > .ant-collapse-content > .ant-collapse-content-box {
   padding: 16px 20px;
 }

@@ -27,7 +27,10 @@
 
 .filterBar {
   position: sticky;
-  top: 64px;
+  /* Pins below the page header (top: 0, z-index 7), whose measured height
+     GatewayPage publishes as `--gateway-header-height`. The 64px fallback
+     only covers the first paint. */
+  top: var(--gateway-header-height, 64px);
   z-index: 6;
   display: flex;
   min-width: 0;
@@ -35,9 +38,9 @@
   justify-content: space-between;
   gap: 12px;
   overflow: visible;
-  padding: 8px 0;
+  padding: 0;
+  /* Opaque so the charts cannot show through while the bar is frozen. */
   background: var(--color-bg-layout);
-  box-shadow: 0 1px 0 var(--color-border-card);
   scrollbar-width: none;
 
   &::-webkit-scrollbar {

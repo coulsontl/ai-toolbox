@@ -77,6 +77,30 @@ const GatewayPage: React.FC = () => {
   const [statusRefreshKey, setStatusRefreshKey] = React.useState(0);
   const [documentVisible, setDocumentVisible] = React.useState(() => document.visibilityState !== 'hidden');
 
+  // The statistics/requests filter bars stick right below this header, so the
+  // offset they need is the header's measured height rather than a constant:
+  // it grows when the controls wrap onto a second row or the subtitle wraps.
+  const headerRef = React.useRef<HTMLDivElement | null>(null);
+  const [headerHeight, setHeaderHeight] = React.useState(64);
+
+  React.useLayoutEffect(() => {
+    const node = headerRef.current;
+    if (!node) return;
+    const syncHeaderHeight = () => {
+      // Round down: a bar tucked a hairline under the header is invisible,
+      // while the opposite rounding opens a gap the list scrolls through.
+      const height = Math.floor(node.getBoundingClientRect().height);
+      // KeepAlive hides visited pages with `display: none`, which measures 0
+      // — hold the last real height instead of pinning the bars at the top.
+      if (height > 0) setHeaderHeight(height);
+    };
+    syncHeaderHeight();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(syncHeaderHeight);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
   const handleStatusChange = React.useCallback((nextStatus: ProxyGatewayStatus) => {
     // An authoritative command result must not be overwritten by an older poll.
     statusRevisionRef.current += 1;
@@ -441,8 +465,11 @@ const GatewayPage: React.FC = () => {
   };
 
   return (
-    <div className={styles.gatewayPage}>
-      <div className={styles.header}>
+    <div
+      className={styles.gatewayPage}
+      style={{ ['--gateway-header-height' as any]: `${headerHeight}px` }}
+    >
+      <div className={styles.header} ref={headerRef}>
         <div className={styles.titleBlock}>
           <span className={styles.titleIcon}>
             <Network size={18} aria-hidden="true" />
