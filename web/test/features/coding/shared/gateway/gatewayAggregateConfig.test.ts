@@ -5,6 +5,7 @@ import type { GatewayCliTakeoverStatus } from '../../../../../services/proxyGate
 import {
   buildGatewayAggregateModelSlug,
   buildGatewayAggregateSitePreviewSlug,
+  canReplaySubagentExposureSelection,
   deriveGatewayAggregateSitePrefix,
   isAggregateSiteId,
   normalizeGatewayAggregateAliases,
@@ -454,6 +455,34 @@ test('an engage needs between one and the hint limit of usable names', () => {
   assert.equal(
     isSubagentExposureSelectionComplete([...atLimit, ' model-0 ', '']),
     true,
+  );
+});
+
+test('a stored exposure selection is only replayable within the hint limit', () => {
+  const atLimit = Array.from(
+    { length: SUBAGENT_EXPOSED_MODEL_LIMIT },
+    (_, index) => `model-${index}`,
+  );
+
+  // An empty/absent selection is the legacy "promote nothing" default, which the
+  // backend accepts, so it must stay replayable rather than be read as broken.
+  assert.equal(canReplaySubagentExposureSelection(undefined), true);
+  assert.equal(canReplaySubagentExposureSelection(null), true);
+  assert.equal(canReplaySubagentExposureSelection([]), true);
+  assert.equal(canReplaySubagentExposureSelection(atLimit), true);
+  // Duplicates and blanks are normalized away before the limit is applied.
+  assert.equal(
+    canReplaySubagentExposureSelection([...atLimit, ' model-0 ', '']),
+    true,
+  );
+
+  // One more than the hint window is exactly the selection every engage rejects,
+  // which is why the provider-save round trip must detect it before restoring
+  // direct mode.
+  assert.equal(canReplaySubagentExposureSelection([...atLimit, 'model-extra']), false);
+  assert.equal(
+    canReplaySubagentExposureSelection([' m0 ', 'm1', 'm2', 'm3', 'm4', 'm5']),
+    false,
   );
 });
 

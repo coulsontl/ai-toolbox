@@ -1,8 +1,19 @@
 import type { GatewayAggregateNamingMode, GatewayCliTakeoverStatus } from '@/services';
-import {
-  isGatewayReengageMode,
-  type GatewayAggregateReengageConfig,
-} from './providerSaveReengage';
+import type { GatewayAggregateReengageConfig } from './providerSaveReengage';
+
+/** Takeover mode a provider save has to replay around itself. */
+export type GatewayReengageMode = 'single' | 'failover' | 'aggregate' | null | undefined;
+
+/**
+ * Narrow a stored takeover mode to one this flow can replay.
+ *
+ * Lives here, beside `resolveGatewayReengageMode`, so the aggregate helpers and
+ * the re-engage flow can share one definition without an import cycle.
+ */
+export const isGatewayReengageMode = (
+  gatewayMode: GatewayReengageMode,
+): gatewayMode is 'single' | 'failover' | 'aggregate' =>
+  gatewayMode === 'single' || gatewayMode === 'failover' || gatewayMode === 'aggregate';
 
 /**
  * Aggregate-mode helpers shared by the gateway settings panel and the provider
@@ -271,6 +282,25 @@ export const isSubagentExposureSelectionComplete = (
   const count = normalizeSubagentExposedModels(models).length;
   return count > 0 && count <= SUBAGENT_EXPOSED_MODEL_LIMIT;
 };
+
+/**
+ * Whether a persisted exposure selection can be replayed by an engage at all.
+ *
+ * Mirrors the backend's `validate_subagent_exposed_model_limit`, which is
+ * fail-closed: more than `SUBAGENT_EXPOSED_MODEL_LIMIT` names is a hard error,
+ * never a truncation. A selection that exceeds the limit therefore makes *every*
+ * aggregate engage fail, and because the provider-save round trip restores
+ * direct mode first, replaying one strands the CLI in direct mode — the takeover
+ * is dropped and each later provider save fails the same way.
+ *
+ * An empty or absent selection is the legacy "publish every bare model, promote
+ * none" default and is always replayable, so callers must not read `[]` as an
+ * un-engageable state.
+ */
+export const canReplaySubagentExposureSelection = (
+  models?: readonly string[] | null,
+): boolean =>
+  normalizeSubagentExposedModels(models).length <= SUBAGENT_EXPOSED_MODEL_LIMIT;
 
 /**
  * Mirror of the backend `resolve_effective_site_aliases`.
