@@ -2033,6 +2033,7 @@ pub fn run() {
             mini_browser::mini_browser_open_embedded,
             mini_browser::mini_browser_set_bounds,
             mini_browser::mini_browser_set_visible,
+            mini_browser::mini_browser_bounds,
             // Update
             update::check_for_updates,
             update::install_update,

@@ -9,6 +9,7 @@ import {
   closeMiniBrowser,
   closeMiniBrowserWindow,
   createMiniBrowserProfileId,
+  dropMiniBrowserProfiles,
   listMiniBrowserWindows,
   loadMiniBrowserAccounts,
   loadMiniBrowserPrefs,
@@ -16,6 +17,7 @@ import {
   nextMiniBrowserAccountLabel,
   normaliseMiniBrowserUrl,
   openMiniBrowserEmbedded,
+  readMiniBrowserBounds,
   saveMiniBrowserAccounts,
   saveMiniBrowserPrefs,
   saveMiniBrowserSites,
@@ -28,27 +30,39 @@ import {
   type MiniBrowserSite,
   type MiniBrowserWindowInfo,
 } from '@/services/miniBrowserApi';
-import { areMiniBrowserBoundsEqual, toMiniBrowserBounds } from '../utils/miniBrowserEmbed';
+import {
+  areMiniBrowserBoundsEqual,
+  planPlacementFlush,
+  toMiniBrowserBounds,
+  type MiniBrowserAppliedPlacement,
+} from '../utils/miniBrowserEmbed';
 import { deriveMiniBrowserSiteName } from '../utils/miniBrowserSiteName';
 import styles from './MiniBrowserPage.module.less';
 
-/** Throttle for `set_bounds`: a drag-resize fires far faster than the OS needs. */
-const BOUNDS_SYNC_THROTTLE_MS = 100;
+/**
+ * Merge window for placement changes.
+ *
+ * A drag-resize and a tab switch both fire far faster than the OS needs, and
+ * every placement invoke travels to the main thread, so a burst is collapsed
+ * into one flush per window instead of one invoke per event.
+ */
+const PLACEMENT_FLUSH_DELAY_MS = 100;
 
 /**
- * How often the visible page's placement is re-asserted.
+ * How often the visible page's placement is checked against the backend.
  *
  * The native page is pinned to a rectangle measured from the DOM, and a missed
  * update is fatal in a very visible way: the page keeps a rectangle from a
  * narrower window and ends up painted over the control column. `resize`,
  * `ResizeObserver` and scroll events cover the common cases, but they are all
- * one-shot — if the window grows while the update is skipped (a throttle window,
- * a layout pass that has not settled, or a failed `set_bounds`, which is
- * swallowed and would otherwise never be retried) nothing puts the page back.
- * This heartbeat re-measures and re-pins, and costs one
- * `getBoundingClientRect` per tick when nothing moved.
+ * one-shot — if an update is skipped (a throttle window, a layout pass that has
+ * not settled, or a failed send) nothing puts the page back.
+ *
+ * The check asks the backend where the page actually is and only re-sends when
+ * the answer disagrees with the rectangle this page wants, so a healthy window
+ * costs one read per tick and never re-sends a rectangle it already has.
  */
-const PLACEMENT_HEARTBEAT_MS = 400;
+const PLACEMENT_VERIFY_MS = 1000;
 
 /** How often the open-page list is re-read (addresses, legacy windows). */
 const WINDOW_POLL_INTERVAL_MS = 2000;
@@ -123,15 +137,49 @@ export const MiniBrowserPage: React.FC = () => {
   const [openOverlays, setOpenOverlays] = React.useState<string[]>([]);
 
   const embedHostRef = React.useRef<HTMLDivElement | null>(null);
-  const lastBoundsRef = React.useRef(new Map<string, MiniBrowserBounds>());
+  /**
+   * The placement each loaded page should have, and the one the backend has
+   * confirmed.
+   *
+   * A flush is the difference between the two, so a tab switch asks the backend
+   * for the two pages that actually changed instead of re-pointing every open
+   * tab. Bounds are physical pixels: see `utils/miniBrowserEmbed.ts` for why.
+   */
+  const desiredBoundsRef = React.useRef(new Map<string, MiniBrowserBounds>());
+  const desiredVisibleRef = React.useRef(new Map<string, boolean>());
+  const appliedRef = React.useRef(new Map<string, MiniBrowserAppliedPlacement>());
+  /**
+   * Per-profile counter bumped whenever a wanted placement changes.
+   *
+   * A reply that arrives after the page asked for something else must not be
+   * recorded as applied, or the newer request would look like it had already
+   * been sent and would never be retried.
+   */
+  const generationRef = React.useRef(new Map<string, number>());
+  /** Every placement invoke runs on this chain, in FIFO order. */
+  const flushChainRef = React.useRef<Promise<void>>(Promise.resolve());
+  const flushBusyRef = React.useRef(false);
+  const flushTimerRef = React.useRef<number | null>(null);
+  const probeInFlightRef = React.useRef(false);
+  /** The device pixel ratio the wanted rectangles were measured with. */
+  const dprRef = React.useRef(window.devicePixelRatio);
   const embeddedProfilesRef = React.useRef<string[]>([]);
   const knownWindowsRef = React.useRef(new Set<string>());
   /** Profiles whose native page is being torn down right now. */
   const closingRef = React.useRef(new Set<string>());
   const prefsRef = React.useRef(prefs);
   const isActiveRef = React.useRef(isActive);
-  const syncTimerRef = React.useRef<number | null>(null);
   const openingRef = React.useRef(new Set<string>());
+  /**
+   * True while any native page is being created.
+   *
+   * Creating a webview blocks the main thread and pumps its message loop, so
+   * every invoke sent in that window is dispatched *inside* the pump: a
+   * placement or verify call then runs WebView2 code on a half-built page and
+   * hangs the window. The panel therefore goes quiet (no poll, no verify, no
+   * flush) until the burst is over, and flushes once when it ends.
+   */
+  const creatingNativePageRef = React.useRef(false);
 
   embeddedProfilesRef.current = embeddedProfiles;
   prefsRef.current = prefs;
@@ -287,7 +335,10 @@ export const MiniBrowserPage: React.FC = () => {
   React.useEffect(() => {
     if (!isActive) return undefined;
     void refresh();
-    const timer = window.setInterval(() => void refresh(), WINDOW_POLL_INTERVAL_MS);
+    const timer = window.setInterval(() => {
+      if (creatingNativePageRef.current) return;
+      void refresh();
+    }, WINDOW_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [isActive, refresh]);
 
@@ -350,79 +401,294 @@ export const MiniBrowserPage: React.FC = () => {
   }, [persistPrefs, rememberableUrls]);
 
   /**
-   * Push the visible page's rectangle to the backend.
+   * The placeholder cell's rectangle, in the physical pixels the backend wants.
    *
-   * Only the visible page is moved: a hidden page keeps whatever rectangle it
-   * had, which is exactly what makes the switch a cheap show/hide. A failed send
-   * forgets the cached rectangle instead of keeping a lie, so the next tick
-   * retries.
+   * `null` means "not laid out" (a hidden route or a frame before the grid has a
+   * size), which is never a rectangle to send.
    */
-  const syncBounds = React.useCallback(async (profileId?: string) => {
-    const target = profileId ?? prefsRef.current.activeProfile;
-    if (!target || !embeddedProfilesRef.current.includes(target)) return;
+  const measureHostBounds = React.useCallback((): MiniBrowserBounds | null => {
     const host = embedHostRef.current;
-    if (!host) return;
-    const bounds = toMiniBrowserBounds(host.getBoundingClientRect());
-    if (!bounds) return;
-    if (areMiniBrowserBoundsEqual(lastBoundsRef.current.get(target) ?? null, bounds)) return;
-
-    lastBoundsRef.current.set(target, bounds);
-    try {
-      await setMiniBrowserBounds(target, bounds);
-    } catch {
-      lastBoundsRef.current.delete(target);
-    }
+    if (!host) return null;
+    return toMiniBrowserBounds(host.getBoundingClientRect(), window.devicePixelRatio);
   }, []);
 
-  /** Leading-edge throttle: the first change is served 100ms later, at most. */
-  const scheduleBoundsSync = React.useCallback(() => {
-    if (syncTimerRef.current !== null) return;
-    syncTimerRef.current = window.setTimeout(() => {
-      syncTimerRef.current = null;
-      // A hidden route has no usable rectangle; nothing to sync until it is back.
-      if (!isActiveRef.current) return;
-      void syncBounds();
-    }, BOUNDS_SYNC_THROTTLE_MS);
-  }, [syncBounds]);
+  /** Invalidate every reply still in flight for one profile. */
+  const bumpGeneration = React.useCallback((profileId: string) => {
+    generationRef.current.set(profileId, (generationRef.current.get(profileId) ?? 0) + 1);
+  }, []);
+
+  /** Want `bounds` for one profile. Returns whether that changed anything. */
+  const markDesiredBounds = React.useCallback(
+    (profileId: string, bounds: MiniBrowserBounds): boolean => {
+      if (areMiniBrowserBoundsEqual(desiredBoundsRef.current.get(profileId) ?? null, bounds)) {
+        return false;
+      }
+      desiredBoundsRef.current.set(profileId, bounds);
+      bumpGeneration(profileId);
+      return true;
+    },
+    [bumpGeneration],
+  );
+
+  /** Want `visible` for one profile. Returns whether that changed anything. */
+  const markDesiredVisible = React.useCallback(
+    (profileId: string, visible: boolean): boolean => {
+      if (desiredVisibleRef.current.get(profileId) === visible) return false;
+      desiredVisibleRef.current.set(profileId, visible);
+      bumpGeneration(profileId);
+      return true;
+    },
+    [bumpGeneration],
+  );
+
+  /** Forget everything this page remembers about one profile's placement. */
+  const forgetPlacement = React.useCallback((profileId: string) => {
+    desiredBoundsRef.current.delete(profileId);
+    desiredVisibleRef.current.delete(profileId);
+    appliedRef.current.delete(profileId);
+    generationRef.current.delete(profileId);
+  }, []);
+
+  /**
+   * Append one backend task to the placement chain.
+   *
+   * Placement invokes are serialised on purpose: a hide, a park and a show for
+   * different tabs overlapping would let them land out of order, and landing out
+   * of order is what makes a page appear at the previous tab's rectangle. The
+   * chain never rejects, so one failed task cannot stop the ones behind it.
+   */
+  const appendToFlushChain = React.useCallback((task: () => Promise<void>): Promise<void> => {
+    flushBusyRef.current = true;
+    const tail = flushChainRef.current.then(task).catch(() => undefined);
+    flushChainRef.current = tail;
+    void tail.then(() => {
+      // Only the last task clears the flag: an earlier one finishing while more
+      // work is queued must not make the chain look idle.
+      if (flushChainRef.current === tail) flushBusyRef.current = false;
+    });
+    return tail;
+  }, []);
+
+  /**
+   * Send every placement that differs from the one the backend confirmed.
+   *
+   * The plan is built when the task runs rather than when it was queued, so a
+   * flush that waited behind another one can never push a rectangle that a later
+   * change has already replaced.
+   */
+  const flushPlacements = React.useCallback(() => {
+    void appendToFlushChain(async () => {
+      // A native page is being created right now: the main thread is pumping
+      // messages inside that creation, so an invoke sent here would run
+      // WebView2 code inside the pump. The burst-end effect re-schedules this.
+      if (creatingNativePageRef.current) return;
+      const ops = planPlacementFlush(
+        desiredBoundsRef.current,
+        desiredVisibleRef.current,
+        appliedRef.current,
+      );
+      for (const op of ops) {
+        // The wanted placement can change while this op waits its turn, and a
+        // reply that lands afterwards must not be recorded as the applied one.
+        const generation = generationRef.current.get(op.profileId) ?? 0;
+        // A tab closed while its ops were queued: there is no page to move.
+        if (!appliedRef.current.has(op.profileId)) continue;
+        try {
+          if (op.kind === 'bounds') {
+            await setMiniBrowserBounds(op.profileId, op.bounds);
+          } else {
+            await setMiniBrowserVisible(op.profileId, op.visible);
+          }
+        } catch {
+          // A refused send keeps the confirmed placement behind the wanted one,
+          // so the next flush or verify tick offers it again.
+          continue;
+        }
+        if ((generationRef.current.get(op.profileId) ?? 0) !== generation) continue;
+        const applied = appliedRef.current.get(op.profileId);
+        if (!applied) continue;
+        appliedRef.current.set(
+          op.profileId,
+          op.kind === 'bounds'
+            ? { ...applied, bounds: op.bounds }
+            : { ...applied, visible: op.visible },
+        );
+      }
+    });
+  }, [appendToFlushChain]);
+
+  /** Merge a burst of placement changes into one flush. */
+  const scheduleFlush = React.useCallback(() => {
+    if (flushTimerRef.current !== null) return;
+    flushTimerRef.current = window.setTimeout(() => {
+      flushTimerRef.current = null;
+      flushPlacements();
+    }, PLACEMENT_FLUSH_DELAY_MS);
+  }, [flushPlacements]);
+
+  // Keep the panel quiet while native pages are being created.
+  const creatingNativePage = busy || openingProfiles.length > 0;
+  React.useEffect(() => {
+    creatingNativePageRef.current = creatingNativePage;
+    if (!creatingNativePage) scheduleFlush();
+  }, [creatingNativePage, scheduleFlush]);
 
   React.useEffect(() => {
     return () => {
-      if (syncTimerRef.current !== null) {
-        window.clearTimeout(syncTimerRef.current);
-        syncTimerRef.current = null;
+      if (flushTimerRef.current !== null) {
+        window.clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
       }
     };
   }, []);
 
-  // Layout changes reach the backend through one throttled path: the host's own
+  /**
+   * Point the page on screen at the placeholder cell.
+   *
+   * Only the active tab is moved: every other loaded page is parked, which is
+   * exactly what makes a switch a cheap hide/show.
+   */
+  const measureActiveTab = React.useCallback(() => {
+    const profileId = prefsRef.current.activeProfile;
+    if (!profileId || !embeddedProfilesRef.current.includes(profileId)) return;
+    const bounds = measureHostBounds();
+    if (!bounds) return;
+    markDesiredBounds(profileId, bounds);
+  }, [markDesiredBounds, measureHostBounds]);
+
+  /**
+   * Re-point every loaded page after the display scale changed.
+   *
+   * The CSS rectangles have not moved, but their physical size has. Only the
+   * page on screen has a rectangle worth redoing: a hidden page sits at the
+   * scale-independent parked rectangle, so marking it changes nothing (and a
+   * mark that changes nothing sends nothing).
+   */
+  const remeasureAfterScaleChange = React.useCallback(() => {
+    const active = prefsRef.current.activeProfile;
+    const bounds = measureHostBounds();
+    for (const profileId of embeddedProfilesRef.current) {
+      const onScreen = profileId === active && desiredVisibleRef.current.get(profileId) === true;
+      if (onScreen) {
+        if (bounds) markDesiredBounds(profileId, bounds);
+      } else {
+        markDesiredBounds(profileId, PARKED_BOUNDS);
+      }
+    }
+    scheduleFlush();
+  }, [markDesiredBounds, measureHostBounds, scheduleFlush]);
+
+  // Layout changes reach the backend through one merged path: the host's own
   // resize, the window resizing, and any scrolling ancestor (`main` is the
   // scroll container, so the listener is registered in the capture phase).
   React.useEffect(() => {
     if (!isActive) return undefined;
 
-    const observer = new ResizeObserver(() => scheduleBoundsSync());
+    /*
+     * A scale change keeps the CSS rectangle but not its physical size, so the
+     * sweep replaces the ordinary re-measure. `resize` fires when the OS resizes
+     * the window crossing a scale boundary; the media query covers a display
+     * switch that resizes nothing.
+     */
+    let scaleQuery: MediaQueryList | null = null;
+    const watchScale = () => {
+      scaleQuery?.removeEventListener('change', handleLayoutChange);
+      scaleQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      scaleQuery.addEventListener('change', handleLayoutChange);
+    };
+    const handleLayoutChange = () => {
+      if (window.devicePixelRatio !== dprRef.current) {
+        dprRef.current = window.devicePixelRatio;
+        watchScale();
+        remeasureAfterScaleChange();
+        return;
+      }
+      if (!isActiveRef.current) return;
+      measureActiveTab();
+      scheduleFlush();
+    };
+
+    const observer = new ResizeObserver(() => handleLayoutChange());
     if (embedHostRef.current) observer.observe(embedHostRef.current);
 
-    const handleLayoutChange = () => scheduleBoundsSync();
     window.addEventListener('resize', handleLayoutChange);
     document.addEventListener('scroll', handleLayoutChange, true);
-    scheduleBoundsSync();
+    watchScale();
+    handleLayoutChange();
 
     return () => {
       observer.disconnect();
+      scaleQuery?.removeEventListener('change', handleLayoutChange);
       window.removeEventListener('resize', handleLayoutChange);
       document.removeEventListener('scroll', handleLayoutChange, true);
     };
-  }, [isActive, scheduleBoundsSync]);
+  }, [isActive, measureActiveTab, remeasureAfterScaleChange, scheduleFlush]);
 
-  // The heartbeat that re-asserts the placement (see the constant).
+  /**
+   * Ask the backend where the visible page actually is, and repair a mismatch.
+   *
+   * The native page can be moved behind this page's back — a missed event, a
+   * layout pass that had not settled, a send the backend refused — so once a
+   * second the reported rectangle is compared with the wanted one. A matching
+   * answer sends nothing at all, and the probe is skipped while the flush chain
+   * is busy so it can never pile up behind layout work.
+   */
+  const verifyPlacement = React.useCallback(() => {
+    if (creatingNativePageRef.current) return;
+    if (flushBusyRef.current || flushTimerRef.current !== null || probeInFlightRef.current) return;
+    const profileId = prefsRef.current.activeProfile;
+    if (!profileId || !embeddedProfilesRef.current.includes(profileId)) return;
+
+    probeInFlightRef.current = true;
+    void readMiniBrowserBounds(profileId)
+      .then((reported) => {
+        if (!reported) return;
+        const desired = desiredBoundsRef.current.get(profileId);
+        if (!desired || areMiniBrowserBoundsEqual(reported, desired)) return;
+        if (import.meta.env.DEV) {
+          console.debug(
+            `[mini-browser] placement mismatch ${profileId}` +
+              ` desired=${desired.x},${desired.y} ${desired.width}x${desired.height}` +
+              ` reported=${reported.x},${reported.y} ${reported.width}x${reported.height}` +
+              ` scale=${reported.scaleFactor} client=${reported.clientWidth}x${reported.clientHeight}`,
+          );
+        }
+        /*
+         * What the backend reports is what is really on screen, so it becomes the
+         * confirmed placement: the next flush then sees the difference from the
+         * wanted one and pushes it again. The rectangle is re-measured too, in
+         * case the layout moved without an event.
+         */
+        const applied = appliedRef.current.get(profileId);
+        if (applied) {
+          appliedRef.current.set(profileId, {
+            ...applied,
+            bounds: {
+              x: reported.x,
+              y: reported.y,
+              width: reported.width,
+              height: reported.height,
+            },
+          });
+        }
+        const measured = measureHostBounds();
+        if (measured) markDesiredBounds(profileId, measured);
+        scheduleFlush();
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        probeInFlightRef.current = false;
+      });
+  }, [markDesiredBounds, measureHostBounds, scheduleFlush]);
+
+  // The verification loop that catches a placement the backend never applied.
   React.useEffect(() => {
     if (!isActive || !activeTab || !embeddedProfiles.includes(activeTab) || overlayOpen) {
       return undefined;
     }
-    const timer = window.setInterval(() => void syncBounds(), PLACEMENT_HEARTBEAT_MS);
+    const timer = window.setInterval(() => verifyPlacement(), PLACEMENT_VERIFY_MS);
     return () => window.clearInterval(timer);
-  }, [activeTab, embeddedProfiles, isActive, overlayOpen, syncBounds]);
+  }, [activeTab, embeddedProfiles, isActive, overlayOpen, verifyPlacement]);
 
   const handleOverlayChange = React.useCallback((key: string, open: boolean) => {
     setOpenOverlays((previous) => {
@@ -455,35 +721,36 @@ export const MiniBrowserPage: React.FC = () => {
   React.useEffect(() => {
     const visible = isActive && !overlayOpen;
     for (const profileId of embeddedProfiles) {
-      // The active tab is revealed by `reassert` below, *after* its rectangle
-      // has been pushed; showing it here would flash it at the old position.
-      if (profileId === activeTab && visible) continue;
-      // Hide first, then park it off the visible area: a hidden view keeps its
-      // rectangle, and a stale rectangle is exactly what makes the next switch
-      // flash at the old position before the re-pin lands.
-      void setMiniBrowserVisible(profileId, false)
-        .then(() => setMiniBrowserBounds(profileId, PARKED_BOUNDS))
-        .catch(() => undefined);
+      const shouldBeVisible = visible && profileId === activeTab;
+      if (desiredVisibleRef.current.get(profileId) === shouldBeVisible) continue;
+      markDesiredVisible(profileId, shouldBeVisible);
+      /*
+       * Two orders, both about what the user sees during a switch.
+       *
+       * A page that is leaving is hidden first and parked second, because a
+       * hidden view keeps its rectangle: parked first, it would be the stale
+       * rectangle that flashes on the next switch. A page that is arriving is
+       * placed first and revealed second, for the same reason — it must not be
+       * shown at the previous tab's rectangle, not even for a frame.
+       */
+      if (shouldBeVisible) {
+        const bounds = measureHostBounds();
+        if (bounds) markDesiredBounds(profileId, bounds);
+      } else {
+        markDesiredBounds(profileId, PARKED_BOUNDS);
+      }
     }
-    if (!visible || !activeTab || !embeddedProfiles.includes(activeTab)) return;
-
-    /*
-     * Re-pin before revealing.
-     *
-     * A hidden tab keeps the rectangle it had when it was last visible, which
-     * can be stale (the window was resized, the sidebar was scrolled). Showing
-     * it first and moving it 100ms later is what makes a freshly switched tab
-     * appear in the wrong place for a frame — or, when the move is missed, for
-     * good. The rectangle is therefore pushed *first* and re-asserted after the
-     * reveal so the page is guaranteed to be both visible and aligned.
-     */
-    const reassert = async () => {
-      lastBoundsRef.current.delete(activeTab);
-      await syncBounds(activeTab);
-      await setMiniBrowserVisible(activeTab, true).catch(() => undefined);
-    };
-    void reassert();
-  }, [activeTab, embeddedProfiles, isActive, overlayOpen, syncBounds]);
+    scheduleFlush();
+  }, [
+    activeTab,
+    embeddedProfiles,
+    isActive,
+    markDesiredBounds,
+    markDesiredVisible,
+    measureHostBounds,
+    overlayOpen,
+    scheduleFlush,
+  ]);
 
   // A real unmount (LRU eviction, app shutdown) hides every page: the native
   // views outlive the React tree, so leaving one visible would leave an orphan
@@ -512,7 +779,7 @@ export const MiniBrowserPage: React.FC = () => {
 
       const host = embedHostRef.current;
       if (!host) return;
-      const bounds = toMiniBrowserBounds(host.getBoundingClientRect());
+      const bounds = toMiniBrowserBounds(host.getBoundingClientRect(), window.devicePixelRatio);
       if (!bounds) {
         // A hidden route has no layout, so the host measures as an empty
         // rectangle. The tab stays listed and loads when the route is shown.
@@ -532,15 +799,29 @@ export const MiniBrowserPage: React.FC = () => {
          * ask for over the current one for the length of the open call.
          */
         const placedAt = reveal ? bounds : PARKED_BOUNDS;
+        const shown = reveal && isActiveRef.current && !overlayOpenRef.current;
         await openMiniBrowserEmbedded(profileId, targetUrl, placedAt);
-        lastBoundsRef.current.set(profileId, placedAt);
+        /*
+         * "Close all" while this page was being created: the tab is gone from
+         * the preferences, and the backend tears a freshly created page down
+         * again when it was closed before it existed, so there is nothing to
+         * place and nothing to list.
+         */
+        if (!prefsRef.current.openTabs.includes(profileId)) return;
+        /*
+         * The open call already placed the page, and a native page is born
+         * visible, so its placement is seeded as both wanted and confirmed.
+         * Seeding happens *before* the tab joins `embeddedProfiles`: the
+         * visibility effect can then only add the show the open call has not
+         * done yet, never repeat the one it just did.
+         */
+        bumpGeneration(profileId);
+        desiredBoundsRef.current.set(profileId, placedAt);
+        desiredVisibleRef.current.set(profileId, shown);
+        appliedRef.current.set(profileId, { bounds: placedAt, visible: true });
         setEmbeddedUrls((previous) => ({ ...previous, [profileId]: targetUrl }));
         setEmbeddedProfiles((previous) =>
           previous.includes(profileId) ? previous : [...previous, profileId],
-        );
-        await setMiniBrowserVisible(
-          profileId,
-          reveal && isActiveRef.current && !overlayOpenRef.current,
         );
         await refresh();
       } catch (error) {
@@ -554,7 +835,7 @@ export const MiniBrowserPage: React.FC = () => {
         setOpeningProfiles((previous) => previous.filter((id) => id !== profileId));
       }
     },
-    [refresh, t],
+    [bumpGeneration, refresh, t],
   );
 
   /** Put a tab in the strip and bring it to the front, loading it if needed. */
@@ -586,16 +867,13 @@ export const MiniBrowserPage: React.FC = () => {
   const handleCloseEmbedded = React.useCallback(
     async (profileId: string) => {
       const current = prefsRef.current;
-      const openTabs = current.openTabs.filter((candidate) => candidate !== profileId);
-      persistPrefs({
-        openTabs,
-        activeProfile:
-          current.activeProfile === profileId
-            ? openTabs[openTabs.length - 1] ?? null
-            : current.activeProfile,
-        lastUrl: current.lastUrl,
-      });
-      lastBoundsRef.current.delete(profileId);
+      /*
+       * Closing a tab keeps the remembered address on purpose: the user's place
+       * on a relay console is a habit of the account, not a property of the tab.
+       * `dropMiniBrowserProfiles` is the one place that rule lives, so closing
+       * one tab and closing every tab cannot drift apart again.
+       */
+      persistPrefs(dropMiniBrowserProfiles(current, [profileId], 'closed'));
       setEmbeddedProfiles((previous) => previous.filter((id) => id !== profileId));
       setEmbeddedUrls((previous) =>
         Object.fromEntries(
@@ -609,14 +887,24 @@ export const MiniBrowserPage: React.FC = () => {
         // Hiding first makes the close reliable: the native page is gone from
         // the user's point of view immediately, even if the backend teardown is
         // slow.
-        await setMiniBrowserVisible(profileId, false).catch(() => undefined);
+        await appendToFlushChain(() =>
+          setMiniBrowserVisible(profileId, false).catch(() => undefined),
+        );
+        // Reopened while that hide was queued: the label belongs to the new page
+        // now, and closing it here would destroy the tab the user just asked
+        // for.
+        if (prefsRef.current.openTabs.includes(profileId)) return;
+        // The page is hidden and about to stop existing: forget its placement so
+        // a reopened tab starts from the open call's rectangle instead of a
+        // stale "already applied" one.
+        forgetPlacement(profileId);
         await closeMiniBrowserWindow(profileId).catch(() => undefined);
       } finally {
         closingRef.current.delete(profileId);
       }
       await refresh();
     },
-    [persistPrefs, refresh],
+    [appendToFlushChain, forgetPlacement, persistPrefs, refresh],
   );
 
   /** Forget a deleted account: close it and drop it from the strip. */
@@ -624,21 +912,21 @@ export const MiniBrowserPage: React.FC = () => {
     (profileIds: string[]) => {
       if (profileIds.length === 0) return;
       const dropped = new Set(profileIds);
-      const current = prefsRef.current;
-      const openTabs = current.openTabs.filter((profileId) => !dropped.has(profileId));
-      persistPrefs({
-        openTabs,
-        activeProfile:
-          current.activeProfile && dropped.has(current.activeProfile)
-            ? openTabs[openTabs.length - 1] ?? null
-            : current.activeProfile,
-        lastUrl: Object.fromEntries(
-          Object.entries(current.lastUrl).filter(([profileId]) => !dropped.has(profileId)),
-        ),
-      });
+      // A deleted account takes its remembered address with it: the profile id
+      // could otherwise be handed to a new account and resume a stranger's page.
+      persistPrefs(dropMiniBrowserProfiles(prefsRef.current, profileIds, 'deleted'));
       for (const profileId of profileIds) {
-        lastBoundsRef.current.delete(profileId);
-        void setMiniBrowserVisible(profileId, false).catch(() => undefined);
+        /*
+         * The hide is queued before the placement is forgotten, in that order,
+         * so it still belongs to a page this component knows about. It carries a
+         * guard: a tab that was reopened while the hide waited its turn must not
+         * be hidden by the stale request.
+         */
+        void appendToFlushChain(() => {
+          if (desiredBoundsRef.current.has(profileId)) return Promise.resolve();
+          return setMiniBrowserVisible(profileId, false).catch(() => undefined);
+        });
+        forgetPlacement(profileId);
       }
       setEmbeddedProfiles((previous) => previous.filter((id) => !dropped.has(id)));
       setEmbeddedUrls((previous) =>
@@ -647,7 +935,7 @@ export const MiniBrowserPage: React.FC = () => {
         ),
       );
     },
-    [persistPrefs],
+    [appendToFlushChain, forgetPlacement, persistPrefs],
   );
 
   /**
@@ -752,6 +1040,16 @@ export const MiniBrowserPage: React.FC = () => {
       void message.warning(t('miniBrowser.noAccounts'));
       return;
     }
+    /*
+     * A page that is still being created owns the main thread until it exists,
+     * and the single-tab path deliberately lets it finish (`loadTab` returns
+     * early for a profile that is already opening). A bulk open therefore has to
+     * wait for that one first, or the two creations overlap and the second one
+     * blocks the window.
+     */
+    while (openingRef.current.size > 0 || closingRef.current.size > 0) {
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+    }
     setBusy(true);
     try {
       const alreadyLoaded = new Set(embeddedProfilesRef.current);
@@ -792,8 +1090,46 @@ export const MiniBrowserPage: React.FC = () => {
     // Every tab, not just the loaded ones: a restored-but-dormant tab is still a
     // tab the user asked to close, and leaving it in the strip would make the
     // button look broken.
-    forgetEmbeddedProfiles([...prefsRef.current.openTabs]);
-    await closeMiniBrowser().catch(() => undefined);
+    const closingTabs = [...prefsRef.current.openTabs];
+    /*
+     * Deliberately *not* `forgetEmbeddedProfiles`: that is the delete-account
+     * rule and it drops each profile's remembered address. Closing every tab is
+     * still just closing tabs, so the addresses stay and reopening a tab resumes
+     * where it was — the same contract as closing one tab with its X.
+     */
+    persistPrefs(dropMiniBrowserProfiles(prefsRef.current, closingTabs, 'closed'));
+    for (const profileId of closingTabs) {
+      /*
+       * Hide each page first, in the same order the single-tab close uses: the
+       * native page is gone from the user's point of view immediately, even if
+       * the backend teardown behind it is slow. The guard is the same one — a tab
+       * reopened while the hide waited its turn must not be hidden by it.
+       */
+      void appendToFlushChain(() => {
+        if (desiredBoundsRef.current.has(profileId)) return Promise.resolve();
+        return setMiniBrowserVisible(profileId, false).catch(() => undefined);
+      });
+      // The backend keeps reporting these pages until their teardown lands, and
+      // the two-second poll would otherwise add every one of them straight back.
+      closingRef.current.add(profileId);
+      forgetPlacement(profileId);
+    }
+    setEmbeddedProfiles((previous) => previous.filter((id) => !closingTabs.includes(id)));
+    setEmbeddedUrls((previous) =>
+      Object.fromEntries(
+        Object.entries(previous).filter(([profileId]) => !closingTabs.includes(profileId)),
+      ),
+    );
+    /*
+     * Queued behind the per-tab hides above: the global close tears down the pages
+     * themselves, and running it first would race them. It also runs for the
+     * legacy standalone windows, which is why it exists at all.
+     */
+    try {
+      await appendToFlushChain(() => closeMiniBrowser().catch(() => undefined));
+    } finally {
+      for (const profileId of closingTabs) closingRef.current.delete(profileId);
+    }
     await refresh();
   };
 

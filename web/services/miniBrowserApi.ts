@@ -116,6 +116,50 @@ export const saveMiniBrowserPrefs = (prefs: MiniBrowserPrefs): void => {
   localStorage.setItem(MINI_BROWSER_PREFS_STORAGE_KEY, JSON.stringify(prefs));
 };
 
+/**
+ * The session that is left after some profiles leave the tab strip.
+ *
+ * `openTabs` and `activeProfile` are always corrected: a profile that is gone
+ * cannot stay in the strip, and the tab that was in front moves to the last
+ * remaining one when it is the profile being dropped.
+ *
+ * The remembered addresses follow `reason` instead, and that distinction is the
+ * whole point of this function:
+ *
+ * - `closed` keeps them. Where the user is on a relay console is a habit of the
+ *   account, not a property of the tab, so closing a tab — or every tab — must
+ *   still let the next open resume there. Pruning on close sends the user back
+ *   through the site's landing page on every reopen;
+ * - `deleted` drops them. The account is gone, so its address would only be a
+ *   stale entry that a later account could inherit.
+ *
+ * This lives here rather than inline in the page because it is the rule, not a
+ * detail of one button: the panel had four call sites that disagreed about it,
+ * which is what made "close all" behave differently from closing one tab.
+ */
+export const dropMiniBrowserProfiles = (
+  prefs: MiniBrowserPrefs,
+  profileIds: string[],
+  reason: 'closed' | 'deleted',
+): MiniBrowserPrefs => {
+  if (profileIds.length === 0) return prefs;
+  const dropped = new Set(profileIds);
+  const openTabs = prefs.openTabs.filter((profileId) => !dropped.has(profileId));
+  return {
+    openTabs,
+    activeProfile:
+      prefs.activeProfile && dropped.has(prefs.activeProfile)
+        ? openTabs[openTabs.length - 1] ?? null
+        : prefs.activeProfile,
+    lastUrl:
+      reason === 'deleted'
+        ? Object.fromEntries(
+            Object.entries(prefs.lastUrl).filter(([profileId]) => !dropped.has(profileId)),
+          )
+        : prefs.lastUrl,
+  };
+};
+
 /** Keeps stored values usable even when a previous version wrote something else. */
 const parseMiniBrowserSites = (raw: unknown): MiniBrowserSite[] => {
   if (!Array.isArray(raw)) return [];
@@ -313,18 +357,35 @@ const profileArgs = (profileId?: string): { profileId?: string } =>
   profileId ? { profileId } : {};
 
 /**
- * Logical-pixel rectangle for the embedded page.
+ * Rectangle for an embedded page, in **physical device pixels**.
  *
- * The origin is the top-left corner of the main window's content area, which is
- * the same coordinate space as `getBoundingClientRect()` while the window is at
- * 100% scale — callers pass `left` / `top` / `width` / `height` straight
- * through, and `x` / `y` match the backend's naming.
+ * The origin is the top-left corner of the main window's content area. Callers
+ * scale the placeholder cell's `getBoundingClientRect()` by `devicePixelRatio`
+ * and round it (see `features/mini-browser/utils/miniBrowserEmbed.ts`). The
+ * backend must not scale the numbers again: the child webview applies its own
+ * scale factor on top of whatever rectangle it is given, so sending CSS pixels
+ * here shrinks the page by that factor — 0.833x at 125% (120 DPI) on Windows.
  */
 export interface MiniBrowserBounds {
   x: number;
   y: number;
   width: number;
   height: number;
+}
+
+/**
+ * Where the backend really has one embedded page, in physical device pixels.
+ *
+ * The rectangle is relative to the main window's client area. `scaleFactor` is
+ * the scale the window itself reports and `clientWidth`/`clientHeight` are that
+ * client area in physical pixels, so a mismatch can be told apart from a unit
+ * error without guessing. `visible` is the visibility the backend last applied.
+ */
+export interface MiniBrowserBoundsReport extends MiniBrowserBounds {
+  scaleFactor: number;
+  clientWidth: number;
+  clientHeight: number;
+  visible: boolean;
 }
 
 /**
@@ -414,6 +475,19 @@ export const setMiniBrowserBounds = async (
     width: bounds.width,
     height: bounds.height,
   });
+};
+
+/**
+ * Where the backend currently has one embedded page, or `null` when it has no
+ * rectangle to report for that account.
+ *
+ * Read-only and cheap: it exists so the page can compare the rectangle it wants
+ * with the one that is actually set instead of assuming a send landed.
+ */
+export const readMiniBrowserBounds = async (
+  profileId: string,
+): Promise<MiniBrowserBoundsReport | null> => {
+  return await invoke<MiniBrowserBoundsReport | null>('mini_browser_bounds', { profileId });
 };
 
 /**
