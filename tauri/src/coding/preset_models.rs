@@ -520,16 +520,17 @@ mod tests {
 
     #[test]
     fn openai_presets_define_gpt_5_6_family_with_max_reasoning() {
-        // gpt-6-astra leads the bundled OpenAI preset list (added 2026-09) and
-        // shares the gpt-5.6 family's capability set; luna is still bundled but
-        // no longer among the first three presets.
-        const GPT_5_6_FAMILY_MODEL_IDS: [&str; 4] = [
+        // gpt-6-astra still leads the bundled OpenAI preset list. GPT-6 Sol and
+        // Luna sit immediately after it and share the same capability set.
+        const GPT_5_6_FAMILY_MODEL_IDS: [&str; 6] = [
             "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
             "gpt-5.6-sol",
             "gpt-5.6-terra",
             "gpt-5.6-luna",
         ];
-        const LEADING_MODEL_IDS: [&str; 3] = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra"];
+        const LEADING_MODEL_IDS: [&str; 3] = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"];
         const GPT_5_6_REASONING_LEVELS: [&str; 6] =
             ["none", "low", "medium", "high", "xhigh", "max"];
 
@@ -626,7 +627,7 @@ mod tests {
             .iter()
             .filter_map(|preset| preset.get("id").and_then(Value::as_str))
             .collect();
-        assert_eq!(model_ids, ["grok-4.6", "grok-4.5"]);
+        assert_eq!(model_ids, ["grok-4.7", "grok-4.6", "grok-4.5"]);
 
         let assert_shared_grok_fields = |model_id: &str, reasoning_levels: &[&str]| {
             let preset = model_list
@@ -673,10 +674,12 @@ mod tests {
             }
         };
 
+        assert_shared_grok_fields("grok-4.7", &GROK_4_6_REASONING_LEVELS);
         assert_shared_grok_fields("grok-4.6", &GROK_4_6_REASONING_LEVELS);
         assert_shared_grok_fields("grok-4.5", &GROK_4_5_REASONING_LEVELS);
 
         for alias in [
+            "grok-4.7-latest",
             "grok-4.6-latest",
             "grok-4.5-latest",
             "grok-build-latest",
