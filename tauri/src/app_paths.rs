@@ -32,6 +32,18 @@ use std::sync::OnceLock;
 const BOOTSTRAP_FILENAME: &str = "app_paths.json";
 /// JSON key holding the override path inside the bootstrap file.
 const OVERRIDE_KEY: &str = "data_dir_override";
+/// Opt-in data-directory override used by the isolated test launcher.
+///
+/// `dirs::data_dir()` reads the Windows Known Folder API, so redirecting
+/// `APPDATA`/`LOCALAPPDATA` in a launcher does **not** move this application's
+/// data directory; the directory name is fixed too, so a different Tauri
+/// identifier does not move it either. Without this variable an isolated
+/// launcher silently shares the production database, Codex config and WebView
+/// profile. An explicit, absolute `AI_TOOLBOX_DATA_DIR` is therefore the only
+/// way to run a genuinely isolated instance.
+///
+/// Unset, relative or non-absolute values keep the production behavior exactly.
+const DATA_DIR_ENV: &str = "AI_TOOLBOX_DATA_DIR";
 
 static RESOLVED_PATHS: OnceLock<ResolvedAppPaths> = OnceLock::new();
 
@@ -87,10 +99,23 @@ pub struct AppDataDirInfo {
 /// Unlike Tauri's path resolver this needs no `AppHandle`, so it can run before
 /// the Tauri app is built.
 pub fn default_data_dir() -> PathBuf {
-    dirs::data_dir()
-        .map(|p| p.join("com.ai-toolbox"))
-        .or_else(|| dirs::home_dir().map(|p| p.join(".ai-toolbox")))
-        .unwrap_or_else(|| PathBuf::from("."))
+    configured_data_dir(std::env::var(DATA_DIR_ENV).ok().as_deref()).unwrap_or_else(|| {
+        dirs::data_dir()
+            .map(|p| p.join("com.ai-toolbox"))
+            .or_else(|| dirs::home_dir().map(|p| p.join(".ai-toolbox")))
+            .unwrap_or_else(|| PathBuf::from("."))
+    })
+}
+
+/// Resolve an explicit data-directory override.
+///
+/// Only an absolute path (after `~` expansion) is accepted, so a relative value
+/// cannot silently resolve to the current working directory; anything else
+/// fails closed to the platform default that production uses.
+fn configured_data_dir(value: Option<&str>) -> Option<PathBuf> {
+    let raw = value.map(str::trim).filter(|value| !value.is_empty())?;
+    let expanded = expand_home(raw);
+    expanded.is_absolute().then_some(expanded)
 }
 
 /// Location of the bootstrap override file (always at the default dir).
@@ -148,8 +173,12 @@ pub fn resolved_data_dir() -> PathBuf {
 /// dir so transient caches (git clones) stay out of roaming profiles by
 /// default.
 fn default_cache_dir() -> PathBuf {
-    dirs::cache_dir()
-        .map(|p| p.join("com.ai-toolbox"))
+    // The isolated launcher must not write caches into the production
+    // `%LOCALAPPDATA%\com.ai-toolbox` either, so an explicit data dir owns its
+    // cache subdirectory.
+    configured_data_dir(std::env::var(DATA_DIR_ENV).ok().as_deref())
+        .map(|data| data.join("cache"))
+        .or_else(|| dirs::cache_dir().map(|p| p.join("com.ai-toolbox")))
         .unwrap_or_else(|| default_data_dir().join("cache"))
 }
 
@@ -337,14 +366,60 @@ mod tests {
 
     #[test]
     fn default_data_dir_under_data_dir() {
-        let base = dirs::data_dir().map(|p| p.join("com.ai-toolbox"));
-        assert_eq!(default_data_dir(), base.unwrap_or_default());
+        // An explicit override takes precedence, so this only asserts the
+        // platform default when the isolated launcher did not set one.
+        assert_eq!(default_data_dir(), dirs_default_data_dir());
     }
 
     #[test]
     fn default_cache_dir_under_cache_dir() {
-        let base = dirs::cache_dir().map(|p| p.join("com.ai-toolbox"));
-        assert_eq!(default_cache_dir(), base.unwrap_or_default());
+        let expected = if std::env::var(DATA_DIR_ENV)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .is_some()
+        {
+            default_data_dir().join("cache")
+        } else {
+            dirs::cache_dir()
+                .map(|p| p.join("com.ai-toolbox"))
+                .unwrap_or_default()
+        };
+        assert_eq!(default_cache_dir(), expected);
+    }
+
+    /// The platform default with no override, mirroring `default_data_dir`'s
+    /// fallback chain.
+    fn dirs_default_data_dir() -> PathBuf {
+        dirs::data_dir()
+            .map(|p| p.join("com.ai-toolbox"))
+            .or_else(|| dirs::home_dir().map(|p| p.join(".ai-toolbox")))
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    #[test]
+    fn configured_data_dir_accepts_only_absolute_paths() {
+        let absolute = tempfile::tempdir().unwrap();
+        let raw = absolute.path().to_string_lossy().into_owned();
+        assert_eq!(configured_data_dir(Some(&raw)), Some(absolute.path().to_path_buf()));
+
+        // Blank, unset and relative values all fail closed to the platform
+        // default instead of resolving against the working directory.
+        assert_eq!(configured_data_dir(None), None);
+        assert_eq!(configured_data_dir(Some("")), None);
+        assert_eq!(configured_data_dir(Some("   ")), None);
+        assert_eq!(configured_data_dir(Some("relative/dir")), None);
+    }
+
+    #[test]
+    fn configured_data_dir_expands_a_leading_tilde() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        assert_eq!(
+            configured_data_dir(Some("~/ai-toolbox-test")),
+            Some(home.join("ai-toolbox-test"))
+        );
     }
 
     #[test]

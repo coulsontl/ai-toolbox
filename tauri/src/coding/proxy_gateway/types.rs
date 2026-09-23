@@ -448,12 +448,30 @@ pub struct ProxyGatewaySettings {
     pub half_open_success_required: u32,
 }
 
+const DEFAULT_GATEWAY_LISTEN_PORT: u16 = 37123;
+const GATEWAY_LISTEN_PORT_ENV: &str = "AI_TOOLBOX_GATEWAY_PORT";
+
+fn configured_gateway_listen_port(value: Option<&str>) -> u16 {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse::<u16>().ok())
+        // Keep the same privileged-port boundary as the gateway's listen
+        // validator. Invalid overrides fail closed to the production default.
+        .filter(|port| *port >= 1024)
+        .unwrap_or(DEFAULT_GATEWAY_LISTEN_PORT)
+}
+
+fn default_gateway_listen_port() -> u16 {
+    configured_gateway_listen_port(std::env::var(GATEWAY_LISTEN_PORT_ENV).ok().as_deref())
+}
+
 impl Default for ProxyGatewaySettings {
     fn default() -> Self {
         Self {
             enabled_on_startup: false,
             listen_host: "127.0.0.1".to_string(),
-            listen_port: 37123,
+            listen_port: default_gateway_listen_port(),
             port_auto_select: false,
             wsl_host: String::new(),
             enabled_cli_keys: GatewayCliKey::supported_mvp(),
@@ -488,6 +506,31 @@ impl Default for ProxyGatewaySettings {
             model_max_cooldown_seconds: 1800,
             half_open_success_required: 2,
         }
+    }
+}
+
+#[cfg(test)]
+mod isolated_runtime_defaults_tests {
+    use super::*;
+
+    #[test]
+    fn gateway_port_defaults_to_the_production_port() {
+        assert_eq!(configured_gateway_listen_port(None), 37123);
+        assert_eq!(configured_gateway_listen_port(Some("")), 37123);
+        assert_eq!(configured_gateway_listen_port(Some("not-a-port")), 37123);
+    }
+
+    #[test]
+    fn gateway_port_accepts_a_non_privileged_test_port() {
+        assert_eq!(configured_gateway_listen_port(Some("38123")), 38123);
+        assert_eq!(configured_gateway_listen_port(Some(" 38123 ")), 38123);
+    }
+
+    #[test]
+    fn gateway_port_rejects_privileged_or_out_of_range_values() {
+        assert_eq!(configured_gateway_listen_port(Some("80")), 37123);
+        assert_eq!(configured_gateway_listen_port(Some("0")), 37123);
+        assert_eq!(configured_gateway_listen_port(Some("70000")), 37123);
     }
 }
 
