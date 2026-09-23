@@ -218,7 +218,7 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                         let _ = app.set_activation_policy(ActivationPolicy::Regular);
                     }
 
-                    if let Some(window) = app.get_webview_window("main") {
+                    if let Some(window) = crate::main_window(app) {
                         let _ = window.show();
                         let _ = window.set_focus();
                     }

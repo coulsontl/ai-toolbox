@@ -4,13 +4,17 @@ import test from 'node:test';
 import {
   MINI_BROWSER_ACCOUNTS_STORAGE_KEY,
   MINI_BROWSER_MAX_URL_LENGTH,
+  MINI_BROWSER_PREFS_STORAGE_KEY,
   MINI_BROWSER_SITES_STORAGE_KEY,
+  dropMiniBrowserProfiles,
   ensureMiniBrowserAccounts,
   nextMiniBrowserAccountLabel,
   normaliseMiniBrowserUrl,
+  parseMiniBrowserPrefs,
   stableMiniBrowserProfileId,
   toMiniBrowserProfileId,
   type MiniBrowserAccount,
+  type MiniBrowserPrefs,
   type MiniBrowserSite,
 } from '../../services/miniBrowserApi';
 
@@ -135,4 +139,138 @@ test('mini browser numbers new accounts with the lowest free index', () => {
 test('mini browser storage keys stay stable for existing installs', () => {
   assert.equal(MINI_BROWSER_SITES_STORAGE_KEY, 'ai-router.mini-browser.sites');
   assert.equal(MINI_BROWSER_ACCOUNTS_STORAGE_KEY, 'ai-router.mini-browser.accounts');
+});
+
+// ---- remembered session ----------------------------------------------------
+
+test('mini browser prefs decode a stored session', () => {
+  assert.deepEqual(
+    parseMiniBrowserPrefs({
+      openTabs: ['relay-a', 'relay-a', 'relay-b'],
+      activeProfile: 'relay-b',
+      lastUrl: {
+        'relay-a': 'https://relay.example.com/console',
+        'relay-b': 'relay.example.com/usage',
+      },
+    }),
+    {
+      openTabs: ['relay-a', 'relay-b'],
+      activeProfile: 'relay-b',
+      lastUrl: {
+        'relay-a': 'https://relay.example.com/console',
+        'relay-b': 'https://relay.example.com/usage',
+      },
+    },
+  );
+});
+
+test('mini browser prefs drop an active tab that is not in the strip', () => {
+  // Otherwise the panel would highlight nothing while claiming a tab is active.
+  assert.deepEqual(
+    parseMiniBrowserPrefs({ openTabs: ['relay-a'], activeProfile: 'relay-b' }).activeProfile,
+    null,
+  );
+  assert.deepEqual(parseMiniBrowserPrefs({ openTabs: [], activeProfile: 'relay-a' }).activeProfile, null);
+});
+
+test('mini browser prefs survive junk without inventing a tab', () => {
+  const empty = { openTabs: [], activeProfile: null, lastUrl: {} };
+  assert.deepEqual(parseMiniBrowserPrefs(null), empty);
+  assert.deepEqual(parseMiniBrowserPrefs([]), empty);
+  assert.deepEqual(parseMiniBrowserPrefs('nonsense'), empty);
+  assert.deepEqual(
+    parseMiniBrowserPrefs({ openTabs: ['ok', 7, null], activeProfile: 5, lastUrl: 'no' }),
+    { openTabs: ['ok'], activeProfile: null, lastUrl: {} },
+  );
+});
+
+test('mini browser prefs refuse an address the backend would reject', () => {
+  // A remembered `javascript:` entry would be refused at open time and leave the
+  // tab apparently broken; dropping it makes the tab fall back to the site.
+  assert.deepEqual(
+    parseMiniBrowserPrefs({
+      openTabs: ['relay-a'],
+      activeProfile: 'relay-a',
+      lastUrl: { 'relay-a': 'javascript:alert(1)' },
+    }).lastUrl,
+    {},
+  );
+  assert.deepEqual(
+    parseMiniBrowserPrefs({
+      openTabs: ['relay-a'],
+      activeProfile: 'relay-a',
+      lastUrl: { 'relay-a': 'file:///c:/secret.txt' },
+    }).lastUrl,
+    {},
+  );
+});
+
+test('mini browser prefs keep their own storage key', () => {
+  assert.equal(MINI_BROWSER_PREFS_STORAGE_KEY, 'ai-router.mini-browser.prefs');
+});
+
+// ---- dropping profiles from the session --------------------------------------
+
+const session = (): MiniBrowserPrefs => ({
+  openTabs: ['tab-a', 'tab-b', 'tab-c'],
+  activeProfile: 'tab-b',
+  lastUrl: {
+    'tab-a': 'https://relay.example.com/home',
+    'tab-b': 'https://relay.example.com/usage',
+    'tab-c': 'https://other.example.com/model-plaza',
+  },
+});
+
+test('mini browser closing a tab keeps its remembered page', () => {
+  // The address is a habit of the account, not a property of the tab: closing a
+  // tab and reopening that account later has to resume on the same page.
+  const next = dropMiniBrowserProfiles(session(), ['tab-a'], 'closed');
+  assert.deepEqual(next.openTabs, ['tab-b', 'tab-c']);
+  assert.equal(next.lastUrl['tab-a'], 'https://relay.example.com/home');
+  assert.deepEqual(next.lastUrl, session().lastUrl);
+});
+
+test('mini browser close-all keeps every remembered page', () => {
+  // The regression this exists for: "close all" reused the delete-account rule,
+  // so every address was dropped and each tab reopened at its site root. A tab
+  // whose site does not redirect then looked like it had never remembered
+  // anything, while its neighbours only "remembered" because the site bounced
+  // them to a deep address that was recorded again.
+  const source = session();
+  const next = dropMiniBrowserProfiles(source, [...source.openTabs], 'closed');
+  assert.deepEqual(next.openTabs, []);
+  assert.equal(next.activeProfile, null);
+  assert.deepEqual(next.lastUrl, source.lastUrl);
+});
+
+test('mini browser deleting an account forgets its remembered page', () => {
+  // A deleted account must not leave an address behind: the profile id could be
+  // handed to a new account, which would then resume a stranger's page.
+  const next = dropMiniBrowserProfiles(session(), ['tab-a', 'tab-c'], 'deleted');
+  assert.deepEqual(next.openTabs, ['tab-b']);
+  assert.deepEqual(next.lastUrl, { 'tab-b': 'https://relay.example.com/usage' });
+});
+
+test('mini browser moves the front tab when the front one is dropped', () => {
+  // Dropping the tab that was in front promotes the last remaining one…
+  const other = dropMiniBrowserProfiles(
+    { ...session(), activeProfile: 'tab-c' },
+    ['tab-c'],
+    'closed',
+  );
+  assert.equal(other.activeProfile, 'tab-b');
+  // …and dropping a background tab leaves the front one alone.
+  assert.equal(dropMiniBrowserProfiles(session(), ['tab-a'], 'closed').activeProfile, 'tab-b');
+});
+
+test('mini browser close-all clears the front tab without touching addresses', () => {
+  const source = session();
+  const next = dropMiniBrowserProfiles(source, [...source.openTabs], 'closed');
+  assert.equal(next.activeProfile, null);
+  assert.deepEqual(next.lastUrl, source.lastUrl);
+});
+
+test('mini browser dropping nothing is a no-op', () => {
+  const source = session();
+  assert.equal(dropMiniBrowserProfiles(source, [], 'closed'), source);
 });

@@ -42,6 +42,124 @@ export const MINI_BROWSER_SITES_STORAGE_KEY = 'ai-router.mini-browser.sites';
 
 export const MINI_BROWSER_ACCOUNTS_STORAGE_KEY = 'ai-router.mini-browser.accounts';
 
+/**
+ * Where the panel keeps what the user left behind.
+ *
+ * `openTabs` is the set of accounts that had a tab, `activeProfile` the one
+ * that was in front, and `lastUrl` the address each account was actually
+ * showing. They live in localStorage next to the sites for the same reason:
+ * the browser panel is a view over the user's own shortcuts, and the backend
+ * only knows about pages that are open right now.
+ */
+export const MINI_BROWSER_PREFS_STORAGE_KEY = 'ai-router.mini-browser.prefs';
+
+export interface MiniBrowserPrefs {
+  /** Profile ids that had a tab when the panel was last left. */
+  openTabs: string[];
+  /** Profile id of the tab that was in front, or `null`. */
+  activeProfile: string | null;
+  /** Last address seen per profile, so a tab reopens where it was left. */
+  lastUrl: Record<string, string>;
+}
+
+export const EMPTY_MINI_BROWSER_PREFS: MiniBrowserPrefs = {
+  openTabs: [],
+  activeProfile: null,
+  lastUrl: {},
+};
+
+/**
+ * Keep a stored `lastUrl` mapping usable.
+ *
+ * Only absolute http/https addresses are kept: anything else (a stale
+ * `javascript:` entry, a half-typed string) would be rejected by the backend,
+ * and silently dropping it makes the tab fall back to the site address instead
+ * of failing to open.
+ */
+const parseMiniBrowserLastUrl = (raw: unknown): Record<string, string> => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const entries = Object.entries(raw as Record<string, unknown>);
+  const kept: Array<[string, string]> = [];
+  for (const [profileId, value] of entries) {
+    if (typeof value !== 'string' || profileId.length === 0) continue;
+    const normalised = normaliseMiniBrowserUrl(value);
+    if (normalised) kept.push([profileId, normalised]);
+  }
+  return Object.fromEntries(kept);
+};
+
+export const parseMiniBrowserPrefs = (raw: unknown): MiniBrowserPrefs => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { openTabs: [], activeProfile: null, lastUrl: {} };
+  }
+  const record = raw as Record<string, unknown>;
+  const openTabs = Array.isArray(record.openTabs)
+    ? record.openTabs.filter((id): id is string => typeof id === 'string' && id.length > 0)
+    : [];
+  const activeProfile =
+    typeof record.activeProfile === 'string' && record.activeProfile.length > 0
+      ? record.activeProfile
+      : null;
+  return {
+    openTabs: [...new Set(openTabs)],
+    // An active tab that is not in the list is a contradiction; drop it rather
+    // than render a tab strip with nothing highlighted.
+    activeProfile: activeProfile && openTabs.includes(activeProfile) ? activeProfile : null,
+    lastUrl: parseMiniBrowserLastUrl(record.lastUrl),
+  };
+};
+
+export const loadMiniBrowserPrefs = (): MiniBrowserPrefs =>
+  parseMiniBrowserPrefs(readStoredJson(MINI_BROWSER_PREFS_STORAGE_KEY));
+
+export const saveMiniBrowserPrefs = (prefs: MiniBrowserPrefs): void => {
+  localStorage.setItem(MINI_BROWSER_PREFS_STORAGE_KEY, JSON.stringify(prefs));
+};
+
+/**
+ * The session that is left after some profiles leave the tab strip.
+ *
+ * `openTabs` and `activeProfile` are always corrected: a profile that is gone
+ * cannot stay in the strip, and the tab that was in front moves to the last
+ * remaining one when it is the profile being dropped.
+ *
+ * The remembered addresses follow `reason` instead, and that distinction is the
+ * whole point of this function:
+ *
+ * - `closed` keeps them. Where the user is on a relay console is a habit of the
+ *   account, not a property of the tab, so closing a tab — or every tab — must
+ *   still let the next open resume there. Pruning on close sends the user back
+ *   through the site's landing page on every reopen;
+ * - `deleted` drops them. The account is gone, so its address would only be a
+ *   stale entry that a later account could inherit.
+ *
+ * This lives here rather than inline in the page because it is the rule, not a
+ * detail of one button: the panel had four call sites that disagreed about it,
+ * which is what made "close all" behave differently from closing one tab.
+ */
+export const dropMiniBrowserProfiles = (
+  prefs: MiniBrowserPrefs,
+  profileIds: string[],
+  reason: 'closed' | 'deleted',
+): MiniBrowserPrefs => {
+  if (profileIds.length === 0) return prefs;
+  const dropped = new Set(profileIds);
+  const openTabs = prefs.openTabs.filter((profileId) => !dropped.has(profileId));
+  return {
+    openTabs,
+    activeProfile:
+      prefs.activeProfile && dropped.has(prefs.activeProfile)
+        ? openTabs[openTabs.length - 1] ?? null
+        : prefs.activeProfile,
+    lastUrl:
+      reason === 'deleted'
+        ? Object.fromEntries(
+            Object.entries(prefs.lastUrl).filter(([profileId]) => !dropped.has(profileId)),
+          )
+        : prefs.lastUrl,
+  };
+};
+
 /** Keeps stored values usable even when a previous version wrote something else. */
 const parseMiniBrowserSites = (raw: unknown): MiniBrowserSite[] => {
   if (!Array.isArray(raw)) return [];
@@ -109,6 +227,17 @@ export const createMiniBrowserProfileId = (): string => {
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return toMiniBrowserProfileId(generated) ?? `${Date.now()}`;
 };
+
+/**
+ * Profile used by the page's "open a URL once" box.
+ *
+ * A one-off address has no saved account, but the embedded command still needs
+ * a profile id, so it gets this fixed one. That keeps the one-off page inside
+ * the main window (instead of the legacy separate window) and gives it its own
+ * stable cookies. It collides with a saved account only if an account was
+ * literally called `manual`, which the id generator cannot produce.
+ */
+export const MINI_BROWSER_ONEOFF_PROFILE_ID = 'manual';
 
 /**
  * Derive a profile id from an existing stored id, deterministically.
@@ -228,6 +357,38 @@ const profileArgs = (profileId?: string): { profileId?: string } =>
   profileId ? { profileId } : {};
 
 /**
+ * Rectangle for an embedded page, in **physical device pixels**.
+ *
+ * The origin is the top-left corner of the main window's content area. Callers
+ * scale the placeholder cell's `getBoundingClientRect()` by `devicePixelRatio`
+ * and round it (see `features/mini-browser/utils/miniBrowserEmbed.ts`). The
+ * backend must not scale the numbers again: the child webview applies its own
+ * scale factor on top of whatever rectangle it is given, so sending CSS pixels
+ * here shrinks the page by that factor — 0.833x at 125% (120 DPI) on Windows.
+ */
+export interface MiniBrowserBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Where the backend really has one embedded page, in physical device pixels.
+ *
+ * The rectangle is relative to the main window's client area. `scaleFactor` is
+ * the scale the window itself reports and `clientWidth`/`clientHeight` are that
+ * client area in physical pixels, so a mismatch can be told apart from a unit
+ * error without guessing. `visible` is the visibility the backend last applied.
+ */
+export interface MiniBrowserBoundsReport extends MiniBrowserBounds {
+  scaleFactor: number;
+  clientWidth: number;
+  clientHeight: number;
+  visible: boolean;
+}
+
+/**
  * Open a URL in the embedded browser, creating its window on first use.
  *
  * Passing `profileId` opens (or reuses) that account's own window and login
@@ -274,6 +435,72 @@ export const focusMiniBrowserWindow = async (profileId: string): Promise<void> =
 /** Every open mini browser window, for the panel's tab strip. */
 export const listMiniBrowserWindows = async (): Promise<MiniBrowserWindowInfo[]> => {
   return await invoke<MiniBrowserWindowInfo[]>('mini_browser_list_windows');
+};
+
+/**
+ * Open (or navigate) an account's page inside the main window.
+ *
+ * The native child webview is always painted above the React DOM, so `bounds`
+ * must describe an empty rectangle the page keeps free of its own content: it
+ * comes from the placeholder cell's `getBoundingClientRect()`.
+ */
+export const openMiniBrowserEmbedded = async (
+  profileId: string,
+  url: string,
+  bounds: MiniBrowserBounds,
+): Promise<void> => {
+  await invoke('mini_browser_open_embedded', {
+    profileId,
+    url,
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+  });
+};
+
+/**
+ * Move (or resize) an already embedded page.
+ *
+ * Called after any layout change: window resize, panel scroll, grid re-flow.
+ */
+export const setMiniBrowserBounds = async (
+  profileId: string,
+  bounds: MiniBrowserBounds,
+): Promise<void> => {
+  await invoke('mini_browser_set_bounds', {
+    profileId,
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+  });
+};
+
+/**
+ * Where the backend currently has one embedded page, or `null` when it has no
+ * rectangle to report for that account.
+ *
+ * Read-only and cheap: it exists so the page can compare the rectangle it wants
+ * with the one that is actually set instead of assuming a send landed.
+ */
+export const readMiniBrowserBounds = async (
+  profileId: string,
+): Promise<MiniBrowserBoundsReport | null> => {
+  return await invoke<MiniBrowserBoundsReport | null>('mini_browser_bounds', { profileId });
+};
+
+/**
+ * Show or hide an embedded page without closing it.
+ *
+ * Hiding is the only way a React modal, dropdown or popover can be seen over an
+ * embedded page, because a native child webview ignores `z-index` entirely.
+ */
+export const setMiniBrowserVisible = async (
+  profileId: string,
+  visible: boolean,
+): Promise<void> => {
+  await invoke('mini_browser_set_visible', { profileId, visible });
 };
 
 /**

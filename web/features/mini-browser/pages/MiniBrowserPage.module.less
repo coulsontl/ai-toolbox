@@ -1,0 +1,508 @@
+/*
+ * Layout: a fixed-height page split into a control column and the embed area.
+ *
+ * The page owns its height (`100vh` minus the app header offset) instead of
+ * growing with its content, because the embedded native webviews are pinned to
+ * rectangles measured from this page: if the page itself scrolled, every
+ * scroll would move those rectangles and the native views would have to chase
+ * them. Only the control column scrolls; the embed area never does.
+ */
+.page {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  height: calc(100vh - var(--content-top-offset) - 48px);
+  min-height: 480px;
+  min-width: 0;
+}
+
+.header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.titleBlock {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+
+  h1 {
+    margin: 0;
+    color: var(--color-text-primary);
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 0;
+    line-height: 1.25;
+  }
+
+  p {
+    margin: 2px 0 0;
+    color: var(--color-text-tertiary);
+    font-size: 12px;
+    line-height: 1.35;
+  }
+}
+
+.titleIcon {
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--ant-color-primary) 18%, var(--color-border));
+  border-radius: 8px;
+  color: var(--ant-color-primary);
+}
+
+.headerControls {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  margin-left: auto;
+  gap: 8px;
+}
+
+.statusPill {
+  display: inline-flex;
+  min-height: 34px;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 560;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+
+  strong {
+    color: var(--color-text-primary);
+    font-size: 12px;
+    font-weight: 650;
+  }
+}
+
+.statusDot,
+.statusDotActive {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--color-text-tertiary);
+}
+
+.statusDotActive {
+  background: var(--color-status-success);
+}
+
+/* ---- left control column + right embed area ---- */
+
+.body {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.sidebar {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.section {
+  min-width: 0;
+}
+
+.sectionTitle {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.hint {
+  margin-bottom: 0;
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+}
+
+/* ---- browser pane: tab strip over one native page ---- */
+
+/*
+ * The pane is chrome only. Exactly one native page is visible at a time and it
+ * is pinned to `.embedHost`, which stays empty: the native view is painted above
+ * the DOM, so anything drawn inside that rectangle would only be covered.
+ */
+.browserPane {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--color-border-card);
+  border-radius: 10px;
+  background: var(--color-bg-container);
+}
+
+.tabStrip {
+  display: flex;
+  min-width: 0;
+  align-items: flex-end;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 6px 6px 0;
+  border-bottom: 1px solid var(--color-border-secondary);
+  background: var(--color-bg-elevated);
+
+  /* A thin strip: a wrapped tab row would move the native page's target. */
+  scrollbar-width: thin;
+}
+
+.tab,
+.tabActive {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 220px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px 0 6px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+
+  &:hover {
+    background: color-mix(in srgb, var(--ant-color-primary) 8%, transparent);
+  }
+}
+
+.tabActive {
+  border-color: var(--color-border-secondary);
+  background: var(--color-bg-container);
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.tabButton {
+  display: inline-flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-secondary);
+    outline-offset: -2px;
+  }
+}
+
+.tabName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tabDotLoaded,
+.tabDotDormant {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+/* Loaded means the native page exists; dormant means the tab is only a row. */
+.tabDotLoaded {
+  background: var(--color-status-success);
+}
+
+.tabDotDormant {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--color-text-tertiary);
+}
+
+.tabSpinner {
+  flex: 0 0 auto;
+  color: var(--ant-color-primary);
+  animation: miniBrowserSpin 900ms linear infinite;
+}
+
+@keyframes miniBrowserSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tabClose {
+  display: flex;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+
+  &:hover {
+    color: var(--color-status-error);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-secondary);
+    outline-offset: 1px;
+  }
+}
+
+.addressBar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border-secondary);
+  background: var(--color-bg-container);
+}
+
+.addressText {
+  min-width: 0;
+  flex: 1;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.addressHint {
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+
+.embedStage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+.embedHost {
+  width: 100%;
+  height: 100%;
+  /* Deliberately blank: filled by the native child webview, not by the DOM. */
+  background: transparent;
+}
+
+/*
+ * Placeholder for a restored tab that has not been loaded yet.
+ *
+ * It sits where the native page will be painted. Once the page opens, the host
+ * is covered by it, so the overlay is removed as soon as the tab is loaded.
+ */
+.dormantOverlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px;
+  background: var(--color-bg-container);
+  text-align: center;
+}
+
+.embedEmpty {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 24px;
+  text-align: center;
+}
+
+.embedEmptyText {
+  max-width: 420px;
+  margin-bottom: 0;
+  font-size: 12px;
+}
+
+/* ---- site + account management ---- */
+
+.siteList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.siteBlock {
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-card);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+}
+
+.siteHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.siteTitle {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+
+  span {
+    max-width: 420px;
+    overflow: hidden;
+    color: var(--color-text-tertiary);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.siteActions {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.accountList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.accountRow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0;
+  border-top: 1px dashed var(--color-border-secondary);
+}
+
+.accountInfo {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.accountName {
+  max-width: 190px;
+}
+
+.statusOpen,
+.statusClosed {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+.statusOpen {
+  color: var(--color-status-success);
+}
+
+.statusTab {
+  color: var(--ant-color-primary);
+}
+
+.statusClosed {
+  color: var(--color-text-tertiary);
+}
+
+.accountMeta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.accountUrl {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountActions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.accountForm {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.saveSiteRow {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.manualRow {
+  display: flex;
+  gap: 8px;
+}
+
+.emptyHint {
+  margin-bottom: 0;
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, auto) minmax(240px, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .headerControls {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+}
