@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { CodexProvider } from '../../../../../types/codex.ts';
-import { saveCodexProviderCatalogWithGatewayReengage } from '../../../../../features/coding/codex/utils/codexProviderCatalogSave.ts';
+import {
+  saveCodexProviderCatalogWithGatewayReengage,
+  withProposedCodexAggregateModels,
+} from '../../../../../features/coding/codex/utils/codexProviderCatalogSave.ts';
 
 const createProvider = (isApplied: boolean): CodexProvider => ({
   id: 'codex-provider',
@@ -30,6 +33,7 @@ test('applied Codex catalog save restores direct before updating and reengages f
 
   const result = await saveCodexProviderCatalogWithGatewayReengage({
     provider: createProvider(true),
+    providers: [createProvider(true)],
     settingsConfig: nextSettingsConfig,
     gatewayMode: 'failover',
     updateProvider: async (provider) => {
@@ -65,6 +69,7 @@ test('applied Codex catalog save replays an aggregate takeover with its config',
 
   await saveCodexProviderCatalogWithGatewayReengage({
     provider: createProvider(true),
+    providers: [createProvider(true)],
     settingsConfig: nextSettingsConfig,
     gatewayMode: 'aggregate',
     aggregateConfig,
@@ -101,6 +106,7 @@ test('unapplied Codex catalog save does not interrupt an active gateway takeover
 
   await saveCodexProviderCatalogWithGatewayReengage({
     provider: createProvider(false),
+    providers: [createProvider(false)],
     settingsConfig: nextSettingsConfig,
     gatewayMode: 'aggregate',
     aggregateConfig: { providerIds: ['a'], separator: '-' },
@@ -134,6 +140,7 @@ test('applied Codex catalog save writes directly when gateway mode is inactive',
 
   await saveCodexProviderCatalogWithGatewayReengage({
     provider: createProvider(true),
+    providers: [createProvider(true)],
     settingsConfig: nextSettingsConfig,
     gatewayMode: null,
     updateProvider: async (provider) => {
@@ -155,4 +162,105 @@ test('applied Codex catalog save writes directly when gateway mode is inactive',
   });
 
   assert.deepEqual(calls, ['save']);
+});
+
+test('proposed aggregate model set replaces edited provider and preserves other selected site models', () => {
+  const editedProvider = createProvider(true);
+  const otherProvider: CodexProvider = {
+    ...editedProvider,
+    id: 'site-b',
+    settingsConfig: JSON.stringify({
+      config: 'model = "site-b-default"',
+      modelCatalog: { models: [{ model: 'site-b-mapped' }] },
+    }),
+  };
+  const proposedSettingsConfig = JSON.stringify({
+    config: 'model = "renamed-model"',
+    modelCatalog: { models: [{ model: 'renamed-model' }] },
+  });
+
+  const config = withProposedCodexAggregateModels(
+    {
+      providerIds: [editedProvider.id, otherProvider.id],
+      separator: '.',
+      subagentExposedModels: ['old-model'],
+    },
+    [editedProvider, otherProvider],
+    { id: editedProvider.id, settingsConfig: proposedSettingsConfig },
+  );
+
+  assert.deepEqual(config?.proposedDeclaredBareModels, [
+    'renamed-model',
+    'site-b-mapped',
+    'site-b-default',
+  ]);
+});
+
+test('catalog save blocks a removed selection before restore and accepts a current model', async () => {
+  const provider = createProvider(true);
+  const calls: string[] = [];
+  const selectedConfig = {
+    providerIds: [provider.id],
+    separator: '.',
+    subagentExposedModels: ['old-model'],
+  };
+  const proposedSettingsConfig = JSON.stringify({
+    config: 'model = "new-model"',
+    modelCatalog: { models: [{ model: 'new-model' }] },
+  });
+
+  await assert.rejects(
+    saveCodexProviderCatalogWithGatewayReengage({
+      provider,
+      providers: [provider],
+      settingsConfig: proposedSettingsConfig,
+      gatewayMode: 'aggregate',
+      aggregateConfig: withProposedCodexAggregateModels(
+        selectedConfig,
+        [provider],
+        { id: provider.id, settingsConfig: proposedSettingsConfig },
+      ),
+      updateProvider: async (nextProvider) => {
+        calls.push('save');
+        return nextProvider;
+      },
+      restoreDirect: async () => {
+        calls.push('restore');
+        return 'direct';
+      },
+      engageSingle: async () => 'single',
+      engageFailover: async () => 'failover',
+      engageAggregate: async () => 'aggregate',
+    }),
+    /containing undeclared models/,
+  );
+  assert.deepEqual(calls, []);
+
+  const validCalls: string[] = [];
+  await saveCodexProviderCatalogWithGatewayReengage({
+    provider,
+    providers: [provider],
+    settingsConfig: proposedSettingsConfig,
+    gatewayMode: 'aggregate',
+    aggregateConfig: withProposedCodexAggregateModels(
+      { ...selectedConfig, subagentExposedModels: ['new-model'] },
+      [provider],
+      { id: provider.id, settingsConfig: proposedSettingsConfig },
+    ),
+    updateProvider: async (nextProvider) => {
+      validCalls.push('save-valid');
+      return nextProvider;
+    },
+    restoreDirect: async () => {
+      validCalls.push('restore-valid');
+      return 'direct';
+    },
+    engageSingle: async () => 'single',
+    engageFailover: async () => 'failover',
+    engageAggregate: async () => {
+      validCalls.push('aggregate-valid');
+      return 'aggregate';
+    },
+  });
+  assert.deepEqual(validCalls, ['restore-valid', 'save-valid', 'aggregate-valid']);
 });
