@@ -36,6 +36,12 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Codex only exposes the five lowest-priority visible entries as
+/// `spawn_agent` model hints. Persisting more than that would make the tail
+/// silently unreachable to the subagent, so callers must reject it rather than
+/// truncating or widening the selection.
+pub const SUBAGENT_EXPOSED_MODEL_LIMIT: usize = 5;
+
 /// Maximum alias length accepted by the backend and the settings page.
 pub const AGGREGATE_ALIAS_MAX_LEN: usize = 32;
 
@@ -90,14 +96,20 @@ pub struct AggregateNamingConfig {
     /// provider id -> user alias. Missing/blank entries fall back to the id.
     pub aliases: BTreeMap<String, String>,
     pub naming: AggregateNamingMode,
-    /// Bare upstream model names still published as hidden aliases.
+    /// Bare upstream model names promoted into Codex's visible model list.
     ///
-    /// Empty (the default) keeps the historical behavior of publishing every
-    /// bare model name the selected sites declare. A non-empty set narrows the
-    /// hidden aliases to exactly these names; every other name stays reachable
-    /// through its `<site><sep><model>` slug.
+    /// Empty (the default) keeps the historical behavior: every declared bare
+    /// model remains addressable, but none is promoted into the picker. A name
+    /// is an exact hidden alias unless its slug already matches a visible site
+    /// row. A non-empty ordered list promotes those names; unticked names
+    /// remain addressable as hidden aliases unless such a slug already exists.
+    ///
+    /// Order is the user's tick order and is the priority order of the five
+    /// `spawn_agent` model hints: the first entry is promoted to the lowest
+    /// priority. It is a `Vec`, not a `BTreeSet`, because deserializing into a
+    /// set would silently re-sort the user's choice into byte order.
     #[serde(default)]
-    pub subagent_exposed_models: BTreeSet<String>,
+    pub subagent_exposed_models: Vec<String>,
 }
 
 impl Default for AggregateNamingConfig {
@@ -106,26 +118,12 @@ impl Default for AggregateNamingConfig {
             separator: ".".to_string(),
             aliases: BTreeMap::new(),
             naming: AggregateNamingMode::SiteModel,
-            subagent_exposed_models: BTreeSet::new(),
+            subagent_exposed_models: Vec::new(),
         }
     }
 }
 
 impl AggregateNamingConfig {
-    /// Whether every declared bare model is published as a hidden alias.
-    ///
-    /// An empty exposed set is the default: the catalog keeps publishing every
-    /// bare name, so aggregate mode stays a drop-in for Codex's `spawn_agent`,
-    /// `[agents]` defaults and auto-review.
-    pub fn exposes_every_bare_model(&self) -> bool {
-        self.subagent_exposed_models.is_empty()
-    }
-
-    /// Whether the hidden-alias table may publish this bare model name.
-    pub fn exposes_bare_model(&self, model: &str) -> bool {
-        self.subagent_exposed_models.is_empty() || self.subagent_exposed_models.contains(model)
-    }
-
     /// Prefix token that addresses one site: its alias, else its provider id.
     pub fn prefix_for(&self, site_id: &str) -> String {
         aggregate_site_prefix(site_id, &self.aliases).to_string()
@@ -158,10 +156,8 @@ pub struct AggregateBareModelSource {
 /// Every bare upstream model name the ordered sites declare, first site wins.
 ///
 /// This is the drawer's "universe", and it deliberately ignores
-/// `AggregateNamingConfig::subagent_exposed_models`: narrowing the exposed set
-/// only removes hidden aliases from the published catalog, so the full list has
-/// to stay available — otherwise a name the user removed could never be added
-/// back without switching the whole takeover to "expose everything".
+/// `AggregateNamingConfig::subagent_exposed_models`: ticking a name promotes it
+/// but does not remove other names from the candidate universe.
 pub fn build_aggregate_bare_model_universe(
     sites: &[(String, Vec<String>)],
 ) -> Vec<AggregateBareModelSource> {
@@ -186,14 +182,68 @@ pub fn build_aggregate_bare_model_universe(
 }
 
 /// Trim bare model names and drop blanks, mirroring the frontend normalizer.
-pub fn normalize_bare_model_names<I>(models: I) -> BTreeSet<String>
+///
+/// Order is preserved (first appearance wins) because the caller treats the
+/// list as the priority order of the promoted `spawn_agent` hints.
+pub fn normalize_bare_model_names<I>(models: I) -> Vec<String>
 where
     I: IntoIterator<Item = String>,
 {
-    models
-        .into_iter()
-        .map(|model| model.trim().to_string())
-        .filter(|model| !model.is_empty())
+    let mut normalized = Vec::new();
+    for model in models {
+        let model = model.trim();
+        if model.is_empty() || normalized.iter().any(|existing| existing == model) {
+            continue;
+        }
+        normalized.push(model.to_string());
+    }
+    normalized
+}
+
+/// Reject a normalized exposure selection that cannot fit Codex's hint window.
+///
+/// This is intentionally fail-closed: callers must not truncate the user's
+/// tick order because the persisted manifest/draft would then claim a
+/// selection that the UI did not actually accept.
+pub fn validate_subagent_exposed_model_limit(models: &[String]) -> Result<(), String> {
+    if models.len() > SUBAGENT_EXPOSED_MODEL_LIMIT {
+        return Err(format!(
+            "At most {SUBAGENT_EXPOSED_MODEL_LIMIT} bare models may be exposed to subagents"
+        ));
+    }
+    Ok(())
+}
+
+/// Normalize an exposure selection and reject any name the selected sites no
+/// longer declare. A partial match is not enough: dropping a stale name would
+/// silently change the user's selection.
+pub fn validate_bare_model_names_declared(
+    requested: &[String],
+    declared: &[String],
+) -> Result<Vec<String>, String> {
+    let normalized = normalize_bare_model_names(requested.iter().cloned());
+    if let Some(stale_model) = normalized
+        .iter()
+        .find(|model| !declared.iter().any(|candidate| candidate == *model))
+    {
+        return Err(format!(
+            "Selected bare model '{stale_model}' is not declared by the selected sites"
+        ));
+    }
+    validate_subagent_exposed_model_limit(&normalized)?;
+    Ok(normalized)
+}
+
+/// Keep requested bare-model order while dropping names no selected site
+/// declares. The catalog can only publish names from this universe.
+pub fn filter_bare_model_names_to_declared(
+    requested: &[String],
+    declared: &[String],
+) -> Vec<String> {
+    requested
+        .iter()
+        .filter(|model| declared.iter().any(|candidate| candidate == *model))
+        .cloned()
         .collect()
 }
 
@@ -855,10 +905,9 @@ mod tests {
 
         let universe = build_aggregate_bare_model_universe(&declared);
 
-        // Names follow first-appearance order and the first declaring site wins,
-        // mirroring the published hidden aliases. The universe is the drawer's
-        // candidate list, so it must not depend on the exposure set: a narrowed
-        // set would otherwise make a removed name impossible to tick again.
+        // Names follow first-appearance order and the first declaring site wins.
+        // The universe is the drawer's candidate list, so it must not depend on
+        // which names are promoted.
         assert_eq!(
             universe,
             vec![
@@ -880,27 +929,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_exposure_set_publishes_every_bare_model() {
-        let config = AggregateNamingConfig::default();
-        assert!(config.exposes_every_bare_model());
-        assert!(config.exposes_bare_model("gpt-5.6-luna"));
-        assert!(config.exposes_bare_model("anything-else"));
-    }
-
-    #[test]
-    fn non_empty_exposure_set_publishes_only_the_selected_bare_models() {
-        let config = AggregateNamingConfig {
-            subagent_exposed_models: BTreeSet::from(["gpt-5.6-luna".to_string()]),
-            ..AggregateNamingConfig::default()
-        };
-        assert!(!config.exposes_every_bare_model());
-        assert!(config.exposes_bare_model("gpt-5.6-luna"));
-        // A name the user unticked must drop out of the hidden aliases; it stays
-        // reachable through its `<site><sep><model>` slug.
-        assert!(!config.exposes_bare_model("gpt-5.6-terra"));
-    }
-
-    #[test]
     fn normalize_bare_model_names_trims_and_drops_blanks() {
         assert_eq!(
             normalize_bare_model_names(vec![
@@ -909,9 +937,55 @@ mod tests {
                 "glm-5".to_string(),
                 "gpt-5.6-luna".to_string(),
             ]),
-            BTreeSet::from(["gpt-5.6-luna".to_string(), "glm-5".to_string()])
+            vec!["gpt-5.6-luna".to_string(), "glm-5".to_string()]
         );
         assert!(normalize_bare_model_names(Vec::<String>::new()).is_empty());
+    }
+
+    #[test]
+    fn subagent_exposure_limit_rejects_without_truncating() {
+        let models = (1..=6)
+            .map(|index| format!("model-{index}"))
+            .collect::<Vec<_>>();
+
+        let error = validate_subagent_exposed_model_limit(&models).unwrap_err();
+
+        assert!(error.contains("At most 5"), "{error}");
+        assert_eq!(models.len(), 6);
+        assert!(validate_subagent_exposed_model_limit(&models[..5]).is_ok());
+    }
+
+    #[test]
+    fn filter_bare_model_names_keeps_only_models_declared_by_selected_sites() {
+        let requested = vec![
+            "gpt-5.6-terra".to_string(),
+            "not-selected".to_string(),
+            "gpt-5.6-luna".to_string(),
+        ];
+        let declared = vec!["gpt-5.6-luna".to_string(), "gpt-5.6-terra".to_string()];
+
+        assert_eq!(
+            filter_bare_model_names_to_declared(&requested, &declared),
+            vec!["gpt-5.6-terra".to_string(), "gpt-5.6-luna".to_string()]
+        );
+    }
+
+    #[test]
+    fn validation_rejects_mixed_declared_and_stale_bare_model_selection() {
+        let requested = vec![
+            " model-1 ".to_string(),
+            "stale-model".to_string(),
+            "model-2".to_string(),
+        ];
+        let declared = vec!["model-1".to_string(), "model-2".to_string()];
+
+        let error = validate_bare_model_names_declared(&requested, &declared).unwrap_err();
+
+        assert!(error.contains("stale-model"), "{error}");
+        assert!(
+            error.contains("not declared by the selected sites"),
+            "{error}"
+        );
     }
 
     #[test]

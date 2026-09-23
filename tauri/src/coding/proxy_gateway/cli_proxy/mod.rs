@@ -682,7 +682,7 @@ pub async fn engage_aggregate_cli(
     aliases: BTreeMap<String, String>,
     naming: crate::coding::proxy_gateway::aggregate_naming::AggregateNamingMode,
     cross_site_failover: bool,
-    subagent_exposed_models: std::collections::BTreeSet<String>,
+    subagent_exposed_models: Vec<String>,
     subagent_defaults: crate::coding::proxy_gateway::cli_proxy::manifest::AggregateSubagentDefaults,
 ) -> Result<GatewayCliTakeoverStatus, String> {
     if cli_key != GatewayCliKey::Codex {
@@ -774,7 +774,7 @@ pub async fn engage_aggregate_cli(
     let settings = settings::load_settings_from_sqlite_state(db)?;
     let effective_origin =
         resolve_effective_base_origin(base_origin, targets.is_wsl_direct, &settings.wsl_host);
-    let naming_config = crate::coding::proxy_gateway::aggregate_naming::AggregateNamingConfig {
+    let mut naming_config = crate::coding::proxy_gateway::aggregate_naming::AggregateNamingConfig {
         separator: separator.clone(),
         aliases: aliases.clone(),
         naming,
@@ -783,19 +783,31 @@ pub async fn engage_aggregate_cli(
                 subagent_exposed_models.iter().cloned(),
             ),
     };
-    // "Expose only the selected names" with nothing selected would be stored as
-    // the empty set, which means "expose everything" — the exact opposite of the
-    // request. Refuse it instead of silently publishing a wider catalog.
+    // The list is ordered: the catalog promotes its first entries into Codex's
+    // five `spawn_agent` model hints. An empty list is still the legacy
+    // "publish every bare name as a hidden alias, promote none" behavior the
+    // provider-save re-engage replays, so it must not be refused here. The
+    // settings panel is what refuses to engage with nothing selected.
+    //
+    // A request that selected names but normalized to nothing (only blanks) is
+    // still refused: publishing every bare model instead of the requested set
+    // would silently widen the catalog.
     if !subagent_exposed_models.is_empty() && naming_config.subagent_exposed_models.is_empty() {
         return Err(
-            "Select at least one bare model to expose, or switch back to exposing all of them"
-                .to_string(),
+            "Select at least one bare model to expose, or clear the selection".to_string(),
         );
     }
     // Allocate the slug table before the manifest is written: the manifest is
     // the router's source of truth, so it must carry the same table the catalog
     // below is generated from.
     let site_specs = load_aggregate_site_specs(db, &ordered_providers).await?;
+    let declared_bare_models =
+        crate::coding::codex::commands::codex_aggregate_declared_bare_models(&site_specs);
+    naming_config.subagent_exposed_models =
+        crate::coding::proxy_gateway::aggregate_naming::validate_bare_model_names_declared(
+            &naming_config.subagent_exposed_models,
+            &declared_bare_models,
+        )?;
     let slug_table =
         crate::coding::codex::commands::codex_aggregate_slug_table(&site_specs, &naming_config)?;
     // The catalog and the manifest table come from the same allocation pass,
@@ -1013,13 +1025,26 @@ async fn normalize_aggregate_draft_config(
     super::aggregate_naming::validate_aggregate_aliases(&aliases, &separator)?;
     super::aggregate_naming::validate_aggregate_site_prefixes(&available_ids, &aliases)?;
 
+    let selected_providers = provider_ids
+        .iter()
+        .filter_map(|provider_id| available.iter().find(|provider| &provider.id == provider_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let site_specs = load_aggregate_site_specs(db, &selected_providers).await?;
+    let declared_bare_models =
+        crate::coding::codex::commands::codex_aggregate_declared_bare_models(&site_specs);
+    let subagent_exposed_models = super::aggregate_naming::validate_bare_model_names_declared(
+        &config.subagent_exposed_models,
+        &declared_bare_models,
+    )?;
+
     Ok(GatewayAggregateConfig {
         provider_ids,
         separator,
         aliases,
         naming: config.naming,
         cross_site_failover: config.cross_site_failover,
-        subagent_exposed_models: config.subagent_exposed_models,
+        subagent_exposed_models,
         // A draft never carries the engage-time `[agents]` defaults, so the
         // settings form shows them as unmanaged while the mode is off.
         subagent: None,

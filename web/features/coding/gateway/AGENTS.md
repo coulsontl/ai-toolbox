@@ -6,6 +6,7 @@
 
 ## Source of Truth
 
+- 子代理裸名模型的已选集合必须原样验证：如果当前站点已不再声明其中某个模型，继续显示可取消勾选的失效项，并阻止草稿保存/接管；只有用户显式取消全部失效项后才可提交，不能用有效子集静默替代原选择。
 - 网关设置、运行状态、CLI 接管状态都以后端 `proxy_gateway_*` Tauri 命令返回为准，前端不自行持久化。
 - 顶部 `网关` 入口可见性来自全局 `visibleTabs`，只表示 UI 入口是否显示，不代表启动、停止或禁用网关服务。
 - 请求列表和统计聚合以后端 SQLite 摘要命令为准；前端只能通过 `proxy_gateway_request_logs`、`proxy_gateway_usage_*`、`proxy_gateway_provider_stats`、`proxy_gateway_model_stats` 读取，不直接扫描数据库或文件目录。

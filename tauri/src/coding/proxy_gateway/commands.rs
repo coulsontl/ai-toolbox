@@ -382,7 +382,7 @@ pub async fn proxy_gateway_engage_aggregate(
     aliases: Option<BTreeMap<String, String>>,
     naming: Option<AggregateNamingMode>,
     cross_site_failover: Option<bool>,
-    subagent_exposed_models: Option<std::collections::BTreeSet<String>>,
+    subagent_exposed_models: Option<Vec<String>>,
     subagent_model: Option<String>,
     subagent_reasoning_effort: Option<String>,
 ) -> Result<GatewayCliTakeoverStatus, String> {
@@ -453,7 +453,7 @@ pub async fn proxy_gateway_save_aggregate_draft(
     aliases: Option<BTreeMap<String, String>>,
     naming: Option<AggregateNamingMode>,
     cross_site_failover: Option<bool>,
-    subagent_exposed_models: Option<std::collections::BTreeSet<String>>,
+    subagent_exposed_models: Option<Vec<String>>,
 ) -> Result<GatewayAggregateConfig, String> {
     let paths = proxy_gateway_paths(&app)?;
     let separator =
@@ -479,48 +479,62 @@ pub async fn proxy_gateway_save_aggregate_draft(
 
 /// Read the aggregate catalog's programmable bare names for the settings drawer.
 ///
-/// Read-only and local-only: it reads the manifest plus, when an aggregate
-/// takeover is enabled, the generated catalog file and the selected providers'
-/// declared models. It never contacts an upstream endpoint and never writes.
+/// Read-only and local-only: it reads the manifest (or, when aggregate mode is
+/// not engaged yet, the saved draft) plus the selected providers' declared
+/// models, and the generated catalog file when one exists. It never contacts an
+/// upstream endpoint and never writes.
 ///
 /// `bare_models` is the full universe the selected sites declare, which is
-/// deliberately *not* the same as `entries` (the names the catalog publishes as
-/// hidden aliases): narrowing the exposure set removes entries, and only the
-/// universe keeps a removed name selectable again.
+/// deliberately *not* the same as `entries` (the bare names the catalog
+/// currently publishes): narrowing the exposure set removes entries, and only
+/// the universe keeps a removed name selectable again. The settings panel needs
+/// this before the mode is engaged, because the exposure selection is part of
+/// what the user has to make before it may engage at all.
+///
 #[tauri::command]
 pub async fn proxy_gateway_subagent_catalog(
     db_state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
     cli_key: GatewayCliKey,
+    provider_ids: Option<Vec<String>>,
 ) -> Result<GatewaySubagentCatalog, String> {
-    if cli_key != GatewayCliKey::Codex {
-        return Ok(GatewaySubagentCatalog {
-            cli_key,
-            aggregate_mode: false,
-            entries: Vec::new(),
-            bare_models: Vec::new(),
-        });
-    }
     let empty = |aggregate_mode: bool| GatewaySubagentCatalog {
         cli_key,
         aggregate_mode,
         entries: Vec::new(),
         bare_models: Vec::new(),
     };
-    let paths = proxy_gateway_paths(&app)?;
-    let Some(manifest) = cli_proxy::read_manifest_for_catalog(&paths, cli_key)? else {
-        return Ok(empty(false));
-    };
-    if !manifest.enabled || manifest.mode != GatewayProxyMode::Aggregate {
+    if cli_key != GatewayCliKey::Codex {
         return Ok(empty(false));
     }
-    let aggregate = manifest.aggregate.clone().unwrap_or_default();
+    let paths = proxy_gateway_paths(&app)?;
+    let manifest = cli_proxy::read_manifest_for_catalog(&paths, cli_key)?;
+    let engaged = manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.enabled && manifest.mode == GatewayProxyMode::Aggregate);
+    let active_provider_ids = manifest
+        .as_ref()
+        .and_then(|manifest| manifest.aggregate.as_ref())
+        .map(|aggregate| aggregate.provider_ids.clone());
+    // While aggregate mode is off the manifest may still carry a previous
+    // selection (a disengage keeps the block), but a never-engaged install has
+    // none. While engaged the manifest is authoritative. Otherwise use the
+    // selection currently shown in the form when supplied, then the persisted
+    // draft for older callers that only pass the CLI key.
+    let provider_ids = if engaged {
+        active_provider_ids.unwrap_or_default()
+    } else if let Some(provider_ids) = provider_ids {
+        provider_ids
+    } else if let Some(draft) = aggregate_draft::load_aggregate_draft(&paths, cli_key) {
+        draft.provider_ids
+    } else {
+        return Ok(empty(false));
+    };
     let providers = super::runtime::load_candidate_providers(db_state.db(), cli_key).await?;
     // Universe: the models the selected sites declare, first site wins. This is
     // the same source the published catalog is built from, so the two can never
     // describe different name sets.
-    let selected_sites = aggregate
-        .provider_ids
+    let selected_sites = provider_ids
         .iter()
         .filter_map(|site_id| {
             providers
@@ -539,11 +553,11 @@ pub async fn proxy_gateway_subagent_catalog(
             .map(|provider| provider.name.clone())
             .unwrap_or_default(),
     };
-    // The hidden aliases the generated catalog currently publishes, read from
-    // the catalog file instead of re-derived: the exposure set (or a hand-edited
+    // The bare names the generated catalog currently publishes, read from the
+    // catalog file instead of re-derived: the exposure set (or a hand-edited
     // catalog) is what Codex actually sees. Names the universe does not know
     // are still reported, with no owning site.
-    let published = read_generated_hidden_alias_models(db_state.db())
+    let published = read_generated_bare_model_names(db_state.db())
         .await
         .into_iter()
         .map(|model| {
@@ -578,17 +592,27 @@ pub async fn proxy_gateway_subagent_catalog(
     };
     Ok(GatewaySubagentCatalog {
         cli_key,
-        aggregate_mode: true,
+        // Reports the *takeover* state, not whether a candidate list exists: the
+        // panel shows its exposure editor before engaging and only wants to know
+        // whether the described selection is the live one.
+        aggregate_mode: engaged,
         entries: published,
         bare_models,
     })
 }
 
-/// Hidden bare-name alias slugs of the currently generated Codex catalog.
+/// Bare-name entries of the currently generated Codex catalog.
+///
+/// A bare name is addressable either way: the exposure set publishes the ticked
+/// ones as promoted, picker-visible rows and the rest as `visibility = "hide"`
+/// aliases. Both kinds name themselves (`display_name == slug`), while a
+/// per-site row is always labelled `<site label> · <model>`. Relying on the
+/// rows' own fields keeps this reader correct for every naming template,
+/// including `model_only`, where a site slug and a bare name can be identical.
 ///
 /// Best-effort: a missing or unreadable catalog file yields an empty list, so
 /// browsing the drawer can never fail the settings page.
-async fn read_generated_hidden_alias_models(db: &SqliteDbState) -> Vec<String> {
+async fn read_generated_bare_model_names(db: &SqliteDbState) -> Vec<String> {
     use crate::coding::codex::constants::AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME;
 
     let Ok(config_dir) =
@@ -609,7 +633,11 @@ async fn read_generated_hidden_alias_models(db: &SqliteDbState) -> Vec<String> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|item| item.get("visibility").and_then(Value::as_str) == Some("hide"))
+        .filter(|item| {
+            let slug = item.get("slug").and_then(Value::as_str);
+            let display_name = item.get("display_name").and_then(Value::as_str);
+            matches!((slug, display_name), (Some(slug), Some(name)) if slug == name)
+        })
         .filter_map(|item| item.get("slug").and_then(Value::as_str))
         .map(str::to_string)
         .collect()

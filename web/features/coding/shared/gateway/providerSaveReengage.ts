@@ -1,10 +1,19 @@
 import type { GatewayAggregateNamingMode } from '@/services';
 import {
+  canReplaySubagentExposureSelection,
+  isGatewayReengageMode,
+  type GatewayReengageMode,
+} from './gatewayAggregateConfig';
+import {
   notifyGatewayAggregateConfigChanged,
   runGatewayAggregateMutation,
 } from './gatewayAggregateMutation';
 
-export type GatewayReengageMode = 'single' | 'failover' | 'aggregate' | null | undefined;
+// Re-exported for the existing `shared/gateway` surface: the mode guard and its
+// type live in `gatewayAggregateConfig` so the re-engage flow can depend on the
+// aggregate helpers without creating an import cycle.
+export { isGatewayReengageMode };
+export type { GatewayReengageMode };
 
 /** Aggregate routing config that must be replayed when re-engaging. */
 export interface GatewayAggregateReengageConfig {
@@ -21,12 +30,14 @@ export interface GatewayAggregateReengageConfig {
    */
   crossSiteFailover?: boolean;
   /**
-   * Bare upstream model names the takeover keeps publishing as programmable
-   * hidden aliases.
+   * Bare upstream model names promoted into Codex's visible catalog. Other
+   * names remain addressable as hidden aliases unless an identical site slug
+   * already exists.
    *
    * `undefined` keeps the backend default, which publishes every bare model;
    * and because an empty array means the same thing, a narrowed set has to be
-   * replayed explicitly or a provider save would silently widen the catalog.
+   * replayed explicitly or a provider save would silently widen the promoted
+   * picker entries.
    */
   subagentExposedModels?: string[];
   /**
@@ -67,11 +78,6 @@ interface SaveProviderWithGatewayReengageOptions<TResult, TStatus> {
   onGatewayStatusChange?: (status: TStatus) => void;
 }
 
-export const isGatewayReengageMode = (
-  gatewayMode: GatewayReengageMode,
-): gatewayMode is 'single' | 'failover' | 'aggregate' =>
-  gatewayMode === 'single' || gatewayMode === 'failover' || gatewayMode === 'aggregate';
-
 export const saveProviderWithGatewayReengage = async <TResult, TStatus>({
   gatewayMode,
   saveProvider,
@@ -104,6 +110,21 @@ export const saveProviderWithGatewayReengage = async <TResult, TStatus>({
     // cross-site model catalog and leave the UI/backend out of sync.
     if (effectiveGatewayMode === 'aggregate' && (!engageAggregate || !effectiveAggregateConfig)) {
       throw new Error('Aggregate gateway re-engage requires engageAggregate and aggregateConfig');
+    }
+    // Fail closed before `restoreDirect` below. The backend refuses an exposure
+    // selection larger than Codex's hint window instead of truncating it, so
+    // replaying one can never succeed; attempting it would leave the CLI in
+    // direct mode with the takeover dropped, and every later provider save
+    // would fail the same way. Refuse up front so the current takeover and the
+    // user's provider config are both left untouched.
+    if (
+      effectiveGatewayMode === 'aggregate'
+      && effectiveAggregateConfig
+      && !canReplaySubagentExposureSelection(effectiveAggregateConfig.subagentExposedModels)
+    ) {
+      throw new Error(
+        'Aggregate gateway re-engage cannot replay an exposure selection larger than the subagent hint limit',
+      );
     }
     if (!isGatewayReengageMode(effectiveGatewayMode)) {
       return saveProvider();

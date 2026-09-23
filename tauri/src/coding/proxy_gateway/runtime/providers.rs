@@ -90,9 +90,11 @@ pub(crate) struct GatewayProviderSelection {
     pub(crate) aggregate_aliases: std::collections::BTreeMap<String, String>,
     /// Aggregate mode only: template used by the Codex catalog and router.
     pub(crate) aggregate_naming: AggregateNamingMode,
-    /// Aggregate mode only: bare model names the catalog still publishes as
-    /// hidden aliases. Empty means "every bare model", matching the manifest.
-    pub(crate) aggregate_subagent_exposed_models: std::collections::BTreeSet<String>,
+    /// Aggregate mode only: bare model names promoted into the visible catalog.
+    /// Unticked names stay addressable as hidden aliases unless an identical
+    /// site slug already exists. Empty means "promote none; publish every bare
+    /// model as addressable", matching the manifest.
+    pub(crate) aggregate_subagent_exposed_models: Vec<String>,
     /// Aggregate mode only: slug table persisted at engage time. Empty when the
     /// manifest predates it, in which case routing rebuilds the table from the
     /// live candidates (`aggregate_provider_ids` + `aggregate_naming`).
@@ -456,7 +458,7 @@ pub(crate) fn resolve_aggregate_route(
         aggregate_separator: separator.to_string(),
         aggregate_aliases: std::collections::BTreeMap::new(),
         aggregate_naming: AggregateNamingMode::SiteModel,
-        aggregate_subagent_exposed_models: std::collections::BTreeSet::new(),
+        aggregate_subagent_exposed_models: Vec::new(),
         aggregate_slug_table: Vec::new(),
         // Route resolution does not consult the failover policy.
         cross_site_failover: true,
@@ -1071,57 +1073,10 @@ fn declared_models_from_settings(settings_config: Option<&Value>) -> Vec<String>
         Value::Object(_) => Some(settings_config.clone()),
         _ => None,
     };
-    let mut out = Vec::new();
-    let catalog_models = settings_value
+    settings_value
         .as_ref()
-        .and_then(|value| value.get("modelCatalog"))
-        .and_then(|catalog| catalog.get("models"))
-        .and_then(Value::as_array);
-    let root_models = settings_value
-        .as_ref()
-        .and_then(|value| value.get("models"))
-        .and_then(Value::as_array);
-
-    if let Some(models) = catalog_models {
-        for model in models {
-            if let Some(model_id) = model
-                .get("model")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|model_id| !model_id.is_empty())
-                .map(str::to_string)
-            {
-                push_unique_string(&mut out, model_id);
-            }
-        }
-    } else if let Some(models) = root_models {
-        // Preserve the legacy fallback when modelCatalog is absent or malformed.
-        for model in models {
-            if let Some(model_id) = model
-                .get("model")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|model_id| !model_id.is_empty())
-                .map(str::to_string)
-            {
-                push_unique_string(&mut out, model_id);
-            }
-        }
-    }
-
-    // A Codex site's own default model is part of its published catalog in both
-    // single and aggregate mode, so a bare request for it has to reach that
-    // site. Read through the same helper the catalog uses so the two lists
-    // cannot drift apart.
-    if let Some(default_model) = settings_value
-        .as_ref()
-        .and_then(|value| value.get("config"))
-        .and_then(Value::as_str)
-        .and_then(crate::coding::codex::commands::extract_codex_top_level_model)
-    {
-        push_unique_string(&mut out, default_model);
-    }
-    out
+        .map(crate::coding::codex::commands::codex_declared_models_from_settings)
+        .unwrap_or_default()
 }
 
 fn gateway_profile_reference_from_meta(value: &Value) -> Option<GatewayProviderProfileReference> {
@@ -2020,7 +1975,7 @@ mod tests {
                     .to_string(),
             aggregate_aliases: std::collections::BTreeMap::new(),
             aggregate_naming: AggregateNamingMode::default(),
-            aggregate_subagent_exposed_models: std::collections::BTreeSet::new(),
+            aggregate_subagent_exposed_models: Vec::new(),
             aggregate_slug_table: Vec::new(),
             // Single/failover selections never reach the aggregate gate, so the
             // value is irrelevant; `true` keeps the helper reading as "no
@@ -2054,7 +2009,7 @@ mod tests {
             aggregate_separator: separator.to_string(),
             aggregate_aliases: std::collections::BTreeMap::new(),
             aggregate_naming: AggregateNamingMode::default(),
-            aggregate_subagent_exposed_models: std::collections::BTreeSet::new(),
+            aggregate_subagent_exposed_models: Vec::new(),
             aggregate_slug_table: Vec::new(),
             cross_site_failover: true,
         }
@@ -2086,6 +2041,31 @@ mod tests {
 
         // No mapping and no default model still means "offers nothing".
         assert!(declared_models_from_settings(Some(&serde_json::json!({}))).is_empty());
+    }
+
+    #[test]
+    fn declared_models_match_aggregate_catalog_when_legacy_root_models_are_present() {
+        let settings = serde_json::json!({
+            "autoReviewModelOverride": "review-model",
+            "models": [{ "model": "legacy-root-model" }],
+            "config": "model = \"default-model\"\nmodel_provider = \"custom\"\n"
+        });
+        let settings_text = serde_json::to_string(&settings).unwrap();
+        let catalog_models =
+            crate::coding::codex::commands::codex_aggregate_declared_bare_models(&[(
+                "site-a".to_string(),
+                "Site A".to_string(),
+                settings.clone(),
+            )]);
+
+        // The aggregate catalog is built from `modelCatalog.models` plus the
+        // config default. A legacy root-level `models` array is not published,
+        // so runtime membership must not accept it either.
+        assert_eq!(catalog_models, vec!["default-model".to_string()]);
+        assert_eq!(
+            declared_models_from_settings(Some(&serde_json::Value::String(settings_text))),
+            catalog_models
+        );
     }
 
     #[test]

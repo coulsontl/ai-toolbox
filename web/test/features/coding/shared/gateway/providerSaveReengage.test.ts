@@ -250,3 +250,92 @@ test('save provider reengage helper still reengages aggregate when the save fail
 
   assert.deepEqual(calls, ['restore', 'status:direct', 'save']);
 });
+
+test('save provider reengage helper refuses to restart a takeover it could never replay', async () => {
+  const calls: string[] = [];
+  const tooManyModels = ['m0', 'm1', 'm2', 'm3', 'm4', 'm5'];
+
+  await assert.rejects(
+    saveProviderWithGatewayReengage({
+      gatewayMode: 'aggregate',
+      aggregateConfig: {
+        providerIds: ['site-a'],
+        separator: '.',
+        subagentExposedModels: tooManyModels,
+      },
+      saveProvider: async () => {
+        calls.push('save');
+        return 'saved';
+      },
+      restoreDirect: async () => {
+        calls.push('restore');
+        return 'direct';
+      },
+      engageSingle: async () => {
+        calls.push('single');
+        return 'single';
+      },
+      engageFailover: async () => {
+        calls.push('failover');
+        return 'failover';
+      },
+      engageAggregate: async () => {
+        calls.push('aggregate');
+        return 'aggregate';
+      },
+      onGatewayStatusChange: (status) => {
+        calls.push(`status:${status}`);
+      },
+    }),
+    /exposure selection larger than the subagent hint limit/,
+  );
+
+  // The whole point: `restoreDirect` already dropped the takeover, so the
+  // unreplayable selection has to be caught before anything is touched.
+  assert.deepEqual(calls, []);
+});
+
+test('save provider reengage helper still restarts an at-limit exposure selection', async () => {
+  const calls: string[] = [];
+
+  const result = await saveProviderWithGatewayReengage({
+    gatewayMode: 'aggregate',
+    aggregateConfig: {
+      providerIds: ['site-a'],
+      separator: '.',
+      subagentExposedModels: ['m0', 'm1', 'm2', 'm3', 'm4'],
+    },
+    saveProvider: async () => {
+      calls.push('save');
+      return 'saved';
+    },
+    restoreDirect: async () => {
+      calls.push('restore');
+      return 'direct';
+    },
+    engageSingle: async () => {
+      calls.push('single');
+      return 'single';
+    },
+    engageFailover: async () => {
+      calls.push('failover');
+      return 'failover';
+    },
+    engageAggregate: async (config) => {
+      calls.push(`aggregate:${(config.subagentExposedModels ?? []).length}`);
+      return 'aggregate';
+    },
+    onGatewayStatusChange: (status) => {
+      calls.push(`status:${status}`);
+    },
+  });
+
+  assert.equal(result, 'saved');
+  assert.deepEqual(calls, [
+    'restore',
+    'status:direct',
+    'save',
+    'aggregate:5',
+    'status:aggregate',
+  ]);
+});

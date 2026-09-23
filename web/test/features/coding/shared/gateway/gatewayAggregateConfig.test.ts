@@ -5,15 +5,20 @@ import type { GatewayCliTakeoverStatus } from '../../../../../services/proxyGate
 import {
   buildGatewayAggregateModelSlug,
   buildGatewayAggregateSitePreviewSlug,
+  canReplaySubagentExposureSelection,
   deriveGatewayAggregateSitePrefix,
   isAggregateSiteId,
   normalizeGatewayAggregateAliases,
   normalizeGatewayAggregateSiteIds,
   normalizeSubagentExposedModels,
+  resolveEffectiveSubagentExposedModels,
+  resolveCanonicalSubagentExposedModels,
+  resolveStaleSubagentExposedModels,
   resolveGatewayAggregateEffectiveAliases,
   resolveGatewayReengageMode,
   resolveSubagentExposureCandidates,
-  resolveSubagentExposureMode,
+  isSubagentExposureSelectionComplete,
+  SUBAGENT_EXPOSED_MODEL_LIMIT,
   toGatewayAggregateReengageConfig,
   validateGatewayAggregateAlias,
   validateGatewayAggregateSeparator,
@@ -432,11 +437,95 @@ test('a narrowed exposure set survives the re-engage config round trip', () => {
   assert.equal(all && 'subagentExposedModels' in all, false);
 });
 
-test('exposure mode is read from the value, not the field presence', () => {
-  assert.equal(resolveSubagentExposureMode(undefined), 'all');
-  assert.equal(resolveSubagentExposureMode([]), 'all');
-  assert.equal(resolveSubagentExposureMode(['  ']), 'all');
-  assert.equal(resolveSubagentExposureMode(['gpt-5.6-luna']), 'selected');
+test('an engage needs between one and the hint limit of usable names', () => {
+  // An empty list is the legacy "promote nothing" default, never a valid choice.
+  assert.equal(isSubagentExposureSelectionComplete(undefined), false);
+  assert.equal(isSubagentExposureSelectionComplete([]), false);
+  assert.equal(isSubagentExposureSelectionComplete(['  ']), false);
+  assert.equal(isSubagentExposureSelectionComplete(['gpt-5.6-luna']), true);
+  // Exactly the limit is fine; one more would be silently invisible to the
+  // subagent, so it is incomplete rather than quietly truncated.
+  const atLimit = Array.from(
+    { length: SUBAGENT_EXPOSED_MODEL_LIMIT },
+    (_, index) => `model-${index}`,
+  );
+  assert.equal(isSubagentExposureSelectionComplete(atLimit), true);
+  assert.equal(isSubagentExposureSelectionComplete([...atLimit, 'model-extra']), false);
+  // Duplicates and blanks do not count toward the limit.
+  assert.equal(
+    isSubagentExposureSelectionComplete([...atLimit, ' model-0 ', '']),
+    true,
+  );
+});
+
+test('a stored exposure selection is only replayable within the hint limit', () => {
+  const atLimit = Array.from(
+    { length: SUBAGENT_EXPOSED_MODEL_LIMIT },
+    (_, index) => `model-${index}`,
+  );
+
+  // An empty/absent selection is the legacy "promote nothing" default, which the
+  // backend accepts, so it must stay replayable rather than be read as broken.
+  assert.equal(canReplaySubagentExposureSelection(undefined), true);
+  assert.equal(canReplaySubagentExposureSelection(null), true);
+  assert.equal(canReplaySubagentExposureSelection([]), true);
+  assert.equal(canReplaySubagentExposureSelection(atLimit), true);
+  // Duplicates and blanks are normalized away before the limit is applied.
+  assert.equal(
+    canReplaySubagentExposureSelection([...atLimit, ' model-0 ', '']),
+    true,
+  );
+
+  // One more than the hint window is exactly the selection every engage rejects,
+  // which is why the provider-save round trip must detect it before restoring
+  // direct mode.
+  assert.equal(canReplaySubagentExposureSelection([...atLimit, 'model-extra']), false);
+  assert.equal(
+    canReplaySubagentExposureSelection([' m0 ', 'm1', 'm2', 'm3', 'm4', 'm5']),
+    false,
+  );
+});
+
+test('effective exposure keeps only addressable names while preserving tick order', () => {
+  assert.deepEqual(
+    resolveEffectiveSubagentExposedModels(
+      [' stale ', 'gpt-5.6-luna', 'gpt-5.6-luna', 'gpt-5.6-sol'],
+      ['gpt-5.6-luna', 'gpt-5.6-sol'],
+    ),
+    ['gpt-5.6-luna', 'gpt-5.6-sol'],
+  );
+  assert.deepEqual(
+    resolveEffectiveSubagentExposedModels(['stale-only'], ['gpt-5.6-luna']),
+    [],
+  );
+});
+
+test('mixed exposure keeps stale selections visible for explicit deselection', () => {
+  const selected = ['stale-model', 'model-1', 'model-2'];
+  const addressable = ['model-1', 'model-2'];
+
+  assert.deepEqual(
+    resolveEffectiveSubagentExposedModels(selected, addressable),
+    ['model-1', 'model-2'],
+  );
+  assert.deepEqual(
+    resolveStaleSubagentExposedModels(selected, addressable),
+    ['stale-model'],
+  );
+  assert.deepEqual(
+    resolveStaleSubagentExposedModels(['stale-model'], addressable),
+    ['stale-model'],
+  );
+});
+
+test('successful API responses are the canonical exposure source', () => {
+  assert.deepEqual(
+    resolveCanonicalSubagentExposedModels({
+      subagent_exposed_models: [' gpt-5.6-sol ', 'gpt-5.6-sol', ''],
+    }),
+    ['gpt-5.6-sol'],
+  );
+  assert.deepEqual(resolveCanonicalSubagentExposedModels(null), []);
 });
 
 test('exposure candidates prefer the universe so a removed name can return', () => {

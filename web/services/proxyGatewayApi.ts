@@ -41,15 +41,10 @@ export interface GatewayAggregateConfig {
    */
   cross_site_failover?: boolean;
   /**
-   * Bare upstream model names the generated Codex catalog keeps publishing as
-   * hidden aliases.
-   *
-   * Those entries never appear in Codex's native model picker; they stay
-   * addressable by exact slug (`spawn_agent`, `[agents]` defaults, auto-review)
-   * and are how aggregate mode stays a drop-in replacement for the bare names
-   * the single-provider catalog used to expose. Absent or empty keeps the
-   * default of publishing every declared bare model, so an empty list must
-   * never be read as "publish none".
+   * Bare upstream model names promoted into Codex's visible model list, in
+   * tick order. Unticked names remain addressable through hidden aliases.
+   * Absent or empty keeps the legacy behavior of promoting none while still
+   * publishing every declared bare name as a hidden alias.
    */
   subagent_exposed_models?: string[];
   /**
@@ -79,10 +74,10 @@ export interface GatewayAggregateBareModel {
 /**
  * Read-only catalog view behind the aggregate drawer's exposure block.
  *
- * `entries` are the hidden aliases the generated catalog currently publishes.
- * `bare_models` is the full universe the selected sites declare: it is the
- * candidate list precisely because a name dropped by a narrowed exposure set
- * must stay selectable again. Older backends omit it, hence the fallback in
+ * `entries` are bare names the generated catalog currently publishes, whether
+ * visible or hidden. `bare_models` is the full universe the selected sites
+ * declare, which supplies candidates before engagement and after selection
+ * changes. Older backends omit it, hence the fallback in
  * `resolveSubagentExposureCandidates`.
  */
 export interface GatewaySubagentCatalog {
@@ -657,17 +652,20 @@ export const getProxyGatewayAggregateDraft = async (
   return invoke<GatewayAggregateConfig | null>('proxy_gateway_aggregate_draft', { cliKey });
 };
 
-/**
- * Read the hidden bare-name aliases the aggregate catalog publishes, plus the
- * full universe the selected sites declare.
- *
- * Read-only and local-only: it reads the engaged manifest, the generated
- * catalog file and the selected providers' declared models.
- */
+  /**
+   * Read bare-name entries in the aggregate catalog, plus the full universe the
+   * selected sites declare.
+   *
+   * Read-only and local-only: it reads the engaged manifest or draft selection,
+   * the generated catalog file and the selected providers' declared models.
+   */
 export const getProxyGatewaySubagentCatalog = async (
   cliKey: GatewayCliKey,
-): Promise<GatewaySubagentCatalog> =>
-  invoke<GatewaySubagentCatalog>('proxy_gateway_subagent_catalog', { cliKey });
+  providerIds?: string[],
+): Promise<GatewaySubagentCatalog> => {
+  const args = providerIds === undefined ? { cliKey } : { cliKey, providerIds };
+  return invoke<GatewaySubagentCatalog>('proxy_gateway_subagent_catalog', args);
+};
 
 /**
  * Persist the aggregate draft without engaging the mode, so the selection

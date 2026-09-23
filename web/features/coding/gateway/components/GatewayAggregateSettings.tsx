@@ -29,19 +29,24 @@ import {
   getGatewayProviderProfilesVersion,
   getGatewayAggregateConfigVersion,
   notifyGatewayAggregateConfigChanged,
+  isSubagentExposureSelectionComplete,
   isAggregateSiteId,
   normalizeGatewayAggregateAliases,
   normalizeGatewayAggregateSiteIds,
   normalizeSubagentExposedModels,
   orderAggregateSiteIdsByCandidates,
+  resolveCanonicalSubagentExposedModels,
   resolveAggregateFormSeed,
+  resolveEffectiveSubagentExposedModels,
   resolveGatewayAggregateEffectiveAliases,
   resolveSubagentExposureCandidates,
+  resolveStaleSubagentExposedModels,
   restoreDirectUnavailableHintKey,
   shortAggregateSiteId,
   subscribeGatewayProviderProfiles,
   subscribeGatewayAggregateConfig,
   runGatewayAggregateMutation,
+  SUBAGENT_EXPOSED_MODEL_LIMIT,
   toAggregateSiteCandidates,
   validateGatewayAggregateSeparator,
   validateGatewayAggregateAlias,
@@ -188,14 +193,11 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
   // names, so a failure reports an error instead of spending another site.
   const [crossSiteFailover, setCrossSiteFailover] = React.useState(false);
   /**
-   * Programmable bare-name exposure. `'all'` submits an empty set, which is the
-   * backend's "publish every bare model" default; `'selected'` publishes exactly
-   * the ticked names. The ticks stay in state in either mode so flipping back to
-   * `'selected'` restores the previous selection.
+   * Programmable bare-name exposure, in tick order. The order *is* the
+   * priority: the first ticked name wins the lowest `spawn_agent` model hint.
+   * An empty list is the backend's legacy "publish every bare model and promote
+   * none" default, which is why an engage requires a non-empty selection.
    */
-  const [subagentExposedMode, setSubagentExposedMode] = React.useState<'all' | 'selected'>(
-    'all',
-  );
   const [subagentExposedModels, setSubagentExposedModels] = React.useState<string[]>([]);
   const [subagentCatalog, setSubagentCatalog] = React.useState<GatewaySubagentCatalog | null>(
     null,
@@ -220,6 +222,7 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
   const statusRequestRef = React.useRef(0);
   const mutationRevisionRef = React.useRef(0);
   const draftRequestRef = React.useRef(0);
+  const catalogRequestRef = React.useRef(0);
   const savedDraftRef = React.useRef<GatewayAggregateConfig | null>(null);
   const mountedRef = React.useRef(true);
   const selectedStatus = React.useMemo(
@@ -292,7 +295,8 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
   );
   /**
    * The exposure block's candidate list: the backend's full bare-name universe,
-   * falling back to the published hidden aliases when that field is absent.
+    * falling back to published bare-name rows (promoted entries or hidden
+    * aliases) when that field is absent.
    * Keeping the universe here is what lets a name be ticked back on after the
    * exposure set previously narrowed it out of the catalog.
    */
@@ -305,20 +309,68 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
   // cannot resolve.
   const effectiveSubagentExposedModels = React.useMemo(() => {
     if (!subagentCatalog) {
-      return subagentExposedModels;
+      // Until the backend has supplied the addressable universe, no value is
+      // safe to submit. This keeps a stale draft from crossing the API during
+      // the catalog refresh window.
+      return [];
     }
-    const addressable = new Set(subagentExposureCandidates.map((entry) => entry.model));
-    return subagentExposedModels.filter((model) => addressable.has(model));
+    return resolveEffectiveSubagentExposedModels(
+      subagentExposedModels,
+      subagentExposureCandidates.map((entry) => entry.model),
+    );
   }, [subagentExposedModels, subagentCatalog, subagentExposureCandidates]);
-  // Publishing an empty set means "publish every bare model", which is the exact
-  // opposite of "only the selected ones" with nothing selected. That request
-  // must never reach the backend.
-  const subagentExposureInvalid =
-    subagentExposedMode === 'selected' && effectiveSubagentExposedModels.length === 0;
+  // Ticks that name a model the current site selection no longer declares. They
+  // cannot be submitted (the catalog would name something the router rejects),
+  // so they are surfaced instead of silently dropped.
+  const staleSubagentExposedModels = React.useMemo(() => {
+    if (!subagentCatalog) {
+      return [];
+    }
+    return resolveStaleSubagentExposedModels(
+      subagentExposedModels,
+      subagentExposureCandidates.map((entry) => entry.model),
+    );
+  }, [subagentCatalog, subagentExposedModels, subagentExposureCandidates]);
+  // The ticked names are what the subagent can see, so an engage needs at least
+  // one and at most the five hint slots. Two states are incomplete: nothing
+  // ticked (the backend would read the empty list as the legacy "promote
+  // nothing" default), and more than the limit (only the first five would be
+  // promoted, which the panel refuses instead of silently dropping the rest).
+  const subagentExposureOverflow =
+    effectiveSubagentExposedModels.length > SUBAGENT_EXPOSED_MODEL_LIMIT;
+  const subagentExposureInvalid = !isSubagentExposureSelectionComplete(
+    effectiveSubagentExposedModels,
+  );
+  /**
+   * Candidates in render order: ticked names first, in tick order, so the panel
+   * shows the priority the backend will apply. The rest keep the backend order.
+   */
+  const orderedSubagentExposureCandidates = React.useMemo(() => {
+    const ticked = new Set(subagentExposedModels);
+    const candidateModels = new Set(
+      subagentExposureCandidates.map((entry) => entry.model),
+    );
+    // Keep unavailable ticks visible as removable rows; otherwise the warning
+    // could block saving with no way for the user to explicitly clear them.
+    const staleEntries = staleSubagentExposedModels
+      .filter((model) => !candidateModels.has(model))
+      .map((model) => ({ model, provider_id: '', provider_name: '' }));
+    const allCandidates = [...subagentExposureCandidates, ...staleEntries];
+    const selected = allCandidates.filter((entry) => ticked.has(entry.model));
+    const rest = allCandidates.filter((entry) => !ticked.has(entry.model));
+    return [
+      ...selected.sort(
+        (left, right) =>
+          subagentExposedModels.indexOf(left.model) - subagentExposedModels.indexOf(right.model),
+      ),
+      ...rest,
+    ];
+  }, [subagentExposureCandidates, subagentExposedModels, staleSubagentExposedModels]);
   const canEngage =
     running &&
     normalizedSiteIds.length > 0 &&
     !hasStaleConfig &&
+    staleSubagentExposedModels.length === 0 &&
     separatorError === null &&
     normalizedAliases !== null &&
     !subagentExposureInvalid &&
@@ -349,6 +401,7 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
       mountedRef.current = false;
       statusRequestRef.current += 1;
       mutationRevisionRef.current += 1;
+      catalogRequestRef.current += 1;
     };
   }, []);
 
@@ -444,12 +497,11 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
     setSiteIds(seed.siteIds);
     setDroppedDraftSites(seed.droppedDraftSites);
     setCrossSiteFailover(seed.crossSiteFailover);
-    // The stored value carries the mode: an empty set is the backend's default
-    // "publish every bare model", so it must not be shown as "only selected".
+    // Tick order is priority order, and the stored array is what the backend
+    // will promote. An empty value is the legacy "publish every bare model and
+    // promote none" default: it is shown as-is and the block explains that a
+    // new selection has to be made before the takeover may engage.
     setSubagentExposedModels(seed.subagentExposedModels);
-    setSubagentExposedMode(
-      seed.subagentExposedModels.length > 0 ? 'selected' : 'all',
-    );
     // The `[agents]` defaults are engage-time state, so they are only shown back
     // from a running takeover: seeding them from the draft would make keys this
     // takeover does not manage look managed.
@@ -471,22 +523,22 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
        * mode leaves the CLI in a different state than one that failed outright.
        */
       failureKey: () => AggregateFailureNoticeKey,
-    ) => {
+    ): Promise<T | null> => {
       const request = mutationRevisionRef.current + 1;
       mutationRevisionRef.current = request;
       setBusy(true);
       setNotice(null);
 
-      let succeeded = false;
+      let result: T | null = null;
       try {
         await runGatewayAggregateMutation(async () => {
           try {
-            const result = await execute();
+            const operationResult = await execute();
             // Refresh inside the lane so the next queued mutation cannot race
             // this operation's canonical status read.
             await refreshCliStatuses().catch(() => undefined);
-            succeeded = true;
-            return result;
+            result = operationResult;
+            return operationResult;
           } catch (error) {
             // Failed commands can still leave a partial restore or stale local
             // draft. Always re-read canonical status before the next mutation.
@@ -514,13 +566,13 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
         // failure; the child only lets the newest request update its notice.
         onTakeoverChange?.();
         if (mountedRef.current && mutationRevisionRef.current === request) {
-          if (succeeded) {
+          if (result !== null) {
             setNotice({ kind: 'success', text: successText });
           }
           setBusy(false);
         }
       }
-      return succeeded;
+      return result;
     },
     [onTakeoverChange, refreshCliStatuses, t],
   );
@@ -539,9 +591,44 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
       overrides?: { crossSiteFailover?: boolean; subagentExposedModels?: string[] },
     ) => {
       const nextCrossSiteFailover = overrides?.crossSiteFailover ?? crossSiteFailover;
-      const nextExposedModels =
-        overrides?.subagentExposedModels ??
-        (subagentExposedMode === 'all' ? [] : subagentExposedModels);
+      const requestedExposedModels =
+        overrides?.subagentExposedModels ?? subagentExposedModels;
+      const nextStaleExposedModels = subagentCatalog
+        ? resolveStaleSubagentExposedModels(
+            requestedExposedModels,
+            subagentExposureCandidates.map((entry) => entry.model),
+          )
+        : [];
+      if (nextStaleExposedModels.length > 0) {
+        setNotice({
+          kind: 'error',
+          text: t('gateway.aggregate.subagentExposedStale', {
+            models: nextStaleExposedModels.join(', '),
+          }),
+        });
+        return false;
+      }
+      const nextExposedModels = subagentCatalog
+        ? resolveEffectiveSubagentExposedModels(
+            requestedExposedModels,
+            subagentExposureCandidates.map((entry) => entry.model),
+          )
+        : normalizeSubagentExposedModels(requestedExposedModels);
+      if (
+        nextExposedModels.length === 0 ||
+        nextExposedModels.length > SUBAGENT_EXPOSED_MODEL_LIMIT
+      ) {
+        setNotice({
+          kind: 'error',
+          text:
+            nextExposedModels.length > SUBAGENT_EXPOSED_MODEL_LIMIT
+              ? t('gateway.aggregate.subagentExposedLimit', {
+                  limit: SUBAGENT_EXPOSED_MODEL_LIMIT,
+                })
+              : t('gateway.aggregate.subagentExposedRequired'),
+        });
+        return false;
+      }
       const requiresDirectRestore = aggregateEngageRequiresDirectRestore(
         nextSiteIds,
         selectedStatus,
@@ -553,7 +640,7 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
       // Only set once the restore actually succeeded, so the failure notice can
       // tell "the CLI is back on direct now" apart from "nothing changed".
       let restoredDirect = false;
-      const succeeded = await runGatewayOperation(
+      const result = await runGatewayOperation(
         async () => {
           if (requiresDirectRestore) {
             // Switching the primary of an enabled takeover is only supported as
@@ -577,7 +664,11 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
         t('gateway.aggregate.notice.enabled'),
         () => (restoredDirect ? 'enableFailedAfterRestore' : 'enableFailed'),
       );
-      if (succeeded) {
+      if (result) {
+        const canonicalExposedModels = resolveCanonicalSubagentExposedModels(
+          result as GatewayCliTakeoverStatus,
+        );
+        setSubagentExposedModels(canonicalExposedModels);
         // The backend persists the accepted selection to the draft file too; keep
         // the in-memory copy in step so leaving aggregate mode re-seeds this form
         // with the last engaged selection instead of an older draft.
@@ -587,10 +678,10 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
           aliases: { ...nextAliases },
           naming: nextNaming,
           cross_site_failover: nextCrossSiteFailover,
-          subagent_exposed_models: [...nextExposedModels],
+          subagent_exposed_models: [...canonicalExposedModels],
         };
       }
-      return succeeded;
+      return Boolean(result);
     },
     [
       cliKey,
@@ -599,8 +690,9 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
       restoreDirectBlockedHint,
       runGatewayOperation,
       selectedStatus,
-      subagentExposedMode,
       subagentExposedModels,
+      subagentCatalog,
+      subagentExposureCandidates,
       subagentModel,
       subagentReasoningEffort,
       t,
@@ -623,11 +715,30 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
       subagentExposedModels?: string[];
     }) => {
       const nextCrossSiteFailover = next.crossSiteFailover ?? crossSiteFailover;
-      const nextExposedModels =
-        next.subagentExposedModels ??
-        (subagentExposedMode === 'all' ? [] : subagentExposedModels);
+      const requestedExposedModels = next.subagentExposedModels ?? subagentExposedModels;
       const request = draftRequestRef.current + 1;
       draftRequestRef.current = request;
+      const staleExposedModels = subagentCatalog
+        ? resolveStaleSubagentExposedModels(
+            requestedExposedModels,
+            subagentExposureCandidates.map((entry) => entry.model),
+          )
+        : [];
+      if (staleExposedModels.length > 0) {
+        setNotice({
+          kind: 'error',
+          text: t('gateway.aggregate.subagentExposedStale', {
+            models: staleExposedModels.join(', '),
+          }),
+        });
+        return;
+      }
+      const nextExposedModels = subagentCatalog
+        ? resolveEffectiveSubagentExposedModels(
+            requestedExposedModels,
+            subagentExposureCandidates.map((entry) => entry.model),
+        )
+        : normalizeSubagentExposedModels(requestedExposedModels);
       // Serialized through the aggregate mutation lane so a slow, older write
       // cannot land after a newer one and resurrect a stale selection.
       void runGatewayAggregateMutation(() =>
@@ -643,7 +754,12 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
       )
         .then((saved) => {
           if (mountedRef.current && draftRequestRef.current === request) {
-            savedDraftRef.current = saved;
+            const canonicalExposedModels = resolveCanonicalSubagentExposedModels(saved);
+            setSubagentExposedModels(canonicalExposedModels);
+            savedDraftRef.current = {
+              ...saved,
+              subagent_exposed_models: canonicalExposedModels,
+            };
             setDroppedDraftSites(false);
           }
         })
@@ -656,7 +772,14 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
           }
         });
     },
-    [cliKey, crossSiteFailover, subagentExposedMode, subagentExposedModels, t],
+    [
+      cliKey,
+      crossSiteFailover,
+      subagentCatalog,
+      subagentExposedModels,
+      subagentExposureCandidates,
+      t,
+    ],
   );
 
   /**
@@ -720,6 +843,30 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
     }
     if (!normalizedAliases) {
       setNotice({ kind: 'error', text: t('gateway.aggregate.aliasInvalid') });
+      return;
+    }
+    if (staleSubagentExposedModels.length > 0) {
+      setNotice({
+        kind: 'error',
+        text: t('gateway.aggregate.subagentExposedStale', {
+          models: staleSubagentExposedModels.join(', '),
+        }),
+      });
+      return;
+    }
+    // The takeover may not engage without a usable exposure selection: an empty
+    // list would engage the legacy "promote nothing" default, so the subagent
+    // would see no bare model at all — the exact problem this panel exists to
+    // fix. Say why instead of letting the disabled switch look broken.
+    if (subagentExposureInvalid) {
+      setNotice({
+        kind: 'error',
+        text: subagentExposureOverflow
+          ? t('gateway.aggregate.subagentExposedLimit', {
+              limit: SUBAGENT_EXPOSED_MODEL_LIMIT,
+            })
+          : t('gateway.aggregate.subagentExposedRequired'),
+      });
       return;
     }
     await runEngage(normalizedSiteIds, separator, normalizedAliases, naming);
@@ -839,23 +986,21 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
   );
   const invalidSiteIds = siteIds.filter((siteId) => !isAggregateSiteId(siteId));
 
-  /**
-   * Read the bare-name universe. Only meaningful while the takeover is engaged,
-   * because the catalog is generated at engage time; the block explains that
-   * instead of requesting it while the mode is off.
-   */
-  const loadSubagentCatalog = React.useCallback(async () => {
-    if (!engaged) {
-      return;
-    }
+  /** Read bare-name candidates for the selected sites; edits share the mutation lane. */
+  const loadSubagentCatalog = React.useCallback(async (providerIds?: string[]) => {
+    const request = catalogRequestRef.current + 1;
+    catalogRequestRef.current = request;
     setSubagentCatalogLoading(true);
+    setSubagentCatalog(null);
     try {
-      const catalog = await getProxyGatewaySubagentCatalog(cliKey);
-      if (mountedRef.current) {
+      const catalog = await runGatewayAggregateMutation(() =>
+        getProxyGatewaySubagentCatalog(cliKey, providerIds),
+      );
+      if (mountedRef.current && catalogRequestRef.current === request) {
         setSubagentCatalog(catalog);
       }
     } catch (error) {
-      if (mountedRef.current) {
+      if (mountedRef.current && catalogRequestRef.current === request) {
         setNotice({
           kind: 'error',
           text: t('gateway.aggregate.notice.subagentExposedLoadFailed', {
@@ -864,67 +1009,49 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
         });
       }
     } finally {
-      if (mountedRef.current) {
+      if (mountedRef.current && catalogRequestRef.current === request) {
         setSubagentCatalogLoading(false);
       }
     }
-  }, [cliKey, engaged, t]);
+  }, [cliKey, t]);
 
-  // A re-engage rewrites the catalog, so a previously read one is stale. Reload
-  // while the block is in use instead of showing names that are no longer
-  // published.
+  // The block is editable before the takeover engages, so the candidate
+  // universe is read for the current form selection. A fresh install has no
+  // saved draft yet; pass its selected site IDs directly instead of showing an
+  // empty list until the user first saves one.
   React.useEffect(() => {
-    if (!engaged) {
-      setSubagentCatalog(null);
-      return;
-    }
-    void loadSubagentCatalog();
-  }, [engaged, loadSubagentCatalog]);
-
-  const handleSubagentExposedModeChange = (mode: 'all' | 'selected') => {
-    setNotice(null);
-    setSubagentExposedMode(mode);
-    const nextModels = normalizeSubagentExposedModels(
-      mode === 'all' ? [] : subagentExposedModels,
-    );
-    if (mode === 'selected' && nextModels.length === 0) {
-      // Nothing to publish yet: the backend would read an empty set as "publish
-      // everything". Keep the mode selected and let the block explain why the
-      // takeover switch is disabled until at least one name is ticked.
-      setNotice({ kind: 'error', text: t('gateway.aggregate.subagentExposedRequired') });
-      return;
-    }
-    if (!engaged) {
-      persistAggregateDraft({
-        siteIds,
-        separator,
-        aliases,
-        naming,
-        subagentExposedModels: nextModels,
-      });
-      return;
-    }
-    if (siteIds.length > 0 && normalizedAliases && separatorError === null) {
-      void runEngage(siteIds, separator, normalizedAliases, naming, {
-        subagentExposedModels: nextModels,
-      });
-    }
-  };
+    void loadSubagentCatalog(engaged ? undefined : normalizedSiteIds);
+  }, [loadSubagentCatalog, normalizedSiteIds.join(','), engaged]);
 
   const handleToggleExposedModel = (model: string, checked: boolean) => {
     setNotice(null);
+    if (checked && effectiveSubagentExposedModels.length >= SUBAGENT_EXPOSED_MODEL_LIMIT) {
+      // Refusing is the point: Codex only shows the five lowest-priority visible
+      // models, so a sixth tick would be silently invisible to the subagent even
+      // though the panel looked like it had accepted it.
+      setNotice({
+        kind: 'error',
+        text: t('gateway.aggregate.subagentExposedLimit', {
+          limit: SUBAGENT_EXPOSED_MODEL_LIMIT,
+        }),
+      });
+      return;
+    }
+    // Appending keeps tick order, which is the priority order the backend
+    // applies; removing keeps the relative order of the rest.
     const nextModels = normalizeSubagentExposedModels(
       checked
         ? [...subagentExposedModels, model]
         : subagentExposedModels.filter((value) => value !== model),
     );
-    setSubagentExposedModels(nextModels);
-    if (nextModels.length === 0) {
-      // Untick-last would publish "expose nothing", which the backend reads as
-      // "expose everything". Say so instead of writing the opposite request.
+    if (engaged && nextModels.length === 0) {
+      // Untick-last would write the legacy empty list, which the backend reads as
+      // "promote nothing" — the opposite of what this panel is for. The mode is
+      // kept unchanged so the visible draft still matches the active manifest.
       setNotice({ kind: 'error', text: t('gateway.aggregate.subagentExposedRequired') });
       return;
     }
+    setSubagentExposedModels(nextModels);
     if (!engaged) {
       persistAggregateDraft({
         siteIds,
@@ -1215,71 +1342,69 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
         <summary className={styles.subagentExposedSummary}>
           <span>{t('gateway.aggregate.subagentExposedTitle')}</span>
           <span className={styles.fieldHelp}>
-            {subagentExposedMode === 'all'
-              ? t('gateway.aggregate.subagentExposedModeAll')
-              : t('gateway.aggregate.subagentExposedCount', {
-                  count: effectiveSubagentExposedModels.length,
-                })}
+            {t('gateway.aggregate.subagentExposedCount', {
+              count: effectiveSubagentExposedModels.length,
+              limit: SUBAGENT_EXPOSED_MODEL_LIMIT,
+            })}
           </span>
         </summary>
         <p className={styles.helper}>{t('gateway.aggregate.subagentExposedHint')}</p>
-        {!engaged ? (
-          <p className={styles.helper}>{t('gateway.aggregate.subagentExposedRequiresEngaged')}</p>
-        ) : (
-          <>
-            <div
-              className={styles.subagentExposedModes}
-              role="radiogroup"
-              aria-label={t('gateway.aggregate.subagentExposedMode')}
-            >
-              <label className={styles.subagentExposedMode}>
-                <input
-                  type="radio"
-                  name={`subagent-exposed-mode-${cliKey}`}
-                  checked={subagentExposedMode === 'all'}
-                  disabled={busy}
-                  onChange={() => handleSubagentExposedModeChange('all')}
-                />
-                {t('gateway.aggregate.subagentExposedModeAll')}
-              </label>
-              <label className={styles.subagentExposedMode}>
-                <input
-                  type="radio"
-                  name={`subagent-exposed-mode-${cliKey}`}
-                  checked={subagentExposedMode === 'selected'}
-                  disabled={busy}
-                  onChange={() => handleSubagentExposedModeChange('selected')}
-                />
-                {t('gateway.aggregate.subagentExposedModeSelected')}
-              </label>
-            </div>
+            {/* Tick order is priority order, and only the first `limit` ticks fit
+                Codex's model hint. The banner states the budget before any tick. */}
             <p className={styles.helper}>
-              {subagentExposedMode === 'all'
-                ? t('gateway.aggregate.subagentExposedAllHint')
-                : t('gateway.aggregate.subagentExposedSelectedHint')}
+              {t('gateway.aggregate.subagentExposedOrderHint', {
+                limit: SUBAGENT_EXPOSED_MODEL_LIMIT,
+              })}
             </p>
-            {subagentExposedMode === 'selected' ? (
-              subagentCatalogLoading ? (
-                <div className={styles.loading}>
-                  <Loader2 size={14} className={styles.spin} aria-hidden="true" />
-                </div>
-              ) : subagentExposureCandidates.length === 0 ? (
-                <p className={styles.helper}>{t('gateway.aggregate.subagentExposedEmpty')}</p>
-              ) : (
-                <ul className={styles.subagentExposedList}>
-                  {subagentExposureCandidates.map((entry) => (
+            {subagentCatalogLoading ? (
+              <div className={styles.loading}>
+                <Loader2 size={14} className={styles.spin} aria-hidden="true" />
+              </div>
+            ) : orderedSubagentExposureCandidates.length === 0 ? (
+              <p className={styles.helper}>{t('gateway.aggregate.subagentExposedEmpty')}</p>
+            ) : (
+              <ul className={styles.subagentExposedList}>
+                {orderedSubagentExposureCandidates.map((entry) => {
+                  const ticked = subagentExposedModels.includes(entry.model);
+                  const effectiveIndex = effectiveSubagentExposedModels.indexOf(entry.model);
+                  const promoted =
+                    ticked &&
+                    effectiveIndex >= 0 &&
+                    effectiveIndex < SUBAGENT_EXPOSED_MODEL_LIMIT;
+                  return (
                     <li key={entry.model} className={styles.subagentExposedItem}>
                       <label className={styles.subagentExposedOption}>
                         <input
                           type="checkbox"
-                          checked={subagentExposedModels.includes(entry.model)}
-                          disabled={busy}
+                          checked={ticked}
+                          disabled={
+                            busy ||
+                            (!ticked &&
+                              effectiveSubagentExposedModels.length >=
+                                SUBAGENT_EXPOSED_MODEL_LIMIT)
+                          }
                           aria-label={entry.model}
                           onChange={(event) =>
                             handleToggleExposedModel(entry.model, event.currentTarget.checked)
                           }
                         />
                         <code className={styles.subagentExposedModel}>{entry.model}</code>
+                        {/* Which names the subagent can actually pick vs. which
+                            stay addressable only: the difference is invisible
+                            from the Codex side, so the panel has to say it. */}
+                        {effectiveIndex >= 0 ? (
+                          <span
+                            className={
+                              promoted
+                                ? styles.subagentExposedBadge
+                                : styles.subagentExposedBadgeMuted
+                            }
+                          >
+                            {promoted
+                              ? t('gateway.aggregate.subagentExposedBadgePromoted')
+                              : t('gateway.aggregate.subagentExposedBadgeAddressable')}
+                          </span>
+                        ) : null}
                         {entry.provider_name ? (
                           <span className={styles.subagentExposedProvider}>
                             {entry.provider_name}
@@ -1287,17 +1412,28 @@ const GatewayAggregateSettings: React.FC<GatewayAggregateSettingsProps> = ({
                         ) : null}
                       </label>
                     </li>
-                  ))}
-                </ul>
-              )
+                  );
+                })}
+              </ul>
+            )}
+            {/* A name the current site selection no longer declares cannot be
+                published; say so instead of dropping it on save. */}
+            {staleSubagentExposedModels.length > 0 ? (
+              <p className={styles.error} role="alert">
+                {t('gateway.aggregate.subagentExposedStale', {
+                  models: staleSubagentExposedModels.join(', '),
+                })}
+              </p>
             ) : null}
             {subagentExposureInvalid ? (
               <p className={styles.error} role="alert">
-                {t('gateway.aggregate.subagentExposedRequired')}
+                {subagentExposureOverflow
+                  ? t('gateway.aggregate.subagentExposedLimit', {
+                      limit: SUBAGENT_EXPOSED_MODEL_LIMIT,
+                    })
+                  : t('gateway.aggregate.subagentExposedRequired')}
               </p>
             ) : null}
-          </>
-        )}
       </details>
 
       {notice ? (
