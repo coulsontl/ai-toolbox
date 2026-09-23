@@ -287,11 +287,11 @@ test('save provider reengage helper refuses to restart a takeover it could never
         calls.push(`status:${status}`);
       },
     }),
-    /exposure selection larger than the subagent hint limit/,
+    /exposure selection over the hint limit/,
   );
 
-  // The whole point: `restoreDirect` already dropped the takeover, so the
-  // unreplayable selection has to be caught before anything is touched.
+  // Reject before restore or save, either of which could leave the takeover
+  // dropped when the subsequent engage cannot replay the selection.
   assert.deepEqual(calls, []);
 });
 
@@ -338,4 +338,64 @@ test('save provider reengage helper still restarts an at-limit exposure selectio
     'aggregate:5',
     'status:aggregate',
   ]);
+});
+
+test('save helper keeps legacy behavior when proposed declarations are omitted', async () => {
+  const calls: string[] = [];
+
+  await saveProviderWithGatewayReengage({
+    gatewayMode: 'aggregate',
+    aggregateConfig: {
+      providerIds: ['site-a'],
+      separator: '.',
+      subagentExposedModels: ['legacy-model'],
+    },
+    saveProvider: async () => {
+      calls.push('save');
+      return 'saved';
+    },
+    restoreDirect: async () => {
+      calls.push('restore');
+      return 'direct';
+    },
+    engageSingle: async () => 'single',
+    engageFailover: async () => 'failover',
+    engageAggregate: async (config) => {
+      assert.equal('proposedDeclaredBareModels' in config, false);
+      calls.push('aggregate');
+      return 'aggregate';
+    },
+  });
+
+  assert.deepEqual(calls, ['restore', 'save', 'aggregate']);
+});
+
+test('save helper rejects stale selection before restore or save', async () => {
+  const calls: string[] = [];
+
+  await assert.rejects(
+    saveProviderWithGatewayReengage({
+      gatewayMode: 'aggregate',
+      aggregateConfig: {
+        providerIds: ['site-a'],
+        separator: '.',
+        subagentExposedModels: ['removed-model'],
+        proposedDeclaredBareModels: ['renamed-model'],
+      },
+      saveProvider: async () => {
+        calls.push('save');
+        return 'saved';
+      },
+      restoreDirect: async () => {
+        calls.push('restore');
+        return 'direct';
+      },
+      engageSingle: async () => 'single',
+      engageFailover: async () => 'failover',
+      engageAggregate: async () => 'aggregate',
+    }),
+    /containing undeclared models/,
+  );
+
+  assert.deepEqual(calls, []);
 });

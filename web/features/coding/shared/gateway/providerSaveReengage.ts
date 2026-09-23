@@ -40,6 +40,8 @@ export interface GatewayAggregateReengageConfig {
    * picker entries.
    */
   subagentExposedModels?: string[];
+  /** Bare model names declared by the proposed post-save catalogs of selected sites. */
+  proposedDeclaredBareModels?: string[];
   /**
    * Codex `[agents]` defaults the takeover owns.
    *
@@ -111,19 +113,20 @@ export const saveProviderWithGatewayReengage = async <TResult, TStatus>({
     if (effectiveGatewayMode === 'aggregate' && (!engageAggregate || !effectiveAggregateConfig)) {
       throw new Error('Aggregate gateway re-engage requires engageAggregate and aggregateConfig');
     }
-    // Fail closed before `restoreDirect` below. The backend refuses an exposure
-    // selection larger than Codex's hint window instead of truncating it, so
-    // replaying one can never succeed; attempting it would leave the CLI in
-    // direct mode with the takeover dropped, and every later provider save
-    // would fail the same way. Refuse up front so the current takeover and the
-    // user's provider config are both left untouched.
+    // Fail closed before `restoreDirect` below. The backend refuses selections
+    // over the hint limit and bare names no longer declared by the proposed
+    // provider catalogs. Replaying either can fail after restoreDirect drops the
+    // takeover, so validate the exact post-save model universe first.
     if (
       effectiveGatewayMode === 'aggregate'
       && effectiveAggregateConfig
-      && !canReplaySubagentExposureSelection(effectiveAggregateConfig.subagentExposedModels)
+      && !canReplaySubagentExposureSelection(
+        effectiveAggregateConfig.subagentExposedModels,
+        effectiveAggregateConfig.proposedDeclaredBareModels,
+      )
     ) {
       throw new Error(
-        'Aggregate gateway re-engage cannot replay an exposure selection larger than the subagent hint limit',
+        'Aggregate gateway re-engage cannot replay an exposure selection over the hint limit or containing undeclared models',
       );
     }
     if (!isGatewayReengageMode(effectiveGatewayMode)) {
@@ -140,7 +143,9 @@ export const saveProviderWithGatewayReengage = async <TResult, TStatus>({
       if (!engageAggregate || !effectiveAggregateConfig) {
         throw new Error('Aggregate gateway re-engage requires engageAggregate and aggregateConfig');
       }
-      const aggregateStatus = await engageAggregate(effectiveAggregateConfig);
+      const { proposedDeclaredBareModels: _proposedDeclaredBareModels, ...replayConfig } =
+        effectiveAggregateConfig;
+      const aggregateStatus = await engageAggregate(replayConfig);
       onGatewayStatusChange?.(aggregateStatus);
       notifyGatewayAggregateConfigChanged();
       return result;
