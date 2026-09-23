@@ -334,11 +334,12 @@ async fn validate_streaming_first_chunk(
         return Ok(());
     };
     let timeout_duration = Duration::from_secs(first_byte_timeout_secs.max(1));
+    let deadline = tokio::time::Instant::now() + timeout_duration;
     let semantic_probe = response_is_sse_header_pairs(&response.headers);
     let mut pre_read_chunks = VecDeque::new();
     let mut probe = StreamingSemanticProbe::new(semantic_probe);
     loop {
-        let next_chunk = tokio::time::timeout(timeout_duration, body_stream.next())
+        let next_chunk = tokio::time::timeout_at(deadline, body_stream.next())
             .await
             .map_err(|_| {
                 GatewayForwardError::new(
@@ -379,11 +380,10 @@ async fn validate_streaming_first_chunk(
                     }
                     StreamingProbeDecision::Continue => {
                         if probe.exceeded_limits() {
-                            response.body_stream = Some(Box::pin(PreReadChunkStream {
-                                pending_chunks: pre_read_chunks,
-                                inner: body_stream,
-                            }));
-                            return Ok(());
+                            return Err(GatewayForwardError::new(
+                                "Upstream streaming response exceeded the first-chunk probe limit before meaningful content",
+                                GatewayFailureKind::EmptyResponse,
+                            ));
                         }
                     }
                 }
@@ -13531,6 +13531,14 @@ data: {data}\r\n\r\n"
         }
     }
 
+    fn streaming_debug_response(body_stream: DebugBodyStream) -> DebugHttpResponse {
+        let mut response = protocol_error_debug_response(&[]);
+        response.headers = vec![(CONTENT_TYPE.to_string(), "text/event-stream".to_string())];
+        response.is_streaming = true;
+        response.body_stream = Some(body_stream);
+        response
+    }
+
     #[test]
     fn success_protocol_error_classifies_failed_envelope_as_upstream_bad_request() {
         let response = protocol_error_debug_response(
@@ -16002,6 +16010,104 @@ data: {data}\r\n\r\n"
             .expect_err("semantic empty SSE should fail before commit");
         assert_eq!(error.kind, GatewayFailureKind::EmptyResponse);
         assert!(response.body_stream.is_none());
+    }
+
+    #[tokio::test]
+    async fn streaming_first_chunk_uses_one_absolute_deadline_across_heartbeats() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let yielded_chunks = Arc::new(AtomicUsize::new(0));
+        let stream_yielded_chunks = yielded_chunks.clone();
+        let stream: DebugBodyStream =
+            Box::pin(futures_util::stream::unfold(0usize, move |index| {
+                let yielded_chunks = stream_yielded_chunks.clone();
+                async move {
+                    if index >= 8 {
+                        return None;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    yielded_chunks.fetch_add(1, Ordering::Relaxed);
+                    Some((Ok(b": ping\n\n".to_vec()), index + 1))
+                }
+            }));
+        let mut response = streaming_debug_response(stream);
+
+        let error = validate_streaming_first_chunk(&mut response, 1)
+            .await
+            .expect_err("heartbeats must not reset the total first-chunk deadline");
+
+        assert_eq!(error.kind, GatewayFailureKind::Timeout);
+        assert!(
+            yielded_chunks.load(Ordering::Relaxed) >= 2,
+            "the timeout must be reached after multiple heartbeat chunks"
+        );
+        assert!(response.body_stream.is_none());
+    }
+
+    #[tokio::test]
+    async fn streaming_first_chunk_rejects_probe_chunk_limit_without_meaningful_content() {
+        let stream: DebugBodyStream = Box::pin(futures_util::stream::iter(
+            (0..STREAM_SEMANTIC_PROBE_MAX_CHUNKS)
+                .map(|_| Ok(b": ping\n\n".to_vec()))
+                .collect::<Vec<_>>(),
+        ));
+        let mut response = streaming_debug_response(stream);
+
+        let error = validate_streaming_first_chunk(&mut response, 1)
+            .await
+            .expect_err("control-only SSE at the probe chunk limit must fail closed");
+
+        assert_eq!(error.kind, GatewayFailureKind::EmptyResponse);
+        assert!(response.body_stream.is_none());
+    }
+
+    #[tokio::test]
+    async fn streaming_first_chunk_rejects_probe_byte_limit_without_meaningful_content() {
+        let mut heartbeat = vec![b'x'; STREAM_SEMANTIC_PROBE_MAX_BYTES];
+        heartbeat[0] = b':';
+        heartbeat.extend_from_slice(b"\n\n");
+        let stream: DebugBodyStream = Box::pin(futures_util::stream::iter(vec![Ok(heartbeat)]));
+        let mut response = streaming_debug_response(stream);
+
+        let error = validate_streaming_first_chunk(&mut response, 1)
+            .await
+            .expect_err("oversized control-only SSE must fail closed");
+
+        assert_eq!(error.kind, GatewayFailureKind::EmptyResponse);
+        assert!(response.body_stream.is_none());
+    }
+
+    #[tokio::test]
+    async fn streaming_first_chunk_accepts_meaningful_event_at_probe_limits() {
+        let heartbeat = b": ping\n\n".to_vec();
+        let prior_bytes = heartbeat.len() * (STREAM_SEMANTIC_PROBE_MAX_CHUNKS - 1);
+        let final_chunk_len = STREAM_SEMANTIC_PROBE_MAX_BYTES - prior_bytes;
+        let mut meaningful = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}"
+        )
+        .as_bytes()
+        .to_vec();
+        assert!(meaningful.len() + 2 <= final_chunk_len);
+        meaningful.resize(final_chunk_len - 2, b' ');
+        meaningful.extend_from_slice(b"\n\n");
+        assert_eq!(meaningful.len(), final_chunk_len);
+
+        let mut chunks = vec![Ok(heartbeat); STREAM_SEMANTIC_PROBE_MAX_CHUNKS - 1];
+        chunks.push(Ok(meaningful.clone()));
+        let stream: DebugBodyStream = Box::pin(futures_util::stream::iter(chunks));
+        let mut response = streaming_debug_response(stream);
+
+        validate_streaming_first_chunk(&mut response, 1)
+            .await
+            .expect("a meaningful event at both probe limits must be accepted");
+
+        let mut replayed = response.body_stream.take().expect("pre-read stream replay");
+        for _ in 0..STREAM_SEMANTIC_PROBE_MAX_CHUNKS - 1 {
+            assert_eq!(replayed.next().await.unwrap().unwrap(), b": ping\n\n");
+        }
+        assert_eq!(replayed.next().await.unwrap().unwrap(), meaningful);
+        assert!(replayed.next().await.is_none());
     }
 
     #[tokio::test]

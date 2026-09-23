@@ -365,6 +365,28 @@
   overflow-wrap: anywhere;
 }
 
+/* Marks which ticked names the subagent can actually pick. The Codex side shows
+   no difference between a promoted name and an addressable-only one, so the
+   panel has to state it. */
+.subagentExposedBadge,
+.subagentExposedBadgeMuted {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid currentcolor;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.subagentExposedBadge {
+  color: var(--color-status-success);
+}
+
+.subagentExposedBadgeMuted {
+  color: var(--color-text-tertiary);
+}
+
 .success {
   color: var(--color-status-success);
 }

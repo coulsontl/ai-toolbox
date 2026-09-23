@@ -162,6 +162,44 @@ export const normalizeSubagentExposedModels = (
   return normalized;
 };
 
+/** Values that can be addressed by the current aggregate catalog. */
+export const resolveEffectiveSubagentExposedModels = (
+  selectedModels: readonly string[] | null | undefined,
+  addressableModels: readonly string[],
+): string[] => {
+  const addressable = new Set(normalizeSubagentExposedModels(addressableModels));
+  return normalizeSubagentExposedModels(selectedModels).filter((model) =>
+    addressable.has(model),
+  );
+};
+
+/** Selected names that cannot be addressed by the current aggregate catalog. */
+export const resolveStaleSubagentExposedModels = (
+  selectedModels: readonly string[] | null | undefined,
+  addressableModels: readonly string[],
+): string[] => {
+  const effective = new Set(
+    resolveEffectiveSubagentExposedModels(selectedModels, addressableModels),
+  );
+  return normalizeSubagentExposedModels(selectedModels).filter(
+    (model) => !effective.has(model),
+  );
+};
+
+/** Normalize the canonical exposure list returned by an aggregate API call. */
+export const resolveCanonicalSubagentExposedModels = (
+  response:
+    | {
+        subagent_exposed_models?: readonly string[] | null;
+        aggregate?: { subagent_exposed_models?: readonly string[] | null } | null;
+      }
+    | null
+    | undefined,
+): string[] =>
+  normalizeSubagentExposedModels(
+    response?.aggregate?.subagent_exposed_models ?? response?.subagent_exposed_models,
+  );
+
 /**
  * Candidate bare names the exposure block may offer.
  *
@@ -169,8 +207,9 @@ export const normalizeSubagentExposedModels = (
  * keeps a name selectable again after the exposure set narrowed it out of the
  * published catalog. Only when the backend omits it (older build, or a catalog
  * read that could not resolve the sites) does this fall back to the published
- * hidden aliases, filtered to the configured takeover's selected sites so a
- * stale catalog entry cannot be offered.
+ * bare-name rows (promoted visible entries or hidden aliases), filtered to the
+ * configured takeover's selected sites so a stale catalog entry cannot be
+ * offered.
  */
 export const resolveSubagentExposureCandidates = (
   catalog:
@@ -209,15 +248,29 @@ export const resolveSubagentExposureCandidates = (
 };
 
 /**
- * Which exposure mode a stored value represents.
+ * How many ticked bare names fit in Codex's `spawn_agent` model hints.
  *
- * The backend stores "publish every bare model" as an empty set, so the mode
- * cannot be inferred from the field's presence alone.
+ * Codex takes the five lowest-priority `visibility = "list"` entries as the
+ * model list it shows the model, so only that many names can be promoted into
+ * the hint. Mirrors `MAX_SPAWN_AGENT_MODEL_OVERRIDES` on the Codex side.
  */
-export const resolveSubagentExposureMode = (
+export const SUBAGENT_EXPOSED_MODEL_LIMIT = 5;
+
+/**
+ * Whether the stored selection is complete enough to engage.
+ *
+ * The backend treats an empty list as the legacy "publish every bare model and
+ * promote none", which is not what a user who opened this panel wants: the
+ * whole point of the new flow is that the ticked names are what the subagent
+ * can see. An engage therefore requires between 1 and
+ * `SUBAGENT_EXPOSED_MODEL_LIMIT` usable names.
+ */
+export const isSubagentExposureSelectionComplete = (
   models?: readonly string[] | null,
-): 'all' | 'selected' =>
-  normalizeSubagentExposedModels(models).length > 0 ? 'selected' : 'all';
+): boolean => {
+  const count = normalizeSubagentExposedModels(models).length;
+  return count > 0 && count <= SUBAGENT_EXPOSED_MODEL_LIMIT;
+};
 
 /**
  * Mirror of the backend `resolve_effective_site_aliases`.
@@ -296,9 +349,11 @@ export const toGatewayAggregateReengageConfig = (
   // The failover policy is always replayed: a dropped `false` would silently
   // re-enable cross-site spending on the next provider save.
   const crossSiteFailover = aggregate.cross_site_failover === true;
-  // A narrowed exposure set must be replayed verbatim: `[]` means "publish
-  // every bare model", so dropping it here would silently widen the catalog on
-  // the next provider save — the user would think they had restricted it.
+  // A narrowed exposure set must be replayed verbatim, in tick order (the order
+  // is the promotion priority). An empty array is the legacy default and is
+  // omitted below, which is exactly right for a takeover engaged before the
+  // exposure block existed: the backend keeps every bare name addressable,
+  // without promoting any, instead of the provider save widening or breaking it.
   const subagentExposedModels = normalizeSubagentExposedModels(
     aggregate.subagent_exposed_models,
   );

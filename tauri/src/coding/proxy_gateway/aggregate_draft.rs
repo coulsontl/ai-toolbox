@@ -18,7 +18,7 @@ use super::cli_proxy::manifest::AGGREGATE_DEFAULT_SEPARATOR;
 use super::paths::ProxyGatewayPaths;
 use super::types::{GatewayAggregateConfig, GatewayCliKey};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
 
@@ -37,10 +37,18 @@ struct AggregateDraftRecord {
     /// Whether a request may move to another selected site on failure. Absent
     /// in older draft files, which therefore default to `false`.
     cross_site_failover: bool,
-    /// Bare model names the catalog keeps publishing as hidden aliases. Empty
-    /// keeps the backend default of publishing every bare model.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    subagent_exposed_models: BTreeSet<String>,
+    /// Declared bare model names selected for subagent exposure. Selected names
+    /// are promoted into the visible catalog; unselected names remain
+    /// addressable as hidden bare-name aliases (or reuse an identical visible
+    /// site slug). Stale names are filtered when the draft is saved and the UI
+    /// reports that removal. Empty keeps the backend's legacy behavior: no name
+    /// is promoted, while every declared bare name stays addressable.
+    ///
+    /// Order is the user's tick order and is the priority order of the five
+    /// `spawn_agent` model hints. A `Vec` keeps that order across the
+    /// draft round-trip; a set would re-sort it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    subagent_exposed_models: Vec<String>,
 }
 
 impl From<AggregateDraftRecord> for GatewayAggregateConfig {
@@ -144,7 +152,7 @@ mod tests {
             cross_site_failover: true,
             // Deliberately non-default: a round trip that collapsed this to the
             // empty "publish everything" set would go unnoticed otherwise.
-            subagent_exposed_models: BTreeSet::from(["gpt-5.6-luna".to_string()]),
+            subagent_exposed_models: vec!["gpt-5.6-luna".to_string()],
             subagent: None,
         }
     }

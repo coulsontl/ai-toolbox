@@ -21,12 +21,14 @@ export interface GatewayAggregateReengageConfig {
    */
   crossSiteFailover?: boolean;
   /**
-   * Bare upstream model names the takeover keeps publishing as programmable
-   * hidden aliases.
+   * Bare upstream model names promoted into Codex's visible catalog. Other
+   * names remain addressable as hidden aliases unless an identical site slug
+   * already exists.
    *
    * `undefined` keeps the backend default, which publishes every bare model;
    * and because an empty array means the same thing, a narrowed set has to be
-   * replayed explicitly or a provider save would silently widen the catalog.
+   * replayed explicitly or a provider save would silently widen the promoted
+   * picker entries.
    */
   subagentExposedModels?: string[];
   /**

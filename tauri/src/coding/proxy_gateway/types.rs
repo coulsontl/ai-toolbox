@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -179,13 +179,19 @@ pub struct GatewayAggregateConfig {
     /// "sites declaring the same upstream model back each other up" behavior.
     #[serde(default)]
     pub cross_site_failover: bool,
-    /// Bare upstream model names published as hidden aliases.
+    /// Bare upstream model names promoted into Codex's visible model list.
     ///
-    /// Absent or empty keeps the historical default of publishing every bare
-    /// model name the selected sites declare; a non-empty set narrows the hidden
-    /// alias table to exactly those names.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub subagent_exposed_models: BTreeSet<String>,
+    /// Absent or empty keeps the historical default: every bare model remains
+    /// addressable, but none is promoted into the picker. A name is an exact
+    /// hidden alias unless it already matches a visible site slug. Non-empty
+    /// values are ordered by tick order and promote those names into the visible
+    /// catalog; unticked names remain hidden aliases unless such a slug exists.
+    ///
+    /// Order is the user's tick order and is the priority order of the five
+    /// `spawn_agent` model hints: the first entry is promoted to the lowest
+    /// priority and becomes visible in the picker. A `Vec` keeps that order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subagent_exposed_models: Vec<String>,
     /// Codex `[agents]` defaults this takeover owns, if any. Absent means the
     /// takeover wrote none, so the settings form must show the fields as
     /// unmanaged rather than as blank values it would then write back.
@@ -193,7 +199,7 @@ pub struct GatewayAggregateConfig {
     pub subagent: Option<GatewayAggregateSubagentDefaults>,
 }
 
-/// One bare model name the drawer may publish as a programmable hidden alias.
+/// One bare model name the drawer may promote into the picker or leave addressable only.
 ///
 /// Carries its declaring site so the settings form can show where a name comes
 /// from even when it is currently *not* published (the debt this fixes: a name
@@ -208,9 +214,8 @@ pub struct GatewayAggregateBareModel {
 
 /// Read-only view of the aggregate catalog's programmable bare names.
 ///
-/// `entries` are the names the generated catalog currently publishes as hidden
-/// aliases; `bare_models` is the full universe the selected sites declare, so a
-/// name that was narrowed out of the catalog can still be chosen again.
+/// `entries` are bare names currently published in the catalog (visible or
+/// hidden); `bare_models` is the full universe the selected sites declare.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct GatewaySubagentCatalog {

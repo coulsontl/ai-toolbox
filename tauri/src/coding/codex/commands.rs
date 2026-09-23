@@ -3208,6 +3208,20 @@ fn codex_model_catalog_from_specs(
     serde_json::json!({ "models": models })
 }
 
+/// Priority base of the rows aggregate mode promotes into Codex's picker.
+///
+/// Codex takes the five lowest-priority `visibility = "list"` entries as its
+/// `spawn_agent` model hints, so the promoted bare names start here and the
+/// per-site slugs follow them.
+const PROMOTED_BARE_MODEL_PRIORITY_BASE: u64 = 1000;
+
+/// Priority base of the hidden bare-name aliases.
+///
+/// They sit far after every visible row: hidden entries can never win a hint
+/// slot (Codex filters on visibility first), and keeping them last also keeps
+/// the publication order stable for `model_only` numbering.
+const HIDDEN_ALIAS_PRIORITY_BASE: u64 = 9000;
+
 /// One `(site, model)` entry for the aggregate-mode catalog.
 #[derive(Debug)]
 struct AggregateCatalogEntry {
@@ -3224,6 +3238,10 @@ struct AggregateCatalogEntry {
     /// resolves exact slugs, while `visibility = "hide"` keeps them out of the
     /// picker and out of the first-5 model hint list.
     hidden: bool,
+    /// Explicit catalog priority. Promoted bare names take the lowest values so
+    /// they win Codex's first five `spawn_agent` model hints; every other entry
+    /// follows in publication order.
+    priority: u64,
     context_window: Option<u64>,
     reasoning_levels: Option<Vec<String>>,
     default_reasoning_level: Option<String>,
@@ -3233,18 +3251,19 @@ struct AggregateCatalogEntry {
 }
 
 /// Build the aggregate-mode catalog: one entry per `(site, upstream model)`
-/// pair, with the site encoded into the slug so the gateway can route on it.
+/// pair, with the site encoded into the slug so the gateway can route on it,
+/// plus the bare names the user promoted into Codex's model picker.
 ///
 /// Reuses `codex_model_catalog_entry` so every non-slug field (reasoning
 /// levels, tool support, truncation policy, modality, …) stays identical to
-/// the single-provider catalog.
+/// the single-provider catalog, then overwrites `priority` from the entry
+/// itself: Codex takes the five lowest-priority `visibility = "list"` entries
+/// as its `spawn_agent` model hints, and the promoted bare names have to win
+/// those slots over the per-site slugs.
 fn aggregate_catalog_from_entries(
     entries: &[AggregateCatalogEntry],
     default_context_window: u64,
 ) -> Value {
-    // Hidden bare-name aliases sit after the whole visible table so they can
-    // never take one of Codex's five visible `spawn_agent` model hints.
-    const HIDDEN_ALIAS_PRIORITY_BASE: u64 = 9000;
     let models: Vec<Value> = entries
         .iter()
         .enumerate()
@@ -3266,11 +3285,13 @@ fn aggregate_catalog_from_entries(
                         "visibility".to_string(),
                         serde_json::Value::String("hide".to_string()),
                     );
-                    object.insert(
-                        "priority".to_string(),
-                        serde_json::json!(HIDDEN_ALIAS_PRIORITY_BASE + index as u64),
-                    );
                 }
+            }
+            if let Some(object) = value.as_object_mut() {
+                object.insert(
+                    "priority".to_string(),
+                    serde_json::json!(entry.priority),
+                );
             }
             value
         })
@@ -3312,6 +3333,44 @@ fn aggregate_site_model_specs(settings_config: &Value) -> Vec<CodexCatalogModelS
     specs
 }
 
+/// Return the bare model universe the selected sites actually declare.
+///
+/// This reuses `aggregate_site_model_specs`, the same source used by the
+/// generated catalog, so a persisted exposure list cannot retain a name that
+/// the catalog cannot publish or the router cannot resolve.
+pub(crate) fn codex_aggregate_declared_bare_models(
+    sites: &[(String, String, Value)],
+) -> Vec<String> {
+    let mut models = Vec::new();
+    for (_, _, settings_config) in sites {
+        for model in codex_declared_models_from_settings(settings_config) {
+            if !models.iter().any(|existing| existing == &model) {
+                models.push(model);
+            }
+        }
+    }
+    models
+}
+
+/// Return the exact bare model ids published for one Codex provider in both
+/// single-provider and aggregate catalogs.
+///
+/// Keep this extraction next to `aggregate_site_model_specs`: runtime routing
+/// must not grow a second interpretation of `modelCatalog`, auto-review, or the
+/// config default. In particular, legacy root-level `models` are not part of
+/// the generated Codex catalog and therefore are not declared here.
+pub(crate) fn codex_declared_models_from_settings(settings_config: &Value) -> Vec<String> {
+    aggregate_site_model_specs(settings_config)
+        .into_iter()
+        .map(|spec| spec.model)
+        .fold(Vec::new(), |mut models, model| {
+            if !models.iter().any(|existing| existing == &model) {
+                models.push(model);
+            }
+            models
+        })
+}
+
 /// Collect one aggregate entry per `(site, model)` pair across `sites`.
 ///
 /// `sites` is `(site_id, site_label, settings_config)` in the user's display
@@ -3332,6 +3391,15 @@ fn aggregate_site_model_specs(settings_config: &Value) -> Vec<CodexCatalogModelS
 /// from the provider-level bare id into that same site's published slug; rows
 /// whose site does not publish the configured review model stay `None` rather
 /// than borrowing another site's slug.
+///
+/// Every bare upstream name a selected site declares stays addressable. A name
+/// the user ticked is additionally promoted to `visibility = "list"` with
+/// priority `1000 + tick order`, so it wins one of Codex's five `spawn_agent`
+/// model hints. An unticked name keeps its hidden alias (`visibility = "hide"`,
+/// priority >= 9000): still callable by its exact bare name, never listed in
+/// the hints. Tick nothing and nothing is promoted, which is exactly the
+/// behavior before this feature existed. Bare-name rows never enter the slug
+/// table: they are not a `(site, upstream model)` pair.
 fn codex_aggregate_catalog_entries(
     sites: &[(String, String, Value)],
     naming: &crate::coding::proxy_gateway::aggregate_naming::AggregateNamingConfig,
@@ -3373,6 +3441,9 @@ fn codex_aggregate_catalog_entries(
                 slug,
                 site_id: Some(site_id.clone()),
                 hidden: false,
+                // Rewritten once the promoted rows are known: the site slugs
+                // start after them so a ticked bare name always outranks them.
+                priority: PROMOTED_BARE_MODEL_PRIORITY_BASE,
                 display_name: format!("{site_label} · {model_display_name}"),
                 context_window: spec.context_window,
                 reasoning_levels: spec.reasoning_levels,
@@ -3428,17 +3499,101 @@ fn codex_aggregate_catalog_entries(
             .map(|slug| (*slug).to_string());
     }
 
-    // Hidden bare-name aliases go *after* the whole visible table: the order is
-    // part of the contract (`model_only` numbering, the five visible spawn hints
-    // and the aggregate preview all depend on it).
+    // Bare-name rows go *after* the whole visible table: the order is part of
+    // the contract (`model_only` numbering, the five visible spawn hints and the
+    // aggregate preview all depend on it).
+    //
+    // Every bare name a selected site declares stays addressable here. Ticking a
+    // name promotes it: it is published as a second, visible entry with the
+    // lowest priority (`1000 + tick order`) so it wins one of Codex's five
+    // `spawn_agent` model hints. Codex filters `visibility = "list"` before it
+    // takes five, so a hidden row can never win a slot no matter how low its
+    // priority is — promotion has to flip the visibility, not just the number.
+    // An unticked name keeps its hidden alias: `visibility = "hide"` with a
+    // priority past every visible row, so it stays callable by its exact bare
+    // name but never shows up in the hints. Ticking nothing promotes nothing,
+    // which is exactly the behavior before this feature existed.
     let visible_slugs = slug_table
         .iter()
         .map(|entry| (entry.slug.as_str(), entry.upstream_model.as_str()))
         .collect::<std::collections::BTreeMap<_, _>>();
+    let site_row_count = entries.len();
+    // Tick order is priority order: the first ticked name wins the lowest slot.
+    // Only names the selected sites declare can be published. A bare name may
+    // already be a visible slug (most often with `model_only`); in that case
+    // promote the existing site row instead of adding a duplicate row.
+    let mut promoted = Vec::new();
+    for model in naming
+        .subagent_exposed_models
+        .iter()
+        .filter(|model| bare_models.iter().any(|candidate| candidate == *model))
+    {
+        if promoted.iter().any(|already_promoted| already_promoted == model) {
+            continue;
+        }
+
+        match visible_slugs.get(model.as_str()) {
+            Some(upstream_model) if *upstream_model == model.as_str() => {}
+            Some(upstream_model) => {
+                return Err(format!(
+                    "Aggregate model name '{model}' collides with the slug generated for upstream model '{upstream_model}'; rename the site alias or change the naming template"
+                ));
+            }
+            None => {}
+        }
+        promoted.push(model.clone());
+    }
+
+    // Keep ordinary site rows after the selected tick slots, then move any
+    // promoted names that already have a site slug into their exact tick slot.
+    for (index, entry) in entries.iter_mut().take(site_row_count).enumerate() {
+        entry.priority = PROMOTED_BARE_MODEL_PRIORITY_BASE + promoted.len() as u64 + index as u64;
+    }
+    for (offset, model) in promoted.iter().enumerate() {
+        let priority = PROMOTED_BARE_MODEL_PRIORITY_BASE + offset as u64;
+        if visible_slugs
+            .get(model.as_str())
+            .is_some_and(|upstream_model| *upstream_model == model.as_str())
+        {
+            let Some(entry) = entries
+                .iter_mut()
+                .take(site_row_count)
+                .find(|entry| entry.slug == *model)
+            else {
+                return Err(format!(
+                    "Aggregate catalog slug '{model}' has no matching site entry"
+                ));
+            };
+            entry.priority = priority;
+            continue;
+        }
+
+        entries.push(AggregateCatalogEntry {
+            slug: model.clone(),
+            site_id: None,
+            hidden: false,
+            priority,
+            display_name: model.clone(),
+            context_window: None,
+            reasoning_levels: None,
+            default_reasoning_level: None,
+            service_tiers: None,
+            input_modalities: None,
+            // Promoted rows keep the same "addressable, no override" contract as
+            // the hidden aliases: the bare name must not move auto-review to
+            // whichever site its entry happens to name (there is none).
+            auto_review_model_override: None,
+        });
+    }
+    // Every bare name that was not promoted stays a hidden alias
+    // (`visibility = "hide"`, priority >= 9000): still addressable by its exact
+    // bare name, but never listed in Codex's model hints. Site slugs keep their
+    // publication order but start after the promoted rows, so a promoted name
+    // always outranks them.
+    let mut hidden_offset = 0u64;
     for model in bare_models {
-        // The exposure set narrows which bare names get a hidden alias at all.
-        // An empty set is the default and keeps publishing every one of them.
-        if !naming.exposes_bare_model(&model) {
+        // Promoted names already own a visible row.
+        if promoted.contains(&model) {
             continue;
         }
         match visible_slugs.get(model.as_str()) {
@@ -3460,6 +3615,7 @@ fn codex_aggregate_catalog_entries(
             slug: model.clone(),
             site_id: None,
             hidden: true,
+            priority: HIDDEN_ALIAS_PRIORITY_BASE + hidden_offset,
             display_name: model,
             context_window: None,
             reasoning_levels: None,
@@ -3471,6 +3627,7 @@ fn codex_aggregate_catalog_entries(
             // before this change.
             auto_review_model_override: None,
         });
+        hidden_offset += 1;
     }
 
     Ok((entries, slug_table))
@@ -5068,6 +5225,7 @@ mod tests {
         write_codex_aggregate_catalog, AggregateCatalogEntry, CodexCatalogModelSpec,
         CodexHistoryRuntimeSource, CodexHistorySourceCandidate, CodexHistorySourceMode,
         RemoteCodexModel, AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME, CODEX_BUILTIN_IMAGE_MODEL_ID,
+        CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW, HIDDEN_ALIAS_PRIORITY_BASE,
     };
     use crate::coding::codex::types::CodexProviderInput;
     use crate::coding::codex::unified_history;
@@ -6358,6 +6516,187 @@ approval_policy = "never"
         }
     }
 
+    /// The ticked bare names have to win Codex's first five `spawn_agent` model
+    /// hints, which are the lowest-priority `visibility = "list"` entries. The
+    /// per-site slugs therefore start above them.
+    #[test]
+    fn aggregate_catalog_promotes_ticked_bare_names_above_the_site_slugs() {
+        let sites = vec![
+            aggregate_site(
+                "site1",
+                "Site 1",
+                json!([{ "model": "gpt-5.6-luna" }, { "model": "gpt-5.6-terra" }]),
+            ),
+            aggregate_site("site2", "Site 2", json!([{ "model": "glm-5" }])),
+        ];
+
+        let naming = aggregate_naming_with_exposed(&["gpt-5.6-terra", "glm-5"]);
+        let (entries, table) = codex_aggregate_catalog_entries(&sites, &naming).unwrap();
+        let catalog = aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
+        let models = catalog["models"].as_array().unwrap();
+        let priority_of = |slug: &str| {
+            models
+                .iter()
+                .find(|model| model["slug"].as_str() == Some(slug))
+                .unwrap_or_else(|| panic!("catalog is missing `{slug}`"))
+        };
+
+        // Tick order is priority order, and both ticked names outrank every
+        // site slug.
+        assert_eq!(priority_of("gpt-5.6-terra")["priority"], json!(1000));
+        assert_eq!(priority_of("glm-5")["priority"], json!(1001));
+        assert_eq!(priority_of("site1.gpt-5.6-luna")["priority"], json!(1002));
+        assert_eq!(priority_of("site1.gpt-5.6-terra")["priority"], json!(1003));
+        assert_eq!(priority_of("site2.glm-5")["priority"], json!(1004));
+
+        // Promoted rows are picker-visible, so Codex's `take(5)` can reach them.
+        for slug in ["gpt-5.6-terra", "glm-5"] {
+            assert_eq!(priority_of(slug)["visibility"], json!("list"));
+        }
+
+        // Promotion never touches the routing table: routing still addresses a
+        // site through its own slug.
+        let slugs: Vec<&str> = table.iter().map(|entry| entry.slug.as_str()).collect();
+        assert_eq!(
+            slugs,
+            vec!["site1.gpt-5.6-luna", "site1.gpt-5.6-terra", "site2.glm-5"]
+        );
+    }
+
+    /// Swapping the tick order swaps the promoted priorities, so the user's
+    /// order — not byte order or declaration order — decides the hint slots.
+    #[test]
+    fn aggregate_catalog_promoted_priority_follows_the_tick_order() {
+        let sites = vec![
+            aggregate_site(
+                "site1",
+                "Site 1",
+                json!([{ "model": "gpt-5.6-luna" }, { "model": "gpt-5.6-terra" }]),
+            ),
+            aggregate_site("site2", "Site 2", json!([{ "model": "glm-5" }])),
+        ];
+
+        let naming = aggregate_naming_with_exposed(&["glm-5", "gpt-5.6-luna"]);
+        let (entries, _) = codex_aggregate_catalog_entries(&sites, &naming).unwrap();
+        let catalog = aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
+        let models = catalog["models"].as_array().unwrap();
+        let priority_of = |slug: &str| {
+            models
+                .iter()
+                .find(|model| model["slug"].as_str() == Some(slug))
+                .unwrap()["priority"]
+                .clone()
+        };
+
+        assert_eq!(priority_of("glm-5"), json!(1000));
+        assert_eq!(priority_of("gpt-5.6-luna"), json!(1001));
+    }
+
+    /// A ticked name the selected sites do not declare cannot be published: it
+    /// has no slug, no hidden alias and no promoted row.
+    #[test]
+    fn aggregate_catalog_ignores_ticked_names_no_selected_site_declares() {
+        let sites = vec![aggregate_site("site1", "Site 1", json!([{ "model": "glm-5" }]))];
+
+        let naming = aggregate_naming_with_exposed(&["glm-5", "gpt-5.3-codex-spark"]);
+        let (entries, _) = codex_aggregate_catalog_entries(&sites, &naming).unwrap();
+        let slugs: Vec<&str> = entries.iter().map(|entry| entry.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["site1.glm-5", "glm-5"]);
+        assert!(!slugs.contains(&"gpt-5.3-codex-spark"));
+    }
+
+    /// Ticking one name must not remove the others: Codex's
+    /// `[agents] default_subagent_model`, auto-review and memory extraction all
+    /// send bare names, so an unticked name keeps its hidden alias (addressable
+    /// by its exact name, never listed in the model hints) and only loses its
+    /// slot in the picker.
+    #[test]
+    fn aggregate_catalog_keeps_unticked_bare_names_hidden() {
+        let sites = vec![
+            aggregate_site(
+                "site1",
+                "Site 1",
+                json!([{ "model": "gpt-5.6-luna" }, { "model": "gpt-5.6-terra" }]),
+            ),
+            aggregate_site("site2", "Site 2", json!([{ "model": "glm-5" }])),
+        ];
+
+        let naming = aggregate_naming_with_exposed(&["glm-5"]);
+        let (entries, table) = codex_aggregate_catalog_entries(&sites, &naming).unwrap();
+        let catalog = aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
+        let models = catalog["models"].as_array().unwrap();
+        let slugs: Vec<&str> = models
+            .iter()
+            .map(|model| model["slug"].as_str().unwrap())
+            .collect();
+        // Site slugs keep their publication order, the ticked name is promoted
+        // right after them and the unticked names stay as trailing hidden rows.
+        assert_eq!(
+            slugs,
+            vec![
+                "site1.gpt-5.6-luna",
+                "site1.gpt-5.6-terra",
+                "site2.glm-5",
+                "glm-5",
+                "gpt-5.6-luna",
+                "gpt-5.6-terra"
+            ]
+        );
+        let model_of = |slug: &str| {
+            models
+                .iter()
+                .find(|model| model["slug"].as_str() == Some(slug))
+                .unwrap_or_else(|| panic!("catalog is missing `{slug}`"))
+        };
+        // The ticked name wins a hint slot; the unticked ones stay addressable
+        // but hidden and far behind every visible row.
+        assert_eq!(model_of("glm-5")["visibility"], json!("list"));
+        for slug in ["gpt-5.6-luna", "gpt-5.6-terra"] {
+            assert_eq!(model_of(slug)["visibility"], json!("hide"));
+            assert!(model_of(slug)["priority"].as_u64().unwrap() >= HIDDEN_ALIAS_PRIORITY_BASE);
+        }
+        // Routing still reaches the unticked models through their site slugs,
+        // and bare-name rows never enter the slug table.
+        let routed: Vec<&str> = table.iter().map(|entry| entry.slug.as_str()).collect();
+        assert_eq!(
+            routed,
+            vec!["site1.gpt-5.6-luna", "site1.gpt-5.6-terra", "site2.glm-5"]
+        );
+    }
+
+    /// The default exposure set is the historical behavior and must not change:
+    /// nothing is promoted, every declared bare name stays a hidden alias.
+    #[test]
+    fn aggregate_catalog_default_exposure_set_promotes_nothing() {
+        let sites = vec![
+            aggregate_site(
+                "site1",
+                "Site 1",
+                json!([{ "model": "gpt-5.6-luna" }, { "model": "gpt-5.6-terra" }]),
+            ),
+            aggregate_site("site2", "Site 2", json!([{ "model": "glm-5" }])),
+        ];
+
+        let naming = aggregate_naming(".");
+        let (entries, _) = codex_aggregate_catalog_entries(&sites, &naming).unwrap();
+        let catalog = aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
+        let models = catalog["models"].as_array().unwrap();
+        assert!(models
+            .iter()
+            .all(|model| model["visibility"].as_str() == Some("list")
+                || model["priority"].as_u64().unwrap() >= HIDDEN_ALIAS_PRIORITY_BASE));
+        // Bare names are hidden; no second visible row was invented for them.
+        let visible: Vec<&str> = models
+            .iter()
+            .filter(|model| model["visibility"].as_str() == Some("list"))
+            .map(|model| model["slug"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            visible,
+            vec!["site1.gpt-5.6-luna", "site1.gpt-5.6-terra", "site2.glm-5"]
+        );
+    }
+
     #[test]
     fn aggregate_catalog_default_exposure_set_publishes_every_bare_model() {
         let sites = vec![
@@ -6369,10 +6708,9 @@ approval_policy = "never"
             aggregate_site("site2", "Site 2", json!([{ "model": "glm-5" }])),
         ];
 
-        // An empty exposure set is the default and must behave exactly as before
-        // this feature existed: every declared bare name stays callable.
+        // An empty exposure selection promotes nothing, while every declared
+        // bare name remains callable through a hidden alias.
         let naming = aggregate_naming(".");
-        assert!(naming.exposes_every_bare_model());
         let (entries, _) = codex_aggregate_catalog_entries(&sites, &naming).unwrap();
         let hidden = entries
             .iter()
@@ -6382,8 +6720,12 @@ approval_policy = "never"
         assert_eq!(hidden, vec!["gpt-5.6-luna", "gpt-5.6-terra", "glm-5"]);
     }
 
+    /// Ticking a subset only decides who is *listed*. Every unticked bare name
+    /// the selected sites declare is still published as a hidden row, so a
+    /// subagent (or `[agents] default_subagent_model`) that sends the exact bare
+    /// name keeps resolving it.
     #[test]
-    fn aggregate_catalog_narrowed_exposure_set_publishes_only_the_selected_bare_names() {
+    fn aggregate_catalog_narrowed_exposure_set_hides_every_other_bare_name() {
         let sites = vec![
             aggregate_site(
                 "site1",
@@ -6401,9 +6743,11 @@ approval_policy = "never"
             .filter(|entry| entry.hidden)
             .map(|entry| entry.slug.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(hidden, vec!["glm-5"]);
+        // Only the ticked name leaves the hidden table (it is promoted into the
+        // picker); every unticked bare name stays published as a hidden row.
+        assert_eq!(hidden, vec!["gpt-5.6-luna", "gpt-5.6-terra"]);
         // The visible `<site><sep><model>` table is untouched by the exposure
-        // set: only the extra bare-name aliases are filtered.
+        // set: it gains the promoted bare name and keeps every site slug.
         let visible = entries
             .iter()
             .filter(|entry| !entry.hidden)
@@ -6411,7 +6755,12 @@ approval_policy = "never"
             .collect::<Vec<_>>();
         assert_eq!(
             visible,
-            vec!["site1.gpt-5.6-luna", "site1.gpt-5.6-terra", "site2.glm-5"]
+            vec![
+                "site1.gpt-5.6-luna",
+                "site1.gpt-5.6-terra",
+                "site2.glm-5",
+                "glm-5"
+            ]
         );
     }
 
@@ -6428,9 +6777,9 @@ approval_policy = "never"
             aggregate_site("site2", "Site 2", json!([{ "model": "gpt-5.6-luna" }])),
         ];
 
-        // Debt #2: narrowing the exposure set removes the *hidden alias*, but the
-        // drawer's universe (the site-declared models, first site wins) must keep
-        // reporting the dropped name so it can be ticked back on later.
+        // The drawer's universe (the site-declared models, first site wins) must
+        // keep reporting every declared bare name so an unticked one can be
+        // ticked back on later; it deliberately ignores the exposure set.
         let declared = sites
             .iter()
             .map(|(site_id, _, settings_config)| {
@@ -6450,8 +6799,10 @@ approval_policy = "never"
             vec![("site1", "gpt-5.6-luna"), ("site1", "gpt-5.6-terra"),]
         );
 
-        // Only the ticked name is published as a hidden alias; the other keeps
-        // working through its `<site><sep><model>` slug.
+        // The ticked name is promoted into the picker. The unticked name stays
+        // addressable by its exact bare name after all — it is published as a
+        // hidden row, so it is never listed in the hints but an explicit bare
+        // call still resolves — and it keeps its `<site><sep><model>` slug.
         let (entries, _) = codex_aggregate_catalog_entries(
             &sites,
             &aggregate_naming_with_exposed(&["gpt-5.6-terra"]),
@@ -6462,13 +6813,14 @@ approval_policy = "never"
             .filter(|entry| entry.hidden)
             .map(|entry| entry.slug.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(hidden, vec!["gpt-5.6-terra"]);
+        assert_eq!(hidden, vec!["gpt-5.6-luna"]);
         let visible = entries
             .iter()
             .filter(|entry| !entry.hidden)
             .map(|entry| entry.slug.as_str())
             .collect::<Vec<_>>();
         assert!(visible.contains(&"site1.gpt-5.6-luna"));
+        assert!(visible.contains(&"gpt-5.6-terra"));
     }
 
     #[test]

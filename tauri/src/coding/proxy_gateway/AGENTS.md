@@ -15,6 +15,7 @@
 
 ## Source of Truth
 
+- 聚合子代理裸名模型的勾选是有序用户选择：接管与草稿保存都必须拒绝任何未被当前选中站点声明的勾选项，不能只过滤失效项后接受剩余项；空列表仍按旧 manifest 语义处理。
 - 全局网关设置来自 AI Toolbox 主数据库的 `proxy_gateway_settings`；必须直接读写 SQLite JSONB，旧 SurrealDB 仅用于启动时一次性导入。CLI 接管状态不进数据库，以 `proxy-gateway/cli-proxy/<cli>/manifest.json` 为准。
 - CLI manifest 只保存接管元数据、目标文件路径、备份相对路径、hash/size、被管理字段、`mode` 和 `primary_provider_id`；不要写 settings_config、API key 明文或上游渠道配置。
 - `manifest.mode` 是 single/failover 的事实源。被接管 CLI 的 runtime 配置内容不区分 single 和 failover；网关运行时根据 manifest 选择候选列表形态：single 只返回 P0，failover 把 P0 提到队首后再接其他 provider。

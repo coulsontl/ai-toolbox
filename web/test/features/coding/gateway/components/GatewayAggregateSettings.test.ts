@@ -66,3 +66,62 @@ test('an engage that switches the primary restores direct first', () => {
   assert.match(settingsSource, /setNotice\(\{ kind: 'error', text: restoreDirectBlockedHint \}\)/);
   assert.match(settingsSource, /aggregateEngageErrorNoticeKey/);
 });
+
+/**
+ * Only the five lowest-priority visible catalog entries reach Codex's
+ * `spawn_agent` model hint, so the panel has to refuse a sixth tick instead of
+ * accepting one the subagent will never see. The refusal must be an explicit
+ * notice plus a disabled checkbox, and the block must tell the user which of the
+ * ticked names are inside the hint window.
+ */
+test('the exposure block refuses more ticks than the hint window holds', () => {
+  assert.match(
+    settingsSource,
+    /if \(checked && effectiveSubagentExposedModels\.length >= SUBAGENT_EXPOSED_MODEL_LIMIT\) \{/,
+  );
+  assert.match(settingsSource, /subagentExposedLimit/);
+  assert.match(
+    settingsSource,
+    /disabled=\{\s*busy \|\|\s*\(!ticked &&\s*effectiveSubagentExposedModels\.length >=\s*SUBAGENT_EXPOSED_MODEL_LIMIT\)/s,
+  );
+});
+
+/**
+ * The two states a subagent can see must be labelled per row, because the Codex
+ * side shows no difference between a promoted name and an addressable-only one.
+ */
+test('every exposure row is labelled with what the subagent can actually pick', () => {
+  assert.match(settingsSource, /subagentExposedBadgePromoted/);
+  assert.match(settingsSource, /subagentExposedBadgeAddressable/);
+  assert.match(settingsSource, /subagentExposedOrderHint/);
+});
+
+/**
+ * A tick that the current site selection no longer declares cannot be
+ * published: it must remain visible so the user can explicitly deselect it,
+ * and both draft save and engage must refuse while it remains selected.
+ */
+test('stale exposure ticks require explicit deselection before save or engage', () => {
+  assert.match(settingsSource, /staleSubagentExposedModels/);
+  assert.match(settingsSource, /subagentExposedStale/);
+  assert.match(settingsSource, /staleSubagentExposedModels\.length === 0/);
+  assert.match(
+    settingsSource,
+    /const staleEntries = staleSubagentExposedModels[\s\S]*?allCandidates = \[\.\.\.subagentExposureCandidates, \.\.\.staleEntries\]/,
+  );
+  assert.match(settingsSource, /if \(nextStaleExposedModels\.length > 0\) \{[\s\S]*?return false;/);
+  assert.match(settingsSource, /if \(staleExposedModels\.length > 0\) \{[\s\S]*?return;/);
+  assert.match(
+    settingsSource,
+    /onChange=\{\(event\) =>\s*handleToggleExposedModel\(entry\.model, event\.currentTarget\.checked\)/,
+  );
+});
+
+/**
+ * The selection has to be made *before* the takeover engages, so the block may
+ * not hide itself behind an engaged-only branch or skip loading its candidates.
+ */
+test('the exposure block is usable before the takeover engages', () => {
+  assert.doesNotMatch(settingsSource, /subagentExposedRequiresEngaged/);
+  assert.doesNotMatch(settingsSource, /if \(!engaged\) \{\s*return;\s*\}/);
+});
