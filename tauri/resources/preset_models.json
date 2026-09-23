@@ -121,6 +121,37 @@
       }
     },
     {
+      "id": "glm-5.3-flashx",
+      "name": "GLM 5.3 FlashX",
+      "contextLimit": 1000000,
+      "outputLimit": 131072,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": true,
+      "attachment": false,
+      "variants": {
+        "low": {
+          "reasoningEffort": "low"
+        },
+        "high": {
+          "reasoningEffort": "high"
+        },
+        "max": {
+          "reasoningEffort": "max"
+        }
+      }
+    },
+    {
       "id": "glm-5.3-flash",
       "name": "GLM 5.3 Flash",
       "contextLimit": 1000000,
@@ -206,6 +237,26 @@
       "modalities": {
         "input": [
           "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": true,
+      "attachment": false
+    },
+    {
+      "id": "qwen3.8-max",
+      "name": "Qwen3.8 Max",
+      "contextLimit": 1000000,
+      "outputLimit": 131072,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
         ],
         "output": [
           "text"
@@ -490,6 +541,48 @@
       "tool_call": true,
       "temperature": true,
       "attachment": false
+    },
+    {
+      "id": "mimo-v2.6-pro",
+      "name": "MiMo V2.6 Pro",
+      "contextLimit": 1048576,
+      "outputLimit": 131072,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video",
+          "audio"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": true,
+      "attachment": true
+    },
+    {
+      "id": "mimo-v2.6-flash",
+      "name": "MiMo V2.6 Flash",
+      "contextLimit": 1048576,
+      "outputLimit": 131072,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video",
+          "audio"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": true,
+      "attachment": true
     },
     {
       "id": "mimo-v2.5-pro",
@@ -1280,6 +1373,114 @@
     {
       "id": "gpt-6-astra",
       "name": "GPT-6 Astra",
+      "contextLimit": 1050000,
+      "outputLimit": 128000,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": false,
+      "attachment": true,
+      "options": {
+        "store": false
+      },
+      "variants": {
+        "none": {
+          "reasoningEffort": "none",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "low": {
+          "reasoningEffort": "low",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "medium": {
+          "reasoningEffort": "medium",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "high": {
+          "reasoningEffort": "high",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "xhigh": {
+          "reasoningEffort": "xhigh",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "max": {
+          "reasoningEffort": "max",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        }
+      }
+    },
+    {
+      "id": "gpt-6-sol",
+      "name": "GPT-6 Sol",
+      "contextLimit": 1050000,
+      "outputLimit": 128000,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": false,
+      "attachment": true,
+      "options": {
+        "store": false
+      },
+      "variants": {
+        "none": {
+          "reasoningEffort": "none",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "low": {
+          "reasoningEffort": "low",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "medium": {
+          "reasoningEffort": "medium",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "high": {
+          "reasoningEffort": "high",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "xhigh": {
+          "reasoningEffort": "xhigh",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "max": {
+          "reasoningEffort": "max",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        }
+      }
+    },
+    {
+      "id": "gpt-6-luna",
+      "name": "GPT-6 Luna",
       "contextLimit": 1050000,
       "outputLimit": 128000,
       "modalities": {
@@ -2265,6 +2466,38 @@
   ],
   "@ai-sdk/xai": [
     {
+      "id": "grok-4.7",
+      "name": "Grok 4.7",
+      "contextLimit": 500000,
+      "outputLimit": 500000,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "attachment": true,
+      "variants": {
+        "low": {
+          "reasoningEffort": "low"
+        },
+        "medium": {
+          "reasoningEffort": "medium"
+        },
+        "high": {
+          "reasoningEffort": "high"
+        },
+        "xhigh": {
+          "reasoningEffort": "xhigh"
+        }
+      }
+    },
+    {
       "id": "grok-4.6",
       "name": "Grok 4.6",
       "contextLimit": 500000,
@@ -2387,6 +2620,63 @@
     {
       "id": "claude-fable-5",
       "name": "Claude Fable 5",
+      "contextLimit": 1000000,
+      "outputLimit": 128000,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": false,
+      "attachment": true,
+      "variants": {
+        "high": {
+          "thinking": {
+            "display": "summarized",
+            "type": "adaptive"
+          },
+          "effort": "high"
+        },
+        "low": {
+          "thinking": {
+            "display": "summarized",
+            "type": "adaptive"
+          },
+          "effort": "low"
+        },
+        "max": {
+          "thinking": {
+            "display": "summarized",
+            "type": "adaptive"
+          },
+          "effort": "max"
+        },
+        "medium": {
+          "thinking": {
+            "display": "summarized",
+            "type": "adaptive"
+          },
+          "effort": "medium"
+        },
+        "xhigh": {
+          "thinking": {
+            "display": "summarized",
+            "type": "adaptive"
+          },
+          "effort": "xhigh"
+        }
+      }
+    },
+    {
+      "id": "claude-opus-5-5",
+      "name": "Claude Opus 5.5",
       "contextLimit": 1000000,
       "outputLimit": 128000,
       "modalities": {

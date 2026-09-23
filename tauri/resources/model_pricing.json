@@ -96,6 +96,22 @@
     "cache_creation_cost_per_million": "12.5"
   },
   {
+    "model_id": "gpt-6-sol",
+    "display_name": "GPT-6 Sol",
+    "input_cost_per_million": "2",
+    "output_cost_per_million": "10",
+    "cache_read_cost_per_million": "0.20",
+    "cache_creation_cost_per_million": "2.5"
+  },
+  {
+    "model_id": "gpt-6-luna",
+    "display_name": "GPT-6 Luna",
+    "input_cost_per_million": "0.10",
+    "output_cost_per_million": "0.50",
+    "cache_read_cost_per_million": "0.01",
+    "cache_creation_cost_per_million": "0.125"
+  },
+  {
     "model_id": "gpt-5.6",
     "display_name": "GPT-5.6 Sol",
     "input_cost_per_million": "5",
@@ -542,6 +558,14 @@
     "output_cost_per_million": "25",
     "cache_read_cost_per_million": "0.50",
     "cache_creation_cost_per_million": "6.25"
+  },
+  {
+    "model_id": "claude-opus-5-5",
+    "display_name": "Claude Opus 5.5",
+    "input_cost_per_million": "4",
+    "output_cost_per_million": "20",
+    "cache_read_cost_per_million": "0.20",
+    "cache_creation_cost_per_million": "5"
   },
   {
     "model_id": "claude-opus-5",
@@ -1008,6 +1032,14 @@
     "cache_creation_cost_per_million": "0"
   },
   {
+    "model_id": "glm-5.3-flashx",
+    "display_name": "GLM-5.3-FlashX",
+    "input_cost_per_million": "0.37",
+    "output_cost_per_million": "1.25",
+    "cache_read_cost_per_million": "0.075",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
     "model_id": "glm-5.3-flash",
     "display_name": "GLM-5.3-Flash",
     "input_cost_per_million": "0.15",
@@ -1040,11 +1072,35 @@
     "cache_creation_cost_per_million": "0"
   },
   {
+    "model_id": "mimo-v2.6-pro",
+    "display_name": "MiMo V2.6 Pro",
+    "input_cost_per_million": "0.435",
+    "output_cost_per_million": "0.87",
+    "cache_read_cost_per_million": "0.0036",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "mimo-v2.6-flash",
+    "display_name": "MiMo V2.6 Flash",
+    "input_cost_per_million": "0.14",
+    "output_cost_per_million": "0.28",
+    "cache_read_cost_per_million": "0.0028",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
     "model_id": "mimo-v2.5-pro",
     "display_name": "MiMo V2.5 Pro",
     "input_cost_per_million": "0.435",
     "output_cost_per_million": "0.87",
     "cache_read_cost_per_million": "0.0036",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "qwen3.8-max",
+    "display_name": "Qwen3.8 Max",
+    "input_cost_per_million": "2",
+    "output_cost_per_million": "6",
+    "cache_read_cost_per_million": "0.25",
     "cache_creation_cost_per_million": "0"
   },
   {
@@ -1165,6 +1221,22 @@
     "input_cost_per_million": "0.16",
     "output_cost_per_million": "0.64",
     "cache_read_cost_per_million": "0",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "grok-4.7",
+    "display_name": "Grok 4.7",
+    "input_cost_per_million": "2",
+    "output_cost_per_million": "6",
+    "cache_read_cost_per_million": "0.50",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "grok-4.7-latest",
+    "display_name": "Grok 4.7",
+    "input_cost_per_million": "2",
+    "output_cost_per_million": "6",
+    "cache_read_cost_per_million": "0.50",
     "cache_creation_cost_per_million": "0"
   },
   {
