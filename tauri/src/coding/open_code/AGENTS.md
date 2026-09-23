@@ -14,6 +14,7 @@
 - OpenCode Core 还会从全局配置目录下的 `agent/**/*.md` 和 `agents/**/*.md` 读取 Markdown Agent。规范的新目录是复数 `agents/`，新建与默认 WSL/SSH 映射只使用复数目录；为避免老用户文件升级后消失，读取、编辑和删除仍兼容旧单数 `agent/`，并写回原始来源路径。应用内自定义 `OPENCODE_CONFIG` 文件只改变主 JSON 文件，不改变默认全局 Agent 目录；不能从自定义 JSON 的父目录猜测 Markdown Agent 目录。WSL Direct 时该目录必须从统一 runtime location 的 Linux 用户根解析。
 - models.dev 的 `experimental.modes.*` 在 OpenCode 语义中会展开成虚拟模型，ID 形如 `${base_model_id}-${mode}`，例如 `gpt-5.5-fast`；后端统一模型列表需要透出 `base_model_id` / `experimental_mode`，供前端继承 base variants。
 - `favorite provider` / `我使用过的供应商` 库不是当前配置镜像，而是独立的历史库和诊断缓存；真正的 OpenCode 运行时配置仍以当前配置文件内容为准。
+- V1/V2 模式开关以当前配置路径旁的 `openvode_v1.<ext>` 备份是否存在作为状态源。开启时先解析完整 JSONC，再写 V2 临时文件并通过同目录重命名替换；关闭时把 V2 当前文件保存为 `opencode_v2.<ext>` 后恢复 V1 原文。路径扩展名沿用当前配置，备份重名时保留旧 V2 副本并加时间戳。
 
 ## 核心设计决策（Why）
 
@@ -64,6 +65,7 @@ sequenceDiagram
 - 共享连通性请求的可选 `apiFormat=openai-codex-responses` 由 OMP 诊断显式传入，不从 URL 猜测。它使用 `/codex/responses`、Bearer 凭据、可选 JWT account id、`instructions`、`store=false` 和强制 SSE；不发送温度/输出上限。HTTP 200 仍须收到 `response.completed` 且没有错误终态才算成功。普通 OpenCode 诊断继续按 npm 选择既有协议。
 
 - 模型 variants 的 option 拼写必须匹配 provider 的 npm 包：`@ai-sdk/openai-compatible` 只认 `reasoningEffort`，`thinkingConfig` 是 `@ai-sdk/google` 包专属。OpenCode 1.x 会把按包自动生成的 `reasoningEffort` variants 与配置 variants `mergeDeep` 合并，掩盖了写法错误；OpenCode 2.x 对配置 variants 原样使用，并在 openai-compatible 路径静默丢弃 `thinkingConfig`，导致思考度不随请求上行。`write_opencode_config_file` 里的 `normalize_openai_compatible_variants` 负责在落盘前把 openai-compatible 供应商下的 `thinkingConfig` 变体改写成 `reasoningEffort`，档位优先级是 `thinkingLevel`（已知档位 none/minimal/low/medium/high/xhigh/max，off/disabled→none，min→minimal）> 变体名（同样必须是已知档位）> `thinkingBudget`（0→none；正数按 1024/4096/10240/32768 映射 minimal/low/medium/high，更高为 xhigh）；三者都推导不出时保持该变体原样，绝不拿变体名硬凑出 `auto`/`no-thinking` 这类非法档位（Gemini 2.5 `auto` 的动态思考没有等价档位，`no-thinking` 靠 0→none 表达）；磁盘与 `sync_providers_from_config` 收藏快照共用 `sanitize_opencode_config`，保证两边写法一致；`@ai-sdk/google` 包保持原样，不要把该转换扩大到其他 npm。
+- V2 模式下，磁盘格式与 `OpenCodeConfig` 内部 V1 编辑结构由 `v2_migration` 在读取/写入边界双向映射。所有常规保存都必须检查同一配置路径的 V1 备份标记并转回 V2；不能因页面仍使用 V1 数据结构而把活动配置降回 V1。用户关闭模式时恢复备份文件原始字节内容。
 - 共享 `fetch_provider_models` / `test_provider_model_connectivity` 增加了可选 `configValueMode`：只有 Pi 调用方传 `"pi"`、OMP 调用方传 `"omp"` 时，后端才会在该工具自己的运行时环境里解析 `apiKey`/headers 的配置值语法；不传时所有值仍按字面量直传，不要把这个开关变成全局默认行为。两种模式的 host 选择（本机 / WSL Direct 发行版）共用 `tauri/src/coding/config_value_host.rs`，语法各自实现在 `tauri/src/coding/pi_config_value.rs`（`$ENV_VAR` 插值、`!command`、`$$`/`$!` 转义，解析失败即报错）与 `tauri/src/coding/omp_config_value.rs`（`!command` 或精确大小写环境变量名，否则字面量，解析不到即省略）。语义、失败语义与 WSL 边界见对应模块的 `AGENTS.md`（`pi/`、`oh_my_pi/`）。
 
 ## 跨模块依赖

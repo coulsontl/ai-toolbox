@@ -2509,6 +2509,12 @@
       "markdownAdvancedHint": "编辑该 Markdown Agent 的 YAML Frontmatter。Agent 指令正文不会被修改；未知字段会保留在当前文件中。",
       "markdownRepairHint": "当前 Markdown Agent 无法解析。请修复完整文件中的 YAML Frontmatter；保存前会重新校验。",
       "markdownPromptEditorHint": "内容将保存到 Markdown Agent {{name}} 的正文：{{path}}"
+    },
+    "v2Migration": {
+      "title": "迁移 OpenCode 配置到 V2",
+      "hint": "开启后会备份原配置为 openvode_v1.<扩展名> 并转换当前文件；关闭后恢复 V1，并将 V2 文件保存为 opencode_v2.<扩展名>。",
+      "enabled": "OpenCode 配置已迁移到 V2",
+      "disabled": "已恢复 OpenCode V1 配置"
     }
   },
   "claudecode": {

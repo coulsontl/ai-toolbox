@@ -2512,6 +2512,12 @@
       "markdownAdvancedHint": "Edit the YAML frontmatter for this Markdown agent. The prompt body is unchanged and unknown fields remain in the current file.",
       "markdownRepairHint": "This Markdown agent cannot be parsed. Repair the YAML frontmatter in the full file; it will be validated again before saving.",
       "markdownPromptEditorHint": "The content will be saved as the Markdown prompt body for {{name}}: {{path}}"
+    },
+    "v2Migration": {
+      "title": "Migrate OpenCode config to V2",
+      "hint": "Enabling backs up the current file as openvode_v1.<extension> and converts it to V2. Turning it off restores V1 and saves the V2 file as opencode_v2.<extension>.",
+      "enabled": "OpenCode config migrated to V2",
+      "disabled": "OpenCode V1 config restored"
     }
   },
   "claudecode": {

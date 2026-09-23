@@ -2257,6 +2257,8 @@ pub fn run() {
             coding::proxy_gateway::provider_profiles::load_cached_gateway_provider_profiles,
             // OpenCode
             coding::open_code::get_opencode_config_path,
+            coding::open_code::get_opencode_v2_config_mode,
+            coding::open_code::set_opencode_v2_config_mode,
             coding::open_code::get_opencode_config_path_info,
             coding::open_code::read_opencode_config,
             coding::open_code::get_opencode_preview,

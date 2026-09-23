@@ -6,6 +6,7 @@ use tauri::Emitter;
 
 use super::adapter;
 use super::types::*;
+use super::v2_migration;
 use crate::coding::all_api_hub;
 use crate::coding::db_id::db_new_id;
 use crate::coding::prompt_file::{read_prompt_content_file, write_prompt_content_file};
@@ -381,7 +382,12 @@ async fn write_opencode_config_file(
         }
     }
 
-    let json_content = serde_json::to_string_pretty(&sanitize_opencode_config(config))
+    let mut config_value = serde_json::to_value(sanitize_opencode_config(config))
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    if v2_migration::is_active(config_path) {
+        config_value = v2_migration::v1_to_v2_value(config_value)?;
+    }
+    let json_content = serde_json::to_string_pretty(&config_value)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
     fs::write(config_path, json_content)
@@ -840,6 +846,36 @@ pub async fn get_opencode_config_path(
     get_default_config_path()
 }
 
+/// Whether the active OpenCode config is currently stored in the V2 format.
+#[tauri::command]
+pub async fn get_opencode_v2_config_mode(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<bool, String> {
+    let config_path = get_opencode_config_path(state).await?;
+    Ok(v2_migration::is_active(Path::new(&config_path)))
+}
+
+/// Convert the active OpenCode config to V2, or restore its original V1 backup.
+#[tauri::command]
+pub async fn set_opencode_v2_config_mode<R: tauri::Runtime>(
+    state: tauri::State<'_, SqliteDbState>,
+    app: tauri::AppHandle<R>,
+    enabled: bool,
+) -> Result<bool, String> {
+    let config_path = get_opencode_config_path(state).await?;
+    let config_path = Path::new(&config_path);
+    let was_enabled = v2_migration::is_active(config_path);
+    let is_enabled = v2_migration::set_mode(config_path, enabled)?;
+
+    if was_enabled != is_enabled {
+        let _ = app.emit("config-changed", "window");
+        #[cfg(target_os = "windows")]
+        let _ = app.emit("wsl-sync-request-opencode", ());
+    }
+
+    Ok(is_enabled)
+}
+
 /// Get OpenCode config path info including source
 #[tauri::command]
 pub async fn get_opencode_config_path_info(
@@ -931,7 +967,17 @@ pub async fn read_opencode_config(
         }
     };
 
-    match json5::from_str::<OpenCodeConfig>(&content) {
+    let v2_active = v2_migration::is_active(config_path);
+    let parsed_config = json5::from_str::<Value>(&content)
+        .map_err(|error| error.to_string())
+        .and_then(|mut value| {
+            if v2_active {
+                value = v2_migration::v2_to_v1_value(value)?;
+            }
+            serde_json::from_value::<OpenCodeConfig>(value).map_err(|error| error.to_string())
+        });
+
+    match parsed_config {
         Ok(mut config) => {
             // Initialize provider if missing
             if config.provider.is_none() {
@@ -943,39 +989,43 @@ pub async fn read_opencode_config(
                 .map(|plugin_names| sanitize_opencode_plugin_list(plugin_names))
                 .filter(|plugin_names| !plugin_names.is_empty());
 
-            // Fill missing name fields with provider key
-            // Fill missing npm fields with smart default based on provider key/name
-            if let Some(ref mut providers) = config.provider {
-                for (key, provider) in providers.iter_mut() {
-                    if provider.name.is_none() {
-                        provider.name = Some(key.clone());
-                    }
-                    if provider.npm.is_none() {
-                        // Smart npm inference based on provider key or name (case-insensitive)
-                        let key_lower = key.to_lowercase();
-                        let name_lower = provider
-                            .name
-                            .as_ref()
-                            .map(|n| n.to_lowercase())
-                            .unwrap_or_default();
+            // Legacy V1 configs need editor defaults. Do not inject those defaults
+            // into native V2 entries: an absent `package` may intentionally inherit
+            // the provider catalog runtime, and adding an inferred npm package on
+            // an unrelated save would change that runtime.
+            if !v2_active {
+                if let Some(ref mut providers) = config.provider {
+                    for (key, provider) in providers.iter_mut() {
+                        if provider.name.is_none() {
+                            provider.name = Some(key.clone());
+                        }
+                        if provider.npm.is_none() {
+                            // Smart npm inference based on provider key or name (case-insensitive)
+                            let key_lower = key.to_lowercase();
+                            let name_lower = provider
+                                .name
+                                .as_ref()
+                                .map(|n| n.to_lowercase())
+                                .unwrap_or_default();
 
-                        let inferred_npm = if key_lower.contains("google")
-                            || key_lower.contains("gemini")
-                            || name_lower.contains("google")
-                            || name_lower.contains("gemini")
-                        {
-                            "@ai-sdk/google"
-                        } else if key_lower.contains("anthropic")
-                            || key_lower.contains("claude")
-                            || name_lower.contains("anthropic")
-                            || name_lower.contains("claude")
-                        {
-                            "@ai-sdk/anthropic"
-                        } else {
-                            "@ai-sdk/openai-compatible"
-                        };
+                            let inferred_npm = if key_lower.contains("google")
+                                || key_lower.contains("gemini")
+                                || name_lower.contains("google")
+                                || name_lower.contains("gemini")
+                            {
+                                "@ai-sdk/google"
+                            } else if key_lower.contains("anthropic")
+                                || key_lower.contains("claude")
+                                || name_lower.contains("anthropic")
+                                || name_lower.contains("claude")
+                            {
+                                "@ai-sdk/anthropic"
+                            } else {
+                                "@ai-sdk/openai-compatible"
+                            };
 
-                        provider.npm = Some(inferred_npm.to_string());
+                            provider.npm = Some(inferred_npm.to_string());
+                        }
                     }
                 }
             }
@@ -1370,6 +1420,23 @@ pub async fn save_opencode_common_config(
     app: tauri::AppHandle,
     config: OpenCodeCommonConfig,
 ) -> Result<(), String> {
+    let existing_config = get_opencode_common_config(state.clone()).await?;
+    let existing_path = existing_config
+        .and_then(|existing| existing.config_path)
+        .filter(|path| !path.trim().is_empty());
+    let next_path = config
+        .config_path
+        .as_ref()
+        .filter(|path| !path.trim().is_empty());
+    if existing_path.as_deref() != next_path.map(String::as_str) {
+        let active_config_path = get_opencode_config_path(state.clone()).await?;
+        if v2_migration::is_active(Path::new(&active_config_path)) {
+            return Err(
+                "Disable V2 config migration before changing the OpenCode config path".to_string(),
+            );
+        }
+    }
+
     let db = state.db();
     let previous_skills_path = runtime_location::get_tool_skills_path_async(&db, "opencode").await;
 

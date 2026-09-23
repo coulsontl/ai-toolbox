@@ -45,7 +45,7 @@ import {
 } from '@dnd-kit/sortable';
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
 import { useProviderSharing } from '@/features/coding/shared/providerShare';
-import { readOpenCodeConfigWithResult, saveOpenCodeConfig, getOpenCodeConfigPathInfo, getOpenCodeUnifiedModels, getOpenCodeAuthProviders, getOpenCodeAuthConfigPath, getOpenCodePreview, listFavoriteProviders, upsertFavoriteProvider, deleteFavoriteProvider, buildModelVariantsMap, getOpenCodeFreeModels, type ConfigPathInfo, type UnifiedModelOption, type GetAuthProvidersResponse, type OpenCodeFavoriteProvider, type OpenCodeDiagnosticsConfig, type OpenCodePreviewData } from '@/services/opencodeApi';
+import { readOpenCodeConfigWithResult, saveOpenCodeConfig, getOpenCodeConfigPathInfo, getOpenCodeV2ConfigMode, setOpenCodeV2ConfigMode, getOpenCodeUnifiedModels, getOpenCodeAuthProviders, getOpenCodeAuthConfigPath, getOpenCodePreview, listFavoriteProviders, upsertFavoriteProvider, deleteFavoriteProvider, buildModelVariantsMap, getOpenCodeFreeModels, type ConfigPathInfo, type UnifiedModelOption, type GetAuthProvidersResponse, type OpenCodeFavoriteProvider, type OpenCodeDiagnosticsConfig, type OpenCodePreviewData } from '@/services/opencodeApi';
 import { listOhMyOpenAgentConfigs, applyOhMyOpenAgentConfig } from '@/services/ohMyOpenAgentApi';
 import { listOhMyOpenCodeSlimConfigs } from '@/services/ohMyOpenCodeSlimApi';
 import { refreshTrayMenu, fetchRemotePresetModels, hasAllApiHubExtension } from '@/services/appApi';
@@ -346,6 +346,8 @@ const OpenCodePage: React.FC = () => {
   const [previewModalOpen, setPreviewModalOpen] = React.useState(false);
   const [previewData, setPreviewDataLocal] = React.useState<OpenCodePreviewData | null>(null);
   const [settingsModalOpen, setSettingsModalOpen] = React.useState(false);
+  const [v2MigrationEnabled, setV2MigrationEnabled] = React.useState(false);
+  const [v2MigrationLoading, setV2MigrationLoading] = React.useState(false);
   const sidebarHidden = sidebarHiddenByPage.opencode;
 
   // Provider modal state
@@ -516,6 +518,28 @@ const OpenCodePage: React.FC = () => {
     // Biome: make the dependency explicit for re-running on refresh key changes
     void openCodeConfigRefreshKey;
   }, [loadConfig, openCodeConfigRefreshKey]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setV2MigrationLoading(true);
+    void getOpenCodeV2ConfigMode()
+      .then((enabled) => {
+        if (!cancelled) setV2MigrationEnabled(enabled);
+      })
+      .catch((error: unknown) => {
+        console.error('Failed to read OpenCode V2 config mode:', error);
+        if (!cancelled && settingsModalOpen) {
+          message.error(error instanceof Error ? error.message : t('common.error'));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setV2MigrationLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [settingsModalOpen, t]);
 
   React.useEffect(() => {
     const checkAllApiHubAvailability = async () => {
@@ -2042,6 +2066,27 @@ const OpenCodePage: React.FC = () => {
     await doSaveConfig(mergeOpenCodeOtherConfigFields(config, value));
   };
 
+  const handleV2MigrationToggle = async (enabled: boolean) => {
+    setV2MigrationLoading(true);
+    try {
+      const actualMode = await setOpenCodeV2ConfigMode(enabled);
+      setV2MigrationEnabled(actualMode);
+      await loadConfig(false, true);
+      incrementOpenCodeConfigRefresh();
+      try {
+        await refreshTrayMenu();
+      } catch (error: unknown) {
+        console.error('Failed to refresh OpenCode tray after config migration:', error);
+      }
+      message.success(t(actualMode ? 'opencode.v2Migration.enabled' : 'opencode.v2Migration.disabled'));
+    } catch (error: unknown) {
+      console.error('Failed to change OpenCode V2 config mode:', error);
+      message.error(error instanceof Error ? error.message : t('common.error'));
+    } finally {
+      setV2MigrationLoading(false);
+    }
+  };
+
   return (
     <div>
       {/* If parse error exists, only show the error alert */}
@@ -2112,6 +2157,7 @@ const OpenCodePage: React.FC = () => {
                       size="small"
                       icon={<EditOutlined />}
                       onClick={() => setPathModalOpen(true)}
+                      disabled={v2MigrationEnabled || v2MigrationLoading}
                       style={{ padding: 0, fontSize: 12 }}
                     >
                       {t('opencode.configPathSource.customize')}
@@ -2923,6 +2969,13 @@ const OpenCodePage: React.FC = () => {
               <CliManualPathSetting
                 commandName="opencode"
                 labelKey="subModules.opencode"
+              />
+              <SettingsToggleRow
+                title={t('opencode.v2Migration.title')}
+                hint={t('opencode.v2Migration.hint')}
+                checked={v2MigrationEnabled}
+                loading={v2MigrationLoading}
+                onChange={handleV2MigrationToggle}
               />
               <SettingsToggleRow
                 title={t('opencode.ohMyOpenCode.clearAppliedEnable')}
