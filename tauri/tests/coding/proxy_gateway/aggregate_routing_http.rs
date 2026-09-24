@@ -289,6 +289,22 @@ async fn write_http_json(socket: &mut TcpStream, status: u16, body: &[u8]) {
     socket.shutdown().await.unwrap();
 }
 
+async fn write_http_sse(socket: &mut TcpStream, body: &[u8]) {
+    socket
+        .write_all(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    socket.write_all(body).await.unwrap();
+    socket.shutdown().await.unwrap();
+}
+
 /// Capture at most one real upstream request. Returning `None` means the
 /// listener saw no request before the caller aborted the task.
 fn spawn_upstream_capture(
@@ -353,6 +369,21 @@ async fn send_request(gateway_url: &str, model: &str) -> (reqwest::StatusCode, V
     let response = client
         .post(gateway_url)
         .json(&responses_request_for_model(model))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.bytes().await.unwrap().to_vec();
+    (status, bytes)
+}
+
+async fn send_streaming_request(gateway_url: &str, model: &str) -> (reqwest::StatusCode, Vec<u8>) {
+    let client = http_client::create_client_no_proxy(10).unwrap();
+    let mut request_body = responses_request_for_model(model);
+    request_body["stream"] = json!(true);
+    let response = client
+        .post(gateway_url)
+        .json(&request_body)
         .send()
         .await
         .unwrap();
@@ -643,6 +674,102 @@ async fn aggregate_gate_off_keeps_a_failing_site_a_request_on_site_a() {
         "site B must never be contacted while the cross-site gate is off"
     );
     site_b_counter.abort();
+}
+
+#[tokio::test]
+async fn repeated_stream_protocol_errors_do_not_cool_the_named_model_site() {
+    let site_a = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let site_a_url = format!("http://{}", site_a.local_addr().unwrap());
+    let protocol_errors_to_reach_threshold = ProxyGatewaySettings::default()
+        .model_failure_score_threshold
+        .max(1) as usize;
+    let site_a_task = tokio::spawn(async move {
+        let mut captured_requests = Vec::with_capacity(protocol_errors_to_reach_threshold + 1);
+        for attempt in 0..=protocol_errors_to_reach_threshold {
+            let (mut socket, _) = tokio::time::timeout(REQUEST_TIMEOUT, site_a.accept())
+                .await
+                .expect("the named site should keep receiving requests")
+                .expect("upstream listener should accept");
+            captured_requests.push(read_http_json(&mut socket).await);
+            if attempt < protocol_errors_to_reach_threshold {
+                write_http_sse(
+                    &mut socket,
+                    b"event: response.failed\n\
+                      data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_failed\",\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"failed upstream\"}}}\n\n",
+                )
+                .await;
+            } else {
+                write_http_sse(
+                    &mut socket,
+                    b"event: response.output_text.delta\n\
+                      data: {\"type\":\"response.output_text.delta\",\"delta\":\"recovered\",\"item_id\":\"msg_fixture\",\"output_index\":0}\n\n\
+                      event: response.completed\n\
+                      data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_modelX\",\"status\":\"completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
+                )
+                .await;
+            }
+        }
+        captured_requests
+    });
+
+    let gateway = RunningAggregateGateway::new_with_slug_table(
+        &[("siteA", "Site A", &site_a_url, &["modelX"])],
+        GatewayProxyMode::Aggregate,
+        &["siteA"],
+        AggregateNamingMode::default(),
+        Vec::new(),
+        false,
+        &[],
+    );
+
+    for attempt in 0..protocol_errors_to_reach_threshold {
+        let (status, bytes) = send_streaming_request(&gateway.url, "siteA.modelX").await;
+        if status != reqwest::StatusCode::BAD_GATEWAY {
+            site_a_task.abort();
+            panic!(
+                "protocol envelope attempt {} should preserve the 502 response, got {status}: {}",
+                attempt + 1,
+                String::from_utf8_lossy(&bytes)
+            );
+        }
+        let response: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(response["error"], "upstream_stream_first_chunk_failed");
+        assert_eq!(
+            response["message"],
+            "Upstream streaming response reported a protocol error envelope"
+        );
+    }
+
+    // Each response.failed contributes one point to the default model health
+    // threshold; despite reaching it, the next request must still visit site A.
+    let (status, bytes) = send_streaming_request(&gateway.url, "siteA.modelX").await;
+    if status != reqwest::StatusCode::OK {
+        site_a_task.abort();
+        panic!(
+            "the named site should remain available after protocol errors, got {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(body.contains("response.completed"), "{body}");
+    assert!(body.contains("recovered"), "{body}");
+
+    let captured_requests = tokio::time::timeout(REQUEST_TIMEOUT, site_a_task)
+        .await
+        .expect("all requests should reach site A")
+        .unwrap();
+    assert_eq!(
+        captured_requests.len(),
+        protocol_errors_to_reach_threshold + 1
+    );
+    for captured in captured_requests {
+        assert_eq!(captured["model"], "modelX");
+        assert_eq!(captured["stream"], true);
+        assert_eq!(
+            captured["input"][0]["content"], "say hello",
+            "the upstream request body must remain intact"
+        );
+    }
 }
 
 /// Gate fully off + the named site is cooling down: the request is refused with
