@@ -8,6 +8,7 @@ import { extractGrokSettingsApiBackend } from '../../../../utils/grokConfigUtils
 import { normalizeGrokCatalogModels } from './grokCatalogModels';
 import {
   CUSTOM_GROK_MODEL_KEY,
+  mapGrokApiFormatToBackend,
   normalizeGrokReasoningEffort,
 } from './grokSettingsConfig';
 
@@ -103,6 +104,27 @@ export function resolveGrokProviderApiFormat(
   }
 
   return DEFAULT_GROK_API_FORMAT;
+}
+
+/**
+ * Channel-level `api_backend` a new catalog entry should inherit.
+ *
+ * Prefers the selected entry (what the card currently speaks), then falls back to the
+ * provider's effective API format — `meta.apiFormat`, then `settingsConfig`, then the
+ * chat default. The fallback matters after the model list is emptied: without it a
+ * re-added model is written without `api_backend`, so the CLI silently falls back to
+ * chat_completions while the UI still shows the channel's real protocol (issue #391
+ * review). Entries that already carry `api_backend` keep their own value; callers only
+ * use this as a default.
+ */
+export function resolveGrokChannelApiBackend(
+  provider: Pick<GrokProvider, 'meta' | 'settingsConfig'>,
+): string {
+  const fromCatalog = extractGrokSettingsApiBackend(parseGrokProviderSettings(provider));
+  if (fromCatalog) {
+    return fromCatalog;
+  }
+  return mapGrokApiFormatToBackend(resolveGrokProviderApiFormat(provider));
 }
 
 /**
@@ -321,10 +343,15 @@ export function buildGrokProviderSettingsWithModels(
   // left untouched.
   //
   // Records written before the channel field existed only carry per-model URLs, so
-  // they are promoted on the first mutation — but only when the catalog states one
+  // they are promoted on the first mutation — but only while the record states one
   // unambiguous address. Mixed per-model URLs are third-party data this app does not
-  // own (it has no per-model URL editor), so they are neither collapsed nor frozen
-  // into the channel field; the surviving entries keep their own addresses.
+  // own (it has no per-model URL editor), so they are never collapsed onto each
+  // other: every entry keeps its own address, and a mutation that runs while two or
+  // more distinct addresses exist promotes nothing (not even when it empties the
+  // catalog — no channel value is invented). Once a mutation runs against a record
+  // that states a single address, that address becomes the channel value, so the
+  // stored value agrees with the surviving catalog instead of being dropped
+  // (issue #391).
   if (provider.category === 'official') {
     delete next.baseUrl;
     delete next.modelCatalog;
@@ -334,8 +361,8 @@ export function buildGrokProviderSettingsWithModels(
   } else {
     const existingChannelBaseUrl = typeof settings.baseUrl === 'string' ? settings.baseUrl.trim() : '';
     const previousEntryBaseUrls = (settings.modelCatalog?.models || [])
-      .map((model) => model.baseUrl?.trim())
-      .filter((value): value is string => Boolean(value));
+      .map((model) => (typeof model.baseUrl === 'string' ? model.baseUrl.trim() : ''))
+      .filter((value) => Boolean(value));
     const promotedChannelBaseUrl = previousEntryBaseUrls[0];
     if (existingChannelBaseUrl) {
       next.baseUrl = existingChannelBaseUrl;

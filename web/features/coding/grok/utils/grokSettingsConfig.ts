@@ -50,7 +50,9 @@ export interface ApplyGrokEndpointSettingsConfigInput {
   endpointCatalogModels: GrokCatalogModel[];
 }
 
-function mapGrokApiFormatToBackend(apiFormat?: GrokApiFormat): string {
+/** Channel API format → live `api_backend` token. Single source for both directions
+ * (the reverse mapping lives in `grokProviderModels.mapGrokApiBackendToApiFormat`). */
+export function mapGrokApiFormatToBackend(apiFormat?: GrokApiFormat): string {
   if (apiFormat === 'openai_responses') {
     return 'responses';
   }

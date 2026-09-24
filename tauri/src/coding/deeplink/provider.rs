@@ -295,6 +295,16 @@ pub(super) fn build_catalog_settings(request: &DeepLinkImportRequest) -> Result<
     if let Some(key) = default_key {
         settings["defaultModelKey"] = json!(key);
     }
+    if request.app == "grok" {
+        // Channel-level Base URL SoT. Grok's live `[model.<key>]` tables are the channel
+        // config, so an import whose model list is empty would otherwise land without any
+        // address: the frontend keeps this field across model-list edits, and a shared
+        // link has to restore it (issue #391). Kimi keeps the equivalent value in
+        // `providerConfigs.<key>.base_url`, written by its own branch below.
+        if let Some(url) = &request.base_url {
+            settings["baseUrl"] = json!(url);
+        }
+    }
     if request.app == "kimi" {
         settings["providerConfigs"] = json!({ "custom": { "type": "openai_legacy" } });
         if let Some(url) = &request.base_url {
@@ -612,5 +622,24 @@ base_url = "https://override.example.com"
             );
             assert_eq!(provider["models"][1]["contextWindow"], 128000, "{target}");
         }
+    }
+
+    #[test]
+    fn catalog_settings_store_the_channel_base_url_for_grok_and_kimi() {
+        // Issue #391: an emptied model list makes the channel URL the only address a
+        // Grok provider has, so the import must persist it at channel level too.
+        let mut request = req_for("grok");
+        request.connection.models = serde_json::from_value(json!([{ "id": "m1" }])).unwrap();
+        let grok: Value = serde_json::from_str(&build_catalog_settings(&request).unwrap()).unwrap();
+        assert_eq!(grok["baseUrl"], "https://api.example.com");
+        assert_eq!(grok["modelCatalog"]["models"][0]["baseUrl"], "https://api.example.com");
+
+        request.app = "kimi".to_string();
+        let kimi: Value = serde_json::from_str(&build_catalog_settings(&request).unwrap()).unwrap();
+        assert!(kimi.get("baseUrl").is_none());
+        assert_eq!(
+            kimi["providerConfigs"]["custom"]["base_url"],
+            "https://api.example.com"
+        );
     }
 }

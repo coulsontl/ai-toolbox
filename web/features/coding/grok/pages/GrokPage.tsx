@@ -75,6 +75,7 @@ import {
   getGrokProviderCatalogModels,
   getGrokProviderDefaultModelKey,
   removeGrokCatalogModel,
+  resolveGrokChannelApiBackend,
   resolveGrokProviderApiFormat,
   toGrokModelFormValues,
   upsertGrokCatalogModel,
@@ -771,7 +772,7 @@ const GrokPage: React.FC = () => {
         }
       })();
       const baseUrl = extractGrokSettingsBaseUrl(settings);
-      const apiBackend = extractGrokSettingsApiBackend(settings);
+      const apiBackend = resolveGrokChannelApiBackend(fetchModelsProvider);
       let models = getGrokProviderCatalogModels(fetchModelsProvider);
       const removed = new Set(result.removedModelIds || []);
       if (removed.size > 0) {
@@ -824,7 +825,7 @@ const GrokPage: React.FC = () => {
       })();
       const nextModel = fromGrokModelFormValues(values, existing, {
         baseUrl: extractGrokSettingsBaseUrl(settings),
-        apiBackend: extractGrokSettingsApiBackend(settings),
+        apiBackend: resolveGrokChannelApiBackend(modelModalProvider),
       });
       const nextModels = upsertGrokCatalogModel(models, nextModel, modelModalKey || undefined);
       const currentDefault = getGrokProviderDefaultModelKey(modelModalProvider);
