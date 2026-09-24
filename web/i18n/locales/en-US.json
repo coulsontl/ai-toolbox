@@ -2873,7 +2873,7 @@
       "requiresOpenaiAuthKeep": "Always write true",
       "requiresOpenaiAuthStrip": "Always remove",
       "requiresOpenaiAuthHelp": "Controls whether requires_openai_auth = true is written for this provider in config.toml. Auto follows how the provider authenticates: true for official logins and for a provider whose API key is stored here, removed for keyless relays that manage auth themselves. Choose \"Always write true\" for relays that expect the OpenAI auth token (for example a ChatGPT-subscription proxy).",
-      "requiresOpenaiAuthPreserveHint": "Unavailable while \"keep official login when switching\" is on: that mode authenticates with the provider bearer token, so requires_openai_auth must stay removed — otherwise Codex sends the wrong credential and the request fails with 401.",
+      "requiresOpenaiAuthPreserveHint": "\"Keep official login when switching\" is on. Auto removes requires_openai_auth here because that mode authenticates with the provider bearer token. If your relay accepts the OpenAI auth token (a ChatGPT-subscription proxy, or you need /fast, voice or other account features), choose \"Always write true\": both fields are written, the bearer token stays the credential and requires_openai_auth only enables the account. Choose \"Always remove\" if the relay manages auth on its own.",
       "baseUrl": "Base URL",
       "baseUrlHelp": "Enter the API endpoint URL. OpenAI Chat/Responses-compatible endpoints usually end with /v1 (e.g. https://api.openai.com/v1); Anthropic Messages / Gemini Native depends on the upstream.",
       "baseUrlConfirmV1": "The current Base URL does not end with /v1. OpenAI Chat/Responses-compatible endpoints typically require this suffix. Continue with the current URL?",

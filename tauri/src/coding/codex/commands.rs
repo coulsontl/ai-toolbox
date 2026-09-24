@@ -2167,23 +2167,34 @@ fn project_codex_auth_to_runtime_config_with_mode(
     // it for a keyless custom provider — nothing to read, so don't demand — which
     // is also what gateway/relay providers (ccNexus, AxonHub) do.
     //
-    // Precedence: official > preserve > explicit mode > automatic rule.
+    // Precedence: official > explicit mode > preserve > automatic rule.
     //
     // The projection always writes or removes the field — there is no "leave
     // as-is" branch — so its presence on disk never depends on an earlier
     // projection having happened to contain it.
+    //
+    // An explicit `keep` deliberately beats `preserve_official_auth`. The two
+    // fields are complementary in Codex, not mutually exclusive:
+    // `experimental_bearer_token`/`env_key` select the credential, while
+    // `requires_openai_auth` only declares the provider first-party-account
+    // backed. `provider_uses_first_party_auth_path`
+    // (codex-rs/model-provider/src/provider.rs) requires
+    // `experimental_bearer_token.is_none()`, so a bearer token short-circuits
+    // that path and Codex keeps using the relay key — the cc-switch#7211 401
+    // does not arise from this shape. Meanwhile `account_state()` resolves the
+    // account whenever the flag is set, which is what enables the account-gated
+    // features (fast mode, voice, image generation) issue #394 asked for. So an
+    // explicit intent wins and the form warns instead of blocking.
     let should_keep_requires_openai_auth = if provider_category == "official" {
         true
-    } else if preserve_official_auth {
-        // The bearer-token projection owns the auth mechanism here: keeping the
-        // flag would make Codex send auth.json credentials instead of the
-        // provider bearer token → 401 (cc-switch#7211). This beats an explicit
-        // `keep`, which would otherwise produce exactly that broken state.
-        false
     } else {
         match mode {
             RequiresOpenaiAuthMode::Keep => true,
             RequiresOpenaiAuthMode::Strip => false,
+            // Only the automatic rule consults `preserve_official_auth`: the
+            // bearer-token projection owns the auth mechanism when the user has
+            // not said otherwise.
+            RequiresOpenaiAuthMode::Auto if preserve_official_auth => false,
             RequiresOpenaiAuthMode::Auto => api_key.is_some(),
         }
     };
@@ -8450,11 +8461,17 @@ requires_openai_auth = true
     }
 
     #[test]
-    fn requires_openai_auth_mode_keep_loses_to_preserve_official_auth() {
-        // cc-switch#7211: with preserve=true the credential is written as a
-        // provider bearer token, so keeping `requires_openai_auth` would make
-        // Codex send auth.json credentials instead → 401. The global preserve
-        // switch therefore beats an explicit `keep`.
+    fn requires_openai_auth_mode_keep_beats_preserve_official_auth() {
+        // Issue #394: the two managed auth fields are complementary in Codex —
+        // `experimental_bearer_token` selects the credential while
+        // `requires_openai_auth` only declares the provider first-party-account
+        // backed. `provider_uses_first_party_auth_path` requires
+        // `experimental_bearer_token.is_none()`, so the relay key still wins as
+        // the credential and there is no cc-switch#7211 401. An explicit `keep`
+        // therefore has to be able to produce both fields at once; the preserve
+        // switch (which only owns the credential projection) no longer overrides
+        // it. The automatic rule keeps the conservative behaviour — see
+        // `project_codex_auth_strips_requires_openai_auth_when_projecting_bearer_token`.
         let managed_config = r#"
 model_provider = "custom"
 
@@ -8479,7 +8496,93 @@ requires_openai_auth = true
         let table = doc["model_providers"]["custom"]
             .as_table_like()
             .expect("custom provider table");
-        assert!(table.get("requires_openai_auth").is_none());
+        assert_eq!(
+            table
+                .get("requires_openai_auth")
+                .and_then(|item| item.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            table
+                .get("experimental_bearer_token")
+                .and_then(|item| item.as_str()),
+            Some("sk-third-party")
+        );
+    }
+
+    #[test]
+    fn requires_openai_auth_mode_keep_with_preserve_writes_both_auth_fields() {
+        // Issue #394 reporter scenario, through the real pipeline: a relay that
+        // accepts the OpenAI auth token, with "keep official login when
+        // switching" ON and mode=keep. Both managed auth fields must land on
+        // disk — the bearer token supplies the credential while the flag
+        // enables the account-gated features (/fast, voice). Selecting `auto`
+        // afterwards must drop the flag again while keeping the bearer token.
+        let keyed_provider_config = r#"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "Custom"
+base_url = "https://api.example.com/v1"
+wire_api = "responses"
+"#;
+        let managed_auth = json!({ "OPENAI_API_KEY": "sk-third-party" });
+        let project = |preserve, mode| {
+            project_codex_auth_to_runtime_config_with_mode(
+                keyed_provider_config,
+                &managed_auth,
+                preserve,
+                "custom",
+                mode,
+            )
+            .unwrap()
+        };
+
+        // What the last apply wrote: auto + preserve=false on a keyed provider
+        // keeps the flag (mirrors `codex login --with-api-key`), no bearer token.
+        let previous = project(false, RequiresOpenaiAuthMode::Auto);
+        let doc: DocumentMut = previous.parse().unwrap();
+        let table = doc["model_providers"]["custom"].as_table_like().unwrap();
+        assert_eq!(
+            table
+                .get("requires_openai_auth")
+                .and_then(|item| item.as_bool()),
+            Some(true)
+        );
+        assert!(table.get("experimental_bearer_token").is_none());
+
+        // Flip preserve on and pick `keep`: both fields, explicitly.
+        let next_keep = project(true, RequiresOpenaiAuthMode::Keep);
+        let written =
+            build_written_codex_config_toml(&previous, Some(&previous), &next_keep).unwrap();
+        let doc: DocumentMut = written.parse().unwrap();
+        let table = doc["model_providers"]["custom"].as_table_like().unwrap();
+        assert_eq!(
+            table
+                .get("requires_openai_auth")
+                .and_then(|item| item.as_bool()),
+            Some(true),
+            "an explicit keep must survive the preserve switch"
+        );
+        assert_eq!(
+            table
+                .get("experimental_bearer_token")
+                .and_then(|item| item.as_str()),
+            Some("sk-third-party"),
+            "the bearer token must still be the credential"
+        );
+
+        // Back to `auto`: preserve owns the auth mechanism again, so the flag
+        // goes away without touching the bearer token.
+        let next_auto = project(true, RequiresOpenaiAuthMode::Auto);
+        let written =
+            build_written_codex_config_toml(&written, Some(&next_keep), &next_auto).unwrap();
+        let doc: DocumentMut = written.parse().unwrap();
+        let table = doc["model_providers"]["custom"].as_table_like().unwrap();
+        assert!(
+            table.get("requires_openai_auth").is_none(),
+            "auto + preserve must strip the flag again"
+        );
         assert_eq!(
             table
                 .get("experimental_bearer_token")

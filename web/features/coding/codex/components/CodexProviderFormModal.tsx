@@ -1062,7 +1062,10 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
             name="requiresOpenaiAuthMode"
             label={t('codex.provider.requiresOpenaiAuth')}
             help={
-              <Text type="secondary" style={{ fontSize: 12 }}>
+              <Text
+                type={preserveOfficialAuthOnSwitch ? 'warning' : 'secondary'}
+                style={{ fontSize: 12 }}
+              >
                 {preserveOfficialAuthOnSwitch
                   ? t('codex.provider.requiresOpenaiAuthPreserveHint')
                   : t('codex.provider.requiresOpenaiAuthHelp')}
@@ -1070,7 +1073,6 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
             }
           >
             <Select
-              disabled={preserveOfficialAuthOnSwitch}
               options={REQUIRES_OPENAI_AUTH_MODE_OPTIONS.map(({ value, labelKey }) => ({
                 value,
                 label: t(labelKey),

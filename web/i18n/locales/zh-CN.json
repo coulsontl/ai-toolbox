@@ -2870,7 +2870,7 @@
       "requiresOpenaiAuthKeep": "始终写入 true",
       "requiresOpenaiAuthStrip": "始终移除",
       "requiresOpenaiAuthHelp": "控制 config.toml 中该供应商是否写入 requires_openai_auth = true。自动会按鉴权方式判定：官方登录、以及在本页填写了 API Key 的供应商写 true，自行管理鉴权的无 key 中转则移除。若你的中转需要 OpenAI 鉴权令牌（例如 ChatGPT 订阅反代），选「始终写入 true」。",
-      "requiresOpenaiAuthPreserveHint": "开启「切换第三方时保留官方登录」时不可用：该模式用供应商 bearer 令牌鉴权，requires_openai_auth 必须保持移除，否则 Codex 会发错凭据、请求报 401。",
+      "requiresOpenaiAuthPreserveHint": "当前已开启「切换第三方时保留官方登录」。该模式下「自动」会移除 requires_openai_auth（鉴权走供应商 bearer 令牌）。若你的中转接受 OpenAI 鉴权令牌（例如 ChatGPT 订阅反代，或需要启用 /fast、语音等账号能力），请选「始终写入 true」：两个字段会同时写入，bearer 令牌仍是凭据，requires_openai_auth 只用于开启账号能力。若该中转自行管理鉴权，请选「始终移除」。",
       "baseUrl": "Base URL",
       "baseUrlHelp": "填写 API 端点地址。OpenAI Chat/Responses 兼容渠道通常需以 /v1 结尾（例如 https://api.openai.com/v1）；Anthropic Messages / Gemini Native 视上游而定。",
       "baseUrlConfirmV1": "当前 Base URL 不是以 /v1 结尾。OpenAI Chat/Responses 兼容渠道通常需要此后缀，确定使用当前配置吗？",
