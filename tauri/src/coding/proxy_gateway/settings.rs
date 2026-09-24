@@ -1,5 +1,5 @@
 use super::listen::validate_settings;
-use super::types::ProxyGatewaySettings;
+use super::types::{configured_gateway_listen_port_override, ProxyGatewaySettings};
 use crate::db::helpers::{db_get, db_put};
 use crate::db::schema::DbTable;
 use crate::db::SqliteDbState;
@@ -12,9 +12,13 @@ pub fn load_settings_from_sqlite_state(
 ) -> Result<ProxyGatewaySettings, String> {
     sqlite_state.with_conn(|conn| {
         let Some(record) = db_get(conn, DbTable::ProxyGatewaySettings, SETTINGS_ID)? else {
-            return Ok(ProxyGatewaySettings::default());
+            let mut settings = ProxyGatewaySettings::default();
+            apply_isolated_runtime_overrides(&mut settings);
+            return Ok(settings);
         };
-        settings_from_value(record)
+        let mut settings = settings_from_value(record)?;
+        apply_isolated_runtime_overrides(&mut settings);
+        Ok(settings)
     })
 }
 
@@ -22,7 +26,10 @@ pub fn save_settings_to_sqlite_state(
     sqlite_state: &SqliteDbState,
     settings: ProxyGatewaySettings,
 ) -> Result<ProxyGatewaySettings, String> {
-    let settings = normalize_settings(settings)?;
+    let mut settings = normalize_settings(settings)?;
+    // Keep the isolated launcher authoritative even when the UI saves another
+    // port: the next read must not silently return the database value.
+    apply_isolated_runtime_overrides(&mut settings);
     let data = serde_json::to_value(&settings)
         .map_err(|error| format!("Failed to serialize proxy gateway settings: {error}"))?;
     sqlite_state
@@ -93,6 +100,24 @@ fn clamp_zero_timeouts_for_legacy_settings(settings: &mut ProxyGatewaySettings) 
     }
 }
 
+/// Force the isolated launcher's gateway port onto a settings record.
+///
+/// `ProxyGatewaySettings::default()` already reads the env, but the common path
+/// loads a persisted record; an isolated instance that bootstraps an existing
+/// database would otherwise keep the production port and defeat isolation.
+fn apply_isolated_runtime_overrides(settings: &mut ProxyGatewaySettings) {
+    apply_gateway_listen_port_override(settings, configured_gateway_listen_port_override());
+}
+
+fn apply_gateway_listen_port_override(
+    settings: &mut ProxyGatewaySettings,
+    listen_port: Option<u16>,
+) {
+    if let Some(listen_port) = listen_port {
+        settings.listen_port = listen_port;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,6 +162,21 @@ mod tests {
                 42
             );
         }
+    }
+
+    #[test]
+    fn isolated_gateway_port_override_wins_over_persisted_record() {
+        let mut settings = ProxyGatewaySettings::default();
+        settings.listen_port = 37123;
+
+        apply_gateway_listen_port_override(&mut settings, Some(38123));
+
+        assert_eq!(settings.listen_port, 38123);
+        apply_gateway_listen_port_override(&mut settings, None);
+        assert_eq!(
+            settings.listen_port, 38123,
+            "an unset/invalid env value must not reset the port to the production default"
+        );
     }
 
     #[test]

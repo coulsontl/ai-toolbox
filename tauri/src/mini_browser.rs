@@ -39,6 +39,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+use tauri::webview::PageLoadEvent;
 use tauri::{Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 
 /// Window label used when a caller passes no profile id. Opening the browser
@@ -317,6 +318,17 @@ fn locked<T: Default>(cell: &OnceLock<Mutex<T>>) -> MutexGuard<'_, T> {
 fn forget_caches(label: &str) {
     locked(&PLACEMENTS).remove(label);
     locked(&EMBEDDED_URLS).remove(label);
+}
+
+/// Remember the address an embedded page last committed.
+///
+/// `open_window_infos` reads this cache for embedded rows because
+/// `webview.url()` is a blocking getter and the list is polled. It must be
+/// updated on every committed navigation, not only when the page is created:
+/// a relay console that navigates itself would otherwise keep reporting its
+/// initial address to the tab strip and the remembered-session store.
+fn record_embedded_url(label: &str, url: &str) {
+    locked(&EMBEDDED_URLS).insert(label.to_string(), url.to_string());
 }
 
 /// Round a JS-supplied coordinate to a physical pixel.
@@ -834,7 +846,7 @@ pub async fn mini_browser_open_embedded<R: tauri::Runtime>(
         // The open call places and shows the page itself, so both halves of the
         // expected placement are recorded here: the next flush then only sends
         // what it really wants to differ.
-        locked(&EMBEDDED_URLS).insert(label.clone(), normalised);
+        record_embedded_url(&label, &normalised);
         locked(&PLACEMENTS).insert(
             label.clone(),
             Placement {
@@ -872,13 +884,21 @@ pub async fn mini_browser_open_embedded<R: tauri::Runtime>(
         return Err("The main window is not available".to_string());
     };
 
+    let page_label = label.clone();
     let builder = tauri::WebviewBuilder::new(&label, WebviewUrl::External(parsed))
         // Same directory rule as the standalone window, so a profile keeps its
         // cookies when the presentation mode changes.
         .data_directory(profile_data_dir(&profile_id))
         // Reject non-web schemes here too: this also covers redirects and
         // `target=_blank`, so the page cannot walk itself into `file://`.
-        .on_navigation(is_navigable_url);
+        .on_navigation(is_navigable_url)
+        // Embedded rows are listed from this cache instead of calling
+        // `webview.url()` on the main thread every two seconds.
+        .on_page_load(move |_, payload| {
+            if payload.event() == PageLoadEvent::Finished {
+                record_embedded_url(&page_label, payload.url().as_str());
+            }
+        });
 
     let created = main.add_child(
         builder,
@@ -1304,5 +1324,24 @@ mod tests {
         assert!(!end_creation("mini-browser-handshake"));
         // And a close for a page that is not being created is a normal close.
         assert!(!mark_close_pending_if_creating("mini-browser-handshake"));
+    }
+
+    #[test]
+    fn embedded_url_cache_tracks_each_committed_navigation() {
+        let label = "mini-browser-url-cache-test";
+        record_embedded_url(label, "https://relay.example.com/first");
+        assert_eq!(
+            locked(&EMBEDDED_URLS).get(label).cloned(),
+            Some("https://relay.example.com/first".to_string())
+        );
+
+        record_embedded_url(label, "https://relay.example.com/second");
+        assert_eq!(
+            locked(&EMBEDDED_URLS).get(label).cloned(),
+            Some("https://relay.example.com/second".to_string())
+        );
+
+        forget_caches(label);
+        assert!(locked(&EMBEDDED_URLS).get(label).is_none());
     }
 }

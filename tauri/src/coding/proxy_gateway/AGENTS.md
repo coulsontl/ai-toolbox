@@ -17,6 +17,7 @@
 
 - 聚合子代理裸名模型的勾选是有序用户选择：接管与草稿保存都必须拒绝任何未被当前选中站点声明的勾选项，不能只过滤失效项后接受剩余项；空列表仍按旧 manifest 语义处理。
 - 全局网关设置来自 AI Toolbox 主数据库的 `proxy_gateway_settings`；必须直接读写 SQLite JSONB，旧 SurrealDB 仅用于启动时一次性导入。CLI 接管状态不进数据库，以 `proxy-gateway/cli-proxy/<cli>/manifest.json` 为准。
+- `AI_TOOLBOX_GATEWAY_PORT` 是隔离测试启动器的进程级端口覆盖：读取或保存任何已存在的 `proxy_gateway_settings` 记录时都必须强制采用该合法端口，不能只在“无记录走 Default”时生效；否则复用既有数据库的隔离实例会继续打开生产端口 37123。env 未设置或非法时保持原设置，不要回写默认端口。
 - CLI manifest 只保存接管元数据、目标文件路径、备份相对路径、hash/size、被管理字段、`mode` 和 `primary_provider_id`；不要写 settings_config、API key 明文或上游渠道配置。
 - `manifest.mode` 是 single/failover 的事实源。被接管 CLI 的 runtime 配置内容不区分 single 和 failover；网关运行时根据 manifest 选择候选列表形态：single 只返回 P0，failover 把 P0 提到队首后再接其他 provider。
 - 聚合模式（`mode = "aggregate"`）是第三种事实源形态，目前只支持 Codex。它的 manifest 额外携带 `aggregate: { provider_ids: [...], separator: ".", aliases: {...}, naming, slug_table }`；`provider_ids` 是用户勾选站点的**显示顺序**，`aliases` 只允许选中站点、字符集为 `[A-Za-z0-9_-]`、最长 32 且忽略大小写唯一，缺失时回退 provider id；别名还不得覆盖任何启用候选（包括未选中的兜底站点）provider id，避免前缀歧义；`naming` 为 `site_model` / `model_at_site` / `model_only`（默认前者）。`model_only` 的同名模型按站点顺序确定性追加 `#2`、`#3`，不得覆盖已有 slug。老 manifest 缺少新增字段时必须保持 `site_model` + provider id 的旧行为。

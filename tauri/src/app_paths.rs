@@ -87,7 +87,8 @@ pub struct AppDataDirInfo {
     pub restart_required: bool,
 }
 
-/// Compute the platform-default app data dir.
+/// Compute the app data dir used for this process: the explicit isolated
+/// launcher override when present, otherwise the platform default.
 ///
 /// This must stay equivalent to Tauri's `app.path().app_data_dir()` on every
 /// platform (Windows `%APPDATA%\com.ai-toolbox`, macOS
@@ -99,12 +100,23 @@ pub struct AppDataDirInfo {
 /// Unlike Tauri's path resolver this needs no `AppHandle`, so it can run before
 /// the Tauri app is built.
 pub fn default_data_dir() -> PathBuf {
-    configured_data_dir(std::env::var(DATA_DIR_ENV).ok().as_deref()).unwrap_or_else(|| {
-        dirs::data_dir()
-            .map(|p| p.join("com.ai-toolbox"))
-            .or_else(|| dirs::home_dir().map(|p| p.join(".ai-toolbox")))
-            .unwrap_or_else(|| PathBuf::from("."))
-    })
+    env_data_dir().unwrap_or_else(platform_default_data_dir)
+}
+
+/// The immutable platform default, independent of the isolated launcher env.
+///
+/// The bootstrap file has to stay at this location even when the launcher
+/// redirects the data directory, otherwise a stale `app_paths.json` inside the
+/// isolated data dir could redirect the same process to production paths.
+fn platform_default_data_dir() -> PathBuf {
+    dirs::data_dir()
+        .map(|p| p.join("com.ai-toolbox"))
+        .or_else(|| dirs::home_dir().map(|p| p.join(".ai-toolbox")))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn env_data_dir() -> Option<PathBuf> {
+    configured_data_dir(std::env::var(DATA_DIR_ENV).ok().as_deref())
 }
 
 /// Resolve an explicit data-directory override.
@@ -120,7 +132,7 @@ fn configured_data_dir(value: Option<&str>) -> Option<PathBuf> {
 
 /// Location of the bootstrap override file (always at the default dir).
 pub fn bootstrap_file_path() -> PathBuf {
-    default_data_dir().join(BOOTSTRAP_FILENAME)
+    platform_default_data_dir().join(BOOTSTRAP_FILENAME)
 }
 
 /// Read the override path from a given bootstrap file (pure, testable).
@@ -149,12 +161,35 @@ pub fn read_override() -> Option<PathBuf> {
 /// Initialize both session paths together, once per process.
 fn resolved_paths() -> &'static ResolvedAppPaths {
     RESOLVED_PATHS.get_or_init(|| {
-        ResolvedAppPaths::from_bootstrap(
+        resolve_paths(
+            env_data_dir(),
             &bootstrap_file_path(),
-            &default_data_dir(),
+            &platform_default_data_dir(),
             &default_cache_dir(),
         )
     })
+}
+
+/// Resolve the paths once, with the isolated launcher env taking precedence
+/// over the persisted bootstrap override.
+///
+/// An explicit `AI_TOOLBOX_DATA_DIR` is the test launcher's contract: the
+/// process must stay inside that directory even if a previous run left an
+/// `app_paths.json` there, so the env value is used directly and the bootstrap
+/// file is not consulted in that mode.
+fn resolve_paths(
+    env_data_dir: Option<PathBuf>,
+    bootstrap_file: &Path,
+    platform_default_data: &Path,
+    default_cache: &Path,
+) -> ResolvedAppPaths {
+    if let Some(data) = env_data_dir {
+        return ResolvedAppPaths {
+            cache: data.join("cache"),
+            data,
+        };
+    }
+    ResolvedAppPaths::from_bootstrap(bootstrap_file, platform_default_data, default_cache)
 }
 
 /// Cache the resolved data dir. Called once at the top of `run()`.
@@ -176,10 +211,10 @@ fn default_cache_dir() -> PathBuf {
     // The isolated launcher must not write caches into the production
     // `%LOCALAPPDATA%\com.ai-toolbox` either, so an explicit data dir owns its
     // cache subdirectory.
-    configured_data_dir(std::env::var(DATA_DIR_ENV).ok().as_deref())
+    env_data_dir()
         .map(|data| data.join("cache"))
         .or_else(|| dirs::cache_dir().map(|p| p.join("com.ai-toolbox")))
-        .unwrap_or_else(|| default_data_dir().join("cache"))
+        .unwrap_or_else(|| platform_default_data_dir().join("cache"))
 }
 
 /// The cache dir in effect for the current session. Follows the data-dir
@@ -305,11 +340,33 @@ pub fn set_override(path: Option<&str>) -> Result<(), String> {
 
 /// Build the info payload for the UI.
 pub fn get_override_info() -> AppDataDirInfo {
+    if let Some(data) = env_data_dir() {
+        return isolated_override_info(&data);
+    }
     build_override_info(
         &bootstrap_file_path(),
         &resolved_data_dir(),
         &default_data_dir(),
     )
+}
+
+/// The settled data-dir info for the isolated launcher.
+///
+/// The env override is the effective directory and there is no pending
+/// bootstrap change for this process, even when the platform-default
+/// `app_paths.json` still contains a user override. Reporting that stale file
+/// here would set `restart_required` and block gateway takeover in the isolated
+/// instance.
+fn isolated_override_info(data: &Path) -> AppDataDirInfo {
+    let path = data.to_string_lossy().into_owned();
+    AppDataDirInfo {
+        r#override: None,
+        effective: path.clone(),
+        default: path.clone(),
+        is_custom: false,
+        next_start: path,
+        restart_required: false,
+    }
 }
 
 fn build_override_info(file: &Path, effective: &Path, default: &Path) -> AppDataDirInfo {
@@ -366,25 +423,22 @@ mod tests {
 
     #[test]
     fn default_data_dir_under_data_dir() {
-        // An explicit override takes precedence, so this only asserts the
-        // platform default when the isolated launcher did not set one.
-        assert_eq!(default_data_dir(), dirs_default_data_dir());
+        // The process-level default is the launcher override when present and
+        // the platform default otherwise; the immutable platform default itself
+        // must stay independent so the bootstrap file cannot move with it.
+        assert_eq!(platform_default_data_dir(), dirs_default_data_dir());
+        assert_eq!(
+            default_data_dir(),
+            env_data_dir().unwrap_or_else(platform_default_data_dir)
+        );
     }
 
     #[test]
     fn default_cache_dir_under_cache_dir() {
-        let expected = if std::env::var(DATA_DIR_ENV)
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .is_some()
-        {
-            default_data_dir().join("cache")
-        } else {
-            dirs::cache_dir()
-                .map(|p| p.join("com.ai-toolbox"))
-                .unwrap_or_default()
-        };
+        let expected = env_data_dir()
+            .map(|data| data.join("cache"))
+            .or_else(|| dirs::cache_dir().map(|p| p.join("com.ai-toolbox")))
+            .unwrap_or_else(|| platform_default_data_dir().join("cache"));
         assert_eq!(default_cache_dir(), expected);
     }
 
@@ -431,6 +485,67 @@ mod tests {
             &default_cache_dir(),
         );
         assert_eq!(paths.cache, default_cache_dir());
+    }
+
+    #[test]
+    fn env_override_wins_over_bootstrap_and_owns_its_cache() {
+        let env_dir = tempfile::tempdir().unwrap();
+        let platform_dir = tempfile::tempdir().unwrap();
+        let other_dir = tempfile::tempdir().unwrap();
+        let bootstrap = platform_dir.path().join(BOOTSTRAP_FILENAME);
+        fs::write(
+            &bootstrap,
+            serde_json::json!({ OVERRIDE_KEY: other_dir.path().to_string_lossy() }).to_string(),
+        )
+        .unwrap();
+
+        let paths = resolve_paths(
+            Some(env_dir.path().to_path_buf()),
+            &bootstrap,
+            platform_dir.path(),
+            &platform_dir.path().join("cache"),
+        );
+
+        // The isolated launcher env is authoritative: a stale bootstrap file
+        // inside the isolated data dir must not redirect the process elsewhere.
+        assert_eq!(paths.data, env_dir.path());
+        assert_eq!(paths.cache, env_dir.path().join("cache"));
+    }
+
+    #[test]
+    fn isolated_override_info_is_settled_on_the_env_directory() {
+        let data = tempfile::tempdir().unwrap();
+        let info = isolated_override_info(data.path());
+        let expected = data.path().to_string_lossy().into_owned();
+
+        assert_eq!(info.effective, expected);
+        assert_eq!(info.default, expected);
+        assert_eq!(info.next_start, expected);
+        assert!(info.r#override.is_none());
+        assert!(!info.is_custom);
+        assert!(!info.restart_required);
+    }
+
+    #[test]
+    fn bootstrap_override_still_wins_without_env_override() {
+        let platform_dir = tempfile::tempdir().unwrap();
+        let override_dir = tempfile::tempdir().unwrap();
+        let bootstrap = platform_dir.path().join(BOOTSTRAP_FILENAME);
+        fs::write(
+            &bootstrap,
+            serde_json::json!({ OVERRIDE_KEY: override_dir.path().to_string_lossy() }).to_string(),
+        )
+        .unwrap();
+
+        let paths = resolve_paths(
+            None,
+            &bootstrap,
+            platform_dir.path(),
+            &platform_dir.path().join("cache"),
+        );
+
+        assert_eq!(paths.data, override_dir.path());
+        assert_eq!(paths.cache, override_dir.path().join("cache"));
     }
 
     #[test]

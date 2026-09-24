@@ -381,6 +381,7 @@ fn command_name(param: &str) -> Result<ReturnType, String> {
 - Use `?` operator for error propagation
 - Startup database compatibility errors must not fall through to `panic!`. When SQLite `user_version` is newer than `TARGET_SCHEMA_VERSION`, enter the DB-free recovery screen instead of trying to downgrade or crashing. Its native close button must exit, not hide to a tray that this startup branch never creates.
 - `frontend-ready` 属于 `web/app/App.tsx` 的公共启动握手，必须覆盖正常和 recovery 两种分支，不依赖数据库初始化；Linux watchdog 遇到主动进入轻量模式应停止，不能把主动释放 WebView 当成白屏重启。
+- Mini Browser 的嵌入页地址由后端 `EMBEDDED_URLS` 缓存提供：`open_window_infos` 对嵌入页故意不调用阻塞的 `webview.url()`，因此必须在 `on_page_load` 每次提交导航时更新缓存；只在 open/navigate 时写入会让页签地址、`lastUrl` 与会话恢复永远停在初始 URL。回归：`cargo test --lib mini_browser`。
 
 #### Package-Managed Updates
 
@@ -663,6 +664,7 @@ features/
 
 - 应用自身的数据根目录统一经 `app_paths::resolved_data_dir()` 读取；瞬时缓存统一经 `resolved_cache_dir()`。两者在进程首次访问时一起冻结，设置页保存只改变下次启动目录，禁止单独重读 bootstrap 让某个缓存提前切换。
 - `app_paths.json` 是启动主库前所需的唯一目录覆盖配置，固定留在平台默认应用数据目录，不放 SQLite、不随覆盖目录移动、也不由数据库备份恢复覆盖。保存必须先验证目标目录可创建/可写，再同目录原子替换 bootstrap；失败保留旧设置。选中默认目录等同清除覆盖。
+- `AI_TOOLBOX_DATA_DIR` 是隔离测试启动器的显式进程级数据目录覆盖：设置后必须直接使用该绝对路径并忽略 bootstrap override，且 bootstrap 文件仍固定在平台默认目录，不能因为 env 改变而移进隔离目录（否则隔离实例内残留的 `app_paths.json` 能把进程重定向回生产数据）。未设置 env 时维持原有 bootstrap 语义。
 - 自定义目录不能只替换 Rust 的 `app_data_dir()` 调用：同时检查 Tauri asset protocol scope、WebView profile、恢复标记的读写、网关 manifest 和缓存路径。默认 data/cache 路径必须与当前 Tauri resolver 保持一致，用 MockRuntime 回归验证；不改变外部 CLI 的目录解析规则。
 - 更改应用数据目录前必须先恢复所有 Gateway CLI 直连；接管 manifest 与原始备份不自动迁移。目录保存和完整的 Gateway 接管/切换编排共用互斥，待重启期间禁止新增接管，避免丢失原始恢复依据。
 - “备份 → 切目录 → 重启 → 恢复”只迁移备份包实际覆盖的数据，不是整个目录的镜像迁移；独立自定义的 Skills 中央仓库和外部工具目录仍遵循各自设置。
