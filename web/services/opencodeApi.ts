@@ -75,6 +75,16 @@ export const getOpenCodeConfigPath = async (): Promise<string> => {
   return await invoke<string>('get_opencode_config_path');
 };
 
+/** Check whether the active OpenCode config is using the V2 format. */
+export const getOpenCodeV2ConfigMode = async (): Promise<boolean> => {
+  return await invoke<boolean>('get_opencode_v2_config_mode');
+};
+
+/** Switch the active OpenCode config between V1 and V2, preserving both versions. */
+export const setOpenCodeV2ConfigMode = async (enabled: boolean): Promise<boolean> => {
+  return await invoke<boolean>('set_opencode_v2_config_mode', { enabled });
+};
+
 /**
  * Get OpenCode configuration path info including source
  */
