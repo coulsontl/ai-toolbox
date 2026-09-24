@@ -299,8 +299,13 @@ export const isSubagentExposureSelectionComplete = (
  */
 export const canReplaySubagentExposureSelection = (
   models?: readonly string[] | null,
+  proposedDeclaredModels?: readonly string[],
 ): boolean =>
-  normalizeSubagentExposedModels(models).length <= SUBAGENT_EXPOSED_MODEL_LIMIT;
+  normalizeSubagentExposedModels(models).length <= SUBAGENT_EXPOSED_MODEL_LIMIT
+  && (
+    proposedDeclaredModels === undefined
+    || resolveStaleSubagentExposedModels(models, proposedDeclaredModels).length === 0
+  );
 
 /**
  * Mirror of the backend `resolve_effective_site_aliases`.

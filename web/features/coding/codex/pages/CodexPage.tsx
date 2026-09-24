@@ -176,7 +176,10 @@ import {
   upsertCodexCatalogModel,
   type CodexCatalogPresetResolver,
 } from '../utils/codexCatalogModels';
-import { saveCodexProviderCatalogWithGatewayReengage } from '../utils/codexProviderCatalogSave';
+import {
+  saveCodexProviderCatalogWithGatewayReengage,
+  withProposedCodexAggregateModels,
+} from '../utils/codexProviderCatalogSave';
 import {
   engageProxyGatewayAggregate,
   engageProxyGatewayFailover,
@@ -1195,6 +1198,7 @@ const CodexPage: React.FC = () => {
     const shouldReengageGateway = Boolean(provider.isApplied) && gatewayModeBeforeSave !== null;
     const savedProvider = await saveCodexProviderCatalogWithGatewayReengage({
       provider,
+      providers,
       settingsConfig,
       gatewayMode: shouldReengageGateway ? gatewayModeBeforeSave : null,
       aggregateConfig: shouldReengageGateway
@@ -2025,7 +2029,16 @@ const CodexPage: React.FC = () => {
 
       await saveProviderWithGatewayReengage({
         gatewayMode: shouldReengageGatewayProxy ? gatewayModeBeforeSave : null,
-        aggregateConfig: shouldReengageGatewayProxy ? gatewayAggregateBeforeSave : null,
+        aggregateConfig: shouldReengageGatewayProxy
+          ? withProposedCodexAggregateModels(
+            gatewayAggregateBeforeSave,
+            providers,
+            {
+              id: editingProvider!.id,
+              settingsConfig,
+            },
+          )
+          : null,
         restoreDirect: () => restoreProxyGatewayCliDirect('codex'),
         engageSingle: () => engageProxyGatewaySingle('codex', savedProviderId),
         engageFailover: () => engageProxyGatewayFailover('codex'),
