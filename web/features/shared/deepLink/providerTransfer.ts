@@ -211,7 +211,12 @@ export function extractProviderShareFields(sourceApp: ProviderShareApp, provider
     models = entries.flatMap((entry) => { const id = readString(entry.model); return id ? [modelEntry(id, entry)] : []; });
     fields.model = readString(selected.model);
     if (sourceApp === 'grok') {
-      fields.baseUrl = firstString(selected, 'baseUrl', 'base_url') ?? 'https://api.x.ai/v1';
+      // Per-model URL wins so mixed-URL catalogs still share as separate connection
+      // variants; the channel-level field is the fallback, which is the only place a
+      // Base URL survives an emptied model list (issue #391).
+      fields.baseUrl = firstString(selected, 'baseUrl', 'base_url')
+        ?? firstString(settings, 'baseUrl')
+        ?? 'https://api.x.ai/v1';
       fields.apiKey = firstString(selected, 'apiKey', 'api_key') ?? fields.apiKey;
       fields.apiFormat ??= normalizeSharedApiFormat(selected.apiBackend ?? selected.api_backend) ?? 'openai_chat';
       fields.baseUrlStyle = normalizeSharedApiFormat(selected.apiBackend ?? selected.api_backend) === 'anthropic_messages' ? 'root' : 'versioned';

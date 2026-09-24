@@ -124,6 +124,18 @@ test('Grok catalogs with different connections are shared as separate model grou
   assert.deepEqual(variants[1].fields.models?.map((model) => model.id), ['m-a', 'm-c']);
 });
 
+test('Grok channel-level Base URL is shared when the model list is empty', () => {
+  // Issue #391: the channel address outlives the catalog, so sharing a provider whose
+  // model list was emptied must not fall back to the xAI default endpoint.
+  const fields = extractProviderShareFields('grok', source({
+    auth: { API_KEY: 'test-key' },
+    baseUrl: 'https://relay.test/v1',
+    modelCatalog: { models: [] },
+  }));
+
+  assert.equal(fields.baseUrl, 'https://relay.test/v1');
+});
+
 test('Kimi groups models by the selected provider configuration', () => {
   const variants = extractProviderShareVariants('kimi', source({
     providerConfigs: { a: { type: 'anthropic', api_key: 'a-key', base_url: 'https://a.test' }, b: { type: 'gemini', api_key: 'b-key', base_url: 'https://b.test' } },

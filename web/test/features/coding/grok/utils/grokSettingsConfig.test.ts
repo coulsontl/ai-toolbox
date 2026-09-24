@@ -133,6 +133,56 @@ test('buildGrokSettingsConfig overwrites stale catalog baseUrl with form baseUrl
   assert.equal(settingsConfig.modelCatalog.models[0].baseUrl, 'https://grok2api.test.com/v1');
   assert.equal(settingsConfig.modelCatalog.models[1].baseUrl, 'https://grok2api.test.com/v1');
   assert.equal(settingsConfig.modelCatalog.models[0].apiBackend, 'responses');
+  // Channel-level SoT, so the URL survives model-list mutations (issue #391).
+  assert.equal(settingsConfig.baseUrl, 'https://grok2api.test.com/v1');
+});
+
+test('official Grok providers never store a channel Base URL', () => {
+  const officialSettings = JSON.parse(buildGrokSettingsConfig({
+    category: 'official',
+    apiKey: '',
+    baseUrl: 'https://stale.example.com/v1',
+    model: 'grok-4.5',
+    apiFormat: 'openai_chat',
+    config: '',
+    catalogModels: [],
+    auth: {},
+  }));
+
+  assert.equal(officialSettings.baseUrl, undefined);
+  assert.equal(officialSettings.modelCatalog, undefined);
+  assert.equal(officialSettings.defaultModelKey, 'grok-4.5');
+});
+
+test('applyGrokEndpointSettingsConfig keeps the channel Base URL in sync with the endpoint', () => {
+  // Form value (built by buildGrokSettingsConfig) wins over the endpoint default.
+  const edited = JSON.parse(applyGrokEndpointSettingsConfig({
+    settingsConfig: JSON.stringify({
+      auth: { API_KEY: 'secret' },
+      config: '',
+      baseUrl: 'https://user-edited.example.com/v1',
+      defaultModelKey: 'custom',
+      modelCatalog: { models: [{ key: 'custom', model: 'grok-4.5' }] },
+    }),
+    apiFormat: 'openai_chat',
+    endpointBaseUrl: 'https://endpoint.test/v1',
+    endpointCatalogModels: [],
+  }));
+
+  assert.equal(edited.baseUrl, 'https://user-edited.example.com/v1');
+  assert.equal(edited.modelCatalog.models[0].baseUrl, 'https://user-edited.example.com/v1');
+
+  // No form value: the endpoint default becomes the channel value, so later model
+  // list edits cannot lose it.
+  const seeded = JSON.parse(applyGrokEndpointSettingsConfig({
+    settingsConfig: JSON.stringify({ auth: {}, config: '' }),
+    apiFormat: 'openai_chat',
+    endpointBaseUrl: 'https://endpoint.test/v1',
+    endpointCatalogModels: [{ key: 'endpoint-model', model: 'endpoint-model' }],
+  }));
+
+  assert.equal(seeded.baseUrl, 'https://endpoint.test/v1');
+  assert.equal(seeded.modelCatalog.models[0].baseUrl, 'https://endpoint.test/v1');
 });
 
 test('buildGrokSettingsConfig leaves catalog baseUrl when form baseUrl is empty', () => {

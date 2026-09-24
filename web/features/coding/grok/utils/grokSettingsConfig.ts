@@ -299,6 +299,12 @@ export function buildGrokSettingsConfig({
     settingsConfig.defaultReasoningEffort = normalizedReasoningEffort;
   }
   if (category === 'custom') {
+    // Channel-level Base URL SoT. The catalog projection above is what reaches the
+    // live `[model.<key>].base_url`, but only this field survives model-list
+    // mutations (issue #391). Official channels have no Base URL.
+    if (normalizedBaseUrl) {
+      settingsConfig.baseUrl = normalizedBaseUrl;
+    }
     settingsConfig.modelCatalog = {
       models: normalizedCatalogModels,
     };
@@ -356,6 +362,9 @@ export function applyGrokEndpointSettingsConfig({
 
   return JSON.stringify({
     ...parsed,
+    // Keep the channel-level SoT in sync with the endpoint finalization so built-in
+    // channels also survive model-list mutations (issue #391).
+    ...(normalizedBaseUrl ? { baseUrl: normalizedBaseUrl } : {}),
     defaultModelKey,
     modelCatalog: {
       models: normalizedCatalogModels,

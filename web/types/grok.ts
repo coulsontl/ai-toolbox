@@ -94,6 +94,16 @@ export interface GrokSettingsConfig {
   config?: string; // TOML format string
   defaultModelKey?: string;
   /**
+   * Custom providers only. Channel-level Base URL Source of Truth.
+   *
+   * `[model.<key>]` IS the channel config, so the URL must also be projected onto
+   * every `modelCatalog.models[].baseUrl`; that projection is what lands on disk.
+   * This field is what survives model-list mutations: deleting the last catalog
+   * model (or the only entry carrying the URL) must never drop the channel URL
+   * (issue #391). Official providers have no Base URL and must not set it.
+   */
+  baseUrl?: string;
+  /**
    * Official providers only. Projects to `[models].default_reasoning_effort`.
    * Custom providers store effort on `modelCatalog.models[].reasoningEffort`.
    */

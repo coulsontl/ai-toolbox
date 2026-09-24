@@ -503,6 +503,7 @@ fn migrate_v8(conn: &Connection) -> Result<(), String> {
     "API_KEY": "xai-..."
   },
   "defaultModelKey": "grok-4.5",
+  "baseUrl": "https://api.x.ai/v1",
   "modelCatalog": {
     "models": [
       {
@@ -1884,9 +1885,12 @@ settingsConfig.modelCatalog.models[]
               │
               ├──> [models].default
               └──> [model.<key>]
+settingsConfig.baseUrl   （渠道级 SoT，只供前端读取/写入，不直接投影）
 ```
 
 不得在 Grok 数据中生成 Codex 的 `model_provider`、`[model_providers.*]`、`wire_api` 或 `model_catalog_json`。Provider 表单的 Base URL、API backend、API key、模型映射和默认模型先进入结构化 JSONB；后端应用时再生成官方 Grok TOML。Provider 高级 TOML 只管理非模型附加配置，并与 Common Config 一样禁止覆盖 `[models].default`、`[model.*]`、`[mcp_servers]`、`[plugins]` 和 marketplace。
+
+`settingsConfig.baseUrl` 是渠道级 Base URL 的唯一落库位置（自定义渠道；官方渠道不写），条目 `baseUrl` 是它的 live 投影。模型条目的 `baseUrl` 必须始终写入相同的渠道值，顶层字段则保证删掉最后一个模型后卡片和编辑表单仍然显示该地址（issue #391）；后端不读顶层字段，live 只认 `[model.<key>].base_url`。老记录没有顶层字段时，前端在首次修改模型列表时按“各条目 URL 一致”才提升，避免把混合 per-model 地址压平。
 
 官方文档确认未设置 `api_backend` 时默认是 `chat_completions`，因此新建普通自定义渠道默认选择 OpenAI Chat，而不是 Responses。Grok 原生支持 `chat_completions`、`responses`、`messages`；不原生支持 `gemini_native`。Gemini Native endpoint 只能作为 Gateway 转换目标，不能作为 Grok 直连 TOML backend。
 

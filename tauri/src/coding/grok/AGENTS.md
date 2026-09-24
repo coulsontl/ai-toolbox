@@ -20,6 +20,7 @@
 - Provider/Common 受管非模型字段使用 Codex 同款激进移除：只要字段曾受管，下次 apply 就移除（即使 live 值已与上次受管值不同）。
 - Provider 受管 `[model.<key>]` **就是渠道配置**。切换/保存/应用时始终删除上一渠道 catalog 里的 key，再写入新渠道投影；不得按“用户手改”保留 `base_url`/`api_key`/`api_backend`，也不得发 `grok-config-warning` 假装保留。
 - 真正本地、从未出现在上一渠道 catalog 的 `[model.*]` 才保留。官方渠道只拥有 `[models].default`，应用官方时清理上一 custom catalog keys 后不得再写任何 `[model.*]`。
+- `settings_config` 顶层 `baseUrl` 是**前端渠道级 Base URL SoT**（卡片/编辑表单在模型列表被清空后仍要显示它，issue #391）。后端不读也不投影它：live 只认 `[model.<key>].base_url`，`validate_provider_settings` 也不校验；不要把它写进 TOML、common 或 provider 高级 `config` 字段。
 - `apply_grok_provider_to_file` 默认应带上当前 common config 作为 previous，避免 common 字段在只切 Provider 时残留。
 - 更新已应用 Provider 时，必须在覆盖 SQLite 记录前捕获旧 `settings_config` 和 `category`，并显式传给运行时重应用链路。写库后再查询 applied provider 得到的是新快照，会导致被删除的 `[model.<key>]` 和高级配置字段残留。
 - `settings_config` 不存 `category`（category 在 provider 行）。清理前一 provider 的 `[model.*]` 时必须传入真实 `previous.category`；官方渠道只拥有 `[models].default`，清理时不得当 custom 去要求 `modelCatalog.models`。

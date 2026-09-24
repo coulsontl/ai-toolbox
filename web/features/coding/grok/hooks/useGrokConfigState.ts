@@ -3,6 +3,7 @@ import {
   extractGrokBaseUrl,
   extractGrokModel,
   extractGrokReasoningEffort,
+  extractGrokSettingsBaseUrl,
   normalizeQuotes,
 } from '@/utils/grokConfigUtils';
 import type {
@@ -119,7 +120,9 @@ function parseInitialGrokState(initialData?: { settingsConfig?: string }) {
       || (defaultModelKey && defaultModelKey !== 'custom' ? defaultModelKey : '')
       || extractGrokModel(configStr)
       || '';
-    const baseUrl = selectedCatalogModel?.baseUrl?.trim() || extractGrokBaseUrl(configStr) || '';
+    // `extractGrokSettingsBaseUrl` reads the channel Base URL first, so an emptied
+    // model list still prefills the form with the configured URL (issue #391).
+    const baseUrl = extractGrokSettingsBaseUrl(config) || '';
     const category: GrokProviderCategory = apiKey.trim() || baseUrl.trim() ? 'custom' : 'official';
     // Official: settings.defaultReasoningEffort; custom: shared catalog effort; fall back to live TOML.
     const reasoningEffort = normalizeGrokReasoningEffort(

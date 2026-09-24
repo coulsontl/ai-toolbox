@@ -6,6 +6,8 @@ interface GrokSettingsLike {
   config?: string;
   defaultModelKey?: string;
   defaultReasoningEffort?: string;
+  /** Channel-level Base URL SoT (custom providers). See `GrokSettingsConfig`. */
+  baseUrl?: string;
   modelCatalog?: {
     models?: Array<{
       key?: string;
@@ -180,7 +182,22 @@ export function extractGrokSettingsModel(settings: GrokSettingsLike): string | u
   return extractGrokModel(settings.config);
 }
 
+/**
+ * Channel-level Base URL of a Grok provider.
+ *
+ * The channel field is the Source of Truth and outlives every catalog model, so
+ * it is read first: deleting the last model must not make the provider look like
+ * it lost its Base URL (issue #391). Older records (and providers imported from
+ * other tools) have no channel field, so fall back to the selected catalog model
+ * and finally to the TOML stored in `settings.config`.
+ */
 export function extractGrokSettingsBaseUrl(settings: GrokSettingsLike): string | undefined {
+  // Restored/imported payloads are not guaranteed to be well typed; a non-string
+  // value must not throw inside a render path.
+  const channelBaseUrl = typeof settings.baseUrl === 'string' ? settings.baseUrl.trim() : '';
+  if (channelBaseUrl) {
+    return channelBaseUrl;
+  }
   const selectedModel = getSelectedGrokCatalogModel(settings);
   return selectedModel?.baseUrl?.trim() || extractGrokBaseUrl(settings.config);
 }

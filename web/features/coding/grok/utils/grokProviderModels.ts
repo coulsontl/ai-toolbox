@@ -314,12 +314,37 @@ export function buildGrokProviderSettingsWithModels(
     ...(nextDefault ? { defaultModelKey: nextDefault } : {}),
   };
 
+  // Channel Base URL is a catalog-independent channel property: every model-list
+  // mutation (delete / batch delete / remove-invalid / add / edit / fetch / set
+  // default) goes through here, so it must never drop the URL even when the last
+  // catalog model carrying it is removed (issue #391). Per-model entries are always
+  // left untouched.
+  //
+  // Records written before the channel field existed only carry per-model URLs, so
+  // they are promoted on the first mutation — but only when the catalog states one
+  // unambiguous address. Mixed per-model URLs are third-party data this app does not
+  // own (it has no per-model URL editor), so they are neither collapsed nor frozen
+  // into the channel field; the surviving entries keep their own addresses.
   if (provider.category === 'official') {
+    delete next.baseUrl;
     delete next.modelCatalog;
     if (nextDefault) {
       next.defaultModelKey = nextDefault;
     }
   } else {
+    const existingChannelBaseUrl = typeof settings.baseUrl === 'string' ? settings.baseUrl.trim() : '';
+    const previousEntryBaseUrls = (settings.modelCatalog?.models || [])
+      .map((model) => model.baseUrl?.trim())
+      .filter((value): value is string => Boolean(value));
+    const promotedChannelBaseUrl = previousEntryBaseUrls[0];
+    if (existingChannelBaseUrl) {
+      next.baseUrl = existingChannelBaseUrl;
+    } else if (
+      promotedChannelBaseUrl
+      && previousEntryBaseUrls.every((value) => value === promotedChannelBaseUrl)
+    ) {
+      next.baseUrl = promotedChannelBaseUrl;
+    }
     next.modelCatalog = { models: normalizedModels };
     if (nextDefault) {
       next.defaultModelKey = nextDefault;
