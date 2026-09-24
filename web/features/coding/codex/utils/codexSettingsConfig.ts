@@ -1,6 +1,8 @@
 import type {
   CodexCatalogModel,
   CodexProviderCategory,
+  CodexRequiresOpenaiAuthMode,
+  CodexRequiresOpenaiAuthModeSelection,
   CodexSettingsConfig,
 } from '../../../../types/codex';
 import {
@@ -24,6 +26,8 @@ export interface BuildCodexSettingsConfigInput {
   reasoningEffort?: string;
   catalogModels: CodexCatalogModel[];
   autoReviewModelOverride?: string;
+  /** Explicit `requires_openai_auth` override; `auto` means keep deriving it. */
+  requiresOpenaiAuthMode?: CodexRequiresOpenaiAuthModeSelection;
   auth: Record<string, unknown>;
 }
 
@@ -33,6 +37,18 @@ export function normalizeCodexAutoReviewModelOverride(value: unknown): string | 
   }
   const normalized = value.trim();
   return normalized || undefined;
+}
+
+/**
+ * Normalize the explicit `requires_openai_auth` override (issue #394).
+ * Only `keep`/`strip` carry an opinion; `auto` and anything unrecognized mean
+ * "derive it from the auth mechanism", which the backend stores as an absent
+ * key — so a typo can never pin the projection to a wrong state.
+ */
+export function normalizeCodexRequiresOpenaiAuthMode(
+  value: unknown,
+): CodexRequiresOpenaiAuthMode | undefined {
+  return value === 'keep' || value === 'strip' ? value : undefined;
 }
 
 /**
@@ -92,6 +108,7 @@ export function buildCodexSettingsConfig({
   reasoningEffort,
   catalogModels,
   autoReviewModelOverride,
+  requiresOpenaiAuthMode,
   auth,
 }: BuildCodexSettingsConfigInput): string {
   let finalConfig = config;
@@ -99,6 +116,9 @@ export function buildCodexSettingsConfig({
   const normalizedCatalogModels = normalizeCodexCatalogModels(catalogModels);
   const normalizedAutoReviewModelOverride = normalizeCodexAutoReviewModelOverride(
     autoReviewModelOverride,
+  );
+  const normalizedRequiresOpenaiAuthMode = normalizeCodexRequiresOpenaiAuthMode(
+    requiresOpenaiAuthMode,
   );
 
   if (category === 'custom') {
@@ -135,6 +155,9 @@ export function buildCodexSettingsConfig({
   }
   if (category === 'custom' && normalizedAutoReviewModelOverride) {
     settingsConfig.autoReviewModelOverride = normalizedAutoReviewModelOverride;
+  }
+  if (category === 'custom' && normalizedRequiresOpenaiAuthMode) {
+    settingsConfig.requiresOpenaiAuthMode = normalizedRequiresOpenaiAuthMode;
   }
 
   return JSON.stringify(settingsConfig);

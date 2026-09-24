@@ -565,9 +565,12 @@ export function ensureCodexCustomProviderConfig(configText: string): string {
     if (typeof customProvider.wire_api !== 'string' || !customProvider.wire_api.trim()) {
       customProvider.wire_api = 'responses';
     }
-    if (typeof customProvider.requires_openai_auth !== 'boolean') {
-      customProvider.requires_openai_auth = true;
-    }
+    // `requires_openai_auth` is intentionally NOT defaulted here. The backend
+    // projection owns that line (see issue #394): it always writes or removes it
+    // from the runtime config.toml based on the provider's auth mechanism and the
+    // provider's explicit `settingsConfig.requiresOpenaiAuthMode`. Injecting a
+    // default here only made the TOML editor advertise a value that the next
+    // apply silently overrode.
 
     modelProviders[providerKey] = customProvider;
     nextConfig.model_providers = modelProviders;
@@ -585,7 +588,7 @@ export function ensureCodexCustomProviderConfig(configText: string): string {
 
     if (!hasProviderSection) {
       nextChunks.push(
-        `[model_providers.${providerKey}]\nname = "OpenAI"\nwire_api = "responses"\nrequires_openai_auth = true`,
+        `[model_providers.${providerKey}]\nname = "OpenAI"\nwire_api = "responses"`,
       );
     }
 

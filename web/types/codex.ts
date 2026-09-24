@@ -91,7 +91,23 @@ export interface CodexSettingsConfig {
    * uses this slug instead of the default codex-auto-review.
    */
   autoReviewModelOverride?: string;
+  /**
+   * Explicit override for the generated `requires_openai_auth` line (issue #394).
+   * Omitted means "derive it from the auth mechanism"; an absent key *is* auto,
+   * so `auto` is never stored. Only meaningful for `custom` providers — official
+   * ones are always automatic.
+   */
+  requiresOpenaiAuthMode?: CodexRequiresOpenaiAuthMode;
 }
+
+/**
+ * Explicit `requires_openai_auth` override stored on a custom provider.
+ * `keep`/`strip` win over the automatic auth-mechanism rule.
+ */
+export type CodexRequiresOpenaiAuthMode = 'keep' | 'strip';
+
+/** The provider form's three-way selection; `auto` normalizes to an absent key. */
+export type CodexRequiresOpenaiAuthModeSelection = 'auto' | CodexRequiresOpenaiAuthMode;
 
 /**
  * Codex Provider stored in database
@@ -362,6 +378,8 @@ export interface CodexProviderFormValues {
   category: CodexProviderCategory;
   // 新架构：直接使用 settingsConfig（JSON 字符串）
   settingsConfig?: string;
+  /** Explicit `requires_openai_auth` override; `auto` keeps deriving it. */
+  requiresOpenaiAuthMode?: CodexRequiresOpenaiAuthModeSelection;
   // 旧架构（向后兼容）
   providerEndpointKey?: string;
   providerProfileId?: string;

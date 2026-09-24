@@ -52,6 +52,7 @@ sequenceDiagram
 - 改写 `auth.json` 时不要覆盖运行时 OAuth 字段；AI Toolbox 只应管理自己负责的 auth 键。
 - 当 `codex_preserve_official_auth_on_switch=true` 且应用第三方 provider 时，第三方 API key 的运行时投影只能写入当前 `model_provider` 指向的 `[model_providers.<id>].experimental_bearer_token`，不能写顶层 `experimental_bearer_token`，因为 Codex runtime 不读取顶层 bearer token。缺少有效 `model_provider` 或对应 provider 表时应拒绝应用，避免跳过 `auth.json` 后生成无可用第三方凭据的运行态。provider 存储仍以 `settings_config.auth.OPENAI_API_KEY` 为主数据；保存/导入 live config 时要把 provider-scoped `experimental_bearer_token` 回填到 auth 并从存储 TOML 清掉，旧 managed 快照也必须包含这个生成字段，确保关闭开关或切回官方时不会残留。
 - 改会影响 live 投影方式的设置（例如 `codex_preserve_official_auth_on_switch`）时，不能只写 SQLite：必须立刻重投影当前已应用渠道。统一走 `proxy_gateway::provider_switch::apply_or_switch_provider`——未接管则直接 apply；Gateway 已接管则 restore 直连 → apply → 再 engage single，原先是 failover 再开 failover。不要只 `save_settings`，也不要在前端拼 restore/engage。失败要回滚设置（对齐 `set_codex_unified_session_history`）。专用入口：`set_codex_preserve_official_auth_on_switch`。
+- `requires_openai_auth` 与 provider-scoped `experimental_bearer_token` 是**无条件受管字段**，由投影完全托管（issue #394）：`project_codex_auth_to_runtime_config_with_mode` 永远写入或删除该字段，**没有「原样保留」分支**；`build_written_codex_config_toml` 在 merge 前会按 `next` 的 active provider id（回退 `current`）先清掉这两个字段。原因是镜像 diff（`remove_managed_toml_fields`）只删除 `previous_managed` 里存在的键，而 `set_codex_preserve_official_auth_on_switch` 用**新** flag 重新投影 previous——旧实现因此在 preserve false→true 翻转后把 `requires_openai_auth = true` 和 `experimental_bearer_token` 同时留在盘上，正是 cc-switch#7211 的 401。`previous` 的不变式准确表述是「必须包含上一次 apply 写下去的每个键」，不是「逐字节相同」。provider 级显式覆盖存 `settingsConfig.requiresOpenaiAuthMode`（`"keep"`/`"strip"`；**键缺失 = `auto`**，未知值丢弃回落 `auto`，snake_case 别名只读不写），只对 custom 生效（official 一律按 `auto` 归一化），且 **preserve=true 一律 strip**（代码里 preserve 判断先于 mode，否则会造出上面那个 401 组合）。`keep` 必须**主动写入**：该字段此前只靠前端注入存在，而 #353 的用户手工删过这一行，「不剥离」在缺该行时是静默 no-op；无法定位 active provider 表时 `keep` 是 no-op + `log::warn!`，**不拒绝**（官方 provider 的存储 config 常无 `model_provider`，拒绝会把本来能用的 apply 变成硬失败）。前端不得再默认注入该行（`useCodexConfigState` 的默认模板、`codexConfigUtils` 的 `ensureCodexCustomProviderConfig` 与字符串兜底、`CodexPage` 的 All API Hub 导入模板均已移除），`extract_provider_settings_for_storage` 也会从 provider TOML 里清掉它；`__local__` 收编（`load_local_codex_provider_snapshot`）会把 live 的同名字段转成显式 mode，避免手工调好的鉴权意图丢失。**Gateway 接管优先**：`cli_proxy` 的 `patch_codex_config` 在接管时主动写 `requires_openai_auth = true`（因为 `patch_codex_auth` 把 `GATEWAY_API_KEY` 写进 auth.json，Codex 必须读它），mode 是 direct-connect-only 旋钮，**禁止**让接管路径去查它。回归测试：`cargo test --lib requires_openai_auth`。
 - WSL 自动同步是事件驱动，不是“数据库写成功就等于已经同步到 WSL”。
 - 删除 prompt 配置只删 SQLite 记录，不改写/清空当前 active prompt 文件。产品语义是“删除已保存的提示词记录”，不是“清空本地 runtime 提示词”；Claude Code / OpenCode / Grok / Gemini / Pi 统一此规则。若用户要改本地生效内容，应通过编辑/应用其他 prompt 或直接改 active prompt 文件。
 - Codex prompt 同步必须按一组文件镜像：`AGENTS.md` 与 `AGENTS.override.md` 存在就同步，不存在就清理远端同名文件。不能只同步 active 文件，否则从 override 切回默认时远端会继续读取旧 override。
@@ -102,6 +103,8 @@ sequenceDiagram
   同时检查 `auth.json`、`config.toml`、active prompt、Skills 路径、历史同步目标和前端 path info 展示。
 - 改会影响 live 投影的设置/开关时：
   写设置后必须重投影当前已应用渠道，统一复用 `apply_or_switch_provider`（直连直接 apply；Gateway 下 restore → apply → re-engage）。参考 `set_codex_preserve_official_auth_on_switch`。
+- 改 provider 级鉴权投影（`requires_openai_auth` / `experimental_bearer_token`）时：
+  同时检查 apply 与 previous-managed 清理两条投影路径、Gateway 接管路径和 `__local__` 收编；回归 `cargo test --lib requires_openai_auth`。
 
 ## 最小验证
 
@@ -112,6 +115,7 @@ sequenceDiagram
 - 改历史同步时，至少验证本机/WSL source 解析、新旧 `threads` schema、session 首行 metadata 往返、`session_index.jsonl` 重建、pre-sync 备份和恢复最新备份。
 - 改统一会话历史时，至少验证 official config 注入/剥离、冲突 `custom` provider 跳过、`openai -> custom` 迁移、账本恢复和 Gateway 接管期间拒绝切换。
 - 改 `codex_preserve_official_auth_on_switch` 时，至少验证：已应用第三方渠道下开关切换后 live `auth.json`/`config.toml` 立即按新投影更新；Gateway 接管时走 restore → apply → re-engage；失败时设置回滚。
+- 改 `requires_openai_auth` 投影或 provider 级 mode 时，至少跑 `cargo test --lib requires_openai_auth`，并核对：keyless custom + `keep` 落盘出现该行、`strip` 移除、`auto` 回到 #353 行为；preserve=false→true 翻转后盘上**不残留**该字段与 `experimental_bearer_token`；Gateway 接管期间该字段仍由 `patch_codex_config` 写入。注意该 filter 只匹配测试名，新增测试名必须含 `requires_openai_auth` 子串（或用 `cargo test --lib codex` 全量兜底）。
 - 改 Codex 模型目录来源（单站点或聚合）时，至少跑 `cargo test --lib codex_model_catalog` 与 `cargo test --lib aggregate_catalog`，并核对同一 provider 在单站点目录与聚合目录里给出同一组模型（聚合条目只是多了站点前缀）。
 - 改聚合 catalog 生命周期（engage 快照、离开聚合还原、`model_catalog_json` 指针）时，至少跑 `cargo test --lib pre_aggregate_catalog` 与 `cargo test --lib coding::proxy_gateway::cli_proxy::tests::`，并核对四条往返：接管前有 AI Toolbox 指针+单站点文件、有外部指针、无指针但文件残留、无指针无文件，退出聚合后都应回到接管前状态。
 - 改 catalog 预览读路径时，至少跑 `cargo test --lib catalog_preview`，并检查预览弹窗三种 root 下的表现：有指针+文件存在（显示内容）、无指针+遗留 AI Toolbox 文件（显示内容+未激活提示）、无指针+无文件（tab 隐藏）；如可行再补指针悬空（显示「文件不存在」空态）。

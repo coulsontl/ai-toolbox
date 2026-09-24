@@ -13,6 +13,7 @@ import {
 import type {
   CodexCatalogModel,
   CodexProviderCategory,
+  CodexRequiresOpenaiAuthModeSelection,
   CodexSettingsConfig,
 } from '@/types/codex';
 import {
@@ -23,6 +24,7 @@ import {
 } from '../utils/codexCatalogModels';
 import {
   buildCodexSettingsConfig,
+  normalizeCodexRequiresOpenaiAuthMode,
   resolveCodexAutoReviewModelOverride,
 } from '../utils/codexSettingsConfig';
 
@@ -40,16 +42,22 @@ export interface CodexSettingsConfigSnapshot {
   config?: string;
   catalogModels?: CodexCatalogModel[];
   autoReviewModelOverride?: string;
+  requiresOpenaiAuthMode?: CodexRequiresOpenaiAuthModeSelection;
 }
 
 // 新建配置的默认 config.toml 模板
+// `requires_openai_auth` is deliberately absent (issue #394): the backend
+// projection owns that line, so the editor must not advertise a value the next
+// apply would override. Intent is expressed through the form's explicit override.
 const DEFAULT_CONFIG_TOML = `model_provider = "custom"
 model_reasoning_effort = "high"
 
 [model_providers.custom]
 name = "OpenAI"
-wire_api = "responses"
-requires_openai_auth = true`;
+wire_api = "responses"`;
+
+/** Absent/`auto` selection: let the backend derive the flag from the auth mechanism. */
+const DEFAULT_REQUIRES_OPENAI_AUTH_MODE: CodexRequiresOpenaiAuthModeSelection = 'auto';
 
 function parseCodexCatalogModels(config: CodexSettingsConfig): CodexCatalogModel[] {
   const rawModels = Array.isArray(config.modelCatalog?.models)
@@ -115,6 +123,7 @@ function parseInitialCodexState(initialData?: { settingsConfig?: string }) {
       config: DEFAULT_CONFIG_TOML,
       catalogModels: [] as CodexCatalogModel[],
       autoReviewModelOverride: '',
+      requiresOpenaiAuthMode: DEFAULT_REQUIRES_OPENAI_AUTH_MODE,
     };
   }
 
@@ -126,6 +135,12 @@ function parseInitialCodexState(initialData?: { settingsConfig?: string }) {
     const baseUrl = extractCodexBaseUrl(configStr) || '';
     const model = extractCodexModel(configStr) || '';
     const category: CodexProviderCategory = apiKey.trim() || baseUrl.trim() ? 'custom' : 'official';
+    // Only custom providers honour the override; official ones stay automatic.
+    const requiresOpenaiAuthMode =
+      category === 'custom'
+        ? (normalizeCodexRequiresOpenaiAuthMode(config.requiresOpenaiAuthMode) ??
+          DEFAULT_REQUIRES_OPENAI_AUTH_MODE)
+        : DEFAULT_REQUIRES_OPENAI_AUTH_MODE;
 
     return {
       category,
@@ -137,6 +152,7 @@ function parseInitialCodexState(initialData?: { settingsConfig?: string }) {
       catalogModels: category === 'custom' ? parseCodexCatalogModels(config) : [],
       autoReviewModelOverride:
         category === 'custom' ? (resolveCodexAutoReviewModelOverride(config) || '') : '',
+      requiresOpenaiAuthMode,
     };
   } catch {
     return {
@@ -148,6 +164,7 @@ function parseInitialCodexState(initialData?: { settingsConfig?: string }) {
       config: '',
       catalogModels: [] as CodexCatalogModel[],
       autoReviewModelOverride: '',
+      requiresOpenaiAuthMode: DEFAULT_REQUIRES_OPENAI_AUTH_MODE,
     };
   }
 }
@@ -168,6 +185,8 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps = 
   const [codexAutoReviewModelOverride, setCodexAutoReviewModelOverride] = useState(
     parsedInitial.autoReviewModelOverride,
   );
+  const [codexRequiresOpenaiAuthMode, setCodexRequiresOpenaiAuthMode] =
+    useState<CodexRequiresOpenaiAuthModeSelection>(parsedInitial.requiresOpenaiAuthMode);
   const [providerCategory, setProviderCategoryState] = useState<CodexProviderCategory>(parsedInitial.category);
 
   // 防止循环更新的标志位
@@ -356,6 +375,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps = 
     setCodexModelState(model);
     setCodexCatalogModels([]);
     setCodexAutoReviewModelOverride('');
+    setCodexRequiresOpenaiAuthMode(DEFAULT_REQUIRES_OPENAI_AUTH_MODE);
     setProviderCategoryState(
       apiKey.trim() || baseUrl.trim() ? 'custom' : 'official',
     );
@@ -390,6 +410,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps = 
     setCodexConfigState(nextState.config);
     setCodexCatalogModels(nextState.catalogModels);
     setCodexAutoReviewModelOverride(nextState.autoReviewModelOverride);
+    setCodexRequiresOpenaiAuthMode(nextState.requiresOpenaiAuthMode);
     setProviderCategoryState(nextState.category);
   }, []);
 
@@ -407,6 +428,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps = 
       userSetBaseUrlRef.current = false;
       setCodexCatalogModels([]);
       setCodexAutoReviewModelOverride('');
+      setCodexRequiresOpenaiAuthMode(DEFAULT_REQUIRES_OPENAI_AUTH_MODE);
       setCodexConfigState((prev) => normalizeCodexConfigForOfficialMode(prev));
     } else {
       setCodexConfigState((prev) => ensureCodexCustomProviderConfig(prev));
@@ -433,12 +455,15 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps = 
       catalogModels: snapshot.catalogModels ?? codexCatalogModels,
       autoReviewModelOverride:
         snapshot.autoReviewModelOverride ?? codexAutoReviewModelOverride,
+      requiresOpenaiAuthMode:
+        snapshot.requiresOpenaiAuthMode ?? codexRequiresOpenaiAuthMode,
       auth: codexAuth,
     });
   }, [
     codexApiKey,
     codexAuth,
     codexAutoReviewModelOverride,
+    codexRequiresOpenaiAuthMode,
     codexBaseUrl,
     codexCatalogModels,
     codexModel,
@@ -455,6 +480,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps = 
     codexConfig,
     codexCatalogModels,
     codexAutoReviewModelOverride,
+    codexRequiresOpenaiAuthMode,
     providerCategory,
 
     // 标志位（用于同步控制）
@@ -473,6 +499,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps = 
     setCodexConfig,
     setCodexCatalogModels,
     setCodexAutoReviewModelOverride,
+    setCodexRequiresOpenaiAuthMode,
     resetCodexConfig,
     resetFromSettingsConfig,
     getFinalSettingsConfig,

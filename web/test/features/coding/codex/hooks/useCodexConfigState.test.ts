@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { normalizeCodexCatalogModels } from '../../../../../features/coding/codex/utils/codexCatalogModels.ts';
 import {
   buildCodexSettingsConfig,
+  normalizeCodexRequiresOpenaiAuthMode,
   parseCodexSettingsConfig,
 } from '../../../../../features/coding/codex/utils/codexSettingsConfig.ts';
 import { extractCodexModel } from '../../../../../utils/codexConfigUtils.ts';
@@ -183,6 +184,65 @@ test('buildCodexSettingsConfig omits empty auto review model override', () => {
   }));
 
   assert.equal(settingsConfig.autoReviewModelOverride, undefined);
+});
+
+test('buildCodexSettingsConfig persists the explicit requires_openai_auth override', () => {
+  // issue #394: the override must survive a full settingsConfig rebuild, which is
+  // what every catalog-only edit does (persistProviderCatalog).
+  const settingsConfig = JSON.parse(buildCodexSettingsConfig({
+    category: 'custom',
+    apiKey: '',
+    baseUrl: 'https://api.example.com/api/codex/backend-api/codex',
+    model: 'gpt-5.6-terra',
+    config: 'model_provider = "custom"',
+    catalogModels: [],
+    requiresOpenaiAuthMode: 'keep',
+    auth: {},
+  }));
+
+  assert.equal(settingsConfig.requiresOpenaiAuthMode, 'keep');
+});
+
+test('buildCodexSettingsConfig omits the auto requires_openai_auth selection', () => {
+  // `auto` is the absent key: writing it back would turn "no opinion" into a
+  // stored value and pin the provider against future changes to the rule.
+  const settingsConfig = JSON.parse(buildCodexSettingsConfig({
+    category: 'custom',
+    apiKey: 'sk-test',
+    baseUrl: 'https://api.example.com/v1',
+    model: 'gpt-5.5',
+    config: 'model_provider = "custom"',
+    catalogModels: [],
+    requiresOpenaiAuthMode: 'auto',
+    auth: {},
+  }));
+
+  assert.equal(settingsConfig.requiresOpenaiAuthMode, undefined);
+});
+
+test('buildCodexSettingsConfig omits the override for official providers', () => {
+  const settingsConfig = JSON.parse(buildCodexSettingsConfig({
+    category: 'official',
+    apiKey: '',
+    baseUrl: '',
+    model: 'gpt-5.5',
+    config: 'model_provider = "custom"',
+    catalogModels: [],
+    requiresOpenaiAuthMode: 'keep',
+    auth: {},
+  }));
+
+  assert.equal(settingsConfig.requiresOpenaiAuthMode, undefined);
+});
+
+test('normalizeCodexRequiresOpenaiAuthMode drops auto and unknown values', () => {
+  assert.equal(normalizeCodexRequiresOpenaiAuthMode('keep'), 'keep');
+  assert.equal(normalizeCodexRequiresOpenaiAuthMode('strip'), 'strip');
+  assert.equal(normalizeCodexRequiresOpenaiAuthMode('auto'), undefined);
+  assert.equal(normalizeCodexRequiresOpenaiAuthMode('KEEP'), undefined);
+  assert.equal(normalizeCodexRequiresOpenaiAuthMode(''), undefined);
+  assert.equal(normalizeCodexRequiresOpenaiAuthMode(undefined), undefined);
+  assert.equal(normalizeCodexRequiresOpenaiAuthMode(true), undefined);
 });
 
 test('buildCodexSettingsConfig keeps the default model independent from model mappings', () => {

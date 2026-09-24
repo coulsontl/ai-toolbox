@@ -162,6 +162,7 @@ import SectionSidebarLayout, {
 import { extractCodexBaseUrl, extractCodexModel } from '@/utils/codexConfigUtils';
 import {
   buildCodexSettingsConfig,
+  normalizeCodexRequiresOpenaiAuthMode,
   parseCodexSettingsConfig,
   resolveCodexAutoReviewModelOverride,
 } from '../utils/codexSettingsConfig';
@@ -1170,6 +1171,13 @@ const CodexPage: React.FC = () => {
     const autoReviewModelOverride = options?.autoReviewModelOverride === undefined
       ? resolveCodexAutoReviewModelOverride(settings)
       : (options.autoReviewModelOverride?.trim() || undefined);
+    // Catalog-only edits rebuild the whole settingsConfig, so the explicit
+    // `requires_openai_auth` override must be carried through explicitly —
+    // otherwise any model add/remove/reorder would silently reset it to auto
+    // (issue #394).
+    const requiresOpenaiAuthMode = normalizeCodexRequiresOpenaiAuthMode(
+      settings.requiresOpenaiAuthMode,
+    );
     const settingsConfig = buildCodexSettingsConfig({
       category: provider.category,
       apiKey: settings.auth?.OPENAI_API_KEY || '',
@@ -1179,6 +1187,7 @@ const CodexPage: React.FC = () => {
       config: settings.config || '',
       catalogModels: models,
       autoReviewModelOverride,
+      requiresOpenaiAuthMode,
       auth: settings.auth ?? {},
     });
 
@@ -1812,7 +1821,6 @@ const CodexPage: React.FC = () => {
           '[model_providers.custom]',
           'name = "OpenAI"',
           'wire_api = "responses"',
-          'requires_openai_auth = true',
         ];
 
         if (baseUrl) {
@@ -1971,6 +1979,12 @@ const CodexPage: React.FC = () => {
               };
 
         if (values.category !== 'official') {
+          const requiresOpenaiAuthMode = normalizeCodexRequiresOpenaiAuthMode(
+            values.requiresOpenaiAuthMode,
+          );
+          if (requiresOpenaiAuthMode) {
+            settingsConfigObj.requiresOpenaiAuthMode = requiresOpenaiAuthMode;
+          }
           const configParts: string[] = [];
           if (values.baseUrl) {
             configParts.push(`base_url = "${values.baseUrl}"`);
@@ -2121,6 +2135,12 @@ const CodexPage: React.FC = () => {
               };
 
         if (values.category !== 'official') {
+          const requiresOpenaiAuthMode = normalizeCodexRequiresOpenaiAuthMode(
+            values.requiresOpenaiAuthMode,
+          );
+          if (requiresOpenaiAuthMode) {
+            settingsConfigObj.requiresOpenaiAuthMode = requiresOpenaiAuthMode;
+          }
           const configParts: string[] = [];
           if (values.baseUrl) {
             configParts.push(`base_url = "${values.baseUrl}"`);
@@ -2891,6 +2911,7 @@ const CodexPage: React.FC = () => {
             provider={editingProvider}
             isCopy={isCopyMode}
             mode={providerModalMode}
+            preserveOfficialAuthOnSwitch={codexPreserveOfficialAuthOnSwitch}
             onCancel={() => {
               setProviderModalOpen(false);
               setEditingProvider(null);

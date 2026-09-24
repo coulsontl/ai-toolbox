@@ -8,7 +8,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '@/stores';
-import type { CodexApiFormat, CodexCatalogModel, CodexProvider, CodexProviderFormValues, CodexSettingsConfig, GatewayProviderMeta } from '@/types/codex';
+import type { CodexApiFormat, CodexCatalogModel, CodexProvider, CodexProviderFormValues, CodexRequiresOpenaiAuthModeSelection, CodexSettingsConfig, GatewayProviderMeta } from '@/types/codex';
 import { fetchCodexOfficialModels } from '@/services/codexApi';
 import { readCurrentOpenCodeProviders } from '@/services/opencodeApi';
 import type { FetchedModel, FetchModelsResponse } from '@/components/common/FetchModelsModal/types';
@@ -53,9 +53,23 @@ import TomlEditor from '@/components/common/TomlEditor';
 import { getDefaultModelsApiType } from '@/components/common/FetchModelsModal/request';
 import { parse as parseToml } from 'smol-toml';
 import { useCodexConfigState } from '../hooks/useCodexConfigState';
+import { normalizeCodexRequiresOpenaiAuthMode } from '../utils/codexSettingsConfig';
 import styles from './CodexProviderFormModal.module.less';
 
 const { Text } = Typography;
+
+/**
+ * Three-way `requires_openai_auth` override (issue #394). `auto` normalizes to
+ * an absent key at persist time, so it stays the default for existing providers.
+ */
+const REQUIRES_OPENAI_AUTH_MODE_OPTIONS: ReadonlyArray<{
+  value: CodexRequiresOpenaiAuthModeSelection;
+  labelKey: string;
+}> = [
+  { value: 'auto', labelKey: 'codex.provider.requiresOpenaiAuthAuto' },
+  { value: 'keep', labelKey: 'codex.provider.requiresOpenaiAuthKeep' },
+  { value: 'strip', labelKey: 'codex.provider.requiresOpenaiAuthStrip' },
+];
 
 const CODEX_OFFICIAL_FALLBACK_MODELS: FetchedModel[] = [
   { id: 'gpt-5.2', name: 'GPT 5.2' },
@@ -239,6 +253,13 @@ interface CodexProviderFormModalProps {
   mode?: 'manual' | 'import';
   onCancel: () => void;
   onSubmit: (values: CodexProviderFormValues) => Promise<void>;
+  /**
+   * Global "keep official login when switching" flag. While it is on, Codex
+   * authenticates with the provider bearer token, so `requires_openai_auth` has
+   * to stay stripped — the override below is disabled rather than silently
+   * ignored (issue #394).
+   */
+  preserveOfficialAuthOnSwitch?: boolean;
 }
 
 const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
@@ -248,6 +269,7 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
   mode = 'manual',
   onCancel,
   onSubmit,
+  preserveOfficialAuthOnSwitch = false,
 }) => {
   const { t } = useTranslation();
   const language = useAppStore((state) => state.language);
@@ -429,6 +451,8 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
           ? normalizeCodexApiFormat(providerEndpoint.apiFormat)
           : normalizeCodexApiFormat(provider.meta?.apiFormat),
         notes: provider.notes || '',
+        requiresOpenaiAuthMode:
+          normalizeCodexRequiresOpenaiAuthMode(settingsConfig.requiresOpenaiAuthMode) ?? 'auto',
       });
       setCurrentBaseUrl(baseUrl || providerEndpoint?.baseUrl || '');
     } else {
@@ -445,6 +469,7 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
         apiFormat: DEFAULT_CODEX_API_FORMAT,
         configToml: '',
         notes: '',
+        requiresOpenaiAuthMode: 'auto',
         sourceProvider: undefined,
       });
     }
@@ -601,6 +626,7 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
         providerProfileId: CUSTOM_PROVIDER_PROFILE_ID,
         providerEndpointId: undefined,
         apiFormat: DEFAULT_CODEX_API_FORMAT,
+        requiresOpenaiAuthMode: 'auto',
       });
       return;
     }
@@ -697,6 +723,7 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
         config: submittedValues.configToml || '',
         catalogModels: codexCatalogModels,
         autoReviewModelOverride: codexAutoReviewModelOverride,
+        requiresOpenaiAuthMode: submittedValues.requiresOpenaiAuthMode,
       });
       const selectedEndpoint = selectedCategory === 'official' || submittedValues.providerProfileId === CUSTOM_PROVIDER_PROFILE_ID
         ? undefined
@@ -1028,6 +1055,26 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
                   {showApiKey ? t('codex.provider.hideApiKey') : t('codex.provider.showApiKey')}
                 </Button>
               }
+            />
+          </Form.Item>
+
+          <Form.Item
+            name="requiresOpenaiAuthMode"
+            label={t('codex.provider.requiresOpenaiAuth')}
+            help={
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {preserveOfficialAuthOnSwitch
+                  ? t('codex.provider.requiresOpenaiAuthPreserveHint')
+                  : t('codex.provider.requiresOpenaiAuthHelp')}
+              </Text>
+            }
+          >
+            <Select
+              disabled={preserveOfficialAuthOnSwitch}
+              options={REQUIRES_OPENAI_AUTH_MODE_OPTIONS.map(({ value, labelKey }) => ({
+                value,
+                label: t(labelKey),
+              }))}
             />
           </Form.Item>
 
