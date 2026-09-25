@@ -1578,6 +1578,7 @@
     "moreOptionsCliNotSet": "No manual CLI path set yet. Click Edit to auto-detect or pick a local CLI path.",
     "apply": "Apply",
     "open": "Open",
+    "openUrl": "Open {{url}}",
     "preferredTerminal": "Preferred Terminal",
     "preferredTerminalHint": "Choose the terminal app used when clicking the terminal button. If the selected terminal is unavailable, the system default terminal is used.",
     "terminalCmd": "Command Prompt",

@@ -1578,6 +1578,7 @@
     "moreOptionsCliNotSet": "尚未手动指定 CLI 路径，点击编辑可自动检测或手动选择本机 CLI 路径",
     "apply": "应用",
     "open": "打开",
+    "openUrl": "打开 {{url}}",
     "preferredTerminal": "首选终端",
     "preferredTerminalHint": "选择点击终端按钮时使用的终端应用。如果选择的终端不可用，将自动使用系统默认终端。",
     "terminalCmd": "命令提示符",

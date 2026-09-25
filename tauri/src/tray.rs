@@ -219,7 +219,9 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                     }
 
                     if let Some(window) = crate::main_window(app) {
+                        // show() does not restore a minimized window on Windows.
                         let _ = window.show();
+                        let _ = window.unminimize();
                         let _ = window.set_focus();
                     }
                 }
