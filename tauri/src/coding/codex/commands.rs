@@ -492,12 +492,12 @@ async fn read_codex_settings_from_disk(
     };
 
     let catalog_preview = read_codex_catalog_preview(&config_path, config.as_deref()).await;
-    let model_catalog_active = if catalog_preview.content.is_some() || catalog_preview.pointer_active
-    {
-        Some(catalog_preview.pointer_active)
-    } else {
-        None
-    };
+    let model_catalog_active =
+        if catalog_preview.content.is_some() || catalog_preview.pointer_active {
+            Some(catalog_preview.pointer_active)
+        } else {
+            None
+        };
 
     Ok(CodexSettings {
         auth,
@@ -564,19 +564,18 @@ async fn read_codex_catalog_preview(
         // No usable pointer: fall back to the AI Toolbox catalog file.
         None => root_dir.join(AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME),
     };
-    let content =
-        match crate::coding::file_io::read_optional_text_file_with_timeout(
-            catalog_path,
-            "Codex model catalog",
-        )
-        .await
-        {
-            Ok(content) => content,
-            Err(error) => {
-                log::warn!("Failed to read Codex model catalog for preview: {error}");
-                None
-            }
-        };
+    let content = match crate::coding::file_io::read_optional_text_file_with_timeout(
+        catalog_path,
+        "Codex model catalog",
+    )
+    .await
+    {
+        Ok(content) => content,
+        Err(error) => {
+            log::warn!("Failed to read Codex model catalog for preview: {error}");
+            None
+        }
+    };
 
     CodexCatalogPreview {
         content,
@@ -2816,8 +2815,7 @@ fn codex_catalog_effective_input_modalities(
             .any(|item| item.eq_ignore_ascii_case("image"))
     };
 
-    let preset_declared =
-        crate::coding::preset_models::input_modalities_for_model_id(&spec.model);
+    let preset_declared = crate::coding::preset_models::input_modalities_for_model_id(&spec.model);
     let vendor_declared = vendor_declared.and_then(|value| {
         let items = value.as_array()?;
         let modalities: Vec<String> = items
@@ -3312,7 +3310,8 @@ fn codex_catalog_model_specs(
                 .filter(|tiers| !tiers.is_empty());
 
             let input_modalities = codex_catalog_input_modalities_override(
-                item.get("modalities").and_then(|modalities| modalities.get("input")),
+                item.get("modalities")
+                    .and_then(|modalities| modalities.get("input")),
             );
 
             specs.push(CodexCatalogModelSpec {
@@ -3541,10 +3540,7 @@ fn aggregate_catalog_from_entries(
                 }
             }
             if let Some(object) = value.as_object_mut() {
-                object.insert(
-                    "priority".to_string(),
-                    serde_json::json!(entry.priority),
-                );
+                object.insert("priority".to_string(), serde_json::json!(entry.priority));
             }
             value
         })
@@ -3781,7 +3777,10 @@ fn codex_aggregate_catalog_entries(
         .iter()
         .filter(|model| bare_models.iter().any(|candidate| candidate == *model))
     {
-        if promoted.iter().any(|already_promoted| already_promoted == model) {
+        if promoted
+            .iter()
+            .any(|already_promoted| already_promoted == model)
+        {
             continue;
         }
 
@@ -6801,7 +6800,8 @@ approval_policy = "never"
 
         let naming = aggregate_naming_with_exposed(&["gpt-5.6-terra", "glm-5"]);
         let (entries, table) = codex_aggregate_catalog_entries(&sites, &naming).unwrap();
-        let catalog = aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
+        let catalog =
+            aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
         let models = catalog["models"].as_array().unwrap();
         let priority_of = |slug: &str| {
             models
@@ -6847,7 +6847,8 @@ approval_policy = "never"
 
         let naming = aggregate_naming_with_exposed(&["glm-5", "gpt-5.6-luna"]);
         let (entries, _) = codex_aggregate_catalog_entries(&sites, &naming).unwrap();
-        let catalog = aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
+        let catalog =
+            aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
         let models = catalog["models"].as_array().unwrap();
         let priority_of = |slug: &str| {
             models
@@ -6865,7 +6866,11 @@ approval_policy = "never"
     /// has no slug, no hidden alias and no promoted row.
     #[test]
     fn aggregate_catalog_ignores_ticked_names_no_selected_site_declares() {
-        let sites = vec![aggregate_site("site1", "Site 1", json!([{ "model": "glm-5" }]))];
+        let sites = vec![aggregate_site(
+            "site1",
+            "Site 1",
+            json!([{ "model": "glm-5" }]),
+        )];
 
         let naming = aggregate_naming_with_exposed(&["glm-5", "gpt-5.3-codex-spark"]);
         let (entries, _) = codex_aggregate_catalog_entries(&sites, &naming).unwrap();
@@ -6892,7 +6897,8 @@ approval_policy = "never"
 
         let naming = aggregate_naming_with_exposed(&["glm-5"]);
         let (entries, table) = codex_aggregate_catalog_entries(&sites, &naming).unwrap();
-        let catalog = aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
+        let catalog =
+            aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
         let models = catalog["models"].as_array().unwrap();
         let slugs: Vec<&str> = models
             .iter()
@@ -6948,7 +6954,8 @@ approval_policy = "never"
 
         let naming = aggregate_naming(".");
         let (entries, _) = codex_aggregate_catalog_entries(&sites, &naming).unwrap();
-        let catalog = aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
+        let catalog =
+            aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
         let models = catalog["models"].as_array().unwrap();
         assert!(models
             .iter()
@@ -8044,7 +8051,9 @@ wire_api = "responses"
             format!("model_provider = \"custom\"\nmodel_catalog_json = \"{AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME}\"\n");
         std::fs::write(&config_path, &config_text).unwrap();
         std::fs::write(
-            temp_dir.path().join(AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME),
+            temp_dir
+                .path()
+                .join(AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME),
             "{\"models\":[]}",
         )
         .unwrap();
@@ -8093,7 +8102,9 @@ wire_api = "responses"
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config_path = temp_dir.path().join("config.toml");
         std::fs::write(
-            temp_dir.path().join(AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME),
+            temp_dir
+                .path()
+                .join(AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME),
             "{\"models\":[{\"slug\":\"leftover\"}]}",
         )
         .unwrap();

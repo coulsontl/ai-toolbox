@@ -6,8 +6,8 @@
 //! the shared filename. Storage layers (local / WebDAV / repository) only receive
 //! finished bytes and never query provider/MCP/Skills tables themselves.
 
-use zeroize::Zeroizing;
 use tauri::Manager;
+use zeroize::Zeroizing;
 
 use super::credentials::{self, backup_error};
 use super::encryption::{self, CryptoError};
@@ -78,9 +78,9 @@ pub async fn generate_backup_file(
         let stored = tauri::async_runtime::spawn_blocking(credentials::read_password)
             .await
             .map_err(|error| error.to_string())??;
-        let password = Zeroizing::new(stored.ok_or_else(|| {
-            crypto_error_string(CryptoError::PasswordRequired)
-        })?);
+        let password = Zeroizing::new(
+            stored.ok_or_else(|| crypto_error_string(CryptoError::PasswordRequired))?,
+        );
         tauri::async_runtime::spawn_blocking(move || encryption::encrypt(&zip_data, &password))
             .await
             .map_err(|error| error.to_string())?

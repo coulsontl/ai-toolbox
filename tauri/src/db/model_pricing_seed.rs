@@ -110,7 +110,10 @@ pub async fn fetch_remote_model_pricing(
         match fetch_one_source(&client, db_state, url).await {
             Ok(inserted_count) => {
                 if !attempts.is_empty() {
-                    log::info!("[ModelPricing] Synced remote pricing from fallback source {}", url);
+                    log::info!(
+                        "[ModelPricing] Synced remote pricing from fallback source {}",
+                        url
+                    );
                 }
                 attempts.push(ModelPricingSyncAttempt {
                     url: url.to_string(),
@@ -136,7 +139,10 @@ pub async fn fetch_remote_model_pricing(
         }
     }
 
-    Err(format!("All remote model pricing sources failed: {}", describe_attempts(&attempts)))
+    Err(format!(
+        "All remote model pricing sources failed: {}",
+        describe_attempts(&attempts)
+    ))
 }
 
 fn describe_attempts(attempts: &[ModelPricingSyncAttempt]) -> String {

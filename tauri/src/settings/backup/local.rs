@@ -60,11 +60,12 @@ pub async fn restore_database(
         })
         .await
         .map_err(|error| error.to_string())??;
-        let mut archive =
-            ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("Failed to read zip archive: {}", e))?;
+        let mut archive = ZipArchive::new(Cursor::new(bytes))
+            .map_err(|e| format!("Failed to read zip archive: {}", e))?;
         restore_from_archive(&app_handle, &mut archive, skip_cli_custom_roots)
     } else {
-        let file = fs::File::open(&zip_path).map_err(|e| format!("Failed to open backup file: {}", e))?;
+        let file =
+            fs::File::open(&zip_path).map_err(|e| format!("Failed to open backup file: {}", e))?;
         let mut archive =
             ZipArchive::new(file).map_err(|e| format!("Failed to read zip archive: {}", e))?;
         restore_from_archive(&app_handle, &mut archive, skip_cli_custom_roots)

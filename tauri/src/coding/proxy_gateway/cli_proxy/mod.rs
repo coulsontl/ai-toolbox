@@ -1,8 +1,7 @@
 pub mod manifest;
 
 use self::manifest::{
-    validate_backup_rel_path, CliProxyManifest, CliProxyManifestFile,
-    PreAggregateCodexCatalog,
+    validate_backup_rel_path, CliProxyManifest, CliProxyManifestFile, PreAggregateCodexCatalog,
 };
 use super::paths::ProxyGatewayPaths;
 use super::runtime::{
@@ -793,9 +792,7 @@ pub async fn engage_aggregate_cli(
     // still refused: publishing every bare model instead of the requested set
     // would silently widen the catalog.
     if !subagent_exposed_models.is_empty() && naming_config.subagent_exposed_models.is_empty() {
-        return Err(
-            "Select at least one bare model to expose, or clear the selection".to_string(),
-        );
+        return Err("Select at least one bare model to expose, or clear the selection".to_string());
     }
     // Allocate the slug table before the manifest is written: the manifest is
     // the router's source of truth, so it must carry the same table the catalog
@@ -1027,7 +1024,11 @@ async fn normalize_aggregate_draft_config(
 
     let selected_providers = provider_ids
         .iter()
-        .filter_map(|provider_id| available.iter().find(|provider| &provider.id == provider_id))
+        .filter_map(|provider_id| {
+            available
+                .iter()
+                .find(|provider| &provider.id == provider_id)
+        })
         .cloned()
         .collect::<Vec<_>>();
     let site_specs = load_aggregate_site_specs(db, &selected_providers).await?;
@@ -5045,9 +5046,11 @@ base_url = "http://127.0.0.1:9999/openai/v1"
             Vec::new(),
         );
         write_manifest(&paths, GatewayCliKey::Codex, &aggregate).unwrap();
-        assert!(ensure_aggregate_takeover_can_engage_single(&paths, GatewayCliKey::Codex)
-            .unwrap_err()
-            .contains("aggregate"));
+        assert!(
+            ensure_aggregate_takeover_can_engage_single(&paths, GatewayCliKey::Codex)
+                .unwrap_err()
+                .contains("aggregate")
+        );
 
         let mut single = aggregate;
         single.mode = GatewayProxyMode::Single;

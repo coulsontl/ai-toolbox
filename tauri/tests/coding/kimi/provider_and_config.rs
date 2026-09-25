@@ -12,9 +12,7 @@ use ai_toolbox_lib::coding::kimi::types::{
     KimiOfficialAccount, KimiPromptConfig, KimiPromptConfigContent, KimiProvider,
     KimiProviderContent,
 };
-use ai_toolbox_lib::coding::runtime_location::{
-    self, get_kimi_config_path_async, get_kimi_prompt_path_async,
-};
+use ai_toolbox_lib::coding::runtime_location::{self, get_kimi_prompt_path_async};
 use ai_toolbox_lib::db::helpers::{db_get, db_list, db_put};
 use ai_toolbox_lib::db::schema::DbTable;
 use ai_toolbox_lib::db::sqlite_state::SqliteDbState;

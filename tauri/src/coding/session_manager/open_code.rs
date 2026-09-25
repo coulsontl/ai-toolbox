@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Map, Value};
 
 use super::message_blocks::{
@@ -95,7 +95,11 @@ fn build_missing_local_opencode_spawn_message(
     }
 }
 
-pub fn scan_sessions(data_root: &Path, sqlite_db_path: &Path) -> Vec<SessionMeta> {
+pub fn scan_sessions(data_root: &Path, sqlite_db_path: &Path, v2: bool) -> Vec<SessionMeta> {
+    if v2 {
+        return scan_sessions_sqlite_with_limit(sqlite_db_path, None, true);
+    }
+
     let json_sessions = scan_sessions_json(data_root);
     let sqlite_sessions = scan_sessions_sqlite(sqlite_db_path);
 
@@ -125,9 +129,13 @@ pub fn scan_recent_sessions(
     data_root: &Path,
     sqlite_db_path: &Path,
     limit: usize,
+    v2: bool,
 ) -> Vec<SessionMeta> {
     if limit == 0 {
         return Vec::new();
+    }
+    if v2 {
+        return scan_sessions_sqlite_with_limit(sqlite_db_path, Some(limit), true);
     }
 
     let json_sessions = scan_recent_sessions_json(data_root, limit);
@@ -161,7 +169,10 @@ pub fn scan_recent_sessions(
     merged
 }
 
-pub fn load_messages(source_path: &str) -> Result<Vec<SessionMessage>, String> {
+pub fn load_messages(source_path: &str, v2: bool) -> Result<Vec<SessionMessage>, String> {
+    if v2 {
+        return load_messages_sqlite_v2(source_path);
+    }
     if source_path.starts_with("sqlite:") {
         return load_messages_sqlite(source_path);
     }
@@ -169,7 +180,14 @@ pub fn load_messages(source_path: &str) -> Result<Vec<SessionMessage>, String> {
     load_messages_json(Path::new(source_path))
 }
 
-pub fn scan_messages_for_query(source_path: &str, query_lower: &str) -> Result<bool, String> {
+pub fn scan_messages_for_query(
+    source_path: &str,
+    query_lower: &str,
+    v2: bool,
+) -> Result<bool, String> {
+    if v2 {
+        return scan_messages_for_query_sqlite_v2(source_path, query_lower);
+    }
     if source_path.starts_with("sqlite:") {
         return scan_messages_for_query_sqlite(source_path, query_lower);
     }
@@ -177,7 +195,14 @@ pub fn scan_messages_for_query(source_path: &str, query_lower: &str) -> Result<b
     scan_messages_for_query_json(Path::new(source_path), query_lower)
 }
 
-pub fn delete_session(source_path: &str) -> Result<(), String> {
+pub fn delete_session(source_path: &str, v2: bool) -> Result<(), String> {
+    if v2 {
+        let (database_path, session_id) = parse_sqlite_source(source_path)
+            .ok_or_else(|| format!("Invalid SQLite source reference: {source_path}"))?;
+        delete_session_from_sqlite_v2(&database_path, &session_id)?;
+        return Ok(());
+    }
+
     if source_path.starts_with("sqlite:") {
         let (database_path, session_id) = parse_sqlite_source(source_path)
             .ok_or_else(|| format!("Invalid SQLite source reference: {source_path}"))?;
@@ -221,7 +246,7 @@ pub fn delete_session(source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn rename_session(source_path: &str, next_title: &str) -> Result<(), String> {
+pub fn rename_session(source_path: &str, next_title: &str, v2: bool) -> Result<(), String> {
     let normalized_title = next_title.trim();
     if normalized_title.is_empty() {
         return Err("Session title cannot be empty".to_string());
@@ -271,8 +296,12 @@ pub fn rename_session(source_path: &str, next_title: &str) -> Result<(), String>
         )
     };
 
-    update_session_title_in_sqlite(&database_path, &session_id, normalized_title)?;
-    update_session_title_in_json(&data_root, &session_id, normalized_title)?;
+    if v2 {
+        update_session_title_in_sqlite_v2(&database_path, &session_id, normalized_title)?;
+    } else {
+        update_session_title_in_sqlite(&database_path, &session_id, normalized_title)?;
+        update_session_title_in_json(&data_root, &session_id, normalized_title)?;
+    }
     Ok(())
 }
 
@@ -454,7 +483,12 @@ pub fn import_native_snapshot(
             ));
         }
         if let Some(data_root) = data_root {
-            ensure_imported_session_visible(data_root, &session_id, &command_context)?;
+            ensure_imported_session_visible(
+                data_root,
+                &session_id,
+                &command_context,
+                config_path.is_some_and(crate::coding::open_code::v2_migration::is_active),
+            )?;
         }
         return Ok(());
     }
@@ -674,13 +708,14 @@ fn ensure_imported_session_visible(
     data_root: &Path,
     session_id: &str,
     command_context: &str,
+    v2: bool,
 ) -> Result<(), String> {
     const MAX_ATTEMPTS: usize = 5;
     const RETRY_DELAY: Duration = Duration::from_millis(120);
 
     let sqlite_db_path = data_root.join("opencode.db");
     for attempt_index in 0..MAX_ATTEMPTS {
-        if scan_sessions(data_root, &sqlite_db_path)
+        if scan_sessions(data_root, &sqlite_db_path, v2)
             .into_iter()
             .any(|session| session.session_id == session_id)
         {
@@ -772,16 +807,17 @@ pub fn session_source_key(source_path: &str) -> Result<String, String> {
 }
 
 fn scan_sessions_sqlite(sqlite_db_path: &Path) -> Vec<SessionMeta> {
-    scan_sessions_sqlite_with_limit(sqlite_db_path, None)
+    scan_sessions_sqlite_with_limit(sqlite_db_path, None, false)
 }
 
 fn scan_sessions_sqlite_limited(sqlite_db_path: &Path, limit: usize) -> Vec<SessionMeta> {
-    scan_sessions_sqlite_with_limit(sqlite_db_path, Some(limit))
+    scan_sessions_sqlite_with_limit(sqlite_db_path, Some(limit), false)
 }
 
 fn scan_sessions_sqlite_with_limit(
     sqlite_db_path: &Path,
     limit: Option<usize>,
+    v2: bool,
 ) -> Vec<SessionMeta> {
     if !sqlite_db_path.exists() {
         return Vec::new();
@@ -795,10 +831,19 @@ fn scan_sessions_sqlite_with_limit(
         Err(_) => return Vec::new(),
     };
 
-    let sql = if limit.is_some() {
-        "SELECT id, title, directory, time_created, time_updated FROM session ORDER BY time_updated DESC LIMIT ?1"
-    } else {
-        "SELECT id, title, directory, time_created, time_updated FROM session ORDER BY time_updated DESC"
+    let sql = match (v2, limit.is_some()) {
+        (false, true) => {
+            "SELECT id, title, directory, time_created, time_updated FROM session ORDER BY time_updated DESC LIMIT ?1"
+        }
+        (false, false) => {
+            "SELECT id, title, directory, time_created, time_updated FROM session ORDER BY time_updated DESC"
+        }
+        (true, true) => {
+            "SELECT id, COALESCE(title, ''), directory, time_created, time_updated FROM session_v2 WHERE parent_id IS NULL ORDER BY time_updated DESC LIMIT ?1"
+        }
+        (true, false) => {
+            "SELECT id, COALESCE(title, ''), directory, time_created, time_updated FROM session_v2 WHERE parent_id IS NULL ORDER BY time_updated DESC"
+        }
     };
 
     let mut statement = match connection.prepare(sql) {
@@ -927,6 +972,84 @@ fn update_session_title_in_sqlite(
         .map_err(|error| format!("Failed to update OpenCode session title: {error}"))?;
 
     Ok(())
+}
+
+fn update_session_title_in_sqlite_v2(
+    database_path: &Path,
+    session_id: &str,
+    next_title: &str,
+) -> Result<(), String> {
+    if !database_path.exists() {
+        return Ok(());
+    }
+
+    let connection = Connection::open(database_path)
+        .map_err(|error| format!("Failed to open OpenCode database: {error}"))?;
+    if !sqlite_table_exists(&connection, "session_v2")? {
+        return Ok(());
+    }
+    connection
+        .execute(
+            "UPDATE session_v2 SET title = ?1 WHERE id = ?2",
+            [next_title, session_id],
+        )
+        .map_err(|error| format!("Failed to update OpenCode V2 session title: {error}"))?;
+
+    Ok(())
+}
+
+fn delete_session_from_sqlite_v2(database_path: &Path, session_id: &str) -> Result<bool, String> {
+    if !database_path.exists() {
+        return Ok(false);
+    }
+
+    let mut connection = Connection::open(database_path)
+        .map_err(|error| format!("Failed to open OpenCode database: {error}"))?;
+    let transaction = connection.transaction().map_err(|error| {
+        format!("Failed to start OpenCode session deletion transaction: {error}")
+    })?;
+
+    let mut deleted_rows = 0;
+    // `session_share` belongs to the V1 `session` table. Do not touch it here.
+    for table in [
+        "session_message",
+        "session_pending",
+        "session_inbox",
+        "instruction_entry",
+        "instruction_state",
+    ] {
+        if !sqlite_table_exists(&transaction, table)? {
+            continue;
+        }
+        deleted_rows += transaction
+            .execute(
+                &format!("DELETE FROM {table} WHERE session_id = ?1"),
+                [session_id],
+            )
+            .map_err(|error| format!("Failed to delete OpenCode V2 {table} rows: {error}"))?;
+    }
+    if sqlite_table_exists(&transaction, "session_v2")? {
+        deleted_rows += transaction
+            .execute("DELETE FROM session_v2 WHERE id = ?1", [session_id])
+            .map_err(|error| format!("Failed to delete OpenCode V2 session record: {error}"))?;
+    }
+
+    transaction
+        .commit()
+        .map_err(|error| format!("Failed to commit OpenCode V2 session deletion: {error}"))?;
+    Ok(deleted_rows > 0)
+}
+
+fn sqlite_table_exists(connection: &Connection, table: &str) -> Result<bool, String> {
+    connection
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map(|row| row.is_some())
+        .map_err(|error| format!("Failed to inspect OpenCode database schema: {error}"))
 }
 
 fn update_session_title_in_json(
@@ -1249,6 +1372,236 @@ fn load_messages_sqlite(source: &str) -> Result<Vec<SessionMessage>, String> {
 
     assign_missing_message_ids(&mut messages, PROVIDER_ID);
     Ok(messages)
+}
+
+fn load_messages_sqlite_v2(source: &str) -> Result<Vec<SessionMessage>, String> {
+    let (database_path, session_id) = parse_sqlite_source(source)
+        .ok_or_else(|| format!("Invalid SQLite source reference: {source}"))?;
+    let connection = Connection::open_with_flags(
+        &database_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| format!("Failed to open OpenCode database: {error}"))?;
+    if !sqlite_table_exists(&connection, "session_message")? {
+        return Ok(Vec::new());
+    }
+
+    let mut statement = connection
+        .prepare(
+            "SELECT id, type, time_created, data FROM session_message WHERE session_id = ?1 ORDER BY seq ASC",
+        )
+        .map_err(|error| format!("Failed to prepare V2 message query: {error}"))?;
+    let rows = statement
+        .query_map([session_id.as_str()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|error| format!("Failed to query V2 messages: {error}"))?;
+
+    let mut messages = Vec::new();
+    for row in rows {
+        let (message_id, message_type, timestamp, data) =
+            row.map_err(|error| format!("Failed to read V2 message: {error}"))?;
+        let Some(value) = serde_json::from_str::<Value>(&data).ok() else {
+            continue;
+        };
+        let Some(mut message) = message_from_v2_row(&message_type, timestamp, &value) else {
+            continue;
+        };
+        message.id = Some(message_id);
+        messages.push(message);
+    }
+
+    assign_missing_message_ids(&mut messages, PROVIDER_ID);
+    Ok(messages)
+}
+
+fn scan_messages_for_query_sqlite_v2(source: &str, query_lower: &str) -> Result<bool, String> {
+    let messages = load_messages_sqlite_v2(source)?;
+    Ok(messages
+        .iter()
+        .any(|message| text_contains_query(&v2_message_search_text(message), query_lower)))
+}
+
+fn v2_message_search_text(message: &SessionMessage) -> String {
+    let mut parts = Vec::new();
+    if !message.content.trim().is_empty() {
+        parts.push(message.content.clone());
+    }
+    for block in &message.blocks {
+        if let Some(text) = block.text.as_deref().filter(|text| !text.trim().is_empty()) {
+            parts.push(text.to_string());
+        }
+        if let Some(output) = block.output.as_ref().and_then(Value::as_str) {
+            if !output.trim().is_empty() {
+                parts.push(output.to_string());
+            }
+        }
+        if let Some(input) = block.input.as_ref() {
+            if let Ok(text) = serde_json::to_string(input) {
+                if text != "null" && text != "{}" {
+                    parts.push(text);
+                }
+            }
+        }
+    }
+    parts.join("\n")
+}
+
+fn message_from_v2_row(
+    message_type: &str,
+    timestamp: i64,
+    value: &Value,
+) -> Option<SessionMessage> {
+    let (role, blocks) = match message_type {
+        "user" => ("user", v2_user_blocks(value)),
+        "assistant" => (
+            "assistant",
+            opencode_blocks_from_parts(&v2_assistant_parts(value)),
+        ),
+        "system" | "synthetic" | "skill" => ("system", v2_text_blocks(value.get("text"), "")),
+        "compaction" => ("system", v2_text_blocks(value.get("summary"), "[Summary] ")),
+        "shell" => ("system", v2_shell_blocks(value)),
+        _ => return None,
+    };
+    if blocks.is_empty() {
+        return None;
+    }
+
+    let mut message = message_from_blocks(role, Some(timestamp), blocks);
+    message.message_type = Some(message_type.to_string());
+    if message_type == "assistant" {
+        message.model = value.get("model").and_then(|model| {
+            model
+                .get("id")
+                .and_then(Value::as_str)
+                .or_else(|| model.as_str())
+                .map(str::to_string)
+        });
+        message.usage = opencode_usage_from_tokens(value.get("tokens"));
+        message.cost_usd = value.get("cost").and_then(Value::as_f64);
+    }
+    Some(message)
+}
+
+fn v2_user_blocks(value: &Value) -> Vec<SessionMessageBlock> {
+    let mut blocks = v2_text_blocks(value.get("text"), "");
+    let names = value
+        .get("files")
+        .and_then(Value::as_array)
+        .map(|files| {
+            files
+                .iter()
+                .filter_map(|file| file.get("name").and_then(Value::as_str))
+                .filter(|name| !name.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !names.is_empty() {
+        blocks.push(text_block(format!("Files: {}", names.join(", "))));
+    }
+    blocks
+}
+
+fn v2_text_blocks(value: Option<&Value>, prefix: &str) -> Vec<SessionMessageBlock> {
+    value
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .map(|text| vec![text_block(format!("{prefix}{text}"))])
+        .unwrap_or_default()
+}
+
+fn v2_shell_blocks(value: &Value) -> Vec<SessionMessageBlock> {
+    let mut lines = Vec::new();
+    if let Some(command) = value
+        .get("command")
+        .and_then(Value::as_str)
+        .filter(|command| !command.is_empty())
+    {
+        lines.push(format!("$ {command}"));
+    }
+    if let Some(output) = value
+        .get("output")
+        .and_then(Value::as_str)
+        .filter(|output| !output.trim().is_empty())
+    {
+        lines.push(output.to_string());
+    }
+    if lines.is_empty() {
+        Vec::new()
+    } else {
+        vec![text_block(lines.join("\n"))]
+    }
+}
+
+fn v2_assistant_parts(value: &Value) -> Vec<Value> {
+    value
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|content| content.iter().cloned().map(adapt_v2_part).collect())
+        .unwrap_or_default()
+}
+
+fn adapt_v2_part(mut part: Value) -> Value {
+    if part.get("type").and_then(Value::as_str) != Some("tool") {
+        return part;
+    }
+
+    if let Some(object) = part.as_object_mut() {
+        if !object.contains_key("tool") {
+            if let Some(name) = object.get("name").cloned() {
+                object.insert("tool".to_string(), name);
+            }
+        }
+        if let Some(state) = object.get_mut("state").and_then(Value::as_object_mut) {
+            if !state.contains_key("output") {
+                if let Some(text) = v2_tool_content_text(state.get("content")) {
+                    state.insert("output".to_string(), Value::String(text));
+                }
+            }
+            if let Some(error) = state.get("error").cloned() {
+                if !error.is_string() {
+                    if let Some(message) = error
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .filter(|message| !message.is_empty())
+                    {
+                        state.insert("error".to_string(), Value::String(message.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    part
+}
+
+fn v2_tool_content_text(content: Option<&Value>) -> Option<String> {
+    let parts = content?.as_array()?;
+    let text = parts
+        .iter()
+        .filter_map(|part| {
+            part.get("text")
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    part.get("name")
+                        .and_then(Value::as_str)
+                        .filter(|name| !name.is_empty())
+                        .map(|name| format!("file: {name}"))
+                })
+        })
+        .collect::<Vec<_>>();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.join("\n"))
+    }
 }
 
 fn scan_messages_for_query_sqlite(source: &str, query_lower: &str) -> Result<bool, String> {
@@ -2064,7 +2417,7 @@ mod tests {
         )
         .expect("failed to write session file");
 
-        let sessions = super::scan_sessions(&data_root, &data_root.join("opencode.db"));
+        let sessions = super::scan_sessions(&data_root, &data_root.join("opencode.db"), false);
 
         assert_eq!(sessions.len(), 1);
         assert_eq!(
@@ -2101,7 +2454,7 @@ mod tests {
         )
         .expect("failed to write session file");
 
-        let sessions = super::scan_sessions(&data_root, &data_root.join("opencode.db"));
+        let sessions = super::scan_sessions(&data_root, &data_root.join("opencode.db"), false);
 
         assert_eq!(sessions.len(), 1);
         assert_eq!(
@@ -2227,7 +2580,7 @@ mod tests {
         .expect("failed to write tool part");
 
         let messages =
-            load_messages(&message_dir.to_string_lossy()).expect("load OpenCode messages");
+            load_messages(&message_dir.to_string_lossy(), false).expect("load OpenCode messages");
 
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].id.as_deref(), Some(message_id));
@@ -2374,7 +2727,7 @@ mod tests {
         )
         .expect("failed to write session file");
 
-        ensure_imported_session_visible(&data_root, session_id, "runtime=local")
+        ensure_imported_session_visible(&data_root, session_id, "runtime=local", false)
             .expect("imported json session should be visible");
     }
 
@@ -2384,11 +2737,150 @@ mod tests {
         let data_root = test_dir.path().join("data");
         fs::create_dir_all(&data_root).expect("failed to create data root");
 
-        let error =
-            ensure_imported_session_visible(&data_root, "ses_import_missing", "runtime=local")
-                .expect_err("missing session should return error");
+        let error = ensure_imported_session_visible(
+            &data_root,
+            "ses_import_missing",
+            "runtime=local",
+            false,
+        )
+        .expect_err("missing session should return error");
 
         assert!(error.contains("ses_import_missing"));
         assert!(error.contains("reported success"));
+    }
+
+    #[test]
+    fn v2_switch_reads_session_v2_and_leaves_v1_rows_alone() {
+        let test_dir = TestDir::new("opencode-v2-sessions");
+        let database_path = test_dir.path().join("opencode.db");
+        let connection = rusqlite::Connection::open(&database_path).expect("open db");
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE session (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    directory TEXT NOT NULL,
+                    time_created INTEGER NOT NULL,
+                    time_updated INTEGER NOT NULL
+                );
+                CREATE TABLE message (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    time_created INTEGER NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE TABLE part (
+                    id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    time_created INTEGER NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE TABLE session_v2 (
+                    id TEXT PRIMARY KEY,
+                    parent_id TEXT,
+                    title TEXT,
+                    directory TEXT NOT NULL,
+                    time_created INTEGER NOT NULL,
+                    time_updated INTEGER NOT NULL
+                );
+                CREATE TABLE session_message (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    time_created INTEGER NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE TABLE session_share (
+                    session_id TEXT NOT NULL,
+                    id TEXT NOT NULL
+                );
+                INSERT INTO session VALUES ('ses_v1_only', 'V1 only', 'D:/legacy', 1, 10);
+                INSERT INTO session_v2 VALUES ('ses_v2_root', NULL, 'V2 root', 'D:/project', 2, 30);
+                INSERT INTO session_v2 VALUES ('ses_v2_child', 'ses_v2_root', 'child', 'D:/project', 3, 40);
+                INSERT INTO session_v2 VALUES ('ses_v2_untitled', NULL, NULL, 'D:/untitled', 4, 20);
+                INSERT INTO session_share VALUES ('ses_v2_root', 'share_v1');
+                INSERT INTO session_message VALUES (
+                    'msg_user', 'ses_v2_root', 'user', 0, 2,
+                    '{\"text\":\"inspect the tests\"}'
+                );
+                INSERT INTO session_message VALUES (
+                    'msg_assistant', 'ses_v2_root', 'assistant', 1, 3,
+                    '{\"model\":{\"id\":\"gpt-5\",\"providerID\":\"openai\"},\"content\":[{\"type\":\"text\",\"text\":\"looking\"},{\"type\":\"tool\",\"id\":\"call_1\",\"name\":\"read\",\"state\":{\"status\":\"completed\",\"input\":{\"filePath\":\"src/main.ts\"},\"content\":[{\"type\":\"text\",\"text\":\"file contents\"}]}}],\"tokens\":{\"input\":4,\"output\":2,\"cache\":{\"read\":1,\"write\":0}},\"cost\":0.02}'
+                );
+                ",
+            )
+            .expect("seed opencode db");
+        drop(connection);
+
+        let v1_sessions = super::scan_sessions(test_dir.path(), &database_path, false);
+        assert_eq!(
+            v1_sessions
+                .iter()
+                .map(|session| session.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ses_v1_only"]
+        );
+
+        let v2_sessions = super::scan_sessions(test_dir.path(), &database_path, true);
+        let v2_ids = v2_sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(v2_ids, vec!["ses_v2_root", "ses_v2_untitled"]);
+        assert_eq!(v2_sessions[1].title.as_deref(), Some("untitled"));
+        assert!(v2_sessions[0].source_path.starts_with("sqlite:"));
+
+        let source = v2_sessions[0].source_path.clone();
+        let messages = super::load_messages(&source, true).expect("load v2 messages");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "user");
+        assert!(messages[0].content.contains("inspect the tests"));
+        assert_eq!(messages[1].role, "assistant");
+        assert_eq!(messages[1].model.as_deref(), Some("gpt-5"));
+        assert!(messages[1].content.contains("looking"));
+        assert!(messages[1].blocks.iter().any(|block| {
+            block.kind == "tool_execution"
+                && block.output.as_ref().and_then(serde_json::Value::as_str)
+                    == Some("file contents")
+        }));
+        assert_eq!(
+            super::scan_messages_for_query(&source, "looking", true).expect("search"),
+            true
+        );
+        assert_eq!(
+            super::scan_messages_for_query(&source, "file contents", true)
+                .expect("search tool output"),
+            true
+        );
+        assert_eq!(
+            super::scan_messages_for_query(&source, "src/main.ts", true)
+                .expect("search tool input"),
+            true
+        );
+        assert_eq!(
+            super::scan_messages_for_query(&source, "file contents", false).expect("v1 search"),
+            false
+        );
+
+        super::rename_session(&source, "renamed v2", true).expect("rename v2");
+        let renamed = super::scan_sessions(test_dir.path(), &database_path, true);
+        assert_eq!(renamed[0].title.as_deref(), Some("renamed v2"));
+        let v1_after_rename = super::scan_sessions(test_dir.path(), &database_path, false);
+        assert_eq!(v1_after_rename[0].title.as_deref(), Some("V1 only"));
+
+        super::delete_session(&source, true).expect("delete v2");
+        let remaining = super::scan_sessions(test_dir.path(), &database_path, true);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].session_id, "ses_v2_untitled");
+        let v1_after_delete = super::scan_sessions(test_dir.path(), &database_path, false);
+        assert_eq!(v1_after_delete[0].session_id, "ses_v1_only");
+        let share_count: i64 = rusqlite::Connection::open(&database_path)
+            .expect("reopen db")
+            .query_row("SELECT COUNT(*) FROM session_share", [], |row| row.get(0))
+            .expect("count shares");
+        assert_eq!(share_count, 1);
     }
 }

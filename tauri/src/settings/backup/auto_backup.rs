@@ -269,8 +269,13 @@ async fn perform_repository_backup(
 ) -> Result<super::repository::RepositoryClient, String> {
     let client = repository_client_from_settings(db_state, &repository_settings).await?;
     let generated = generate_backup_file(app_handle, None).await?;
-    client.upload_file(&generated.filename, &generated.bytes).await?;
-    info!("Auto-backup: uploaded to repository as {}", generated.filename);
+    client
+        .upload_file(&generated.filename, &generated.bytes)
+        .await?;
+    info!(
+        "Auto-backup: uploaded to repository as {}",
+        generated.filename
+    );
     Ok(client)
 }
 

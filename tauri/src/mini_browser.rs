@@ -392,10 +392,7 @@ fn open_window_infos<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec<MiniBr
             let (title, url) = if window.label() == label {
                 // A standalone window is one page the user opened on purpose, so
                 // its live address and title are worth the getters.
-                let url = webview
-                    .url()
-                    .map(|url| url.to_string())
-                    .unwrap_or_default();
+                let url = webview.url().map(|url| url.to_string()).unwrap_or_default();
                 let title = window.title().unwrap_or_else(|_| url.clone());
                 (title, url)
             } else {
@@ -774,13 +771,7 @@ pub async fn mini_browser_set_visible<R: tauri::Runtime>(
         // or hidden for real, because guessing "already hidden" would leave the
         // active tab invisible — the blank page this change exists to remove.
         let current = current.unwrap_or_default();
-        placements.insert(
-            label.clone(),
-            Placement {
-                visible,
-                ..current
-            },
-        );
+        placements.insert(label.clone(), Placement { visible, ..current });
     }
     if visible {
         webview
@@ -1251,10 +1242,22 @@ mod tests {
     fn placement_dedupe_any_geometry_field_changes_needs_send() {
         let current = placement();
         for moved in [
-            Placement { x: 13, ..placement() },
-            Placement { y: 35, ..placement() },
-            Placement { width: 1001, ..placement() },
-            Placement { height: 751, ..placement() },
+            Placement {
+                x: 13,
+                ..placement()
+            },
+            Placement {
+                y: 35,
+                ..placement()
+            },
+            Placement {
+                width: 1001,
+                ..placement()
+            },
+            Placement {
+                height: 751,
+                ..placement()
+            },
         ] {
             assert!(
                 !current.same_geometry(&moved),

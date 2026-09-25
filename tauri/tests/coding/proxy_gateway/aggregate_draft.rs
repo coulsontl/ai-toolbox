@@ -16,11 +16,7 @@ fn codex_provider_record(name: &str, sort_index: i64) -> Value {
     codex_provider_record_with_models(name, sort_index, &["fixture-model"])
 }
 
-fn codex_provider_record_with_models(
-    name: &str,
-    sort_index: i64,
-    models: &[&str],
-) -> Value {
+fn codex_provider_record_with_models(name: &str, sort_index: i64, models: &[&str]) -> Value {
     let model_catalog = models
         .iter()
         .map(|model| json!({ "model": model }))
@@ -176,12 +172,7 @@ async fn draft_rejects_more_than_five_declared_exposed_models() {
     let directory = tempfile::tempdir().unwrap();
     let paths = ProxyGatewayPaths::new(directory.path());
     let models = [
-        "model-1",
-        "model-2",
-        "model-3",
-        "model-4",
-        "model-5",
-        "model-6",
+        "model-1", "model-2", "model-3", "model-4", "model-5", "model-6",
     ];
     let db = draft_test_db_with_models(&models);
     let mut config = draft(&["site-a"], ".", &[]);

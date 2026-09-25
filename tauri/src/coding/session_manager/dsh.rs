@@ -1012,9 +1012,7 @@ mod tests {
                 if path.is_dir() {
                     pending.push(path);
                 } else if session_artifact::is_session_artifact(&path) {
-                    expected_dirs.push(
-                        path.parent().unwrap_or(Path::new(".")).to_path_buf(),
-                    );
+                    expected_dirs.push(path.parent().unwrap_or(Path::new(".")).to_path_buf());
                 }
             }
         }
@@ -1045,7 +1043,10 @@ mod tests {
         let before = source_dirs.len();
         source_dirs.dedup();
         assert_eq!(before, source_dirs.len(), "one artifact per session dir");
-        let mut ids: Vec<&str> = sessions.iter().map(|meta| meta.session_id.as_str()).collect();
+        let mut ids: Vec<&str> = sessions
+            .iter()
+            .map(|meta| meta.session_id.as_str())
+            .collect();
         ids.sort_unstable();
         let before = ids.len();
         ids.dedup();

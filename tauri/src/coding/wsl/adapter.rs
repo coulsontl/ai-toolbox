@@ -222,7 +222,10 @@ mod tests {
             }),
             vec![],
         );
-        assert_eq!(config.last_sync_warnings, vec!["警告A".to_string(), "警告B".to_string()]);
+        assert_eq!(
+            config.last_sync_warnings,
+            vec!["警告A".to_string(), "警告B".to_string()]
+        );
     }
 
     #[test]

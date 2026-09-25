@@ -1844,8 +1844,7 @@ mod tests {
         assert_eq!(google_models[0].id, "gemini-2.5-pro");
         assert_eq!(google_models[0].name.as_deref(), Some("Gemini 2.5 Pro"));
 
-        let error =
-            parse_generic_models_response(r#"{"foo":"bar"}"#).expect_err("unknown schema");
+        let error = parse_generic_models_response(r#"{"foo":"bar"}"#).expect_err("unknown schema");
         assert!(error.contains("Failed to parse models response"));
     }
 

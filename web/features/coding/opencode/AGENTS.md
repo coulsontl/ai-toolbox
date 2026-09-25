@@ -12,7 +12,7 @@
 - OpenCode Core 的 Agent 配置字段是单数 `agent`，与 OMO/OMOS 插件配置里的复数 `agents` 不同；`small_model` 仍用于标题生成等轻量内部任务，不是所有 Subagent 的统一模型。
 - 后端统一模型列表会把 models.dev 的 `experimental.modes.*` 展开为虚拟模型，并通过 `baseModelId` / `experimentalMode` 标记来源；页面里的 variant dropdown 应基于这些元数据继承 base model variants，不要靠 `-fast` 等后缀猜测。
 - `favorite provider` 列表和诊断属于辅助历史状态，不能反推为 OpenCode 当前运行时真实配置。
-- “更多选项”的 V1→V2 开关调用后端文件迁移命令；开关状态从当前配置路径旁的 V1 备份探测，不能另存一份可能与文件状态分叉的前端持久化布尔值。切换成功后必须重读配置并刷新托盘。前端始终按 V1 编辑结构读写，**不要**自行识别或拼装 V2 的 `providers`/`plugins`/`agents`/`mcp` 形状；后端 `v2_migration` 按 `../opencode` 官方 `migrate.ts` 在读写边界转换，前端对 V2 文件字段的任何假设都会在保存时被后端再次转换。
+- “更多选项”的 V1→V2 开关调用后端文件迁移命令；开关状态从当前配置路径旁的 V1 备份探测，不能另存一份可能与文件状态分叉的前端持久化布尔值。切换成功后必须重读配置并刷新托盘。前端始终按 V1 编辑结构读写，**不要**自行识别或拼装 V2 的 `providers`/`plugins`/`agents`/`mcp` 形状；后端 `v2_migration` 按 `../opencode` 官方 `migrate.ts` 在读写边界转换，前端对 V2 文件字段的任何假设都会在保存时被后端再次转换。页头在迁移未开启时显示可关闭的 V2 提示，关闭状态只记在 `localStorage` 的 `opencode.v2MigrationHintDismissed`，不要写成配置或开关状态。
 - 共享连通性弹窗允许调用方传入 `apiFormat=openai-codex-responses`：该接口只接受流式诊断，温度与输出上限控件禁用；普通 OpenCode 调用不传此标记，保持原有选项与请求格式。
 
 ## 核心设计决策（Why）

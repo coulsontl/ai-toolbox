@@ -638,8 +638,15 @@ pub fn shareable_auth_key(provider_id: &str) -> Result<(Option<String>, bool), S
 
 fn shareable_auth_entry(entry: Option<&AuthEntry>) -> (Option<String>, bool) {
     match entry {
-        Some(entry) if matches!(entry.auth_type.as_str(), "api" | "api_key") =>
-            (entry.key.as_deref().map(str::trim).filter(|key| !key.is_empty()).map(str::to_string), false),
+        Some(entry) if matches!(entry.auth_type.as_str(), "api" | "api_key") => (
+            entry
+                .key
+                .as_deref()
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .map(str::to_string),
+            false,
+        ),
         Some(_) => (None, true),
         None => (None, false),
     }
@@ -1107,8 +1114,12 @@ mod tests {
 
     #[test]
     fn sharing_only_exports_api_key_auth_and_never_oauth_tokens() {
-        let api: AuthEntry = serde_json::from_value(json!({ "type": "api", "key": "test-api-key" })).unwrap();
-        assert_eq!(shareable_auth_entry(Some(&api)), (Some("test-api-key".to_string()), false));
+        let api: AuthEntry =
+            serde_json::from_value(json!({ "type": "api", "key": "test-api-key" })).unwrap();
+        assert_eq!(
+            shareable_auth_entry(Some(&api)),
+            (Some("test-api-key".to_string()), false)
+        );
         let oauth: AuthEntry = serde_json::from_value(json!({ "type": "oauth", "key": "not-an-api-key", "access": "access-secret", "refresh": "refresh-secret" })).unwrap();
         assert_eq!(shareable_auth_entry(Some(&oauth)), (None, true));
         assert_eq!(shareable_auth_entry(None), (None, false));

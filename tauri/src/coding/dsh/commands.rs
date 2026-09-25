@@ -825,11 +825,15 @@ fn write_provider_with_credential(
         return Err("Credential ref is required".to_string());
     }
     credentials.set_ref(credential.ref_name.trim(), Some(credential.value.trim()));
-    let result = credentials.write(credentials_path)
+    let result = credentials
+        .write(credentials_path)
         .and_then(|()| write_yaml_object(config_path, config));
     if let Err(error) = result {
         let mut failures = Vec::new();
-        for (path, previous) in [(config_path, previous_config), (credentials_path, previous_credentials)] {
+        for (path, previous) in [
+            (config_path, previous_config),
+            (credentials_path, previous_credentials),
+        ] {
             let restore = match previous {
                 Some(bytes) => fs::write(path, bytes),
                 None => match fs::remove_file(path) {
@@ -837,10 +841,16 @@ fn write_provider_with_credential(
                     result => result,
                 },
             };
-            if let Err(restore_error) = restore { failures.push(format!("{}: {restore_error}", path.display())); }
+            if let Err(restore_error) = restore {
+                failures.push(format!("{}: {restore_error}", path.display()));
+            }
         }
         set_credentials_file_permissions(credentials_path);
-        return Err(if failures.is_empty() { error } else { format!("{error}; rollback failed: {}", failures.join("; ")) });
+        return Err(if failures.is_empty() {
+            error
+        } else {
+            format!("{error}; rollback failed: {}", failures.join("; "))
+        });
     }
     Ok(())
 }
@@ -1701,19 +1711,30 @@ mod tests {
         let config_path = dir.path().join("settings.yaml");
         let credentials_path = dir.path().join(".credentials.yaml");
         let original_config = b"# Keep the original bytes\nagent: { enabled: true }\n";
-        let original_credentials = b"version: 1\nrefs: { OLD_KEY: keep-key }\nrecords: { login: { key: keep-login } }\n";
+        let original_credentials =
+            b"version: 1\nrefs: { OLD_KEY: keep-key }\nrecords: { login: { key: keep-login } }\n";
         fs::write(&config_path, original_config).unwrap();
         fs::write(&credentials_path, original_credentials).unwrap();
-        let input = DshCredentialInput { ref_name: "NEW_KEY".to_string(), value: "new-key".to_string() };
+        let input = DshCredentialInput {
+            ref_name: "NEW_KEY".to_string(),
+            value: "new-key".to_string(),
+        };
         // The second writer rejects a non-mapping after the credential write.
-        let result = write_provider_with_credential(&config_path, &Value::Null, &credentials_path, &input);
+        let result =
+            write_provider_with_credential(&config_path, &Value::Null, &credentials_path, &input);
         assert!(result.is_err());
         assert_eq!(fs::read(&config_path).unwrap(), original_config);
         assert_eq!(fs::read(&credentials_path).unwrap(), original_credentials);
 
         let new_config = dir.path().join("new/settings.yaml");
         let new_credentials = dir.path().join("new/.credentials.yaml");
-        assert!(write_provider_with_credential(&new_config, &Value::Null, &new_credentials, &input).is_err());
+        assert!(write_provider_with_credential(
+            &new_config,
+            &Value::Null,
+            &new_credentials,
+            &input
+        )
+        .is_err());
         assert!(!new_config.exists());
         assert!(!new_credentials.exists());
     }

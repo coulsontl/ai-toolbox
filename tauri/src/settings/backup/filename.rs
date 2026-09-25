@@ -88,7 +88,10 @@ pub fn parse_backup_filename(filename: &str) -> Option<BackupFileNameInfo> {
                     Some(BackupFileNameInfo {
                         timestamp: timestamp.to_string(),
                         unique_id: Some(unique_id.to_string()),
-                        host_label: host_label.map(str::trim).filter(|h| !h.is_empty()).map(str::to_string),
+                        host_label: host_label
+                            .map(str::trim)
+                            .filter(|h| !h.is_empty())
+                            .map(str::to_string),
                         encrypted,
                     })
                 }
@@ -210,11 +213,21 @@ mod tests {
     #[test]
     fn foreign_filenames_are_not_managed() {
         assert!(!is_managed_backup_filename("configuration.aitsync"));
-        assert!(!is_managed_backup_filename("other-backup-20260913-120000.zip"));
-        assert!(!is_managed_backup_filename("ai-toolbox-backup-notatime.zip"));
-        assert!(!is_managed_backup_filename("ai-toolbox-backup-20260913-120000.tar.gz"));
-        assert!(!is_managed_backup_filename("ai-toolbox-backup-20260913-120000.zip.enc.enc"));
-        assert!(!is_managed_backup_filename("ai-toolbox-backup-20260913-120000-badid!.zip"));
+        assert!(!is_managed_backup_filename(
+            "other-backup-20260913-120000.zip"
+        ));
+        assert!(!is_managed_backup_filename(
+            "ai-toolbox-backup-notatime.zip"
+        ));
+        assert!(!is_managed_backup_filename(
+            "ai-toolbox-backup-20260913-120000.tar.gz"
+        ));
+        assert!(!is_managed_backup_filename(
+            "ai-toolbox-backup-20260913-120000.zip.enc.enc"
+        ));
+        assert!(!is_managed_backup_filename(
+            "ai-toolbox-backup-20260913-120000-badid!.zip"
+        ));
     }
 
     #[test]
@@ -244,10 +257,9 @@ mod tests {
         assert_eq!(info.timestamp, "20260102-030405");
         assert!(!info.encrypted);
 
-        let with_host = parse_backup_filename(
-            "ai-toolbox-backup-20260913-120000-abc123ef_工作机.zip.enc",
-        )
-        .expect("multibyte host label on the new layout must parse");
+        let with_host =
+            parse_backup_filename("ai-toolbox-backup-20260913-120000-abc123ef_工作机.zip.enc")
+                .expect("multibyte host label on the new layout must parse");
         assert_eq!(with_host.timestamp, "20260913-120000");
         assert_eq!(with_host.unique_id.as_deref(), Some("abc123ef"));
         assert_eq!(with_host.host_label.as_deref(), Some("工作机"));
@@ -258,12 +270,20 @@ mod tests {
     fn multibyte_foreign_names_return_none_without_panicking() {
         // Non-boundary slicing must degrade to None, never panic, for anything
         // that is not a managed backup name.
-        assert_eq!(parse_backup_filename("ai-toolbox-backup-中文备份.zip"), None);
-        assert_eq!(parse_backup_filename("备份-ai-toolbox-backup-20260913-120000.zip"), None);
+        assert_eq!(
+            parse_backup_filename("ai-toolbox-backup-中文备份.zip"),
+            None
+        );
+        assert_eq!(
+            parse_backup_filename("备份-ai-toolbox-backup-20260913-120000.zip"),
+            None
+        );
         assert_eq!(
             parse_backup_filename("ai-toolbox-backup-工作-20260102-030405.zip.enc.enc"),
             None
         );
-        assert!(is_managed_backup_filename("ai-toolbox-backup-中文-20260102-030405.zip"));
+        assert!(is_managed_backup_filename(
+            "ai-toolbox-backup-中文-20260102-030405.zip"
+        ));
     }
 }

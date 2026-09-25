@@ -2023,8 +2023,7 @@ pub async fn import_codex_official_account_auth_json(
     }
 
     let auth = parse_imported_auth_json(&auth_json)?;
-    if let Some(existing_account) =
-        find_matching_official_account(&db, &provider_id, &auth).await?
+    if let Some(existing_account) = find_matching_official_account(&db, &provider_id, &auth).await?
     {
         let _ = app.emit("config-changed", "window");
         return load_official_account(&db, &existing_account.id).await;

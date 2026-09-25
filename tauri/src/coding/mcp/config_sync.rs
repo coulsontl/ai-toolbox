@@ -156,7 +156,11 @@ fn remove_legacy_kimi_toml_mcp_table(mcp_config_path: &Path) {
         let mut doc = content
             .parse::<toml_edit::DocumentMut>()
             .map_err(|e| format!("Failed to parse TOML config: {}", e))?;
-        if doc.get("mcp_servers").and_then(|item| item.as_table()).is_none() {
+        if doc
+            .get("mcp_servers")
+            .and_then(|item| item.as_table())
+            .is_none()
+        {
             return Ok(false);
         }
         doc.remove("mcp_servers");
@@ -1153,10 +1157,7 @@ fn build_kimi_http_config(
 ) -> Result<Value, String> {
     let mut result = serde_json::Map::new();
     if server.server_type == "sse" {
-        result.insert(
-            "transport".to_string(),
-            Value::String("sse".to_string()),
-        );
+        result.insert("transport".to_string(), Value::String("sse".to_string()));
     }
     result.insert("url".to_string(), Value::String(url.to_string()));
 
@@ -1259,10 +1260,7 @@ fn import_servers_from_kimi(config_path: &PathBuf) -> Result<Vec<McpServer>, Str
     let config: Value =
         json5::from_str(content).map_err(|e| format!("Failed to parse config file: {}", e))?;
 
-    let Some(servers_obj) = config
-        .get("mcpServers")
-        .and_then(Value::as_object)
-    else {
+    let Some(servers_obj) = config.get("mcpServers").and_then(Value::as_object) else {
         return Ok(vec![]);
     };
 
@@ -2085,7 +2083,10 @@ X-Test = "yes"
         assert!(config.get("type").is_none());
         assert!(config.get("transport").is_none());
         assert_eq!(config["command"], "npx");
-        assert_eq!(config["args"], json!(["-y", "--prefer-online", "@sammysnake/fast-context-mcp"]));
+        assert_eq!(
+            config["args"],
+            json!(["-y", "--prefer-online", "@sammysnake/fast-context-mcp"])
+        );
         assert_eq!(config["env"], json!({ "API_KEY": "k-123" }));
         assert_eq!(config["cwd"], "/workspace");
         assert_eq!(config["enabled"], false);

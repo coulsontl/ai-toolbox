@@ -337,7 +337,10 @@ mod tests {
             vec![],
             vec![],
         );
-        assert_eq!(config.last_sync_warnings, vec!["kept foreign path".to_string()]);
+        assert_eq!(
+            config.last_sync_warnings,
+            vec!["kept foreign path".to_string()]
+        );
     }
 
     #[test]

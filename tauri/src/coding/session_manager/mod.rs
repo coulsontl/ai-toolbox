@@ -563,6 +563,10 @@ impl SessionTool {
     }
 }
 
+fn opencode_reads_v2(config_path: &Path) -> bool {
+    crate::coding::open_code::v2_migration::is_active(config_path)
+}
+
 impl ToolSessionContext {
     fn cache_key(&self) -> String {
         match self {
@@ -593,12 +597,17 @@ impl ToolSessionContext {
                 state_root,
                 sqlite_db_path,
             } => format!(
-                "opencode:{}:{}:{}:{}:{}",
+                "opencode:{}:{}:{}:{}:{}:{}",
                 runtime_location.host_path.display(),
                 config_path.display(),
                 data_root.display(),
                 state_root.display(),
-                sqlite_db_path.display()
+                sqlite_db_path.display(),
+                if opencode_reads_v2(config_path) {
+                    "v2"
+                } else {
+                    "v1"
+                }
             ),
             Self::Pi { sessions_root } => format!("pi:{}", sessions_root.display()),
             Self::OhMyPi { sessions_root } => format!("oh_my_pi:{}", sessions_root.display()),
@@ -1355,7 +1364,8 @@ fn list_sessions_blocking(
         .filter(|session| session_activity_in_range(&session.meta, time_bounds.as_ref()))
         .collect();
 
-    let available_paths = build_session_paths_from_contexts(&time_filtered_sessions, DEFAULT_SESSION_PATH_LIMIT);
+    let available_paths =
+        build_session_paths_from_contexts(&time_filtered_sessions, DEFAULT_SESSION_PATH_LIMIT);
     let path_filtered_sessions = if let Some(path_filter_text) = path_filter.as_deref() {
         filter_sessions_by_path_with_context(time_filtered_sessions, path_filter_text)
     } else {
@@ -1461,8 +1471,8 @@ fn delete_session_blocking(contexts: SessionContextSet, source_path: String) -> 
         Err(error) => {
             let mut handled_by_opencode = false;
             for entry in &contexts.entries {
-                if matches!(entry.context, ToolSessionContext::OpenCode { .. }) {
-                    open_code::delete_session(&source_path)?;
+                if let ToolSessionContext::OpenCode { config_path, .. } = &entry.context {
+                    open_code::delete_session(&source_path, opencode_reads_v2(config_path))?;
                     invalidate_cache(&entry.context);
                     handled_by_opencode = true;
                 }
@@ -1517,8 +1527,8 @@ fn delete_session_from_meta(
         ToolSessionContext::OpenClaw { .. } => {
             open_claw::delete_session(Path::new(&session.source_path))?;
         }
-        ToolSessionContext::OpenCode { .. } => {
-            open_code::delete_session(&session.source_path)?;
+        ToolSessionContext::OpenCode { config_path, .. } => {
+            open_code::delete_session(&session.source_path, opencode_reads_v2(config_path))?;
         }
         ToolSessionContext::Pi { .. } => {
             pi::delete_session(Path::new(&session.source_path))?;
@@ -2103,8 +2113,12 @@ fn rename_session_blocking(
             invalidate_cache(&context);
             Ok(())
         }
-        ToolSessionContext::OpenCode { .. } => {
-            open_code::rename_session(&session.source_path, &title)?;
+        ToolSessionContext::OpenCode { config_path, .. } => {
+            open_code::rename_session(
+                &session.source_path,
+                &title,
+                opencode_reads_v2(config_path),
+            )?;
             invalidate_cache(&context);
             Ok(())
         }
@@ -2260,10 +2274,11 @@ fn scan_sessions(context: &ToolSessionContext) -> Vec<SessionMeta> {
         ToolSessionContext::GeminiCli { tmp_root } => gemini_cli::scan_sessions(tmp_root),
         ToolSessionContext::OpenClaw { agents_root } => open_claw::scan_sessions(agents_root),
         ToolSessionContext::OpenCode {
+            config_path,
             data_root,
             sqlite_db_path,
             ..
-        } => open_code::scan_sessions(data_root, sqlite_db_path),
+        } => open_code::scan_sessions(data_root, sqlite_db_path, opencode_reads_v2(config_path)),
         ToolSessionContext::Pi { sessions_root } => pi::scan_sessions(sessions_root),
         ToolSessionContext::OhMyPi { sessions_root } => oh_my_pi::scan_sessions(sessions_root),
         ToolSessionContext::Grok { sessions_root } => grok::scan_sessions(sessions_root),
@@ -2298,10 +2313,16 @@ fn scan_recent_sessions(context: &ToolSessionContext, limit: usize) -> Vec<Sessi
             open_claw::scan_recent_sessions(agents_root, limit)
         }
         ToolSessionContext::OpenCode {
+            config_path,
             data_root,
             sqlite_db_path,
             ..
-        } => open_code::scan_recent_sessions(data_root, sqlite_db_path, limit),
+        } => open_code::scan_recent_sessions(
+            data_root,
+            sqlite_db_path,
+            limit,
+            opencode_reads_v2(config_path),
+        ),
         ToolSessionContext::Pi { sessions_root } => pi::scan_recent_sessions(sessions_root, limit),
         ToolSessionContext::OhMyPi { sessions_root } => {
             oh_my_pi::scan_recent_sessions(sessions_root, limit)
@@ -2341,7 +2362,9 @@ fn load_messages(
         ToolSessionContext::ClaudeCode { .. } => claude_code::load_messages(Path::new(source_path)),
         ToolSessionContext::GeminiCli { .. } => gemini_cli::load_messages(Path::new(source_path)),
         ToolSessionContext::OpenClaw { .. } => open_claw::load_messages(Path::new(source_path)),
-        ToolSessionContext::OpenCode { .. } => open_code::load_messages(source_path),
+        ToolSessionContext::OpenCode { config_path, .. } => {
+            open_code::load_messages(source_path, opencode_reads_v2(config_path))
+        }
         ToolSessionContext::Pi { .. } => pi::load_messages(Path::new(source_path)),
         ToolSessionContext::OhMyPi { .. } => oh_my_pi::load_messages(Path::new(source_path)),
         ToolSessionContext::Grok { .. } => grok::load_messages(Path::new(source_path)),
@@ -2478,9 +2501,11 @@ fn scan_session_content_for_query(
         ToolSessionContext::OpenClaw { .. } => {
             open_claw::scan_messages_for_query(Path::new(source_path), query_lower)
         }
-        ToolSessionContext::OpenCode { .. } => {
-            open_code::scan_messages_for_query(source_path, query_lower)
-        }
+        ToolSessionContext::OpenCode { config_path, .. } => open_code::scan_messages_for_query(
+            source_path,
+            query_lower,
+            opencode_reads_v2(config_path),
+        ),
         ToolSessionContext::Pi { .. } => {
             pi::scan_messages_for_query(Path::new(source_path), query_lower)
         }
@@ -3302,7 +3327,10 @@ mod tests {
 
     #[test]
     fn session_time_range_parse_accepts_presets_and_rejects_unknown() {
-        assert_eq!(SessionTimeRange::parse(None).unwrap(), SessionTimeRange::All);
+        assert_eq!(
+            SessionTimeRange::parse(None).unwrap(),
+            SessionTimeRange::All
+        );
         assert_eq!(
             SessionTimeRange::parse(Some(String::new())).unwrap(),
             SessionTimeRange::All
@@ -3348,7 +3376,10 @@ mod tests {
         assert_eq!(last30.min_ts, Some(now_ms - 30 * DAY_MS));
         assert!(last30.max_ts.is_none());
         assert!(older30.min_ts.is_none());
-        assert_eq!(older30.max_ts, last30.min_ts, "the two views share one cutoff");
+        assert_eq!(
+            older30.max_ts, last30.min_ts,
+            "the two views share one cutoff"
+        );
     }
 
     #[test]
@@ -3361,7 +3392,10 @@ mod tests {
         let older30 = SessionTimeRange::OlderThan30Days.bounds(now_ms);
 
         // Exactly on the cutoff: inside "last 30 days", outside "older than 30 days".
-        assert!(session_activity_in_range(&time_filter_meta(Some(cutoff)), last30.as_ref()));
+        assert!(session_activity_in_range(
+            &time_filter_meta(Some(cutoff)),
+            last30.as_ref()
+        ));
         assert!(!session_activity_in_range(
             &time_filter_meta(Some(cutoff)),
             older30.as_ref()
@@ -3379,8 +3413,14 @@ mod tests {
         // and stay visible under `all`.
         assert!(session_activity_in_range(&time_filter_meta(None), None));
         assert!(session_activity_in_range(&time_filter_meta(Some(0)), None));
-        assert!(!session_activity_in_range(&time_filter_meta(None), last30.as_ref()));
-        assert!(!session_activity_in_range(&time_filter_meta(Some(0)), older30.as_ref()));
+        assert!(!session_activity_in_range(
+            &time_filter_meta(None),
+            last30.as_ref()
+        ));
+        assert!(!session_activity_in_range(
+            &time_filter_meta(Some(0)),
+            older30.as_ref()
+        ));
     }
 
     #[test]
@@ -3986,9 +4026,11 @@ mod tests {
                 .items
                 .iter()
                 .filter(|session| {
-                    index.selected_path(&session.session_id).is_some_and(|selected| {
-                        codex_rollout::same_rollout_path(selected, &session.source_path)
-                    })
+                    index
+                        .selected_path(&session.session_id)
+                        .is_some_and(|selected| {
+                            codex_rollout::same_rollout_path(selected, &session.source_path)
+                        })
                 })
                 .count();
             println!("rows whose path came from the database: {database_decided}");
@@ -4944,7 +4986,7 @@ mod tests {
             sqlite_db_path: export_env.sqlite_db_path(),
         };
         let source_session =
-            open_code::scan_sessions(&export_data_root, &export_env.sqlite_db_path())
+            open_code::scan_sessions(&export_data_root, &export_env.sqlite_db_path(), false)
                 .into_iter()
                 .find(|session| session.session_id == session_id)
                 .expect("opencode source session should exist");
@@ -5012,14 +5054,14 @@ mod tests {
         drop(import_env_guards);
 
         let imported_sessions =
-            open_code::scan_sessions(&import_env.data_root(), &import_env.sqlite_db_path());
+            open_code::scan_sessions(&import_env.data_root(), &import_env.sqlite_db_path(), false);
         let imported_session = imported_sessions
             .iter()
             .find(|session| session.session_id == session_id)
             .expect("opencode imported session should exist");
         assert_project_dir_eq(imported_session.project_dir.as_deref(), &project_dir);
 
-        let imported_messages = open_code::load_messages(&imported_session.source_path)
+        let imported_messages = open_code::load_messages(&imported_session.source_path, false)
             .expect("load opencode messages");
         assert_eq!(imported_messages.len(), 1);
         assert_eq!(imported_messages[0].content, "OpenCode round trip prompt");
@@ -5175,14 +5217,14 @@ mod tests {
         drop(import_env_guards);
 
         let imported_sessions =
-            open_code::scan_sessions(&import_env.data_root(), &import_env.sqlite_db_path());
+            open_code::scan_sessions(&import_env.data_root(), &import_env.sqlite_db_path(), false);
         let imported_session = imported_sessions
             .iter()
             .find(|session| session.session_id == session_id)
             .expect("opencode imported session should exist");
         assert_project_dir_eq(imported_session.project_dir.as_deref(), &project_dir);
 
-        let imported_messages = open_code::load_messages(&imported_session.source_path)
+        let imported_messages = open_code::load_messages(&imported_session.source_path, false)
             .expect("load opencode raw-import messages");
         assert_eq!(imported_messages.len(), 1);
         assert_eq!(imported_messages[0].content, "OpenCode raw import prompt");
@@ -5273,14 +5315,14 @@ mod tests {
         drop(import_env_guards);
 
         let imported_sessions =
-            open_code::scan_sessions(&import_env.data_root(), &import_env.sqlite_db_path());
+            open_code::scan_sessions(&import_env.data_root(), &import_env.sqlite_db_path(), false);
         let imported_session = imported_sessions
             .iter()
             .find(|session| session.session_id == session_id)
             .expect("recovered opencode imported session should exist");
         assert_eq!(imported_session.title.as_deref(), Some("Recovered Import"));
 
-        let imported_messages = open_code::load_messages(&imported_session.source_path)
+        let imported_messages = open_code::load_messages(&imported_session.source_path, false)
             .expect("load recovered opencode messages");
         assert_eq!(imported_messages.len(), 2);
         assert_eq!(imported_messages[0].content, "Recovered import prompt");
@@ -5372,7 +5414,7 @@ mod tests {
         drop(import_env_guards);
 
         let imported_sessions =
-            open_code::scan_sessions(&import_env.data_root(), &import_env.sqlite_db_path());
+            open_code::scan_sessions(&import_env.data_root(), &import_env.sqlite_db_path(), false);
         let imported_session = imported_sessions
             .iter()
             .find(|session| session.session_id == session_id)
@@ -5382,7 +5424,7 @@ mod tests {
             Some("Recovered Assistant First")
         );
 
-        let imported_messages = open_code::load_messages(&imported_session.source_path)
+        let imported_messages = open_code::load_messages(&imported_session.source_path, false)
             .expect("load assistant-first recovered opencode messages");
         assert_eq!(imported_messages.len(), 1);
         assert_eq!(

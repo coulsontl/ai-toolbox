@@ -2518,6 +2518,7 @@
     },
     "v2Migration": {
       "title": "迁移 OpenCode 配置到 V2",
+      "banner": "若本机 OpenCode 已升级到 V2，请点右上角「更多选项」，开启「迁移 OpenCode 配置到 V2」。未开启时，本页仍按 V1 读写本地文件。",
       "hint": "开启后会备份原配置为 openvode_v1.<扩展名> 并转换当前文件；关闭后恢复 V1，并将 V2 文件保存为 opencode_v2.<扩展名>。",
       "enabled": "OpenCode 配置已迁移到 V2",
       "disabled": "已恢复 OpenCode V1 配置"

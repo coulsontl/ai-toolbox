@@ -2521,6 +2521,7 @@
     },
     "v2Migration": {
       "title": "Migrate OpenCode config to V2",
+      "banner": "If OpenCode on this machine is V2, open More options at the top right and turn on Migrate OpenCode config to V2. Until then, this page still reads and writes the local file as V1.",
       "hint": "Enabling backs up the current file as openvode_v1.<extension> and converts it to V2. Turning it off restores V1 and saves the V2 file as opencode_v2.<extension>.",
       "enabled": "OpenCode config migrated to V2",
       "disabled": "OpenCode V1 config restored"

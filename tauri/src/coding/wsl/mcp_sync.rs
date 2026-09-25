@@ -160,11 +160,17 @@ pub async fn sync_mcp_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<()
             }
         }
         Err(e) => {
-            log::warn!("Skipped OpenCode/Codex/Grok/Gemini CLI/Kimi/Pi MCP sync: {}", e);
+            log::warn!(
+                "Skipped OpenCode/Codex/Grok/Gemini CLI/Kimi/Pi MCP sync: {}",
+                e
+            );
             all_errors.push(format!("OpenCode/Codex/Grok/Gemini CLI/Kimi/Pi: {}", e));
             let _ = app.emit(
                 "wsl-sync-warning",
-                format!("OpenCode/Codex/Grok/Gemini CLI/Kimi/Pi MCP 同步已跳过：{}", e),
+                format!(
+                    "OpenCode/Codex/Grok/Gemini CLI/Kimi/Pi MCP 同步已跳过：{}",
+                    e
+                ),
             );
         }
     }

@@ -745,7 +745,10 @@ fn migrate_model(value: Value, parent_package: Option<&str>) -> Result<Value, St
     if !options.is_empty() {
         out.insert("settings".to_string(), Value::Object(options.clone()));
     }
-    if let Some(headers) = headers.as_ref().and_then(|value| value.as_object().cloned()) {
+    if let Some(headers) = headers
+        .as_ref()
+        .and_then(|value| value.as_object().cloned())
+    {
         out.insert("headers".to_string(), Value::Object(headers));
     }
     if let Some(package) = model_package.as_ref() {
@@ -2145,8 +2148,8 @@ mod tests {
     }
 
     /// Anthropic providers lower their key into an `x-api-key` header instead of
-/// `settings`, so the flat shape has to carry the header overlay for the
-/// released reader to authenticate at all.
+    /// `settings`, so the flat shape has to carry the header overlay for the
+    /// released reader to authenticate at all.
     #[test]
     fn v1_anthropic_provider_writes_the_flat_shape_with_its_auth_header() {
         let v1 = json!({

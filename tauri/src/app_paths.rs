@@ -455,7 +455,10 @@ mod tests {
     fn configured_data_dir_accepts_only_absolute_paths() {
         let absolute = tempfile::tempdir().unwrap();
         let raw = absolute.path().to_string_lossy().into_owned();
-        assert_eq!(configured_data_dir(Some(&raw)), Some(absolute.path().to_path_buf()));
+        assert_eq!(
+            configured_data_dir(Some(&raw)),
+            Some(absolute.path().to_path_buf())
+        );
 
         // Blank, unset and relative values all fail closed to the platform
         // default instead of resolving against the working directory.

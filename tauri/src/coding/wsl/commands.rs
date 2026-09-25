@@ -2500,7 +2500,10 @@ mod tests {
             &ids
         ));
         assert!(!should_backfill_versioned_mapping(
-            16, 17, "omp-config", &ids
+            16,
+            17,
+            "omp-config",
+            &ids
         ));
         assert!(!should_backfill_versioned_mapping(
             17,

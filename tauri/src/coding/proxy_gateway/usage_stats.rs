@@ -193,9 +193,7 @@ impl StatsAccumulator {
 
     fn add_proxy_success(&mut self, proxy_success_count: u64, proxy_request_count: u64) {
         self.proxy_success_count = self.proxy_success_count.saturating_add(proxy_success_count);
-        self.proxy_request_count = self
-            .proxy_request_count
-            .saturating_add(proxy_request_count);
+        self.proxy_request_count = self.proxy_request_count.saturating_add(proxy_request_count);
     }
 
     fn proxy_success_rate(&self) -> Option<f32> {

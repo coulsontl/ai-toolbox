@@ -14,6 +14,7 @@ import {
   ImportOutlined,
   ApiOutlined,
   DeleteOutlined,
+  CloseOutlined,
   SafetyCertificateOutlined,
   RobotOutlined,
   ToolOutlined,
@@ -94,6 +95,8 @@ import { useRefreshStore } from '@/stores';
 import { useSettingsStore } from '@/stores';
 import type { OpenCodeAllApiHubProvider } from '@/services/opencodeApi';
 import { openCodePromptApi } from '@/services/openCodePromptApi';
+
+const OPENCODE_V2_HINT_DISMISSED_KEY = 'opencode.v2MigrationHintDismissed';
 import SectionSidebarLayout, {
   type SidebarSectionMarker,
 } from '@/components/layout/SectionSidebarLayout/SectionSidebarLayout';
@@ -348,6 +351,13 @@ const OpenCodePage: React.FC = () => {
   const [settingsModalOpen, setSettingsModalOpen] = React.useState(false);
   const [v2MigrationEnabled, setV2MigrationEnabled] = React.useState(false);
   const [v2MigrationLoading, setV2MigrationLoading] = React.useState(false);
+  const [v2HintDismissed, setV2HintDismissed] = React.useState(() => {
+    try {
+      return localStorage.getItem(OPENCODE_V2_HINT_DISMISSED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const sidebarHidden = sidebarHiddenByPage.opencode;
 
   // Provider modal state
@@ -2066,6 +2076,15 @@ const OpenCodePage: React.FC = () => {
     await doSaveConfig(mergeOpenCodeOtherConfigFields(config, value));
   };
 
+  const dismissV2Hint = () => {
+    setV2HintDismissed(true);
+    try {
+      localStorage.setItem(OPENCODE_V2_HINT_DISMISSED_KEY, '1');
+    } catch {
+      // The banner still stays closed for this session if storage is unavailable.
+    }
+  };
+
   const handleV2MigrationToggle = async (enabled: boolean) => {
     setV2MigrationLoading(true);
     try {
@@ -2204,8 +2223,21 @@ const OpenCodePage: React.FC = () => {
                   </Button>
                 </Space>
               </div>
-              <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', borderLeft: '2px solid rgba(0,0,0,0.12)', paddingLeft: 8, marginTop: 4 }}>
-                {t('opencode.pageHint')}
+              <div style={{ fontSize: 12, color: 'var(--color-text-secondary)', borderLeft: '2px solid var(--color-border)', paddingLeft: 8, marginTop: 4 }}>
+                <div>{t('opencode.pageHint')}</div>
+                {!v2MigrationEnabled && !v2HintDismissed && (
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 4, lineHeight: 1.5 }}>
+                    <span style={{ flex: 1 }}>{t('opencode.v2Migration.banner')}</span>
+                    <Button
+                      type="text"
+                      size="small"
+                      aria-label={t('common.close')}
+                      icon={<CloseOutlined />}
+                      onClick={dismissV2Hint}
+                      style={{ flex: 'none', width: 16, height: 16, minWidth: 16, padding: 0, color: 'inherit' }}
+                    />
+                  </div>
+                )}
               </div>
             </div>
 

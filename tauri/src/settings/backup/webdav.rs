@@ -509,10 +509,11 @@ pub async fn restore_from_webdav(
     info!("Extracting backup archive...");
 
     // Decrypt if needed (header-based detection) before any restore write happens.
-    let zip_data =
-        tauri::async_runtime::spawn_blocking(move || prepare_backup_bytes(zip_data.to_vec(), restore_password.as_deref()))
-            .await
-            .map_err(|error| error.to_string())??;
+    let zip_data = tauri::async_runtime::spawn_blocking(move || {
+        prepare_backup_bytes(zip_data.to_vec(), restore_password.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
 
     let cursor = std::io::Cursor::new(zip_data);
     let mut archive = ZipArchive::new(cursor).map_err(|e| {

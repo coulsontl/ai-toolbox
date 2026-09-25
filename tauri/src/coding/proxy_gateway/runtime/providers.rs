@@ -2051,12 +2051,9 @@ mod tests {
             "config": "model = \"default-model\"\nmodel_provider = \"custom\"\n"
         });
         let settings_text = serde_json::to_string(&settings).unwrap();
-        let catalog_models =
-            crate::coding::codex::commands::codex_aggregate_declared_bare_models(&[(
-                "site-a".to_string(),
-                "Site A".to_string(),
-                settings.clone(),
-            )]);
+        let catalog_models = crate::coding::codex::commands::codex_aggregate_declared_bare_models(
+            &[("site-a".to_string(), "Site A".to_string(), settings.clone())],
+        );
 
         // The aggregate catalog is built from `modelCatalog.models` plus the
         // config default. A legacy root-level `models` array is not published,

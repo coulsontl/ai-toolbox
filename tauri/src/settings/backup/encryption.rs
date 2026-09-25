@@ -124,7 +124,10 @@ mod tests {
     #[test]
     fn wrong_password_fails_with_auth_error() {
         let encrypted = encrypt(PLAINTEXT, "right").unwrap();
-        assert_eq!(decrypt(&encrypted, "wrong").unwrap_err(), CryptoError::AuthFailed);
+        assert_eq!(
+            decrypt(&encrypted, "wrong").unwrap_err(),
+            CryptoError::AuthFailed
+        );
     }
 
     #[test]
@@ -132,7 +135,10 @@ mod tests {
         let mut encrypted = encrypt(PLAINTEXT, "right").unwrap();
         let last = encrypted.len() - 1;
         encrypted[last] ^= 0xFF;
-        assert_eq!(decrypt(&encrypted, "right").unwrap_err(), CryptoError::AuthFailed);
+        assert_eq!(
+            decrypt(&encrypted, "right").unwrap_err(),
+            CryptoError::AuthFailed
+        );
 
         let mut tampered_header = encrypt(PLAINTEXT, "right").unwrap();
         tampered_header[ENCRYPTION_MAGIC.len()] ^= 0xFF;
@@ -150,7 +156,10 @@ mod tests {
             decrypt(&ENCRYPTION_MAGIC[..ENCRYPTION_MAGIC.len() - 4], "pw").unwrap_err(),
             CryptoError::InvalidFormat
         );
-        assert_eq!(decrypt(&ENCRYPTION_MAGIC.to_vec(), "pw").unwrap_err(), CryptoError::InvalidFormat);
+        assert_eq!(
+            decrypt(&ENCRYPTION_MAGIC.to_vec(), "pw").unwrap_err(),
+            CryptoError::InvalidFormat
+        );
         assert_eq!(
             decrypt(b"PK\x03\x04 not encrypted at all", "pw").unwrap_err(),
             CryptoError::InvalidFormat
@@ -164,7 +173,10 @@ mod tests {
             CryptoError::PasswordRequired
         );
         let encrypted = encrypt(PLAINTEXT, "pw").unwrap();
-        assert_eq!(decrypt(&encrypted, "").unwrap_err(), CryptoError::PasswordRequired);
+        assert_eq!(
+            decrypt(&encrypted, "").unwrap_err(),
+            CryptoError::PasswordRequired
+        );
     }
 
     #[test]

@@ -632,7 +632,10 @@ base_url = "https://override.example.com"
         request.connection.models = serde_json::from_value(json!([{ "id": "m1" }])).unwrap();
         let grok: Value = serde_json::from_str(&build_catalog_settings(&request).unwrap()).unwrap();
         assert_eq!(grok["baseUrl"], "https://api.example.com");
-        assert_eq!(grok["modelCatalog"]["models"][0]["baseUrl"], "https://api.example.com");
+        assert_eq!(
+            grok["modelCatalog"]["models"][0]["baseUrl"],
+            "https://api.example.com"
+        );
 
         request.app = "kimi".to_string();
         let kimi: Value = serde_json::from_str(&build_catalog_settings(&request).unwrap()).unwrap();

@@ -50,6 +50,7 @@ sequenceDiagram
 - 收敛时必须把"id 为空"的会话单独放行，不能把它们当成同一个身份合并；否则会把一批没有 id 的会话折叠成一行。
 - 同一个 id 出现在不同 runtime context（local vs WSL/SSH）下不能合并，那是两个真实存在的会话；收敛 key 必须带上 context，而不是只带 id。
 - 对 OpenCode，会话来源判断和导入导出依赖显式运行时环境与官方导出格式，不能套用其它工具的 JSONL 逻辑。
+- OpenCode 会话读哪一代由「迁移到 V2」开关决定，不由库里有没有 `session_v2` 表决定。开关状态是当前配置路径旁是否存在 `openvode_v1.<ext>`（`open_code::v2_migration::is_active`）。开启后列表、详情、正文搜索、重命名和删除只碰 `session_v2` / `session_message`，并且只列出 `parent_id IS NULL` 的顶层会话；关闭后仍只读 V1 的 `session` / `message` / `part` 和 JSON storage。升级库两套表并存，不能因为表存在就自动切到 V2，也不能在一种模式下改另一套表。
 - OpenCode CLI 版本可能在 official export 的 `info` 中自动补默认 `cost` / `tokens` 字段；往返测试应只归一化这类 CLI 默认补字段，不要把真实消息、路径或用户内容差异吞掉。
 - 对 OpenCode 删除，不要为了确认 `source_path` 再先全量扫描会话缓存。`source_path` 自身就能解析出 `session_id` 并直接执行删除；预扫描只会把单删/批删放大成整库遍历。
 - 对 OpenCode 删除，直删语义仍要保持幂等。若底层 SQLite/JSON 已不存在，应视为成功收敛，而不是把重复删除、并发删除或陈旧列表操作升级成 `Session not found`。
