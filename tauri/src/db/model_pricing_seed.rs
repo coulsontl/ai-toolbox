@@ -14,6 +14,16 @@ use crate::http_client;
 const CACHE_FILE_NAME: &str = "model_pricing.json";
 const BUNDLED_MODEL_PRICING_JSON: &str = include_str!("../../resources/model_pricing.json");
 
+/// Remote sources for the official price list, tried in order.
+///
+/// The first entry is canonical; the second is a CDN mirror because
+/// raw.githubusercontent.com is unreachable on some networks, where the sync
+/// used to fail with nothing but a swallowed error (issue #390).
+const MODEL_PRICING_REMOTE_URLS: [&str; 2] = [
+    "https://raw.githubusercontent.com/coulsontl/ai-toolbox/main/tauri/resources/model_pricing.json",
+    "https://cdn.jsdelivr.net/gh/coulsontl/ai-toolbox@main/tauri/resources/model_pricing.json",
+];
+
 static CACHE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,9 +37,21 @@ struct ModelPricingSeedItem {
     cache_creation_cost_per_million: String,
 }
 
+/// One remote source the sync touched, in attempt order. `error` is `None` for
+/// the source that succeeded, so the caller can tell a primary-source success
+/// (`attempts.len() == 1`) from a mirror fallback.
 #[derive(Debug, Clone, Serialize)]
-pub struct ModelPricingSeedResult {
+pub struct ModelPricingSyncAttempt {
+    pub url: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelPricingSyncResult {
     pub inserted_count: usize,
+    /// Source that produced the rows, i.e. the last entry of `attempts`.
+    pub source_url: String,
+    pub attempts: Vec<ModelPricingSyncAttempt>,
 }
 
 pub fn set_cache_dir(dir: PathBuf) {
@@ -80,11 +102,64 @@ pub fn ensure_seeded(conn: &Connection) -> Result<usize, String> {
 
 pub async fn fetch_remote_model_pricing(
     db_state: &SqliteDbState,
-    url: String,
-) -> Result<ModelPricingSeedResult, String> {
+) -> Result<ModelPricingSyncResult, String> {
     let client = http_client::client_with_timeout(db_state, 30).await?;
+    let mut attempts = Vec::with_capacity(MODEL_PRICING_REMOTE_URLS.len());
+
+    for url in MODEL_PRICING_REMOTE_URLS {
+        match fetch_one_source(&client, db_state, url).await {
+            Ok(inserted_count) => {
+                if !attempts.is_empty() {
+                    log::info!("[ModelPricing] Synced remote pricing from fallback source {}", url);
+                }
+                attempts.push(ModelPricingSyncAttempt {
+                    url: url.to_string(),
+                    error: None,
+                });
+                return Ok(ModelPricingSyncResult {
+                    inserted_count,
+                    source_url: url.to_string(),
+                    attempts,
+                });
+            }
+            Err(error) => {
+                log::warn!(
+                    "[ModelPricing] Failed to fetch remote pricing from {}: {}",
+                    url,
+                    error
+                );
+                attempts.push(ModelPricingSyncAttempt {
+                    url: url.to_string(),
+                    error: Some(error),
+                });
+            }
+        }
+    }
+
+    Err(format!("All remote model pricing sources failed: {}", describe_attempts(&attempts)))
+}
+
+fn describe_attempts(attempts: &[ModelPricingSyncAttempt]) -> String {
+    attempts
+        .iter()
+        .map(|attempt| {
+            format!(
+                "{} ({})",
+                attempt.url,
+                attempt.error.as_deref().unwrap_or("no error recorded")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+async fn fetch_one_source(
+    client: &reqwest::Client,
+    db_state: &SqliteDbState,
+    url: &str,
+) -> Result<usize, String> {
     let response = client
-        .get(&url)
+        .get(url)
         .send()
         .await
         .map_err(|error| format!("Failed to fetch remote model pricing: {error}"))?;
@@ -106,9 +181,7 @@ pub async fn fetch_remote_model_pricing(
         log::warn!("[ModelPricing] Failed to write cache: {}", error);
     }
 
-    let inserted_count = db_state
-        .with_conn(|conn| insert_pricing_items(conn, &pricing_items, "remote model pricing"))?;
-    Ok(ModelPricingSeedResult { inserted_count })
+    db_state.with_conn(|conn| insert_pricing_items(conn, &pricing_items, "remote model pricing"))
 }
 
 fn seed_from_json_str(
@@ -284,6 +357,27 @@ mod tests {
     }
 
     #[test]
+    fn remote_pricing_sources_mirror_the_bundled_price_list() {
+        // A single source is what let issue #390 go unnoticed: when the only host
+        // is unreachable the sync fails with nothing but a swallowable error.
+        assert!(MODEL_PRICING_REMOTE_URLS.len() >= 2);
+        for url in MODEL_PRICING_REMOTE_URLS {
+            assert!(
+                url.starts_with("https://"),
+                "{url} must be served over https"
+            );
+            assert!(
+                url.ends_with("/tauri/resources/model_pricing.json"),
+                "{url} must mirror the bundled price list path"
+            );
+        }
+        // Canonical host first, CDN mirror second: callers read "more than one
+        // attempt" as "the primary source failed".
+        assert!(MODEL_PRICING_REMOTE_URLS[0].contains("raw.githubusercontent.com"));
+        assert!(MODEL_PRICING_REMOTE_URLS[1].contains("cdn.jsdelivr.net"));
+    }
+
+    #[test]
     fn bundled_model_pricing_json_is_valid() {
         let pricing_items =
             parse_pricing_items(BUNDLED_MODEL_PRICING_JSON, "bundled model pricing")
@@ -306,6 +400,16 @@ mod tests {
             ("grok-4.5", "2", "6", "0.50", "0"),
             ("grok-4.5-latest", "2", "6", "0.50", "0"),
             ("grok-build-latest", "2", "6", "0.50", "0"),
+            // Published models that had no price at all before issue #390: a
+            // missing row means native session rows for them cost `0` with
+            // `cost_source = "unavailable"`. Values mirror the vendor entries in
+            // `resources/models.dev.json`.
+            ("gpt-5.3-codex-spark", "1.75", "14", "0.175", "0"),
+            ("gpt-5.4-pro", "30", "180", "0", "0"),
+            ("glm-5-turbo", "1.2", "4", "0.24", "0"),
+            ("gemini-2.0-flash-lite", "0.075", "0.3", "0", "0"),
+            ("claude-sonnet-4-0", "3", "15", "0.30", "3.75"),
+            ("claude-3-7-sonnet-latest", "3", "15", "0.30", "3.75"),
         ] {
             let pricing = pricing_items
                 .iter()

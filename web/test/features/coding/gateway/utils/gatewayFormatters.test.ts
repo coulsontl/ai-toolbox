@@ -21,6 +21,7 @@ import {
   resolveGatewayRequestRange,
   resolveGatewayUsageRange,
   shouldShowBodyComparison,
+  unpricedModelIds,
 } from '../../../../../features/coding/gateway/utils/gatewayFormatters.ts';
 
 test('WebSocket request status uses the delivered terminal and keeps handshake fallback distinct', () => {
@@ -314,4 +315,24 @@ test('requestExportPrefix avoids unknown filenames for non-model requests', () =
     requested_model: 'gpt-5',
     upstream_model_id: 'openai/gpt-5',
   }), 'gpt-5-openai-gpt-5');
+});
+
+test('unpriced model ids dedupe across CLIs, sort, and skip placeholders and priced rows', () => {
+  assert.deepEqual(
+    unpricedModelIds([
+      { model: 'gpt-5.4-pro', has_pricing: false },
+      { model: 'unknown', has_pricing: false },
+      { model: '  Unknown ', has_pricing: false },
+      { model: '', has_pricing: false },
+      { model: 'claude-sonnet-4-5', has_pricing: true },
+      { model: 'gpt-5.4-pro', has_pricing: false },
+      { model: 'glm-5-turbo', has_pricing: false },
+      { model: 'free-but-priced', has_pricing: true },
+    ]),
+    ['glm-5-turbo', 'gpt-5.4-pro'],
+  );
+  assert.deepEqual(unpricedModelIds([]), []);
+  // `has_pricing: true` means the price table resolves the id, not that the
+  // displayed amount is non-zero, so priced rows never enter the list.
+  assert.deepEqual(unpricedModelIds([{ model: 'claude-opus-4-5', has_pricing: true }]), []);
 });

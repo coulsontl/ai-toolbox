@@ -193,11 +193,21 @@ const ModelPricingModal: React.FC<ModelPricingModalProps> = ({ open, onClose }) 
     setSyncingOfficialPricing(true);
     try {
       const result = await fetchRemoteModelPricing();
-      message.success(
-        t('gateway.page.pricing.officialSyncSucceeded', {
-          count: result.inserted_count,
-        }),
-      );
+      // `attempts` lists every source the backend tried in order, so more than
+      // one entry means the primary source failed and a mirror answered.
+      if (result.attempts.length > 1) {
+        message.info(
+          t('gateway.page.pricing.officialSyncFromMirror', {
+            count: result.inserted_count,
+          }),
+        );
+      } else {
+        message.success(
+          t('gateway.page.pricing.officialSyncSucceeded', {
+            count: result.inserted_count,
+          }),
+        );
+      }
       await loadPricingList();
     } catch (syncError) {
       message.error(

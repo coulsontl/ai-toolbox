@@ -72,6 +72,22 @@
     "cache_creation_cost_per_million": "3.75"
   },
   {
+    "model_id": "claude-sonnet-4-0",
+    "display_name": "Claude Sonnet 4",
+    "input_cost_per_million": "3",
+    "output_cost_per_million": "15",
+    "cache_read_cost_per_million": "0.30",
+    "cache_creation_cost_per_million": "3.75"
+  },
+  {
+    "model_id": "claude-3-7-sonnet-latest",
+    "display_name": "Claude 3.7 Sonnet",
+    "input_cost_per_million": "3",
+    "output_cost_per_million": "15",
+    "cache_read_cost_per_million": "0.30",
+    "cache_creation_cost_per_million": "3.75"
+  },
+  {
     "model_id": "claude-3-5-haiku-20241022",
     "display_name": "Claude 3.5 Haiku",
     "input_cost_per_million": "0.80",
@@ -192,6 +208,14 @@
     "cache_creation_cost_per_million": "0"
   },
   {
+    "model_id": "gpt-5.4-pro",
+    "display_name": "GPT-5.4 Pro",
+    "input_cost_per_million": "30",
+    "output_cost_per_million": "180",
+    "cache_read_cost_per_million": "0",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
     "model_id": "gpt-5.4-mini",
     "display_name": "GPT-5.4 Mini",
     "input_cost_per_million": "0.75",
@@ -242,6 +266,14 @@
   {
     "model_id": "gpt-5.3-codex-xhigh",
     "display_name": "GPT-5.3 Codex",
+    "input_cost_per_million": "1.75",
+    "output_cost_per_million": "14",
+    "cache_read_cost_per_million": "0.175",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "gpt-5.3-codex-spark",
+    "display_name": "GPT-5.3 Codex Spark",
     "input_cost_per_million": "1.75",
     "output_cost_per_million": "14",
     "cache_read_cost_per_million": "0.175",
@@ -533,6 +565,14 @@
     "input_cost_per_million": "0.10",
     "output_cost_per_million": "0.40",
     "cache_read_cost_per_million": "0.025",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "gemini-2.0-flash-lite",
+    "display_name": "Gemini 2.0 Flash Lite",
+    "input_cost_per_million": "0.075",
+    "output_cost_per_million": "0.3",
+    "cache_read_cost_per_million": "0",
     "cache_creation_cost_per_million": "0"
   },
   {
@@ -1005,6 +1045,14 @@
     "input_cost_per_million": "1",
     "output_cost_per_million": "3.2",
     "cache_read_cost_per_million": "0.2",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "glm-5-turbo",
+    "display_name": "GLM-5-Turbo",
+    "input_cost_per_million": "1.2",
+    "output_cost_per_million": "4",
+    "cache_read_cost_per_million": "0.24",
     "cache_creation_cost_per_million": "0"
   },
   {

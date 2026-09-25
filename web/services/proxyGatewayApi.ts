@@ -2,9 +2,6 @@ import { invoke } from '@tauri-apps/api/core';
 import type { GatewayPrivacyDetail } from './gatewayPrivacyApi';
 import type { ConnectivityTestResponse } from './opencodeApi';
 
-const MODEL_PRICING_REMOTE_URL =
-  'https://raw.githubusercontent.com/coulsontl/ai-toolbox/main/tauri/resources/model_pricing.json';
-
 export type GatewayCliKey =
   | 'claude'
   | 'codex'
@@ -115,8 +112,18 @@ export interface ModelPricing {
   cache_creation_cost_per_million: string;
 }
 
+/** One remote price source the backend touched, in attempt order. */
+export interface ModelPricingSyncAttempt {
+  url: string;
+  /** `null` for the source that succeeded. */
+  error: string | null;
+}
+
 export interface ModelPricingSyncResult {
   inserted_count: number;
+  /** Source that produced the rows, i.e. the last entry of `attempts`. */
+  source_url: string;
+  attempts: ModelPricingSyncAttempt[];
 }
 
 export interface ProxyGatewaySettings {
@@ -367,6 +374,8 @@ export interface GatewayModelStats {
   success_rate: number | null;
   avg_latency_ms: number | null;
   cache_hit_rate: number | null;
+  /** Whether `model_pricing` can price this model id at all (backend matcher). */
+  has_pricing: boolean;
 }
 
 export interface GatewayRequestLogSummary {
@@ -527,9 +536,20 @@ export const deleteModelPricing = async (modelId: string): Promise<void> => {
 };
 
 export const fetchRemoteModelPricing = async (): Promise<ModelPricingSyncResult> => {
-  return invoke<ModelPricingSyncResult>('fetch_remote_model_pricing', {
-    url: MODEL_PRICING_REMOTE_URL,
-  });
+  return invoke<ModelPricingSyncResult>('fetch_remote_model_pricing');
+};
+
+/**
+ * Startup sync of the official price list. Failure is non-fatal and stays out of
+ * the UI: the bundled list is already seeded, and the manual sync button in the
+ * pricing modal surfaces errors with an actionable message.
+ */
+export const syncRemoteModelPricingInBackground = async (): Promise<void> => {
+  try {
+    await fetchRemoteModelPricing();
+  } catch (error) {
+    console.warn('[gateway] remote model pricing sync failed', error);
+  }
 };
 
 export const getGatewayPricingConfig = async (

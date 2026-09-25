@@ -552,6 +552,14 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
               <strong>{t(detail.usage_metadata?.incomplete ? 'gateway.page.requests.nativeUsage.incomplete' : 'gateway.page.requests.nativeUsage.recorded')}</strong>
               <span>{t('gateway.page.requests.nativeUsage.costSource')}</span>
               <strong>{t(`gateway.page.requests.nativeUsage.cost.${detail.usage_metadata?.cost_source ?? 'model_pricing'}`)}</strong>
+              {detail.usage_metadata?.cost_source === 'unavailable' && (
+                <>
+                  <span />
+                  <strong className={styles.detailNote}>
+                    {t('gateway.page.requests.nativeUsage.costUnavailableHint')}
+                  </strong>
+                </>
+              )}
               {detail.usage_metadata?.granularity === 'session' && (
                 <>
                   <span>{t('gateway.page.requests.nativeUsage.window')}</span>

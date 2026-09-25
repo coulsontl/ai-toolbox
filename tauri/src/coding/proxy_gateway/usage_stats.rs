@@ -1145,10 +1145,17 @@ pub fn model_stats(
             item.add_input_usage(input_tokens, cache_read_tokens, cache_creation_tokens);
         }
         merge_rollup_model_stats(conn, &mut stats_map, start_date, end_date, cli_key, include_session)?;
+        // Pricing coverage is a property of the model id, so it holds for detail
+        // rows, rollup-only rows and merged groups alike. Memoised because the
+        // same model can appear under several CLIs.
+        let mut pricing_memo = HashMap::<String, bool>::new();
         let mut items = stats_map
             .into_iter()
             .filter_map(|((app_type, model), item)| {
                 let cli_key = cli_key_from_app_type(&app_type)?;
+                let has_pricing = *pricing_memo
+                    .entry(model.clone())
+                    .or_insert_with(|| session_model_has_pricing(conn, &model));
                 Some(GatewayModelStats {
                     cli_key,
                     model,
@@ -1158,6 +1165,7 @@ pub fn model_stats(
                     success_rate: item.proxy_success_rate(),
                     avg_latency_ms: item.avg_latency_ms(),
                     cache_hit_rate: item.cache_hit_rate(),
+                    has_pricing,
                 })
             })
             .collect::<Vec<_>>();
@@ -4920,5 +4928,137 @@ mod tests {
             .expect("request logs");
         // Both rows survive (the replay idempotency did not swallow the failed one).
         assert_eq!(logs.total, 2);
+    }
+
+    #[test]
+    fn model_stats_reports_which_models_have_no_pricing() {
+        let db = test_db();
+        insert_provider(&db, "provider-alpha", "Alpha Provider");
+        let settings = ProxyGatewaySettings::default();
+
+        // Priced through the normalizing matcher: the bundled table has
+        // `claude-sonnet-4-5-20250929`, so `anthropic/claude-sonnet-4-5`
+        // (the default `make_detail` upstream model) resolves by prefix.
+        let priced = make_detail("trace-priced", "provider-alpha", 200, 10, 20);
+        record_request_summary(&db, &settings, &priced).expect("record priced");
+
+        // A model id nobody prices yet: zero cost is allowed for it, but the
+        // stats row must say why.
+        let mut unpriced = make_detail("trace-unpriced", "provider-alpha", 200, 10, 20);
+        unpriced.summary.upstream_model_id = Some("unpriced-test-model-9".to_string());
+        record_request_summary(&db, &settings, &unpriced).expect("record unpriced");
+
+        // Rollup-only usage must be covered too: the merged path rebuilds the
+        // row from `usage_daily_rollups`, which carries no detail row.
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO usage_daily_rollups (
+                    date, app_type, provider_id, model, request_count, success_count,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                    total_cost_usd, avg_latency_ms
+                ) VALUES (
+                    '2026-05-18', 'claude', 'provider-alpha', 'rollup-only-unpriced-model',
+                    1, 1, 10, 5, 0, 0, '0.000000', 100
+                )",
+                [],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        })
+        .expect("insert rollup");
+
+        let model_rows = model_stats(&db, None, None, Some(GatewayCliKey::Claude.into()), true)
+            .expect("model stats");
+        let by_model = model_rows
+            .iter()
+            .map(|item| (item.model.as_str(), item))
+            .collect::<BTreeMap<_, _>>();
+        let priced_row = by_model
+            .get("anthropic/claude-sonnet-4-5")
+            .unwrap_or_else(|| panic!("priced row missing; got {:?}", by_model.keys()));
+        let unpriced_row = by_model
+            .get("unpriced-test-model-9")
+            .unwrap_or_else(|| panic!("unpriced row missing; got {:?}", by_model.keys()));
+        let rollup_row = by_model
+            .get("rollup-only-unpriced-model")
+            .unwrap_or_else(|| panic!("rollup row missing; got {:?}", by_model.keys()));
+
+        assert!(
+            priced_row.has_pricing,
+            "a model the pricing matcher resolves must report pricing"
+        );
+        assert!(!unpriced_row.has_pricing);
+        assert!(!rollup_row.has_pricing);
+    }
+
+    /// Published presets that must stay unpriced on purpose.
+    ///
+    /// Image-generation models have no per-token price and the pricing table has
+    /// never carried one; anything else published must be priceable, otherwise
+    /// native session rows for it silently cost `0` with
+    /// `cost_source = "unavailable"` (issue #390).
+    const UNPRICED_PRESET_MODEL_IDS: &[&str] = &["gemini-2.5-flash-image"];
+
+    #[test]
+    fn every_published_preset_model_resolves_to_model_pricing() {
+        let db = test_db();
+        let preset_ids = crate::coding::preset_models::bundled_preset_model_ids();
+        assert!(
+            !preset_ids.is_empty(),
+            "bundled preset ids must parse from resources/preset_models.json"
+        );
+
+        db.with_conn(|conn| {
+            for model_id in &preset_ids {
+                if UNPRICED_PRESET_MODEL_IDS.contains(&model_id.as_str()) {
+                    continue;
+                }
+                assert!(
+                    session_model_has_pricing(conn, model_id),
+                    "published preset {model_id} has no model_pricing row; add it to \
+                     tauri/resources/model_pricing.json or, if it can never be priced, \
+                     declare it in UNPRICED_PRESET_MODEL_IDS"
+                );
+            }
+            Ok(())
+        })
+        .expect("preset pricing coverage assertions");
+    }
+
+    #[test]
+    fn unpriced_preset_exclusions_stay_image_only_and_still_unpriced() {
+        // The exemption list is a deliberate, reviewable decision: keep it to
+        // image-generation presets so a real model can never be laundered into it.
+        assert_eq!(UNPRICED_PRESET_MODEL_IDS.len(), 1);
+        assert_eq!(UNPRICED_PRESET_MODEL_IDS[0], "gemini-2.5-flash-image");
+
+        let db = test_db();
+        let preset_ids = crate::coding::preset_models::bundled_preset_model_ids();
+        db.with_conn(|conn| {
+            for model_id in UNPRICED_PRESET_MODEL_IDS {
+                assert!(
+                    preset_ids.iter().any(|id| id == model_id),
+                    "{model_id} is exempt but is no longer a published preset; drop the exemption"
+                );
+                assert!(
+                    model_id.contains("-image"),
+                    "{model_id}: only image-generation presets may be exempt"
+                );
+                assert!(
+                    !session_model_has_pricing(conn, model_id),
+                    "{model_id} is priced now; drop the exemption"
+                );
+            }
+            // `codex-auto-review` is a Codex catalog placeholder: the gateway
+            // rewrites auto-review requests to the channel's own review/default
+            // model, so a price row for it would fabricate a bill. It is not a
+            // preset, so the coverage test above cannot see it.
+            assert!(
+                !session_model_has_pricing(conn, "codex-auto-review"),
+                "codex-auto-review is a rewritten placeholder id and must stay unpriced"
+            );
+            Ok(())
+        })
+        .expect("unpriced exclusion assertions");
     }
 }

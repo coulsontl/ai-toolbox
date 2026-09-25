@@ -48,6 +48,7 @@ import {
   getGatewayRequestsPerMinute,
   GATEWAY_USAGE_RANGE_PRESETS,
   resolveGatewayUsageRange,
+  unpricedModelIds,
   type GatewayUsageRangePreset,
   type GatewayUsageRangeSelection,
 } from '../utils/gatewayFormatters';
@@ -81,6 +82,8 @@ const emptyState: StatisticsState = {
 };
 
 const cliOptions: GatewayCliFilter[] = ['all', ...GATEWAY_USAGE_TOOLS];
+/** Model ids are named inline in a 10px hint line; past a few the count suffices. */
+const UNPRICED_MODEL_NAME_LIMIT = 3;
 const trendSeriesKeys: readonly TrendSeriesKey[] = ['input', 'output', 'cache', 'other', 'cost'];
 const trendCurveType = 'monotoneX' as const;
 const dateOnlyBucketPattern = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -193,6 +196,10 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
   const statisticsRequestIdRef = React.useRef(0);
 
   const effectiveCliKey = toCliKey(cliFilter);
+  const unpricedModels = React.useMemo(
+    () => unpricedModelIds(state.modelStats),
+    [state.modelStats],
+  );
 
   const loadStatistics = React.useCallback(async () => {
     const requestId = ++statisticsRequestIdRef.current;
@@ -356,6 +363,11 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
             {value === 'unknown' ? t('gateway.page.statistics.modelUnavailable') : value}
           </strong>
           <small>{t(`settings.gateway.cli.${record.cli_key}`)}</small>
+          {record.has_pricing === false && value !== 'unknown' ? (
+            <small className={styles.unpricedTag}>
+              {t('gateway.page.statistics.unpricedModelTag')}
+            </small>
+          ) : null}
         </div>
       ),
     },
@@ -506,7 +518,34 @@ const GatewayStatisticsView: React.FC<GatewayStatisticsViewProps> = ({ refreshKe
       </div>
 
       <GatewayUsageOverview summary={state.summary} requestsPerMinute={requestRate} />
-      <p className={styles.usageNote}>{t('gateway.page.requests.nativeUsage.overviewHint')}</p>
+      <div className={styles.hintGroup}>
+        <p className={styles.usageNote}>{t('gateway.page.requests.nativeUsage.overviewHint')}</p>
+        {unpricedModels.length > 0 ? (
+          <>
+            <p className={styles.usageNote}>
+              {t('gateway.page.statistics.unpricedModelsHint', { count: unpricedModels.length })}
+              {' '}
+              {unpricedModels.slice(0, UNPRICED_MODEL_NAME_LIMIT).map((model) => (
+                <code key={model} className={styles.unpricedModelName}>
+                  {model}
+                </code>
+              ))}
+              {unpricedModels.length > UNPRICED_MODEL_NAME_LIMIT
+                ? t('gateway.page.statistics.unpricedModelsMore', {
+                    count: unpricedModels.length - UNPRICED_MODEL_NAME_LIMIT,
+                  })
+                : ''}
+            </p>
+            <button
+              type="button"
+              className={styles.hintAction}
+              onClick={() => setShowPricingModal(true)}
+            >
+              {t('gateway.page.statistics.unpricedModelsAction')}
+            </button>
+          </>
+        ) : null}
+      </div>
 
       <section className={styles.chartPanel}>
         <div className={styles.panelHeader}>

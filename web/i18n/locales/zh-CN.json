@@ -114,7 +114,11 @@
         "cacheCreation": "缓存创建",
         "cacheRead": "缓存命中",
         "approximateTokens": "≈ {{value}}",
-        "modelUnavailable": "未记录模型"
+        "modelUnavailable": "未记录模型",
+        "unpricedModelsHint": "本区间有 {{count}} 个模型未匹配到模型价格，金额只累计已报告或已定价的用量；缺少定价不代表免费。",
+        "unpricedModelsAction": "补充模型价格",
+        "unpricedModelTag": "未定价",
+        "unpricedModelsMore": "等另 {{count}} 个"
       },
       "pricing": {
         "open": "定价配置",
@@ -158,7 +162,8 @@
         "loadModelFailed": "加载模型定价失败：{{error}}",
         "saveModelFailed": "保存模型定价失败：{{error}}",
         "deleteConfirmTitle": "删除模型定价",
-        "deleteConfirmDesc": "确定删除 {{modelId}} 的定价吗？"
+        "deleteConfirmDesc": "确定删除 {{modelId}} 的定价吗？",
+        "officialSyncFromMirror": "主源不可达，已通过镜像源同步，新增 {{count}} 条"
       },
       "modelHealthState": {
         "healthy": "正常"
@@ -274,7 +279,8 @@
           "source": "数据来源",
           "allSources": "全部来源",
           "proxy": "网关",
-          "overviewHint": "统计包含网关与本地用量；同一次调用优先网关。回合与累计记录保留原生粒度，未知调用数不推算，累计用量按观察时间归属。成本仅累计已报告或可按模型价格估算的部分；缺少定价不代表免费。"
+          "overviewHint": "统计包含网关与本地用量；同一次调用优先网关。回合与累计记录保留原生粒度，未知调用数不推算，累计用量按观察时间归属。成本仅累计已报告或可按模型价格估算的部分；缺少定价不代表免费。",
+          "costUnavailableHint": "该模型没有匹配到模型价格，这条记录的成本按 0 计。可在统计页的定价配置里补充价格或同步预设价格；下一次本地用量同步会按新价格回填这条会话记录。"
         },
         "websocket": {
           "transport": "传输方式",

@@ -1003,6 +1003,15 @@ pub struct GatewayModelStats {
     pub avg_latency_ms: Option<u64>,
     /// Token-weighted input cache hit ratio (0..=1); None when input usage is absent.
     pub cache_hit_rate: Option<f64>,
+    /// Whether the pricing table can price this model id at all, decided by the
+    /// same matcher the write path and the session cost reconciliation use.
+    ///
+    /// `false` means no cost can be derived from `model_pricing`, so native
+    /// (session) usage for this model lands at `0`; it does **not** mean the
+    /// model is free. `true` does not promise a non-zero amount either: rows
+    /// already stored are only requoted by the session cost reconciliation, not
+    /// by pricing CRUD.
+    pub has_pricing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -114,7 +114,11 @@
         "cacheCreation": "Cache creation",
         "cacheRead": "Cache read",
         "approximateTokens": "≈ {{value}}",
-        "modelUnavailable": "Model not recorded"
+        "modelUnavailable": "Model not recorded",
+        "unpricedModelsHint": "{{count}} model(s) in this range have no matching model price, so the amount only counts reported or priced usage. Missing pricing does not mean free.",
+        "unpricedModelsAction": "Add model prices",
+        "unpricedModelTag": "No price",
+        "unpricedModelsMore": "and {{count}} more"
       },
       "pricing": {
         "open": "Pricing config",
@@ -158,7 +162,8 @@
         "loadModelFailed": "Failed to load model pricing: {{error}}",
         "saveModelFailed": "Failed to save model pricing: {{error}}",
         "deleteConfirmTitle": "Delete model pricing",
-        "deleteConfirmDesc": "Delete pricing for {{modelId}}?"
+        "deleteConfirmDesc": "Delete pricing for {{modelId}}?",
+        "officialSyncFromMirror": "Primary source unreachable; synced from mirror, {{count}} new rows added"
       },
       "modelHealthState": {
         "healthy": "Healthy"
@@ -274,7 +279,8 @@
           "source": "Data source",
           "allSources": "All sources",
           "proxy": "Gateway",
-          "overviewHint": "Includes gateway and local usage, preferring the gateway for the same invocation. Aggregates retain native granularity; unknown call counts are not inferred, and cumulative usage is attributed to observation time. Cost includes reported amounts and available model price estimates. Missing pricing does not mean free usage."
+          "overviewHint": "Includes gateway and local usage, preferring the gateway for the same invocation. Aggregates retain native granularity; unknown call counts are not inferred, and cumulative usage is attributed to observation time. Cost includes reported amounts and available model price estimates. Missing pricing does not mean free usage.",
+          "costUnavailableHint": "No model price matched this model, so this record is costed at 0. Add a price or sync preset prices from the pricing dialog on the statistics page; the next local usage sync will reprice this session record."
         },
         "websocket": {
           "transport": "Transport",

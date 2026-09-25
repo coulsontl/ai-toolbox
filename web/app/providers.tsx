@@ -19,7 +19,7 @@ import {
   fetchRemotePresetModels,
   loadCachedGatewayProviderProfiles,
   fetchRemoteGatewayProviderProfiles,
-  fetchRemoteModelPricing,
+  syncRemoteModelPricingInBackground,
   type UpdateInfo,
 } from '@/services';
 import { restartApp } from '@/services/settingsApi';
@@ -291,7 +291,7 @@ export const Providers: React.FC<ProvidersProps> = ({ children }) => {
       await loadCachedGatewayProviderProfiles();
       fetchRemotePresetModels();
       fetchRemoteGatewayProviderProfiles();
-      fetchRemoteModelPricing().catch(() => {});
+      syncRemoteModelPricingInBackground();
     };
     init();
   }, [initApp, initSettings, initTheme]);

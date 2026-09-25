@@ -1,4 +1,4 @@
-import type { GatewayCliKey, GatewayRequestLogFilters, GatewayUsageTool, ProxyGatewaySettings, ProxyGatewayStatus } from '@/services';
+import type { GatewayCliKey, GatewayModelStats, GatewayRequestLogFilters, GatewayUsageTool, ProxyGatewaySettings, ProxyGatewayStatus } from '@/services';
 
 export const joinClassNames = (...classNames: Array<string | false | null | undefined>) =>
   classNames.filter(Boolean).join(' ');
@@ -172,6 +172,24 @@ const placeholderModelValues = new Set(['', 'unknown', 'null', 'none']);
 
 const isPlaceholderModel = (value: string | null | undefined) =>
   placeholderModelValues.has(value?.trim().toLowerCase() ?? '');
+
+/**
+ * Model ids in range that the pricing table cannot price at all, deduped across
+ * CLIs and sorted. Placeholder rows (`unknown`) are not models and are excluded,
+ * same as the models table. Priced-but-zero-cost rows are NOT reported: the
+ * backend flag answers "does a price row resolve for this id", never "is the
+ * displayed amount zero".
+ */
+export const unpricedModelIds = (
+  modelStats: Array<Pick<GatewayModelStats, 'model' | 'has_pricing'>>,
+) =>
+  Array.from(
+    new Set(
+      modelStats
+        .filter((row) => row.has_pricing === false && !isPlaceholderModel(row.model))
+        .map((row) => row.model),
+    ),
+  ).sort();
 
 export const formatModelRoute = (
   requestedModel: string | null,

@@ -217,6 +217,39 @@ fn is_valid_preset_models(data: &Value) -> bool {
     data.as_object().map(|m| !m.is_empty()).unwrap_or(false)
 }
 
+/// Bundled preset model ids, in file order.
+///
+/// Test-only: the invariant "every published preset must be priceable" is
+/// asserted in `proxy_gateway::usage_stats`, whose pricing matcher is private
+/// to that module, so the id list cannot be read through a runtime API without
+/// widening it. Reads the same compile-time bundled file as the lookup indexes.
+#[cfg(test)]
+pub(crate) fn bundled_preset_model_ids() -> Vec<String> {
+    let Ok(presets) = serde_json::from_str::<Value>(DEFAULT_PRESET_MODELS_JSON) else {
+        return Vec::new();
+    };
+    let Some(groups) = presets.as_object() else {
+        return Vec::new();
+    };
+    let mut ids = Vec::new();
+    for models in groups.values() {
+        let Some(models) = models.as_array() else {
+            continue;
+        };
+        for model in models {
+            let id = model
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty());
+            if let Some(id) = id {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    ids
+}
+
 // ============================================================================
 // Tauri commands
 // ============================================================================

@@ -1464,12 +1464,14 @@ pub fn delete_model_pricing(
     pricing::delete_model_pricing(&db_state, model_id)
 }
 
+/// Sync the official price list. Sources are owned by the backend (primary plus
+/// mirror fallback), so callers no longer pass a URL — which also removes a
+/// webview-controlled arbitrary fetch.
 #[tauri::command]
 pub async fn fetch_remote_model_pricing(
     db_state: tauri::State<'_, SqliteDbState>,
-    url: String,
-) -> Result<model_pricing_seed::ModelPricingSeedResult, String> {
-    model_pricing_seed::fetch_remote_model_pricing(&db_state, url).await
+) -> Result<model_pricing_seed::ModelPricingSyncResult, String> {
+    model_pricing_seed::fetch_remote_model_pricing(&db_state).await
 }
 
 #[tauri::command]

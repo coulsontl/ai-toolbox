@@ -86,9 +86,10 @@ sequenceDiagram
 - 设置 Tab 自动保存有 debounce；顶部启动按钮必须优先使用设置面板当前 draft 立即保存后启动，不能重新读取旧的后端 settings 后启动。
 - 统计图表直接使用 Recharts；不要为了网关统计引入额外图表封装层。图表必须有 tooltip/legend，并使用主题变量保证浅色/深色模式可读。
 - 定价管理弹窗遵循全局 Modal 规范：不重度覆盖 Ant Design Modal chrome，上半部分用 `sectionCard` 风格承载默认配置，下半部分用 Ant Design Table 原生样式展示模型定价。
-- 定价管理弹窗里的“同步官方价格”按钮位于模型定价标题行右侧、添加按钮左边；成功后提示新增条数并刷新表格，失败只在当前操作中提示错误。
+- 定价管理弹窗里的“同步官方价格”按钮位于模型定价标题行右侧、添加按钮左边；成功后提示新增条数并刷新表格，失败只在当前操作中提示错误。远端源列表由后端维护，前端只按 `attempts.length > 1` 区分“主源成功”和“镜像兜底”，镜像兜底用 `officialSyncFromMirror` 说明来源，不要在前端硬编码源 URL。
 - 如果未来新增视图依赖的后端查询命令还没暴露，页面只能显示真实空态，不能用假数据填充图表。
 - Gateway 辅助说明文字统一使用 `fontSize: 10` 和 `color: var(--color-text-tertiary)`，避免设置页和统计页说明文字风格漂移。
+- 「未定价」必须和「免费」分开说：模型统计的 `has_pricing === false` 只表示价格表无法为该 model id 定价，提示与表内标记都不能写成“免费”或“金额错误”，并且要给出可操作路径（统计页提示组里紧跟提示的紧凑文字按钮 `.hintAction` 打开定价弹窗，按钮保持 24px 高度，不要压进 10px 说明行里）。派生集合统一走 `gatewayFormatters.ts::unpricedModelIds`（按 model 去重排序、复用 `isPlaceholderModel` 排除 `unknown` 伪行、不收录已定价的零费用行），不要在组件里各写一份过滤；请求明细的 `cost_source === 'unavailable'` 说明是同一件事的逐条版本。
 - 请求模型后的 effort 只显示后端 `reasoning_effort`，不解析模型名或请求正文。耗时按首字（近似首包）/总耗时展示并保留秒的小数精度；现有 TTFT 记录的是首个写出的非空 chunk，可能含 SSE 控制事件，不能宣传为严格的首个文字 token。
 - TPS 只对有 usage 语义的请求派生，分子仅为输出 token：流式且已记录首包时除以 `duration_ms - first_token_ms`，非流式或缺首包时除以总耗时；无输出或无有效生成区间显示 `-`。列表用独立「令牌/秒」列展示，列内只显示实际计算的带单位数值或 `-`，不加 TPS 前缀；明细保留 TPS 标签，使用相同的带单位数值。最多保留一位小数并省略末尾 `.0`。字段说明必须解释这两种计时口径。
 - 供应商缓存命中率直接展示后端输入 token 加权比例（0..1）；用量概览从当前 CLI / 时间范围的 summary 总量计算同一比例：`cache_read / (fresh_input + cache_creation + cache_read)`，不要平均供应商百分比。`null` 显示 `-`，真实 `0` 显示 `0.0%`；输出 token 不参与命中率。

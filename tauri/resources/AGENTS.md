@@ -80,6 +80,8 @@ sequenceDiagram
   - 是否仍是合法 JSON 数组。
   - 每个对象字段是否与 SQLite `model_pricing` 表一致，成本字段是否仍是非负数字字符串。
   - 新增默认价格不会覆盖用户已有行；修正已存在模型的官方价格不会自动改写老用户数据库。
+  - 新增 preset 必须同任务补价格行：`usage_stats.rs` 的 `every_published_preset_model_resolves_to_model_pricing` 会逐个断言每个 published preset id 都能命中 `model_pricing`，漏配直接红。只能靠图片生成模型豁免，豁免集是 `usage_stats.rs` 里的 `UNPRICED_PRESET_MODEL_IDS`（当前仅 `gemini-2.5-flash-image`），且只允许追加 `*-image` 的 id。
+  - Codex client 的模型列表不都来自 preset：远端 catalog（router-for-me 的 `models.json`）里还有 `kimi-k2.8`、`grok-4.7-build-fast`、`codex-auto-review` 等只有上游才认识的名称。`codex-auto-review` 是占位 id（网关会把 auto-review 请求改写成渠道自己的 review/默认模型），**永远不要给它编价格**；其余远端别名在拿到可信官方单价前也不要凭名字套用同族价格。
 
 ## 最小验证
 
