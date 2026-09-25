@@ -732,6 +732,22 @@ fn migrate_model(value: Value, parent_package: Option<&str>) -> Result<Value, St
     if let Some(name) = name {
         out.insert("name".to_string(), name);
     }
+    // The released 2.0 shape names these flat: `modelID` is the API model id
+    // (`api.id` in the preview shape), `package` overrides the provider package
+    // for this model, and `settings` carries the V1 options verbatim because the
+    // official `model()` mapping is an identity function.
+    if let Some(id) = id.clone() {
+        out.insert("modelID".to_string(), Value::String(id));
+    }
+    if let Some(package) = model_package.as_ref() {
+        out.insert("package".to_string(), Value::String(package.clone()));
+    }
+    if !options.is_empty() {
+        out.insert("settings".to_string(), Value::Object(options.clone()));
+    }
+    if let Some(headers) = headers.as_ref().and_then(|value| value.as_object().cloned()) {
+        out.insert("headers".to_string(), Value::Object(headers));
+    }
     if let Some(package) = model_package.as_ref() {
         let mut api = Map::new();
         if let Some(id) = id.clone() {
@@ -897,7 +913,7 @@ fn migrate_provider(value: Value) -> Result<Value, String> {
     if let Some(package) = package_name.clone() {
         let mut api = Map::new();
         api.insert("type".to_string(), Value::String("aisdk".to_string()));
-        api.insert("package".to_string(), Value::String(package));
+        api.insert("package".to_string(), Value::String(package.clone()));
         if let Some(url) = rendered.url.clone() {
             api.insert("url".to_string(), url);
         }
@@ -908,6 +924,19 @@ fn migrate_provider(value: Value) -> Result<Value, String> {
             );
         }
         out.insert("api".to_string(), Value::Object(api));
+        // OpenCode 2.0 reads the provider flat (`package` plus `settings`/
+        // `headers`/`body` overlays, with the base URL inside `settings`) and
+        // rejects a provider whose package it cannot resolve, so both shapes are
+        // written: the preview shape keeps the URL at `api.url`, the released
+        // shape needs `settings.baseURL`. Each decoder ignores the other's keys.
+        out.insert("package".to_string(), Value::String(package));
+        let mut settings = rendered.settings.clone();
+        if let Some(url) = rendered.url.clone() {
+            settings.insert("baseURL".to_string(), url);
+        }
+        if !settings.is_empty() {
+            out.insert("settings".to_string(), Value::Object(settings));
+        }
     } else if let Some(url) = rendered.url.clone() {
         out.insert("api".to_string(), json!({ "type": "native", "url": url }));
     }
@@ -923,6 +952,15 @@ fn migrate_provider(value: Value) -> Result<Value, String> {
             request.insert("body".to_string(), Value::Object(rendered.body.clone()));
         }
         out.insert("request".to_string(), Value::Object(request));
+    }
+    if !rendered.headers.is_empty() {
+        out.insert(
+            "headers".to_string(),
+            Value::Object(rendered.headers.clone()),
+        );
+    }
+    if !rendered.body.is_empty() {
+        out.insert("body".to_string(), Value::Object(rendered.body.clone()));
     }
     if let Some(models) = models.and_then(|value| value.as_object().cloned()) {
         let converted = models
@@ -1170,6 +1208,42 @@ fn convert_provider_v2_to_v1(value: Value) -> Result<Value, String> {
             options.insert("body".to_string(), body.clone());
         }
     }
+    // A provider written by OpenCode 2.0 itself only carries the flat shape, and
+    // a file written by this editor carries both; `or_insert` keeps the preview
+    // shape authoritative when the two overlap without dropping flat-only keys.
+    let flat_settings = provider
+        .remove("settings")
+        .and_then(|value| value.as_object().cloned());
+    let flat_package = string_value(provider.remove("package").as_ref());
+    if !out.contains_key("npm") {
+        if let Some(package) = flat_package {
+            out.insert("npm".to_string(), Value::String(package));
+        }
+    }
+    if let Some(url) = flat_settings
+        .as_ref()
+        .and_then(|settings| string_value(settings.get("baseURL")))
+    {
+        out.entry("api".to_string())
+            .or_insert(Value::String(url.clone()));
+        options
+            .entry("baseURL".to_string())
+            .or_insert(Value::String(url));
+    }
+    if let Some(settings) = flat_settings {
+        for (key, value) in settings {
+            options.entry(key).or_insert(value);
+        }
+    }
+    for key in ["headers", "body"] {
+        if !options.contains_key(key) {
+            if let Some(value) = provider.remove(key) {
+                options.insert(key.to_string(), value);
+            }
+        } else {
+            provider.remove(key);
+        }
+    }
     if !options.is_empty() {
         out.insert("options".to_string(), Value::Object(options));
     }
@@ -1228,6 +1302,29 @@ fn convert_model_v2_to_v1(value: Value) -> Result<Value, String> {
             for (key, value) in body {
                 options.insert(key.clone(), value.clone());
             }
+        }
+    }
+    // Same dual-shape rule as providers: the flat keys are what OpenCode 2.0
+    // writes, they only fill what the preview shape left unset, and they are
+    // consumed here so a save cannot echo them back next to the preview fields.
+    if !model.contains_key("id") {
+        if let Some(id) = string_value(model.get("modelID")) {
+            model.insert("id".to_string(), Value::String(id));
+        }
+    }
+    model.remove("modelID");
+    if !model.contains_key("provider") {
+        if let Some(package) = string_value(model.get("package")) {
+            model.insert("provider".to_string(), json!({ "npm": package }));
+        }
+    }
+    model.remove("package");
+    if let Some(settings) = model
+        .remove("settings")
+        .and_then(|value| value.as_object().cloned())
+    {
+        for (key, value) in settings {
+            options.entry(key).or_insert(value);
         }
     }
     if !options.is_empty() {
@@ -1863,11 +1960,24 @@ mod tests {
         assert!(provider.get("npm").is_none());
         assert!(provider.get("options").is_none());
 
+        // Released 2.0 shape written alongside it: flat package plus overlays,
+        // and the base URL inside `settings` because that shape has no `api.url`.
+        // OpenCode 2.0 rejects a provider whose package it cannot resolve, so a
+        // file that only carried the preview shape would fail to load at all.
+        assert_eq!(provider["package"], "@ai-sdk/openai-compatible");
+        assert_eq!(
+            provider["settings"],
+            json!({ "apiKey": "sk-test", "baseURL": "https://relay.example.com/v1" })
+        );
+        assert_eq!(provider["headers"], json!({ "X-Test": "1" }));
+
         let model = &provider["models"]["gpt-x"];
         // The official migration only puts a model package on `api` when the
         // model itself declares a provider override; otherwise `api.id` is
         // enough because the provider catalog supplies the package.
         assert_eq!(model["api"], json!({ "id": "gpt-x-upstream" }));
+        assert_eq!(model["modelID"], "gpt-x-upstream");
+        assert_eq!(model["settings"], json!({ "reasoningEffort": "high" }));
         assert_eq!(
             model["capabilities"],
             json!({ "tools": true, "input": ["text"], "output": ["text"] })
@@ -2032,6 +2142,126 @@ mod tests {
             json!(["provider-a", "provider-b"])
         );
         assert!(restored.get("experimental").is_none());
+    }
+
+    /// Anthropic providers lower their key into an `x-api-key` header instead of
+/// `settings`, so the flat shape has to carry the header overlay for the
+/// released reader to authenticate at all.
+    #[test]
+    fn v1_anthropic_provider_writes_the_flat_shape_with_its_auth_header() {
+        let v1 = json!({
+            "provider": {
+                "anthropic-relay": {
+                    "name": "Anthropic Relay",
+                    "npm": "@ai-sdk/anthropic",
+                    "options": { "apiKey": "sk-ant-test", "baseURL": "https://relay.example.com" },
+                    "models": { "claude-x": { "id": "claude-x-20260101", "name": "Claude X" } }
+                }
+            }
+        });
+        let written = v1_to_v2_value(v1).unwrap();
+        let provider = &written["providers"]["anthropic-relay"];
+        assert_eq!(provider["package"], "@ai-sdk/anthropic");
+        assert_eq!(
+            provider["settings"],
+            json!({ "baseURL": "https://relay.example.com" })
+        );
+        assert_eq!(provider["headers"], json!({ "x-api-key": "sk-ant-test" }));
+        assert_eq!(
+            provider["models"]["claude-x"]["modelID"],
+            "claude-x-20260101"
+        );
+        assert_eq!(
+            written["providers"]["anthropic-relay"]["api"]["url"],
+            "https://relay.example.com"
+        );
+    }
+
+    /// A file written by OpenCode 2.0 itself carries the flat shape only, so the
+    /// editor has to restore it without the preview `api`/`request` keys.
+    #[test]
+    fn released_v2_flat_provider_restores_the_v1_editor_shape() {
+        let value = json!({
+            "providers": {
+                "relay": {
+                    "name": "Relay",
+                    "package": "@ai-sdk/openai-compatible",
+                    "settings": {
+                        "apiKey": "sk-test",
+                        "baseURL": "https://relay.example.com/v1"
+                    },
+                    "headers": { "X-Test": "1" },
+                    "body": { "reasoning_effort": "high" },
+                    "models": {
+                        "gpt-x": {
+                            "name": "GPT X",
+                            "modelID": "gpt-x-upstream",
+                            "package": "@ai-sdk/openai-compatible",
+                            "settings": { "reasoningEffort": "high" },
+                            "headers": { "X-Model": "2" }
+                        }
+                    }
+                }
+            }
+        });
+
+        let restored = v2_to_v1_value(value).unwrap();
+        let provider = &restored["provider"]["relay"];
+        assert_eq!(provider["npm"], "@ai-sdk/openai-compatible");
+        assert_eq!(provider["api"], "https://relay.example.com/v1");
+        assert_eq!(
+            provider["options"]["baseURL"],
+            "https://relay.example.com/v1"
+        );
+        assert_eq!(provider["options"]["apiKey"], "sk-test");
+        assert_eq!(provider["options"]["headers"], json!({ "X-Test": "1" }));
+        assert_eq!(
+            provider["options"]["body"],
+            json!({ "reasoning_effort": "high" })
+        );
+        // The flat keys are consumed, not echoed next to the preview shape.
+        assert!(provider.get("package").is_none());
+        assert!(provider.get("settings").is_none());
+        assert!(provider.get("headers").is_none());
+        assert!(provider.get("body").is_none());
+
+        let model = &provider["models"]["gpt-x"];
+        assert_eq!(model["id"], "gpt-x-upstream");
+        assert_eq!(model["provider"]["npm"], "@ai-sdk/openai-compatible");
+        assert_eq!(model["options"]["reasoningEffort"], "high");
+        assert_eq!(model["headers"], json!({ "X-Model": "2" }));
+        assert!(model.get("modelID").is_none());
+        assert!(model.get("settings").is_none());
+        assert!(model.get("package").is_none());
+    }
+
+    /// The dual-shape file this editor writes must survive a full round trip:
+    /// reading it back and saving again cannot drop or duplicate either shape.
+    #[test]
+    fn dual_shape_provider_survives_a_read_write_round_trip() {
+        let v1 = json!({
+            "provider": {
+                "relay": {
+                    "name": "Relay",
+                    "npm": "@ai-sdk/openai-compatible",
+                    "api": "https://relay.example.com/v1",
+                    "options": { "apiKey": "sk-test", "headers": { "X-Test": "1" } },
+                    "models": { "gpt-x": { "id": "gpt-x-upstream", "name": "GPT X" } }
+                }
+            }
+        });
+        let written = v1_to_v2_value(v1.clone()).unwrap();
+        let restored = v2_to_v1_value(written.clone()).unwrap();
+        let again = v1_to_v2_value(restored).unwrap();
+        assert_eq!(again["providers"]["relay"], written["providers"]["relay"]);
+        assert_eq!(
+            again["providers"]["relay"]["settings"]["baseURL"],
+            "https://relay.example.com/v1"
+        );
+        assert_eq!(
+            again["providers"]["relay"]["api"]["url"],
+            "https://relay.example.com/v1"
+        );
     }
 
     #[test]

@@ -1205,3 +1205,360 @@ fn opencode_reads_wal_updates_and_deduplicates_legacy_json_without_writing_nativ
         .unwrap();
     assert_eq!(native_count, 1);
 }
+
+/// OpenCode 2.0 stores assistant rows as `session_message` rows tagged with
+/// `type`, with the native model nested under `model.id`.
+fn opencode_v2_assistant(model: &str, input: u64, completed: i64) -> Value {
+    json!({"type":"assistant","agent":"build",
+        "model":{"providerID":"opencode","id":model},
+        "time":{"created":completed * 1000,"completed":completed * 1000},
+        "tokens":{"input":input,"output":10,"reasoning":5,"cache":{"read":80,"write":20}},
+        "cost":0.0012})
+}
+
+#[test]
+fn opencode_v2_reads_the_renamed_store_and_skips_inherited_fork_history() {
+    let root = tempfile::tempdir().unwrap();
+    let native_path = root.path().join("opencode.db");
+    let native = Connection::open(&native_path).unwrap();
+    native
+        .execute_batch(&format!(
+            "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT, fork_session_id TEXT,
+                time_created INTEGER, time_updated INTEGER);
+             CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+                time_created INTEGER, time_updated INTEGER, data TEXT);
+             CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, data TEXT);
+             INSERT INTO session_v2 VALUES ('ses-root', NULL, NULL, {root}, 1);
+             INSERT INTO session_v2 VALUES ('ses-fork', NULL, 'ses-root', {fork_at}, 2);",
+            root = THEN * 1000,
+            fork_at = (THEN + 10) * 1000
+        ))
+        .unwrap();
+    // The fork keeps the parent's message plus one of its own; OpenCode's own
+    // stats only count what the fork created after branching.
+    native
+        .execute(
+            "INSERT INTO session_message VALUES ('msg-own', 'ses-root', 'assistant', 0, ?1, 1, ?2)",
+            params![
+                THEN * 1000,
+                opencode_v2_assistant("root-model", 100, THEN).to_string()
+            ],
+        )
+        .unwrap();
+    native
+        .execute(
+            "INSERT INTO session_message VALUES ('msg-inherited', 'ses-fork', 'assistant', 0, ?1, 2, ?2)",
+            params![
+                (THEN + 5) * 1000,
+                opencode_v2_assistant("inherited-model", 7_000, THEN + 5).to_string()
+            ],
+        )
+        .unwrap();
+    native
+        .execute(
+            "INSERT INTO session_message VALUES ('msg-fork-own', 'ses-fork', 'assistant', 1, ?1, 3, ?2)",
+            params![
+                (THEN + 15) * 1000,
+                opencode_v2_assistant("fork-model", 200, THEN + 15).to_string()
+            ],
+        )
+        .unwrap();
+    // User and unfinished rows carry no countable usage.
+    native
+        .execute(
+            "INSERT INTO session_message VALUES ('msg-user', 'ses-root', 'user', 1, ?1, 1, '{\"type\":\"user\"}')",
+            params![THEN * 1000],
+        )
+        .unwrap();
+    let mut unfinished = opencode_v2_assistant("pending-model", 300, THEN);
+    unfinished["time"] = json!({"created": THEN * 1000});
+    native
+        .execute(
+            "INSERT INTO session_message VALUES ('msg-pending', 'ses-root', 'assistant', 2, ?1, 1, ?2)",
+            params![(THEN + 1) * 1000, unfinished.to_string()],
+        )
+        .unwrap();
+
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayCliKey::OpenCode, root.path());
+
+    let models: Vec<String> = db
+        .with_conn(|conn| {
+            let mut query = conn
+                .prepare("SELECT model FROM proxy_request_logs ORDER BY model")
+                .map_err(|error| error.to_string())?;
+            let rows = query
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            Ok(rows)
+        })
+        .unwrap();
+    assert_eq!(models, vec!["fork-model", "root-model"]);
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
+    assert_eq!(summary.total_requests, 2);
+    assert_eq!(summary.total_input_tokens, 300);
+    assert_eq!(summary.total_output_tokens, 30);
+}
+
+/// Read-only audit against a store written by a real OpenCode 2.0 install.
+/// Point `AI_TOOLBOX_OPENCODE_V2_DB` at its `opencode.db`; only a temp copy is
+/// ever opened for writing.
+#[test]
+#[ignore = "Audit against a real OpenCode 2.0 store via AI_TOOLBOX_OPENCODE_V2_DB"]
+fn local_opencode_v2_store_imports_per_request_usage() {
+    let path = std::env::var("AI_TOOLBOX_OPENCODE_V2_DB")
+        .expect("set AI_TOOLBOX_OPENCODE_V2_DB to a real OpenCode 2.0 opencode.db");
+    let root = tempfile::tempdir().unwrap();
+    // The live store is usually still in the write-ahead log, so the copy has to
+    // carry it instead of relying on a checkpoint.
+    for suffix in ["", "-wal", "-shm"] {
+        let from = format!("{path}{suffix}");
+        if std::path::Path::new(&from).is_file() {
+            fs::copy(&from, root.path().join(format!("opencode.db{suffix}"))).unwrap();
+        }
+    }
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    let result = run_sync(&db, GatewayCliKey::OpenCode, root.path());
+    let rows: Vec<(String, i64, i64, i64, i64)> = db
+        .with_conn(|conn| {
+            let mut query = conn
+                .prepare(
+                    "SELECT model, input_tokens, output_tokens, cache_read_tokens,
+                            cache_creation_tokens
+                     FROM proxy_request_logs ORDER BY created_at, model",
+                )
+                .map_err(|error| error.to_string())?;
+            let rows = query
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                })
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            Ok(rows)
+        })
+        .unwrap();
+    println!(
+        "imported={} inserted={} failed={} scanned={} rows={:?}",
+        result.parsed_records,
+        result.inserted_records,
+        result.failed_files,
+        result.scanned_files,
+        rows
+    );
+    assert!(!rows.is_empty(), "a real 2.0 store must yield usage rows");
+    assert!(
+        rows.iter().all(|row| row.0 != "unknown"),
+        "2.0 rows must resolve the nested model id: {rows:?}"
+    );
+}
+
+#[test]
+fn opencode_v2_store_wins_over_legacy_tables_kept_by_the_upgrade() {
+    let root = tempfile::tempdir().unwrap();
+    let native_path = root.path().join("opencode.db");
+    let native = Connection::open(&native_path).unwrap();
+    // The 2.0 upgrade copies the V1 rows into the new tables and leaves the old
+    // ones frozen, so both stores exist and only the renamed one is live.
+    native
+        .execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, time_updated INTEGER);
+             CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+             CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT, fork_session_id TEXT,
+                time_created INTEGER, time_updated INTEGER, tokens_input INTEGER DEFAULT 0,
+                tokens_output INTEGER DEFAULT 0, tokens_reasoning INTEGER DEFAULT 0,
+                tokens_cache_read INTEGER DEFAULT 0, tokens_cache_write INTEGER DEFAULT 0,
+                model TEXT);
+             CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+                time_created INTEGER, time_updated INTEGER, data TEXT);",
+        )
+        .unwrap();
+    let legacy = json!({"id":"msg-1","role":"assistant","modelID":"legacy-model",
+        "time":{"created":THEN * 1000,"completed":THEN * 1000},
+        "tokens":{"input":1,"output":1,"cache":{"read":0,"write":0}},"cost":0});
+    native
+        .execute_batch(&format!(
+            "INSERT INTO session VALUES ('ses-1', 1);
+             INSERT INTO message VALUES ('msg-1', 'ses-1', {created}, 1, '{legacy}');",
+            created = THEN * 1000,
+            legacy = legacy.to_string().replace('\'', "''")
+        ))
+        .unwrap();
+    // The live aggregate matches its own rows, so the import adds no remainder.
+    native
+        .execute(
+            "INSERT INTO session_v2 (id, fork_session_id, time_created, time_updated,
+                tokens_input, tokens_output, tokens_reasoning, model)
+             VALUES ('ses-1', NULL, ?1, 1, 400, 10, 0, ?2)",
+            params![
+                THEN * 1000,
+                json!({"id": "live-model", "providerID": "mock"}).to_string()
+            ],
+        )
+        .unwrap();
+    native
+        .execute(
+            "INSERT INTO session_message VALUES ('msg-1', 'ses-1', 'assistant', 0, ?1, 1, ?2)",
+            params![
+                THEN * 1000,
+                opencode_v2_assistant("live-model", 400, THEN).to_string()
+            ],
+        )
+        .unwrap();
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayCliKey::OpenCode, root.path());
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
+    assert_eq!(summary.total_requests, 1);
+    assert_eq!(summary.total_input_tokens, 400);
+}
+
+/// Title generation and other auxiliary calls leave no message row; their usage
+/// only exists in the session aggregate, and a fork's aggregate can carry the
+/// parent's copied history, which must never be re-recorded.
+#[test]
+fn opencode_v2_records_only_the_settled_aggregate_remainder() {
+    let root = tempfile::tempdir().unwrap();
+    let native_path = root.path().join("opencode.db");
+    let native = Connection::open(&native_path).unwrap();
+    native
+        .execute_batch(
+            "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT, fork_session_id TEXT,
+                time_created INTEGER, time_updated INTEGER, tokens_input INTEGER DEFAULT 0,
+                tokens_output INTEGER DEFAULT 0, tokens_reasoning INTEGER DEFAULT 0,
+                tokens_cache_read INTEGER DEFAULT 0, tokens_cache_write INTEGER DEFAULT 0,
+                model TEXT);
+             CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+                time_created INTEGER, time_updated INTEGER, data TEXT);",
+        )
+        .unwrap();
+    // Two aggregate calls against one row: the second is the auxiliary one.
+    native
+        .execute(
+            "INSERT INTO session_v2 (id, fork_session_id, time_created, time_updated,
+                tokens_input, tokens_output, tokens_reasoning, model)
+             VALUES ('ses-1', NULL, ?1, ?3, 2468, 912, 0, ?2)",
+            params![
+                THEN * 1000,
+                json!({"id": "mock-model", "providerID": "mock"}).to_string(),
+                THEN * 1000
+            ],
+        )
+        .unwrap();
+    native
+        .execute(
+            "INSERT INTO session_message VALUES ('msg-1', 'ses-1', 'assistant', 0, ?1, ?2, ?3)",
+            params![
+                THEN * 1000,
+                THEN * 1000,
+                opencode_v2_assistant("mock-model", 1234, THEN).to_string()
+            ],
+        )
+        .unwrap();
+    // A fork whose aggregate still holds the copied parent total records nothing.
+    native
+        .execute(
+            "INSERT INTO session_v2 (id, fork_session_id, time_created, time_updated,
+                tokens_input, tokens_output, model)
+             VALUES ('ses-fork', 'ses-1', ?1, ?3, 9999, 9999, ?2)",
+            params![
+                (THEN + 30) * 1000,
+                json!({"id": "mock-model", "providerID": "mock"}).to_string(),
+                THEN * 1000
+            ],
+        )
+        .unwrap();
+    native
+        .execute(
+            "INSERT INTO session_message VALUES ('msg-2', 'ses-fork', 'assistant', 0, ?1, ?2, ?3)",
+            params![
+                (THEN + 31) * 1000,
+                (THEN + 31) * 1000,
+                opencode_v2_assistant("fork-model", 5, THEN + 31).to_string()
+            ],
+        )
+        .unwrap();
+    // A settlement still in flight defers the remainder to a later sync.
+    native
+        .execute(
+            "INSERT INTO session_v2 (id, fork_session_id, time_created, time_updated,
+                tokens_input, tokens_output, model)
+             VALUES ('ses-busy', NULL, ?1, ?3, 5000, 5000, ?2)",
+            params![
+                THEN * 1000,
+                json!({"id": "mock-model", "providerID": "mock"}).to_string(),
+                THEN * 1000
+            ],
+        )
+        .unwrap();
+    let mut unfinished = opencode_v2_assistant("mock-model", 1, THEN);
+    unfinished["time"] = json!({"created": THEN * 1000});
+    native
+        .execute(
+            "INSERT INTO session_message VALUES ('msg-3', 'ses-busy', 'assistant', 0, ?1, ?2, ?3)",
+            params![THEN * 1000, THEN * 1000, unfinished.to_string()],
+        )
+        .unwrap();
+
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayCliKey::OpenCode, root.path());
+    let rows: Vec<(String, String, i64, i64, String)> = db
+        .with_conn(|conn| {
+            let mut query = conn
+                .prepare(
+                    "SELECT request_id, model, input_tokens, output_tokens, data_source
+                     FROM proxy_request_logs ORDER BY request_id",
+                )
+                .map_err(|error| error.to_string())?;
+            let rows = query
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                })
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            Ok(rows)
+        })
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            // The aggregate minus the settled row: input 2468 - 1234, output
+            // (912 + 0 reasoning) - (10 + 5 reasoning).
+            (
+                "SESSION:opencode:ses-1:aggregate".to_string(),
+                "mock-model".to_string(),
+                1234,
+                897,
+                "session".to_string(),
+            ),
+            (
+                "SESSION:opencode:ses-1:msg-1".to_string(),
+                "mock-model".to_string(),
+                1234,
+                15,
+                "session".to_string(),
+            ),
+            (
+                "SESSION:opencode:ses-fork:msg-2".to_string(),
+                "fork-model".to_string(),
+                5,
+                15,
+                "session".to_string(),
+            ),
+        ]
+    );
+}

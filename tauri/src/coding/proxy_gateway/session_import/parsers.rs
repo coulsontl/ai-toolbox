@@ -281,7 +281,7 @@ pub(super) fn parse_value(
             ..Default::default()
         }
     } else if cli_key == GatewayUsageTool::OpenCode && value.get("tokens").is_some() {
-        if value.get("role").and_then(Value::as_str) != Some("assistant")
+        if !is_opencode_usage_row(value)
             || value.pointer("/time/completed").is_none_or(Value::is_null)
         {
             return None;
@@ -332,6 +332,10 @@ pub(super) fn parse_value(
             "/response/model",
             "/message/model",
             "/metadata/model",
+            // OpenCode 2.0 nests the native id under `model`; the object itself
+            // is skipped by `string`, and its `variant` is a reasoning overlay
+            // rather than part of the catalog id the V1 `modelID` carries.
+            "/model/id",
         ],
     )
     .unwrap_or_else(|| "unknown".to_string());
@@ -567,6 +571,14 @@ pub(super) fn number(value: &Value, keys: &[&str]) -> u64 {
     keys.iter()
         .find_map(|key| value.get(*key).and_then(Value::as_u64))
         .unwrap_or(0)
+}
+
+/// OpenCode 1.x marks assistant rows with `role`; 2.0 stores the kind in the
+/// `session_message.type` column instead, and its schema gives only the
+/// assistant kind a `tokens` field.
+pub(super) fn is_opencode_usage_row(value: &Value) -> bool {
+    value.get("role").and_then(Value::as_str) == Some("assistant")
+        || value.get("type").and_then(Value::as_str) == Some("assistant")
 }
 
 pub(super) fn string(value: &Value, paths: &[&str]) -> Option<String> {
