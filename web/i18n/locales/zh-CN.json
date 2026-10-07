@@ -1616,7 +1616,8 @@
       "custom": "默认",
       "recent": "最近使用",
       "created": "按创建时间",
-      "name": "按名称"
+      "name": "按名称",
+      "dragDisabledHint": "拖拽排序仅在选择「默认」排序时可用"
     },
     "providerSearch": {
       "placeholder": "搜索供应商",

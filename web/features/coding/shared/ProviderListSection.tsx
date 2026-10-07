@@ -57,6 +57,12 @@ export interface ProviderListSectionProps {
   sortMode: ProviderSortMode;
   sortModes: readonly ProviderSortMode[];
   onSortModeChange: (mode: ProviderSortMode) => void;
+  /**
+   * Whether the current sort mode is the one that disables dragging. Callers
+   * already compute this to gate the drag grips; passing it on lets the sort
+   * control say *why* they are gone.
+   */
+  dragDisabledBySort?: boolean;
 
   onBatchTest?: () => void;
   batchTesting?: boolean;
@@ -134,6 +140,7 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
   sortMode,
   sortModes,
   onSortModeChange,
+  dragDisabledBySort = false,
   onBatchTest,
   batchTesting = false,
   onOpenCommonConfig,
@@ -200,7 +207,12 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
                   />
                 )}
                 <ProviderSearchInput value={keyword} onChange={onKeywordChange} />
-                <ProviderSortDropdown mode={sortMode} modes={sortModes} onChange={onSortModeChange} />
+                <ProviderSortDropdown
+                  mode={sortMode}
+                  modes={sortModes}
+                  onChange={onSortModeChange}
+                  dragDisabledBySort={dragDisabledBySort}
+                />
                 {onBatchTest && (
                   <Button
                     type="link"

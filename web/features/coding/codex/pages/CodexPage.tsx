@@ -2454,6 +2454,7 @@ const CodexPage: React.FC = () => {
           sortMode={sortMode}
           sortModes={PROVIDER_SORT_MODES}
           onSortModeChange={setSortMode}
+          dragDisabledBySort={sortMode !== 'custom'}
           onBatchTest={handleBatchTestProviders}
           batchTesting={batchTestingProviders}
           onOpenCommonConfig={() => setCommonConfigModalOpen(true)}

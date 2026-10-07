@@ -1616,7 +1616,8 @@
       "custom": "Default",
       "recent": "Recently used",
       "created": "By creation time",
-      "name": "By name"
+      "name": "By name",
+      "dragDisabledHint": "Dragging works only while sorting is set to Default"
     },
     "providerSearch": {
       "placeholder": "Search providers",

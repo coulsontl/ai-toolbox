@@ -22,10 +22,11 @@
     "test:form-modal-layout": "node ./scripts/verify-form-modal-layout.mjs",
     "test:provider-card-layout": "node ./scripts/verify-provider-card-layout.mjs",
     "test:ime-autocomplete": "node ./scripts/verify-ime-safe-autocomplete.mjs",
-    "test": "pnpm run test:web && pnpm run test:form-modal-layout && pnpm run test:provider-card-layout",
+    "test": "pnpm run test:web && pnpm run test:form-modal-layout && pnpm run test:provider-card-layout && pnpm run test:provider-list-drag",
     "sync:version": "node scripts/sync-tauri-version.mjs",
     "tauri": "tauri",
-    "prepare": "husky"
+    "prepare": "husky",
+    "test:provider-list-drag": "node ./scripts/verify-provider-list-drag.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "6.2.5",

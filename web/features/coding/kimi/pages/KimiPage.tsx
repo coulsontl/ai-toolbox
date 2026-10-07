@@ -983,6 +983,7 @@ const KimiPage: React.FC = () => {
         sortMode={sortMode}
         sortModes={PROVIDER_SORT_MODES}
         onSortModeChange={setSortMode}
+        dragDisabledBySort={sortMode !== 'custom'}
         onBatchTest={() => void handleBatchTestProviders()}
         batchTesting={batchTestingProviders}
         onOpenCommonConfig={() => setCommonConfigModalOpen(true)}
