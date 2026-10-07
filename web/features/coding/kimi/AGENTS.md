@@ -8,6 +8,9 @@
 
 - 遵循根目录 `DESIGN.md` 设计规范。
 - 页面与 Codex/Grok 结构保持一致，复用 `SectionSidebarLayout`、`RootDirectoryModal`、`GlobalPromptSettings`、`SessionManagerPanel` 和共享 Gateway 入口。
+- **页面外壳与卡片全部走共享组件**（2026-10-08 迁移）：头部 `CodingPageHeader`、供应商区 `ProviderListSection`、卡片 `CodexStyleCard`（Kimi 有模型目录 + 单一 active provider，按选型表属 Codex 式）。`KimiProviderCard.tsx` 是**薄映射层**，只把 `settings_config` 解析成 `ProviderCardVariantProps`；布局改动一律改在 `shared/providerCardVariants/`（Hard Rule 14，由 `pnpm run test:provider-card-layout` 守护）。Kimi 原 `KimiProviderCard.module.less` 已删除——卡片外框与拖拽把手样式归 `CardShell`。
+- 迁移时三处**位置变化**（不是功能丢失，改前改后都只有一处入口）：连通性测试从「更多」菜单移到卡片第二行（`inlineActions`）+ 模型区工具栏（`onTestModels`）；「官方账号登录」按钮进 `ProviderListSection` 的 `toolbarExtra`（工具栏中部，Kimi 是唯一有这个按钮的 CLI）；官方账号列表进 `footer` 插槽（**必须用 `footer` 而非 `alwaysVisible`**：后者只在列表为空时渲染，而账号区在列表非空时也要显示）。
+- 模型行接入共享 `ModelListSection` 后**多出两个行级按钮**：复制、设为主模型（对应新增的 `handleCopyModel` / `handleSetPrimaryModel`）。行身份是 `model.key`（catalog 别名），不是上游 model id——见 `modelRows` 与 `rowKeyByDisplay` 的注释。
 - Gateway 现在是 direct → single → failover 三态。single 入口在已应用 provider 卡片的“网关代理”按钮；single/failover 接管期间锁定其他 provider 的直连应用入口，failover 卡片显示 P0/P1 优先级。
 - i18n 键集中在顶层 `kimi.*`（如 `kimi.provider.*`、`kimi.providerForm.*`）；全局提示词区块使用 `kimi.prompt.*`（`GlobalPromptSettings` 的 `translationKeyPrefix` 必须传 `kimi.prompt`，传不存在的键会直接把键名字面量渲染成展开栏标题）。
 - 侧边栏与其他 agent 页一致：`sidebarTitle` 只传 `t('kimi.title')` 纯字符串，section 图标经 `getIcon`（providers=Database / prompt=FileText / plugins=Appstore / sessions=Message），`onSectionSelect` 负责展开对应 Collapse（prompt/session 用 nonce 触发共享组件重挂载展开）。

@@ -1,5 +1,5 @@
 import React from 'react';
-import { App, Button, Collapse, Empty, Space, Spin, Tag, Typography, message } from 'antd';
+import { App, Button, Collapse, Space, Tag, Typography, message } from 'antd';
 import {
   DndContext,
   KeyboardSensor,
@@ -18,19 +18,13 @@ import {
 } from '@dnd-kit/sortable';
 import {
   AppstoreOutlined,
-  CheckSquareOutlined,
   DatabaseOutlined,
-  EditOutlined,
-  EllipsisOutlined,
   ExclamationCircleOutlined,
-  EyeOutlined,
   FileTextOutlined,
   FolderOpenOutlined,
   LinkOutlined,
   MessageOutlined,
-  PlusOutlined,
   SyncOutlined,
-  ThunderboltOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
@@ -44,6 +38,8 @@ import SidebarSettingsModal from '@/components/common/SidebarSettingsModal';
 import CliManualPathSetting from '@/components/common/CliManualPathSetting';
 import RootDirectoryModal from '@/features/coding/shared/RootDirectoryModal';
 import useRootDirectoryConfig from '@/features/coding/shared/useRootDirectoryConfig';
+import CodingPageHeader from '@/features/coding/shared/CodingPageHeader';
+import ProviderListSection from '@/features/coding/shared/ProviderListSection';
 import {
   GatewayFailoverButton,
   firstGatewayApiFormat,
@@ -117,10 +113,6 @@ import type { GatewayCliTakeoverStatus } from '@/services';
 import JsonPreviewModal from '@/components/common/JsonPreviewModal';
 import {
   PROVIDER_SORT_MODES,
-  ProviderBatchToolbar,
-  ProviderSearchEmpty,
-  ProviderSearchInput,
-  ProviderSortDropdown,
   filterProviderItems,
   sortProviderItems,
   useProviderBatchSelection,
@@ -152,7 +144,7 @@ import {
 } from '../utils/kimiCatalogModels';
 import { saveKimiProviderCatalogWithGatewayReengage } from '../utils/kimiProviderCatalogSave';
 
-const { Link, Text, Title } = Typography;
+const { Link, Text } = Typography;
 
 /**
  * Template used when the official-login flow must create the official provider
@@ -416,22 +408,98 @@ const KimiPage: React.FC = () => {
     }
   }, [modelModalProvider, modelModalRowKey, persistProviderCatalog, t]);
 
-  const handleDeleteModel = React.useCallback((provider: KimiProvider, model: KimiCatalogModel) => {
-    modal.confirm({
-      title: t('kimi.model.confirmDelete', { name: model.displayName || model.key }),
-      icon: <ExclamationCircleOutlined />,
-      onOk: async () => {
-        try {
-          const currentModels = parseKimiSettingsConfig(provider.settingsConfig).catalogModels;
-          const nextModels = removeKimiCatalogModels(currentModels, [kimiCatalogRowKey(model)]);
-          await persistProviderCatalog(provider, nextModels);
-          message.success(t('kimi.deleteSuccess'));
-        } catch (error) {
-          message.error(error instanceof Error ? error.message : String(error));
-        }
-      },
+  /**
+   * Delete one catalog row.
+   *
+   * No confirmation here: the shared model list wraps the row's delete button
+   * in its own `Popconfirm`, so asking again in a modal would double-prompt.
+   */
+  const handleDeleteModel = React.useCallback(async (
+    provider: KimiProvider,
+    model: KimiCatalogModel,
+  ) => {
+    try {
+      const currentModels = parseKimiSettingsConfig(provider.settingsConfig).catalogModels;
+      const nextModels = removeKimiCatalogModels(currentModels, [kimiCatalogRowKey(model)]);
+      await persistProviderCatalog(provider, nextModels);
+      message.success(t('kimi.deleteSuccess'));
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : String(error));
+    }
+  }, [persistProviderCatalog, t]);
+
+  /**
+   * Duplicate a catalog row under a free key.
+   *
+   * The key is the `[models."<key>"]` table name and must be unique, so the copy
+   * walks a `-copy` / `-copy-2` … suffix until one is free rather than asking
+   * the user to invent one (they can rename it afterwards in the editor).
+   */
+  const handleCopyModel = React.useCallback(async (
+    provider: KimiProvider,
+    model: KimiCatalogModel,
+  ) => {
+    const currentModels = parseKimiSettingsConfig(provider.settingsConfig).catalogModels;
+    const existingKeys = new Set(currentModels.map((item) => item.key.trim()));
+    const baseKey = `${model.key.trim()}-copy`;
+    let nextKey = baseKey;
+    let suffix = 2;
+    while (existingKeys.has(nextKey)) {
+      nextKey = `${baseKey}-${suffix}`;
+      suffix += 1;
+    }
+    try {
+      await persistProviderCatalog(
+        provider,
+        upsertKimiCatalogModel(currentModels, { ...model, key: nextKey }),
+      );
+      message.success(t('kimi.saveSuccess'));
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : String(error));
+    }
+  }, [persistProviderCatalog, t]);
+
+  /**
+   * Make one catalog row the provider's default model.
+   *
+   * The default lives in `settingsConfig.defaultModelKey` (the CLI resolves the
+   * alias through the catalog), so this is a settings write, not a catalog
+   * edit — but it still rebuilds `settingsConfig`, so it goes through the same
+   * gateway-aware save path.
+   */
+  const handleSetPrimaryModel = React.useCallback(async (
+    provider: KimiProvider,
+    model: KimiCatalogModel,
+  ) => {
+    const settings = parseKimiSettingsConfig(provider.settingsConfig);
+    const settingsConfig = buildKimiSettingsConfig({
+      category: provider.category,
+      apiKey: settings.apiKey,
+      baseUrl: settings.baseUrl,
+      providerKey: settings.providerKey,
+      defaultModelKey: model.key.trim(),
+      catalogModels: settings.catalogModels,
+      customTomlConfig: settings.customTomlConfig,
+      rawObject: settings.rawObject,
     });
-  }, [persistProviderCatalog, t, modal]);
+    try {
+      await saveKimiProviderCatalogWithGatewayReengage({
+        provider,
+        settingsConfig,
+        gatewayMode: resolveGatewayReengageMode(gatewayCliStatus),
+        updateProvider: updateKimiProvider,
+        restoreDirect: () => restoreProxyGatewayCliDirect('kimi'),
+        engageSingle: () => engageProxyGatewaySingle('kimi', provider.id),
+        engageFailover: () => engageProxyGatewayFailover('kimi'),
+        onGatewayStatusChange: setGatewayCliStatus,
+      });
+      await loadConfig(true);
+      await refreshTrayMenu();
+      message.success(t('kimi.saveSuccess'));
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : String(error));
+    }
+  }, [gatewayCliStatus, loadConfig, t]);
 
   /**
    * Open the upstream model-list modal. Official channels authenticate through
@@ -579,7 +647,7 @@ const KimiPage: React.FC = () => {
   const handleToggleDisabled = async (provider: KimiProvider, isDisabled: boolean) => {
     try {
       await toggleKimiProviderDisabled(provider.id, isDisabled);
-      message.success(isDisabled ? t('kimi.providerDisabled') : t('kimi.providerEnabled'));
+      message.success(isDisabled ? t('common.disabled') : t('common.enabled'));
       await loadConfig(true);
       await refreshTrayMenu();
     } catch (error) {
@@ -834,6 +902,11 @@ const KimiPage: React.FC = () => {
     }
   };
 
+  /** The header's refresh button; `loadConfig` also drives the section spinners. */
+  const handleRefreshPage = () => {
+    void loadConfig();
+  };
+
   const handleOpenPluginsDirectory = async () => {
     const rootPath = rootPathInfo?.path;
     if (!rootPath) return;
@@ -884,324 +957,170 @@ const KimiPage: React.FC = () => {
       }}
     >
       <div>
-        {/* 页面头部 */}
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div>
-              <div style={{ marginBottom: 8 }}>
-                <Title level={4} style={{ margin: 0, display: 'inline-block', marginRight: 8 }}>
-                  Kimi Code CLI
-                </Title>
+        <CodingPageHeader
+          title={t('kimi.title')}
+          docsUrl="https://www.npmjs.com/package/@moonshot-ai/kimi-code"
+          onPreviewConfig={handlePreviewCurrentConfig}
+          configPath={configPath || '~/.kimi-code/config.toml'}
+          onCustomizeConfig={() => setRootDirectoryModalOpen(true)}
+          onOpenFolder={handleOpenConfigFolder}
+          onRefresh={handleRefreshPage}
+          onMoreOptions={() => setSettingsModalOpen(true)}
+        />
+      </div>
+
+      <ProviderListSection
+        sectionId="kimi-providers"
+        collapsed={providerListCollapsed}
+        onCollapsedChange={setProviderListCollapsed}
+        loading={loading}
+        providerCount={providers.length}
+        visibleCount={visibleProviders.length}
+        batch={providerBatch}
+        batchSelectableIds={batchSelectableIds}
+        keyword={providerKeyword}
+        onKeywordChange={setProviderKeyword}
+        sortMode={sortMode}
+        sortModes={PROVIDER_SORT_MODES}
+        onSortModeChange={setSortMode}
+        onBatchTest={() => void handleBatchTestProviders()}
+        batchTesting={batchTestingProviders}
+        onOpenCommonConfig={() => setCommonConfigModalOpen(true)}
+        onAddProvider={handleAddProvider}
+        headerExtra={
+          <GatewayFailoverButton
+            cliKey="kimi"
+            status={gatewayCliStatus}
+            primaryProviderNeedsGatewayProxy={primaryGatewayProviderNeedsProxy}
+            primaryProviderNeedsProxyReason={primaryGatewayProviderNeedsProxyReason}
+            onStatusChange={setGatewayCliStatus}
+          />
+        }
+        toolbarExtra={
+          <Button
+            type="link"
+            size="small"
+            style={{ fontSize: 12 }}
+            icon={<UserOutlined />}
+            onClick={(event) => {
+              event.stopPropagation();
+              void handleStartOfficialAccountAuth();
+            }}
+          >
+            {t('kimi.officialAccountButton')}
+          </Button>
+        }
+        hint={<div>{t('kimi.pageHint')}</div>}
+        footer={
+          officialAccounts.length > 0 ? (
+            <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Text strong style={{ fontSize: 12 }}>{t('kimi.officialAccounts')}</Text>
                 <Link
                   type="secondary"
                   style={{ fontSize: 12 }}
                   onClick={(event) => {
                     event.stopPropagation();
-                    void openUrl('https://www.npmjs.com/package/@moonshot-ai/kimi-code');
+                    void openUrl('https://www.kimi.com/code/console');
                   }}
                 >
-                  <LinkOutlined /> {t('kimi.viewDocs')}
-                </Link>
-                <Link
-                  type="secondary"
-                  style={{ fontSize: 12, marginLeft: 16 }}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void handlePreviewCurrentConfig();
-                  }}
-                >
-                  <EyeOutlined /> {t('common.previewConfig')}
+                  <LinkOutlined /> {t('kimi.viewUsage')}
                 </Link>
               </div>
-              <Space>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  {t('kimi.configPath')}:
-                </Text>
-                <Text code style={{ fontSize: 12 }}>
-                  {configPath || '~/.kimi-code/config.toml'}
-                </Text>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<EditOutlined />}
-                  onClick={() => setRootDirectoryModalOpen(true)}
-                  style={{ padding: 0, fontSize: 12 }}
+              {officialAccounts.map((account) => (
+                <div
+                  key={account.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    fontSize: 12,
+                    color: 'var(--color-text-secondary)',
+                    flexWrap: 'wrap',
+                  }}
                 >
-                  {t('kimi.rootPathSource.customize')}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<FolderOpenOutlined />}
-                  onClick={() => void handleOpenConfigFolder()}
-                  style={{ padding: 0, fontSize: 12 }}
-                >
-                  {t('kimi.openFolder')}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<SyncOutlined />}
-                  onClick={() => void loadConfig()}
-                  style={{ padding: 0, fontSize: 12 }}
-                >
-                  {t('kimi.refreshConfig')}
-                </Button>
-              </Space>
-            </div>
-
-            <Space>
-              <Button type="text" icon={<EllipsisOutlined />} onClick={() => setSettingsModalOpen(true)}>
-                {t('common.moreOptions')}
-              </Button>
-            </Space>
-          </div>
-        </div>
-      </div>
-
-      <div id="kimi-providers" data-sidebar-section="true" data-sidebar-title={t('kimi.provider.title')}>
-        <Collapse
-          style={{ marginBottom: 16 }}
-          activeKey={providerListCollapsed ? [] : ['providers']}
-          onChange={(keys) => setProviderListCollapsed(!keys.includes('providers'))}
-          items={[
-            {
-              key: 'providers',
-              label: (
-                <Space size={8} wrap>
-                  <Text strong>
-                    <DatabaseOutlined style={{ marginRight: 8 }} />
-                    {t('kimi.provider.title')}
-                  </Text>
-                  <GatewayFailoverButton
-                    cliKey="kimi"
-                    status={gatewayCliStatus}
-                    primaryProviderNeedsGatewayProxy={primaryGatewayProviderNeedsProxy}
-                    primaryProviderNeedsProxyReason={primaryGatewayProviderNeedsProxyReason}
-                    onStatusChange={setGatewayCliStatus}
-                  />
-                </Space>
-              ),
-              extra: (
-                <Space size={4} wrap>
-                  <Button
-                    type="link"
-                    size="small"
-                    style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (providerBatch.selectionMode) {
-                        providerBatch.exitSelection();
-                      } else {
-                        providerBatch.enterSelection();
-                      }
-                    }}
-                  >
-                    <CheckSquareOutlined style={{ fontSize: 13, lineHeight: 1 }} />
-                    <span>
-                      {providerBatch.selectionMode
-                        ? t('common.batch.exit')
-                        : t('common.batch.manage')}
-                    </span>
-                  </Button>
-                  {providerBatch.selectionMode && (
-                    <ProviderBatchToolbar
-                      hasSelection={providerBatch.hasSelection}
-                      visibleCount={batchSelectableIds.length}
-                      isAllSelected={providerBatch.isAllSelected}
-                      indeterminate={providerBatch.indeterminate}
-                      onSelectAll={providerBatch.selectAllFiltered}
-                      onBatchDelete={providerBatch.batchDelete}
-                      disabled={loading}
-                    />
-                  )}
-                  <ProviderSearchInput value={providerKeyword} onChange={setProviderKeyword} />
-                  <ProviderSortDropdown
-                    mode={sortMode}
-                    modes={PROVIDER_SORT_MODES}
-                    onChange={setSortMode}
-                  />
-                  <Button
-                    type="link"
-                    size="small"
-                    style={{ fontSize: 12 }}
-                    icon={<ThunderboltOutlined />}
-                    loading={batchTestingProviders}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void handleBatchTestProviders();
-                    }}
-                  >
-                    {t('common.batchTest')}
-                  </Button>
-                  <Button
-                    type="link"
-                    size="small"
-                    style={{ fontSize: 12 }}
-                    icon={<AppstoreOutlined />}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setCommonConfigModalOpen(true);
-                    }}
-                  >
-                    {t('kimi.commonConfig.title')}
-                  </Button>
-                  <Button
-                    type="link"
-                    size="small"
-                    style={{ fontSize: 12 }}
-                    icon={<UserOutlined />}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void handleStartOfficialAccountAuth();
-                    }}
-                  >
-                    {t('kimi.officialAccountButton')}
-                  </Button>
-                  <Button
-                    type="link"
-                    size="small"
-                    style={{ fontSize: 12 }}
-                    icon={<PlusOutlined />}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      handleAddProvider();
-                    }}
-                  >
-                    {t('kimi.addProvider')}
-                  </Button>
-                </Space>
-              ),
-              children: (
-                <Spin spinning={loading}>
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: 'var(--color-text-secondary)',
-                      borderLeft: '2px solid var(--color-border)',
-                      paddingLeft: 8,
-                      marginBottom: 12,
-                    }}
-                  >
-                    <div>{t('kimi.pageHint')}</div>
-                  </div>
-
-                  {providers.length === 0 ? (
-                    <Empty description={t('kimi.emptyText')} style={{ marginTop: 40 }} />
-                  ) : visibleProviders.length === 0 ? (
-                    <ProviderSearchEmpty />
+                  <UserOutlined />
+                  <span>{account.email || account.name || account.id}</span>
+                  {account.isApplied ? (
+                    <Tag color="success" style={{ marginInlineEnd: 0 }}>
+                      {t('kimi.account.applied')}
+                    </Tag>
                   ) : (
-                    <DndContext
-                          sensors={providerBatchDragDisabled ? [] : sensors}
-                          collisionDetection={closestCenter}
-                          onDragEnd={(event) => void handleDragEnd(event)}
-                          modifiers={[restrictToVerticalAxis]}
-                        >
-                          <SortableContext
-                            items={providers.map((provider) => provider.id)}
-                            strategy={verticalListSortingStrategy}
-                          >
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                              {visibleProviders.map((provider) => (
-                                <KimiProviderCard
-                                  key={provider.id}
-                                  provider={provider}
-                                  isApplied={provider.id === appliedProviderId}
-                                  gatewayTakeoverActive={gatewayTakeoverActive}
-                                  gatewayStatus={gatewayCliStatus}
-                                  onGatewayStatusChange={setGatewayCliStatus}
-                                  onEdit={handleEditProvider}
-                                  onDelete={(value) => void handleDeleteProvider(value)}
-                                  onApply={(value) => void handleApplyProvider(value)}
-                                  onToggleDisabled={handleToggleDisabled}
-                                  onTest={handleTestProvider}
-                                  onCopy={handleCopyProvider}
-                                  onShare={shareProvider}
-                                  connectivityStatus={connectivityStatuses[provider.id]}
-                                  selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
-                                  selected={providerBatch.selectedIds.has(provider.id)}
-                                  onSelectChange={(checked) =>
-                                    providerBatch.toggleSelect(provider.id, checked)
-                                  }
-                                  onEditModel={handleEditModel}
-                                  onDeleteModel={handleDeleteModel}
-                                  onDeleteModels={handleDeleteModels}
-                                  onFetchModels={handleOpenFetchModels}
-                                  canFetchModels={
-                                    provider.category !== 'official'
-                                    && provider.id !== KIMI_LOCAL_PROVIDER_ID
-                                    && Boolean(extractKimiBaseUrl(provider.settingsConfig))
-                                  }
-                                />
-                              ))}
-                            </div>
-                          </SortableContext>
-                        </DndContext>
+                    <Button
+                      type="link"
+                      size="small"
+                      style={{ fontSize: 12, padding: 0, height: 'auto' }}
+                      onClick={() => void handleApplyOfficialAccount(account)}
+                    >
+                      {t('kimi.account.apply')}
+                    </Button>
                   )}
-
-                  {officialAccounts.length > 0 ? (
-                    <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                        <Text strong style={{ fontSize: 12 }}>{t('kimi.officialAccounts')}</Text>
-                        <Link
-                          type="secondary"
-                          style={{ fontSize: 12 }}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void openUrl('https://www.kimi.com/code/console');
-                          }}
-                        >
-                          <LinkOutlined /> {t('kimi.viewUsage')}
-                        </Link>
-                      </div>
-                      {officialAccounts.map((account) => (
-                        <div
-                          key={account.id}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            fontSize: 12,
-                            color: 'var(--color-text-secondary)',
-                            flexWrap: 'wrap',
-                          }}
-                        >
-                          <UserOutlined />
-                          <span>{account.email || account.name || account.id}</span>
-                          {account.isApplied ? (
-                            <Tag color="success" style={{ marginInlineEnd: 0 }}>
-                              {t('kimi.account.applied')}
-                            </Tag>
-                          ) : (
-                            <Button
-                              type="link"
-                              size="small"
-                              style={{ fontSize: 12, padding: 0, height: 'auto' }}
-                              onClick={() => void handleApplyOfficialAccount(account)}
-                            >
-                              {t('kimi.account.apply')}
-                            </Button>
-                          )}
-                          <Button
-                            type="link"
-                            size="small"
-                            danger
-                            style={{ fontSize: 12, padding: 0, height: 'auto' }}
-                            disabled={account.isApplied}
-                            onClick={() => handleDeleteOfficialAccount(account)}
-                          >
-                            {t('kimi.account.delete')}
-                          </Button>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                </Spin>
-              ),
-            },
-          ]}
-        />
-      </div>
+                  <Button
+                    type="link"
+                    size="small"
+                    danger
+                    style={{ fontSize: 12, padding: 0, height: 'auto' }}
+                    disabled={account.isApplied}
+                    onClick={() => handleDeleteOfficialAccount(account)}
+                  >
+                    {t('kimi.account.delete')}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          ) : null
+        }
+      >
+        <DndContext
+          sensors={providerBatchDragDisabled ? [] : sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={(event) => void handleDragEnd(event)}
+          modifiers={[restrictToVerticalAxis]}
+        >
+          <SortableContext
+            items={providers.map((provider) => provider.id)}
+            strategy={verticalListSortingStrategy}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {visibleProviders.map((provider) => (
+                <KimiProviderCard
+                  key={provider.id}
+                  provider={provider}
+                  isApplied={provider.id === appliedProviderId}
+                  gatewayTakeoverActive={gatewayTakeoverActive}
+                  gatewayStatus={gatewayCliStatus}
+                  onGatewayStatusChange={setGatewayCliStatus}
+                  onEdit={handleEditProvider}
+                  onDelete={(value) => void handleDeleteProvider(value)}
+                  onApply={(value) => void handleApplyProvider(value)}
+                  onToggleDisabled={handleToggleDisabled}
+                  onTest={handleTestProvider}
+                  onCopy={handleCopyProvider}
+                  onShare={shareProvider}
+                  connectivityStatus={connectivityStatuses[provider.id]}
+                  selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
+                  selected={providerBatch.selectedIds.has(provider.id)}
+                  onSelectChange={(checked) =>
+                    providerBatch.toggleSelect(provider.id, checked)
+                  }
+                  onEditModel={handleEditModel}
+                  onCopyModel={handleCopyModel}
+                  onSetPrimaryModel={handleSetPrimaryModel}
+                  onDeleteModel={handleDeleteModel}
+                  onDeleteModels={handleDeleteModels}
+                  onFetchModels={handleOpenFetchModels}
+                  canFetchModels={
+                    provider.category !== 'official'
+                    && provider.id !== KIMI_LOCAL_PROVIDER_ID
+                    && Boolean(extractKimiBaseUrl(provider.settingsConfig))
+                  }
+                  dragDisabled={providerDragDisabled}
+                />
+              ))}
+            </div>
+          </SortableContext>
+        </DndContext>
+      </ProviderListSection>
 
       <div id="kimi-global-prompt" data-sidebar-section="true" data-sidebar-title={t('common.prompt.title')}>
         <GlobalPromptSettings

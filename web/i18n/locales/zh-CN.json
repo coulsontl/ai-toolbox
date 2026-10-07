@@ -5905,7 +5905,6 @@
       }
     },
     "rootPathSource": {
-      "customize": "自定义配置目录",
       "modal": {
         "title": "自定义 Kimi Code CLI 配置目录",
         "sourceEnv": "环境变量 KIMI_CODE_HOME",
@@ -5951,8 +5950,6 @@
       }
     },
     "pageHint": "可添加多套供应商配置并通过「应用」或系统托盘快捷菜单快速切换。「通用配置」的内容为所有供应商共享，应用时会自动与供应商配置合并写入。",
-    "addProvider": "添加供应商",
-    "emptyText": "暂无供应商配置，点击上方按钮添加",
     "plugins": {
       "title": "插件管理",
       "name": "插件名称",
@@ -5974,8 +5971,6 @@
     "deleteSuccess": "删除成功",
     "saveSuccess": "保存成功",
     "officialAccountButton": "官方账号",
-    "configPath": "配置路径",
-    "viewDocs": "查看文档",
     "viewUsage": "查看额度",
     "providerForm": {
       "editTitle": "编辑供应商",
@@ -6017,8 +6012,6 @@
       "presetNoneNew": "预设模型已全部存在，无新增"
     },
     "localConfigHint": "来自本地文件，编辑后保存到数据库",
-    "providerDisabled": "已禁用",
-    "providerEnabled": "已启用",
     "account": {
       "apply": "应用",
       "applied": "已应用",
@@ -6027,14 +6020,7 @@
       "applySuccess": "官方账号已应用",
       "deleteSuccess": "官方账号已删除"
     },
-    "openFolder": "打开文件夹",
-    "refreshConfig": "刷新配置",
     "model": {
-      "title": "模型列表",
-      "addModel": "添加模型",
-      "batchDelete": "批量删除",
-      "cancelBatchDelete": "退出批量删除",
-      "deleteSelected": "删除已选 {{count}} 项",
       "addTitle": "添加模型",
       "editTitle": "编辑模型",
       "key": "模型 Key",
@@ -6059,13 +6045,9 @@
       "supportEffortsPlaceholder": "选择档位",
       "defaultEffort": "默认思考档位",
       "defaultEffortHint": "写入 default_effort，必须属于已选档位。",
-      "emptyText": "暂无模型，可点击「添加模型」手动新增。",
-      "confirmDelete": "确定要删除模型 \"{{name}}\" 吗？",
       "batchDeleteSuccess": "已删除 {{count}} 个模型",
       "editModelHint": "模型目录写入 config.toml 的 [models] 表；应用供应商后才会投影到运行时文件。",
-      "selectModel": "选择模型 {{name}}",
       "catalogMovedHint": "模型目录已移至供应商卡片的「模型列表」区域，保存后在卡片中编辑。",
-      "defaultTag": "默认",
       "keyDuplicate": "该模型 Key 已被同供应商的其他模型占用。"
     }
   },

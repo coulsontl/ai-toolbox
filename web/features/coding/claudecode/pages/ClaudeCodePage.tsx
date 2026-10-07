@@ -1360,6 +1360,7 @@ const ClaudeCodePage: React.FC = () => {
                       setGatewayCliStatus(status);
                       await loadConfig();
                     }}
+                    dragDisabled={providerDragDisabled}
                   />
                 ))}
               </div>

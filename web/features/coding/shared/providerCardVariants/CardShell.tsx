@@ -43,6 +43,28 @@ interface CardShellProps {
  * *content* layout is what the three styles differ on, and that is left to
  * them.
  */
+/**
+ * The drag handle's own affordances: the grip is a small, low-contrast target,
+ * so it lights up and gains a fill only while the pointer is over it. Without
+ * that feedback the handle is hard to find and gives no sign it is grabbed.
+ *
+ * Kimi's card carried this (`.dragHandle:hover`); the other bespoke cards did
+ * not. It belongs here rather than in the caller: it describes how the handle
+ * behaves, which is `CardShell`'s job, and every consumer gets it at once.
+ */
+const dragHandleStyle: React.CSSProperties = {
+  cursor: 'grab',
+  padding: '4px 2px',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  color: 'var(--color-text-tertiary)',
+  borderRadius: 4,
+  flexShrink: 0,
+  touchAction: 'none',
+  transition: 'color 0.2s ease, background-color 0.2s ease',
+};
+
 const CardShell: React.FC<CardShellProps> = ({
   sortableId,
   draggable = false,
@@ -121,12 +143,18 @@ const CardShell: React.FC<CardShellProps> = ({
               {...attributes}
               {...listeners}
               style={{
+                ...dragHandleStyle,
                 cursor: isDragging ? 'grabbing' : 'grab',
-                padding: '4px 0',
-                display: 'flex',
-                alignItems: 'center',
-                color: '#999',
-                touchAction: 'none',
+                color: isDragging ? 'var(--color-text)' : dragHandleStyle.color,
+                background: isDragging ? 'var(--color-fill-secondary)' : undefined,
+              }}
+              onMouseEnter={(event) => {
+                event.currentTarget.style.color = 'var(--color-text)';
+                event.currentTarget.style.background = 'var(--color-fill-secondary)';
+              }}
+              onMouseLeave={(event) => {
+                event.currentTarget.style.color = 'var(--color-text-tertiary)';
+                event.currentTarget.style.background = '';
               }}
             >
               <HolderOutlined style={{ fontSize: 16 }} />

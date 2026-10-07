@@ -46,8 +46,8 @@
 - `features/coding/shared/management`（`ManagementCheckbox`）：批量选择的复选框。
 - `features/coding/shared/providerConnectivity/ProviderConnectivityStatus`：连通性状态点。
 - `components/common/ProviderNameLink`、`components/common/SdkTag`：名称链接与 SDK 标签。
-- 使用方：`claudecode`（Claude 式）、`codex`（Codex 式）、`zcode` + `omo_native`（OpenCode 式）。三种样式**均已落地**。
-- 仍持 bespoke 卡片的四个（claudedesktop / geminicli / grok / kimi）已登记在 `scripts/verify-provider-card-layout.mjs` 的 `PENDING_MIGRATION` 里，只减不增。
+- 使用方：`claudecode`（Claude 式）、`codex` + `kimi`（Codex 式）、`zcode` + `omo_native`（OpenCode 式）。三种样式**均已落地**。
+- 仍持 bespoke 卡片的三个（claudedesktop / geminicli / grok）已登记在 `scripts/verify-provider-card-layout.mjs` 的 `PENDING_MIGRATION` 里，只减不增。
 
 ## 迁移一个 CLI 的步骤
 
@@ -72,7 +72,7 @@
 | `actions.gatewayActions` | 头部主操作**之前** | 网关接管/恢复直连/切换主渠道 | claudecode、codex |
 | `actions.primaryAction` | 头部主操作 | 文字链「应用」 | claudecode、codex |
 | `actions.extraActions` | 头部图标按钮，在「更多」**之前** | 工具专属头部动作 | zcode、omo_native（OpenCode 式）；Claude/Codex 式亦可 |
-| `actions.enabledStateLabel` | 「更多」菜单里启用开关的副标题 | `配置已启用` / `配置已禁用`（各 CLI 措辞不同，不共用 `common.provider.*`） | claudecode、codex |
+| `actions.enabledStateLabel` | 「更多」菜单里启用开关的副标题 | `配置已启用` / `配置已禁用`（各 CLI 措辞不同，不共用 `common.provider.*`） | claudecode、codex、kimi |
 | `modelSection.aboveList` / `renderModelExtraActions` | 模型区内 | Codex 的自动审批行与行级动作 | codex |
 | `modelSection.className` / `bodyStyle` | 模型 Collapse | 缩进适配（透明背景由 `transparentRows` 负责） | codex |
 
@@ -81,6 +81,8 @@
 Claude / Codex 式的菜单**固定为**：启用（含副标题）→ 编辑 → 复制 → 分享 → 分隔线 → 删除，每项带图标，`trigger={['click']}`。
 
 这些细节（图标、分隔线、副标题文案、点击而非 hover）**迁移前就存在**，用户看得见。迁移时把它们简化掉——比如只留 `{ key, label }` 而丢掉 `icon` / `divider`，或把「编辑」提到头部——**不会有任何报错**，只是菜单长得像另一个产品。改这个菜单前先 `git show <迁移前的 commit>:<原文件>` 对照一遍。
+
+**原实现里契约之外的菜单项，按语义找插槽，不要删也不要破例。** 例：Kimi 把「连通性测试」放在菜单里（全仓唯一），而它本质是「对模型目录的探测」——迁到模型区工具栏（`modelSection.onTestModels`）与卡片第二行（`inlineActions`），与同样有模型目录的 Codex 卡一致。位置变了就是行为变了：**写进提交说明**，否则用户按肌肉记忆去菜单里找会找不到（同 #103）。
 
 > **每个可选 prop 都必须在某个样式里有渲染点**。声明了却没渲染 = 调用方传了等于没传，且类型检查完全通过（历史坑 #70、#97）。2026-10-07 删掉了三个零消费方 prop：`metaEntries` 的 `kind: 'id'` / `'sdk'` 与 `ProviderCardModels.modelSourceTag`。
 

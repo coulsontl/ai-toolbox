@@ -2570,6 +2570,7 @@ const CodexPage: React.FC = () => {
                     onSelectChange={(checked) =>
                       providerBatch.toggleSelect(provider.id, checked)
                     }
+                    dragDisabled={providerDragDisabled}
                   />
                 ))}
               </div>

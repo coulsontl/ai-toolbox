@@ -5908,7 +5908,6 @@
       }
     },
     "rootPathSource": {
-      "customize": "Customize Root Directory",
       "modal": {
         "title": "Customize Kimi Code CLI Root Directory",
         "sourceEnv": "Environment Variable KIMI_CODE_HOME",
@@ -5954,8 +5953,6 @@
       }
     },
     "pageHint": "Add multiple provider configurations and quickly switch via Apply or the system tray menu. Common configuration is shared across all providers and merged automatically on apply.",
-    "addProvider": "Add Provider",
-    "emptyText": "No provider configuration, click button above to add",
     "plugins": {
       "title": "Plugins",
       "name": "Plugin Name",
@@ -5977,8 +5974,6 @@
     "deleteSuccess": "Deleted Successfully",
     "saveSuccess": "Saved Successfully",
     "officialAccountButton": "Official Account",
-    "configPath": "Config Path",
-    "viewDocs": "View Docs",
     "viewUsage": "View Usage",
     "providerForm": {
       "editTitle": "Edit Provider",
@@ -6020,8 +6015,6 @@
       "presetNoneNew": "All preset models are already in the catalog"
     },
     "localConfigHint": "From local file, will be saved to database after editing",
-    "providerDisabled": "Disabled",
-    "providerEnabled": "Enabled",
     "account": {
       "apply": "Apply",
       "applied": "Applied",
@@ -6030,14 +6023,7 @@
       "applySuccess": "Official account applied",
       "deleteSuccess": "Official account deleted"
     },
-    "openFolder": "Open Folder",
-    "refreshConfig": "Refresh Config",
     "model": {
-      "title": "Model List",
-      "addModel": "Add Model",
-      "batchDelete": "Batch Delete",
-      "cancelBatchDelete": "Exit Batch Delete",
-      "deleteSelected": "Delete {{count}} selected",
       "addTitle": "Add Model",
       "editTitle": "Edit Model",
       "key": "Model Key",
@@ -6062,13 +6048,9 @@
       "supportEffortsPlaceholder": "Select efforts",
       "defaultEffort": "Default Effort",
       "defaultEffortHint": "Written as default_effort; must be one of the selected efforts.",
-      "emptyText": "No models yet. Click \"Add Model\" to create one.",
-      "confirmDelete": "Delete model \"{{name}}\"?",
       "batchDeleteSuccess": "Deleted {{count}} models",
       "editModelHint": "The catalog is written to the [models] table in config.toml; it is projected to the runtime file only after the provider is applied.",
-      "selectModel": "Select model {{name}}",
       "catalogMovedHint": "The model catalog now lives in the provider card's \"Model List\" section; edit it there after saving.",
-      "defaultTag": "Default",
       "keyDuplicate": "This model key is already used by another model on this provider."
     }
   },

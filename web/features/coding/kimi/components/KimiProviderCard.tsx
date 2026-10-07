@@ -1,22 +1,12 @@
 import React from 'react';
-import { Card, Space, Button, Dropdown, Switch, Tag, Typography, Tooltip, Collapse, Empty, message } from 'antd';
-import type { MenuProps } from 'antd';
+import { message } from 'antd';
 import {
-  ApiOutlined,
-  CheckOutlined,
-  CopyOutlined,
-  EditOutlined,
-  DeleteOutlined,
-  MoreOutlined,
-  HolderOutlined,
-  GlobalOutlined,
-  PlusOutlined,
-} from '@ant-design/icons';
-import { BarChart2, Share2 } from 'lucide-react';
+  BarChart2,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { useSortable } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
+import { ApiOutlined, CheckOutlined } from '@ant-design/icons';
+import { Button, Tag, Tooltip, Typography } from 'antd';
 import { KimiProvider, KIMI_LOCAL_PROVIDER_ID } from '@/types/kimi';
 import type { KimiCatalogModel } from '@/types/kimi';
 import {
@@ -33,10 +23,9 @@ import {
 } from '../utils/settingsConfig';
 import { kimiCatalogRowKey } from '../utils/kimiCatalogModels';
 import AppliedTag from '@/components/common/AppliedTag';
-import ProviderNameLink from '@/components/common/ProviderNameLink';
 import ProxyTag from '@/components/common/ProxyTag';
-import ProviderConnectivityStatus from '@/features/coding/shared/providerConnectivity/ProviderConnectivityStatus';
 import type { ProviderConnectivityStatusItem } from '@/components/common/ProviderCard/types';
+import type { ModelDisplayData } from '@/components/common/ProviderCard/types';
 import {
   canApplyProviderWithGatewayProxy,
   firstGatewayApiFormat,
@@ -49,8 +38,12 @@ import {
   providerNeedsGatewayProxy,
   subscribeGatewayProviderProfiles,
 } from '@/features/coding/shared/gateway';
-import { ManagementCheckbox } from '@/features/coding/shared/management';
-import styles from './KimiProviderCard.module.less';
+import {
+  CodexStyleCard,
+  InlineConnectivityButton,
+  type ProviderCardMetaEntry,
+  type ProviderCardVariantProps,
+} from '@/features/coding/shared/providerCardVariants';
 
 const { Text } = Typography;
 
@@ -73,14 +66,42 @@ interface KimiProviderCardProps {
   onSelectChange?: (checked: boolean) => void;
   /** Open the single-model editor for this provider (add or edit). */
   onEditModel?: (provider: KimiProvider, model?: KimiCatalogModel) => void;
+  /** Duplicate a catalog row under a free key. */
+  onCopyModel?: (provider: KimiProvider, model: KimiCatalogModel) => void;
+  /** Point `defaultModelKey` at this row. */
+  onSetPrimaryModel?: (provider: KimiProvider, model: KimiCatalogModel) => void;
   onDeleteModel?: (provider: KimiProvider, model: KimiCatalogModel) => void;
   onDeleteModels?: (provider: KimiProvider, models: KimiCatalogModel[]) => void;
   /** Open the fetch-models modal for this provider. */
   onFetchModels?: (provider: KimiProvider) => void;
   /** Whether the provider has enough config for an upstream model fetch. */
   canFetchModels?: boolean;
+  /**
+   * Hides the drag handle when reordering is not available (non-`custom` sort
+   * mode, or an active search) — a handle that cannot move anything is worse
+   * than no handle.
+   */
+  dragDisabled?: boolean;
 }
 
+/**
+ * A Kimi Code provider, rendered in the Codex style.
+ *
+ * The layout lives in the shared variant; this file only maps Kimi's storage
+ * shape onto it, so the card cannot drift from the other CLIs that share the
+ * style.
+ *
+ * Three Kimi-specific facts drive the mapping:
+ *
+ * - The endpoint, the active model and the catalog all live inside the
+ *   `settings_config` JSON blob (`auth` / `providerConfigs` / `modelCatalog`),
+ *   not on the row, so they are parsed out here.
+ * - The model catalog is this CLI's own list, so the card carries a model
+ *   section — but the official and `__local__` rows have no persisted catalog
+ *   and must not show one.
+ * - Official channels authenticate through OAuth, so there is no static API key
+ *   to probe: the connectivity action is disabled for them.
+ */
 const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
   provider,
   isApplied,
@@ -99,10 +120,13 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
   selected = false,
   onSelectChange,
   onEditModel,
+  onCopyModel,
+  onSetPrimaryModel,
   onDeleteModel,
   onDeleteModels,
   onFetchModels,
   canFetchModels = false,
+  dragDisabled = false,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -110,21 +134,6 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
   const [restoringDirect, setRestoringDirect] = React.useState(false);
   const [modelsSelectionMode, setModelsSelectionMode] = React.useState(false);
   const [selectedModelKeys, setSelectedModelKeys] = React.useState<string[]>([]);
-
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: provider.id });
-
-  const sortableStyle = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : provider.isDisabled ? 0.6 : 1,
-  };
 
   const isOfficialProvider = provider.category === 'official';
   const isLocalProvider = provider.id === KIMI_LOCAL_PROVIDER_ID;
@@ -212,25 +221,11 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
     gatewayProxyActive && !isApplied && !canSwitchGatewayProvider;
   const applyWithProxyDisabled = provider.isDisabled || !gatewayCanApplyProxy;
 
-  const actionAreaWidth =
-    showApplyWithProxyAction
-      ? 160
-      : showApplyAction ||
-          showGatewaySwitchAction ||
-          showGatewayLockedApply ||
-          canShowGatewayProxyButton ||
-          canShowRestoreDirectButton ||
-          canShowRestoreDirectUnavailable
-        ? 140
-        : 40;
-
   const refreshTrayAfterGatewayChange = () => {
     void refreshTrayMenu().catch(() => {});
   };
 
-  const handleEngageGatewayProxy = async (event: React.MouseEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
+  const handleEngageGatewayProxy = async () => {
     setEngagingGatewayProxy(true);
     try {
       const nextStatus = await engageProxyGatewaySingle('kimi', provider.id);
@@ -245,9 +240,7 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
     }
   };
 
-  const handleApplyWithGatewayProxy = async (event: React.MouseEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
+  const handleApplyWithGatewayProxy = async () => {
     setEngagingGatewayProxy(true);
     try {
       const nextStatus = await switchProxyGatewayPrimaryProvider('kimi', provider.id);
@@ -262,9 +255,7 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
     }
   };
 
-  const handleRestoreDirect = async (event: React.MouseEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
+  const handleRestoreDirect = async () => {
     setRestoringDirect(true);
     try {
       const nextStatus = await restoreProxyGatewayCliDirect('kimi');
@@ -279,9 +270,7 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
     }
   };
 
-  const handleSwitchGatewayProvider = async (event: React.MouseEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
+  const handleSwitchGatewayProvider = async () => {
     setEngagingGatewayProxy(true);
     try {
       const nextStatus = await switchProxyGatewayPrimaryProvider('kimi', provider.id);
@@ -296,90 +285,13 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
     }
   };
 
-  const handleToggleDisabled = (checked: boolean) => {
-    if (showRuntimeApplied && !checked) {
+  const handleToggleDisabled = (enabled: boolean) => {
+    if (showRuntimeApplied && !enabled) {
       message.warning(t('common.disableAppliedConfigWarning'));
       return;
     }
-    void onToggleDisabled(provider, !checked);
+    void onToggleDisabled(provider, !enabled);
   };
-
-  const menuItems: MenuProps['items'] = [
-    ...(isLocalProvider
-      ? []
-      : [
-          {
-            key: 'toggle',
-            label: (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <span>{t('common.enable')}</span>
-                  <Text type="secondary" style={{ fontSize: 11 }}>
-                    {provider.isDisabled ? t('kimi.providerDisabled') : t('kimi.providerEnabled')}
-                  </Text>
-                </div>
-                <Switch
-                  checked={!provider.isDisabled}
-                  onChange={handleToggleDisabled}
-                  size="small"
-                />
-              </div>
-            ),
-          },
-        ]),
-    {
-      key: 'edit',
-      label: t('common.edit'),
-      icon: <EditOutlined />,
-      onClick: () => onEdit(provider),
-    },
-    {
-      key: 'test',
-      label: t('opencode.connectivity.button'),
-      icon: <ApiOutlined />,
-      // Official channels authenticate via the OAuth login state; there is no
-      // static API key to probe directly (same rule as grok/claude/codex).
-      disabled: isOfficialProvider || provider.isDisabled,
-      onClick: () => onTest?.(provider),
-    },
-    {
-      key: 'copy',
-      label: t('common.copy'),
-      icon: <CopyOutlined />,
-      onClick: () => onCopy?.(provider),
-    },
-    ...(onShare ? [{
-      key: 'share', label: t('common.share'), icon: <Share2 size={14} />,
-      onClick: () => onShare(provider),
-    }] : []),
-    ...(isLocalProvider
-      ? []
-      : [
-          {
-            type: 'divider' as const,
-          },
-          {
-            key: 'delete',
-            label: t('common.delete'),
-            icon: <DeleteOutlined />,
-            danger: true,
-            onClick: () => onDelete(provider),
-          },
-        ]),
-  ];
-
-  const cardBorderColor = selectable && selected
-    ? 'var(--ant-color-primary)'
-    : isGatewayPrimary
-      ? 'var(--color-status-success)'
-      : showRuntimeApplied
-        ? 'var(--ant-color-primary)'
-        : 'var(--color-border-card)';
-  const cardBackground = isGatewayPrimary
-    ? 'linear-gradient(135deg, color-mix(in srgb, var(--color-status-success) 12%, var(--color-bg-container)), var(--color-bg-container))'
-    : showRuntimeApplied
-      ? 'var(--color-bg-selected)'
-      : undefined;
 
   const handleToggleModelsSelectionMode = () => {
     setModelsSelectionMode((current) => !current);
@@ -404,442 +316,305 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
     setModelsSelectionMode(false);
   };
 
-  /**
-   * Model section: the catalog editor moved off the provider form so a single
-   * model's full field set (sizes / reasoning key / capabilities / efforts) has
-   * room to breathe, and per-model actions sit next to the list they act on.
-   */
-  const renderModelSection = () => (
-    <Collapse
-      ghost
-      style={{ marginTop: 8, background: 'transparent' }}
-      items={[
-        {
-          key: 'models',
-          label: (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-              <Text strong style={{ fontSize: 13 }}>
-                {t('kimi.model.title')} ({catalogModels.length})
-              </Text>
-              <Space size={0} onClick={(event) => event.stopPropagation()}>
-                {modelsSelectionMode && (
-                  <Button
-                    size="small"
-                    type="text"
-                    danger
-                    style={{ fontSize: 12 }}
-                    disabled={selectedModelKeys.length === 0}
-                    onClick={handleBatchDeleteModels}
-                  >
-                    {t('kimi.model.deleteSelected', { count: selectedModelKeys.length })}
-                  </Button>
-                )}
-                {onDeleteModels && (
-                  <Button
-                    size="small"
-                    type="text"
-                    style={{ fontSize: 12 }}
-                    onClick={handleToggleModelsSelectionMode}
-                  >
-                    {modelsSelectionMode
-                      ? t('kimi.model.cancelBatchDelete')
-                      : t('kimi.model.batchDelete')}
-                  </Button>
-                )}
-                {onFetchModels && (
-                  <Tooltip title={canFetchModels ? '' : t('opencode.provider.completeUrlAndKey')}>
-                    <span>
-                      <Button
-                        size="small"
-                        type="text"
-                        style={{ fontSize: 12 }}
-                        disabled={!canFetchModels}
-                        onClick={() => onFetchModels(provider)}
-                      >
-                        {t('codex.fetchModels.button')}
-                      </Button>
-                    </span>
-                  </Tooltip>
-                )}
-                {onEditModel && (
-                  <Button
-                    size="small"
-                    type="text"
-                    style={{ fontSize: 12 }}
-                    onClick={() => onEditModel(provider)}
-                  >
-                    <PlusOutlined style={{ marginRight: 0 }} />
-                    {t('kimi.model.addModel')}
-                  </Button>
-                )}
-              </Space>
-            </div>
-          ),
-          children: (
-            <div style={{ paddingLeft: 18, background: 'transparent' }}>
-              {catalogModels.length > 0 ? (
-                <Space direction="vertical" style={{ width: '100%' }} size={4}>
-                  {catalogModels.map((model) => {
-                    const rowKey = kimiCatalogRowKey(model);
-                    const isDefaultModel = modelName === model.key;
-                    return (
-                      <div
-                        key={rowKey}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 8,
-                          padding: '4px 8px',
-                          borderRadius: 4,
-                          background: 'var(--color-bg-container)',
-                        }}
-                      >
-                        {modelsSelectionMode && (
-                          <ManagementCheckbox
-                            checked={selectedModelKeys.includes(rowKey)}
-                            ariaLabel={t('kimi.model.selectModel', { name: model.key })}
-                            onChange={(checked) => handleToggleModelSelected(rowKey, checked)}
-                            style={{ width: 13, height: 13 }}
-                          />
-                        )}
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <Text
-                            style={{ fontSize: 12, cursor: modelsSelectionMode ? 'default' : 'pointer' }}
-                            onClick={() => {
-                              if (!modelsSelectionMode) onEditModel?.(provider, model);
-                            }}
-                          >
-                            {model.displayName || model.key}
-                          </Text>
-                          <Text type="secondary" style={{ fontSize: 11, marginLeft: 8 }}>
-                            {model.model}
-                          </Text>
-                          {model.maxContextSize != null && (
-                            <Text type="secondary" style={{ fontSize: 11, marginLeft: 8 }}>
-                              {model.maxContextSize}
-                            </Text>
-                          )}
-                          {isDefaultModel && (
-                            <Tag color="blue" style={{ marginLeft: 8, fontSize: 10 }}>
-                              {t('kimi.model.defaultTag')}
-                            </Tag>
-                          )}
-                        </div>
-                        {!modelsSelectionMode && onDeleteModel && (
-                          <Button
-                            type="text"
-                            danger
-                            size="small"
-                            icon={<DeleteOutlined />}
-                            onClick={() => onDeleteModel(provider, model)}
-                          />
-                        )}
-                      </div>
-                    );
-                  })}
-                </Space>
-              ) : (
-                <Empty
-                  image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description={t('kimi.model.emptyText')}
-                  style={{ margin: '8px 0' }}
-                />
-              )}
-            </div>
-          ),
-        },
-      ]}
-    />
-  );
-
-  return (
-    <div ref={setNodeRef} style={sortableStyle}>
-      <Card
-        size="small"
-        className={styles.card}
-        style={{
-          borderColor: cardBorderColor,
-          background: cardBackground,
-          marginBottom: 12,
-          boxShadow: 'var(--shadow-card-sm)',
-          transition: 'all 0.3s ease',
-        }}
-        styles={{
-          body: {
-            padding: '12px 16px',
-          },
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          {/* Drag Handle / Selection Checkbox */}
-          {selectable ? (
-            <div style={{ display: 'flex', alignItems: 'center', padding: '4px 0' }}>
-              <ManagementCheckbox
-                checked={selected}
-                ariaLabel={t('common.batch.selectItem')}
-                onChange={onSelectChange ?? (() => {})}
-                style={{ width: 13, height: 13 }}
-              />
-            </div>
-          ) : (
-            <div
-              {...attributes}
-              {...listeners}
-              className={styles.dragHandle}
-              style={{
-                cursor: 'grab',
-                display: 'flex',
-                alignItems: 'center',
-                color: 'var(--color-text-tertiary)',
-                padding: '4px 2px',
-                borderRadius: 4,
-                flexShrink: 0,
-              }}
-            >
-              <HolderOutlined style={{ fontSize: 14 }} />
-            </div>
-          )}
-
-          {/* Provider Info */}
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <Space direction="vertical" size={4} style={{ width: '100%' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <ProviderConnectivityStatus item={connectivityStatus} />
-                <ProviderNameLink
-                  name={provider.name}
-                  baseUrl={baseUrl}
-                  style={{ fontSize: 14, fontWeight: 600 }}
-                />
-                {isLocalProvider && (
-                  <Text type="secondary" style={{ fontSize: 11 }}>
-                    ({t('kimi.localConfigHint')})
-                  </Text>
-                )}
-                {isOfficialProvider && (
-                  <Tag>{t('kimi.provider.modeOfficial')}</Tag>
-                )}
-                {isOfficialProvider && gatewayTakeoverActive && (
-                  <Tooltip title={t('gateway.takeover.officialBypassedTooltip')}>
-                    <Tag color="gold">{t('gateway.takeover.officialBypassedTag')}</Tag>
-                  </Tooltip>
-                )}
-                {showRuntimeApplied && (
-                  <AppliedTag>{t('kimi.provider.applied')}</AppliedTag>
-                )}
-                {showProxyTag && (
-                  <ProxyTag>{t('gateway.proxy.proxyTag')}</ProxyTag>
-                )}
-                {showProxyTag && (
-                  <Tooltip title={t('gateway.proxy.statisticsTooltip')}>
-                    <BarChart2
-                      size={14}
-                      aria-label={t('gateway.proxy.statisticsTooltip')}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        navigate('/gateway/statistics');
-                      }}
-                      style={{
-                        color: 'var(--color-text-tertiary)',
-                        cursor: 'pointer',
-                        flexShrink: 0,
-                      }}
-                    />
-                  </Tooltip>
-                )}
-                {priorityEntry && (
-                  <Tag
-                    color={priorityEntry.label === 'P0' ? 'success' : 'default'}
-                    style={{ margin: 0 }}
-                  >
-                    {priorityEntry.label}
-                  </Tag>
-                )}
-              </div>
-
-              {/* Meta Info */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-                {isLocalProvider ? (
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    ({t('kimi.localConfigHint')})
-                  </Text>
-                ) : (
-                  <>
-                    {modelName && (
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        <BarChart2
-                          size={12}
-                          style={{ marginRight: 4, verticalAlign: -1 }}
-                        />
-                        {modelName}
-                      </Text>
-                    )}
-                    {baseUrl && (
-                      <Text
-                        type="secondary"
-                        style={{
-                          fontSize: 12,
-                          maxWidth: 320,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        <GlobalOutlined style={{ marginRight: 4 }} />
-                        {baseUrl}
-                      </Text>
-                    )}
-                  </>
-                )}
-              </div>
-
-              {provider.notes && (
-                <Text
-                  type="secondary"
-                  style={{
-                    fontSize: 12,
-                    display: 'block',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {provider.notes}
-                </Text>
-              )}
-            </Space>
-          </div>
-
-          {/* Action Buttons Area */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'flex-end',
-              gap: 4,
-              flexShrink: 0,
-              width: actionAreaWidth,
-            }}
+  const gatewayActions = (
+    <>
+      {canShowGatewayProxyButton && (
+        <Tooltip title={t('gateway.proxy.singleHint')}>
+          <Button
+            type="link"
+            size="small"
+            icon={<ApiOutlined />}
+            onClick={() => void handleEngageGatewayProxy()}
+            loading={engagingGatewayProxy}
           >
-            {canShowGatewayProxyButton && (
-              <Tooltip title={t('gateway.proxy.singleHint')}>
-                <Button
-                  type="link"
-                  size="small"
-                  icon={<ApiOutlined />}
-                  loading={engagingGatewayProxy}
-                  onClick={handleEngageGatewayProxy}
-                >
-                  {t('gateway.proxy.singleButton')}
-                </Button>
-              </Tooltip>
-            )}
-
-            {canShowRestoreDirectButton && (
-              <Tooltip title={t('gateway.proxy.restoreDirectHint')}>
-                <Button
-                  type="link"
-                  size="small"
-                  loading={restoringDirect}
-                  onClick={handleRestoreDirect}
-                >
-                  {t('gateway.proxy.restoreDirectButton')}
-                </Button>
-              </Tooltip>
-            )}
-
-            {canShowRestoreDirectUnavailable && (
-              <Tooltip title={restoreDirectUnavailableTitle}>
-                <Button type="link" size="small" disabled>
-                  {t('gateway.proxy.restoreDirectButton')}
-                </Button>
-              </Tooltip>
-            )}
-
-            {showDirectApplyAction && (
-              <Button
-                type="link"
-                size="small"
-                icon={<CheckOutlined />}
-                disabled={provider.isDisabled}
-                onClick={() => onApply(provider)}
-              >
-                {t('kimi.provider.apply')}
-              </Button>
-            )}
-
-            {showApplyWithProxyAction && (
-              <Tooltip
-                title={
-                  gatewayCanApplyProxy
-                    ? t('gateway.proxy.applyWithProxyHint')
-                    : t('gateway.proxy.applyWithProxyDisabledTooltip')
-                }
-              >
-                <span>
-                  <Button
-                    type="link"
-                    size="small"
-                    icon={<CheckOutlined />}
-                    disabled={applyWithProxyDisabled}
-                    loading={engagingGatewayProxy}
-                    onClick={handleApplyWithGatewayProxy}
-                  >
-                    {t('gateway.proxy.applyWithProxyButton')}
-                  </Button>
-                </span>
-              </Tooltip>
-            )}
-
-            {showGatewaySwitchAction && (
-              <Tooltip
-                title={
-                  gatewayFailoverActive
-                    ? t('gateway.proxy.switchPrimaryFailoverHint')
-                    : t('gateway.proxy.switchPrimaryHint')
-                }
-              >
-                <Button
-                  type="link"
-                  size="small"
-                  icon={<CheckOutlined />}
-                  loading={engagingGatewayProxy}
-                  onClick={handleSwitchGatewayProvider}
-                >
-                  {gatewayFailoverActive
-                    ? t('gateway.proxy.switchPrimaryP0Button')
-                    : t('gateway.proxy.switchPrimaryButton')}
-                </Button>
-              </Tooltip>
-            )}
-
-            {showGatewayLockedApply && (
-              <Tooltip title={t('gateway.proxy.applyLockedTooltip')}>
-                <span>
-                  <Button type="link" size="small" icon={<CheckOutlined />} disabled>
-                    {t('common.apply')}
-                  </Button>
-                </span>
-              </Tooltip>
-            )}
-
-            <Dropdown menu={{ items: menuItems }} trigger={['click']} placement="bottomRight">
-              <Button
-                type="text"
-                size="small"
-                icon={<MoreOutlined />}
-                style={{ color: 'var(--color-text-secondary)' }}
-              />
-            </Dropdown>
-          </div>
-        </div>
-
-        {/* Official channels carry no client-side catalog — the settings builder
-            deletes `modelCatalog` for them by design, so an editor here would
-            silently discard every save. `__local__` is a read-only bridge. */}
-        {!isLocalProvider && !isOfficialProvider && renderModelSection()}
-      </Card>
-    </div>
+            {t('gateway.proxy.singleButton')}
+          </Button>
+        </Tooltip>
+      )}
+      {canShowRestoreDirectButton && (
+        <Tooltip title={t('gateway.proxy.restoreDirectHint')}>
+          <Button
+            type="link"
+            size="small"
+            onClick={() => void handleRestoreDirect()}
+            loading={restoringDirect}
+          >
+            {t('gateway.proxy.restoreDirectButton')}
+          </Button>
+        </Tooltip>
+      )}
+      {canShowRestoreDirectUnavailable && (
+        <Tooltip title={restoreDirectUnavailableTitle}>
+          <Button type="link" size="small" disabled>
+            {t('gateway.proxy.restoreDirectButton')}
+          </Button>
+        </Tooltip>
+      )}
+      {showApplyWithProxyAction && (
+        <Tooltip
+          title={
+            gatewayCanApplyProxy
+              ? t('gateway.proxy.applyWithProxyHint')
+              : t('gateway.proxy.applyWithProxyDisabledTooltip')
+          }
+        >
+          <span>
+            <Button
+              type="link"
+              size="small"
+              icon={<CheckOutlined />}
+              onClick={() => void handleApplyWithGatewayProxy()}
+              disabled={applyWithProxyDisabled}
+              loading={engagingGatewayProxy}
+            >
+              {t('gateway.proxy.applyWithProxyButton')}
+            </Button>
+          </span>
+        </Tooltip>
+      )}
+      {showGatewaySwitchAction && (
+        <Tooltip
+          title={
+            gatewayFailoverActive
+              ? t('gateway.proxy.switchPrimaryFailoverHint')
+              : t('gateway.proxy.switchPrimaryHint')
+          }
+        >
+          <Button
+            type="link"
+            size="small"
+            icon={<CheckOutlined />}
+            onClick={() => void handleSwitchGatewayProvider()}
+            loading={engagingGatewayProxy}
+          >
+            {gatewayFailoverActive
+              ? t('gateway.proxy.switchPrimaryP0Button')
+              : t('gateway.proxy.switchPrimaryButton')}
+          </Button>
+        </Tooltip>
+      )}
+      {showGatewayLockedApply && (
+        <Tooltip title={t('gateway.proxy.applyLockedTooltip')}>
+          <span>
+            <Button type="link" size="small" icon={<CheckOutlined />} disabled>
+              {t('kimi.provider.apply')}
+            </Button>
+          </span>
+        </Tooltip>
+      )}
+    </>
   );
+
+  const nameTags = (
+    <>
+      {isLocalProvider && (
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          ({t('kimi.localConfigHint')})
+        </Text>
+      )}
+      {isOfficialProvider && <Tag>{t('kimi.provider.modeOfficial')}</Tag>}
+      {isOfficialProvider && gatewayTakeoverActive && (
+        <Tooltip title={t('gateway.takeover.officialBypassedTooltip')}>
+          <Tag color="gold">{t('gateway.takeover.officialBypassedTag')}</Tag>
+        </Tooltip>
+      )}
+      {showRuntimeApplied && (
+        <AppliedTag>{t('kimi.provider.applied')}</AppliedTag>
+      )}
+      {showProxyTag && <ProxyTag>{t('gateway.proxy.proxyTag')}</ProxyTag>}
+      {showProxyTag && (
+        <Tooltip title={t('gateway.proxy.statisticsTooltip')}>
+          <BarChart2
+            size={14}
+            aria-label={t('gateway.proxy.statisticsTooltip')}
+            onClick={(event) => {
+              event.stopPropagation();
+              navigate('/gateway/statistics');
+            }}
+            style={{
+              color: 'var(--color-text-tertiary)',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          />
+        </Tooltip>
+      )}
+      {priorityEntry && (
+        <Tag
+          color={priorityEntry.label === 'P0' ? 'success' : 'default'}
+          style={{ margin: 0 }}
+        >
+          {priorityEntry.label}
+        </Tag>
+      )}
+    </>
+  );
+
+  // The bespoke card showed the active model and the endpoint unlabelled, each
+  // behind a small icon. `metaEntries` has no icon slot, so the entries carry
+  // the same two facts as `code` (monospaced, so the model id and the URL read
+  // as values rather than prose) without inventing labels the original did not
+  // have.
+  const metaEntries: ProviderCardMetaEntry[] = [];
+  if (isLocalProvider) {
+    metaEntries.push({ kind: 'text', value: `(${t('kimi.localConfigHint')})` });
+  } else {
+    if (modelName) {
+      metaEntries.push({ kind: 'code', value: modelName });
+    }
+    if (baseUrl) {
+      metaEntries.push({ kind: 'code', value: baseUrl });
+    }
+  }
+  if (provider.notes) {
+    metaEntries.push({ kind: 'text', value: provider.notes });
+  }
+
+  const showModelList = !isLocalProvider && !isOfficialProvider;
+
+  /**
+   * The catalog row's identity is its **key** (the `[models."<key>"]` table
+   * name, which is also what `defaultModelKey` points at), but the shared row
+   * prints `id` as the parenthesised second fact. So the key travels as the row
+   * key and the upstream model id is what `id` carries — the same split the
+   * Codex card makes.
+   */
+  const modelRows: ModelDisplayData[] = catalogModels.map((model) => ({
+    id: model.model,
+    name: model.displayName || model.key,
+    contextLimit: model.maxContextSize,
+    isPrimary: Boolean(modelName) && modelName === model.key,
+  }));
+
+  const rowKeyByDisplay = new Map<ModelDisplayData, string>(
+    modelRows.map((row, index) => [row, kimiCatalogRowKey(catalogModels[index])]),
+  );
+
+  const props: ProviderCardVariantProps = {
+    provider: {
+      id: provider.id,
+      name: provider.name,
+      baseUrl,
+    },
+    providerState: {
+      isDisabled: provider.isDisabled,
+      // The style card hands this the switch's **new** enabled state, which is
+      // what `handleToggleDisabled` takes — it owns the applied-provider guard.
+      onToggleDisabled: isLocalProvider ? undefined : handleToggleDisabled,
+      draggable: !selectable && !dragDisabled,
+      sortableId: provider.id,
+      connectivityStatus,
+      selectable,
+      selected,
+      onSelectChange,
+      dimmed: provider.isDisabled,
+      // A provider can be both applied and the failover P0; CardShell gives the
+      // gateway role precedence.
+      accent: isGatewayPrimary ? 'gatewayPrimary' : showRuntimeApplied ? 'applied' : undefined,
+    },
+    actions: {
+      onEdit: () => onEdit(provider),
+      onCopy: onCopy ? () => onCopy(provider) : undefined,
+      onShare: onShare ? () => onShare(provider) : undefined,
+      // `__local__` is not a managed preset: it has no delete path.
+      onDelete: isLocalProvider ? undefined : () => onDelete(provider),
+      enabledStateLabel: provider.isDisabled
+        ? t('common.disabled')
+        : t('common.enabled'),
+      gatewayActions,
+      primaryAction: showDirectApplyAction
+        ? {
+            label: t('kimi.provider.apply'),
+            icon: <CheckOutlined />,
+            onClick: () => void onApply(provider),
+            disabled: provider.isDisabled,
+          }
+        : undefined,
+    },
+    nameTags,
+    metaEntries,
+    // The connectivity probe moved out of the "more" menu: the shared menu is a
+    // fixed contract (enable → edit → copy → share → ─── → delete) with no room
+    // for a tool-specific item, so it lands on the meta line — where the Codex
+    // style already puts it — and on the model-section toolbar below.
+    //
+    // Rendered unconditionally, like the Codex card: an official channel cannot
+    // be probed (it authenticates through OAuth, not a static key), and a
+    // greyed-out button carrying the reason is more useful than a missing one.
+    inlineActions: (
+      <>
+        <Text type="secondary" style={{ fontSize: 11 }}>|</Text>
+        <InlineConnectivityButton
+          onClick={() => onTest?.(provider)}
+          disabled={isOfficialProvider || provider.isDisabled}
+          tooltip={
+            isOfficialProvider
+              ? t('kimi.provider.officialConnectivityHint')
+              : undefined
+          }
+        />
+      </>
+    ),
+    modelSection: showModelList
+      ? {
+          models: modelRows,
+          // Identity-based on purpose: rebuilding the key from `display.id` or
+          // `display.name` cannot recover the catalog alias, and the alias is
+          // what every callback (`edit` / `copy` / `delete` / `set primary`)
+          // resolves the model by.
+          rowKeyOf: (model) => rowKeyByDisplay.get(model) ?? model.id,
+          modelsDraggable: false,
+          modelSelectionMode: modelsSelectionMode,
+          selectedModelIds: selectedModelKeys,
+          onToggleModelSelection: handleToggleModelSelected,
+          onToggleBatchDeleteMode: onDeleteModels ? handleToggleModelsSelectionMode : undefined,
+          onBatchDeleteModels: onDeleteModels ? handleBatchDeleteModels : undefined,
+          onTestModels: onTest ? () => onTest(provider) : undefined,
+          testModelsDisabled: isOfficialProvider || provider.isDisabled,
+          testModelsDisabledTooltip: isOfficialProvider
+            ? t('kimi.provider.officialConnectivityHint')
+            : t('common.modelMissing'),
+          onFetchModels: onFetchModels ? () => onFetchModels(provider) : undefined,
+          fetchDisabled: !canFetchModels,
+          fetchDisabledTooltip: t('opencode.provider.completeUrlAndKey'),
+          onAddModel: onEditModel ? () => onEditModel(provider) : undefined,
+          onEditModel: onEditModel
+            ? (rowKey) => {
+                const model = catalogModels.find((item) => kimiCatalogRowKey(item) === rowKey);
+                if (model) {
+                  onEditModel(provider, model);
+                }
+              }
+            : undefined,
+          onCopyModel: onCopyModel
+            ? (rowKey) => {
+                const model = catalogModels.find((item) => kimiCatalogRowKey(item) === rowKey);
+                if (model) {
+                  onCopyModel(provider, model);
+                }
+              }
+            : undefined,
+          onSetPrimaryModel: onSetPrimaryModel
+            ? (rowKey) => {
+                const model = catalogModels.find((item) => kimiCatalogRowKey(item) === rowKey);
+                if (model) {
+                  onSetPrimaryModel(provider, model);
+                }
+              }
+            : undefined,
+          onDeleteModel: onDeleteModel
+            ? (rowKey) => {
+                const model = catalogModels.find((item) => kimiCatalogRowKey(item) === rowKey);
+                if (model) {
+                  onDeleteModel(provider, model);
+                }
+              }
+            : undefined,
+        }
+      : undefined,
+  };
+
+  return <CodexStyleCard {...props} />;
 };
 
 export default KimiProviderCard;

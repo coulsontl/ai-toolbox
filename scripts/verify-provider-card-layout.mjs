@@ -62,7 +62,6 @@ const PENDING_MIGRATION = new Set([
   'claudedesktop/components/ClaudeDesktopProviderCard.tsx',
   'geminicli/components/GeminiCliProviderCard.tsx',
   'grok/components/GrokProviderCard.tsx',
-  'kimi/components/KimiProviderCard.tsx',
 ]);
 
 /**

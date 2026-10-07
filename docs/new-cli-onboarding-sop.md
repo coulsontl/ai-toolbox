@@ -541,7 +541,7 @@ import CodingPageHeader from '@/features/coding/shared/CodingPageHeader';
 | 样式组件 | 何时用 | 判定问题 | 第二行 | 头部主操作 | 已接入 |
 |---|---|---|---|---|---|
 | `ClaudeStyleCard` | 没有模型目录（模型写在 provider 配置里） | CLI 是否管理一个模型清单？否 → 此样式 | 带标签的绑定（`默认: …` / `Haiku: …`） | 文字链「应用」 | claudecode |
-| `CodexStyleCard` | 有模型目录，且有单一 active provider | 是，且「应用」有意义 → 此样式 | 自由格式（端点/模型/masked key/备注） | 文字链「应用」 | codex |
+| `CodexStyleCard` | 有模型目录，且有单一 active provider | 是，且「应用」有意义 → 此样式 | 自由格式（端点/模型/masked key/备注） | 文字链「应用」 | codex、kimi |
 | `OpenCodeStyleCard` | 有模型目录，且**没有**单一 active provider | 是，且「启用哪个渠道」不成立 → 此样式 | 固定顺序 `ID • SDK • 端点` | **无**（默认在模型行上选） | zcode、omo_native |
 
 > **「已接入」这一列在 2026-10-07 之前是空的**：三种样式里只有 `OpenCodeStyleCard` 有消费方，而 `ClaudeStyleCard` / `CodexStyleCard` 零消费方——它们各自最典型的对应 CLI（Claude Code / Codex）反而持 776 / 1134 行的 bespoke 卡片。规则写在 Hard Rule 14 里，**没有任何检查能发现规则被绕过**。现已由 `scripts/verify-provider-card-layout.mjs` 机械守护（见下）。
@@ -555,6 +555,8 @@ import CodingPageHeader from '@/features/coding/shared/CodingPageHeader';
 **守卫（必跑）**：`pnpm run test:provider-card-layout`。它扫 `web/features/coding/<cli>/components/*ProviderCard.tsx`，禁止映射层自己 `useSortable` / 自己渲染 `<Card>` / 自己写 `ManagementCheckbox`。尚未迁移的四个（claudedesktop / geminicli / grok / kimi）登记在脚本的 `PENDING_MIGRATION` 里，**只减不增**：迁完不删条目会报错，没迁却不在名单里也会报错。脚本的 `EXEMPT_FILES` 记录了三个「名字像但不是列表卡片」的例外（`ZcodeOfficialAccountCard`、`AntigravityProviderCard`），每条都要写理由。
 
 **样式能力不够时怎么办**：先确认**至少两个**调用方需要这个能力，再给 `ProviderCardVariantProps` 加 prop。实例：网关接管按钮（`actions.gatewayActions`）的处理器在 claudecode / codex / grok / kimi / claudedesktop **五张卡片里逐字重复**（实测 diff 只有 `'claude'` vs `'codex'` 一行不同），补这个插槽是本轮唯一改共享组件的地方。反之，只有一个调用方需要的能力留在调用方自己的映射层里，不要塞进共享 props。
+
+> **例外：外壳的「插槽完备性」不适用这个门槛**（2026-10-08 补）。`ProviderListSection` / `CodingPageHeader` 这类**外壳**组件，判据不是「几个调用方要这个能力」，而是「**去掉这个插槽，调用方要不要把整段外壳抄回来？**」要 → 单消费方也该加（实例：`ProviderListSection.toolbarExtra`，只有 Kimi 用）。外壳的插槽不产生行为，只是让已有行为有地方待着；缺一个位置就会逼出一次分叉，正是外壳要消除的东西。见 13.1 模式五十五。
 
 **三个组件**（均在 `web/features/coding/shared/` 或 `web/components/common/`）：
 
@@ -948,8 +950,8 @@ import { GlobalPromptSettings } from '@/features/coding/shared/prompt';
 
 | 关注点 | 已迁移 | 未迁移 |
 |------|------|------|
-| `ProviderListSection`（列表外壳） | claudecode、codex、zcode、omo_native | 其余 11 页 |
-| **卡片变体**（`providerCardVariants`） | claudecode、codex、zcode、omo_native | claudedesktop、geminicli、grok、kimi（登记在 `scripts/verify-provider-card-layout.mjs`） |
+| `ProviderListSection`（列表外壳） | claudecode、codex、zcode、omo_native、kimi | 其余 10 页 |
+| **卡片变体**（`providerCardVariants`） | claudecode、codex、zcode、omo_native、kimi | claudedesktop、geminicli、grok（登记在 `scripts/verify-provider-card-layout.mjs`） |
 | `ModelListSection`（模型折叠区） | codex、zcode、omo_native（**均经卡片变体间接触达**，只有 `CodexStyleCard` / `OpenCodeStyleCard` 直接 import） | — |
 
 > ⚠️ **卡片变体是三者里唯一有机械守卫的**（`pnpm run test:provider-card-layout`）。列表外壳与模型折叠区**没有**守卫，迁移进度只能靠这张表——**改这张表时先跑一遍**：
@@ -971,6 +973,7 @@ import { GlobalPromptSettings } from '@/features/coding/shared/prompt';
 | zcode | ✅ 已迁移（2026-10-06，含搜索/排序/多选/拖拽/一键测试/通用配置） |
 | claudecode | ✅ 已迁移（2026-10-07；5 组 key 中文全同、英文 3 处措辞统一取 `common.*`） |
 | omo_native | ✅ 已迁移（2026-10-07） |
+| kimi | ✅ 已迁移（2026-10-08；5 组 key 中文 2 处不同仍统一取 `common.*`，见下） |
 | claudedesktop | 文案硬编码中文、未走 i18n；缺「自定义配置目录」 |
 | openclaw | 预览配置用 `openclaw.previewConfig` 而非 `common.previewConfig` |
 | 其余 9 个页面 | 结构合规，可直接迁移 |
@@ -1693,6 +1696,11 @@ UI 表现异常时，**先排除进程 stale**，再怀疑代码：
 | 103 | 迁移时**顺手提升了某个动作的位置** | 「编辑」原本在「更多」菜单里，迁到共享组件后被提到了头部显眼的 `primaryAction` 位——功能没丢，但用户按肌肉记忆去菜单里找，找不到，问「现在跑外面来了」 | **迁移的验收标准是「和迁移前一模一样」**，不是「更合理」。想调位置就单独提出来当一次显式改动。见 13.1 模式五十二 |
 | 104 | 回调**契约收窄**，值算反了：开关点了没反应 | `onToggleDisabled` 原本是 antd 的 `(checked) => void`；迁到共享组件时被收窄成无参 `() => void`，映射层只好用当前状态重算新值（`!provider.isDisabled`），再交给一个内部又会取反的处理器 → **写回的就是原值**。开关渲染正常、点了毫无反应，类型检查全通过。用户点了一下就发现 | 共享组件**透传**值而不是让调用方重算：`onChange={onToggleDisabled}`，类型 `(enabled: boolean) => void`。见 13.1 模式五十三、§12.3.1 第三遍 |
 | 105 | 卡片级拖拽属性挂在了**模型区**的 props 下，无模型区的样式读不到 | `draggable` / `sortableId` 定义在 `ProviderCardModels` 里（因为最早的消费方都带模型列表）。Claude 式没有模型区 → 迁移后 `useSortable` 从未被喂 id、拖拽把手整个消失。**同一个类型里的 prop，不代表所有样式都会读** | 提到 `providerState`（卡片级 chrome 的归属处），三个样式都在 `CardShell` 上渲染它。见 13.1 模式五十四 |
+| 106 | **共享外壳缺一个插槽，调用方就只能整块复制** | `ProviderListSection` 的工具栏没有「额外按钮」位置，Kimi 的「官方账号登录」按钮就无处安放——要么留在页面里继续复制整段工具栏，要么删掉这个入口。**外壳的插槽完备性不是「新能力」**，不能套用「至少两个消费方」的门槛 | 新增 `toolbarExtra`（单消费方即可，Kimi）。判据写进 §4.2.1 与附录 B.1：**外壳缺位置本身就是缺陷**——共享外壳的存在意义就是让调用方不必复制。见 13.1 模式五十五 |
+| 107 | `alwaysVisible` 与 `footer` **选错，内容在有数据时整块消失** | Kimi 的官方账号列表原本无条件显示（在列表下方）。迁到 `ProviderListSection` 时放进 `alwaysVisible`——该插槽**只在列表为空/搜索无结果时渲染**，于是有供应商时账号区完全不见。没有报错、没有类型错误，只是内容没了 | 判据：**「列表非空时它还需要显示吗？」** 需要 → `footer`（无条件）；只有「空态时也要能看到」才用 `alwaysVisible`。见 13.1 模式五十六 |
+| 108 | 固定菜单遇到**工具专属菜单项**时没有出口 | Kimi 是唯一把「连通性测试」放在「更多」菜单里的卡片。共享菜单是固定契约（启用→编辑→复制→分享→分隔线→删除），不接纳额外项——迁移者要么删掉（漏功能）要么破坏契约 | 额外项迁到**语义相符的插槽**：连通性测试属于「对模型目录的探测」，落到卡片第二行（`inlineActions`）+ 模型区工具栏（`onTestModels`），与 Codex 卡一致。**位置变化要写进提交说明**。见 13.1 模式五十七 |
+| 109 | 共享模型行比 bespoke 行**多出按钮，但页面没有对应 handler** | Kimi 的模型行只有「删除」+ 点名字编辑；共享 `ModelItem` 渲染 编辑/复制/设为主模型/删除 四个。直接迁移会得到两个**点了没反应**的按钮——或者干脆不渲染，等于功能比预期少 | 迁移到共享列表时**逐个确认新增按钮的 handler 在页面侧存在**；不存在就实现（Kimi 补了 `handleCopyModel` / `handleSetPrimaryModel`）。见 13.1 模式五十八 |
+| 110 | 迁移时**按钮的图标被换成了「语义相近」的另一个** | 网关代理按钮原本是 `ApiOutlined`（「接管代理」的语义），迁移后写成了 `CheckOutlined`——因为同一排的其他网关按钮（应用并代理 / 切换主渠道 / 锁定应用）都用 `CheckOutlined`，顺手就统一了。**功能完全正常，只是图标换了**，任何测试都发现不了 | 逐按钮对照 `icon={<...>}`：把原实现的图标清单与迁移后**逐个**比对，不只比数量。图标是「这个按钮是什么」的一部分，不是装饰。见 13.1 模式五十一 |
 
 ### 13.1 静默失效的模式（归纳）
 
@@ -2115,6 +2123,13 @@ UI 表现异常时，**先排除进程 stale**，再怀疑代码：
 >
 > **对策**：**样式跟着组件走**。如果这条规则描述的是「这个组件在自己的容器里该怎么显示」（而不是「这个 CLI 想让它长什么样」），就把它搬进组件的 `*.module.less`，由组件的 prop 触发（如 `transparentRows`）。留在 CLI 侧只会让下一个迁移的人再丢一次。
 
+**模式五十一（补充：图标也会被「顺手统一」掉）。** 同一类规则的另一个入口：迁移时不是丢图标，而是**把图标换成语义相近的另一个**——因为同一排的其他按钮都用那个图标，看着「不一致」就顺手改了。功能不受影响，测试全绿，只是这个按钮从此长得像它的邻居而不像它自己。
+> 例（#110）：Kimi 的网关代理按钮从 `ApiOutlined` 变成 `CheckOutlined`。
+>
+> **判别方法**：对照图标时**逐个按钮比**，不要只比「用了几个图标」——数量相同、位置相同，换掉一个也看不出来。`git show <迁移前>:<文件> | grep -n "icon={<"` 与迁移后逐行对齐。
+>
+> **对策**：**图标是按钮身份的一部分**，和文案同级。迁移的默认姿势是原样复刻；想统一图标要单独提出来当一次显式改动。
+
 **模式五十一：菜单被「简化」成了等价的数据，丢掉了它的结构。** 把一个 `MenuProps['items']` 菜单重写成更「干净」的 `{ key, label }[]`，类型检查完全通过、菜单也照样弹出、每一项也都点得动——但**图标没了、分隔线没了、某项的副标题退回了通用文案**。菜单项在数据上「等价」，在用户眼里是另一个产品；而这些装饰性细节**没有任何测试会覆盖**。
 > 例（#102）：Claude Code / Codex 卡片迁移后，「更多」菜单丢了全部图标、删除前的分隔线，启用开关的副标题从 `配置已启用` 退化成 `已启用`。用户逐项对照后指出「不要丢东西了」。
 >
@@ -2142,6 +2157,34 @@ UI 表现异常时，**先排除进程 stale**，再怀疑代码：
 > **判别方法**：给共享 props 加字段时问「**它描述的是哪一层？**」——卡片级（拖拽、选中、禁用、高亮）归 `providerState`；列表级（行、工具栏、批量删除）归 `modelSection`。判断标准是「**没有模型列表的样式还需不需要它**」：需要 → 放卡片级。
 >
 > **对策**：props 的分组按**语义层级**，不按「当初谁在用」。同一个 interface 里的字段**不代表所有样式都会读**——`ProviderCardVariantProps` 是三个样式共用的扁平结构，每个样式只读自己那部分，**加字段时必须在每个样式的渲染点指认一次**（同 13.1 模式二 / #70）。
+
+**模式五十五：共享外壳缺一个位置，调用方就只能整块复制。** 迁移一个页面到共享外壳时，最难发现的不是「组件能力不够」，而是「**外壳没有地方放我的东西**」：工具栏、标题行、列表底部各有各的插槽，少一个，调用方就只有两条路——把整段外壳抄回来（分叉又回来了），或者把这个入口删掉（漏功能）。而「至少两个消费方才加 prop」的门槛会让人以为单消费方就不该加，于是选了第三条路：**保持 bespoke**，迁移半途而废。
+> 例（#106）：`ProviderListSection` 的工具栏没有「额外按钮」位置，Kimi 的「官方账号登录」按钮无处安放。
+>
+> **判别方法**：给外壳类组件（`ProviderListSection` / `CodingPageHeader` / `ModelListSection`）加插槽前，先问「**去掉这个插槽，调用方要不要复制整段外壳？**」要 → 这是外壳完整性，不是新能力。
+>
+> **对策**：外壳的**插槽完备性**不适用「至少两个消费方」的门槛。判据是「**有没有一个位置能放下调用方的第 N 个动作**」，不是「有多少人要用这个位置」。插槽本身不产生行为，它只是让已有行为有地方待着。
+
+**模式五十六：两个「显示内容」的插槽长得像、语义相反，选错就静默丢内容。** 共享外壳常有一对插槽：一个「列表为空时也要显示」（`alwaysVisible`），一个「无条件显示」（`footer`）。名字都像「附加内容」，文档也都写着「渲染在列表附近」——选错不会报错，只会**在某一种状态下内容整块消失**，而那种状态（列表非空）恰恰是日常状态，于是问题看起来像「内容不见了」而不是「插槽选错了」。
+> 例（#107）：Kimi 的官方账号列表放进 `alwaysVisible`，有供应商时整块消失。
+>
+> **判别方法**：把两种状态各问一遍——「**列表为空时它要显示吗？**」「**列表非空时它要显示吗？**」两个都「要」→ `footer`；只有前者 → `alwaysVisible`。
+>
+> **对策**：往共享外壳塞内容前，**把插槽的渲染条件读一遍**（不是读名字）。插槽的名字描述的是位置，渲染条件描述的是语义——后者才决定内容会不会出现。
+
+**模式五十七：「固定契约」的组件遇到调用方的额外项，规则没说该去哪。** 把菜单/工具栏固定成契约是对的（防止各 CLI 长得不一样），但规则只写了「**必须长这样**」，没写「**原来多出来的那一项该去哪**」。迁移者面对一个无处安放的菜单项，只能在「删掉它」（漏功能）和「破例加一项」（破坏契约）之间选。
+> 例（#108）：Kimi 把「连通性测试」放在「更多」菜单里，而共享菜单固定为 启用→编辑→复制→分享→分隔线→删除。
+>
+> **判别方法**：写「固定契约」这类规则时，补一句「**如果原实现有契约外的项，按语义找插槽**」，并给出该契约的插槽清单。
+>
+> **对策**：额外项迁到**语义相符的插槽**，不是随便找个地方塞。Kimi 的连通性测试本质是「对模型目录的探测」，所以落到模型区工具栏（`onTestModels`）与卡片第二行（`inlineActions`）——与同样有模型目录的 Codex 卡一致。**位置变了就是行为变了，要写进提交说明让用户能找回来。**
+
+**模式五十八：迁到「更完整的」共享组件时，多出来的能力需要页面侧先有 handler。** 共享组件的行级/卡片级契约通常比单个 bespoke 实现**更完整**（四个行级按钮 vs 一个）。迁移后这些按钮要么渲染出来但**点了没反应**（handler 是 `undefined` 时组件仍渲染，取决于组件写法），要么干脆不渲染——两种都是「功能比预期少」。这不是共享组件的缺陷，是**迁移只做了一半**：把 UI 换过去了，没把 UI 需要的能力补上。
+> 例（#109）：Kimi 的模型行只有删除，共享 `ModelItem` 有四个按钮；页面侧没有 copy / set-primary 的 handler。
+>
+> **判别方法**：迁移到共享组件后，**把新组件会渲染的每个按钮列出来**，逐个问「这个按钮点了会调什么？页面里有这个 handler 吗？」
+>
+> **对策**：缺的 handler **在页面侧实现**，不要为了迁就现状去裁剪共享组件的能力。实现前先确认这个能力在该 CLI 的存储模型里**成立**（Kimi 的 `defaultModelKey` 可写，所以「设为主模型」有意义；若语义不成立，才是应该不传 handler 的场景）。
 
 **反向模式（不是坑但容易误判）：进程 stales。**
 > 排查 UI 异常前，**先确认运行中的进程是当前构建**。曾出现：前端 Vite 热更新到最新代码，而后端进程是 14 小时前启动的旧二进制，DB 迁移也没跑 → 表现为「后端命令不存在/报错」，实际是代码根本没生效。
@@ -2221,9 +2264,14 @@ const existingModels = provider
 | `onBatchTest` / `batchTesting` | 「一键测试」 | ✅ 传 |
 | `onOpenCommonConfig` | 「通用配置」 | ✅ 传 |
 | `headerExtra` | 标题旁插槽（Gateway 胶囊） | 有意不传（非网关 CLI） |
+| `toolbarExtra` | 工具栏中部的工具专属按钮（「通用配置」与「添加供应商」之间） | 有意不传（无此类动作） |
 | `emptyTextHint` | 空态追加的一句补充 | 有意不传（无专属导入来源） |
 | `hint` | 工具栏下方提示块 | ❌ **漏传** |
-| `footer` | 底部导入按钮组 | ❌ **漏传** |
+| `footer` | 底部导入按钮组（**无条件渲染**，与 `alwaysVisible` 不同） | ❌ **漏传** |
+
+> **`alwaysVisible` vs `footer`——选错会静默丢内容**：`alwaysVisible` 只在列表为空 / 搜索无结果时渲染（用于「空列表时也要能看到的区块」），`footer` 无条件渲染（用于「无论列表如何都要显示的区块」）。Kimi 的官方账号列表两种状态都要显示，放 `alwaysVisible` 就会在**有供应商时整块消失**。判据：**「列表非空时它还需要显示吗？」** 需要 → `footer`。
+>
+> `toolbarExtra` 是**外壳完整性**插槽，不是新能力：共享外壳若缺一个位置，调用方就只能整块复制工具栏——那正是这个组件要消除的分叉。因此它**允许只有一个消费方**（Kimi 的官方账号登录按钮），不适用 §4.2.1「至少两个调用方」的门槛。
 
 **`ModelListSection`**（`shared/ModelListSection.tsx`）
 

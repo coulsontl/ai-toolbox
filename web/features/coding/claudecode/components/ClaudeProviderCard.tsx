@@ -60,6 +60,16 @@ interface ClaudeProviderCardProps {
   selectable?: boolean;
   selected?: boolean;
   onSelectChange?: (checked: boolean) => void;
+  /**
+   * Hides the drag handle when reordering is not available (non-`custom` sort
+   * mode, or an active search) — a handle that cannot move anything is worse
+   * than no handle.
+   *
+   * The page also empties the DndContext sensors in those states, so this is
+   * what keeps the two in agreement: without it the grip renders, shows a
+   * `grab` cursor, and refuses to move.
+   */
+  dragDisabled?: boolean;
 }
 
 /**
@@ -96,6 +106,7 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
   selectable = false,
   selected = false,
   onSelectChange,
+  dragDisabled = false,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -588,9 +599,12 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
       // it the switch's **new** enabled state, which is exactly what it takes.
       onToggleDisabled: isLocalProvider ? undefined : handleToggleDisabled,
       // Card-level drag handle. The bespoke card registered `useSortable` under
-      // `provider.id` and showed the handle whenever batch selection was off; the
-      // page disables dragging by emptying the DndContext sensors.
-      draggable: !selectable,
+      // `provider.id` and showed the handle whenever batch selection was off;
+      // the page empties the DndContext sensors in the same states that set
+      // `dragDisabled`, so gating on it keeps the grip and the sensors in
+      // agreement — otherwise the grip renders, shows a `grab` cursor, and
+      // cannot move anything.
+      draggable: !selectable && !dragDisabled,
       sortableId: provider.id,
       connectivityStatus,
       selectable,
