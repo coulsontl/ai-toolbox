@@ -142,7 +142,15 @@ const ClaudeStyleCard: React.FC<ProviderCardVariantProps> = ({
           </div>
 
           {metaEntries && metaEntries.length > 0 && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px 16px', flexWrap: 'wrap', marginTop: 4 }}>
+            // 8, not 4: the Claude-style cards always had a 4px stack gap
+            // *plus* a 4px offset on this row (`Space direction="vertical"
+            // size={4}` around a row that carried its own `marginTop: 4`), in
+            // Claude Code and in the still-bespoke Claude Desktop card. The
+            // Codex-style cards stack on 4 alone, which is why this cannot be
+            // one value shared by both variants — the migration flattened the
+            // two and Claude Code silently lost half its title-to-subtitle
+            // gap (2026-10-08 report).
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px 16px', flexWrap: 'wrap', marginTop: 8 }}>
               {metaEntries.map((entry, index) => (
                 // One entry renders as one flex item, so the gap separates
                 // bindings but never splits a label from its value, and

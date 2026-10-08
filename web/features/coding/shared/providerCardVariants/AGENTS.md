@@ -39,6 +39,10 @@
 - **有状态的回调必须**透传新值**，不要让调用方自己算。** `onToggleDisabled: (enabled: boolean) => void` 与 antd `Switch.onChange` 同契约；组件里写 `onChange={onToggleDisabled}`，**不要**写成 `onChange={() => onToggleDisabled()}`。后者迫使映射层从当前状态反推新值，推反了就得到一个「渲染正常、点了没反应」的开关——不报错、类型也通过。2026-10-07 在 Claude Code / Codex 卡片上真实发生过。
 - **props 的分组按语义层级，不按「当初谁在用」。** 卡片级的东西（拖拽、选中、禁用、高亮）进 `providerState`；模型列表级的（行、工具栏、批量删除）进 `modelSection`。判据是「**没有模型列表的样式还需不需要它**」——需要就放卡片级。`draggable` / `sortableId` 曾误放在 `modelSection` 下，于是 Claude 式卡片（无模型区）的拖拽把手静默消失。
 - **同一个 interface 里的字段，不代表所有样式都会读。** `ProviderCardVariantProps` 是三个样式共用的扁平结构，加字段时要在**每个**样式的渲染点指认一次（同 13.1 模式二 / #70）。
+- **样式统一不等于数值统一：原来就不一致的数值要按变体保留。** 两个值是真差异，不是分叉——判据是「原实现是不是这个值」（`git show <迁移前>:<原文件>`）。
+  - body padding：`16`（claudecode/codex 迁移前就是 16，claudedesktop/geminicli/grok 至今也是 16）。曾从 `components/common/ProviderCard` 抄了 `8px 12px`，导致每个迁移过的 tab 静默少 8px 上下。
+  - 标题→副标题间距：**Claude 式 8**（原实现是 `Space size={4}` 叠在带 `marginTop: 4` 的行上），**Codex 式 4**（原实现是 `flexDirection: column; gap: 4`）。
+  - 两条都有浏览器断言：`pnpm run test:provider-card-spacing`（只挂卡片组件本身，不挂页面）。**间距类改动必须量，不能读代码**（SOP 13.1 模式六十三 / 六十五）。
 - **`footer` 必须渲染在头部两栏之外。** 头部是「左内容 / 右动作链接」两栏 flex（`justify-content: space-between`），任何放进**左栏内部**的区块，右边缘都会比卡片少一截——正好是那组动作链接的宽度（Codex 官方账号区实测差 160px）。2026-10-08 就是这样：`footer` 被写在左栏里，账号行的「切换 / 删除」比下方模型区工具栏短一截，用户报成「账号列表右侧空了一大块」。**凡是卡片的一个「区」，就应该和模型区一样跨满整宽**；判据是**用几何量对齐**，不是看代码：`scripts/verify-codex-official-accounts.mjs` 断言账号行右边缘 == 卡片内容右边缘 == 头部动作右边缘。
 
 ## 跨模块依赖

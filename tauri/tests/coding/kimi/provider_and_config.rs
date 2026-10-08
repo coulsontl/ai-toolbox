@@ -713,6 +713,153 @@ fn legacy_credential_names_are_migrated_to_fixed_file_name() {
     assert_eq!(read_back["refresh_token"], "ref_legacy");
 }
 
+/// Builds the on-disk shape the Kimi CLI leaves behind after a successful
+/// login, so the adoption test exercises the same fields the real file has.
+fn write_live_credential_file(root: &std::path::Path, snapshot: &serde_json::Value) {
+    let credentials_dir = root.join("credentials");
+    fs::create_dir_all(&credentials_dir).expect("create credentials dir");
+    fs::write(
+        credentials_dir.join("kimi-code.json"),
+        snapshot.to_string(),
+    )
+    .expect("write credential file");
+}
+
+fn put_provider_row(state: &SqliteDbState, id: &str, category: &str, is_applied: bool) {
+    let content = KimiProviderContent {
+        name: format!("Provider {id}"),
+        category: category.to_string(),
+        settings_config: "{}".to_string(),
+        source_provider_id: None,
+        website_url: None,
+        notes: None,
+        icon: None,
+        icon_color: None,
+        sort_index: Some(0),
+        meta: None,
+        is_applied,
+        is_disabled: false,
+        created_at: "2026-03-31T00:00:00Z".to_string(),
+        updated_at: "2026-03-31T00:00:00Z".to_string(),
+    };
+    state
+        .with_conn(|conn| {
+            db_put(
+                conn,
+                DbTable::KimiProvider,
+                id,
+                &adapter::provider_to_db_value(&content),
+            )
+        })
+        .expect("db_put provider");
+}
+
+#[test]
+fn live_cli_login_is_adopted_as_the_applied_account() {
+    let _guard = KIMI_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let (temp_dir, state) = setup_test_env();
+
+    // The CLI signed in and wrote its own credentials; the app has no account
+    // row, so the official-account card would claim nothing is signed in.
+    let snapshot = json!({
+        "access_token": "tok_live",
+        "refresh_token": "ref_live",
+        "token_endpoint": "https://api.example.invalid/api/oauth/token",
+        "expires_at": 4102444800i64,
+    });
+    write_live_credential_file(temp_dir.path(), &snapshot);
+    put_provider_row(&state, "official_provider", "official", true);
+
+    block_on(official_accounts::adopt_live_login_as_account(&state)).expect("adopt live login");
+
+    let accounts =
+        official_accounts::list_kimi_official_accounts_with_state(&state).expect("list accounts");
+    assert_eq!(accounts.len(), 1, "the live login must become one account");
+    let account = &accounts[0];
+    assert_eq!(account.provider_id, "official_provider");
+    assert_eq!(account.name, "kimi-code");
+    assert!(
+        account.is_applied,
+        "an applied official provider means this login is the live one"
+    );
+    assert_eq!(account.expires_at, Some(4102444800));
+    let stored: serde_json::Value =
+        serde_json::from_str(account.auth_snapshot.as_deref().expect("snapshot")).expect("parse");
+    assert_eq!(
+        stored["refresh_token"], "ref_live",
+        "the refresh loop needs the token the CLI wrote"
+    );
+}
+
+#[test]
+fn live_login_adoption_is_a_no_op_without_a_usable_official_login() {
+    let _guard = KIMI_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+    // An existing account row means the app already owns this state; adopting
+    // again would create a second row sharing one credential file name.
+    let (temp_dir, state) = setup_test_env();
+    write_live_credential_file(
+        temp_dir.path(),
+        &json!({ "access_token": "tok_live", "refresh_token": "ref_live" }),
+    );
+    put_provider_row(&state, "official_provider", "official", true);
+    let existing = json!({
+        "provider_id": "official_provider",
+        "name": "kimi-code",
+        "kind": "official",
+        "is_applied": true,
+        "sort_index": 0,
+        "created_at": "2026-03-31T00:00:00Z",
+        "updated_at": "2026-03-31T00:00:00Z",
+    });
+    state
+        .with_conn(|conn| {
+            db_put(
+                conn,
+                DbTable::KimiOfficialAccount,
+                "account_existing",
+                &existing,
+            )
+        })
+        .expect("db_put account");
+    block_on(official_accounts::adopt_live_login_as_account(&state)).expect("adopt");
+    assert_eq!(
+        official_accounts::list_kimi_official_accounts_with_state(&state)
+            .expect("list")
+            .len(),
+        1,
+        "an existing account must not be joined by an adopted twin"
+    );
+
+    // A custom provider's live config is not an official login.
+    let (temp_dir, state) = setup_test_env();
+    write_live_credential_file(
+        temp_dir.path(),
+        &json!({ "access_token": "tok_live", "refresh_token": "ref_live" }),
+    );
+    put_provider_row(&state, "custom_provider", "custom", true);
+    block_on(official_accounts::adopt_live_login_as_account(&state)).expect("adopt");
+    assert!(
+        official_accounts::list_kimi_official_accounts_with_state(&state)
+            .expect("list")
+            .is_empty(),
+        "a custom provider must not be read as an official login"
+    );
+
+    // A credential file the CLI wrote before the token exchange completed has
+    // no access token to adopt.
+    let (temp_dir, state) = setup_test_env();
+    write_live_credential_file(temp_dir.path(), &json!({ "refresh_token": "ref_live" }));
+    put_provider_row(&state, "official_provider", "official", true);
+    block_on(official_accounts::adopt_live_login_as_account(&state)).expect("adopt");
+    assert!(
+        official_accounts::list_kimi_official_accounts_with_state(&state)
+            .expect("list")
+            .is_empty(),
+        "an empty access token must not be adopted"
+    );
+}
+
 #[test]
 fn common_config_without_provider_merges_into_live_file_without_clobbering() {
     let _guard = KIMI_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());

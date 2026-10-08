@@ -757,6 +757,97 @@ pub async fn migrate_legacy_credential_names(db: &SqliteDbState) -> Result<(), S
     Ok(())
 }
 
+/// One-time adoption of an official login that only the Kimi CLI knows about.
+///
+/// The CLI keeps its own OAuth credentials in `credentials/<name>.json`; the
+/// account list is a separate record. Someone who signed in through the CLI —
+/// or through the app before the account list existed — therefore has a live
+/// login the official-account card cannot see, so the card says "no account
+/// signed in yet" while the CLI is in fact logged in. Adopt that file as the
+/// applied account.
+///
+/// Deliberately narrow, because this writes an account the user never
+/// confirmed:
+///
+/// - only when the list is empty (any stored account means the app owns the
+///   state already, and a second row would share the one credential file name
+///   and overwrite the first on the next login);
+/// - only for an `official` provider, and only when one is applied, so the
+///   adopted account is never marked applied over a custom provider's live
+///   config;
+/// - only from a credential file that actually parses into an access token;
+/// - never fatal: a failure here must not stop the refresh pass, and the file
+///   is left exactly as it was.
+pub async fn adopt_live_login_as_account(db: &SqliteDbState) -> Result<(), String> {
+    if !list_kimi_official_accounts_with_state(db)?.is_empty() {
+        return Ok(());
+    }
+    let Some(applied_provider) = list_kimi_providers_for_db(db)?
+        .into_iter()
+        .find(|provider| provider.is_applied)
+    else {
+        return Ok(());
+    };
+    if applied_provider.category != "official" {
+        return Ok(());
+    }
+    let credential_path = get_kimi_root_dir_from_db_async(db)
+        .await?
+        .join(KIMI_CREDENTIALS_DIR)
+        .join(format!("{KIMI_OFFICIAL_CREDENTIAL_NAME}.json"));
+    let raw = match fs::read_to_string(&credential_path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("Failed to read Kimi credentials: {error}")),
+    };
+    let snapshot: Value = serde_json::from_str(&raw)
+        .map_err(|error| format!("Invalid Kimi credential file: {error}"))?;
+    // An empty or missing access token means the file is not a usable login
+    // (the CLI writes it before the token exchange completes).
+    let has_access_token = snapshot
+        .get("access_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|token| !token.is_empty());
+    if !has_access_token {
+        return Ok(());
+    }
+    let now = Local::now().to_rfc3339();
+    let content = json!({
+        "provider_id": applied_provider.id,
+        "name": KIMI_OFFICIAL_CREDENTIAL_NAME,
+        "kind": "official",
+        "email": null,
+        "subject": null,
+        // Stored verbatim so `read_account_snapshot` hands the refresh loop
+        // the same fields the CLI wrote.
+        "auth_snapshot": snapshot.to_string(),
+        "expires_at": snapshot.get("expires_at").and_then(Value::as_i64),
+        "token_endpoint": snapshot
+            .get("token_endpoint")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "last_refresh": now,
+        "last_error": null,
+        "plan_type": null,
+        "limit_weekly_text": null,
+        "limit_monthly_text": null,
+        "limit_weekly_reset_at": null,
+        "limit_monthly_reset_at": null,
+        "last_limits_fetched_at": null,
+        "is_applied": true,
+        "sort_index": 0,
+        "created_at": now,
+        "updated_at": now,
+    });
+    db.with_conn(|conn| db_put(conn, DbTable::KimiOfficialAccount, &db_new_id(), &content))?;
+    log::info!(
+        "[kimi-oauth] Adopted the live CLI login at {} as an official account",
+        credential_path.display()
+    );
+    Ok(())
+}
+
 /// Background refresh: refresh access tokens that are within the lead window.
 /// Non-applied accounts only update the SQLite record; the applied account also
 /// rewrites the live credential file and emits sync events.
@@ -767,6 +858,7 @@ pub async fn refresh_applied_kimi_accounts_if_needed<R: tauri::Runtime>(
     let state = db;
     let _guard = OAUTH_REFRESH_LOCK.lock().await;
     migrate_legacy_credential_names(state).await?;
+    adopt_live_login_as_account(state).await?;
     let accounts = list_kimi_official_accounts_with_state(state)?;
     for account in accounts {
         let Some(expires_at) = account.expires_at else {

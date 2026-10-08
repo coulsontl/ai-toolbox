@@ -121,7 +121,14 @@ const CardShell: React.FC<CardShellProps> = ({
           boxShadow: 'var(--shadow-card-sm)',
           transition: 'box-shadow 0.16s ease',
         }}
-        styles={{ body: { padding: '8px 12px' } }}
+        /* 16, matching every provider card that has not migrated yet
+           (claudedesktop / geminicli / grok) and what claudecode and codex used
+           before they moved onto this shell. The shell had inherited 8/12 from
+           `components/common/ProviderCard` — a different, older card — so every
+           migrated tab lost 8px of vertical padding and 4px horizontal without
+           anything saying so (2026-10-08 report: "the new shared provider
+           card's vertical margins are smaller than before"). */
+        styles={{ body: { padding: 16 } }}
         onMouseEnter={(event) => {
           event.currentTarget.style.boxShadow = 'var(--shadow-card-sm-hover)';
         }}
