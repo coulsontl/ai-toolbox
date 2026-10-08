@@ -1,3 +1,6 @@
+use super::compat::codex_remote_compaction::{
+    self as codex_remote_compaction, RemoteCompactionCompat,
+};
 use super::compat::codex_responses_compact::{
     CodexResponsesCompactCompat, CODEX_RESPONSES_COMPACT_COMPAT_HEADER,
 };
@@ -1495,6 +1498,7 @@ async fn send_upstream_request(
     privacy: Option<&PrivacyRequest>,
 ) -> Result<DebugHttpResponse, GatewayForwardError> {
     let compact_compat = CodexResponsesCompactCompat::new(route, provider);
+    let remote_compaction = RemoteCompactionCompat::resolve(route, &request.body);
     let source_protocol = source_protocol_from_route(route);
     let conversion_route = compact_compat.conversion_route().or_else(|| {
         source_protocol.and_then(|source_protocol| conversion_route(source_protocol, provider))
@@ -1526,6 +1530,7 @@ async fn send_upstream_request(
         Some(provider),
         route_declares_streaming(route),
         compact_compat,
+        remote_compaction,
     )?;
     let mut upstream_body = prepared_upstream_body.body;
     let conversion_context = prepared_upstream_body.conversion_context;
@@ -1690,6 +1695,7 @@ async fn send_upstream_request(
                 Some(provider),
                 route_declares_streaming(route),
                 compact_compat,
+                remote_compaction,
                 &upstream_body_snapshot,
             )? {
                 let rectified_body = match privacy {
@@ -1738,6 +1744,7 @@ async fn send_upstream_request(
                     non_streaming_timeout_secs.max(1),
                     Some(context),
                     compact_compat,
+                    remote_compaction,
                     xai_namespace_restore_map.clone(),
                 )
                 .await;
@@ -1790,6 +1797,7 @@ async fn send_upstream_request(
                         non_streaming_timeout_secs.max(1),
                         Some(context),
                         compact_compat,
+                        remote_compaction,
                         xai_namespace_restore_map.clone(),
                     )
                     .await;
@@ -1834,6 +1842,7 @@ async fn send_upstream_request(
                     non_streaming_timeout_secs.max(1),
                     Some(context),
                     compact_compat,
+                    remote_compaction,
                     xai_namespace_restore_map.clone(),
                 )
                 .await;
@@ -1877,6 +1886,7 @@ async fn send_upstream_request(
                     non_streaming_timeout_secs.max(1),
                     Some(context),
                     compact_compat,
+                    remote_compaction,
                     xai_namespace_restore_map.clone(),
                 )
                 .await;
@@ -1921,6 +1931,7 @@ async fn send_upstream_request(
         non_streaming_timeout_secs.max(1),
         Some(context),
         compact_compat,
+        remote_compaction,
         xai_namespace_restore_map,
     )
     .await
@@ -2078,6 +2089,7 @@ async fn build_gateway_response(
     body_read_timeout_secs: u64,
     context: Option<&GatewayRuntimeContext>,
     compact_compat: CodexResponsesCompactCompat,
+    remote_compaction: RemoteCompactionCompat,
     xai_namespace_restore_map: HashMap<String, NamespacedName>,
 ) -> Result<DebugHttpResponse, GatewayForwardError> {
     let status = response.status();
@@ -2382,6 +2394,20 @@ async fn build_gateway_response(
             }
         }
     }
+    if remote_compaction.is_compaction_response() && (200..400).contains(&status.as_u16()) {
+        // The upstream answered with an ordinary summary. Codex needs exactly
+        // one `compaction` item instead, carrying the summary in a capsule this
+        // Gateway can read back on later turns.
+        body = build_remote_compaction_response_body(&body, &upstream_response_body)
+        .map_err(|message| GatewayForwardError {
+            message,
+            kind: GatewayFailureKind::GatewayParse,
+            upstream_request_body: Some(upstream_body_snapshot.clone()),
+            upstream_response_body: Some(upstream_response_body.clone()),
+            upstream_response_body_bytes,
+        })?;
+        set_response_content_type(&mut response_headers, "application/json");
+    }
     if should_restore_xai_namespaces {
         body = restore_xai_namespace_json_body(&body, &xai_namespace_restore_map);
     }
@@ -2415,17 +2441,48 @@ async fn build_gateway_response(
         .map(|_| upstream_response_body_bytes)
         .unwrap_or(0);
 
+    // Codex always streams its compaction request, but the summary was fetched
+    // in one piece so the item could be sealed before anything was emitted.
+    // Render the finished item as the SSE stream the client is waiting for —
+    // only when it actually asked for one, so a non-streaming caller still gets
+    // the JSON item instead of a `text/event-stream` body it cannot parse.
+    let compaction_stream = if remote_compaction.is_compaction_response()
+        && (200..400).contains(&status.as_u16())
+        && request_declares_streaming(request)
+    {
+        serde_json::from_slice::<Value>(&body)
+            .ok()
+            .map(|response| codex_remote_compaction::build_compaction_sse(&response))
+            .filter(|stream| !stream.is_empty())
+    } else {
+        None
+    };
+    let (body, body_stream, is_streaming) = match compaction_stream {
+        Some(stream) => {
+            set_response_content_type(&mut response_headers, "text/event-stream");
+            let bytes = stream.into_bytes();
+            let stream = futures_util::stream::once(async move { Ok(bytes) });
+            (Vec::new(), Some(Box::pin(stream) as DebugBodyStream), true)
+        }
+        None => (body, None, false),
+    };
+    let response_body_bytes = if is_streaming {
+        0
+    } else {
+        body.len() as u64
+    };
+
     let gateway_response = DebugHttpResponse {
         privacy: None,
         status_code: status.as_u16(),
         status_text: status.canonical_reason().unwrap_or("Unknown").to_string(),
         headers: response_headers,
-        response_body_bytes: body.len() as u64,
+        response_body_bytes,
         body,
-        body_stream: None,
+        body_stream,
         token_usage,
         first_token_ms: None,
-        is_streaming: false,
+        is_streaming,
         cli_key: Some(provider.cli_key),
         route_name: route.route_name.to_string(),
         provider_id: Some(provider.id.clone()),
@@ -4787,6 +4844,48 @@ fn should_attempt_responses_encrypted_content_rectifier(
         && (400..500).contains(&status_code)
 }
 
+/// Turns an upstream summarization reply into the `compaction` item Codex installs.
+///
+/// `converted_body` is already in the client-facing Responses shape (the normal
+/// conversion ran first), so the summary is read from it, while `upstream_body`
+/// supplies usage in whichever protocol the provider actually speaks.
+fn build_remote_compaction_response_body(
+    converted_body: &[u8],
+    upstream_body: &[u8],
+) -> Result<Vec<u8>, String> {
+    let converted: Value = serde_json::from_slice(converted_body)
+        .map_err(|error| format!("Failed to parse compaction response: {error}"))?;
+    let upstream: Value = serde_json::from_slice(upstream_body).unwrap_or(Value::Null);
+
+    let summary = codex_remote_compaction::extract_summary_text(&converted).map_err(|error| {
+        use codex_remote_compaction::CompactionSummaryError;
+        match error {
+            CompactionSummaryError::Truncated => "Upstream truncated the compaction summary".to_string(),
+            CompactionSummaryError::Empty => "Upstream returned an empty compaction summary".to_string(),
+            // Unreachable: `extract_summary_text` inspects a complete 2xx body,
+            // and only the WebSocket stream summary ever reports a failure (a
+            // non-2xx status fails the request before reaching this point). The
+            // arm exists because the enum is shared, so its message states only
+            // what is true here instead of naming a failure that cannot arrive.
+            CompactionSummaryError::Failed => "Upstream returned an unusable compaction summary".to_string(),
+        }
+    })?;
+
+    // Every target protocol's response carries its model, and the converted
+    // body is always in the Responses shape by the time it gets here.
+    let model = converted
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+
+    let item = codex_remote_compaction::build_compaction_item(&summary, model)
+        .ok_or_else(|| "Failed to seal the compaction summary".to_string())?;
+    let response = codex_remote_compaction::build_compaction_response(&item, model, &upstream);
+
+    serde_json::to_vec(&response)
+        .map_err(|error| format!("Failed to serialize compaction response: {error}"))
+}
+
 fn should_filter_known_invalid_responses_ciphers(
     enabled: bool,
     target_protocol: AiProtocol,
@@ -5657,6 +5756,7 @@ fn build_upstream_body(
         None,
         route_streaming,
         CodexResponsesCompactCompat::none(),
+            RemoteCompactionCompat::none(),
     )
     .map(|prepared| prepared.body)
 }
@@ -5715,6 +5815,9 @@ fn prepare_websocket_request_with_model(
     if requested_model.trim().is_empty() {
         return Err("response.create requires a model".to_string());
     }
+    // A `response.create` frame is a Responses request in a WebSocket envelope,
+    // so compaction is recognized and rewritten the same way as over HTTP.
+    let remote_compaction = RemoteCompactionCompat::resolve_websocket(&original);
     let prepared = build_upstream_body_for_provider(
         request,
         requested_model,
@@ -5730,6 +5833,7 @@ fn prepare_websocket_request_with_model(
         Some(provider),
         false,
         CodexResponsesCompactCompat::none(),
+        remote_compaction,
     )
     .map_err(|error| error.message)?;
     let mut payload: Value =
@@ -5786,6 +5890,7 @@ fn build_upstream_body_for_provider(
     provider: Option<&UpstreamProvider>,
     route_streaming: bool,
     compact_compat: CodexResponsesCompactCompat,
+    remote_compaction: RemoteCompactionCompat,
 ) -> Result<PreparedUpstreamBody, GatewayForwardError> {
     let Ok(mut value) = serde_json::from_slice::<Value>(&request.body) else {
         if let Some(route) = conversion_route {
@@ -5888,6 +5993,20 @@ fn build_upstream_body_for_provider(
     }
     if cli_key == GatewayCliKey::Claude && strip_thinking_for_retry {
         strip_thinking_blocks(&mut value);
+    }
+    if remote_compaction.is_remote_compaction() {
+        // The upstream must see a plain summarization turn: Codex's
+        // `compaction_trigger` is a private control item no third-party provider
+        // understands, and its base instructions would otherwise make the model
+        // resume the coding task instead of summarizing it.
+        if let Some(summary_request) = codex_remote_compaction::build_compaction_summary_request(&value)
+        {
+            value = summary_request;
+        }
+    } else if remote_compaction.may_replay_capsules() {
+        // A later turn replays the compaction item this Gateway wrote. Expand it
+        // back into readable context; items written by anyone else are untouched.
+        codex_remote_compaction::expand_compaction_capsules(&mut value);
     }
     let rewritten_body = serde_json::to_vec(&value).map_err(|error| GatewayForwardError {
         message: format!("Failed to rewrite upstream request model: {error}"),
@@ -8935,6 +9054,7 @@ fn build_thinking_signature_rectified_upstream_body(
     provider: Option<&UpstreamProvider>,
     route_streaming: bool,
     compact_compat: CodexResponsesCompactCompat,
+    remote_compaction: RemoteCompactionCompat,
     original_upstream_body: &[u8],
 ) -> Result<Option<PreparedUpstreamBody>, GatewayForwardError> {
     let prepared = build_upstream_body_for_provider(
@@ -8952,6 +9072,7 @@ fn build_thinking_signature_rectified_upstream_body(
         provider,
         route_streaming,
         compact_compat,
+        remote_compaction,
     )?;
 
     if prepared.body == original_upstream_body {
@@ -11669,6 +11790,7 @@ mod tests {
             None,
             false,
             CodexResponsesCompactCompat::none(),
+            RemoteCompactionCompat::none(),
         )
         .unwrap();
         let value: Value = serde_json::from_slice(&prepared.body).unwrap();
@@ -11709,6 +11831,7 @@ mod tests {
             None,
             false,
             CodexResponsesCompactCompat::none(),
+            RemoteCompactionCompat::none(),
         )
         .unwrap();
         let value: Value = serde_json::from_slice(&prepared.body).unwrap();
@@ -11741,6 +11864,7 @@ mod tests {
             None,
             false,
             CodexResponsesCompactCompat::none(),
+            RemoteCompactionCompat::none(),
         )
         .unwrap();
         let value: Value = serde_json::from_slice(&prepared.body).unwrap();
@@ -11770,6 +11894,7 @@ mod tests {
             None,
             false,
             CodexResponsesCompactCompat::none(),
+            RemoteCompactionCompat::none(),
         )
         .unwrap();
         let value: Value = serde_json::from_slice(&prepared.body).unwrap();
@@ -11803,6 +11928,7 @@ mod tests {
             None,
             false,
             CodexResponsesCompactCompat::none(),
+            RemoteCompactionCompat::none(),
         )
         .unwrap();
         let value: Value = serde_json::from_slice(&prepared.body).unwrap();
@@ -11860,6 +11986,7 @@ mod tests {
             None,
             false,
             CodexResponsesCompactCompat::none(),
+            RemoteCompactionCompat::none(),
         )
         .unwrap();
         let value: Value = serde_json::from_slice(&prepared.body).unwrap();
@@ -11895,6 +12022,7 @@ mod tests {
             None,
             false,
             CodexResponsesCompactCompat::none(),
+            RemoteCompactionCompat::none(),
         )
         .unwrap();
         let value: Value = serde_json::from_slice(&prepared.body).unwrap();
@@ -11928,6 +12056,7 @@ mod tests {
             None,
             false,
             CodexResponsesCompactCompat::none(),
+            RemoteCompactionCompat::none(),
         )
         .unwrap();
         assert_eq!(
@@ -11979,6 +12108,7 @@ mod tests {
             None,
             false,
             CodexResponsesCompactCompat::none(),
+            RemoteCompactionCompat::none(),
         )
         .unwrap();
         assert_eq!(
@@ -12333,6 +12463,7 @@ data: {data}\r\n\r\n"
             None,
             false,
             CodexResponsesCompactCompat::none(),
+            RemoteCompactionCompat::none(),
         )
         .unwrap();
         let value: Value = serde_json::from_slice(&prepared.body).unwrap();
@@ -12383,6 +12514,7 @@ data: {data}\r\n\r\n"
             None,
             false,
             CodexResponsesCompactCompat::none(),
+            RemoteCompactionCompat::none(),
         )
         .unwrap();
         let value: Value = serde_json::from_slice(&prepared.body).unwrap();
@@ -13765,6 +13897,7 @@ data: {data}\r\n\r\n"
             None,
             false,
             CodexResponsesCompactCompat::none(),
+            RemoteCompactionCompat::none(),
         )
         .unwrap();
         let value = serde_json::from_slice::<Value>(&prepared.body).unwrap();
@@ -13802,6 +13935,7 @@ data: {data}\r\n\r\n"
             None,
             false,
             CodexResponsesCompactCompat::none(),
+            RemoteCompactionCompat::none(),
         )
         .unwrap();
         let value = serde_json::from_slice::<Value>(&prepared.body).unwrap();
@@ -14817,6 +14951,7 @@ data: {data}\r\n\r\n"
             None,
             false,
             CodexResponsesCompactCompat::none(),
+            RemoteCompactionCompat::none(),
         )
         .unwrap();
         let value = serde_json::from_slice::<Value>(&prepared.body).unwrap();
@@ -18428,6 +18563,7 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
             None,
             false,
             CodexResponsesCompactCompat::none(),
+            RemoteCompactionCompat::none(),
             &original_body,
         )
         .unwrap()
@@ -19293,6 +19429,7 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
             None,
             false,
             CodexResponsesCompactCompat::none(),
+            RemoteCompactionCompat::none(),
         )
         .unwrap();
         let value = serde_json::from_slice::<Value>(&prepared.body).unwrap();

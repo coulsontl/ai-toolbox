@@ -2,6 +2,9 @@
 //! Aggregate mode uses HTTP/SSE because its model is only known after the
 //! downstream WebSocket handshake.
 
+use super::compat::codex_remote_compaction::{
+    self as codex_remote_compaction, CompactionStreamSummary, RemoteCompactionCompat,
+};
 use super::compat::provider_kind::ProviderBodyCompat;
 use super::http_io::{
     empty_response, header_value, write_response, DebugHttpRequest, DebugHttpResponse,
@@ -714,6 +717,10 @@ struct PendingTurn {
     failure_kind: Option<GatewayFailureKind>,
     restore_map: HashMap<String, super::compat::xai_responses::NamespacedName>,
     privacy_restorer: Option<crate::coding::proxy_gateway::privacy::stream::EventRestorer>,
+    /// Set when this turn asked the upstream for a continuation summary, in
+    /// which case the upstream's own stream is consumed and replaced by a
+    /// synthesized `compaction` item.
+    compaction: Option<CompactionStreamSummary>,
 }
 
 impl PendingTurn {
@@ -968,6 +975,26 @@ impl PendingTurns {
             }
         }
     }
+}
+
+/// Seals a finished upstream summary into the `compaction` response Codex reads.
+///
+/// Returns `None` when there is no usable summary — the upstream failed, was
+/// truncated, returned nothing, or the capsule could not be sealed. Codex
+/// installs the item as the whole conversation history, so none of those may be
+/// papered over with placeholder text: the caller forwards the upstream's own
+/// terminal instead, which Codex classifies and retries on its own terms.
+fn build_websocket_compaction_response(
+    compaction: &CompactionStreamSummary,
+    model: &str,
+) -> Option<Value> {
+    let summary = compaction.finish().ok()?;
+    let item = codex_remote_compaction::build_compaction_item(&summary, model)?;
+    Some(codex_remote_compaction::build_websocket_compaction_response(
+        &item,
+        model,
+        compaction.usage(),
+    ))
 }
 
 async fn send_message<S: AsyncRead + AsyncWrite + Unpin>(
@@ -1261,6 +1288,9 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                             failure_kind: None,
                             restore_map: HashMap::new(),
                             privacy_restorer,
+                            compaction: RemoteCompactionCompat::resolve_websocket(&value)
+                                .is_remote_compaction()
+                                .then(CompactionStreamSummary::default),
                         };
                         let prepared = prepared.and_then(|(body, model, map)| {
                             if pending.full(turn.request.body.len().saturating_add(body.len())) {
@@ -1391,7 +1421,7 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                                     && value.get("stream_id").is_none()
                                     && value.get("response_id").is_none()
                             });
-                        let terminal = classify_sse_event_fields(None, &text);
+                        let mut terminal = classify_sse_event_fields(None, &text);
                         let settings = context.settings_snapshot();
                         let mut outgoing = text.as_bytes().to_vec();
                         let mut restored_messages = None;
@@ -1424,6 +1454,9 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                                     }
                                 });
                             }
+                            if let (Some(compaction), Some(value)) = (&mut turn.compaction, &value) {
+                                compaction.push(value);
+                            }
                         }
                         if connection_error {
                             for turn in pending.lanes.values_mut().flatten() {
@@ -1441,11 +1474,75 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                                 if let Some(privacy) = &turn.response.privacy { privacy.fail(); }
                             }
                         }
+                        // A compaction turn's upstream frames are consumed rather
+                        // than forwarded. Two reasons: Codex needs exactly one
+                        // `compaction` item, which cannot be built until the
+                        // summary is complete; and streaming the raw deltas would
+                        // put the summary on the wire in the clear, defeating the
+                        // envelope this path exists to produce.
+                        //
+                        // Two cases fall back to the upstream's own frames:
+                        // a summary that is not finished yet (nothing to emit),
+                        // and one that failed, was truncated, or came back empty.
+                        // The latter must not be papered over — Codex installs the
+                        // item as the whole conversation history, and it classifies
+                        // `response.failed` by error code to retry the retryable
+                        // ones.
+                        enum CompactionOutcome {
+                            Consumed,
+                            Synthesized(Vec<String>),
+                            Forwarded,
+                        }
+                        let compaction_outcome = match lane
+                            .as_ref()
+                            .and_then(|lane| pending.lanes.get(lane))
+                            .and_then(|queue| queue.front())
+                            .and_then(|turn| turn.compaction.as_ref())
+                        {
+                            None => CompactionOutcome::Forwarded,
+                            Some(compaction) if !compaction.is_terminal() => {
+                                CompactionOutcome::Consumed
+                            }
+                            Some(_) => lane
+                                .as_ref()
+                                .and_then(|lane| pending.lanes.get_mut(lane))
+                                .and_then(|queue| queue.front_mut())
+                                .and_then(|turn| {
+                                    let compaction = turn.compaction.take()?;
+                                    let model = turn
+                                        .response
+                                        .upstream_model_id
+                                        .clone()
+                                        .unwrap_or_default();
+                                    build_websocket_compaction_response(&compaction, &model)
+                                })
+                                .map(|response| {
+                                    CompactionOutcome::Synthesized(
+                                        codex_remote_compaction::build_compaction_frames(&response),
+                                    )
+                                })
+                                .unwrap_or(CompactionOutcome::Forwarded),
+                        };
+                        if matches!(compaction_outcome, CompactionOutcome::Synthesized(_)) {
+                            // The upstream's own terminal is replaced, so the turn
+                            // is closed by the synthesized `response.completed`.
+                            terminal = Some(SseTerminalKind::Success);
+                        }
                         let mut sent = Ok(());
                         let mut delivered_terminal = None;
                         let privacy_transformed = restored_messages.is_some();
                         let passthrough = restored_messages.is_none().then(|| outgoing.clone());
-                        for message in restored_messages.into_iter().flatten().chain(passthrough) {
+                        let forwarded = match compaction_outcome {
+                            CompactionOutcome::Synthesized(frames) => frames
+                                .into_iter()
+                                .map(|frame| frame.into_bytes())
+                                .collect::<Vec<_>>(),
+                            CompactionOutcome::Consumed => Vec::new(),
+                            CompactionOutcome::Forwarded => {
+                                restored_messages.into_iter().flatten().chain(passthrough).collect()
+                            }
+                        };
+                        for message in forwarded {
                             sent = send_message(&mut downstream, Message::Text(String::from_utf8(message.clone()).map_err(io_error)?.into())).await;
                             if sent.is_err() { break; }
                             delivered_terminal = if privacy_transformed {

@@ -92,6 +92,26 @@ Claude Desktop 使用独立 `/claude-desktop` 前缀和自己的 provider 表，
 
 测试：`responses_identity_stream_preserves_compaction_bytes_without_kernel`、`responses_stream_drops_compaction_for_chat_without_losing_text`。
 
+#### 1.6.1 Codex remote compaction v2
+
+v2 与 legacy `/responses/compact` 是两代不同协议，识别边界刻意互斥（`runtime/compat/codex_remote_compaction.rs`）：v2 认普通 `/responses`（WS 为普通 `response.create` 帧）里 `input[]` 的 `compaction_trigger`，legacy 端点仍归 `codex_responses_compact.rs`。
+
+| 环节 | 行为 |
+|---|---|
+| 触发信号 | `input[]` 含 `{"type":"compaction_trigger"}`。**不是** `x-codex-turn-metadata.request_kind == "compaction"`——本地 checkpoint 压缩也带该元数据，其响应必须保持普通 assistant 摘要 |
+| 摘要请求 | 剥离 trigger 与 `tools`/`tool_choice`/`parallel_tool_calls`/`response_format`/`stop`/`previous_response_id`，替换 `instructions` 为专用摘要指令，末尾追加产出指令，HTTP 侧再置 `stream:false` |
+| 摘要抽取 | HTTP 按结构识别四种目标协议（Responses / Chat / Anthropic / Gemini），不依赖声明的 target protocol；WS 从上游 delta 事件重组 |
+| 失败处理 | 摘要为空、`finish_reason == length`、上游 error 或封装失败时一律失败该轮，**不伪造 item**：Codex 把返回的 item 当作整段对话历史安装，占位文本等于静默丢弃上下文。HTTP 侧走既有错误路径（400 `gateway_request_schema_rejected`）；WS 侧转发上游自己的终态，让 Codex 按 error code 分类重试。该规则同样覆盖「上游**成功**但摘要不可用」——`response.completed` 不带文本、`response.incomplete` 截断——此时转发上游终态会让 Codex 报自己的 `expected exactly one compaction output item`，这是刻意的：比塞一个伪造上下文好 |
+| HTTP 响应形态 | 合成好的 item 跟随客户端声明成形：流式客户端拿到 5 事件 SSE，非流式客户端拿到同一 response 的 JSON。Codex 恒为流式，非流分支实际不可达，但重渲染必须按 `request_declares_streaming` 门控，否则非流式调用方收到 `text/event-stream` 外壳却解析不出 body |
+| identity 路由 | v2 走 Responses 同协议直通时**同样被改写**。`build_upstream_body_for_provider` 对无 `conversion_route` 的请求本就会解析再重发 JSON，所以改写就地做，不需要为它造转换路由。这是最易回归的一点：改动 body 构造就可能让 `compaction_trigger` 原样透传给第三方上游，且模块单测看不出来 |
+| `encrypted_content` | AES-256-GCM（自识别前缀 `ai-toolbox-compact-v1:`），每次封装新 nonce。解开失败按“非本 Gateway 生成”原样保留，绝不报错。**不能**退回 base64：该字段随 Codex 历史落 rollout 文件与日志 |
+| 后续轮次 | 回传的本地 capsule 解回带标题的可读上下文；其它工具/官方写的 compaction item 原样保留 |
+| WS 传输 | 只覆盖 Responses 直通（需协议转换的 provider 握手前已 `426`）。帧是**裸 JSON**（无 `event:`/`data:` 外壳）。终态前**不转发任何上游帧**（摘要未封装完成，且透传 delta 会把摘要明文送上线路）；终态后合成 5 帧，上游自己的 `response.completed` 丢弃。仅当摘要不可用时改为转发上游终态 |
+
+Codex 侧门控：只有 `name == "OpenAI"`（或 Azure）的 provider 默认启用 v2（`codex-rs/model-provider/src/capabilities.rs`），纯字符串比较，与 `base_url` 无关；`[features] remote_compaction_v2 = false` 是 no-op。接管时写 `capabilities.remote_compaction = "v2"` 可为第三方 provider 打开。
+
+测试：纯函数层 `the_legacy_compact_endpoint_is_not_claimed`、`local_checkpoint_metadata_is_not_remote_compaction`、`the_summary_comes_out_of_every_target_protocol`、`the_compaction_stream_has_exactly_one_done_item`、`the_websocket_frames_are_bare_json_with_one_compaction_item`、`usage_survives_from_every_upstream_shape`；WS relay 层 `websocket_compaction_turn_is_summarized_and_replaced`、`websocket_compaction_turn_keeps_an_incremental_delta`、`websocket_compaction_failure_is_forwarded_not_synthesized`、`websocket_empty_summary_forwards_the_upstream_terminal`、`websocket_truncated_summary_forwards_the_upstream_terminal`；HTTP 挂载层（真网关 + stub 上游）`tauri/tests/coding/proxy_gateway/codex_remote_compaction_http.rs` 的 `identity_responses_compaction_is_rewritten_and_sealed`、`a_non_streaming_client_still_gets_one_compaction_item`、`a_replayed_capsule_becomes_readable_context_upstream`、`an_empty_summary_fails_instead_of_faking_an_item`。挂载层必须有集成测试：纯函数全对但接线错（identity 路由没改写、非流客户端被塞 SSE、回放没展开 capsule）单测看不出来。
+
 ### 1.7 跨协议终态 envelope 索引
 
 详细状态机见架构主文档 §10 / §18。本表只索引 source terminal 到四个 target 的默认 wire，便于 provider/channel 审查检索：
@@ -116,7 +136,7 @@ Claude Desktop 使用独立 `/claude-desktop` 前缀和自己的 provider 表，
 6. 写入或改写最终上游 `model`：先查 provider 精确模型改写规则（2.6），未命中再走各 CLI family/default 映射，最终剥离 `[1M]` / `[1m]`。
 7. Gemini source 转非 Gemini target 且 route streaming 时写 `stream=true`。
 8. thinking rectifier 重试路径才执行 `strip_thinking_blocks`；该 rectifier 按**入站 CLI=Claude** 门控，不是按 target protocol 判断；正常请求不会预先删除 thinking。
-9. `/responses/compact` 走 compact 专项 compat；普通跨协议请求调用 `convert_request_body_with_context()`；同协议请求直通当前 body。
+9. `/responses/compact` 走 compact 专项 compat；Codex remote compaction v2 的 `compaction_trigger` 轮次在此前已改写为普通摘要请求（见 §1.6.1），不走 compact facade；普通跨协议请求调用 `convert_request_body_with_context()`；同协议请求直通当前 body。
 10. target Gemini 时可由 `GeminiShadowStore` 回放上一轮带 `thoughtSignature` 的 model functionCall。
 11. target OpenAI Responses 时执行 `prompt_cache_key` fallback。
 12. target OpenAI Chat 时先缓存被 strip 前的 `prompt_cache_key`，再跑 provider pipeline。
@@ -1155,12 +1175,13 @@ inferred provider：
 - 认证和 provider 自定义 Headers 先走 `build_upstream_headers`。随后由 WS 层重新生成 Connection/Upgrade、Sec-WebSocket-Key/Version，移除客户端 Sec-WebSocket-*、body framing、Host/Accept 等冲突字段；不请求压缩扩展或 subprotocol。客户端/provider 已给出的 OpenAI-Beta 保留，缺省才注入 `responses_websockets=2026-02-06`。
 - 使用专门的全局 HTTP client builder，显式 rustls、HTTP/1.1、无重定向、无总响应超时，保留用户的 direct/system/custom proxy。连接首包、逐轮 idle、写入/flush 和服务停止分别控制生命周期，不能套用普通 HTTP 的 30 秒整次请求超时。
 - 每个 `response.create` 的 model 改写复用 single/failover 规则、`[1M]` 清理及同协议 provider pipeline；去掉 HTTP 专属 `stream/background`，保留 `type/generate/stream_id/previous_response_id/event_id`。xAI native Responses namespace 恢复表按轮隔离。首版不做 WS 内协议转换、provider 切换或生成重放。
+- Codex remote compaction v2 的轮次（`input[]` 含 `compaction_trigger`）同样走 WS，但上游事件被消费而非转发：按 delta 重组摘要后合成恰好一个 `compaction` item，以 5 个裸 JSON 帧发出，上游自己的 `response.completed` 丢弃。`previous_response_id` 原样保留，不替 Codex 决定 full 还是 delta。细节见 §1.6.1。
 - 握手时没有模型，只能过滤 provider 级冷却；不能用猜测模型跳过渠道或更新模型健康。每轮生成的健康判定基于实际上游模型和已送达终态；合法 Incomplete/Canceled、客户端取消和预热不当作上游模型故障。
 - `response.failed` / error event 仍以 WS 事件送给客户端，业务行的 HTTP status 保持空值，详情单独保留事件 error status。握手尝试只记录在连接 metadata；业务请求的尝试数不被它放大。
 
 single/failover 模式下，网关总开关与 provider 的原始 `supports_websockets` 能力判断同时生效。关闭总开关后已有连接空闲时关闭，在途轮次继续按既有 usage/终态规则结算；开启不会解除 Codex 当前会话已经记住的 HTTP fallback，需要新会话或重启客户端再试。聚合模式独立投影 `supports_websockets=false`，不因该总开关开启而启用 WS。切换开关不影响 HTTP/SSE 的协议转换和数据脱敏设置。
 
-关键实现：`runtime/websocket.rs`、`runtime/upstream.rs::prepare_websocket_request`、`provider_protocol.rs::codex_supports_websockets_from_config`、`cli_proxy/mod.rs::patch_codex_config`、`http_client.rs::client_websocket_handshake`。回归：`runtime/websocket/tests.rs`、`runtime/websocket/lifecycle_tests.rs`、`runtime/websocket/settings_tests.rs`、`settings.rs::websocket_setting_defaults_to_off_and_round_trips_without_resetting_other_settings`、`provider_protocol.rs::websocket_capability_uses_the_selected_provider_table`、`cli_proxy/mod.rs::codex_takeover_writes_mode_specific_websocket_capability_and_restores_original`。
+关键实现：`runtime/websocket.rs`、`runtime/upstream.rs::prepare_websocket_request`、`runtime/compat/codex_remote_compaction.rs`、`provider_protocol.rs::codex_supports_websockets_from_config`、`cli_proxy/mod.rs::patch_codex_config`、`http_client.rs::client_websocket_handshake`。回归：`runtime/websocket/tests.rs`、`runtime/websocket/lifecycle_tests.rs`、`runtime/websocket/settings_tests.rs`、`settings.rs::websocket_setting_defaults_to_off_and_round_trips_without_resetting_other_settings`、`provider_protocol.rs::websocket_capability_uses_the_selected_provider_table`、`cli_proxy/mod.rs::codex_takeover_writes_mode_specific_websocket_capability_and_restores_original`、`websocket_compaction_turn_is_summarized_and_replaced`、`websocket_compaction_turn_keeps_an_incremental_delta`。
 
 ### 7.2 数据脱敏与渠道兼容（issue #347）
 

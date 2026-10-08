@@ -1,5 +1,201 @@
+use ai_toolbox_lib::coding::proxy_gateway::{
+    paths::ProxyGatewayPaths, types::ProxyGatewaySettings, ProxyGatewayState,
+};
+use ai_toolbox_lib::db::{
+    helpers::{db_create, db_put},
+    schema::DbTable,
+    SqliteDbState,
+};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+
+/// How much of each request/response body the gateway is asked to record.
+///
+/// `Truncated` shrinks `log_max_body_size_kb`, which is how the body-logging
+/// limits are exercised.
+#[derive(Clone, Copy)]
+pub(super) enum BodyLogging {
+    Enabled,
+    Disabled,
+    Truncated,
+}
+
+/// A real gateway process bound to an ephemeral port, forwarding to `upstream_url`.
+pub(super) struct RunningGateway {
+    state: ProxyGatewayState,
+    pub(super) url: String,
+    _directory: tempfile::TempDir,
+}
+
+impl RunningGateway {
+    pub(super) fn new(upstream_url: &str, provider_type: &str, logging: BodyLogging) -> Self {
+        Self::new_for_api_format(upstream_url, provider_type, logging, "openai_chat")
+    }
+
+    pub(super) fn new_for_api_format(
+        upstream_url: &str,
+        provider_type: &str,
+        logging: BodyLogging,
+        api_format: &str,
+    ) -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let api_version = if api_format == "gemini_native" {
+            "v1beta"
+        } else {
+            "v1"
+        };
+        let config = format!(
+            "model = \"fixture-model\"\nmodel_provider = \"fixture\"\n\
+             [model_providers.fixture]\nbase_url = \"{upstream_url}/{api_version}\"\nwire_api = \"chat\"\n"
+        );
+        db.with_conn(|connection| {
+            db_put(
+                connection,
+                DbTable::Settings,
+                "app",
+                &json!({"proxy_mode": "direct"}),
+            )?;
+            db_create(
+                connection,
+                DbTable::CodexProvider,
+                &json!({
+                    "name": "Parallel tool fixture", "category": "custom",
+                    "is_applied": true, "is_disabled": false,
+                    "settings_config": json!({
+                        "config": config, "auth": {"OPENAI_API_KEY": "fixture-key"}
+                    }).to_string(),
+                    "meta": {"apiFormat": api_format, "providerType": provider_type}
+                }),
+            )
+        })
+        .unwrap();
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let settings = ProxyGatewaySettings {
+            listen_port: port,
+            port_auto_select: true,
+            max_retry_count: 0,
+            retry_interval_secs: 0,
+            streaming_first_byte_timeout_secs: 5,
+            streaming_idle_timeout_secs: 5,
+            non_streaming_timeout_secs: 5,
+            request_log_enabled: !matches!(logging, BodyLogging::Disabled),
+            store_request_body: !matches!(logging, BodyLogging::Disabled),
+            store_response_body: !matches!(logging, BodyLogging::Disabled),
+            log_max_body_size_kb: if matches!(logging, BodyLogging::Truncated) {
+                1
+            } else {
+                256
+            },
+            ..ProxyGatewaySettings::default()
+        };
+        let state = ProxyGatewayState::default();
+        let status = state
+            .manager
+            .lock()
+            .unwrap()
+            .start_with_context(settings, db, ProxyGatewayPaths::new(directory.path()))
+            .unwrap();
+        Self {
+            state,
+            url: format!(
+                "http://127.0.0.1:{}/openai/v1/responses",
+                status.listen_port.expect("bound gateway port")
+            ),
+            _directory: directory,
+        }
+    }
+}
+
+impl Drop for RunningGateway {
+    fn drop(&mut self) {
+        let _ = self.state.manager.lock().unwrap().stop();
+    }
+}
+
+pub(super) async fn read_mock_request(
+    socket: &mut TcpStream,
+    expected_path_prefix: &str,
+) -> Value {
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 2048];
+    let header_end = loop {
+        let size = socket.read(&mut buffer).await.unwrap();
+        assert!(size > 0, "upstream request ended before headers");
+        bytes.extend_from_slice(&buffer[..size]);
+        if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+            break index + 4;
+        }
+    };
+    let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
+    assert!(
+        headers.starts_with(&format!("POST {expected_path_prefix}")),
+        "{headers}"
+    );
+    let length = headers
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .unwrap()
+        .1
+        .trim()
+        .parse::<usize>()
+        .unwrap();
+    while bytes.len() < header_end + length {
+        let size = socket.read(&mut buffer).await.unwrap();
+        assert!(size > 0, "upstream request ended before body");
+        bytes.extend_from_slice(&buffer[..size]);
+    }
+    serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap()
+}
+
+pub(super) async fn write_mock_reply(
+    socket: &mut TcpStream,
+    status: u16,
+    body: &[u8],
+    streaming: bool,
+) {
+    let reason = if status == 200 { "OK" } else { "Bad Request" };
+    if streaming {
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: text/event-stream\r\n\
+             Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        for chunk in body.chunks(37) {
+            socket
+                .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                .await
+                .unwrap();
+            socket.write_all(chunk).await.unwrap();
+            socket.write_all(b"\r\n").await.unwrap();
+        }
+        socket.write_all(b"0\r\n\r\n").await.unwrap();
+    } else {
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        socket.write_all(body).await.unwrap();
+    }
+    socket.shutdown().await.unwrap();
+}
 
 pub(super) fn function_call(call_id: &str, name: &str, arguments: Value) -> Value {
     json!({

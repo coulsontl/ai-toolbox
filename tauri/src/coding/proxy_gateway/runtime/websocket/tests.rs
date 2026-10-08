@@ -428,6 +428,439 @@ async fn upstream_handshake_preserves_auth_rate_limit_errors_and_falls_back_on_u
     }
 }
 
+/// The WebSocket transport has no non-streamed mode, so a compaction turn is
+/// summarized by consuming the upstream's own event stream and replacing it with
+/// a synthesized `compaction` item. Codex must see exactly one compaction item
+/// and one terminal event, and the request must reach upstream as a plain
+/// summarization turn rather than a private `compaction_trigger`.
+#[tokio::test]
+async fn websocket_compaction_turn_is_summarized_and_replaced() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, _) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        let request = receive_json(&mut socket).await;
+        // The private control item must not reach the upstream, and the tool
+        // inventory is irrelevant to summarizing.
+        let input = request["input"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !input.iter().any(|item| item["type"] == "compaction_trigger"),
+            "the compaction trigger leaked upstream: {request}"
+        );
+        assert!(request.get("tools").is_none(), "tools leaked upstream");
+        assert!(
+            request["instructions"]
+                .as_str()
+                .is_some_and(|text| text.contains("continuation summary")),
+            "base instructions were not replaced: {request}"
+        );
+        assert!(
+            input
+                .last()
+                .is_some_and(|item| item["content"][0]["text"] == "Produce the continuation summary now."),
+            "the follow-up summarization turn is missing: {request}"
+        );
+
+        send_json(&mut socket, json!({"type":"response.output_text.delta","delta":"Goal: ship "})).await;
+        send_json(&mut socket, json!({"type":"response.output_text.delta","delta":"compaction v2"})).await;
+        send_json(&mut socket, json!({"type":"response.completed","response":{"id":"upstream-response","usage":{"input_tokens":11,"output_tokens":4}}})).await;
+        let _ = socket.next().await;
+    });
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    send_json(
+        &mut client,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "instructions": "You are a coding agent.",
+            "tools": [{ "type": "function", "name": "shell" }],
+            "input": [
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "fix the bug" }] },
+                { "type": "compaction_trigger" },
+            ],
+        }),
+    )
+    .await;
+
+    let mut frames = Vec::new();
+    loop {
+        let frame = receive_json(&mut client).await;
+        let terminal = frame["type"] == "response.completed";
+        frames.push(frame);
+        if terminal {
+            break;
+        }
+    }
+    let _ = client.close(None).await;
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    // The upstream's own deltas must not reach the client: the summary is only
+    // ever delivered sealed inside the compaction item.
+    assert!(
+        !frames
+            .iter()
+            .any(|frame| frame.to_string().contains("Goal: ship")),
+        "the unsealed summary leaked to the client: {frames:?}",
+    );
+
+    // Exactly one compaction item, delivered by the terminal event.
+    let items: Vec<&Value> = frames
+        .iter()
+        .filter_map(|frame| (frame["type"] == "response.output_item.done").then(|| &frame["item"]))
+        .collect();
+    assert_eq!(items.len(), 1, "expected exactly one done item: {frames:?}");
+    assert_eq!(items[0]["type"], "compaction");
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|frame| frame["type"] == "response.completed")
+            .count(),
+        1,
+        "the upstream terminal must not be forwarded alongside the synthesized one",
+    );
+
+    // The summary is sealed into the capsule, and the upstream's own usage and
+    // model survive the rewrite.
+    let completed = frames.last().unwrap();
+    assert_eq!(completed["response"]["model"], "test-model");
+    assert_eq!(completed["response"]["usage"]["input_tokens"], 11);
+    assert_eq!(completed["response"]["usage"]["output_tokens"], 4);
+    let sealed = items[0]["encrypted_content"].as_str().unwrap();
+    let summary = super::super::compat::codex_remote_compaction::open_compaction_summary(sealed)
+        .expect("the item must carry a capsule this Gateway can read back");
+    assert_eq!(summary, "Goal: ship compaction v2");
+    assert!(
+        !sealed.contains("Goal: ship"),
+        "the summary must not travel in plaintext: {sealed}"
+    );
+
+    // The turn is billed like any other request.
+    let detail = recorded_details(&context).pop().unwrap();
+    assert_eq!(detail.summary.total_attempt_count, 1);
+}
+
+/// Codex may send the compaction turn as an incremental delta: only the items
+/// since the last response, plus the trigger, with `previous_response_id`
+/// carrying the rest of the conversation.
+///
+/// The Gateway must preserve Codex's own full-vs-delta decision — dropping
+/// `previous_response_id` would leave the upstream with nothing to summarize,
+/// while forcing the full history through would duplicate it.
+#[tokio::test]
+async fn websocket_compaction_turn_keeps_an_incremental_delta() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, _) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        let request = receive_json(&mut socket).await;
+        assert_eq!(request["previous_response_id"], "resp_prev");
+        let input = request["input"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !input.iter().any(|item| item["type"] == "compaction_trigger"),
+            "the compaction trigger leaked upstream: {request}"
+        );
+        // The delta's own items survive; only the trigger is replaced.
+        assert_eq!(input[0]["content"][0]["text"], "and then fix the tests");
+        assert_eq!(
+            input.last().unwrap()["content"][0]["text"],
+            "Produce the continuation summary now."
+        );
+
+        send_json(&mut socket, json!({"type":"response.output_text.delta","delta":"delta summary"})).await;
+        send_json(&mut socket, json!({"type":"response.completed","response":{"id":"upstream-response","usage":{"input_tokens":3,"output_tokens":2}}})).await;
+        let _ = socket.next().await;
+    });
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    send_json(
+        &mut client,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "previous_response_id": "resp_prev",
+            "input": [
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "and then fix the tests" }] },
+                { "type": "compaction_trigger" },
+            ],
+        }),
+    )
+    .await;
+
+    loop {
+        if receive_json(&mut client).await["type"] == "response.completed" {
+            break;
+        }
+    }
+    let _ = client.close(None).await;
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+}
+
+/// A failed summarization must reach Codex as the upstream's own error.
+///
+/// Codex classifies `response.failed` by its error code and retries the
+/// retryable ones; it also installs a returned item as the whole conversation
+/// history. Synthesizing a successful item here would both discard the real
+/// context and swallow the retry.
+#[tokio::test]
+async fn websocket_compaction_failure_is_forwarded_not_synthesized() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, _) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        receive_json(&mut socket).await;
+        // Summarization fails after partial output: the deltas must not leak,
+        // and the error must survive.
+        send_json(&mut socket, json!({"type":"response.output_text.delta","delta":"partial summary that must not leak"})).await;
+        send_json(&mut socket, json!({
+            "type": "response.failed",
+            "response": {
+                "id": "upstream-failed",
+                "status": "failed",
+                "error": { "code": "rate_limit_exceeded", "message": "Rate limit reached" },
+            },
+        }))
+        .await;
+        let _ = socket.next().await;
+    });
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    send_json(
+        &mut client,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "input": [
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "fix the bug" }] },
+                { "type": "compaction_trigger" },
+            ],
+        }),
+    )
+    .await;
+
+    let mut frames = Vec::new();
+    loop {
+        let frame = receive_json(&mut client).await;
+        let terminal = matches!(
+            frame["type"].as_str(),
+            Some("response.failed" | "response.completed")
+        );
+        frames.push(frame);
+        if terminal {
+            break;
+        }
+    }
+    let _ = client.close(None).await;
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    assert_eq!(frames.len(), 1, "only the upstream terminal may be delivered: {frames:?}");
+    assert_eq!(frames[0]["type"], "response.failed");
+    assert_eq!(
+        frames[0]["response"]["error"]["code"],
+        "rate_limit_exceeded",
+        "Codex needs the real code to classify and retry the failure",
+    );
+    assert!(
+        !frames
+            .iter()
+            .any(|frame| frame["type"] == "response.output_item.done"),
+        "a failed summary must not produce a compaction item: {frames:?}",
+    );
+    assert!(
+        !frames
+            .iter()
+            .any(|frame| frame.to_string().contains("must not leak")),
+        "the unsealed summary leaked to the client: {frames:?}",
+    );
+}
+
+/// An upstream that *succeeds* without producing a summary must not be papered
+/// over into a compaction item either.
+///
+/// `build_websocket_compaction_response` returns `None` here, and the relay has
+/// to fall back to the upstream's own terminal rather than emit a half-built
+/// turn. Codex then raises its own "expected exactly one compaction output
+/// item" error against a completed response instead of installing a fabricated
+/// context as the whole history.
+#[tokio::test]
+async fn websocket_empty_summary_forwards_the_upstream_terminal() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, _) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        receive_json(&mut socket).await;
+        send_json(&mut socket, json!({
+            "type": "response.output_item.done",
+            "item": {
+                "id": "upstream-empty", "type": "message", "role": "assistant",
+                "content": [{ "type": "output_text", "text": "" }],
+            },
+        }))
+        .await;
+        send_json(&mut socket, json!({
+            "type": "response.completed",
+            "response": {
+                "id": "upstream-empty", "status": "completed",
+                "output": [{ "type": "message", "role": "assistant",
+                    "content": [{ "type": "output_text", "text": "" }] }],
+                "usage": { "input_tokens": 3, "output_tokens": 0 },
+            },
+        }))
+        .await;
+        let _ = socket.next().await;
+    });
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    send_json(
+        &mut client,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "input": [
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "fix the bug" }] },
+                { "type": "compaction_trigger" },
+            ],
+        }),
+    )
+    .await;
+
+    let mut frames = Vec::new();
+    loop {
+        let frame = receive_json(&mut client).await;
+        let terminal = matches!(
+            frame["type"].as_str(),
+            Some("response.completed" | "response.failed" | "response.incomplete")
+        );
+        frames.push(frame);
+        if terminal {
+            break;
+        }
+    }
+    let _ = client.close(None).await;
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    assert_eq!(
+        frames.len(),
+        1,
+        "only the upstream terminal may be delivered: {frames:?}"
+    );
+    assert_eq!(
+        frames[0]["response"]["id"], "upstream-empty",
+        "the upstream's own terminal must survive: {frames:?}",
+    );
+    assert!(
+        !frames.iter().any(|frame| frame["item"]["type"] == "compaction"
+            || frame["response"]["output"]
+                .as_array()
+                .is_some_and(|output| output.iter().any(|item| item["type"] == "compaction"))),
+        "an empty summary must not produce a compaction item: {frames:?}",
+    );
+    assert!(
+        !frames
+            .iter()
+            .any(|frame| frame.to_string().contains("ai-toolbox-compact-v1:")),
+        "a capsule was sealed from nothing: {frames:?}",
+    );
+}
+
+/// The same fallback for a truncated summary: the upstream's `incomplete`
+/// terminal is the truth, and the partial text must not be installed as context.
+#[tokio::test]
+async fn websocket_truncated_summary_forwards_the_upstream_terminal() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, _) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        receive_json(&mut socket).await;
+        // A half-written summary that must never reach the client.
+        send_json(
+            &mut socket,
+            json!({"type":"response.output_text.delta","delta":"half a summary, cut off mid-"}),
+        )
+        .await;
+        send_json(
+            &mut socket,
+            json!({"type":"response.incomplete","response":{"id":"upstream-incomplete","status":"incomplete"}}),
+        )
+        .await;
+        let _ = socket.next().await;
+    });
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    send_json(
+        &mut client,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "input": [
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "fix the bug" }] },
+                { "type": "compaction_trigger" },
+            ],
+        }),
+    )
+    .await;
+
+    let mut frames = Vec::new();
+    loop {
+        let frame = receive_json(&mut client).await;
+        let terminal = matches!(
+            frame["type"].as_str(),
+            Some("response.completed" | "response.failed" | "response.incomplete")
+        );
+        frames.push(frame);
+        if terminal {
+            break;
+        }
+    }
+    let _ = client.close(None).await;
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    assert_eq!(
+        frames.len(),
+        1,
+        "only the upstream terminal may be delivered: {frames:?}"
+    );
+    assert_eq!(frames[0]["type"], "response.incomplete");
+    assert_eq!(frames[0]["response"]["id"], "upstream-incomplete");
+    assert!(
+        !frames
+            .iter()
+            .any(|frame| frame["item"]["type"] == "compaction"),
+        "a truncated summary must not produce a compaction item: {frames:?}",
+    );
+    assert!(
+        !frames
+            .iter()
+            .any(|frame| frame.to_string().contains("half a summary")),
+        "the partial summary leaked to the client: {frames:?}",
+    );
+}
+
 #[tokio::test]
 async fn handshake_retry_is_recorded_separately_from_turn_attempts() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();

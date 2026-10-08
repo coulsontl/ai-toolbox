@@ -145,6 +145,8 @@ Copilot 是一个 runtime 特例：`effective_upstream_provider_for_request()` �
 
 OpenAI Responses `/responses/compact` 是例外边界：它不进入普通 4×4 聊天转换矩阵，也不新增 `AiProtocol`。runtime 的 `CodexResponsesCompactCompat` 单独识别 Codex compact endpoint：OpenAI Responses target 保持原 compact path；OpenAI Chat、Anthropic Messages、Gemini Native target 通过 compact 专项 facade 转换请求，并把上游响应转回 `response.compaction`。显式 streaming compact 请求仍在发送上游前拒绝。
 
+Codex remote compaction **v2** 是同一能力的第二代协议，由 runtime 的 `RemoteCompactionCompat`（`runtime/compat/codex_remote_compaction.rs`）处理，同样不进转换矩阵。它不用独立 endpoint，而是在普通 `/responses` 请求（WS 则是普通 `response.create` 帧）的 `input[]` 末尾追加 `{"type":"compaction_trigger"}`，要求响应恰好含一个 `{"type":"compaction","encrypted_content":"..."}` output item，随后跟 `response.completed`。两者的识别边界刻意互斥：v2 只认 `compaction_trigger`，legacy 端点继续归 `CodexResponsesCompactCompat`，否则同一请求会被改写两次。摘要以 AES-256-GCM 封进 `encrypted_content`（自识别前缀），Gateway 在后续轮次解回可读上下文，因此不需要跨请求状态。`x-codex-turn-metadata.request_kind == "compaction"` **不是** v2 信号——本地 checkpoint 压缩也带该元数据，其响应必须保持普通 assistant 摘要。
+
 ## 6. 请求转换链路
 
 主入口是 `runtime/upstream.rs::send_upstream_request()`。每次 provider attempt 大致按这个顺序构造上游请求：
@@ -1018,7 +1020,7 @@ X-Transformer-Lossy: /path: message | /path2: message
 
 WebSocket 是 runtime 的传输方式，不扩展上述转换矩阵。聚合模式通过 Codex `config.toml` 投影 `supports_websockets=false`，使 Codex 在建连前选择 HTTP Responses/SSE；若客户端仍向聚合路由发起 WebSocket 握手，Gateway 本地返回 `426`，不联系上游。聚合 WebSocket 暂不支持，这是明确的技术债；聚合 HTTP/SSE 路由继续可用。
 
-以下 WebSocket 握手与逐轮生命周期规则适用于 single/failover 模式，不代表聚合模式支持 WebSocket。`runtime/websocket.rs` 接收 Codex 路由的 `GET + Upgrade`，当前实际入口为 `/openai/v1/responses`。每条下游连接独占一条上游连接，固定 provider 和认证身份；连接建立后不切换 provider，也不重放已经发送的生成请求。其他 CLI 和 `/responses/compact` 继续 HTTP/SSE。
+以下 WebSocket 握手与逐轮生命周期规则适用于 single/failover 模式，不代表聚合模式支持 WebSocket。`runtime/websocket.rs` 接收 Codex 路由的 `GET + Upgrade`，当前实际入口为 `/openai/v1/responses`。每条下游连接独占一条上游连接，固定 provider 和认证身份；连接建立后不切换 provider，也不重放已经发送的生成请求。其他 CLI 和 `/responses/compact` 继续 HTTP/SSE；remote compaction v2 的 WS 轮次按上面 §16 的逐轮不变量处理。
 
 网关设置 `codex_websocket_enabled` 默认关闭，旧配置缺少该字段也按关闭读取；开关位于“设置 → 转发与容错 → 传输方式”，沿用普通网关 settings 的 JSONB 保存和运行态更新。关闭时在加载 provider 前返回 `426`，不连接上游；上游握手返回后、下游写出 `101` 前再次检查，覆盖保存设置与握手并发的情况。
 
@@ -1031,6 +1033,9 @@ single/failover 模式切换开关不改写 CLI 文件，也不重启网关。�
 逐轮处理遵守以下不变量：
 
 - 每个文本 `response.create` 建立独立请求记录，按 `stream_id` 隔离 FIFO 队列；通过 response ID 关联后续事件，忽略已完成 ID 的重复终态对统计的影响。`previous_response_id`、`generate:false` 和事件控制字段保留。模型映射及已证明的同协议 provider body 兼容复用 `upstream.rs`，不调用跨协议 transformer。
+- Codex remote compaction v2 的轮次在 WS 上同样被识别（`input[]` 含 `compaction_trigger`，`RemoteCompactionCompat::resolve_websocket`），但处理方式与普通轮次不同：上游帧先喂给 `CompactionStreamSummary` 累加而**不转发**（透传 delta 会把摘要明文送上线路，且摘要未封装完成时无可发内容），收到终态后合成为恰好一个 `compaction` item，再以 5 个**裸 JSON** 帧发出。WS 帧没有 SSE 的 `event:`/`data:` 外壳（Codex 直接按 JSON 解析文本帧），且 WS 没有非流模式，摘要必须从 delta 重组，不能像 HTTP 那样请求一次性 JSON。上游自己的 `response.completed` 必须丢弃，否则 Codex 会看到两个终态。
+- 摘要不可用时（上游 error、截断、空、封装失败）该轮**不合成 item**，改转发上游自己的终态：Codex 把返回的 item 当作整段对话历史安装，占位文本会静默丢弃上下文，同时按 error code 分类重试的能力也会被吞掉。`finish()` 必须先判失败——失败前到达的 delta 是半截草稿而非摘要。这条同样适用于「上游**成功**但没有可用摘要」：`response.completed` 不带文本（转发该 completed，Codex 报自己的 `expected exactly one compaction output item`）与 `response.incomplete` 截断（转发 incomplete，部分文本不下发）。回归 `websocket_empty_summary_forwards_the_upstream_terminal`、`websocket_truncated_summary_forwards_the_upstream_terminal`。
+- Codex 自己的 full-vs-delta 判定必须保留：`previous_response_id` 原样转发，不替它补全历史。该能力只覆盖 Responses 直通（需要协议转换的 provider 在握手前已 `426`）。
 - 上游事件先提取 usage，再写给客户端；只有终态成功写出后才能标记 Completed / Failed / Incomplete / Canceled。客户端写入失败时保留已收到的真实 Token，记录 Canceled；缺终态的上游 EOF 为 Incomplete。`101`、收到 usage、日志快照中存在终态都不能替代终态送达。
 - 成功轮次在终态送达后立即写 SQLite compact summary + JSONL，不等连接关闭。`transport=websocket` 的业务轮次没有 HTTP 状态码；握手失败保留真实状态及 fallback 原因。连接/response/stream/previous IDs 和握手尝试明细只放 JSONL，并进入明细导出。
 - 握手、Ping/Pong、连接复用和轮间空闲不计模型调用或 RPM。`generate:false` 标记 WebsocketWarmup，调用数为 0；无 usage 不产生用量，有真实 usage 则照实计 Token/费用。握手重试与每轮生成尝试分别记录，不能把连接建立前的重试伪装成每轮生成重试。
@@ -1074,6 +1079,7 @@ single/failover 模式切换开关不改写 CLI 文件，也不重启网关。�
 | `tauri/src/coding/proxy_gateway/runtime/pipeline.rs` | middleware pipeline 与 executor customizer 骨架 |
 | `tauri/src/coding/proxy_gateway/runtime/compat/provider_kind.rs` | providerType alias（`_`→`-` 归一化）、target protocol guard 与 `ProviderBodyCompat` 分类 |
 | `tauri/src/coding/proxy_gateway/runtime/compat/codex_responses_compact.rs` | Codex `/responses/compact` 端点识别与 Chat/Anthropic/Gemini fallback |
+| `tauri/src/coding/proxy_gateway/runtime/compat/codex_remote_compaction.rs` | Codex remote compaction v2：`compaction_trigger` 识别、摘要请求改写、AES-GCM capsule、HTTP SSE 与 WS 裸 JSON 帧合成 |
 | `tauri/src/coding/proxy_gateway/runtime/content_encoding.rs` | 入站/上游 content-encoding 解压（gzip/br/zstd 等）与 16 MiB 上限 |
 | `tauri/src/coding/proxy_gateway/runtime/compat/xai_responses.rs` | xAI native Responses namespace 展平/恢复和严格字段清理 |
 | `tauri/src/coding/proxy_gateway/runtime/header_preserving_client.rs` | 原始 HTTP/1.1 header 大小写保真路径与 body 超时/上限 |

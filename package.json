@@ -22,11 +22,13 @@
     "test:form-modal-layout": "node ./scripts/verify-form-modal-layout.mjs",
     "test:provider-card-layout": "node ./scripts/verify-provider-card-layout.mjs",
     "test:ime-autocomplete": "node ./scripts/verify-ime-safe-autocomplete.mjs",
-    "test": "pnpm run test:web && pnpm run test:form-modal-layout && pnpm run test:provider-card-layout && pnpm run test:provider-list-drag",
+    "test": "pnpm run test:web && pnpm run test:form-modal-layout && pnpm run test:provider-card-layout && pnpm run test:provider-list-drag && pnpm run test:official-account-card && pnpm run test:codex-official-accounts",
     "sync:version": "node scripts/sync-tauri-version.mjs",
     "tauri": "tauri",
     "prepare": "husky",
-    "test:provider-list-drag": "node ./scripts/verify-provider-list-drag.mjs"
+    "test:provider-list-drag": "node ./scripts/verify-provider-list-drag.mjs",
+    "test:official-account-card": "node ./scripts/verify-kimi-official-account-card.mjs",
+    "test:codex-official-accounts": "node ./scripts/verify-codex-official-accounts.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "6.2.5",
