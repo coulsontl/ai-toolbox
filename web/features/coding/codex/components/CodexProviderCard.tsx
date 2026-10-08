@@ -16,6 +16,7 @@ import {
   LinkOutlined,
   RightOutlined,
   SafetyOutlined,
+  SwapOutlined,
   SyncOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
@@ -585,7 +586,7 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
                   )}
                   {showOfficialRuntimeState && account.isApplied && (
                     <AppliedTag style={{ fontSize: 10 }}>
-                      {t('codex.provider.applied')}
+                      {t('codex.provider.officialAccountApplied')}
                     </AppliedTag>
                   )}
                 </div>
@@ -625,11 +626,11 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
                     <Button
                       type="text"
                       size="small"
-                      icon={<CheckOutlined />}
+                      icon={<SwapOutlined />}
                       onClick={() => onOfficialAccountApply?.(provider, account)}
                       style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
                     >
-                      {t('codex.provider.apply')}
+                      {t('codex.provider.officialAccountSwitch')}
                     </Button>
                   ) : null}
                   {!account.isVirtual && (

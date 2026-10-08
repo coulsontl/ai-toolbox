@@ -39,6 +39,7 @@
 - **有状态的回调必须**透传新值**，不要让调用方自己算。** `onToggleDisabled: (enabled: boolean) => void` 与 antd `Switch.onChange` 同契约；组件里写 `onChange={onToggleDisabled}`，**不要**写成 `onChange={() => onToggleDisabled()}`。后者迫使映射层从当前状态反推新值，推反了就得到一个「渲染正常、点了没反应」的开关——不报错、类型也通过。2026-10-07 在 Claude Code / Codex 卡片上真实发生过。
 - **props 的分组按语义层级，不按「当初谁在用」。** 卡片级的东西（拖拽、选中、禁用、高亮）进 `providerState`；模型列表级的（行、工具栏、批量删除）进 `modelSection`。判据是「**没有模型列表的样式还需不需要它**」——需要就放卡片级。`draggable` / `sortableId` 曾误放在 `modelSection` 下，于是 Claude 式卡片（无模型区）的拖拽把手静默消失。
 - **同一个 interface 里的字段，不代表所有样式都会读。** `ProviderCardVariantProps` 是三个样式共用的扁平结构，加字段时要在**每个**样式的渲染点指认一次（同 13.1 模式二 / #70）。
+- **`footer` 必须渲染在头部两栏之外。** 头部是「左内容 / 右动作链接」两栏 flex（`justify-content: space-between`），任何放进**左栏内部**的区块，右边缘都会比卡片少一截——正好是那组动作链接的宽度（Codex 官方账号区实测差 160px）。2026-10-08 就是这样：`footer` 被写在左栏里，账号行的「切换 / 删除」比下方模型区工具栏短一截，用户报成「账号列表右侧空了一大块」。**凡是卡片的一个「区」，就应该和模型区一样跨满整宽**；判据是**用几何量对齐**，不是看代码：`scripts/verify-codex-official-accounts.mjs` 断言账号行右边缘 == 卡片内容右边缘 == 头部动作右边缘。
 
 ## 跨模块依赖
 
@@ -68,7 +69,7 @@
 | `nameTags` | 名称右侧 | 已应用 / 官方 / 代理 / 网关优先级徽章 | claudecode、codex、zcode |
 | `metaEntries` | 第二行 | 有序的 `text` / `code` / `tag` 项；**标签用 `entry.label`，不要拆成前一个 `text` 项** | claudecode（角色绑定）、codex（端点/模型/key/备注）、zcode |
 | `inlineActions` | 第二行末尾 | 行内动作（连通性测试、CLI 启动） | claudecode、codex（`InlineConnectivityButton`） |
-| `footer` | 第二行下方、模型区上方 | 自由区块（官方账号折叠区） | codex |
+| `footer` | **头部两栏之下、模型区之上**（与模型区一样**跨满卡片整宽**） | 自由区块（官方账号折叠区） | codex |
 | `actions.gatewayActions` | 头部主操作**之前** | 网关接管/恢复直连/切换主渠道 | claudecode、codex |
 | `actions.primaryAction` | 头部主操作 | 文字链「应用」 | claudecode、codex |
 | `actions.extraActions` | 头部图标按钮，在「更多」**之前** | 工具专属头部动作 | zcode、omo_native（OpenCode 式）；Claude/Codex 式亦可 |

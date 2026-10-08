@@ -36,7 +36,7 @@ fn setup_test_env() -> (TempDir, SqliteDbState) {
     let state = SqliteDbState::in_memory_for_test().expect("sqlite state");
 
     // Configure the custom root_dir in KimiCommonConfig so all commands point to temp_dir
-    let common_val = adapter::common_to_db_value("", Some(temp_dir.path().to_str().unwrap()));
+    let common_val = adapter::common_to_db_value("", Some(temp_dir.path().to_str().unwrap()), None);
     state
         .with_conn(|conn| db_put(conn, DbTable::KimiCommonConfig, "common", &common_val))
         .expect("db_put common config");
@@ -460,7 +460,7 @@ max_steps = 50
 temperature = 0.7
 "#;
     let common_val =
-        adapter::common_to_db_value(common_toml, Some(temp_dir.path().to_str().unwrap()));
+        adapter::common_to_db_value(common_toml, Some(temp_dir.path().to_str().unwrap()), None);
     state
         .with_conn(|conn| db_put(conn, DbTable::KimiCommonConfig, "common", &common_val))
         .expect("db_put common");

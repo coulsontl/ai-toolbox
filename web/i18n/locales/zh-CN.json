@@ -2940,6 +2940,8 @@
       "officialAccountLabel": "账号",
       "officialAccountsEmpty": "暂无官方账号，点击右侧 OAuth 登录添加",
       "officialAccountLogin": "OAuth 登录",
+      "officialAccountSwitch": "切换",
+      "officialAccountApplied": "默认",
       "officialAccountRefresh": "刷新额度",
       "officialAccountLocal": "本地官方登录",
       "officialAccountLocalTag": "本地",
@@ -5964,14 +5966,17 @@
       "globalHint": "插件是全局资源（plugins/ 目录），不随供应商切换；安装、卸载与更新请在 Kimi CLI 中通过 /plugins 命令完成。"
     },
     "officialAccount": {
-      "loginSuccess": "官方账号登录成功"
+      "loginSuccess": "官方账号登录成功",
+      "login": "登录",
+      "empty": "尚未登录任何官方账号。",
+      "applyHint": "将 Kimi 切换到该账号",
+      "hint": "切换会把该账号的登录凭据写入 Kimi 配置，替换当前登录；网关接管期间无法切换。"
     },
-    "officialAccounts": "已登录账号",
+    "officialAccounts": "官方账号",
     "sessions": "会话管理",
     "applySuccess": "应用成功",
     "deleteSuccess": "删除成功",
     "saveSuccess": "保存成功",
-    "officialAccountButton": "官方账号",
     "viewUsage": "查看额度",
     "providerForm": {
       "editTitle": "编辑供应商",
@@ -6014,11 +6019,10 @@
     },
     "localConfigHint": "来自本地文件，编辑后保存到数据库",
     "account": {
-      "apply": "应用",
-      "applied": "已应用",
-      "delete": "删除",
+      "apply": "切换",
+      "applied": "默认",
       "deleteConfirm": "确定删除官方账号 {{name}}？删除后需要重新登录。",
-      "applySuccess": "官方账号已应用",
+      "applySuccess": "已切换官方账号",
       "deleteSuccess": "官方账号已删除"
     },
     "model": {

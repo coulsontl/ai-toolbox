@@ -68,6 +68,10 @@ pub struct KimiProviderInput {
 pub struct KimiCommonConfig {
     pub config: String,
     pub root_dir: Option<String>,
+    /// Where the official-account card sits in the provider list, counted as
+    /// the number of provider cards above it. UI state, not Kimi state — it
+    /// lives here because this record is the module's only singleton row.
+    pub official_account_index: Option<i64>,
     pub updated_at: String,
 }
 

@@ -15,6 +15,7 @@
 
 - **`cli/config.json` 不在这里编辑**。MCP server、hooks、plugin、权限开关各有自己的 tab；在这里再编辑一次就是两个地方写同一个文件。
 - 官方账号卡片**不是 provider**：ZCode 把官方登录放在 `credentials.json`，与 provider 注册表相互独立、独立切换。但它作为列表里的**平级卡片**参与排序和拖拽，所以它自己带 `marginBottom`（见 Gotchas）。
+- **说明文字是「标题的副标题」，紧贴标题下方**（标题行 → 说明 → 账号行），不是卡片底部的脚注：空态时底部说明会被整块空插画推得离标题一屏远（2026-10-08 用户圈出 Kimi 的同一写法后，两张同构卡片一起改）。Kimi 的 `KimiOfficialAccountCard` 与此**必须保持一致**——它是照这张卡抄的，改一处就要改两处。
 - 共用组件优先用 `features/coding/shared/` 的：`CodingPageHeader`、`ProviderListSection`、`ModelListSection`、`SessionManagerPanel`、`useRootDirectoryConfig`、`providerList`（搜索/排序/批量）、`favoriteProviders`、`providerConnectivity/batchTest`。**不要在 zcode 里重写这些**。
 
 ## 核心设计决策（Why）

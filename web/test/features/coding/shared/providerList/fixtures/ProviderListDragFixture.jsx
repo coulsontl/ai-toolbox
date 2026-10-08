@@ -47,10 +47,10 @@ updateGatewayProviderProfiles(gatewayProfiles);
 /** Providers, in the order the page will list them. `createdAt` is set so the
  *  "creation time" sort mode produces a *different* order than the stored one —
  *  otherwise a drag assertion could not tell the two apart. */
-const createProvider = (id, name, createdAt) => ({
+const createProvider = (id, name, createdAt, category = 'custom') => ({
   id,
   name,
-  category: 'custom',
+  category,
   settingsConfig: JSON.stringify({
     auth: { OPENAI_API_KEY: 'fixture-key-' + id },
     config: 'model_provider = "custom"\nmodel = "gpt-5"\n[model_providers.custom]\n'
@@ -68,15 +68,45 @@ const createProvider = (id, name, createdAt) => ({
   updatedAt: createdAt,
 });
 
+/** Two saved accounts, one applied — enough to see both row states. Pass
+ *  `?accounts=2` to render them on every card; the default keeps the drag
+ *  fixture's page as bare as the drag assertions expect. */
+const createOfficialAccount = (id, email, isApplied) => ({
+  id,
+  providerId: 'provider-a',
+  name: email,
+  kind: 'oauth',
+  email,
+  planType: 'plus',
+  limitMonthlyText: '100%',
+  isApplied,
+  isVirtual: false,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+});
+
 const state = {
   runId: parameters.get('runId'),
   requests: [],
   sortMode: parameters.get('sortMode') || 'custom',
   providers: [
-    createProvider('provider-a', 'Provider A', '2026-01-03T00:00:00.000Z'),
+    // The account rows only render on an `official` provider, so `?accounts=2`
+    // turns provider A into one — that is the shape the rows appear in.
+    createProvider(
+      'provider-a',
+      'Provider A',
+      '2026-01-03T00:00:00.000Z',
+      parameters.get('accounts') === '2' ? 'official' : 'custom',
+    ),
     createProvider('provider-b', 'Provider B', '2026-01-02T00:00:00.000Z'),
     createProvider('provider-c', 'Provider C', '2026-01-01T00:00:00.000Z'),
   ],
+  officialAccounts: parameters.get('accounts') === '2'
+    ? [
+        createOfficialAccount('account-1', 'first@example.invalid', true),
+        createOfficialAccount('account-2', 'second@example.invalid', false),
+      ]
+    : [],
 };
 
 const gatewayCliStatus = {
@@ -113,7 +143,7 @@ window.__TAURI_INTERNALS__ = {
       case 'get_codex_config_file_path': return 'C:\\Users\\tester\\.codex\\config.toml';
       case 'get_codex_root_path_info': return { path: 'C:\\Users\\tester\\.codex', source: 'default' };
       case 'list_codex_providers': return structuredClone(state.providers);
-      case 'list_codex_official_accounts': return [];
+      case 'list_codex_official_accounts': return structuredClone(state.officialAccounts);
       case 'reorder_codex_providers': {
         const byId = new Map(state.providers.map(provider => [provider.id, provider]));
         state.providers = args.ids.map(id => byId.get(id));

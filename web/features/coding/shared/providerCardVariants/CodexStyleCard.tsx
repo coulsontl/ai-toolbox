@@ -173,8 +173,6 @@ const CodexStyleCard: React.FC<ProviderCardVariantProps> = ({
               {inlineActions}
             </div>
           )}
-
-          {footer && <div style={{ marginTop: 8 }}>{footer}</div>}
         </div>
 
         <Space size={0} style={{ whiteSpace: 'nowrap' }}>
@@ -222,6 +220,17 @@ const CodexStyleCard: React.FC<ProviderCardVariantProps> = ({
           )}
         </Space>
       </div>
+
+      {/* Below the header row, not inside it. The header row is two columns —
+          content beside the action links — so a block rendered inside its left
+          column stops short of the card's right edge by the width of those
+          links. Everything that is a *section* of the card (the model list
+          here, the official accounts through `footer`) spans the card, so its
+          right-aligned actions line up with each other and with the card edge.
+          The 2026-10-08 report of "the account list leaves a big empty chunk on
+          the right" was exactly this: the account rows' buttons stopped ~160px
+          short of the model toolbar's. */}
+      {footer && <div style={{ marginTop: 8 }}>{footer}</div>}
 
       {modelSection && (
         <ModelListSection

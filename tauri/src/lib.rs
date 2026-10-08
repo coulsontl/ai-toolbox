@@ -2547,6 +2547,7 @@ pub fn run() {
             coding::kimi::get_kimi_preset_models,
             coding::kimi::extract_kimi_common_config_from_current_file,
             coding::kimi::save_kimi_common_config,
+            coding::kimi::save_kimi_official_account_index,
             coding::kimi::save_kimi_local_config,
             coding::kimi::list_kimi_prompt_configs,
             coding::kimi::create_kimi_prompt_config,

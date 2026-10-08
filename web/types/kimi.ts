@@ -109,6 +109,13 @@ export interface KimiProviderInput {
 export interface KimiCommonConfig {
   config: string;
   rootDir?: string | null;
+  /**
+   * Where the official-account card sits in the provider list, counted as the
+   * number of provider cards above it. UI state, not Kimi state — the backend
+   * keeps it in the common-config singleton because that is the module's only
+   * singleton row.
+   */
+  officialAccountIndex?: number | null;
   updatedAt?: string;
 }
 

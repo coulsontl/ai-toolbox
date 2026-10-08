@@ -155,6 +155,14 @@ const ZcodeOfficialAccountCard: React.FC<ZcodeOfficialAccountCardProps> = ({
           </Space>
         </div>
 
+        {/* The section's own explanation is its subtitle, so it sits directly
+          under the title — not after the rows, where it read as a stray
+          footnote and, in the empty state, ended up below the empty
+          illustration rather than beside the title it explains. */}
+        <div style={{ marginTop: 4, fontSize: 12, color: 'var(--color-text-secondary)' }}>
+          {t('zcode.officialAccount.hint')}
+        </div>
+
         <div style={{ marginTop: 8 }}>
           {accounts.length === 0 ? (
             <Empty
@@ -248,10 +256,6 @@ const ZcodeOfficialAccountCard: React.FC<ZcodeOfficialAccountCardProps> = ({
               </div>
             ))
           )}
-        </div>
-
-        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-text-secondary)' }}>
-          {t('zcode.officialAccount.hint')}
         </div>
       </Card>
     </div>

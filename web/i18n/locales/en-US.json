@@ -2943,6 +2943,8 @@
       "officialAccountLabel": "Account",
       "officialAccountsEmpty": "No official accounts yet. Click OAuth Login to add one.",
       "officialAccountLogin": "OAuth Login",
+      "officialAccountSwitch": "Switch",
+      "officialAccountApplied": "Default",
       "officialAccountRefresh": "Refresh Limits",
       "officialAccountLocal": "Local official login",
       "officialAccountLocalTag": "Local",
@@ -5967,14 +5969,17 @@
       "globalHint": "Plugins are global resources (the plugins/ directory) and do not switch with providers. Install, uninstall, and update them with the /plugins command in the Kimi CLI."
     },
     "officialAccount": {
-      "loginSuccess": "Logged in successfully"
+      "loginSuccess": "Logged in successfully",
+      "login": "Sign in",
+      "empty": "No official account is signed in yet.",
+      "applyHint": "Switch Kimi to this account",
+      "hint": "Switching writes this account's credentials into Kimi's config, replacing the current login. It is unavailable while the gateway owns the config file."
     },
     "officialAccounts": "Official Accounts",
     "sessions": "Sessions",
     "applySuccess": "Applied Successfully",
     "deleteSuccess": "Deleted Successfully",
     "saveSuccess": "Saved Successfully",
-    "officialAccountButton": "Official Account",
     "viewUsage": "View Usage",
     "providerForm": {
       "editTitle": "Edit Provider",
@@ -6017,11 +6022,10 @@
     },
     "localConfigHint": "From local file, will be saved to database after editing",
     "account": {
-      "apply": "Apply",
-      "applied": "Applied",
-      "delete": "Delete",
+      "apply": "Switch",
+      "applied": "Default",
       "deleteConfirm": "Delete official account {{name}}? You will need to log in again.",
-      "applySuccess": "Official account applied",
+      "applySuccess": "Switched the official account",
       "deleteSuccess": "Official account deleted"
     },
     "model": {

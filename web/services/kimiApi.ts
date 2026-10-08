@@ -62,6 +62,11 @@ export async function saveKimiCommonConfig(input: KimiCommonConfigInput): Promis
   await invoke('save_kimi_common_config', { input });
 }
 
+/** Persists where the official-account card sits among the provider cards. */
+export async function saveKimiOfficialAccountIndex(index: number): Promise<void> {
+  await invoke('save_kimi_official_account_index', { index });
+}
+
 export async function listKimiOfficialAccounts(): Promise<KimiOfficialAccount[]> {
   return await invoke<KimiOfficialAccount[]>('list_kimi_official_accounts');
 }

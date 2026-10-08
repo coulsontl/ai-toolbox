@@ -1,5 +1,5 @@
 import React from 'react';
-import { App, Button, Collapse, Space, Tag, Typography, message } from 'antd';
+import { App, Button, Collapse, Space, Typography, message } from 'antd';
 import {
   DndContext,
   KeyboardSensor,
@@ -22,10 +22,8 @@ import {
   ExclamationCircleOutlined,
   FileTextOutlined,
   FolderOpenOutlined,
-  LinkOutlined,
   MessageOutlined,
   SyncOutlined,
-  UserOutlined,
 } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -91,6 +89,7 @@ import {
   revealKimiConfigFolder,
   saveKimiCommonConfig,
   saveKimiLocalConfig,
+  saveKimiOfficialAccountIndex,
   selectKimiProvider,
   startKimiOfficialAccountDeviceAuth,
   toggleKimiProviderDisabled,
@@ -121,6 +120,9 @@ import {
 import KimiCommonConfigModal from '../components/KimiCommonConfigModal';
 import KimiDeviceAuthModal from '../components/KimiDeviceAuthModal';
 import KimiModelFormModal from '../components/KimiModelFormModal';
+import KimiOfficialAccountCard, {
+  KIMI_OFFICIAL_ACCOUNT_CARD_ID,
+} from '../components/KimiOfficialAccountCard';
 import KimiPluginsPanel from '../components/KimiPluginsPanel';
 import KimiProviderCard from '../components/KimiProviderCard';
 import KimiProviderFormModal from '../components/KimiProviderFormModal';
@@ -144,7 +146,7 @@ import {
 } from '../utils/kimiCatalogModels';
 import { saveKimiProviderCatalogWithGatewayReengage } from '../utils/kimiProviderCatalogSave';
 
-const { Link, Text } = Typography;
+const { Text } = Typography;
 
 /**
  * Template used when the official-login flow must create the official provider
@@ -169,6 +171,10 @@ const KimiPage: React.FC = () => {
   const [plugins, setPlugins] = React.useState<KimiPlugin[]>([]);
   const [officialAccounts, setOfficialAccounts] = React.useState<KimiOfficialAccount[]>([]);
   const [commonConfig, setCommonConfig] = React.useState<KimiCommonConfig | null>(null);
+  const [officialAccountIndex, setOfficialAccountIndex] = React.useState(0);
+  const [applyingOfficialAccountId, setApplyingOfficialAccountId] = React.useState<string | null>(
+    null,
+  );
   const [appliedProviderId, setAppliedProviderId] = React.useState('');
   const [gatewayCliStatus, setGatewayCliStatus] = React.useState<GatewayCliTakeoverStatus | null>(null);
   const [providerListCollapsed, setProviderListCollapsed] = React.useState(false);
@@ -254,6 +260,7 @@ const KimiPage: React.FC = () => {
       setPlugins(pluginList);
       setOfficialAccounts(accountList);
       setCommonConfig(nextCommonConfig);
+      setOfficialAccountIndex(nextCommonConfig?.officialAccountIndex ?? 0);
       setAppliedProviderId(providerList.find((provider) => provider.isApplied)?.id ?? '');
       // Drop statuses of providers that no longer exist so a delete/reload
       // cannot leave stale badges behind.
@@ -675,6 +682,31 @@ const KimiPage: React.FC = () => {
     [providers, providerKeyword, sortMode, lastUsedAt],
   );
 
+  /**
+   * Ids of every sortable member of the list, in the order they are drawn —
+   * provider cards plus the official-account card at its stored slot.
+   *
+   * Drag indices must come from this, not from `visibleProviders`: the
+   * official-account card is one of the items and shifts every index below it.
+   */
+  const sortableItemIds = React.useMemo(() => {
+    const ids: string[] = visibleProviders.map((provider) => provider.id);
+    ids.splice(Math.min(officialAccountIndex, ids.length), 0, KIMI_OFFICIAL_ACCOUNT_CARD_ID);
+    return ids;
+  }, [visibleProviders, officialAccountIndex]);
+
+  /**
+   * The slot the official-account card is drawn in, counted in *visible*
+   * providers so a search that hides cards does not push it past the end.
+   */
+  const officialAccountSlot = React.useMemo(() => {
+    const visibleIds = new Set(visibleProviders.map((provider) => provider.id));
+    const above = providers
+      .slice(0, Math.min(officialAccountIndex, providers.length))
+      .filter((provider) => visibleIds.has(provider.id));
+    return Math.min(above.length, visibleProviders.length);
+  }, [providers, officialAccountIndex, visibleProviders]);
+
   const handleBatchDeleteProviders = React.useCallback(
     async (ids: string[]): Promise<boolean> => {
       const providersToDelete = providers.filter(
@@ -723,6 +755,7 @@ const KimiPage: React.FC = () => {
   };
 
   const handleApplyOfficialAccount = async (account: KimiOfficialAccount) => {
+    setApplyingOfficialAccountId(account.id);
     try {
       await applyKimiOfficialAccount(account.id);
       message.success(t('kimi.account.applySuccess'));
@@ -730,6 +763,8 @@ const KimiPage: React.FC = () => {
       await refreshTrayMenu();
     } catch (error) {
       message.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setApplyingOfficialAccountId(null);
     }
   };
 
@@ -836,15 +871,34 @@ const KimiPage: React.FC = () => {
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
-    const oldIndex = providers.findIndex((provider) => provider.id === active.id);
-    const newIndex = providers.findIndex((provider) => provider.id === over.id);
+    // Indices come from the merged ordering, not from `providers`: the official
+    // -account card is one of the items and shifts every index below it.
+    const oldIndex = sortableItemIds.indexOf(String(active.id));
+    const newIndex = sortableItemIds.indexOf(String(over.id));
+    if (oldIndex < 0 || newIndex < 0) return;
+
+    const nextIds = arrayMove(sortableItemIds, oldIndex, newIndex);
+    const nextProviderIds = nextIds.filter((id) => id !== KIMI_OFFICIAL_ACCOUNT_CARD_ID);
+    const nextCardIndex = nextIds.indexOf(KIMI_OFFICIAL_ACCOUNT_CARD_ID);
+    const providerById = new Map(providers.map((provider) => [provider.id, provider]));
     const previousProviders = [...providers];
-    const nextProviders = arrayMove(providers, oldIndex, newIndex);
-    setProviders(nextProviders);
+    const previousCardIndex = officialAccountIndex;
+
+    setProviders(
+      nextProviderIds
+        .map((id) => providerById.get(id))
+        .filter((provider): provider is KimiProvider => Boolean(provider)),
+    );
+    setOfficialAccountIndex(nextCardIndex);
+
     try {
-      await reorderKimiProviders(nextProviders.map((provider) => provider.id));
+      await reorderKimiProviders(nextProviderIds);
+      if (nextCardIndex !== previousCardIndex) {
+        await saveKimiOfficialAccountIndex(nextCardIndex);
+      }
     } catch (error) {
       setProviders(previousProviders);
+      setOfficialAccountIndex(previousCardIndex);
       message.error(error instanceof Error ? error.message : String(error));
     }
   };
@@ -917,6 +971,24 @@ const KimiPage: React.FC = () => {
       message.error(errorMessage || t('common.error'));
     }
   };
+
+  /**
+   * The official-account card, rendered both in its slot among the provider
+   * cards and (via `alwaysVisible`) when the list itself is empty or filtered
+   * away — the only way to reach the sign-in entry from an empty list.
+   */
+  const officialAccountCard = (
+    <KimiOfficialAccountCard
+      accounts={officialAccounts}
+      loginPending={deviceAuthSession !== null}
+      applyingAccountId={applyingOfficialAccountId}
+      sortableId={providerDragDisabled ? undefined : KIMI_OFFICIAL_ACCOUNT_CARD_ID}
+      onLogin={() => void handleStartOfficialAccountAuth()}
+      onApply={(account) => void handleApplyOfficialAccount(account)}
+      onDelete={handleDeleteOfficialAccount}
+      onViewUsage={() => void openUrl('https://www.kimi.com/code/console')}
+    />
+  );
 
   return (
     <SectionSidebarLayout
@@ -997,80 +1069,8 @@ const KimiPage: React.FC = () => {
             onStatusChange={setGatewayCliStatus}
           />
         }
-        toolbarExtra={
-          <Button
-            type="link"
-            size="small"
-            style={{ fontSize: 12 }}
-            icon={<UserOutlined />}
-            onClick={(event) => {
-              event.stopPropagation();
-              void handleStartOfficialAccountAuth();
-            }}
-          >
-            {t('kimi.officialAccountButton')}
-          </Button>
-        }
         hint={<div>{t('kimi.pageHint')}</div>}
-        footer={
-          officialAccounts.length > 0 ? (
-            <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <Text strong style={{ fontSize: 12 }}>{t('kimi.officialAccounts')}</Text>
-                <Link
-                  type="secondary"
-                  style={{ fontSize: 12 }}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void openUrl('https://www.kimi.com/code/console');
-                  }}
-                >
-                  <LinkOutlined /> {t('kimi.viewUsage')}
-                </Link>
-              </div>
-              {officialAccounts.map((account) => (
-                <div
-                  key={account.id}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    fontSize: 12,
-                    color: 'var(--color-text-secondary)',
-                    flexWrap: 'wrap',
-                  }}
-                >
-                  <UserOutlined />
-                  <span>{account.email || account.name || account.id}</span>
-                  {account.isApplied ? (
-                    <Tag color="success" style={{ marginInlineEnd: 0 }}>
-                      {t('kimi.account.applied')}
-                    </Tag>
-                  ) : (
-                    <Button
-                      type="link"
-                      size="small"
-                      style={{ fontSize: 12, padding: 0, height: 'auto' }}
-                      onClick={() => void handleApplyOfficialAccount(account)}
-                    >
-                      {t('kimi.account.apply')}
-                    </Button>
-                  )}
-                  <Button
-                    type="link"
-                    size="small"
-                    danger
-                    style={{ fontSize: 12, padding: 0, height: 'auto' }}
-                    disabled={account.isApplied}
-                    onClick={() => handleDeleteOfficialAccount(account)}
-                  >
-                    {t('kimi.account.delete')}
-                  </Button>
-                </div>
-              ))}
-            </div>
-          ) : null
-        }
+        alwaysVisible={officialAccountCard}
       >
         <DndContext
           sensors={providerBatchDragDisabled ? [] : sensors}
@@ -1078,46 +1078,51 @@ const KimiPage: React.FC = () => {
           onDragEnd={(event) => void handleDragEnd(event)}
           modifiers={[restrictToVerticalAxis]}
         >
-          <SortableContext
-            items={providers.map((provider) => provider.id)}
-            strategy={verticalListSortingStrategy}
-          >
+          <SortableContext items={sortableItemIds} strategy={verticalListSortingStrategy}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {visibleProviders.map((provider) => (
-                <KimiProviderCard
-                  key={provider.id}
-                  provider={provider}
-                  isApplied={provider.id === appliedProviderId}
-                  gatewayTakeoverActive={gatewayTakeoverActive}
-                  gatewayStatus={gatewayCliStatus}
-                  onGatewayStatusChange={setGatewayCliStatus}
-                  onEdit={handleEditProvider}
-                  onDelete={(value) => void handleDeleteProvider(value)}
-                  onApply={(value) => void handleApplyProvider(value)}
-                  onToggleDisabled={handleToggleDisabled}
-                  onTest={handleTestProvider}
-                  onCopy={handleCopyProvider}
-                  onShare={shareProvider}
-                  connectivityStatus={connectivityStatuses[provider.id]}
-                  selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
-                  selected={providerBatch.selectedIds.has(provider.id)}
-                  onSelectChange={(checked) =>
-                    providerBatch.toggleSelect(provider.id, checked)
-                  }
-                  onEditModel={handleEditModel}
-                  onCopyModel={handleCopyModel}
-                  onSetPrimaryModel={handleSetPrimaryModel}
-                  onDeleteModel={handleDeleteModel}
-                  onDeleteModels={handleDeleteModels}
-                  onFetchModels={handleOpenFetchModels}
-                  canFetchModels={
-                    provider.category !== 'official'
-                    && provider.id !== KIMI_LOCAL_PROVIDER_ID
-                    && Boolean(extractKimiBaseUrl(provider.settingsConfig))
-                  }
-                  dragDisabled={providerDragDisabled}
-                />
+              {visibleProviders.map((provider, providerIndex) => (
+                <React.Fragment key={provider.id}>
+                  {/* The card shares this ordering with the provider cards, so
+                      it is rendered in place rather than pinned above them. */}
+                  {providerIndex === officialAccountSlot && officialAccountCard}
+                  <KimiProviderCard
+                    provider={provider}
+                    isApplied={provider.id === appliedProviderId}
+                    gatewayTakeoverActive={gatewayTakeoverActive}
+                    gatewayStatus={gatewayCliStatus}
+                    onGatewayStatusChange={setGatewayCliStatus}
+                    onEdit={handleEditProvider}
+                    onDelete={(value) => void handleDeleteProvider(value)}
+                    onApply={(value) => void handleApplyProvider(value)}
+                    onToggleDisabled={handleToggleDisabled}
+                    onTest={handleTestProvider}
+                    onCopy={handleCopyProvider}
+                    onShare={shareProvider}
+                    connectivityStatus={connectivityStatuses[provider.id]}
+                    selectable={
+                      providerBatch.selectionMode && providerBatch.isSelectable(provider.id)
+                    }
+                    selected={providerBatch.selectedIds.has(provider.id)}
+                    onSelectChange={(checked) =>
+                      providerBatch.toggleSelect(provider.id, checked)
+                    }
+                    onEditModel={handleEditModel}
+                    onCopyModel={handleCopyModel}
+                    onSetPrimaryModel={handleSetPrimaryModel}
+                    onDeleteModel={handleDeleteModel}
+                    onDeleteModels={handleDeleteModels}
+                    onFetchModels={handleOpenFetchModels}
+                    canFetchModels={
+                      provider.category !== 'official'
+                      && provider.id !== KIMI_LOCAL_PROVIDER_ID
+                      && Boolean(extractKimiBaseUrl(provider.settingsConfig))
+                    }
+                    dragDisabled={providerDragDisabled}
+                  />
+                </React.Fragment>
               ))}
+              {/* Past the last provider, so the card can sit at the bottom. */}
+              {officialAccountSlot >= visibleProviders.length && officialAccountCard}
             </div>
           </SortableContext>
         </DndContext>

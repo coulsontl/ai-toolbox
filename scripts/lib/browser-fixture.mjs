@@ -95,7 +95,12 @@ export async function runBrowserFixture({ fixtureDirectory, fixtureFilename, art
       });
       const send = (method, params = {}) => new Promise((resolve, reject) => {
         const id = ++nextRequestId;
-        const timeout = setTimeout(() => { pendingRequests.delete(id); reject(new Error('Browser command timed out: ' + method)); }, 30000);
+        // 60s, not 30s: on a busy dev machine (the app itself, other browser
+        // fixtures in the same `pnpm test` run) a page boot can hold the
+        // renderer long enough to exceed a 30s budget, and a command timeout
+        // reads as a product failure. Nothing legitimate takes 60s; a real hang
+        // still fails, just later.
+        const timeout = setTimeout(() => { pendingRequests.delete(id); reject(new Error('Browser command timed out: ' + method)); }, 60000);
         pendingRequests.set(id, { resolve, reject, timeout });
         socket.send(JSON.stringify({ id, method, params }));
       });
@@ -133,15 +138,25 @@ export async function runBrowserFixture({ fixtureDirectory, fixtureFilename, art
     console.log(`Passed ${checks.length} browser checks.`);
   } catch (error) {
     if (browser) {
-      console.error('Browser exceptions:', JSON.stringify(browser.exceptions));
-      await writeFile(path.join(artifactRoot, 'failure.html'), await browser.evaluate('document.documentElement.outerHTML'));
-      const { data } = await browser.send('Page.captureScreenshot', { format: 'png' });
-      await writeFile(path.join(artifactRoot, 'failure.png'), Buffer.from(data, 'base64'));
+      try {
+        console.error('Browser exceptions:', JSON.stringify(browser.exceptions));
+        await writeFile(path.join(artifactRoot, 'failure.html'), await browser.evaluate('document.documentElement.outerHTML'));
+        const { data } = await browser.send('Page.captureScreenshot', { format: 'png' });
+        await writeFile(path.join(artifactRoot, 'failure.png'), Buffer.from(data, 'base64'));
+      } catch (diagnosticsError) {
+        // Diagnostics are best-effort. Letting one fail here would replace the
+        // actual assertion error with "Browser command timed out", which is
+        // what a reader needs least.
+        console.error('Failed to capture failure diagnostics:', diagnosticsError.message);
+      }
     }
     throw error;
   } finally {
+    // Teardown must never rewrite the verdict — a slow browser exit used to
+    // surface as a passing run failing on `Browser.close`.
     try { if (browser) await browser.close(); }
-    finally { await new Promise(resolve => server.close(resolve)); }
+    catch (closeError) { console.error('Browser did not close cleanly:', closeError.message); }
+    await new Promise(resolve => server.close(resolve));
   }
 
 }

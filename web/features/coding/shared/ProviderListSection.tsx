@@ -73,21 +73,6 @@ export interface ProviderListSectionProps {
   headerExtra?: React.ReactNode;
 
   /**
-   * Extra toolbar button(s), rendered between "common config" and "add
-   * provider" — the middle of the action run, where a tool's own list-level
-   * action belongs.
-   *
-   * A shell that cannot host one of its callers' buttons forces that caller to
-   * copy the whole toolbar, which is the divergence this component exists to
-   * remove. So a slot here counts as shell completeness, not as a new
-   * capability, and may be added for a single consumer. Kimi's "official
-   * account login" is the current one: it is a list-level action (it can create
-   * the official provider row), so it cannot go in `headerExtra` with the
-   * Gateway chips.
-   */
-  toolbarExtra?: React.ReactNode;
-
-  /**
    * Extra empty-state sentence appended to `common.provider.emptyText`, for
    * tools that can import providers from somewhere specific ("…or import from
    * OpenCode"). Most tools need nothing here.
@@ -146,7 +131,6 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
   onOpenCommonConfig,
   onAddProvider,
   headerExtra,
-  toolbarExtra,
   emptyTextHint,
   hint,
   alwaysVisible,
@@ -242,7 +226,6 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
                     {t('common.provider.commonConfig')}
                   </Button>
                 )}
-                {toolbarExtra}
                 <Button
                   type="link"
                   size="small"
