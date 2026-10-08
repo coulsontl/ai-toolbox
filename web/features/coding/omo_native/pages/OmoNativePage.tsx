@@ -239,6 +239,9 @@ const OmoNativePage: React.FC = () => {
           providers={providers}
           setProviders={setProviders}
           loadProviders={loadProviders}
+          // 「模型设置」的默认渠道不可删（与 Pi 同规则）：这个 key 由页面转交，
+          // 两处读的是同一份 `settings.json` 视图，改完默认值立即生效。
+          defaultProviderKey={runtimeConfig?.modelSettings.providerKey}
         />
 
         <OmoNativeBuiltinProvidersSection

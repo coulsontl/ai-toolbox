@@ -108,12 +108,20 @@ interface OmoNativeProvidersSectionProps {
   setProviders: React.Dispatch<React.SetStateAction<OmoNativeProvider[]>>;
   /** 从后端重读 provider 列表（各处的落盘动作都调它）。 */
   loadProviders: () => Promise<void>;
+  /**
+   * 「模型设置」里选中的默认渠道 key（`settings.json` 的 `defaultProvider`）。
+   *
+   * 它**不能删**：删掉之后引擎的 `defaultProvider` 就指向一个不存在的 provider。
+   * 与 Pi 同规则——删除按钮保留但置灰，并排除出批量选择。
+   */
+  defaultProviderKey?: string;
 }
 
 const OmoNativeProvidersSection: React.FC<OmoNativeProvidersSectionProps> = ({
   providers,
   setProviders,
   loadProviders,
+  defaultProviderKey,
 }) => {
   const { t } = useTranslation();
   const { message } = App.useApp();
@@ -600,9 +608,13 @@ const OmoNativeProvidersSection: React.FC<OmoNativeProvidersSectionProps> = ({
     [providers, connectivityInfo?.providerId],
   );
 
+  // 默认渠道不进批量选择（与 Pi 一致）：只把卡片上的删除按钮置灰还不够，
+  // 「全选 → 批量删除」同样能把它删掉，那是同一条规则的绕过路径。
   const batchSelectableIds = React.useMemo(
-    () => visibleProviders.map((provider) => provider.key),
-    [visibleProviders],
+    () => visibleProviders
+      .filter((provider) => provider.key !== defaultProviderKey)
+      .map((provider) => provider.key),
+    [visibleProviders, defaultProviderKey],
   );
   const providerBatch = useProviderBatchSelection({
     allIds: batchSelectableIds,
@@ -682,6 +694,11 @@ const OmoNativeProvidersSection: React.FC<OmoNativeProvidersSectionProps> = ({
               onEdit={() => openProviderModal(provider)}
               onCopy={() => openProviderModal(provider, { copy: true })}
               onDelete={() => void handleDeleteProvider(provider)}
+              deleteDisabledReason={
+                provider.key === defaultProviderKey
+                  ? t('omoNative.provider.deleteDisabledDefault')
+                  : undefined
+              }
               selectable={
                 providerBatch.selectionMode && providerBatch.isSelectable(provider.key)
               }

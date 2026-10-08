@@ -6335,7 +6335,8 @@
     },
     "provider": {
       "disabled": "已禁用",
-      "enabled": "启用"
+      "enabled": "启用",
+      "deleteDisabledDefault": "该渠道已设为默认，不可删除"
     }
   }
 }

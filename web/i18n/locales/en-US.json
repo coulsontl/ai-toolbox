@@ -6338,7 +6338,8 @@
     },
     "provider": {
       "disabled": "Disabled",
-      "enabled": "Enabled"
+      "enabled": "Enabled",
+      "deleteDisabledDefault": "This is the default provider and cannot be deleted"
     }
   }
 }

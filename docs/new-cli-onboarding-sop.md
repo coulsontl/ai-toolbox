@@ -380,6 +380,10 @@ rg -n "<tool>" web/ tauri/src/ --glob '!node_modules' --glob '!*.test.*'
   > ⚠️ **这条在 OmO Native 上重犯过一次**（2026-10-07）：入口有、能跑通、不报错，只是「应用」后拿到的是裸 id——与 ZCode 完全同一个缺陷。**入口存在 ≠ 能力完成**，判据是「应用后那一行有没有带上参数」
 - [ ] 模型列表有连通性测试
 - [ ] 供应商有连通性测试 / 批量测试
+- [ ] **「默认渠道」的删除按钮置灰，并排除出批量选择**
+  > 判据：**默认指针是不是写在 provider 记录之外**（settings/config 里的 `defaultProvider` / `model`）？是 → 适用（pi / ohMyPi / dsh / hermes / openclaw / opencode / omo_native）。Claude 式（claudecode / codex / gemini / grok / kimi）是「应用」语义，不适用。
+  >
+  > **OmO Native 2026-10-08 才补上**（第 113 条）：规则在 Pi 上早就有，但本清单从没列过它——卡片能力集没枚举，新建的卡片就静默少一条（模式二十七 / 90 的又一例）。只置灰单个按钮不算完成：`batchSelectableIds` 也要把它排除，否则「全选 → 批量删除」能绕过。
 - [ ] 有「导入我使用过的供应商」或等价导入入口
 - [ ] 有全局提示词区块
 - [ ] 有会话管理面板（若该 CLI 有会话概念）
@@ -1715,6 +1719,7 @@ UI 表现异常时，**先排除进程 stale**，再怀疑代码：
 | 110 | 迁移时**按钮的图标被换成了「语义相近」的另一个** | 网关代理按钮原本是 `ApiOutlined`（「接管代理」的语义），迁移后写成了 `CheckOutlined`——因为同一排的其他网关按钮（应用并代理 / 切换主渠道 / 锁定应用）都用 `CheckOutlined`，顺手就统一了。**功能完全正常，只是图标换了**，任何测试都发现不了 | 逐按钮对照 `icon={<...>}`：把原实现的图标清单与迁移后**逐个**比对，不只比数量。图标是「这个按钮是什么」的一部分，不是装饰。见 13.1 模式五十一 |
 | 111 | 用户报「拖不动」，而**真实原因是排序模式**：功能被有意关掉了，但界面没说 | Codex 页的拖拽在「非默认排序 / 有搜索词」下被有意禁用（`providerDragDisabled`），代码完全正确。用户的 DB 里 `provider_sort_modes.codex = "created"`——于是他看到的是**没有把手的卡片**，读到的结论是「拖拽把手没用」。排查时先怀疑了四层实现（`CardShell` 注册、`useSortable`、页面传感器、`dragDisabled` 传参），全部正确 | 功能性禁用**必须在界面上留下原因**，否则用户无法区分「坏了」和「关掉了」。给 `ProviderSortDropdown` 加 `dragDisabledBySort` + tooltip 说明「拖拽仅在默认排序下可用」。**判别方法：任何让用户可见能力消失的状态，都要能回答「用户怎么知道为什么」。** 见 13.1 模式五十九 |
 | 112 | 排查交互 bug 时**只读代码**，把「代码看起来对」当成「行为对」 | 本轮的拖拽「修」了两遍（`draggable` 归属 + `dragDisabled` 门控），每次都是读链路后宣布修好，每次都还没修好。真正定位问题只用了一次**在浏览器里真的拖一下**：仓库里已有 `scripts/lib/browser-fixture.mjs`（真 Chromium + CDP），却一直没被用来做交互验证 | 交互类改动**优先用浏览器夹具验证**，而不是读链路。本轮把 `ProviderListDragFixture.jsx` + `providerListDragBrowserChecks.mjs` 落成 `pnpm run test:provider-list-drag`（7 项，含真指针拖拽、落库回写、禁用态无把手、tooltip 文案）。见 13.1 模式六十 |
+| 113 | 用户点名「参考 Pi」补的**默认渠道不可删**，OmO Native 当时没有：pi / ohMyPi / dsh / hermes / openclaw / opencode **六个**页面都做了，只有 OmO 静默少一条 | 规则本体是「默认指针（`settings.json` 的 `defaultProvider`）指向的渠道不能删」；Pi 用 `actions.deleteDisabledReason` 置灰按钮 + `canBatchDeleteProvider` 排除批量。OmO 建卡片时逐项对着 Pi 抄了按钮，**唯独没抄这条门控**——又是模式 27 / 第 90 条那类「卡片能力集没人枚举」 | 分组判据落到 §4.0.2-H：**默认指针是否写在 provider 记录之外**——是（pi / ohMyPi / dsh / hermes / openclaw / opencode / omo_native）→ 必须置灰删除按钮**并**排除出 `batchSelectableIds`；Claude 式「应用」语义不适用。**只置灰单个按钮不算完成**：漏掉批量那条，全选就能删掉它 |
 
 ### 13.1 静默失效的模式（归纳）
 
@@ -2345,7 +2350,7 @@ const existingModels = provider
 | `providerState.connectivityStatus` | 名称左侧状态点 | claudecode、codex、zcode |
 | `providerState.selectable` / `selected` / `onSelectChange` | 多选复选框（取代拖拽手柄） | 全部 |
 | `actions.onEdit` / `onCopy` / `onShare` / `onDelete` | 头部/菜单里的四个标准动作 | 全部 |
-| `actions.deleteDisabledReason` / `deleteConfirm` | 删除的禁用原因 / 内置二次确认 | zcode（`deleteConfirm: false`，自己确认） |
+| `actions.deleteDisabledReason` / `deleteConfirm` | 删除的禁用原因 / 内置二次确认 | zcode（`deleteConfirm: false`，自己确认）、omo_native（`deleteDisabledReason`＝「默认渠道不可删」+ `deleteConfirm: false`） |
 | **`actions.primaryAction`** | 头部文字链「应用」（含 `locked` 置灰态） | claudecode、codex |
 | **`actions.gatewayActions`** | 主操作**之前**的网关按钮组（代理/恢复直连/切换主渠道） | claudecode、codex |
 | `actions.extraActions` | 头部图标按钮，在「更多」**之前** | zcode、omo_native（OpenCode 式）；Claude/Codex 式亦可 |

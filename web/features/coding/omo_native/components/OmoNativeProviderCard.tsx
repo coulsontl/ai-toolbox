@@ -19,6 +19,14 @@ interface OmoNativeProviderCardProps {
   onEdit: () => void;
   onCopy: () => void;
   onDelete: () => void;
+  /**
+   * Greys out the delete button and explains why on hover.
+   *
+   * Set while this provider is the one `settings.json` starts with: deleting it
+   * would leave the engine's `defaultProvider` pointing at nothing, so the
+   * button stays in place but stops working (same rule as Pi).
+   */
+  deleteDisabledReason?: string;
   /** Renders a checkbox instead of the drag handle while batch selection is on. */
   selectable?: boolean;
   selected?: boolean;
@@ -69,6 +77,7 @@ const OmoNativeProviderCard: React.FC<OmoNativeProviderCardProps> = ({
   onEdit,
   onCopy,
   onDelete,
+  deleteDisabledReason,
   selectable = false,
   selected = false,
   onSelectChange,
@@ -126,6 +135,7 @@ const OmoNativeProviderCard: React.FC<OmoNativeProviderCardProps> = ({
       onEdit,
       onCopy,
       onDelete,
+      deleteDisabledReason,
       deleteConfirm: false,
       // No primary action: several Native providers are usable at once, so a
       // header "应用" would imply the others were switched off.

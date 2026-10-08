@@ -92,6 +92,8 @@
   | `modelSelectionMode` / `onToggleBatchDeleteMode` / `onBatchDeleteModels` | ✅ | 模型级批量删除（2026-10-07 补；此前只有供应商级，用户报「少了一个批量删除」） |
 
 - **复制模型走「新增 + 预填」**：`models.json` 按模型 `id` 索引目录，所以不能照抄 Codex 的「同 id 加名字后缀」（会造出重复 id）。`handleCopyModel` 打开**新增**弹窗并预填副本，让用户自己起新 id。
+- **「模型设置」里选中的默认渠道不可删**（2026-10-08 用户要求，规则与 Pi 一致）：删除按钮**保留但置灰**，hover 给原因（`omoNative.provider.deleteDisabledDefault`），并且**排除出批量选择**——只置灰单个按钮挡不住「全选 → 批量删除」这条绕过路径。判据是 `provider.key === runtimeConfig.modelSettings.providerKey`（`settings.json` 的 `defaultProvider`），由页面把 key 传给供应商区块算，**不改后端**：默认值本来就只在 `settings.json` 里，`list_omo_native_providers` 没有也不需要这个字段。删掉默认渠道会让引擎的 `defaultProvider` 指向一个不存在的 provider。
+  > **哪些页面适用这条规则**：默认指针**写在 provider 记录之外**（settings/config 里的 `defaultProvider` / `model`）的 CLI——pi / ohMyPi / dsh / hermes / openclaw / opencode / omo_native。Claude 式（claudecode / codex / gemini / grok / kimi）是「应用」语义，不适用。新增 CLI 时按这条判据决定传不传 `actions.deleteDisabledReason`。
 - **`[native]` 块是 `.strict()` 校验的**（上游 `OmoTypedHarnessConfigSchema`）。只允许 `OMO_NATIVE_BLOCK_KEYS` 那 14 个键；写别的（尤其 `[opencode]` 的 `disabled_agents` / `claude_code` / `background_task`）会触发上游 unknown-key diagnostic。
 - 会话管理直接复用 `shared/sessionManager` 的 `SessionManagerPanel tool="omo_native"`。Native 与 OMP 同源引擎（senpi），JSONL 格式同构，后端 `session_manager/oh_my_pi.rs` 是参数化的同一份解析器——**不要**在前端另写一套解析。
 - Provider 面读取的是引擎自己的 `models.json` / `auth.json`，不是本应用的 provider 表。`auth.json` 的值是「config value」语义（`$NAME` 插值、`!cmd` 执行 shell），写入必须走后端 `escape_literal_config_value`。
@@ -138,6 +140,7 @@
 
 - 打开本页：页头显示引擎状态目录；**五个区块**（供应商 / 引擎内建渠道 / 全局提示词 / 其他配置 / 会话管理）都在，侧栏五项都能跳转。
 - 供应商：能新建 / 编辑 / 复制 / 删除；编辑弹窗是**水平布局**（标签在左）；卡片第二行是 `ID • SDK • 端点`；模型折叠区能增删改模型、能进入模型批量删除模式；连通性测试与获取模型可用。
+- 默认渠道：在「模型设置」选一个自定义渠道作默认 → 该卡片删除按钮置灰（hover 显示「该渠道已设为默认，不可删除」），批量选择模式下它没有复选框、「全选」也不含它；把默认换成别的渠道后按钮恢复可点。
 - 排序：切到「自定义」并清空搜索后，卡片左侧出现拖拽把手；拖完重载页面顺序不变（顺序落在 `models.json` 的键序上）。
 - 引擎内建渠道：区块内先转圈约 8 秒（后端在跑逐个凭据检查，区块默认展开，加载在页面挂载时就开始），然后只列出已配置凭据的渠道；未配置的一个都不出现。列表不含 `models.json` 里的自定义 provider。本机实测只有 `anthropic`（来自环境变量）。
 - 全局提示词：能读到 `~/.omo/agent/AGENTS.md`（存在时显示为 `default` 桥接态）；apply 后文件内容变化。
