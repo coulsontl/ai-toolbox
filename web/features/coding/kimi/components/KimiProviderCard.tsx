@@ -8,7 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { ApiOutlined, CheckOutlined } from '@ant-design/icons';
 import { Button, Tag, Tooltip, Typography } from 'antd';
 import { KimiProvider, KIMI_LOCAL_PROVIDER_ID } from '@/types/kimi';
-import type { KimiCatalogModel } from '@/types/kimi';
+import type { KimiCatalogModel, KimiOfficialAccount } from '@/types/kimi';
 import {
   engageProxyGatewaySingle,
   restoreProxyGatewayCliDirect,
@@ -44,8 +44,31 @@ import {
   type ProviderCardMetaEntry,
   type ProviderCardVariantProps,
 } from '@/features/coding/shared/providerCardVariants';
+import { OfficialAccountsSection } from '@/features/coding/shared/officialAccounts';
+import type {
+  OfficialAccountRowView,
+} from '@/features/coding/shared/officialAccounts';
 
 const { Text } = Typography;
+
+/**
+ * Name an account row after when it was captured.
+ *
+ * Kimi's OAuth grants no identity — the CLI's own token record holds only tokens
+ * and an expiry, and there is no userinfo endpoint — so a row cannot be labelled
+ * with an email the way Codex's rows are. The capture time is the only stable
+ * fact about it, and it is enough to tell two rows apart in the list.
+ */
+function formatAccountTimestamp(value: string): string {
+  if (!value) {
+    return '';
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toLocaleString();
+}
 
 interface KimiProviderCardProps {
   provider: KimiProvider;
@@ -82,6 +105,19 @@ interface KimiProviderCardProps {
    * than no handle.
    */
   dragDisabled?: boolean;
+  /**
+   * Accounts of the official channel, shown inside this card. Only the official
+   * row renders them — the channel is where a login belongs, and an official
+   * account cannot be attached to a relay.
+   */
+  officialAccounts?: KimiOfficialAccount[];
+  onOfficialAccountLogin?: () => void;
+  onOfficialAccountApply?: (account: KimiOfficialAccount) => void;
+  onOfficialAccountDelete?: (account: KimiOfficialAccount) => void;
+  onOfficialAccountSaveLocal?: (account: KimiOfficialAccount) => void;
+  loginPending?: boolean;
+  applyingOfficialAccountId?: string | null;
+  savingOfficialAccountId?: string | null;
 }
 
 /**
@@ -127,6 +163,14 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
   onFetchModels,
   canFetchModels = false,
   dragDisabled = false,
+  officialAccounts = [],
+  onOfficialAccountLogin,
+  onOfficialAccountApply,
+  onOfficialAccountDelete,
+  onOfficialAccountSaveLocal,
+  loginPending = false,
+  applyingOfficialAccountId = null,
+  savingOfficialAccountId = null,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -490,6 +534,85 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
     modelRows.map((row, index) => [row, kimiCatalogRowKey(catalogModels[index])]),
   );
 
+  /**
+   * The official channel's accounts, as the shared section renders them.
+   *
+   * Kimi's grant carries no identity — no id_token, no email — so there is
+   * nothing to label a row with. The row shows when its login was captured
+   * instead; the only action that tells two rows apart is the switch, and that
+   * is what the "default" tag marks.
+   */
+  const officialAccountRows = React.useMemo<OfficialAccountRowView[]>(
+    () =>
+      officialAccounts.map((account) => ({
+        id: account.id,
+        label: t('kimi.officialAccount.rowLabel', {
+          time: formatAccountTimestamp(account.createdAt),
+        }),
+        kindTag: account.isVirtual
+          ? t('kimi.officialAccount.currentTag')
+          : t('kimi.officialAccount.savedTag'),
+        isApplied: account.isApplied,
+        isVirtual: Boolean(account.isVirtual),
+        lastError: account.lastError ?? undefined,
+      })),
+    [officialAccounts, t],
+  );
+
+  const officialAccountById = (id: string) =>
+    officialAccounts.find((account) => account.id === id);
+
+  const officialAccountPending =
+    savingOfficialAccountId !== null
+      ? { accountId: savingOfficialAccountId, action: 'save' as const }
+      : applyingOfficialAccountId !== null
+        ? { accountId: applyingOfficialAccountId, action: 'apply' as const }
+        : null;
+
+  const officialAccountSection =
+    isOfficialProvider && onOfficialAccountLogin ? (
+      <OfficialAccountsSection
+        variant="embedded"
+        title={t('kimi.officialAccounts')}
+        hint={t('kimi.officialAccount.hint')}
+        applyHint={t('kimi.officialAccount.applyHint')}
+        emptyText={t('kimi.officialAccount.empty')}
+        accounts={officialAccountRows}
+        pending={officialAccountPending}
+        actionsDisabled={loginPending}
+        loginAction={
+          <Button
+            type="link"
+            size="small"
+            icon={<ApiOutlined />}
+            onClick={onOfficialAccountLogin}
+            loading={loginPending}
+            style={{ paddingInline: 0, height: 'auto', fontSize: 12 }}
+          >
+            {t('kimi.officialAccount.login')}
+          </Button>
+        }
+        onSaveLocal={(row) => {
+          const account = officialAccountById(row.id);
+          if (account) {
+            onOfficialAccountSaveLocal?.(account);
+          }
+        }}
+        onApply={(row) => {
+          const account = officialAccountById(row.id);
+          if (account) {
+            onOfficialAccountApply?.(account);
+          }
+        }}
+        onDelete={(row) => {
+          const account = officialAccountById(row.id);
+          if (account) {
+            onOfficialAccountDelete?.(account);
+          }
+        }}
+      />
+    ) : undefined;
+
   const props: ProviderCardVariantProps = {
     provider: {
       id: provider.id,
@@ -533,6 +656,10 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
     },
     nameTags,
     metaEntries,
+    // The account list belongs to the official channel, so it rides inside the
+    // official card rather than in a card of its own. The slot spans the card's
+    // full width, which is what keeps its rows aligned with the model section.
+    footer: officialAccountSection,
     // The connectivity probe moved out of the "more" menu: the shared menu is a
     // fixed contract (enable → edit → copy → share → ─── → delete) with no room
     // for a tool-specific item, so it lands on the meta line — where the Codex

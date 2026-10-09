@@ -1,7 +1,6 @@
 import React from 'react';
 import {
   Button,
-  Space,
   Tag,
   Typography,
   Tooltip,
@@ -10,14 +9,8 @@ import {
 import {
   ApiOutlined,
   CheckOutlined,
-  DeleteOutlined,
-  DownOutlined,
-  EyeOutlined,
   LinkOutlined,
-  RightOutlined,
   SafetyOutlined,
-  SwapOutlined,
-  SyncOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -51,6 +44,11 @@ import type { ProviderConnectivityStatusItem } from '@/components/common/Provide
 import CodexStyleCard, {
   InlineConnectivityButton,
 } from '@/features/coding/shared/providerCardVariants/CodexStyleCard';
+import { OfficialAccountsSection } from '@/features/coding/shared/officialAccounts';
+import type {
+  OfficialAccountPendingAction,
+  OfficialAccountRowView,
+} from '@/features/coding/shared/officialAccounts';
 import type {
   ProviderCardMetaEntry,
   ProviderCardVariantProps,
@@ -316,7 +314,6 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
     ? gatewayStatus?.provider_priorities.find((entry) => entry.provider_id === provider.id)
     : undefined;
   const isGatewayPrimary = priorityEntry?.label === 'P0';
-  const hasOfficialAccounts = isOfficialProvider && officialAccounts.length > 0;
   const displayModelName = modelName && reasoningEffort
     ? `${modelName} (${reasoningEffort})`
     : modelName;
@@ -437,17 +434,82 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
     }
   };
 
-  const renderOfficialAccountResetLine = (account: CodexOfficialAccount) => {
-    const resetLine = buildOfficialAccountResetLine(account, t);
-    if (!resetLine) {
-      return null;
+  /**
+   * This CLI's accounts, resolved to what the shared section renders. A mapping
+   * rather than JSX: the section knows nothing about `CodexOfficialAccount`, and
+   * the quota wording is Codex's business.
+   */
+  const officialAccountRows = React.useMemo<OfficialAccountRowView[]>(() => {
+    // Accounts only ever surface on the official row; a custom provider that
+    // somehow carries one keeps the "no accounts" notice instead of a list.
+    if (!isOfficialProvider) {
+      return [];
     }
-    return (
-      <Text type="secondary" style={{ fontSize: 10, flexBasis: '100%' }}>
-        {resetLine}
-      </Text>
-    );
-  };
+    return officialAccounts.map((account) => {
+      const metaLines: string[] = [];
+      if (account.planType) {
+        metaLines.push(account.planType);
+      }
+      if (!account.lastError) {
+        if (account.limit5hText) {
+          metaLines.push(
+            `${t('codex.provider.officialAccountShortWindowLimitLabel', {
+              label: account.limitShortLabel || '5h',
+            })}: ${account.limit5hText}`,
+          );
+        }
+        if (account.limitWeeklyText) {
+          metaLines.push(
+            `${t('codex.provider.officialAccountWeeklyLimitLabel')}: ${account.limitWeeklyText}`,
+          );
+        }
+        if (account.limitMonthlyText) {
+          metaLines.push(
+            `${t('codex.provider.officialAccountMonthlyLimitLabel')}: ${account.limitMonthlyText}`,
+          );
+        }
+        const resetLine = buildOfficialAccountResetLine(account, t);
+        if (resetLine) {
+          metaLines.push(resetLine);
+        }
+      }
+      return {
+        id: account.id,
+        label: formatOfficialAccountLabel(account),
+        kindTag: account.isVirtual
+          ? t('codex.provider.officialAccountLocalTag')
+          : t('codex.provider.officialAccountOauthTag'),
+        metaLines,
+        // Gateway takeover owns the runtime state; while it is on, neither the
+        // "default" mark nor the switch action belongs on screen.
+        isApplied: showOfficialRuntimeState && account.isApplied,
+        isVirtual: account.isVirtual,
+        lastError: account.lastError
+          ? t('codex.provider.officialAccountLastError', { message: account.lastError })
+          : undefined,
+      };
+    });
+  }, [officialAccounts, isOfficialProvider, showOfficialRuntimeState, t]);
+
+  const officialAccountById = (id: string) =>
+    officialAccounts.find((account) => account.id === id);
+
+  /** Row actions address view models; the handlers take this CLI's records. */
+  const withOfficialAccount =
+    (handler?: (provider: CodexProvider, account: CodexOfficialAccount) => void) =>
+    (row: OfficialAccountRowView) => {
+      const account = officialAccountById(row.id);
+      if (account) {
+        handler?.(provider, account);
+      }
+    };
+
+  const officialAccountPending: OfficialAccountPendingAction | null =
+    refreshingOfficialAccountId
+      ? { accountId: refreshingOfficialAccountId, action: 'refresh' }
+      : savingOfficialAccountId
+        ? { accountId: savingOfficialAccountId, action: 'save' }
+        : null;
 
   const renderOfficialAccounts = () => {
     if (!shouldShowCodexOfficialAccounts(provider, officialAccounts.length)) {
@@ -455,45 +517,16 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
     }
 
     return (
-      <div
-        style={{
-          marginTop: 12,
-          paddingTop: 12,
-          borderTop: '1px solid var(--color-border)',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-            marginBottom: accountsCollapsed ? 0 : 10,
-          }}
-        >
-          <Button
-            type="text"
-            size="small"
-            onClick={() => setAccountsCollapsed((current) => !current)}
-            style={{
-              padding: 0,
-              height: 'auto',
-              color: 'var(--color-text-secondary)',
-              fontSize: 12,
-            }}
-          >
-            <Space size={6}>
-              {accountsCollapsed ? <RightOutlined /> : <DownOutlined />}
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {t('codex.provider.officialAccountsTitle')}
-              </Text>
-              <Text type="secondary" style={{ fontSize: 11 }}>
-                ({officialAccounts.length})
-              </Text>
-            </Space>
-          </Button>
-
-          {isOfficialProvider ? (
+      <OfficialAccountsSection
+        variant="embedded"
+        title={t('codex.provider.officialAccountsTitle')}
+        emptyText={t('codex.provider.officialAccountsEmpty')}
+        accounts={officialAccountRows}
+        collapsed={accountsCollapsed}
+        onToggleCollapsed={() => setAccountsCollapsed((current) => !current)}
+        pending={officialAccountPending}
+        loginAction={
+          isOfficialProvider ? (
             <Button
               type="link"
               size="small"
@@ -507,154 +540,22 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
             <Text type="secondary" style={{ fontSize: 11 }}>
               {t('codex.provider.officialAccountLegacyNotice')}
             </Text>
-          )}
-        </div>
-
-        {!accountsCollapsed && (
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 8,
-              paddingLeft: 18,
-            }}
-          >
-            {hasOfficialAccounts ? officialAccounts.map((account) => (
-              <div
-                key={account.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 12,
-                  padding: '6px 0',
-                  borderBottom: '1px solid var(--color-border)',
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    flexWrap: 'wrap',
-                    gap: 8,
-                    minWidth: 0,
-                    flex: 1,
-                  }}
-                >
-                  <Text
-                    strong={showOfficialRuntimeState && account.isApplied}
-                    style={{ fontSize: 12 }}
-                    ellipsis={{ tooltip: formatOfficialAccountLabel(account) }}
-                  >
-                    {formatOfficialAccountLabel(account)}
-                  </Text>
-                  <Tag style={{ margin: 0, fontSize: 10 }}>
-                    {account.id === CODEX_LOCAL_PROVIDER_ID
-                      ? t('codex.provider.officialAccountLocalTag')
-                      : t('codex.provider.officialAccountOauthTag')}
-                  </Tag>
-                  {account.planType && (
-                    <Text type="secondary" style={{ fontSize: 11 }}>
-                      {account.planType}
-                    </Text>
-                  )}
-                  {account.lastError ? (
-                    <Text type="danger" style={{ fontSize: 11 }}>
-                      {t('codex.provider.officialAccountLastError', { message: account.lastError })}
-                    </Text>
-                  ) : (
-                    <>
-                      {account.limit5hText && (
-                        <Text type="secondary" style={{ fontSize: 11 }}>
-                          {`${t('codex.provider.officialAccountShortWindowLimitLabel', {
-                            label: account.limitShortLabel || '5h',
-                          })}: ${account.limit5hText}`}
-                        </Text>
-                      )}
-                      {account.limitWeeklyText && (
-                        <Text type="secondary" style={{ fontSize: 11 }}>
-                          {`${t('codex.provider.officialAccountWeeklyLimitLabel')}: ${account.limitWeeklyText}`}
-                        </Text>
-                      )}
-                      {account.limitMonthlyText && (
-                        <Text type="secondary" style={{ fontSize: 11 }}>
-                          {`${t('codex.provider.officialAccountMonthlyLimitLabel')}: ${account.limitMonthlyText}`}
-                        </Text>
-                      )}
-                      {renderOfficialAccountResetLine(account)}
-                    </>
-                  )}
-                  {showOfficialRuntimeState && account.isApplied && (
-                    <AppliedTag style={{ fontSize: 10 }}>
-                      {t('codex.provider.officialAccountApplied')}
-                    </AppliedTag>
-                  )}
-                </div>
-
-                <Space size={4} wrap>
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<SyncOutlined />}
-                    onClick={() => onOfficialAccountRefresh?.(provider, account)}
-                    loading={refreshingOfficialAccountId === account.id}
-                    style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
-                  >
-                    {t('codex.provider.officialAccountRefresh')}
-                  </Button>
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<EyeOutlined />}
-                    onClick={() => onOfficialAccountViewDetails?.(provider, account)}
-                    style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
-                  >
-                    {t('codex.provider.officialAccountViewDetails')}
-                  </Button>
-                  {account.id === CODEX_LOCAL_PROVIDER_ID ? (
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<CheckOutlined />}
-                      onClick={() => onOfficialLocalAccountSave?.(provider, account)}
-                      loading={savingOfficialAccountId === account.id}
-                      style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
-                    >
-                      {t('common.save')}
-                    </Button>
-                  ) : showOfficialRuntimeState && !account.isApplied ? (
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<SwapOutlined />}
-                      onClick={() => onOfficialAccountApply?.(provider, account)}
-                      style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
-                    >
-                      {t('codex.provider.officialAccountSwitch')}
-                    </Button>
-                  ) : null}
-                  {!account.isVirtual && (
-                    <Button
-                      type="text"
-                      danger
-                      size="small"
-                      icon={<DeleteOutlined />}
-                      onClick={() => onOfficialAccountDelete?.(provider, account)}
-                      style={{ height: 'auto', paddingInline: 4, fontSize: 11 }}
-                    >
-                      {t('common.delete')}
-                    </Button>
-                  )}
-                </Space>
-              </div>
-            )) : (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {t('codex.provider.officialAccountsEmpty')}
-              </Text>
-            )}
-          </div>
-        )}
-      </div>
+          )
+        }
+        onRefresh={onOfficialAccountRefresh ? withOfficialAccount(onOfficialAccountRefresh) : undefined}
+        onViewDetails={
+          onOfficialAccountViewDetails ? withOfficialAccount(onOfficialAccountViewDetails) : undefined
+        }
+        onSaveLocal={onOfficialLocalAccountSave ? withOfficialAccount(onOfficialLocalAccountSave) : undefined}
+        // Hiding the switch while the CLI is on gateway takeover is Codex's
+        // rule, and the section only shows it when the handler is supplied.
+        onApply={
+          showOfficialRuntimeState && onOfficialAccountApply
+            ? withOfficialAccount(onOfficialAccountApply)
+            : undefined
+        }
+        onDelete={onOfficialAccountDelete ? withOfficialAccount(onOfficialAccountDelete) : undefined}
+      />
     );
   };
 

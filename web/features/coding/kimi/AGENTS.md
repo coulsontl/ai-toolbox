@@ -9,13 +9,15 @@
 - 遵循根目录 `DESIGN.md` 设计规范。
 - 页面与 Codex/Grok 结构保持一致，复用 `SectionSidebarLayout`、`RootDirectoryModal`、`GlobalPromptSettings`、`SessionManagerPanel` 和共享 Gateway 入口。
 - **页面外壳与卡片全部走共享组件**（2026-10-08 迁移）：头部 `CodingPageHeader`、供应商区 `ProviderListSection`、卡片 `CodexStyleCard`（Kimi 有模型目录 + 单一 active provider，按选型表属 Codex 式）。`KimiProviderCard.tsx` 是**薄映射层**，只把 `settings_config` 解析成 `ProviderCardVariantProps`；布局改动一律改在 `shared/providerCardVariants/`（Hard Rule 14，由 `pnpm run test:provider-card-layout` 守护）。Kimi 原 `KimiProviderCard.module.less` 已删除——卡片外框与拖拽把手样式归 `CardShell`。
-- 迁移时两处**位置变化**（不是功能丢失，改前改后都只有一处入口）：连通性测试从「更多」菜单移到卡片第二行（`inlineActions`）+ 模型区工具栏（`onTestModels`）；「官方账号登录」按钮与账号列表从列表工具栏 / 页面底部合并进 `KimiOfficialAccountCard`（见下条）。
-- **官方账号是一张列表成员卡片，不是工具按钮、也不是页底区块**（2026-10-08 修正）。`KimiOfficialAccountCard` 与供应商卡片**平级**：同款外壳、同一个 `DndContext` / `SortableContext`、自带拖拽把手、自带 `marginBottom`，位置存 `KimiCommonConfig.officialAccountIndex`（按「上面有几张供应商卡」计，不用列表下标；写库走 `save_kimi_official_account_index`）。`「登录」`在卡片右上角，「切换 / 删除」在账号行右侧。
-  - **卡片同时传给 `children`（槽位内）与 `alwaysVisible`**，两者渲染分支互斥：列表非空时走 `children` 里的槽位，列表为空/搜索无结果时走 `alwaysVisible`——**否则空列表下没有任何登录入口**。拖拽索引一律取 `sortableItemIds`（合并了哨兵 id），不要用 `providers.findIndex`，那会漏掉卡片自身占的一格。
-  - `sortableId={providerDragDisabled ? undefined : KIMI_OFFICIAL_ACCOUNT_CARD_ID}`：与供应商卡片一致，搜索 / 非默认排序下没有把手（那里拖拽本就被禁用）。
-  - **CLI 自己登录过的用户会被自动收编**：启动时的 `adopt_live_login_as_account`（挂在 `refresh_applied_kimi_accounts_if_needed` 里、`migrate_legacy_credential_names` 之后）在「账号表为空 + 已应用的 provider 是 official + `credentials/kimi-code.json` 能解析出 access_token」三个条件同时成立时，把那笔 CLI 登录写成一条已应用的账号。**不要放宽这三个条件**：账号行共用一个凭据文件名，多写一条会在下次登录时互相覆盖；把非 official 的已应用 provider 也算进来，会让一笔自定义配置被标成官方登录。失败不致命，文件原样保留。
-  - **说明文字是「标题的副标题」，紧贴标题下方**（标题行 → 说明 → 账号行），不是卡片底部的脚注：空态时底部说明会被整块空插画推得离标题一屏远（2026-10-08 用户圈出）。ZCode 的同构卡片同步改了，**两张卡片的这段位置必须一致**。`pnpm run test:official-account-card` 里有一条「卡片里没有任何一句话被渲染两次」的断言，专门拦「搬到新位置却没删旧位置」。
-  - 参照实现是 ZCode 的 `ZcodeOfficialAccountCard`（SOP #42 / #61），**不是** Codex 卡片里的账号折叠区。Codex 能把账号放进官方订阅卡片内部，是因为它的官方 provider 行由 CLI 的 `auth.json` 投影而来、恒存在；Kimi 的官方行是**点「登录」时才懒创建的**（`handleStartOfficialAccountAuth`），入口放进那张卡片就成了先有鸡还是先有蛋。
+- 迁移时两处**位置变化**（不是功能丢失，改前改后都只有一处入口）：连通性测试从「更多」菜单移到卡片第二行（`inlineActions`）+ 模型区工具栏（`onTestModels`）；「官方账号登录」按钮与账号列表从列表工具栏 / 页面底部并入**官方渠道卡片内的账号区块**（见下条）。
+- **官方账号区块在官方渠道卡片内部，不再是一张独立卡片**（2026-10-09 重做，对齐 Codex）。账号列表用共享区块 `features/coding/shared/officialAccounts`（`variant="embedded"`），挂在 `KimiProviderCard` 的 `footer` 槽——`CodexStyleCard` 会把它放在头部两栏**之下**、模型区之上，跨满卡片整宽。`KimiOfficialAccountCard.tsx` 与 `officialAccountIndex`（含 `save_kimi_official_account_index` 命令、`KimiCommonConfig.official_account_index`、拖拽哨兵）**已整份删除**：官方渠道就是一条 provider 行，账号挂在它自己身上，不再需要一个列表成员身份。
+  - **登录入口在这张卡片的账号区右上角**，走共享区块的 `loginAction` 插槽（Kimi 传一个按钮；ZCode 传的是下拉）。
+  - **官方行只由两件事产生**：① 用户手工新建（表单里选「官方账号」类别）；② 启动时 `adopt_live_login_as_account` 在「**provider 表为空** + `credentials/kimi-code.json` 能解析出 access_token」时导入一条并标记 applied。**登录动作本身不落任何行**——行在 token 交换成功后才由后端 `ensure_kimi_official_provider` 建（见下条）。
+  - **不要恢复「点登录先建行」**：那是空壳卡片的来源（用户在列表里圈出过）。`start_kimi_official_account_device_auth` 已经**不再接收 `provider_id`**，这是该不变量在签名上的体现。
+- **一个官方渠道可挂多个账号**（2026-10-09）。判重靠**凭据指纹**（`same_official_login`：先比 refresh_token，再比 access_token），不是 `provider_id`——Kimi 的 OAuth 不发身份（CLI 自己的 `OAuthToken` 只有 token 与过期时间，授权流程也没有 userinfo 端点），所以「同一个账号」只能定义为「同一份凭据」。**登录成功时后端先 `ensure_kimi_official_provider`**（有 official 行就复用、没有才按模板建），模板常量在后端 `constants.rs`（前端那份已删）。
+- **凭据文件名与账号名是两回事**（这条是「只能有一个账号」的根因）。`write_credential_file` 恒写 `credentials/kimi-code.json`（`KIMI_OFFICIAL_CREDENTIAL_NAME`，真实 CLI 唯一认得的键），**不读账号行上的 `name`**；`name` 是显示名（当前为空——没有身份可标，前端用「登录时间」当行标签）。磁盘只有一份 live 凭据，DB 里 N 行快照，切换时把选中的那份写回去。`migrate_legacy_credential_names` 只负责把旧文件名迁到固定键，**不再改账号名**。
+- **虚拟回显行**：`list_kimi_official_accounts` 是前端入口（`list_kimi_official_accounts_with_state` 是存储视图，**不要**往里塞虚拟行——它喂给写入路径）。当磁盘上的登录没有任何已存账号与之指纹匹配时，列表头部合成一条 `is_virtual=true`、id 为 `__local__` 的行，只给「保存当前登录」一个动作（`save_kimi_official_local_account`）。保存后它变成普通行，切换/删除随之出现。
+
 - 模型行接入共享 `ModelListSection` 后**多出两个行级按钮**：复制、设为主模型（对应新增的 `handleCopyModel` / `handleSetPrimaryModel`）。行身份是 `model.key`（catalog 别名），不是上游 model id——见 `modelRows` 与 `rowKeyByDisplay` 的注释。
 - Gateway 现在是 direct → single → failover 三态。single 入口在已应用 provider 卡片的“网关代理”按钮；single/failover 接管期间锁定其他 provider 的直连应用入口，failover 卡片显示 P0/P1 优先级。
 - i18n 键集中在顶层 `kimi.*`（如 `kimi.provider.*`、`kimi.providerForm.*`）；全局提示词区块使用 `kimi.prompt.*`（`GlobalPromptSettings` 的 `translationKeyPrefix` 必须传 `kimi.prompt`，传不存在的键会直接把键名字面量渲染成展开栏标题）。

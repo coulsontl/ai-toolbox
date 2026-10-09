@@ -71,6 +71,7 @@ This document provides essential information for AI coding agents working on thi
 | `web/features/coding/omo_native/` | OmO Native 前端页面（供应商 / 全局提示词 / 会话管理三区块）、`models.json` provider 映射与插件版 OMO 的边界 |
 | `web/features/coding/zcode/` | ZCode 前端页面、provider/模型、官方账号与 OAuth 登录、通用配置与导入 |
 | `web/features/coding/shared/providerCardVariants/` | 三种固定供应商卡片样式（Claude/Codex/OpenCode）的单一实现，各 CLI 按 provider 模型形状选用；由 `scripts/verify-provider-card-layout.mjs` 守护 |
+| `web/features/coding/shared/officialAccounts/` | 官方账号区块（标题 → 说明 → 账号行：切换/保存/刷新/详情/删除）的单一实现。各 CLI 只写「自家账号记录 → `OfficialAccountRowView`」的映射，宿主由调用方挑（`embedded`＝供应商卡片内 / `standalone`＝自持卡片）；登录入口是插槽，不是开关。由 `scripts/verify-official-accounts-shared.mjs` 守护 |
 | `web/features/coding/codex/` | Codex 前端页面、根目录配置、provider 与 prompt 交互 |
 | `web/features/coding/grok/` | Grok CLI 前端页面、根目录配置、provider、官方账号、plugin、prompt 与 session 交互 |
 | `web/features/coding/geminicli/` | Gemini CLI 前端页面、根目录配置、provider、prompt、usage 与 session 交互 |

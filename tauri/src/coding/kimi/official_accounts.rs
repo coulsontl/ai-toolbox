@@ -16,7 +16,8 @@ use super::adapter;
 use super::commands::{
     emit_kimi_sync, get_kimi_root_dir_from_db_async, list_kimi_providers_for_db,
 };
-use super::constants::{KIMI_CREDENTIALS_DIR, KIMI_LOCAL_PROVIDER_ID};
+use super::constants::KIMI_CREDENTIALS_DIR;
+use crate::coding::local_bridge::LOCAL_CONFIG_ID;
 use super::types::{KimiOfficialAccount, KimiProvider};
 use crate::coding::db_id::{db_extract_id, db_new_id};
 use crate::db::helpers::{
@@ -125,24 +126,18 @@ fn validate_kimi_oauth_endpoint(raw: &str, field: &str) -> Result<String, String
     Ok(url.to_string())
 }
 
+/// Start a device-code login. Writes nothing until it succeeds.
+///
+/// It used to take a `provider_id` and refuse to start without a persisted
+/// official provider row, which is why the caller had to create that row *first*
+/// — and why cancelling left an empty shell in the provider list forever. The
+/// row is now resolved at the moment the token exchange succeeds (see
+/// `ensure_kimi_official_provider`), so an abandoned login leaves no trace.
 #[tauri::command]
 pub async fn start_kimi_official_account_device_auth(
     state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
-    provider_id: String,
 ) -> Result<KimiDeviceAuthStartResult, String> {
-    // The `__local__` projection is never a DB row; resolve it to the real
-    // official provider before the id-based lookup below.
-    let provider_id = if provider_id == KIMI_LOCAL_PROVIDER_ID {
-        list_kimi_providers_for_db(state.db())?
-            .into_iter()
-            .find(|provider| provider.category == "official")
-            .map(|provider| provider.id)
-            .ok_or_else(|| "No official Kimi provider found".to_string())?
-    } else {
-        provider_id
-    };
-    load_official_provider(state.db(), &provider_id)?;
     {
         let mut sessions = AUTH_SESSIONS
             .lock()
@@ -270,7 +265,6 @@ pub async fn start_kimi_official_account_device_auth(
                             &state_db,
                             &app_clone,
                             &session_id_clone,
-                            &provider_id,
                             &access_token,
                             body.refresh_token.as_deref(),
                             body.expires_in,
@@ -393,11 +387,57 @@ fn set_auth_session_status(session_id: &str, status: &str) {
     }
 }
 
+/// The credential values a login can be recognised by.
+///
+/// Kimi's OAuth grants no identity — the CLI's own `OAuthToken` holds only
+/// tokens and an expiry, and the grant has no userinfo endpoint — so "the same
+/// account" can only mean "the same credentials". The refresh token decides
+/// when both sides carry one; otherwise the access token does. A device-code
+/// exchange always mints a fresh pair, so two logins with nothing in common are
+/// two accounts, not one.
+fn snapshot_token<'a>(snapshot: &'a Value, key: &str) -> Option<&'a str> {
+    snapshot
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn same_official_login(left: &Value, right: &Value) -> bool {
+    for key in ["refresh_token", "access_token"] {
+        if let (Some(left), Some(right)) = (snapshot_token(left, key), snapshot_token(right, key)) {
+            return left == right;
+        }
+    }
+    false
+}
+
+fn find_matching_kimi_official_account(
+    db: &SqliteDbState,
+    provider_id: &str,
+    snapshot: &Value,
+) -> Result<Option<KimiOfficialAccount>, String> {
+    Ok(list_kimi_official_accounts_with_state(db)?
+        .into_iter()
+        .find(|account| {
+            account.provider_id == provider_id
+                && read_account_snapshot(account)
+                    .is_some_and(|stored| same_official_login(&stored, snapshot))
+        }))
+}
+
+/// Persist a completed login.
+///
+/// The row is matched by credential fingerprint (see
+/// `find_matching_kimi_official_account`), so signing in again with the same
+/// login updates its row while a different login appends one — which is what
+/// makes several accounts under one official channel possible. `name` is left
+/// empty: there is no identity to name the row with, and the section's label is
+/// built on the frontend from what it does have (the login time).
 async fn store_official_account(
     db: &SqliteDbState,
     app: &tauri::AppHandle,
     session_id: &str,
-    provider_id: &str,
     access_token: &str,
     refresh_token: Option<&str>,
     expires_in: Option<i64>,
@@ -410,13 +450,22 @@ async fn store_official_account(
             .unwrap_or(0)
     });
     let now = Local::now().to_rfc3339();
-    let account_name = KIMI_OFFICIAL_CREDENTIAL_NAME.to_string();
-    // Re-login on the same provider refreshes the existing account row instead
-    // of appending a duplicate — duplicates share one credential file name and
-    // would overwrite each other.
-    let existing = list_kimi_official_accounts_with_state(db)?
-        .into_iter()
-        .find(|account| account.provider_id == provider_id);
+    // The row a login hangs off, created on first need. Resolving it *here* —
+    // rather than making the caller create one before the device flow starts —
+    // is what keeps a cancelled login from leaving a shell behind.
+    let provider_id = super::commands::ensure_kimi_official_provider(db)?.id;
+    let snapshot = json!({
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_endpoint": token_endpoint,
+        "expires_at": expires_at,
+        "expires_in": expires_in,
+        "scope": KIMI_OAUTH_SCOPE,
+        "token_type": "Bearer",
+    });
+    // Re-login of the same login refreshes its row instead of appending a
+    // duplicate.
+    let existing = find_matching_kimi_official_account(db, &provider_id, &snapshot)?;
     // Keep the previous ordering on re-login; resetting to 0 would silently
     // reorder the account list.
     let sort_index = existing
@@ -439,19 +488,11 @@ async fn store_official_account(
         .unwrap_or_else(|| now.clone());
     let content = json!({
         "provider_id": provider_id,
-        "name": account_name,
+        "name": "",
         "kind": "official",
         "email": null,
         "subject": null,
-        "auth_snapshot": serde_json::to_string(&json!({
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "token_endpoint": token_endpoint,
-            "expires_at": expires_at,
-            "expires_in": expires_in,
-            "scope": KIMI_OAUTH_SCOPE,
-            "token_type": "Bearer",
-        }))
+        "auth_snapshot": serde_json::to_string(&snapshot)
         .unwrap_or_default(),
         "expires_at": expires_at,
         "token_endpoint": token_endpoint,
@@ -490,6 +531,10 @@ async fn store_official_account(
     Ok(())
 }
 
+/// Read the stored account rows, in display order.
+///
+/// No virtual row is added here: this is the storage view, used by the write
+/// paths. The frontend-facing list is `list_kimi_official_accounts`.
 pub fn list_kimi_official_accounts_with_state(
     state: &SqliteDbState,
 ) -> Result<Vec<KimiOfficialAccount>, String> {
@@ -507,11 +552,150 @@ pub fn list_kimi_official_accounts_with_state(
         })
 }
 
+/// The live login as a read-only row, when nothing stored represents it.
+///
+/// Same idea as Codex's virtual account: the CLI can be signed in with an
+/// account this app has never captured, and a list that does not say so is
+/// lying about what is in use. The row carries no snapshot — it mirrors the
+/// credential file — and its only action is "save", which is what turns it into
+/// a stored account.
+///
+/// It is deliberately **not** synthesized in `list_kimi_official_accounts_with_state`:
+/// that function feeds the write paths (adoption, refresh, apply), and a
+/// synthetic row leaking into them would look like an account that has no row.
+fn build_virtual_local_account(snapshot: &Value) -> KimiOfficialAccount {
+    KimiOfficialAccount {
+        id: LOCAL_CONFIG_ID.to_string(),
+        provider_id: String::new(),
+        name: String::new(),
+        kind: "local".to_string(),
+        email: None,
+        subject: None,
+        auth_snapshot: Some(snapshot.to_string()),
+        token_endpoint: snapshot
+            .get("token_endpoint")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        expires_at: snapshot.get("expires_at").and_then(Value::as_i64),
+        last_refresh: None,
+        last_error: None,
+        plan_type: None,
+        limit_weekly_text: None,
+        limit_monthly_text: None,
+        limit_weekly_reset_at: None,
+        limit_monthly_reset_at: None,
+        last_limits_fetched_at: None,
+        is_applied: false,
+        sort_index: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+        is_virtual: true,
+    }
+}
+
+async fn read_live_login_snapshot(db: &SqliteDbState) -> Option<Value> {
+    let path = get_kimi_root_dir_from_db_async(db)
+        .await
+        .ok()?
+        .join(KIMI_CREDENTIALS_DIR)
+        .join(format!("{KIMI_OFFICIAL_CREDENTIAL_NAME}.json"));
+    let raw = fs::read_to_string(path).ok()?;
+    let snapshot: Value = serde_json::from_str(&raw).ok()?;
+    // An empty or missing access token means the file is not a usable login
+    // (the CLI writes it before the token exchange completes).
+    snapshot
+        .get("access_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|token| !token.is_empty())
+        .then_some(snapshot)
+}
+
+/// The account list the frontend sees: stored rows plus, when the live login is
+/// not represented by any of them, one virtual row for it.
+pub async fn list_kimi_official_accounts_for_frontend(
+    db: &SqliteDbState,
+) -> Result<Vec<KimiOfficialAccount>, String> {
+    let mut accounts = list_kimi_official_accounts_with_state(db)?;
+    let Some(snapshot) = read_live_login_snapshot(db).await else {
+        return Ok(accounts);
+    };
+    let already_represented = accounts
+        .iter()
+        .filter_map(read_account_snapshot)
+        .any(|stored| same_official_login(&stored, &snapshot));
+    if !already_represented {
+        accounts.insert(0, build_virtual_local_account(&snapshot));
+    }
+    Ok(accounts)
+}
+
 #[tauri::command]
-pub fn list_kimi_official_accounts(
+pub async fn list_kimi_official_accounts(
     state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Vec<KimiOfficialAccount>, String> {
-    list_kimi_official_accounts_with_state(state.inner())
+    list_kimi_official_accounts_for_frontend(state.inner()).await
+}
+
+/// Store the live login as a proper account.
+///
+/// The only action a virtual row offers: it exists because the app has not
+/// captured that login yet, and once it is captured the virtual row disappears
+/// on the next list (nothing matches it any more) while the stored row carries
+/// the switch/delete actions instead.
+pub async fn save_kimi_official_local_login(
+    db: &SqliteDbState,
+) -> Result<KimiOfficialAccount, String> {
+    let snapshot = read_live_login_snapshot(db)
+        .await
+        .ok_or_else(|| "No live Kimi login to save".to_string())?;
+    let provider = super::commands::ensure_kimi_official_provider(db)?;
+    if let Some(account) = find_matching_kimi_official_account(db, &provider.id, &snapshot)? {
+        // Already captured (a second click, or another window got there first):
+        // nothing to write.
+        return Ok(account);
+    }
+    let now = Local::now().to_rfc3339();
+    let id = db_new_id();
+    let content = json!({
+        "provider_id": provider.id,
+        "name": "",
+        "kind": "official",
+        "email": null,
+        "subject": null,
+        "auth_snapshot": snapshot.to_string(),
+        "expires_at": snapshot.get("expires_at").and_then(Value::as_i64),
+        "token_endpoint": snapshot
+            .get("token_endpoint")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "last_refresh": now,
+        "last_error": null,
+        "plan_type": null,
+        "limit_weekly_text": null,
+        "limit_monthly_text": null,
+        "limit_weekly_reset_at": null,
+        "limit_monthly_reset_at": null,
+        "last_limits_fetched_at": null,
+        // Saving does not make it the applied account; the live file already is
+        // it, and "apply" stays the explicit action for switching.
+        "is_applied": false,
+        "sort_index": 0,
+        "created_at": now,
+        "updated_at": now,
+    });
+    db.with_conn(|conn| db_put(conn, DbTable::KimiOfficialAccount, &id, &content))?;
+    get_account(db, &id)?.ok_or_else(|| "Failed to read back the saved Kimi account".to_string())
+}
+
+#[tauri::command]
+pub async fn save_kimi_official_local_account(
+    state: tauri::State<'_, SqliteDbState>,
+    app: tauri::AppHandle,
+) -> Result<KimiOfficialAccount, String> {
+    let account = save_kimi_official_local_login(state.db()).await?;
+    let _ = app.emit("config-changed", "window");
+    Ok(account)
 }
 
 fn account_from_db_value(value: Value) -> KimiOfficialAccount {
@@ -593,6 +777,9 @@ fn account_from_db_value(value: Value) -> KimiOfficialAccount {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
+        // Only the synthesizer sets this; a stored row is by definition not
+        // virtual.
+        is_virtual: false,
     }
 }
 
@@ -608,7 +795,14 @@ fn read_account_snapshot(account: &KimiOfficialAccount) -> Option<Value> {
         .and_then(|snapshot| serde_json::from_str(snapshot).ok())
 }
 
-/// Write the live OAuth credential file under `credentials/<name>.json` (0600).
+/// Write the live OAuth credential file at `credentials/<name>.json` (0600).
+///
+/// The file name is the fixed storage key the real Kimi CLI resolves its login
+/// through — the module comment on `KIMI_OFFICIAL_CREDENTIAL_NAME` has the
+/// detail — so it is deliberately *not* taken from the account row. There is one
+/// live credential; the account rows are snapshots, and switching writes the
+/// chosen snapshot here. Coupling the two is what used to cap Kimi at a single
+/// account: every row wanted its own file name, and only one name works.
 pub async fn write_credential_file(
     db: &SqliteDbState,
     account: &KimiOfficialAccount,
@@ -619,7 +813,7 @@ pub async fn write_credential_file(
     let credentials_dir = root_dir.join(KIMI_CREDENTIALS_DIR);
     fs::create_dir_all(&credentials_dir)
         .map_err(|error| format!("Failed to create {}: {error}", credentials_dir.display()))?;
-    let file_path = credentials_dir.join(format!("{}.json", account.name));
+    let file_path = credentials_dir.join(format!("{KIMI_OFFICIAL_CREDENTIAL_NAME}.json"));
     let temp = NamedTempFile::new_in(&credentials_dir)
         .map_err(|error| format!("Failed to create temp credential file: {error}"))?;
     let mut file = temp;
@@ -635,21 +829,6 @@ pub async fn write_credential_file(
         let _ = fs::set_permissions(&file_path, fs::Permissions::from_mode(0o600));
     }
     Ok(())
-}
-
-async fn remove_credential_file(
-    db: &SqliteDbState,
-    account: &KimiOfficialAccount,
-) -> Result<(), String> {
-    let root_dir = get_kimi_root_dir_from_db_async(db).await?;
-    let file_path = root_dir
-        .join(KIMI_CREDENTIALS_DIR)
-        .join(format!("{}.json", account.name));
-    match fs::remove_file(&file_path) {
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("Failed to remove credential file: {error}")),
-    }
 }
 
 #[tauri::command]
@@ -702,7 +881,10 @@ pub async fn delete_kimi_official_account(
     if account.is_applied {
         return Err("The applied Kimi official account cannot be deleted".to_string());
     }
-    let _ = remove_credential_file(state.db(), &account).await;
+    // The live credential file is deliberately left alone: it holds the
+    // *applied* account's snapshot, and the applied account cannot be deleted —
+    // so a row being removed here never owns that file. Deleting it would sign
+    // the CLI out of the account still in use.
     state
         .db()
         .with_conn(|conn| db_delete(conn, DbTable::KimiOfficialAccount, &account_id).map(|_| ()))?;
@@ -710,71 +892,67 @@ pub async fn delete_kimi_official_account(
     Ok(())
 }
 
-/// One-time adoption of legacy account rows created before the credential
-/// name was fixed to `kimi-code`: rename the row (and the credential file
-/// when possible) so the real Kimi CLI can see the login. No-op once every
-/// row uses the fixed name.
+/// One-time fix-up for logins written before the credential file name was fixed.
+///
+/// Account rows used to be *named after* their credential file, so a login from
+/// an older build sits next to `credentials/<that old name>.json` — a file the
+/// real CLI never reads, since it resolves its login through the fixed
+/// `kimi-code` key. Rename that file if it is still lying around.
+///
+/// Rows are no longer renamed: `name` carries a display label now (and is empty
+/// when there is no identity to label with), so rewriting it here would fight
+/// the label the frontend builds.
 pub async fn migrate_legacy_credential_names(db: &SqliteDbState) -> Result<(), String> {
-    let legacy_accounts = list_kimi_official_accounts_with_state(db)?
+    let legacy_names = list_kimi_official_accounts_with_state(db)?
         .into_iter()
-        .filter(|account| account.name != KIMI_OFFICIAL_CREDENTIAL_NAME)
+        .map(|account| account.name)
+        .filter(|name| !name.is_empty() && name != KIMI_OFFICIAL_CREDENTIAL_NAME)
         .collect::<Vec<_>>();
-    if legacy_accounts.is_empty() {
+    if legacy_names.is_empty() {
         return Ok(());
     }
     let credentials_dir = get_kimi_root_dir_from_db_async(db)
         .await?
         .join(KIMI_CREDENTIALS_DIR);
-    for account in legacy_accounts {
-        let legacy_path = credentials_dir.join(format!("{}.json", account.name));
-        let target_path = credentials_dir.join(format!("{KIMI_OFFICIAL_CREDENTIAL_NAME}.json"));
-        if legacy_path.exists() && !target_path.exists() {
-            if let Err(error) = fs::rename(&legacy_path, &target_path) {
-                // Best-effort: the row rename below already fixes future writes.
-                log::warn!(
-                    "[kimi-oauth] Failed to rename legacy credential file {}: {error}",
-                    legacy_path.display()
-                );
-            }
+    let target_path = credentials_dir.join(format!("{KIMI_OFFICIAL_CREDENTIAL_NAME}.json"));
+    if target_path.exists() {
+        return Ok(());
+    }
+    for name in legacy_names {
+        let legacy_path = credentials_dir.join(format!("{name}.json"));
+        if !legacy_path.exists() {
+            continue;
         }
-        let now = Local::now().to_rfc3339();
-        db.with_conn(|conn| {
-            db_patch_fields(
-                conn,
-                DbTable::KimiOfficialAccount,
-                &account.id,
-                &[
-                    (
-                        "name",
-                        Value::String(KIMI_OFFICIAL_CREDENTIAL_NAME.to_string()),
-                    ),
-                    ("updated_at", Value::String(now)),
-                ],
-            )
-            .map(|_| ())
-        })?;
+        // Best-effort: the applied account's next refresh rewrites the file at
+        // the fixed name anyway, so a failure here only delays the fix.
+        if let Err(error) = fs::rename(&legacy_path, &target_path) {
+            log::warn!(
+                "[kimi-oauth] Failed to rename legacy credential file {}: {error}",
+                legacy_path.display()
+            );
+        }
+        return Ok(());
     }
     Ok(())
 }
 
-/// One-time adoption of an official login that only the Kimi CLI knows about.
+/// Bootstrap an official setup that only the Kimi CLI knows about.
 ///
-/// The CLI keeps its own OAuth credentials in `credentials/<name>.json`; the
-/// account list is a separate record. Someone who signed in through the CLI —
-/// or through the app before the account list existed — therefore has a live
-/// login the official-account card cannot see, so the card says "no account
-/// signed in yet" while the CLI is in fact logged in. Adopt that file as the
-/// applied account.
+/// A fresh install has no provider rows and no account rows, while the CLI may
+/// already be signed in — its credential file is sitting right there. Import
+/// that login as the official channel: one provider row marked applied (nothing
+/// else is) plus one applied account, so the list shows what is really in use
+/// instead of an empty official card. Same shape as Codex's
+/// `import_codex_default_provider_from_local_files`.
 ///
-/// Deliberately narrow, because this writes an account the user never
-/// confirmed:
+/// Deliberately narrow, because this writes rows the user never confirmed:
 ///
-/// - only when the list is empty (any stored account means the app owns the
-///   state already, and a second row would share the one credential file name
-///   and overwrite the first on the next login);
-/// - only for an `official` provider, and only when one is applied, so the
-///   adopted account is never marked applied over a custom provider's live
-///   config;
+/// - only on an install with **no provider rows at all** — so it can never
+///   invent an official channel under someone who deliberately switched to a
+///   relay. A login that shows up later is surfaced by the virtual row instead,
+///   which needs no import and saves nothing until asked;
+/// - only when the account list is empty (an existing account means this app
+///   already owns the state);
 /// - only from a credential file that actually parses into an access token;
 /// - never fatal: a failure here must not stop the refresh pass, and the file
 ///   is left exactly as it was.
@@ -782,13 +960,7 @@ pub async fn adopt_live_login_as_account(db: &SqliteDbState) -> Result<(), Strin
     if !list_kimi_official_accounts_with_state(db)?.is_empty() {
         return Ok(());
     }
-    let Some(applied_provider) = list_kimi_providers_for_db(db)?
-        .into_iter()
-        .find(|provider| provider.is_applied)
-    else {
-        return Ok(());
-    };
-    if applied_provider.category != "official" {
+    if !list_kimi_providers_for_db(db)?.is_empty() {
         return Ok(());
     }
     let credential_path = get_kimi_root_dir_from_db_async(db)
@@ -812,10 +984,16 @@ pub async fn adopt_live_login_as_account(db: &SqliteDbState) -> Result<(), Strin
     if !has_access_token {
         return Ok(());
     }
+    let provider = super::commands::ensure_kimi_official_provider(db)?;
     let now = Local::now().to_rfc3339();
+    // The provider table was empty a moment ago, and the CLI is signed in, so
+    // the official channel is what the live config.toml already points at.
+    db.with_conn_mut(|conn| {
+        db_update_applied_status(conn, DbTable::KimiProvider, Some(&provider.id), &now)
+    })?;
     let content = json!({
-        "provider_id": applied_provider.id,
-        "name": KIMI_OFFICIAL_CREDENTIAL_NAME,
+        "provider_id": provider.id,
+        "name": "",
         "kind": "official",
         "email": null,
         "subject": null,
@@ -842,7 +1020,7 @@ pub async fn adopt_live_login_as_account(db: &SqliteDbState) -> Result<(), Strin
     });
     db.with_conn(|conn| db_put(conn, DbTable::KimiOfficialAccount, &db_new_id(), &content))?;
     log::info!(
-        "[kimi-oauth] Adopted the live CLI login at {} as an official account",
+        "[kimi-oauth] Adopted the live CLI login at {} as the official channel",
         credential_path.display()
     );
     Ok(())

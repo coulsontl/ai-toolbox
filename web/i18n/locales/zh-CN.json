@@ -1824,6 +1824,13 @@
       "confirmDeleteContent": "将删除扩展目录中的本地扩展文件或目录。",
       "updateResultTitle": "扩展更新结果",
       "emptyCommandOutput": "命令未产生输出"
+    },
+    "officialAccount": {
+      "refresh": "刷新",
+      "details": "详情",
+      "switch": "切换",
+      "saveCurrent": "保存当前登录",
+      "default": "默认"
     }
   },
   "sessionManager": {
@@ -5975,7 +5982,11 @@
       "login": "登录",
       "empty": "尚未登录任何官方账号。",
       "applyHint": "将 Kimi 切换到该账号",
-      "hint": "切换会把该账号的登录凭据写入 Kimi 配置，替换当前登录；网关接管期间无法切换。"
+      "hint": "切换会把该账号的登录凭据写入 Kimi 配置，替换当前登录；网关接管期间无法切换。",
+      "rowLabel": "{{time}} 登录",
+      "currentTag": "当前登录",
+      "savedTag": "已保存",
+      "saveSuccess": "已保存当前登录"
     },
     "officialAccounts": "官方账号",
     "sessions": "会话管理",

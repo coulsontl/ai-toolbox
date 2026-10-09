@@ -1,12 +1,12 @@
 /**
  * Mounts the **real** `KimiPage` against a stubbed Tauri IPC layer so the
- * official-account card can be inspected and dragged with real pointer events.
+ * official channel's account list can be inspected with real DOM queries.
  *
- * Why the real page: the card is only half the feature. The other half is the
- * page's slot arithmetic — which index the card is drawn at, and whether the
- * drag reports the *merged* ordering (provider cards plus the card) rather than
- * a provider-only index. A card-only fixture would re-create the page half,
- * which is exactly where the disagreement can live.
+ * Why the real page rather than the card: the account list lives *inside* the
+ * official provider card, so what has to hold is a property of the page — the
+ * official row is an ordinary list member (draggable, searchable, counted like
+ * any other), and its account rows line up with the card's own content edges
+ * rather than with some narrower column.
  *
  * Only `KimiPage` is mounted, so the stub table below is the page's own command
  * set — an unstubbed command throws loudly instead of silently returning
@@ -40,19 +40,20 @@ useAppStore.setState({ language });
 document.documentElement.dataset.theme = resolvedTheme;
 updateGatewayProviderProfiles(gatewayProfiles);
 
-/** Provider card title, and the label the official-account card renders with. */
+/** The official channel's card title, and the label its account section uses. */
+const OFFICIAL_PROVIDER_NAME = 'Kimi Official';
 const OFFICIAL_ACCOUNT_TITLE = '官方账号';
 
-const createProvider = (id, name, createdAt) => ({
+const createProvider = (id, name, createdAt, category = 'custom') => ({
   id,
   name,
-  category: 'custom',
+  category,
   settingsConfig: JSON.stringify({
-    auth: { API_KEY: `fixture-key-${id}` },
+    auth: { API_KEY: category === 'official' ? '' : `fixture-key-${id}` },
     defaultModelKey: `${id}-model-a`,
-    providerConfigs: {
-      fixture: { type: 'openai', base_url: `https://${id}.example.test/v1` },
-    },
+    providerConfigs: category === 'official'
+      ? {}
+      : { fixture: { type: 'openai', base_url: `https://${id}.example.test/v1` } },
     modelCatalog: {
       models: [
         {
@@ -72,34 +73,53 @@ const createProvider = (id, name, createdAt) => ({
 });
 
 const allProviders = [
+  createProvider('provider-official', OFFICIAL_PROVIDER_NAME, '2026-01-04T00:00:00.000Z', 'official'),
   createProvider('provider-a', 'Provider A', '2026-01-03T00:00:00.000Z'),
   createProvider('provider-b', 'Provider B', '2026-01-02T00:00:00.000Z'),
   createProvider('provider-c', 'Provider C', '2026-01-01T00:00:00.000Z'),
 ];
 
-const createAccount = (id, email, isApplied) => ({
+/**
+ * Kimi's grant carries no identity, so an account row is named after when it was
+ * captured — the fixture mirrors that shape rather than inventing an email.
+ */
+const createAccount = (id, createdAt, isApplied, isVirtual = false) => ({
   id,
-  providerId: 'provider-official',
-  name: email,
-  kind: 'official',
-  email,
+  providerId: isVirtual ? '' : 'provider-official',
+  name: '',
+  kind: isVirtual ? 'local' : 'official',
   isApplied,
-  createdAt: '2026-01-01T00:00:00.000Z',
-  updatedAt: '2026-01-01T00:00:00.000Z',
+  isVirtual,
+  createdAt,
+  updatedAt: createdAt,
 });
 
+const savedAccounts = [
+  createAccount('account-1', '2026-03-31T00:00:00.000Z', true),
+  createAccount('account-2', '2026-04-01T00:00:00.000Z', false),
+];
+const virtualAccount = createAccount('__local__', '2026-04-02T00:00:00.000Z', false, true);
+
+const accountMode = parameters.get('accounts') || '2';
+const providersMode = parameters.get('providers') || 'all';
 const state = {
   runId: parameters.get('runId'),
   requests: [],
   sortMode: parameters.get('sortMode') || 'custom',
-  accountIndex: Number(parameters.get('accountIndex') ?? 0),
-  providers: parameters.get('providers') === '0' ? [] : structuredClone(allProviders),
-  officialAccounts: parameters.get('accounts') === '0'
-    ? []
-    : [
-        createAccount('account-1', 'first@example.invalid', true),
-        createAccount('account-2', 'second@example.invalid', false),
-      ],
+  providers:
+    providersMode === '0'
+      ? []
+      : structuredClone(
+          providersMode === 'custom-only'
+            ? allProviders.filter(provider => provider.category !== 'official')
+            : allProviders,
+        ),
+  officialAccounts:
+    accountMode === '0'
+      ? []
+      : accountMode === 'virtual'
+        ? [structuredClone(virtualAccount)]
+        : structuredClone(savedAccounts),
 };
 
 const gatewayCliStatus = {
@@ -137,19 +157,21 @@ window.__TAURI_INTERNALS__ = {
       case 'get_kimi_root_path_info': return { path: 'C:\\Users\\tester\\.kimi-code', source: 'default' };
       case 'list_kimi_providers': return structuredClone(state.providers);
       case 'list_kimi_official_accounts': return structuredClone(state.officialAccounts);
+      case 'save_kimi_official_local_account': {
+        const virtual = state.officialAccounts.find(account => account.isVirtual);
+        if (!virtual) throw new Error('No live Kimi login to save');
+        virtual.isVirtual = false;
+        virtual.providerId = 'provider-official';
+        return structuredClone(virtual);
+      }
       case 'reorder_kimi_providers': {
         const byId = new Map(state.providers.map(provider => [provider.id, provider]));
         state.providers = args.ids.map(id => byId.get(id)).filter(Boolean);
         return null;
       }
-      case 'save_kimi_official_account_index': {
-        state.accountIndex = args.index;
-        return null;
-      }
       case 'list_kimi_plugins': return [];
       case 'refresh_tray_menu': return null;
-      case 'get_kimi_common_config':
-        return { config: '', officialAccountIndex: state.accountIndex };
+      case 'get_kimi_common_config': return { config: '' };
       case 'read_kimi_settings': return { config: '' };
 
       // --- provider list UI state -----------------------------------------
@@ -193,42 +215,48 @@ window.__TAURI_INTERNALS__ = {
 
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
-/** Every card inside the provider section, in the order it is drawn. The
- *  official-account card is named by its title; provider cards by their name. */
+/** Every card inside the provider section, in the order it is drawn. */
 const cardsInProviderSection = () => [...document.querySelectorAll('#kimi-providers .ant-card')];
 
 const cardFor = name => cardsInProviderSection().find(card => card.textContent.includes(name));
-
-const handleFor = name => {
-  const card = cardFor(name);
-  if (!card) throw new Error('No card rendered for: ' + name);
-  const handle = card.querySelector('.anticon-holder');
-  return handle ? handle.parentElement : null;
-};
 
 const centerOf = element => {
   const rect = element.getBoundingClientRect();
   return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
 };
 
+/**
+ * The account rows of the official card.
+ *
+ * A row is the element the section draws a separator under (it sets the border
+ * inline), so the marker is structural rather than a stylesheet class name.
+ * Anchoring on the action cluster alone is not enough: the card header's own
+ * "apply" action is a `Space` carrying a check icon too.
+ */
+const accountRowsIn = card =>
+  [...card.querySelectorAll('div')].filter(node =>
+    String(node.style?.borderBottom || '').includes('1px solid'));
+
 window.kimiOfficialAccountFixture = {
   state,
   OFFICIAL_ACCOUNT_TITLE,
+  OFFICIAL_PROVIDER_NAME,
   /** Card titles in the order the page draws them. */
   renderedMembers() {
     return cardsInProviderSection().map(card => {
       const provider = state.providers.find(item => card.textContent.includes(item.name));
-      if (provider) return provider.name;
-      return card.textContent.includes(OFFICIAL_ACCOUNT_TITLE) ? OFFICIAL_ACCOUNT_TITLE : '?';
+      return provider ? provider.name : '?';
     });
   },
   hasHandle(name) {
-    return Boolean(handleFor(name));
+    const card = cardFor(name);
+    return Boolean(card?.querySelector('.anticon-holder'));
   },
   handleCenter(name) {
-    const handle = handleFor(name);
+    const card = cardFor(name);
+    const handle = card?.querySelector('.anticon-holder');
     if (!handle) throw new Error('No drag handle rendered for: ' + name);
-    return centerOf(handle);
+    return centerOf(handle.parentElement ?? handle);
   },
   /** Row center of another card — the drop target for a drag. */
   cardCenter(name) {
@@ -250,6 +278,14 @@ window.kimiOfficialAccountFixture = {
     return [...(cardFor(name)?.querySelectorAll('button') ?? [])]
       .map(button => button.textContent.trim());
   },
+  /** Same buttons with their enabled state. */
+  cardButtonStates(name) {
+    return [...(cardFor(name)?.querySelectorAll('button') ?? [])]
+      .map(button => ({
+        label: button.textContent.trim(),
+        disabled: button.disabled,
+      }));
+  },
   /**
    * Sentences the card renders more than once.
    *
@@ -268,14 +304,40 @@ window.kimiOfficialAccountFixture = {
     }
     return [...counts.entries()].filter(([, count]) => count > 1).map(([text]) => text);
   },
-  /** Same buttons with their enabled state — a row's action is drawn even when
-   *  it is inert, so label presence alone says nothing about what is offered. */
-  cardButtonStates(name) {
-    return [...(cardFor(name)?.querySelectorAll('button') ?? [])]
-      .map(button => ({
-        label: button.textContent.trim(),
-        disabled: button.disabled,
-      }));
+  /** How many account rows the official card draws. */
+  accountRowCount(name = OFFICIAL_PROVIDER_NAME) {
+    const card = cardFor(name);
+    return card ? accountRowsIn(card).length : 0;
+  },
+  /** Debug aid: the outer HTML of the official card's account area. */
+  debugAccountHtml(name = OFFICIAL_PROVIDER_NAME) {
+    const card = cardFor(name);
+    return card ? card.innerHTML.slice(0, 4000) : null;
+  },
+  /**
+   * Right edge of the account rows, of the card's content box, and of the
+   * header's action links. The three must agree: a block that renders inside the
+   * header's content column is inset by the action links' width, which is the
+   * "empty space on the right" defect that a type check cannot see.
+   */
+  accountAlignment(name = OFFICIAL_PROVIDER_NAME) {
+    const card = cardFor(name);
+    if (!card) throw new Error('No card rendered for: ' + name);
+    const rows = accountRowsIn(card);
+    if (rows.length === 0) throw new Error('No account rows rendered for: ' + name);
+    // The card body's *content* edge, not its border box: the padding is part of
+    // the card, and measuring the border box would call a correctly aligned row
+    // inset. (The Codex guard subtracts the same padding.)
+    const body = card.querySelector('.ant-card-body');
+    const bodyStyle = body ? getComputedStyle(body) : null;
+    const headerActions = card.querySelector('.anticon-ellipsis')?.closest('span, button, div');
+    return {
+      rowRight: Math.round(Math.max(...rows.map(row => row.getBoundingClientRect().right))),
+      contentRight: body
+        ? Math.round(body.getBoundingClientRect().right - parseFloat(bodyStyle.paddingRight || '0'))
+        : null,
+      headerRight: headerActions ? Math.round(headerActions.getBoundingClientRect().right) : null,
+    };
   },
   async waitForMembers(titles, timeoutMs = 4000) {
     const deadline = Date.now() + timeoutMs;
@@ -291,15 +353,6 @@ window.kimiOfficialAccountFixture = {
   lastReorder() {
     const call = [...state.requests].reverse().find(entry => entry.command === 'reorder_kimi_providers');
     return call ? call.args.ids : null;
-  },
-  /** Every `save_kimi_official_account_index` payload the page sent, in order. */
-  savedIndices() {
-    return state.requests
-      .filter(entry => entry.command === 'save_kimi_official_account_index')
-      .map(entry => entry.args.index);
-  },
-  storedIndex() {
-    return state.accountIndex;
   },
   storedOrder() {
     return state.providers.map(provider => provider.name);

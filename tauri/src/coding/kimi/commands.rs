@@ -13,7 +13,8 @@ use super::adapter;
 use super::constants::{
     KIMI_CREDENTIALS_DIR, KIMI_DEFAULT_MODEL_MAX_CONTEXT_SIZE, KIMI_HOME_ENV_KEY,
     KIMI_LOCAL_PROVIDER_ID, KIMI_OFFICIAL_API_BASE_URL, KIMI_OFFICIAL_DEFAULT_MODEL_DISPLAY_NAME,
-    KIMI_OFFICIAL_DEFAULT_MODEL_KEY, KIMI_PLUGINS_DIR,
+    KIMI_OFFICIAL_DEFAULT_MODEL_KEY, KIMI_OFFICIAL_PROVIDER_CATEGORY, KIMI_OFFICIAL_PROVIDER_NAME,
+    KIMI_OFFICIAL_PROVIDER_SETTINGS_CONFIG, KIMI_PLUGINS_DIR,
 };
 use super::types::*;
 use crate::coding::db_id::db_new_id;
@@ -246,6 +247,54 @@ pub async fn create_kimi_provider<R: tauri::Runtime>(
         )
     })?;
     let _ = app.emit("config-changed", "window");
+    Ok(provider_from_content(id, content))
+}
+
+/// The official-channel provider row, created on first need.
+///
+/// The official channel is a provider row — it is what `config.toml` projection
+/// writes and what an account's `is_applied` hangs off — but nothing guarantees
+/// one exists. A fresh install has no rows at all, and the sign-in flow used to
+/// make the *frontend* create one **before** the device flow started, so every
+/// cancelled login left an empty `Kimi Official` shell behind (users could see
+/// it, and it was counted in the list and in batch selection).
+///
+/// Resolving the row here instead keeps two things true: signing in is a pure
+/// action that writes nothing until it succeeds, and a row that does exist
+/// always belongs to a real login.
+pub fn ensure_kimi_official_provider(db: &SqliteDbState) -> Result<KimiProvider, String> {
+    if let Some(provider) = list_kimi_providers_for_db(db)?
+        .into_iter()
+        .find(|provider| provider.category == KIMI_OFFICIAL_PROVIDER_CATEGORY)
+    {
+        return Ok(provider);
+    }
+    let now = Local::now().to_rfc3339();
+    let content = KimiProviderContent {
+        name: KIMI_OFFICIAL_PROVIDER_NAME.to_string(),
+        category: KIMI_OFFICIAL_PROVIDER_CATEGORY.to_string(),
+        settings_config: KIMI_OFFICIAL_PROVIDER_SETTINGS_CONFIG.to_string(),
+        source_provider_id: None,
+        website_url: None,
+        notes: None,
+        icon: None,
+        icon_color: None,
+        sort_index: Some(next_sort_index(db, DbTable::KimiProvider)?),
+        meta: None,
+        is_applied: false,
+        is_disabled: false,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    let id = db_new_id();
+    db.with_conn(|conn| {
+        db_put(
+            conn,
+            DbTable::KimiProvider,
+            &id,
+            &adapter::provider_to_db_value(&content),
+        )
+    })?;
     Ok(provider_from_content(id, content))
 }
 
@@ -697,7 +746,6 @@ pub async fn extract_kimi_common_config_from_current_file(
     Ok(KimiCommonConfig {
         config: document.to_string(),
         root_dir: existing.as_ref().and_then(|value| value.root_dir.clone()),
-        official_account_index: existing.and_then(|value| value.official_account_index),
         updated_at: Local::now().to_rfc3339(),
     })
 }
@@ -718,11 +766,6 @@ pub async fn save_kimi_common_config(
     let config_write_guard = CONFIG_WRITE_LOCK.lock().await;
     let existing_common = get_common_config(db)?;
     let previous_common_config = existing_common.as_ref().map(|value| value.config.clone());
-    // Read before `existing_common` is consumed: rewriting the common record
-    // from this snapshot must not drop the card's stored position.
-    let existing_account_index = existing_common
-        .as_ref()
-        .and_then(|value| value.official_account_index);
     let existing_root = existing_common.and_then(|value| value.root_dir);
     let root_dir = if input.clear_root_dir {
         None
@@ -735,11 +778,7 @@ pub async fn save_kimi_common_config(
             .map(str::to_string)
             .or(existing_root)
     };
-    let value = adapter::common_to_db_value(
-        &input.config,
-        root_dir.as_deref(),
-        existing_account_index,
-    );
+    let value = adapter::common_to_db_value(&input.config, root_dir.as_deref());
     db.with_conn(|conn| db_put(conn, DbTable::KimiCommonConfig, "common", &value))?;
     runtime_location::refresh_runtime_location_cache_for_module_async(db, "kimi").await?;
     if let Some(provider) = get_applied_provider(db)? {
@@ -770,27 +809,6 @@ pub async fn save_kimi_common_config(
     let _ = app.emit("config-changed", "window");
     emit_kimi_sync(&app);
     Ok(())
-}
-
-/// Persists where the official-account card sits among the provider cards.
-///
-/// The position is UI state, not Kimi state, so it rides in the common-config
-/// singleton rather than the live `config.toml`. Writing it here must not
-/// disturb the rest of that record, which is why the existing config and
-/// root_dir are carried over verbatim.
-#[tauri::command]
-pub async fn save_kimi_official_account_index(
-    state: tauri::State<'_, SqliteDbState>,
-    index: i64,
-) -> Result<(), String> {
-    let db = state.db();
-    let existing = get_common_config(db)?;
-    let value = adapter::common_to_db_value(
-        existing.as_ref().map(|value| value.config.as_str()).unwrap_or(""),
-        existing.as_ref().and_then(|value| value.root_dir.as_deref()),
-        Some(index.max(0)),
-    );
-    db.with_conn(|conn| db_put(conn, DbTable::KimiCommonConfig, "common", &value))
 }
 
 #[tauri::command]
@@ -875,9 +893,6 @@ pub async fn save_kimi_local_config(
     })?;
 
     let existing_common = get_common_config(db)?;
-    let existing_account_index = existing_common
-        .as_ref()
-        .and_then(|value| value.official_account_index);
     let root_dir = if input.clear_root_dir {
         None
     } else {
@@ -894,11 +909,7 @@ pub async fn save_kimi_local_config(
             conn,
             DbTable::KimiCommonConfig,
             "common",
-            &adapter::common_to_db_value(
-                &common_config,
-                root_dir.as_deref(),
-                existing_account_index,
-            ),
+            &adapter::common_to_db_value(&common_config, root_dir.as_deref()),
         )
     })?;
     runtime_location::refresh_runtime_location_cache_for_module_async(db, "kimi").await?;
@@ -1451,7 +1462,7 @@ async fn import_kimi_local_provider_from_files(
     // Adopt the common config too so later applies take over the whole file
     // state; an existing row (root_dir semantics) is never overwritten.
     if get_common_config(db)?.is_none() {
-        let common = adapter::common_to_db_value(&snapshot.common_config, None, None);
+        let common = adapter::common_to_db_value(&snapshot.common_config, None);
         db.with_conn(|conn| db_put(conn, DbTable::KimiCommonConfig, "common", &common))?;
     }
     Ok(Some(provider_id))

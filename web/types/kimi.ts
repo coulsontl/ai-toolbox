@@ -156,6 +156,11 @@ export interface KimiOfficialAccount {
   sortIndex?: number;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Mirrors the login that is live on disk but has no stored row yet. It can
+   * only be saved — never switched to (it is what is live) or deleted.
+   */
+  isVirtual?: boolean;
 }
 
 export interface KimiPlugin {

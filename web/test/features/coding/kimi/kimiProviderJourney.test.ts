@@ -256,23 +256,27 @@ test('journey: gateway re-engage for any save that rewrites live files', () => {
     'unapplied saves only touch the DB row; failover stays untouched');
 });
 
-test('journey: official login flow creates the official provider row once', () => {
+test('journey: starting a login writes no provider row', () => {
   const store = new InMemoryKimiProviderStore();
   store.localCategory = 'official';
   store.hasLocalCredentials = true;
 
-  // handleStartOfficialAccountAuth: no official provider in DB yet -> create one.
+  // The frontend used to create the official provider *before* the device flow
+  // started, so every cancelled login left an empty `Kimi Official` card behind.
+  // The row is now created by the backend once the exchange succeeds, which
+  // means starting a login must touch nothing.
   const officialInList = () => store.providers.find((provider) => provider.category === 'official');
   assert.equal(officialInList(), undefined);
+  assert.equal(store.providers.length, 0, 'a started login creates no rows');
 
+  // The row appears only when the login completes, and a second login reuses it
+  // rather than adding another.
   const created = store.create({
     name: 'Kimi Official',
     category: 'official',
     settingsConfig: JSON.stringify({ auth: { API_KEY: '' }, defaultModelKey: 'kimi-code/k3', providerConfigs: {} }),
   });
   assert.equal(created.category, 'official');
-
-  // Reopening the flow must find the existing official provider (no duplicate).
   assert.equal(officialInList()?.id, created.id);
 });
 

@@ -3,25 +3,24 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 /**
- * Drives the official-account card of the **real** Kimi page in a browser.
+ * Drives the official channel's account section of the **real** Kimi page in a
+ * browser.
  *
- * What this guards, and why the real page rather than the component:
+ * What this guards, and why the real page rather than the section component:
  *
- *  - **Placement.** The card is a member of the provider list, drawn at a slot
- *    derived from the merged ordering. A card-only fixture cannot see the slot
- *    arithmetic, and the defect this replaced was purely a placement mistake —
- *    the account area sat in the list footer while the user read it as a card.
- *  - **The merged drag index.** The drag indices come from `sortableItemIds`,
- *    not from `providers`. Using the provider list would silently write an
- *    index off by one — the card occupies a slot too — and nothing static
- *    would notice.
- *  - **The empty-list fallback.** The card is passed as both `children` and
- *    `alwaysVisible`; the two branches are exclusive. If only the first is
- *    wired, the sign-in entry disappears the moment the list is empty, and
- *    looking at a populated list would never show it.
+ *  - **The host.** The account list lives inside the official provider card, and
+ *    that card has to stay an ordinary list member — draggable, and counted like
+ *    any other card. A section-only fixture cannot see the list at all.
+ *  - **The row geometry.** The rows must end at the card's content edge and at
+ *    the header actions' edge. A block rendered inside the header's content
+ *    column is inset by the action links' width — the "empty space on the right"
+ *    defect that neither types nor snapshots can see.
+ *  - **The virtual row.** A login the app has never captured shows up as a
+ *    virtual row whose only action is save; once saved it must stop being
+ *    virtual, and the saved row must offer switch/delete instead.
  *
- * Labels are read off the rendered page rather than hardcoded, so re-wording
- * the card does not require editing this file.
+ * Labels are read off the rendered page rather than hardcoded, so re-wording the
+ * card does not require editing this file.
  */
 export async function verifyKimiOfficialAccountCard({ send, evaluate, baseUrl, artifactRoot }) {
   const checks = [];
@@ -79,84 +78,141 @@ export async function verifyKimiOfficialAccountCard({ send, evaluate, baseUrl, a
     await delay(300);
   };
 
-  // --- populated list: the card is a member, at its stored slot -------------
-  await openFixture('providers=3&accounts=2&accountIndex=0');
+  // --- the account section lives inside the official card -------------------
+  await openFixture('providers=all&accounts=2');
+  // Read after the first load: the fixture defines its globals when it boots.
+  const officialName = await fixture('OFFICIAL_PROVIDER_NAME');
+  const accountSectionTitle = await fixture('OFFICIAL_ACCOUNT_TITLE');
   await waitFor('kimiOfficialAccountFixture.renderedMembers().length === 4', 'four list members');
-  const title = await fixture('OFFICIAL_ACCOUNT_TITLE');
 
   check(
-    'the official-account card is drawn as the first member of the provider list',
+    'the official channel is an ordinary list member, first in created order',
     await fixture('renderedMembers()'),
-    [title, 'Provider A', 'Provider B', 'Provider C'],
+    [officialName, 'Provider A', 'Provider B', 'Provider C'],
   );
-  check('the card carries the same drag handle as the provider cards', await fixture(`hasHandle(${JSON.stringify(title)})`));
+  check(
+    'the official card carries the same drag handle as the provider cards',
+    await fixture(`hasHandle(${JSON.stringify(officialName)})`),
+  );
+  check(
+    'both saved accounts render a row inside the official card',
+    await fixture(`accountRowCount(${JSON.stringify(officialName)})`),
+    2,
+  );
   await screenshot('populated-list');
 
-  const cardButtons = await fixture(`cardButtonLabels(${JSON.stringify(title)})`);
-  check('the sign-in entry lives on the card, not in the list toolbar', cardButtons[0], '登录');
+  const cardButtons = await fixture(`cardButtonLabels(${JSON.stringify(officialName)})`);
+  check('the sign-in entry lives on the official card', cardButtons.includes('登录'));
   check(
-    'the list toolbar no longer carries an official-account button',
-    (await fixture('toolbarLabels()')).filter(label => label === title),
+    'the list toolbar carries no official-account entry',
+    (await fixture('toolbarLabels()')).filter(label => label === accountSectionTitle),
     [],
   );
   check(
-    'each saved account offers a switch and a delete action',
-    (await fixture(`cardButtonStates(${JSON.stringify(title)})`)).slice(1).map(button => button.label),
-    ['切换', '删除', '切换', '删除'],
+    'every saved account can be deleted',
+    cardButtons.filter(label => label === '删除').length,
+    2,
   );
   check(
-    'the applied account is the one whose actions are withheld',
-    (await fixture(`cardButtonStates(${JSON.stringify(title)})`)).slice(1).map(button => button.disabled),
-    [true, true, false, false],
+    'the account that is not in use offers a switch',
+    cardButtons.filter(label => label === '切换').length,
+    1,
+  );
+  // The applied row carries the "default" badge instead of an inert switch: a
+  // disabled "switch" next to "default" says the same thing twice.
+  check(
+    'the applied account offers no switch at all',
+    (await fixture(`cardButtonStates(${JSON.stringify(officialName)})`))
+      .filter(button => button.label === '切换' || button.label === '默认').map(button => button.label),
+    ['切换'],
   );
   check(
-    'the applied account is badged as the default rather than as an applied channel',
-    await fixture(`cardText(${JSON.stringify(title)})`).then(text => text.includes('默认')),
+    'the applied account is badged as the default',
+    await fixture(`cardText(${JSON.stringify(officialName)})`).then(text => text.includes('默认')),
   );
   check(
     'no sentence is rendered twice on the card',
-    await fixture(`cardRepeatedSentences(${JSON.stringify(title)})`),
+    await fixture(`cardRepeatedSentences(${JSON.stringify(officialName)})`),
     [],
   );
 
-  // --- dragging it past a provider card re-slots it ------------------------
-  await dragCard(title, 'Provider C');
+  // --- the rows span the card, not the header's content column --------------
+  const alignment = await fixture(`accountAlignment(${JSON.stringify(officialName)})`);
   check(
-    'dragging the card past every provider moves it to the bottom',
-    await fixture('waitForMembers(["Provider A","Provider B","Provider C",' + JSON.stringify(title) + '])'),
-    ['Provider A', 'Provider B', 'Provider C', title],
+    'the account rows end at the card content edge',
+    alignment.rowRight,
+    alignment.contentRight,
+  );
+  if (alignment.headerRight !== null) {
+    check(
+      'the account rows share the header actions\' right edge',
+      alignment.rowRight,
+      alignment.headerRight,
+    );
+  }
+
+  // --- a live login with no stored row is offered as save-only --------------
+  await openFixture('providers=all&accounts=virtual');
+  await waitFor('kimiOfficialAccountFixture.accountRowCount() === 1', 'the virtual row');
+  const virtualButtons = await fixture(`cardButtonStates(${JSON.stringify(officialName)})`);
+  check(
+    'the uncaptured live login is marked as the current login',
+    await fixture(`cardText(${JSON.stringify(officialName)})`).then(text => text.includes('当前登录')),
+  );
+  check(
+    'the virtual row offers save instead of switch or delete',
+    virtualButtons.filter(button => ['保存当前登录', '切换', '删除'].includes(button.label)).map(button => button.label),
+    ['保存当前登录'],
+  );
+  await screenshot('virtual-row');
+
+  // Saving captures it, which is what makes the virtual row disappear.
+  await evaluate(
+    `[...document.querySelectorAll('#kimi-providers button')]`
+    + `.find(button => button.textContent.includes('保存当前登录'))?.click()`,
+  );
+  await delay(600);
+  await waitFor(
+    `kimiOfficialAccountFixture.cardButtonLabels(${JSON.stringify(officialName)}).includes('切换')`,
+    'the saved row to offer switch',
+  );
+  check(
+    'saving turns the live login into a stored account with switch and delete',
+    (await fixture(`cardButtonLabels(${JSON.stringify(officialName)})`))
+      .filter(label => ['保存当前登录', '切换', '删除'].includes(label)).sort(),
+    ['删除', '切换'].sort(),
+  );
+
+  // --- dragging the official card reorders it among the providers -----------
+  await openFixture('providers=all&accounts=2');
+  await waitFor('kimiOfficialAccountFixture.renderedMembers().length === 4', 'four list members');
+  await dragCard(officialName, 'Provider C');
+  check(
+    'dragging the official card past every provider moves it to the bottom',
+    await fixture('waitForMembers(["Provider A","Provider B","Provider C",' + JSON.stringify(officialName) + '])'),
+    ['Provider A', 'Provider B', 'Provider C', officialName],
+  );
+  check(
+    'the reorder payload carries provider ids only — the card is a provider',
+    await fixture('lastReorder()'),
+    ['provider-a', 'provider-b', 'provider-c', 'provider-official'],
   );
   await screenshot('dragged-to-bottom');
-  check(
-    'the new slot is persisted as a provider count, not as the card index',
-    await fixture('savedIndices()'),
-    [3],
-  );
-  check('the backend state matches the slot the user sees', await fixture('storedIndex()'), 3);
 
-  // --- restored slot: index 2 puts it between B and C ----------------------
-  await openFixture('providers=3&accounts=2&accountIndex=2');
-  await waitFor('kimiOfficialAccountFixture.renderedMembers().length === 4', 'four list members');
+  // --- no official row: the list still works, and there is no card ----------
+  await openFixture('providers=custom-only&accounts=0');
+  await waitFor('kimiOfficialAccountFixture.renderedMembers().length === 3', 'three provider cards');
   check(
-    'a stored index of 2 draws the card below the second provider',
+    'an install with no official channel renders no official card',
     await fixture('renderedMembers()'),
-    ['Provider A', 'Provider B', title, 'Provider C'],
-  );
-
-  // --- empty list: the card is still the only way in ------------------------
-  await openFixture('providers=0&accounts=0');
-  await waitFor('kimiOfficialAccountFixture.renderedMembers().length === 1', 'the card alone');
-  check(
-    'an empty provider list still renders the card, so the sign-in entry is reachable',
-    await fixture('renderedMembers()'),
-    [title],
+    ['Provider A', 'Provider B', 'Provider C'],
   );
   check(
-    'with no account saved the card still offers sign-in',
-    (await fixture(`cardButtonLabels(${JSON.stringify(title)})`))[0],
-    '登录',
+    'no account section is rendered anywhere',
+    await fixture('accountRowCount()'),
+    0,
   );
-  await screenshot('empty-list');
+  await screenshot('no-official-channel');
 
   return checks;
 }

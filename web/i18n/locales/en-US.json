@@ -1824,6 +1824,13 @@
       "confirmDeleteContent": "The local extension file or directory will be deleted from the extensions folder.",
       "updateResultTitle": "Extension update result",
       "emptyCommandOutput": "The command produced no output"
+    },
+    "officialAccount": {
+      "refresh": "Refresh",
+      "details": "Details",
+      "switch": "Switch",
+      "saveCurrent": "Save current login",
+      "default": "Default"
     }
   },
   "sessionManager": {
@@ -5978,7 +5985,11 @@
       "login": "Sign in",
       "empty": "No official account is signed in yet.",
       "applyHint": "Switch Kimi to this account",
-      "hint": "Switching writes this account's credentials into Kimi's config, replacing the current login. It is unavailable while the gateway owns the config file."
+      "hint": "Switching writes this account's credentials into Kimi's config, replacing the current login. It is unavailable while the gateway owns the config file.",
+      "rowLabel": "Signed in {{time}}",
+      "currentTag": "Current login",
+      "savedTag": "Saved",
+      "saveSuccess": "Current login saved"
     },
     "officialAccounts": "Official Accounts",
     "sessions": "Sessions",

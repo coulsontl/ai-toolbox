@@ -68,10 +68,6 @@ pub struct KimiProviderInput {
 pub struct KimiCommonConfig {
     pub config: String,
     pub root_dir: Option<String>,
-    /// Where the official-account card sits in the provider list, counted as
-    /// the number of provider cards above it. UI state, not Kimi state — it
-    /// lives here because this record is the module's only singleton row.
-    pub official_account_index: Option<i64>,
     pub updated_at: String,
 }
 
@@ -174,4 +170,10 @@ pub struct KimiOfficialAccount {
     pub sort_index: Option<i32>,
     pub created_at: String,
     pub updated_at: String,
+    /// Synthesized from the live credential file rather than stored: the CLI is
+    /// signed in with a login this app has never captured. It has no row id, so
+    /// it can only be saved (`save_kimi_official_local_account`) — never applied
+    /// or deleted. Always `false` for rows read from the database.
+    #[serde(default)]
+    pub is_virtual: bool,
 }

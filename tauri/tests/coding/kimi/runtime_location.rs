@@ -133,7 +133,7 @@ fn kimi_custom_db_root_dir_takes_highest_precedence() {
     let custom_root = temp_db_dir.path().join("db_kimi_dir");
     fs::create_dir_all(&custom_root).expect("create custom root");
 
-    let common_val = adapter::common_to_db_value("", Some(custom_root.to_str().unwrap()), None);
+    let common_val = adapter::common_to_db_value("", Some(custom_root.to_str().unwrap()));
     state
         .with_conn(|conn| db_put(conn, DbTable::KimiCommonConfig, "common", &common_val))
         .expect("db_put common");

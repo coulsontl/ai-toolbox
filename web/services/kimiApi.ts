@@ -62,11 +62,6 @@ export async function saveKimiCommonConfig(input: KimiCommonConfigInput): Promis
   await invoke('save_kimi_common_config', { input });
 }
 
-/** Persists where the official-account card sits among the provider cards. */
-export async function saveKimiOfficialAccountIndex(index: number): Promise<void> {
-  await invoke('save_kimi_official_account_index', { index });
-}
-
 export async function listKimiOfficialAccounts(): Promise<KimiOfficialAccount[]> {
   return await invoke<KimiOfficialAccount[]>('list_kimi_official_accounts');
 }
@@ -79,12 +74,18 @@ export async function deleteKimiOfficialAccount(id: string): Promise<void> {
   await invoke('delete_kimi_official_account', { accountId: id });
 }
 
-export async function startKimiOfficialAccountDeviceAuth(
-  providerId: string,
-): Promise<KimiDeviceAuthStartResult> {
-  return await invoke<KimiDeviceAuthStartResult>('start_kimi_official_account_device_auth', {
-    providerId,
-  });
+/**
+ * Starts a device-code login. Takes no provider: the official channel row is
+ * created by the backend once the exchange succeeds, so an abandoned login
+ * leaves nothing behind.
+ */
+export async function startKimiOfficialAccountDeviceAuth(): Promise<KimiDeviceAuthStartResult> {
+  return await invoke<KimiDeviceAuthStartResult>('start_kimi_official_account_device_auth');
+}
+
+/** Stores the login that is live on disk as a real account. */
+export async function saveKimiOfficialLocalAccount(): Promise<KimiOfficialAccount> {
+  return await invoke<KimiOfficialAccount>('save_kimi_official_local_account');
 }
 
 export async function getKimiOfficialAccountAuthStatus(sessionId: string): Promise<string> {

@@ -59,9 +59,6 @@ pub fn common_from_db_value(value: Value) -> KimiCommonConfig {
             .unwrap_or("")
             .to_string(),
         root_dir: optional_string(&value, "root_dir"),
-        official_account_index: value
-            .get("official_account_index")
-            .and_then(Value::as_i64),
         updated_at: value
             .get("updated_at")
             .and_then(Value::as_str)
@@ -70,21 +67,11 @@ pub fn common_from_db_value(value: Value) -> KimiCommonConfig {
     }
 }
 
-pub fn common_to_db_value(
-    config: &str,
-    root_dir: Option<&str>,
-    official_account_index: Option<i64>,
-) -> Value {
+pub fn common_to_db_value(config: &str, root_dir: Option<&str>) -> Value {
     let mut map = Map::new();
     map.insert("config".to_string(), Value::String(config.to_string()));
     if let Some(root_dir) = root_dir.filter(|value| !value.trim().is_empty()) {
         map.insert("root_dir".to_string(), Value::String(root_dir.to_string()));
-    }
-    if let Some(index) = official_account_index {
-        map.insert(
-            "official_account_index".to_string(),
-            Value::Number(index.max(0).into()),
-        );
     }
     map.insert(
         "updated_at".to_string(),

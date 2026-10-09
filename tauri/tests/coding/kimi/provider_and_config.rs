@@ -4,8 +4,8 @@ use std::sync::{LazyLock, Mutex};
 use ai_toolbox_lib::coding::kimi::adapter;
 use ai_toolbox_lib::coding::kimi::commands::{
     apply_kimi_provider_to_file, delete_kimi_provider_internal, disable_kimi_prompt_runtime,
-    list_kimi_providers_for_db, write_common_config_without_provider,
-    write_kimi_prompt_and_mark_applied,
+    ensure_kimi_official_provider, list_kimi_providers_for_db,
+    write_common_config_without_provider, write_kimi_prompt_and_mark_applied,
 };
 use ai_toolbox_lib::coding::kimi::official_accounts;
 use ai_toolbox_lib::coding::kimi::types::{
@@ -36,7 +36,7 @@ fn setup_test_env() -> (TempDir, SqliteDbState) {
     let state = SqliteDbState::in_memory_for_test().expect("sqlite state");
 
     // Configure the custom root_dir in KimiCommonConfig so all commands point to temp_dir
-    let common_val = adapter::common_to_db_value("", Some(temp_dir.path().to_str().unwrap()), None);
+    let common_val = adapter::common_to_db_value("", Some(temp_dir.path().to_str().unwrap()));
     state
         .with_conn(|conn| db_put(conn, DbTable::KimiCommonConfig, "common", &common_val))
         .expect("db_put common config");
@@ -460,7 +460,7 @@ max_steps = 50
 temperature = 0.7
 "#;
     let common_val =
-        adapter::common_to_db_value(common_toml, Some(temp_dir.path().to_str().unwrap()), None);
+        adapter::common_to_db_value(common_toml, Some(temp_dir.path().to_str().unwrap()));
     state
         .with_conn(|conn| db_put(conn, DbTable::KimiCommonConfig, "common", &common_val))
         .expect("db_put common");
@@ -600,7 +600,10 @@ fn official_account_credentials_file_written_and_read() {
     let (temp_dir, state) = setup_test_env();
 
     // Production write path: write_credential_file persists the account's
-    // auth_snapshot under credentials/<name>.json with 0600 permissions.
+    // auth_snapshot under the fixed credentials/kimi-code.json with 0600
+    // permissions. The name is deliberately *not* taken from the account row —
+    // it is the storage key the real CLI resolves its login through, which is
+    // what lets several accounts exist at once.
     let snapshot = json!({
         "access_token": "tok_official_secret_123",
         "refresh_token": "ref_official_456",
@@ -609,7 +612,7 @@ fn official_account_credentials_file_written_and_read() {
     let account = KimiOfficialAccount {
         id: "account_kimi_official".to_string(),
         provider_id: "kimi_official".to_string(),
-        name: "Kimi Official Pro".to_string(),
+        name: "a-name-that-must-not-become-a-file-name".to_string(),
         kind: "official".to_string(),
         email: None,
         subject: None,
@@ -628,16 +631,22 @@ fn official_account_credentials_file_written_and_read() {
         sort_index: Some(0),
         created_at: "2026-03-31T00:00:00Z".to_string(),
         updated_at: "2026-03-31T00:00:00Z".to_string(),
+        is_virtual: false,
     };
 
     block_on(official_accounts::write_credential_file(&state, &account))
         .expect("write credential file");
 
-    let cred_file = temp_dir
-        .path()
-        .join("credentials")
-        .join(format!("{}.json", account.name));
+    let cred_file = temp_dir.path().join("credentials").join("kimi-code.json");
     assert!(cred_file.exists());
+    assert!(
+        !temp_dir
+            .path()
+            .join("credentials")
+            .join(format!("{}.json", account.name))
+            .exists(),
+        "the account name must never become a credential file name"
+    );
     let read_back: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&cred_file).unwrap()).unwrap();
     assert_eq!(read_back["access_token"], "tok_official_secret_123");
@@ -658,10 +667,11 @@ fn legacy_credential_names_are_migrated_to_fixed_file_name() {
     let _guard = KIMI_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let (temp_dir, state) = setup_test_env();
 
-    // Rows created before the credential name was fixed store
-    // `kimi-<provider_id>`; the real Kimi CLI only reads
-    // credentials/kimi-code.json, so the migration must adopt both the row
-    // and the on-disk file.
+    // Rows used to be named after their credential file. An older build
+    // therefore left `credentials/<old name>.json` next to them, and the real
+    // Kimi CLI never reads that file — it resolves its login through the fixed
+    // `kimi-code` key. The migration renames the file. The row itself keeps its
+    // name: `name` is a display label now, not a file name.
     let snapshot = json!({
         "access_token": "tok_legacy",
         "refresh_token": "ref_legacy",
@@ -699,8 +709,8 @@ fn legacy_credential_names_are_migrated_to_fixed_file_name() {
         official_accounts::list_kimi_official_accounts_with_state(&state).expect("list accounts");
     assert_eq!(accounts.len(), 1);
     assert_eq!(
-        accounts[0].name, "kimi-code",
-        "row must adopt the fixed name"
+        accounts[0].name, "kimi-managed-kimi-code",
+        "the row keeps its name — it is a label, not a file name"
     );
     assert!(
         !legacy_file.exists(),
@@ -754,13 +764,66 @@ fn put_provider_row(state: &SqliteDbState, id: &str, category: &str, is_applied:
         .expect("db_put provider");
 }
 
+/// Store a login the way a completed device flow does, and read it back.
+///
+/// Mirrors `store_official_account`'s two load-bearing rules: the row is matched
+/// by credential fingerprint (so re-login of the same login updates rather than
+/// appends), and the official channel row is created on demand.
+fn store_login(state: &SqliteDbState, snapshot: &serde_json::Value) -> KimiOfficialAccount {
+    let provider = ensure_kimi_official_provider(state).expect("ensure provider");
+    let stored = snapshot.to_string();
+    let existing = official_accounts::list_kimi_official_accounts_with_state(state)
+        .expect("list accounts")
+        .into_iter()
+        .find(|account| {
+            account.provider_id == provider.id
+                && account
+                    .auth_snapshot
+                    .as_deref()
+                    .is_some_and(|existing| existing == stored)
+        });
+    let id = existing
+        .map(|account| account.id)
+        .unwrap_or_else(|| format!("account_{}", account_id_suffix(&stored)));
+    let now = "2026-03-31T00:00:00Z".to_string();
+    let content = json!({
+        "provider_id": provider.id,
+        "name": "",
+        "kind": "official",
+        "auth_snapshot": stored,
+        "expires_at": 4102444800i64,
+        "is_applied": false,
+        "sort_index": 0,
+        "created_at": now,
+        "updated_at": now,
+    });
+    state
+        .with_conn(|conn| db_put(conn, DbTable::KimiOfficialAccount, &id, &content))
+        .expect("db_put account");
+    official_accounts::list_kimi_official_accounts_with_state(state)
+        .expect("list accounts")
+        .into_iter()
+        .find(|account| account.id == id)
+        .expect("stored account")
+}
+
+/// A stable row id derived from the snapshot, so storing the same login twice in
+/// a test lands on the same row the way fingerprint matching does in production.
+fn account_id_suffix(snapshot: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    snapshot.hash(&mut hasher);
+    hasher.finish()
+}
+
 #[test]
 fn live_cli_login_is_adopted_as_the_applied_account() {
     let _guard = KIMI_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let (temp_dir, state) = setup_test_env();
 
-    // The CLI signed in and wrote its own credentials; the app has no account
-    // row, so the official-account card would claim nothing is signed in.
+    // A fresh install: the CLI signed in and wrote its own credentials, the app
+    // has no provider rows and no account rows, so the list would otherwise show
+    // nothing while the CLI is in fact logged in.
     let snapshot = json!({
         "access_token": "tok_live",
         "refresh_token": "ref_live",
@@ -768,19 +831,28 @@ fn live_cli_login_is_adopted_as_the_applied_account() {
         "expires_at": 4102444800i64,
     });
     write_live_credential_file(temp_dir.path(), &snapshot);
-    put_provider_row(&state, "official_provider", "official", true);
 
     block_on(official_accounts::adopt_live_login_as_account(&state)).expect("adopt live login");
+
+    // The official channel itself has to exist before an account can hang off
+    // it, and it is what the live config.toml already points at.
+    let providers = list_kimi_providers_for_db(&state).expect("list providers");
+    assert_eq!(providers.len(), 1, "the official channel must be imported");
+    assert_eq!(providers[0].category, "official");
+    assert!(providers[0].is_applied);
 
     let accounts =
         official_accounts::list_kimi_official_accounts_with_state(&state).expect("list accounts");
     assert_eq!(accounts.len(), 1, "the live login must become one account");
     let account = &accounts[0];
-    assert_eq!(account.provider_id, "official_provider");
-    assert_eq!(account.name, "kimi-code");
+    assert_eq!(account.provider_id, providers[0].id);
+    assert_eq!(
+        account.name, "",
+        "there is no identity to label the row with — the frontend names it"
+    );
     assert!(
         account.is_applied,
-        "an applied official provider means this login is the live one"
+        "the CLI's live login is the account in use"
     );
     assert_eq!(account.expires_at, Some(4102444800));
     let stored: serde_json::Value =
@@ -795,8 +867,7 @@ fn live_cli_login_is_adopted_as_the_applied_account() {
 fn live_login_adoption_is_a_no_op_without_a_usable_official_login() {
     let _guard = KIMI_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
-    // An existing account row means the app already owns this state; adopting
-    // again would create a second row sharing one credential file name.
+    // An existing account row means the app already owns this state.
     let (temp_dir, state) = setup_test_env();
     write_live_credential_file(
         temp_dir.path(),
@@ -805,7 +876,7 @@ fn live_login_adoption_is_a_no_op_without_a_usable_official_login() {
     put_provider_row(&state, "official_provider", "official", true);
     let existing = json!({
         "provider_id": "official_provider",
-        "name": "kimi-code",
+        "name": "",
         "kind": "official",
         "is_applied": true,
         "sort_index": 0,
@@ -857,6 +928,156 @@ fn live_login_adoption_is_a_no_op_without_a_usable_official_login() {
             .expect("list")
             .is_empty(),
         "an empty access token must not be adopted"
+    );
+}
+
+#[test]
+fn adopt_is_a_no_op_when_the_install_already_has_provider_rows() {
+    let _guard = KIMI_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let (temp_dir, state) = setup_test_env();
+
+    // Someone who deliberately switched to a relay keeps that choice: a login
+    // that appears later is surfaced by the virtual row instead of being
+    // imported, so nothing is written without being asked for.
+    write_live_credential_file(
+        temp_dir.path(),
+        &json!({ "access_token": "tok_live", "refresh_token": "ref_live" }),
+    );
+    put_provider_row(&state, "custom_provider", "custom", true);
+
+    block_on(official_accounts::adopt_live_login_as_account(&state)).expect("adopt");
+
+    assert_eq!(
+        list_kimi_providers_for_db(&state).expect("list providers").len(),
+        1,
+        "an existing install must not gain an official channel"
+    );
+    assert!(
+        official_accounts::list_kimi_official_accounts_with_state(&state)
+            .expect("list")
+            .is_empty()
+    );
+}
+
+#[test]
+fn the_official_provider_row_is_created_on_demand_and_reused() {
+    let _guard = KIMI_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let (_temp_dir, state) = setup_test_env();
+
+    // Signing in must not require the caller to have created a row first — that
+    // requirement is what used to leave an empty `Kimi Official` shell behind
+    // every time a login was cancelled.
+    let first = ensure_kimi_official_provider(&state).expect("create official provider");
+    assert_eq!(first.category, "official");
+    assert!(!first.is_applied, "creating the row must not apply it");
+    assert_eq!(
+        list_kimi_providers_for_db(&state).expect("list").len(),
+        1,
+        "exactly one row is created"
+    );
+
+    let second = ensure_kimi_official_provider(&state).expect("reuse official provider");
+    assert_eq!(second.id, first.id, "the existing row is reused");
+    assert_eq!(list_kimi_providers_for_db(&state).expect("list").len(), 1);
+}
+
+#[test]
+fn several_logins_share_one_official_row_and_keep_their_own_rows() {
+    let _guard = KIMI_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let (_temp_dir, state) = setup_test_env();
+
+    let first_login = json!({
+        "access_token": "tok_one",
+        "refresh_token": "ref_one",
+        "expires_at": 4102444800i64,
+    });
+    let second_login = json!({
+        "access_token": "tok_two",
+        "refresh_token": "ref_two",
+        "expires_at": 4102444800i64,
+    });
+
+    let first = store_login(&state, &first_login);
+    let second = store_login(&state, &second_login);
+    assert_ne!(first.id, second.id, "two logins are two accounts");
+    assert_eq!(
+        first.provider_id, second.provider_id,
+        "both hang off the same official channel"
+    );
+    assert_eq!(
+        list_kimi_providers_for_db(&state).expect("list").len(),
+        1,
+        "the channel row is not duplicated per account"
+    );
+
+    // Re-login of an existing account updates that account instead of adding a
+    // third: the fingerprint is what identifies it, since the grant carries no
+    // identity of its own.
+    let again = store_login(&state, &first_login);
+    assert_eq!(again.id, first.id);
+    assert_eq!(
+        official_accounts::list_kimi_official_accounts_with_state(&state)
+            .expect("list")
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn a_live_login_that_no_stored_account_represents_shows_up_as_a_virtual_row() {
+    let _guard = KIMI_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let (temp_dir, state) = setup_test_env();
+
+    let stored_login = json!({
+        "access_token": "tok_stored",
+        "refresh_token": "ref_stored",
+        "expires_at": 4102444800i64,
+    });
+    store_login(&state, &stored_login);
+
+    // The CLI signs in again, replacing the live credential file. Nothing in the
+    // account list matches it, so the list has to say so — otherwise it reports
+    // the old account as the live one.
+    let live_login = json!({
+        "access_token": "tok_live",
+        "refresh_token": "ref_live",
+        "expires_at": 4102444800i64,
+    });
+    write_live_credential_file(temp_dir.path(), &live_login);
+
+    let listed = block_on(official_accounts::list_kimi_official_accounts_for_frontend(&state))
+        .expect("list for frontend");
+    assert_eq!(listed.len(), 2, "the saved login plus the live one");
+    let virtual_row = listed
+        .iter()
+        .find(|account| account.is_virtual)
+        .expect("the unrepresented live login must be listed");
+    assert_eq!(virtual_row.id, "__local__");
+    assert!(
+        virtual_row.provider_id.is_empty(),
+        "a virtual row has no provider — it mirrors the live file"
+    );
+    assert!(
+        !virtual_row.is_applied,
+        "the switch action must not be offered for the login already in use"
+    );
+
+    // Saving it captures it; the virtual row then has a stored twin and stops
+    // being listed.
+    let saved = block_on(official_accounts::save_kimi_official_local_login(&state))
+        .expect("save live login");
+    assert!(!saved.is_virtual);
+    assert_eq!(
+        saved.provider_id,
+        list_kimi_providers_for_db(&state).expect("list providers")[0].id,
+        "the saved account hangs off the official channel"
+    );
+    let after_save = block_on(official_accounts::list_kimi_official_accounts_for_frontend(&state))
+        .expect("list for frontend");
+    assert_eq!(after_save.len(), 2, "the saved login became a real account");
+    assert!(
+        after_save.iter().all(|account| !account.is_virtual),
+        "the virtual row disappears once its login is stored"
     );
 }
 

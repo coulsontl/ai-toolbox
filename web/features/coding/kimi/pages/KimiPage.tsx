@@ -26,7 +26,6 @@ import {
   SyncOutlined,
 } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
-import { openUrl } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import SectionSidebarLayout, {
   type SidebarSectionMarker,
@@ -89,7 +88,7 @@ import {
   revealKimiConfigFolder,
   saveKimiCommonConfig,
   saveKimiLocalConfig,
-  saveKimiOfficialAccountIndex,
+  saveKimiOfficialLocalAccount,
   selectKimiProvider,
   startKimiOfficialAccountDeviceAuth,
   toggleKimiProviderDisabled,
@@ -120,16 +119,12 @@ import {
 import KimiCommonConfigModal from '../components/KimiCommonConfigModal';
 import KimiDeviceAuthModal from '../components/KimiDeviceAuthModal';
 import KimiModelFormModal from '../components/KimiModelFormModal';
-import KimiOfficialAccountCard, {
-  KIMI_OFFICIAL_ACCOUNT_CARD_ID,
-} from '../components/KimiOfficialAccountCard';
 import KimiPluginsPanel from '../components/KimiPluginsPanel';
 import KimiProviderCard from '../components/KimiProviderCard';
 import KimiProviderFormModal from '../components/KimiProviderFormModal';
 import {
   buildKimiSettingsConfig,
   extractKimiBaseUrl,
-  KIMI_OFFICIAL_DEFAULT_MODEL_KEY,
   KIMI_OFFICIAL_DEFAULT_MODEL_MAX_CONTEXT_SIZE,
   parseKimiSettingsConfig,
 } from '../utils/settingsConfig';
@@ -148,17 +143,6 @@ import { saveKimiProviderCatalogWithGatewayReengage } from '../utils/kimiProvide
 
 const { Text } = Typography;
 
-/**
- * Template used when the official-login flow must create the official provider
- * row first. Must pass backend validation (`validate_provider_settings`).
- */
-const KIMI_OFFICIAL_PROVIDER_TEMPLATE: KimiProviderInput = {
-  name: 'Kimi Official',
-  category: 'official',
-  settingsConfig: `{\n  "auth": { "API_KEY": "" },\n  "defaultModelKey": "${KIMI_OFFICIAL_DEFAULT_MODEL_KEY}",\n  "providerConfigs": {}\n}`,
-  sortIndex: 0,
-};
-
 const KimiPage: React.FC = () => {
   const { t } = useTranslation();
   const { shareProvider, shareModal } = useProviderSharing('kimi', () => loadConfig());
@@ -171,10 +155,10 @@ const KimiPage: React.FC = () => {
   const [plugins, setPlugins] = React.useState<KimiPlugin[]>([]);
   const [officialAccounts, setOfficialAccounts] = React.useState<KimiOfficialAccount[]>([]);
   const [commonConfig, setCommonConfig] = React.useState<KimiCommonConfig | null>(null);
-  const [officialAccountIndex, setOfficialAccountIndex] = React.useState(0);
   const [applyingOfficialAccountId, setApplyingOfficialAccountId] = React.useState<string | null>(
     null,
   );
+  const [savingOfficialAccountId, setSavingOfficialAccountId] = React.useState<string | null>(null);
   const [appliedProviderId, setAppliedProviderId] = React.useState('');
   const [gatewayCliStatus, setGatewayCliStatus] = React.useState<GatewayCliTakeoverStatus | null>(null);
   const [providerListCollapsed, setProviderListCollapsed] = React.useState(false);
@@ -260,7 +244,6 @@ const KimiPage: React.FC = () => {
       setPlugins(pluginList);
       setOfficialAccounts(accountList);
       setCommonConfig(nextCommonConfig);
-      setOfficialAccountIndex(nextCommonConfig?.officialAccountIndex ?? 0);
       setAppliedProviderId(providerList.find((provider) => provider.isApplied)?.id ?? '');
       // Drop statuses of providers that no longer exist so a delete/reload
       // cannot leave stale badges behind.
@@ -682,30 +665,11 @@ const KimiPage: React.FC = () => {
     [providers, providerKeyword, sortMode, lastUsedAt],
   );
 
-  /**
-   * Ids of every sortable member of the list, in the order they are drawn —
-   * provider cards plus the official-account card at its stored slot.
-   *
-   * Drag indices must come from this, not from `visibleProviders`: the
-   * official-account card is one of the items and shifts every index below it.
-   */
-  const sortableItemIds = React.useMemo(() => {
-    const ids: string[] = visibleProviders.map((provider) => provider.id);
-    ids.splice(Math.min(officialAccountIndex, ids.length), 0, KIMI_OFFICIAL_ACCOUNT_CARD_ID);
-    return ids;
-  }, [visibleProviders, officialAccountIndex]);
-
-  /**
-   * The slot the official-account card is drawn in, counted in *visible*
-   * providers so a search that hides cards does not push it past the end.
-   */
-  const officialAccountSlot = React.useMemo(() => {
-    const visibleIds = new Set(visibleProviders.map((provider) => provider.id));
-    const above = providers
-      .slice(0, Math.min(officialAccountIndex, providers.length))
-      .filter((provider) => visibleIds.has(provider.id));
-    return Math.min(above.length, visibleProviders.length);
-  }, [providers, officialAccountIndex, visibleProviders]);
+  /** Ids of every sortable member of the list, in the order they are drawn. */
+  const sortableItemIds = React.useMemo(
+    () => visibleProviders.map((provider) => provider.id),
+    [visibleProviders],
+  );
 
   const handleBatchDeleteProviders = React.useCallback(
     async (ids: string[]): Promise<boolean> => {
@@ -871,34 +835,24 @@ const KimiPage: React.FC = () => {
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
-    // Indices come from the merged ordering, not from `providers`: the official
-    // -account card is one of the items and shifts every index below it.
     const oldIndex = sortableItemIds.indexOf(String(active.id));
     const newIndex = sortableItemIds.indexOf(String(over.id));
     if (oldIndex < 0 || newIndex < 0) return;
 
-    const nextIds = arrayMove(sortableItemIds, oldIndex, newIndex);
-    const nextProviderIds = nextIds.filter((id) => id !== KIMI_OFFICIAL_ACCOUNT_CARD_ID);
-    const nextCardIndex = nextIds.indexOf(KIMI_OFFICIAL_ACCOUNT_CARD_ID);
+    const nextProviderIds = arrayMove(sortableItemIds, oldIndex, newIndex);
     const providerById = new Map(providers.map((provider) => [provider.id, provider]));
     const previousProviders = [...providers];
-    const previousCardIndex = officialAccountIndex;
 
     setProviders(
       nextProviderIds
         .map((id) => providerById.get(id))
         .filter((provider): provider is KimiProvider => Boolean(provider)),
     );
-    setOfficialAccountIndex(nextCardIndex);
 
     try {
       await reorderKimiProviders(nextProviderIds);
-      if (nextCardIndex !== previousCardIndex) {
-        await saveKimiOfficialAccountIndex(nextCardIndex);
-      }
     } catch (error) {
       setProviders(previousProviders);
-      setOfficialAccountIndex(previousCardIndex);
       message.error(error instanceof Error ? error.message : String(error));
     }
   };
@@ -921,30 +875,34 @@ const KimiPage: React.FC = () => {
     }
   };
 
+  /**
+   * Start a sign-in. Nothing is written yet — not even the provider row, which
+   * the backend creates once the exchange succeeds. Creating it up front is
+   * what used to leave an empty `Kimi Official` card behind every cancelled
+   * login.
+   */
   const handleStartOfficialAccountAuth = async () => {
-    // The `__local__` projection is not a real DB row — the backend cannot
-    // resolve it as an official provider, so only look at persisted rows.
-    let officialProvider = providers.find(
-      (p) => p.category === 'official' && p.id !== KIMI_LOCAL_PROVIDER_ID,
-    );
-    if (!officialProvider) {
-      try {
-        const newProvider = await createKimiProvider({ ...KIMI_OFFICIAL_PROVIDER_TEMPLATE });
-        officialProvider = newProvider;
-        setProviders((prev) => [...prev, newProvider]);
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        message.error(errorMessage || t('common.error'));
-        return;
-      }
-    }
-
     try {
-      const session = await startKimiOfficialAccountDeviceAuth(officialProvider.id);
+      const session = await startKimiOfficialAccountDeviceAuth();
       setDeviceAuthSession(session);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       message.error(errorMessage || t('common.error'));
+    }
+  };
+
+  /** Capture the login that is live on disk but has no account row yet. */
+  const handleSaveOfficialLocalAccount = async (account: KimiOfficialAccount) => {
+    setSavingOfficialAccountId(account.id);
+    try {
+      await saveKimiOfficialLocalAccount();
+      message.success(t('kimi.officialAccount.saveSuccess'));
+      await loadConfig(true);
+      await refreshTrayMenu();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSavingOfficialAccountId(null);
     }
   };
 
@@ -971,24 +929,6 @@ const KimiPage: React.FC = () => {
       message.error(errorMessage || t('common.error'));
     }
   };
-
-  /**
-   * The official-account card, rendered both in its slot among the provider
-   * cards and (via `alwaysVisible`) when the list itself is empty or filtered
-   * away — the only way to reach the sign-in entry from an empty list.
-   */
-  const officialAccountCard = (
-    <KimiOfficialAccountCard
-      accounts={officialAccounts}
-      loginPending={deviceAuthSession !== null}
-      applyingAccountId={applyingOfficialAccountId}
-      sortableId={providerDragDisabled ? undefined : KIMI_OFFICIAL_ACCOUNT_CARD_ID}
-      onLogin={() => void handleStartOfficialAccountAuth()}
-      onApply={(account) => void handleApplyOfficialAccount(account)}
-      onDelete={handleDeleteOfficialAccount}
-      onViewUsage={() => void openUrl('https://www.kimi.com/code/console')}
-    />
-  );
 
   return (
     <SectionSidebarLayout
@@ -1071,7 +1011,6 @@ const KimiPage: React.FC = () => {
           />
         }
         hint={<div>{t('kimi.pageHint')}</div>}
-        alwaysVisible={officialAccountCard}
       >
         <DndContext
           sensors={providerBatchDragDisabled ? [] : sensors}
@@ -1081,11 +1020,8 @@ const KimiPage: React.FC = () => {
         >
           <SortableContext items={sortableItemIds} strategy={verticalListSortingStrategy}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {visibleProviders.map((provider, providerIndex) => (
+              {visibleProviders.map((provider) => (
                 <React.Fragment key={provider.id}>
-                  {/* The card shares this ordering with the provider cards, so
-                      it is rendered in place rather than pinned above them. */}
-                  {providerIndex === officialAccountSlot && officialAccountCard}
                   <KimiProviderCard
                     provider={provider}
                     isApplied={provider.id === appliedProviderId}
@@ -1119,11 +1055,17 @@ const KimiPage: React.FC = () => {
                       && Boolean(extractKimiBaseUrl(provider.settingsConfig))
                     }
                     dragDisabled={providerDragDisabled}
+                    officialAccounts={officialAccounts}
+                    onOfficialAccountLogin={() => void handleStartOfficialAccountAuth()}
+                    onOfficialAccountApply={(account) => void handleApplyOfficialAccount(account)}
+                    onOfficialAccountDelete={handleDeleteOfficialAccount}
+                    onOfficialAccountSaveLocal={(account) => void handleSaveOfficialLocalAccount(account)}
+                    loginPending={deviceAuthSession !== null}
+                    applyingOfficialAccountId={applyingOfficialAccountId}
+                    savingOfficialAccountId={savingOfficialAccountId}
                   />
                 </React.Fragment>
               ))}
-              {/* Past the last provider, so the card can sit at the bottom. */}
-              {officialAccountSlot >= visibleProviders.length && officialAccountCard}
             </div>
           </SortableContext>
         </DndContext>
