@@ -154,6 +154,10 @@ pub struct KimiOfficialAccount {
     pub kind: String,
     pub email: Option<String>,
     pub subject: Option<String>,
+    /// Display name from the managed platform's `/me`. `subject` is the stable
+    /// identity; this is what the row is labelled with, and it is absent for a
+    /// row whose profile could not be read.
+    pub nickname: Option<String>,
     #[serde(skip_serializing)]
     pub auth_snapshot: Option<String>,
     pub token_endpoint: Option<String>,

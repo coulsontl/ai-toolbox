@@ -389,12 +389,9 @@ fn set_auth_session_status(session_id: &str, status: &str) {
 
 /// The credential values a login can be recognised by.
 ///
-/// Kimi's OAuth grants no identity — the CLI's own `OAuthToken` holds only
-/// tokens and an expiry, and the grant has no userinfo endpoint — so "the same
-/// account" can only mean "the same credentials". The refresh token decides
-/// when both sides carry one; otherwise the access token does. A device-code
-/// exchange always mints a fresh pair, so two logins with nothing in common are
-/// two accounts, not one.
+/// Used as the *fallback* fingerprint when a login carries no profile yet —
+/// see `fetch_managed_profile`. Two logins are the same account when they name
+/// the same `user_id`; tokens decide only when that name is missing.
 fn snapshot_token<'a>(snapshot: &'a Value, key: &str) -> Option<&'a str> {
     snapshot
         .get(key)
@@ -412,18 +409,112 @@ fn same_official_login(left: &Value, right: &Value) -> bool {
     false
 }
 
+/// What the managed platform says about the account behind an access token.
+///
+/// `GET {base}/me` — the endpoint the 2.x CLI reads its own profile from. The
+/// nickname is what makes an account list legible, and the user id is a real
+/// identity (unlike the tokens, which rotate on every refresh). Never fatal:
+/// a missing nickname only means the row keeps the fallback label.
+#[derive(Debug, Clone, Default)]
+pub struct KimiManagedProfile {
+    pub user_id: Option<String>,
+    pub nickname: Option<String>,
+    pub email: Option<String>,
+    /// The plan's display name (`Free`, `Vivace`, …) — Kimi's `plan_type`.
+    pub user_level_name: Option<String>,
+}
+
+fn profile_from_payload(payload: &Value) -> KimiManagedProfile {
+    let field = |key: &str| {
+        payload
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    KimiManagedProfile {
+        user_id: field("user_id"),
+        nickname: field("nickname"),
+        email: field("email"),
+        user_level_name: field("user_level_name"),
+    }
+}
+
+pub async fn fetch_managed_profile(
+    db: &SqliteDbState,
+    access_token: &str,
+) -> Result<KimiManagedProfile, String> {
+    let client = http_client::client_with_timeout(db, 15).await?;
+    let response = client
+        .get(format!("{}/me", super::constants::KIMI_OFFICIAL_API_BASE_URL))
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .map_err(|error| format!("Kimi profile request failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Kimi profile request failed with status {}",
+            response.status()
+        ));
+    }
+    let payload: Value = response
+        .json()
+        .await
+        .map_err(|error| format!("Failed to parse Kimi profile response: {error}"))?;
+    Ok(profile_from_payload(&payload))
+}
+
+/// Fill in a row's profile, and return the identity fields it now has.
+///
+/// Best-effort by design: the profile endpoint needs a live token, and a row
+/// that cannot reach it must still be listed and still be switchable.
+async fn resolve_account_profile(
+    db: &SqliteDbState,
+    snapshot: &Value,
+) -> KimiManagedProfile {
+    let Some(access_token) = snapshot_token(snapshot, "access_token") else {
+        return KimiManagedProfile::default();
+    };
+    match fetch_managed_profile(db, access_token).await {
+        Ok(profile) => profile,
+        Err(error) => {
+            log::debug!("[kimi-oauth] Could not read the managed profile: {error}");
+            KimiManagedProfile::default()
+        }
+    }
+}
+
+/// Find the row a login belongs to.
+///
+/// Identity first, tokens second. A re-login of the same person mints a new
+/// token pair, so a fingerprint alone would append a duplicate row for an
+/// account already in the list; the profile's `user_id` survives re-login, and
+/// that is what makes "sign in again" an update rather than a new entry. Tokens
+/// remain the fallback for a row whose profile could not be read.
 fn find_matching_kimi_official_account(
     db: &SqliteDbState,
     provider_id: &str,
     snapshot: &Value,
+    profile: &KimiManagedProfile,
 ) -> Result<Option<KimiOfficialAccount>, String> {
-    Ok(list_kimi_official_accounts_with_state(db)?
-        .into_iter()
+    let accounts = list_kimi_official_accounts_with_state(db)?;
+    let owned = || {
+        accounts
+            .iter()
+            .filter(|account| account.provider_id == provider_id)
+    };
+    if let Some(user_id) = profile.user_id.as_deref() {
+        if let Some(matched) = owned().find(|account| account.subject.as_deref() == Some(user_id)) {
+            return Ok(Some(matched.clone()));
+        }
+    }
+    Ok(owned()
         .find(|account| {
-            account.provider_id == provider_id
-                && read_account_snapshot(account)
-                    .is_some_and(|stored| same_official_login(&stored, snapshot))
-        }))
+            read_account_snapshot(account)
+                .is_some_and(|stored| same_official_login(&stored, snapshot))
+        })
+        .cloned())
 }
 
 /// Persist a completed login.
@@ -464,8 +555,14 @@ async fn store_official_account(
         "token_type": "Bearer",
     });
     // Re-login of the same login refreshes its row instead of appending a
-    // duplicate.
-    let existing = find_matching_kimi_official_account(db, &provider_id, &snapshot)?;
+    // duplicate. Matching happens after the profile is read: a re-login of a
+    // known account is found by identity, not by the tokens it just replaced.
+    // Who this login belongs to. Read while the token is fresh, and *before*
+    // the row is written, so the very first login already has a name to show
+    // instead of a timestamp — and before matching, so a re-login of a known
+    // account updates its row instead of appending a twin.
+    let profile = resolve_account_profile(db, &snapshot).await;
+    let existing = find_matching_kimi_official_account(db, &provider_id, &snapshot, &profile)?;
     // Keep the previous ordering on re-login; resetting to 0 would silently
     // reorder the account list.
     let sort_index = existing
@@ -490,15 +587,18 @@ async fn store_official_account(
         "provider_id": provider_id,
         "name": "",
         "kind": "official",
-        "email": null,
-        "subject": null,
+        "email": profile.email,
+        // The account's stable identity — what tells two logins apart in the
+        // list, and what a re-login is matched against once tokens rotate.
+        "subject": profile.user_id,
+        "nickname": profile.nickname,
         "auth_snapshot": serde_json::to_string(&snapshot)
         .unwrap_or_default(),
         "expires_at": expires_at,
         "token_endpoint": token_endpoint,
         "last_refresh": now,
         "last_error": null,
-        "plan_type": null,
+        "plan_type": profile.user_level_name,
         "limit_weekly_text": null,
         "limit_monthly_text": null,
         "limit_weekly_reset_at": null,
@@ -563,14 +663,18 @@ pub fn list_kimi_official_accounts_with_state(
 /// It is deliberately **not** synthesized in `list_kimi_official_accounts_with_state`:
 /// that function feeds the write paths (adoption, refresh, apply), and a
 /// synthetic row leaking into them would look like an account that has no row.
-fn build_virtual_local_account(snapshot: &Value) -> KimiOfficialAccount {
+fn build_virtual_local_account(
+    snapshot: &Value,
+    profile: &KimiManagedProfile,
+) -> KimiOfficialAccount {
     KimiOfficialAccount {
         id: LOCAL_CONFIG_ID.to_string(),
         provider_id: String::new(),
         name: String::new(),
         kind: "local".to_string(),
-        email: None,
-        subject: None,
+        email: profile.email.clone(),
+        subject: profile.user_id.clone(),
+        nickname: profile.nickname.clone(),
         auth_snapshot: Some(snapshot.to_string()),
         token_endpoint: snapshot
             .get("token_endpoint")
@@ -579,7 +683,7 @@ fn build_virtual_local_account(snapshot: &Value) -> KimiOfficialAccount {
         expires_at: snapshot.get("expires_at").and_then(Value::as_i64),
         last_refresh: None,
         last_error: None,
-        plan_type: None,
+        plan_type: profile.user_level_name.clone(),
         limit_weekly_text: None,
         limit_monthly_text: None,
         limit_weekly_reset_at: None,
@@ -625,7 +729,11 @@ pub async fn list_kimi_official_accounts_for_frontend(
         .filter_map(read_account_snapshot)
         .any(|stored| same_official_login(&stored, &snapshot));
     if !already_represented {
-        accounts.insert(0, build_virtual_local_account(&snapshot));
+        // A row that has never been saved has no stored profile either, so ask
+        // the platform who it is — the list would otherwise show "signed in at
+        // 22:20" for a login whose owner has a perfectly good nickname.
+        let profile = resolve_account_profile(db, &snapshot).await;
+        accounts.insert(0, build_virtual_local_account(&snapshot, &profile));
     }
     Ok(accounts)
 }
@@ -650,7 +758,10 @@ pub async fn save_kimi_official_local_login(
         .await
         .ok_or_else(|| "No live Kimi login to save".to_string())?;
     let provider = super::commands::ensure_kimi_official_provider(db)?;
-    if let Some(account) = find_matching_kimi_official_account(db, &provider.id, &snapshot)? {
+    let profile = resolve_account_profile(db, &snapshot).await;
+    if let Some(account) =
+        find_matching_kimi_official_account(db, &provider.id, &snapshot, &profile)?
+    {
         // Already captured (a second click, or another window got there first):
         // nothing to write.
         return Ok(account);
@@ -661,8 +772,9 @@ pub async fn save_kimi_official_local_login(
         "provider_id": provider.id,
         "name": "",
         "kind": "official",
-        "email": null,
-        "subject": null,
+        "email": profile.email,
+        "subject": profile.user_id,
+        "nickname": profile.nickname,
         "auth_snapshot": snapshot.to_string(),
         "expires_at": snapshot.get("expires_at").and_then(Value::as_i64),
         "token_endpoint": snapshot
@@ -671,7 +783,7 @@ pub async fn save_kimi_official_local_login(
             .map(str::to_string),
         "last_refresh": now,
         "last_error": null,
-        "plan_type": null,
+        "plan_type": profile.user_level_name,
         "limit_weekly_text": null,
         "limit_monthly_text": null,
         "limit_weekly_reset_at": null,
@@ -722,6 +834,10 @@ fn account_from_db_value(value: Value) -> KimiOfficialAccount {
             .map(str::to_string),
         subject: value
             .get("subject")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        nickname: value
+            .get("nickname")
             .and_then(Value::as_str)
             .map(str::to_string),
         auth_snapshot: value
@@ -985,6 +1101,7 @@ pub async fn adopt_live_login_as_account(db: &SqliteDbState) -> Result<(), Strin
         return Ok(());
     }
     let provider = super::commands::ensure_kimi_official_provider(db)?;
+    let profile = resolve_account_profile(db, &snapshot).await;
     let now = Local::now().to_rfc3339();
     // The provider table was empty a moment ago, and the CLI is signed in, so
     // the official channel is what the live config.toml already points at.
@@ -995,8 +1112,9 @@ pub async fn adopt_live_login_as_account(db: &SqliteDbState) -> Result<(), Strin
         "provider_id": provider.id,
         "name": "",
         "kind": "official",
-        "email": null,
-        "subject": null,
+        "email": profile.email,
+        "subject": profile.user_id,
+        "nickname": profile.nickname,
         // Stored verbatim so `read_account_snapshot` hands the refresh loop
         // the same fields the CLI wrote.
         "auth_snapshot": snapshot.to_string(),
@@ -1007,7 +1125,7 @@ pub async fn adopt_live_login_as_account(db: &SqliteDbState) -> Result<(), Strin
             .map(str::to_string),
         "last_refresh": now,
         "last_error": null,
-        "plan_type": null,
+        "plan_type": profile.user_level_name,
         "limit_weekly_text": null,
         "limit_monthly_text": null,
         "limit_weekly_reset_at": null,

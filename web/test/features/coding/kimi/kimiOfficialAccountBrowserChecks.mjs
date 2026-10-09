@@ -127,6 +127,11 @@ export async function verifyKimiOfficialAccountCard({ send, evaluate, baseUrl, a
     ['切换'],
   );
   check(
+    'each row is labelled with the platform nickname, not with a timestamp',
+    (await fixture(`cardText(${JSON.stringify(officialName)})`)).includes('moonwalker')
+      && (await fixture(`cardText(${JSON.stringify(officialName)})`)).includes('nightowl'),
+  );
+  check(
     'the applied account is badged as the default',
     await fixture(`cardText(${JSON.stringify(officialName)})`).then(text => text.includes('默认')),
   );

@@ -80,14 +80,16 @@ const allProviders = [
 ];
 
 /**
- * Kimi's grant carries no identity, so an account row is named after when it was
- * captured — the fixture mirrors that shape rather than inventing an email.
+ * A row is labelled with the platform nickname the backend read from `/me`;
+ * the capture time is only the fallback for a login the platform could not
+ * identify.
  */
-const createAccount = (id, createdAt, isApplied, isVirtual = false) => ({
+const createAccount = (id, createdAt, isApplied, { isVirtual = false, nickname = '' } = {}) => ({
   id,
   providerId: isVirtual ? '' : 'provider-official',
   name: '',
   kind: isVirtual ? 'local' : 'official',
+  nickname,
   isApplied,
   isVirtual,
   createdAt,
@@ -95,10 +97,13 @@ const createAccount = (id, createdAt, isApplied, isVirtual = false) => ({
 });
 
 const savedAccounts = [
-  createAccount('account-1', '2026-03-31T00:00:00.000Z', true),
-  createAccount('account-2', '2026-04-01T00:00:00.000Z', false),
+  createAccount('account-1', '2026-03-31T00:00:00.000Z', true, { nickname: 'moonwalker' }),
+  createAccount('account-2', '2026-04-01T00:00:00.000Z', false, { nickname: 'nightowl' }),
 ];
-const virtualAccount = createAccount('__local__', '2026-04-02T00:00:00.000Z', false, true);
+const virtualAccount = createAccount('__local__', '2026-04-02T00:00:00.000Z', false, {
+  isVirtual: true,
+  nickname: 'moonwalker',
+});
 
 const accountMode = parameters.get('accounts') || '2';
 const providersMode = parameters.get('providers') || 'all';

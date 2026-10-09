@@ -537,21 +537,27 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
   /**
    * The official channel's accounts, as the shared section renders them.
    *
-   * Kimi's grant carries no identity — no id_token, no email — so there is
-   * nothing to label a row with. The row shows when its login was captured
-   * instead; the only action that tells two rows apart is the switch, and that
-   * is what the "default" tag marks.
+   * The label is the platform nickname (`/me`), falling back to the email and
+   * then to when the login was captured — a row the platform could not identify
+   * still has to be distinguishable from its neighbours.
    */
   const officialAccountRows = React.useMemo<OfficialAccountRowView[]>(
     () =>
       officialAccounts.map((account) => ({
         id: account.id,
-        label: t('kimi.officialAccount.rowLabel', {
-          time: formatAccountTimestamp(account.createdAt),
-        }),
+        label:
+          account.nickname
+          || account.email
+          || t('kimi.officialAccount.rowLabel', {
+            time: formatAccountTimestamp(account.createdAt),
+          }),
         kindTag: account.isVirtual
           ? t('kimi.officialAccount.currentTag')
           : t('kimi.officialAccount.savedTag'),
+        // The plan name (`Free`, `Vivace`, …) is what the platform reports for
+        // the account; it is the one piece of quota context Kimi can show
+        // without a billing call.
+        metaLines: account.planType ? [account.planType] : undefined,
         isApplied: account.isApplied,
         isVirtual: Boolean(account.isVirtual),
         lastError: account.lastError ?? undefined,

@@ -141,7 +141,10 @@ export interface KimiOfficialAccount {
   name: string;
   kind: string;
   email?: string;
+  /** Stable identity from the managed platform's `/me` (its `user_id`). */
   subject?: string;
+  /** Display name from `/me`; what the account row is labelled with. */
+  nickname?: string;
   tokenEndpoint?: string;
   expiresAt?: number;
   lastRefresh?: string;

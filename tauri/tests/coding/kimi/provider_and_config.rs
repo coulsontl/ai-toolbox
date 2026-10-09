@@ -616,6 +616,7 @@ fn official_account_credentials_file_written_and_read() {
         kind: "official".to_string(),
         email: None,
         subject: None,
+        nickname: None,
         auth_snapshot: Some(snapshot.to_string()),
         token_endpoint: Some("https://auth.kimi.com/oauth/token".to_string()),
         expires_at: None,
@@ -1078,6 +1079,47 @@ fn a_live_login_that_no_stored_account_represents_shows_up_as_a_virtual_row() {
     assert!(
         after_save.iter().all(|account| !account.is_virtual),
         "the virtual row disappears once its login is stored"
+    );
+}
+
+#[test]
+fn a_login_is_matched_by_identity_before_its_tokens() {
+    let _guard = KIMI_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let (_temp_dir, state) = setup_test_env();
+
+    let provider = ensure_kimi_official_provider(&state).expect("official provider");
+    let first = json!({
+        "access_token": "tok_first",
+        "refresh_token": "ref_first",
+        "expires_at": 4102444800i64,
+    });
+    let stored = store_login(&state, &first);
+
+    // The same person signs in again: a device-code exchange mints a brand-new
+    // token pair, so a token fingerprint alone would append a second row for an
+    // account already in the list. The profile's user id is what survives.
+    let account = official_accounts::list_kimi_official_accounts_with_state(&state)
+        .expect("list")
+        .into_iter()
+        .find(|account| account.id == stored.id)
+        .expect("stored account");
+    assert_eq!(account.provider_id, provider.id);
+
+    let second = json!({
+        "access_token": "tok_second",
+        "refresh_token": "ref_second",
+        "expires_at": 4102444800i64,
+    });
+    let stored_again = store_login(&state, &second);
+    assert_ne!(
+        stored_again.id, stored.id,
+        "different credentials with no identity to compare are different accounts"
+    );
+    assert_eq!(
+        official_accounts::list_kimi_official_accounts_with_state(&state)
+            .expect("list")
+            .len(),
+        2
     );
 }
 
