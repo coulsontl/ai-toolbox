@@ -50,10 +50,11 @@ sequenceDiagram
 - xAI 官方模型预设放在 `@ai-sdk/xai`，不要因为 Grok 也兼容 OpenAI API 就塞进 `@ai-sdk/openai-compatible`。`grok-4.5` 是用户可见 canonical ID；`grok-4.5-latest` 和 `grok-build-latest` 可用于价格匹配，但不要作为重复预设展示。Grok 4.5 reasoning 不能关闭，只提供 `low`、`medium`、`high` 三档。当前预设为兼容 OpenCode 的成对 `limit` 约束，将 `contextLimit` 和 `outputLimit` 都设为 500K；这是产品兼容取值，不要表述成 xAI 已正式公布最大输出 token。
 - 预设只要声明 `contextLimit` 或 `outputLimit`，两个字段就必须成对存在，避免 OpenCode v1 生成无法通过校验的半完整 `limit`。Step 3.7 Flash、Step 3.5 Flash 2603 和 Step 3.5 Flash 当前将 `outputLimit` 设为与 262K `contextLimit` 相同的兼容值；不要把该兼容值表述成厂商已正式公布的最大输出 token。
 - `model_pricing.json` 保存标准请求的基础单价，不能表达长上下文分段计费。GPT-5.6 输入超过 272K token 后的输入/输出倍率不应通过伪造第二套模型 ID 表达；需要精确支持时应扩展计费规则结构。OpenAI 官方单独公布的 cache write 单价仍写入 `cache_creation_cost_per_million`，实际是否产生该费用取决于 usage 是否提供 cache creation token。
-- Claude Sonnet 5 和 Sonnet 5.5 的官方标准价都是 `$2 / $10`（cache read `0.20`、5m cache write `2.50`）：Anthropic 已确认原定 2026-09-01 生效的 `$3 / $15` 涨价取消，`$2 / $10` 成为标准价。不要按旧公告把它"修正"回 `3 / 15`。
+- Claude Sonnet 5 和 Sonnet 5.5 的官方标准价都是 `$2 / $10`（5m cache write `2.50`）：Anthropic 已确认原定 2026-09-01 生效的 `$3 / $15` 涨价取消，`$2 / $10` 成为标准价。不要按旧公告把它"修正"回 `3 / 15`。但两者的 cache read 已在 2026-10-07 分叉：随 Haiku 5.5 发布，Sonnet 5.5 的 cache read 从 `0.20` 降到 `0.10`，Sonnet 5 仍是 `0.20`。当时官方定价文档页尚未同步这次降价，不要照它把 Sonnet 5.5 "修正"回 `0.20`。
 - Fable 5.1 / Mythos 5.1 的 `cache_read_cost_per_million` 官方就是 `0.25`（基础输入价的 0.025x，其余模型通常是 0.1x）；不要把它当成笔误"修正"回 `1.00`。同代模型的 `cache_creation_cost_per_million` 仍按官方 5m 档 `12.50` 填写。
 - Mythos 家族（`claude-mythos-5` / `claude-mythos-5-1`）按惯例只进 `model_pricing.json`，不进 `preset_models.json`：该家族仅对通过验证的组织开放，预设列表不展示。Fable 家族则两处都维护。
-- OpenCode 的 `@ai-sdk/anthropic` 预设必须按模型代际维护 reasoning variants，不能把所有 Claude 模型套成同一结构：Sonnet/Opus 4.6 及之后使用同级的 `thinking: { type: "adaptive" }` 与 `effort`；Opus 4.7+、Sonnet 5、Sonnet 5.5、Fable 5、Fable 5.1 还要提供 `xhigh`，并设置 `display: "summarized"` 避免默认省略思考文本；Opus 4.5 使用 `effort` 但不启用 adaptive；Sonnet 4.5、Haiku 4.5、Opus 4.1、Sonnet 4 和 Sonnet 3.7 继续使用 `thinking: { type: "enabled", budgetTokens }`。`effort` 是 `thinking` 的同级字段，不能放进 `thinking` 对象。
+- Claude Haiku 5.5（`claude-haiku-5-5`）官方按 prompt 长度分两档计费：10 万 token 以内 `$0.10 / $0.50`（cache read `0.01`、5m cache write `0.125`），超过 10 万 token 为 `$0.50 / $2.50`（cache read `0.05`、5m cache write `0.625`）。与 GPT-5.6 的长上下文倍率同理，`model_pricing.json` 只写 ≤10 万 token 的基础档，不要为高档位伪造第二个模型 ID。
+- OpenCode 的 `@ai-sdk/anthropic` 预设必须按模型代际维护 reasoning variants，不能把所有 Claude 模型套成同一结构：Sonnet/Opus 4.6 及之后使用同级的 `thinking: { type: "adaptive" }` 与 `effort`；Opus 4.7+、Sonnet 5、Sonnet 5.5、Haiku 5.5、Fable 5、Fable 5.1 还要提供 `xhigh`，并设置 `display: "summarized"` 避免默认省略思考文本；Opus 4.5 使用 `effort` 但不启用 adaptive；Sonnet 4.5、Haiku 4.5、Opus 4.1、Sonnet 4 和 Sonnet 3.7 继续使用 `thinking: { type: "enabled", budgetTokens }`。Haiku 5.5 是首个支持 `effort` 的 Haiku，不要沿用 Haiku 4.5 的固定预算结构。`effort` 是 `thinking` 的同级字段，不能放进 `thinking` 对象。
 - 更新 Claude 预设时，同时核对 models.dev 的 `reasoning_options`、context/output limit 与当前 OpenCode provider variant 生成逻辑；只看 Anthropic API 支持范围不够，因为 OpenCode 会按 provider SDK 和具体模型代际生成不同参数形状。
 - 不要在这里记录“远端缓存刷新后也许会覆盖本地顺序”之类推测；判断最终线上效果时，要先区分当前看到的是 bundled defaults 还是 app data / 远端缓存数据。
 - 新增 Gateway provider compat 后要同步更新 `gateway_provider_profiles.json`，否则用户只能走自定义渠道，runtime 也不应靠模型名 fallback 补偿这个缺口。模型名可以作为已识别 provider 内部的能力细分条件，但不能作为 provider 身份识别条件。
@@ -92,7 +93,7 @@ sequenceDiagram
 - 修改模型限制后，必须确认所有预设的 `contextLimit` 与 `outputLimit` 仍然成对存在。
 - 修改 GPT-5.6 预设或共享思考等级时，至少确认三个 canonical ID 的顺序与 `none/low/medium/high/xhigh/max` variants，并确认 Pi 前后端仍能保留 `max`、拒绝把 `ultra` 当成普通 thinking level。
 - 修改 `gpt-6.1-sol` 或它和 `gpt-6-sol` 的相对顺序时，至少确认它仍在 `gpt-6-sol` 正前方，且 variants 保持 5 档（没有 `none`）。
-- 修改 Claude 5.5 代预设时，至少确认它排在上一代同档模型正前方（`claude-sonnet-5-5` 在 `claude-sonnet-5` 前、`claude-opus-5-5` 在 `claude-opus-5` 前），且 variants 是 `low/medium/high/xhigh/max` 五档 adaptive + `display: summarized`。
+- 修改 Claude 5.5 代预设时，至少确认它排在上一代同档模型正前方（`claude-sonnet-5-5` 在 `claude-sonnet-5` 前、`claude-opus-5-5` 在 `claude-opus-5` 前、`claude-haiku-5-5` 在 `claude-haiku-4-5-20251001` 前），且 variants 是 `low/medium/high/xhigh/max` 五档 adaptive + `display: summarized`。
 - 修改 Grok 4.5 预设时，至少确认它位于 `@ai-sdk/xai`，只展示 canonical ID，保留 500K context、500K compatibility output limit 与 `low/medium/high` 三档 reasoning。
 - 修改 `@ai-sdk/anthropic` Claude 预设后，至少运行 `cargo test coding::preset_models::tests`，确认 adaptive、effort-only 与固定 budget 三类模型没有互相串用参数。
 - 修改 `preset_models.json` 的 `id` / `name` 后至少跑 `cargo test --lib preset_models`：`display_name_lookup_covers_bundled_ids_and_rejects_unknown_ones` 会逐个断言每个 bundled id 仍能查到自己的 name，重复 id 或漏写 `name` 会直接暴露。

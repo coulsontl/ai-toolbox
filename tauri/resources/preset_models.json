@@ -3229,6 +3229,63 @@
       }
     },
     {
+      "id": "claude-haiku-5-5",
+      "name": "Claude Haiku 5.5",
+      "contextLimit": 1000000,
+      "outputLimit": 128000,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": false,
+      "attachment": true,
+      "variants": {
+        "high": {
+          "thinking": {
+            "display": "summarized",
+            "type": "adaptive"
+          },
+          "effort": "high"
+        },
+        "low": {
+          "thinking": {
+            "display": "summarized",
+            "type": "adaptive"
+          },
+          "effort": "low"
+        },
+        "max": {
+          "thinking": {
+            "display": "summarized",
+            "type": "adaptive"
+          },
+          "effort": "max"
+        },
+        "medium": {
+          "thinking": {
+            "display": "summarized",
+            "type": "adaptive"
+          },
+          "effort": "medium"
+        },
+        "xhigh": {
+          "thinking": {
+            "display": "summarized",
+            "type": "adaptive"
+          },
+          "effort": "xhigh"
+        }
+      }
+    },
+    {
       "id": "claude-haiku-4-5-20251001",
       "name": "Claude Haiku 4.5",
       "contextLimit": 200000,

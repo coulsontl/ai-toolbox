@@ -402,7 +402,9 @@ mod tests {
             ("gpt-6.1-sol", "2", "10", "0.10", "2.5"),
             // Sonnet 5.5 ships at Sonnet 5's permanent $2/$10 rate; Anthropic
             // cancelled the $3/$15 increase, so both rows stay at $2/$10.
-            ("claude-sonnet-5-5", "2", "10", "0.20", "2.50"),
+            // Cache reads diverged on 2026-10-07: the Haiku 5.5 launch halved
+            // Sonnet 5.5's to $0.10 while Sonnet 5 stays at $0.20.
+            ("claude-sonnet-5-5", "2", "10", "0.10", "2.50"),
             ("claude-sonnet-5", "2", "10", "0.20", "2.50"),
             ("gpt-5.6", "5", "30", "0.50", "6.25"),
             ("gpt-5.6-sol", "5", "30", "0.50", "6.25"),
