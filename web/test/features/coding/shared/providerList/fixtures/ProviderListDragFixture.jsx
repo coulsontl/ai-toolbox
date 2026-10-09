@@ -35,6 +35,15 @@ import '@/App.css';
 
 const parameters = new URLSearchParams(location.search);
 const language = parameters.get('language') || 'zh-CN';
+/** How many providers to list. Three (the default) fit on screen; the locate
+ *  check asks for more so the applied card starts below the fold. */
+const providerCount = Number(parameters.get('count') || 3);
+/** Which provider record carries `isApplied`, i.e. the applied tag and the
+ *  locate action's target. Any value that matches no provider id (the checks
+ *  use `applied=none`) leaves nothing applied. */
+const appliedProviderId = parameters.get('applied') || 'provider-a';
+/** `provider-a`…`provider-n`, in the order the page lists them. */
+const providerIds = Array.from('abcdefghijklmnopqrstuvwxyz'.slice(0, providerCount));
 const themeMode = parameters.get('theme') || 'light';
 const resolvedTheme = themeMode === 'system'
   ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
@@ -62,7 +71,7 @@ const createProvider = (id, name, createdAt, category = 'custom') => ({
       ],
     },
   }),
-  isApplied: id === 'provider-a',
+  isApplied: id === appliedProviderId,
   isDisabled: false,
   createdAt,
   updatedAt: createdAt,
@@ -89,18 +98,14 @@ const state = {
   runId: parameters.get('runId'),
   requests: [],
   sortMode: parameters.get('sortMode') || 'custom',
-  providers: [
+  providers: providerIds.map((letter, index) => createProvider(
+    `provider-${letter}`,
+    `Provider ${letter.toUpperCase()}`,
+    new Date(Date.UTC(2026, 0, 3 - index)).toISOString(),
     // The account rows only render on an `official` provider, so `?accounts=2`
     // turns provider A into one — that is the shape the rows appear in.
-    createProvider(
-      'provider-a',
-      'Provider A',
-      '2026-01-03T00:00:00.000Z',
-      parameters.get('accounts') === '2' ? 'official' : 'custom',
-    ),
-    createProvider('provider-b', 'Provider B', '2026-01-02T00:00:00.000Z'),
-    createProvider('provider-c', 'Provider C', '2026-01-01T00:00:00.000Z'),
-  ],
+    index === 0 && parameters.get('accounts') === '2' ? 'official' : 'custom',
+  )),
   officialAccounts: parameters.get('accounts') === '2'
     ? [
         createOfficialAccount('account-1', 'first@example.invalid', true),
@@ -259,6 +264,26 @@ window.providerListDragFixture = {
   storedOrder() {
     return state.providers.map(provider => provider.name);
   },
+  /** The record the fixture marked applied — the locate action's target. */
+  appliedProviderId,
+  /** The applied card's box relative to the viewport: how the locate check
+   *  tells "scrolled into view" from "still below the fold". */
+  appliedCardBox() {
+    const card = document.querySelector(`[data-provider-id="${appliedProviderId}"]`);
+    if (!card) return null;
+    const rect = card.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom, viewportHeight: window.innerHeight };
+  },
+  /**
+   * The applied card wrapper's computed shadow — the locate flash's *visible*
+   * effect. Read from the rendered style, not the class list: the CSS-module
+   * build hashes the class name, and a check that matched a hash would pass
+   * even if the rule never applied.
+   */
+  appliedCardShadow() {
+    const card = document.querySelector(`[data-provider-id="${appliedProviderId}"]`);
+    return card ? getComputedStyle(card).boxShadow : null;
+  },
 };
 
 createRoot(document.getElementById('root')).render(
@@ -268,7 +293,15 @@ createRoot(document.getElementById('root')).render(
           app provides it through `RouterProvider`; a memory router is the
           equivalent for a single mounted page. */}
       <MemoryRouter initialEntries={['/coding/codex']}>
-        <CodexPage />
+        {/* The app scrolls `main` (MainLayout's `styles.main`), and App.css
+            pins `html/body/#root` to `overflow: hidden` — so without a
+            scroll container here the page is simply clipped and
+            `scrollIntoView` has nothing to scroll. Any check that drives the
+            provider list's locate action needs this, or it would be asserting
+            against a fixture in which scrolling is impossible. */}
+        <main style={{ height: '100%', overflowY: 'auto' }}>
+          <CodexPage />
+        </main>
       </MemoryRouter>
     </App>
   </ConfigProvider>,

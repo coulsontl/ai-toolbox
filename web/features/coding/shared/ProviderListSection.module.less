@@ -1,0 +1,42 @@
+/* The one-shot ring a located provider card wears while the page scrolls to
+   it. It is applied to the card's wrapper (`[data-provider-id]` in
+   `providerCardVariants/CardShell`), not to the antd Card, because the wrapper
+   is what the locate query finds and what bounds the card exactly.
+
+   A ring, not a border/background change: the located card is normally the
+   *applied* one, and that card already carries a primary border and the
+   selected background — recolouring those would flash invisibly. */
+.locateFlash {
+  /* The card's own radius (8px, DESIGN.md `rounded.card`); the repo has no
+     radius custom property, and a square ring around a rounded card reads as
+     a rendering bug. */
+  border-radius: 8px;
+  animation: locateFlashRing 1.4s ease-out;
+}
+
+/* Draws at full strength and fades out. Growing the ring from a zero spread
+   instead would make the first ~200ms invisible, and this flash is already
+   starting the moment the card stops moving — the point is for the user to see
+   it *at once*, not to be introduced to it gradually. */
+@keyframes locateFlashRing {
+  0% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ant-color-primary) 55%, transparent);
+  }
+
+  55% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ant-color-primary) 30%, transparent);
+  }
+
+  100% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ant-color-primary) 0%, transparent);
+  }
+}
+
+/* Reduced motion keeps the "this one, here" answer but drops the pulse: a
+   static ring for the same lifetime instead of an animation. */
+@media (prefers-reduced-motion: reduce) {
+  .locateFlash {
+    animation: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ant-color-primary) 30%, transparent);
+  }
+}

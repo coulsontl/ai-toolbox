@@ -1,6 +1,7 @@
 import React from 'react';
-import { Button, Collapse, Empty, Space, Spin, Typography } from 'antd';
+import { App, Button, Collapse, Empty, Space, Spin, Tooltip, Typography } from 'antd';
 import {
+  AimOutlined,
   AppstoreOutlined,
   CheckSquareOutlined,
   DatabaseOutlined,
@@ -14,8 +15,65 @@ import ProviderSearchInput from './providerList/ProviderSearchInput';
 import ProviderSortDropdown from './providerList/ProviderSortDropdown';
 import type { ProviderSortMode } from './providerList/sortProviders';
 import type { ProviderBatchSelection } from './providerList/useProviderBatchSelection';
+import styles from './ProviderListSection.module.less';
 
 const { Text } = Typography;
+
+/** Held just past the `.locateFlash` animation's own 1.4s. */
+const LOCATE_FLASH_DURATION_MS = 1500;
+
+/** The panel's expand animation; scrolling before it settles lands short. */
+const COLLAPSE_SETTLE_DELAY_MS = 260;
+
+/** How long to wait for a smooth scroll to settle before flashing anyway. */
+const SCROLL_SETTLE_DEADLINE_MS = 1200;
+
+/**
+ * One pending flash-removal per card.
+ *
+ * A second locate on the same card has to *extend* the flash: without this, the
+ * first click's removal timer fires mid-way through the second flash and cuts it
+ * short — the same "arrived at a card with no highlight" outcome the arrival
+ * delay exists to prevent, and re-clicking is exactly what a user does when a
+ * long list takes a moment to move.
+ */
+const pendingFlashTimers = new WeakMap<HTMLElement, number>();
+
+/**
+ * Flashes a card once it has stopped moving.
+ *
+ * The flash must not start at click time: scrolling to a card further down the
+ * list takes a few hundred ms, so a flash that ran during the scroll would be
+ * spent almost entirely off screen and the user would arrive at an unmarked
+ * card — the one thing the action exists to prevent. Waiting for the card's
+ * position to settle also covers "the card was already in view" (no scroll
+ * happens, so it settles immediately) and falls back to a deadline, because the
+ * page cannot tell a finished scroll from a slow one.
+ */
+const flashWhenArrived = (card: HTMLElement) => {
+  const startedAt = performance.now();
+  let previousTop = card.getBoundingClientRect().top;
+  let stillFrames = 0;
+  const step = () => {
+    const top = card.getBoundingClientRect().top;
+    stillFrames = Math.abs(top - previousTop) < 0.5 ? stillFrames + 1 : 0;
+    previousTop = top;
+    if (stillFrames < 2 && performance.now() - startedAt < SCROLL_SETTLE_DEADLINE_MS) {
+      window.requestAnimationFrame(step);
+      return;
+    }
+    const previousTimer = pendingFlashTimers.get(card);
+    if (previousTimer !== undefined) {
+      window.clearTimeout(previousTimer);
+    }
+    card.classList.add(styles.locateFlash);
+    pendingFlashTimers.set(card, window.setTimeout(() => {
+      card.classList.remove(styles.locateFlash);
+      pendingFlashTimers.delete(card);
+    }, LOCATE_FLASH_DURATION_MS));
+  };
+  window.requestAnimationFrame(step);
+};
 
 /**
  * The hint block's visual contract: small, secondary-coloured text behind a
@@ -57,6 +115,15 @@ export interface ProviderListSectionProps {
   sortMode: ProviderSortMode;
   sortModes: readonly ProviderSortMode[];
   onSortModeChange: (mode: ProviderSortMode) => void;
+
+  /**
+   * Id of the provider currently in effect — the card wearing the "applied"
+   * tag. Passing it (even as `''`, meaning "nothing is applied right now")
+   * renders the toolbar's locate action; omitting it hides the action, for
+   * tools that have no such thing as one applied provider (OmO Native runs
+   * several at once).
+   */
+  locateProviderId?: string;
   /**
    * Whether the current sort mode is the one that disables dragging. Callers
    * already compute this to gate the drag grips; passing it on lets the sort
@@ -125,6 +192,7 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
   sortMode,
   sortModes,
   onSortModeChange,
+  locateProviderId,
   dragDisabledBySort = false,
   onBatchTest,
   batchTesting = false,
@@ -138,11 +206,69 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
   footer,
 }) => {
   const { t } = useTranslation();
+  const { message } = App.useApp();
+  const rootRef = React.useRef<HTMLDivElement | null>(null);
 
   const toolbarButtonStyle: React.CSSProperties = { fontSize: 12 };
 
+  /**
+   * Scrolls to the applied provider's card and flashes it.
+   *
+   * The card is found in the DOM by the `data-provider-id` that
+   * `providerCardVariants/CardShell` puts on every card, rather than by state
+   * threaded down from the owning page: the page already renders the cards
+   * itself, and the answer here depends on what is *currently visible* (the
+   * search filter, the sort mode) — which is exactly what the DOM knows and a
+   * prop would have to be kept in sync with.
+   */
+  const locateAppliedProvider = () => {
+    const root = rootRef.current;
+    // The click handler has already explained the empty case to the user.
+    if (!root || !locateProviderId) {
+      return;
+    }
+    const card = root.querySelector<HTMLElement>(
+      `[data-provider-id="${CSS.escape(locateProviderId)}"]`,
+    );
+    if (!card) {
+      message.info(
+        keyword.trim()
+          ? t('common.provider.locateFiltered')
+          : t('common.provider.locateMissing'),
+      );
+      return;
+    }
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    flashWhenArrived(card);
+  };
+
+  const handleLocateClick = (event: React.MouseEvent) => {
+    event.stopPropagation();
+    // Answered before expanding: with nothing applied there is no card to
+    // scroll to, and opening the section to deliver that message would be an
+    // edit to the page the user did not ask for.
+    if (!locateProviderId) {
+      message.info(t('common.provider.locateNone'));
+      return;
+    }
+    if (!collapsed) {
+      locateAppliedProvider();
+      return;
+    }
+    // Expand first and scroll once the panel has settled — its content is
+    // inside the collapse animation before that (`SectionSidebarLayout` waits
+    // for the same reason).
+    onCollapsedChange(false);
+    window.setTimeout(locateAppliedProvider, COLLAPSE_SETTLE_DELAY_MS);
+  };
+
   return (
-    <div id={sectionId} data-sidebar-section="true" data-sidebar-title={t('common.provider.title')}>
+    <div
+      ref={rootRef}
+      id={sectionId}
+      data-sidebar-section="true"
+      data-sidebar-title={t('common.provider.title')}
+    >
       <Collapse
         style={{ marginBottom: 16 }}
         activeKey={collapsed ? [] : ['providers']}
@@ -197,6 +323,19 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
                   onChange={onSortModeChange}
                   dragDisabledBySort={dragDisabledBySort}
                 />
+                {locateProviderId !== undefined && (
+                  <Tooltip title={t('common.provider.locateTooltip')}>
+                    <Button
+                      type="link"
+                      size="small"
+                      style={toolbarButtonStyle}
+                      icon={<AimOutlined />}
+                      onClick={handleLocateClick}
+                    >
+                      {t('common.provider.locate')}
+                    </Button>
+                  </Tooltip>
+                )}
                 {onBatchTest && (
                   <Button
                     type="link"

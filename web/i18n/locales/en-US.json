@@ -1660,7 +1660,12 @@
       "deselectAllProviders": "Deselect All",
       "selectAllProviders": "Select all importable providers",
       "importSelected": "Import Selected",
-      "providerExists": "Already exists"
+      "providerExists": "Already exists",
+      "locate": "Locate",
+      "locateTooltip": "Scroll to the applied provider",
+      "locateNone": "No provider is applied right now",
+      "locateFiltered": "The applied provider is filtered out by the current search",
+      "locateMissing": "The applied provider is not in the current list"
     },
     "viewDocs": "Official Docs",
     "configPath": "Config Path",

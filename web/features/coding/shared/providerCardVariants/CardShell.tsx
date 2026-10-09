@@ -110,12 +110,21 @@ const CardShell: React.FC<CardShellProps> = ({
   // compute transforms, and an unregistered node cannot be dragged the moment
   // the parent re-enables it.
   return (
-    <div ref={setNodeRef} style={style}>
-      {/* Bottom margin on the Card, not the wrapper: each card spaces itself so
-          the gap survives a reorder among its siblings. */}
+    // `data-provider-id` is the locate target of the provider list's
+    // "定位" action (`ProviderListSection` queries it, scrolls to the card and
+    // flashes it). It reuses `sortableId` because that already *is* the
+    // provider's identity inside the list — dnd-kit requires it to be unique
+    // there, which is exactly the guarantee the locate query needs.
+    //
+    // The bottom margin lives on the wrapper, not the Card: the wrapper is
+    // what carries that attribute and the flash ring, so its box has to be the
+    // card's box. It used to sit on the Card, which left the gap *inside* the
+    // wrapper (a flex item does not collapse its child's margin) and would have
+    // drawn the ring 12px below the card. Each card still spaces itself, so the
+    // gap still survives a reorder among its siblings.
+    <div ref={setNodeRef} data-provider-id={sortableId} style={{ ...style, marginBottom: 12 }}>
       <Card
         style={{
-          marginBottom: 12,
           borderColor,
           background,
           boxShadow: 'var(--shadow-card-sm)',

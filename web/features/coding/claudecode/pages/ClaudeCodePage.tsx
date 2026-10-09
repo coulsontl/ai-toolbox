@@ -1277,6 +1277,7 @@ const ClaudeCodePage: React.FC = () => {
           sortModes={PROVIDER_SORT_MODES}
           onSortModeChange={setSortMode}
           dragDisabledBySort={sortMode !== 'custom'}
+          locateProviderId={appliedProviderId}
           onBatchTest={handleBatchTestProviders}
           batchTesting={batchTestingProviders}
           onOpenCommonConfig={() => setCommonConfigModalOpen(true)}

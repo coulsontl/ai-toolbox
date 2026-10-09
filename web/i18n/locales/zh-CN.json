@@ -1660,7 +1660,12 @@
       "deselectAllProviders": "取消全选",
       "selectAllProviders": "全选可导入供应商",
       "importSelected": "导入选中项",
-      "providerExists": "已存在"
+      "providerExists": "已存在",
+      "locate": "定位",
+      "locateTooltip": "滚动到当前已应用的供应商",
+      "locateNone": "当前没有已应用的供应商",
+      "locateFiltered": "已应用的供应商被当前搜索词过滤掉了",
+      "locateMissing": "当前列表里找不到已应用的供应商"
     },
     "viewDocs": "官方文档",
     "configPath": "配置文件路径",

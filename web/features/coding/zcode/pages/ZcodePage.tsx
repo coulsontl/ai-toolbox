@@ -219,6 +219,12 @@ const ZcodePage: React.FC = () => {
     [providers, providerKeyword, sortMode, lastUsedAt],
   );
 
+  /** The card wearing ZCode's "默认" tag — what the provider list's 定位 targets. */
+  const appliedProviderId = React.useMemo(
+    () => providers.find((provider) => provider.isApplied)?.id ?? '',
+    [providers],
+  );
+
   const sidebarSections = React.useMemo<SidebarSectionMarker[]>(
     () => [
       {
@@ -1215,6 +1221,7 @@ const ZcodePage: React.FC = () => {
           sortMode={sortMode}
           sortModes={PROVIDER_SORT_MODES}
           onSortModeChange={setSortMode}
+          locateProviderId={appliedProviderId}
           onBatchTest={handleBatchTestProviders}
           batchTesting={batchTestingProviders}
           onAddProvider={() => {

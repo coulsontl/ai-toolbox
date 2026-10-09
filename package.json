@@ -22,14 +22,16 @@
     "test:form-modal-layout": "node ./scripts/verify-form-modal-layout.mjs",
     "test:provider-card-layout": "node ./scripts/verify-provider-card-layout.mjs",
     "test:ime-autocomplete": "node ./scripts/verify-ime-safe-autocomplete.mjs",
-    "test": "pnpm run test:web && pnpm run test:form-modal-layout && pnpm run test:provider-card-layout && pnpm run test:provider-list-drag && pnpm run test:official-account-card && pnpm run test:codex-official-accounts && pnpm run test:provider-card-spacing",
+    "test": "pnpm run test:web && pnpm run test:form-modal-layout && pnpm run test:provider-card-layout && pnpm run test:provider-list-drag && pnpm run test:provider-list-locate && pnpm run test:official-account-card && pnpm run test:codex-official-accounts && pnpm run test:provider-card-spacing && pnpm run test:official-accounts-shared",
     "sync:version": "node scripts/sync-tauri-version.mjs",
     "tauri": "tauri",
     "prepare": "husky",
     "test:provider-list-drag": "node ./scripts/verify-provider-list-drag.mjs",
+    "test:provider-list-locate": "node ./scripts/verify-provider-list-locate.mjs",
     "test:official-account-card": "node ./scripts/verify-kimi-official-account-card.mjs",
     "test:codex-official-accounts": "node ./scripts/verify-codex-official-accounts.mjs",
-    "test:provider-card-spacing": "node ./scripts/verify-provider-card-spacing.mjs"
+    "test:provider-card-spacing": "node ./scripts/verify-provider-card-spacing.mjs",
+    "test:official-accounts-shared": "node ./scripts/verify-official-accounts-shared.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "6.2.5",

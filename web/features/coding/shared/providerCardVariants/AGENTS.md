@@ -31,7 +31,8 @@
 
 - **`CardShell` 的 `setNodeRef` 必须无条件挂载。** dnd-kit 需要测量节点来计算 transform；未注册的节点在父级重新启用拖拽时拖不动。写成 `draggable ? setNodeRef : undefined` 会引入「禁用一次就再也拖不动」的隐性 bug。
 - **`useSortable` 每次渲染都必须执行。** 没有 id 时传占位符并置 `disabled`，不要条件调用 hook——违反 hooks 规则会在拖拽开关切换时崩。
-- **卡片自己留底部间距（`marginBottom: 12`），不靠父容器的 `gap`。** 这样重排后间距不会错位；靠父容器 gap 时，把官方账号卡片之类的异类插进列表会丢间距。
+- **卡片自己留底部间距（`marginBottom: 12`），不靠父容器的 `gap`；间距挂在外层 `div` 上，不挂在 antd `Card` 上。** 这样重排后间距不会错位；靠父容器 gap 时，把官方账号卡片之类的异类插进列表会丢间距。间距必须在**外层**是因为外层才是「这张卡片的盒子」：它带 `data-provider-id`、也承载定位闪光环（`ProviderListSection` 的「定位」），写在 `Card` 上会让间距落在盒子**内部**（flex item 不会与子元素折叠外边距），环就画到卡片下方 12px 处去了。视觉上两种写法等价（间距值不变），差别只在盒子边界。
+- **每张卡片必须带 `data-provider-id={sortableId}`（外层 `div`）。** 这是「定位当前已应用供应商」在 DOM 里找到卡片的唯一锚点：`ProviderListSection` 的定位动作按这个属性查询、滚动并闪光。复用 `sortableId` 而不是新增 id prop，因为 dnd-kit 本来就要求它在列表内唯一——正是定位查询需要的那条保证。删掉或改名会让定位静默失效（点了没反应，或者只弹「找不到」）。回归：`pnpm run test:provider-list-locate`。
 - **「已应用 / 网关 P0」的高亮属于 `CardShell`，不属于映射层。** 四个 bespoke 卡片各自抄了一份「选中 > 网关 P0 > 已应用」的优先级；迁到共享组件时如果不把它一起搬进来，卡片会静默变成统一的灰边框——**没有任何报错，只是状态看不见了**。映射层只负责把 `providerState.accent` 算出来。
 - **标签与它的值必须在同一个 `metaEntries` 项里。** 拆成两个项（`{kind:'text', value:'Haiku:'}` + `{kind:'code', value:'…'}`）数据上等价，渲染上不等价：行的 `gap: 16px` 会插到标签和值之间，而 `alignItems` 让两者的盒子按顶边对齐——`<code>` 的 padding 一撑，标签就明显偏高。这是 Claude Code 卡片上真实出现过的错位。用 `entry.label`，组件把它渲染成同一个 flex 项。
 - **`transparentRows` 自带透明 Collapse**（`ModelListSection.module.less`）。该规则曾以 `.codex-model-list-collapse` / `.grok-model-list-collapse` 的形式在 CLI 侧各存一份，迁移时漏 import 就会在**有底色的卡片**上露出白色标题条——没有底色时完全看不出来，所以能潜伏很久。现在由共享组件统一施加，CLI 侧不要再复制。
