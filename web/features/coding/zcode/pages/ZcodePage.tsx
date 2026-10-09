@@ -225,6 +225,20 @@ const ZcodePage: React.FC = () => {
     [providers],
   );
 
+  /**
+   * ZCode's applied fact can also live on an official account rather than on a
+   * provider row (`apply_zcode_official_account` writes the account, never a
+   * provider's flag). The account card is not a locate target — it carries no
+   * `data-provider-id` — so in that state the registry still points at the
+   * previously applied provider and 定位 would scroll to a card that is no
+   * longer the one in effect. Saying nothing is the honest answer.
+   */
+  const officialAccountApplied = React.useMemo(
+    () => officialAccounts.some((account) => account.isApplied),
+    [officialAccounts],
+  );
+  const locateProviderId = officialAccountApplied ? '' : appliedProviderId;
+
   const sidebarSections = React.useMemo<SidebarSectionMarker[]>(
     () => [
       {
@@ -1221,7 +1235,7 @@ const ZcodePage: React.FC = () => {
           sortMode={sortMode}
           sortModes={PROVIDER_SORT_MODES}
           onSortModeChange={setSortMode}
-          locateProviderId={appliedProviderId}
+          locateProviderId={locateProviderId}
           onBatchTest={handleBatchTestProviders}
           batchTesting={batchTestingProviders}
           onAddProvider={() => {

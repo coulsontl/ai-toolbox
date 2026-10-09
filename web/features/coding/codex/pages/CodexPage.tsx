@@ -96,6 +96,7 @@ import { findPresetModelById } from '@/constants/presetModels';
 import ImportFromCcSwitchModal from '@/features/coding/shared/ccSwitch/ImportFromCcSwitchModal';
 import CodingPageHeader from '@/features/coding/shared/CodingPageHeader';
 import ProviderListSection from '@/features/coding/shared/ProviderListSection';
+import { isLocalConfigId } from '@/features/coding/shared/localConfig';
 import ShareProviderModal from '@/features/coding/shared/providerShare';
 import { hasCcSwitchDb, type CcSwitchProviderCandidate } from '@/services/ccSwitchApi';
 import SidebarSettingsModal, {
@@ -573,7 +574,9 @@ const CodexPage: React.FC = () => {
       );
       setOfficialAccountsByProviderId(Object.fromEntries(officialAccountEntries));
       setPluginPanelRefreshToken((value) => value + 1);
-      const applied = providerList.find((p) => p.isApplied);
+      // The `__local__` bridge is flagged applied by the backend but wears no
+      // applied tag on its card, so it is not what 定位 should point at.
+      const applied = providerList.find((p) => p.isApplied && !isLocalConfigId(p.id));
       setAppliedProviderId(applied?.id || '');
     } catch (error) {
       console.error('Failed to load config:', error);

@@ -118,18 +118,21 @@ export async function verifyProviderListLocate({ send, evaluate, baseUrl, artifa
     'the applied card is scrolled fully into view',
     afterBox.top >= 0 && afterBox.bottom <= afterBox.viewportHeight,
   );
-  // The flash has to be alive *here*, on arrival: a flash that ran while the
-  // list was still scrolling would be over before the card was ever on screen,
-  // which is exactly the state the user would read as "it did nothing".
-  const shadowWhileFlashing = await fixture('appliedCardShadow()');
-  // A zero-spread ring is a computed shadow that paints nothing; the flash has
-  // to be an actual visible ring, not merely "some box-shadow exists".
-  check(
-    'the located card flashes a visible ring on arrival',
-    shadowWhileFlashing !== 'none'
-      && shadowWhileFlashing !== null
-      && !shadowWhileFlashing.includes('0px 0px 0px 0px'),
+  // The flash starts only once the card has *settled* in view (see
+  // `flashWhenArrived`), so it can begin a frame or two after the scroll ends —
+  // sampling the shadow the instant the card enters the viewport would race it.
+  // What must hold is that a visible ring is painted while the card is on
+  // screen; a flash that ran during the scroll would never be observable here.
+  //
+  // "Visible" is read from the computed shadow, not the class list: the CSS
+  // module hashes the class name, and a zero-spread ring is a shadow that
+  // paints nothing.
+  await waitFor(
+    '(() => { const shadow = providerListDragFixture.appliedCardShadow();'
+    + ' return Boolean(shadow) && shadow !== "none" && !shadow.includes("0px 0px 0px 0px"); })()',
+    'the flash ring to be painted on the arrived card',
   );
+  check('the located card flashes a visible ring on arrival', true);
   await screenshot('locate-after');
 
   await delay(1800);
@@ -155,6 +158,25 @@ export async function verifyProviderListLocate({ send, evaluate, baseUrl, artifa
     '已应用的供应商被当前搜索词过滤掉了',
   );
   await screenshot('locate-filtered');
+
+  // --- the applied provider is the local bridge: it is not a locate target -
+  // The backend flags the `__local__` bridge record as applied, but its card
+  // wears no applied tag — so a locate that pointed at it would tell the user
+  // "here is the applied one" about a card that says nothing of the kind.
+  // 15 cards: the 14 numbered providers plus the bridge record itself.
+  await openFixture('count=14&applied=__local__', 15);
+  check(
+    'the bridge record is flagged applied but rendered as a card',
+    await evaluate(`Boolean(document.querySelector('[data-provider-id="__local__"]'))`),
+  );
+  await clickHeaderControl(locateLabel);
+  await waitFor(`${lastMessage} !== null`, 'the bridge-record message');
+  check(
+    'an applied bridge record is not treated as the applied provider',
+    await evaluate(lastMessage),
+    '当前没有已应用的供应商',
+  );
+  await screenshot('locate-local-bridge');
 
   // --- nothing is applied: say so -----------------------------------------
   await openFixture('count=14&applied=none', 14);

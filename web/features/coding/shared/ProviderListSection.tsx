@@ -22,11 +22,11 @@ const { Text } = Typography;
 /** Held just past the `.locateFlash` animation's own 1.4s. */
 const LOCATE_FLASH_DURATION_MS = 1500;
 
-/** The panel's expand animation; scrolling before it settles lands short. */
-const COLLAPSE_SETTLE_DELAY_MS = 260;
-
 /** How long to wait for a smooth scroll to settle before flashing anyway. */
 const SCROLL_SETTLE_DEADLINE_MS = 1200;
+
+/** How long a locate waits for the section's expand motion to lay the card out. */
+const CARD_LAYOUT_DEADLINE_MS = 1500;
 
 /**
  * One pending flash-removal per card.
@@ -40,24 +40,30 @@ const SCROLL_SETTLE_DEADLINE_MS = 1200;
 const pendingFlashTimers = new WeakMap<HTMLElement, number>();
 
 /**
- * Flashes a card once it has stopped moving.
+ * Flashes a card once it has arrived and stopped moving.
  *
  * The flash must not start at click time: scrolling to a card further down the
  * list takes a few hundred ms, so a flash that ran during the scroll would be
  * spent almost entirely off screen and the user would arrive at an unmarked
- * card — the one thing the action exists to prevent. Waiting for the card's
- * position to settle also covers "the card was already in view" (no scroll
- * happens, so it settles immediately) and falls back to a deadline, because the
- * page cannot tell a finished scroll from a slow one.
+ * card — the one thing the action exists to prevent.
+ *
+ * "Stopped moving" alone is not enough to mean "arrived": at the start of an
+ * eased scroll — or while the main thread is busy — the card sits still for a
+ * frame or two before the scroll commits, and two still frames would then read
+ * as arrival while the card is still below the fold. The card must also be
+ * fully in view. A card already on screen satisfies both at once, so the
+ * no-scroll case still flashes immediately; a card taller than the viewport
+ * never satisfies the second and falls back to the deadline.
  */
 const flashWhenArrived = (card: HTMLElement) => {
   const startedAt = performance.now();
   let previousTop = card.getBoundingClientRect().top;
   let stillFrames = 0;
   const step = () => {
-    const top = card.getBoundingClientRect().top;
-    stillFrames = Math.abs(top - previousTop) < 0.5 ? stillFrames + 1 : 0;
-    previousTop = top;
+    const rect = card.getBoundingClientRect();
+    const inView = rect.top >= 0 && rect.bottom <= window.innerHeight;
+    stillFrames = inView && Math.abs(rect.top - previousTop) < 0.5 ? stillFrames + 1 : 0;
+    previousTop = rect.top;
     if (stillFrames < 2 && performance.now() - startedAt < SCROLL_SETTLE_DEADLINE_MS) {
       window.requestAnimationFrame(step);
       return;
@@ -73,6 +79,51 @@ const flashWhenArrived = (card: HTMLElement) => {
     }, LOCATE_FLASH_DURATION_MS));
   };
   window.requestAnimationFrame(step);
+};
+
+/**
+ * Waits until the card is laid out, then runs `onReady` with it.
+ *
+ * A collapsed panel keeps its children in the DOM at `display: none`, where
+ * every rect is zero and `scrollIntoView` does nothing at all — scrolling at
+ * that moment would spend the flash on an invisible card. Polling for a
+ * measured box replaces guessing the expand motion's duration, which is a
+ * themeable value with a 500ms fallback deadline of its own.
+ *
+ * Returns a cancel function; the caller owns when the run stops being wanted
+ * (the user re-collapses the section, or the page unmounts).
+ */
+const waitForLaidOutCard = (
+  root: HTMLElement,
+  providerId: string,
+  onReady: (card: HTMLElement) => void,
+  onTimeout: () => void,
+): (() => void) => {
+  const startedAt = performance.now();
+  let frameId = 0;
+  let cancelled = false;
+  const step = () => {
+    if (cancelled) {
+      return;
+    }
+    const card = root.querySelector<HTMLElement>(
+      `[data-provider-id="${CSS.escape(providerId)}"]`,
+    );
+    if (card && card.getBoundingClientRect().height > 0) {
+      onReady(card);
+      return;
+    }
+    if (performance.now() - startedAt < CARD_LAYOUT_DEADLINE_MS) {
+      frameId = window.requestAnimationFrame(step);
+      return;
+    }
+    onTimeout();
+  };
+  frameId = window.requestAnimationFrame(step);
+  return () => {
+    cancelled = true;
+    window.cancelAnimationFrame(frameId);
+  };
 };
 
 /**
@@ -208,8 +259,23 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
   const { t } = useTranslation();
   const { message } = App.useApp();
   const rootRef = React.useRef<HTMLDivElement | null>(null);
+  /** Cancels an in-flight locate whose panel was re-collapsed or unmounted. */
+  const cancelPendingLocateRef = React.useRef<(() => void) | null>(null);
 
   const toolbarButtonStyle: React.CSSProperties = { fontSize: 12 };
+
+  /**
+   * The three "why nothing moved" answers, told to the user when the action
+   * cannot point at a card.
+   *
+   * Guarded because `App.useApp()` does not throw outside an `<App>` provider:
+   * antd's context default is `{ message: {} }`, so `message.info` is
+   * `undefined` there — and a fixture or host that mounts the section directly
+   * would crash on exactly the branches that exist to explain themselves.
+   */
+  const explainLocateFailure = (reason: string) => {
+    message.info?.(reason);
+  };
 
   /**
    * Scrolls to the applied provider's card and flashes it.
@@ -221,17 +287,16 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
    * search filter, the sort mode) — which is exactly what the DOM knows and a
    * prop would have to be kept in sync with.
    */
-  const locateAppliedProvider = () => {
+  const locateAppliedProvider = (providerId: string) => {
     const root = rootRef.current;
-    // The click handler has already explained the empty case to the user.
-    if (!root || !locateProviderId) {
+    if (!root) {
       return;
     }
     const card = root.querySelector<HTMLElement>(
-      `[data-provider-id="${CSS.escape(locateProviderId)}"]`,
+      `[data-provider-id="${CSS.escape(providerId)}"]`,
     );
     if (!card) {
-      message.info(
+      explainLocateFailure(
         keyword.trim()
           ? t('common.provider.locateFiltered')
           : t('common.provider.locateMissing'),
@@ -243,24 +308,59 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
   };
 
   const handleLocateClick = (event: React.MouseEvent) => {
+    // The toolbar lives inside the collapse header, whose own keydown handler
+    // toggles the panel on Enter. A native button fires its click *after* that
+    // keydown, so without swallowing the event one keypress would both collapse
+    // the section and run locate against the panel it just closed.
     event.stopPropagation();
+    event.preventDefault();
     // Answered before expanding: with nothing applied there is no card to
     // scroll to, and opening the section to deliver that message would be an
     // edit to the page the user did not ask for.
     if (!locateProviderId) {
-      message.info(t('common.provider.locateNone'));
+      explainLocateFailure(t('common.provider.locateNone'));
       return;
     }
     if (!collapsed) {
-      locateAppliedProvider();
+      locateAppliedProvider(locateProviderId);
       return;
     }
-    // Expand first and scroll once the panel has settled — its content is
-    // inside the collapse animation before that (`SectionSidebarLayout` waits
-    // for the same reason).
+    // Expand first, then scroll once the panel has actually laid the card out.
+    // Waiting on the measured box rather than on a fixed delay is deliberate:
+    // a hidden panel reports zero rects, and the expand motion is a themeable
+    // duration, so any constant here is a guess that fails silently (the scroll
+    // becomes a no-op and the flash is spent on an invisible card).
+    const root = rootRef.current;
     onCollapsedChange(false);
-    window.setTimeout(locateAppliedProvider, COLLAPSE_SETTLE_DELAY_MS);
+    cancelPendingLocateRef.current?.();
+    cancelPendingLocateRef.current = waitForLaidOutCard(
+      root ?? document.body,
+      locateProviderId,
+      (card) => {
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        flashWhenArrived(card);
+      },
+      () => {
+        explainLocateFailure(t('common.provider.locateMissing'));
+      },
+    );
   };
+
+  // Re-collapsing ends a locate that is still waiting on the expand: the user
+  // has said they do not want to see the list.
+  React.useEffect(() => {
+    if (collapsed) {
+      cancelPendingLocateRef.current?.();
+      cancelPendingLocateRef.current = null;
+    }
+  }, [collapsed]);
+
+  React.useEffect(
+    () => () => {
+      cancelPendingLocateRef.current?.();
+    },
+    [],
+  );
 
   return (
     <div

@@ -131,7 +131,7 @@ import {
   getClaudeConfiguredModelIds,
   parseClaudeSettingsConfig,
 } from '../utils/claudeModelConfig';
-import { LOCAL_CONFIG_ID } from '../../shared/localConfig';
+import { LOCAL_CONFIG_ID, isLocalConfigId } from '../../shared/localConfig';
 
 const { Text } = Typography;
 
@@ -414,7 +414,9 @@ const ClaudeCodePage: React.FC = () => {
       setProviders(providerList);
       setPluginPanelRefreshToken((value) => value + 1);
 
-      const applied = providerList.find((p) => p.isApplied);
+      // The `__local__` bridge is flagged applied by the backend but wears no
+      // applied tag on its card, so it is not what 定位 should point at.
+      const applied = providerList.find((p) => p.isApplied && !isLocalConfigId(p.id));
       setAppliedProviderId(applied?.id || '');
     } catch (error) {
       console.error('Failed to load config:', error);

@@ -40,10 +40,21 @@ const language = parameters.get('language') || 'zh-CN';
 const providerCount = Number(parameters.get('count') || 3);
 /** Which provider record carries `isApplied`, i.e. the applied tag and the
  *  locate action's target. Any value that matches no provider id (the checks
- *  use `applied=none`) leaves nothing applied. */
+ *  use `applied=none`) leaves nothing applied; `applied=__local__` puts the
+ *  flag on the local-file bridge record instead (see `bridge` below). */
 const appliedProviderId = parameters.get('applied') || 'provider-a';
 /** `provider-a`…`provider-n`, in the order the page lists them. */
 const providerIds = Array.from('abcdefghijklmnopqrstuvwxyz'.slice(0, providerCount));
+/**
+ * The local-file bridge record.
+ *
+ * The backend flags this record applied, but every card suppresses the applied
+ * chrome for it (`showRuntimeApplied = isApplied && !isLocalProvider`) — it is
+ * a mirror of the on-disk config, not a preset the user applied. The page must
+ * not offer it as the locate target, and this is the only state where the
+ * backend's `is_applied` and the card's badge disagree.
+ */
+const isBridgeApplied = appliedProviderId === '__local__';
 const themeMode = parameters.get('theme') || 'light';
 const resolvedTheme = themeMode === 'system'
   ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
@@ -98,14 +109,19 @@ const state = {
   runId: parameters.get('runId'),
   requests: [],
   sortMode: parameters.get('sortMode') || 'custom',
-  providers: providerIds.map((letter, index) => createProvider(
-    `provider-${letter}`,
-    `Provider ${letter.toUpperCase()}`,
-    new Date(Date.UTC(2026, 0, 3 - index)).toISOString(),
-    // The account rows only render on an `official` provider, so `?accounts=2`
-    // turns provider A into one — that is the shape the rows appear in.
-    index === 0 && parameters.get('accounts') === '2' ? 'official' : 'custom',
-  )),
+  providers: [
+    ...(isBridgeApplied
+      ? [createProvider('__local__', 'default', '2026-01-04T00:00:00.000Z')]
+      : []),
+    ...providerIds.map((letter, index) => createProvider(
+      `provider-${letter}`,
+      `Provider ${letter.toUpperCase()}`,
+      new Date(Date.UTC(2026, 0, 3 - index)).toISOString(),
+      // The account rows only render on an `official` provider, so `?accounts=2`
+      // turns provider A into one — that is the shape the rows appear in.
+      index === 0 && parameters.get('accounts') === '2' ? 'official' : 'custom',
+    )),
+  ],
   officialAccounts: parameters.get('accounts') === '2'
     ? [
         createOfficialAccount('account-1', 'first@example.invalid', true),

@@ -244,7 +244,13 @@ const KimiPage: React.FC = () => {
       setPlugins(pluginList);
       setOfficialAccounts(accountList);
       setCommonConfig(nextCommonConfig);
-      setAppliedProviderId(providerList.find((provider) => provider.isApplied)?.id ?? '');
+      // The `__local__` bridge is flagged applied by the backend but wears no
+      // applied tag on its card, so it is not what 定位 should point at.
+      setAppliedProviderId(
+        providerList.find(
+          (provider) => provider.isApplied && provider.id !== KIMI_LOCAL_PROVIDER_ID,
+        )?.id ?? '',
+      );
       // Drop statuses of providers that no longer exist so a delete/reload
       // cannot leave stale badges behind.
       setConnectivityStatuses((previous) => {
