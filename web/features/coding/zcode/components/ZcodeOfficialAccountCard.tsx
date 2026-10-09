@@ -145,22 +145,19 @@ const ZcodeOfficialAccountCard: React.FC<ZcodeOfficialAccountCardProps> = ({
           emptyText={t('zcode.officialAccount.empty')}
           accounts={accountRows}
           leadingAction={
-            <>
-              {sortableId && (
-                <span
-                  {...attributes}
-                  {...listeners}
-                  style={{
-                    cursor: dragDisabled ? 'default' : isDragging ? 'grabbing' : 'grab',
-                    color: '#999',
-                    touchAction: 'none',
-                  }}
-                >
-                  <HolderOutlined />
-                </span>
-              )}
-              <LinkOutlined style={{ color: 'var(--color-text-secondary)' }} />
-            </>
+            sortableId && (
+              <span
+                {...attributes}
+                {...listeners}
+                style={{
+                  cursor: dragDisabled ? 'default' : isDragging ? 'grabbing' : 'grab',
+                  color: '#999',
+                  touchAction: 'none',
+                }}
+              >
+                <HolderOutlined />
+              </span>
+            )
           }
           loginAction={loginAction}
           actionsDisabled={loginPending}

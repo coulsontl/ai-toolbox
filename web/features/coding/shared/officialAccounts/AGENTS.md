@@ -15,6 +15,8 @@
 
 ## 核心设计决策（Why）
 
+- **标题行的 🔗 图标由组件自己画**，不由调用方传。三份原实现里有两份（Kimi、ZCode）把它画在标题行、一份（Codex）画在登录按钮上；抽组件时照了 Codex，于是图标从标题行消失，用户对照 ZCode 截图发现。**任何两份原实现共有的装饰都进组件**，调用方不再重复传（见 13.1 模式七十四）。
+
 - **登录入口是插槽（`loginAction`），不是布尔开关。** Codex/Kimi 是一个按钮，ZCode 是「选 OAuth provider」的下拉菜单。做成 `showLogin` + `loginProviders` 之类的 prop，等于把下拉的形态知识塞进共享组件——它就不该知道一个 CLI 有几个官方 provider。
 - **行级动作按语义固定五个**（`onApply` / `onSaveLocal` / `onRefresh` / `onViewDetails` / `onDelete`），**谁传哪个就渲染哪个**。CLI 没有的动作不传即可，组件不做「这个 CLI 有没有这个能力」的判断。
 - **虚拟行（`isVirtual`）只给一个动作：保存。** 它镜像的是磁盘上已经生效的那份登录——切到它自己是无意义的，删掉它也不会让 CLI 登出。保存之后它变成普通行，切换/删除随之出现。
@@ -37,6 +39,9 @@
 | codex | `embedded`（官方供应商卡片内） | 刷新 / 详情 / 保存 / 切换 / 删除（全量） |
 | kimi | `embedded`（官方供应商卡片内） | 保存 / 切换 / 删除 |
 | zcode | `standalone`（自己的卡片） | 保存 / 切换 / 删除 |
+| antigravity / geminicli / grok | **仍手写**（`PENDING_MIGRATION`，3 个） | — |
+
+> 这三个是 2026-10-09 修守卫时才发现的：原守卫匹配的是 `anticon-swap` / `anticon-check`（渲染后的 DOM class），源码里永远不命中，所以它们从未被扫出（见 13.1 模式七十三）。迁移时按同一份映射规则接进来即可。
 
 守卫：`pnpm run test:official-accounts-shared`（源码棘轮，禁止再手写行级按钮）、
 `pnpm run test:codex-official-accounts` 与 `pnpm run test:official-account-card`（真浏览器几何断言）。

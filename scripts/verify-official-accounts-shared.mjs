@@ -41,27 +41,25 @@ const SHARED_SECTION_IMPORT = 'shared/officialAccounts';
  *
  * **This list may only shrink.** Remove an entry in the same commit that moves
  * the file onto the shared section.
- */
-const PENDING_MIGRATION = new Set([]);
-
-/**
- * What a migrated file must not do, and the fix for each.
  *
- * These are the shapes the three hand-written implementations shared: a row with
- * its own action buttons, and a hand-rolled empty state.
+ * These three were invisible until 2026-10-09 because the check looked for
+ * `anticon-swap` / `anticon-check` — Ant Design's *rendered* class names, which
+ * never appear in source. The rule now keys on the shared import instead.
  */
-const FORBIDDEN = [
-  {
-    pattern: /anticon-swap/,
-    what: 'draws its own per-row switch button',
-    fix: 'map the account to `OfficialAccountRowView` and pass `onApply` to the shared section',
-  },
-  {
-    pattern: /anticon-check/,
-    what: 'draws its own per-row save button',
-    fix: 'pass `onSaveLocal` to the shared section; it renders the save action for virtual rows',
-  },
-];
+const PENDING_MIGRATION = new Set([
+  'antigravity/components/AntigravityProviderCard.tsx',
+  'geminicli/components/GeminiCliProviderCard.tsx',
+  'grok/components/GrokProviderCard.tsx',
+]);
+
+/** The shared implementation itself; it is not a consumer. */
+const SHARED_DIRECTORY = path.join('shared', 'officialAccounts');
+
+/** What a violation means, and the fix. */
+const VIOLATION_FIX =
+  'map this CLI\'s records to `OfficialAccountRowView` and render ' +
+  '`shared/officialAccounts`, instead of drawing the title, rows and their ' +
+  'actions here';
 
 const isGovernedFile = (filename) =>
   /OfficialAccount.*\.tsx$/.test(filename) || filename.endsWith('ProviderCard.tsx');
@@ -78,7 +76,13 @@ async function collectGovernedFiles(directory) {
       continue;
     }
     if (entry.isFile() && isGovernedFile(entry.name)) {
-      found.push(path.join(directory, entry.name));
+      const absolute = path.join(directory, entry.name);
+      // The shared implementation is the thing every consumer imports; it is
+      // not itself a consumer, and it necessarily iterates the rows.
+      if (absolute.includes(SHARED_DIRECTORY)) {
+        continue;
+      }
+      found.push(absolute);
     }
   }
   return found;
@@ -106,15 +110,21 @@ for (const file of files) {
   const usesSharedSection = source.includes(SHARED_SECTION_IMPORT);
   const findings = [];
   if (!usesSharedSection) {
-    for (const rule of FORBIDDEN) {
-      for (const [index, line] of source.split('\n').entries()) {
-        // Comments may legitimately mention these names; only code counts.
-        const code = line.replace(/\/\/.*$/, '');
-        if (rule.pattern.test(code)) {
-          findings.push({ line: index + 1, text: line.trim(), what: rule.what, fix: rule.fix });
-          break;
-        }
-      }
+    // Keyed on the source-level signal every hand-written section shares: it
+    // iterates its own account records to draw the rows. Icon names are *not*
+    // usable here — antd renders them as classes that never appear in source,
+    // and not every implementation used one for the switch.
+    const rowMap = source.split('\n').findIndex(line =>
+      /\.map\(/.test(line.replace(/\/\/.*$/, ''))
+      && /officialAccount|accountRows/.test(line),
+    );
+    if (rowMap !== -1) {
+      findings.push({
+        line: rowMap + 1,
+        text: source.split('\n')[rowMap].trim(),
+        what: 'draws its own official-account rows',
+        fix: VIOLATION_FIX,
+      });
     }
   }
 

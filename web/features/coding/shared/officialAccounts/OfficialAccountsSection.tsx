@@ -5,6 +5,7 @@ import {
   DeleteOutlined,
   DownOutlined,
   EyeOutlined,
+  LinkOutlined,
   RightOutlined,
   SwapOutlined,
   SyncOutlined,
@@ -72,6 +73,11 @@ const OfficialAccountsSection: React.FC<OfficialAccountsSectionProps> = ({
     <Space size={6}>
       {collapsible && (isCollapsed ? <RightOutlined /> : <DownOutlined />)}
       {leadingAction}
+      {/* The link glyph belongs to the section, not to any one host. Two of the
+          three original implementations drew one on the title line (Kimi and
+          ZCode) and it was lost when the section was extracted from Codex's,
+          which happened to draw its own on the login button instead. */}
+      <LinkOutlined style={{ color: 'var(--color-text-secondary)' }} />
       <Text strong style={{ fontSize: 13 }}>
         {title}
       </Text>

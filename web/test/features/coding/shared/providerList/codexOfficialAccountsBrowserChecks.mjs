@@ -33,25 +33,33 @@ export async function verifyCodexOfficialAccountAlignment({ send, evaluate, base
     throw new Error('Timed out waiting for: ' + (label || expression));
   };
 
+  // `?accounts=2` turns `provider-a` into the official provider, and
+  // `data-provider-id` is the card's stable anchor (the same one the locate
+  // action queries). Addressing the card by a title string would break the
+  // moment the wording changes — and it did.
+  const officialCard = '[data-provider-id="provider-a"]';
   await send('Page.navigate', { url: `${baseUrl}/?accounts=2&runId=align-${Date.now()}` });
-  await waitFor('document.body.textContent.includes("账号列表")', 'the accounts block');
+  // Wait for the *toggle*, not merely the card box: the card element exists
+  // before React has drawn the section inside it, and clicking a button that
+  // is not there yet throws.
+  const toggleQuery =
+    `${officialCard} .ant-card button:has(.anticon-right), `
+    + `${officialCard} .ant-card button:has(.anticon-down)`;
+  await waitFor(
+    `Boolean(document.querySelector('${toggleQuery}'))`,
+    'the account section\'s collapse toggle',
+  );
 
   // Expanded through a DOM click rather than a synthetic pointer sequence: the
   // block's default state is collapsed, and a real pointer event here leaves
-  // the browser unresponsive to the next command.
-  await evaluate(`(() => {
-    const card = [...document.querySelectorAll('.ant-card')]
-      .find(node => node.textContent.includes('账号列表'));
-    const toggle = [...card.querySelectorAll('button')]
-      .find(button => button.textContent.includes('账号列表'));
-    toggle.click();
-    return true;
-  })()`);
+  // the browser unresponsive to the next command. The toggle is the card's only
+  // button carrying the section's collapse caret; the model list below is a
+  // sibling of the card, not a child, so this cannot pick that one up.
+  await evaluate(`document.querySelector('${toggleQuery}').click(), true`);
   await delay(500);
 
   const geometry = await evaluate(`(() => {
-    const card = [...document.querySelectorAll('.ant-card')]
-      .find(node => node.textContent.includes('账号列表'));
+    const card = document.querySelector('${officialCard} .ant-card');
     if (!card) return null;
     const rightEdgeOf = element => element
       ? Math.round(element.getBoundingClientRect().right)

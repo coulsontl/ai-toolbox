@@ -520,6 +520,10 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
       <OfficialAccountsSection
         variant="embedded"
         title={t('codex.provider.officialAccountsTitle')}
+        // Only the official card can switch accounts, so only it explains the
+        // switch. A non-official card still lists legacy rows, but its notice
+        // ("clear these first") is the whole story there.
+        hint={isOfficialProvider ? t('codex.provider.officialAccountHint') : undefined}
         emptyText={t('codex.provider.officialAccountsEmpty')}
         accounts={officialAccountRows}
         collapsed={accountsCollapsed}
