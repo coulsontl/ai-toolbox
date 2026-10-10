@@ -1257,7 +1257,9 @@ mod tests {
                 format!("{provider}/{model}")
             );
             assert_eq!(
-                default_selection_from_settings(&settings).model_id.as_deref(),
+                default_selection_from_settings(&settings)
+                    .model_id
+                    .as_deref(),
                 Some(model)
             );
             assert_eq!(settings["modelRoles"]["task"], "example/task");
