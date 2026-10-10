@@ -12,7 +12,7 @@
 - 全局提示词预设存 `oh_my_pi_prompt_config` 表,写入运行时根目录的 `AGENTS.md`。
 - 文件式预览由 `read_omp_runtime_config` 返回原始文件内容(`configContent`/`modelsContent`/`mcpContent`/`promptContent`),前端按文件 Tab 展示,与 Codex 一致。
 - **OpenAI Codex 订阅是原生 OAuth,不是 `models.yml` provider**: 凭据在运行时根目录的 `agent.db`(`auth_credentials` 表,`provider='openai-codex'`),账号写入/切换/额度在 `accounts.rs`,模型目录来自 `omp models openai-codex --json`。`build_provider_views` 无条件插入 `openai-codex` 这个 key,使它在没有 YAML provider 时也可见。
-- Codex 模型目录由 `refresh_omp_codex_catalog` 命令(前端订阅卡片的刷新按钮与页面首次加载)跑 CLI 取得,结果缓存在进程内的 `CODEX_CATALOG_CACHE`(按运行时根路径分键,失败结果也缓存)。`read_omp_runtime_config` **只读缓存,不跑 CLI** —— 详见下方 Gotchas 的 `omp models` 副作用。
+- Codex 模型目录由 `refresh_omp_codex_catalog` 命令(前端订阅卡片的刷新按钮与页面首次加载)跑 CLI 取得,结果缓存在进程内的 `CODEX_CATALOG_CACHE`(按运行时根路径分键,失败结果也缓存)。`read_omp_runtime_config` **只读缓存,不跑 CLI**。刷新调用先核对页面的根路径；缓存发布按请求代次过滤迟到结果，防止旧超时清掉新目录。前端独立加载目录，不让首次联网发现阻塞本地配置 —— 详见下方 Gotchas 的 `omp models` 副作用。
 - **subagent / roles 集中配置(OMP 侧「Subagents 集中配置」)**: 多套方案存 `oh_my_pi_agents_config` 表，分为**核心模型角色(modelRoles)**与**自定义 subagents(agents)**两层。
   1. 核心模型角色(`model_roles`): 对应 OMP 原生内置角色(`default`, `plan`, `task`, `advisor`, `commit`, `tiny`, `smol`, `slow`, `vision`)。apply 时写入运行时 `config.yml` 的 `modelRoles` 映射(`provider/modelId:thinkingLevel`)，`default` 的思考等级同步更新 `defaultThinkingLevel`。**只接管这 9 个核心角色**:`config.yml` 里方案之外的自定义 role(上游 `getKnownRoleIds` 允许任意 role 名)原样保留,方案里没写的核心角色视为用户清空。
   2. 自定义 subagents(`agents`): 对应扩展的委托代理，apply 时渲染为 `<agentDir>/agents/*.md`。方案外的自定义文件由 apply / clear applied 清理(目录 = 当前方案)。

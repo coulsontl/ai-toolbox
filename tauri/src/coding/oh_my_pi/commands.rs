@@ -412,15 +412,28 @@ const CODEX_CATALOG_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// fetched here — the page shows an empty catalog with a refresh affordance
 /// until the user asks, which is the point of moving the call out of the read
 /// path.
-static CODEX_CATALOG_CACHE: std::sync::Mutex<Option<(String, Result<Vec<Value>, String>)>> =
-    std::sync::Mutex::new(None);
+struct CodexCatalogCache {
+    generation: u64,
+    catalog: Option<(String, Result<Vec<Value>, String>)>,
+}
+
+static CODEX_CATALOG_CACHE: std::sync::Mutex<CodexCatalogCache> =
+    std::sync::Mutex::new(CodexCatalogCache { generation: 0, catalog: None });
+
+fn begin_codex_catalog_refresh() -> u64 {
+    let mut cache = CODEX_CATALOG_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.generation += 1;
+    cache.generation
+}
 
 fn read_cached_codex_catalog(location: &RuntimeLocationInfo) -> Result<Vec<Value>, String> {
     let root = location.host_path.to_string_lossy().to_string();
     let cache = CODEX_CATALOG_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    match cache.as_ref() {
+    match cache.catalog.as_ref() {
         Some((cached_root, result)) if cached_root == &root => result.clone(),
         _ => Err(
             "OpenAI Codex models have not been loaded yet. Use refresh to fetch the catalog."
@@ -429,12 +442,14 @@ fn read_cached_codex_catalog(location: &RuntimeLocationInfo) -> Result<Vec<Value
     }
 }
 
-fn store_codex_catalog(location: &RuntimeLocationInfo, catalog: &Result<Vec<Value>, String>) {
-    let root = location.host_path.to_string_lossy().to_string();
+fn store_codex_catalog(location: &RuntimeLocationInfo, catalog: Result<Vec<Value>, String>, generation: u64) {
     let mut cache = CODEX_CATALOG_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *cache = Some((root, catalog.clone()));
+    // A timed-out older request must not erase a newer refresh used by the tray.
+    if generation == cache.generation {
+        cache.catalog = Some((location.host_path.to_string_lossy().into_owned(), catalog));
+    }
 }
 
 /// Never read credential payloads or initialize/migrate OMP's database.
@@ -853,9 +868,14 @@ pub async fn read_omp_runtime_config(
 #[tauri::command]
 pub async fn refresh_omp_codex_catalog(
     state: tauri::State<'_, SqliteDbState>,
+    root_path: String,
 ) -> Result<OmpRuntimeConfig, String> {
     let runtime_location =
         runtime_location::get_oh_my_pi_runtime_location_async(state.db()).await?;
+    if runtime_location.host_path.to_string_lossy() != root_path {
+        return Err("OMP runtime directory changed. Refresh the configuration before loading models.".to_string());
+    }
+    let generation = begin_codex_catalog_refresh();
     let catalog = match tokio::time::timeout(
         CODEX_CATALOG_TIMEOUT,
         super::extensions::run_omp_command(
@@ -874,7 +894,7 @@ pub async fn refresh_omp_codex_catalog(
                 .to_string(),
         ),
     };
-    store_codex_catalog(&runtime_location, &catalog);
+    store_codex_catalog(&runtime_location, catalog, generation);
     read_omp_runtime_config(state).await
 }
 
@@ -1872,15 +1892,21 @@ mod tests {
         let first = local_location(Path::new("C:\\first\\.omp\\agent"));
         let second = local_location(Path::new("C:\\second\\.omp\\agent"));
         assert!(read_cached_codex_catalog(&first).is_err());
-        store_codex_catalog(&first, &Ok(vec![json!({"id": "codex-test"})]));
+        store_codex_catalog(&first, Ok(vec![json!({"id": "codex-test"})]), begin_codex_catalog_refresh());
         assert_eq!(
             read_cached_codex_catalog(&first).unwrap(),
             vec![json!({"id": "codex-test"})]
         );
         // Another root must not inherit the first root's catalog.
         assert!(read_cached_codex_catalog(&second).is_err());
+        let older = begin_codex_catalog_refresh();
+        let newer = begin_codex_catalog_refresh();
+        store_codex_catalog(&second, Ok(vec![json!({"id": "newer-model"})]), newer);
+        store_codex_catalog(&second, Err("old timeout".to_string()), older);
+        assert_eq!(read_cached_codex_catalog(&second).unwrap()[0]["id"], "newer-model");
+        assert!(read_cached_codex_catalog(&first).is_err());
         // A cached failure stays a failure instead of re-running the CLI.
-        store_codex_catalog(&second, &Err("catalog unavailable".to_string()));
+        store_codex_catalog(&second, Err("catalog unavailable".to_string()), begin_codex_catalog_refresh());
         assert_eq!(
             read_cached_codex_catalog(&second).unwrap_err(),
             "catalog unavailable"

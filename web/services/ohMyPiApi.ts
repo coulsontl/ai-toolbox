@@ -49,16 +49,8 @@ export const readOmpRuntimeConfig = async (): Promise<OmpRuntimeConfig> => {
   return await invoke<OmpRuntimeConfig>('read_omp_runtime_config');
 };
 
-/**
- * Re-run `omp models` to refill the Codex catalog, then return the new config.
- *
- * Separate from `readOmpRuntimeConfig` because the CLI call is not a read: it
- * writes `agent.db`/`models.db` and may hit the network. Only the subscription
- * card's refresh button and the first page load should pay for it.
- */
-export const refreshOmpCodexCatalog = async (): Promise<OmpRuntimeConfig> => {
-  return await invoke<OmpRuntimeConfig>('refresh_omp_codex_catalog');
-};
+export const refreshOmpCodexCatalog = (rootPath: string): Promise<OmpRuntimeConfig> =>
+  invoke('refresh_omp_codex_catalog', { rootPath });
 
 export const saveOmpModelSettings = async (
   input: OmpModelSettingsInput,

@@ -131,8 +131,8 @@ import {
 import {
   deleteOmpRuntimeProvider,
   getOmpSettingsConfig,
-  readOmpRuntimeConfig,
   refreshOmpCodexCatalog,
+  readOmpRuntimeConfig,
   saveOmpModelSettings,
   saveOmpModelsProvider,
   saveOmpOtherSettings,
@@ -153,7 +153,7 @@ import OmpAgentsSettings from '../components/OmpAgentsSettings';
 import { OMP_CORE_MODEL_ROLES } from '../utils/ompAgentsUtils';
 import OmpExtensionsSection from '../components/OmpExtensionsSection';
 import OmpSubscriptionCard from '../components/OmpSubscriptionCard';
-import { getOmpRuntimeModelIds, getOmpRuntimeModelRecords } from '../utils/ompRuntimeModels';
+import { getOmpRuntimeModelIds, getOmpRuntimeModelRecords, mergeOmpRuntimeCatalog, type OmpRuntimeCatalog } from '../utils/ompRuntimeModels';
 import styles from './OhMyPiPage.module.less';
 
 const { Title, Text, Link } = Typography;
@@ -506,7 +506,18 @@ const OhMyPiPage: React.FC = () => {
   const [saving, setSaving] = React.useState(false);
   const [refreshingModels, setRefreshingModels] = React.useState(false);
   const [extensionsRefreshKey, setExtensionsRefreshKey] = React.useState(0);
-  const [runtimeConfig, setRuntimeConfig] = React.useState<OmpRuntimeConfig | null>(null);
+  const [localRuntimeConfig, setRuntimeConfig] = React.useState<OmpRuntimeConfig | null>(null);
+  const [runtimeCatalog, setRuntimeCatalog] = React.useState<OmpRuntimeCatalog | null>(null);
+  const [catalogRefreshKey, setCatalogRefreshKey] = React.useState(0);
+  const configRequestRef = React.useRef(0);
+  const catalogGenerationRef = React.useRef(0);
+  const runtimeConfig = React.useMemo(
+    () => localRuntimeConfig ? mergeOmpRuntimeCatalog(localRuntimeConfig, runtimeCatalog) : null,
+    [localRuntimeConfig, runtimeCatalog],
+  );
+  const rootPath = localRuntimeConfig?.rootPathInfo.path;
+  const currentRootRef = React.useRef(rootPath);
+  currentRootRef.current = rootPath;
   const [modelForm] = Form.useForm();
   const [providerModal, setProviderModal] = React.useState<ProviderJsonModalState | null>(null);
   const [providerModalForm] = Form.useForm();
@@ -582,23 +593,15 @@ const OhMyPiPage: React.FC = () => {
     },
   ], [t]);
 
-  /**
-   * `refreshCatalog` re-runs `omp models` for the Codex subscription.
-   *
-   * It is opt-in because that command is not a read: it initializes `agent.db`,
-   * migrates `models.db`, and fetches from the network on a cold cache. Every
-   * save command returns a fresh config through the same read path, so paying
-   * for the CLI there made each model edit wait on a subprocess and a database
-   * write. Only the initial load and the subscription card's refresh ask for it.
-   */
   const loadConfig = React.useCallback(async (silent = false, refreshCatalog = false) => {
+    const request = ++configRequestRef.current;
+    if (refreshCatalog) catalogGenerationRef.current += 1;
     if (!silent) {
       setLoading(true);
     }
     try {
-      const config = refreshCatalog
-        ? await refreshOmpCodexCatalog()
-        : await readOmpRuntimeConfig();
+      const config = await readOmpRuntimeConfig();
+      if (request !== configRequestRef.current) return;
       setRuntimeConfig(config);
       setOtherSettings(config.otherSettings || {});
       modelForm.setFieldsValue({
@@ -606,19 +609,44 @@ const OhMyPiPage: React.FC = () => {
         defaultModel: config.modelSettings.modelId || undefined,
         defaultThinkingLevel: config.modelSettings.thinkingLevel || undefined,
       });
+      if (refreshCatalog) setCatalogRefreshKey((key) => key + 1);
     } catch (error) {
+      if (request !== configRequestRef.current) return;
       console.error('Failed to load Pi runtime config:', error);
       message.error(t('common.error'));
     } finally {
-      if (!silent) {
-        setLoading(false);
-      }
+      if (request === configRequestRef.current) setLoading(false);
     }
   }, [modelForm, t]);
 
   React.useEffect(() => {
-    loadConfig(false, true);
+    void loadConfig(false, true);
+    return () => {
+      configRequestRef.current += 1;
+      catalogGenerationRef.current += 1;
+    };
   }, [loadConfig]);
+
+  React.useEffect(() => {
+    if (!rootPath) return;
+    const generation = ++catalogGenerationRef.current;
+    let cancelled = false;
+    setRuntimeCatalog((previous) => previous?.rootPath === rootPath ? { ...previous, error: null } : null);
+    void refreshOmpCodexCatalog(rootPath).then(
+      (config) => {
+        if (!cancelled && rootPath === currentRootRef.current && config.rootPathInfo.path === rootPath && generation === catalogGenerationRef.current) {
+          const provider = config.providers.find((item) => item.providerKey === 'openai-codex');
+          setRuntimeCatalog({ rootPath, models: provider?.runtimeModels ?? [], error: provider?.runtimeCatalogError ?? null });
+        }
+      },
+      (error: unknown) => {
+        if (!cancelled && rootPath === currentRootRef.current && generation === catalogGenerationRef.current) {
+          setRuntimeCatalog({ rootPath, models: [], error: error instanceof Error ? error.message : String(error) });
+        }
+      },
+    );
+    return () => { cancelled = true; };
+  }, [rootPath, catalogRefreshKey]);
 
   React.useEffect(() => {
     const checkAllApiHubAvailability = async () => {
@@ -1830,9 +1858,6 @@ const OhMyPiPage: React.FC = () => {
         provider={provider}
         defaultModel={runtimeConfig?.modelSettings.modelId}
         onSetPrimaryModel={(modelId) => void handleSetPrimaryModel(provider, modelId)}
-        // This card's refresh is the catalog's refresh: it is where a user
-        // lands after a terminal login, when the model list has just become
-        // available. Every other config read takes the cached catalog.
         onRefresh={() => loadConfig(true, true)}
       />
     ) : null;
