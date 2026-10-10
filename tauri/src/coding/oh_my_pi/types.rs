@@ -132,6 +132,21 @@ pub struct OmpDefaultSelection {
     pub thinking_level: Option<String>,
 }
 
+/// Local OMP metadata only. OAuth credentials never cross the IPC boundary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OmpCodexSubscription {
+    /// `configured` means a local, non-disabled OAuth entry exists, not that
+    /// the subscription or access token has been verified with OpenAI.
+    pub status: String,
+    pub has_api_key_override: bool,
+    pub login_command: String,
+    pub models_command: String,
+    pub shell: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wsl_distro: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OmpRuntimeConfig {
@@ -146,6 +161,7 @@ pub struct OmpRuntimeConfig {
     pub model_settings: OmpDefaultSelection,
     pub providers: Vec<OmpRuntimeProviderView>,
     pub builtin_providers: Vec<OmpBuiltinProvider>,
+    pub codex_subscription: OmpCodexSubscription,
     /// Raw `config.yml` / `config.yaml` file content for file-based preview.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_content: Option<String>,

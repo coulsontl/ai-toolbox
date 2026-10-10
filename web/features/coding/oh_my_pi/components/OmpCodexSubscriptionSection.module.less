@@ -1,0 +1,73 @@
+.section {
+  border-top: 1px solid var(--color-border);
+  padding-top: 12px;
+  font-size: 13px;
+}
+
+.header,
+.heading,
+.actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.header {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.heading {
+  font-size: 14px;
+  min-width: 0;
+}
+
+.hint {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+
+  &:global(.ant-typography) {
+    margin: 0;
+  }
+}
+
+.header + .hint {
+  margin-top: 12px;
+}
+
+.section > :global(.ant-alert) {
+  margin-top: 12px;
+}
+
+.guide {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.commandGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.commandRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.command {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

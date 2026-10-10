@@ -419,8 +419,9 @@ fn build_provider_views(settings: &Value, models: &Value) -> Vec<OmpRuntimeProvi
         }
     }
 
-    // 不把全部内置渠道无条件塞进列表:OMP 的 provider 事实源是 models.yml,
-    // 只有配置过或设为默认的供应商才展示(内置标记仅对确实出现的渠道生效)。
+    // Other built-ins appear only when configured or selected. Codex OAuth is
+    // a separate native subscription, with no required models.yml provider.
+    keys.insert("openai-codex".to_string());
 
     let mut views = Vec::new();
     for provider_key in keys {
@@ -440,7 +441,11 @@ fn build_provider_views(settings: &Value, models: &Value) -> Vec<OmpRuntimeProvi
             sources.push(OmpProviderSource::SettingsYml);
         }
 
-        let kind = credential_kind(models_provider.as_ref(), is_builtin);
+        let kind = if provider_key == "openai-codex" && models_provider.is_none() {
+            OmpCredentialKind::Oauth
+        } else {
+            credential_kind(models_provider.as_ref(), is_builtin)
+        };
         let mut categories = Vec::new();
         match kind {
             OmpCredentialKind::ApiKey => categories.push(OmpProviderCategory::ApiKey),
@@ -459,7 +464,7 @@ fn build_provider_views(settings: &Value, models: &Value) -> Vec<OmpRuntimeProvi
         if !is_builtin && models_provider.is_none() {
             warnings.push(OmpProviderWarning::MissingProvider);
         }
-        if is_default {
+        if is_default && provider_key != "openai-codex" {
             if let Some(default_model) = default_model.as_deref() {
                 if !default_model.trim().is_empty()
                     && !model_ids.is_empty()
@@ -612,7 +617,11 @@ pub async fn read_omp_runtime_config(
     state: tauri::State<'_, SqliteDbState>,
 ) -> Result<OmpRuntimeConfig, String> {
     let db = state.db();
-    let root_path_info = get_omp_root_path_info_from_db_async(&db).await?;
+    let location = runtime_location::get_oh_my_pi_runtime_location_async(&db).await?;
+    let root_path_info = OmpPathInfo {
+        path: location.host_path.to_string_lossy().to_string(),
+        source: location.source.clone(),
+    };
     let root_dir = PathBuf::from(&root_path_info.path);
     let config_path = get_omp_config_path_from_root(&root_dir);
     let models_path = get_omp_models_path_from_root(&root_dir);
@@ -621,6 +630,26 @@ pub async fn read_omp_runtime_config(
 
     let settings = read_yaml_object_or_empty(&config_path)?;
     let models = read_yaml_object_or_empty(&models_path)?;
+    let codex_provider = models
+        .get("providers")
+        .and_then(|value| value.get("openai-codex"));
+    let has_api_key_override = codex_provider
+        .and_then(|value| value.get("apiKey"))
+        .map(|value| !value.is_null())
+        .unwrap_or(false);
+    let (codex_subscription, cached_model_ids) =
+        super::subscription::read_subscription(&location, has_api_key_override).await;
+    let mut providers = build_provider_views(&settings, &models);
+    if let Some(provider) = providers
+        .iter_mut()
+        .find(|provider| provider.provider_key == "openai-codex")
+    {
+        for model_id in cached_model_ids {
+            if !provider.model_ids.contains(&model_id) {
+                provider.model_ids.push(model_id);
+            }
+        }
+    }
 
     Ok(OmpRuntimeConfig {
         root_path_info,
@@ -630,8 +659,9 @@ pub async fn read_omp_runtime_config(
         prompt_path: prompt_path.to_string_lossy().to_string(),
         other_settings: build_other_settings(&settings),
         model_settings: default_selection_from_settings(&settings),
-        providers: build_provider_views(&settings, &models),
+        providers,
         builtin_providers: builtin_providers(),
+        codex_subscription,
         config_content: fs::read_to_string(&config_path).ok(),
         models_content: fs::read_to_string(&models_path).ok(),
         mcp_content: fs::read_to_string(&mcp_path).ok(),
@@ -650,7 +680,23 @@ async fn update_default_selection(
     remove_thinking_level: bool,
 ) -> Result<(), String> {
     let config_path = get_omp_config_path_async(db).await?;
-    let mut settings = read_yaml_object_or_empty(&config_path)?;
+    update_default_selection_at_path(
+        &config_path,
+        provider_key,
+        model_id,
+        thinking_level,
+        remove_thinking_level,
+    )
+}
+
+fn update_default_selection_at_path(
+    config_path: &Path,
+    provider_key: Option<&str>,
+    model_id: Option<&str>,
+    thinking_level: Option<&str>,
+    remove_thinking_level: bool,
+) -> Result<(), String> {
+    let mut settings = read_yaml_object_or_empty(config_path)?;
     let settings_object = object_mut(&mut settings)?;
 
     let next_provider = provider_key
@@ -688,7 +734,7 @@ async fn update_default_selection(
         }
     }
 
-    write_yaml_object(&config_path, &settings)
+    write_yaml_object(config_path, &settings)
 }
 
 #[tauri::command]
@@ -1163,6 +1209,58 @@ pub async fn save_omp_local_prompt_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_subscription_is_visible_without_a_models_provider_or_api_key() {
+        let providers = build_provider_views(&json!({}), &json!({}));
+        let codex = providers
+            .iter()
+            .find(|provider| provider.provider_key == "openai-codex")
+            .unwrap();
+        assert!(matches!(codex.credential_kind, OmpCredentialKind::Oauth));
+        assert!(codex.models_provider.is_none());
+        assert!(codex.credential.is_none());
+        assert!(codex.is_builtin);
+    }
+
+    #[test]
+    fn switching_subscription_default_preserves_auth_models_and_other_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let config_path = root.join("config.yml");
+        let models_path = root.join("models.yml");
+        let auth_path = root.join("agent.db");
+        let auth_fixture = b"opaque fake OAuth fixture: never opened by configuration writes";
+        fs::write(&auth_path, auth_fixture).unwrap();
+        let models = "providers:\n  example:\n    apiKey: EXAMPLE_KEY\n    custom: keep\n";
+        fs::write(&models_path, models).unwrap();
+        write_yaml_object(
+            &config_path,
+            &json!({
+                "theme": "dark", "unknown": {"keep": true},
+                "modelRoles": {"default": "example/old", "task": "example/task"},
+                "defaultThinkingLevel": "high"
+            }),
+        )
+        .unwrap();
+        for (provider, model) in [("openai-codex", "native-model"), ("example", "old")] {
+            update_default_selection_at_path(
+                &config_path,
+                Some(provider),
+                Some(model),
+                Some("high"),
+                false,
+            )
+            .unwrap();
+            let settings = read_yaml_object_or_empty(&config_path).unwrap();
+            assert_eq!(settings["modelRoles"]["default"], format!("{provider}/{model}"));
+            assert_eq!(settings["modelRoles"]["task"], "example/task");
+            assert_eq!(settings["unknown"]["keep"], true);
+            assert_eq!(settings["defaultThinkingLevel"], "high");
+            assert_eq!(fs::read(&auth_path).unwrap().as_slice(), auth_fixture);
+            assert_eq!(fs::read_to_string(&models_path).unwrap(), models);
+        }
+    }
 
     #[test]
     fn normalize_omptype_drops_incomplete_cost_and_thinking_level_map() {

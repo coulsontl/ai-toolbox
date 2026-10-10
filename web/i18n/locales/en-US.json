@@ -5658,6 +5658,27 @@
       "builtinInheritedHint": "Built-in agents that are untouched keep the OMP bundled default; configured fields are written into the preset.",
       "bundledDefault": "bundled",
       "bundledInherited": "OMP default"
+    },
+    "codexSubscription": {
+      "title": "OpenAI Codex subscription",
+      "configured": "Local OAuth record found",
+      "notConfigured": "No local OAuth record found",
+      "unknown": "Local status unknown",
+      "description": "Use your ChatGPT subscription through OMP native login, separately from the OpenAI API key provider. A local record does not confirm subscription or credential validity.",
+      "loginGuide": "Subscription login guide",
+      "refreshAfterLogin": "Refresh local status",
+      "localStatusHint": "This checks only for an enabled OAuth record in the locally readable OMP directory, without server validation. Unknown does not mean signed out; check the OMP configuration directory and terminal environment, then retry.",
+      "apiKeyOverride": "An openai-codex API key override exists in models.yml and may take priority over subscription credentials. Review and resolve it yourself to use the subscription; refreshing will not change or remove it.",
+      "powershell": "Run these commands in PowerShell. They target the current OMP configuration directory.",
+      "posixShell": "Run these commands in a POSIX terminal shell. They target the current OMP configuration directory.",
+      "wslShell": "Run these commands in a POSIX terminal inside WSL distribution {{distro}}. They target that environment’s OMP configuration directory.",
+      "loginStep": "1. Sign in with OMP native subscription login",
+      "modelsStep": "2. View or update the OMP model catalog",
+      "copyCommand": "Copy command: {{step}}",
+      "finishHint": "Follow OMP to complete browser authorization, run the model catalog command, then refresh here. Retry if login is cancelled or fails; do not paste tokens into AI Toolbox. Finally, choose OpenAI Codex subscription as the default provider and select or enter a model ID.",
+      "modelHint": "Choose from OMP’s cache or enter the exact model ID without the openai-codex/ prefix. Selection, Enter or blur saves it; use the login guide to refresh an empty catalog.",
+      "modelPlaceholder": "Select or enter an exact Codex model ID",
+      "commandUnavailable": "A safe command could not be generated for the current paths. Check the OMP configuration directory and CLI path."
     }
   },
   "dsh": {

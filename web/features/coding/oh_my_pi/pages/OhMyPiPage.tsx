@@ -151,6 +151,9 @@ import { extractOmpProviderFromCcSwitch } from '../utils/importMapping';
 import OmpAgentsSettings from '../components/OmpAgentsSettings';
 import { OMP_CORE_MODEL_ROLES } from '../utils/ompAgentsUtils';
 import OmpExtensionsSection from '../components/OmpExtensionsSection';
+import OmpCodexSubscriptionSection from '../components/OmpCodexSubscriptionSection';
+import OmpCodexModelInput from '../components/OmpCodexModelInput';
+import { isOmpCodexSubscriptionProvider, OMP_CODEX_PROVIDER_KEY } from '../utils/ompCodexSubscription';
 import styles from './OhMyPiPage.module.less';
 
 const { Title, Text, Link } = Typography;
@@ -535,7 +538,7 @@ const OhMyPiPage: React.FC = () => {
   const [otherSettingsValid, setOtherSettingsValid] = React.useState(true);
   const [previewModalOpen, setPreviewModalOpen] = React.useState(false);
   const [settingsModalOpen, setSettingsModalOpen] = React.useState(false);
-    const modelSettingsSaveSeqRef = React.useRef(0);
+  const modelSettingsSaveSeqRef = React.useRef(0);
   // `oh_my_pi`, not `pi`: PiPage reads `pi`, and each CLI owns its own slot.
   // Reading Pi's key here made this page's sidebar toggle a no-op — it wrote
   // `oh_my_pi` while displaying `pi`.
@@ -594,6 +597,10 @@ const OhMyPiPage: React.FC = () => {
       });
     } catch (error) {
       console.error('Failed to load Pi runtime config:', error);
+      setRuntimeConfig((previous) => previous ? {
+        ...previous,
+        codexSubscription: { ...previous.codexSubscription, status: 'unknown' },
+      } : previous);
       message.error(t('common.error'));
     } finally {
       if (!silent) {
@@ -661,7 +668,10 @@ const OhMyPiPage: React.FC = () => {
   const providerOptions = React.useMemo(() => {
     const options = new Map<string, string>();
     runtimeConfig?.providers.forEach((provider) => {
-      options.set(provider.providerKey, `${provider.displayName} (${provider.providerKey})`);
+      const name = isOmpCodexSubscriptionProvider(provider)
+        ? t('ohMyPi.codexSubscription.title')
+        : provider.displayName;
+      options.set(provider.providerKey, `${name} (${provider.providerKey})`);
     });
     runtimeConfig?.builtinProviders.forEach((provider) => {
       if (!options.has(provider.key)) {
@@ -673,7 +683,7 @@ const OhMyPiPage: React.FC = () => {
       options.set(current, current);
     }
     return Array.from(options.entries()).map(([value, label]) => ({ value, label }));
-  }, [runtimeConfig]);
+  }, [runtimeConfig, t]);
 
   /** 分组模型选项(供 subagent 方案编辑弹窗复用): 角色别名 + provider -> model list。 */
   const ompAgentsModelOptions = React.useMemo(() => {
@@ -726,20 +736,28 @@ const OhMyPiPage: React.FC = () => {
   const modelOptions = React.useMemo(() => {
     const options = new Set<string>();
     selectedProvider?.modelIds?.forEach((modelId) => options.add(modelId));
-    const current = selectedDefaultModel || runtimeConfig?.modelSettings.modelId;
+    const current = selectedDefaultModel || (
+      selectedProviderKey === runtimeConfig?.modelSettings.providerKey
+        ? runtimeConfig?.modelSettings.modelId
+        : undefined
+    );
     if (current) {
       options.add(current);
     }
     return Array.from(options).map((modelId) => ({ value: modelId, label: modelId }));
-  }, [runtimeConfig?.modelSettings.modelId, selectedDefaultModel, selectedProvider?.modelIds]);
+  }, [runtimeConfig?.modelSettings, selectedDefaultModel, selectedProvider?.modelIds, selectedProviderKey]);
 
   const ompProviders = React.useMemo(
-    () => runtimeConfig?.providers ?? [],
+    // Pure native OAuth belongs to the subscription section. Explicit overrides
+    // stay editable so users can inspect or remove their own API-key configuration.
+    () => runtimeConfig?.providers.filter((provider) => (
+      !isOmpCodexSubscriptionProvider(provider) || Boolean(provider.modelsProvider)
+    )) ?? [],
     [runtimeConfig?.providers],
   );
   const existingProviderIds = React.useMemo(
-    () => ompProviders.map((provider) => provider.providerKey),
-    [ompProviders],
+    () => runtimeConfig?.providers.map((provider) => provider.providerKey) ?? [],
+    [runtimeConfig?.providers],
   );
   const existingFavoriteProviderIds = React.useMemo(
     () => existingProviderIds.map((providerId) => buildFavoriteProviderStorageKey('omp', providerId)),
@@ -842,12 +860,17 @@ const OhMyPiPage: React.FC = () => {
     if (Object.prototype.hasOwnProperty.call(changedValues, 'defaultProvider')) {
       if (
         nextValues.defaultModel
-        && nextProvider?.modelIds?.length
-        && !nextProvider.modelIds.includes(nextValues.defaultModel)
+        && (nextProvider?.modelIds?.length || nextValues.defaultProvider === OMP_CODEX_PROVIDER_KEY)
+        && !nextProvider?.modelIds?.includes(nextValues.defaultModel)
       ) {
         nextValues.defaultModel = undefined;
         modelForm.setFieldValue('defaultModel', undefined);
       }
+    }
+    // An empty model is a draft: the backend falls back to the previous model
+    // for empty values, which would otherwise pair Codex with the old provider's ID.
+    if (nextValues.defaultProvider === OMP_CODEX_PROVIDER_KEY && !nextValues.defaultModel?.trim()) {
+      return;
     }
     const nextModel = nextProvider && nextValues.defaultModel
       ? getProviderModelRecords(nextProvider.modelsProvider).find(
@@ -856,6 +879,8 @@ const OhMyPiPage: React.FC = () => {
       : undefined;
     const unsupportedThinkingCleared = Boolean(
       nextValues.defaultThinkingLevel
+      // Cached/native Codex IDs have no capability metadata; unknown is not unsupported.
+      && (nextModel || nextValues.defaultProvider !== OMP_CODEX_PROVIDER_KEY)
       && !isOmpThinkingLevelSupported(nextValues.defaultThinkingLevel, nextModel),
     );
     if (unsupportedThinkingCleared) {
@@ -2060,13 +2085,27 @@ const OhMyPiPage: React.FC = () => {
                         placeholder={t('ohMyPi.modelSettings.defaultProviderPlaceholder')}
                       />
                     </Form.Item>
-                    <Form.Item label={t('ohMyPi.modelSettings.defaultModel')} name="defaultModel">
-                      <Select
-                        allowClear
-                        showSearch
-                        options={modelOptions}
-                        placeholder={t('ohMyPi.modelSettings.defaultModelPlaceholder')}
-                      />
+                    <Form.Item
+                      label={t('ohMyPi.modelSettings.defaultModel')}
+                      name="defaultModel"
+                      extra={selectedProviderKey === OMP_CODEX_PROVIDER_KEY
+                        ? t('ohMyPi.codexSubscription.modelHint')
+                        : undefined}
+                    >
+                      {selectedProviderKey === OMP_CODEX_PROVIDER_KEY ? (
+                        <OmpCodexModelInput
+                          options={modelOptions}
+                          placeholder={t('ohMyPi.codexSubscription.modelPlaceholder')}
+                          disabled={saving}
+                        />
+                      ) : (
+                        <Select
+                          allowClear
+                          showSearch
+                          options={modelOptions}
+                          placeholder={t('ohMyPi.modelSettings.defaultModelPlaceholder')}
+                        />
+                      )}
                     </Form.Item>
                     {thinkingLevelOptions.length > 0 ? (
                       <Form.Item label={t('ohMyPi.modelSettings.thinkingLevel')} name="defaultThinkingLevel">
@@ -2079,6 +2118,13 @@ const OhMyPiPage: React.FC = () => {
                     ) : null}
                   </div>
                 </Form>
+                {runtimeConfig && (
+                  <OmpCodexSubscriptionSection
+                    subscription={runtimeConfig.codexSubscription}
+                    disabled={saving}
+                    onRefresh={() => loadConfig(true)}
+                  />
+                )}
               </div>
             </div>
           </div>
@@ -2163,7 +2209,7 @@ const OhMyPiPage: React.FC = () => {
                   ),
                   children: (
                     <div>
-                      {runtimeConfig?.providers.length ? (
+                      {ompProviders.length ? (
                         <div className={styles.providerList}>
                           {visibleProviders.length ? (
                             visibleProviders.map(renderProvider)

@@ -19,13 +19,17 @@
 
 ## 与 Pi 的差异
 
-- OMP 没有 `auth.json`/`models.json`/`settings.json`;凭据(apiKey)直接写在 `models.yml` 的 provider 配置里,默认模型用 `modelRoles.default`(格式 `provider/modelId`)表达,思考级别用 `defaultThinkingLevel`。
+- OMP 没有 `auth.json`/`models.json`/`settings.json`;API Key 写在 `models.yml` 的 provider 配置里；OAuth 由 OMP 的 `agent.db` 管理,默认模型用 `modelRoles.default`(格式 `provider/modelId`)表达,思考级别用 `defaultThinkingLevel`。
 - OMP 扩展是 `omp plugin` 系统(plugins),不是 Pi 的 `extensions` 命令;本地扩展目录是 `<root>/extensions`。
 - OMP 的 skills 由 native 能力(priority 100)从 `<agentDir>/skills`(即 `~/.omp/agent/skills`)发现,应用把 skills 同步到该目录;不是 agents 能力(priority 70,可被 `skills.enableAgentsUser` 关闭)的 `~/.agents/skills`。
 - OMP 与 Pi 都识别 `PI_CODING_AGENT_DIR`,但应用内自定义根目录分别保存。
 - OMP 的 `models.yml` 配置值语法与 Pi 不同:provider `apiKey` / header 值是「先按**精确大小写**当环境变量名查,查不到就当字面量」,或以 `!` 开头的 shell 命令(10s 超时,stdout trim,进程内缓存成功结果)。命令失败/超时/空输出、或 header 解析为空时**省略该值**,不是报错——上游实现是 `packages/coding-agent/src/config/model-config-values.ts`(精确大小写查找见 `packages/utils/src/env.ts` 的 `$envExact`),不要套用 Pi 的 `$ENV_VAR` 插值规则。
 
 ## Gotchas
+
+- OpenAI Codex 订阅使用原生 `openai-codex` provider，不需要在 `models.yml` 写入 API Key 或 token。`subscription.rs` 只读 `agent.db` 的非禁用 OAuth 记录是否存在（不选择 `data`），只通过 SQL 投影 `models.db` 缓存的模型 ID；绝不使用会迁移/刷新凭据的 OMP AuthStorage。`configured` 只代表本地记录存在，不保证远程凭据/订阅有效；不兼容、损坏、超时是 `unknown`，不能按未登录处理。
+- 订阅指引由用户在终端执行：`omp --profile default login openai-codex`，以 `PI_CODING_AGENT_DIR` 固定页面的运行目录，所有动态路径按对应 shell 引号规则处理。模型目录由原生 `models openai-codex --json --no-extensions` 维护；应用仅展示已知 schema 的缓存及允许手填 ID。默认 Unix 根目录遵循 OMP 的 XDG data 路由；无法确定 WSL 默认根的 XDG 时显示未知，不能拿 Windows 环境代替 Linux 环境。不要启动登录或将认证数据送到预览、收藏、分享、诊断或同步链路。
+- `models.yml.providers.openai-codex.apiKey` 会优先于 OAuth，应在订阅区显式警告；切换默认模型只改 `config.yml`，不自动删除该覆盖、不写入认证数据库。
 
 - `models.yml` 允许 override-only provider 和未知字段。按 provider key 写入时必须保留其他 provider 及未知字段。
 - 写入 `modelRoles.default` 时必须是 `provider/modelId`(OMP `parseModelString` 按首个 `/` 拆分),裸 provider 无效。

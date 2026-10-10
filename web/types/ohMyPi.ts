@@ -45,6 +45,16 @@ export interface OmpBuiltinProvider {
   name: string;
 }
 
+export interface OmpCodexSubscription {
+  /** Local enabled OAuth record presence, not a server-side validity check. */
+  status: 'configured' | 'not_configured' | 'unknown';
+  hasApiKeyOverride: boolean;
+  loginCommand: string;
+  modelsCommand: string;
+  shell: 'powershell' | 'posix';
+  wslDistro?: string;
+}
+
 export interface OmpRuntimeConfig {
   rootPathInfo: OmpPathInfo;
   configPath: string;
@@ -57,6 +67,7 @@ export interface OmpRuntimeConfig {
   modelSettings: OmpDefaultSelection;
   providers: OmpRuntimeProviderView[];
   builtinProviders: OmpBuiltinProvider[];
+  codexSubscription: OmpCodexSubscription;
   /** Raw `config.yml` / `config.yaml` file content for file-based preview. */
   configContent?: string | null;
   /** Raw `models.yml` file content for file-based preview. */

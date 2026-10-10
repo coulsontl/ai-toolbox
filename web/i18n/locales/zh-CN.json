@@ -5655,6 +5655,27 @@
       "builtinInheritedHint": "内置代理未覆盖时可保留 OMP bundled 默认;勾选/填写字段后才会写入方案。",
       "bundledDefault": "bundled",
       "bundledInherited": "由 OMP 默认"
+    },
+    "codexSubscription": {
+      "title": "OpenAI Codex 订阅",
+      "configured": "检测到本地 OAuth 记录",
+      "notConfigured": "未检测到本地 OAuth 记录",
+      "unknown": "本地状态未知",
+      "description": "使用 ChatGPT 订阅，由 OMP 原生登录管理，与 OpenAI API Key 渠道独立。本地记录不代表订阅或凭据仍然有效。",
+      "loginGuide": "订阅登录指引",
+      "refreshAfterLogin": "已完成，刷新本地状态",
+      "localStatusHint": "这里只检测当前可读取的 OMP 目录中未禁用的 OAuth 记录，不验证服务端有效性。状态未知不代表未登录，请核对 OMP 配置目录和终端环境后重试。",
+      "apiKeyOverride": "检测到 models.yml 中 openai-codex 的 API Key 覆盖，它可能优先于订阅凭据。若要使用订阅，请自行检查并处理该覆盖；刷新不会删除或修改它。",
+      "powershell": "在 PowerShell 中运行以下命令，路径已匹配当前 OMP 配置目录。",
+      "posixShell": "在终端的 POSIX shell 中运行以下命令，路径已匹配当前 OMP 配置目录。",
+      "wslShell": "在 WSL 发行版 {{distro}} 的 POSIX 终端中运行以下命令，路径已匹配该环境的 OMP 配置目录。",
+      "loginStep": "1. 使用 OMP 原生订阅登录",
+      "modelsStep": "2. 查看或更新 OMP 模型目录",
+      "copyCommand": "复制命令：{{step}}",
+      "finishHint": "跟随 OMP 完成浏览器授权，再运行模型目录命令并回此处刷新。登录取消或失败时可重试；请勿把 token 粘贴到 AI Toolbox。最后在默认供应商中选 OpenAI Codex 订阅，再选择或填写模型 ID。",
+      "modelHint": "从 OMP 缓存选择，或填写准确模型 ID（不含 openai-codex/ 前缀）。选择、回车或失焦时保存；目录为空时可先按登录指引刷新。",
+      "modelPlaceholder": "选择或输入准确的 Codex 模型 ID",
+      "commandUnavailable": "当前路径无法生成安全的命令，请检查 OMP 配置目录及 CLI 路径。"
     }
   },
   "dsh": {

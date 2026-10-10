@@ -10,7 +10,7 @@
 
 ## 与 Pi 页的关系（先读这一节）
 
-- 本页与 `web/features/coding/pi/` 同构但**不是同一套数据**：OMP 没有 `auth.json` / `settings.json`，凭据直接写在 `models.yml` 的 provider 里，默认模型是 `config.yml` 的 `modelRoles.default`。两页共享的是 `shared/*` 组件、`favoriteProviders` 的 payload 形状（`OmpFavoriteProviderPayload` 就是 `PiFavoriteProviderPayload` 的别名）与 `ompModelMetadata`/`piModelMetadata` 的词表，**不共享运行文件**。
+- 本页与 `web/features/coding/pi/` 同构但**不是同一套数据**：OMP 没有 `auth.json` / `settings.json`，API Key 写在 `models.yml` 的 provider 里，OAuth 由 OMP 的 `agent.db` 管理，默认模型是 `config.yml` 的 `modelRoles.default`。两页共享的是 `shared/*` 组件、`favoriteProviders` 的 payload 形状（`OmpFavoriteProviderPayload` 就是 `PiFavoriteProviderPayload` 的别名）与 `ompModelMetadata`/`piModelMetadata` 的词表，**不共享运行文件**。
 - 推荐扩展清单目前是 Pi 那份的逐条副本（22 条、同序、同 `installSource`），而文件顶部的注释却写着「OMP 页面不内置 Pi 的推荐扩展列表」——注释已与代码不符。改其中一份时先决定是否两份一起改，不要相信那条注释。
 - OMP **不挂载** `MagicContextSettings`：后端 `MagicContextHarness` 只有 `opencode` / `pi` 两个取值。推荐列表里保留 `@cortexkit/pi-magic-context` 只是因为装它有用；给本页加 `<MagicContextSettings harness="omp">` 会直接编译不过，先扩后端枚举。
 
@@ -22,6 +22,9 @@
 - subagent 方案的**主数据在应用数据库**（`listOmpAgentsConfigs` 等），`<agentDir>/agents/*.md` 与 `config.yml` 的 `modelRoles` 是 apply 的产物；空库时后端给出 `__local__` 桥接态（读本地 `modelRoles` + `agents/*.md`），它不是记录、不可删除，UI 也不给它「已应用」样式。
 
 ## 核心设计决策（Why）
+
+- Codex 订阅区消费 `codexSubscription` 的脱敏本地状态与原生命令指引，不收集 OAuth token、不执行登录，也不把它伪装成 API Key provider。`configured` 仅代表可读本地记录；`unknown` 不代表未登录。`openai-codex` 不进入普通 API Key 的收藏、分享、编辑或诊断链路；已有 `models.yml` API Key 覆盖须明确警告而非自动清除。
+- Codex 模型候选来自只读原生缓存，允许手填精确 ID。切换到 Codex 且没有有效模型时暂不写入，防止后端空值回退把上一供应商的模型沿用。保存继续调用 `saveOmpModelSettings`，只改 `config.yml`；登录及模型目录更新需用户在指引指定的 shell/WSL 发行版执行，再只读刷新页面。
 
 - 模型设置卡同样是**变更即保存**（`onValuesChange` → `saveOmpModelSettings`），并有 `modelSettingsSaveSeqRef` 代次守卫。它与 Pi 的关键差异：**只有显式清空思考级别控件、或旧值对新模型不合法时，才把 `clearThinkingLevel` 置真**。切 provider / 切模型本身不得清掉全局 `defaultThinkingLevel`（OMP 对单个模型不支持的 effort 是 clamp，不是删全局键）。「设为默认模型」时若旧级别不适用，会回落到该模型的 `thinking.defaultLevel`，而不是像 Pi 那样直接清空。
 - 供应商表单是 OMP 独有的「API 变更时自动补 Base URL」：`automaticProviderBaseUrlRef` 记录「当前地址是否仍由表单自动填入」。新建弹窗初始为自动态；用户手改或清空后转为手动态；编辑/复制现有供应商时直接是手动态（`undefined`）；重新打开新建弹窗重置。`OMP_API_DEFAULT_BASE_URL` 只收录端点稳定、不依赖用户资源的协议，Azure / Vertex / Bedrock / gemini-cli 不预填。回归：`web/test/features/coding/oh_my_pi/utils/ompProviderForm.test.ts`。
