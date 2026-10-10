@@ -1252,7 +1252,10 @@ mod tests {
             )
             .unwrap();
             let settings = read_yaml_object_or_empty(&config_path).unwrap();
-            assert_eq!(settings["modelRoles"]["default"], format!("{provider}/{model}"));
+            assert_eq!(
+                settings["modelRoles"]["default"],
+                format!("{provider}/{model}")
+            );
             assert_eq!(
                 default_selection_from_settings(&settings).model_id.as_deref(),
                 Some(model)
@@ -1408,6 +1411,11 @@ mod tests {
         let (provider, model) = split_provider_model("anthropic/claude-sonnet-4:high");
         assert_eq!(provider.as_deref(), Some("anthropic"));
         assert_eq!(model.as_deref(), Some("claude-sonnet-4"));
+
+        for literal_id in ["native-model:exact", "model:HIGH", "qwen:14b", "x:free"] {
+            let (_, model) = split_provider_model(&format!("openai-codex/{literal_id}"));
+            assert_eq!(model.as_deref(), Some(literal_id));
+        }
 
         let (provider, model) = split_provider_model("bare");
         assert_eq!(provider, None);
