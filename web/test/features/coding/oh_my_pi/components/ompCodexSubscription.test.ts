@@ -143,6 +143,8 @@ test('opening and cancelling native login never executes commands or changes con
   tree = view.render(props);
   const modal = elements(tree, 'Modal')[0];
   assert.equal(modal.props.open, true);
+  assert.equal(modal.props.style.maxWidth, '100%');
+  assert.equal(modal.props.style.marginBlock, 0);
   assert.ok(elements(tree, 'code').some(node => node.props.children.includes(subscription.loginCommand)));
   modal.props.onCancel();
   assert.equal(elements(view.render(props), 'Modal')[0].props.open, false);

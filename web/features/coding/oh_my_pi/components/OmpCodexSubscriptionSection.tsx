@@ -83,6 +83,9 @@ const OmpCodexSubscriptionSection: React.FC<Props> = ({ subscription, disabled, 
         title={t('ohMyPi.codexSubscription.loginGuide')}
         onCancel={() => setGuideOpen(false)}
         width={680}
+        // Viewport-based mobile widths can exceed the padded, scrollable wrap
+        // and move a centered inline-block modal below its full-height spacer.
+        style={{ maxWidth: '100%', marginBlock: 0 }}
         footer={[
           <Button key="close" onClick={() => setGuideOpen(false)}>{t('common.close')}</Button>,
           <Button key="refresh" type="primary" loading={refreshing} disabled={disabled} onClick={handleRefresh}>
