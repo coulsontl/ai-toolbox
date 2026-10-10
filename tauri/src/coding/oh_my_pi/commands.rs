@@ -402,14 +402,108 @@ fn credential_kind(provider: Option<&Value>, is_builtin: bool) -> OmpCredentialK
     }
 }
 
-fn build_provider_views(settings: &Value, models: &Value) -> Vec<OmpRuntimeProviderView> {
+/// Never read credential payloads or initialize/migrate OMP's database.
+fn read_codex_oauth_status(root: &Path) -> OmpOauthStatus {
+    let path = root.join("agent.db");
+    match fs::metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return OmpOauthStatus::Missing
+        }
+        Err(_) => return OmpOauthStatus::Unavailable,
+        Ok(_) => {}
+    }
+    let stored = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .and_then(|conn| {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_credentials WHERE provider = ?1 AND credential_type = 'oauth' AND disabled_cause IS NULL)",
+                ["openai-codex"],
+                |row| row.get::<_, bool>(0),
+            )
+        });
+    match stored {
+        Ok(true) => OmpOauthStatus::Stored,
+        Ok(false) => OmpOauthStatus::Missing,
+        Err(_) => OmpOauthStatus::Unavailable,
+    }
+}
+
+fn parse_codex_runtime_models(raw: &str) -> Result<Vec<Value>, String> {
+    let catalog: Value = serde_json::from_str(raw).map_err(|error| {
+        format!("OMP returned invalid model catalog JSON: {error}. Update OMP and refresh.")
+    })?;
+    let models = catalog
+        .get("models")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "OMP model catalog is missing its models array. Update OMP and refresh.".to_string()
+        })?;
+    models
+        .iter()
+        .map(|model| {
+            let object = model
+                .as_object()
+                .filter(|object| {
+                    object
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| !id.trim().is_empty())
+                        && object.get("provider").and_then(Value::as_str) == Some("openai-codex")
+                })
+                .ok_or_else(|| {
+                    "OMP returned an invalid OpenAI Codex model. Update OMP and refresh."
+                        .to_string()
+                })?;
+            let mut result = Map::new();
+            for key in [
+                "id",
+                "name",
+                "api",
+                "baseUrl",
+                "reasoning",
+                "input",
+                "cost",
+                "contextWindow",
+                "maxTokens",
+            ] {
+                if let Some(value) = object.get(key) {
+                    result.insert(key.to_string(), value.clone());
+                }
+            }
+            if let Some(efforts) = object.get("thinking").and_then(Value::as_array) {
+                if !efforts.iter().all(Value::is_string) {
+                    return Err(
+                        "OMP returned invalid model thinking levels. Update OMP and refresh."
+                            .to_string(),
+                    );
+                }
+                if !efforts.is_empty() {
+                    result.insert(
+                        "thinking".to_string(),
+                        json!({"mode": "effort", "efforts": efforts}),
+                    );
+                    result.entry("reasoning".to_string()).or_insert(json!(true));
+                }
+            }
+            Ok(Value::Object(result))
+        })
+        .collect()
+}
+
+fn build_provider_views(
+    settings: &Value,
+    models: &Value,
+    oauth_status: OmpOauthStatus,
+    runtime_models: &[Value],
+    runtime_catalog_error: Option<&str>,
+    login_command: Option<&str>,
+) -> Vec<OmpRuntimeProviderView> {
     let default_selection = default_selection_from_settings(settings);
     let default_provider = default_selection.provider_key.clone();
     let default_model = default_selection.model_id.clone();
 
     let models_map: Map<String, Value> = get_models_providers(models).into_iter().collect();
 
-    let mut keys = BTreeSet::new();
+    let mut keys = BTreeSet::from(["openai-codex".to_string()]);
     for (key, _) in &models_map {
         keys.insert(key.clone());
     }
@@ -419,13 +513,13 @@ fn build_provider_views(settings: &Value, models: &Value) -> Vec<OmpRuntimeProvi
         }
     }
 
-    // 不把全部内置渠道无条件塞进列表:OMP 的 provider 事实源是 models.yml,
-    // 只有配置过或设为默认的供应商才展示(内置标记仅对确实出现的渠道生效)。
+    // Only Codex is always visible: its native OAuth subscription need not have YAML.
 
     let mut views = Vec::new();
     for provider_key in keys {
         let models_provider = models_map.get(&provider_key).cloned();
         let is_builtin = is_builtin_provider(&provider_key);
+        let is_codex = provider_key == "openai-codex";
         let is_default = default_provider.as_deref() == Some(provider_key.as_str());
         let is_override = is_builtin && models_provider.is_some();
 
@@ -440,7 +534,11 @@ fn build_provider_views(settings: &Value, models: &Value) -> Vec<OmpRuntimeProvi
             sources.push(OmpProviderSource::SettingsYml);
         }
 
-        let kind = credential_kind(models_provider.as_ref(), is_builtin);
+        let kind = if is_codex {
+            OmpCredentialKind::Oauth
+        } else {
+            credential_kind(models_provider.as_ref(), is_builtin)
+        };
         let mut categories = Vec::new();
         match kind {
             OmpCredentialKind::ApiKey => categories.push(OmpProviderCategory::ApiKey),
@@ -454,7 +552,16 @@ fn build_provider_views(settings: &Value, models: &Value) -> Vec<OmpRuntimeProvi
             categories.push(OmpProviderCategory::ApiKey);
         }
 
-        let model_ids = model_ids_from_provider(models_provider.as_ref());
+        let mut model_ids = model_ids_from_provider(models_provider.as_ref());
+        if is_codex {
+            for model in runtime_models {
+                if let Some(id) = model.get("id").and_then(Value::as_str) {
+                    if !model_ids.iter().any(|existing| existing == id) {
+                        model_ids.push(id.to_string());
+                    }
+                }
+            }
+        }
         let mut warnings = Vec::new();
         if !is_builtin && models_provider.is_none() {
             warnings.push(OmpProviderWarning::MissingProvider);
@@ -477,6 +584,9 @@ fn build_provider_views(settings: &Value, models: &Value) -> Vec<OmpRuntimeProvi
         if is_default {
             runtime_files.push(crate::coding::oh_my_pi::constants::OMP_CONFIG_FILE.to_string());
         }
+        if is_codex {
+            runtime_files.push("agent.db".to_string());
+        }
 
         views.push(OmpRuntimeProviderView {
             display_name: builtin_provider_name(&provider_key)
@@ -494,6 +604,22 @@ fn build_provider_views(settings: &Value, models: &Value) -> Vec<OmpRuntimeProvi
             sources,
             categories,
             credential_kind: kind,
+            oauth_status: is_codex.then_some(oauth_status),
+            runtime_models: if is_codex {
+                runtime_models.to_vec()
+            } else {
+                Vec::new()
+            },
+            runtime_catalog_error: if is_codex {
+                runtime_catalog_error.map(str::to_string)
+            } else {
+                None
+            },
+            login_command: if is_codex {
+                login_command.map(str::to_string)
+            } else {
+                None
+            },
             credential: None,
             models_provider,
             runtime_files,
@@ -611,34 +737,66 @@ pub async fn save_omp_settings_config(
 pub async fn read_omp_runtime_config(
     state: tauri::State<'_, SqliteDbState>,
 ) -> Result<OmpRuntimeConfig, String> {
-    let db = state.db();
-    let root_path_info = get_omp_root_path_info_from_db_async(&db).await?;
-    let root_dir = PathBuf::from(&root_path_info.path);
-    let config_path = get_omp_config_path_from_root(&root_dir);
-    let models_path = get_omp_models_path_from_root(&root_dir);
-    let mcp_path = get_omp_mcp_path_from_root(&root_dir);
-    let prompt_path = get_omp_prompt_path_from_root(&root_dir);
-
-    let settings = read_yaml_object_or_empty(&config_path)?;
-    let models = read_yaml_object_or_empty(&models_path)?;
-
-    Ok(OmpRuntimeConfig {
-        root_path_info,
-        config_path: config_path.to_string_lossy().to_string(),
-        models_path: models_path.to_string_lossy().to_string(),
-        mcp_path: mcp_path.to_string_lossy().to_string(),
-        prompt_path: prompt_path.to_string_lossy().to_string(),
-        other_settings: build_other_settings(&settings),
-        model_settings: default_selection_from_settings(&settings),
-        providers: build_provider_views(&settings, &models),
-        builtin_providers: builtin_providers(),
-        config_content: fs::read_to_string(&config_path).ok(),
-        models_content: fs::read_to_string(&models_path).ok(),
-        mcp_content: fs::read_to_string(&mcp_path).ok(),
-        prompt_content: fs::read_to_string(&prompt_path).ok(),
-        settings,
-        models,
-    })
+    let runtime_location =
+        runtime_location::get_oh_my_pi_runtime_location_async(state.db()).await?;
+    let catalog = match tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        super::extensions::run_omp_command(&runtime_location, &["models", "openai-codex", "--json", "--no-extensions"]),
+    ).await {
+        Ok(Ok(raw)) => parse_codex_runtime_models(&raw),
+        Ok(Err(error)) => Err(format!("Unable to load OpenAI Codex models. Check the OMP CLI installation, then refresh. {error}")),
+        Err(_) => Err("OpenAI Codex model catalog timed out after 15s. Check the selected runtime and OMP CLI, then refresh.".to_string()),
+    };
+    let (runtime_models, runtime_catalog_error) = match catalog {
+        Ok(models) => (models, None),
+        Err(error) => (Vec::new(), Some(error)),
+    };
+    let display_path = runtime_location.host_path.to_string_lossy().to_string();
+    crate::coding::file_io::run_blocking_fs_operation(
+        crate::coding::file_io::DEFAULT_CONFIG_FILE_IO_TIMEOUT,
+        "read OMP runtime configuration",
+        &display_path,
+        move || {
+            let root_dir = &runtime_location.host_path;
+            let root_path_info = OmpPathInfo {
+                path: root_dir.to_string_lossy().to_string(),
+                source: runtime_location.source.clone(),
+            };
+            let config_path = get_omp_config_path_from_root(root_dir);
+            let models_path = get_omp_models_path_from_root(root_dir);
+            let mcp_path = get_omp_mcp_path_from_root(root_dir);
+            let prompt_path = get_omp_prompt_path_from_root(root_dir);
+            let settings = read_yaml_object_or_empty(&config_path)?;
+            let models = read_yaml_object_or_empty(&models_path)?;
+            let oauth_status = read_codex_oauth_status(root_dir);
+            let login_command = super::extensions::omp_login_command(&runtime_location);
+            Ok(OmpRuntimeConfig {
+                root_path_info,
+                config_path: config_path.to_string_lossy().to_string(),
+                models_path: models_path.to_string_lossy().to_string(),
+                mcp_path: mcp_path.to_string_lossy().to_string(),
+                prompt_path: prompt_path.to_string_lossy().to_string(),
+                other_settings: build_other_settings(&settings),
+                model_settings: default_selection_from_settings(&settings),
+                providers: build_provider_views(
+                    &settings,
+                    &models,
+                    oauth_status,
+                    &runtime_models,
+                    runtime_catalog_error.as_deref(),
+                    login_command.as_deref(),
+                ),
+                builtin_providers: builtin_providers(),
+                config_content: fs::read_to_string(&config_path).ok(),
+                models_content: fs::read_to_string(&models_path).ok(),
+                mcp_content: fs::read_to_string(&mcp_path).ok(),
+                prompt_content: fs::read_to_string(&prompt_path).ok(),
+                settings,
+                models,
+            })
+        },
+    )
+    .await
 }
 
 /// 更新 config.yml 中 `modelRoles.default` 与 `defaultThinkingLevel`。
@@ -1453,5 +1611,147 @@ mod tests {
         let primary = root.join(crate::coding::oh_my_pi::constants::OMP_CONFIG_FILE);
         fs::write(&primary, "theme: { dark: false }\n").expect("write config.yml");
         assert_eq!(get_omp_config_path_from_root(root), primary);
+    }
+    #[test]
+    fn codex_subscription_is_visible_without_yaml_or_credentials() {
+        let views = build_provider_views(
+            &json!({}),
+            &json!({}),
+            OmpOauthStatus::Missing,
+            &[],
+            None,
+            Some("omp login openai-codex"),
+        );
+        assert_eq!(views.len(), 1);
+        let codex = &views[0];
+        assert_eq!(codex.provider_key, "openai-codex");
+        assert!(matches!(codex.credential_kind, OmpCredentialKind::Oauth));
+        assert!(matches!(
+            codex.categories[0],
+            OmpProviderCategory::Subscription
+        ));
+        assert!(codex.models_provider.is_none());
+        assert_eq!(codex.oauth_status, Some(OmpOauthStatus::Missing));
+        assert!(codex.runtime_models.is_empty());
+        assert!(codex.runtime_catalog_error.is_none());
+        assert_eq!(
+            codex.login_command.as_deref(),
+            Some("omp login openai-codex")
+        );
+    }
+
+    #[test]
+    fn codex_catalog_is_read_only_view_data_and_reports_failures() {
+        let runtime = parse_codex_runtime_models(r#"{"models":[{"id":"codex-test","provider":"openai-codex","name":"Codex Test","contextWindow":200000,"maxTokens":32000,"thinking":["low","high"],"apiKey":"never-expose"}]}"#).unwrap();
+        assert_eq!(
+            runtime[0]["thinking"],
+            json!({"mode":"effort","efforts":["low","high"]})
+        );
+        assert_eq!(runtime[0]["contextWindow"], json!(200000));
+        assert!(runtime[0].get("apiKey").is_none());
+        let settings = json!({"modelRoles":{"default":"openai-codex/codex-test"}});
+        let models = json!({"providers":{"gateway":{"apiKey":"preserve-api-key","models":[{"id":"gateway-test"}]}}});
+        let before = models.clone();
+        let views = build_provider_views(
+            &settings,
+            &models,
+            OmpOauthStatus::Stored,
+            &runtime,
+            None,
+            None,
+        );
+        let codex = views
+            .iter()
+            .find(|view| view.provider_key == "openai-codex")
+            .unwrap();
+        assert_eq!(codex.model_ids, ["codex-test"]);
+        assert!(codex.warnings.is_empty());
+        assert!(codex.models_provider.is_none());
+        assert_eq!(models, before);
+        let failed = build_provider_views(
+            &settings,
+            &models,
+            OmpOauthStatus::Unavailable,
+            &[],
+            Some("Install OMP, then refresh"),
+            None,
+        );
+        assert_eq!(
+            failed
+                .iter()
+                .find(|view| view.provider_key == "openai-codex")
+                .unwrap()
+                .runtime_catalog_error
+                .as_deref(),
+            Some("Install OMP, then refresh")
+        );
+        assert!(failed
+            .iter()
+            .find(|view| view.provider_key == "gateway")
+            .unwrap()
+            .runtime_catalog_error
+            .is_none());
+        assert!(parse_codex_runtime_models("not JSON").is_err());
+        assert!(parse_codex_runtime_models(r#"{"models":[{"provider":"openai-codex"}]}"#).is_err());
+        assert!(parse_codex_runtime_models(r#"{"models":[]}"#)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn codex_oauth_metadata_does_not_create_or_modify_auth_database() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let path = root.join("agent.db");
+        assert_eq!(read_codex_oauth_status(root), OmpOauthStatus::Missing);
+        assert!(!path.exists());
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        // No data column: this query must work without ever reading payloads.
+        conn.execute_batch("CREATE TABLE auth_credentials(provider TEXT, credential_type TEXT, disabled_cause TEXT);
+            INSERT INTO auth_credentials VALUES ('openai-codex', 'api_key', NULL);
+            INSERT INTO auth_credentials VALUES ('other', 'oauth', NULL);").unwrap();
+        assert_eq!(read_codex_oauth_status(root), OmpOauthStatus::Missing);
+        conn.execute(
+            "INSERT INTO auth_credentials VALUES ('openai-codex', 'oauth', 'revoked')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(read_codex_oauth_status(root), OmpOauthStatus::Missing);
+        conn.execute_batch("UPDATE auth_credentials SET disabled_cause = NULL WHERE provider = 'openai-codex' AND credential_type = 'oauth';
+            ALTER TABLE auth_credentials ADD COLUMN data TEXT;
+            UPDATE auth_credentials SET data = 'secret-refresh-and-access-token';").unwrap();
+        drop(conn);
+        let bytes = fs::read(&path).unwrap();
+        assert_eq!(read_codex_oauth_status(root), OmpOauthStatus::Stored);
+        let views = build_provider_views(
+            &json!({}),
+            &json!({}),
+            read_codex_oauth_status(root),
+            &[],
+            None,
+            None,
+        );
+        let serialized = serde_json::to_string(&views).unwrap();
+        assert!(!serialized.contains("secret-refresh-and-access-token"));
+        assert!(!serialized.contains("refreshToken"));
+        write_yaml_object(
+            &get_omp_models_path_from_root(root),
+            &json!({"providers":{"api":{"apiKey":"existing-key"}}}),
+        )
+        .unwrap();
+        write_yaml_object(
+            &get_omp_config_path_from_root(root),
+            &json!({"modelRoles":{"default":"openai-codex/codex-test"}}),
+        )
+        .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::write(&path, b"not sqlite").unwrap();
+        assert_eq!(read_codex_oauth_status(root), OmpOauthStatus::Unavailable);
+        let incompatible = tempfile::tempdir().unwrap();
+        rusqlite::Connection::open(incompatible.path().join("agent.db")).unwrap();
+        assert_eq!(
+            read_codex_oauth_status(incompatible.path()),
+            OmpOauthStatus::Unavailable
+        );
     }
 }

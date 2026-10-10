@@ -7,8 +7,8 @@ import {
   OMP_THINKING_LEVELS,
   getOmpModelDefaultThinkingLevel,
   getOmpModelThinkingLevelOptions,
-  getProviderModelRecords,
 } from '../../../../utils/ompModelMetadata.ts';
+import { getOmpRuntimeModelRecords } from './ompRuntimeModels.ts';
 
 /**
  * OMP 原生核心模型角色定义(modelRoles)。
@@ -176,7 +176,7 @@ export const GENERAL_THINKING_OPTIONS: Array<{ value: string; label: string }> =
 
 /**
  * 根据所选模型和当前 provider 列表计算适用的思考等级选项。
- * 严格贴合模型在 provider 配置(models.yml)中声明的 reasoning / thinking.efforts 支持。
+ * 严格贴合 YAML 或原生运行时目录中声明的 reasoning / thinking.efforts 支持。
  */
 export const getOmpThinkingOptionsForModel = (
   modelName: string | undefined,
@@ -211,7 +211,7 @@ export const getOmpThinkingOptionsForModel = (
     const modelId = trimmed.slice(slashIdx + 1);
     const provider = providers?.find((p) => p.providerKey === providerKey);
     if (provider) {
-      const records = getProviderModelRecords(provider.modelsProvider);
+      const records = getOmpRuntimeModelRecords(provider);
       const match = records.find((m) => m.id === modelId);
       if (match) {
         hasMatchingModel = true;
@@ -223,7 +223,7 @@ export const getOmpThinkingOptionsForModel = (
   // 3. 若没带 provider 前缀或未找到，在所有 provider 中搜索 modelId
   if (!hasMatchingModel && providers && providers.length > 0) {
     for (const provider of providers) {
-      const records = getProviderModelRecords(provider.modelsProvider);
+      const records = getOmpRuntimeModelRecords(provider);
       const match = records.find((m) => m.id === trimmed);
       if (match) {
         hasMatchingModel = true;

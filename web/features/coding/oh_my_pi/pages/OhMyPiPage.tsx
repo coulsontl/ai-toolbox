@@ -151,6 +151,8 @@ import { extractOmpProviderFromCcSwitch } from '../utils/importMapping';
 import OmpAgentsSettings from '../components/OmpAgentsSettings';
 import { OMP_CORE_MODEL_ROLES } from '../utils/ompAgentsUtils';
 import OmpExtensionsSection from '../components/OmpExtensionsSection';
+import OmpSubscriptionCard from '../components/OmpSubscriptionCard';
+import { getOmpRuntimeModelIds, getOmpRuntimeModelRecords } from '../utils/ompRuntimeModels';
 import styles from './OhMyPiPage.module.less';
 
 const { Title, Text, Link } = Typography;
@@ -691,7 +693,7 @@ const OhMyPiPage: React.FC = () => {
     });
 
     runtimeConfig?.providers.forEach((provider) => {
-      const modelIds = provider.modelIds ?? [];
+      const modelIds = getOmpRuntimeModelIds(provider);
       if (modelIds.length === 0) {
         return;
       }
@@ -715,7 +717,7 @@ const OhMyPiPage: React.FC = () => {
     if (!selectedProvider || !selectedDefaultModel) {
       return undefined;
     }
-    return getProviderModelRecords(selectedProvider.modelsProvider).find(
+    return getOmpRuntimeModelRecords(selectedProvider).find(
       (entry) => entry.id === selectedDefaultModel,
     )?.model;
   }, [selectedDefaultModel, selectedProvider]);
@@ -725,13 +727,13 @@ const OhMyPiPage: React.FC = () => {
   );
   const modelOptions = React.useMemo(() => {
     const options = new Set<string>();
-    selectedProvider?.modelIds?.forEach((modelId) => options.add(modelId));
+    if (selectedProvider) getOmpRuntimeModelIds(selectedProvider).forEach((modelId) => options.add(modelId));
     const current = selectedDefaultModel || runtimeConfig?.modelSettings.modelId;
     if (current) {
       options.add(current);
     }
     return Array.from(options).map((modelId) => ({ value: modelId, label: modelId }));
-  }, [runtimeConfig?.modelSettings.modelId, selectedDefaultModel, selectedProvider?.modelIds]);
+  }, [runtimeConfig?.modelSettings.modelId, selectedDefaultModel, selectedProvider]);
 
   const ompProviders = React.useMemo(
     () => runtimeConfig?.providers ?? [],
@@ -842,15 +844,16 @@ const OhMyPiPage: React.FC = () => {
     if (Object.prototype.hasOwnProperty.call(changedValues, 'defaultProvider')) {
       if (
         nextValues.defaultModel
-        && nextProvider?.modelIds?.length
-        && !nextProvider.modelIds.includes(nextValues.defaultModel)
+        && nextProvider
+        && getOmpRuntimeModelIds(nextProvider).length > 0
+        && !getOmpRuntimeModelIds(nextProvider).includes(nextValues.defaultModel)
       ) {
         nextValues.defaultModel = undefined;
         modelForm.setFieldValue('defaultModel', undefined);
       }
     }
     const nextModel = nextProvider && nextValues.defaultModel
-      ? getProviderModelRecords(nextProvider.modelsProvider).find(
+      ? getOmpRuntimeModelRecords(nextProvider).find(
         (entry) => entry.id === nextValues.defaultModel,
       )?.model
       : undefined;
@@ -974,6 +977,10 @@ const OhMyPiPage: React.FC = () => {
     const providerKey = values.providerKey?.trim();
     if (!providerKey) {
       message.error(t('ohMyPi.provider.providerKeyRequired'));
+      return;
+    }
+    if (providerKey === 'openai-codex' && !providerModal.provider?.sources.includes('models_yml')) {
+      message.error(t('ohMyPi.subscription.useLoginGuidance'));
       return;
     }
 
@@ -1394,7 +1401,7 @@ const OhMyPiPage: React.FC = () => {
   });
 
   const handleSetPrimaryModel = async (provider: OmpRuntimeProviderView, modelId: string) => {
-    const nextModel = getProviderModelRecords(provider.modelsProvider).find(
+    const nextModel = getOmpRuntimeModelRecords(provider).find(
       (entry) => entry.id === modelId,
     )?.model;
     const currentThinkingLevel = runtimeConfig?.modelSettings.thinkingLevel ?? undefined;
@@ -1799,11 +1806,21 @@ const OhMyPiPage: React.FC = () => {
   };
 
   const renderProvider = (provider: OmpRuntimeProviderView) => {
-    // OMP 没有 auth.json,凭据(apiKey)直接写在 models.yml 的 provider 配置里。
+    const isSubscription = provider.providerKey === 'openai-codex';
     const providerConfig = provider.modelsProvider ?? {};
     const hasCredential = Object.prototype.hasOwnProperty.call(providerConfig, 'apiKey')
       && !isRecordEmpty({ apiKey: providerConfig.apiKey });
     const hasProviderConfig = provider.sources.includes('models_yml');
+    const subscriptionCard = isSubscription ? (
+      <OmpSubscriptionCard
+        key={provider.providerKey}
+        provider={provider}
+        defaultModel={runtimeConfig?.modelSettings.modelId}
+        onSetPrimaryModel={(modelId) => void handleSetPrimaryModel(provider, modelId)}
+        onRefresh={() => loadConfig(true)}
+      />
+    ) : null;
+    if (isSubscription && !hasProviderConfig) return subscriptionCard;
     const canDeleteProvider = hasCredential || hasProviderConfig;
     const deleteDisabledReason = canDeleteProvider && provider.isDefault
       ? t('ohMyPi.provider.deleteDisabledDefault', { defaultValue: '该渠道已设为默认，不可删除' })
@@ -1832,7 +1849,7 @@ const OhMyPiPage: React.FC = () => {
       : !diagnostics.baseUrl ? t('common.baseUrlMissing') : '';
     const providerDisplay: ProviderDisplayData = {
       id: provider.providerKey,
-      name: provider.displayName,
+      name: isSubscription ? provider.displayName + ' · ' + t('ohMyPi.subscription.yamlOverride') : provider.displayName,
       sdkName: getStringField(providerConfig, 'api') || provider.categories.join(', ') || 'omp',
       baseUrl: providerBaseUrl
         || provider.sources.map((source) => translateRuntimeLabel('ohMyPi.sourceLabels', source)).join(' / ')
@@ -1845,18 +1862,20 @@ const OhMyPiPage: React.FC = () => {
     }));
 
     return (
+      <React.Fragment key={provider.providerKey}>
+        {subscriptionCard}
       <ProviderCard
         key={provider.providerKey}
         provider={providerDisplay}
         models={modelDisplayList}
         onEdit={() => openProviderModal(provider)}
-        onCopy={() => openProviderModal(provider, { copy: true })}
-        onShare={() => shareProvider({
+        onCopy={!isSubscription ? () => openProviderModal(provider, { copy: true }) : undefined}
+        onShare={!isSubscription ? () => shareProvider({
           id: provider.providerKey, name: provider.displayName, category: 'custom',
           settingsConfig: JSON.stringify(providerConfig), credential: provider.credential,
           credentialUnavailable: provider.credentialKind === 'oauth' || provider.credentialKind === 'env_possible',
           defaultModel: provider.isDefault ? runtimeConfig?.modelSettings.modelId ?? undefined : undefined,
-        })}
+        }) : undefined}
         onDelete={canDeleteProvider ? () => handleDeleteSupplier(provider) : undefined}
         deleteConfirm={false}
         deleteDisabledReason={deleteDisabledReason}
@@ -1940,6 +1959,7 @@ const OhMyPiPage: React.FC = () => {
         modelsDraggable={!isBatchDeleteMode}
         onReorderModels={(modelIds) => handleReorderModels(provider, modelIds)}
       />
+      </React.Fragment>
     );
   };
 

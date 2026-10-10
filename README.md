@@ -43,7 +43,7 @@ AI Toolbox is a cross-platform desktop application that helps developers efficie
 - **Kimi Code CLI configuration management** - Manage Kimi Code CLI providers, `config.toml` / `credentials` official accounts, global prompts, and plugins
 - **OpenClaw configuration management** - Manage OpenClaw models, providers, config file paths, and session records
 - **Pi configuration management** - Manage Pi CLI models, providers, extensions, prompts, and runtime configuration
-- **Oh My Pi configuration management** - Manage the Oh My Pi (OMP) runtime root, `models.yml` providers, `config.yml` settings, and centralized subagent configuration
+- **Oh My Pi configuration management** - Manage the Oh My Pi (OMP) runtime root, `models.yml` providers, `config.yml` settings, and centralized subagent configuration. OpenAI Codex subscriptions are shown separately: use the card’s login guidance to run OMP’s root-scoped OAuth login, then refresh to load native models. Credential status reads metadata only from `agent.db`; tokens are never copied into YAML or shared. Requires an OMP CLI with `omp login openai-codex` and `omp models --json` support.
 - **Claude Desktop configuration management** - Manage Claude Desktop 3P gateway profiles, with one-click gateway takeover
 - **Hermes Agent configuration management** - Manage Hermes Agent's `config.yaml`, providers, default model, global prompts, and memory files
 - **DeepSeek Harness configuration management** - Manage DeepSeek Harness (dsh) `settings.yaml` / `.credentials.yaml`, providers, default model, and global prompts

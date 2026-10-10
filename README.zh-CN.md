@@ -41,7 +41,7 @@ AI Toolbox 是一个跨平台桌面应用，旨在帮助开发者高效管理各
 - **Kimi Code CLI 配置管理** - 管理 Kimi Code CLI 的供应商、`config.toml` / `credentials` 官方账号、全局 Prompt 和插件
 - **OpenClaw 配置管理** - 管理 OpenClaw 的模型、供应商、配置文件路径和会话记录
 - **Pi 配置管理** - 管理 Pi CLI 的模型、供应商、扩展、Prompt 和运行时配置
-- **Oh My Pi 配置管理** - 管理 Oh My Pi (OMP) 的运行时根目录、`models.yml` 供应商、`config.yml` 设置和 subagent 集中配置
+- **Oh My Pi 配置管理** - 管理 Oh My Pi (OMP) 的运行时根目录、`models.yml` 供应商、`config.yml` 设置和 subagent 集中配置。OpenAI Codex 订阅独立展示：在卡片中复制使用所选运行目录的 OMP 原生 OAuth 登录命令，登录后刷新以加载原生模型。认证状态仅读取 `agent.db` 元数据，不将 token 写入 YAML 或分享。需安装支持 `omp login openai-codex` 和 `omp models --json` 的 OMP CLI。
 - **Claude Desktop 配置管理** - 管理 Claude Desktop 的 3P 网关 profile 配置，支持一键网关接管
 - **Hermes Agent 配置管理** - 管理 Hermes Agent 的 `config.yaml`、供应商、默认模型、全局提示词和 memory 记忆文件
 - **DeepSeek Harness 配置管理** - 管理 DeepSeek Harness (dsh) 的 `settings.yaml` / `.credentials.yaml`、供应商、默认模型和全局提示词

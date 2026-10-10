@@ -79,13 +79,15 @@ fn omp_wsl_path_prefix(linux_user_root: Option<&str>) -> String {
     .join(":")
 }
 
-fn build_omp_command(
+async fn build_omp_command(
     runtime_location: &RuntimeLocationInfo,
     args: &[&str],
 ) -> Result<OmpCommandInvocation, String> {
     match runtime_location.mode {
         RuntimeLocationMode::LocalWindows => {
-            let omp_program = resolve_local_omp_program();
+            let omp_program = tauri::async_runtime::spawn_blocking(resolve_local_omp_program)
+                .await
+                .map_err(|error| format!("Failed to resolve OMP CLI: {error}"))?;
             let local_program_label = omp_program.path.display().to_string();
             let mut command = build_local_tokio_command(&omp_program.path);
             command.args(args);
@@ -177,15 +179,84 @@ fn build_omp_spawn_error(error: &std::io::Error, local_program_label: Option<&st
     annotate_omp_command_error(with_hint, local_program_label)
 }
 
-async fn run_omp_command(
+fn posix_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn powershell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// Copyable terminal guidance; uses the same root and WSL PATH as the runner.
+pub(super) fn omp_login_command(location: &RuntimeLocationInfo) -> Option<String> {
+    match location.mode {
+        RuntimeLocationMode::LocalWindows => {
+            let program = resolve_local_omp_program();
+            let root = location.host_path.to_string_lossy();
+            let program = program.path.to_string_lossy();
+            if cfg!(target_os = "windows") {
+                Some(format!(
+                    "$env:PI_CODING_AGENT_DIR={}; & {} login openai-codex",
+                    powershell_quote(&root),
+                    powershell_quote(&program)
+                ))
+            } else {
+                Some(format!(
+                    "PI_CODING_AGENT_DIR={} {} login openai-codex",
+                    posix_quote(&root),
+                    posix_quote(&program)
+                ))
+            }
+        }
+        RuntimeLocationMode::WslDirect => {
+            let wsl = location.wsl.as_ref()?;
+            let args = [
+                "wsl".to_string(),
+                "-d".to_string(),
+                wsl.distro.clone(),
+                "--exec".to_string(),
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                WSL_OMP_COMMAND_SCRIPT.to_string(),
+                "ai-toolbox-omp".to_string(),
+                omp_wsl_path_prefix(wsl.linux_user_root.as_deref()),
+                wsl.linux_path.clone(),
+                "env".to_string(),
+                "omp".to_string(),
+                "login".to_string(),
+                "openai-codex".to_string(),
+            ];
+            let quote = if cfg!(target_os = "windows") {
+                powershell_quote
+            } else {
+                posix_quote
+            };
+            let prefix = if cfg!(target_os = "windows") {
+                "& "
+            } else {
+                ""
+            };
+            Some(format!(
+                "{prefix}{}",
+                args.iter()
+                    .map(|arg| quote(arg))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ))
+        }
+    }
+}
+
+pub(super) async fn run_omp_command(
     runtime_location: &RuntimeLocationInfo,
     args: &[&str],
 ) -> Result<String, String> {
     let OmpCommandInvocation {
         mut command,
         local_program_label,
-    } = build_omp_command(runtime_location, args)?;
+    } = build_omp_command(runtime_location, args).await?;
 
+    command.kill_on_drop(true);
     let output = command
         .output()
         .await
@@ -909,5 +980,32 @@ mod tests {
                 .join("plugins")
                 .join("node_modules")
         );
+    }
+    #[test]
+    fn login_guidance_quotes_shell_values_and_selected_wsl_root() {
+        assert_eq!(posix_quote("/tmp/it's $root"), "'/tmp/it'\"'\"'s $root'");
+        assert_eq!(powershell_quote("C:\\it's $root"), "'C:\\it''s $root'");
+        let location = RuntimeLocationInfo {
+            mode: RuntimeLocationMode::WslDirect,
+            source: "custom".to_string(),
+            host_path: PathBuf::from(r"\\wsl.localhost\Ubuntu\home\tester\custom root"),
+            wsl: Some(crate::coding::runtime_location::WslLocationInfo {
+                distro: "Ubuntu user's".to_string(),
+                linux_path: "/home/tester/custom root".to_string(),
+                linux_user_root: Some("/home/tester".to_string()),
+            }),
+        };
+        let command = omp_login_command(&location).unwrap();
+        assert!(command.contains("'/home/tester/custom root'"));
+        assert!(command.contains("export PI_CODING_AGENT_DIR="));
+        assert!(command.contains("/home/tester/.bun/bin"));
+        assert!(command.ends_with("'env' 'omp' 'login' 'openai-codex'"));
+        assert!(!command.contains("wsl.localhost"));
+        let quote = if cfg!(target_os = "windows") {
+            powershell_quote
+        } else {
+            posix_quote
+        };
+        assert!(command.contains(&quote("Ubuntu user's")));
     }
 }

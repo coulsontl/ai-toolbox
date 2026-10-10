@@ -32,6 +32,10 @@ export interface OmpRuntimeProviderView {
   credentialKind: OmpCredentialKind;
   credential?: unknown;
   modelsProvider?: Record<string, unknown>;
+  oauthStatus?: 'stored' | 'missing' | 'unavailable' | null;
+  runtimeModels?: Record<string, unknown>[];
+  loginCommand?: string | null;
+  runtimeCatalogError?: string | null;
   runtimeFiles: string[];
   isBuiltin: boolean;
   isOverride: boolean;

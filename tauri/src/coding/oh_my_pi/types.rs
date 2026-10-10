@@ -98,7 +98,13 @@ pub enum OmpProviderWarning {
     MissingProvider,
     MissingModel,
 }
-
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OmpOauthStatus {
+    Stored,
+    Missing,
+    Unavailable,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OmpRuntimeProviderView {
@@ -107,6 +113,12 @@ pub struct OmpRuntimeProviderView {
     pub sources: Vec<OmpProviderSource>,
     pub categories: Vec<OmpProviderCategory>,
     pub credential_kind: OmpCredentialKind,
+    /// Metadata only: stored credentials are not proof of a valid session.
+    pub oauth_status: Option<OmpOauthStatus>,
+    #[serde(default)]
+    pub runtime_models: Vec<Value>,
+    pub runtime_catalog_error: Option<String>,
+    pub login_command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]

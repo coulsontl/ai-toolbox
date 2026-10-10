@@ -5301,7 +5301,24 @@
     "refreshConfig": "刷新配置",
     "syncModels": "同步预设模型",
     "modelsRefreshSuccess": "预设模型已同步",
-    "pageHint": "Oh My Pi 的配置始终以本地运行时文件为准，本页面仅做可视化编辑，所有更改直接读写 config.yml 和 models.yml。",
+    "pageHint": "OMP 始终以本地运行时文件为准。配置更改写入 config.yml 和 models.yml；订阅凭据保留在 agent.db 中，原生模型目录仅供读取。",
+    "subscription": {
+      "status": {
+        "stored": "凭据已存储",
+        "missing": "未登录",
+        "unavailable": "凭据状态不可用"
+      },
+      "credentialHint": "订阅凭据保留在 OMP 的 agent.db 中，不可分享。凭据已存储不代表会话仍然有效。",
+      "nativeModels": "原生目录 · 只读",
+      "yamlOverride": "models.yml 覆盖配置",
+      "loginGuidance": "订阅登录",
+      "loginHint": "在终端运行下方命令以登录 OpenAI Codex。此命令使用当前配置的 OMP 目录和所选运行环境（包括 WSL）。在外部完成登录后，返回此处刷新。本页面不读取或编辑 OAuth 令牌。",
+      "refreshAfterLogin": "登录后刷新",
+      "loginUnavailable": "登录命令不可用。请检查 OMP CLI 路径和运行环境设置，然后刷新。",
+      "emptyCatalog": "暂时没有可用的原生模型。请完成 OMP 订阅登录，再刷新以加载模型目录。",
+      "catalogError": "无法加载原生模型目录，现有 YAML 模型仍可使用。",
+      "useLoginGuidance": "OpenAI Codex 使用订阅登录，不使用 API Key。请使用内置卡片上的「订阅登录」。"
+    },
     "invalidJson": "JSON 格式无效",
     "preview": {
       "title": "预览 Oh My Pi 配置"
@@ -5343,8 +5360,8 @@
       "editProviderConfigTitle": "编辑 Oh My Pi 渠道配置",
       "providerKey": "供应商 Key",
       "providerKeyPlaceholder": "例如：openrouter",
-      "addSupplier": "添加供应商",
-      "addSupplierTitle": "添加 Oh My Pi 供应商",
+      "addSupplier": "添加 API 供应商",
+      "addSupplierTitle": "添加 Oh My Pi API 供应商",
       "editSupplierTitle": "编辑 {{name}}",
       "editSupplier": "编辑供应商",
       "deleteSupplier": "删除供应商",
@@ -5356,7 +5373,7 @@
       "credentialTypeApiKey": "API Key",
       "credentialTypeOauth": "OAuth / 登录令牌",
       "credentialKey": "密钥",
-      "credentialAdvancedJson": "models.yml 高级 JSON（官方订阅 / 登录态，可选）",
+      "credentialAdvancedJson": "models.yml 中的 API 凭据高级 JSON。订阅登录由 OMP 管理，不在 YAML 中配置。",
       "configSection": "第三方渠道配置 models.yml",
       "apiType": "API 类型",
       "apiTypePlaceholder": "选择或输入 API 类型",
@@ -5421,7 +5438,7 @@
       "settings_yml": "config.yml"
     },
     "categoryLabels": {
-      "subscription": "OAuth",
+      "subscription": "订阅（OAuth）",
       "api_key": "API Key",
       "custom": "自定义"
     },
