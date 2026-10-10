@@ -44,7 +44,11 @@ import {
   type ProviderCardMetaEntry,
   type ProviderCardVariantProps,
 } from '@/features/coding/shared/providerCardVariants';
-import { OfficialAccountsSection } from '@/features/coding/shared/officialAccounts';
+import {
+  OfficialAccountCount,
+  OfficialAccountHeadingIcon,
+  OfficialAccountsSection,
+} from '@/features/coding/shared/officialAccounts';
 import type {
   OfficialAccountRowView,
 } from '@/features/coding/shared/officialAccounts';
@@ -449,14 +453,27 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
     </>
   );
 
+  /**
+   * The official card's name row doubles as the heading of its account block:
+   * `🔗 官方账号 (2)`. The glyph comes in through the style card's `namePrefix`,
+   * the count through `OfficialAccountCount` — the same pair the section itself
+   * draws for a standalone host (ZCode), so the three headings cannot drift
+   * apart.
+   *
+   * The count reads the account records rather than the rows memo: the name row
+   * is built above that memo, and the records are what both the heading and the
+   * list below are counting.
+   */
+  const namePrefix = isOfficialProvider ? <OfficialAccountHeadingIcon /> : undefined;
+
   const nameTags = (
     <>
+      {isOfficialProvider && <OfficialAccountCount count={officialAccounts.length} />}
       {isLocalProvider && (
         <Text type="secondary" style={{ fontSize: 11 }}>
           ({t('kimi.localConfigHint')})
         </Text>
       )}
-      {isOfficialProvider && <Tag>{t('kimi.provider.modeOfficial')}</Tag>}
       {isOfficialProvider && gatewayTakeoverActive && (
         <Tooltip title={t('gateway.takeover.officialBypassedTooltip')}>
           <Tag color="gold">{t('gateway.takeover.officialBypassedTag')}</Tag>
@@ -500,18 +517,26 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
   // as values rather than prose) without inventing labels the original did not
   // have.
   const metaEntries: ProviderCardMetaEntry[] = [];
-  if (isLocalProvider) {
-    metaEntries.push({ kind: 'text', value: `(${t('kimi.localConfigHint')})` });
+  if (isOfficialProvider) {
+    // The official card's second line is the account block's explanation: an
+    // official channel has no endpoint and no key of its own (it authenticates
+    // through the CLI's OAuth login), and the one thing a reader of *this* card
+    // needs is what switching accounts does.
+    metaEntries.push({ kind: 'text', value: t('kimi.officialAccount.hint') });
   } else {
-    if (modelName) {
-      metaEntries.push({ kind: 'code', value: modelName });
+    if (isLocalProvider) {
+      metaEntries.push({ kind: 'text', value: `(${t('kimi.localConfigHint')})` });
+    } else {
+      if (modelName) {
+        metaEntries.push({ kind: 'code', value: modelName });
+      }
+      if (baseUrl) {
+        metaEntries.push({ kind: 'code', value: baseUrl });
+      }
     }
-    if (baseUrl) {
-      metaEntries.push({ kind: 'code', value: baseUrl });
+    if (provider.notes) {
+      metaEntries.push({ kind: 'text', value: provider.notes });
     }
-  }
-  if (provider.notes) {
-    metaEntries.push({ kind: 'text', value: provider.notes });
   }
 
   const showModelList = !isLocalProvider && !isOfficialProvider;
@@ -575,17 +600,24 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
         ? { accountId: applyingOfficialAccountId, action: 'apply' as const }
         : null;
 
+  /**
+   * The account list collapses, like Codex's and ZCode's.
+   *
+   * It starts **open** here: this card's accounts have always been on screen,
+   * and the heading above them is what a reader lands on. Codex starts closed
+   * only because its card already carries a model section. The ability, not the
+   * starting state, is what the three cards share.
+   */
+  const [accountsCollapsed, setAccountsCollapsed] = React.useState(false);
+
   const officialAccountSection =
     isOfficialProvider && onOfficialAccountLogin ? (
       <OfficialAccountsSection
         variant="embedded"
-        title={t('kimi.officialAccounts')}
-        hint={t('kimi.officialAccount.hint')}
-        applyHint={t('kimi.officialAccount.applyHint')}
-        emptyText={t('kimi.officialAccount.empty')}
-        accounts={officialAccountRows}
-        pending={officialAccountPending}
-        actionsDisabled={loginPending}
+        listTitle={t('common.officialAccount.listTitle')}
+        // The explanation is no longer rendered here: it explains the *card*, so
+        // it sits on the card's second line. The sign-in entry stays, at the end
+        // of the list's title line — the row it adds to.
         loginAction={
           <Button
             type="link"
@@ -598,6 +630,13 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
             {t('kimi.officialAccount.login')}
           </Button>
         }
+        applyHint={t('kimi.officialAccount.applyHint')}
+        emptyText={t('kimi.officialAccount.empty')}
+        accounts={officialAccountRows}
+        collapsed={accountsCollapsed}
+        onToggleCollapsed={() => setAccountsCollapsed((current) => !current)}
+        pending={officialAccountPending}
+        actionsDisabled={loginPending}
         onSaveLocal={(row) => {
           const account = officialAccountById(row.id);
           if (account) {
@@ -622,7 +661,12 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
   const props: ProviderCardVariantProps = {
     provider: {
       id: provider.id,
-      name: provider.name,
+      // The official card is named for what it holds, not for the row's own
+      // label: every CLI's official channel heads its account block the same
+      // way, which is what makes the three cards one style.
+      name: isOfficialProvider
+        ? t('common.officialAccount.headingTitle')
+        : provider.name,
       baseUrl,
     },
     providerState: {
@@ -660,6 +704,7 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
           }
         : undefined,
     },
+    namePrefix,
     nameTags,
     metaEntries,
     // The account list belongs to the official channel, so it rides inside the
@@ -671,20 +716,17 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
     // for a tool-specific item, so it lands on the meta line — where the Codex
     // style already puts it — and on the model-section toolbar below.
     //
-    // Rendered unconditionally, like the Codex card: an official channel cannot
-    // be probed (it authenticates through OAuth, not a static key), and a
-    // greyed-out button carrying the reason is more useful than a missing one.
-    inlineActions: (
+    // Except on the official card, whose meta line carries the account block's
+    // explanation: a probe sentence and an explanation sentence on one line read
+    // as one thought. The probe was disabled there anyway — an official channel
+    // authenticates through its OAuth login, not a static key — so only the
+    // greyed-out word goes away, not an action.
+    inlineActions: isOfficialProvider ? undefined : (
       <>
         <Text type="secondary" style={{ fontSize: 11 }}>|</Text>
         <InlineConnectivityButton
           onClick={() => onTest?.(provider)}
-          disabled={isOfficialProvider || provider.isDisabled}
-          tooltip={
-            isOfficialProvider
-              ? t('kimi.provider.officialConnectivityHint')
-              : undefined
-          }
+          disabled={provider.isDisabled}
         />
       </>
     ),

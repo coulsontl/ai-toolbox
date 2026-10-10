@@ -44,7 +44,11 @@ import type { ProviderConnectivityStatusItem } from '@/components/common/Provide
 import CodexStyleCard, {
   InlineConnectivityButton,
 } from '@/features/coding/shared/providerCardVariants/CodexStyleCard';
-import { OfficialAccountsSection } from '@/features/coding/shared/officialAccounts';
+import {
+  OfficialAccountCount,
+  OfficialAccountHeadingIcon,
+  OfficialAccountsSection,
+} from '@/features/coding/shared/officialAccounts';
 import type {
   OfficialAccountPendingAction,
   OfficialAccountRowView,
@@ -519,11 +523,12 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
     return (
       <OfficialAccountsSection
         variant="embedded"
-        title={t('codex.provider.officialAccountsTitle')}
-        // Only the official card can switch accounts, so only it explains the
-        // switch. A non-official card still lists legacy rows, but its notice
-        // ("clear these first") is the whole story there.
-        hint={isOfficialProvider ? t('codex.provider.officialAccountHint') : undefined}
+        listTitle={t('common.officialAccount.listTitle')}
+        // The explanation is not passed here: it explains the *card*, so it sits
+        // on the card's second line, and this list keeps the one line it needs —
+        // its title, its count, and the sign-in entry it adds rows to. What is
+        // left of a non-official card's section is its notice, which stays on
+        // the title line, beside the list it is about.
         emptyText={t('codex.provider.officialAccountsEmpty')}
         accounts={officialAccountRows}
         collapsed={accountsCollapsed}
@@ -567,8 +572,16 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
    * The second line: endpoint, active model, masked key and notes, each
    * optional, in whatever order the CLI supplies. This is what the Codex style
    * means by "free-form" — the OpenCode style fixes that line to id/SDK/endpoint.
+   *
+   * The official card is the exception: it has no endpoint and no key (it
+   * authenticates through `auth.json`), its active model is already the marked
+   * row of the model list below, and the one thing a reader of *this* card
+   * needs is what switching accounts does. So the line carries that instead.
    */
   const metaEntries = React.useMemo<ProviderCardMetaEntry[]>(() => {
+    if (isOfficialProvider) {
+      return [{ kind: 'text', value: t('codex.provider.officialAccountHint') }];
+    }
     const entries: ProviderCardMetaEntry[] = [];
     if (baseUrl) {
       entries.push({ kind: 'code', value: baseUrl });
@@ -583,17 +596,28 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
       entries.push({ kind: 'text', value: provider.notes });
     }
     return entries;
-  }, [baseUrl, displayModelName, maskedApiKey, provider.notes]);
+  }, [baseUrl, displayModelName, isOfficialProvider, maskedApiKey, provider.notes, t]);
+
+  /**
+   * The official card's name row doubles as the heading of its account block:
+   * `🔗 官方账号 (2)`. The glyph comes in through the style card's `namePrefix`,
+   * the count through `OfficialAccountCount` — the same pair the section itself
+   * draws for a standalone host (ZCode), so the three headings cannot drift
+   * apart.
+   *
+   * The count reads the account records rather than the rows memo: the name row
+   * is built above that memo, and the records are what both the heading and the
+   * list below are counting.
+   */
+  const namePrefix = isOfficialProvider ? <OfficialAccountHeadingIcon /> : undefined;
 
   const nameTags = (
     <>
+      {isOfficialProvider && <OfficialAccountCount count={officialAccounts.length} />}
       {isLocalProvider && (
         <Text type="secondary" style={{ fontSize: 11 }}>
           ({t('codex.localConfigHint')})
         </Text>
-      )}
-      {isOfficialProvider && (
-        <Tag>{t('codex.provider.modeOfficial')}</Tag>
       )}
       {isOfficialProvider && gatewayTakeoverActive && (
         <Tooltip title={t('gateway.takeover.officialBypassedTooltip')}>
@@ -777,7 +801,12 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
   const props: ProviderCardVariantProps = {
     provider: {
       id: provider.id,
-      name: provider.name,
+      // The official card is named for what it holds, not for the row's own
+      // label: every CLI's official channel heads its account block the same
+      // way, which is what makes the three cards one style.
+      name: isOfficialProvider
+        ? t('common.officialAccount.headingTitle')
+        : provider.name,
       baseUrl,
     },
     providerState: {
@@ -821,15 +850,18 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
           }
         : undefined,
     },
+    namePrefix,
     nameTags,
     metaEntries,
-    inlineActions: (
+    // The probe rides the meta line, except on the official card, whose meta
+    // line is the account block's explanation — the two would read as one
+    // sentence. It was disabled there anyway.
+    inlineActions: isOfficialProvider ? undefined : (
       <>
         <Text type="secondary" style={{ fontSize: 11 }}>|</Text>
         <InlineConnectivityButton
           onClick={() => onTest(provider)}
           disabled={!canRunConnectivityTest}
-          tooltip={isOfficialProvider ? t('codex.provider.officialConnectivityHint') : undefined}
         />
       </>
     ),

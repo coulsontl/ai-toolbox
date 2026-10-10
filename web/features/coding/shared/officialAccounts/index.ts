@@ -6,7 +6,11 @@
  * official provider row to sit inside (Codex, Kimi), `standalone` when the
  * official login is not a provider at all (ZCode).
  */
-export { default as OfficialAccountsSection } from './OfficialAccountsSection';
+export {
+  default as OfficialAccountsSection,
+  OfficialAccountCount,
+  OfficialAccountHeadingIcon,
+} from './OfficialAccountsSection';
 export type {
   OfficialAccountAction,
   OfficialAccountPendingAction,

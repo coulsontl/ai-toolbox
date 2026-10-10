@@ -40,9 +40,17 @@ useAppStore.setState({ language });
 document.documentElement.dataset.theme = resolvedTheme;
 updateGatewayProviderProfiles(gatewayProfiles);
 
-/** The official channel's card title, and the label its account section uses. */
+/** The official channel's row id, and the two labels every official card shows. */
+const OFFICIAL_PROVIDER_ID = 'provider-official';
 const OFFICIAL_PROVIDER_NAME = 'Kimi Official';
-const OFFICIAL_ACCOUNT_TITLE = '官方账号';
+/**
+ * The heading every CLI's official card shows, and the title of the list under
+ * it. Both are shared strings (`common.officialAccount.*`), which is the point:
+ * the card *displays* 官方账号 even though the row is named "Kimi Official" in
+ * the data, so the card can no longer be found by the words it shows.
+ */
+const OFFICIAL_CARD_HEADING = '官方账号';
+const ACCOUNT_LIST_TITLE = '账号列表';
 
 const createProvider = (id, name, createdAt, category = 'custom') => ({
   id,
@@ -220,10 +228,20 @@ window.__TAURI_INTERNALS__ = {
 
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
-/** Every card inside the provider section, in the order it is drawn. */
-const cardsInProviderSection = () => [...document.querySelectorAll('#kimi-providers .ant-card')];
+/**
+ * Every card inside the provider section, in the order it is drawn.
+ *
+ * Addressed by the wrapper's `data-provider-id` — the same anchor the page's own
+ * "locate" action uses — rather than by the words on the card. The official
+ * card's row is named "Kimi Official" but the card *displays* the shared account
+ * heading (官方账号), so a text anchor finds nothing and the helper below
+ * degrades to '?'.
+ */
+const cardsInProviderSection = () =>
+  [...document.querySelectorAll('#kimi-providers [data-provider-id]')];
 
-const cardFor = name => cardsInProviderSection().find(card => card.textContent.includes(name));
+const cardFor = providerId =>
+  cardsInProviderSection().find(card => card.dataset.providerId === providerId);
 
 const centerOf = element => {
   const rect = element.getBoundingClientRect();
@@ -244,34 +262,83 @@ const accountRowsIn = card =>
 
 window.kimiOfficialAccountFixture = {
   state,
-  OFFICIAL_ACCOUNT_TITLE,
-  OFFICIAL_PROVIDER_NAME,
-  /** Card titles in the order the page draws them. */
-  renderedMembers() {
-    return cardsInProviderSection().map(card => {
-      const provider = state.providers.find(item => card.textContent.includes(item.name));
-      return provider ? provider.name : '?';
-    });
+  OFFICIAL_PROVIDER_ID,
+  OFFICIAL_CARD_HEADING,
+  ACCOUNT_LIST_TITLE,
+  /** The id of every member card, in the order the page draws them. */
+  renderedMemberIds() {
+    return cardsInProviderSection().map(card => card.dataset.providerId);
   },
-  hasHandle(name) {
-    const card = cardFor(name);
+  /**
+   * The list's collapse toggle inside a card, if it renders one.
+   *
+   * Structural rather than by label: the caret is the toggle button's only icon,
+   * and the model list's own collapse sits outside the provider section's cards.
+   */
+  listToggle(id) {
+    return cardFor(id)?.querySelector('button:has(.anticon-right), button:has(.anticon-down)') ?? null;
+  },
+  /** Does the card render that toggle at all? */
+  hasListToggle(id) {
+    return Boolean(window.kimiOfficialAccountFixture.listToggle(id));
+  },
+  hasHandle(id) {
+    const card = cardFor(id);
     return Boolean(card?.querySelector('.anticon-holder'));
   },
-  handleCenter(name) {
-    const card = cardFor(name);
+  /** Does the card's heading line carry the account block's 🔗? */
+  hasHeadingGlyph(id) {
+    const card = cardFor(id);
+    return Boolean(card?.querySelector('.anticon-link'));
+  },
+  handleCenter(id) {
+    const card = cardFor(id);
     const handle = card?.querySelector('.anticon-holder');
-    if (!handle) throw new Error('No drag handle rendered for: ' + name);
+    if (!handle) throw new Error('No drag handle rendered for: ' + id);
     return centerOf(handle.parentElement ?? handle);
   },
   /** Row center of another card — the drop target for a drag. */
-  cardCenter(name) {
-    const card = cardFor(name);
-    if (!card) throw new Error('No card rendered for: ' + name);
+  cardCenter(id) {
+    const card = cardFor(id);
+    if (!card) throw new Error('No card rendered for: ' + id);
     return centerOf(card);
   },
   /** The card's own text, so labels ("登录", "切换") can be read off the screen. */
-  cardText(name) {
-    return cardFor(name)?.textContent ?? null;
+  cardText(id) {
+    return cardFor(id)?.textContent ?? null;
+  },
+  /**
+   * The measured boxes of the sign-in entry, the list's title and the heading.
+   *
+   * The three are separate lines, and which line the button belongs on is a
+   * placement rule no type or snapshot check can see — the button renders either
+   * way. Callers compare the boxes (see the browser checks).
+   */
+  loginPlacement(id) {
+    const card = cardFor(id);
+    if (!card) throw new Error('No card rendered for: ' + id);
+    const box = node => {
+      const rect = node.getBoundingClientRect();
+      return {
+        left: Math.round(rect.left),
+        right: Math.round(rect.right),
+        top: Math.round(rect.top),
+        bottom: Math.round(rect.bottom),
+      };
+    };
+    /** The deepest element whose whole text is exactly `text`. */
+    const leafWithText = text => [...card.querySelectorAll('*')]
+      .filter(node => node.children.length === 0 && node.textContent.trim() === text)
+      .at(-1) ?? null;
+    const login = [...card.querySelectorAll('button')]
+      .find(button => button.textContent.includes('登录')) ?? null;
+    const listTitle = leafWithText(ACCOUNT_LIST_TITLE);
+    const heading = leafWithText(OFFICIAL_CARD_HEADING);
+    return {
+      login: login ? box(login) : null,
+      listTitle: listTitle ? box(listTitle) : null,
+      heading: heading ? box(heading) : null,
+    };
   },
   /** Labels of every button drawn inside the provider section's toolbar. */
   toolbarLabels() {
@@ -279,13 +346,13 @@ window.kimiOfficialAccountFixture = {
       .map(button => button.textContent.trim());
   },
   /** Labels of every button drawn inside a card, in DOM order. */
-  cardButtonLabels(name) {
-    return [...(cardFor(name)?.querySelectorAll('button') ?? [])]
+  cardButtonLabels(id) {
+    return [...(cardFor(id)?.querySelectorAll('button') ?? [])]
       .map(button => button.textContent.trim());
   },
   /** Same buttons with their enabled state. */
-  cardButtonStates(name) {
-    return [...(cardFor(name)?.querySelectorAll('button') ?? [])]
+  cardButtonStates(id) {
+    return [...(cardFor(id)?.querySelectorAll('button') ?? [])]
       .map(button => ({
         label: button.textContent.trim(),
         disabled: button.disabled,
@@ -299,9 +366,9 @@ window.kimiOfficialAccountFixture = {
    * added in a new place and not removed from the old one — which is what
    * happened when the section hint became the title's subtitle.
    */
-  cardRepeatedSentences(name, minimumLength = 20) {
+  cardRepeatedSentences(id, minimumLength = 20) {
     const counts = new Map();
-    for (const node of cardFor(name)?.querySelectorAll('*') ?? []) {
+    for (const node of cardFor(id)?.querySelectorAll('*') ?? []) {
       if (node.children.length > 0) continue;
       const text = node.textContent.trim();
       if (text.length < minimumLength) continue;
@@ -310,13 +377,13 @@ window.kimiOfficialAccountFixture = {
     return [...counts.entries()].filter(([, count]) => count > 1).map(([text]) => text);
   },
   /** How many account rows the official card draws. */
-  accountRowCount(name = OFFICIAL_PROVIDER_NAME) {
-    const card = cardFor(name);
+  accountRowCount(id = OFFICIAL_PROVIDER_ID) {
+    const card = cardFor(id);
     return card ? accountRowsIn(card).length : 0;
   },
   /** Debug aid: the outer HTML of the official card's account area. */
-  debugAccountHtml(name = OFFICIAL_PROVIDER_NAME) {
-    const card = cardFor(name);
+  debugAccountHtml(id = OFFICIAL_PROVIDER_ID) {
+    const card = cardFor(id);
     return card ? card.innerHTML.slice(0, 4000) : null;
   },
   /**
@@ -325,11 +392,11 @@ window.kimiOfficialAccountFixture = {
    * header's content column is inset by the action links' width, which is the
    * "empty space on the right" defect that a type check cannot see.
    */
-  accountAlignment(name = OFFICIAL_PROVIDER_NAME) {
-    const card = cardFor(name);
-    if (!card) throw new Error('No card rendered for: ' + name);
+  accountAlignment(id = OFFICIAL_PROVIDER_ID) {
+    const card = cardFor(id);
+    if (!card) throw new Error('No card rendered for: ' + id);
     const rows = accountRowsIn(card);
-    if (rows.length === 0) throw new Error('No account rows rendered for: ' + name);
+    if (rows.length === 0) throw new Error('No account rows rendered for: ' + id);
     // The card body's *content* edge, not its border box: the padding is part of
     // the card, and measuring the border box would call a correctly aligned row
     // inset. (The Codex guard subtracts the same padding.)
@@ -344,15 +411,15 @@ window.kimiOfficialAccountFixture = {
       headerRight: headerActions ? Math.round(headerActions.getBoundingClientRect().right) : null,
     };
   },
-  async waitForMembers(titles, timeoutMs = 4000) {
+  async waitForMembers(ids, timeoutMs = 4000) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (window.kimiOfficialAccountFixture.renderedMembers().join('|') === titles.join('|')) {
-        return titles;
+      if (window.kimiOfficialAccountFixture.renderedMemberIds().join('|') === ids.join('|')) {
+        return ids;
       }
       await wait(50);
     }
-    return window.kimiOfficialAccountFixture.renderedMembers();
+    return window.kimiOfficialAccountFixture.renderedMemberIds();
   },
   /** The last `reorder_kimi_providers` payload the page sent, if any. */
   lastReorder() {

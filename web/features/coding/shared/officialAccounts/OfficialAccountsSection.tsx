@@ -27,6 +27,32 @@ const { Text } = Typography;
 const actionButtonStyle: React.CSSProperties = { fontSize: 12, height: 'auto', paddingInline: 4 };
 
 /**
+ * The 🔗 an official-account heading carries.
+ *
+ * Exported because an `embedded` host draws it on **its own** heading line (the
+ * provider card's name row) — the heading of a block is the block's mark, no
+ * matter which component owns the line it sits on. Two drawings of the same
+ * glyph is exactly how it went missing once already.
+ */
+export const OfficialAccountHeadingIcon: React.FC = () => (
+  <LinkOutlined style={{ color: 'var(--color-text-secondary)' }} />
+);
+
+/**
+ * The `(n)` beside an official-account heading.
+ *
+ * A count belongs to the heading, so an embedded host renders it on its name
+ * row while the list repeats it on its own title line; both go through here so
+ * the two can never drift apart in size or colour.
+ */
+export const OfficialAccountCount: React.FC<{ count: number }> = ({ count }) =>
+  count > 0 ? (
+    <Text type="secondary" style={{ fontSize: 12 }}>
+      ({count})
+    </Text>
+  ) : null;
+
+/**
  * The official-account section, shared by every CLI that has an official login.
  *
  * It used to exist three times — inside Codex's provider card, inside Kimi's and
@@ -42,13 +68,13 @@ const actionButtonStyle: React.CSSProperties = { fontSize: 12, height: 'auto', p
  */
 const OfficialAccountsSection: React.FC<OfficialAccountsSectionProps> = ({
   variant,
-  title,
+  headingTitle,
+  listTitle,
   hint,
   applyHint,
   emptyText,
   accounts,
   loginAction,
-  leadingAction,
   collapsed,
   onToggleCollapsed,
   pending = null,
@@ -69,23 +95,38 @@ const OfficialAccountsSection: React.FC<OfficialAccountsSectionProps> = ({
   const isPending = (account: OfficialAccountRowView, action: OfficialAccountAction) =>
     pending?.accountId === account.id && pending.action === action;
 
-  const titleLine = (
+  /**
+   * The block's heading — `🔗 官方账号 (n)`.
+   *
+   * Drawn here only for a `standalone` host, whose card *is* this section, so
+   * this is the card's own heading. An `embedded` host owns that line (the
+   * provider card's name row) and builds it from the same exports, so the three
+   * headings cannot drift apart.
+   */
+  const headingLine = (
+    <Space size={6}>
+      <OfficialAccountHeadingIcon />
+      <Text strong style={{ fontSize: 13 }}>
+        {headingTitle}
+      </Text>
+      <OfficialAccountCount count={accounts.length} />
+    </Space>
+  );
+
+  /**
+   * The list's own title — `▾ 账号列表 (n)` — which every host carries.
+   *
+   * The caret lives *here*, not on the heading: what opens and closes is the
+   * list, and that reads the same whether the heading above it belongs to this
+   * section (ZCode) or to a provider card (Codex, Kimi).
+   */
+  const listLine = (
     <Space size={6}>
       {collapsible && (isCollapsed ? <RightOutlined /> : <DownOutlined />)}
-      {leadingAction}
-      {/* The link glyph belongs to the section, not to any one host. Two of the
-          three original implementations drew one on the title line (Kimi and
-          ZCode) and it was lost when the section was extracted from Codex's,
-          which happened to draw its own on the login button instead. */}
-      <LinkOutlined style={{ color: 'var(--color-text-secondary)' }} />
       <Text strong style={{ fontSize: 13 }}>
-        {title}
+        {listTitle}
       </Text>
-      {accounts.length > 0 && (
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          ({accounts.length})
-        </Text>
-      )}
+      <OfficialAccountCount count={accounts.length} />
     </Space>
   );
 
@@ -97,6 +138,24 @@ const OfficialAccountsSection: React.FC<OfficialAccountsSectionProps> = ({
           : undefined
       }
     >
+      {!embedded && (
+        <>
+          {headingLine}
+
+          {/* The explanation is the heading's subtitle, so it sits directly
+              under the heading — not after the rows, where it read as a stray
+              footnote and, in the empty state, ended up below the empty
+              illustration rather than beside the line it explains. An embedded
+              host renders this same sentence on its own second line instead
+              (`hint` is not passed there). */}
+          {hint && (
+            <div style={{ marginTop: 4, fontSize: 12, color: 'var(--color-text-secondary)' }}>
+              {hint}
+            </div>
+          )}
+        </>
+      )}
+
       <div
         style={{
           display: 'flex',
@@ -104,6 +163,7 @@ const OfficialAccountsSection: React.FC<OfficialAccountsSectionProps> = ({
           justifyContent: 'space-between',
           gap: 12,
           flexWrap: 'wrap',
+          marginTop: !embedded && hint ? 8 : 0,
           marginBottom: embedded && !isCollapsed ? 10 : 0,
         }}
       >
@@ -114,23 +174,16 @@ const OfficialAccountsSection: React.FC<OfficialAccountsSectionProps> = ({
             onClick={onToggleCollapsed}
             style={{ padding: 0, height: 'auto' }}
           >
-            {titleLine}
+            {listLine}
           </Button>
         ) : (
-          titleLine
+          listLine
         )}
+        {/* The sign-in entry belongs to the *list*: it adds a row to it, and it
+            sits where the rows it changes are — not up on the card's heading,
+            which names the card rather than the list under it. */}
         {loginAction}
       </div>
-
-      {/* The section's explanation is the title's subtitle, so it sits directly
-          under the title — not after the rows, where it read as a stray
-          footnote and, in the empty state, ended up below the empty
-          illustration rather than beside the title it explains. */}
-      {hint && (
-        <div style={{ marginTop: 4, fontSize: 12, color: 'var(--color-text-secondary)' }}>
-          {hint}
-        </div>
-      )}
 
       {!isCollapsed && (
         <div
@@ -139,9 +192,12 @@ const OfficialAccountsSection: React.FC<OfficialAccountsSectionProps> = ({
             display: 'flex',
             flexDirection: 'column',
             gap: embedded ? 8 : 0,
-            // Embedded rows line up with the collapsible title's text rather
-            // than with its arrow.
-            paddingLeft: embedded ? 18 : 0,
+            // Every host indents the rows past the title's arrow, so they line
+            // up with the text of `账号列表` rather than with its caret. Only
+            // `embedded` used to: the standalone card had no caret to clear, and
+            // its rows sat flush with the card edge while everything above them
+            // was indented — the misalignment the user circled.
+            paddingLeft: 18,
           }}
         >
           {accounts.length === 0 ? (

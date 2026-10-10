@@ -81,31 +81,64 @@ export async function verifyKimiOfficialAccountCard({ send, evaluate, baseUrl, a
   // --- the account section lives inside the official card -------------------
   await openFixture('providers=all&accounts=2');
   // Read after the first load: the fixture defines its globals when it boots.
-  const officialName = await fixture('OFFICIAL_PROVIDER_NAME');
-  const accountSectionTitle = await fixture('OFFICIAL_ACCOUNT_TITLE');
-  await waitFor('kimiOfficialAccountFixture.renderedMembers().length === 4', 'four list members');
+  // Cards are addressed by `data-provider-id`, not by the words on them: the
+  // official card *displays* the shared heading (官方账号) while its row is named
+  // "Kimi Official" in the data, so a text anchor degrades to '?'.
+  const officialId = await fixture('OFFICIAL_PROVIDER_ID');
+  const headingLabel = await fixture('OFFICIAL_CARD_HEADING');
+  const listTitle = await fixture('ACCOUNT_LIST_TITLE');
+  await waitFor('kimiOfficialAccountFixture.renderedMemberIds().length === 4', 'four list members');
 
   check(
     'the official channel is an ordinary list member, first in created order',
-    await fixture('renderedMembers()'),
-    [officialName, 'Provider A', 'Provider B', 'Provider C'],
+    await fixture('renderedMemberIds()'),
+    [officialId, 'provider-a', 'provider-b', 'provider-c'],
   );
   check(
     'the official card carries the same drag handle as the provider cards',
-    await fixture(`hasHandle(${JSON.stringify(officialName)})`),
+    await fixture(`hasHandle(${JSON.stringify(officialId)})`),
   );
   check(
     'both saved accounts render a row inside the official card',
-    await fixture(`accountRowCount(${JSON.stringify(officialName)})`),
+    await fixture(`accountRowCount(${JSON.stringify(officialId)})`),
     2,
+  );
+
+  // --- the card wears the unified account-block shape -----------------------
+  const headingText = await fixture(`cardText(${JSON.stringify(officialId)})`);
+  check(
+    'the heading is the unified account label, with the block\'s link glyph',
+    await fixture(`hasHeadingGlyph(${JSON.stringify(officialId)})`)
+      && headingText.includes(headingLabel),
+  );
+  check(
+    'the heading carries the account count',
+    headingText.includes('(2)'),
+  );
+  check(
+    'the list keeps its own title and a collapse toggle',
+    headingText.includes(listTitle)
+      && await fixture(`hasListToggle(${JSON.stringify(officialId)})`),
+  );
+  // The sign-in entry adds a row to the *list*, so it sits at the end of the
+  // list's own title line — not up on the card's heading, which names the card.
+  // Placement is geometry: only the measured boxes can tell the two lines apart.
+  const placement = await fixture(`loginPlacement(${JSON.stringify(officialId)})`);
+  const centreOfBox = box => (box.top + box.bottom) / 2;
+  check(
+    'the sign-in entry sits on the list\'s title line, at its right',
+    Boolean(placement.login && placement.listTitle && placement.heading)
+      && placement.login.top > placement.heading.bottom
+      && placement.login.left >= placement.listTitle.right
+      && Math.abs(centreOfBox(placement.login) - centreOfBox(placement.listTitle)) <= 8,
   );
   await screenshot('populated-list');
 
-  const cardButtons = await fixture(`cardButtonLabels(${JSON.stringify(officialName)})`);
+  const cardButtons = await fixture(`cardButtonLabels(${JSON.stringify(officialId)})`);
   check('the sign-in entry lives on the official card', cardButtons.includes('登录'));
   check(
     'the list toolbar carries no official-account entry',
-    (await fixture('toolbarLabels()')).filter(label => label === accountSectionTitle),
+    (await fixture('toolbarLabels()')).filter(label => label === headingLabel),
     [],
   );
   check(
@@ -122,27 +155,27 @@ export async function verifyKimiOfficialAccountCard({ send, evaluate, baseUrl, a
   // disabled "switch" next to "default" says the same thing twice.
   check(
     'the applied account offers no switch at all',
-    (await fixture(`cardButtonStates(${JSON.stringify(officialName)})`))
+    (await fixture(`cardButtonStates(${JSON.stringify(officialId)})`))
       .filter(button => button.label === '切换' || button.label === '默认').map(button => button.label),
     ['切换'],
   );
   check(
     'each row is labelled with the platform nickname, not with a timestamp',
-    (await fixture(`cardText(${JSON.stringify(officialName)})`)).includes('moonwalker')
-      && (await fixture(`cardText(${JSON.stringify(officialName)})`)).includes('nightowl'),
+    (await fixture(`cardText(${JSON.stringify(officialId)})`)).includes('moonwalker')
+      && (await fixture(`cardText(${JSON.stringify(officialId)})`)).includes('nightowl'),
   );
   check(
     'the applied account is badged as the default',
-    await fixture(`cardText(${JSON.stringify(officialName)})`).then(text => text.includes('默认')),
+    await fixture(`cardText(${JSON.stringify(officialId)})`).then(text => text.includes('默认')),
   );
   check(
     'no sentence is rendered twice on the card',
-    await fixture(`cardRepeatedSentences(${JSON.stringify(officialName)})`),
+    await fixture(`cardRepeatedSentences(${JSON.stringify(officialId)})`),
     [],
   );
 
   // --- the rows span the card, not the header's content column --------------
-  const alignment = await fixture(`accountAlignment(${JSON.stringify(officialName)})`);
+  const alignment = await fixture(`accountAlignment(${JSON.stringify(officialId)})`);
   check(
     'the account rows end at the card content edge',
     alignment.rowRight,
@@ -156,13 +189,32 @@ export async function verifyKimiOfficialAccountCard({ send, evaluate, baseUrl, a
     );
   }
 
+  // --- the list collapses from its own title line ---------------------------
+  // A real click, not a state inspection: the caret is a button, and a button
+  // that renders but cannot be pressed is exactly the failure this catches.
+  const toggleQuery = `kimiOfficialAccountFixture.listToggle(${JSON.stringify(officialId)})`;
+  await evaluate(`${toggleQuery}.click(), true`);
+  await delay(400);
+  check(
+    'collapsing the list from its title hides every row',
+    await fixture(`accountRowCount(${JSON.stringify(officialId)})`),
+    0,
+  );
+  await evaluate(`${toggleQuery}.click(), true`);
+  await delay(400);
+  check(
+    'expanding it brings the rows back',
+    await fixture(`accountRowCount(${JSON.stringify(officialId)})`),
+    2,
+  );
+
   // --- a live login with no stored row is offered as save-only --------------
   await openFixture('providers=all&accounts=virtual');
   await waitFor('kimiOfficialAccountFixture.accountRowCount() === 1', 'the virtual row');
-  const virtualButtons = await fixture(`cardButtonStates(${JSON.stringify(officialName)})`);
+  const virtualButtons = await fixture(`cardButtonStates(${JSON.stringify(officialId)})`);
   check(
     'the uncaptured live login is marked as the current login',
-    await fixture(`cardText(${JSON.stringify(officialName)})`).then(text => text.includes('当前登录')),
+    await fixture(`cardText(${JSON.stringify(officialId)})`).then(text => text.includes('当前登录')),
   );
   check(
     'the virtual row offers save instead of switch or delete',
@@ -178,24 +230,24 @@ export async function verifyKimiOfficialAccountCard({ send, evaluate, baseUrl, a
   );
   await delay(600);
   await waitFor(
-    `kimiOfficialAccountFixture.cardButtonLabels(${JSON.stringify(officialName)}).includes('切换')`,
+    `kimiOfficialAccountFixture.cardButtonLabels(${JSON.stringify(officialId)}).includes('切换')`,
     'the saved row to offer switch',
   );
   check(
     'saving turns the live login into a stored account with switch and delete',
-    (await fixture(`cardButtonLabels(${JSON.stringify(officialName)})`))
+    (await fixture(`cardButtonLabels(${JSON.stringify(officialId)})`))
       .filter(label => ['保存当前登录', '切换', '删除'].includes(label)).sort(),
     ['删除', '切换'].sort(),
   );
 
   // --- dragging the official card reorders it among the providers -----------
   await openFixture('providers=all&accounts=2');
-  await waitFor('kimiOfficialAccountFixture.renderedMembers().length === 4', 'four list members');
-  await dragCard(officialName, 'Provider C');
+  await waitFor('kimiOfficialAccountFixture.renderedMemberIds().length === 4', 'four list members');
+  await dragCard(officialId, 'provider-c');
   check(
     'dragging the official card past every provider moves it to the bottom',
-    await fixture('waitForMembers(["Provider A","Provider B","Provider C",' + JSON.stringify(officialName) + '])'),
-    ['Provider A', 'Provider B', 'Provider C', officialName],
+    await fixture('waitForMembers(["provider-a","provider-b","provider-c",' + JSON.stringify(officialId) + '])'),
+    ['provider-a', 'provider-b', 'provider-c', officialId],
   );
   check(
     'the reorder payload carries provider ids only — the card is a provider',
@@ -206,11 +258,11 @@ export async function verifyKimiOfficialAccountCard({ send, evaluate, baseUrl, a
 
   // --- no official row: the list still works, and there is no card ----------
   await openFixture('providers=custom-only&accounts=0');
-  await waitFor('kimiOfficialAccountFixture.renderedMembers().length === 3', 'three provider cards');
+  await waitFor('kimiOfficialAccountFixture.renderedMemberIds().length === 3', 'three provider cards');
   check(
     'an install with no official channel renders no official card',
-    await fixture('renderedMembers()'),
-    ['Provider A', 'Provider B', 'Provider C'],
+    await fixture('renderedMemberIds()'),
+    ['provider-a', 'provider-b', 'provider-c'],
   );
   check(
     'no account section is rendered anywhere',

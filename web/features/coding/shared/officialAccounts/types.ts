@@ -60,8 +60,24 @@ export interface OfficialAccountPendingAction {
 
 export interface OfficialAccountsSectionProps {
   variant: OfficialAccountsSectionVariant;
-  title: string;
-  /** The section's own explanation, rendered as the title's subtitle. */
+  /**
+   * The heading's text — `官方账号` — for a `standalone` host, whose card *is*
+   * this section and therefore draws the heading line itself.
+   *
+   * An `embedded` host passes nothing here: the heading belongs to the provider
+   * card's name row, which that card builds from `OfficialAccountHeadingIcon`
+   * and `OfficialAccountCount`.
+   */
+  headingTitle?: string;
+  /** The list's own title — `账号列表` — carried by every host, collapsible or not. */
+  listTitle: string;
+  /**
+   * The block's explanation.
+   *
+   * A `standalone` host gets it under the heading, drawn here. An `embedded`
+   * host renders the same sentence on the card's second line instead — where a
+   * reader of that card looks for it — and passes nothing.
+   */
   hint?: string;
   /**
    * Hover text for the switch action. Each CLI words it differently ("switch
@@ -72,19 +88,13 @@ export interface OfficialAccountsSectionProps {
   emptyText: string;
   accounts: OfficialAccountRowView[];
   /**
-   * The sign-in entry, injected as a node so the section never learns how many
+   * The sign-in entry, rendered at the far end of the *list's* title line — the
+   * row it adds to. Injected as a node so the section never learns how many
    * OAuth providers a CLI has: Codex and Kimi pass a button, ZCode passes a
    * dropdown over its two providers.
    */
   loginAction?: ReactNode;
-  /**
-   * Rendered before the title, inside the title line. Exists for the host that
-   * owns its card: ZCode's card is a list member, so its drag handle and icon
-   * have to sit on the title line. Provier-card hosts (Codex, Kimi) pass
-   * nothing — their card already has a handle.
-   */
-  leadingAction?: ReactNode;
-  /** Omit both to render the section uncollapsible (only Codex collapses). */
+  /** Omit both to render the section uncollapsible (Codex, Kimi and ZCode collapse). */
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
   /**

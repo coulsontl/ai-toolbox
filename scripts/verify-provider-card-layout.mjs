@@ -24,8 +24,9 @@
  * set may only shrink — migrating one without removing it from the list is an
  * error, so the list cannot silently go stale.
  *
- * Scope: `web/features/coding/<cli>/components/*ProviderCard.tsx`. Files whose
- * name matches but which are not list cards are listed in `EXEMPT_FILES`.
+ * Scope: `web/features/coding/<cli>/components/*ProviderCard.tsx` **and**
+ * `*OfficialAccountCard.tsx` (see `GOVERNED_SUFFIXES`). Files whose name matches
+ * but which are not list cards are listed in `EXEMPT_FILES`.
  */
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -38,14 +39,10 @@ const codingRoot = path.join(webRoot, 'features', 'coding');
 const SKIPPED_DIRECTORIES = new Set(['node_modules', '__tests__', 'fixtures']);
 
 /**
- * Files that match `*ProviderCard.tsx` but are not provider-list cards, so the
+ * Files that match the governed names but are not provider-list cards, so the
  * rule does not apply. Each entry must state why.
  */
 const EXEMPT_FILES = new Map([
-  [
-    'zcode/components/ZcodeOfficialAccountCard.tsx',
-    'Official-account row card, not a provider-list card; it is not sortable and has no provider chrome.',
-  ],
   [
     'antigravity/components/AntigravityProviderCard.tsx',
     'Despite the name, this is the official-account panel for a single official provider (rendered in its own Collapse section, returns null for non-official providers). It has no provider-list chrome. The misleading name is recorded in the SOP as a rename candidate.',
@@ -90,7 +87,17 @@ const FORBIDDEN = [
   },
 ];
 
-const isGovernedFile = (filename) => filename.endsWith('ProviderCard.tsx');
+/**
+ * The suffix set, not one suffix: ZCode's official-account card is a *member* of
+ * the provider list (sortable, same shell, same chrome) and was named
+ * `ZcodeOfficialAccountCard.tsx`, so a `*ProviderCard.tsx` scope never saw it.
+ * It kept its own `<Card>` and its own `useSortable` for three weeks, lost the
+ * handle's hover feedback and the row's left edge, and no check said a word —
+ * a guard whose scope is a filename suffix covers what the file is called, not
+ * what it is. The file is exempt no more: it now renders `CardShell`.
+ */
+const GOVERNED_SUFFIXES = ['ProviderCard.tsx', 'OfficialAccountCard.tsx'];
+const isGovernedFile = (filename) => GOVERNED_SUFFIXES.some(suffix => filename.endsWith(suffix));
 
 /**
  * Every prop declared on `ProviderCardVariantProps` (and the three sub-shapes)

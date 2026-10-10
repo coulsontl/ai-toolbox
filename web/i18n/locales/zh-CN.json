@@ -1826,6 +1826,8 @@
       "emptyCommandOutput": "命令未产生输出"
     },
     "officialAccount": {
+      "headingTitle": "官方账号",
+      "listTitle": "账号列表",
       "refresh": "刷新",
       "details": "详情",
       "switch": "切换",
@@ -2948,7 +2950,6 @@
       "modeCustom": "自定义渠道",
       "officialConnectivityHint": "官方订阅使用 Codex 当前登录态，AI Toolbox 目前不支持直接做模型测试。",
       "officialBatchSkipped": "已跳过 {{count}} 个官方订阅配置，AI Toolbox 目前不支持直接测试其登录态。",
-      "officialAccountsTitle": "官方账号",
       "officialAccountHint": "切换会把该账号的登录凭据写入 Codex 的 auth.json，替换当前登录；网关接管或代理模式下无法切换。",
       "officialAccountLabel": "账号",
       "officialAccountsEmpty": "暂无官方账号，点击右侧 OAuth 登录添加",
@@ -5989,7 +5990,6 @@
       "savedTag": "已保存",
       "saveSuccess": "已保存当前登录"
     },
-    "officialAccounts": "官方账号",
     "sessions": "会话管理",
     "applySuccess": "应用成功",
     "deleteSuccess": "删除成功",
@@ -6087,7 +6087,6 @@
       "disabled": "已禁用"
     },
     "officialAccount": {
-      "title": "官方账号",
       "empty": "尚未登录任何官方账号。",
       "login": "登录",
       "loginTitle": "登录 ZCode 官方账号",

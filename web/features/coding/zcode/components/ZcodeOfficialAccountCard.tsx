@@ -1,9 +1,8 @@
 import React from 'react';
-import { Button, Card, Dropdown, Space } from 'antd';
-import { HolderOutlined, LinkOutlined } from '@ant-design/icons';
-import { useSortable } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
+import { Button, Dropdown, Space } from 'antd';
+import { LinkOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { CardShell } from '@/features/coding/shared/providerCardVariants';
 import { OfficialAccountsSection } from '@/features/coding/shared/officialAccounts';
 import type { OfficialAccountRowView } from '@/features/coding/shared/officialAccounts';
 import type { ZcodeOfficialAccount } from '@/types/zcode';
@@ -37,11 +36,15 @@ export interface ZcodeOfficialAccountCardProps {
  * ZCode needs its own card because an official login is not a provider: ZCode
  * keeps it in `credentials.json`, outside the provider registry, and the two are
  * switched independently — so there is no provider row for the shared section to
- * sit inside. It is still a peer of the provider cards in the list, though, so
- * it carries the same drag handle and can be moved down among them. That is the
- * whole of what this file adds: the card shell and the drag registration. The
- * section itself is `shared/officialAccounts`, the same one Codex renders inside
- * its official provider card.
+ * sit inside.
+ *
+ * It is still a peer of the provider cards in the list, and it looks like one:
+ * the frame is the shared `CardShell` (drag registration, handle, chrome), the
+ * block inside it is `shared/officialAccounts`, and this file only maps ZCode's
+ * own account records onto `OfficialAccountRowView`. Both halves used to be
+ * written by hand here, and both drifted — the handle lost its hover feedback and
+ * the content lost its left edge, because the handle sat *inside* the heading
+ * line instead of in its own column.
  */
 const ZcodeOfficialAccountCard: React.FC<ZcodeOfficialAccountCardProps> = ({
   accounts,
@@ -58,12 +61,15 @@ const ZcodeOfficialAccountCard: React.FC<ZcodeOfficialAccountCardProps> = ({
 }) => {
   const { t } = useTranslation();
 
-  // `useSortable` must run on every render, so a card rendered without an id
-  // registers under a placeholder and is disabled instead.
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: sortableId ?? 'zcode-official-account',
-    disabled: !sortableId || dragDisabled,
-  });
+  /**
+   * The account list collapses, like Codex's and Kimi's.
+   *
+   * It starts **open** here: this card's accounts have always been on screen,
+   * and the heading above them is what a reader lands on — Codex starts closed
+   * only because its card already carries a model section. The ability, not the
+   * starting state, is what the three cards share.
+   */
+  const [accountsCollapsed, setAccountsCollapsed] = React.useState(false);
 
   const labelForProvider = (providerId: string) =>
     loginProviders.find((provider) => provider.value === providerId)?.label ?? providerId;
@@ -121,63 +127,38 @@ const ZcodeOfficialAccountCard: React.FC<ZcodeOfficialAccountCardProps> = ({
   );
 
   return (
-    <div
-      ref={sortableId ? setNodeRef : undefined}
-      style={
-        sortableId
-          ? {
-              transform: CSS.Transform.toString(transform),
-              transition,
-              opacity: isDragging ? 0.5 : 1,
-            }
-          : undefined
-      }
+    <CardShell
+      sortableId={sortableId}
+      draggable={Boolean(sortableId) && !dragDisabled}
     >
-      {/* Bottom margin on the Card, like every sibling CLI card. Each card
-          spaces itself, so the gap survives being reordered among the
-          provider cards. */}
-      <Card size="small" style={{ marginBottom: 12 }} styles={{ body: { padding: 12 } }}>
-        <OfficialAccountsSection
-          variant="standalone"
-          title={t('zcode.officialAccount.title')}
-          hint={t('zcode.officialAccount.hint')}
-          applyHint={t('zcode.officialAccount.applyHint')}
-          emptyText={t('zcode.officialAccount.empty')}
-          accounts={accountRows}
-          leadingAction={
-            sortableId && (
-              <span
-                {...attributes}
-                {...listeners}
-                style={{
-                  cursor: dragDisabled ? 'default' : isDragging ? 'grabbing' : 'grab',
-                  color: '#999',
-                  touchAction: 'none',
-                }}
-              >
-                <HolderOutlined />
-              </span>
-            )
+      <OfficialAccountsSection
+        variant="standalone"
+        headingTitle={t('common.officialAccount.headingTitle')}
+        listTitle={t('common.officialAccount.listTitle')}
+        hint={t('zcode.officialAccount.hint')}
+        collapsed={accountsCollapsed}
+        onToggleCollapsed={() => setAccountsCollapsed((current) => !current)}
+        applyHint={t('zcode.officialAccount.applyHint')}
+        emptyText={t('zcode.officialAccount.empty')}
+        accounts={accountRows}
+        loginAction={loginAction}
+        actionsDisabled={loginPending}
+        pending={pending}
+        onSaveLocal={() => onSaveCurrent()}
+        onApply={(row) => {
+          const account = accountById(row.id);
+          if (account) {
+            onApply(account);
           }
-          loginAction={loginAction}
-          actionsDisabled={loginPending}
-          pending={pending}
-          onSaveLocal={() => onSaveCurrent()}
-          onApply={(row) => {
-            const account = accountById(row.id);
-            if (account) {
-              onApply(account);
-            }
-          }}
-          onDelete={(row) => {
-            const account = accountById(row.id);
-            if (account) {
-              onDelete(account);
-            }
-          }}
-        />
-      </Card>
-    </div>
+        }}
+        onDelete={(row) => {
+          const account = accountById(row.id);
+          if (account) {
+            onDelete(account);
+          }
+        }}
+      />
+    </CardShell>
   );
 };
 

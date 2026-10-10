@@ -210,6 +210,16 @@ export interface ProviderCardVariantProps {
   providerState?: ProviderCardState;
   actions?: ProviderCardActions;
   modelSection?: ProviderCardModels;
+  /**
+   * Rendered immediately **before** the provider name.
+   *
+   * `nameTags` covers everything after the name, but nothing could reach in
+   * front of it, because the name itself comes from `provider.name` and cannot
+   * carry markup. The official-account card needs that spot: its name row is
+   * the heading of an account block, and such a heading reads
+   * `🔗 <name> (n)` — glyph before, count after.
+   */
+  namePrefix?: React.ReactNode;
   /** Tags rendered beside the provider name (applied / disabled / official…). */
   nameTags?: React.ReactNode;
   /**

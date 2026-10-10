@@ -45,6 +45,7 @@ const CodexStyleCard: React.FC<ProviderCardVariantProps> = ({
   providerState,
   actions,
   modelSection,
+  namePrefix,
   nameTags,
   footer,
   metaEntries,
@@ -138,6 +139,7 @@ const CodexStyleCard: React.FC<ProviderCardVariantProps> = ({
         <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <ProviderConnectivityStatus item={connectivityStatus} />
+            {namePrefix}
             <ProviderNameLink
               name={provider.name}
               baseUrl={provider.baseUrl}

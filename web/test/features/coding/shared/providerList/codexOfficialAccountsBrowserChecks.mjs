@@ -112,6 +112,59 @@ export async function verifyCodexOfficialAccountAlignment({ send, evaluate, base
     geometry.contentRight,
   );
 
+  const heading = await evaluate(`(() => {
+    const card = document.querySelector('${officialCard} .ant-card');
+    if (!card) return null;
+    const text = card.textContent ?? '';
+    /** The deepest element whose whole text is exactly \`value\`. */
+    const leafWithText = value => [...card.querySelectorAll('*')]
+      .filter(node => node.children.length === 0 && node.textContent.trim() === value)
+      .at(-1) ?? null;
+    const box = node => {
+      const rect = node.getBoundingClientRect();
+      return {
+        left: Math.round(rect.left),
+        right: Math.round(rect.right),
+        top: Math.round(rect.top),
+        bottom: Math.round(rect.bottom),
+      };
+    };
+    const login = [...card.querySelectorAll('button')]
+      .find(button => button.textContent.includes('登录')) ?? null;
+    const listTitle = leafWithText('账号列表');
+    const headingLabel = leafWithText('官方账号');
+    return {
+      hasGlyph: Boolean(card.querySelector('.anticon-link')),
+      hasHeadingLabel: Boolean(headingLabel),
+      // The second line is the account block's explanation, which is the only
+      // place the card's target file is named.
+      hasExplanation: text.includes('auth.json'),
+      login: login ? box(login) : null,
+      listTitle: listTitle ? box(listTitle) : null,
+      heading: headingLabel ? box(headingLabel) : null,
+    };
+  })()`);
+
+  assert.ok(heading, 'the official-account card must render');
+  check(
+    'the card heading is the shared account heading, with its link glyph',
+    heading.hasGlyph && heading.hasHeadingLabel,
+  );
+  check(
+    'the card\'s second line explains switching, not the endpoint it no longer has',
+    heading.hasExplanation,
+  );
+  // The sign-in entry adds a row to the list, so it belongs on the list's own
+  // title line. Placement is geometry: the button renders either way.
+  const centreOf = box => (box.top + box.bottom) / 2;
+  check(
+    'the sign-in entry sits on the list\'s title line, at its right',
+    Boolean(heading.login && heading.listTitle && heading.heading)
+      && heading.login.top > heading.heading.bottom
+      && heading.login.left >= heading.listTitle.right
+      && Math.abs(centreOf(heading.login) - centreOf(heading.listTitle)) <= 8,
+  );
+
   const { data } = await send('Page.captureScreenshot', { format: 'png' });
   await writeFile(path.join(artifactRoot, 'account-alignment.png'), Buffer.from(data, 'base64'));
 
