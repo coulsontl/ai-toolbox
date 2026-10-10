@@ -348,11 +348,10 @@ fn split_provider_model(role: &str) -> (Option<String>, Option<String>) {
             let provider = role[..index].to_string();
             let mut model = role[index + 1..].to_string();
             if let Some(level_sep) = model.rfind(':') {
-                // `modelRoles` role values may carry a `:level` thinking
-                // suffix (e.g. `anthropic/claude-sonnet-4:high`). Strip it so
-                // the resolved model id is the bare model name; the level is
-                // handled separately by `defaultThinkingLevel`.
-                if !model[level_sep + 1..].is_empty() {
+                // Only known thinking suffixes are role syntax. A colon can
+                // otherwise be part of a manually entered model ID.
+                let suffix = &model[level_sep + 1..];
+                if OMP_THINKING_LEVEL_KEYS.contains(&suffix) {
                     model.truncate(level_sep);
                 }
             }
@@ -1243,7 +1242,7 @@ mod tests {
             }),
         )
         .unwrap();
-        for (provider, model) in [("openai-codex", "native-model"), ("example", "old")] {
+        for (provider, model) in [("openai-codex", "native-model:exact"), ("example", "old")] {
             update_default_selection_at_path(
                 &config_path,
                 Some(provider),
@@ -1254,6 +1253,10 @@ mod tests {
             .unwrap();
             let settings = read_yaml_object_or_empty(&config_path).unwrap();
             assert_eq!(settings["modelRoles"]["default"], format!("{provider}/{model}"));
+            assert_eq!(
+                default_selection_from_settings(&settings).model_id.as_deref(),
+                Some(model)
+            );
             assert_eq!(settings["modelRoles"]["task"], "example/task");
             assert_eq!(settings["unknown"]["keep"], true);
             assert_eq!(settings["defaultThinkingLevel"], "high");

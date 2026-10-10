@@ -28,7 +28,7 @@ fn command_for(root: &str, program: &str, powershell: bool, action: &str) -> Str
     }
     if powershell {
         format!(
-            "$env:PI_CODING_AGENT_DIR={}; & {} --profile default {action}",
+            "& {{ $previous = $env:PI_CODING_AGENT_DIR; try {{ $env:PI_CODING_AGENT_DIR={}; & {} --profile default {action} }} finally {{ $env:PI_CODING_AGENT_DIR=$previous }} }}",
             quote_powershell(root),
             quote_powershell(program)
         )
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn guidance_quotes_roots_and_selects_profile_before_subcommand() {
         assert_eq!(command_for("/tmp/a'b $x", "/bin/omp", false, "login openai-codex"), "PI_CODING_AGENT_DIR='/tmp/a'\\''b $x' '/bin/omp' --profile default login openai-codex");
-        assert_eq!(command_for("C:\\a'b", "C:\\Program Files\\omp.cmd", true, "login openai-codex"), "$env:PI_CODING_AGENT_DIR='C:\\a''b'; & 'C:\\Program Files\\omp.cmd' --profile default login openai-codex");
+        assert_eq!(command_for("C:\\a'b", "C:\\Program Files\\omp.cmd", true, "login openai-codex"), "& { $previous = $env:PI_CODING_AGENT_DIR; try { $env:PI_CODING_AGENT_DIR='C:\\a''b'; & 'C:\\Program Files\\omp.cmd' --profile default login openai-codex } finally { $env:PI_CODING_AGENT_DIR=$previous } }");
         assert!(command_for("/tmp/a\nb", "omp", false, "login openai-codex").is_empty());
     }
 
