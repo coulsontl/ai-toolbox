@@ -2088,15 +2088,13 @@ const OhMyPiPage: React.FC = () => {
                     <Form.Item
                       label={t('ohMyPi.modelSettings.defaultModel')}
                       name="defaultModel"
-                      extra={selectedProviderKey === OMP_CODEX_PROVIDER_KEY
-                        ? t('ohMyPi.codexSubscription.modelHint')
-                        : undefined}
                     >
                       {selectedProviderKey === OMP_CODEX_PROVIDER_KEY ? (
                         <OmpCodexModelInput
                           options={modelOptions}
                           placeholder={t('ohMyPi.codexSubscription.modelPlaceholder')}
                           disabled={saving}
+                          aria-describedby="omp-codex-model-hint"
                         />
                       ) : (
                         <Select
@@ -2118,6 +2116,11 @@ const OhMyPiPage: React.FC = () => {
                     ) : null}
                   </div>
                 </Form>
+                {selectedProviderKey === OMP_CODEX_PROVIDER_KEY && (
+                  <p id="omp-codex-model-hint" className={styles.modelSettingsHint}>
+                    {t('ohMyPi.codexSubscription.modelHint')}
+                  </p>
+                )}
                 {runtimeConfig && (
                   <OmpCodexSubscriptionSection
                     subscription={runtimeConfig.codexSubscription}
