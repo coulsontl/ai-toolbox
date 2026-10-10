@@ -567,3 +567,274 @@ async fn connection_error_is_recorded_for_each_affected_turn() {
         assert!(detail.response_body.unwrap().contains("Session expired"));
     }
 }
+
+/// A relay that pins a Responses WebSocket to its first model rejects a later
+/// model switch with a 400. Codex reuses one socket for a whole session and
+/// reads that 400 as terminal, so the switch never lands — the dead turn behind
+/// issue #420. The relay must deliver a code Codex retries and close the socket,
+/// so its own reconnect dials a connection the relay has not locked.
+#[tokio::test]
+async fn upstream_model_lock_error_is_rewritten_and_closes_the_connection() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (directory, context, provider_id) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    // Single mode is where the CLI carries the real model, so a switch reaches
+    // the relay as reported in issue #420. Failover mode maps the request onto
+    // the provider's default model, so the relay need never see a switch at all.
+    let manifest_path =
+        ProxyGatewayPaths::new(directory.path()).manifest_path(GatewayCliKey::Codex);
+    std::fs::create_dir_all(manifest_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec(
+            &crate::coding::proxy_gateway::cli_proxy::manifest::CliProxyManifest::new(
+                GatewayCliKey::Codex,
+                "http://127.0.0.1:37123".to_string(),
+                "2026-10-10T00:00:00Z".to_string(),
+                GatewayProxyMode::Single,
+                provider_id,
+            ),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    crate::coding::proxy_gateway::runtime::providers::clear_gateway_provider_selection_cache();
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        // The first turn selects the channel and pins the connection.
+        let first = receive_json(&mut socket).await;
+        assert_eq!(first["model"], "test-model");
+        send_json(
+            &mut socket,
+            json!({"type":"response.created","response":{"id":"resp-1"}}),
+        )
+        .await;
+        send_json(
+            &mut socket,
+            json!({"type":"response.completed","response":{"id":"resp-1","usage":{"input_tokens":1,"output_tokens":1}}}),
+        )
+        .await;
+        // The switch is refused, exactly as the relay's lock does.
+        let second = receive_json(&mut socket).await;
+        assert_eq!(second["model"], "other-model");
+        send_json(
+            &mut socket,
+            json!({
+                "type": "error",
+                "status": 400,
+                "error": {
+                    "type": "new_api_error",
+                    "code": "invalid_request",
+                    "message": "responses websocket connection is locked to model \"test-model\", but the request is for \"other-model\"",
+                },
+            }),
+        )
+        .await;
+        // The gateway must close its side after delivering the rewrite.
+        let _ = socket.next().await;
+    });
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+
+    send_json(
+        &mut client,
+        json!({"type":"response.create","model":"test-model","input":"hello"}),
+    )
+    .await;
+    assert_eq!(receive_json(&mut client).await["type"], "response.created");
+    assert_eq!(
+        receive_json(&mut client).await["type"],
+        "response.completed"
+    );
+
+    send_json(
+        &mut client,
+        json!({"type":"response.create","model":"other-model","input":"hello"}),
+    )
+    .await;
+    let error = receive_json(&mut client).await;
+    assert_eq!(error["type"], "error");
+    assert_eq!(
+        error["error"]["code"], "websocket_connection_limit_reached",
+        "the lock must arrive as a code Codex retries and reconnects on: {error}"
+    );
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("locked to model")),
+        "the upstream message — it names the locked model — must survive: {error}"
+    );
+    assert!(
+        matches!(
+            timeout(Duration::from_secs(5), client.next())
+                .await
+                .unwrap(),
+            Some(Ok(Message::Close(_)))
+        ),
+        "the socket must close so the retry is not refused by the same lock"
+    );
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    // The switched turn is still billed, under its own category.
+    let detail = recorded_details(&context)
+        .into_iter()
+        .find(|detail| detail.summary.requested_model.as_deref() == Some("other-model"))
+        .expect("the switched turn must be recorded");
+    assert_eq!(
+        detail.summary.stream_outcome,
+        Some(GatewayStreamOutcome::Failed)
+    );
+    assert_eq!(
+        detail.summary.error_category.as_deref(),
+        Some("websocket_model_locked")
+    );
+    assert!(!detail.summary.success);
+}
+
+/// The lock is a property of the connection, not of the model. Scoring it would
+/// cool the model down for something no request against it could fix, so the
+/// turn must leave the health registry untouched.
+#[tokio::test]
+async fn a_locked_model_turn_does_not_penalize_model_health() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, provider_id) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        receive_json(&mut socket).await;
+        send_json(
+            &mut socket,
+            json!({
+                "type": "error",
+                "status": 400,
+                "error": {
+                    "type": "new_api_error",
+                    "code": "invalid_request",
+                    "message": "responses websocket connection is locked to model \"test-model\"",
+                },
+            }),
+        )
+        .await;
+        let _ = socket.next().await;
+    });
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    send_json(
+        &mut client,
+        json!({"type":"response.create","model":"test-model","input":"hello"}),
+    )
+    .await;
+    assert_eq!(
+        receive_json(&mut client).await["error"]["code"],
+        "websocket_connection_limit_reached"
+    );
+    assert!(matches!(
+        timeout(Duration::from_secs(5), client.next())
+            .await
+            .unwrap(),
+        Some(Ok(Message::Close(_)))
+    ));
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    // The turn ran and was recorded ...
+    let detail = recorded_details(&context).pop().unwrap();
+    assert_eq!(
+        detail.summary.error_category.as_deref(),
+        Some("websocket_model_locked")
+    );
+
+    // ... and the model carries no blame for it.
+    let registry = context.health_registry.as_ref().unwrap().lock().unwrap();
+    let key = ProviderModelHealthKey {
+        cli_key: GatewayCliKey::Codex,
+        provider_id,
+        upstream_model_id: "test-model".to_string(),
+    };
+    assert!(
+        registry.model_entry(&key).is_none(),
+        "a connection-level lock must not create a model-health entry"
+    );
+}
+
+/// The rewrite keys off the relay's message text, because every rejection shares
+/// the generic `invalid_request` code. A different 400 must travel byte-identical
+/// and keep the socket open — and must still count against the model, so the
+/// exemption above stays a deliberate exception rather than a blanket one.
+#[tokio::test]
+async fn an_unrelated_400_error_is_forwarded_unchanged() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, provider_id) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    let unrelated = json!({
+        "type": "error",
+        "status": 400,
+        "error": {
+            "type": "invalid_request_error",
+            "code": "invalid_request",
+            "message": "Unsupported parameter: foo",
+        },
+    });
+    let upstream_events = unrelated.clone();
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        // Two turns: the second request reaching this stub at all is what proves
+        // the rejection did not close the socket.
+        for _ in 0..2 {
+            receive_json(&mut socket).await;
+            send_json(&mut socket, upstream_events.clone()).await;
+        }
+        let _ = socket.next().await;
+    });
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    for _ in 0..2 {
+        send_json(
+            &mut client,
+            json!({"type":"response.create","model":"test-model","input":"hello"}),
+        )
+        .await;
+        assert_eq!(
+            receive_json(&mut client).await,
+            unrelated,
+            "a non-lock 400 must reach the client untouched"
+        );
+    }
+    let _ = client.close(None).await;
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    let detail = recorded_details(&context)
+        .into_iter()
+        .find(|detail| detail.summary.error_category.as_deref() == Some("upstream_error"))
+        .expect("the rejected turn must be recorded as a plain upstream error");
+    assert_eq!(
+        detail.summary.stream_outcome,
+        Some(GatewayStreamOutcome::Failed)
+    );
+    // It still counts against the model — that is what makes the exemption above
+    // a deliberate exception rather than a path that never scores anything.
+    let registry = context.health_registry.as_ref().unwrap().lock().unwrap();
+    let key = ProviderModelHealthKey {
+        cli_key: GatewayCliKey::Codex,
+        provider_id,
+        upstream_model_id: "test-model".to_string(),
+    };
+    let entry = registry
+        .model_entry(&key)
+        .expect("an ordinary 400 must still score against the model");
+    assert_eq!(
+        entry.last_error_category.as_deref(),
+        Some("upstream_bad_request")
+    );
+}

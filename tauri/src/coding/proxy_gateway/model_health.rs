@@ -19,6 +19,10 @@ pub enum GatewayFailureKind {
     RequestSchema,
     ClientCancelled,
     GatewayParse,
+    /// The relay refused this turn because the connection is pinned to another
+    /// model. The refusal is about the connection, not the model, so it must
+    /// not move health — but it is not the client's cancel either.
+    UpstreamModelLocked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +95,11 @@ pub fn classify_failure(kind: GatewayFailureKind) -> FailureWeight {
             scope: FailureScope::None,
             score: 0,
             category: "gateway_parse",
+        },
+        GatewayFailureKind::UpstreamModelLocked => FailureWeight {
+            scope: FailureScope::None,
+            score: 0,
+            category: "websocket_model_locked",
         },
     }
 }

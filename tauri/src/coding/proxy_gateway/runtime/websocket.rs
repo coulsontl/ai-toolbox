@@ -1060,6 +1060,35 @@ fn terminal_outcome(kind: SseTerminalKind) -> GatewayStreamOutcome {
     }
 }
 
+/// The retryable code Codex maps to a retry and reconnects on. Reusing the code
+/// its own connection-limit recovery uses keeps a model switch to a reconnect
+/// instead of a collapsed turn.
+const MODEL_LOCK_RETRY_CODE: &str = "websocket_connection_limit_reached";
+
+/// The message a New API-family relay writes for a Responses WebSocket that is
+/// locked to another model. It is the only marker: the `code` is the generic
+/// `invalid_request` shared with several unrelated rejections, and a real
+/// connection-limit error says something else.
+const MODEL_LOCK_MESSAGE: &str = "responses websocket connection is locked to model";
+
+fn is_upstream_model_lock_error(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("error")
+        && value
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains(MODEL_LOCK_MESSAGE))
+}
+
+/// Rewrite the lock rejection so Codex classifies it as retryable, keeping the
+/// upstream message (it names the model the connection is stuck on).
+fn rewrite_upstream_model_lock_error(text: &str, value: &Value) -> Vec<u8> {
+    let mut rewritten = value.clone();
+    if let Some(error) = rewritten.get_mut("error").and_then(Value::as_object_mut) {
+        error.insert("code".into(), Value::String(MODEL_LOCK_RETRY_CODE.into()));
+    }
+    serde_json::to_vec(&rewritten).unwrap_or_else(|_| text.as_bytes().to_vec())
+}
+
 async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Unpin>(
     mut downstream: WebSocketStream<S>,
     mut upstream_socket: WebSocketStream<U>,
@@ -1408,6 +1437,14 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                         last_data = Instant::now();
                         let value = serde_json::from_str::<Value>(&text).ok();
                         let lane = value.as_ref().and_then(|value| pending.event_lane(value));
+                        // The relay pins a Responses WebSocket to the model of its
+                        // first successful turn and rejects a later model switch
+                        // with a 400. Codex reuses one socket for a whole session,
+                        // so the rejection must become a retry plus a fresh
+                        // connection rather than a dead turn; see the rewrite below.
+                        let model_locked = value
+                            .as_ref()
+                            .is_some_and(is_upstream_model_lock_error);
                         // Late duplicate terminals must not consume or leak into another protected turn.
                         if value.as_ref().and_then(|value| value.pointer("/response/id").or_else(|| value.get("response_id"))).and_then(Value::as_str)
                             .is_some_and(|id| pending.completed.iter().any(|completed| completed == id)
@@ -1423,7 +1460,12 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                             });
                         let mut terminal = classify_sse_event_fields(None, &text);
                         let settings = context.settings_snapshot();
-                        let mut outgoing = text.as_bytes().to_vec();
+                        let mut outgoing = match &value {
+                            Some(value) if model_locked => {
+                                rewrite_upstream_model_lock_error(&text, value)
+                            }
+                            _ => text.as_bytes().to_vec(),
+                        };
                         let mut restored_messages = None;
                         if let Some(turn) = lane
                             .as_ref()
@@ -1441,6 +1483,15 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                             if terminal == Some(SseTerminalKind::Failed) {
                                 if let Some(value) = &value {
                                     turn.record_upstream_error(value);
+                                    if model_locked {
+                                        // The refusal is about the connection, not
+                                        // the model: keep it off the health score and
+                                        // name it for what it is in the log.
+                                        turn.failure_kind =
+                                            Some(GatewayFailureKind::UpstreamModelLocked);
+                                        turn.response.error_category =
+                                            Some("websocket_model_locked".to_string());
+                                    }
                                 }
                             }
                             if let Some(restorer) = &mut turn.privacy_restorer {
@@ -1568,6 +1619,16 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                                 GatewayStreamOutcome::Canceled,
                                 "client_disconnected",
                                 "Could not deliver WebSocket response to client",
+                            );
+                        }
+                        if model_locked {
+                            // Codex reuses one socket for a whole session, so the
+                            // retry it just queued would land on the same locked
+                            // connection. Close it and let the retry dial again.
+                            break (
+                                GatewayStreamOutcome::Failed,
+                                "websocket_model_locked",
+                                "Upstream WebSocket is locked to another model; reconnecting",
                             );
                         }
                         if privacy_unscoped {
