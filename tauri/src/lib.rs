@@ -2691,6 +2691,7 @@ pub fn run() {
             coding::oh_my_pi::get_omp_settings_config,
             coding::oh_my_pi::save_omp_settings_config,
             coding::oh_my_pi::read_omp_runtime_config,
+            coding::oh_my_pi::refresh_omp_codex_catalog,
             coding::oh_my_pi::save_omp_model_settings,
             coding::oh_my_pi::save_omp_other_settings,
             coding::oh_my_pi::save_omp_models_provider,

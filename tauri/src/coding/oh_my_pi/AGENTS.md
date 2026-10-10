@@ -11,6 +11,8 @@
 - OMP MCP server 主数据仍属于全局 MCP 模块,派生文件是当前运行时根目录的 `mcp.json`。
 - 全局提示词预设存 `oh_my_pi_prompt_config` 表,写入运行时根目录的 `AGENTS.md`。
 - 文件式预览由 `read_omp_runtime_config` 返回原始文件内容(`configContent`/`modelsContent`/`mcpContent`/`promptContent`),前端按文件 Tab 展示,与 Codex 一致。
+- **OpenAI Codex 订阅是原生 OAuth,不是 `models.yml` provider**: 凭据在运行时根目录的 `agent.db`(`auth_credentials` 表,`provider='openai-codex'`),账号写入/切换/额度在 `accounts.rs`,模型目录来自 `omp models openai-codex --json`。`build_provider_views` 无条件插入 `openai-codex` 这个 key,使它在没有 YAML provider 时也可见。
+- Codex 模型目录由 `refresh_omp_codex_catalog` 命令(前端订阅卡片的刷新按钮与页面首次加载)跑 CLI 取得,结果缓存在进程内的 `CODEX_CATALOG_CACHE`(按运行时根路径分键,失败结果也缓存)。`read_omp_runtime_config` **只读缓存,不跑 CLI** —— 详见下方 Gotchas 的 `omp models` 副作用。
 - **subagent / roles 集中配置(OMP 侧「Subagents 集中配置」)**: 多套方案存 `oh_my_pi_agents_config` 表，分为**核心模型角色(modelRoles)**与**自定义 subagents(agents)**两层。
   1. 核心模型角色(`model_roles`): 对应 OMP 原生内置角色(`default`, `plan`, `task`, `advisor`, `commit`, `tiny`, `smol`, `slow`, `vision`)。apply 时写入运行时 `config.yml` 的 `modelRoles` 映射(`provider/modelId:thinkingLevel`)，`default` 的思考等级同步更新 `defaultThinkingLevel`。**只接管这 9 个核心角色**:`config.yml` 里方案之外的自定义 role(上游 `getKnownRoleIds` 允许任意 role 名)原样保留,方案里没写的核心角色视为用户清空。
   2. 自定义 subagents(`agents`): 对应扩展的委托代理，apply 时渲染为 `<agentDir>/agents/*.md`。方案外的自定义文件由 apply / clear applied 清理(目录 = 当前方案)。
@@ -46,6 +48,9 @@
 - apply/已应用方案 update 必须先对整份 `agents` 做无副作用 render/validate,再写 `config.yml` 或 `agents/` 目录;否则非法 agent 会先改 `modelRoles` 再失败,而 update 又会把 re-apply 错误吞掉。
 - 备份恢复的 re-apply 编排除了全局提示词,还要按 `get_applied_omp_agents_config_id` 重新渲染 subagent 方案(用 `apply_omp_agents_config_internal_without_events`,不得在恢复期间 emit 事件)。
 - 文件级 agent 编辑命令(`list_omp_agents` / `save_omp_agent` / `delete_omp_agent` 与前端同名 API 封装)是**给后续"agents/*.md 文件编辑器"铺的地基,当前没有 UI 入口**;不要当成死代码删掉,也不要误以为前端已经在用。
+- **`omp models` 不是只读命令,绝不能放进 `read_omp_runtime_config`**。实测(OMP 18.8.7):它会初始化/迁移 `agent.db`、改写 `models.db`(102400→126976 字节),冷缓存时还会联网拉目录。而 `read_omp_runtime_config` 被每个 save 命令、托盘菜单和 deeplink 导入调用,所以放在那里等于每次改模型都付一次子进程 + 数据库写入,托盘还可能阻塞在网络上。目录因此改为按需刷新 + 进程内缓存,详见 Source of Truth。
+- **`omp` 命令行必须带 `--profile default`**。上游 `ict()`/`v$()` 的解析顺序是 profile 环境变量优先于 `PI_CODING_AGENT_DIR`,而 `default` 是唯一表示「无 profile」的取值(上游返回 `undefined` 并清掉 `OMP_PROFILE`/`PI_PROFILE`)。实测 `OMP_PROFILE=hijack` 时 `PI_CODING_AGENT_DIR` 被完全忽略,数据库写进 `~/.omp/profiles/hijack/agent/`,而我们指定的目录保持为空——用户会看到「登录成功但状态仍是未登录」。`omp_login_command` 的本地与 WSL 两条分支都要带。
+- **WSL/UNC 根目录下不得打开 `agent.db`**。`\\wsl.localhost\` 路径会经 Windows 网络重定向器访问活的 Linux WAL 数据库,它不实现 POSIX 所需的锁语义,只读打开也足以损坏或阻塞。`accounts.rs` 的 `checked_root` 已拒绝这类根,`commands.rs` 的 `read_codex_oauth_status` 同样必须在任何文件系统调用之前拒绝(WSL Direct 模式与 WSL UNC 路径都返回 `Unavailable`,不是 `Missing`)。
 
 ## 最小验证
 
@@ -58,3 +63,6 @@
 - `apiKey` 写成环境变量名时「获取模型」/「连通性测试」用变量值;写成 `$ENV_VAR`(非 `!` 开头)时按字面量发送(OMP 不插值);写成 `!cmd` 时执行并 trim;命令失败/空输出时不带该凭证,且不应报解析错误。
 - 保存默认模型后 `config.yml` 的 `modelRoles.default` 为 `provider/modelId`。
 - 安装 `omp` 后运行 `omp plugin list --json` 可列出插件。
+- 打开 OMP 页面后,连续保存若干次配置(改模型、改 provider)期间 `models.db` 与 `agent.db` 的修改时间不再变化——`read_omp_runtime_config` 不再触发 CLI;只有点订阅卡片的刷新按钮才重新跑 `omp models`。
+- 在导出了 `OMP_PROFILE=<任意名>` 的 shell 里,把页面给出的登录命令粘贴执行,凭据落在页面显示的那个运行目录里(而不是 `~/.omp/profiles/<名>/agent/`)。
+- 运行目录选在 WSL 下时,Codex 卡片显示凭据状态「不可用」而不是「未登录」,且不产生任何对 `agent.db` 的访问。

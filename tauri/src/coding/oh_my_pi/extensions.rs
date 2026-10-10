@@ -188,6 +188,14 @@ fn powershell_quote(value: &str) -> String {
 }
 
 /// Copyable terminal guidance; uses the same root and WSL PATH as the runner.
+///
+/// `--profile default` is not decoration. OMP resolves its agent directory from
+/// `OMP_PROFILE`/`PI_PROFILE` *before* `PI_CODING_AGENT_DIR`, and the literal
+/// profile name `default` is the one value that means "no profile" (upstream
+/// `v$()` returns `undefined` for it). Without the flag, a user whose shell
+/// exports `OMP_PROFILE` gets a login written to that profile's agent dir while
+/// the UI reports the state of the directory we selected — the two disagree and
+/// the account looks missing right after a successful login.
 pub(super) fn omp_login_command(location: &RuntimeLocationInfo) -> Option<String> {
     match location.mode {
         RuntimeLocationMode::LocalWindows => {
@@ -196,13 +204,13 @@ pub(super) fn omp_login_command(location: &RuntimeLocationInfo) -> Option<String
             let program = program.path.to_string_lossy();
             if cfg!(target_os = "windows") {
                 Some(format!(
-                    "$env:PI_CODING_AGENT_DIR={}; & {} login openai-codex",
+                    "$env:PI_CODING_AGENT_DIR={}; & {} --profile default login openai-codex",
                     powershell_quote(&root),
                     powershell_quote(&program)
                 ))
             } else {
                 Some(format!(
-                    "PI_CODING_AGENT_DIR={} {} login openai-codex",
+                    "PI_CODING_AGENT_DIR={} {} --profile default login openai-codex",
                     posix_quote(&root),
                     posix_quote(&program)
                 ))
@@ -223,6 +231,8 @@ pub(super) fn omp_login_command(location: &RuntimeLocationInfo) -> Option<String
                 wsl.linux_path.clone(),
                 "env".to_string(),
                 "omp".to_string(),
+                "--profile".to_string(),
+                "default".to_string(),
                 "login".to_string(),
                 "openai-codex".to_string(),
             ];
@@ -999,7 +1009,10 @@ mod tests {
         assert!(command.contains("'/home/tester/custom root'"));
         assert!(command.contains("export PI_CODING_AGENT_DIR="));
         assert!(command.contains("/home/tester/.bun/bin"));
-        assert!(command.ends_with("'env' 'omp' 'login' 'openai-codex'"));
+        // `--profile default` pins the agent dir: without it an exported
+        // OMP_PROFILE/PI_PROFILE outranks PI_CODING_AGENT_DIR and the login
+        // lands in a different directory than the one the UI reads.
+        assert!(command.ends_with("'env' 'omp' '--profile' 'default' 'login' 'openai-codex'"));
         assert!(!command.contains("wsl.localhost"));
         let quote = if cfg!(target_os = "windows") {
             powershell_quote
@@ -1007,5 +1020,16 @@ mod tests {
             posix_quote
         };
         assert!(command.contains(&quote("Ubuntu user's")));
+
+        // The local branch is a different code path and needs the same pin.
+        let local = RuntimeLocationInfo {
+            mode: RuntimeLocationMode::LocalWindows,
+            source: "db".to_string(),
+            host_path: PathBuf::from(r"C:\Users\tester\.omp\agent"),
+            wsl: None,
+        };
+        let local_command = omp_login_command(&local).unwrap();
+        assert!(local_command.contains("--profile default login openai-codex"));
+        assert!(local_command.contains("PI_CODING_AGENT_DIR="));
     }
 }

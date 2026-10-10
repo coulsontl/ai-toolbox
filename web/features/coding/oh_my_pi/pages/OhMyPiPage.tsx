@@ -132,6 +132,7 @@ import {
   deleteOmpRuntimeProvider,
   getOmpSettingsConfig,
   readOmpRuntimeConfig,
+  refreshOmpCodexCatalog,
   saveOmpModelSettings,
   saveOmpModelsProvider,
   saveOmpOtherSettings,
@@ -581,12 +582,23 @@ const OhMyPiPage: React.FC = () => {
     },
   ], [t]);
 
-  const loadConfig = React.useCallback(async (silent = false) => {
+  /**
+   * `refreshCatalog` re-runs `omp models` for the Codex subscription.
+   *
+   * It is opt-in because that command is not a read: it initializes `agent.db`,
+   * migrates `models.db`, and fetches from the network on a cold cache. Every
+   * save command returns a fresh config through the same read path, so paying
+   * for the CLI there made each model edit wait on a subprocess and a database
+   * write. Only the initial load and the subscription card's refresh ask for it.
+   */
+  const loadConfig = React.useCallback(async (silent = false, refreshCatalog = false) => {
     if (!silent) {
       setLoading(true);
     }
     try {
-      const config = await readOmpRuntimeConfig();
+      const config = refreshCatalog
+        ? await refreshOmpCodexCatalog()
+        : await readOmpRuntimeConfig();
       setRuntimeConfig(config);
       setOtherSettings(config.otherSettings || {});
       modelForm.setFieldsValue({
@@ -605,7 +617,7 @@ const OhMyPiPage: React.FC = () => {
   }, [modelForm, t]);
 
   React.useEffect(() => {
-    loadConfig();
+    loadConfig(false, true);
   }, [loadConfig]);
 
   React.useEffect(() => {
@@ -1818,7 +1830,10 @@ const OhMyPiPage: React.FC = () => {
         provider={provider}
         defaultModel={runtimeConfig?.modelSettings.modelId}
         onSetPrimaryModel={(modelId) => void handleSetPrimaryModel(provider, modelId)}
-        onRefresh={() => loadConfig(true)}
+        // This card's refresh is the catalog's refresh: it is where a user
+        // lands after a terminal login, when the model list has just become
+        // available. Every other config read takes the cached catalog.
+        onRefresh={() => loadConfig(true, true)}
       />
     ) : null;
     if (isSubscription && !hasProviderConfig) return subscriptionCard;

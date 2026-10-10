@@ -10,7 +10,7 @@ use super::types::*;
 use crate::coding::db_id::db_new_id;
 use crate::coding::open_code::shell_env;
 use crate::coding::prompt_file::{read_prompt_content_file, write_prompt_content_file};
-use crate::coding::runtime_location;
+use crate::coding::runtime_location::{self, RuntimeLocationInfo, RuntimeLocationMode};
 use crate::coding::skills::commands::resync_all_skills_if_tool_path_changed;
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put, db_update_applied_status,
@@ -402,8 +402,57 @@ fn credential_kind(provider: Option<&Value>, is_builtin: bool) -> OmpCredentialK
     }
 }
 
+const CODEX_CATALOG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Process-wide cache of the last Codex catalog a refresh produced.
+///
+/// Keyed by runtime root so switching the OMP root cannot serve another root's
+/// models. `Err` is cached too: a failed refresh must not turn every later
+/// config read back into a CLI subprocess. A root with no entry yet is *not*
+/// fetched here — the page shows an empty catalog with a refresh affordance
+/// until the user asks, which is the point of moving the call out of the read
+/// path.
+static CODEX_CATALOG_CACHE: std::sync::Mutex<Option<(String, Result<Vec<Value>, String>)>> =
+    std::sync::Mutex::new(None);
+
+fn read_cached_codex_catalog(location: &RuntimeLocationInfo) -> Result<Vec<Value>, String> {
+    let root = location.host_path.to_string_lossy().to_string();
+    let cache = CODEX_CATALOG_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match cache.as_ref() {
+        Some((cached_root, result)) if cached_root == &root => result.clone(),
+        _ => Err(
+            "OpenAI Codex models have not been loaded yet. Use refresh to fetch the catalog."
+                .to_string(),
+        ),
+    }
+}
+
+fn store_codex_catalog(location: &RuntimeLocationInfo, catalog: &Result<Vec<Value>, String>) {
+    let root = location.host_path.to_string_lossy().to_string();
+    let mut cache = CODEX_CATALOG_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *cache = Some((root, catalog.clone()));
+}
+
 /// Never read credential payloads or initialize/migrate OMP's database.
-fn read_codex_oauth_status(root: &Path) -> OmpOauthStatus {
+///
+/// WSL/UNC roots are refused before any filesystem call. A `\\wsl.localhost\`
+/// path reaches a live Linux SQLite database through the Windows network
+/// redirector, which does not implement the POSIX locking a WAL database
+/// requires; a read-only open is enough to corrupt or block it. `accounts.rs`
+/// refuses the same roots for account writes — this is the read path and must
+/// not be the hole in that rule.
+fn read_codex_oauth_status(location: &RuntimeLocationInfo) -> OmpOauthStatus {
+    if location.mode == RuntimeLocationMode::WslDirect {
+        return OmpOauthStatus::Unavailable;
+    }
+    let root = &location.host_path;
+    if runtime_location::is_wsl_unc_path(&root.to_string_lossy()) {
+        return OmpOauthStatus::Unavailable;
+    }
     let path = root.join("agent.db");
     match fs::metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -739,14 +788,7 @@ pub async fn read_omp_runtime_config(
 ) -> Result<OmpRuntimeConfig, String> {
     let runtime_location =
         runtime_location::get_oh_my_pi_runtime_location_async(state.db()).await?;
-    let catalog = match tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        super::extensions::run_omp_command(&runtime_location, &["models", "openai-codex", "--json", "--no-extensions"]),
-    ).await {
-        Ok(Ok(raw)) => parse_codex_runtime_models(&raw),
-        Ok(Err(error)) => Err(format!("Unable to load OpenAI Codex models. Check the OMP CLI installation, then refresh. {error}")),
-        Err(_) => Err("OpenAI Codex model catalog timed out after 15s. Check the selected runtime and OMP CLI, then refresh.".to_string()),
-    };
+    let catalog = read_cached_codex_catalog(&runtime_location);
     let (runtime_models, runtime_catalog_error) = match catalog {
         Ok(models) => (models, None),
         Err(error) => (Vec::new(), Some(error)),
@@ -768,7 +810,7 @@ pub async fn read_omp_runtime_config(
             let prompt_path = get_omp_prompt_path_from_root(root_dir);
             let settings = read_yaml_object_or_empty(&config_path)?;
             let models = read_yaml_object_or_empty(&models_path)?;
-            let oauth_status = read_codex_oauth_status(root_dir);
+            let oauth_status = read_codex_oauth_status(&runtime_location);
             let login_command = super::extensions::omp_login_command(&runtime_location);
             Ok(OmpRuntimeConfig {
                 root_path_info,
@@ -797,6 +839,43 @@ pub async fn read_omp_runtime_config(
         },
     )
     .await
+}
+
+/// Refresh the Codex catalog by running the CLI once, then return the new config.
+///
+/// This is deliberately *not* part of `read_omp_runtime_config`. The `omp models`
+/// command is not a read: it initializes `agent.db`, migrates `models.db`, and
+/// fetches the catalog from the network on a cold or expired cache. `read_…` is
+/// called by every save command and by the tray, so running the CLI there meant
+/// every model edit paid a subprocess plus a database write, and the tray menu
+/// could block on a network fetch. The catalog is therefore cached and only this
+/// explicit command (the subscription card's refresh button) re-runs the CLI.
+#[tauri::command]
+pub async fn refresh_omp_codex_catalog(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<OmpRuntimeConfig, String> {
+    let runtime_location =
+        runtime_location::get_oh_my_pi_runtime_location_async(state.db()).await?;
+    let catalog = match tokio::time::timeout(
+        CODEX_CATALOG_TIMEOUT,
+        super::extensions::run_omp_command(
+            &runtime_location,
+            &["--profile", "default", "models", "openai-codex", "--json", "--no-extensions"],
+        ),
+    )
+    .await
+    {
+        Ok(Ok(raw)) => parse_codex_runtime_models(&raw),
+        Ok(Err(error)) => Err(format!(
+            "Unable to load OpenAI Codex models. Check the OMP CLI installation, then refresh. {error}"
+        )),
+        Err(_) => Err(
+            "OpenAI Codex model catalog timed out. Check the selected runtime and OMP CLI, then refresh."
+                .to_string(),
+        ),
+    };
+    store_codex_catalog(&runtime_location, &catalog);
+    read_omp_runtime_config(state).await
 }
 
 /// 更新 config.yml 中 `modelRoles.default` 与 `defaultThinkingLevel`。
@@ -1698,35 +1777,45 @@ mod tests {
             .is_empty());
     }
 
+    fn local_location(root: &Path) -> RuntimeLocationInfo {
+        RuntimeLocationInfo {
+            mode: RuntimeLocationMode::LocalWindows,
+            source: "db".to_string(),
+            host_path: root.to_path_buf(),
+            wsl: None,
+        }
+    }
+
     #[test]
     fn codex_oauth_metadata_does_not_create_or_modify_auth_database() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
+        let location = local_location(root);
         let path = root.join("agent.db");
-        assert_eq!(read_codex_oauth_status(root), OmpOauthStatus::Missing);
+        assert_eq!(read_codex_oauth_status(&location), OmpOauthStatus::Missing);
         assert!(!path.exists());
         let conn = rusqlite::Connection::open(&path).unwrap();
         // No data column: this query must work without ever reading payloads.
         conn.execute_batch("CREATE TABLE auth_credentials(provider TEXT, credential_type TEXT, disabled_cause TEXT);
             INSERT INTO auth_credentials VALUES ('openai-codex', 'api_key', NULL);
             INSERT INTO auth_credentials VALUES ('other', 'oauth', NULL);").unwrap();
-        assert_eq!(read_codex_oauth_status(root), OmpOauthStatus::Missing);
+        assert_eq!(read_codex_oauth_status(&location), OmpOauthStatus::Missing);
         conn.execute(
             "INSERT INTO auth_credentials VALUES ('openai-codex', 'oauth', 'revoked')",
             [],
         )
         .unwrap();
-        assert_eq!(read_codex_oauth_status(root), OmpOauthStatus::Missing);
+        assert_eq!(read_codex_oauth_status(&location), OmpOauthStatus::Missing);
         conn.execute_batch("UPDATE auth_credentials SET disabled_cause = NULL WHERE provider = 'openai-codex' AND credential_type = 'oauth';
             ALTER TABLE auth_credentials ADD COLUMN data TEXT;
             UPDATE auth_credentials SET data = 'secret-refresh-and-access-token';").unwrap();
         drop(conn);
         let bytes = fs::read(&path).unwrap();
-        assert_eq!(read_codex_oauth_status(root), OmpOauthStatus::Stored);
+        assert_eq!(read_codex_oauth_status(&location), OmpOauthStatus::Stored);
         let views = build_provider_views(
             &json!({}),
             &json!({}),
-            read_codex_oauth_status(root),
+            read_codex_oauth_status(&location),
             &[],
             None,
             None,
@@ -1746,12 +1835,55 @@ mod tests {
         .unwrap();
         assert_eq!(fs::read(&path).unwrap(), bytes);
         fs::write(&path, b"not sqlite").unwrap();
-        assert_eq!(read_codex_oauth_status(root), OmpOauthStatus::Unavailable);
+        assert_eq!(
+            read_codex_oauth_status(&location),
+            OmpOauthStatus::Unavailable
+        );
         let incompatible = tempfile::tempdir().unwrap();
         rusqlite::Connection::open(incompatible.path().join("agent.db")).unwrap();
         assert_eq!(
-            read_codex_oauth_status(incompatible.path()),
+            read_codex_oauth_status(&local_location(incompatible.path())),
             OmpOauthStatus::Unavailable
+        );
+    }
+
+    #[test]
+    fn codex_oauth_status_refuses_wsl_and_unc_roots_without_touching_them() {
+        // A `\\wsl.localhost\` path reaches a live Linux WAL database through
+        // the Windows redirector, whose locking is not POSIX. Refuse before the
+        // filesystem call, even though the directory is unreachable here.
+        let mut location = local_location(Path::new(
+            "\\\\wsl.localhost\\Ubuntu\\home\\test\\.omp\\agent",
+        ));
+        assert_eq!(
+            read_codex_oauth_status(&location),
+            OmpOauthStatus::Unavailable
+        );
+        location.mode = RuntimeLocationMode::WslDirect;
+        location.host_path = PathBuf::from("/home/test/.omp/agent");
+        assert_eq!(
+            read_codex_oauth_status(&location),
+            OmpOauthStatus::Unavailable
+        );
+    }
+
+    #[test]
+    fn codex_catalog_cache_is_scoped_to_the_runtime_root() {
+        let first = local_location(Path::new("C:\\first\\.omp\\agent"));
+        let second = local_location(Path::new("C:\\second\\.omp\\agent"));
+        assert!(read_cached_codex_catalog(&first).is_err());
+        store_codex_catalog(&first, &Ok(vec![json!({"id": "codex-test"})]));
+        assert_eq!(
+            read_cached_codex_catalog(&first).unwrap(),
+            vec![json!({"id": "codex-test"})]
+        );
+        // Another root must not inherit the first root's catalog.
+        assert!(read_cached_codex_catalog(&second).is_err());
+        // A cached failure stays a failure instead of re-running the CLI.
+        store_codex_catalog(&second, &Err("catalog unavailable".to_string()));
+        assert_eq!(
+            read_cached_codex_catalog(&second).unwrap_err(),
+            "catalog unavailable"
         );
     }
 }

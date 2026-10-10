@@ -51,7 +51,7 @@ This document provides essential information for AI coding agents working on thi
 | `tauri/src/coding/open_claw/` | OpenClaw 后端配置文件与 WSL 同步约束 |
 | `tauri/src/coding/oh_my_openagent/` | Oh My OpenAgent 后端配置、临时本地态、应用链路与 OpenCode WSL 联动 |
 | `tauri/src/coding/oh_my_opencode_slim/` | Oh My OpenCode Slim 后端配置、临时本地态、应用链路与 OpenCode WSL 联动 |
-| `tauri/src/coding/oh_my_pi/` | Oh My Pi 运行时根目录、models.yml provider、config.yml 设置、subagent 集中配置方案(agents/*.md)与本地 MCP/Skills 路径边界 |
+| `tauri/src/coding/oh_my_pi/` | Oh My Pi 运行时根目录、models.yml provider、config.yml 设置、subagent 集中配置方案(agents/*.md)、Codex 原生订阅(agent.db 账号/切换/额度)与本地 MCP/Skills 路径边界 |
 | `tauri/src/coding/omo_native/` | OmO Native 后端：`[native]` 块 JSONC 原地补丁、引擎 `models.json`/`auth.json` provider、全局提示词（`AGENTS.md`）与托盘方案切换 |
 | `tauri/src/coding/proxy_gateway/` | 本机代理网关、CLI 接管 manifest、配置备份恢复与模型级健康/日志文件 |
 | `tauri/src/coding/proxy_gateway/transformer/` | 网关协议转换独立模块：Anthropic/OpenAI Chat/OpenAI Responses/Gemini Native JSON 与 SSE 互转 |
@@ -67,7 +67,7 @@ This document provides essential information for AI coding agents working on thi
 | `web/features/coding/dsh/` | DSH 前端页面、runtime 配置整份替换语义、凭证共享与删除计划、模型字段白名单 |
 | `web/features/coding/hermes/` | Hermes 前端页面、custom_providers 与模型设置交互（复用 pi 样式） |
 | `web/features/coding/pi/` | Pi 前端页面、provider/models、extensions 与导入映射 |
-| `web/features/coding/oh_my_pi/` | Oh My Pi 前端页面、models.yml provider、subagent 方案与 OMP 语义诊断（复用 pi 样式） |
+| `web/features/coding/oh_my_pi/` | Oh My Pi 前端页面、models.yml provider、Codex 订阅卡片（官方账号共享组件的 embedded 宿主）、subagent 方案与 OMP 语义诊断（复用 pi 样式） |
 | `web/features/coding/omo_native/` | OmO Native 前端页面（供应商 / 全局提示词 / 会话管理三区块）、`models.json` provider 映射与插件版 OMO 的边界 |
 | `web/features/coding/zcode/` | ZCode 前端页面、provider/模型、官方账号与 OAuth 登录、通用配置与导入 |
 | `web/features/coding/shared/providerCardVariants/` | 三种固定供应商卡片样式（Claude/Codex/OpenCode）的单一实现，各 CLI 按 provider 模型形状选用；由 `scripts/verify-provider-card-layout.mjs` 守护 |
