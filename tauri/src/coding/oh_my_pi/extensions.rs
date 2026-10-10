@@ -79,6 +79,19 @@ fn omp_wsl_path_prefix(linux_user_root: Option<&str>) -> String {
     .join(":")
 }
 
+/// Pins every `omp` invocation to the root this app selected.
+///
+/// Same reason as the comment on `omp_login_command`, but this covers the
+/// commands the app runs itself. The pin belongs at this choke point rather
+/// than at each call site: it was added for the login command and the catalog
+/// refresh first, and the plugin path kept the unpinned behavior — measured,
+/// `omp plugin list --json` returns an empty list under an exported profile, so
+/// a user saw "no plugins installed" for plugins that were there.
+const OMP_PROFILE_PIN: [&str; 2] = ["--profile", "default"];
+
+/// The same pin as one shell-token suffix, for the copyable login command.
+const OMP_PROFILE_PIN_SUFFIX: &str = "--profile default";
+
 async fn build_omp_command(
     runtime_location: &RuntimeLocationInfo,
     args: &[&str],
@@ -90,6 +103,7 @@ async fn build_omp_command(
                 .map_err(|error| format!("Failed to resolve OMP CLI: {error}"))?;
             let local_program_label = omp_program.path.display().to_string();
             let mut command = build_local_tokio_command(&omp_program.path);
+            command.args(OMP_PROFILE_PIN);
             command.args(args);
             command.env(OMP_ENV_KEY, &runtime_location.host_path);
             Ok(OmpCommandInvocation {
@@ -118,6 +132,7 @@ async fn build_omp_command(
                 "env",
             ]);
             command.arg("omp");
+            command.args(OMP_PROFILE_PIN);
             command.args(args);
             Ok(OmpCommandInvocation {
                 command,
@@ -204,15 +219,17 @@ pub(super) fn omp_login_command(location: &RuntimeLocationInfo) -> Option<String
             let program = program.path.to_string_lossy();
             if cfg!(target_os = "windows") {
                 Some(format!(
-                    "$env:PI_CODING_AGENT_DIR={}; & {} --profile default login openai-codex",
+                    "$env:PI_CODING_AGENT_DIR={}; & {} {} login openai-codex",
                     powershell_quote(&root),
-                    powershell_quote(&program)
+                    powershell_quote(&program),
+                    OMP_PROFILE_PIN_SUFFIX
                 ))
             } else {
                 Some(format!(
-                    "PI_CODING_AGENT_DIR={} {} --profile default login openai-codex",
+                    "PI_CODING_AGENT_DIR={} {} {} login openai-codex",
                     posix_quote(&root),
-                    posix_quote(&program)
+                    posix_quote(&program),
+                    OMP_PROFILE_PIN_SUFFIX
                 ))
             }
         }
@@ -231,8 +248,8 @@ pub(super) fn omp_login_command(location: &RuntimeLocationInfo) -> Option<String
                 wsl.linux_path.clone(),
                 "env".to_string(),
                 "omp".to_string(),
-                "--profile".to_string(),
-                "default".to_string(),
+                OMP_PROFILE_PIN[0].to_string(),
+                OMP_PROFILE_PIN[1].to_string(),
                 "login".to_string(),
                 "openai-codex".to_string(),
             ];
@@ -843,6 +860,20 @@ pub async fn update_omp_extensions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_omp_invocation_pins_the_profile() {
+        // The runner's pin is injected in `build_omp_command`, the single choke
+        // point for `run_omp_command`. Dropping it silently reroutes every
+        // command to a profile directory, so the constants are asserted here: a
+        // refactor that removes the injection has to delete this test too.
+        assert_eq!(OMP_PROFILE_PIN, ["--profile", "default"]);
+        assert_eq!(
+            OMP_PROFILE_PIN_SUFFIX,
+            OMP_PROFILE_PIN.join(" "),
+            "the copyable command and the runner must pin the same profile"
+        );
+    }
 
     #[test]
     fn parses_plugin_list_json_with_npm_and_marketplace() {

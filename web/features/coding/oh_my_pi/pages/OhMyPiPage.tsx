@@ -1828,6 +1828,11 @@ const OhMyPiPage: React.FC = () => {
 
   const handleRefreshConfig = () => {
     void loadConfig(true);
+    // This is the page's general "re-read everything" button, and it is where
+    // users land after a terminal login. Leaving the model list stale would
+    // make them hunt for the subscription card's own refresh to see the account
+    // they just added.
+    setCatalogRefreshKey((key) => key + 1);
     setExtensionsRefreshKey((currentRefreshKey) => currentRefreshKey + 1);
     void refreshTrayMenu();
   };
@@ -1858,7 +1863,13 @@ const OhMyPiPage: React.FC = () => {
         provider={provider}
         defaultModel={runtimeConfig?.modelSettings.modelId}
         onSetPrimaryModel={(modelId) => void handleSetPrimaryModel(provider, modelId)}
-        onRefresh={() => loadConfig(true, true)}
+        onRefresh={async () => {
+          // The card's refresh is the catalog's refresh: it is where a user
+          // lands after a terminal login, when the model list has just become
+          // available. Bump the key first so the catalog effect re-runs.
+          setCatalogRefreshKey((key) => key + 1);
+          await loadConfig(true);
+        }}
       />
     ) : null;
     if (isSubscription && !hasProviderConfig) return subscriptionCard;

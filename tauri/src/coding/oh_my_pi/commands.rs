@@ -406,19 +406,25 @@ const CODEX_CATALOG_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 
 /// Process-wide cache of the last Codex catalog a refresh produced.
 ///
-/// Keyed by runtime root so switching the OMP root cannot serve another root's
-/// models. `Err` is cached too: a failed refresh must not turn every later
-/// config read back into a CLI subprocess. A root with no entry yet is *not*
-/// fetched here — the page shows an empty catalog with a refresh affordance
-/// until the user asks, which is the point of moving the call out of the read
-/// path.
+/// One slot, tagged with the root it came from, so a read for a different root
+/// can never be served another root's models. A refresh for the newly selected
+/// root replaces the slot; the page re-fetches whenever the root changes, so
+/// the previous root's entry is not worth keeping.
+///
+/// `Err` is cached too: a failed refresh must not turn every later config read
+/// back into a CLI subprocess. A root with no entry is *not* fetched here — the
+/// page shows an empty catalog with a refresh affordance until the user asks,
+/// which is the point of moving the call out of the read path.
 struct CodexCatalogCache {
     generation: u64,
     catalog: Option<(String, Result<Vec<Value>, String>)>,
 }
 
 static CODEX_CATALOG_CACHE: std::sync::Mutex<CodexCatalogCache> =
-    std::sync::Mutex::new(CodexCatalogCache { generation: 0, catalog: None });
+    std::sync::Mutex::new(CodexCatalogCache {
+        generation: 0,
+        catalog: None,
+    });
 
 fn begin_codex_catalog_refresh() -> u64 {
     let mut cache = CODEX_CATALOG_CACHE
@@ -428,21 +434,29 @@ fn begin_codex_catalog_refresh() -> u64 {
     cache.generation
 }
 
-fn read_cached_codex_catalog(location: &RuntimeLocationInfo) -> Result<Vec<Value>, String> {
+/// `None` means this root has never been refreshed — a state the UI shows as an
+/// empty catalog with a refresh affordance, not as a failure. `Some(Err(..))` is
+/// a real failed refresh and carries the reason.
+///
+/// Reporting the miss as an error put a "could not load the model catalog"
+/// warning on every first page load, for a catalog that had simply not been
+/// fetched yet.
+fn read_cached_codex_catalog(location: &RuntimeLocationInfo) -> Option<Result<Vec<Value>, String>> {
     let root = location.host_path.to_string_lossy().to_string();
     let cache = CODEX_CATALOG_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     match cache.catalog.as_ref() {
-        Some((cached_root, result)) if cached_root == &root => result.clone(),
-        _ => Err(
-            "OpenAI Codex models have not been loaded yet. Use refresh to fetch the catalog."
-                .to_string(),
-        ),
+        Some((cached_root, result)) if cached_root == &root => Some(result.clone()),
+        _ => None,
     }
 }
 
-fn store_codex_catalog(location: &RuntimeLocationInfo, catalog: Result<Vec<Value>, String>, generation: u64) {
+fn store_codex_catalog(
+    location: &RuntimeLocationInfo,
+    catalog: Result<Vec<Value>, String>,
+    generation: u64,
+) {
     let mut cache = CODEX_CATALOG_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -465,7 +479,11 @@ fn read_codex_oauth_status(location: &RuntimeLocationInfo) -> OmpOauthStatus {
         return OmpOauthStatus::Unavailable;
     }
     let root = &location.host_path;
-    if runtime_location::is_wsl_unc_path(&root.to_string_lossy()) {
+    // Belt and braces with the mode check: `build_runtime_location` maps every
+    // WSL UNC path to `WslDirect`, but `accounts.rs::checked_root` refuses any
+    // UNC path, and this read path should not be the one place that accepts a
+    // share the write path rejects.
+    if root.to_string_lossy().starts_with("\\\\") {
         return OmpOauthStatus::Unavailable;
     }
     let path = root.join("agent.db");
@@ -803,10 +821,11 @@ pub async fn read_omp_runtime_config(
 ) -> Result<OmpRuntimeConfig, String> {
     let runtime_location =
         runtime_location::get_oh_my_pi_runtime_location_async(state.db()).await?;
-    let catalog = read_cached_codex_catalog(&runtime_location);
-    let (runtime_models, runtime_catalog_error) = match catalog {
-        Ok(models) => (models, None),
-        Err(error) => (Vec::new(), Some(error)),
+    let (runtime_models, runtime_catalog_error) = match read_cached_codex_catalog(&runtime_location)
+    {
+        Some(Ok(models)) => (models, None),
+        Some(Err(error)) => (Vec::new(), Some(error)),
+        None => (Vec::new(), None),
     };
     let display_path = runtime_location.host_path.to_string_lossy().to_string();
     crate::coding::file_io::run_blocking_fs_operation(
@@ -873,7 +892,10 @@ pub async fn refresh_omp_codex_catalog(
     let runtime_location =
         runtime_location::get_oh_my_pi_runtime_location_async(state.db()).await?;
     if runtime_location.host_path.to_string_lossy() != root_path {
-        return Err("OMP runtime directory changed. Refresh the configuration before loading models.".to_string());
+        return Err(
+            "OMP runtime directory changed. Refresh the configuration before loading models."
+                .to_string(),
+        );
     }
     let generation = begin_codex_catalog_refresh();
     let catalog = match tokio::time::timeout(
@@ -1891,24 +1913,39 @@ mod tests {
     fn codex_catalog_cache_is_scoped_to_the_runtime_root() {
         let first = local_location(Path::new("C:\\first\\.omp\\agent"));
         let second = local_location(Path::new("C:\\second\\.omp\\agent"));
-        assert!(read_cached_codex_catalog(&first).is_err());
-        store_codex_catalog(&first, Ok(vec![json!({"id": "codex-test"})]), begin_codex_catalog_refresh());
+        // Never refreshed: distinct from a failed refresh, so the UI shows the
+        // empty-catalog hint rather than an error.
+        assert!(read_cached_codex_catalog(&first).is_none());
+        store_codex_catalog(
+            &first,
+            Ok(vec![json!({"id": "codex-test"})]),
+            begin_codex_catalog_refresh(),
+        );
         assert_eq!(
-            read_cached_codex_catalog(&first).unwrap(),
+            read_cached_codex_catalog(&first).unwrap().unwrap(),
             vec![json!({"id": "codex-test"})]
         );
-        // Another root must not inherit the first root's catalog.
-        assert!(read_cached_codex_catalog(&second).is_err());
+        // The slot is tagged with its root: a read for another root must not be
+        // served these models, and vice versa once the slot is replaced.
+        assert!(read_cached_codex_catalog(&second).is_none());
         let older = begin_codex_catalog_refresh();
         let newer = begin_codex_catalog_refresh();
         store_codex_catalog(&second, Ok(vec![json!({"id": "newer-model"})]), newer);
+        // A late response from the superseded generation must not overwrite it.
         store_codex_catalog(&second, Err("old timeout".to_string()), older);
-        assert_eq!(read_cached_codex_catalog(&second).unwrap()[0]["id"], "newer-model");
-        assert!(read_cached_codex_catalog(&first).is_err());
-        // A cached failure stays a failure instead of re-running the CLI.
-        store_codex_catalog(&second, Err("catalog unavailable".to_string()), begin_codex_catalog_refresh());
         assert_eq!(
-            read_cached_codex_catalog(&second).unwrap_err(),
+            read_cached_codex_catalog(&second).unwrap().unwrap()[0]["id"],
+            "newer-model"
+        );
+        assert!(read_cached_codex_catalog(&first).is_none());
+        // A cached failure stays a failure instead of re-running the CLI.
+        store_codex_catalog(
+            &second,
+            Err("catalog unavailable".to_string()),
+            begin_codex_catalog_refresh(),
+        );
+        assert_eq!(
+            read_cached_codex_catalog(&second).unwrap().unwrap_err(),
             "catalog unavailable"
         );
     }
