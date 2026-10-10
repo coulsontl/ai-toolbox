@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  OmpCodexAccountsResult,
   OmpAgentsConfig,
   OmpAgentsConfigInput,
   OmpAgentFile,
@@ -16,6 +17,15 @@ import type {
   OmpSettingsConfigInput,
   SaveOmpAgentFileRequest,
 } from '@/types/ohMyPi';
+
+export const listOmpCodexAccounts = (rootPath: string): Promise<OmpCodexAccountsResult> =>
+  invoke('list_omp_codex_accounts', { rootPath });
+
+export const importOmpCodexAccount = (rootPath: string, authJson: string): Promise<OmpCodexAccountsResult> =>
+  invoke('import_omp_codex_account', { rootPath, authJson });
+
+export const switchOmpCodexAccount = (rootPath: string, accountId: string): Promise<OmpCodexAccountsResult> =>
+  invoke('switch_omp_codex_account', { rootPath, accountId });
 
 export const getOmpRootPathInfo = async (): Promise<OmpPathInfo> => {
   return await invoke<OmpPathInfo>('get_omp_root_path_info');

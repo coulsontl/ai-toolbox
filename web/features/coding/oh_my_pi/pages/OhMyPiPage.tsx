@@ -1813,7 +1813,8 @@ const OhMyPiPage: React.FC = () => {
     const hasProviderConfig = provider.sources.includes('models_yml');
     const subscriptionCard = isSubscription ? (
       <OmpSubscriptionCard
-        key={provider.providerKey}
+        key={`${provider.providerKey}:${runtimeConfig?.rootPathInfo.path}`}
+        rootPath={runtimeConfig?.rootPathInfo.path ?? ''}
         provider={provider}
         defaultModel={runtimeConfig?.modelSettings.modelId}
         onSetPrimaryModel={(modelId) => void handleSetPrimaryModel(provider, modelId)}

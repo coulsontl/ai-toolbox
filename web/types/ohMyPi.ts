@@ -3,6 +3,22 @@ export interface OmpPathInfo {
   source: 'custom' | 'env' | 'shell' | 'default';
 }
 
+export interface OmpCodexAccount {
+  id: string;
+  email: string | null;
+  accountId: string | null;
+  plan: string | null;
+  expiresAt: number | null;
+  isEnabled: boolean;
+  disabledCause: string | null;
+}
+
+export interface OmpCodexAccountsResult {
+  accounts: OmpCodexAccount[];
+  canWrite: boolean;
+  error: string | null;
+}
+
 export interface OmpSettingsConfig {
   rootDir?: string | null;
   updatedAt?: string;

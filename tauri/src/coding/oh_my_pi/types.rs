@@ -3,6 +3,26 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OmpCodexAccount {
+    pub id: String,
+    pub email: Option<String>,
+    pub account_id: Option<String>,
+    pub plan: Option<String>,
+    pub expires_at: Option<f64>,
+    pub is_enabled: bool,
+    pub disabled_cause: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OmpCodexAccountsResult {
+    pub accounts: Vec<OmpCodexAccount>,
+    pub can_write: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OmpPathInfo {
     pub path: String,
     pub source: String,
