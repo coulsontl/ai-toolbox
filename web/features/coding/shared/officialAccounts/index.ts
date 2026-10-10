@@ -10,6 +10,7 @@ export {
   default as OfficialAccountsSection,
   OfficialAccountCount,
   OfficialAccountHeadingIcon,
+  OfficialAccountHint,
 } from './OfficialAccountsSection';
 export type {
   OfficialAccountAction,

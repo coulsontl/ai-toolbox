@@ -23,6 +23,7 @@
   > 返工记录：曾把 🔗 当成「区块标题行上的装饰」无条件画，于是 Codex/Kimi 的**卡片头部**没有 🔗、而列表标题多了一个。用户要的是卡片头部那两行换成 `🔗 官方账号 (2)` + 说明。**区块是卡片的一部分时，「区块的标题行」≠「卡片那行」。**
 - **登录入口挂在「列表行」右端**（`loginAction`），不在卡片头部。它加的是列表里的一行，就该和它改动的那些行在一起。曾放到卡片头部右侧（`extraActions`），用户直接指出「登录按钮应该是放到账号列表标题的右侧啊」。
 - **说明（`hint`）在 `standalone` 里由区块画在标题行下方；`embedded` 里由卡片画在自己的第二行**（`metaEntries`）。归属判据是「这句话讲的是这张卡片，还是讲这一串行」。
+- **说明句子的样式也由组件给**（`OfficialAccountHint`）：两条渲染路径都必须用它，不许一边用 antd `<Text type="secondary">`、另一边手写 `--color-text-secondary`。这两个名字看着等价，实际差一档灰度（antd 的 secondary = `colorTextDescription` = alpha 0.45；应用 CSS 变量是 0.65），于是 ZCode 那句比另外两家深一点（用户 2026-10-10 发现）。**「同一句话」= 同一个组件，不是一个字符串加两处手抄样式。** 为此 `ProviderCardMetaEntry.value` 从 `string` 放宽成 `ReactNode`：值本身可以是个共享组件，style card 只管它**放哪**。
 - **折叠箭头只属于列表行**，永远不在标题行上。开合的是列表；标题行是这一块的身份证，两端的读法一致。
 - **措辞统一在 `common.officialAccount.*`。** `headingTitle`（官方账号）与 `listTitle`（账号列表）是**三端同一句话**，各 CLI 不再各写一份——用户明确要求「Kimi Official 标题都统一使用官方账号」；`官方订阅` 那个类别标记也随之从官方卡片上去掉（标题已经说明它是什么）。**每个 CLI 仍自己传已翻译串**（区块不认识任何 CLI），但传的是同一批 key。
 - **折叠能力三端都有**，默认状态可以不同：Codex 默认收起（它的卡片下面还有模型区），Kimi / ZCode 默认展开（它们的账号一直露在外面）。共享的是「能力」，不是「初始状态」。
@@ -39,6 +40,7 @@
 - **卡片的壳（边框、拖拽把手、悬停反馈、内容列）一律来自 `CardShell`，不许手抄。** ZCode 的官方卡片曾经自己写 `<Card>` + `useSortable` + 把手：于是把手丢了悬停反馈、还被放进标题行内部，正文因此贴到卡片左边缘（用户圈出「为什么下面的内容左边距没了」）。把手术：外壳换 `CardShell`，把手自成一列，正文在内容列里——与所有供应商卡片同构。
 - **`actionsDisabled` 是「登录进行中，谁都别动」。** ZCode/Kimi 的登录会重写同一份凭据文件，中途点行级动作就是和它抢。
 - **新增 prop 必须在至少一个调用方真的用上**，否则按「零消费方 prop 不许存在」删掉（同 `providerCardVariants` 的纪律）。`leadingAction` 就是这样被删掉的：把手换成 `CardShell` 之后它没有消费方了。
+- **行的缩进是固定 18px，标题文本位置 = 折叠箭头宽度 + 6px 间距**，两者天然差 ~3px（箭头宽度来自图标字体）。ZCode 的浏览器检查因此用 ≤4px 容差——**别把它钉到像素级**，那是在钉字体而不是钉布局；真正要拦的是「整段贴到卡片边缘」那种 18px 级的偏差。
 - **迁移一个 CLI 时不要顺手改措辞。** 但「区块标题 / 列表标题」这两句是**刻意统一**的共享 key；行内的「切换 / 保存当前登录 / 默认」仍是用户确认过的口径：账号之间叫**切换**，渠道之间才叫**应用**。
 
 ## 使用方
@@ -47,13 +49,15 @@
 |---|---|---|---|---|
 | codex | `embedded`（官方供应商卡片内） | 卡片名称行（`namePrefix` + `OfficialAccountCount`） | 卡片第二行（`metaEntries`） | 有，默认收起 |
 | kimi | `embedded`（官方供应商卡片内） | 同上 | 同上 | 有，默认展开 |
-| zcode | `standalone`（自己的卡片，壳用 `CardShell`） | 区块自己画（`headingTitle`） | 区块画在标题行下方（`hint`） | 有，默认展开 |
+| zcode | `standalone`（自己的卡片，壳用 `CardShell`） | 区块自己画（`headingTitle`） | 区块画在标题行下方（`OfficialAccountHint`） | 有，默认展开 |
 | antigravity / geminicli / grok | **仍手写**（`PENDING_MIGRATION`，3 个） | — | — | — |
 
 > 这三个是 2026-10-09 修守卫时才发现的：原守卫匹配的是 `anticon-swap` / `anticon-check`（渲染后的 DOM class），源码里永远不命中，所以它们从未被扫出（见 13.1 模式七十三）。迁移时按同一份映射规则接进来即可。
 
 守卫：`pnpm run test:official-accounts-shared`（源码棘轮，禁止再手写行级按钮）、
-`pnpm run test:codex-official-accounts` 与 `pnpm run test:official-account-card`（真浏览器：几何 + 标题形状 + 折叠真点击）。
+`pnpm run test:codex-official-accounts`、`pnpm run test:official-account-card`（Kimi）与
+`pnpm run test:zcode-official-account`（真浏览器：几何 + 标题形状 + 折叠真点击 +
+**说明句的 `getComputedStyle` 颜色/字号**——三端各一份，接线各测各的）。
 
 ## 何时更新本文件
 

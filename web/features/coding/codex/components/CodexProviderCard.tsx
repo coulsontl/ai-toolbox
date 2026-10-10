@@ -47,6 +47,7 @@ import CodexStyleCard, {
 import {
   OfficialAccountCount,
   OfficialAccountHeadingIcon,
+  OfficialAccountHint,
   OfficialAccountsSection,
 } from '@/features/coding/shared/officialAccounts';
 import type {
@@ -580,7 +581,10 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
    */
   const metaEntries = React.useMemo<ProviderCardMetaEntry[]>(() => {
     if (isOfficialProvider) {
-      return [{ kind: 'text', value: t('codex.provider.officialAccountHint') }];
+      return [{
+        kind: 'text',
+        value: <OfficialAccountHint>{t('codex.provider.officialAccountHint')}</OfficialAccountHint>,
+      }];
     }
     const entries: ProviderCardMetaEntry[] = [];
     if (baseUrl) {

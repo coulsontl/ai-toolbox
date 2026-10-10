@@ -27,6 +27,29 @@ const { Text } = Typography;
 const actionButtonStyle: React.CSSProperties = { fontSize: 12, height: 'auto', paddingInline: 4 };
 
 /**
+ * The account block's explanation sentence, rendered the one way.
+ *
+ * It is drawn in two places — under the heading on a `standalone` card, and as
+ * an `embedded` card's second line — so it is a component rather than a string
+ * with a style copied next to it. The first version drew it with the app's
+ * `--color-text-secondary` variable on one host and through antd's Typography
+ * on the others; those two names look interchangeable and are not (the variable
+ * is alpha 0.65, antd's `secondary` is `colorTextDescription` = alpha 0.45), so
+ * the standalone card's sentence came out a shade darker (reported 2026-10-10).
+ *
+ * `style` is for placement only (block display, margins); the typography is not
+ * overridable — that is the point of exporting it.
+ */
+export const OfficialAccountHint: React.FC<{
+  children: React.ReactNode;
+  style?: React.CSSProperties;
+}> = ({ children, style }) => (
+  <Text type="secondary" style={{ fontSize: 12, ...style }}>
+    {children}
+  </Text>
+);
+
+/**
  * The 🔗 an official-account heading carries.
  *
  * Exported because an `embedded` host draws it on **its own** heading line (the
@@ -147,11 +170,12 @@ const OfficialAccountsSection: React.FC<OfficialAccountsSectionProps> = ({
               footnote and, in the empty state, ended up below the empty
               illustration rather than beside the line it explains. An embedded
               host renders this same sentence on its own second line instead
-              (`hint` is not passed there). */}
+              (`hint` is not passed there) — both through `OfficialAccountHint`,
+              so the two cannot drift in colour or size. */}
           {hint && (
-            <div style={{ marginTop: 4, fontSize: 12, color: 'var(--color-text-secondary)' }}>
+            <OfficialAccountHint style={{ display: 'block', marginTop: 4 }}>
               {hint}
-            </div>
+            </OfficialAccountHint>
           )}
         </>
       )}

@@ -35,7 +35,16 @@ export interface ProviderCardMetaEntry {
    * with no reader.
    */
   kind: 'code' | 'text' | 'tag';
-  value: string;
+  /**
+   * A node, not a string, because some values *are* shared components: the
+   * official-account card's second line is `OfficialAccountHint`, the same
+   * element a standalone card draws under its heading. Passing the sentence as
+   * a plain string forced the card to re-state its typography, and the two
+   * copies drifted (the standalone one came out a shade darker, reported
+   * 2026-10-10). Styles still decide *where* a value sits; the value's own
+   * component decides what it looks like.
+   */
+  value: React.ReactNode;
   /**
    * Optional label rendered immediately before the value, in secondary text:
    * `Haiku: claude-haiku-4-5`.

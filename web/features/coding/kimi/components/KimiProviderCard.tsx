@@ -47,6 +47,7 @@ import {
 import {
   OfficialAccountCount,
   OfficialAccountHeadingIcon,
+  OfficialAccountHint,
   OfficialAccountsSection,
 } from '@/features/coding/shared/officialAccounts';
 import type {
@@ -522,7 +523,10 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
     // official channel has no endpoint and no key of its own (it authenticates
     // through the CLI's OAuth login), and the one thing a reader of *this* card
     // needs is what switching accounts does.
-    metaEntries.push({ kind: 'text', value: t('kimi.officialAccount.hint') });
+    metaEntries.push({
+      kind: 'text',
+      value: <OfficialAccountHint>{t('kimi.officialAccount.hint')}</OfficialAccountHint>,
+    });
   } else {
     if (isLocalProvider) {
       metaEntries.push({ kind: 'text', value: `(${t('kimi.localConfigHint')})` });
