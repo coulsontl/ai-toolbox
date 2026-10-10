@@ -1,4 +1,5 @@
-use super::types::{OmpCodexAccount, OmpCodexAccountsResult};
+use super::types::{OmpCodexAccount, OmpCodexAccountUsage, OmpCodexAccountsResult};
+use crate::coding::codex::official_accounts::fetch_usage_snapshot;
 use crate::coding::runtime_location::{self, RuntimeLocationInfo, RuntimeLocationMode};
 use crate::db::SqliteDbState;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -321,22 +322,31 @@ fn import_account(conn: &mut Connection, raw: &str) -> Result<(), String> {
     tx.commit().map_err(|_| DB_ERROR.into())
 }
 
-fn switch_account(conn: &mut Connection, target: &str) -> Result<(), String> {
-    let id = target
+fn selected_account_id(target: &str) -> Result<i64, String> {
+    target
         .parse::<i64>()
         .ok()
         .filter(|id| *id > 0)
-        .ok_or("Invalid Codex account selection.")?;
+        .ok_or_else(|| "Invalid Codex account selection.".into())
+}
+
+fn check_account_disabled(disabled: Option<&str>) -> Result<(), String> {
+    if disabled.is_some_and(|cause| cause != INACTIVE) {
+        return Err(
+            "OMP disabled this credential; authenticate again in OMP before selecting it.".into(),
+        );
+    }
+    Ok(())
+}
+
+fn switch_account(conn: &mut Connection, target: &str) -> Result<(), String> {
+    let id = selected_account_id(target)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| DB_ERROR)?;
     let disabled = tx.query_row("SELECT disabled_cause FROM auth_credentials WHERE id=?1 AND provider=?2 AND credential_type='oauth'", params![id, PROVIDER], |r| r.get::<_, Option<String>>(0))
         .map_err(|error| if error == rusqlite::Error::QueryReturnedNoRows { "Codex account no longer exists." } else { DB_ERROR })?;
-    if disabled.as_deref().is_some_and(|cause| cause != INACTIVE) {
-        return Err(
-            "OMP disabled this credential; authenticate again in OMP before selecting it.".into(),
-        );
-    }
+    check_account_disabled(disabled.as_deref())?;
     tx.execute("UPDATE auth_credentials SET disabled_cause=CASE WHEN id=?1 THEN NULL ELSE ?2 END,updated_at=CAST(strftime('%s','now') AS INTEGER) WHERE provider=?3 AND credential_type='oauth' AND (disabled_cause IS NULL OR id=?1)", params![id, INACTIVE, PROVIDER]).map_err(|_| DB_ERROR)?;
     tx.commit().map_err(|_| DB_ERROR.into())
 }
@@ -369,6 +379,60 @@ fn broker_configured(root: &Path, env_url: Option<&str>) -> Result<bool, String>
     Ok(url.is_some_and(|v| !v.is_null() && v.as_str().is_none_or(|s| !s.trim().is_empty())))
 }
 
+fn open_native_readonly(root: &Path) -> Result<Connection, String> {
+    let path = root.join("agent.db");
+    // Existing, regular local database only; no CREATE or URI interpretation.
+    let metadata = fs::symlink_metadata(&path)
+        .ok()
+        .filter(|metadata| metadata.file_type().is_file())
+        .ok_or("Native OMP agent.db is missing or not a regular file. Run OMP first; AI Toolbox will not create it.")?;
+    if metadata.len() == 0 {
+        return Err(SCHEMA_ERROR.into());
+    }
+    let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|_| DB_ERROR)?;
+    conn.busy_timeout(Duration::from_secs(5))
+        .map_err(|_| DB_ERROR)?;
+    Ok(conn)
+}
+
+// Intentionally no Debug/Serialize: tokens stay private to this explicit read.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageCredentials {
+    access: String,
+    account_id: String,
+    #[serde(rename = "orgName")]
+    plan: Option<String>,
+}
+
+fn usage_credentials(root: &Path, target: &str) -> Result<UsageCredentials, String> {
+    let id = selected_account_id(target)?;
+    let conn = open_native_readonly(root)?;
+    if !schema_supported(&conn) {
+        return Err(SCHEMA_ERROR.into());
+    }
+    let (raw, disabled) = conn.query_row(
+        "SELECT data,disabled_cause FROM auth_credentials WHERE id=?1 AND provider=?2 AND credential_type='oauth'",
+        params![id, PROVIDER],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+    ).map_err(|error| if error == rusqlite::Error::QueryReturnedNoRows {
+        "Codex account no longer exists."
+    } else { DB_ERROR })?;
+    check_account_disabled(disabled.as_deref())?;
+    let credentials: UsageCredentials = serde_json::from_str(&raw)
+        .map_err(|_| "Stored Codex credential payload is invalid; authenticate again in OMP.")?;
+    if credentials.access.trim().is_empty() {
+        return Err(
+            "Stored Codex credential has no access token; authenticate again in OMP.".into(),
+        );
+    }
+    if credentials.account_id.trim().is_empty() {
+        return Err("Stored Codex credential has no account ID; authenticate again in OMP.".into());
+    }
+    Ok(credentials)
+}
+
 enum Action<'a> {
     List,
     Import(&'a str),
@@ -381,21 +445,10 @@ fn account_operation(
     blocked: Option<String>,
 ) -> OmpCodexAccountsResult {
     let path = root.join("agent.db");
-    // Existing, regular local database only; no CREATE or URI interpretation.
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) if metadata.file_type().is_file() => metadata,
-        _ => return failure("Native OMP agent.db is missing or not a regular file. Run OMP first; AI Toolbox will not create it."),
-    };
-    if metadata.len() == 0 {
-        return failure(SCHEMA_ERROR);
-    }
-    let mut conn = match Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+    let mut conn = match open_native_readonly(root) {
         Ok(conn) => conn,
-        Err(_) => return failure(DB_ERROR),
+        Err(error) => return failure(error),
     };
-    if conn.busy_timeout(Duration::from_secs(5)).is_err() {
-        return failure(DB_ERROR);
-    }
     let accounts = match list_accounts(&conn) {
         Ok(accounts) => accounts,
         Err(_) => return failure(SCHEMA_ERROR),
@@ -448,6 +501,31 @@ fn account_operation(
     }
 }
 
+fn configured_account_block(root: &Path) -> Option<String> {
+    let env_url = std::env::var("OMP_AUTH_BROKER_URL").ok().or_else(|| {
+        crate::coding::open_code::shell_env::get_env_from_shell_config("OMP_AUTH_BROKER_URL")
+    });
+    // Native profiles/XDG can redirect agent.db independently of runtime root.
+    let redirected = ["OMP_PROFILE", "PI_PROFILE", "XDG_DATA_HOME"]
+        .iter()
+        .any(|key| {
+            std::env::var(key)
+                .ok()
+                .or_else(|| crate::coding::open_code::shell_env::get_env_from_shell_config(key))
+                .is_some_and(|v| !v.trim().is_empty())
+        });
+    account_block(root, env_url.as_deref(), redirected)
+}
+
+fn account_block(root: &Path, env_url: Option<&str>, redirected: bool) -> Option<String> {
+    let blocked = match broker_configured(root, env_url) {
+        Ok(true) => Some("OMP auth broker is configured; local account writes and quota queries are unavailable. Manage accounts through native OMP/broker.".into()),
+        Err(error) => Some(error),
+        Ok(false) => None,
+    };
+    blocked.or_else(|| redirected.then(|| "OMP profile/XDG database redirection is unsupported for local account management. Use native OMP account management.".into()))
+}
+
 async fn run(db: &SqliteDbState, root_path: &str, action: Action<'_>) -> OmpCodexAccountsResult {
     let location = match runtime_location::get_oh_my_pi_runtime_location_async(db).await {
         Ok(location) => location,
@@ -457,25 +535,40 @@ async fn run(db: &SqliteDbState, root_path: &str, action: Action<'_>) -> OmpCode
         Ok(root) => root,
         Err(error) => return failure(error),
     };
-    let env_url = std::env::var("OMP_AUTH_BROKER_URL").ok().or_else(|| {
-        crate::coding::open_code::shell_env::get_env_from_shell_config("OMP_AUTH_BROKER_URL")
-    });
-    let blocked = match broker_configured(&root, env_url.as_deref()) {
-        Ok(true) => Some("OMP auth broker is configured; local account writes are unavailable. Manage accounts through native OMP/broker.".into()),
-        Err(error) => Some(error), Ok(false) => None,
-    };
-    // Native profiles/XDG can redirect agent.db independently of runtime root.
-    // Fail closed rather than editing a possibly inactive local database.
-    let redirected = ["OMP_PROFILE", "PI_PROFILE", "XDG_DATA_HOME"]
-        .iter()
-        .any(|key| {
-            std::env::var(key)
-                .ok()
-                .or_else(|| crate::coding::open_code::shell_env::get_env_from_shell_config(key))
-                .is_some_and(|v| !v.trim().is_empty())
-        });
-    let blocked = blocked.or_else(|| redirected.then(|| "OMP profile/XDG database redirection is unsupported for account writes. Use native OMP account management.".into()));
-    account_operation(&root, action, blocked)
+    account_operation(&root, action, configured_account_block(&root))
+}
+
+#[tauri::command]
+pub async fn get_omp_codex_account_usage(
+    state: tauri::State<'_, SqliteDbState>,
+    root_path: String,
+    account_id: String,
+) -> Result<OmpCodexAccountUsage, String> {
+    let location = runtime_location::get_oh_my_pi_runtime_location_async(state.db())
+        .await
+        .map_err(|_| "Unable to resolve the selected OMP runtime root.")?;
+    let root = checked_root(&location, &root_path)?;
+    if let Some(error) = configured_account_block(&root) {
+        return Err(error);
+    }
+    // Inactive rows are queried without enabling them; drop SQLite before HTTP.
+    let credentials = usage_credentials(&root, &account_id)?;
+    let snapshot = fetch_usage_snapshot(
+        state.db(),
+        credentials.access.trim(),
+        Some(&credentials.account_id),
+        credentials.plan.as_deref(),
+    )
+    .await
+    .map_err(|_| "Unable to query Codex quota. Check the connection or authenticate again in OMP, then retry manually.")?;
+    Ok(OmpCodexAccountUsage {
+        account_id,
+        has_five_hour_limit: snapshot.limit_short_label.is_some(),
+        limit_5h_text: snapshot.limit_5h_text,
+        limit_weekly_text: snapshot.limit_weekly_text,
+        limit_5h_reset_at: snapshot.limit_5h_reset_at,
+        limit_weekly_reset_at: snapshot.limit_weekly_reset_at,
+    })
 }
 
 #[tauri::command]
@@ -747,6 +840,107 @@ mod tests {
             assert!(broker_configured(missing.path(), None).unwrap());
         }
         assert!(broker_configured(missing.path(), Some("https://broker.example")).unwrap());
+    }
+
+    #[test]
+    fn usage_reads_inactive_native_credentials_without_writes_or_refresh() {
+        let (dir, conn) = fixture();
+        // Exact schema-8 data; no refresh token is needed for a readonly query.
+        let data = json!({"access":"synthetic-access", "accountId":"synthetic-account",
+            "orgName":"prolite", "expires":1, "nativeExtra":"preserved"});
+        conn.execute(
+            "INSERT INTO auth_credentials(provider,credential_type,data,disabled_cause) VALUES(?1,'oauth',?2,?3)",
+            params![PROVIDER, data.to_string(), INACTIVE],
+        ).unwrap();
+        let before = rows(&conn);
+        let revision: i64 = conn
+            .query_row("SELECT revision FROM auth_change_revision", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let timestamps: (i64, i64) = conn
+            .query_row(
+                "SELECT created_at,updated_at FROM auth_credentials",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let bytes = fs::read(dir.path().join("agent.db")).unwrap();
+        let credentials = usage_credentials(dir.path(), "1").unwrap();
+        assert_eq!(credentials.access, "synthetic-access");
+        assert_eq!(credentials.account_id, "synthetic-account");
+        assert_eq!(credentials.plan.as_deref(), Some("prolite"));
+        assert_eq!(rows(&conn), before);
+        assert_eq!(
+            conn.query_row("SELECT revision FROM auth_change_revision", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            revision
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT created_at,updated_at FROM auth_credentials",
+                [],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            )
+            .unwrap(),
+            timestamps
+        );
+        assert_eq!(fs::read(dir.path().join("agent.db")).unwrap(), bytes);
+        let readonly = open_native_readonly(dir.path()).unwrap();
+        assert!(readonly
+            .execute("UPDATE auth_credentials SET disabled_cause=NULL", [])
+            .is_err());
+    }
+
+    #[test]
+    fn usage_refuses_invalid_selection_schema_and_payload_without_leaks() {
+        let (dir, conn) = fixture();
+        conn.execute("INSERT INTO auth_credentials(provider,credential_type,data) VALUES('other','oauth','synthetic-secret')", []).unwrap();
+        conn.execute("INSERT INTO auth_credentials(provider,credential_type,data) VALUES('openai-codex','api_key','synthetic-secret')", []).unwrap();
+        conn.execute("INSERT INTO auth_credentials(provider,credential_type,data,disabled_cause) VALUES('openai-codex','oauth','synthetic-secret','invalid_grant synthetic-secret')", []).unwrap();
+        conn.execute("INSERT INTO auth_credentials(provider,credential_type,data) VALUES('openai-codex','oauth','{synthetic-secret')", []).unwrap();
+        for data in [
+            json!({"accountId":"synthetic-secret"}),
+            json!({"access":"synthetic-secret"}),
+        ] {
+            conn.execute("INSERT INTO auth_credentials(provider,credential_type,data) VALUES('openai-codex','oauth',?1)", [data.to_string()]).unwrap();
+        }
+        let before = rows(&conn);
+        for id in [
+            "", "-1", "0", "1 OR 1=1", "999", "1", "2", "3", "4", "5", "6",
+        ] {
+            let error = usage_credentials(dir.path(), id).err().unwrap();
+            assert!(!error.contains("synthetic-secret"));
+        }
+        conn.execute("UPDATE auth_schema_version SET version=9", [])
+            .unwrap();
+        assert_eq!(
+            usage_credentials(dir.path(), "4").err().unwrap(),
+            SCHEMA_ERROR
+        );
+        assert_eq!(rows(&conn), before);
+        let missing = tempfile::tempdir().unwrap();
+        assert!(usage_credentials(missing.path(), "1").is_err());
+        assert!(!missing.path().join("agent.db").exists());
+    }
+
+    #[test]
+    fn usage_reuses_broker_and_profile_fail_closed_guards() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(account_block(dir.path(), None, false).is_none());
+        assert!(account_block(dir.path(), Some("https://broker.example"), false).is_some());
+        assert!(account_block(dir.path(), None, true).is_some());
+        fs::write(
+            dir.path().join("config.yml"),
+            "auth.broker.url: https://broker.example",
+        )
+        .unwrap();
+        assert!(account_block(dir.path(), None, false).is_some());
+        fs::write(dir.path().join("config.yml"), "[synthetic-secret").unwrap();
+        let error = account_block(dir.path(), None, false).unwrap();
+        assert!(!error.contains("synthetic-secret"));
+        assert!(!dir.path().join("agent.db").exists());
     }
 
     #[test]

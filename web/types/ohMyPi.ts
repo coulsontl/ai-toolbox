@@ -19,6 +19,15 @@ export interface OmpCodexAccountsResult {
   error: string | null;
 }
 
+export interface OmpCodexAccountUsage {
+  accountId: string;
+  hasFiveHourLimit: boolean;
+  limit5hText: string | null;
+  limitWeeklyText: string | null;
+  limit5hResetAt: number | null;
+  limitWeeklyResetAt: number | null;
+}
+
 export interface OmpSettingsConfig {
   rootDir?: string | null;
   updatedAt?: string;

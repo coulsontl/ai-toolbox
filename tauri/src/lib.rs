@@ -2685,6 +2685,7 @@ pub fn run() {
             // Oh My Pi
             coding::oh_my_pi::get_omp_root_path_info,
             coding::oh_my_pi::list_omp_codex_accounts,
+            coding::oh_my_pi::get_omp_codex_account_usage,
             coding::oh_my_pi::import_omp_codex_account,
             coding::oh_my_pi::switch_omp_codex_account,
             coding::oh_my_pi::get_omp_settings_config,

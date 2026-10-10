@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   OmpCodexAccountsResult,
+  OmpCodexAccountUsage,
   OmpAgentsConfig,
   OmpAgentsConfigInput,
   OmpAgentFile,
@@ -26,6 +27,9 @@ export const importOmpCodexAccount = (rootPath: string, authJson: string): Promi
 
 export const switchOmpCodexAccount = (rootPath: string, accountId: string): Promise<OmpCodexAccountsResult> =>
   invoke('switch_omp_codex_account', { rootPath, accountId });
+
+export const getOmpCodexAccountUsage = (rootPath: string, accountId: string): Promise<OmpCodexAccountUsage> =>
+  invoke('get_omp_codex_account_usage', { rootPath, accountId });
 
 export const getOmpRootPathInfo = async (): Promise<OmpPathInfo> => {
   return await invoke<OmpPathInfo>('get_omp_root_path_info');

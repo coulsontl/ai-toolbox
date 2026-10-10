@@ -157,13 +157,13 @@ struct ParsedIdToken {
 }
 
 #[derive(Debug, Clone, Default)]
-struct UsageSnapshot {
-    limit_short_label: Option<String>,
-    limit_5h_text: Option<String>,
-    limit_weekly_text: Option<String>,
+pub(crate) struct UsageSnapshot {
+    pub(crate) limit_short_label: Option<String>,
+    pub(crate) limit_5h_text: Option<String>,
+    pub(crate) limit_weekly_text: Option<String>,
     limit_monthly_text: Option<String>,
-    limit_5h_reset_at: Option<i64>,
-    limit_weekly_reset_at: Option<i64>,
+    pub(crate) limit_5h_reset_at: Option<i64>,
+    pub(crate) limit_weekly_reset_at: Option<i64>,
     limit_monthly_reset_at: Option<i64>,
     reset_credits_available: Option<i64>,
 }
@@ -1256,7 +1256,7 @@ fn plan_type_has_short_window(plan_type: Option<&str>) -> bool {
             .map(str::trim)
             .map(str::to_ascii_lowercase)
             .as_deref(),
-        Some("free")
+        Some("free" | "pro" | "prolite" | "pro_lite")
     )
 }
 
@@ -1308,11 +1308,22 @@ fn extract_reset_credits_available(body: &Value) -> Option<i64> {
 
 fn parse_usage_snapshot(body: &Value, plan_type: Option<&str>) -> UsageSnapshot {
     let (short_window, weekly_window, monthly_window) = classify_rate_windows(body);
+    // Usage reports the current tier; native credential metadata can be stale.
+    let plan_type = body
+        .get("plan_type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|plan| !plan.is_empty())
+        .or(plan_type);
     let has_short_window = plan_type_has_short_window(plan_type);
     let effective_weekly_window = if has_short_window {
         weekly_window
     } else {
-        weekly_window.or(short_window)
+        // Legacy primary windows without durations are weekly for no-5h tiers.
+        // Never relabel an explicitly timed 5h window as weekly.
+        weekly_window.or(short_window.filter(|window| {
+            extract_limit_window_seconds(window.value).is_none()
+        }))
     };
 
     UsageSnapshot {
@@ -1343,7 +1354,7 @@ fn parse_usage_snapshot(body: &Value, plan_type: Option<&str>) -> UsageSnapshot 
     }
 }
 
-async fn fetch_usage_snapshot(
+pub(crate) async fn fetch_usage_snapshot(
     db: &crate::db::SqliteDbState,
     access_token: &str,
     account_id: Option<&str>,
@@ -2637,6 +2648,52 @@ mod tests {
         assert_eq!(snapshot.limit_weekly_reset_at, Some(67890));
         assert_eq!(snapshot.limit_monthly_text, None);
         assert_eq!(snapshot.limit_monthly_reset_at, None);
+    }
+
+    #[test]
+    fn parse_usage_snapshot_pro_family_has_no_five_hour_limit() {
+        let mut body = serde_json::json!({
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 25, "limit_window_seconds": WEEK_WINDOW_SECONDS, "reset_at": 12345
+                },
+                "secondary_window": {
+                    "used_percent": 40, "limit_window_seconds": FIVE_HOUR_WINDOW_SECONDS, "reset_at": 23456
+                }
+            }
+        });
+        // Native usage source recognizes both spellings of Pro Lite.
+        for plan in ["pro", "prolite", "pro_lite", " PRO "] {
+            let snapshot = parse_usage_snapshot(&body, Some(plan));
+            assert_eq!(snapshot.limit_short_label, None);
+            assert_eq!(snapshot.limit_5h_text, None);
+            assert_eq!(snapshot.limit_5h_reset_at, None);
+            assert_eq!(snapshot.limit_weekly_text.as_deref(), Some("75%"));
+            assert_eq!(snapshot.limit_weekly_reset_at, Some(12345));
+        }
+        body["plan_type"] = serde_json::json!("prolite");
+        assert_eq!(parse_usage_snapshot(&body, Some("plus")).limit_5h_text, None);
+        body["plan_type"] = serde_json::json!("plus");
+        let snapshot = parse_usage_snapshot(&body, Some("pro"));
+        assert_eq!(snapshot.limit_5h_text.as_deref(), Some("60%"));
+        assert_eq!(snapshot.limit_5h_reset_at, Some(23456));
+    }
+
+    #[test]
+    fn parse_usage_snapshot_pro_does_not_relabel_timed_five_hour_window_as_weekly() {
+        let body = serde_json::json!({
+            "plan_type": "pro",
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 10, "limit_window_seconds": FIVE_HOUR_WINDOW_SECONDS, "reset_at": 12345
+                }
+            }
+        });
+        let snapshot = parse_usage_snapshot(&body, None);
+        assert_eq!(snapshot.limit_short_label, None);
+        assert_eq!(snapshot.limit_5h_text, None);
+        assert_eq!(snapshot.limit_weekly_text, None);
+        assert_eq!(snapshot.limit_weekly_reset_at, None);
     }
 
     #[test]

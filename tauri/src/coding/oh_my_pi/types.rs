@@ -23,6 +23,17 @@ pub struct OmpCodexAccountsResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OmpCodexAccountUsage {
+    pub account_id: String,
+    pub has_five_hour_limit: bool,
+    pub limit_5h_text: Option<String>,
+    pub limit_weekly_text: Option<String>,
+    pub limit_5h_reset_at: Option<i64>,
+    pub limit_weekly_reset_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OmpPathInfo {
     pub path: String,
     pub source: String,
