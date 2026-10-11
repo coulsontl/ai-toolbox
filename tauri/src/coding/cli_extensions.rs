@@ -2512,17 +2512,19 @@ User packages:
 npm error Fetching packages of type \"remote\" have been disabled\n\
 npm error Refusing to fetch \"@modelcontextprotocol/core@https://pkg.pr.new/modelcontextprotocol/typescript-sdk/@modelcontextprotocol/core@3b205e7\"";
 
-        let annotated = annotate_npm_policy_error(
-            raw.to_string(),
-            &local_runtime_location("C:\\Users\\tester\\.omo\\agent"),
-        );
+        let location = local_runtime_location("C:\\Users\\tester\\.omo\\agent");
+        let annotated = annotate_npm_policy_error(raw.to_string(), &location);
 
         // 原始输出必须保留——包名和 URL 是排查的关键信息。
         assert!(annotated.contains("EALLOWREMOTE"));
         assert!(annotated.contains("Refusing to fetch"));
         assert!(annotated.contains("allow-remote=all"));
-        assert!(annotated.contains("C:\\Users\\tester\\.omo\\agent\\npm/.npmrc"));
         assert!(annotated.contains("@modelcontextprotocol/core"));
+        // 提示里给出的 `.npmrc` 路径必须与实际要写的文件一致。这里按实现
+        // 取期望值，而不是写死分隔符：Windows 运行时给 `\\npm`，而 CI 的
+        // Linux runner 上 `PathBuf::join` 产出 `/npm`（报告 2026-10-08 的
+        // `Run Rust tests` 失败正是断言写死了 Windows 分隔符）。
+        assert!(annotated.contains(&format!("{}/.npmrc", packages_dir_display(&location))));
     }
 
     #[test]
@@ -2530,15 +2532,13 @@ npm error Refusing to fetch \"@modelcontextprotocol/core@https://pkg.pr.new/mode
         let raw = "npm error code EALLOWSCRIPTS\n\
 npm error --allow-scripts is not allowed in project-scoped installs. Add the entries to the \"allowScripts\" field in package.json, or to .npmrc, instead.";
 
-        let annotated = annotate_npm_policy_error(
-            raw.to_string(),
-            &local_runtime_location("C:\\Users\\tester\\.pi\\agent"),
-        );
+        let location = local_runtime_location("C:\\Users\\tester\\.pi\\agent");
+        let annotated = annotate_npm_policy_error(raw.to_string(), &location);
 
         assert!(annotated.contains("EALLOWSCRIPTS"));
         assert!(annotated.contains("allow-scripts=<包名，逗号分隔>"));
         assert!(annotated.contains("allowScripts"));
-        assert!(annotated.contains("C:\\Users\\tester\\.pi\\agent\\npm/.npmrc"));
+        assert!(annotated.contains(&format!("{}/.npmrc", packages_dir_display(&location))));
     }
 
     #[test]

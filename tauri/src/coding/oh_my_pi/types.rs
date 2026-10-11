@@ -3,6 +3,37 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OmpCodexAccount {
+    pub id: String,
+    pub email: Option<String>,
+    pub account_id: Option<String>,
+    pub plan: Option<String>,
+    pub expires_at: Option<f64>,
+    pub is_enabled: bool,
+    pub disabled_cause: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OmpCodexAccountsResult {
+    pub accounts: Vec<OmpCodexAccount>,
+    pub can_write: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OmpCodexAccountUsage {
+    pub account_id: String,
+    pub has_five_hour_limit: bool,
+    pub limit_5h_text: Option<String>,
+    pub limit_weekly_text: Option<String>,
+    pub limit_5h_reset_at: Option<i64>,
+    pub limit_weekly_reset_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OmpPathInfo {
     pub path: String,
     pub source: String,
@@ -98,7 +129,13 @@ pub enum OmpProviderWarning {
     MissingProvider,
     MissingModel,
 }
-
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OmpOauthStatus {
+    Stored,
+    Missing,
+    Unavailable,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OmpRuntimeProviderView {
@@ -107,6 +144,12 @@ pub struct OmpRuntimeProviderView {
     pub sources: Vec<OmpProviderSource>,
     pub categories: Vec<OmpProviderCategory>,
     pub credential_kind: OmpCredentialKind,
+    /// Metadata only: stored credentials are not proof of a valid session.
+    pub oauth_status: Option<OmpOauthStatus>,
+    #[serde(default)]
+    pub runtime_models: Vec<Value>,
+    pub runtime_catalog_error: Option<String>,
+    pub login_command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]

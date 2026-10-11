@@ -1,5 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  OmpCodexAccountsResult,
+  OmpCodexAccountUsage,
   OmpAgentsConfig,
   OmpAgentsConfigInput,
   OmpAgentFile,
@@ -16,6 +18,18 @@ import type {
   OmpSettingsConfigInput,
   SaveOmpAgentFileRequest,
 } from '@/types/ohMyPi';
+
+export const listOmpCodexAccounts = (rootPath: string): Promise<OmpCodexAccountsResult> =>
+  invoke('list_omp_codex_accounts', { rootPath });
+
+export const importOmpCodexAccount = (rootPath: string, authJson: string): Promise<OmpCodexAccountsResult> =>
+  invoke('import_omp_codex_account', { rootPath, authJson });
+
+export const switchOmpCodexAccount = (rootPath: string, accountId: string): Promise<OmpCodexAccountsResult> =>
+  invoke('switch_omp_codex_account', { rootPath, accountId });
+
+export const getOmpCodexAccountUsage = (rootPath: string, accountId: string): Promise<OmpCodexAccountUsage> =>
+  invoke('get_omp_codex_account_usage', { rootPath, accountId });
 
 export const getOmpRootPathInfo = async (): Promise<OmpPathInfo> => {
   return await invoke<OmpPathInfo>('get_omp_root_path_info');
@@ -34,6 +48,9 @@ export const saveOmpSettingsConfig = async (
 export const readOmpRuntimeConfig = async (): Promise<OmpRuntimeConfig> => {
   return await invoke<OmpRuntimeConfig>('read_omp_runtime_config');
 };
+
+export const refreshOmpCodexCatalog = (rootPath: string): Promise<OmpRuntimeConfig> =>
+  invoke('refresh_omp_codex_catalog', { rootPath });
 
 export const saveOmpModelSettings = async (
   input: OmpModelSettingsInput,

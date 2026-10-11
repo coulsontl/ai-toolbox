@@ -131,6 +131,7 @@ import {
 import {
   deleteOmpRuntimeProvider,
   getOmpSettingsConfig,
+  refreshOmpCodexCatalog,
   readOmpRuntimeConfig,
   saveOmpModelSettings,
   saveOmpModelsProvider,
@@ -151,6 +152,8 @@ import { extractOmpProviderFromCcSwitch } from '../utils/importMapping';
 import OmpAgentsSettings from '../components/OmpAgentsSettings';
 import { OMP_CORE_MODEL_ROLES } from '../utils/ompAgentsUtils';
 import OmpExtensionsSection from '../components/OmpExtensionsSection';
+import OmpSubscriptionCard from '../components/OmpSubscriptionCard';
+import { getOmpRuntimeModelIds, getOmpRuntimeModelRecords, mergeOmpRuntimeCatalog, type OmpRuntimeCatalog } from '../utils/ompRuntimeModels';
 import styles from './OhMyPiPage.module.less';
 
 const { Title, Text, Link } = Typography;
@@ -503,7 +506,18 @@ const OhMyPiPage: React.FC = () => {
   const [saving, setSaving] = React.useState(false);
   const [refreshingModels, setRefreshingModels] = React.useState(false);
   const [extensionsRefreshKey, setExtensionsRefreshKey] = React.useState(0);
-  const [runtimeConfig, setRuntimeConfig] = React.useState<OmpRuntimeConfig | null>(null);
+  const [localRuntimeConfig, setRuntimeConfig] = React.useState<OmpRuntimeConfig | null>(null);
+  const [runtimeCatalog, setRuntimeCatalog] = React.useState<OmpRuntimeCatalog | null>(null);
+  const [catalogRefreshKey, setCatalogRefreshKey] = React.useState(0);
+  const configRequestRef = React.useRef(0);
+  const catalogGenerationRef = React.useRef(0);
+  const runtimeConfig = React.useMemo(
+    () => localRuntimeConfig ? mergeOmpRuntimeCatalog(localRuntimeConfig, runtimeCatalog) : null,
+    [localRuntimeConfig, runtimeCatalog],
+  );
+  const rootPath = localRuntimeConfig?.rootPathInfo.path;
+  const currentRootRef = React.useRef(rootPath);
+  currentRootRef.current = rootPath;
   const [modelForm] = Form.useForm();
   const [providerModal, setProviderModal] = React.useState<ProviderJsonModalState | null>(null);
   const [providerModalForm] = Form.useForm();
@@ -579,12 +593,15 @@ const OhMyPiPage: React.FC = () => {
     },
   ], [t]);
 
-  const loadConfig = React.useCallback(async (silent = false) => {
+  const loadConfig = React.useCallback(async (silent = false, refreshCatalog = false) => {
+    const request = ++configRequestRef.current;
+    if (refreshCatalog) catalogGenerationRef.current += 1;
     if (!silent) {
       setLoading(true);
     }
     try {
       const config = await readOmpRuntimeConfig();
+      if (request !== configRequestRef.current) return;
       setRuntimeConfig(config);
       setOtherSettings(config.otherSettings || {});
       modelForm.setFieldsValue({
@@ -592,19 +609,44 @@ const OhMyPiPage: React.FC = () => {
         defaultModel: config.modelSettings.modelId || undefined,
         defaultThinkingLevel: config.modelSettings.thinkingLevel || undefined,
       });
+      if (refreshCatalog) setCatalogRefreshKey((key) => key + 1);
     } catch (error) {
+      if (request !== configRequestRef.current) return;
       console.error('Failed to load Pi runtime config:', error);
       message.error(t('common.error'));
     } finally {
-      if (!silent) {
-        setLoading(false);
-      }
+      if (request === configRequestRef.current) setLoading(false);
     }
   }, [modelForm, t]);
 
   React.useEffect(() => {
-    loadConfig();
+    void loadConfig(false, true);
+    return () => {
+      configRequestRef.current += 1;
+      catalogGenerationRef.current += 1;
+    };
   }, [loadConfig]);
+
+  React.useEffect(() => {
+    if (!rootPath) return;
+    const generation = ++catalogGenerationRef.current;
+    let cancelled = false;
+    setRuntimeCatalog((previous) => previous?.rootPath === rootPath ? { ...previous, error: null } : null);
+    void refreshOmpCodexCatalog(rootPath).then(
+      (config) => {
+        if (!cancelled && rootPath === currentRootRef.current && config.rootPathInfo.path === rootPath && generation === catalogGenerationRef.current) {
+          const provider = config.providers.find((item) => item.providerKey === 'openai-codex');
+          setRuntimeCatalog({ rootPath, models: provider?.runtimeModels ?? [], error: provider?.runtimeCatalogError ?? null });
+        }
+      },
+      (error: unknown) => {
+        if (!cancelled && rootPath === currentRootRef.current && generation === catalogGenerationRef.current) {
+          setRuntimeCatalog({ rootPath, models: [], error: error instanceof Error ? error.message : String(error) });
+        }
+      },
+    );
+    return () => { cancelled = true; };
+  }, [rootPath, catalogRefreshKey]);
 
   React.useEffect(() => {
     const checkAllApiHubAvailability = async () => {
@@ -691,7 +733,7 @@ const OhMyPiPage: React.FC = () => {
     });
 
     runtimeConfig?.providers.forEach((provider) => {
-      const modelIds = provider.modelIds ?? [];
+      const modelIds = getOmpRuntimeModelIds(provider);
       if (modelIds.length === 0) {
         return;
       }
@@ -715,7 +757,7 @@ const OhMyPiPage: React.FC = () => {
     if (!selectedProvider || !selectedDefaultModel) {
       return undefined;
     }
-    return getProviderModelRecords(selectedProvider.modelsProvider).find(
+    return getOmpRuntimeModelRecords(selectedProvider).find(
       (entry) => entry.id === selectedDefaultModel,
     )?.model;
   }, [selectedDefaultModel, selectedProvider]);
@@ -725,13 +767,13 @@ const OhMyPiPage: React.FC = () => {
   );
   const modelOptions = React.useMemo(() => {
     const options = new Set<string>();
-    selectedProvider?.modelIds?.forEach((modelId) => options.add(modelId));
+    if (selectedProvider) getOmpRuntimeModelIds(selectedProvider).forEach((modelId) => options.add(modelId));
     const current = selectedDefaultModel || runtimeConfig?.modelSettings.modelId;
     if (current) {
       options.add(current);
     }
     return Array.from(options).map((modelId) => ({ value: modelId, label: modelId }));
-  }, [runtimeConfig?.modelSettings.modelId, selectedDefaultModel, selectedProvider?.modelIds]);
+  }, [runtimeConfig?.modelSettings.modelId, selectedDefaultModel, selectedProvider]);
 
   const ompProviders = React.useMemo(
     () => runtimeConfig?.providers ?? [],
@@ -842,15 +884,16 @@ const OhMyPiPage: React.FC = () => {
     if (Object.prototype.hasOwnProperty.call(changedValues, 'defaultProvider')) {
       if (
         nextValues.defaultModel
-        && nextProvider?.modelIds?.length
-        && !nextProvider.modelIds.includes(nextValues.defaultModel)
+        && nextProvider
+        && getOmpRuntimeModelIds(nextProvider).length > 0
+        && !getOmpRuntimeModelIds(nextProvider).includes(nextValues.defaultModel)
       ) {
         nextValues.defaultModel = undefined;
         modelForm.setFieldValue('defaultModel', undefined);
       }
     }
     const nextModel = nextProvider && nextValues.defaultModel
-      ? getProviderModelRecords(nextProvider.modelsProvider).find(
+      ? getOmpRuntimeModelRecords(nextProvider).find(
         (entry) => entry.id === nextValues.defaultModel,
       )?.model
       : undefined;
@@ -974,6 +1017,10 @@ const OhMyPiPage: React.FC = () => {
     const providerKey = values.providerKey?.trim();
     if (!providerKey) {
       message.error(t('ohMyPi.provider.providerKeyRequired'));
+      return;
+    }
+    if (providerKey === 'openai-codex' && !providerModal.provider?.sources.includes('models_yml')) {
+      message.error(t('ohMyPi.subscription.useLoginGuidance'));
       return;
     }
 
@@ -1394,7 +1441,7 @@ const OhMyPiPage: React.FC = () => {
   });
 
   const handleSetPrimaryModel = async (provider: OmpRuntimeProviderView, modelId: string) => {
-    const nextModel = getProviderModelRecords(provider.modelsProvider).find(
+    const nextModel = getOmpRuntimeModelRecords(provider).find(
       (entry) => entry.id === modelId,
     )?.model;
     const currentThinkingLevel = runtimeConfig?.modelSettings.thinkingLevel ?? undefined;
@@ -1781,6 +1828,11 @@ const OhMyPiPage: React.FC = () => {
 
   const handleRefreshConfig = () => {
     void loadConfig(true);
+    // This is the page's general "re-read everything" button, and it is where
+    // users land after a terminal login. Leaving the model list stale would
+    // make them hunt for the subscription card's own refresh to see the account
+    // they just added.
+    setCatalogRefreshKey((key) => key + 1);
     setExtensionsRefreshKey((currentRefreshKey) => currentRefreshKey + 1);
     void refreshTrayMenu();
   };
@@ -1799,11 +1851,28 @@ const OhMyPiPage: React.FC = () => {
   };
 
   const renderProvider = (provider: OmpRuntimeProviderView) => {
-    // OMP 没有 auth.json,凭据(apiKey)直接写在 models.yml 的 provider 配置里。
+    const isSubscription = provider.providerKey === 'openai-codex';
     const providerConfig = provider.modelsProvider ?? {};
     const hasCredential = Object.prototype.hasOwnProperty.call(providerConfig, 'apiKey')
       && !isRecordEmpty({ apiKey: providerConfig.apiKey });
     const hasProviderConfig = provider.sources.includes('models_yml');
+    const subscriptionCard = isSubscription ? (
+      <OmpSubscriptionCard
+        key={`${provider.providerKey}:${runtimeConfig?.rootPathInfo.path}`}
+        rootPath={runtimeConfig?.rootPathInfo.path ?? ''}
+        provider={provider}
+        defaultModel={runtimeConfig?.modelSettings.modelId}
+        onSetPrimaryModel={(modelId) => void handleSetPrimaryModel(provider, modelId)}
+        onRefresh={async () => {
+          // The card's refresh is the catalog's refresh: it is where a user
+          // lands after a terminal login, when the model list has just become
+          // available. Bump the key first so the catalog effect re-runs.
+          setCatalogRefreshKey((key) => key + 1);
+          await loadConfig(true);
+        }}
+      />
+    ) : null;
+    if (isSubscription && !hasProviderConfig) return subscriptionCard;
     const canDeleteProvider = hasCredential || hasProviderConfig;
     const deleteDisabledReason = canDeleteProvider && provider.isDefault
       ? t('ohMyPi.provider.deleteDisabledDefault', { defaultValue: '该渠道已设为默认，不可删除' })
@@ -1832,7 +1901,7 @@ const OhMyPiPage: React.FC = () => {
       : !diagnostics.baseUrl ? t('common.baseUrlMissing') : '';
     const providerDisplay: ProviderDisplayData = {
       id: provider.providerKey,
-      name: provider.displayName,
+      name: isSubscription ? provider.displayName + ' · ' + t('ohMyPi.subscription.yamlOverride') : provider.displayName,
       sdkName: getStringField(providerConfig, 'api') || provider.categories.join(', ') || 'omp',
       baseUrl: providerBaseUrl
         || provider.sources.map((source) => translateRuntimeLabel('ohMyPi.sourceLabels', source)).join(' / ')
@@ -1845,18 +1914,20 @@ const OhMyPiPage: React.FC = () => {
     }));
 
     return (
+      <React.Fragment key={provider.providerKey}>
+        {subscriptionCard}
       <ProviderCard
         key={provider.providerKey}
         provider={providerDisplay}
         models={modelDisplayList}
         onEdit={() => openProviderModal(provider)}
-        onCopy={() => openProviderModal(provider, { copy: true })}
-        onShare={() => shareProvider({
+        onCopy={!isSubscription ? () => openProviderModal(provider, { copy: true }) : undefined}
+        onShare={!isSubscription ? () => shareProvider({
           id: provider.providerKey, name: provider.displayName, category: 'custom',
           settingsConfig: JSON.stringify(providerConfig), credential: provider.credential,
           credentialUnavailable: provider.credentialKind === 'oauth' || provider.credentialKind === 'env_possible',
           defaultModel: provider.isDefault ? runtimeConfig?.modelSettings.modelId ?? undefined : undefined,
-        })}
+        }) : undefined}
         onDelete={canDeleteProvider ? () => handleDeleteSupplier(provider) : undefined}
         deleteConfirm={false}
         deleteDisabledReason={deleteDisabledReason}
@@ -1940,6 +2011,7 @@ const OhMyPiPage: React.FC = () => {
         modelsDraggable={!isBatchDeleteMode}
         onReorderModels={(modelIds) => handleReorderModels(provider, modelIds)}
       />
+      </React.Fragment>
     );
   };
 

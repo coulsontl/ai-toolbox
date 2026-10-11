@@ -87,3 +87,20 @@ test('copy does not autofill and a new dialog resets autofill ownership', () => 
   form.handlers.handleProviderApiChange('azure-openai-responses');
   assert.equal(form.fields.baseUrl, '');
 });
+
+test('subscription cannot be added through the API-key provider form', async () => {
+  const form = createFormHarness();
+  form.handlers.openProviderModal();
+  form.fields.providerKey = 'openai-codex';
+  await assert.rejects(form.handlers.handleSaveProviderModal(), /ohMyPi.subscription.useLoginGuidance/);
+  assert.equal(form.saved(), undefined);
+});
+
+test('existing Codex YAML override remains editable without converting OAuth to an API key', async () => {
+  const form = createFormHarness();
+  const provider = { api: 'openai-codex-responses', models: [{ id: 'gpt-5-codex' }] };
+  form.handlers.openProviderModal({ providerKey: 'openai-codex', modelsProvider: provider, sources: ['models_yml'] });
+  await form.handlers.handleSaveProviderModal();
+  assert.deepEqual(form.saved().provider.models, provider.models);
+  assert.equal(form.saved().provider.apiKey, undefined);
+});

@@ -3,6 +3,31 @@ export interface OmpPathInfo {
   source: 'custom' | 'env' | 'shell' | 'default';
 }
 
+export interface OmpCodexAccount {
+  id: string;
+  email: string | null;
+  accountId: string | null;
+  plan: string | null;
+  expiresAt: number | null;
+  isEnabled: boolean;
+  disabledCause: string | null;
+}
+
+export interface OmpCodexAccountsResult {
+  accounts: OmpCodexAccount[];
+  canWrite: boolean;
+  error: string | null;
+}
+
+export interface OmpCodexAccountUsage {
+  accountId: string;
+  hasFiveHourLimit: boolean;
+  limit5hText: string | null;
+  limitWeeklyText: string | null;
+  limit5hResetAt: number | null;
+  limitWeeklyResetAt: number | null;
+}
+
 export interface OmpSettingsConfig {
   rootDir?: string | null;
   updatedAt?: string;
@@ -32,6 +57,10 @@ export interface OmpRuntimeProviderView {
   credentialKind: OmpCredentialKind;
   credential?: unknown;
   modelsProvider?: Record<string, unknown>;
+  oauthStatus?: 'stored' | 'missing' | 'unavailable' | null;
+  runtimeModels?: Record<string, unknown>[];
+  loginCommand?: string | null;
+  runtimeCatalogError?: string | null;
   runtimeFiles: string[];
   isBuiltin: boolean;
   isOverride: boolean;

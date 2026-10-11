@@ -11,6 +11,8 @@
     "opener:allow-open-path",
     "dialog:default",
     "fs:default",
+    "fs:allow-stat",
+    "fs:allow-read-text-file",
     "shell:default",
     "os:default",
     "deep-link:default"

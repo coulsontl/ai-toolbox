@@ -79,15 +79,31 @@ fn omp_wsl_path_prefix(linux_user_root: Option<&str>) -> String {
     .join(":")
 }
 
-fn build_omp_command(
+/// Pins every `omp` invocation to the root this app selected.
+///
+/// Same reason as the comment on `omp_login_command`, but this covers the
+/// commands the app runs itself. The pin belongs at this choke point rather
+/// than at each call site: it was added for the login command and the catalog
+/// refresh first, and the plugin path kept the unpinned behavior — measured,
+/// `omp plugin list --json` returns an empty list under an exported profile, so
+/// a user saw "no plugins installed" for plugins that were there.
+const OMP_PROFILE_PIN: [&str; 2] = ["--profile", "default"];
+
+/// The same pin as one shell-token suffix, for the copyable login command.
+const OMP_PROFILE_PIN_SUFFIX: &str = "--profile default";
+
+async fn build_omp_command(
     runtime_location: &RuntimeLocationInfo,
     args: &[&str],
 ) -> Result<OmpCommandInvocation, String> {
     match runtime_location.mode {
         RuntimeLocationMode::LocalWindows => {
-            let omp_program = resolve_local_omp_program();
+            let omp_program = tauri::async_runtime::spawn_blocking(resolve_local_omp_program)
+                .await
+                .map_err(|error| format!("Failed to resolve OMP CLI: {error}"))?;
             let local_program_label = omp_program.path.display().to_string();
             let mut command = build_local_tokio_command(&omp_program.path);
+            command.args(OMP_PROFILE_PIN);
             command.args(args);
             command.env(OMP_ENV_KEY, &runtime_location.host_path);
             Ok(OmpCommandInvocation {
@@ -116,6 +132,7 @@ fn build_omp_command(
                 "env",
             ]);
             command.arg("omp");
+            command.args(OMP_PROFILE_PIN);
             command.args(args);
             Ok(OmpCommandInvocation {
                 command,
@@ -177,15 +194,96 @@ fn build_omp_spawn_error(error: &std::io::Error, local_program_label: Option<&st
     annotate_omp_command_error(with_hint, local_program_label)
 }
 
-async fn run_omp_command(
+fn posix_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn powershell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// Copyable terminal guidance; uses the same root and WSL PATH as the runner.
+///
+/// `--profile default` is not decoration. OMP resolves its agent directory from
+/// `OMP_PROFILE`/`PI_PROFILE` *before* `PI_CODING_AGENT_DIR`, and the literal
+/// profile name `default` is the one value that means "no profile" (upstream
+/// `v$()` returns `undefined` for it). Without the flag, a user whose shell
+/// exports `OMP_PROFILE` gets a login written to that profile's agent dir while
+/// the UI reports the state of the directory we selected — the two disagree and
+/// the account looks missing right after a successful login.
+pub(super) fn omp_login_command(location: &RuntimeLocationInfo) -> Option<String> {
+    match location.mode {
+        RuntimeLocationMode::LocalWindows => {
+            let program = resolve_local_omp_program();
+            let root = location.host_path.to_string_lossy();
+            let program = program.path.to_string_lossy();
+            if cfg!(target_os = "windows") {
+                Some(format!(
+                    "$env:PI_CODING_AGENT_DIR={}; & {} {} login openai-codex",
+                    powershell_quote(&root),
+                    powershell_quote(&program),
+                    OMP_PROFILE_PIN_SUFFIX
+                ))
+            } else {
+                Some(format!(
+                    "PI_CODING_AGENT_DIR={} {} {} login openai-codex",
+                    posix_quote(&root),
+                    posix_quote(&program),
+                    OMP_PROFILE_PIN_SUFFIX
+                ))
+            }
+        }
+        RuntimeLocationMode::WslDirect => {
+            let wsl = location.wsl.as_ref()?;
+            let args = [
+                "wsl".to_string(),
+                "-d".to_string(),
+                wsl.distro.clone(),
+                "--exec".to_string(),
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                WSL_OMP_COMMAND_SCRIPT.to_string(),
+                "ai-toolbox-omp".to_string(),
+                omp_wsl_path_prefix(wsl.linux_user_root.as_deref()),
+                wsl.linux_path.clone(),
+                "env".to_string(),
+                "omp".to_string(),
+                OMP_PROFILE_PIN[0].to_string(),
+                OMP_PROFILE_PIN[1].to_string(),
+                "login".to_string(),
+                "openai-codex".to_string(),
+            ];
+            let quote = if cfg!(target_os = "windows") {
+                powershell_quote
+            } else {
+                posix_quote
+            };
+            let prefix = if cfg!(target_os = "windows") {
+                "& "
+            } else {
+                ""
+            };
+            Some(format!(
+                "{prefix}{}",
+                args.iter()
+                    .map(|arg| quote(arg))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ))
+        }
+    }
+}
+
+pub(super) async fn run_omp_command(
     runtime_location: &RuntimeLocationInfo,
     args: &[&str],
 ) -> Result<String, String> {
     let OmpCommandInvocation {
         mut command,
         local_program_label,
-    } = build_omp_command(runtime_location, args)?;
+    } = build_omp_command(runtime_location, args).await?;
 
+    command.kill_on_drop(true);
     let output = command
         .output()
         .await
@@ -764,6 +862,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_omp_invocation_pins_the_profile() {
+        // The runner's pin is injected in `build_omp_command`, the single choke
+        // point for `run_omp_command`. Dropping it silently reroutes every
+        // command to a profile directory, so the constants are asserted here: a
+        // refactor that removes the injection has to delete this test too.
+        assert_eq!(OMP_PROFILE_PIN, ["--profile", "default"]);
+        assert_eq!(
+            OMP_PROFILE_PIN_SUFFIX,
+            OMP_PROFILE_PIN.join(" "),
+            "the copyable command and the runner must pin the same profile"
+        );
+    }
+
+    #[test]
     fn parses_plugin_list_json_with_npm_and_marketplace() {
         let raw = r#"{
   "npm": [
@@ -909,5 +1021,46 @@ mod tests {
                 .join("plugins")
                 .join("node_modules")
         );
+    }
+    #[test]
+    fn login_guidance_quotes_shell_values_and_selected_wsl_root() {
+        assert_eq!(posix_quote("/tmp/it's $root"), "'/tmp/it'\"'\"'s $root'");
+        assert_eq!(powershell_quote("C:\\it's $root"), "'C:\\it''s $root'");
+        let location = RuntimeLocationInfo {
+            mode: RuntimeLocationMode::WslDirect,
+            source: "custom".to_string(),
+            host_path: PathBuf::from(r"\\wsl.localhost\Ubuntu\home\tester\custom root"),
+            wsl: Some(crate::coding::runtime_location::WslLocationInfo {
+                distro: "Ubuntu user's".to_string(),
+                linux_path: "/home/tester/custom root".to_string(),
+                linux_user_root: Some("/home/tester".to_string()),
+            }),
+        };
+        let command = omp_login_command(&location).unwrap();
+        assert!(command.contains("'/home/tester/custom root'"));
+        assert!(command.contains("export PI_CODING_AGENT_DIR="));
+        assert!(command.contains("/home/tester/.bun/bin"));
+        // `--profile default` pins the agent dir: without it an exported
+        // OMP_PROFILE/PI_PROFILE outranks PI_CODING_AGENT_DIR and the login
+        // lands in a different directory than the one the UI reads.
+        assert!(command.ends_with("'env' 'omp' '--profile' 'default' 'login' 'openai-codex'"));
+        assert!(!command.contains("wsl.localhost"));
+        let quote = if cfg!(target_os = "windows") {
+            powershell_quote
+        } else {
+            posix_quote
+        };
+        assert!(command.contains(&quote("Ubuntu user's")));
+
+        // The local branch is a different code path and needs the same pin.
+        let local = RuntimeLocationInfo {
+            mode: RuntimeLocationMode::LocalWindows,
+            source: "db".to_string(),
+            host_path: PathBuf::from(r"C:\Users\tester\.omp\agent"),
+            wsl: None,
+        };
+        let local_command = omp_login_command(&local).unwrap();
+        assert!(local_command.contains("--profile default login openai-codex"));
+        assert!(local_command.contains("PI_CODING_AGENT_DIR="));
     }
 }

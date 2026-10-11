@@ -16,7 +16,7 @@
 
 ## Source of Truth
 
-- 页面唯一状态源是 `readOmpRuntimeConfig()` 返回的 `OmpRuntimeConfig`；每个写命令返回**整份新 config**，页面直接 `setRuntimeConfig(nextConfig)`，不做乐观更新（托盘、MCP 页、深链导入、备份恢复都会绕过本页写文件）。
+- 本地文件状态源是 `readOmpRuntimeConfig()` 返回的 `OmpRuntimeConfig`；每个写命令返回**整份新 config**，`setRuntimeConfig(nextConfig)` 只更新本地快照，不做乐观更新。原生目录是独立、按根路径隔离的只读视图；刷新回包只取模型与目录错误，不能覆盖最新设置或表单。合并时以当前本地默认模型重算告警，YAML 同名模型优先。
 - `providers` 是后端从 `models.yml`（+ `config.yml` 的 `modelRoles.default`）折叠出的只读视图。OMP 视图的 `credential` **恒为 `null`**（后端 `credential: None`）：卡片的「有凭据」判定来自 `modelsProvider.apiKey` 是否存在，不是 `credential` 字段。页面里几处把 `provider.credential` 传进收藏 / 分享的对象因此都是 `null`，属于既定事实而不是漏传。
 - `settings` / `models` / `configContent` / `modelsContent` / `mcpContent` / `promptContent` 只服务预览弹窗与「其他配置」的初始切片，不是保存基底。
 - subagent 方案的**主数据在应用数据库**（`listOmpAgentsConfigs` 等），`<agentDir>/agents/*.md` 与 `config.yml` 的 `modelRoles` 是 apply 的产物；空库时后端给出 `__local__` 桥接态（读本地 `modelRoles` + `agents/*.md`），它不是记录、不可删除，UI 也不给它「已应用」样式。
@@ -27,6 +27,9 @@
 - 供应商表单是 OMP 独有的「API 变更时自动补 Base URL」：`automaticProviderBaseUrlRef` 记录「当前地址是否仍由表单自动填入」。新建弹窗初始为自动态；用户手改或清空后转为手动态；编辑/复制现有供应商时直接是手动态（`undefined`）；重新打开新建弹窗重置。`OMP_API_DEFAULT_BASE_URL` 只收录端点稳定、不依赖用户资源的协议，Azure / Vertex / Bedrock / gemini-cli 不预填。回归：`web/test/features/coding/oh_my_pi/utils/ompProviderForm.test.ts`。
 - 「获取模型」与「连通性测试」的能力判定集中在 `utils/ompDiagnostics.ts`，它同时回答三件事：目录请求用哪个连接、连通性是否可用、每个模型各自的连接。**混用连接不再是禁用理由**（issue #360）：目录端点退回供应商级 `api`/`baseUrl`，连通性按 `modelConnections` 逐模型测试，token 上限字段名跟着该模型解析出的 npm 走（Google 读 `maxOutputTokens`，其余读 `maxTokens`）。
 - 模型弹窗对 OMP 用 `showOmpThinking`（写 `thinking` 结构）而不是 Pi 的 `showThinkingLevelMap`；保存时无条件 `delete nextModel.thinkingLevelMap`，因为 OMP 不认这个键。`cost` 必须四个字段齐全，否则整块不写（缺一个字段就会让整个 `models.yml` 校验失败、禁用所有自定义 provider）。
+- **Codex 订阅卡片是「官方账号」共享组件的 OMP 宿主**（`OmpSubscriptionCard` → `OpenCodeStyleCard` + `OfficialAccountsSection` 的 `embedded` 变体），不是自建区块。账号行由「`OmpCodexAccount` → `OfficialAccountRowView`」映射而来，登录入口走 `loginAction` 插槽（导入 auth.json / 订阅登录 / 刷新三个动作）。改动卡片样式应改共享组件，不要在 OMP 侧分叉——这是 `9a1d3c35`、`557632cb` 两次提交统一三种卡片的原因。
+- `loadConfig(silent, refreshCatalog)` 先结束本地配置加载，再由独立 effect 刷新原生目录；不得把 `refreshOmpCodexCatalog` 放进全局 Spin 的 await 链。首次进入运行目录和订阅卡片刷新触发一次目录发现；普通配置读取、保存、托盘事件、deeplink、subagent apply 不触发 CLI。异步响应必须检查根路径、请求代次与卸载清理，避免切目录、连续刷新或保存后迟到的回包覆盖当前视图。目录超时只显示订阅卡片的局部错误，本地设置与账号仍可使用；额度继续仅由逐账号按钮手动查询。
+- 纯原生订阅（`openai-codex` 且没有 `models.yml` 覆盖）**不进供应商列表**，只渲染订阅卡片；一旦用户在 `models.yml` 里显式配了该 provider，卡片与供应商卡片同时出现，后者带「models.yml 覆盖配置」后缀——这是为了让用户能检查并移除自己的 API-key 配置，而不是把它藏起来。
 
 ## 关键流程
 
@@ -115,4 +118,6 @@ sequenceDiagram
 - 手工在 `config.yml` 写一个自定义 role（如 `my-role`），apply 只配核心角色的方案后该 role 仍在。
 - 方案里写 `ollama/qwen2.5:14b` 这类字面 model id，打开弹窗再保存后逐字不变（`ompAgentsUtils` 单测覆盖）。
 - 改诊断逻辑时跑 `node --test web/test/features/coding/oh_my_pi/utils/ompDiagnostics.test.ts`；改模型映射时跑 `ompFetchedModels.test.ts`；改 subagent 工具函数时跑 `ompAgentsUtils.test.ts`。
+- 未配置 `models.yml` 的 `openai-codex` 只以订阅卡片出现；在 `models.yml` 里加该 provider 后，卡片与供应商卡片同时出现且后者带「models.yml 覆盖配置」。
+- 打开页面后连续保存模型/供应商多次，`models.db` 的修改时间不变；点订阅卡片的刷新按钮后才变化（证明 `omp models` 只在显式刷新时执行）。
 - 任何写操作后托盘菜单同步（`refreshTrayMenu()` 不可省）。
