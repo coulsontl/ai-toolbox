@@ -33,6 +33,8 @@ import ClaudeDesktopProviderCard from '@/features/coding/claudedesktop/component
 import GeminiCliProviderCard from '@/features/coding/geminicli/components/GeminiCliProviderCard';
 import GrokProviderCard from '@/features/coding/grok/components/GrokProviderCard';
 import OmoNativeProviderCard from '@/features/coding/omo_native/components/OmoNativeProviderCard';
+import OpenClawProviderCard from '@/features/coding/openclaw/components/OpenClawProviderCard';
+import HermesProviderCard from '@/features/coding/hermes/components/HermesProviderCard';
 import gatewayProfiles from '../../../../../../../tauri/resources/gateway_provider_profiles.json';
 import '@/App.css';
 
@@ -358,6 +360,94 @@ const omoProps = {
   onBatchDeleteModels: noop,
 };
 
+/* ------------------------------------------------------------------ OpenClaw */
+
+const openClawProvider = {
+  baseUrl: 'https://relay.openclaw.example.test/v1',
+  apiKey: 'sk-openclaw-fixture-key',
+  api: 'openai-completions',
+  models: [
+    { id: 'gpt-5', name: 'GPT-5', contextWindow: 400000, maxTokens: 128000 },
+    { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5' },
+  ],
+};
+
+const openClawProps = {
+  onEdit: noop,
+  onCopy: noop,
+  onShare: noop,
+  onDelete: noop,
+  onAddModel: noop,
+  onEditModel: noop,
+  onCopyModel: noop,
+  onDeleteModel: noop,
+  onReorderModels: noop,
+  onTestModels: noop,
+  testModelsDisabled: false,
+  testModelsDisabledTooltip: '未配置可测试模型',
+  onFetchModels: noop,
+  fetchDisabled: false,
+  fetchDisabledTooltip: '请先填写 Base URL 与 API Key',
+  onSelectChange: noop,
+  onToggleModelSelection: noop,
+  onToggleBatchDeleteMode: noop,
+  onBatchDeleteModels: noop,
+};
+
+/* ------------------------------------------------------------------ Hermes */
+
+const hermesProvider = {
+  providerKey: 'anthropic-direct',
+  displayName: 'Anthropic Direct',
+  apiMode: 'anthropic',
+  provider: {
+    id: 'anthropic-direct',
+    api_mode: 'anthropic',
+    base_url: 'https://api.anthropic.com',
+    api_key: 'sk-ant-hermes-fixture-key',
+    models: [
+      { id: 'claude-opus-4-8', name: 'Claude Opus 4.8' },
+      { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5' },
+    ],
+  },
+  modelIds: ['claude-opus-4-8', 'claude-sonnet-4-5'],
+  isBuiltin: false,
+  isReadOnly: false,
+  isDefault: true,
+};
+
+/** A built-in `providers:` entry: no edit, no copy, no delete, no catalog. */
+const hermesReadOnlyProvider = {
+  providerKey: 'openrouter',
+  displayName: 'OpenRouter Built-in',
+  apiMode: 'openai',
+  provider: { id: 'openrouter', base_url: 'https://openrouter.ai/api/v1' },
+  modelIds: [],
+  isBuiltin: true,
+  isReadOnly: true,
+  isDefault: false,
+};
+
+const hermesProps = {
+  onEdit: noop,
+  onCopy: noop,
+  onShare: noop,
+  onDelete: noop,
+  onAddModel: noop,
+  onEditModel: noop,
+  onCopyModel: noop,
+  onDeleteModel: noop,
+  onSetPrimaryModel: noop,
+  onTestModels: noop,
+  testModelsDisabled: false,
+  onFetchModels: noop,
+  fetchDisabled: false,
+  onSelectChange: noop,
+  onToggleModelSelection: noop,
+  onToggleBatchDeleteMode: noop,
+  onBatchDeleteModels: noop,
+};
+
 /* ------------------------------------------------------------------ fixture API */
 
 const cards = (name) => [...document.querySelectorAll(`[data-fixture="${name}"]`)];
@@ -396,6 +486,24 @@ window.migratedProviderCardsFixture = {
   /** Whether a block renders a drag handle. */
   hasHandle(name) {
     return Boolean(cards(name)[0]?.querySelector('[data-provider-card-handle]'));
+  },
+
+  /**
+   * Opens the list card's model fold.
+   *
+   * The rows exist only after the fold opens: `ModelListSection` keeps the body
+   * lazily mounted, so reading a row's state before this clicks returns nothing
+   * and would read as "the row says nothing".
+   */
+  async expandModels(name) {
+    const root = cards(name)[0];
+    // The fold's header is antd's `role="button"` header div, not a <button>.
+    const header = [...root.querySelectorAll('[role="button"], button')]
+      .find(node => node.textContent.includes('模型列表'));
+    if (!header) return false;
+    header.click();
+    await new Promise(resolve => setTimeout(resolve, 300));
+    return true;
   },
 
   /** The second line of a compact cell, as written. */
@@ -539,6 +647,58 @@ createRoot(document.getElementById('root')).render(
             {...omoProps}
             provider={omoProviders[1]}
             viewMode="card"
+          />
+        </div>
+
+        <div data-fixture="openclaw-list">
+          <OpenClawProviderCard
+            {...openClawProps}
+            providerId="relay-main"
+            config={openClawProvider}
+            viewMode="list"
+          />
+        </div>
+        <div data-fixture="openclaw-card">
+          <OpenClawProviderCard
+            {...openClawProps}
+            providerId="relay-main"
+            config={openClawProvider}
+            viewMode="card"
+          />
+        </div>
+        {/* The default provider: delete stays visible but explains itself. */}
+        <div data-fixture="openclaw-default-list">
+          <OpenClawProviderCard
+            {...openClawProps}
+            providerId="relay-main"
+            config={openClawProvider}
+            viewMode="list"
+            deleteDisabledReason="该渠道已设为默认，不可删除"
+          />
+        </div>
+
+        <div data-fixture="hermes-list">
+          <HermesProviderCard
+            {...hermesProps}
+            provider={hermesProvider}
+            defaultModelId="claude-opus-4-8"
+            viewMode="list"
+          />
+        </div>
+        <div data-fixture="hermes-card">
+          <HermesProviderCard
+            {...hermesProps}
+            provider={hermesProvider}
+            defaultModelId="claude-opus-4-8"
+            viewMode="card"
+          />
+        </div>
+        {/* The page owns the read-only gating: it passes no callbacks at all,
+            which is what the card must render as "no actions". */}
+        <div data-fixture="hermes-readonly-list">
+          <HermesProviderCard
+            provider={hermesReadOnlyProvider}
+            viewMode="list"
           />
         </div>
       </div>

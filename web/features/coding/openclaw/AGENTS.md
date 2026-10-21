@@ -16,6 +16,7 @@
 - `OpenClawConfigPathModal` 只在 `source === custom` 时回填当前值，避免把 env/default 等来源误写成用户输入。
 - 保存、导入、删除 provider 后都会显式 reload 和 tray refresh，因为页面 section 状态分散，不能只局部 patch 一个局部状态就结束。
 - **复制供应商 / 复制模型走「新增 + 预填」**（2026-10-07 补：此前两个复制按钮都没有，是全仓唯一缺失的页面）。`handleCopyProvider` / `handleCopyModel` 与编辑共用同一个弹窗，靠 `isCopy` 区分：弹窗预填来源值并把 id 加 `_copy` 后缀且**保持可编辑**，保存时落成一条新记录。⚠️ 复制模式下 `handleModelSubmit` **不能**按 `editingModel.id` 去找下标替换——那会把源模型覆盖掉，必须走 `push` 分支（`isCopy` 的判定要贯穿提交路径，不只是在弹窗里）。
+- **卡片是共享 OpenCode 式映射层**（`components/OpenClawProviderCard.tsx`，2026-10-21 迁完）：页面只传 store 形状，布局在 `providerCardVariants/OpenCodeStyleCard`，两种布局共用一份 `renderProviderCard`。**协议到 AI SDK 包名的映射在 `utils/apiToNpm.ts`**，页面、映射层与连通性/获取模型弹窗必须共用这一份，不要再在页面里写第二份。删除确认在页面 handler 里（`Modal.confirm`），卡片传 `deleteConfirm: false`——列表卡、格子菜单和详情侧栏因此走同一个确认。
 - **本页的供应商卡片与模型行能力集**（对照 SOP §4.2.2 / §4.2.3 的清单）：供应商卡片 = 编辑 / 复制 / 分享 / 删除（默认模型不可删）/ 拖拽 / 批量选择；模型行 = 新增 / 编辑 / 复制 / 删除 / 拖拽 / 批量删除 / 连通性测试 / 获取模型。**没有**「设为默认模型」（默认模型在 `agents.defaults.model.primary`，由 `AgentsDefaultsCard` 管，不在模型行上）和「模型启用开关」（`models` 条目没有 `enabled` 键）。
 
 ## 关键流程

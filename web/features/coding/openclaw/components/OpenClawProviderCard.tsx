@@ -1,206 +1,303 @@
 import React from 'react';
-import { Button, Modal, Space, Tooltip } from 'antd';
-import { ApiOutlined, CloudDownloadOutlined, DeleteOutlined } from '@ant-design/icons';
+import { Button, Space, Tooltip } from 'antd';
+import {
+  CopyOutlined,
+  DeleteOutlined,
+  EditOutlined,
+} from '@ant-design/icons';
+import { Share2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import ProviderCard from '@/components/common/ProviderCard';
+import ProviderNameLink from '@/components/common/ProviderNameLink';
+import OpenCodeStyleCard from '@/features/coding/shared/providerCardVariants/OpenCodeStyleCard';
+import ProviderModelSection from '@/features/coding/shared/providerCardVariants/ProviderModelSection';
 import type {
-  ProviderDisplayData,
+  ProviderCardModels,
+  ProviderCardVariantProps,
+} from '@/features/coding/shared/providerCardVariants/types';
+import {
+  ProviderCompactCard,
+  type ProviderDetailSection,
+} from '@/features/coding/shared/providerCardView';
+import type { ProviderViewMode } from '@/features/coding/shared/providerList';
+import type {
   ModelDisplayData,
   ProviderConnectivityStatusItem,
 } from '@/components/common/ProviderCard/types';
 import type { OpenClawProviderConfig, OpenClawModel } from '@/types/openclaw';
+import { openClawApiToNpm } from '../utils/apiToNpm';
 
-interface Props {
+interface OpenClawProviderCardProps {
   providerId: string;
   config: OpenClawProviderConfig;
-  draggable?: boolean;
-  sortableId?: string;
-  modelsDraggable?: boolean;
-  onReorderModels?: (modelIds: string[]) => void;
+  /** `'card'` renders the compact grid cell plus the detail sidebar. */
+  viewMode?: ProviderViewMode;
+  /** Hides the drag handle while the list order cannot be changed (non-custom sort or search). */
+  dragDisabled?: boolean;
+  selectable?: boolean;
+  selected?: boolean;
+  onSelectChange?: (selected: boolean) => void;
+  connectivityStatus?: ProviderConnectivityStatusItem;
+
   onEdit: () => void;
   onCopy: () => void;
   onShare?: () => void;
   onDelete: () => void;
+  /** Disables the delete button and explains why on hover (the default provider). */
+  deleteDisabledReason?: string;
+
+  /** Model catalog actions. Omit a handler to hide its button. */
   onAddModel: () => void;
   onEditModel: (model: OpenClawModel) => void;
   onCopyModel: (model: OpenClawModel) => void;
   onDeleteModel: (modelId: string) => void;
-  /** 批量删除模型:多选 + 切换 + 确认执行 */
+  onReorderModels: (modelIds: string[]) => void;
+  /** Model-row batch delete, driven from the catalog toolbar. */
   modelSelectionMode?: boolean;
   selectedModelIds?: string[];
   onToggleModelSelection?: (modelId: string, selected: boolean) => void;
   onToggleBatchDeleteMode?: () => void;
   onBatchDeleteModels?: () => void;
-  onConnectivityTest: () => void;
+
+  /** Whole-catalog probes: connectivity and upstream model discovery. */
+  onTestModels: () => void;
+  testModelsDisabled: boolean;
+  testModelsDisabledTooltip?: string;
   onFetchModels: () => void;
-  connectivityStatus?: ProviderConnectivityStatusItem;
-  /** 当该渠道承载主模型(agents.defaults.model.primary)时，删除按钮置灰并显示此提示 */
-  deleteDisabledReason?: string;
-  /** Provider-level batch selection mode (swaps drag handle for a checkbox). */
-  selectable?: boolean;
-  /** Whether this provider is currently selected (only meaningful when selectable). */
-  selected?: boolean;
-  /** Toggle provider selection. */
-  onSelectChange?: (checked: boolean) => void;
+  fetchDisabled: boolean;
+  fetchDisabledTooltip?: string;
 }
 
-const toProviderDisplayData = (id: string, config: OpenClawProviderConfig): ProviderDisplayData => ({
-  id,
-  name: id,
-  sdkName: config.api || '',
-  baseUrl: config.baseUrl || '',
-});
-
-const toModelDisplayData = (model: OpenClawModel): ModelDisplayData => ({
-  id: model.id,
-  name: model.name || model.id,
-  contextLimit: model.contextWindow,
-  outputLimit: model.maxTokens,
-});
-
-const OpenClawProviderCard: React.FC<Props> = ({
+/**
+ * An OpenClaw provider, rendered in the OpenCode style.
+ *
+ * OpenClaw owns a per-provider model catalog (`models.providers.<id>.models`)
+ * and has no provider-level "apply": `agents.defaults.model.primary` points at
+ * one model inside one channel, and that pointer is edited in
+ * `AgentsDefaultsCard`. That is the OpenCode shape, so the layout lives in the
+ * shared variant and this file only maps OpenClaw's storage onto it.
+ *
+ * Both layouts are built from the same `props` object, so the list card and the
+ * grid cell cannot offer different actions.
+ */
+const OpenClawProviderCard: React.FC<OpenClawProviderCardProps> = ({
   providerId,
   config,
-  draggable,
-  sortableId,
-  modelsDraggable,
-  onReorderModels,
+  viewMode = 'list',
+  dragDisabled = false,
+  selectable = false,
+  selected = false,
+  onSelectChange,
+  connectivityStatus,
   onEdit,
   onCopy,
   onShare,
   onDelete,
+  deleteDisabledReason,
   onAddModel,
   onEditModel,
   onCopyModel,
   onDeleteModel,
-  onConnectivityTest,
-  onFetchModels,
-  connectivityStatus,
-  modelSelectionMode,
-  selectedModelIds,
+  onReorderModels,
+  modelSelectionMode = false,
+  selectedModelIds = [],
   onToggleModelSelection,
   onToggleBatchDeleteMode,
   onBatchDeleteModels,
-  deleteDisabledReason,
-  selectable = false,
-  selected = false,
-  onSelectChange,
+  onTestModels,
+  testModelsDisabled,
+  testModelsDisabledTooltip,
+  onFetchModels,
+  fetchDisabled,
+  fetchDisabledTooltip,
 }) => {
   const { t } = useTranslation();
+  const baseUrl = config.baseUrl || '';
+  const apiKey = config.apiKey || '';
+  const sdkName = openClawApiToNpm(config.api, config.baseUrl);
+  const catalogModels = config.models || [];
 
-  const isAuthReady = Boolean(config.baseUrl?.trim() && config.apiKey?.trim());
-  const authTooltip = !isAuthReady ? t('openclaw.providers.completeUrlAndKey') : '';
-  const isBatchDeleteMode = Boolean(modelSelectionMode);
-  const selectedModelCount = selectedModelIds?.length ?? 0;
+  const modelRows = React.useMemo<ModelDisplayData[]>(
+    () =>
+      catalogModels.map((model) => ({
+        id: model.id,
+        name: model.name || model.id,
+        contextLimit: model.contextWindow,
+        outputLimit: model.maxTokens,
+      })),
+    [catalogModels],
+  );
 
-  const provider = toProviderDisplayData(providerId, config);
-  const models = (config.models || []).map(toModelDisplayData);
+  /** The row handlers take ids; the page's handlers take the stored model. */
+  const findModel = (modelId: string): OpenClawModel | undefined =>
+    catalogModels.find((model) => model.id === modelId);
 
-  // Map model ID back to OpenClawModel for edit callback
-  const modelMap = React.useMemo(() => {
-    const map = new Map<string, OpenClawModel>();
-    for (const m of config.models || []) {
-      map.set(m.id, m);
+  /**
+   * The catalog, as data. Hoisted out of the props literal because the card
+   * view renders it in a different place (the detail sidebar), not because it
+   * states something different.
+   */
+  const modelSection: ProviderCardModels = {
+    models: modelRows,
+    modelsDraggable: !modelSelectionMode,
+    onReorderModels,
+    modelSelectionMode,
+    selectedModelIds,
+    onToggleModelSelection,
+    onToggleBatchDeleteMode,
+    onBatchDeleteModels,
+    // Probing and discovery belong to the catalog, not to the card: they run
+    // against the whole model list, which is why the bespoke card kept them in
+    // its model toolbar too.
+    onTestModels,
+    testModelsDisabled,
+    testModelsDisabledTooltip,
+    onFetchModels,
+    fetchDisabled,
+    fetchDisabledTooltip,
+    onAddModel,
+    onEditModel: (modelId) => {
+      const model = findModel(modelId);
+      if (model) onEditModel(model);
+    },
+    onCopyModel: (modelId) => {
+      const model = findModel(modelId);
+      if (model) onCopyModel(model);
+    },
+    onDeleteModel,
+  };
+
+  const props: ProviderCardVariantProps = {
+    provider: {
+      id: providerId,
+      name: providerId,
+      sdkName,
+      baseUrl,
+    },
+    providerState: {
+      // Card-level drag handle: the provider order is what is being sorted.
+      draggable: !selectable && !dragDisabled,
+      sortableId: providerId,
+      connectivityStatus,
+      selectable,
+      selected,
+      onSelectChange,
+    },
+    actions: {
+      onEdit,
+      onCopy,
+      onShare,
+      onDelete,
+      // No header "应用": a provider is never switched on or off here.
+      deleteConfirm: false,
+      deleteDisabledReason,
+    },
+    modelSection,
+  };
+
+  if (viewMode !== 'card') {
+    return <OpenCodeStyleCard {...props} />;
+  }
+
+  const detailSections: ProviderDetailSection[] = [{
+    key: 'connection',
+    title: t('common.provider.connectionTitle'),
+    fields: [
+      {
+        key: 'baseUrl',
+        label: t('openclaw.providers.baseUrl'),
+        value: baseUrl,
+        emptyText: t('common.provider.notConfigured'),
+        copyable: true,
+      },
+      // No `emptyText`: a provider that never declared a protocol has none to
+      // show, so the row drops instead of claiming it is unconfigured.
+      { key: 'api', label: t('openclaw.providers.apiProtocol'), value: config.api },
+      {
+        key: 'apiKey',
+        label: t('openclaw.providers.apiKey'),
+        value: apiKey,
+        emptyText: t('common.provider.notConfigured'),
+        copyable: true,
+        elideMiddle: true,
+      },
+    ],
+  }, {
+    // The catalog brings its own title, toolbar and empty state.
+    key: 'catalog',
+    content: (
+      <ProviderModelSection
+        providerId={providerId}
+        modelSection={modelSection}
+        appearance="detail"
+      />
+    ),
+  }];
+
+  /**
+   * The sidebar footer confirms on its own (it is not a `Popconfirm` host), and
+   * the page's delete handler asks as well — the list card, the grid menu and
+   * this footer all go through it, so the question is asked exactly once, where
+   * every entry point meets.
+   */
+  const handleDeleteFromDetail = () => {
+    if (deleteDisabledReason) {
+      return;
     }
-    return map;
-  }, [config.models]);
+    onDelete();
+  };
 
   return (
-    <ProviderCard
-      provider={provider}
-      models={models}
-      draggable={draggable}
-      sortableId={sortableId}
-      modelsDraggable={modelsDraggable}
-      onReorderModels={onReorderModels}
-      onEdit={onEdit}
-      onCopy={onCopy}
-      onShare={onShare}
-      onDelete={onDelete}
-      deleteDisabledReason={deleteDisabledReason}
-      selectable={selectable}
-      selected={selected}
-      onSelectChange={onSelectChange}
-      onAddModel={onAddModel}
-      onEditModel={(modelId) => {
-        const model = modelMap.get(modelId);
-        if (model) onEditModel(model);
-      }}
-      onCopyModel={(modelId) => {
-        const model = modelMap.get(modelId);
-        if (model) onCopyModel(model);
-      }}
-      onDeleteModel={onDeleteModel}
-      modelSelectionMode={modelSelectionMode}
-      selectedModelIds={selectedModelIds}
-      onToggleModelSelection={onToggleModelSelection}
-      connectivityStatus={connectivityStatus}
-      extraActions={
-        <Space size={4}>
-          {onToggleBatchDeleteMode && (
-            <>
-              <Button
-                size="small"
-                type="text"
-                style={{ fontSize: 12 }}
-                onClick={onToggleBatchDeleteMode}
-              >
-                <DeleteOutlined style={{ marginRight: 4 }} />
-                {isBatchDeleteMode
-                  ? t('openclaw.providers.cancelBatchDelete')
-                  : t('openclaw.providers.batchDelete')}
+    <ProviderCompactCard
+      provider={props.provider}
+      // The cell states one fact: the AI SDK package this channel speaks. A
+      // provider with no catalog still has one, so the second line is never
+      // blank; the endpoint and the catalog live in the sidebar.
+      subtitle={[{ value: sdkName }]}
+      // No primary action of its own, so the action row carries only the
+      // "more" menu; `'subtitle'` keeps it on the second line instead of
+      // opening an empty bordered footer bar.
+      actionPlacement="subtitle"
+      providerState={props.providerState}
+      actions={props.actions}
+      extraMenuItems={[{
+        key: 'model-test',
+        label: t('opencode.connectivity.button'),
+        disabled: testModelsDisabled,
+        onClick: onTestModels,
+      }]}
+      detail={{
+        title: <ProviderNameLink name={providerId} baseUrl={baseUrl} />,
+        sections: detailSections,
+        secondaryActions: (
+          <Space size={4} wrap>
+            <Button size="small" type="text" icon={<EditOutlined />} onClick={onEdit}>
+              {t('common.edit')}
+            </Button>
+            <Button size="small" type="text" icon={<CopyOutlined />} onClick={onCopy}>
+              {t('common.copy')}
+            </Button>
+            {onShare && (
+              <Button size="small" type="text" icon={<Share2 size={14} />} onClick={onShare}>
+                {t('common.share')}
               </Button>
-              {isBatchDeleteMode && (
+            )}
+            <Tooltip title={deleteDisabledReason}>
+              <span>
                 <Button
                   size="small"
+                  type="text"
                   danger
-                  style={{ fontSize: 12 }}
-                  disabled={selectedModelCount === 0}
-                  onClick={() => {
-                    Modal.confirm({
-                      title: t('common.model.batchDeleteConfirmTitle'),
-                      content: t('common.model.batchDeleteConfirmContent', { count: selectedModelCount }),
-                      okText: t('common.delete'),
-                      cancelText: t('common.cancel'),
-                      onOk: () => onBatchDeleteModels?.(),
-                    });
-                  }}
+                  icon={<DeleteOutlined />}
+                  disabled={Boolean(deleteDisabledReason)}
+                  onClick={handleDeleteFromDetail}
                 >
-                  {t('openclaw.providers.deleteSelected', { count: selectedModelCount })}
+                  {t('common.delete')}
                 </Button>
-              )}
-            </>
-          )}
-          <Tooltip title={authTooltip}>
-            <span>
-              <Button
-                size="small"
-                type="text"
-                style={{ fontSize: 12 }}
-                onClick={onConnectivityTest}
-                disabled={!isAuthReady || (config.models || []).length === 0}
-              >
-                <ApiOutlined style={{ marginRight: 4 }} />
-                {t('opencode.connectivity.button')}
-              </Button>
-            </span>
-          </Tooltip>
-          <Tooltip title={authTooltip}>
-            <span>
-              <Button
-                size="small"
-                type="text"
-                style={{ fontSize: 12 }}
-                onClick={onFetchModels}
-                disabled={!isAuthReady}
-              >
-                <CloudDownloadOutlined style={{ marginRight: 4 }} />
-                {t('openclaw.providers.fetchModels')}
-              </Button>
-            </span>
-          </Tooltip>
-        </Space>
-      }
+              </span>
+            </Tooltip>
+          </Space>
+        ),
+      }}
     />
   );
 };

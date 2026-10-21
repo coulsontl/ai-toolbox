@@ -1,37 +1,27 @@
 import React from 'react';
 import {
   Button,
-  Empty,
   Space,
   Typography,
   message,
-  Spin,
   Collapse,
   Alert,
   Modal,
 } from 'antd';
 import {
-  PlusOutlined,
-  FolderOpenOutlined,
-  EyeOutlined,
   EditOutlined,
-  ReloadOutlined,
-  LinkOutlined,
-  EllipsisOutlined,
   DatabaseOutlined,
   RobotOutlined,
   SettingOutlined,
   MoreOutlined,
   ImportOutlined,
-  ThunderboltOutlined,
   MessageOutlined,
   EnvironmentOutlined,
   ToolOutlined,
   GlobalOutlined,
-  CheckSquareOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { listen } from '@tauri-apps/api/event';
 import {
   DndContext,
@@ -44,11 +34,12 @@ import {
 } from '@dnd-kit/core';
 import {
   arrayMove,
+  rectSortingStrategy,
   SortableContext,
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
+import { restrictToVerticalAxis, restrictToWindowEdges } from '@dnd-kit/modifiers';
 
 import {
   readOpenClawConfigWithResult,
@@ -75,6 +66,7 @@ import {
   buildFetchedOpenClawModel,
 } from '../utils/openClawFetchedModels';
 import { applyOpenClawUserAgent } from '../utils/providerHeaders';
+import { openClawApiToNpm, toOpenCodeProvider } from '../utils/apiToNpm';
 import {
   extractOpenClawOtherConfigFields,
   mergeOpenClawOtherConfigFields,
@@ -143,58 +135,22 @@ import { SessionManagerPanel } from '@/features/coding/shared/sessionManager';
 import {
   PROVIDER_SORT_MODES_BASIC,
   backupProvidersBeforeDelete,
-  ProviderBatchToolbar,
-  ProviderSearchEmpty,
-  ProviderSearchInput,
-  ProviderSortDropdown,
   filterProviderItems,
   sortProviderItems,
   useProviderBatchSelection,
   useProviderListSort,
+  useProviderListViewPrefs,
 } from '@/features/coding/shared/providerList';
+import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
+import ProviderListSection from '@/features/coding/shared/ProviderListSection';
+import CodingPageHeader from '@/features/coding/shared/CodingPageHeader';
 import ImportFromCcSwitchModal from '@/features/coding/shared/ccSwitch/ImportFromCcSwitchModal';
 import { hasCcSwitchDb, type CcSwitchProviderCandidate } from '@/services/ccSwitchApi';
 import { extractOpenClawProviderFromCcSwitch } from '../utils/importMapping';
 
 import styles from './OpenClawPage.module.less';
 
-const { Title, Text, Link } = Typography;
-
-const OPENAI_COMPATIBLE_NPM = '@ai-sdk/openai-compatible';
-const OPENAI_RESPONSES_NPM = '@ai-sdk/openai';
-
-/**
- * Map OpenClaw `api` protocol (+ optional baseUrl hint) to OpenCode `npm` SDK name.
- * Used by FetchModelsModal and ConnectivityTestModal.
- */
-const apiToNpm = (api?: string, baseUrl?: string): string => {
-  // Explicit protocol match
-  if (api === 'openai-completions') return OPENAI_COMPATIBLE_NPM;
-  if (api === 'openai-responses') return OPENAI_RESPONSES_NPM;
-  if (api === 'anthropic-messages') return '@ai-sdk/anthropic';
-  if (api === 'google-generative-ai') return '@ai-sdk/google';
-
-  // Infer from baseUrl (covers old imports without api, or generic api like openai-completions)
-  const url = (baseUrl || '').toLowerCase();
-  if (url.includes('anthropic')) return '@ai-sdk/anthropic';
-  if (url.includes('generativelanguage.googleapis.com') || url.includes('google')) return '@ai-sdk/google';
-
-  return '@ai-sdk/openai-compatible';
-};
-
-/**
- * Convert OpenClawProviderConfig to OpenCodeProvider shape for ConnectivityTestModal.
- */
-const toOpenCodeProvider = (cfg: OpenClawProviderConfig): OpenCodeProvider => ({
-  npm: apiToNpm(cfg.api, cfg.baseUrl),
-  options: {
-    baseURL: cfg.baseUrl || '',
-    apiKey: cfg.apiKey,
-  },
-  models: Object.fromEntries(
-    (cfg.models || []).map((m) => [m.id, { name: m.name || m.id }]),
-  ),
-});
+const { Text } = Typography;
 
 const buildOpenClawFavoriteProviderConfig = (
   providerId: string,
@@ -458,6 +414,7 @@ const OpenClawPage: React.FC = () => {
   }, [config]);
 
   const { sortMode, setSortMode, lastUsedAt, noteProviderUsed } = useProviderListSort('openclaw');
+  const { viewMode, setViewMode } = useProviderListViewPrefs('openclaw');
   const [providerKeyword, setProviderKeyword] = React.useState('');
   // Search and non-custom sort modes bypass the config file order, so
   // dragging would write a stale custom order — dnd is only enabled in
@@ -735,24 +692,40 @@ const OpenClawPage: React.FC = () => {
       }
     };
 
-    try {
-      await upsertFavoriteProvider(
-        buildFavoriteProviderStorageKey('openclaw', providerId),
-        buildOpenClawFavoriteProviderConfig(providerId, provider),
-      );
-      await performDelete();
-    } catch (favoriteError) {
-      console.error('Failed to preserve OpenClaw favorite provider before deletion:', favoriteError);
-      Modal.confirm({
-        title: t('common.deleteWithoutBackupTitle'),
-        content: t('common.deleteWithoutBackupContent'),
-        okText: t('common.continueDelete'),
-        cancelText: t('common.cancel'),
-        onOk: async () => {
+    /**
+     * Awaited before anything happens, because the request now arrives from
+     * three places (list card menu, grid cell menu, detail sidebar) and only
+     * the first used to be wrapped in a `Popconfirm`. Asking here is the one
+     * place all three pass through; the card layer passes
+     * `deleteConfirm: false` so the list does not ask twice.
+     */
+    Modal.confirm({
+      title: t('common.provider.deleteProvider'),
+      content: t('common.provider.confirmDelete', { name: providerId }),
+      okText: t('common.confirm'),
+      cancelText: t('common.cancel'),
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await upsertFavoriteProvider(
+            buildFavoriteProviderStorageKey('openclaw', providerId),
+            buildOpenClawFavoriteProviderConfig(providerId, provider),
+          );
           await performDelete();
-        },
-      });
-    }
+        } catch (favoriteError) {
+          console.error('Failed to preserve OpenClaw favorite provider before deletion:', favoriteError);
+          Modal.confirm({
+            title: t('common.deleteWithoutBackupTitle'),
+            content: t('common.deleteWithoutBackupContent'),
+            okText: t('common.continueDelete'),
+            cancelText: t('common.cancel'),
+            onOk: async () => {
+              await performDelete();
+            },
+          });
+        }
+      },
+    });
   };
 
   const handleBatchDeleteProviders = React.useCallback(
@@ -1232,7 +1205,7 @@ const OpenClawPage: React.FC = () => {
       name: fetchModelsProviderId,
       baseUrl: provider.baseUrl || '',
       apiKey: provider.apiKey,
-      sdkName: apiToNpm(provider.api, provider.baseUrl),
+      sdkName: openClawApiToNpm(provider.api, provider.baseUrl),
       existingModelIds: (provider.models || []).map((m) => m.id),
     };
   }, [config, fetchModelsProviderId]);
@@ -1241,7 +1214,7 @@ const OpenClawPage: React.FC = () => {
     if (!config || !fetchModelsProviderId) return;
     const provider = config.models?.providers?.[fetchModelsProviderId];
     if (!provider) return;
-    const providerNpm = apiToNpm(provider.api, provider.baseUrl);
+    const providerNpm = openClawApiToNpm(provider.api, provider.baseUrl);
 
     const providers = config.models?.providers;
     if (!providers) return;
@@ -1337,6 +1310,60 @@ const OpenClawPage: React.FC = () => {
   // ================================================================
   // Drag handlers
   // ================================================================
+  /**
+   * One provider's card props, shared by both layouts.
+   *
+   * Both `ProviderListSection` branches render this, so the two views cannot
+   * offer different actions or a different delete guard.
+   */
+  const renderProviderCard = (providerId: string, providerConfig: OpenClawProviderConfig) => {
+    const isDefaultProvider = agentsDefaults?.model?.primary?.split('/')[0] === providerId;
+    return (
+      <OpenClawProviderCard
+        key={providerId}
+        providerId={providerId}
+        config={providerConfig}
+        viewMode={viewMode}
+        dragDisabled={providerBatchDragDisabled}
+        onEdit={() => handleEditProvider(providerId, providerConfig)}
+        onCopy={() => handleCopyProvider(providerId, providerConfig)}
+        onShare={() => shareProvider({
+          id: providerId, name: providerId, category: 'custom',
+          settingsConfig: JSON.stringify(providerConfig),
+          defaultModel: agentsDefaults?.model?.primary?.startsWith(providerId + '/')
+            ? agentsDefaults.model.primary.slice(providerId.length + 1)
+            : undefined,
+        })}
+        onDelete={() => handleDeleteProvider(providerId)}
+        deleteDisabledReason={
+          isDefaultProvider
+            ? t('openclaw.providers.deleteDisabledDefault', { defaultValue: '该渠道已设为默认，不可删除' })
+            : undefined
+        }
+        selectable={providerBatch.selectionMode && providerBatch.isSelectable(providerId)}
+        selected={providerBatch.selectedIds.has(providerId)}
+        onSelectChange={(checked) => providerBatch.toggleSelect(providerId, checked)}
+        onAddModel={() => handleAddModel(providerId)}
+        onEditModel={(model) => handleEditModel(providerId, model)}
+        onCopyModel={(model) => handleCopyModel(providerId, model)}
+        onDeleteModel={(modelId) => handleDeleteModel(providerId, modelId)}
+        onReorderModels={(modelIds) => handleReorderModels(providerId, modelIds)}
+        onTestModels={() => handleOpenConnectivityTest(providerId)}
+        testModelsDisabled={(providerConfig.models || []).length === 0}
+        testModelsDisabledTooltip={t('common.modelMissing')}
+        onFetchModels={() => handleOpenFetchModels(providerId)}
+        fetchDisabled={!providerConfig.baseUrl?.trim() || !providerConfig.apiKey?.trim()}
+        fetchDisabledTooltip={t('openclaw.providers.completeUrlAndKey')}
+        connectivityStatus={connectivityStatuses[providerId]}
+        modelSelectionMode={batchDeleteProviderId === providerId}
+        selectedModelIds={selectedModelIdsByProvider[providerId] ?? []}
+        onToggleModelSelection={(modelId, selected) => handleToggleModelSelection(providerId, modelId, selected)}
+        onToggleBatchDeleteMode={() => handleToggleBatchDeleteMode(providerId)}
+        onBatchDeleteModels={() => handleBatchDeleteModels(providerId)}
+      />
+    );
+  };
+
   const handleProviderDragEnd = async (event: DragEndEvent) => {
     if (!config?.models?.providers) return;
     const { active, over } = event;
@@ -1519,97 +1546,56 @@ const OpenClawPage: React.FC = () => {
         ) : (
           <>
             {/* ===== HEADER ===== */}
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div>
-                  <div style={{ marginBottom: 8 }}>
-                    <Title level={4} style={{ margin: 0, display: 'inline-block', marginRight: 8 }}>
-                      {t('openclaw.title')}
-                    </Title>
-                    <Link
-                      type="secondary"
-                      style={{ fontSize: 12 }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openUrl('https://docs.openclaw.ai/concepts/model-providers');
-                      }}
-                    >
-                      <LinkOutlined /> {t('openclaw.viewDocs')}
-                    </Link>
-                    <Link
-                      type="secondary"
-                      style={{ fontSize: 12, marginLeft: 16 }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setPreviewOpen(true);
-                      }}
-                    >
-                      <EyeOutlined /> {t('openclaw.previewConfig')}
-                    </Link>
-                  </div>
-                  <Space>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      {t('openclaw.configPath')}:
-                    </Text>
-                    <Text code style={{ fontSize: 12 }}>
-                      {configPathInfo?.path || '~/.openclaw/openclaw.json'}
-                    </Text>
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<EditOutlined />}
-                      onClick={() => setConfigPathModalOpen(true)}
-                      style={{ padding: 0, fontSize: 12 }}
-                    >
-                      {t('openclaw.customConfigPath')}
-                    </Button>
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<FolderOpenOutlined />}
-                      onClick={handleOpenFolder}
-                      style={{ padding: 0, fontSize: 12 }}
-                    >
-                      {t('openclaw.openFolder')}
-                    </Button>
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<ReloadOutlined />}
-                      onClick={handleRefresh}
-                      style={{ padding: 0, fontSize: 12 }}
-                    >
-                      {t('openclaw.refreshConfig')}
-                    </Button>
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<GlobalOutlined />}
-                      onClick={handleOpenWebUi}
-                      style={{ padding: 0, fontSize: 12 }}
-                    >
-                      {t('openclaw.openWebUi')}
-                    </Button>
-                  </Space>
-                </div>
-                <Space>
-                  <Button type="text" icon={<EllipsisOutlined />} onClick={() => setSettingsModalOpen(true)}>
-                    {t('common.moreOptions')}
+            <CodingPageHeader
+              title={t('openclaw.title')}
+              docsUrl="https://docs.openclaw.ai/concepts/model-providers"
+              onPreviewConfig={() => setPreviewOpen(true)}
+              configPath={configPathInfo?.path || '~/.openclaw/openclaw.json'}
+              onOpenFolder={handleOpenFolder}
+              onRefresh={handleRefresh}
+              onMoreOptions={() => setSettingsModalOpen(true)}
+              extraActions={(
+                <>
+                  {/* The shared "customize config dir" button says *directory*;
+                      OpenClaw picks a *file*, so it keeps its own wording here
+                      rather than borrowing a label that would describe the
+                      wrong thing. */}
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<EditOutlined />}
+                    onClick={() => setConfigPathModalOpen(true)}
+                    style={{ padding: 0, fontSize: 12 }}
+                  >
+                    {t('openclaw.customConfigPath')}
                   </Button>
-                </Space>
-              </div>
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<GlobalOutlined />}
+                    onClick={handleOpenWebUi}
+                    style={{ padding: 0, fontSize: 12 }}
+                  >
+                    {t('openclaw.openWebUi')}
+                  </Button>
+                </>
+              )}
+            />
 
-              <div
-                style={{
-                  fontSize: 12,
-                  color: 'var(--color-text-tertiary)',
-                  borderLeft: '2px solid var(--color-border)',
-                  paddingLeft: 8,
-                  marginTop: 8,
-                }}
-              >
-                {t('openclaw.configFileHint')}
-              </div>
+            {/* Describes the whole page (it names the config file as the source
+                of truth), not the provider list, so it stays under the header
+                rather than moving into `ProviderListSection.hint`. */}
+            <div
+              style={{
+                fontSize: 12,
+                color: 'var(--color-text-tertiary)',
+                borderLeft: '2px solid var(--color-border)',
+                paddingLeft: 8,
+                marginTop: -12,
+                marginBottom: 16,
+              }}
+            >
+              {t('openclaw.configFileHint')}
             </div>
 
             <OpenClawHealthBanner warnings={healthWarnings} onReload={handleRefresh} />
@@ -1661,184 +1647,86 @@ const OpenClawPage: React.FC = () => {
             </div>
 
             {/* ===== PROVIDERS COLLAPSE ===== */}
-            <div
-              id="openclaw-providers"
-              data-sidebar-section="true"
-              data-sidebar-title={t('openclaw.providers.title')}
+            <ProviderListSection
+              sectionId="openclaw-providers"
+              collapsed={providersCollapsed}
+              onCollapsedChange={setProvidersCollapsed}
+              loading={loading}
+              providerCount={providerEntries.length}
+              visibleCount={visibleProviderEntries.length}
+              batch={providerBatch}
+              batchSelectableIds={batchSelectableIds}
+              keyword={providerKeyword}
+              onKeywordChange={setProviderKeyword}
+              sortMode={sortMode}
+              sortModes={PROVIDER_SORT_MODES_BASIC}
+              onSortModeChange={setSortMode}
+              dragDisabledBySort={providerDragDisabled}
+              viewMode={viewMode}
+              onViewModeChange={setViewMode}
+              onBatchTest={handleBatchTestProviders}
+              batchTesting={batchTestingProviders}
+              onAddProvider={handleAddProvider}
+              footer={(
+                <Space wrap>
+                  <Button
+                    type="dashed"
+                    icon={<ImportOutlined />}
+                    onClick={() => setFavoriteImportModalOpen(true)}
+                  >
+                    {t('opencode.provider.importFavorite')}
+                  </Button>
+                  {allApiHubAvailable && (
+                    <Button
+                      type="dashed"
+                      icon={<AllApiHubIcon />}
+                      onClick={() => setAllApiHubImportModalOpen(true)}
+                    >
+                      {t('openclaw.providers.importFromAllApiHub')}
+                    </Button>
+                  )}
+                  {ccSwitchAvailable && (
+                    <Button
+                      type="dashed"
+                      icon={<ImportOutlined />}
+                      onClick={() => setCcSwitchImportModalOpen(true)}
+                    >
+                      {t('common.ccSwitch.importFromCcSwitch')}
+                    </Button>
+                  )}
+                </Space>
+              )}
             >
-              <Collapse
-                className={styles.collapseCard}
-                activeKey={providersCollapsed ? [] : ['providers']}
-                onChange={(keys) => setProvidersCollapsed(!keys.includes('providers'))}
-                items={[
-                  {
-                    key: 'providers',
-                    label: (
-                      <Text strong>
-                        <DatabaseOutlined style={{ marginRight: 8 }} />
-                        {t('openclaw.providers.title')}
-                      </Text>
-                    ),
-                    extra: (
-                      <Space size={4} wrap>
-                        <Button
-                          type="link"
-                          size="small"
-                          style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (providerBatch.selectionMode) {
-                              providerBatch.exitSelection();
-                            } else {
-                              providerBatch.enterSelection();
-                            }
-                          }}
-                        >
-                          <CheckSquareOutlined style={{ fontSize: 13, lineHeight: 1 }} />
-                          <span>
-                            {providerBatch.selectionMode
-                              ? t('common.batch.exit')
-                              : t('common.batch.manage')}
-                          </span>
-                        </Button>
-                        {providerBatch.selectionMode && (
-                          <ProviderBatchToolbar
-                            hasSelection={providerBatch.hasSelection}
-                            visibleCount={batchSelectableIds.length}
-                            isAllSelected={providerBatch.isAllSelected}
-                            indeterminate={providerBatch.indeterminate}
-                            onSelectAll={providerBatch.selectAllFiltered}
-                            onBatchDelete={providerBatch.batchDelete}
-                            disabled={loading}
-                          />
-                        )}
-                        <ProviderSearchInput value={providerKeyword} onChange={setProviderKeyword} />
-                        <ProviderSortDropdown
-                          mode={sortMode}
-                          modes={PROVIDER_SORT_MODES_BASIC}
-                          onChange={setSortMode}
-                        />
-                        <Button
-                          type="link"
-                          size="small"
-                          icon={<ThunderboltOutlined />}
-                          loading={batchTestingProviders}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleBatchTestProviders();
-                          }}
-                        >
-                          {t('common.batchTest')}
-                        </Button>
-                        <Button
-                          type="link"
-                          size="small"
-                          icon={<PlusOutlined />}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleAddProvider();
-                          }}
-                        >
-                          {t('openclaw.providers.addProvider')}
-                        </Button>
-                      </Space>
-                    ),
-                    children: (
-                      <Spin spinning={loading}>
-                        {providerEntries.length === 0 ? (
-                          <Empty description={t('openclaw.providers.emptyText')} />
-                        ) : visibleProviderEntries.length === 0 ? (
-                          <ProviderSearchEmpty />
-                        ) : (
-                          <DndContext
-                            sensors={providerBatchDragDisabled ? [] : sensors}
-                            collisionDetection={closestCenter}
-                            modifiers={[restrictToVerticalAxis]}
-                            onDragEnd={handleProviderDragEnd}
-                          >
-                            <SortableContext
-                              items={providerEntries.map(([id]) => id)}
-                              strategy={verticalListSortingStrategy}
-                            >
-                              {visibleProviderEntries.map(([providerId, providerConfig]) => (
-                                <OpenClawProviderCard
-                                  key={providerId}
-                                  providerId={providerId}
-                                  config={providerConfig}
-                                  draggable={!providerBatchDragDisabled}
-                                  sortableId={providerId}
-                                  modelsDraggable
-                                  onReorderModels={(modelIds) => handleReorderModels(providerId, modelIds)}
-                                  onEdit={() => handleEditProvider(providerId, providerConfig)}
-                                  onCopy={() => handleCopyProvider(providerId, providerConfig)}
-                                  onShare={() => shareProvider({
-                                    id: providerId, name: providerId, category: 'custom',
-                                    settingsConfig: JSON.stringify(providerConfig),
-                                    defaultModel: agentsDefaults?.model?.primary?.startsWith(providerId + '/') ? agentsDefaults.model.primary.slice(providerId.length + 1) : undefined,
-                                  })}
-                                  onDelete={() => handleDeleteProvider(providerId)}
-                                  deleteDisabledReason={
-                                    agentsDefaults?.model?.primary?.split('/')[0] === providerId
-                                      ? t('openclaw.providers.deleteDisabledDefault', { defaultValue: '该渠道已设为默认，不可删除' })
-                                      : undefined
-                                  }
-                                  selectable={providerBatch.selectionMode && providerBatch.isSelectable(providerId)}
-                                  selected={providerBatch.selectedIds.has(providerId)}
-                                  onSelectChange={(checked) =>
-                                    providerBatch.toggleSelect(providerId, checked)
-                                  }
-                                  onAddModel={() => handleAddModel(providerId)}
-                                  onEditModel={(model) => handleEditModel(providerId, model)}
-                                  onCopyModel={(model) => handleCopyModel(providerId, model)}
-                                  onDeleteModel={(modelId) => handleDeleteModel(providerId, modelId)}
-                                  onConnectivityTest={() => handleOpenConnectivityTest(providerId)}
-                                  onFetchModels={() => handleOpenFetchModels(providerId)}
-                                  connectivityStatus={connectivityStatuses[providerId]}
-                                  modelSelectionMode={batchDeleteProviderId === providerId}
-                                  selectedModelIds={selectedModelIdsByProvider[providerId] ?? []}
-                                  onToggleModelSelection={(modelId, selected) => handleToggleModelSelection(providerId, modelId, selected)}
-                                  onToggleBatchDeleteMode={() => handleToggleBatchDeleteMode(providerId)}
-                                  onBatchDeleteModels={() => handleBatchDeleteModels(providerId)}
-                                />
-                              ))}
-                            </SortableContext>
-                          </DndContext>
-                        )}
-                        <div style={{ marginTop: 12 }}>
-                          <Space wrap>
-                            <Button
-                              type="dashed"
-                              icon={<ImportOutlined />}
-                              onClick={() => setFavoriteImportModalOpen(true)}
-                            >
-                              {t('opencode.provider.importFavorite')}
-                            </Button>
-                            {allApiHubAvailable && (
-                              <Button
-                                type="dashed"
-                                icon={<AllApiHubIcon />}
-                                onClick={() => setAllApiHubImportModalOpen(true)}
-                              >
-                                {t('openclaw.providers.importFromAllApiHub')}
-                              </Button>
-                            )}
-                            {ccSwitchAvailable && (
-                              <Button
-                                type="dashed"
-                                icon={<ImportOutlined />}
-                                onClick={() => setCcSwitchImportModalOpen(true)}
-                              >
-                                {t('common.ccSwitch.importFromCcSwitch')}
-                              </Button>
-                            )}
-                          </Space>
-                        </div>
-                      </Spin>
-                    ),
-                  },
-                ]}
-              />
-            </div>
+              {/* One `DndContext` serves both layouts; only the sorting strategy
+                  and the drag modifier change with the view. */}
+              <DndContext
+                sensors={providerBatchDragDisabled ? [] : sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleProviderDragEnd}
+                modifiers={[viewMode === 'card' ? restrictToWindowEdges : restrictToVerticalAxis]}
+              >
+                <SortableContext
+                  items={providerEntries.map(([id]) => id)}
+                  strategy={viewMode === 'card' ? rectSortingStrategy : verticalListSortingStrategy}
+                >
+                  {viewMode === 'card' ? (
+                    <ProviderCardGrid
+                      items={visibleProviderEntries}
+                      getKey={([providerId]) => providerId}
+                      renderItem={([providerId, providerConfig]) => renderProviderCard(providerId, providerConfig)}
+                    />
+                  ) : (
+                    <div>
+                      {visibleProviderEntries.map(([providerId, providerConfig]) => (
+                        <React.Fragment key={providerId}>
+                          {renderProviderCard(providerId, providerConfig)}
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  )}
+                </SortableContext>
+              </DndContext>
+            </ProviderListSection>
 
             {/* ===== ENV COLLAPSE ===== */}
             <div

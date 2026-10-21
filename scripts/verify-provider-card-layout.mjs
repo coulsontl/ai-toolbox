@@ -87,6 +87,17 @@ const FORBIDDEN = [
     what: 'hand-rolls the batch-selection checkbox',
     fix: 'pass `providerState.selectable` / `selected` / `onSelectChange`; CardShell renders the checkbox',
   },
+  {
+    // The rule above catches a card that brings its own chrome. This one
+    // catches a mapping layer that never left the *older* card component: it
+    // is a shared component, so it is not "own chrome", and none of the other
+    // rules fire — `OpenClawProviderCard` wrapped `components/common/ProviderCard`
+    // for months, kept the old 8/12 padding and the old header, and every check
+    // passed. That card predates the three styles and is no longer the target.
+    pattern: /from\s+'@\/components\/common\/ProviderCard'/,
+    what: 'renders the legacy `components/common/ProviderCard`',
+    fix: 'render a style component (ClaudeStyleCard / CodexStyleCard / OpenCodeStyleCard) through a thin mapping layer; import types from `@/components/common/ProviderCard/types` if needed',
+  },
 ];
 
 /**

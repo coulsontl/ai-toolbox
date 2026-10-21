@@ -12,6 +12,7 @@
 
 ## 核心设计决策（Why）
 
+- **供应商卡片是共享 OpenCode 式映射层**（`components/HermesProviderCard.tsx`，2026-10-21 迁完）：Hermes 有 per-provider 模型目录、没有 provider 级「应用」（默认模型在 `model:` 段），所以头部无主操作。**没有 provider 拖拽**——后端没有 reorder 命令，顺序就是 YAML 字典的顺序。只读渠道（`providers:` 字典）不渲染编辑/复制/删除，并画「只读」标签。**复制**：预填源渠道、Key 加 `_copy` 且可编辑，弹窗标题走「添加」分支（`providerModal.copy`）。
 - 通用配置（其他设置）用 JsonEditor 自动保存：失焦即 `save_hermes_other_settings()`，后端按切片读-改-写，只替换它拥有的顶层键，所以 MCP、provider、模型等键不会被这次保存回退。
 - Memory 面板与通用配置编辑面**共同拥有** `memory:` 段（前者写开关，后者以 JSON 文本展示整段），因此面板写完后必须让页面重读配置（`onConfigChanged` → `loadConfig(true)`），否则编辑器的旧文本会在下一次失焦保存里把开关改回去（issue #406 同形）。
 

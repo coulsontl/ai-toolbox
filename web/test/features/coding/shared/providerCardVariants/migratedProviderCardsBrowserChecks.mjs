@@ -422,6 +422,160 @@ export async function verifyMigratedProviderCards({ send, evaluate, baseUrl, art
     Boolean(otherDelete && otherDelete.found && !otherDelete.disabled),
   );
 
+  /* ---------------------------------------------------------------- OpenClaw */
+
+  const openClawText = await fixture('text("openclaw-list")');
+  check(
+    'the OpenClaw card states its id, npm package and endpoint',
+    openClawText.includes('relay-main')
+      && openClawText.includes('@ai-sdk/openai-compatible')
+      && openClawText.includes('https://relay.openclaw.example.test/v1'),
+  );
+  check(
+    'the OpenClaw card offers no provider-level 应用',
+    !openClawText.includes('应用'),
+  );
+
+  // The catalog toolbar is the only place the probes live now: the bespoke card
+  // had them in a header `extraActions` slot the shared styles do not have.
+  const openClawToolbar = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="openclaw-list"]');
+      const buttons = [...root.querySelectorAll('button')].map(node => node.textContent.replace(/\\s+/g, ' ').trim());
+      return {
+        batch: buttons.some(text => text.includes('批量删除')),
+        test: buttons.some(text => text.includes('模型测试')),
+        fetch: buttons.some(text => text.includes('获取模型')),
+        add: buttons.some(text => text.includes('添加模型')),
+      };
+    })()
+  `);
+  check(
+    'the OpenClaw model toolbar carries batch delete, test, fetch and add',
+    openClawToolbar.batch && openClawToolbar.test && openClawToolbar.fetch && openClawToolbar.add,
+  );
+
+  check('the OpenClaw cell states the npm package', await fixture('subtitle("openclaw-card")') === '@ai-sdk/openai-compatible');
+
+  // The OpenCode-style list card has no "more" menu — delete is an icon button
+  // in the header, which the default provider's guard must grey out.
+  const openClawDefaultDelete = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="openclaw-default-list"]');
+      const deleteButton = [...root.querySelectorAll('button')]
+        .find(node => node.querySelector('.anticon-delete'));
+      if (!deleteButton) return { found: false };
+      // A disabled antd button drops pointer events, so the tooltip has to hang
+      // off a wrapper element — the button's direct parent must be that span.
+      return {
+        found: true,
+        disabled: deleteButton.disabled === true,
+        hasTooltipHost: deleteButton.parentElement?.tagName === 'SPAN',
+      };
+    })()
+  `);
+  check(
+    'the default OpenClaw provider greys out delete',
+    Boolean(openClawDefaultDelete.found && openClawDefaultDelete.disabled),
+  );
+  check(
+    'the disabled OpenClaw delete keeps a hover target for its reason',
+    Boolean(openClawDefaultDelete.hasTooltipHost),
+  );
+
+  /* ---------------------------------------------------------------- Hermes */
+
+  const hermesText = await fixture('text("hermes-list")');
+  check(
+    'the Hermes card states its endpoint and API mode',
+    hermesText.includes('https://api.anthropic.com') && hermesText.includes('anthropic'),
+  );
+  check(
+    'the Hermes card offers no provider-level 应用',
+    !hermesText.includes('应用'),
+  );
+  // No new "default" badge on the card: the fact was already stated on the
+  // catalog row (`当前主模型`), and a migration does not add state furniture.
+  // Scoped to the header line, which is where a badge would have gone.
+  const hermesNameLine = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="hermes-list"]');
+      const name = [...root.querySelectorAll('*')]
+        .find(node => node.children.length === 0 && node.textContent.includes('Anthropic Direct'));
+      return name?.parentElement?.textContent.replace(/\\s+/g, ' ').trim() ?? '';
+    })()
+  `);
+  check(
+    'the Hermes card does not re-state the default as a name-line badge',
+    !hermesNameLine.includes('当前主模型'),
+  );
+
+  // The catalog rows live behind the card's fold; read them after opening it.
+  check('the Hermes card opens its model catalog', await fixture('expandModels("hermes-list")'));
+  const hermesRows = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="hermes-list"]');
+      const rows = [...root.querySelectorAll('[data-model-row]')].map(node => ({
+        text: node.textContent.replace(/\\s+/g, ' ').trim(),
+        grip: Boolean(node.querySelector('[class*="grip"]')),
+        setPrimary: [...node.querySelectorAll('button')]
+          .some(button => button.textContent.includes('设为主模型')),
+      }));
+      return rows;
+    })()
+  `);
+  check(
+    'the Hermes model row that owns the default says so',
+    Boolean(hermesRows.find(row => row.text.includes('claude-opus-4-8'))?.text.includes('当前主模型')),
+  );
+  check(
+    'another Hermes model row offers 设为主模型',
+    Boolean(hermesRows.find(row => row.text.includes('claude-sonnet-4-5'))?.setPrimary),
+  );
+  check(
+    'Hermes model rows carry no drag grip (the CLI has no reorder)',
+    hermesRows.every(row => !row.grip),
+  );
+
+  const hermesReadOnly = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="hermes-readonly-list"]');
+      const text = root.textContent.replace(/\\s+/g, ' ').trim();
+      // The catalog toolbar always carries 批量删除 / 添加模型; what the read-only
+      // state must remove is the *provider* actions (header icon buttons).
+      const headerIcons = [...root.querySelectorAll('button')]
+        .map(node => node.querySelector('.anticon')?.className ?? '')
+        .filter(name => name);
+      return {
+        tagged: text.includes('只读'),
+        edit: headerIcons.some(name => name.includes('anticon-edit')),
+        copy: headerIcons.some(name => name.includes('anticon-copy')),
+        del: headerIcons.some(name => name.includes('anticon-delete')),
+      };
+    })()
+  `);
+  check(
+    'a read-only Hermes provider is tagged 只读',
+    hermesReadOnly.tagged,
+  );
+  check(
+    'a read-only Hermes provider offers no edit, copy or delete',
+    !hermesReadOnly.edit && !hermesReadOnly.copy && !hermesReadOnly.del,
+  );
+  const hermesReadOnlyText = await fixture('text("hermes-readonly-list")');
+  check(
+    'a read-only Hermes provider does not pretend its key is its endpoint',
+    !hermesReadOnlyText.includes('(只读)'),
+  );
+
+  const hermesCardSubtitle = await fixture('subtitle("hermes-card")');
+  check(
+    'the Hermes cell states the SDK family and the default model',
+    Boolean(hermesCardSubtitle
+      && hermesCardSubtitle.startsWith('@ai-sdk/anthropic')
+      && hermesCardSubtitle.includes('当前主模型')),
+  );
+
   await screenshot('migrated-provider-cards-light');
 
   /* ---------------------------------------------------------------- dark theme */

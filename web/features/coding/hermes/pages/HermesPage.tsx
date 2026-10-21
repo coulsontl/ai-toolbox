@@ -4,7 +4,6 @@ import AllApiHubIcon from '@/components/common/AllApiHubIcon';
 import {
   Button,
   Collapse,
-  Empty,
   Form,
   Input,
   Modal,
@@ -16,37 +15,23 @@ import {
   message,
 } from 'antd';
 import {
-  ApiOutlined,
-  CheckSquareOutlined,
-  CloudDownloadOutlined,
   DatabaseOutlined,
-  DeleteOutlined,
   DownOutlined,
   EditOutlined,
-  EllipsisOutlined,
-  EyeOutlined,
   FileTextOutlined,
-  FolderOpenOutlined,
   GlobalOutlined,
   ImportOutlined,
-  LinkOutlined,
-  PlusOutlined,
   QuestionCircleOutlined,
-  ReloadOutlined,
   RightOutlined,
   RobotOutlined,
   SettingOutlined,
-  ThunderboltOutlined,
   ToolOutlined,
 } from '@ant-design/icons';
-import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import FileConfigPreviewModal from '@/components/common/FileConfigPreviewModal';
-import ProviderCard from '@/components/common/ProviderCard';
 import type {
-  ModelDisplayData,
   ProviderConnectivityStatusItem,
-  ProviderDisplayData,
 } from '@/components/common/ProviderCard/types';
 import SectionSidebarLayout, {
   type SidebarSectionMarker,
@@ -55,15 +40,16 @@ import { SessionManagerPanel } from '@/features/coding/shared/sessionManager';
 import {
   PROVIDER_SORT_MODES_BASIC,
   backupProvidersBeforeDelete,
-  ProviderBatchToolbar,
-  ProviderSearchEmpty,
-  ProviderSearchInput,
-  ProviderSortDropdown,
   filterProviderItems,
   sortProviderItems,
   useProviderBatchSelection,
   useProviderListSort,
+  useProviderListViewPrefs,
 } from '@/features/coding/shared/providerList';
+import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
+import ProviderListSection from '@/features/coding/shared/ProviderListSection';
+import CodingPageHeader from '@/features/coding/shared/CodingPageHeader';
+import HermesProviderCard from '../components/HermesProviderCard';
 import SidebarSettingsModal from '@/components/common/SidebarSettingsModal';
 import CliManualPathSetting from '@/components/common/CliManualPathSetting';
 import { TRAY_CONFIG_REFRESH_EVENT } from '@/constants/configEvents';
@@ -131,17 +117,24 @@ import {
   getProviderModelRecords,
   getStringField,
   isRecordEmpty,
-  maskCredential,
   setOptionalStringField,
   HERMES_REASONING_LEVELS,
   parseReasoningEffort,
 } from '../utils/hermesUtils';
 import styles from './HermesPage.module.less';
 
-const { Title, Text, Link } = Typography;
+const { Title, Text } = Typography;
 
 interface HermesProviderModalState {
   provider?: HermesRuntimeProviderView;
+  /**
+   * Pre-fill from `provider` and save as a new key instead of editing it.
+   *
+   * The copy button used to open the blank "add" modal: a copy that copied
+   * nothing. Copy and edit still share one modal (as OpenClaw does), because
+   * the fields are the same and only the submit path differs.
+   */
+  copy?: boolean;
 }
 
 interface HermesModelModalState {
@@ -245,6 +238,7 @@ const HermesPage: React.FC = () => {
   const [connectivityModalOpen, setConnectivityModalOpen] = React.useState(false);
   const [connectivityStatuses, setConnectivityStatuses] = React.useState<Record<string, ProviderConnectivityStatusItem>>({});
   const [batchTestingProviders, setBatchTestingProviders] = React.useState(false);
+  const [providerListCollapsed, setProviderListCollapsed] = React.useState(false);
   const [otherSettings, setOtherSettings] = React.useState<Record<string, unknown>>({});
   const [otherSettingsValid, setOtherSettingsValid] = React.useState(true);
   const [previewModalOpen, setPreviewModalOpen] = React.useState(false);
@@ -509,20 +503,26 @@ const HermesPage: React.FC = () => {
     if (!providerModal) {
       return;
     }
-    const nextProviderJson = providerModal.provider?.provider
-      ? asRecord(providerModal.provider.provider)
+    const sourceProvider = providerModal.provider;
+    const nextProviderJson = sourceProvider?.provider
+      ? asRecord(sourceProvider.provider)
       : {};
     setProviderJson(nextProviderJson);
     setProviderJsonValid(true);
     setProviderAdvancedExpanded(false);
     providerModalForm.setFieldsValue({
-      providerKey: providerModal.provider?.providerKey,
-      apiMode: providerModal.provider?.apiMode || getStringField(nextProviderJson, 'api_mode'),
+      // The key is the identity: edits lock it, copies pre-fill it with a
+      // `_copy` suffix and leave it editable, so the save lands as a new entry.
+      providerKey: providerModal.copy && sourceProvider
+        ? `${sourceProvider.providerKey}_copy`
+        : sourceProvider?.providerKey,
+      apiMode: sourceProvider?.apiMode || getStringField(nextProviderJson, 'api_mode'),
       baseUrl: getStringField(nextProviderJson, 'base_url')
         || getStringField(nextProviderJson, 'baseUrl'),
       providerApiKey: getStringField(nextProviderJson, 'api_key')
         || getStringField(nextProviderJson, 'apiKey'),
-      providerDisplayName: getStringField(nextProviderJson, 'display_name'),
+      providerDisplayName: getStringField(nextProviderJson, 'display_name')
+        || sourceProvider?.displayName,
     });
   }, [providerModal, providerModalForm]);
 
@@ -795,6 +795,7 @@ const HermesPage: React.FC = () => {
   };
 
   const { sortMode, setSortMode, lastUsedAt, noteProviderUsed } = useProviderListSort('hermes');
+  const { viewMode, setViewMode } = useProviderListViewPrefs('hermes');
   const [providerKeyword, setProviderKeyword] = React.useState('');
   const visibleProviders = React.useMemo(
     () =>
@@ -1349,134 +1350,66 @@ const HermesPage: React.FC = () => {
     }
   };
 
-  const renderProvider = (provider: HermesRuntimeProviderView) => {
+  /**
+   * One provider's card props, shared by both layouts.
+   *
+   * Both `ProviderListSection` branches render this, so the list card and the
+   * grid cell cannot offer different actions, a different delete guard, or a
+   * different read-only treatment.
+   */
+  const renderProviderCard = (provider: HermesRuntimeProviderView) => {
     const providerConfig = asRecord(provider.provider);
-    const credentialPreview = maskCredential(provider.credential);
     const baseUrl = getStringField(providerConfig, 'base_url')
       || getStringField(providerConfig, 'baseUrl');
-    const hasModelIds = (provider.modelIds?.length ?? 0) > 0;
-    const connectivityTooltip = !baseUrl
-      ? t('common.baseUrlMissing')
-      : !hasModelIds
-        ? t('common.modelMissing')
-        : '';
+    const hasModels = (provider.modelIds?.length ?? 0) > 0;
     const isReadOnly = provider.isReadOnly;
-
-    const deleteDisabledReason = !isReadOnly && provider.isDefault
-      ? t('hermes.provider.deleteDisabledDefault', { defaultValue: '该渠道已设为默认，不可删除' })
+    const defaultModelId = provider.isDefault
+      ? runtimeConfig?.modelSettings.defaultModel ?? undefined
       : undefined;
 
-    const providerDisplay: ProviderDisplayData = {
-      id: provider.providerKey,
-      name: provider.displayName,
-      sdkName: provider.apiMode || 'hermes',
-      baseUrl: baseUrl || credentialPreview || `${provider.providerKey} (${t('hermes.provider.readOnly', { defaultValue: 'read-only' })})`,
-    };
-    const modelDisplayList: ModelDisplayData[] = getProviderModelRecords(provider.provider).map((entry) => ({
-      id: entry.id,
-      name: getStringField(entry.model, 'name') || entry.id,
-      isPrimary: provider.isDefault && runtimeConfig?.modelSettings.defaultModel === entry.id,
-      contextLimit: getNumberField(entry.model, 'context_length'),
-      outputLimit: getNumberField(entry.model, 'max_tokens'),
-    }));
-    const isBatchDeleteMode = batchDeleteProviderId === provider.providerKey;
-    const selectedModelIds = selectedModelIdsByProvider[provider.providerKey] ?? [];
-    const selectedModelCount = selectedModelIds.length;
-
     return (
-      <ProviderCard
+      <HermesProviderCard
         key={provider.providerKey}
-        provider={providerDisplay}
-        models={modelDisplayList}
+        provider={provider}
+        defaultModelId={defaultModelId}
+        viewMode={viewMode}
+        selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.providerKey)}
+        selected={providerBatch.selectedIds.has(provider.providerKey)}
+        onSelectChange={(checked) => providerBatch.toggleSelect(provider.providerKey, checked)}
+        connectivityStatus={connectivityStatuses[provider.providerKey]}
         onEdit={isReadOnly ? undefined : () => setProviderModal({ provider })}
-        onCopy={isReadOnly ? undefined : () => setProviderModal({ provider: undefined })}
+        // Copy pre-fills the source provider and saves as a new key; opening the
+        // blank "add" modal was a copy button that copied nothing.
+        onCopy={isReadOnly ? undefined : () => setProviderModal({ provider, copy: true })}
         onShare={() => shareProvider({
           id: provider.providerKey, name: provider.displayName, category: 'custom',
           settingsConfig: JSON.stringify({ ...provider.provider, api_mode: provider.apiMode ?? provider.provider?.api_mode }),
           credential: provider.credential,
           credentialUnavailable: provider.isBuiltin,
-          defaultModel: provider.isDefault ? runtimeConfig?.modelSettings.defaultModel ?? undefined : undefined,
+          defaultModel: defaultModelId,
         })}
         onDelete={isReadOnly ? undefined : () => handleDeleteProvider(provider)}
-        deleteConfirm={false}
-        deleteDisabledReason={deleteDisabledReason}
-        selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.providerKey)}
-        selected={providerBatch.selectedIds.has(provider.providerKey)}
-        onSelectChange={(checked) => providerBatch.toggleSelect(provider.providerKey, checked)}
-        connectivityStatus={connectivityStatuses[provider.providerKey]}
-        extraActions={
-          <>
-            {!isReadOnly && (
-              <>
-                <Button
-                  size="small"
-                  type="text"
-                  style={{ fontSize: 12 }}
-                  onClick={() => handleToggleBatchDeleteMode(provider.providerKey)}
-                >
-                  <DeleteOutlined style={{ marginRight: 4 }} />
-                  {isBatchDeleteMode
-                    ? t('hermes.model.cancelBatchDelete', { defaultValue: '退出批量删除' })
-                    : t('hermes.model.batchDelete', { defaultValue: '批量删除' })}
-                </Button>
-                {isBatchDeleteMode && (
-                  <Button
-                    size="small"
-                    danger
-                    style={{ fontSize: 12 }}
-                    disabled={selectedModelCount === 0}
-                    onClick={() => {
-                      Modal.confirm({
-                        title: t('common.model.batchDeleteConfirmTitle'),
-                        content: t('common.model.batchDeleteConfirmContent', { count: selectedModelCount }),
-                        okText: t('common.delete', { defaultValue: '删除' }),
-                        cancelText: t('common.cancel'),
-                        onOk: () => handleBatchDeleteModels(provider.providerKey),
-                      });
-                    }}
-                  >
-                    {t('hermes.model.deleteSelected', { count: selectedModelCount })}
-                  </Button>
-                )}
-              </>
-            )}
-            <Tooltip title={connectivityTooltip}>
-              <span>
-                <Button
-                  size="small"
-                  type="text"
-                  style={{ fontSize: 12 }}
-                  onClick={() => handleOpenConnectivityTest(provider.providerKey)}
-                  disabled={!baseUrl || !hasModelIds}
-                >
-                  <ApiOutlined style={{ marginRight: 4 }} />
-                  {t('hermes.connectivity.button', { defaultValue: 'Test' })}
-                </Button>
-              </span>
-            </Tooltip>
-            {!isReadOnly && (
-              <Button
-                size="small"
-                type="text"
-                style={{ fontSize: 12 }}
-                onClick={() => handleOpenFetchModels(provider.providerKey)}
-                disabled={!baseUrl}
-              >
-                <CloudDownloadOutlined style={{ marginRight: 4 }} />
-                {t('hermes.model.fetchModels', { defaultValue: 'Fetch Models' })}
-              </Button>
-            )}
-          </>
+        deleteDisabledReason={
+          !isReadOnly && provider.isDefault
+            ? t('hermes.provider.deleteDisabledDefault', { defaultValue: '该渠道已设为默认，不可删除' })
+            : undefined
         }
-        modelSelectionMode={isBatchDeleteMode}
-        selectedModelIds={selectedModelIds}
-        onToggleModelSelection={(modelId, selected) => handleToggleModelSelection(provider.providerKey, modelId, selected)}
-        modelsDraggable={!isBatchDeleteMode}
         onAddModel={isReadOnly ? undefined : () => setModelModal({ provider })}
         onEditModel={isReadOnly ? undefined : (modelId) => setModelModal({ provider, modelId })}
         onCopyModel={isReadOnly ? undefined : (modelId) => setModelModal({ provider, copyFromId: modelId })}
         onDeleteModel={isReadOnly ? undefined : (modelId) => handleDeleteModel(provider.providerKey, modelId)}
         onSetPrimaryModel={isReadOnly ? undefined : (modelId) => handleSetDefaultModel(provider, modelId)}
+        onTestModels={isReadOnly ? undefined : () => handleOpenConnectivityTest(provider.providerKey)}
+        testModelsDisabled={!baseUrl || !hasModels}
+        testModelsDisabledTooltip={!baseUrl ? t('common.baseUrlMissing') : t('common.modelMissing')}
+        onFetchModels={isReadOnly ? undefined : () => handleOpenFetchModels(provider.providerKey)}
+        fetchDisabled={!baseUrl}
+        fetchDisabledTooltip={t('common.baseUrlMissing')}
+        modelSelectionMode={batchDeleteProviderId === provider.providerKey}
+        selectedModelIds={selectedModelIdsByProvider[provider.providerKey] ?? []}
+        onToggleModelSelection={(modelId, selected) => handleToggleModelSelection(provider.providerKey, modelId, selected)}
+        onToggleBatchDeleteMode={isReadOnly ? undefined : () => handleToggleBatchDeleteMode(provider.providerKey)}
+        onBatchDeleteModels={isReadOnly ? undefined : () => void handleBatchDeleteModels(provider.providerKey)}
       />
     );
   };
@@ -1491,82 +1424,27 @@ const HermesPage: React.FC = () => {
         getIcon={(id) => SIDEBAR_ICON_BY_SECTION_ID[id] ?? null}
       >
         <div className={styles.pageContent}>
-          <div className={styles.pageHeader}>
-            <div>
-              <div className={styles.titleRow}>
-                <Title level={4} className={styles.pageTitle}>
-                  {t('hermes.title', { defaultValue: 'Hermes' })}
-                </Title>
-                <Link
-                  type="secondary"
-                  className={styles.headerLink}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void openUrl('https://hermes-agent.nousresearch.com/docs/');
-                  }}
-                >
-                  <LinkOutlined /> {t('hermes.viewDocs', { defaultValue: '官方文档' })}
-                </Link>
-                <Link
-                  type="secondary"
-                  className={styles.headerLink}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setPreviewModalOpen(true);
-                  }}
-                >
-                  <EyeOutlined /> {t('common.previewConfig')}
-                </Link>
-              </div>
-              <Space className={styles.pathToolbar} wrap>
-                <Text type="secondary" className={styles.pathLabel}>
-                  {t('hermes.configPath', { defaultValue: 'Config path' })}:
-                </Text>
-                <Text code className={styles.pathText}>
-                  {runtimeConfig?.rootPathInfo.path}
-                </Text>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<EditOutlined />}
-                  onClick={() => setRootDirectoryModalOpen(true)}
-                  className={styles.textAction}
-                >
-                  {t('hermes.rootPathSource.customize', { defaultValue: 'Customize' })}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<FolderOpenOutlined />}
-                  onClick={handleOpenRootFolder}
-                  className={styles.textAction}
-                >
-                  {t('hermes.openFolder', { defaultValue: 'Open folder' })}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<ReloadOutlined />}
-                  onClick={handleRefreshConfig}
-                  className={styles.textAction}
-                >
-                  {t('hermes.refreshConfig', { defaultValue: 'Refresh' })}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<GlobalOutlined />}
-                  onClick={handleOpenWebUi}
-                  className={styles.textAction}
-                >
-                  {t('hermes.openWebUi', { defaultValue: 'Open Web UI' })}
-                </Button>
-              </Space>
-            </div>
-            <Button type="text" icon={<EllipsisOutlined />} onClick={() => setSettingsModalOpen(true)}>
-              {t('common.moreOptions')}
-            </Button>
-          </div>
+          <CodingPageHeader
+            title={t('hermes.title', { defaultValue: 'Hermes' })}
+            docsUrl="https://hermes-agent.nousresearch.com/docs/"
+            onPreviewConfig={() => setPreviewModalOpen(true)}
+            configPath={runtimeConfig?.rootPathInfo.path || '~/.hermes'}
+            onCustomizeConfig={() => setRootDirectoryModalOpen(true)}
+            onOpenFolder={handleOpenRootFolder}
+            onRefresh={handleRefreshConfig}
+            onMoreOptions={() => setSettingsModalOpen(true)}
+            extraActions={(
+              <Button
+                type="text"
+                size="small"
+                icon={<GlobalOutlined />}
+                onClick={handleOpenWebUi}
+                style={{ padding: 0, fontSize: 12 }}
+              >
+                {t('hermes.openWebUi', { defaultValue: 'Open Web UI' })}
+              </Button>
+            )}
+          />
           <div className={styles.pageHint}>
             {t('hermes.pageHint', {
               defaultValue: 'Hermes reads a single config.yaml; provider facts come from the runtime file. Built-in (read-only) providers are managed by the providers: dict.',
@@ -1626,124 +1504,75 @@ const HermesPage: React.FC = () => {
             data-hermes-sidebar-section="true"
             data-sidebar-title={t('hermes.provider.title', { defaultValue: 'Providers' })}
           >
-            <Collapse
-              className={styles.collapseCard}
-              items={[
-                {
-                  key: 'providers',
-                  label: (
-                    <Space>
-                      <ApiOutlined />
-                      <Text strong>{t('hermes.provider.title', { defaultValue: 'Providers' })}</Text>
-                    </Space>
-                  ),
-                  extra: (
-                    <Space size={4} wrap onClick={(event) => event.stopPropagation()}>
-                      <Button
-                        type="link"
-                        size="small"
-                        style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (providerBatch.selectionMode) {
-                            providerBatch.exitSelection();
-                          } else {
-                            providerBatch.enterSelection();
-                          }
-                        }}
-                      >
-                        <CheckSquareOutlined style={{ fontSize: 13, lineHeight: 1 }} />
-                        <span>
-                          {providerBatch.selectionMode
-                            ? t('common.batch.exit')
-                            : t('common.batch.manage')}
-                        </span>
-                      </Button>
-                      {providerBatch.selectionMode && (
-                        <ProviderBatchToolbar
-                          hasSelection={providerBatch.hasSelection}
-                          visibleCount={batchSelectableIds.length}
-                          isAllSelected={providerBatch.isAllSelected}
-                          indeterminate={providerBatch.indeterminate}
-                          onSelectAll={providerBatch.selectAllFiltered}
-                          onBatchDelete={providerBatch.batchDelete}
-                          disabled={loading}
-                        />
-                      )}
-                      <ProviderSearchInput value={providerKeyword} onChange={setProviderKeyword} />
-                      <ProviderSortDropdown
-                        mode={sortMode}
-                        modes={PROVIDER_SORT_MODES_BASIC}
-                        onChange={setSortMode}
-                      />
-                      <Button
-                        type="link"
-                        size="small"
-                        style={{ fontSize: 12 }}
-                        icon={<ThunderboltOutlined />}
-                        loading={batchTestingProviders}
-                        onClick={handleBatchTestProviders}
-                      >
-                        {t('common.batchTest')}
-                      </Button>
-                      <Button
-                        type="link"
-                        size="small"
-                        style={{ fontSize: 12 }}
-                        icon={<PlusOutlined />}
-                        onClick={() => setProviderModal({})}
-                      >
-                        {t('hermes.provider.addSupplier', { defaultValue: 'Add provider' })}
-                      </Button>
-                    </Space>
-                  ),
-                  children: (
-                    <div>
-                      {runtimeConfig?.providers.length
-                        ? (
-                            <div className={styles.providerList}>
-                              {visibleProviders.length ? (
-                                visibleProviders.map(renderProvider)
-                              ) : (
-                                <ProviderSearchEmpty />
-                              )}
-                            </div>
-                          )
-                        : <Empty description={t('hermes.provider.emptyText', { defaultValue: 'No providers configured.' })} />}
-                      <div style={{ marginTop: 12 }}>
-                        <Space wrap>
-                          <Button
-                            type="dashed"
-                            icon={<ImportOutlined />}
-                            onClick={() => setImportModalOpen(true)}
-                          >
-                            {t('opencode.provider.importFavorite')}
-                          </Button>
-                          {allApiHubAvailable && (
-                            <Button
-                              type="dashed"
-                              icon={<AllApiHubIcon />}
-                              onClick={() => setAllApiHubImportModalOpen(true)}
-                            >
-                              {t('common.allApiHub.importFromAllApiHub')}
-                            </Button>
-                          )}
-                          {ccSwitchAvailable && (
-                            <Button
-                              type="dashed"
-                              icon={<ImportOutlined />}
-                              onClick={() => setCcSwitchImportModalOpen(true)}
-                            >
-                              {t('common.ccSwitch.importFromCcSwitch')}
-                            </Button>
-                          )}
-                        </Space>
-                      </div>
-                    </div>
-                  ),
-                },
-              ]}
-            />
+            <ProviderListSection
+              sectionId="hermes-providers-section"
+              collapsed={providerListCollapsed}
+              onCollapsedChange={setProviderListCollapsed}
+              loading={loading}
+              providerCount={runtimeConfig?.providers.length ?? 0}
+              visibleCount={visibleProviders.length}
+              batch={providerBatch}
+              batchSelectableIds={batchSelectableIds}
+              keyword={providerKeyword}
+              onKeywordChange={setProviderKeyword}
+              sortMode={sortMode}
+              sortModes={PROVIDER_SORT_MODES_BASIC}
+              onSortModeChange={setSortMode}
+              dragDisabledBySort={sortMode !== 'custom'}
+              viewMode={viewMode}
+              onViewModeChange={setViewMode}
+              onBatchTest={handleBatchTestProviders}
+              batchTesting={batchTestingProviders}
+              onAddProvider={() => setProviderModal({})}
+              footer={(
+                <Space wrap>
+                  <Button
+                    type="dashed"
+                    icon={<ImportOutlined />}
+                    onClick={() => setImportModalOpen(true)}
+                  >
+                    {t('opencode.provider.importFavorite')}
+                  </Button>
+                  {allApiHubAvailable && (
+                    <Button
+                      type="dashed"
+                      icon={<AllApiHubIcon />}
+                      onClick={() => setAllApiHubImportModalOpen(true)}
+                    >
+                      {t('common.allApiHub.importFromAllApiHub')}
+                    </Button>
+                  )}
+                  {ccSwitchAvailable && (
+                    <Button
+                      type="dashed"
+                      icon={<ImportOutlined />}
+                      onClick={() => setCcSwitchImportModalOpen(true)}
+                    >
+                      {t('common.ccSwitch.importFromCcSwitch')}
+                    </Button>
+                  )}
+                </Space>
+              )}
+            >
+              {/* No provider drag: Hermes has no reorder command — the order is
+                  whichever order the YAML dict happens to have, and a grip here
+                  would move a card without writing anything back. */}
+              {viewMode === 'card' ? (
+                <ProviderCardGrid
+                  items={visibleProviders}
+                  getKey={(provider) => provider.providerKey}
+                  renderItem={(provider) => renderProviderCard(provider)}
+                />
+              ) : (
+                <div>
+                  {visibleProviders.map((provider) => (
+                    <React.Fragment key={provider.providerKey}>
+                      {renderProviderCard(provider)}
+                    </React.Fragment>
+                  ))}
+                </div>
+              )}
+            </ProviderListSection>
           </div>
 
           <div
@@ -1845,7 +1674,7 @@ const HermesPage: React.FC = () => {
         />
 
         <Modal
-          title={providerModal?.provider
+          title={providerModal?.provider && !providerModal.copy
             ? t('hermes.provider.editSupplierTitle', { defaultValue: '编辑供应商', name: providerModal.provider.displayName })
             : t('hermes.provider.addSupplierTitle', { defaultValue: '添加供应商' })}
           open={!!providerModal}
@@ -1864,7 +1693,9 @@ const HermesPage: React.FC = () => {
                   rules={[{ required: true, message: t('hermes.provider.providerKeyRequired', { defaultValue: '请输入供应商 Key' }) }]}
                 >
                   <Input
-                    disabled={!!providerModal?.provider}
+                    // Editing keeps the key; copying starts a new entry, so its
+                    // key stays editable — only the source key is locked.
+                    disabled={!!providerModal?.provider && !providerModal.copy}
                     placeholder={t('hermes.provider.providerKeyPlaceholder', { defaultValue: '如 anthropic' })}
                   />
                 </Form.Item>
