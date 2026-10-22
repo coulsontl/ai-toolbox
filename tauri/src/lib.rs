@@ -1859,14 +1859,16 @@ pub fn run() {
 
             // Keep the tray usage block current without waiting for a settings
             // or config event. Request counts only move when gateway or session
-            // traffic lands, so a minute is fine; the menu is rebuilt from the
-            // DB anyway, this just refreshes the text.
+            // traffic lands, so a minute is fine. This path is deliberately
+            // "text changed only": rebuilding the native menu every minute
+            // replaced the popup menu (and its click subclass) underneath the
+            // user, which made "Quit" miss clicks.
             {
                 let app_clone = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
                     loop {
                         tokio::time::sleep(Duration::from_secs(60)).await;
-                        let _ = tray::refresh_tray_menus(&app_clone).await;
+                        let _ = tray::refresh_tray_usage_if_changed(&app_clone).await;
                     }
                 });
             }

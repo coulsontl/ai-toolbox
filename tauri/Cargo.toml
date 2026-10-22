@@ -100,6 +100,13 @@ image = { version = "0.25.9", default-features = false, features = ["png", "jpeg
 [target.'cfg(windows)'.dependencies]
 junction = "1.1"
 windows-native-keyring-store = "1.1"
+# `GetGUIThreadInfo` tells the tray refresh whether its popup menu is open, so a
+# rebuild cannot swap the menu (and its WM_COMMAND subclass) out from under a
+# click. Already in the tree via tray-icon/muda.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Reaches the same macOS Keychain items `agy` itself writes (service
