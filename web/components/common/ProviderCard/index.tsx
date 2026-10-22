@@ -93,6 +93,12 @@ interface ProviderCardProps {
   selected?: boolean;
   /** Toggle provider selection. */
   onSelectChange?: (checked: boolean) => void;
+  /**
+   * Why this provider cannot be picked. Set in selection mode for an ineligible
+   * row so it still shows a (disabled) checkbox with this reason on hover,
+   * instead of no checkbox at all.
+   */
+  selectDisabledReason?: string;
 }
 
 /**
@@ -128,6 +134,7 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
   selectable = false,
   selected = false,
   onSelectChange,
+  selectDisabledReason,
 }) => {
   const { t } = useTranslation();
 
@@ -340,13 +347,22 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
         }}
       >
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-          {selectable ? (
+          {selectable || selectDisabledReason ? (
             <div style={{ display: 'flex', alignItems: 'center', padding: '4px 0' }}>
-              <ManagementCheckbox
-                checked={selected}
-                ariaLabel={t('common.batch.selectItem')}
-                onChange={onSelectChange ?? (() => {})}
-              />
+              {/* A `<span>` host: a disabled input swallows the hover itself,
+                  so the reason would never reach the tooltip. */}
+              <Tooltip title={selectable ? undefined : selectDisabledReason}>
+                <span style={{ display: 'inline-flex' }}>
+                  <ManagementCheckbox
+                    checked={selected}
+                    disabled={!selectable}
+                    ariaLabel={selectable
+                      ? t('common.batch.selectItem')
+                      : (selectDisabledReason ?? t('common.batch.selectUnavailable'))}
+                    onChange={onSelectChange ?? (() => {})}
+                  />
+                </span>
+              </Tooltip>
             </div>
           ) : draggable && (
             <div

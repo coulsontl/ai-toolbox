@@ -90,9 +90,11 @@ import {
   backupProvidersBeforeDelete,
   filterProviderItems,
   sortProviderItems,
+  providerSelectionDisabledReason,
   useProviderBatchSelection,
   useProviderListSort,
   useProviderListViewPrefs,
+  type ProviderSelectionBlockReason,
 } from '@/features/coding/shared/providerList';
 import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
 import {
@@ -532,6 +534,13 @@ const ClaudeCodePage: React.FC = () => {
 
   const canBatchDeleteProvider = React.useCallback(
     (provider: ClaudeCodeProvider) => provider.id !== LOCAL_CONFIG_ID,
+    [],
+  );
+
+  /** Why a row cannot be picked, for the disabled checkbox's tooltip. */
+  const batchBlockReason = React.useCallback(
+    (provider: ClaudeCodeProvider): ProviderSelectionBlockReason | undefined =>
+      provider.id === LOCAL_CONFIG_ID ? 'local' : undefined,
     [],
   );
 
@@ -1246,6 +1255,9 @@ const ClaudeCodePage: React.FC = () => {
     selectable: providerBatch.selectionMode && providerBatch.isSelectable(provider.id),
     selected: providerBatch.selectedIds.has(provider.id),
     onSelectChange: (checked: boolean) => providerBatch.toggleSelect(provider.id, checked),
+    selectDisabledReason: providerBatch.selectionMode
+      ? providerSelectionDisabledReason(t, batchBlockReason(provider))
+      : undefined,
     connectivityStatus: connectivityStatuses[provider.id],
     gatewayTakeoverActive,
     gatewayStatus: gatewayCliStatus,

@@ -27,9 +27,11 @@ import {
   PROVIDER_SORT_MODES_BASIC,
   filterProviderItems,
   sortProviderItems,
+  providerSelectionDisabledReason,
   useProviderBatchSelection,
   useProviderListSort,
   useProviderListViewPrefs,
+  type ProviderSelectionBlockReason,
 } from '@/features/coding/shared/providerList';
 import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
 import {
@@ -622,6 +624,13 @@ const OmoNativeProvidersSection: React.FC<OmoNativeProvidersSectionProps> = ({
 
   // 默认渠道不进批量选择（与 Pi 一致）：只把卡片上的删除按钮置灰还不够，
   // 「全选 → 批量删除」同样能把它删掉，那是同一条规则的绕过路径。
+  /** Why a row cannot be picked, for the disabled checkbox's tooltip. */
+  const batchBlockReason = React.useCallback(
+    (provider: OmoNativeProvider): ProviderSelectionBlockReason | undefined =>
+      (provider.key === defaultProviderKey ? 'default' : undefined),
+    [defaultProviderKey],
+  );
+
   const batchSelectableIds = React.useMemo(
     () => visibleProviders
       .filter((provider) => provider.key !== defaultProviderKey)
@@ -662,6 +671,11 @@ const OmoNativeProvidersSection: React.FC<OmoNativeProvidersSectionProps> = ({
       }
       selected={providerBatch.selectedIds.has(provider.key)}
       onSelectChange={(selected) => providerBatch.toggleSelect(provider.key, selected)}
+      selectDisabledReason={
+        providerBatch.selectionMode
+          ? providerSelectionDisabledReason(t, batchBlockReason(provider))
+          : undefined
+      }
       connectivityStatus={connectivityStatuses[provider.key]}
       onAddModel={() => setModelModal({ provider })}
       onEditModel={(modelId) => setModelModal({ provider, modelId })}

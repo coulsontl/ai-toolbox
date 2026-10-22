@@ -121,6 +121,8 @@ interface GrokProviderCardProps {
   selectable?: boolean;
   selected?: boolean;
   onSelectChange?: (checked: boolean) => void;
+  /** Why this row cannot be picked in selection mode (disabled checkbox tooltip). */
+  selectDisabledReason?: string;
 }
 
 /**
@@ -173,6 +175,7 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
   selectable = false,
   selected = false,
   onSelectChange,
+  selectDisabledReason,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -846,6 +849,7 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
       selectable,
       selected,
       onSelectChange,
+      selectDisabledReason,
       dimmed: provider.isDisabled,
       accent: isGatewayPrimary
         ? 'gatewayPrimary'

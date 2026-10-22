@@ -60,9 +60,11 @@ import {
   backupProvidersBeforeDelete,
   filterProviderItems,
   sortProviderItems,
+  providerSelectionDisabledReason,
   useProviderBatchSelection,
   useProviderListSort,
   useProviderListViewPrefs,
+  type ProviderSelectionBlockReason,
 } from '@/features/coding/shared/providerList';
 import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
 import CodingPageHeader from '@/features/coding/shared/CodingPageHeader';
@@ -557,6 +559,18 @@ const ClaudeDesktopPage: React.FC = () => {
     [officialChannelProviderId],
   );
 
+  /** Why a row cannot be picked, for the disabled checkbox's tooltip. */
+  const batchBlockReason = React.useCallback(
+    (provider: ClaudeDesktopProvider): ProviderSelectionBlockReason | undefined => {
+      // `canBatchDeleteProvider` also drops rows without an id; without a branch
+      // here those rows would render a disabled checkbox with no explanation.
+      if (!provider.id) return 'unnamed';
+      if (provider.id === officialChannelProviderId) return 'official';
+      return undefined;
+    },
+    [officialChannelProviderId],
+  );
+
   const handleBatchDeleteProviders = React.useCallback(
     async (ids: string[]): Promise<boolean> => {
       const providersToDelete = providers.filter(
@@ -624,6 +638,11 @@ const ClaudeDesktopPage: React.FC = () => {
       selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
       selected={providerBatch.selectedIds.has(provider.id)}
       onSelectChange={(checked) => providerBatch.toggleSelect(provider.id, checked)}
+      selectDisabledReason={
+        providerBatch.selectionMode
+          ? providerSelectionDisabledReason(t, batchBlockReason(provider))
+          : undefined
+      }
       gatewayTakeoverActive={gatewayTakeoverActive}
       gatewayStatus={gatewayCliStatus}
       onGatewayStatusChange={async (status) => {

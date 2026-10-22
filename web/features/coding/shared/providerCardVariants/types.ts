@@ -156,6 +156,11 @@ export interface ProviderCardState {
   selectable?: boolean;
   selected?: boolean;
   onSelectChange?: (checked: boolean) => void;
+  /**
+   * Why this provider cannot be picked. Set in selection mode for an ineligible
+   * row so it still shows a (disabled) checkbox with this reason on hover.
+   */
+  selectDisabledReason?: string;
   /** Renders the card at reduced opacity, e.g. while a disabled provider is listed. */
   dimmed?: boolean;
   /**

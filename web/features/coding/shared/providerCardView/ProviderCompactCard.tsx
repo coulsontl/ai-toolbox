@@ -1,5 +1,5 @@
 import React from 'react';
-import { Drawer, Dropdown } from 'antd';
+import { Drawer, Dropdown, Tooltip } from 'antd';
 import { HolderOutlined, MoreOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useSortable } from '@dnd-kit/sortable';
@@ -234,6 +234,7 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
     selectable = false,
     selected = false,
     onSelectChange,
+    selectDisabledReason,
     dimmed = false,
     draggable = false,
     sortableId,
@@ -264,7 +265,10 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
     '--locate-flash-radius': '10px',
   } as React.CSSProperties;
 
-  const showHandle = draggable && !selectable;
+  // Selection mode takes over the left slot for every row, eligible or not —
+  // see `CardShell` for why an ineligible row keeps a disabled checkbox.
+  const inSelectionMode = selectable || Boolean(selectDisabledReason);
+  const showHandle = draggable && !inSelectionMode;
   const primary = actions?.primaryAction;
   // Built once and placed by `actionPlacement`: the same nodes move between the
   // second line and the footer bar, so the two placements cannot end up offering
@@ -291,7 +295,7 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
   });
 
   const [detailOpen, setDetailOpen] = React.useState(false);
-  const canOpenDetail = Boolean(detail) && !selectable;
+  const canOpenDetail = Boolean(detail) && !inSelectionMode;
 
   /**
    * The card body opens the detail sidebar; anything that is itself a control
@@ -334,12 +338,21 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
         onClick={canOpenDetail ? handleCardClick : undefined}
       >
         <div className={styles.headerRow}>
-          {selectable ? (
-            <ManagementCheckbox
-              checked={selected}
-              ariaLabel={t('common.batch.selectItem')}
-              onChange={onSelectChange ?? (() => {})}
-            />
+          {inSelectionMode ? (
+            // A `<span>` host: a disabled input does not emit the hover the
+            // tooltip listens for.
+            <Tooltip title={selectable ? undefined : selectDisabledReason}>
+              <span style={{ display: 'inline-flex' }}>
+                <ManagementCheckbox
+                  checked={selected}
+                  disabled={!selectable}
+                  ariaLabel={selectable
+                    ? t('common.batch.selectItem')
+                    : (selectDisabledReason ?? t('common.batch.selectUnavailable'))}
+                  onChange={onSelectChange ?? (() => {})}
+                />
+              </span>
+            </Tooltip>
           ) : showHandle ? (
             <span
               {...attributes}

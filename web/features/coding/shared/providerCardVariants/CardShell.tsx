@@ -1,5 +1,5 @@
 import React from 'react';
-import { Card } from 'antd';
+import { Card, Tooltip } from 'antd';
 import { HolderOutlined } from '@ant-design/icons';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -19,6 +19,16 @@ interface CardShellProps {
   selectable?: boolean;
   selected?: boolean;
   onSelectChange?: (checked: boolean) => void;
+  /**
+   * Why this card cannot be picked in selection mode. Set while selection mode
+   * is on and the row is ineligible: the checkbox still renders — greyed out,
+   * with this sentence on hover — instead of vanishing.
+   *
+   * A missing control reads as a bug ("why has this one no checkbox?"); a
+   * disabled one that explains itself reads as a rule. The same reasoning as
+   * `dragDisabledBySort`'s tooltip.
+   */
+  selectDisabledReason?: string;
   /** Renders the whole card at reduced opacity. */
   dimmed?: boolean;
   /**
@@ -76,6 +86,7 @@ const CardShell: React.FC<CardShellProps> = ({
   selectable = false,
   selected = false,
   onSelectChange,
+  selectDisabledReason,
   dimmed = false,
   accent,
   children,
@@ -95,7 +106,11 @@ const CardShell: React.FC<CardShellProps> = ({
     opacity: isDragging ? 0.5 : dimmed ? 0.6 : 1,
   };
 
-  const showHandle = draggable && !selectable;
+  // In selection mode every card owns the left slot: an eligible one gets a live
+  // checkbox, an ineligible one a disabled checkbox carrying its reason. The
+  // handle only claims the slot when selection mode is off.
+  const inSelectionMode = selectable || Boolean(selectDisabledReason);
+  const showHandle = draggable && !inSelectionMode;
 
   const isSelected = selectable && selected;
   const { borderColor, background } = resolveProviderAccentChrome(accent, isSelected);
@@ -140,13 +155,22 @@ const CardShell: React.FC<CardShellProps> = ({
         }}
       >
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-          {selectable ? (
+          {inSelectionMode ? (
             <div style={{ display: 'flex', alignItems: 'center', padding: '4px 0' }}>
-              <ManagementCheckbox
-                checked={selected}
-                ariaLabel={t('common.batch.selectItem')}
-                onChange={onSelectChange ?? (() => {})}
-              />
+              {/* A `<span>` host: a disabled input swallows the hover itself, so
+                  the reason would never reach the tooltip. */}
+              <Tooltip title={selectable ? undefined : selectDisabledReason}>
+                <span style={{ display: 'inline-flex' }}>
+                  <ManagementCheckbox
+                    checked={selected}
+                    disabled={!selectable}
+                    ariaLabel={selectable
+                      ? t('common.batch.selectItem')
+                      : (selectDisabledReason ?? t('common.batch.selectUnavailable'))}
+                    onChange={onSelectChange ?? (() => {})}
+                  />
+                </span>
+              </Tooltip>
             </div>
           ) : showHandle ? (
             <div

@@ -114,9 +114,11 @@ import {
   PROVIDER_SORT_MODES,
   filterProviderItems,
   sortProviderItems,
+  providerSelectionDisabledReason,
   useProviderBatchSelection,
   useProviderListViewPrefs,
   useProviderListSort,
+  type ProviderSelectionBlockReason,
 } from '@/features/coding/shared/providerList';
 import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
 import KimiCommonConfigModal from '../components/KimiCommonConfigModal';
@@ -709,6 +711,19 @@ const KimiPage: React.FC = () => {
   );
 
   // Selectable ids exclude the local provider (no delete path / not a managed preset).
+  /** Why a row cannot be picked, for the disabled checkbox's tooltip. */
+  const batchBlockReason = React.useCallback(
+    (provider: KimiProvider): ProviderSelectionBlockReason | undefined => {
+      if (provider.id === KIMI_LOCAL_PROVIDER_ID) return 'local';
+      if (provider.isApplied) return 'default';
+      if (officialAccounts.some((account) => account.providerId === provider.id)) {
+        return 'officialAccount';
+      }
+      return undefined;
+    },
+    [officialAccounts],
+  );
+
   const batchSelectableIds = React.useMemo(
     () => visibleProviders.filter((provider) => canDeleteKimiProvider(provider, officialAccounts)).map((provider) => provider.id),
     [visibleProviders, officialAccounts],
@@ -967,6 +982,9 @@ const KimiPage: React.FC = () => {
     selectable: providerBatch.selectionMode && providerBatch.isSelectable(provider.id),
     selected: providerBatch.selectedIds.has(provider.id),
     onSelectChange: (checked: boolean) => providerBatch.toggleSelect(provider.id, checked),
+    selectDisabledReason: providerBatch.selectionMode
+      ? providerSelectionDisabledReason(t, batchBlockReason(provider))
+      : undefined,
     onEditModel: handleEditModel,
     onCopyModel: handleCopyModel,
     onSetPrimaryModel: handleSetPrimaryModel,

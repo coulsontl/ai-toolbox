@@ -21,3 +21,7 @@ export {
   type ProviderSortMode,
 } from './sortProviders';
 export type { ProviderBatchSelection } from './useProviderBatchSelection';
+export {
+  providerSelectionDisabledReason,
+  type ProviderSelectionBlockReason,
+} from './selectionDisabledReasons';

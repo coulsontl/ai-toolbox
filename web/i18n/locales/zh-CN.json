@@ -1720,7 +1720,15 @@
       "deleteConfirmTitle": "确认删除选中供应商",
       "deleteConfirmContent": "将删除选中的 {{count}} 个供应商，确定？",
       "selectItem": "选择此供应商",
-      "backupFailed": "未能备份供应商 {{name}}，本次批量删除已取消。"
+      "backupFailed": "未能备份供应商 {{name}}，本次批量删除已取消。",
+      "selectUnavailable": "该供应商当前不可多选",
+      "selectDisabledDefault": "该渠道已设为默认，不可多选",
+      "selectDisabledLocal": "本地配置文件记录，不可多选",
+      "selectDisabledOfficial": "官方渠道不能删除，不可多选",
+      "selectDisabledOfficialAccount": "该渠道下还有官方账号，请先删除账号",
+      "selectDisabledReadOnly": "引擎内置渠道，不可编辑",
+      "selectDisabledNoRecord": "该渠道没有本应用可删除的配置记录",
+      "selectDisabledUnnamed": "该渠道没有可用于删除的标识"
     },
     "provider": {
       "overwrite": "覆盖更新",

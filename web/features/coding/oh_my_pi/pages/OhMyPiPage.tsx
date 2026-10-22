@@ -99,8 +99,10 @@ import {
   ProviderSortDropdown,
   filterProviderItems,
   sortProviderItems,
+  providerSelectionDisabledReason,
   useProviderBatchSelection,
   useProviderListSort,
+  type ProviderSelectionBlockReason,
 } from '@/features/coding/shared/providerList';
 import {
   fetchRemotePresetModels,
@@ -1383,6 +1385,19 @@ const OhMyPiPage: React.FC = () => {
     [],
   );
 
+  /** Why a row cannot be picked, for the disabled checkbox's tooltip. */
+  const batchBlockReason = React.useCallback(
+    (provider: OmpRuntimeProviderView): ProviderSelectionBlockReason | undefined => {
+      if (provider.isDefault) return 'default';
+      if (!provider.sources.includes('models_yml')
+        && !Object.prototype.hasOwnProperty.call(provider.modelsProvider ?? {}, 'apiKey')) {
+        return 'readOnly';
+      }
+      return undefined;
+    },
+    [],
+  );
+
   const handleBatchDeleteProviders = React.useCallback(
     async (providerKeys: string[]): Promise<boolean> => {
       const providersToDelete = ompProviders.filter(
@@ -1933,6 +1948,9 @@ const OhMyPiPage: React.FC = () => {
         selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.providerKey)}
         selected={providerBatch.selectedIds.has(provider.providerKey)}
         onSelectChange={(checked) => providerBatch.toggleSelect(provider.providerKey, checked)}
+        selectDisabledReason={providerBatch.selectionMode
+          ? providerSelectionDisabledReason(t, batchBlockReason(provider))
+          : undefined}
         connectivityStatus={diagnostics.supportsConnectivity ? connectivityStatuses[provider.providerKey] : undefined}
         extraActions={
           <Space size={0}>

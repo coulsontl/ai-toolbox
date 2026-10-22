@@ -78,6 +78,8 @@ interface ClaudeProviderCardProps {
   selectable?: boolean;
   selected?: boolean;
   onSelectChange?: (checked: boolean) => void;
+  /** Why this row cannot be picked in selection mode (disabled checkbox tooltip). */
+  selectDisabledReason?: string;
   /**
    * Hides the drag handle when reordering is not available (non-`custom` sort
    * mode, or an active search) — a handle that cannot move anything is worse
@@ -132,6 +134,7 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
   selectable = false,
   selected = false,
   onSelectChange,
+  selectDisabledReason,
   dragDisabled = false,
   viewMode = 'list',
 }) => {
@@ -768,6 +771,7 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
       selectable,
       selected,
       onSelectChange,
+      selectDisabledReason,
       dimmed: provider.isDisabled,
       // A provider can be both applied and the failover P0; CardShell gives the
       // gateway role precedence.

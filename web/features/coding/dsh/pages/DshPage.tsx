@@ -85,8 +85,10 @@ import {
   ProviderSortDropdown,
   filterProviderItems,
   sortProviderItems,
+  providerSelectionDisabledReason,
   useProviderBatchSelection,
   useProviderListSort,
+  type ProviderSelectionBlockReason,
 } from '@/features/coding/shared/providerList';
 import {
   fetchRemotePresetModels,
@@ -1548,6 +1550,17 @@ const DshPage: React.FC = () => {
     [runtimeConfig, loadConfig, clearBatchDeleteState, t],
   );
 
+  /** Why a row cannot be picked, for the disabled checkbox's tooltip. */
+  const batchBlockReason = React.useCallback(
+    (provider: DshRuntimeProviderView): ProviderSelectionBlockReason | undefined => {
+      if (provider.isDefault) return 'default';
+      if (provider.isBuiltin || provider.modelSource === 'builtin') return 'readOnly';
+      if (!provider.credentialExists && !provider.provider) return 'noRecord';
+      return undefined;
+    },
+    [],
+  );
+
   const batchSelectableIds = React.useMemo(
     () => visibleProviders.filter(canDeleteDshProvider).map((provider) => provider.providerKey),
     [visibleProviders],
@@ -1870,6 +1883,9 @@ const DshPage: React.FC = () => {
         onSelectChange={(checked) =>
           providerBatch.toggleSelect(provider.providerKey, checked)
         }
+        selectDisabledReason={providerBatch.selectionMode
+          ? providerSelectionDisabledReason(t, batchBlockReason(provider))
+          : undefined}
         connectivityStatus={connectivityStatuses[provider.providerKey]}
         modelSourceTag={modelSourceTag}
         extraActions={

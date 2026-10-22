@@ -56,6 +56,7 @@ const OpenCodeStyleCard: React.FC<ProviderCardVariantProps> = ({
     selectable = false,
     selected = false,
     onSelectChange,
+    selectDisabledReason,
     dimmed = false,
     draggable = false,
     sortableId,
@@ -71,6 +72,7 @@ const OpenCodeStyleCard: React.FC<ProviderCardVariantProps> = ({
       selectable={selectable}
       selected={selected}
       onSelectChange={onSelectChange}
+      selectDisabledReason={selectDisabledReason}
       dimmed={dimmed}
       accent={accent}
     >

@@ -87,8 +87,10 @@ import {
   ProviderSortDropdown,
   filterProviderItems,
   sortProviderItems,
+  providerSelectionDisabledReason,
   useProviderBatchSelection,
   useProviderListSort,
+  type ProviderSelectionBlockReason,
 } from '@/features/coding/shared/providerList';
 import {
   fetchRemotePresetModels,
@@ -1336,6 +1338,18 @@ const PiPage: React.FC = () => {
     [],
   );
 
+  /** Why a row cannot be picked, for the disabled checkbox's tooltip. */
+  const batchBlockReason = React.useCallback(
+    (provider: PiRuntimeProviderView): ProviderSelectionBlockReason | undefined => {
+      if (provider.isDefault) return 'default';
+      if (!provider.sources.includes('auth_json') && !provider.sources.includes('models_json')) {
+        return 'readOnly';
+      }
+      return undefined;
+    },
+    [],
+  );
+
   const handleBatchDeleteProviders = React.useCallback(
     async (ids: string[]): Promise<boolean> => {
       const providersToDelete = piProviders.filter(
@@ -1868,6 +1882,9 @@ const PiPage: React.FC = () => {
         selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.providerKey)}
         selected={providerBatch.selectedIds.has(provider.providerKey)}
         onSelectChange={(checked) => providerBatch.toggleSelect(provider.providerKey, checked)}
+        selectDisabledReason={providerBatch.selectionMode
+          ? providerSelectionDisabledReason(t, batchBlockReason(provider))
+          : undefined}
         connectivityStatus={connectivityStatuses[provider.providerKey]}
         extraActions={
           <Space size={0}>

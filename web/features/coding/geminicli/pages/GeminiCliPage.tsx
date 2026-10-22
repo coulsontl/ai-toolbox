@@ -53,9 +53,11 @@ import {
   PROVIDER_SORT_MODES,
   filterProviderItems,
   sortProviderItems,
+  providerSelectionDisabledReason,
   useProviderBatchSelection,
   useProviderListSort,
   useProviderListViewPrefs,
+  type ProviderSelectionBlockReason,
 } from '@/features/coding/shared/providerList';
 import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
 import CodingPageHeader from '@/features/coding/shared/CodingPageHeader';
@@ -491,6 +493,16 @@ const GeminiCliPage: React.FC = () => {
     [officialAccountsByProviderId],
   );
 
+  /** Why a row cannot be picked, for the disabled checkbox's tooltip. */
+  const batchBlockReason = React.useCallback(
+    (provider: GeminiCliProvider): ProviderSelectionBlockReason | undefined => {
+      if (provider.id === GEMINI_CLI_LOCAL_PROVIDER_ID) return 'local';
+      if ((officialAccountsByProviderId[provider.id]?.length ?? 0) > 0) return 'officialAccount';
+      return undefined;
+    },
+    [officialAccountsByProviderId],
+  );
+
   const handleBatchDeleteProviders = React.useCallback(
     async (ids: string[]): Promise<boolean> => {
       const providersToDelete = providers.filter(
@@ -552,6 +564,11 @@ const GeminiCliPage: React.FC = () => {
       selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.id)}
       selected={providerBatch.selectedIds.has(provider.id)}
       onSelectChange={(checked) => providerBatch.toggleSelect(provider.id, checked)}
+      selectDisabledReason={
+        providerBatch.selectionMode
+          ? providerSelectionDisabledReason(t, batchBlockReason(provider))
+          : undefined
+      }
       officialAccounts={officialAccountsByProviderId[provider.id] || []}
       onOfficialAccountLogin={handleStartOfficialAccountOauth}
       onOfficialLocalAccountSave={handleSaveOfficialLocalAccount}

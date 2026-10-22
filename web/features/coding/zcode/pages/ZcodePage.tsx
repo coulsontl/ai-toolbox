@@ -32,9 +32,11 @@ import {
   backupProvidersBeforeDelete,
   filterProviderItems,
   sortProviderItems,
+  providerSelectionDisabledReason,
   useProviderBatchSelection,
   useProviderListViewPrefs,
   useProviderListSort,
+  type ProviderSelectionBlockReason,
 } from '@/features/coding/shared/providerList';
 import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
 import {
@@ -964,6 +966,13 @@ const ZcodePage: React.FC = () => {
     [persistProviderModels],
   );
 
+  /** Why a row cannot be picked, for the disabled checkbox's tooltip. */
+  const batchBlockReason = React.useCallback(
+    (provider: ZcodeProvider): ProviderSelectionBlockReason | undefined =>
+      (provider.id === appliedProviderId ? 'default' : undefined),
+    [appliedProviderId],
+  );
+
   const batchSelectableIds = React.useMemo(
     // The default pointer lives in the registry, outside the provider rows, so
     // the applied provider is protected from batch deletion — same rule as the
@@ -1227,6 +1236,9 @@ const ZcodePage: React.FC = () => {
     selectable: providerBatch.selectionMode && providerBatch.isSelectable(provider.id),
     selected: providerBatch.selectedIds.has(provider.id),
     onSelectChange: (selected: boolean) => providerBatch.toggleSelect(provider.id, selected),
+    selectDisabledReason: providerBatch.selectionMode
+      ? providerSelectionDisabledReason(t, batchBlockReason(provider))
+      : undefined,
     connectivityStatus: connectivityStatuses[provider.id],
     onAddModel: () => handleAddModel(provider),
     onEditModel: (modelId: string) => handleEditModel(provider, modelId),

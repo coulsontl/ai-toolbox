@@ -108,6 +108,8 @@ interface KimiProviderCardProps {
   selectable?: boolean;
   selected?: boolean;
   onSelectChange?: (checked: boolean) => void;
+  /** Why this row cannot be picked in selection mode (disabled checkbox tooltip). */
+  selectDisabledReason?: string;
   /** Open the single-model editor for this provider (add or edit). */
   onEditModel?: (provider: KimiProvider, model?: KimiCatalogModel) => void;
   /** Duplicate a catalog row under a free key. */
@@ -178,6 +180,7 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
   selectable = false,
   selected = false,
   onSelectChange,
+  selectDisabledReason,
   onEditModel,
   onCopyModel,
   onSetPrimaryModel,
@@ -811,6 +814,7 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
       selectable,
       selected,
       onSelectChange,
+      selectDisabledReason,
       dimmed: provider.isDisabled,
       // A provider can be both applied and the failover P0; CardShell gives the
       // gateway role precedence.

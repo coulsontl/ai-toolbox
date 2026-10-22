@@ -1720,7 +1720,15 @@
       "deleteConfirmTitle": "Confirm delete selected providers",
       "deleteConfirmContent": "Will delete {{count}} selected providers. Continue?",
       "selectItem": "Select this provider",
-      "backupFailed": "Could not back up provider {{name}}. Batch deletion was cancelled."
+      "backupFailed": "Could not back up provider {{name}}. Batch deletion was cancelled.",
+      "selectUnavailable": "This provider cannot be selected",
+      "selectDisabledDefault": "This provider is the default and cannot be selected",
+      "selectDisabledLocal": "Local config record; it cannot be selected",
+      "selectDisabledOfficial": "Official providers cannot be deleted, so they cannot be selected",
+      "selectDisabledOfficialAccount": "This provider still has official accounts; remove them first",
+      "selectDisabledReadOnly": "Built-in provider managed by the engine",
+      "selectDisabledNoRecord": "This provider has no record this app can delete",
+      "selectDisabledUnnamed": "This provider has no id to reference"
     },
     "provider": {
       "overwrite": "Overwrite",

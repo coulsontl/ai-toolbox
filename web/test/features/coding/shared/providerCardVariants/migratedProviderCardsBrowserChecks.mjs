@@ -533,8 +533,15 @@ export async function verifyMigratedProviderCards({ send, evaluate, baseUrl, art
     Boolean(hermesRows.find(row => row.text.includes('claude-sonnet-4-5'))?.setPrimary),
   );
   check(
-    'Hermes model rows carry no drag grip (the CLI has no reorder)',
+    'Hermes model rows carry no drag grip (the CLI has no model reorder)',
     hermesRows.every(row => !row.grip),
+  );
+  // The provider card itself does drag: `custom_providers` is a YAML sequence,
+  // and `reorder_hermes_providers` rewrites it. A model grip would drag nothing;
+  // the card grip is the one that persists.
+  check(
+    'the Hermes provider card carries a drag grip',
+    await evaluate(`Boolean(document.querySelector('[data-fixture="hermes-list"] [data-provider-card-handle]'))`),
   );
 
   const hermesReadOnly = await evaluate(`
@@ -567,6 +574,68 @@ export async function verifyMigratedProviderCards({ send, evaluate, baseUrl, art
     'a read-only Hermes provider does not pretend its key is its endpoint',
     !hermesReadOnlyText.includes('(只读)'),
   );
+  // `reorder_hermes_providers` rewrites the custom list only, so a grip on a
+  // `providers:` dict row would move a card and persist nothing.
+  check(
+    'a read-only Hermes provider carries no drag grip',
+    await evaluate(`!document.querySelector('[data-fixture="hermes-readonly-list"] [data-provider-card-handle]')`),
+  );
+
+  /* ---------------------------------------------- selection mode (checkbox) */
+
+  /** Reads the left-slot control of a fixture block. */
+  const readSelectionSlot = name => evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="${name}"]');
+      const input = root?.querySelector('input[type="checkbox"]');
+      return {
+        hasCheckbox: Boolean(input),
+        disabled: input ? input.disabled : null,
+        hasHandle: Boolean(root?.querySelector('[data-provider-card-handle]')),
+      };
+    })()
+  `);
+
+  const eligibleSlot = await readSelectionSlot("hermes-selection-list");
+  check('an eligible row in selection mode shows a live checkbox',
+    eligibleSlot.hasCheckbox && eligibleSlot.disabled === false);
+  check('the checkbox replaces the drag handle in selection mode', !eligibleSlot.hasHandle);
+
+  const blockedSlot = await readSelectionSlot("hermes-selection-disabled-list");
+  check('an ineligible row still shows a checkbox instead of a blank slot',
+    blockedSlot.hasCheckbox);
+  check('the ineligible row’s checkbox is disabled', blockedSlot.disabled === true);
+  check('the ineligible row shows no drag handle either', !blockedSlot.hasHandle);
+
+  // Hover the disabled checkbox: its reason must be reachable, which a bare
+  // disabled <input> would swallow.
+  // These fixture blocks stack past the fold, and a hover on an off-screen
+  // element never reaches the tooltip: scroll it in first, then measure.
+  await evaluate(`document.querySelector('[data-fixture="hermes-selection-disabled-list"]')
+    ?.scrollIntoView({ block: 'center' })`);
+  await delay(300);
+  const blockedCheckboxCenter = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="hermes-selection-disabled-list"]');
+      const box = root?.querySelector('input[type="checkbox"]')?.parentElement;
+      if (!box) return null;
+      const rect = box.getBoundingClientRect();
+      if (rect.width === 0 || rect.top < 0 || rect.bottom > innerHeight) return null;
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()
+  `);
+  assert.ok(blockedCheckboxCenter, 'the disabled checkbox must be on screen');
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...blockedCheckboxCenter });
+  await delay(600);
+  check(
+    'hovering the disabled checkbox explains why the row cannot be picked',
+    await evaluate(`document.querySelector('.ant-tooltip')?.textContent?.trim() ?? null`),
+    '该渠道已设为默认，不可多选',
+  );
+
+  const readOnlySlot = await readSelectionSlot("hermes-readonly-selection-list");
+  check('a read-only row in selection mode is disabled too, not blank',
+    readOnlySlot.hasCheckbox && readOnlySlot.disabled === true);
 
   const hermesCardSubtitle = await fixture('subtitle("hermes-card")');
   check(

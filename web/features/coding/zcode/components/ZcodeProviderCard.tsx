@@ -38,6 +38,8 @@ interface ZcodeProviderCardProps {
   selectable?: boolean;
   selected?: boolean;
   onSelectChange?: (selected: boolean) => void;
+  /** Why this row cannot be picked in selection mode (disabled checkbox tooltip). */
+  selectDisabledReason?: string;
   /** Latest result of the batch connectivity test for this provider. */
   connectivityStatus?: ProviderConnectivityStatusItem;
   /** Flips the provider's disabled flag. */
@@ -96,6 +98,7 @@ const ZcodeProviderCard: React.FC<ZcodeProviderCardProps> = ({
   selectable = false,
   selected = false,
   onSelectChange,
+  selectDisabledReason,
   connectivityStatus,
   onToggleDisabled,
   onAddModel,
@@ -261,6 +264,7 @@ const ZcodeProviderCard: React.FC<ZcodeProviderCardProps> = ({
       selectable,
       selected,
       onSelectChange,
+      selectDisabledReason,
       dimmed: provider.isDisabled,
     },
     actions: {

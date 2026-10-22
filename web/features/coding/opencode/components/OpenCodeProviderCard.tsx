@@ -41,6 +41,8 @@ export interface OpenCodeProviderCardProps {
   selectable?: boolean;
   selected?: boolean;
   onSelectChange?: (selected: boolean) => void;
+  /** Why this row cannot be picked in selection mode (disabled checkbox tooltip). */
+  selectDisabledReason?: string;
   connectivityStatus?: ProviderConnectivityStatusItem;
   isDisabled: boolean;
   /** Receives the **new enabled state** (antd `Switch.onChange` contract). */
@@ -95,6 +97,7 @@ const OpenCodeProviderCard: React.FC<OpenCodeProviderCardProps> = ({
   selectable = false,
   selected = false,
   onSelectChange,
+  selectDisabledReason,
   connectivityStatus,
   isDisabled,
   onToggleDisabled,
@@ -167,6 +170,7 @@ const OpenCodeProviderCard: React.FC<OpenCodeProviderCardProps> = ({
       selectable,
       selected,
       onSelectChange,
+      selectDisabledReason,
     },
     actions: {
       onEdit,

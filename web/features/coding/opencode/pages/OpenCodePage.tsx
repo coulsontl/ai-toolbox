@@ -130,10 +130,12 @@ import {
   PROVIDER_SORT_MODES_BASIC,
   backupProvidersBeforeDelete,
   filterProviderItems,
+  providerSelectionDisabledReason,
   useProviderBatchSelection,
   useProviderListViewPrefs,
   useProviderListSort,
   sortProviderItems,
+  type ProviderSelectionBlockReason,
 } from '@/features/coding/shared/providerList';
 import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
 import ProviderListSection from '@/features/coding/shared/ProviderListSection';
@@ -985,6 +987,18 @@ const OpenCodePage: React.FC = () => {
       }
     },
     [config, doSaveConfig, clearBatchDeleteState, refreshTrayMenu, incrementOpenCodeConfigRefresh, t],
+  );
+
+  /** Why a row cannot be picked, for the disabled checkbox's tooltip. */
+  const batchBlockReason = React.useCallback(
+    (providerId: string): ProviderSelectionBlockReason | undefined => {
+      // Mirrors `canDeleteOpenCodeProvider`: a row missing from the config has
+      // nothing to delete, and the provider behind the global default is in use.
+      if (!config?.provider?.[providerId]) return 'noRecord';
+      const configuredDefault = config?.model?.split('/')[0];
+      return configuredDefault === providerId ? 'default' : undefined;
+    },
+    [config],
   );
 
   const batchSelectableIds = React.useMemo(
@@ -2190,6 +2204,9 @@ const OpenCodePage: React.FC = () => {
       selectable: providerBatch.selectionMode && providerBatch.isSelectable(providerId),
       selected: providerBatch.selectedIds.has(providerId),
       onSelectChange: (selected: boolean) => providerBatch.toggleSelect(providerId, selected),
+      selectDisabledReason: providerBatch.selectionMode
+        ? providerSelectionDisabledReason(t, batchBlockReason(providerId))
+        : undefined,
       connectivityStatus: connectivityStatuses[providerId],
       isDisabled: disabledProviderIds.has(providerId),
       onToggleDisabled: (enabled: boolean) => {

@@ -71,6 +71,7 @@ sequenceDiagram
 
 - 不要把 `shared/` 写成新的业务层。它应该统一交互语义，而不是偷存一份自己的持久化状态。
 - 供应商批量选择的 `allIds` 必须由 owning page 按真实可删除条件过滤；卡片复选框统一消费 hook 的 `isSelectable`，避免全选排除了默认项、卡片却仍显示可选。进入选择模式时禁用供应商拖拽。确认执行时使用最新的可选集合和页面回调，防止弹窗打开期间切换默认项后误删。
+- **多选模式下每一行都要有复选框，不可选的置灰并说明原因**：只渲染可选行的复选框，会让被排除的行（正在使用的默认渠道、本地记录、官方渠道、仍挂着官方账号、引擎内置只读）**整个左槽空掉**——用户读到的不是「规则」而是「这颗按钮丢了」（2026-10-22 用户报「供应商列表多选时正在使用的那个前面没有多选按钮……不是以为出 BUG 了」）。判定与文案分两层：页面用 `batchBlockReason(provider)` 给出 `ProviderSelectionBlockReason`（`'default' | 'local' | 'official' | 'officialAccount' | 'readOnly' | 'builtinSource'`），共享层 `providerSelectionDisabledReason(t, reason)` 翻译成一句话，经 `selectDisabledReason` 传给卡片；CardShell / ProviderCompactCard / 旧 `ProviderCard` 三处都渲染 `disabled` 复选框并挂 `Tooltip`。**`Tooltip` 的宿主必须是 `<span>`**：禁用的 `<input>` 不派发 hover，包一层才能让原因显示出来。`selectDisabledReason` 有值即视为「选择模式」，把手让位给复选框。全选语义不变，仍只覆盖可选行。
 - 批量删除回调只有整批成功才返回成功状态；失败时先刷新 owning module，再保留尚未删除的选择。绑定官方账号的 Codex/Grok/Gemini/Kimi provider 也应排除，不能让第一条后端拒绝中断整批后再静默清空选择。
 - 收藏备份统一先经 `backupProvidersBeforeDelete` 完成整批准备；任一备份失败就停止删除并显示供应商名。不要复用吞掉异常的 best-effort wrapper，也不要在循环中一边删除一边取下一条备份；DSH 的多个渠道可能共享凭据，前一次删除会改变后一次读取的凭据状态。
 - 供应商列表的"最近使用"写入约定：DB 型 tab（claudecode/claudedesktop/codex/grok/geminicli/kimi/openclaw）在各自后端 apply 汇聚函数内调用 `record_provider_last_used_in_sqlite_state`，覆盖托盘和窗口两条路径；配置文件型 tab（opencode/pi/omp/hermes/dsh）在托盘 internal 记录，窗口路径由页面在"设为默认模型/应用"成功后调 `noteProviderUsed`（内部走 `record_provider_last_used` command）兜底。前端重复记录与后端记录重叠是幂等无害的，页面接入时必须调用它以同步 hook 内存缓存。
