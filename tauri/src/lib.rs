@@ -3021,6 +3021,14 @@ pub fn run() {
                 // other exit paths (user close with minimize_to_tray disabled,
                 // app.exit, restart) keep their current semantics.
                 tauri::RunEvent::ExitRequested { code, api, .. } => {
+                    // A request carrying a code is a deliberate exit (tray quit,
+                    // restart, in-app update) that the event loop accepted;
+                    // stand the tray watchdog down so a slow shutdown is not
+                    // truncated. The automatic no-code request below is the
+                    // lightweight-mode window loss, which must keep the process.
+                    if code.is_some() {
+                        tray::note_exit_committed();
+                    }
                     if code.is_none() && lightweight::is_lightweight_mode() {
                         api.prevent_exit();
                     }
