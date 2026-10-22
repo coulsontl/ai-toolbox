@@ -65,9 +65,10 @@ useAppStore.setState({ language });
 document.documentElement.dataset.theme = resolvedTheme;
 updateGatewayProviderProfiles(gatewayProfiles);
 
-/** Providers, in the order the page will list them. `createdAt` is set so the
- *  "creation time" sort mode produces a *different* order than the stored one —
- *  otherwise a drag assertion could not tell the two apart. */
+/** Providers, in the order the page will list them. `createdAt` ascends with
+ *  the stored order, so "creation time" (newest first) renders C, B, A — the
+ *  reverse of the stored order. It used to descend, which made the created-mode
+ *  assertion compare A, B, C against A, B, C: a check that could not fail. */
 const createProvider = (id, name, createdAt, category = 'custom') => ({
   id,
   name,
@@ -113,12 +114,12 @@ const state = {
   viewMode: parameters.get('viewMode') || 'list',
   providers: [
     ...(isBridgeApplied
-      ? [createProvider('__local__', 'default', '2026-01-04T00:00:00.000Z')]
+      ? [createProvider('__local__', 'default', '2025-12-31T00:00:00.000Z')]
       : []),
     ...providerIds.map((letter, index) => createProvider(
       `provider-${letter}`,
       `Provider ${letter.toUpperCase()}`,
-      new Date(Date.UTC(2026, 0, 3 - index)).toISOString(),
+      new Date(Date.UTC(2026, 0, 1 + index)).toISOString(),
       // The account rows only render on an `official` provider, so `?accounts=2`
       // turns provider A into one — that is the shape the rows appear in.
       index === 0 && parameters.get('accounts') === '2' ? 'official' : 'custom',
@@ -210,6 +211,16 @@ window.providerListDragFixture = {
   lastReorder() {
     const call = [...state.requests].reverse().find(entry => entry.command === 'reorder_codex_providers');
     return call ? call.args.ids : null;
+  },
+  /** The last `save_provider_sort_mode` payload — what the page persisted. */
+  lastSavedSortMode() {
+    const call = [...state.requests].reverse().find(entry => entry.command === 'save_provider_sort_mode');
+    return call ? call.args : null;
+  },
+  /** Sort menu items as rendered, in the order the dropdown shows them. */
+  sortMenuItems() {
+    return [...document.querySelectorAll('.ant-dropdown-menu-item')]
+      .map(item => item.textContent.trim());
   },
   /** Stored order, as the backend would persist it. */
   storedOrder() {

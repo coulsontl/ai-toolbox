@@ -12,7 +12,8 @@
 
 ## 核心设计决策（Why）
 
-- **供应商卡片是共享 OpenCode 式映射层**（`components/HermesProviderCard.tsx`，2026-10-21 迁完）：Hermes 有 per-provider 模型目录、没有 provider 级「应用」（默认模型在 `model:` 段），所以头部无主操作。**没有 provider 拖拽**——后端没有 reorder 命令，顺序就是 YAML 字典的顺序。只读渠道（`providers:` 字典）不渲染编辑/复制/删除，并画「只读」标签。**复制**：预填源渠道、Key 加 `_copy` 且可编辑，弹窗标题走「添加」分支（`providerModal.copy`）。
+- **供应商卡片是共享 OpenCode 式映射层**（`components/HermesProviderCard.tsx`，2026-10-21 迁完）：Hermes 有 per-provider 模型目录、没有 provider 级「应用」（默认模型在 `model:` 段），所以头部无主操作。只读渠道（`providers:` 字典）不渲染编辑/复制/删除，并画「只读」标签。**复制**：预填源渠道、Key 加 `_copy` 且可编辑，弹窗标题走「添加」分支（`providerModal.copy`）。
+- **provider 顺序 = `custom_providers` 序列顺序**（2026-10-22 补）：Hermes 把可写渠道存成 YAML **序列**，序列顺序就是显示顺序；拖动卡片调 `reorder_hermes_providers` 重写该序列。此前 `build_provider_views` 用 `BTreeSet` 收口所有 key，读出来永远是字母序，任何拖拽都会被读回时覆盖——所以当时没有把手。只读 `providers:` 字典没有可拖的行（命令只重写 `custom_providers`），它们的把手按 `isReadOnly` 关掉；搜索或非 `custom` 排序时按共享约定禁用拖拽（`dragDisabled`）。
 - 通用配置（其他设置）用 JsonEditor 自动保存：失焦即 `save_hermes_other_settings()`，后端按切片读-改-写，只替换它拥有的顶层键，所以 MCP、provider、模型等键不会被这次保存回退。
 - Memory 面板与通用配置编辑面**共同拥有** `memory:` 段（前者写开关，后者以 JSON 文本展示整段），因此面板写完后必须让页面重读配置（`onConfigChanged` → `loadConfig(true)`），否则编辑器的旧文本会在下一次失焦保存里把开关改回去（issue #406 同形）。
 

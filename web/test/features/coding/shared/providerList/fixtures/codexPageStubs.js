@@ -56,7 +56,7 @@ export const createCodexPageInvoke = (state) => async (command, args) => {
     case 'get_provider_list_state':
       return {
         sort_modes: { codex: state.sortMode },
-        last_used: {},
+        last_used: state.lastUsed ?? {},
         view_modes: { codex: state.viewMode },
       };
     case 'save_provider_sort_mode': {

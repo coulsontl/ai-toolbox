@@ -1,6 +1,6 @@
 use chrono::Local;
 use serde_json::{json, Map, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -716,12 +716,39 @@ fn get_providers_dict(object: &Map<String, Value>) -> Vec<(String, Value)> {
         .unwrap_or_default()
 }
 
+/// The model ids a provider declares, in declaration order.
+///
+/// Both shapes are accepted because the caller may see either one: the runtime
+/// view denormalizes `models` from the YAML dict into an array *before* this
+/// runs, while the raw config and the save path still hold the dict form. Only
+/// reading the dict literally meant every provider with a catalog reported a
+/// single id — the `model:` scalar fallback — which is what the connectivity
+/// test modal lists (user-reported 2026-10-21: two models, one row).
 fn model_ids_from_provider(provider: &Value) -> Vec<String> {
     let mut ids = Vec::new();
-    if let Some(models) = provider.get("models").and_then(Value::as_object) {
-        for key in models.keys() {
-            ids.push(key.clone());
+    match provider.get("models") {
+        Some(Value::Object(models)) => {
+            for key in models.keys() {
+                ids.push(key.clone());
+            }
         }
+        // Denormalized shape: each entry carries its id back.
+        Some(Value::Array(models)) => {
+            for entry in models {
+                let Some(id) = entry
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                else {
+                    continue;
+                };
+                if !ids.iter().any(|existing| existing == id) {
+                    ids.push(id.to_string());
+                }
+            }
+        }
+        _ => {}
     }
     if let Some(model) = provider.get("model").and_then(Value::as_str) {
         if !ids.iter().any(|id| id == model) {
@@ -785,21 +812,34 @@ fn build_provider_views(config: &Value) -> Vec<HermesRuntimeProviderView> {
     let dict = get_providers_dict(object);
     let custom_names: BTreeSet<String> = custom.iter().map(|(name, _)| name.clone()).collect();
 
-    let mut keys = BTreeSet::new();
+    // Display order: `custom_providers` is a YAML sequence, and its order is the
+    // one the user dragged into place (`custom_providers` order is what
+    // `reorder_hermes_providers` rewrites). The read-only `providers:` dict and
+    // a dangling default provider follow, in their own order, because they have
+    // no draggable row to move.
+    //
+    // This used to be a `BTreeSet` of every key, which sorted the whole list
+    // alphabetically and silently overrode both the YAML order and any drag.
+    let mut seen = BTreeSet::new();
+    let mut ordered_keys = Vec::new();
     for (name, _) in &custom {
-        keys.insert(name.clone());
+        if seen.insert(name.clone()) {
+            ordered_keys.push(name.clone());
+        }
     }
     for (name, _) in &dict {
-        keys.insert(name.clone());
+        if seen.insert(name.clone()) {
+            ordered_keys.push(name.clone());
+        }
     }
     if let Some(default_provider) = &default_provider {
-        if !default_provider.trim().is_empty() {
-            keys.insert(default_provider.clone());
+        if !default_provider.trim().is_empty() && seen.insert(default_provider.clone()) {
+            ordered_keys.push(default_provider.clone());
         }
     }
 
     let mut views = Vec::new();
-    for provider_key in keys {
+    for provider_key in ordered_keys {
         let is_read_only = !custom_names.contains(&provider_key)
             && dict.iter().any(|(name, _)| *name == provider_key);
         let is_default = default_provider.as_deref() == Some(provider_key.as_str());
@@ -1120,6 +1160,94 @@ pub async fn delete_hermes_runtime_provider(
         &app,
         &config_path,
         &[("custom_providers", Value::Array(providers))],
+    )?;
+    drop(_guard);
+    emit_config_changed(&app, "window");
+    read_hermes_runtime_config(state).await
+}
+
+/// Reorder `custom_providers` to match `provider_keys`.
+///
+/// Keys the caller did not mention (a stale payload, or a provider added
+/// between render and drop) keep their existing relative order after the listed
+/// ones — dropping them would delete providers on an out-of-date drag.
+fn order_providers_by_keys(providers: &[Value], provider_keys: &[String]) -> Vec<Value> {
+    let name_of = |provider: &Value| {
+        provider
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let by_name: HashMap<String, &Value> = providers
+        .iter()
+        .filter_map(|provider| name_of(provider).map(|name| (name, provider)))
+        .collect();
+
+    let mut ordered: Vec<Value> = Vec::with_capacity(providers.len());
+    let mut placed = BTreeSet::new();
+    for key in provider_keys {
+        if let Some(provider) = by_name.get(key) {
+            if placed.insert(key.clone()) {
+                ordered.push((*provider).clone());
+            }
+        }
+    }
+    for provider in providers {
+        if let Some(name) = name_of(provider) {
+            if placed.insert(name) {
+                ordered.push(provider.clone());
+            }
+        }
+    }
+    ordered
+}
+
+/// Persist the drag order of the custom providers.
+///
+/// Hermes keeps `custom_providers` as a YAML sequence, so the sequence order
+/// *is* the display order (see `build_provider_views`). Only that list is
+/// rewritten; the read-only `providers:` dict is engine-owned and has no
+/// draggable row.
+///
+/// `provider_keys` is the order the user sees. Keys the caller did not mention
+/// (a stale payload, or a provider added between render and drop) keep their
+/// existing relative order after the listed ones — dropping them would delete
+/// providers on an out-of-date drag.
+#[tauri::command]
+pub async fn reorder_hermes_providers(
+    state: tauri::State<'_, SqliteDbState>,
+    app: tauri::AppHandle,
+    provider_keys: Vec<String>,
+) -> Result<HermesRuntimeConfig, String> {
+    let db = state.db();
+    let config_path = get_hermes_config_path_async(&db).await?;
+    let _guard = hermes_write_lock()
+        .lock()
+        .map_err(|_| "Hermes config write lock poisoned".to_string())?;
+    let mut config = read_yaml_object_or_empty(&config_path)?;
+    let object = object_mut(&mut config)?;
+
+    let providers = object
+        .get("custom_providers")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if providers.is_empty() {
+        drop(_guard);
+        return read_hermes_runtime_config(state).await;
+    }
+
+    let ordered = order_providers_by_keys(&providers, &provider_keys);
+
+    if ordered == providers {
+        drop(_guard);
+        return read_hermes_runtime_config(state).await;
+    }
+
+    write_yaml_sections_with_backup(
+        &app,
+        &config_path,
+        &[("custom_providers", Value::Array(ordered))],
     )?;
     drop(_guard);
     emit_config_changed(&app, "window");
@@ -1710,6 +1838,28 @@ pub async fn launch_hermes_dashboard() -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// The list order the user dragged into place is the `custom_providers`
+    /// sequence order. It used to be rebuilt through a `BTreeSet`, which sorted
+    /// every provider alphabetically and made the drag look broken.
+    #[test]
+    fn provider_views_follow_the_custom_list_order() {
+        let config = json!({
+            "custom_providers": [
+                { "name": "zeta" },
+                { "name": "alpha" },
+                { "name": "mike" }
+            ],
+            "providers": { "builtin-one": { "base_url": "https://example.test" } }
+        });
+
+        let keys: Vec<String> = build_provider_views(&config)
+            .into_iter()
+            .map(|view| view.provider_key)
+            .collect();
+
+        assert_eq!(keys, vec!["zeta", "alpha", "mike", "builtin-one"]);
+    }
+
     #[test]
     fn dedup_keeps_last_toplevel_occurrence() {
         // Duplicates come from older section-append tooling; the last block is
@@ -1752,6 +1902,37 @@ model:
   default: gpt-4
 ";
         assert_eq!(deduplicate_top_level_keys(yaml), yaml);
+    }
+
+    #[test]
+    fn model_ids_reads_both_the_dict_and_the_denormalized_array() {
+        // The runtime view converts `models` to an array before the ids are
+        // collected, so the array form is the one that actually reaches this
+        // function in production.
+        let denormalized = json!({
+            "models": [
+                { "id": "deepseek-v4.1-flash", "context_length": 1000000 },
+                { "id": "minimax-m3.1-flash" },
+            ],
+        });
+        assert_eq!(
+            model_ids_from_provider(&denormalized),
+            vec!["deepseek-v4.1-flash".to_string(), "minimax-m3.1-flash".to_string()],
+        );
+
+        let raw = json!({
+            "models": { "alpha": {}, "beta": {} },
+        });
+        assert_eq!(model_ids_from_provider(&raw), vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn model_ids_appends_the_single_model_scalar_once() {
+        let provider = json!({
+            "models": [{ "id": "alpha" }, { "id": "alpha" }, { "id": "  " }],
+            "model": "alpha",
+        });
+        assert_eq!(model_ids_from_provider(&provider), vec!["alpha".to_string()]);
     }
 
     #[test]
@@ -1913,6 +2094,47 @@ model:
         let raw = "model:\n  default: gpt-4\nagent:\n  max_turns: 10\n";
         let next = replace_yaml_section(raw, "model", &json!({ "default": "gpt-4" })).unwrap();
         assert_eq!(next, raw);
+    }
+
+    /// The reorder keeps every provider: listed keys move to the front in the
+    /// given order, unlisted ones keep their relative order behind them. A
+    /// stale payload must never drop a provider.
+    #[test]
+    fn order_providers_by_keys_keeps_unlisted_providers_behind_the_listed_ones() {
+        let providers = vec![
+            json!({ "name": "alpha" }),
+            json!({ "name": "beta" }),
+            json!({ "name": "gamma" }),
+        ];
+        let requested = vec!["gamma".to_string(), "alpha".to_string()];
+
+        let ordered = order_providers_by_keys(&providers, &requested);
+
+        let names: Vec<&str> = ordered
+            .iter()
+            .filter_map(|provider| provider.get("name").and_then(Value::as_str))
+            .collect();
+        assert_eq!(names, vec!["gamma", "alpha", "beta"]);
+    }
+
+    /// Keys that no longer exist are ignored, and duplicates in the payload do
+    /// not duplicate a provider in the file.
+    #[test]
+    fn order_providers_by_keys_ignores_unknown_and_duplicate_keys() {
+        let providers = vec![json!({ "name": "alpha" }), json!({ "name": "beta" })];
+        let requested = vec![
+            "gone".to_string(),
+            "beta".to_string(),
+            "beta".to_string(),
+        ];
+
+        let ordered = order_providers_by_keys(&providers, &requested);
+
+        let names: Vec<&str> = ordered
+            .iter()
+            .filter_map(|provider| provider.get("name").and_then(Value::as_str))
+            .collect();
+        assert_eq!(names, vec!["beta", "alpha"]);
     }
 
     #[test]

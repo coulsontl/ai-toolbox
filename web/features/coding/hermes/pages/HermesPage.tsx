@@ -27,6 +27,23 @@ import {
   SettingOutlined,
   ToolOutlined,
 } from '@ant-design/icons';
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  rectSortingStrategy,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { restrictToVerticalAxis, restrictToWindowEdges } from '@dnd-kit/modifiers';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import FileConfigPreviewModal from '@/components/common/FileConfigPreviewModal';
@@ -70,6 +87,7 @@ import {
   listHermesAllApiHubProviders,
   openHermesWebUi,
   readHermesRuntimeConfig,
+  reorderHermesProviders,
   resolveHermesAllApiHubProviders,
   saveHermesModelSettings,
   saveHermesModelsProvider,
@@ -149,6 +167,10 @@ interface HermesCommonConfigLike {
   config?: string;
   rootDir?: string | null;
 }
+
+/** Providers the user can drag: everything except the read-only `providers:` dict rows. */
+const canReorderProvider = (provider: HermesRuntimeProviderView): boolean =>
+  !provider.isReadOnly;
 
 const SIDEBAR_ICON_BY_SECTION_ID: Record<string, React.ReactNode> = {
   'hermes-model-settings': <RobotOutlined />,
@@ -400,6 +422,11 @@ const HermesPage: React.FC = () => {
       });
     },
     [],
+  );
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
   const connectivityInfo = React.useMemo(() => {
@@ -820,6 +847,66 @@ const HermesPage: React.FC = () => {
     allIds: batchSelectableIds,
     onBatchDelete: handleBatchDeleteProviders,
   });
+
+  // Dragging writes the order into the `custom_providers` YAML sequence; search
+  // and non-`custom` sort modes show an order the file does not contain, so a
+  // drop there would persist something the user is not looking at.
+  const providerDragDisabled = sortMode !== 'custom' || providerKeyword.trim() !== '';
+  const providerBatchDragDisabled = providerDragDisabled || providerBatch.selectionMode;
+
+  const handleProviderDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) {
+      return;
+    }
+    const providerKeys = hermesProviders
+      .filter(canReorderProvider)
+      .map((provider) => provider.providerKey);
+    const oldIndex = providerKeys.indexOf(active.id as string);
+    // Dropping onto a read-only row (which always renders after the writable
+    // ones) means "move to the end of the writable list". Returning instead
+    // would make the gesture silently do nothing.
+    const newIndex = providerKeys.indexOf(over.id as string) >= 0
+      ? providerKeys.indexOf(over.id as string)
+      : providerKeys.length - 1;
+    if (oldIndex < 0) {
+      return;
+    }
+    const previousConfig = runtimeConfig;
+    // Optimistic: the card must land where it was dropped even if the write is
+    // slow, and a failure has to put the old order back.
+    //
+    // Only the writable providers move, so a plain "reordered list" would drop
+    // every read-only `providers:` row from the page until the backend answers
+    // — and then re-append it at the end. Walk the current list and replace the
+    // writable entries with their new order, leaving read-only rows where they
+    // are.
+    const byKey = new Map(
+      (runtimeConfig?.providers ?? []).map((provider) => [provider.providerKey, provider]),
+    );
+    const movedKeys = arrayMove(providerKeys, oldIndex, newIndex);
+    let nextWritableIndex = 0;
+    const reordered = (runtimeConfig?.providers ?? []).map((provider) => {
+      if (!canReorderProvider(provider)) {
+        return provider;
+      }
+      const nextKey = movedKeys[nextWritableIndex++];
+      return byKey.get(nextKey) ?? provider;
+    });
+    if (runtimeConfig) {
+      setRuntimeConfig({ ...runtimeConfig, providers: reordered });
+    }
+    try {
+      const nextConfig = await reorderHermesProviders(movedKeys);
+      setRuntimeConfig(nextConfig);
+      setOtherSettings(nextConfig.otherSettings || {});
+      await refreshTrayMenu();
+    } catch (error) {
+      console.error('Failed to reorder Hermes providers:', error);
+      setRuntimeConfig(previousConfig);
+      message.error(t('common.error'));
+    }
+  };
 
   const handleSetDefaultModel = async (provider: HermesRuntimeProviderView, modelId: string) => {
     setSaving(true);
@@ -1389,6 +1476,7 @@ const HermesPage: React.FC = () => {
           defaultModel: defaultModelId,
         })}
         onDelete={isReadOnly ? undefined : () => handleDeleteProvider(provider)}
+        dragDisabled={providerBatchDragDisabled}
         deleteDisabledReason={
           !isReadOnly && provider.isDefault
             ? t('hermes.provider.deleteDisabledDefault', { defaultValue: '该渠道已设为默认，不可删除' })
@@ -1518,7 +1606,7 @@ const HermesPage: React.FC = () => {
               sortMode={sortMode}
               sortModes={PROVIDER_SORT_MODES_BASIC}
               onSortModeChange={setSortMode}
-              dragDisabledBySort={sortMode !== 'custom'}
+              dragDisabledBySort={providerDragDisabled}
               viewMode={viewMode}
               onViewModeChange={setViewMode}
               onBatchTest={handleBatchTestProviders}
@@ -1554,24 +1642,37 @@ const HermesPage: React.FC = () => {
                 </Space>
               )}
             >
-              {/* No provider drag: Hermes has no reorder command — the order is
-                  whichever order the YAML dict happens to have, and a grip here
-                  would move a card without writing anything back. */}
-              {viewMode === 'card' ? (
-                <ProviderCardGrid
-                  items={visibleProviders}
-                  getKey={(provider) => provider.providerKey}
-                  renderItem={(provider) => renderProviderCard(provider)}
-                />
-              ) : (
-                <div>
-                  {visibleProviders.map((provider) => (
-                    <React.Fragment key={provider.providerKey}>
-                      {renderProviderCard(provider)}
-                    </React.Fragment>
-                  ))}
-                </div>
-              )}
+              {/* One `DndContext` serves both layouts; only the sorting strategy
+                  and the drag modifier change with the view. The order it writes
+                  is the `custom_providers` YAML sequence, which is also what
+                  `build_provider_views` reads back. */}
+              <DndContext
+                sensors={providerBatchDragDisabled ? [] : sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleProviderDragEnd}
+                modifiers={[viewMode === 'card' ? restrictToWindowEdges : restrictToVerticalAxis]}
+              >
+                <SortableContext
+                  items={visibleProviders.map((provider) => provider.providerKey)}
+                  strategy={viewMode === 'card' ? rectSortingStrategy : verticalListSortingStrategy}
+                >
+                  {viewMode === 'card' ? (
+                    <ProviderCardGrid
+                      items={visibleProviders}
+                      getKey={(provider) => provider.providerKey}
+                      renderItem={(provider) => renderProviderCard(provider)}
+                    />
+                  ) : (
+                    <div>
+                      {visibleProviders.map((provider) => (
+                        <React.Fragment key={provider.providerKey}>
+                          {renderProviderCard(provider)}
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  )}
+                </SortableContext>
+              </DndContext>
             </ProviderListSection>
           </div>
 

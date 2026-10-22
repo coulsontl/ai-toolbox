@@ -36,6 +36,8 @@ interface OpenClawProviderCardProps {
   selectable?: boolean;
   selected?: boolean;
   onSelectChange?: (selected: boolean) => void;
+  /** Why this row cannot be picked in selection mode (disabled checkbox tooltip). */
+  selectDisabledReason?: string;
   connectivityStatus?: ProviderConnectivityStatusItem;
 
   onEdit: () => void;
@@ -87,6 +89,7 @@ const OpenClawProviderCard: React.FC<OpenClawProviderCardProps> = ({
   selectable = false,
   selected = false,
   onSelectChange,
+  selectDisabledReason,
   connectivityStatus,
   onEdit,
   onCopy,
@@ -181,6 +184,7 @@ const OpenClawProviderCard: React.FC<OpenClawProviderCardProps> = ({
       selectable,
       selected,
       onSelectChange,
+      selectDisabledReason,
     },
     actions: {
       onEdit,

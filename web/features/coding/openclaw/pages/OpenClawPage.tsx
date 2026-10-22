@@ -137,9 +137,11 @@ import {
   backupProvidersBeforeDelete,
   filterProviderItems,
   sortProviderItems,
+  providerSelectionDisabledReason,
   useProviderBatchSelection,
   useProviderListSort,
   useProviderListViewPrefs,
+  type ProviderSelectionBlockReason,
 } from '@/features/coding/shared/providerList';
 import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
 import ProviderListSection from '@/features/coding/shared/ProviderListSection';
@@ -771,6 +773,15 @@ const OpenClawPage: React.FC = () => {
     [config, agentsDefaults, loadFavoriteProviders, loadConfig, loadSectionData, refreshTrayMenu, t],
   );
 
+  /** Why a row cannot be picked, for the disabled checkbox's tooltip. */
+  const batchBlockReason = React.useCallback(
+    (providerId: string): ProviderSelectionBlockReason | undefined => {
+      const primaryProviderId = agentsDefaults?.model?.primary?.split('/')[0];
+      return primaryProviderId === providerId ? 'default' : undefined;
+    },
+    [agentsDefaults],
+  );
+
   // Selectable ids exclude providers that can't be deleted (e.g. the default model's provider).
   const batchSelectableIds = React.useMemo(
     () =>
@@ -1341,6 +1352,9 @@ const OpenClawPage: React.FC = () => {
             : undefined
         }
         selectable={providerBatch.selectionMode && providerBatch.isSelectable(providerId)}
+        selectDisabledReason={providerBatch.selectionMode
+          ? providerSelectionDisabledReason(t, batchBlockReason(providerId))
+          : undefined}
         selected={providerBatch.selectedIds.has(providerId)}
         onSelectChange={(checked) => providerBatch.toggleSelect(providerId, checked)}
         onAddModel={() => handleAddModel(providerId)}

@@ -186,6 +186,11 @@ impl OpenClawConfigDocument {
 
     /// 对比 `old_value` 与 `new_value` 两个根对象,仅对变化的顶层 key 执行
     /// 替换/删除,其余节原样保留。
+    ///
+    /// 变化判定比较**序列化文本**而非 `Value` 相等:本 crate 的 `serde_json`
+    /// 开了 `preserve_order`,其 map 比较与 key 顺序无关,于是「只把
+    /// `models.providers` 的两个键换了个位置」会被判成没变化——拖拽排序明明
+    /// 落到了前端对象里,写盘却被跳过,重新加载后又变回原顺序。
     pub fn apply_root_section_diff(
         &mut self,
         old_value: &Value,
@@ -198,7 +203,13 @@ impl OpenClawConfigDocument {
 
         for (key, new_section) in new_obj {
             let changed = match old_obj.and_then(|obj| obj.get(key)) {
-                Some(old_section) => old_section != new_section,
+                Some(old_section) => {
+                    serde_json::to_string(old_section).map_err(|error| {
+                        format!("Failed to serialize current '{key}' section: {error}")
+                    })? != serde_json::to_string(new_section).map_err(|error| {
+                        format!("Failed to serialize new '{key}' section: {error}")
+                    })?
+                }
                 None => true,
             };
             if changed {
@@ -822,5 +833,38 @@ mod tests {
         assert!(written.contains("tools"));
         assert!(!written.contains("env"));
         json5::from_str::<Value>(&written).expect("valid after diff");
+    }
+
+    /// Reordering providers changes only the key order of `models.providers`,
+    /// and `serde_json`'s `preserve_order` makes `Value` equality
+    /// order-insensitive. The diff must compare the serialized text instead —
+    /// otherwise a drag is silently dropped as "nothing changed".
+    #[test]
+    fn apply_root_section_diff_writes_a_provider_reorder() {
+        let _guard = test_guard();
+        let dir = temp_dir();
+        let path = dir.path().join("openclaw.json");
+        let source = "{\n  models: { mode: 'merge', providers: { a: { models: [] }, b: { models: [] } } },\n}\n";
+        fs::write(&path, source).unwrap();
+
+        let old_value = json5::from_str::<Value>(source).unwrap();
+        let new_value = json!({
+            "models": { "mode": "merge", "providers": { "b": { "models": [] }, "a": { "models": [] } } }
+        });
+        assert_eq!(old_value.get("models"), new_value.get("models"), "equality is order-insensitive");
+
+        let mut doc = OpenClawConfigDocument::load(&path).unwrap();
+        doc.apply_root_section_diff(&old_value, &new_value).unwrap();
+        let written = doc.text.to_string();
+
+        let reparsed = json5::from_str::<Value>(&written).expect("valid after reorder");
+        let provider_keys: Vec<&String> = reparsed
+            .get("models")
+            .and_then(|models| models.get("providers"))
+            .and_then(Value::as_object)
+            .expect("providers survive")
+            .keys()
+            .collect();
+        assert_eq!(provider_keys, vec!["b", "a"], "written order: {written}");
     }
 }

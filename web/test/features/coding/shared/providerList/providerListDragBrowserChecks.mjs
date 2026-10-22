@@ -87,7 +87,10 @@ export async function verifyProviderListDrag({ send, evaluate, baseUrl, artifact
     'no grip renders in a non-custom sort mode, so the list cannot look draggable',
     await fixture('renderedOrder().length === 3 && ["Provider A","Provider B","Provider C"].every(name => !providerListDragFixture.hasHandle(name))'),
   );
-  check('non-custom mode renders in its own order, not the stored one', await fixture('renderedOrder()'), ['Provider A', 'Provider B', 'Provider C']);
+  // Newest first: the fixture's `createdAt` ascends with the stored order, so
+  // this order is the reverse of it. The previous assertion expected A, B, C —
+  // the stored order — and therefore passed whether or not the sort ran.
+  check('non-custom mode renders in its own order, not the stored one', await fixture('renderedOrder()'), ['Provider C', 'Provider B', 'Provider A']);
   const sortButtonCenter = await evaluate(`(() => {
     const button = [...document.querySelectorAll('button')]
       .find(element => element.textContent.includes(${JSON.stringify(sortLabel)}));
@@ -104,6 +107,60 @@ export async function verifyProviderListDrag({ send, evaluate, baseUrl, artifact
     '拖拽排序仅在选择「默认」排序时可用',
   );
   await screenshot('created-mode');
+
+  // --- the control actually sorts: open the menu, pick, observe -----------
+  //
+  // Everything above asserts the *consequence* of a sort mode loaded from the
+  // backend. None of it drives the control, so a dropdown whose click never
+  // reaches the page — the reported "排序不生效" — would pass all of them.
+  const clickSortMode = async label => {
+    const center = await evaluate(`(() => {
+      const button = [...document.querySelectorAll('button')]
+        .find(element => element.textContent.includes(${JSON.stringify(sortLabel)}));
+      if (!button) return null;
+      const rect = button.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()`);
+    assert.ok(center, 'the sort control must be on screen');
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: center.x, y: center.y, button: 'left', clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: center.x, y: center.y, button: 'left', clickCount: 1 });
+    await delay(300);
+    const items = await fixture('sortMenuItems()');
+    assert.ok(items.length > 0, 'the sort menu must open: ' + JSON.stringify(items));
+    const itemCenter = await evaluate(`(() => {
+      const item = [...document.querySelectorAll('.ant-dropdown-menu-item')]
+        .find(element => element.textContent.trim() === ${JSON.stringify(label)});
+      if (!item) return null;
+      const rect = item.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()`);
+    assert.ok(itemCenter, `the "${label}" sort item must be in the menu`);
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: itemCenter.x, y: itemCenter.y, button: 'left', clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: itemCenter.x, y: itemCenter.y, button: 'left', clickCount: 1 });
+    await delay(400);
+  };
+
+  await openFixture('sortMode=custom');
+  await clickSortMode('按名称');
+  check(
+    'picking a sort mode from the menu reorders the list',
+    await fixture('renderedOrder()'),
+    ['Provider A', 'Provider B', 'Provider C'],
+  );
+  check(
+    'picking a sort mode persists the choice',
+    await fixture('lastSavedSortMode()'),
+    { module: 'codex', mode: 'name' },
+  );
+  // The dropdown lives inside the Collapse header: a click that bubbles would
+  // also toggle the whole section, which looks like "the menu did nothing".
+  // Read `aria-expanded`, not a content class: antd 6 keeps the active state on
+  // the collapse header, and there is no `.ant-collapse-content-active` to find.
+  check(
+    'picking a sort mode leaves the provider section expanded',
+    await evaluate(`document.querySelector('#codex-providers .ant-collapse-header')?.getAttribute('aria-expanded')`),
+    'true',
+  );
 
   return checks;
 }

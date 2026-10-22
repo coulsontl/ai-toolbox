@@ -40,6 +40,8 @@ interface HermesProviderCardProps {
   selectable?: boolean;
   selected?: boolean;
   onSelectChange?: (selected: boolean) => void;
+  /** Why this row cannot be picked in selection mode (disabled checkbox tooltip). */
+  selectDisabledReason?: string;
   connectivityStatus?: ProviderConnectivityStatusItem;
 
   onEdit?: () => void;
@@ -48,6 +50,8 @@ interface HermesProviderCardProps {
   onDelete?: () => void;
   /** Disables the delete button and explains why on hover (the default provider). */
   deleteDisabledReason?: string;
+  /** Set while search or a non-`custom` sort makes the visible order not the stored one. */
+  dragDisabled?: boolean;
 
   /** Model catalog actions. Omit a handler to hide its button. */
   onAddModel?: () => void;
@@ -89,12 +93,14 @@ const HermesProviderCard: React.FC<HermesProviderCardProps> = ({
   selectable = false,
   selected = false,
   onSelectChange,
+  selectDisabledReason,
   connectivityStatus,
   onEdit,
   onCopy,
   onShare,
   onDelete,
   deleteDisabledReason,
+  dragDisabled = false,
   onAddModel,
   onEditModel,
   onCopyModel,
@@ -173,12 +179,15 @@ const HermesProviderCard: React.FC<HermesProviderCardProps> = ({
       baseUrl,
     },
     providerState: {
-      draggable: !selectable,
+      // Read-only `providers:` dict rows have no position to move: the
+      // `reorder_hermes_providers` command rewrites `custom_providers` only.
+      draggable: !provider.isReadOnly && !selectable && !dragDisabled,
       sortableId: provider.providerKey,
       connectivityStatus,
       selectable,
       selected,
       onSelectChange,
+      selectDisabledReason,
     },
     actions: {
       onEdit,

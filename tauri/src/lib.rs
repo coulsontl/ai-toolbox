@@ -2311,6 +2311,7 @@ pub fn run() {
             coding::hermes::save_hermes_settings_config,
             coding::hermes::read_hermes_runtime_config,
             coding::hermes::save_hermes_models_provider,
+            coding::hermes::reorder_hermes_providers,
             coding::hermes::delete_hermes_runtime_provider,
             coding::hermes::save_hermes_model_settings,
             coding::hermes::save_hermes_other_settings,

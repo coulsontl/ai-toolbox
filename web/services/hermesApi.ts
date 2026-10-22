@@ -41,6 +41,13 @@ export const deleteHermesRuntimeProvider = async (
   return await invoke<HermesRuntimeConfig>('delete_hermes_runtime_provider', { providerKey });
 };
 
+/** Persist the drag order of the writable `custom_providers` list. */
+export const reorderHermesProviders = async (
+  providerKeys: string[],
+): Promise<HermesRuntimeConfig> => {
+  return await invoke<HermesRuntimeConfig>('reorder_hermes_providers', { providerKeys });
+};
+
 export const saveHermesModelSettings = async (
   input: HermesModelSettingsInput,
 ): Promise<HermesRuntimeConfig> => {
