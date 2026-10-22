@@ -59,9 +59,11 @@ import {
   backupProvidersBeforeDelete,
   filterProviderItems,
   sortProviderItems,
+  providerSelectionDisabledReason,
   useProviderBatchSelection,
   useProviderListSort,
   useProviderListViewPrefs,
+  type ProviderSelectionBlockReason,
 } from '@/features/coding/shared/providerList';
 import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
 import ProviderListSection from '@/features/coding/shared/ProviderListSection';
@@ -839,6 +841,16 @@ const HermesPage: React.FC = () => {
     [hermesProviders, providerKeyword, sortMode, lastUsedAt],
   );
 
+  /** Why a row cannot be picked, for the disabled checkbox's tooltip. */
+  const batchBlockReason = React.useCallback(
+    (provider: HermesRuntimeProviderView): ProviderSelectionBlockReason | undefined => {
+      if (provider.isReadOnly) return 'readOnly';
+      if (provider.isDefault) return 'default';
+      return undefined;
+    },
+    [],
+  );
+
   const batchSelectableIds = React.useMemo(
     () => visibleProviders.filter(canBatchDeleteProvider).map((provider) => provider.providerKey),
     [visibleProviders, canBatchDeleteProvider],
@@ -1461,6 +1473,9 @@ const HermesPage: React.FC = () => {
         defaultModelId={defaultModelId}
         viewMode={viewMode}
         selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.providerKey)}
+        selectDisabledReason={providerBatch.selectionMode
+          ? providerSelectionDisabledReason(t, batchBlockReason(provider))
+          : undefined}
         selected={providerBatch.selectedIds.has(provider.providerKey)}
         onSelectChange={(checked) => providerBatch.toggleSelect(provider.providerKey, checked)}
         connectivityStatus={connectivityStatuses[provider.providerKey]}

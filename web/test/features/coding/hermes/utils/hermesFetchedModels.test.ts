@@ -12,7 +12,7 @@ test('buildFetchedHermesModel keeps upstream id casing and name', () => {
   assert.equal(record.name, 'Sonnet 5');
 });
 
-test('buildFetchedHermesModel fills preset context/max_tokens/reasoning', () => {
+test('buildFetchedHermesModel fills preset context/max_tokens/reasoning/name', () => {
   const preset: PresetModel = {
     id: 'claude-sonnet-5',
     name: 'Claude Sonnet 5',
@@ -25,6 +25,14 @@ test('buildFetchedHermesModel fills preset context/max_tokens/reasoning', () => 
   assert.equal(record.context_length, 200000);
   assert.equal(record.max_tokens, 64000);
   assert.equal(record.reasoning, true);
+  // The preset's readable name wins over whatever the upstream echoed back —
+  // most endpoints answer with the id, which is not a display name.
+  assert.equal(record.name, 'Claude Sonnet 5');
+});
+
+test('buildFetchedHermesModel falls back to the fetched name when the preset has none', () => {
+  const record = buildFetchedHermesModel({ id: 'x', name: 'Upstream X' }, { id: 'x', name: '' } as PresetModel);
+  assert.equal(record.name, 'Upstream X');
 });
 
 test('buildFetchedHermesModel omits limits when preset lacks them', () => {
