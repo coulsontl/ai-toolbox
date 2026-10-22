@@ -4565,7 +4565,8 @@
     },
     "followCcSwitchMarks": "遵循 CC Switch 标记",
     "followCcSwitchMarksHintOn": "CC Switch 来源的 server 将按其标记的 agent 同步（未标记的不会同步到任何工具）；下方勾选仅作用于其他来源。",
-    "followCcSwitchMarksHintOff": "CC Switch 来源的 server 将按下方勾选同步。"
+    "followCcSwitchMarksHintOff": "CC Switch 来源的 server 将按下方勾选同步。",
+    "copyJson": "复制 JSON"
   },
   "pi": {
     "rootPathSource": {

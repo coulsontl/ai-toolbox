@@ -3,6 +3,7 @@ import { message } from 'antd';
 import {
   Code2,
   Copy,
+  FileJson,
   Globe2,
   GripVertical,
   Loader2,
@@ -33,6 +34,7 @@ import {
   hashTagColorIndex,
   normalizeTagList,
 } from '../utils/mcpTags';
+import { formatMcpServerExportJson } from '../utils/mcpServerExportJson';
 import styles from './McpCard.module.less';
 
 const TAG_COLOR_CLASS_NAMES: readonly string[] = [
@@ -287,6 +289,15 @@ const McpCardContent = React.memo(function McpCardContent({
     }];
   }, [loading, onSetManagementEnabled, server, t]);
 
+  const handleCopyJson = React.useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(formatMcpServerExportJson(server));
+      message.success(t('mcp.exportCopied'));
+    } catch {
+      message.error(t('mcp.copyFailed'));
+    }
+  }, [server, t]);
+
   const actionItems = React.useMemo<ManagementMenuItem[]>(() => [
     {
       key: 'metadata',
@@ -304,6 +315,13 @@ const McpCardContent = React.memo(function McpCardContent({
       disabled: loading,
     },
     {
+      key: 'copy-json',
+      icon: <FileJson size={14} />,
+      label: t('mcp.copyJson'),
+      onSelect: () => { void handleCopyJson(); },
+      disabled: loading,
+    },
+    {
       key: 'delete',
       danger: true,
       icon: <Trash2 size={14} />,
@@ -311,7 +329,7 @@ const McpCardContent = React.memo(function McpCardContent({
       onSelect: () => onDelete(server.id),
       disabled: loading,
     },
-  ], [loading, managementItems, onDelete, onEdit, onEditMetadata, server, t]);
+  ], [handleCopyJson, loading, managementItems, onDelete, onEdit, onEditMetadata, server, t]);
 
   const handleCardClick: React.MouseEventHandler<HTMLDivElement> = React.useCallback((event) => {
     // Selection mode reserves the card click for the checkbox; interactive

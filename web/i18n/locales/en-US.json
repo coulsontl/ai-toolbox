@@ -4568,7 +4568,8 @@
     },
     "followCcSwitchMarks": "Follow CC Switch marks",
     "followCcSwitchMarksHintOn": "Servers from CC Switch sync to the agents marked there (unmarked ones sync to no tool); the selection below applies to other sources only.",
-    "followCcSwitchMarksHintOff": "Servers from CC Switch sync to the tools selected below."
+    "followCcSwitchMarksHintOff": "Servers from CC Switch sync to the tools selected below.",
+    "copyJson": "Copy JSON"
   },
   "pi": {
     "rootPathSource": {

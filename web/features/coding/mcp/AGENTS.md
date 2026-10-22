@@ -19,7 +19,7 @@
 - MCP 页不自己实现底层同步逻辑，只做中心存储和工具勾选的前端入口。
 - 自定义分组只影响页面组织和搜索，不改变 MCP server 配置，也不改变同步到各工具的目标路径。
 - 分组视图不开放拖拽排序；排序只在平铺模式中修改全局 `sort_index`，避免把“改分组”和“改排序”混成一个交互。
-- MCP 卡片采用与 Skills 同款三区布局（`McpCard.module.less`）：头部行 = 状态槽 + 名称 + hover 渐显操作簇（复制命令/地址 + 刷新 + 更多）；主体 = 描述 + 单行标签行（tags → group → note），三者皆无时整行不渲染；底部 meta 栏 = 来源按钮 + 工具同步 icon pill，不展示最后编辑时间。`onEdit` 编辑服务器配置收进更多菜单，不在头部单独放铅笔按钮。
+- MCP 卡片采用与 Skills 同款三区布局（`McpCard.module.less`）：头部行 = 状态槽 + 名称 + hover 渐显操作簇（复制命令/地址 + 刷新 + 更多）；主体 = 描述 + 单行标签行（tags → group → note），三者皆无时整行不渲染；底部 meta 栏 = 来源按钮 + 工具同步 icon pill，不展示最后编辑时间。`onEdit` 编辑服务器配置收进更多菜单，不在头部单独放铅笔按钮。更多菜单在「编辑配置」之后提供「复制 JSON」（`utils/mcpServerExportJson.ts`），用于把单个 server 带到另一台机器：输出 `{ mcpServers: { <name>: { type, command/url, args, env/headers, *_timeout_sec } } }`，与「从 JSON 导入」解析器（`mcpJsonImport.ts`）严格对称，可原样粘回；**只导出 server 配置，不导出分组/备注/标签**（导入器不读这些字段，同步目标由导入弹窗勾选）。
 - MCP 详情采用右侧 `Drawer`（宽度 `min(60vw, 760px)`，`destroyOnHidden`、`closable={false}`、body padding 0 + flex column），由 `McpDetailPanel` 渲染只读派生视图；卡片正文点击仅在浏览模式打开，选择模式和拖拽手柄通过 `data-mcp-card-no-detail` 排除。
 - MCP 标签系统复用 Skills 标签工具（`web/features/coding/skills/utils/skillTags.ts`，经 `mcp/utils/mcpTags.ts` 转发）：工具栏 `TagFilterDropdown` 支持搜索/多选/未打标签哨兵；搜索关键词同时匹配 tags；卡片只展示标签行；详情面板通过行内 add/remove 编辑，persist 走 `mcp_update_metadata` 的 `tags` 参数。
 - MCP 顶部工具栏必须和 Skills 一样冻结：`position: sticky; top: 0`（相对已垫过的 `main` 内容区），滚动浏览时钉在固定顶栏正下方，页面滚出后自动解冻；不要改成 `fixed`，也不要把 `--content-top-offset` 再写进 sticky `top`。
@@ -63,7 +63,7 @@ sequenceDiagram
 - MCP 管理启用/禁用（`management_enabled`）语义与 Skills 对齐：禁用会从当前工具取消同步并记录历史绑定，重新启用必须走「`enableServer` 恢复管理状态并取回历史工具 → `getRestorableToolIds` 基于 `disabled_previous_tools` 过滤出可恢复工具 → 用户确认 `restoreTools`」的 restore 链路；不要只 patch `management_enabled` 或新建绕过该链路的快捷状态。禁用后 server 仍保留在原分组内，禁用筛选只是 UX 派生状态。
 - 批量启用/禁用与单卡共用同一套 `management_enabled` 语义：批量入口的内部 id 集合必须在 handler 内部按方向选择（enabled 时用 `selectedDisabledServerIds`、disabled 时用 `selectedEnabledServerIds`），不要用整份选择集无脑 toggle；批量 enable 前先为每个受影响 server 聚合 restore 候选，onOk 里逐个 `batchSetManagementEnabled → restoreTools`，成功后 `refresh()` 并清空选择集。失败提示用 `mcp.batch.enableFailed/disableFailed`。
 - 启用/禁用菜单的每个 entry 必须独立判定 `disabled`（禁用入口看 `selectedDisabledServerIds`、重新启用入口看 `selectedEnabledServerIds`）；只选了一类 server 时，另一方向入口照常可用，绝不能因为「整批没有可禁用的项」把重新启用入口也一起禁掉。
-- 「视图与筛选」弹层首行是与 Skills 完全同款的「启用状态」分段筛选（`mcp.enabledFilter.*`），过滤链固定为 管理状态 → 标签 → 搜索；卡片三点菜单顺序与 SkillCard 对齐（编辑元数据 → 禁用服务器/启用 → 编辑配置 → 删除），`onSetManagementEnabled` 未接线时整体省略切换项，绝不渲染空 label 占位行；状态点语义统一以 `management_enabled` 为准（卡片与详情面板都是启用=绿色 success 点）。
+- 「视图与筛选」弹层首行是与 Skills 完全同款的「启用状态」分段筛选（`mcp.enabledFilter.*`），过滤链固定为 管理状态 → 标签 → 搜索；卡片三点菜单顺序与 SkillCard 对齐（编辑元数据 → 禁用服务器/启用 → 编辑配置 → 复制 JSON → 删除），`onSetManagementEnabled` 未接线时整体省略切换项，绝不渲染空 label 占位行；状态点语义统一以 `management_enabled` 为准（卡片与详情面板都是启用=绿色 success 点）。
 - 「数据管理」弹层区与 Skills 同款两项：「分组管理」（`McpGroupsModal`，后端 `mcp_group` 实体表 + `mcp_list/save/delete_group` 命令，字段与 SkillGroupRecord 一致；服务器成员关系仍按 `user_group` 文本匹配——后端保存时重命名会同步改组内服务器文本、删除会清空同名文本，前端 invoke 参数名是 `groupId` 不是 `id`）与「分组导入/导出」（`McpInventoryModal` + 后端 `mcp_{export,preview_group_inventory_import,apply_group_inventory_import}` 命令，JSON 形如 `{schema_version, groups:{组名:[服务器名]}}`，只动分组不动配置；store 的 `update_mcp_server_metadata` 对 None 是“清除”语义，保留 note/tags 必须显式回传）。
 - 引用后置 `useCallback`/`useMemo` 的依赖数组会在渲染求值时触发 TDZ（TS2448「Cannot access before initialization」）：新增派生 memo 若依赖某个定义在它后面的 handler，必须把 memo 移到该 handler 定义之后，而不是从 deps 里删掉 handler——否则 memo 闭包永久捕获首渲染的陈旧状态。
 
