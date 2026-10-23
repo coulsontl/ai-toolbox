@@ -340,37 +340,11 @@
   .buttonIconOnly();
 }
 
-.dangerToolActionButton:global(.ant-btn) {
-  .buttonBase();
-  .buttonDangerSurface();
-  .buttonCompact();
-}
-
 .dangerToolIconButton:global(.ant-btn) {
   .buttonBase();
   .buttonDangerSurface();
   .buttonCompact();
   .buttonIconOnly();
-}
-
-.inlineTextButton:global(.ant-btn) {
-  min-height: 30px;
-  height: 30px;
-  padding: 0 10px;
-  border-radius: 12px;
-  color: var(--color-text-secondary);
-  border: 1px solid transparent;
-  background: transparent;
-  box-shadow: none;
-  font-size: 12px;
-  font-weight: 600;
-  .buttonMotion();
-
-  &:hover:not(:disabled):not([disabled]) {
-    color: var(--color-text-primary);
-    border-color: color-mix(in srgb, var(--color-border) 80%, var(--ant-color-primary) 20%);
-    background: color-mix(in srgb, var(--ant-color-primary) 6%, var(--color-bg-container));
-  }
 }
 
 .textarea {
@@ -668,14 +642,6 @@
   &:active {
     cursor: grabbing;
   }
-}
-
-.channelListMeta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--color-text-secondary);
 }
 
 .channelListActions {

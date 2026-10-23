@@ -22,53 +22,6 @@
   line-height: 1.25;
 }
 
-.tabList {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-bg-elevated);
-}
-
-.tabButton {
-  display: inline-flex;
-  min-height: 30px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 0 10px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 560;
-  transition:
-    background 0.16s ease,
-    border-color 0.16s ease,
-    color 0.16s ease;
-
-  &:hover {
-    color: var(--color-text-primary);
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--color-border-secondary);
-    outline-offset: 2px;
-  }
-}
-
-.tabButtonActive {
-  border-color: var(--color-border);
-  background: var(--color-bg-container);
-  color: var(--color-text-primary);
-  box-shadow: var(--shadow-card-sm);
-}
-
 .content {
   min-width: 0;
 }
@@ -77,13 +30,5 @@
   .header {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .tabList {
-    width: 100%;
-  }
-
-  .tabButton {
-    flex: 1;
   }
 }

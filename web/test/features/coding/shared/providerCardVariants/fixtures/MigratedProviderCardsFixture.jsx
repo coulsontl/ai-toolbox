@@ -35,6 +35,10 @@ import GrokProviderCard from '@/features/coding/grok/components/GrokProviderCard
 import OmoNativeProviderCard from '@/features/coding/omo_native/components/OmoNativeProviderCard';
 import OpenClawProviderCard from '@/features/coding/openclaw/components/OpenClawProviderCard';
 import HermesProviderCard from '@/features/coding/hermes/components/HermesProviderCard';
+import PiProviderCard from '@/features/coding/pi/components/PiProviderCard';
+import OmpProviderCard from '@/features/coding/oh_my_pi/components/OmpProviderCard';
+import OmpSubscriptionCard from '@/features/coding/oh_my_pi/components/OmpSubscriptionCard';
+import DshProviderCard from '@/features/coding/dsh/components/DshProviderCard';
 import gatewayProfiles from '../../../../../../../tauri/resources/gateway_provider_profiles.json';
 import '@/App.css';
 
@@ -448,6 +452,190 @@ const hermesProps = {
   onBatchDeleteModels: noop,
 };
 
+/* ------------------------------------------------------------------ Pi */
+
+const piProvider = {
+  providerKey: 'openrouter',
+  displayName: 'OpenRouter Relay',
+  sources: ['auth_json', 'models_json'],
+  categories: ['custom', 'api_key'],
+  credentialKind: 'api_key',
+  credential: { key: 'sk-or-v1-fixture-key-1234' },
+  modelsProvider: {
+    name: 'OpenRouter Relay',
+    api: 'openai-completions',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    models: [
+      // Persisted in Pi's own shape (`contextWindow` / `maxTokens`); the card
+      // used to read the *form field* names (`contextLimit` / `outputLimit`)
+      // and therefore never showed either limit.
+      {
+        id: 'anthropic/claude-opus-4-8',
+        name: 'Claude Opus 4.8',
+        contextWindow: 200000,
+        maxTokens: 32000,
+      },
+      { id: 'openai/gpt-5.2', name: 'GPT-5.2' },
+    ],
+  },
+  runtimeFiles: ['auth.json', 'models.json'],
+  isBuiltin: false,
+  isOverride: false,
+  isDefault: true,
+  modelIds: ['anthropic/claude-opus-4-8', 'openai/gpt-5.2'],
+};
+
+/** A built-in key that exists only in `settings.json` as the default. */
+const piBuiltinProvider = {
+  providerKey: 'anthropic',
+  displayName: 'Anthropic',
+  sources: ['official_builtin', 'settings_json'],
+  categories: ['subscription'],
+  credentialKind: 'env_possible',
+  runtimeFiles: ['settings.json'],
+  isBuiltin: true,
+  isOverride: false,
+  isDefault: false,
+  modelIds: [],
+};
+
+const piProps = {
+  onEdit: noop,
+  onCopy: noop,
+  onShare: noop,
+  onDelete: noop,
+  onAddModel: noop,
+  onEditModel: noop,
+  onCopyModel: noop,
+  onDeleteModel: noop,
+  onSetPrimaryModel: noop,
+  onReorderModels: noop,
+  onToggleBatchDeleteMode: noop,
+  onBatchDeleteModels: noop,
+  onTestModels: noop,
+  testModelsDisabled: false,
+  onFetchModels: noop,
+  fetchDisabled: false,
+  onSelectChange: noop,
+  onToggleModelSelection: noop,
+};
+
+/* ------------------------------------------------------------------ Oh My Pi */
+
+const ompProvider = {
+  providerKey: 'openrouter',
+  displayName: 'OMP OpenRouter',
+  sources: ['models_yml'],
+  categories: ['custom', 'api_key'],
+  credentialKind: 'api_key',
+  modelsProvider: {
+    name: 'OMP OpenRouter',
+    api: 'openai-completions',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    models: [
+      { id: 'anthropic/claude-opus-4-8', name: 'Claude Opus 4.8' },
+    ],
+  },
+  runtimeFiles: ['models.yml'],
+  isBuiltin: false,
+  isOverride: false,
+  isDefault: false,
+  modelIds: ['anthropic/claude-opus-4-8'],
+};
+
+const ompSubscriptionProvider = {
+  providerKey: 'openai-codex',
+  displayName: 'OpenAI Codex',
+  sources: ['official_builtin'],
+  categories: ['subscription'],
+  credentialKind: 'oauth',
+  oauthStatus: 'stored',
+  runtimeModels: [{ id: 'gpt-5-codex', name: 'GPT-5 Codex' }],
+  runtimeFiles: ['agent.db'],
+  isBuiltin: true,
+  isOverride: false,
+  isDefault: false,
+  modelIds: [],
+};
+
+const ompProps = {
+  onEdit: noop,
+  onCopy: noop,
+  onShare: noop,
+  onDelete: noop,
+  onAddModel: noop,
+  onEditModel: noop,
+  onCopyModel: noop,
+  onDeleteModel: noop,
+  onSetPrimaryModel: noop,
+  onReorderModels: noop,
+  onToggleBatchDeleteMode: noop,
+  onBatchDeleteModels: noop,
+  onTestModels: noop,
+  testModelsDisabled: false,
+  onFetchModels: noop,
+  fetchDisabled: false,
+  onSelectChange: noop,
+  onToggleModelSelection: noop,
+};
+
+/* ------------------------------------------------------------------ dsh */
+
+const dshProvider = {
+  providerKey: 'deepseek-custom',
+  displayName: 'DeepSeek Custom',
+  apiKeyEnv: 'DEEPSEEK_CUSTOM_API_KEY',
+  credentialExists: true,
+  apiKey: 'sk-dsh-fixture',
+  api: 'openai-completions',
+  provider: {
+    displayName: 'DeepSeek Custom',
+    api: 'openai-completions',
+    baseURL: 'https://api.deepseek.com/v1',
+    apiKeyEnv: 'DEEPSEEK_CUSTOM_API_KEY',
+    models: [{ id: 'deepseek-v4', name: 'DeepSeek V4' }],
+  },
+  modelIds: ['deepseek-v4'],
+  modelSource: 'explicit',
+  isBuiltin: false,
+  isDefault: true,
+  warnings: [],
+};
+
+/** A catalog-backed route: bundled models, not removable, no explicit catalog. */
+const dshBuiltinProvider = {
+  providerKey: 'deepseek-official',
+  displayName: 'DeepSeek Official',
+  credentialExists: false,
+  modelIds: [],
+  modelSource: 'builtin',
+  builtinModels: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }],
+  isBuiltin: true,
+  isDefault: false,
+  warnings: [],
+};
+
+const dshProps = {
+  onEdit: noop,
+  onCopy: noop,
+  onShare: noop,
+  onDelete: noop,
+  onAddModel: noop,
+  onEditModel: noop,
+  onCopyModel: noop,
+  onDeleteModel: noop,
+  onSetPrimaryModel: noop,
+  onReorderModels: noop,
+  onToggleBatchDeleteMode: noop,
+  onBatchDeleteModels: noop,
+  onTestModels: noop,
+  testModelsDisabled: false,
+  onFetchModels: noop,
+  fetchDisabled: false,
+  onSelectChange: noop,
+  onToggleModelSelection: noop,
+};
+
 /* ------------------------------------------------------------------ fixture API */
 
 const cards = (name) => [...document.querySelectorAll(`[data-fixture="${name}"]`)];
@@ -486,6 +674,34 @@ window.migratedProviderCardsFixture = {
   /** Whether a block renders a drag handle. */
   hasHandle(name) {
     return Boolean(cards(name)[0]?.querySelector('[data-provider-card-handle]'));
+  },
+
+  /**
+   * Opens the compact card's detail sidebar and reports the footer buttons.
+   *
+   * The first `div` inside the block *is* the clickable card body (the outer
+   * wrapper only carries the sortable ref), so clicking it is exactly what a
+   * user does to open the sidebar. The footer is where the quieter actions
+   * render; a card that never passes `secondaryActions` leaves it empty.
+   */
+  async detailFooterActions(name) {
+    const root = cards(name)[0];
+    const body = root?.querySelector('[data-provider-card-clickable]');
+    if (!body) return null;
+    body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    for (let attempt = 0; attempt < 60; attempt++) {
+      const footer = document.querySelector('[data-provider-detail-footer]');
+      if (footer) {
+        const labels = [...footer.querySelectorAll('button')]
+          .map(button => button.textContent.trim())
+          .filter(Boolean);
+        document.querySelector('.ant-drawer-close')?.click();
+        await new Promise(resolve => setTimeout(resolve, 250));
+        return labels;
+      }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    return null;
   },
 
   /**
@@ -727,6 +943,71 @@ createRoot(document.getElementById('root')).render(
             viewMode="list"
             selectDisabledReason="引擎内置渠道，不可编辑"
           />
+        </div>
+
+        {/* Pi: the credential mask is a *second line* fact, never an endpoint. */}
+        <div data-fixture="pi-list">
+          <PiProviderCard
+            {...piProps}
+            provider={piProvider}
+            defaultModelId="anthropic/claude-opus-4-8"
+            viewMode="list"
+          />
+        </div>
+        <div data-fixture="pi-card">
+          <PiProviderCard
+            {...piProps}
+            provider={piProvider}
+            defaultModelId="anthropic/claude-opus-4-8"
+            viewMode="card"
+          />
+        </div>
+        {/* A built-in key with no runtime file behind it: no delete, still no
+            fabricated endpoint (the old card printed the credential mask here). */}
+        <div data-fixture="pi-builtin-list">
+          <PiProviderCard provider={piBuiltinProvider} viewMode="list" />
+        </div>
+
+        {/* Oh My Pi: the OAuth route keeps the subscription block and gets no
+            edit/copy/share of its own. */}
+        <div data-fixture="omp-list">
+          <OmpProviderCard {...ompProps} provider={ompProvider} viewMode="list" />
+        </div>
+        <div data-fixture="omp-card">
+          <OmpProviderCard {...ompProps} provider={ompProvider} viewMode="card" />
+        </div>
+        <div data-fixture="omp-subscription-block">
+          <OmpSubscriptionCard
+            rootPath="/fixture/omp"
+            provider={ompSubscriptionProvider}
+            defaultModel={null}
+            onSetPrimaryModel={noop}
+            onRefresh={async () => {}}
+          />
+        </div>
+
+        {/* dsh: the bundled catalog is a tag and carries no add/edit/delete. */}
+        <div data-fixture="dsh-list">
+          <DshProviderCard
+            {...dshProps}
+            provider={dshProvider}
+            defaultModelId="deepseek-v4"
+            viewMode="list"
+          />
+        </div>
+        <div data-fixture="dsh-card">
+          <DshProviderCard
+            {...dshProps}
+            provider={dshProvider}
+            defaultModelId="deepseek-v4"
+            viewMode="card"
+          />
+        </div>
+        {/* A catalog-backed route is still editable (that is how a user pins an
+            explicit `models` list over the bundled catalog); only delete and
+            the grip are withheld, so the page passes those as `undefined`. */}
+        <div data-fixture="dsh-builtin-list">
+          <DshProviderCard {...dshProps} provider={dshBuiltinProvider} onDelete={undefined} viewMode="list" />
         </div>
       </div>
     </MemoryRouter>

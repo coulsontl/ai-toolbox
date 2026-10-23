@@ -58,6 +58,13 @@ export const savePiModelsProvider = async (
   return await invoke<PiRuntimeConfig>('save_pi_models_provider', { input });
 };
 
+/** Persist the drag order of `models.json`'s `providers` map. */
+export const reorderPiProviders = async (
+  providerKeys: string[],
+): Promise<PiRuntimeConfig> => {
+  return await invoke<PiRuntimeConfig>('reorder_pi_providers', { providerKeys });
+};
+
 export const deletePiRuntimeProvider = async (
   providerKey: string,
   scope: PiDeleteScope,

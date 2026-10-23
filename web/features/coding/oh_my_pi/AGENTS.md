@@ -28,6 +28,8 @@
 - 「获取模型」与「连通性测试」的能力判定集中在 `utils/ompDiagnostics.ts`，它同时回答三件事：目录请求用哪个连接、连通性是否可用、每个模型各自的连接。**混用连接不再是禁用理由**（issue #360）：目录端点退回供应商级 `api`/`baseUrl`，连通性按 `modelConnections` 逐模型测试，token 上限字段名跟着该模型解析出的 npm 走（Google 读 `maxOutputTokens`，其余读 `maxTokens`）。
 - 模型弹窗对 OMP 用 `showOmpThinking`（写 `thinking` 结构）而不是 Pi 的 `showThinkingLevelMap`；保存时无条件 `delete nextModel.thinkingLevelMap`，因为 OMP 不认这个键。`cost` 必须四个字段齐全，否则整块不写（缺一个字段就会让整个 `models.yml` 校验失败、禁用所有自定义 provider）。
 - **Codex 订阅卡片是「官方账号」共享组件的 OMP 宿主**（`OmpSubscriptionCard` → `OpenCodeStyleCard` + `OfficialAccountsSection` 的 `embedded` 变体），不是自建区块。账号行由「`OmpCodexAccount` → `OfficialAccountRowView`」映射而来，登录入口走 `loginAction` 插槽（导入 auth.json / 订阅登录 / 刷新三个动作）。改动卡片样式应改共享组件，不要在 OMP 侧分叉——这是 `9a1d3c35`、`557632cb` 两次提交统一三种卡片的原因。
+- **账号列表可折叠，但只在列表卡里**：`renderAccountSection({ fold })` 按宿主给形态——列表卡传 `fold: true`（默认折叠，与 Codex 同口径），详情侧栏传 `fold: false`（常开，因为它没有需要对齐的邻居，再点一次才看到行是白费的）。`OfficialAccountsSection` 只在收到 `collapsed` / `onToggleCollapsed` 时才画三角，所以**不传这两个 prop 就是「常开」的实现方式**，不要额外加一个 `collapsible={false}`。守护：`test:migrated-provider-cards` 的「is collapsible」+「clicking expands」两条。
+- **Codex 固定排在供应商列表第一位，不参与拖拽**（2026-10-22 用户明确选择保持现状）。它是纯 OAuth 渠道，`models.yml` 里没有条目；给它建条目会让后端把它判成 `isOverride`，界面给名字加「models.yml 覆盖配置」后缀、OMP 也可能按自定义 provider 处理。所以 `build_provider_views` 用 `BTreeSet::from(["openai-codex"])` 起头、`OmpProviderCard` 传 `draggable: !isSubscription`。**要让 Codex 可排序，必须先解决「它的位置存在哪」**，不要顺手给它建 `models.yml` 条目。
 - `loadConfig(silent, refreshCatalog)` 先结束本地配置加载，再由独立 effect 刷新原生目录；不得把 `refreshOmpCodexCatalog` 放进全局 Spin 的 await 链。首次进入运行目录和订阅卡片刷新触发一次目录发现；普通配置读取、保存、托盘事件、deeplink、subagent apply 不触发 CLI。异步响应必须检查根路径、请求代次与卸载清理，避免切目录、连续刷新或保存后迟到的回包覆盖当前视图。目录超时只显示订阅卡片的局部错误，本地设置与账号仍可使用；额度继续仅由逐账号按钮手动查询。
 - 纯原生订阅（`openai-codex` 且没有 `models.yml` 覆盖）**不进供应商列表**，只渲染订阅卡片；一旦用户在 `models.yml` 里显式配了该 provider，卡片与供应商卡片同时出现，后者带「models.yml 覆盖配置」后缀——这是为了让用户能检查并移除自己的 API-key 配置，而不是把它藏起来。
 
@@ -72,7 +74,9 @@ sequenceDiagram
 
 - **侧栏折叠键必须是 `oh_my_pi`，不是 `pi`**（已修复，勿改回）。本页曾读 `sidebarHiddenByPage.pi` 却写 `setSidebarHidden('oh_my_pi', …)`，导致「更多选项」里的侧栏开关**静默无效**——它翻转的是一个本页不显示的槽位，而 Pi 页（`PiPage.tsx` 读 `pi`）的开关状态被本页读去显示。`SIDEBAR_PAGE_KEYS` 里 `pi` 与 `oh_my_pi` 是两个独立键，每个 CLI 只碰自己那个。
 - 侧栏菜单项 id 必须与 DOM 上 `data-pi-sidebar-section="true"` 元素的 `id` 完全一致（滚动靠 `document.getElementById`）。本页的分区 id 沿用 `pi-*` 前缀（`pi-model-settings` / `pi-providers` / `pi-agents` / `pi-extensions` / `pi-global-prompt` / `pi-other-configuration` / `pi-session-manager`），改名要同时改 `sidebarSections` 与 JSX。
-- 页头显示的是**配置目录**（`rootPathInfo.path`）而非配置文件路径，这是 pi/ohMyPi 独有的真实差异；两页尚未迁移到共享 `CodingPageHeader`，迁移时应加 `configPathLabel` 之类的 prop，而不是把差异抹平。
+- 页头显示的是**配置目录**（`rootPathInfo.path`）而非配置文件路径（`config.yml` / `models.yml` 从它派生）。共享 `CodingPageHeader` 用 `configPathKind="directory"` 表达这个差异（标签取 `common.configDir`），**不要改成自由文案 prop**。
+- **页面外壳与卡片全部走共享组件**（2026-10-22 迁移）：页头 `CodingPageHeader`、供应商区 `ProviderListSection`、卡片 `OpenCodeStyleCard`（薄映射层 `components/OmpProviderCard.tsx`）、卡片视图 `ProviderCompactCard` + `ProviderModelSection`、编辑弹窗 `components/OmpProviderFormModal.tsx`（横向布局，因此被 `verify-form-modal-layout` 覆盖）。弹窗里那些「协议切换时自动填端点、用户改过就不再覆盖」的判定抽在 `utils/ompProviderForm.ts` 的纯函数里，由 `web/test/.../ompProviderForm.test.ts` 直接断言——**不要再把它写回页面内联 handler**，那样测试只能靠抓源码。OMP 的 Codex 订阅卡片（`OmpSubscriptionCard`）同样是共享卡片，但它是 OAuth 渠道，编辑/复制/分享与拖拽都关掉。**卡片视图必须自己传 `detail.secondaryActions`**：格子只带「更多」菜单，编辑 / 复制 / 分享 / 删除只在详情侧栏里；订阅渠道没有那几个 handler，按钮因此自然不渲染（与列表卡一致）。
+- **供应商拖拽是「把手 + 行为 + 存取」三件套**：视图顺序来自 `models.yml` 的 providers 键序（`openai-codex` 固定排第一，因为它是 OAuth 渠道而不是 YAML 里的一行），拖动调后端 `reorder_omp_providers`。`build_provider_views` 必须跟随该键序出视图，**不要用 `BTreeSet` 重建**——读取端按字母序重建会让拖拽静默失效；写盘按序列化文本比较变化。
 - 「其他配置」只拥有 `config.yml` 的非受管切片：`modelRoles` / `defaultThinkingLevel` / `modelProviderOrder` / `modelRoleStorage` / `extensions` / `disabledExtensions` / `enabledModels` / `disabledProviders` / `modelTags` / `cycleOrder` 由 provider 卡片与 subagent 区块拥有，编辑器里看不到、保存时也不会写回。需要让用户手改这些键时走别的入口，不要把它们从隐藏列表里放出来。
 - 供应商表单保存时**没有 credential 分支**：apiKey 只是 `modelsProvider.apiKey` 字段，删空即从配置里删掉。删除供应商也没有 Pi 的 scope 三选一——`deleteOmpRuntimeProvider(providerKey)` 直接从 `models.yml.providers` 移除该 key，默认 provider 的删除按钮渲染成禁用 + tooltip，批量删除前先把当前配置备份为 favorite provider。
 - 批量删除的 `allIds` 必须过 `canBatchDeleteProvider`（排除默认 provider；来源含 `models_yml` 或配置里带 `apiKey`）。共享的 `backupProvidersBeforeDelete` 有一条失败即中止整批。
@@ -92,6 +96,7 @@ sequenceDiagram
 - 拖拽排序是乐观更新 + 失败回滚（`reorderOmpAgentsConfigs`），不要在失败分支里保留新顺序。
 - 扩展区与 Pi 同构但走 `omp plugin` 命令；「打开目录」用 `invoke('open_folder')`。`omp` 二进制路径来自「更多选项」的 `CliManualPathSetting commandName="omp"`（后端 `cli_manual_paths` 的 key 就是 `omp`，`pi` 是另一个 key），不要在页面里另做探测。
 
+- **页面容器的间距规则（2026-10-22 修）**：`.pageContent` 只写 `display: block`，**不要 `flex` + `gap`**——`CodingPageHeader` 自带 `marginBottom: 16`，容器再加 16px 的 gap 会让页头与第一个区块之间变成 32px（OpenCode 2026-10-19、pi / oh_my_pi / dsh / hermes 2026-10-22 各犯一次）。间距一律由区块类 `.ompSection { margin-bottom: 16px; }` 自带，使 `block` 布局下的 margin 折叠生效。任何时刻改 `.pageContent` / 区块类都要跑 `pnpm run test:page-rhythm`（真浏览器量页头→首区块与区块→区块，必须都是 16px）。层级同理：`styles.xxx` 在 CSS Modules 里少一个键只得到 `undefined`，元素会渲染成 `class=""`——改名后跑 `pnpm run test:css-module-classes`（**本页就是那个错配的现场**：页面写 `styles.ompSection` 而 less 写 `.piSection`，6 个区块长期渲染成 `class=""`，`scroll-margin-top` 与间距一起失效）。
 ## 跨模块依赖
 
 - 后端 `oh_my_pi::*` 命令（`web/services/ohMyPiApi.ts` 一一对应）、prompt presets 走 `ohMyPiPromptApi`。

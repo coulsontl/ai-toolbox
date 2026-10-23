@@ -58,6 +58,7 @@ const ProviderModelSection: React.FC<ProviderModelSectionProps> = ({
       onTest={modelSection.onTestModels}
       testDisabled={modelSection.testModelsDisabled}
       testDisabledTooltip={modelSection.testModelsDisabledTooltip}
+      testHint={modelSection.testModelsHint}
       onFetchModels={modelSection.onFetchModels}
       fetchDisabled={modelSection.fetchDisabled}
       fetchDisabledTooltip={modelSection.fetchDisabledTooltip}

@@ -2,45 +2,26 @@ import React from 'react';
 import {
   Button,
   Collapse,
-  Empty,
   Form,
-  Input,
   Modal,
   Select,
   Space,
   Spin,
-  Switch,
-  Tooltip,
   Typography,
   message,
 } from 'antd';
 import {
-  ApiOutlined,
   AppstoreAddOutlined,
-  CloudDownloadOutlined,
   CloudSyncOutlined,
   DatabaseOutlined,
-  DeleteOutlined,
-  DownOutlined,
-  EditOutlined,
-  EllipsisOutlined,
-  EyeOutlined,
   FileTextOutlined,
-  FolderOpenOutlined,
-  LinkOutlined,
   MessageOutlined,
-  PlusOutlined,
-  QuestionCircleOutlined,
-  ReloadOutlined,
-  RightOutlined,
   RobotOutlined,
   SettingOutlined,
-  ThunderboltOutlined,
   ToolOutlined,
   ImportOutlined,
-  CheckSquareOutlined,
 } from '@ant-design/icons';
-import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 
 import { useProviderSharing } from '@/features/coding/shared/providerShare';
@@ -48,11 +29,8 @@ import AllApiHubIcon from '@/components/common/AllApiHubIcon';
 import ImportProviderModal from '@/components/common/ImportProviderModal';
 import JsonEditor from '@/components/common/JsonEditor';
 import FileConfigPreviewModal from '@/components/common/FileConfigPreviewModal';
-import ProviderCard from '@/components/common/ProviderCard';
 import type {
-  ModelDisplayData,
   ProviderConnectivityStatusItem,
-  ProviderDisplayData,
 } from '@/components/common/ProviderCard/types';
 import ModelFormModal from '@/components/common/ModelFormModal';
 import type { ModelFormValues } from '@/components/common/ModelFormModal';
@@ -69,6 +47,20 @@ import {
   buildFetchedPiModel,
   piApiToSdkName,
 } from '../utils/piFetchedModels';
+import { PI_API_OPTIONS } from '../utils/piApiOptions';
+import {
+  createDefaultProviderConfig,
+  hasProviderConfigContent,
+  isRecordEmpty,
+  resolvePiProviderApiKey,
+  setOptionalStringField,
+} from '../utils/providerConfig';
+import {
+  asRecord,
+  getNumberField,
+  getProviderModelRecords,
+  getStringField,
+} from '../utils/providerModels';
 import ProviderConnectivityTestModal from '@/features/coding/shared/providerConnectivity/ProviderConnectivityTestModal';
 import {
   buildProviderConnectivityBatchTarget,
@@ -81,17 +73,38 @@ import { SessionManagerPanel } from '@/features/coding/shared/sessionManager';
 import {
   PROVIDER_SORT_MODES_BASIC,
   backupProvidersBeforeDelete,
-  ProviderBatchToolbar,
-  ProviderSearchEmpty,
-  ProviderSearchInput,
-  ProviderSortDropdown,
   filterProviderItems,
   sortProviderItems,
   providerSelectionDisabledReason,
   useProviderBatchSelection,
   useProviderListSort,
+  useProviderListViewPrefs,
   type ProviderSelectionBlockReason,
 } from '@/features/coding/shared/providerList';
+import ProviderListSection from '@/features/coding/shared/ProviderListSection';
+import CodingPageHeader from '@/features/coding/shared/CodingPageHeader';
+import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  rectSortingStrategy,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { restrictToVerticalAxis, restrictToWindowEdges } from '@dnd-kit/modifiers';
+import PiProviderCard from '../components/PiProviderCard';
+import PiProviderFormModal, {
+  type PiProviderDraft,
+} from '../components/PiProviderFormModal';
 import {
   fetchRemotePresetModels,
   hasAllApiHubExtension,
@@ -122,6 +135,7 @@ import {
   deletePiRuntimeProvider,
   getPiSettingsConfig,
   readPiRuntimeConfig,
+  reorderPiProviders,
   savePiAuthProvider,
   savePiModelSettings,
   savePiModelsProvider,
@@ -143,10 +157,12 @@ import { extractPiProviderFromCcSwitch } from '../utils/importMapping';
 import PiExtensionsSection from '../components/PiExtensionsSection';
 import styles from './PiPage.module.less';
 
-const { Title, Text, Link } = Typography;
+const { Title, Text } = Typography;
 
 interface ProviderJsonModalState {
   provider?: PiRuntimeProviderView;
+  /** Pre-fill from `provider`, save under `<key>_copy`. */
+  copy?: boolean;
 }
 
 interface PiModelModalState {
@@ -155,13 +171,6 @@ interface PiModelModalState {
   model?: Record<string, unknown>;
 }
 
-const PI_API_OPTIONS = [
-  'openai-completions',
-  'openai-responses',
-  'anthropic-messages',
-  'google-generative-ai',
-].map((value) => ({ value, label: value }));
-
 const SIDEBAR_ICON_BY_SECTION_ID: Record<string, React.ReactNode> = {
   'pi-model-settings': <RobotOutlined />,
   'pi-providers': <DatabaseOutlined />,
@@ -169,39 +178,6 @@ const SIDEBAR_ICON_BY_SECTION_ID: Record<string, React.ReactNode> = {
   'pi-global-prompt': <FileTextOutlined />,
   'pi-other-configuration': <ToolOutlined />,
   'pi-session-manager': <MessageOutlined />,
-};
-
-const maskCredential = (credential: unknown): string => {
-  if (!credential || typeof credential !== 'object') {
-    return '';
-  }
-  const key = (credential as Record<string, unknown>).key;
-  if (typeof key !== 'string' || key.trim() === '') {
-    return '';
-  }
-  if (key.startsWith('$') || key.startsWith('!')) {
-    return key;
-  }
-  if (key.length <= 10) {
-    return '********';
-  }
-  return `${key.slice(0, 4)}...${key.slice(-4)}`;
-};
-
-const asRecord = (value: unknown): Record<string, unknown> => (
-  value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {}
-);
-
-const getStringField = (value: Record<string, unknown>, key: string): string => {
-  const fieldValue = value[key];
-  return typeof fieldValue === 'string' ? fieldValue : '';
-};
-
-const getNumberField = (value: Record<string, unknown>, key: string): number | undefined => {
-  const fieldValue = value[key];
-  return typeof fieldValue === 'number' && Number.isFinite(fieldValue) ? fieldValue : undefined;
 };
 
 const stringifyRecordField = (value: unknown): string | undefined => {
@@ -241,70 +217,6 @@ const parseStringArray = (value: string | undefined): string[] => {
     return [];
   }
 };
-
-const getProviderModelRecords = (
-  providerConfig: Record<string, unknown> | undefined,
-): Array<{ id: string; model: Record<string, unknown> }> => {
-  if (!providerConfig) {
-    return [];
-  }
-  const models = providerConfig.models;
-  if (!Array.isArray(models)) {
-    return [];
-  }
-  return models
-    .map((model) => {
-      if (typeof model === 'string') {
-        return { id: model, model: { id: model } };
-      }
-      if (model && typeof model === 'object' && typeof (model as Record<string, unknown>).id === 'string') {
-        return {
-          id: (model as Record<string, string>).id,
-          model: model as Record<string, unknown>,
-        };
-      }
-      return null;
-    })
-    .filter((entry): entry is { id: string; model: Record<string, unknown> } => !!entry);
-};
-
-const setOptionalStringField = (
-  target: Record<string, unknown>,
-  key: string,
-  value: unknown,
-) => {
-  if (typeof value === 'string' && value.trim()) {
-    target[key] = value.trim();
-  } else {
-    delete target[key];
-  }
-};
-
-const isRecordEmpty = (value: Record<string, unknown>): boolean => Object.keys(value).length === 0;
-
-const createDefaultProviderConfig = (): Record<string, unknown> => ({
-  api: 'openai-completions',
-  baseUrl: '',
-  models: [],
-});
-
-const hasProviderConfigContent = (providerConfig: Record<string, unknown>): boolean => (
-  Object.values(providerConfig).some((value) => {
-    if (value === null || value === undefined) {
-      return false;
-    }
-    if (typeof value === 'string') {
-      return value.trim() !== '';
-    }
-    if (Array.isArray(value)) {
-      return value.length > 0;
-    }
-    if (typeof value === 'object') {
-      return !isRecordEmpty(asRecord(value));
-    }
-    return true;
-  })
-);
 
 const buildPiThinkingLevelOptionLabel = (levelKey: string, mappedValue: unknown): string => {
   if (typeof mappedValue === 'string' && mappedValue.trim() && mappedValue !== levelKey) {
@@ -424,6 +336,27 @@ const buildPiOpenCodeProvider = (
       ...(isRecordEmpty(headers) ? {} : { headers }),
     },
     models,
+  };
+};
+
+/**
+ * Point an outbound OpenCode-shaped provider at the credential Pi will use.
+ *
+ * `buildPiOpenCodeProvider` stays the *stored channel* shape (favorites and
+ * sharing dedupe on its `apiKey`), while requests must authenticate the way Pi
+ * does: `auth.json` first, `models.json` second (issue #435).
+ */
+const withResolvedPiApiKey = (
+  provider: PiRuntimeProviderView,
+  openCodeProvider: OpenCodeProvider,
+): OpenCodeProvider => {
+  const apiKey = resolvePiProviderApiKey(provider);
+  if (!apiKey) {
+    return openCodeProvider;
+  }
+  return {
+    ...openCodeProvider,
+    options: { ...openCodeProvider.options, apiKey },
   };
 };
 
@@ -565,19 +498,13 @@ const PiPage: React.FC = () => {
   const [runtimeConfig, setRuntimeConfig] = React.useState<PiRuntimeConfig | null>(null);
   const [modelForm] = Form.useForm();
   const [providerModal, setProviderModal] = React.useState<ProviderJsonModalState | null>(null);
-  const [providerModalForm] = Form.useForm();
-  const [credentialJson, setCredentialJson] = React.useState<Record<string, unknown>>({});
-  const [providerConfigJson, setProviderConfigJson] = React.useState<Record<string, unknown>>({});
-  const [providerHeadersJson, setProviderHeadersJson] = React.useState<Record<string, unknown>>({});
-  const [providerCompatJson, setProviderCompatJson] = React.useState<Record<string, unknown>>({});
-  const [providerModelOverridesJson, setProviderModelOverridesJson] = React.useState<Record<string, unknown>>({});
-  const [credentialJsonValid, setCredentialJsonValid] = React.useState(true);
-  const [providerConfigJsonValid, setProviderConfigJsonValid] = React.useState(true);
-  const [providerHeadersJsonValid, setProviderHeadersJsonValid] = React.useState(true);
-  const [providerCompatJsonValid, setProviderCompatJsonValid] = React.useState(true);
-  const [providerModelOverridesJsonValid, setProviderModelOverridesJsonValid] = React.useState(true);
-  const [providerAdvancedExpanded, setProviderAdvancedExpanded] = React.useState(false);
   const [piModelModal, setPiModelModal] = React.useState<PiModelModalState | null>(null);
+  const [providerListCollapsed, setProviderListCollapsed] = React.useState(false);
+  const { viewMode, setViewMode } = useProviderListViewPrefs('pi');
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
   const [batchDeleteProviderId, setBatchDeleteProviderId] = React.useState<string | null>(null);
   const [selectedModelIdsByProvider, setSelectedModelIdsByProvider] = React.useState<Record<string, string[]>>({});
   const [fetchModelsProviderId, setFetchModelsProviderId] = React.useState<string | null>(null);
@@ -759,6 +686,12 @@ const PiPage: React.FC = () => {
     () => runtimeConfig?.providers ?? [],
     [runtimeConfig?.providers],
   );
+  /**
+   * The provider `settings.json`'s `defaultProvider` points at, or `''` when
+   * nothing is applied. Passed even as `''`: the locate control then explains
+   * that nothing is applied instead of silently disappearing.
+   */
+  const defaultProviderId = piProviders.find((provider) => provider.isDefault)?.providerKey ?? '';
   const existingProviderIds = React.useMemo(
     () => piProviders.map((provider) => provider.providerKey),
     [piProviders],
@@ -787,7 +720,7 @@ const PiPage: React.FC = () => {
       providerId: provider.providerKey,
       name: provider.displayName,
       baseUrl: getStringField(providerConfig, 'baseUrl'),
-      apiKey: getStringField(providerConfig, 'apiKey'),
+      apiKey: resolvePiProviderApiKey(provider),
       headers: asStringRecord(providerConfig.headers),
       sdkName: piApiToSdkName(api),
       // Pi resolves `apiKey` / header values itself; the shared commands must
@@ -810,7 +743,7 @@ const PiPage: React.FC = () => {
     return {
       providerId: provider.providerKey,
       providerName: provider.displayName,
-      providerConfig: buildPiOpenCodeProvider(provider, providerConfig),
+      providerConfig: withResolvedPiApiKey(provider, buildPiOpenCodeProvider(provider, providerConfig)),
       modelIds,
       configValueMode: 'pi' as const,
     };
@@ -916,54 +849,22 @@ const PiPage: React.FC = () => {
     provider?: PiRuntimeProviderView,
     options?: { copy?: boolean },
   ) => {
-    const nextCredentialJson = provider?.credential
-      ? asRecord(provider.credential)
-      : {};
-    const isCopy = options?.copy === true;
-    const isExistingProviderEdit = !!provider && !isCopy;
-    const nextProviderConfigJson = provider?.modelsProvider
-      ? asRecord(provider.modelsProvider)
-      : isExistingProviderEdit
-        ? {}
-        : createDefaultProviderConfig();
-
-    setProviderModal({ provider: isCopy ? undefined : provider });
-    setCredentialJson(nextCredentialJson);
-    setProviderConfigJson(nextProviderConfigJson);
-    setProviderHeadersJson(asRecord(nextProviderConfigJson.headers));
-    setProviderCompatJson(asRecord(nextProviderConfigJson.compat));
-    setProviderModelOverridesJson(asRecord(nextProviderConfigJson.modelOverrides));
-    setCredentialJsonValid(true);
-    setProviderConfigJsonValid(true);
-    setProviderHeadersJsonValid(true);
-    setProviderCompatJsonValid(true);
-    setProviderModelOverridesJsonValid(true);
-    setProviderAdvancedExpanded(false);
-    providerModalForm.setFieldsValue({
-      providerKey: isCopy && provider ? `${provider.providerKey}_copy` : provider?.providerKey,
-      displayName: getStringField(nextProviderConfigJson, 'name'),
-      api: getStringField(nextProviderConfigJson, 'api') || undefined,
-      baseUrl: getStringField(nextProviderConfigJson, 'baseUrl'),
-      providerApiKey: getStringField(nextProviderConfigJson, 'apiKey'),
-      authHeader: typeof nextProviderConfigJson.authHeader === 'boolean'
-        ? nextProviderConfigJson.authHeader
-        : undefined,
-    });
+    setProviderModal({ provider, copy: options?.copy === true });
   };
 
-  const handleSaveProviderModal = async () => {
-    if (
-      !providerModal
-      || !credentialJsonValid
-      || !providerConfigJsonValid
-      || !providerHeadersJsonValid
-      || !providerCompatJsonValid
-      || !providerModelOverridesJsonValid
-    ) {
+  /**
+   * Save what the modal handed back.
+   *
+   * The credential (`auth.json`) and the channel (`models.json`) are separate
+   * files behind separate commands: an empty credential editor means "do not
+   * touch auth.json", while an emptied channel config still writes `models.json`
+   * for a provider that already lives there.
+   */
+  const handleSaveProviderModal = async (draft: PiProviderDraft) => {
+    if (!providerModal) {
       return;
     }
-    const values = await providerModalForm.validateFields();
-    const providerKey = values.providerKey?.trim();
+    const providerKey = draft.values.providerKey?.trim();
     if (!providerKey) {
       message.error(t('pi.provider.providerKeyRequired'));
       return;
@@ -971,59 +872,67 @@ const PiPage: React.FC = () => {
 
     setSaving(true);
     try {
-      let nextConfig: PiRuntimeConfig | null = null;
-      const shouldSaveCredential = Object.keys(credentialJson).length > 0;
-      if (shouldSaveCredential) {
-        const nextCredentialJson = { ...credentialJson };
-        nextConfig = await savePiAuthProvider({ providerKey, credential: nextCredentialJson });
-      }
-      const nextProviderConfigJson = { ...providerConfigJson };
-      setOptionalStringField(nextProviderConfigJson, 'name', values.displayName);
-      setOptionalStringField(nextProviderConfigJson, 'api', values.api);
-      setOptionalStringField(nextProviderConfigJson, 'baseUrl', values.baseUrl);
-      setOptionalStringField(nextProviderConfigJson, 'apiKey', values.providerApiKey);
-      if (
-        typeof values.authHeader === 'boolean'
-        && (
-          values.authHeader
-          || Object.prototype.hasOwnProperty.call(providerConfigJson, 'authHeader')
-        )
-      ) {
-        nextProviderConfigJson.authHeader = values.authHeader;
+      const shouldSaveCredential = Object.keys(draft.credential).length > 0;
+      // Copy, never alias: `asRecord` returns the live `runtimeConfig` object,
+      // and this block deletes keys from it. A failed save would then leave the
+      // rejected edit in state, and the next successful write of any provider
+      // would persist it.
+      const nextProviderConfigJson = providerModal.provider?.modelsProvider
+        ? { ...asRecord(providerModal.provider.modelsProvider) }
+        : createDefaultProviderConfig();
+      setOptionalStringField(nextProviderConfigJson, 'name', draft.values.displayName);
+      setOptionalStringField(nextProviderConfigJson, 'api', draft.values.api);
+      setOptionalStringField(nextProviderConfigJson, 'baseUrl', draft.values.baseUrl);
+      setOptionalStringField(nextProviderConfigJson, 'apiKey', draft.values.providerApiKey);
+      if (draft.values.authHeader === true) {
+        nextProviderConfigJson.authHeader = true;
       } else {
         delete nextProviderConfigJson.authHeader;
       }
-      if (isRecordEmpty(providerHeadersJson)) {
+      if (isRecordEmpty(draft.headers)) {
         delete nextProviderConfigJson.headers;
       } else {
-        nextProviderConfigJson.headers = providerHeadersJson;
+        nextProviderConfigJson.headers = draft.headers;
       }
-      if (isRecordEmpty(providerCompatJson)) {
+      if (isRecordEmpty(draft.compat)) {
         delete nextProviderConfigJson.compat;
       } else {
-        nextProviderConfigJson.compat = providerCompatJson;
+        nextProviderConfigJson.compat = draft.compat;
       }
-      if (isRecordEmpty(providerModelOverridesJson)) {
+      if (isRecordEmpty(draft.modelOverrides)) {
         delete nextProviderConfigJson.modelOverrides;
       } else {
-        nextProviderConfigJson.modelOverrides = providerModelOverridesJson;
+        nextProviderConfigJson.modelOverrides = draft.modelOverrides;
       }
+      // An edit of a channel-only provider keeps writing models.json even when
+      // every field was blanked (that is how the user deletes the channel);
+      // adding a provider writes it only when something was filled in.
       const shouldSaveProviderConfig = !providerModal.provider
         || providerModal.provider.sources.includes('models_json')
         || hasProviderConfigContent(nextProviderConfigJson);
-      if (shouldSaveProviderConfig) {
-        nextConfig = await savePiModelsProvider({ providerKey, provider: nextProviderConfigJson });
-      }
       if (!shouldSaveCredential && !shouldSaveProviderConfig) {
         message.error(t('pi.provider.selectAtLeastOneSection'));
         return;
+      }
+
+      let nextConfig: PiRuntimeConfig | null = null;
+      if (shouldSaveCredential) {
+        nextConfig = await savePiAuthProvider({ providerKey, credential: draft.credential });
+      }
+      if (shouldSaveProviderConfig) {
+        nextConfig = await savePiModelsProvider({ providerKey, provider: nextProviderConfigJson });
       }
       if (!nextConfig) {
         return;
       }
       if (shouldSaveProviderConfig) {
         try {
-          await upsertPiFavoriteProvider(providerKey, nextProviderConfigJson, credentialJson, values.displayName);
+          await upsertPiFavoriteProvider(
+            providerKey,
+            nextProviderConfigJson,
+            draft.credential,
+            draft.values.displayName,
+          );
         } catch (error) {
           console.error('Failed to save Pi favorite provider:', error);
         }
@@ -1634,7 +1543,7 @@ const PiPage: React.FC = () => {
 
   const handleBatchTestProviders = React.useCallback(async () => {
     const targets = piProviders.map((provider) => {
-      const providerConfig = buildPiOpenCodeProvider(provider);
+      const providerConfig = withResolvedPiApiKey(provider, buildPiOpenCodeProvider(provider));
       const modelIds = getProviderModelRecords(provider.modelsProvider).map((entry) => entry.id);
       return buildProviderConnectivityBatchTarget(
         {
@@ -1825,49 +1734,39 @@ const PiPage: React.FC = () => {
     }
   };
 
-  const renderProvider = (provider: PiRuntimeProviderView) => {
-    const credentialPreview = maskCredential(provider.credential);
+  /**
+   * One mapper for every layout. `ProviderListSection` renders the same node in
+   * the list and the grid, so the two cannot offer different actions.
+   */
+  const renderProviderCard = (provider: PiRuntimeProviderView) => {
     const hasCredential = provider.sources.includes('auth_json');
     const hasProviderConfig = provider.sources.includes('models_json');
     const providerConfig = provider.modelsProvider ?? {};
     const canDeleteProvider = hasCredential || hasProviderConfig;
-    const deleteDisabledReason = canDeleteProvider && provider.isDefault
-      ? t('pi.provider.deleteDisabledDefault', { defaultValue: '该渠道已设为默认，不可删除' })
-      : undefined;
     const isBatchDeleteMode = batchDeleteProviderId === provider.providerKey;
     const selectedModelIds = selectedModelIdsByProvider[provider.providerKey] ?? [];
-    const selectedModelCount = selectedModelIds.length;
     const providerBaseUrl = getStringField(providerConfig, 'baseUrl');
     const hasModelIds = getProviderModelRecords(provider.modelsProvider).length > 0;
-    const connectivityTooltip = !providerBaseUrl
-      ? t('common.baseUrlMissing')
-      : !hasModelIds
-        ? t('common.modelMissing')
-        : '';
-    const fetchModelsTooltip = !providerBaseUrl ? t('common.baseUrlMissing') : '';
-    const providerDisplay: ProviderDisplayData = {
-      id: provider.providerKey,
-      name: provider.displayName,
-      sdkName: getStringField(providerConfig, 'api') || provider.categories.join(', ') || 'pi',
-      baseUrl: providerBaseUrl
-        || credentialPreview
-        // Inline template (not via a prefix-taking helper) so the i18n key
-        // scanner sees `pi.sourceLabels.` as a live dynamic prefix — the
-        // helper indirection once hid it and `i18n:prune` deleted live copy.
-        || provider.sources.map((source) => t(`pi.sourceLabels.${source}`, { defaultValue: source })).join(' / ')
-        || t('pi.provider.builtinHint'),
-    };
-    const modelDisplayList: ModelDisplayData[] = getProviderModelRecords(provider.modelsProvider).map((entry) => ({
-      id: entry.id,
-      name: getStringField(entry.model, 'name') || entry.id,
-      isPrimary: provider.isDefault && runtimeConfig?.modelSettings.modelId === entry.id,
-    }));
 
     return (
-      <ProviderCard
+      <PiProviderCard
         key={provider.providerKey}
-        provider={providerDisplay}
-        models={modelDisplayList}
+        provider={provider}
+        defaultModelId={provider.isDefault
+          ? runtimeConfig?.modelSettings.modelId ?? undefined
+          : undefined}
+        viewMode={viewMode}
+        selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.providerKey)}
+        selected={providerBatch.selectedIds.has(provider.providerKey)}
+        onSelectChange={(checked) => providerBatch.toggleSelect(provider.providerKey, checked)}
+        selectDisabledReason={providerBatch.selectionMode
+          ? providerSelectionDisabledReason(t, batchBlockReason(provider))
+          : undefined}
+        connectivityStatus={connectivityStatuses[provider.providerKey]}
+        // Only `models.json` entries have a stored position: an auth-only
+        // provider is appended by the backend after them, so its handle would
+        // drag nothing.
+        dragDisabled={providerBatchDragDisabled || !hasProviderConfig}
         onEdit={() => openProviderModal(provider)}
         onCopy={() => openProviderModal(provider, { copy: true })}
         onShare={() => shareProvider({
@@ -1876,81 +1775,12 @@ const PiPage: React.FC = () => {
           credentialUnavailable: provider.credentialKind === 'oauth' || provider.credentialKind === 'env_possible',
           defaultModel: provider.isDefault ? runtimeConfig?.modelSettings.modelId ?? undefined : undefined,
         })}
+        // A provider that exists in neither runtime file has no delete path at
+        // all; one that is the default keeps the button and explains itself.
         onDelete={canDeleteProvider ? () => handleDeleteSupplier(provider) : undefined}
-        deleteConfirm={false}
-        deleteDisabledReason={deleteDisabledReason}
-        selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.providerKey)}
-        selected={providerBatch.selectedIds.has(provider.providerKey)}
-        onSelectChange={(checked) => providerBatch.toggleSelect(provider.providerKey, checked)}
-        selectDisabledReason={providerBatch.selectionMode
-          ? providerSelectionDisabledReason(t, batchBlockReason(provider))
+        deleteDisabledReason={canDeleteProvider && provider.isDefault
+          ? t('pi.provider.deleteDisabledDefault', { defaultValue: '该渠道已设为默认，不可删除' })
           : undefined}
-        connectivityStatus={connectivityStatuses[provider.providerKey]}
-        extraActions={
-          <Space size={0}>
-            <Button
-              size="small"
-              type="text"
-              icon={<DeleteOutlined />}
-              style={{ fontSize: 12 }}
-              onClick={() => handleToggleBatchDeleteMode(provider.providerKey)}
-            >
-              {isBatchDeleteMode
-                ? t('pi.model.cancelBatchDelete')
-                : t('pi.model.batchDelete')}
-            </Button>
-            {isBatchDeleteMode && (
-              <Button
-                size="small"
-                type="text"
-                danger
-                style={{ fontSize: 12 }}
-                disabled={selectedModelCount === 0}
-                onClick={() => {
-                  Modal.confirm({
-                    title: t('common.model.batchDeleteConfirmTitle'),
-                    content: t('common.model.batchDeleteConfirmContent', { count: selectedModelCount }),
-                    okText: t('common.confirm'),
-                    cancelText: t('common.cancel'),
-                    onOk: async () => {
-                      await handleBatchDeleteModels(provider);
-                    },
-                  });
-                }}
-              >
-                {t('pi.model.deleteSelected', { count: selectedModelCount })}
-              </Button>
-            )}
-            <Tooltip title={connectivityTooltip}>
-              <span>
-                <Button
-                  size="small"
-                  type="text"
-                  style={{ fontSize: 12 }}
-                  onClick={() => handleOpenConnectivityTest(provider.providerKey)}
-                  disabled={!providerBaseUrl || !hasModelIds}
-                >
-                  <ApiOutlined style={{ marginRight: 4 }} />
-                  {t('pi.connectivity.button')}
-                </Button>
-              </span>
-            </Tooltip>
-            <Tooltip title={fetchModelsTooltip}>
-              <span>
-                <Button
-                  size="small"
-                  type="text"
-                  style={{ fontSize: 12 }}
-                  onClick={() => handleOpenFetchModels(provider.providerKey)}
-                  disabled={!providerBaseUrl}
-                >
-                  <CloudDownloadOutlined style={{ marginRight: 4 }} />
-                  {t('pi.fetchModels.button')}
-                </Button>
-              </span>
-            </Tooltip>
-          </Space>
-        }
         onAddModel={() => openPiModelModal(provider)}
         onEditModel={(modelId) => openPiModelModal(provider, modelId)}
         onCopyModel={(modelId) => openPiModelModal(provider, modelId, { copy: true })}
@@ -1959,10 +1789,66 @@ const PiPage: React.FC = () => {
         modelSelectionMode={isBatchDeleteMode}
         selectedModelIds={selectedModelIds}
         onToggleModelSelection={(modelId, selected) => handleToggleModelSelection(provider.providerKey, modelId, selected)}
-        modelsDraggable={!isBatchDeleteMode}
         onReorderModels={(modelIds) => handleReorderModels(provider, modelIds)}
+        onToggleBatchDeleteMode={() => handleToggleBatchDeleteMode(provider.providerKey)}
+        onBatchDeleteModels={() => {
+          Modal.confirm({
+            title: t('common.model.batchDeleteConfirmTitle'),
+            content: t('common.model.batchDeleteConfirmContent', { count: selectedModelIds.length }),
+            okText: t('common.confirm'),
+            cancelText: t('common.cancel'),
+            onOk: async () => {
+              await handleBatchDeleteModels(provider);
+            },
+          });
+        }}
+        onTestModels={() => handleOpenConnectivityTest(provider.providerKey)}
+        testModelsDisabled={!providerBaseUrl || !hasModelIds}
+        testModelsDisabledTooltip={!providerBaseUrl
+          ? t('common.baseUrlMissing')
+          : !hasModelIds
+            ? t('common.modelMissing')
+            : undefined}
+        onFetchModels={() => handleOpenFetchModels(provider.providerKey)}
+        fetchDisabled={!providerBaseUrl}
+        fetchDisabledTooltip={!providerBaseUrl ? t('common.baseUrlMissing') : undefined}
       />
     );
+  };
+
+  // Dragging rewrites `models.json`'s `providers` key order. Search and
+  // non-`custom` sort modes show an order the file does not contain, so a drop
+  // there would persist something the user is not looking at.
+  const providerDragDisabled = sortMode !== 'custom' || providerKeyword.trim() !== '';
+  const providerBatchDragDisabled = providerDragDisabled || providerBatch.selectionMode;
+
+  const handleProviderDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) {
+      return;
+    }
+    // Only keys that live in `models.json` have a position; auth-only providers
+    // are appended by the backend and cannot be dragged.
+    const providerKeys = piProviders
+      .filter((provider) => provider.sources.includes('models_json'))
+      .map((provider) => provider.providerKey);
+    const oldIndex = providerKeys.indexOf(active.id as string);
+    const newIndex = providerKeys.indexOf(over.id as string);
+    if (oldIndex < 0 || newIndex < 0) {
+      return;
+    }
+    const movedKeys = arrayMove(providerKeys, oldIndex, newIndex);
+    const previousConfig = runtimeConfig;
+    try {
+      const nextConfig = await reorderPiProviders(movedKeys);
+      setRuntimeConfig(nextConfig);
+      setOtherSettings(nextConfig.otherSettings || {});
+      await refreshTrayMenu();
+    } catch (error) {
+      console.error('Failed to reorder Pi providers:', error);
+      setRuntimeConfig(previousConfig);
+      message.error(t('common.error'));
+    }
   };
 
   return (
@@ -1975,86 +1861,31 @@ const PiPage: React.FC = () => {
         getIcon={(id) => SIDEBAR_ICON_BY_SECTION_ID[id] ?? null}
       >
         <div className={styles.pageContent}>
-          <div className={styles.pageHeader}>
-            <div>
-              <div className={styles.titleRow}>
-                <Title level={4} className={styles.pageTitle}>
-                  {t('pi.title')}
-                </Title>
-                <Link
-                  type="secondary"
-                  className={styles.headerLink}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void openUrl('https://pi.dev/docs/latest/quickstart');
-                  }}
-                >
-                  <LinkOutlined /> {t('pi.viewDocs')}
-                </Link>
-                <Link
-                  type="secondary"
-                  className={styles.headerLink}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setPreviewModalOpen(true);
-                  }}
-                >
-                  <EyeOutlined /> {t('common.previewConfig')}
-                </Link>
-              </div>
-              <Space className={styles.pathToolbar} wrap>
-                <Text type="secondary" className={styles.pathLabel}>
-                  {t('pi.configPath')}:
-                </Text>
-                <Text code className={styles.pathText}>
-                  {runtimeConfig?.rootPathInfo.path}
-                </Text>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<EditOutlined />}
-                  onClick={() => setRootDirectoryModalOpen(true)}
-                  className={styles.textAction}
-                >
-                  {t('pi.rootPathSource.customize')}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<FolderOpenOutlined />}
-                  onClick={handleOpenRootFolder}
-                  className={styles.textAction}
-                >
-                  {t('pi.openFolder')}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<ReloadOutlined />}
-                  onClick={handleRefreshConfig}
-                  className={styles.textAction}
-                >
-                  {t('pi.refreshConfig')}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<CloudSyncOutlined />}
-                  onClick={handleRefreshModelsCache}
-                  loading={refreshingModels}
-                  className={styles.textAction}
-                >
-                  {t('pi.syncModels')}
-                </Button>
-              </Space>
-            </div>
-            <Button type="text" icon={<EllipsisOutlined />} onClick={() => setSettingsModalOpen(true)}>
-              {t('common.moreOptions')}
-            </Button>
-          </div>
-          <div className={styles.pageHint}>
-            {t('pi.pageHint')}
-          </div>
+          <CodingPageHeader
+            title={t('pi.title')}
+            docsUrl="https://pi.dev/docs/latest/quickstart"
+            onPreviewConfig={() => setPreviewModalOpen(true)}
+            configPath={runtimeConfig?.rootPathInfo.path ?? ''}
+            // Pi's root is a directory (`auth.json` / `models.json` /
+            // `settings.json` all derive from it), not one config file.
+            configPathKind="directory"
+            onCustomizeConfig={() => setRootDirectoryModalOpen(true)}
+            onOpenFolder={handleOpenRootFolder}
+            onRefresh={handleRefreshConfig}
+            onMoreOptions={() => setSettingsModalOpen(true)}
+            extraActions={(
+              <Button
+                type="text"
+                size="small"
+                icon={<CloudSyncOutlined />}
+                onClick={handleRefreshModelsCache}
+                loading={refreshingModels}
+                style={{ padding: 0, fontSize: 12 }}
+              >
+                {t('pi.syncModels')}
+              </Button>
+            )}
+          />
 
           <div
             id="pi-model-settings"
@@ -2105,131 +1936,90 @@ const PiPage: React.FC = () => {
             </div>
           </div>
 
-          <div
-            id="pi-providers"
-            className={styles.piSection}
-            data-pi-sidebar-section="true"
-            data-sidebar-title={t('pi.provider.title')}
+          <ProviderListSection
+            sectionId="pi-providers"
+            collapsed={providerListCollapsed}
+            onCollapsedChange={setProviderListCollapsed}
+            loading={loading}
+            providerCount={piProviders.length}
+            visibleCount={visibleProviders.length}
+            batch={providerBatch}
+            batchSelectableIds={batchSelectableIds}
+            keyword={providerKeyword}
+            onKeywordChange={setProviderKeyword}
+            sortMode={sortMode}
+            sortModes={PROVIDER_SORT_MODES_BASIC}
+            onSortModeChange={setSortMode}
+            dragDisabledBySort={providerDragDisabled}
+            locateProviderId={defaultProviderId}
+            viewMode={viewMode}
+            onViewModeChange={setViewMode}
+            onBatchTest={handleBatchTestProviders}
+            batchTesting={batchTestingProviders}
+            onAddProvider={() => openProviderModal()}
+            hint={<div>{t('pi.pageHint')}</div>}
+            footer={(
+              <Space wrap>
+                <Button
+                  type="dashed"
+                  icon={<ImportOutlined />}
+                  onClick={() => setImportModalOpen(true)}
+                >
+                  {t('pi.provider.importFavorite')}
+                </Button>
+                {allApiHubAvailable && (
+                  <Button
+                    type="dashed"
+                    icon={<AllApiHubIcon />}
+                    onClick={() => setAllApiHubImportModalOpen(true)}
+                  >
+                    {t('pi.provider.importAllApiHub')}
+                  </Button>
+                )}
+                {ccSwitchAvailable && (
+                  <Button
+                    type="dashed"
+                    icon={<ImportOutlined />}
+                    onClick={() => setCcSwitchImportModalOpen(true)}
+                  >
+                    {t('common.ccSwitch.importFromCcSwitch')}
+                  </Button>
+                )}
+              </Space>
+            )}
           >
-            <Collapse
-              className={styles.collapseCard}
-              items={[
-                {
-                  key: 'providers',
-                  label: (
-                    <Space>
-                      <ApiOutlined />
-                      <Text strong>{t('pi.provider.title')}</Text>
-                    </Space>
-                  ),
-                  extra: (
-                    <Space onClick={(event) => event.stopPropagation()}>
-                      <Button
-                        type="link"
-                        size="small"
-                        style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (providerBatch.selectionMode) {
-                            providerBatch.exitSelection();
-                          } else {
-                            providerBatch.enterSelection();
-                          }
-                        }}
-                      >
-                        <CheckSquareOutlined style={{ fontSize: 13, lineHeight: 1 }} />
-                        <span>
-                          {providerBatch.selectionMode
-                            ? t('common.batch.exit')
-                            : t('common.batch.manage')}
-                        </span>
-                      </Button>
-                      {providerBatch.selectionMode && (
-                        <ProviderBatchToolbar
-                          hasSelection={providerBatch.hasSelection}
-                          visibleCount={batchSelectableIds.length}
-                          isAllSelected={providerBatch.isAllSelected}
-                          indeterminate={providerBatch.indeterminate}
-                          onSelectAll={providerBatch.selectAllFiltered}
-                          onBatchDelete={providerBatch.batchDelete}
-                          disabled={loading}
-                        />
-                      )}
-                      <ProviderSearchInput value={providerKeyword} onChange={setProviderKeyword} />
-                      <ProviderSortDropdown
-                        mode={sortMode}
-                        modes={PROVIDER_SORT_MODES_BASIC}
-                        onChange={setSortMode}
-                      />
-                      <Button
-                        type="link"
-                        size="small"
-                        style={{ fontSize: 12 }}
-                        icon={<ThunderboltOutlined />}
-                        loading={batchTestingProviders}
-                        onClick={handleBatchTestProviders}
-                      >
-                        {t('common.batchTest')}
-                      </Button>
-                      <Button
-                        type="link"
-                        size="small"
-                        style={{ fontSize: 12 }}
-                        icon={<PlusOutlined />}
-                        onClick={() => openProviderModal()}
-                      >
-                        {t('pi.provider.addSupplier')}
-                      </Button>
-                    </Space>
-                  ),
-                  children: (
-                    <div>
-                      {runtimeConfig?.providers.length ? (
-                        <div className={styles.providerList}>
-                          {visibleProviders.length ? (
-                            visibleProviders.map(renderProvider)
-                          ) : (
-                            <ProviderSearchEmpty />
-                          )}
-                        </div>
-                      ) : (
-                        <Empty description={t('pi.provider.emptyText')} />
-                      )}
-                      <div style={{ marginTop: 12 }}>
-                        <Space wrap>
-                          <Button
-                            type="dashed"
-                            icon={<ImportOutlined />}
-                            onClick={() => setImportModalOpen(true)}
-                          >
-                            {t('pi.provider.importFavorite')}
-                          </Button>
-                          {allApiHubAvailable && (
-                            <Button
-                              type="dashed"
-                              icon={<AllApiHubIcon />}
-                              onClick={() => setAllApiHubImportModalOpen(true)}
-                            >
-                              {t('pi.provider.importAllApiHub')}
-                            </Button>
-                          )}
-                          {ccSwitchAvailable && (
-                            <Button
-                              type="dashed"
-                              icon={<ImportOutlined />}
-                              onClick={() => setCcSwitchImportModalOpen(true)}
-                            >
-                              {t('common.ccSwitch.importFromCcSwitch')}
-                            </Button>
-                          )}
-                        </Space>
-                      </div>
-                    </div>
-                  ),
-                },
-              ]}
-            />
-          </div>
+            {/* One `DndContext` serves both layouts; only the sorting strategy
+                and the drag modifier change with the view. The order it writes
+                is `models.json`'s `providers` key order, which is also what
+                `build_provider_views` reads back. */}
+            <DndContext
+              sensors={providerBatchDragDisabled ? [] : sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleProviderDragEnd}
+              modifiers={[viewMode === 'card' ? restrictToWindowEdges : restrictToVerticalAxis]}
+            >
+              <SortableContext
+                items={visibleProviders.map((provider) => provider.providerKey)}
+                strategy={viewMode === 'card' ? rectSortingStrategy : verticalListSortingStrategy}
+              >
+                {viewMode === 'card' ? (
+                  <ProviderCardGrid
+                    items={visibleProviders}
+                    getKey={(provider) => provider.providerKey}
+                    renderItem={(provider) => renderProviderCard(provider)}
+                  />
+                ) : (
+                  <div>
+                    {visibleProviders.map((provider) => (
+                      <React.Fragment key={provider.providerKey}>
+                        {renderProviderCard(provider)}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                )}
+              </SortableContext>
+            </DndContext>
+          </ProviderListSection>
 
           <div
             id="pi-extensions"
@@ -2331,138 +2121,14 @@ const PiPage: React.FC = () => {
           onReset={handleResetRootDirectory}
         />
 
-        <Modal
-          title={providerModal?.provider
-            ? t('pi.provider.editSupplierTitle', { name: providerModal.provider.displayName })
-            : t('pi.provider.addSupplierTitle')}
+        <PiProviderFormModal
           open={!!providerModal}
-          width={860}
-          confirmLoading={saving}
+          provider={providerModal?.provider}
+          copy={providerModal?.copy}
+          saving={saving}
           onCancel={() => setProviderModal(null)}
-          onOk={handleSaveProviderModal}
-          destroyOnHidden
-        >
-          <Form form={providerModalForm} layout="vertical" className={styles.providerForm}>
-            <div className={styles.modalSection}>
-              <div className={styles.modalGrid}>
-                <Form.Item
-                  label={t('pi.provider.providerKey')}
-                  name="providerKey"
-                  rules={[{ required: true, message: t('pi.provider.providerKeyRequired') }]}
-                >
-                  <Input
-                    disabled={!!providerModal?.provider}
-                    placeholder={t('pi.provider.providerKeyPlaceholder')}
-                  />
-                </Form.Item>
-                <Form.Item label={t('pi.provider.displayName')} name="displayName">
-                  <Input placeholder={t('pi.provider.displayNamePlaceholder')} />
-                </Form.Item>
-              </div>
-            </div>
-
-            <div className={styles.modalSection}>
-              <Text strong>{t('pi.provider.configSection')}</Text>
-              <div className={styles.modalGrid}>
-                <Form.Item label={t('pi.provider.apiType')} name="api">
-                  <Select
-                    allowClear
-                    showSearch
-                    options={PI_API_OPTIONS}
-                    placeholder={t('pi.provider.apiTypePlaceholder')}
-                  />
-                </Form.Item>
-                <Form.Item label={t('pi.provider.baseUrl')} name="baseUrl">
-                  <Input placeholder="https://api.example.com/v1" />
-                </Form.Item>
-                <Form.Item label={t('pi.provider.providerApiKey')} name="providerApiKey">
-                  <Input.Password autoComplete="off" />
-                </Form.Item>
-                <Form.Item
-                  label={(
-                    <Space size={4}>
-                      <span>{t('pi.provider.authHeader')}</span>
-                      <Tooltip title={t('pi.provider.authHeaderHint')}>
-                        <QuestionCircleOutlined style={{ color: 'var(--color-text-tertiary)' }} />
-                      </Tooltip>
-                    </Space>
-                  )}
-                  name="authHeader"
-                  valuePropName="checked"
-                >
-                  <Switch />
-                </Form.Item>
-              </div>
-            </div>
-
-            <div className={styles.advancedToggle}>
-              <Button
-                type="link"
-                onClick={() => setProviderAdvancedExpanded(!providerAdvancedExpanded)}
-                className={styles.advancedToggleButton}
-              >
-                {providerAdvancedExpanded ? <DownOutlined /> : <RightOutlined />}
-                <span>{t('common.advancedSettings')}</span>
-              </Button>
-            </div>
-            {providerAdvancedExpanded && (
-              <div className={styles.modalSection}>
-                <div className={styles.advancedEditor}>
-                  <Text type="secondary">{t('pi.provider.credentialAdvancedJson')}</Text>
-                  <JsonEditor
-                    value={isRecordEmpty(credentialJson) ? undefined : credentialJson}
-                    height={180}
-                    onChange={(value, isValid) => {
-                      if (isValid) {
-                        setCredentialJson(asRecord(value));
-                      }
-                      setCredentialJsonValid(isValid);
-                    }}
-                  />
-                </div>
-                <div className={styles.advancedEditor}>
-                  <Text type="secondary">{t('pi.provider.headersJson')}</Text>
-                  <JsonEditor
-                    value={isRecordEmpty(providerHeadersJson) ? undefined : providerHeadersJson}
-                    height={160}
-                    onChange={(value, isValid) => {
-                      if (isValid) {
-                        setProviderHeadersJson(asRecord(value));
-                      }
-                      setProviderHeadersJsonValid(isValid);
-                    }}
-                  />
-                </div>
-                <div className={styles.advancedEditor}>
-                  <Text type="secondary">{t('pi.provider.compatJson')}</Text>
-                  <JsonEditor
-                    value={isRecordEmpty(providerCompatJson) ? undefined : providerCompatJson}
-                    height={180}
-                    onChange={(value, isValid) => {
-                      if (isValid) {
-                        setProviderCompatJson(asRecord(value));
-                      }
-                      setProviderCompatJsonValid(isValid);
-                    }}
-                  />
-                </div>
-                <div className={styles.advancedEditor}>
-                  <Text type="secondary">{t('pi.provider.modelOverridesJson')}</Text>
-                  <JsonEditor
-                    value={isRecordEmpty(providerModelOverridesJson) ? undefined : providerModelOverridesJson}
-                    height={200}
-                    onChange={(value, isValid) => {
-                      if (isValid) {
-                        setProviderModelOverridesJson(asRecord(value));
-                      }
-                      setProviderModelOverridesJsonValid(isValid);
-                    }}
-                  />
-                </div>
-              </div>
-            )}
-          </Form>
-        </Modal>
+          onSubmit={(draft) => void handleSaveProviderModal(draft)}
+        />
 
         <Modal
           title={t('pi.provider.deleteScopeModalTitle')}

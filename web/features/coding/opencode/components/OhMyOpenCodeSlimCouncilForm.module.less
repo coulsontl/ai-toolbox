@@ -87,12 +87,6 @@
   font-weight: 500;
 }
 
-.switchHint {
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--color-text-secondary);
-}
-
 .mainCard {
   border: 1px solid var(--color-border);
   border-radius: 16px;
@@ -192,7 +186,11 @@
   margin-bottom: 14px;
 }
 
-.listActions .ant-btn {
+// `:global(.ant-btn)` is load-bearing: without it CSS Modules hashes the
+// `.ant-btn` half too, the selector never matches, and this rounding has been
+// dead since it was written. `pnpm run test:css-module-classes` reports such a
+// selector as an orphan, which is what surfaced it.
+.listActions :global(.ant-btn) {
   border-radius: 10px;
 }
 

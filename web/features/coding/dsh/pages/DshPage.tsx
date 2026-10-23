@@ -5,52 +5,32 @@ import {
   Alert,
   Button,
   Collapse,
-  Empty,
   Form,
-  Input,
   Modal,
   Select,
   Space,
   Spin,
-  Tooltip,
   Typography,
   message,
 } from 'antd';
 import {
-  ApiOutlined,
-  CheckSquareOutlined,
-  CloudDownloadOutlined,
   CloudSyncOutlined,
   DatabaseOutlined,
-  DeleteOutlined,
-  DownOutlined,
-  EditOutlined,
-  EllipsisOutlined,
-  EyeOutlined,
   FileTextOutlined,
-  FolderOpenOutlined,
   GlobalOutlined,
-  LinkOutlined,
   MessageOutlined,
-  PlusOutlined,
   ImportOutlined,
-  ReloadOutlined,
-  RightOutlined,
   RobotOutlined,
   SettingOutlined,
-  ThunderboltOutlined,
   ToolOutlined,
 } from '@ant-design/icons';
-import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 
 import JsonEditor from '@/components/common/JsonEditor';
 import DshConfigPreviewModal from '@/components/common/DshConfigPreviewModal';
-import ProviderCard from '@/components/common/ProviderCard';
 import type {
-  ModelDisplayData,
   ProviderConnectivityStatusItem,
-  ProviderDisplayData,
 } from '@/components/common/ProviderCard/types';
 import ModelFormModal from '@/components/common/ModelFormModal';
 import type { ModelFormValues } from '@/components/common/ModelFormModal';
@@ -79,17 +59,39 @@ import { SessionManagerPanel } from '@/features/coding/shared/sessionManager';
 import {
   PROVIDER_SORT_MODES_BASIC,
   backupProvidersBeforeDelete,
-  ProviderBatchToolbar,
-  ProviderSearchEmpty,
-  ProviderSearchInput,
-  ProviderSortDropdown,
   filterProviderItems,
   sortProviderItems,
   providerSelectionDisabledReason,
   useProviderBatchSelection,
   useProviderListSort,
+  useProviderListViewPrefs,
   type ProviderSelectionBlockReason,
 } from '@/features/coding/shared/providerList';
+import ProviderListSection from '@/features/coding/shared/ProviderListSection';
+import CodingPageHeader from '@/features/coding/shared/CodingPageHeader';
+import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  rectSortingStrategy,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { restrictToVerticalAxis, restrictToWindowEdges } from '@dnd-kit/modifiers';
+import DshProviderCard from '../components/DshProviderCard';
+import DshMigrationNotice from '../components/DshMigrationNotice';
+import DshProviderFormModal, {
+  type DshProviderDraft,
+} from '../components/DshProviderFormModal';
 import {
   fetchRemotePresetModels,
   hasAllApiHubExtension,
@@ -123,6 +125,20 @@ import {
   credentialRefFromProviderKey,
 } from '../utils/providerDeletion';
 import {
+  asRecord,
+  getDshModelRecords,
+  getNumberField,
+  getProviderModelRecords,
+  getStringField,
+} from '../utils/providerModels';
+import {
+  createDefaultProviderConfig,
+  hasProviderConfigContent,
+  isCatalogOwnedRoute,
+  isRecordEmpty,
+  setOptionalStringField,
+} from '../utils/providerConfig';
+import {
   checkDshAgentInstructions,
   deleteDshCredential,
   deleteDshRuntimeProvider,
@@ -136,6 +152,7 @@ import {
   saveDshCredential,
   saveDshModelSettings,
   saveDshModelsProvider,
+  reorderDshProviders,
   saveDshOtherSettings,
   saveDshSettingsConfig,
 } from '@/services/dshApi';
@@ -149,10 +166,12 @@ import type {
 
 import styles from './DshPage.module.less';
 
-const { Title, Text, Link } = Typography;
+const { Title, Text } = Typography;
 
 interface ProviderJsonModalState {
   provider?: DshRuntimeProviderView;
+  /** Pre-fill from `provider`, save under `<key>_copy`. */
+  copy?: boolean;
 }
 
 interface DshModelModalState {
@@ -160,12 +179,6 @@ interface DshModelModalState {
   modelId?: string;
   model?: Record<string, unknown>;
 }
-
-const DSH_API_OPTIONS = [
-  'openai-completions',
-  'openai-responses',
-  'anthropic-messages',
-].map((value) => ({ value, label: value }));
 
 const SIDEBAR_ICON_BY_SECTION_ID: Record<string, React.ReactNode> = {
   'dsh-model-settings': <RobotOutlined />,
@@ -175,86 +188,9 @@ const SIDEBAR_ICON_BY_SECTION_ID: Record<string, React.ReactNode> = {
   'dsh-session-manager': <MessageOutlined />,
 };
 
-/// The backend only reports whether a credential ref exists, not its value.
-const MASKED_CREDENTIAL = '••••••••';
-
-const asRecord = (value: unknown): Record<string, unknown> => (
-  value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {}
-);
-
 /// Raw dsh provider dict from `llm-pi-ai.providers.<route>`; `{}` when absent.
 const providerRawConfig = (provider: DshRuntimeProviderView): Record<string, unknown> =>
   provider.provider ?? {};
-
-const getStringField = (value: Record<string, unknown>, key: string): string => {
-  const fieldValue = value[key];
-  return typeof fieldValue === 'string' ? fieldValue : '';
-};
-
-const getNumberField = (value: Record<string, unknown>, key: string): number | undefined => {
-  const fieldValue = value[key];
-  return typeof fieldValue === 'number' && Number.isFinite(fieldValue) ? fieldValue : undefined;
-};
-
-const getProviderModelRecords = (
-  providerConfig: Record<string, unknown> | undefined,
-): Array<{ id: string; model: Record<string, unknown> }> => {
-  if (!providerConfig) {
-    return [];
-  }
-  const models = providerConfig.models;
-  if (!Array.isArray(models)) {
-    return [];
-  }
-  return models
-    .map((model) => {
-      if (typeof model === 'string') {
-        return { id: model, model: { id: model } };
-      }
-      if (model && typeof model === 'object' && typeof (model as Record<string, unknown>).id === 'string') {
-        return {
-          id: (model as Record<string, string>).id,
-          model: model as Record<string, unknown>,
-        };
-      }
-      return null;
-    })
-    .filter((entry): entry is { id: string; model: Record<string, unknown> } => !!entry);
-};
-
-/// The route's served model records: explicit `models` first, then the bundled
-/// adapter catalog when `modelSource` is `builtin` (official llm-pi-ai behavior).
-const getDshModelRecords = (
-  provider: DshRuntimeProviderView,
-): Array<{ id: string; model: Record<string, unknown> }> => {
-  const explicit = getProviderModelRecords(providerRawConfig(provider));
-  if (explicit.length > 0) {
-    return explicit;
-  }
-  if (provider.modelSource !== 'builtin' || !provider.builtinModels) {
-    return [];
-  }
-  return provider.builtinModels.map((model) => ({
-    id: getStringField(model, 'id') || '',
-    model,
-  }));
-};
-
-const setOptionalStringField = (
-  target: Record<string, unknown>,
-  key: string,
-  value: unknown,
-) => {
-  if (typeof value === 'string' && value.trim()) {
-    target[key] = value.trim();
-  } else {
-    delete target[key];
-  }
-};
-
-const isRecordEmpty = (value: Record<string, unknown>): boolean => Object.keys(value).length === 0;
 
 /**
  * 模型字段中由弹窗专用控件管理的键；其余字段视为额外参数原样保留。
@@ -323,31 +259,6 @@ const extractDshExtraParams = (model: unknown): Record<string, unknown> | undefi
   return Object.keys(extra).length > 0 ? extra : undefined;
 };
 
-const createDefaultProviderConfig = (): Record<string, unknown> => ({
-  api: 'openai-completions',
-  baseURL: '',
-  apiKeyEnv: '',
-  models: [],
-});
-
-const hasProviderConfigContent = (providerConfig: Record<string, unknown>): boolean => (
-  Object.values(providerConfig).some((value) => {
-    if (value === null || value === undefined) {
-      return false;
-    }
-    if (typeof value === 'string') {
-      return value.trim() !== '';
-    }
-    if (Array.isArray(value)) {
-      return value.length > 0;
-    }
-    if (typeof value === 'object') {
-      return !isRecordEmpty(asRecord(value));
-    }
-    return true;
-  })
-);
-
 const asStringRecord = (value: unknown): Record<string, string> => {
   const record = asRecord(value);
   return Object.fromEntries(
@@ -360,12 +271,9 @@ const buildDshOpenCodeProvider = (
   providerConfig: Record<string, unknown> = providerRawConfig(provider) ?? {},
   apiKeyValue = '',
 ): OpenCodeProvider => {
-  // Serve the explicit models, falling back to the adapter's bundled catalog
-  // when the route stays configuration-free (official llm-pi-ai behavior).
-  const records = getProviderModelRecords(providerConfig).length > 0
-    ? getProviderModelRecords(providerConfig)
-    : (provider.modelSource === 'builtin' ? provider.builtinModels ?? [] : [])
-      .map((model) => ({ id: getStringField(model, 'id') || '', model }));
+  // Same explicit-models → bundled-catalog fallback as the card and the probes;
+  // a second copy here would let sharing and display disagree about a route.
+  const records = getDshModelRecords(provider);
   const models = Object.fromEntries(
     records.map((entry) => [
       entry.id,
@@ -448,13 +356,13 @@ const DshPage: React.FC = () => {
   const [importModalOpen, setImportModalOpen] = React.useState(false);
   const [ccSwitchAvailable, setCcSwitchAvailable] = React.useState(false);
   const [ccSwitchImportModalOpen, setCcSwitchImportModalOpen] = React.useState(false);
-  const [providerModalForm] = Form.useForm();
-  const [providerConfigJson, setProviderConfigJson] = React.useState<Record<string, unknown>>({});
-  const [providerModelOverridesJson, setProviderModelOverridesJson] = React.useState<Record<string, unknown>>({});
-  const [providerConfigJsonValid, setProviderConfigJsonValid] = React.useState(true);
-  const [providerModelOverridesJsonValid, setProviderModelOverridesJsonValid] = React.useState(true);
-  const [providerAdvancedExpanded, setProviderAdvancedExpanded] = React.useState(false);
   const [dshModelModal, setDshModelModal] = React.useState<DshModelModalState | null>(null);
+  const [providerListCollapsed, setProviderListCollapsed] = React.useState(false);
+  const { viewMode, setViewMode } = useProviderListViewPrefs('dsh');
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
   const [batchDeleteProviderId, setBatchDeleteProviderId] = React.useState<string | null>(null);
   const [selectedModelIdsByProvider, setSelectedModelIdsByProvider] = React.useState<Record<string, string[]>>({});
   const [fetchModelsProviderId, setFetchModelsProviderId] = React.useState<string | null>(null);
@@ -571,7 +479,6 @@ const DshPage: React.FC = () => {
   }, [loadConfig]);
 
   const [pinnedProfile, setPinnedProfile] = React.useState<string | undefined>(undefined);
-
   React.useEffect(() => {
     let cancelled = false;
     getDshSettingsConfig()
@@ -659,6 +566,10 @@ const DshPage: React.FC = () => {
     return Array.from(options).map((modelId) => ({ value: modelId, label: modelId }));
   }, [runtimeConfig?.modelSettings.model, selectedDefaultModel, selectedProvider?.modelIds]);
 
+  const defaultProviderId = React.useMemo(
+    () => (runtimeConfig?.providers ?? []).find((provider) => provider.isDefault)?.providerKey ?? '',
+    [runtimeConfig?.providers],
+  );
   const dshProviders = React.useMemo(
     () => runtimeConfig?.providers ?? [],
     [runtimeConfig?.providers],
@@ -807,43 +718,28 @@ const DshPage: React.FC = () => {
     }
   };
 
-  const openProviderModal = async (
+  const openProviderModal = (
     provider?: DshRuntimeProviderView,
     options?: { copy?: boolean },
   ) => {
-    const isCopy = options?.copy === true;
-    const isExistingProviderEdit = !!provider && !isCopy;
-    const nextProviderConfigJson = provider?.provider
-      ? asRecord(providerRawConfig(provider))
-      : isExistingProviderEdit
-        ? {}
-        : createDefaultProviderConfig();
-
-    setProviderModal({ provider: isCopy ? undefined : provider });
-    setProviderConfigJson(nextProviderConfigJson);
-    setProviderModelOverridesJson(asRecord(nextProviderConfigJson.modelOverrides));
-    setProviderConfigJsonValid(true);
-    setProviderModelOverridesJsonValid(true);
-    setProviderAdvancedExpanded(false);
-    providerModalForm.setFieldsValue({
-      providerKey: isCopy && provider ? `${provider.providerKey}_copy` : provider?.providerKey,
-      displayName: getStringField(nextProviderConfigJson, 'displayName'),
-      api: getStringField(nextProviderConfigJson, 'api') || undefined,
-      baseUrl: getStringField(nextProviderConfigJson, 'baseURL'),
-      providerApiKey: provider?.apiKey || '',
-    });
+    setProviderModal({ provider, copy: options?.copy === true });
   };
 
-  const handleSaveProviderModal = async () => {
-    if (
-      !providerModal
-      || !providerConfigJsonValid
-      || !providerModelOverridesJsonValid
-    ) {
+  /**
+   * Save what the modal handed back.
+   *
+   * dsh splits a route across two files: the provider entry
+   * (`llm-pi-ai.providers.<route>`) and the secret (`.credentials.yaml`, under a
+   * `REF` name). An API key typed in the form writes the credential; clearing it
+   * on an existing provider deletes the credential. The provider entry is
+   * written whenever the route exists or the form says something — a catalog
+   * route can carry a credential without ever getting a provider entry.
+   */
+  const handleSaveProviderModal = async (draft: DshProviderDraft) => {
+    if (!providerModal) {
       return;
     }
-    const values = await providerModalForm.validateFields();
-    const providerKey = values.providerKey?.trim();
+    const providerKey = draft.values.providerKey?.trim();
     if (!providerKey) {
       message.error(t('dsh.provider.providerKeyRequired', { defaultValue: '请输入供应商 Key' }));
       return;
@@ -855,25 +751,40 @@ const DshPage: React.FC = () => {
         (provider) => provider.providerKey === providerKey,
       );
       const hadCredential = !!existingProvider?.credentialExists;
-      const nextApiKey = typeof values.providerApiKey === 'string' ? values.providerApiKey.trim() : '';
-      const credentialRef = getStringField(providerConfigJson, 'apiKeyEnv') || credentialRefFromProviderKey(providerKey);
+      const nextApiKey = typeof draft.values.providerApiKey === 'string'
+        ? draft.values.providerApiKey.trim()
+        : '';
+      const credentialRef = providerModal.provider?.apiKeyEnv
+        || credentialRefFromProviderKey(providerKey);
       const shouldSaveCredential = nextApiKey !== '';
       const shouldDeleteCredential = hadCredential && nextApiKey === '';
-      const nextProviderConfigJson = { ...providerConfigJson };
+      // Copy, never alias: `asRecord` returns the live `runtimeConfig` object,
+      // and the `delete`s below would mutate it before the command runs. A
+      // failed save would then leave the rejected edit in state, and the next
+      // write that spreads this record would persist a route missing its
+      // `baseURL` / `displayName`.
+      const nextProviderConfigJson = providerModal.provider?.provider
+        ? { ...asRecord(providerModal.provider.provider) }
+        : createDefaultProviderConfig();
       // Built-in/catalog channels keep display name and wire protocol from the
       // catalog (official llm-pi-ai behavior); only custom routes own them.
-      const editingBuiltIn = !!providerModal.provider
-        && (providerModal.provider.isBuiltin || providerModal.provider.modelSource === 'builtin');
+      const editingBuiltIn = isCatalogOwnedRoute(providerModal.provider, providerModal.copy === true);
       if (editingBuiltIn) {
         delete nextProviderConfigJson.displayName;
         delete nextProviderConfigJson.api;
       } else {
-        setOptionalStringField(nextProviderConfigJson, 'displayName', values.displayName);
-        setOptionalStringField(nextProviderConfigJson, 'api', values.api);
+        setOptionalStringField(nextProviderConfigJson, 'displayName', draft.values.displayName);
+        setOptionalStringField(nextProviderConfigJson, 'api', draft.values.api);
       }
-      setOptionalStringField(nextProviderConfigJson, 'baseURL', values.baseUrl);
+      setOptionalStringField(nextProviderConfigJson, 'baseURL', draft.values.baseUrl);
       // dsh has no authHeader flag; drop any stale key written by older builds.
       delete nextProviderConfigJson.authHeader;
+      if (isRecordEmpty(draft.modelOverrides)) {
+        delete nextProviderConfigJson.modelOverrides;
+      } else {
+        nextProviderConfigJson.modelOverrides = draft.modelOverrides;
+      }
+
       let nextConfig: DshRuntimeConfig | null = null;
       if (shouldSaveCredential) {
         nextConfig = await saveDshCredential({ refName: credentialRef, value: nextApiKey });
@@ -881,16 +792,14 @@ const DshPage: React.FC = () => {
       } else if (shouldDeleteCredential) {
         nextConfig = await deleteDshCredential(credentialRef);
       }
-      if (isRecordEmpty(providerModelOverridesJson)) {
-        delete nextProviderConfigJson.modelOverrides;
-      } else {
-        nextProviderConfigJson.modelOverrides = providerModelOverridesJson;
-      }
       const shouldSaveProviderConfig = !providerModal.provider
         || !!providerModal.provider.provider
         || hasProviderConfigContent(nextProviderConfigJson);
       if (shouldSaveProviderConfig) {
-        nextConfig = await saveDshModelsProvider({ providerKey, provider: nextProviderConfigJson });
+        nextConfig = await saveDshModelsProvider({
+          providerKey,
+          provider: nextProviderConfigJson,
+        });
       } else if (!shouldSaveCredential && !shouldDeleteCredential) {
         message.error(t('dsh.provider.selectAtLeastOneSection', { defaultValue: '请至少填写一个配置区块' }));
         return;
@@ -1807,62 +1716,44 @@ const DshPage: React.FC = () => {
     }
   };
 
-  // Whether the provider modal edits a built-in/catalog-backed channel. Such a
-  // channel keeps display-name and wire protocol from the catalog (official
-  // llm-pi-ai behavior), so those fields are hidden on a built-in edit.
-  const isBuiltInModalChannel = !!providerModal?.provider
-    && (providerModal.provider.isBuiltin || providerModal.provider.modelSource === 'builtin');
-
-  const renderProvider = (provider: DshRuntimeProviderView) => {
-    const credentialPreview = provider.credentialExists ? MASKED_CREDENTIAL : '';
+  /**
+   * One mapper for every layout. `ProviderListSection` renders the same node in
+   * the list and the grid, so the two cannot offer different actions.
+   */
+  const renderProviderCard = (provider: DshRuntimeProviderView) => {
     const hasCredential = provider.credentialExists;
     const hasProviderConfig = !!provider.provider;
     const providerConfig = providerRawConfig(provider);
     const isBatchDeleteMode = batchDeleteProviderId === provider.providerKey;
     const selectedModelIds = selectedModelIdsByProvider[provider.providerKey] ?? [];
-    const selectedModelCount = selectedModelIds.length;
     const providerBaseUrl = getStringField(providerConfig, 'baseURL');
     const hasModelIds = getDshModelRecords(provider).length > 0;
-    const connectivityTooltip = !providerBaseUrl
-      ? t('common.baseUrlMissing')
-      : !hasModelIds
-        ? t('common.modelMissing')
-        : '';
-    const fetchModelsTooltip = !providerBaseUrl ? t('common.baseUrlMissing') : '';
     // Official llm-pi-ai behavior: a catalog-backed/built-in channel is not
     // removable and owns no route-level protocol or display-name (those come
-    // from the catalog). `modelSource === 'builtin'` covers a route named after
-    // the adapter default even when its key is not in the known built-in list.
-    const isBuiltInChannel = provider.isBuiltin || provider.modelSource === 'builtin';
-    const deleteDisabledReason = !isBuiltInChannel && (hasCredential || hasProviderConfig) && provider.isDefault
-      ? t('dsh.provider.deleteDisabledDefault', { defaultValue: '该渠道已设为默认，不可删除' })
-      : undefined;
-    const modelSourceTag = provider.modelSource === 'builtin'
-      ? t('dsh.model.modelSourceBuiltin', { defaultValue: '内置 · 适配器默认模型' })
-      : undefined;
-    const providerDisplay: ProviderDisplayData = {
-      id: provider.providerKey,
-      name: provider.displayName,
-      sdkName: getStringField(providerConfig, 'api')
-        || provider.apiKeyEnv
-        || t('dsh.provider.builtinHint', { defaultValue: '内置供应商' })
-        || 'dsh',
-      baseUrl: providerBaseUrl
-        || credentialPreview
-        || provider.apiKeyEnv
-        || t('dsh.provider.builtinHint', { defaultValue: '内置供应商' }),
-    };
-    const modelDisplayList: ModelDisplayData[] = getDshModelRecords(provider).map((entry) => ({
-      id: entry.id,
-      name: getStringField(entry.model, 'name') || entry.id,
-      isPrimary: provider.isDefault && runtimeConfig?.modelSettings.model === entry.id,
-    }));
+    // from the catalog). The predicate is shared with the editor modal and the
+    // card — see `isCatalogOwnedRoute`.
+    const isBuiltInChannel = isCatalogOwnedRoute(provider, false);
+    const canDeleteProvider = !isBuiltInChannel && (hasCredential || hasProviderConfig);
 
     return (
-      <ProviderCard
+      <DshProviderCard
         key={provider.providerKey}
-        provider={providerDisplay}
-        models={modelDisplayList}
+        provider={provider}
+        defaultModelId={provider.isDefault
+          ? runtimeConfig?.modelSettings.model ?? undefined
+          : undefined}
+        viewMode={viewMode}
+        selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.providerKey)}
+        selected={providerBatch.selectedIds.has(provider.providerKey)}
+        onSelectChange={(checked) => providerBatch.toggleSelect(provider.providerKey, checked)}
+        selectDisabledReason={providerBatch.selectionMode
+          ? providerSelectionDisabledReason(t, batchBlockReason(provider))
+          : undefined}
+        connectivityStatus={connectivityStatuses[provider.providerKey]}
+        // Only a route with its own `providers` entry has a stored position; a
+        // route that exists only as the `agent-default-model` pointer is
+        // appended by the reader, so its handle would drag nothing.
+        dragDisabled={providerBatchDragDisabled || !hasProviderConfig}
         onEdit={() => openProviderModal(provider)}
         onCopy={() => openProviderModal(provider, { copy: true })}
         onShare={() => shareProvider({
@@ -1873,86 +1764,10 @@ const DshPage: React.FC = () => {
           credentialUnavailable: (provider.credentialExists || Boolean(provider.apiKeyEnv)) && !provider.apiKey,
           defaultModel: provider.isDefault ? runtimeConfig?.modelSettings.model ?? undefined : undefined,
         })}
-        onDelete={!isBuiltInChannel && (hasCredential || hasProviderConfig)
-          ? () => handleDeleteSupplier(provider)
+        onDelete={canDeleteProvider ? () => handleDeleteSupplier(provider) : undefined}
+        deleteDisabledReason={canDeleteProvider && provider.isDefault
+          ? t('dsh.provider.deleteDisabledDefault', { defaultValue: '该渠道已设为默认，不可删除' })
           : undefined}
-        deleteConfirm={false}
-        deleteDisabledReason={deleteDisabledReason}
-        selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.providerKey)}
-        selected={providerBatch.selectedIds.has(provider.providerKey)}
-        onSelectChange={(checked) =>
-          providerBatch.toggleSelect(provider.providerKey, checked)
-        }
-        selectDisabledReason={providerBatch.selectionMode
-          ? providerSelectionDisabledReason(t, batchBlockReason(provider))
-          : undefined}
-        connectivityStatus={connectivityStatuses[provider.providerKey]}
-        modelSourceTag={modelSourceTag}
-        extraActions={
-          <Space size={0}>
-            <Button
-              size="small"
-              type="text"
-              icon={<DeleteOutlined />}
-              style={{ fontSize: 12 }}
-              onClick={() => handleToggleBatchDeleteMode(provider.providerKey)}
-            >
-              {isBatchDeleteMode
-                ? t('dsh.model.cancelBatchDelete', { defaultValue: '退出批量删除' })
-                : t('dsh.model.batchDelete', { defaultValue: '批量删除' })}
-            </Button>
-            {isBatchDeleteMode && (
-              <Button
-                size="small"
-                type="text"
-                danger
-                style={{ fontSize: 12 }}
-                disabled={selectedModelCount === 0}
-                onClick={() => {
-                  Modal.confirm({
-                    title: t('common.model.batchDeleteConfirmTitle'),
-                    content: t('common.model.batchDeleteConfirmContent', { count: selectedModelCount }),
-                    okText: t('common.confirm'),
-                    cancelText: t('common.cancel'),
-                    onOk: async () => {
-                      await handleBatchDeleteModels(provider);
-                    },
-                  });
-                }}
-              >
-                {t('dsh.model.deleteSelected', { defaultValue: '删除所选 {{count}}', count: selectedModelCount })}
-              </Button>
-            )}
-            <Tooltip title={connectivityTooltip}>
-              <span>
-                <Button
-                  size="small"
-                  type="text"
-                  style={{ fontSize: 12 }}
-                  onClick={() => handleOpenConnectivityTest(provider.providerKey)}
-                  disabled={!providerBaseUrl || !hasModelIds}
-                >
-                  <ApiOutlined style={{ marginRight: 4 }} />
-                  {t('dsh.connectivity.button', { defaultValue: '连通性测试' })}
-                </Button>
-              </span>
-            </Tooltip>
-            <Tooltip title={fetchModelsTooltip}>
-              <span>
-                <Button
-                  size="small"
-                  type="text"
-                  style={{ fontSize: 12 }}
-                  onClick={() => handleOpenFetchModels(provider.providerKey)}
-                  disabled={!providerBaseUrl}
-                >
-                  <CloudDownloadOutlined style={{ marginRight: 4 }} />
-                  {t('dsh.fetchModels.button', { defaultValue: '拉取模型' })}
-                </Button>
-              </span>
-            </Tooltip>
-          </Space>
-        }
         onAddModel={() => openDshModelModal(provider)}
         onEditModel={(modelId) => openDshModelModal(provider, modelId)}
         onCopyModel={(modelId) => openDshModelModal(provider, modelId, { copy: true })}
@@ -1961,10 +1776,66 @@ const DshPage: React.FC = () => {
         modelSelectionMode={isBatchDeleteMode}
         selectedModelIds={selectedModelIds}
         onToggleModelSelection={(modelId, selected) => handleToggleModelSelection(provider.providerKey, modelId, selected)}
-        modelsDraggable={!isBatchDeleteMode}
         onReorderModels={(modelIds) => handleReorderModels(provider, modelIds)}
+        onToggleBatchDeleteMode={() => handleToggleBatchDeleteMode(provider.providerKey)}
+        onBatchDeleteModels={() => {
+          Modal.confirm({
+            title: t('common.model.batchDeleteConfirmTitle'),
+            content: t('common.model.batchDeleteConfirmContent', { count: selectedModelIds.length }),
+            okText: t('common.confirm'),
+            cancelText: t('common.cancel'),
+            onOk: async () => {
+              await handleBatchDeleteModels(provider);
+            },
+          });
+        }}
+        onTestModels={() => handleOpenConnectivityTest(provider.providerKey)}
+        testModelsDisabled={!providerBaseUrl || !hasModelIds}
+        testModelsDisabledTooltip={!providerBaseUrl
+          ? t('common.baseUrlMissing')
+          : !hasModelIds
+            ? t('common.modelMissing')
+            : undefined}
+        onFetchModels={() => handleOpenFetchModels(provider.providerKey)}
+        fetchDisabled={!providerBaseUrl}
+        fetchDisabledTooltip={!providerBaseUrl ? t('common.baseUrlMissing') : undefined}
       />
     );
+  };
+
+  // Dragging rewrites the key order of `llm-pi-ai.providers`. Search and
+  // non-`custom` sort modes show an order the file does not contain, so a drop
+  // there would persist something the user is not looking at.
+  const providerDragDisabled = sortMode !== 'custom' || providerKeyword.trim() !== '';
+  const providerBatchDragDisabled = providerDragDisabled || providerBatch.selectionMode;
+
+  const handleProviderDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) {
+      return;
+    }
+    // Only routes that live in the dict have a position; a catalog-backed
+    // default route without a provider entry is appended by the reader.
+    const providerKeys = dshProviders
+      .filter((provider) => Boolean(provider.provider))
+      .map((provider) => provider.providerKey);
+    const oldIndex = providerKeys.indexOf(active.id as string);
+    const newIndex = providerKeys.indexOf(over.id as string);
+    if (oldIndex < 0 || newIndex < 0) {
+      return;
+    }
+    const movedKeys = arrayMove(providerKeys, oldIndex, newIndex);
+    const previousConfig = runtimeConfig;
+    try {
+      const nextConfig = await reorderDshProviders(movedKeys);
+      setRuntimeConfig(nextConfig);
+      setOtherSettings(nextConfig.otherSettings || {});
+      await refreshTrayMenu();
+    } catch (error) {
+      console.error('Failed to reorder dsh providers:', error);
+      setRuntimeConfig(previousConfig);
+      message.error(t('common.error'));
+    }
   };
 
   return (
@@ -1977,74 +1848,27 @@ const DshPage: React.FC = () => {
         getIcon={(id) => SIDEBAR_ICON_BY_SECTION_ID[id] ?? null}
       >
         <div className={styles.pageContent}>
-          <div className={styles.pageHeader}>
-            <div>
-              <div className={styles.titleRow}>
-                <Title level={4} className={styles.pageTitle}>
-                  {t('dsh.title', { defaultValue: 'DeepSeek Harness' })}
-                </Title>
-                <Link
-                  type="secondary"
-                  className={styles.headerLink}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void openUrl('https://deepseek-harness.github.io/deepseek-harness/guide/quickstart');
-                  }}
-                >
-                  <LinkOutlined /> {t('dsh.viewDocs', { defaultValue: '官方文档' })}
-                </Link>
-                <Link
-                  type="secondary"
-                  className={styles.headerLink}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setPreviewModalOpen(true);
-                  }}
-                >
-                  <EyeOutlined /> {t('common.previewConfig')}
-                </Link>
-              </div>
-              <Space className={styles.pathToolbar} wrap>
-                <Text type="secondary" className={styles.pathLabel}>
-                  {t('dsh.configPath', { defaultValue: '配置文件路径' })}:
-                </Text>
-                <Text code className={styles.pathText}>
-                  {runtimeConfig?.rootPathInfo.path}
-                </Text>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<EditOutlined />}
-                  onClick={() => setRootDirectoryModalOpen(true)}
-                  className={styles.textAction}
-                >
-                  {t('dsh.rootPathSource.customize', { defaultValue: '自定义配置目录' })}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<FolderOpenOutlined />}
-                  onClick={handleOpenRootFolder}
-                  className={styles.textAction}
-                >
-                  {t('dsh.openFolder', { defaultValue: '打开文件夹' })}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<ReloadOutlined />}
-                  onClick={handleRefreshConfig}
-                  className={styles.textAction}
-                >
-                  {t('dsh.refreshConfig', { defaultValue: '刷新' })}
-                </Button>
+          <CodingPageHeader
+            title={t('dsh.title', { defaultValue: 'DeepSeek Harness' })}
+            docsUrl="https://deepseek-harness.github.io/deepseek-harness/guide/quickstart"
+            onPreviewConfig={() => setPreviewModalOpen(true)}
+            configPath={runtimeConfig?.rootPathInfo.path ?? ''}
+            // The root is the config directory; the active file inside it is
+            // `profiles/<profile>/cordis.patch.yml` or legacy `settings.yaml`.
+            configPathKind="directory"
+            onCustomizeConfig={() => setRootDirectoryModalOpen(true)}
+            onOpenFolder={handleOpenRootFolder}
+            onRefresh={handleRefreshConfig}
+            onMoreOptions={() => setSettingsModalOpen(true)}
+            extraActions={(
+              <Space size={4} wrap>
                 <Button
                   type="text"
                   size="small"
                   icon={<CloudSyncOutlined />}
                   onClick={handleRefreshModelsCache}
                   loading={refreshingModels}
-                  className={styles.textAction}
+                  style={{ padding: 0, fontSize: 12 }}
                 >
                   {t('dsh.syncModels', { defaultValue: '同步模型' })}
                 </Button>
@@ -2053,13 +1877,19 @@ const DshPage: React.FC = () => {
                   size="small"
                   icon={<GlobalOutlined />}
                   onClick={handleOpenWebUi}
-                  className={styles.textAction}
+                  style={{ padding: 0, fontSize: 12 }}
                 >
                   {t('dsh.openWebUi', { defaultValue: '打开 Web UI' })}
                 </Button>
-                {runtimeConfig?.profiles.length ? (
+                {/* Only while a profile layer is actually in use. A profile
+                    directory can exist without dsh having migrated (0.1.5
+                    provisions `profiles/web` but still reads `settings.yaml`),
+                    and pinning one there changes nothing — the backend keeps
+                    reading the legacy file. Showing the picker anyway would
+                    promise a switch that does not happen. */}
+                {runtimeConfig?.profiles.length && runtimeConfig?.profile ? (
                   <>
-                    <Text type="secondary" className={styles.pathLabel}>
+                    <Text type="secondary" style={{ fontSize: 12, marginLeft: 4 }}>
                       {t('dsh.profile.label', { defaultValue: '配置 Profile' })}:
                     </Text>
                     <Select
@@ -2074,29 +1904,17 @@ const DshPage: React.FC = () => {
                   </>
                 ) : null}
               </Space>
-            </div>
-            <Button type="text" icon={<EllipsisOutlined />} onClick={() => setSettingsModalOpen(true)}>
-              {t('common.moreOptions')}
-            </Button>
-          </div>
-          <div className={styles.pageHint}>
-            {t('dsh.pageHint', { defaultValue: '管理 dsh（DeepSeek Harness）的模型供应商、默认模型与全局提示词。' })}
-          </div>
+            )}
+          />
 
+          {/* The notice owns its own dismissal state, so the page cannot show
+              it for a path the user already closed. It is a one-time event:
+              a banner that stays forever stops being information and becomes
+              furniture. */}
           {runtimeConfig?.migratedFromSettings ? (
-            <Alert
-              type="info"
-              showIcon
-              style={{ marginBottom: 12 }}
-              message={t('dsh.profile.migrationTitle', {
-                defaultValue: '配置已迁移到 profile 层',
-              })}
-              description={t('dsh.profile.migrationWithFile', {
-                defaultValue:
-                  'dsh 0.1.7 起不再读取 settings.yaml：它已被导入到 {{patchPath}} 并重命名为 {{importedPath}}。本页的供应商与默认模型现在直接写入 profile 补丁文件，旧文件仅作历史记录。',
-                patchPath: runtimeConfig.configPath,
-                importedPath: `${runtimeConfig.settingsYamlPath}.imported`,
-              })}
+            <DshMigrationNotice
+              patchPath={runtimeConfig.configPath}
+              importedPath={`${runtimeConfig.settingsYamlPath}.imported`}
             />
           ) : null}
 
@@ -2147,131 +1965,96 @@ const DshPage: React.FC = () => {
             </div>
           </div>
 
-          <div
-            id="dsh-providers"
-            className={styles.dshSection}
-            data-dsh-sidebar-section="true"
-            data-sidebar-title={t('dsh.provider.title', { defaultValue: '供应商列表' })}
+          <ProviderListSection
+            sectionId="dsh-providers"
+            collapsed={providerListCollapsed}
+            onCollapsedChange={setProviderListCollapsed}
+            loading={loading}
+            providerCount={dshProviders.length}
+            visibleCount={visibleProviders.length}
+            batch={providerBatch}
+            batchSelectableIds={batchSelectableIds}
+            keyword={providerKeyword}
+            onKeywordChange={setProviderKeyword}
+            sortMode={sortMode}
+            sortModes={PROVIDER_SORT_MODES_BASIC}
+            onSortModeChange={setSortMode}
+            dragDisabledBySort={providerDragDisabled}
+            locateProviderId={defaultProviderId}
+            viewMode={viewMode}
+            onViewModeChange={setViewMode}
+            onBatchTest={handleBatchTestProviders}
+            batchTesting={batchTestingProviders}
+            onAddProvider={() => openProviderModal()}
+            hint={(
+              <div>
+                {t('dsh.pageHint', {
+                  defaultValue: '管理 dsh（DeepSeek Harness）的模型供应商、默认模型与全局提示词。',
+                })}
+              </div>
+            )}
+            footer={(
+              <Space wrap>
+                <Button
+                  type="dashed"
+                  icon={<ImportOutlined />}
+                  onClick={() => setImportModalOpen(true)}
+                >
+                  {t('opencode.provider.importFavorite')}
+                </Button>
+                {allApiHubAvailable && (
+                  <Button
+                    type="dashed"
+                    icon={<AllApiHubIcon />}
+                    onClick={() => setAllApiHubImportModalOpen(true)}
+                  >
+                    {t('common.allApiHub.importFromAllApiHub')}
+                  </Button>
+                )}
+                {ccSwitchAvailable && (
+                  <Button
+                    type="dashed"
+                    icon={<ImportOutlined />}
+                    onClick={() => setCcSwitchImportModalOpen(true)}
+                  >
+                    {t('common.ccSwitch.importFromCcSwitch')}
+                  </Button>
+                )}
+              </Space>
+            )}
           >
-            <Collapse
-              className={styles.collapseCard}
-              items={[
-                {
-                  key: 'providers',
-                  label: (
-                    <Space>
-                      <ApiOutlined />
-                      <Text strong>{t('dsh.provider.title', { defaultValue: '供应商列表' })}</Text>
-                    </Space>
-                  ),
-                  extra: (
-                    <Space onClick={(event) => event.stopPropagation()}>
-                      <Button
-                        type="link"
-                        size="small"
-                        style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (providerBatch.selectionMode) {
-                            providerBatch.exitSelection();
-                          } else {
-                            providerBatch.enterSelection();
-                          }
-                        }}
-                      >
-                        <CheckSquareOutlined style={{ fontSize: 13, lineHeight: 1 }} />
-                        <span>
-                          {providerBatch.selectionMode
-                            ? t('common.batch.exit')
-                            : t('common.batch.manage')}
-                        </span>
-                      </Button>
-                      {providerBatch.selectionMode && (
-                        <ProviderBatchToolbar
-                          hasSelection={providerBatch.hasSelection}
-                          visibleCount={batchSelectableIds.length}
-                          isAllSelected={providerBatch.isAllSelected}
-                          indeterminate={providerBatch.indeterminate}
-                          onSelectAll={providerBatch.selectAllFiltered}
-                          onBatchDelete={providerBatch.batchDelete}
-                          disabled={loading}
-                        />
-                      )}
-                      <ProviderSearchInput value={providerKeyword} onChange={setProviderKeyword} />
-                      <ProviderSortDropdown
-                        mode={sortMode}
-                        modes={PROVIDER_SORT_MODES_BASIC}
-                        onChange={setSortMode}
-                      />
-                      <Button
-                        type="link"
-                        size="small"
-                        style={{ fontSize: 12 }}
-                        icon={<ThunderboltOutlined />}
-                        loading={batchTestingProviders}
-                        onClick={handleBatchTestProviders}
-                      >
-                        {t('common.batchTest')}
-                      </Button>
-                      <Button
-                        type="link"
-                        size="small"
-                        style={{ fontSize: 12 }}
-                        icon={<PlusOutlined />}
-                        onClick={() => openProviderModal()}
-                      >
-                        {t('dsh.provider.addSupplier', { defaultValue: '新增供应商' })}
-                      </Button>
-                    </Space>
-                  ),
-                  children: (
-                    <div>
-                      {runtimeConfig?.providers.length ? (
-                        <div className={styles.providerList}>
-                          {visibleProviders.length ? (
-                            visibleProviders.map(renderProvider)
-                          ) : (
-                            <ProviderSearchEmpty />
-                          )}
-                        </div>
-                      ) : (
-                        <Empty description={t('dsh.provider.emptyText', { defaultValue: '暂无供应商' })} />
-                      )}
-                      <div style={{ marginTop: 12 }}>
-                        <Space wrap>
-                          <Button
-                            type="dashed"
-                            icon={<ImportOutlined />}
-                            onClick={() => setImportModalOpen(true)}
-                          >
-                            {t('opencode.provider.importFavorite')}
-                          </Button>
-                          {allApiHubAvailable && (
-                            <Button
-                              type="dashed"
-                              icon={<AllApiHubIcon />}
-                              onClick={() => setAllApiHubImportModalOpen(true)}
-                            >
-                              {t('common.allApiHub.importFromAllApiHub')}
-                            </Button>
-                          )}
-                          {ccSwitchAvailable && (
-                            <Button
-                              type="dashed"
-                              icon={<ImportOutlined />}
-                              onClick={() => setCcSwitchImportModalOpen(true)}
-                            >
-                              {t('common.ccSwitch.importFromCcSwitch')}
-                            </Button>
-                          )}
-                        </Space>
-                      </div>
-                    </div>
-                  ),
-                },
-              ]}
-            />
-          </div>
+            {/* One `DndContext` serves both layouts; only the sorting strategy
+                and the drag modifier change with the view. The order it writes
+                is `llm-pi-ai.providers`' key order, which is also what
+                `build_provider_views` reads back. */}
+            <DndContext
+              sensors={providerBatchDragDisabled ? [] : sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleProviderDragEnd}
+              modifiers={[viewMode === 'card' ? restrictToWindowEdges : restrictToVerticalAxis]}
+            >
+              <SortableContext
+                items={visibleProviders.map((provider) => provider.providerKey)}
+                strategy={viewMode === 'card' ? rectSortingStrategy : verticalListSortingStrategy}
+              >
+                {viewMode === 'card' ? (
+                  <ProviderCardGrid
+                    items={visibleProviders}
+                    getKey={(provider) => provider.providerKey}
+                    renderItem={(provider) => renderProviderCard(provider)}
+                  />
+                ) : (
+                  <div>
+                    {visibleProviders.map((provider) => (
+                      <React.Fragment key={provider.providerKey}>
+                        {renderProviderCard(provider)}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                )}
+              </SortableContext>
+            </DndContext>
+          </ProviderListSection>
 
           <div
             id="dsh-global-prompt"
@@ -2284,7 +2067,7 @@ const DshPage: React.FC = () => {
                 type="warning"
                 showIcon
                 style={{ marginBottom: 12 }}
-                message={t('dsh.agentInstructions.disabledWarning')}
+                title={t('dsh.agentInstructions.disabledWarning')}
                 // One fact, one key, two render positions: the scope note also
                 // shows below when the toggle is already on, because a user who
                 // enabled it still needs to know the Web surface is not covered.
@@ -2340,7 +2123,7 @@ const DshPage: React.FC = () => {
                     <Alert
                       type="info"
                       showIcon
-                      message={t('dsh.profile.otherSettingsFrozenTitle', {
+                      title={t('dsh.profile.otherSettingsFrozenTitle', {
                         defaultValue: '其他配置已由 dsh 自身管理',
                       })}
                       description={t('dsh.profile.otherSettingsFrozenDesc', {
@@ -2396,89 +2179,14 @@ const DshPage: React.FC = () => {
           onReset={handleResetRootDirectory}
         />
 
-        <Modal
-          title={providerModal?.provider
-            ? t('dsh.provider.editSupplierTitle', { defaultValue: '编辑供应商', name: providerModal.provider.displayName })
-            : t('dsh.provider.addSupplierTitle', { defaultValue: '新增供应商' })}
+        <DshProviderFormModal
           open={!!providerModal}
-          width={860}
-          confirmLoading={saving}
+          provider={providerModal?.provider}
+          copy={providerModal?.copy}
+          saving={saving}
           onCancel={() => setProviderModal(null)}
-          onOk={handleSaveProviderModal}
-          destroyOnHidden
-        >
-          <Form form={providerModalForm} layout="vertical" className={styles.providerForm}>
-            <div className={styles.modalSection}>
-              <div className={styles.modalGrid}>
-                <Form.Item
-                  label={t('dsh.provider.providerKey', { defaultValue: '供应商 Key' })}
-                  name="providerKey"
-                  rules={[{ required: true, message: t('dsh.provider.providerKeyRequired', { defaultValue: '请输入供应商 Key' }) }]}
-                >
-                  <Input
-                    disabled={!!providerModal?.provider}
-                    placeholder={t('dsh.provider.providerKeyPlaceholder', { defaultValue: '如 deepseek' })}
-                  />
-                </Form.Item>
-                {!isBuiltInModalChannel && (
-                  <Form.Item label={t('dsh.provider.displayName', { defaultValue: '显示名称' })} name="displayName">
-                    <Input placeholder={t('dsh.provider.displayNamePlaceholder', { defaultValue: '供应商显示名称' })} />
-                  </Form.Item>
-                )}
-              </div>
-            </div>
-
-            <div className={styles.modalSection}>
-              <Text strong>{t('dsh.provider.configSection', { defaultValue: '连接配置' })}</Text>
-              <div className={styles.modalGrid}>
-                {!isBuiltInModalChannel && (
-                  <Form.Item label={t('dsh.provider.apiType', { defaultValue: 'API 类型' })} name="api">
-                    <Select
-                      allowClear
-                      showSearch
-                      options={DSH_API_OPTIONS}
-                      placeholder={t('dsh.provider.apiTypePlaceholder', { defaultValue: '选择 API 类型' })}
-                    />
-                  </Form.Item>
-                )}
-                <Form.Item label={t('dsh.provider.baseUrl', { defaultValue: 'Base URL' })} name="baseUrl">
-                  <Input placeholder="https://api.deepseek.com/v1" />
-                </Form.Item>
-                <Form.Item label={t('dsh.provider.providerApiKey', { defaultValue: 'API Key' })} name="providerApiKey">
-                  <Input.Password autoComplete="off" placeholder={t('dsh.provider.providerApiKeyPlaceholder', { defaultValue: '输入 API Key 保存到凭证文件' })} />
-                </Form.Item>
-                </div>
-            </div>
-
-            <div className={styles.advancedToggle}>
-              <Button
-                type="link"
-                onClick={() => setProviderAdvancedExpanded(!providerAdvancedExpanded)}
-                className={styles.advancedToggleButton}
-              >
-                {providerAdvancedExpanded ? <DownOutlined /> : <RightOutlined />}
-                <span>{t('common.advancedSettings')}</span>
-              </Button>
-            </div>
-            {providerAdvancedExpanded && (
-              <div className={styles.modalSection}>
-                <div className={styles.advancedEditor}>
-                  <Text type="secondary">{t('dsh.provider.modelOverridesJson', { defaultValue: '模型覆盖（modelOverrides）' })}</Text>
-                  <JsonEditor
-                    value={isRecordEmpty(providerModelOverridesJson) ? undefined : providerModelOverridesJson}
-                    height={200}
-                    onChange={(value, isValid) => {
-                      if (isValid) {
-                        setProviderModelOverridesJson(asRecord(value));
-                      }
-                      setProviderModelOverridesJsonValid(isValid);
-                    }}
-                  />
-                </div>
-              </div>
-            )}
-          </Form>
-        </Modal>
+          onSubmit={(draft) => void handleSaveProviderModal(draft)}
+        />
 
         <Modal
           title={t('dsh.provider.deleteScopeModalTitle', { defaultValue: '删除供应商' })}

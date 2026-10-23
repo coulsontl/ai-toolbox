@@ -20,28 +20,74 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 // What this cannot cover: a script killed from outside (command timeout, Ctrl+C,
 // a truncated pipe) never reaches teardown at all, and the whole browser survives.
 // The recognition and cleanup recipe for those orphans is in the root AGENTS.md.
-async function killBrowserTree(browser) {
-  if (!browser || browser.exitCode !== null || browser.signalCode !== null) return;
-  const exited = new Promise(resolve => browser.once('exit', () => resolve(true)));
-  let graceTimer;
-  const gracePeriod = new Promise(resolve => { graceTimer = setTimeout(() => resolve(false), 2000); });
-  browser.kill();
-  const didExit = await Promise.race([exited, gracePeriod]);
-  // A pending timer holds the event loop open, so a healthy exit must not leave
-  // the fixture script sitting here for the rest of the grace period.
-  clearTimeout(graceTimer);
-  if (didExit) return;
-  if (process.platform === 'win32') {
-    // Windows does not cascade a terminated parent onto its children, so ask for
-    // the tree explicitly; `/T` is what reaches the stuck renderer/GPU pair.
-    await new Promise(resolve => {
-      const killer = spawn('taskkill', ['/PID', String(browser.pid), '/T', '/F'], { stdio: 'ignore' });
-      killer.once('exit', resolve);
-      killer.once('error', resolve);
-    });
+async function killBrowserTree(browser, profilePath) {
+  if (!browser) return;
+
+  // `Browser.close` has usually already ended the *parent* by the time this
+  // runs. Bailing out there — which the original version did — leaves the
+  // renderer, GPU and utility processes it forked alive forever: they are
+  // reparented, so nothing tracks them, and every fixture run leaked a few.
+  // Thirty had accumulated by 2026-10-23 and made `Runtime.evaluate` time out
+  // in whichever suite ran when the machine finally choked.
+  const alreadyExited = browser.exitCode !== null || browser.signalCode !== null;
+  if (!alreadyExited) {
+    const exited = new Promise(resolve => browser.once('exit', () => resolve(true)));
+    let graceTimer;
+    const gracePeriod = new Promise(resolve => { graceTimer = setTimeout(() => resolve(false), 2000); });
+    browser.kill();
+    const didExit = await Promise.race([exited, gracePeriod]);
+    clearTimeout(graceTimer);
+    if (didExit) {
+      // The parent is gone, but on Windows its children are not.
+    }
+  }
+
+  if (process.platform !== 'win32') {
+    try { browser.kill('SIGKILL'); } catch { /* Already gone. */ }
     return;
   }
-  try { browser.kill('SIGKILL'); } catch { /* Already gone. */ }
+
+  // `taskkill /T` only walks *live* descendants. Once the launcher has exited
+  // its children are re-parented and the tree is gone, so `/T` finds nothing —
+  // that leak survived the first fix. The one thing every process of this
+  // browser still carries is its own `--user-data-dir`, so sweep by that
+  // instead: it is unique per run (a fresh temp dir) and cannot match the
+  // user's daily browser.
+  if (profilePath) {
+    const swept = await sweepByProfile(profilePath);
+    if (swept > 0) console.error(`[fixture] swept ${swept} orphaned browser processes`);
+    return;
+  }
+  await new Promise(resolve => {
+    const killer = spawn('taskkill', ['/PID', String(browser.pid), '/T', '/F'], { stdio: 'ignore' });
+    killer.once('exit', resolve);
+    killer.once('error', resolve);
+  });
+}
+
+/**
+ * Kills every browser process whose command line carries `--user-data-dir=<profilePath>`.
+ *
+ * Matched on the exact profile directory rather than the executable name: that
+ * directory is a fresh temp dir created for this one run, so a match can only
+ * be a process this fixture started.
+ */
+async function sweepByProfile(profilePath) {
+  const script = [
+    `$needle = ${JSON.stringify(profilePath)}`,
+    'Get-CimInstance Win32_Process',
+    "| Where-Object { $_.Name -in @('chrome.exe','msedge.exe') -and $_.CommandLine -and $_.CommandLine.Contains($needle) }",
+    '| ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $_.ProcessId }',
+  ].join(' ');
+  return new Promise(resolve => {
+    const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let out = '';
+    child.stdout.on('data', data => { out += data; });
+    child.once('exit', () => resolve(out.trim().split(/\s+/).filter(Boolean).length));
+    child.once('error', () => resolve(0));
+  });
 }
 
 // Shared Chromium/Vite fixture runner. All HTTP, profiles and artifacts are local.
@@ -136,33 +182,50 @@ export async function runBrowserFixture({ fixtureDirectory, fixtureFilename, art
         pendingRequests.delete(payload.id); clearTimeout(request.timeout);
         payload.error ? request.reject(new Error(JSON.stringify(payload.error))) : request.resolve(payload.result);
       });
-      const send = (method, params = {}) => new Promise((resolve, reject) => {
+      // 60s, not 30s: on a busy dev machine (the app itself, other browser
+      // fixtures in the same `pnpm test` run) a page boot can hold the
+      // renderer long enough to exceed a 30s budget, and a command timeout
+      // reads as a product failure. Nothing legitimate takes 60s; a real hang
+      // still fails, just later. Teardown calls `sendWithTimeout` directly with
+      // a short budget — see `close()`.
+      const CAPTURE_TIMEOUT = 60000;
+      const sendWithTimeout = (method, params, timeoutMs) => new Promise((resolve, reject) => {
         const id = ++nextRequestId;
-        // 60s, not 30s: on a busy dev machine (the app itself, other browser
-        // fixtures in the same `pnpm test` run) a page boot can hold the
-        // renderer long enough to exceed a 30s budget, and a command timeout
-        // reads as a product failure. Nothing legitimate takes 60s; a real hang
-        // still fails, just later.
-        const timeout = setTimeout(() => { pendingRequests.delete(id); reject(new Error('Browser command timed out: ' + method)); }, 60000);
+        const timeout = setTimeout(() => {
+          pendingRequests.delete(id);
+          reject(new Error('Browser command timed out: ' + method));
+        }, timeoutMs);
         pendingRequests.set(id, { resolve, reject, timeout });
         socket.send(JSON.stringify({ id, method, params }));
       });
+      const send = (method, params = {}) => sendWithTimeout(method, params, CAPTURE_TIMEOUT);
+      let evaluateCount = 0;
+      let lastEvaluateExpression = '';
       const evaluate = async expression => {
+        evaluateCount += 1;
+        lastEvaluateExpression = expression;
         const result = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
         if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
         return result.result.value;
       };
       await send('Page.enable'); await send('Runtime.enable');
       await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
-      return { send, evaluate, exceptions,
+      return {
+        send, evaluate, exceptions,
+        /** What the browser was doing when a command last timed out. */
+        progress: () => ({ evaluateCount, lastEvaluateExpression }),
         async close() {
-          try { await send('Browser.close'); }
-          // The handshake is best effort: a browser that ignores it still has to
-          // go, children included, or the next fixture inherits its memory.
-          finally { socket.close(); await killBrowserTree(browser); }
+          // `Browser.close` is a courtesy, not the teardown. Give it a short
+          // window — the CAPTURE_TIMEOUT (60s) it would otherwise inherit is
+          // long enough that a hung browser holds the whole run, and if the
+          // caller itself gets killed mid-wait this `finally` never runs at all
+          // and the renderer survives. Three seconds is plenty for a browser
+          // that intends to exit; anything slower is swept by the tree kill.
+          try { await sendWithTimeout('Browser.close', {}, 3000); }
+          finally { socket.close(); await killBrowserTree(browser, profilePath); }
         },
       };
-    } catch (error) { socket?.close(); await killBrowserTree(browser); throw error; }
+    } catch (error) { socket?.close(); await killBrowserTree(browser, profilePath); throw error; }
   }
 
   const fixtureRoot = path.join(artifactRoot, 'dist');
@@ -184,8 +247,17 @@ export async function runBrowserFixture({ fixtureDirectory, fixtureFilename, art
     if (browser.exceptions.length) throw new Error('Unhandled browser exceptions: ' + JSON.stringify(browser.exceptions));
     await writeFile(path.join(artifactRoot, 'results.json'), JSON.stringify({ checks, browserExceptions: browser.exceptions }, null, 2));
     console.log(`Passed ${checks.length} browser checks.`);
+    console.log(`[fixture] ${fixtureFilename}: ${checks.length} checks, ${browser.progress().evaluateCount} evaluations`);
   } catch (error) {
     if (browser) {
+      // Say what the browser was doing when it stopped answering. Without this
+      // a timeout reads "Browser command timed out: Runtime.evaluate" and names
+      // neither the check nor the expression.
+      const { evaluateCount, lastEvaluateExpression } = browser.progress();
+      console.error(
+        `[fixture] ${fixtureFilename} failed after ${evaluateCount} evaluations; last expression: `
+        + lastEvaluateExpression.replace(/\s+/g, ' ').slice(0, 240),
+      );
       try {
         console.error('Browser exceptions:', JSON.stringify(browser.exceptions));
         await writeFile(path.join(artifactRoot, 'failure.html'), await browser.evaluate('document.documentElement.outerHTML'));

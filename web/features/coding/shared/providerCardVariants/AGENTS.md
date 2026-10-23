@@ -60,7 +60,7 @@
 - `features/coding/shared/providerConnectivity/ProviderConnectivityStatus`：连通性状态点。
 - `components/common/ProviderNameLink`、`components/common/SdkTag`：名称链接与 SDK 标签。
 - `features/coding/shared/providerCardView/`：紧凑卡片网格视图（同一批数据的另一种呈现密度，不是第四种样式）。共用 `cardChrome.ts`、`providerCardMenu.tsx` 与 `providerCardActions.tsx`；`ProviderCompactCard` 是它自己的 chrome 宿主，与 `CardShell` 同级。
-- 使用方：`claudecode` + `geminicli` + `claudedesktop`（Claude 式）、`codex` + `kimi` + `grok`（Codex 式）、`zcode` + `omo_native` + `opencode` + `openclaw` + `hermes`（OpenCode 式）。三种样式**均已落地**，`scripts/verify-provider-card-layout.mjs` 的 `PENDING_MIGRATION` 已清空——全仓不再有 bespoke 供应商卡片，也不再有任何映射层 import `components/common/ProviderCard`（2026-10-21 起由守卫机械拦截）。
+- 使用方：`claudecode` + `geminicli` + `claudedesktop`（Claude 式）、`codex` + `kimi` + `grok`（Codex 式）、`zcode` + `omo_native` + `opencode` + `openclaw` + `hermes` + `pi` + `oh_my_pi` + `dsh`（OpenCode 式）。三种样式**均已落地**，`scripts/verify-provider-card-layout.mjs` 的 `PENDING_MIGRATION` 已清空——全仓不再有 bespoke 供应商卡片，旧卡 `components/common/ProviderCard/index.tsx` **已于 2026-10-22 删除**（目录里只剩 `types.ts`，`ModelDisplayData` 等共享类型仍在用），映射层 import 旧卡由守卫第四条规则机械拦截。
 - 2026-10-20 迁完最后三家时给 Claude 式补了三个能力（都是 Codex 式已有的既定插槽，不是新机制）：
   - **`namePrefix`**：Gemini 的官方卡片要 `🔗 官方账号 (n)`，🔗 走这个名字前缀槽。
   - **`kind: 'tag'`**：Claude 式此前把 tag 降级成次要色文本；Gemini 的模型标签与 Claude Desktop 的 `tierAlias` 需要真 `Tag`。
@@ -69,6 +69,10 @@
 - **2026-10-21：`openclaw` 与 `hermes` 迁到 OpenCode 式。** 两家都是「per-provider 模型目录 + 没有 provider 级 应用」的形状（OpenClaw 的 `agents.defaults.model.primary`、Hermes 的 `model.defaultProvider` 都在别处编辑），所以头部没有主操作。两家的模型目录探针（模型测试 / 获取模型）都从旧卡的头部 `extraActions` 移进了 `modelSection`（工具栏），与 ZCode / Codex 一致——位置变了，写进提交说明。
   - **OpenClaw**：`apiToNpm` 从页面抽到 `utils/apiToNpm.ts`（页面、映射层、连通性/获取模型弹窗共用）。删除确认下沉到页面 handler（`Modal.confirm`）并令 `deleteConfirm: false`：旧卡只在列表上包了 `Popconfirm`，格子菜单与详情侧栏是绕过它的两个入口。
   - **Hermes**：新增 `components/HermesProviderCard.tsx`。只读渠道（`providers:` 字典）不传编辑/复制/删除与模型增改，并用 `nameTags` 画「只读」标签——此前这条事实被拼进了 Base URL 的兜底文本（`<key> (只读)`），既伪造了 URL 又不可靠。**模型行不画把手**：Hermes 没有模型重排命令，旧卡把模型把手画成可拖但 `onReorderModels` 从未传过。**「复制」顺手修好**：此前打开的是空白新增弹窗，现在预填源渠道、Key 加 `_copy`、弹窗标题走「添加」分支（与 OpenClaw 的 `isCopy` 同型）。**供应商卡片可以拖**（2026-10-22 补）：Hermes 把可写渠道存成 `custom_providers` YAML **序列**，序列顺序就是显示顺序，拖动调 `reorder_hermes_providers` 重写它；只读 `providers:` 字典行没有可拖的位子（`draggable: !isReadOnly && !selectable && !dragDisabled`）。在此之前的读取端用 `BTreeSet` 重建列表，任何顺序都会被读回成字母序。
+- **2026-10-22：`pi` / `oh_my_pi` / `dsh` 迁到 OpenCode 式（最后三家，旧卡随之删除）。** 三家都是「per-provider 模型目录 + 没有 provider 级 应用」：默认指针分别在 `settings.json` 的 `modelSettings`、`config.yml` 的 `modelRoles.default`、`agent-default-model`。模型目录走 `modelSection`，`ProviderModelSection` 同时喂列表卡与侧栏。**三家都补齐了后端 reorder 命令**（`reorder_pi_providers` / `reorder_omp_providers` / `reorder_dsh_providers`），因为迁移前读取端都按字母序重建列表、也没有写回顺序的入口——「把手 + 行为 + 存取」缺了两件。可拖的判据各按自家存储：pi 只有 `models_json` 来源的行有位子（auth-only 由后端追加），omp 的 Codex 订阅卡片是固定成员、无把手，dsh 的内置目录渠道没有配置行。
+  - **来源标签（`sources`）走 `nameTags`，不要拼进 Base URL 兜底**：旧卡的 `baseUrl` 在没有渠道配置时会退化成凭据掩码或来源名，读起来像一个叫 `auth.json` 的端点。dsh 也一样：`内置 · 适配器默认模型` 与 `apiKeyEnv` 是标签，不是 URL。
+  - **只读渠道的模型区要整组关掉**：dsh 的内置目录既有 `modelsDraggable: false`，也没有添加/编辑/复制/删除（否则拖出来的行会被写进一个从没存过模型的文件）。
+
 - **第二行只承载「这张卡片要陈述的事实」，用户的备注不要被官方分支吞掉。** Gemini / Grok 的官方卡片把连接事实换成了切换说明（`OfficialAccountHint`），但备注在两种模式下都可编辑、迁移前的卡片也照画——所以官方分支在说明之后仍追加 `provider.notes`；Claude Desktop 则在**没有角色绑定**时把备注放进第二行（有绑定时进 footer，与 Claude Code 同规则）。2026-10-20 的首次迁移漏了这三处，审阅时由「官方渠道的备注会消失」发现。
 - **固定成员不要再用类别标签重复标题。** 一个由应用命名、位置固定的成员（Claude Desktop 的官方渠道）标题已经写成 `🔗 官方账号`，再挂一枚「官方订阅」标签就是把同一句话说两遍（SOP §4.2.9）。这类成员也不该出现删除入口：`actions.onDelete` 直接不传，列表菜单、格子菜单与详情侧栏三处会一起消失——比"渲染一个 disabled 的删除"更准确，因为那张行删了也会被下次列表 seed 回来。**只保护"固定成员"本身**：同类别但非固定的行（历史重复、用户复制出来的）仍是普通行，照常有删除。
 
@@ -87,9 +91,9 @@
 | 插槽 | 位置 | 用途 | 现有消费方 |
 |---|---|---|---|
 | `providerState.accent` | 卡片外框（`CardShell`） | `applied`（主色边框 + 选中底色）/ `gatewayPrimary`（成功色 + 渐变）；批量选中优先于两者 | claudecode、codex、kimi、geminicli、grok、claudedesktop |
-| `providerState.draggable` / `sortableId` | 卡片级拖拽把手（`CardShell`） | **卡片级**顺序；不带模型区的样式也要能拖，所以不放 `modelSection` | 九个 coding 页全部（claudecode、claudedesktop、codex、geminicli、grok、kimi、omo_native、opencode、zcode） |
+| `providerState.draggable` / `sortableId` | 卡片级拖拽把手（`CardShell`） | **卡片级**顺序；不带模型区的样式也要能拖，所以不放 `modelSection` | 全部 14 个有供应商列表的 CLI（claudecode、claudedesktop、codex、dsh、geminicli、grok、hermes、kimi、oh_my_pi、omo_native、openclaw、opencode、pi、zcode）。**只有真的能写回顺序的才传 `true`**：Hermes 的只读 `providers:` 字典行、OMP 的 Codex 订阅卡片、dsh 的内置目录渠道都没有把手 |
 | `namePrefix` | 名称**之前** | 被改名的卡片补前缀图标（官方卡片的 🔗） | codex、kimi、geminicli、grok、zcode（官方账号卡片） |
-| `nameTags` | 名称右侧 | 已应用 / 官方 / 代理 / 网关优先级徽章、官方账号计数 | claudecode、claudedesktop、codex、geminicli、grok、kimi、zcode |
+| `nameTags` | 名称右侧 | 已应用 / 官方 / 代理 / 网关优先级徽章、官方账号计数、来源标签 | claudecode、claudedesktop、codex、dsh（内置目录 + `apiKeyEnv`）、geminicli、grok、kimi、oh_my_pi、pi、zcode |
 | `metaEntries` | 第二行 | 有序的 `text` / `code` / `tag` 项；**标签用 `entry.label`，不要拆成前一个 `text` 项** | claudecode（角色绑定）、claudedesktop（角色路由 + tierAlias tag）、codex、geminicli、grok、kimi |
 | `inlineActions` | 第二行末尾 | 行内动作（连通性测试、CLI 启动） | claudecode、codex、kimi、claudedesktop（`InlineConnectivityButton`）。**Grok 刻意不传**：它的模型工具栏已经是唯一入口，再放一个就是同一张卡片说两遍 |
 | `footer` | **头部两栏之下、模型区之上**（与模型区一样**跨满卡片整宽**） | 自由区块（官方账号折叠区、备注、只读模型目录） | codex、geminicli、grok、kimi、claudecode（备注）、claudedesktop（备注）、opencode（只读目录） |

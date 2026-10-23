@@ -1,106 +1,134 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import vm from 'node:vm';
-import ts from 'typescript';
 
-import { getOmpApiBaseUrlUpdate } from '../../../../../features/coding/oh_my_pi/utils/ompApiOptions.ts';
+import {
+  buildOmpProviderConfigFromForm,
+  ompProviderKeySaveError,
+  resolveOmpAutomaticBaseUrlChange,
+  resolveOmpProviderFormInitialState,
+} from '../../../../../features/coding/oh_my_pi/utils/ompProviderForm.ts';
+import type { OmpRuntimeProviderView } from '../../../../../types/ohMyPi.ts';
 
-// Execute the actual page handlers, replacing only React state and the IO boundary.
-function createFormHarness() {
-  const file = new URL('../../../../../features/coding/oh_my_pi/pages/OhMyPiPage.tsx', import.meta.url);
-  const source = ts.createSourceFile(file.pathname, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const names = new Set(['asRecord', 'getStringField', 'createDefaultProviderConfig', 'setOptionalStringField', 'isRecordEmpty', 'hasProviderConfigContent', 'openProviderModal', 'handleProviderApiChange', 'handleProviderBaseUrlChange', 'handleSaveProviderModal']);
-  const declarations: string[] = [];
-  function visit(node: ts.Node) {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && names.has(node.name.text)) {
-      declarations.push(`const ${node.name.text} = ${node.initializer!.getText(source)};`);
-    }
-    ts.forEachChild(node, visit);
-  }
-  visit(source);
-  assert.equal(declarations.length, names.size);
-  const fields: Record<string, unknown> = {};
-  let saved: { providerKey: string; provider: Record<string, unknown> } | undefined;
-  const noop = () => {};
-  const context: Record<string, any> = {
-    getOmpApiBaseUrlUpdate, automaticProviderBaseUrlRef: { current: undefined },
-    providerModalForm: {
-      setFieldsValue: (values: Record<string, unknown>) => Object.assign(fields, values),
-      getFieldValue: (key: string) => fields[key],
-      setFieldValue: (key: string, value: unknown) => { fields[key] = value; },
-      validateFields: async () => ({ ...fields }),
-    },
-    setProviderAdvancedExpanded: noop, setSaving: noop, setRuntimeConfig: noop, setOtherSettings: noop,
-    saveOmpModelsProvider: async (value: typeof saved) => { saved = JSON.parse(JSON.stringify(value)); return { otherSettings: {} }; },
-    upsertOmpFavoriteProvider: async () => {}, refreshTrayMenu: async () => {},
-    message: { success: noop, error: (error: unknown) => { throw new Error(String(error)); } }, t: (key: string) => key, console,
-  };
-  for (const state of ['providerModal', 'providerConfigJson', 'providerHeadersJson', 'providerCompatJson', 'providerModelOverridesJson', 'providerConfigJsonValid', 'providerHeadersJsonValid', 'providerCompatJsonValid', 'providerModelOverridesJsonValid']) {
-    context[`set${state[0].toUpperCase()}${state.slice(1)}`] = (value: unknown) => { context[state] = value; };
-  }
-  const compiled = ts.transpileModule(`${declarations.join('\n')}\n({ openProviderModal, handleProviderApiChange, handleProviderBaseUrlChange, handleSaveProviderModal });`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const handlers = vm.runInNewContext(compiled, context);
-  return { fields, handlers, saved: () => saved! };
-}
+/**
+ * These used to scrape `OhMyPiPage.tsx` for the inline handlers. The provider
+ * editor now lives in `OmpProviderFormModal` and the decisions behind it in
+ * `utils/ompProviderForm.ts`, so the same behaviour is asserted directly on the
+ * pure functions — a source-scrape would have to be rewritten for every layout
+ * change and would still assert nothing about the values it never sets.
+ */
 
-test('switching API in a new provider saves the matching automatic endpoint and edit preserves it', async () => {
-  const form = createFormHarness();
-  form.handlers.openProviderModal();
-  form.fields.providerKey = 'example';
-  for (const api of ['openai-responses', 'anthropic-messages']) {
-    form.fields.api = api;
-    form.handlers.handleProviderApiChange(api);
-  }
-  await form.handlers.handleSaveProviderModal();
-  assert.equal(form.saved().provider.api, 'anthropic-messages');
-  assert.equal(form.saved().provider.baseUrl, 'https://api.anthropic.com');
-  form.handlers.openProviderModal({ providerKey: 'example', modelsProvider: form.saved().provider, sources: ['models_yml'] });
-  form.fields.api = 'openai-responses';
-  form.handlers.handleProviderApiChange(form.fields.api);
-  assert.equal(form.fields.baseUrl, 'https://api.anthropic.com');
+const emptyJsonBlocks = { headers: {}, compat: {}, modelOverrides: {} };
+
+test('a new provider starts with the form owning the endpoint', () => {
+  const state = resolveOmpProviderFormInitialState();
+  assert.equal(state.automaticBaseUrl, '');
+  assert.equal(state.values.providerKey, '');
+  assert.equal(state.values.api, 'openai-completions');
 });
 
-test('manual endpoints and explicit clearing survive later API changes', async () => {
+test('switching API in a new provider saves the matching automatic endpoint', () => {
+  let automaticBaseUrl = resolveOmpProviderFormInitialState().automaticBaseUrl;
+  let baseUrl: string | undefined;
+
+  const change = resolveOmpAutomaticBaseUrlChange('anthropic-messages', baseUrl, automaticBaseUrl);
+  automaticBaseUrl = change.automaticBaseUrl;
+  baseUrl = change.baseUrl;
+
+  const provider = buildOmpProviderConfigFromForm(
+    { api: 'openai-completions', baseUrl: '', models: [] },
+    { providerKey: 'example', api: 'anthropic-messages', baseUrl },
+    emptyJsonBlocks,
+  );
+  assert.equal(provider.api, 'anthropic-messages');
+  assert.equal(provider.baseUrl, 'https://api.anthropic.com');
+});
+
+test('an edit keeps the stored endpoint when the protocol changes', () => {
+  const provider = {
+    providerKey: 'example',
+    displayName: 'Example',
+    sources: ['models_yml'],
+    categories: [],
+    credentialKind: 'api_key',
+    modelsProvider: { api: 'anthropic-messages', baseUrl: 'https://api.anthropic.com' },
+    runtimeFiles: [],
+    isBuiltin: false,
+    isOverride: false,
+    isDefault: false,
+  } as unknown as OmpRuntimeProviderView;
+
+  const state = resolveOmpProviderFormInitialState(provider);
+  assert.equal(state.automaticBaseUrl, undefined);
+  const change = resolveOmpAutomaticBaseUrlChange(
+    'openai-responses',
+    state.values.baseUrl,
+    state.automaticBaseUrl,
+  );
+  assert.equal(change.baseUrl, undefined);
+});
+
+test('manual endpoints and explicit clearing survive later API changes', () => {
   for (const baseUrl of ['https://custom.example/v1', '']) {
-    const form = createFormHarness();
-    form.handlers.openProviderModal();
-    form.fields.providerKey = 'example';
-    form.handlers.handleProviderApiChange('openai-responses');
-    form.fields.baseUrl = baseUrl;
-    form.handlers.handleProviderBaseUrlChange();
-    form.fields.api = 'anthropic-messages';
-    form.handlers.handleProviderApiChange(form.fields.api);
-    await form.handlers.handleSaveProviderModal();
-    assert.equal(form.saved().provider.baseUrl, baseUrl || undefined);
+    const change = resolveOmpAutomaticBaseUrlChange('anthropic-messages', baseUrl, undefined);
+    // `undefined` means "the user owns it": no replacement at all.
+    assert.equal(change.baseUrl, undefined);
+    assert.equal(change.automaticBaseUrl, undefined);
   }
 });
 
-test('copy does not autofill and a new dialog resets autofill ownership', () => {
-  const form = createFormHarness();
-  form.handlers.openProviderModal({ providerKey: 'existing', modelsProvider: { api: 'openai-responses' } }, { copy: true });
-  form.handlers.handleProviderApiChange('anthropic-messages');
-  assert.ok(!form.fields.baseUrl);
-  form.handlers.openProviderModal();
-  form.handlers.handleProviderApiChange('anthropic-messages');
-  assert.equal(form.fields.baseUrl, 'https://api.anthropic.com');
-  form.handlers.handleProviderApiChange('azure-openai-responses');
-  assert.equal(form.fields.baseUrl, '');
+test('copy does not inherit the source endpoint ownership', () => {
+  const provider = {
+    providerKey: 'existing',
+    displayName: 'Existing',
+    sources: ['models_yml'],
+    categories: [],
+    credentialKind: 'api_key',
+    modelsProvider: { api: 'openai-responses' },
+    runtimeFiles: [],
+    isBuiltin: false,
+    isOverride: false,
+    isDefault: false,
+  } as unknown as OmpRuntimeProviderView;
+
+  const state = resolveOmpProviderFormInitialState(provider, true);
+  assert.equal(state.values.providerKey, 'existing_copy');
+  // A copy keeps the source endpoint if it has one but must not rewrite it.
+  assert.equal(state.automaticBaseUrl, undefined);
 });
 
-test('subscription cannot be added through the API-key provider form', async () => {
-  const form = createFormHarness();
-  form.handlers.openProviderModal();
-  form.fields.providerKey = 'openai-codex';
-  await assert.rejects(form.handlers.handleSaveProviderModal(), /ohMyPi.subscription.useLoginGuidance/);
-  assert.equal(form.saved(), undefined);
+test('a fresh dialog resets autofill ownership', () => {
+  const state = resolveOmpProviderFormInitialState();
+  assert.equal(state.automaticBaseUrl, '');
+  const change = resolveOmpAutomaticBaseUrlChange('anthropic-messages', '', state.automaticBaseUrl);
+  assert.equal(change.baseUrl, 'https://api.anthropic.com');
 });
 
-test('existing Codex YAML override remains editable without converting OAuth to an API key', async () => {
-  const form = createFormHarness();
-  const provider = { api: 'openai-codex-responses', models: [{ id: 'gpt-5-codex' }] };
-  form.handlers.openProviderModal({ providerKey: 'openai-codex', modelsProvider: provider, sources: ['models_yml'] });
-  await form.handlers.handleSaveProviderModal();
-  assert.deepEqual(form.saved().provider.models, provider.models);
-  assert.equal(form.saved().provider.apiKey, undefined);
+test('subscription cannot be added through the API-key provider form', () => {
+  assert.equal(ompProviderKeySaveError('openai-codex'), 'subscriptionUseLoginGuidance');
+  assert.equal(ompProviderKeySaveError('example'), null);
+});
+
+test('existing Codex YAML override remains editable without converting OAuth to an API key', () => {
+  const provider = {
+    providerKey: 'openai-codex',
+    displayName: 'OpenAI Codex',
+    sources: ['models_yml'],
+    categories: [],
+    credentialKind: 'oauth',
+    modelsProvider: { api: 'openai-codex-responses', models: [{ id: 'gpt-5-codex' }] },
+    runtimeFiles: [],
+    isBuiltin: true,
+    isOverride: true,
+    isDefault: false,
+  } as unknown as OmpRuntimeProviderView;
+
+  assert.equal(ompProviderKeySaveError('openai-codex', provider), null);
+  const state = resolveOmpProviderFormInitialState(provider);
+  const saved = buildOmpProviderConfigFromForm(
+    provider.modelsProvider ?? {},
+    state.values,
+    state.jsonBlocks,
+  );
+  assert.deepEqual(saved.models, provider.modelsProvider?.models);
+  assert.equal(saved.apiKey, undefined);
 });

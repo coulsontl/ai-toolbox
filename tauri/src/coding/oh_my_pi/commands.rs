@@ -10,6 +10,7 @@ use super::types::*;
 use crate::coding::db_id::db_new_id;
 use crate::coding::open_code::shell_env;
 use crate::coding::prompt_file::{read_prompt_content_file, write_prompt_content_file};
+use crate::coding::provider_order;
 use crate::coding::runtime_location::{self, RuntimeLocationInfo, RuntimeLocationMode};
 use crate::coding::skills::commands::resync_all_skills_if_tool_path_changed;
 use crate::db::helpers::{
@@ -583,15 +584,23 @@ fn build_provider_views(
     let default_provider = default_selection.provider_key.clone();
     let default_model = default_selection.model_id.clone();
 
-    let models_map: Map<String, Value> = get_models_providers(models).into_iter().collect();
+    let models_providers = get_models_providers(models);
+    let models_map: Map<String, Value> = models_providers.iter().cloned().collect();
 
-    let mut keys = BTreeSet::from(["openai-codex".to_string()]);
-    for (key, _) in &models_map {
-        keys.insert(key.clone());
+    // Codex is always visible (its native OAuth need not have YAML). Everything
+    // after it follows `models.yml`'s key order — that sequence is what the
+    // user drags, and rebuilding it with a `BTreeSet` silently discarded the
+    // stored order on the next read.
+    let mut seen = BTreeSet::from(["openai-codex".to_string()]);
+    let mut keys = vec!["openai-codex".to_string()];
+    for (key, _) in &models_providers {
+        if seen.insert(key.clone()) {
+            keys.push(key.clone());
+        }
     }
     if let Some(default_provider) = &default_provider {
-        if !default_provider.trim().is_empty() {
-            keys.insert(default_provider.clone());
+        if !default_provider.trim().is_empty() && seen.insert(default_provider.clone()) {
+            keys.push(default_provider.clone());
         }
     }
 
@@ -1129,6 +1138,38 @@ pub async fn save_omp_models_provider<R: tauri::Runtime>(
     read_omp_runtime_config(state).await
 }
 
+/// Persist the drag order of `models.yml`'s `providers` mapping.
+///
+/// Only the key order changes. Change detection compares **serialized text**:
+/// this crate enables `preserve_order`, whose map equality ignores key order, so
+/// a pure reorder would look like "no change" and the write would be skipped.
+#[tauri::command]
+pub async fn reorder_omp_providers<R: tauri::Runtime>(
+    state: tauri::State<'_, SqliteDbState>,
+    app: tauri::AppHandle<R>,
+    provider_keys: Vec<String>,
+) -> Result<OmpRuntimeConfig, String> {
+    let db = state.db();
+    let models_path = get_omp_models_path_async(&db).await?;
+    let mut models = read_yaml_object_or_empty(&models_path)?;
+    let before = serde_json::to_string(&models)
+        .map_err(|error| format!("Failed to serialize {}: {error}", models_path.display()))?;
+
+    let Some(providers) = models.get_mut("providers").and_then(Value::as_object_mut) else {
+        return read_omp_runtime_config(state).await;
+    };
+
+    *providers = provider_order::reorder_map_by_keys(providers, &provider_keys);
+
+    let after = serde_json::to_string(&models)
+        .map_err(|error| format!("Failed to serialize {}: {error}", models_path.display()))?;
+    if before != after {
+        write_yaml_object(&models_path, &models)?;
+        emit_config_changed(&app, "window");
+    }
+    read_omp_runtime_config(state).await
+}
+
 #[tauri::command]
 pub async fn delete_omp_runtime_provider(
     state: tauri::State<'_, SqliteDbState>,
@@ -1442,6 +1483,31 @@ pub async fn save_omp_local_prompt_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `models.yml`'s key order is what the user drags; the OAuth route stays
+    /// pinned first, everything else follows the file, and a dangling default
+    /// comes last.
+    #[test]
+    fn provider_views_follow_the_models_yml_order_after_the_oauth_route() {
+        let models = json!({
+            "providers": {
+                "zulu": {},
+                "alpha": {}
+            }
+        });
+        let settings = json!({ "modelRoles": { "default": "omega/model-x" } });
+
+        let views = build_provider_views(
+            &settings,
+            &models,
+            OmpOauthStatus::Missing,
+            &[],
+            None,
+            None,
+        );
+        let keys: Vec<&str> = views.iter().map(|view| view.provider_key.as_str()).collect();
+        assert_eq!(keys, vec!["openai-codex", "zulu", "alpha", "omega"]);
+    }
 
     #[test]
     fn normalize_omptype_drops_incomplete_cost_and_thinking_level_map() {

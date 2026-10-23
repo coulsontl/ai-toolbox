@@ -87,6 +87,12 @@ export interface ModelListSectionProps {
   onTest?: () => void;
   testDisabled?: boolean;
   testDisabledTooltip?: string;
+  /**
+   * Shown on the test button even when it is enabled: a caveat about *how* the
+   * test runs (OMP tests each model through its own connection). The disabled
+   * tooltip answers "why can't I click"; this answers "what will clicking do".
+   */
+  testHint?: string;
   onFetchModels?: () => void;
   fetchDisabled?: boolean;
   fetchDisabledTooltip?: string;
@@ -141,6 +147,7 @@ const ModelListSection: React.FC<ModelListSectionProps> = ({
   onTest,
   testDisabled = false,
   testDisabledTooltip,
+  testHint,
   onFetchModels,
   fetchDisabled = false,
   fetchDisabledTooltip,
@@ -244,7 +251,7 @@ const ModelListSection: React.FC<ModelListSectionProps> = ({
           </Button>
         )}
         {onTest && (
-          <Tooltip title={testDisabled ? testDisabledTooltip : ''}>
+          <Tooltip title={testDisabled ? testDisabledTooltip : (testHint ?? '')}>
             <span>
               <Button
                 size="small"

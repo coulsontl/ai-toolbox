@@ -5,6 +5,9 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
 import { useTranslation } from 'react-i18next';
 import { OpenCodeStyleCard } from '@/features/coding/shared/providerCardVariants';
+import { ProviderCompactCard } from '@/features/coding/shared/providerCardView';
+import ModelListSection from '@/features/coding/shared/ModelListSection';
+import type { ProviderViewMode } from '@/features/coding/shared/providerList';
 import { OfficialAccountsSection } from '@/features/coding/shared/officialAccounts';
 import type { OfficialAccountRowView } from '@/features/coding/shared/officialAccounts';
 import { copyTextToClipboard } from '@/services/clipboardApi';
@@ -18,9 +21,11 @@ interface Props {
   defaultModel?: string | null;
   onSetPrimaryModel: (modelId: string) => void;
   onRefresh: () => Promise<void>;
+  /** `'card'` renders the compact cell; the account manager moves into its sidebar. */
+  viewMode?: ProviderViewMode;
 }
 
-const OmpSubscriptionCard: React.FC<Props> = ({ rootPath, provider, defaultModel, onSetPrimaryModel, onRefresh }) => {
+const OmpSubscriptionCard: React.FC<Props> = ({ rootPath, provider, defaultModel, onSetPrimaryModel, onRefresh, viewMode = 'list' }) => {
   const { t } = useTranslation();
   const [loginOpen, setLoginOpen] = React.useState(false);
   const [importOpen, setImportOpen] = React.useState(false);
@@ -28,6 +33,13 @@ const OmpSubscriptionCard: React.FC<Props> = ({ rootPath, provider, defaultModel
   const [refreshing, setRefreshing] = React.useState(false);
   const [mutating, setMutating] = React.useState(false);
   const [accountState, setAccountState] = React.useState<OmpCodexAccountsResult>({ accounts: [], canWrite: false, error: null });
+  /**
+   * The list card folds its account rows away by default, the same call Codex
+   * makes: the card sits in a list whose other members are one line tall, and
+   * the rows are one click away. The detail sidebar renders the same block with
+   * `fold: false`, so its rows stay open.
+   */
+  const [accountsCollapsed, setAccountsCollapsed] = React.useState(true);
   const request = React.useRef(0);
   const active = React.useRef(true);
   const busy = React.useRef(false);
@@ -204,54 +216,119 @@ const OmpSubscriptionCard: React.FC<Props> = ({ rootPath, provider, defaultModel
   };
   const status = t(`ohMyPi.subscription.status.${provider.oauthStatus ?? 'unavailable'}`);
 
-  return (
+  /**
+   * `fold` is what the list card has and the detail sidebar does not — the same
+   * split Codex makes. `OfficialAccountsSection` only draws a caret when the
+   * host passes `collapsed` / `onToggleCollapsed`, so withholding them is how
+   * the sidebar gets the block permanently open: the sidebar has no neighbours
+   * to line up with, and hiding its rows behind a second click buys nothing.
+   */
+  const renderAccountSection = ({ fold }: { fold: boolean }) => (
     <>
-      <OpenCodeStyleCard
-        provider={{
-          id: `${provider.providerKey}-subscription`,
-          name: provider.displayName,
-          sdkName: `${t('ohMyPi.categoryLabels.subscription')} · ${status}`,
-          baseUrl: t('ohMyPi.subscription.credentialHint'),
-        }}
-        modelSection={{
-          models,
-          onSetPrimaryModel,
-          aboveList: <Typography.Text type="secondary">{t('ohMyPi.subscription.nativeModels')}</Typography.Text>,
-        }}
-        footer={
-          <>
-            <OfficialAccountsSection
-              variant="embedded"
-              listTitle={t('common.officialAccount.listTitle')}
-              emptyText={refreshing ? t('common.loading') : t('ohMyPi.subscription.accountsEmpty')}
-              accounts={accountRows}
-              actionsDisabled={refreshing || mutating || quotaPending !== null || !rootPath}
-              applyHint={t('ohMyPi.subscription.switchAccount')}
-              onApply={canWrite ? selectAccount : undefined}
-              onRefresh={(row) => void refreshQuota(row)}
-              pending={quotaPending ? { accountId: quotaPending, action: 'refresh' } : mutating && switchTarget ? { accountId: switchTarget.id, action: 'apply' } : null}
-              loginAction={
-                <Space size={0} wrap>
-                  <Button size="small" type="text" disabled={!canWrite} onClick={() => setImportOpen(true)}>{t('ohMyPi.subscription.importAccount')}</Button>
-                  <Button size="small" type="text" onClick={() => setLoginOpen(true)}>{t('ohMyPi.subscription.loginGuidance')}</Button>
-                  <Button size="small" type="text" icon={<ReloadOutlined />} loading={refreshing} disabled={mutating || quotaPending !== null} onClick={() => void refresh()}>{t('ohMyPi.refreshConfig')}</Button>
-                </Space>
-              }
-            />
-            <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
-              {t('ohMyPi.subscription.accountsHint')}
-            </Typography.Paragraph>
-            {(accountState.error || !accountState.canWrite) && (
-              <Alert type="warning" showIcon title={accountState.error ?? t('ohMyPi.subscription.accountsReadOnly')} style={{ marginTop: 12 }} />
-            )}
-          </>
+      <OfficialAccountsSection
+        variant="embedded"
+        listTitle={t('common.officialAccount.listTitle')}
+        emptyText={refreshing ? t('common.loading') : t('ohMyPi.subscription.accountsEmpty')}
+        accounts={accountRows}
+        actionsDisabled={refreshing || mutating || quotaPending !== null || !rootPath}
+        applyHint={t('ohMyPi.subscription.switchAccount')}
+        onApply={canWrite ? selectAccount : undefined}
+        onRefresh={(row) => void refreshQuota(row)}
+        pending={quotaPending ? { accountId: quotaPending, action: 'refresh' } : mutating && switchTarget ? { accountId: switchTarget.id, action: 'apply' } : null}
+        {...(fold
+          ? {
+              collapsed: accountsCollapsed,
+              onToggleCollapsed: () => setAccountsCollapsed((current) => !current),
+            }
+          : {})}
+        loginAction={
+          <Space size={0} wrap>
+            <Button size="small" type="text" disabled={!canWrite} onClick={() => setImportOpen(true)}>{t('ohMyPi.subscription.importAccount')}</Button>
+            <Button size="small" type="text" onClick={() => setLoginOpen(true)}>{t('ohMyPi.subscription.loginGuidance')}</Button>
+            <Button size="small" type="text" icon={<ReloadOutlined />} loading={refreshing} disabled={mutating || quotaPending !== null} onClick={() => void refresh()}>{t('ohMyPi.refreshConfig')}</Button>
+          </Space>
         }
       />
-      {provider.runtimeCatalogError ? (
-        <Alert type="warning" showIcon title={t('ohMyPi.subscription.catalogError')} description={provider.runtimeCatalogError} style={{ marginBottom: 12 }} />
-      ) : !provider.runtimeModels?.length ? (
-        <Alert type="info" showIcon title={t('ohMyPi.subscription.emptyCatalog')} style={{ marginBottom: 12 }} />
-      ) : null}
+      <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
+        {t('ohMyPi.subscription.accountsHint')}
+      </Typography.Paragraph>
+      {(accountState.error || !accountState.canWrite) && (
+        <Alert type="warning" showIcon title={accountState.error ?? t('ohMyPi.subscription.accountsReadOnly')} style={{ marginTop: 12 }} />
+      )}
+    </>
+  );
+  const modelSection = {
+    models,
+    onSetPrimaryModel,
+    aboveList: <Typography.Text type="secondary">{t('ohMyPi.subscription.nativeModels')}</Typography.Text>,
+  };
+  const providerCardHeader = {
+    id: `${provider.providerKey}-subscription`,
+    name: provider.displayName,
+    sdkName: `${t('ohMyPi.categoryLabels.subscription')} · ${status}`,
+    baseUrl: t('ohMyPi.subscription.credentialHint'),
+  };
+
+  // The catalog warnings stay inside whichever layout this card renders. A grid
+  // makes every top-level child a cell of its own, so a sibling `<Alert>` would
+  // occupy a whole column and push the neighbouring cards into the next one.
+  const catalogAlert = provider.runtimeCatalogError ? (
+    <Alert type="warning" showIcon title={t('ohMyPi.subscription.catalogError')} description={provider.runtimeCatalogError} style={{ marginBottom: 12 }} />
+  ) : !provider.runtimeModels?.length ? (
+    <Alert type="info" showIcon title={t('ohMyPi.subscription.emptyCatalog')} style={{ marginBottom: 12 }} />
+  ) : null;
+
+  return (
+    <>
+      {viewMode === 'card' ? (
+        // The cell states which OAuth status it is on; the account manager (a
+        // row per account, each with its own actions) opens in the cell's own
+        // sidebar, the same call ZCode's account cell makes.
+        <>
+          <ProviderCompactCard
+            provider={providerCardHeader}
+            subtitle={[{ value: status }]}
+            actionPlacement="subtitle"
+            // `locateAnchor={false}`: this cell has no `sortableId` (the OAuth
+            // route is a fixed list member, not a draggable provider), and the
+            // placeholder id would otherwise be written to `data-provider-id`.
+            // A drag that ended over it would then find no index for the
+            // placeholder and silently drop the drop.
+            providerState={{ draggable: false }}
+            locateAnchor={false}
+            detail={{
+              title: provider.displayName,
+              statusTags: <Typography.Text type="secondary">{status}</Typography.Text>,
+              sections: [{
+                key: 'accounts',
+                content: renderAccountSection({ fold: false }),
+              }, {
+                key: 'catalog',
+                content: (
+                  <ModelListSection
+                    models={models}
+                    sectionKey={`omp-subscription-models-${provider.providerKey}`}
+                    appearance="detail"
+                    transparentRows
+                    onSetPrimaryModel={onSetPrimaryModel}
+                    aboveList={modelSection.aboveList}
+                  />
+                ),
+              }],
+            }}
+          />
+          {catalogAlert}
+        </>
+      ) : (
+        <>
+          <OpenCodeStyleCard
+            provider={providerCardHeader}
+            modelSection={modelSection}
+            footer={renderAccountSection({ fold: true })}
+          />
+          {catalogAlert}
+        </>
+      )}
       <Modal
         open={importOpen}
         title={t('ohMyPi.subscription.importAccount')}
@@ -263,7 +340,7 @@ const OmpSubscriptionCard: React.FC<Props> = ({ rootPath, provider, defaultModel
         okButtonProps={{ disabled: !canWrite }}
         cancelButtonProps={{ disabled: mutating }}
         closable={!mutating}
-        maskClosable={!mutating}
+        mask={{ closable: !mutating }}
       >
         <Alert type="warning" showIcon title={t('ohMyPi.subscription.privateAuthWarning')} />
         <Typography.Paragraph style={{ marginTop: 12 }}>{t('ohMyPi.subscription.importHint')}</Typography.Paragraph>
@@ -280,7 +357,7 @@ const OmpSubscriptionCard: React.FC<Props> = ({ rootPath, provider, defaultModel
         okButtonProps={{ disabled: !canWrite }}
         cancelButtonProps={{ disabled: mutating }}
         closable={!mutating}
-        maskClosable={!mutating}
+        mask={{ closable: !mutating }}
       >
         <Typography.Paragraph>{t('ohMyPi.subscription.switchHint')}</Typography.Paragraph>
         {switchTarget && <Typography.Paragraph strong style={{ overflowWrap: 'anywhere' }}>{accountLabel(switchTarget)} · {switchTarget.accountId ?? switchTarget.id}</Typography.Paragraph>}

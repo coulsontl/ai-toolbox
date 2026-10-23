@@ -1,64 +1,20 @@
+// No `gap` and no flex here. `CodingPageHeader` brings its own 16px bottom
+// margin, so a column `gap` would stack on top of it and every gap in the page
+// would become 32px — the defect OpenCode recorded on 2026-10-19 (SOP §4.3).
+// Sections own their bottom margin instead, and plain block layout lets that
+// margin collapse with whatever a section's last child already brings, so a
+// Collapse shipping its own 16px does not double the gap.
 .pageContent {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+  display: block;
 }
 
-.pageHeader {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.titleRow {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  margin-bottom: 8px;
-  flex-wrap: wrap;
-}
-
-.pageTitle {
-  margin: 0 8px 0 0 !important;
-  display: inline-block;
-}
-
-.headerLink {
-  font-size: 12px;
-}
-
-.pathToolbar {
-  max-width: 100%;
-}
-
-.pathLabel,
-.pathText,
-.textAction {
-  font-size: 12px;
-}
-
-.pathText {
-  max-width: min(680px, 48vw);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.textAction {
-  padding: 0;
-}
-
-.pageHint {
-  font-size: 12px;
-  color: var(--color-text-tertiary);
-  border-left: 2px solid var(--color-border-secondary);
-  padding-left: 8px;
-  margin-top: -12px;
-}
-
-.piSection {
+// Was `.piSection` while the page referenced `styles.ompSection`: CSS Modules
+// resolves a missing key to `undefined`, so all six section wrappers rendered
+// with no class at all — no spacing, no `scroll-margin-top`, and nothing to
+// notice it. Keep the name the page uses.
+.ompSection {
   scroll-margin-top: 84px;
+  margin-bottom: 16px;
 }
 
 .promptSection {
@@ -103,103 +59,8 @@
   margin-bottom: 0;
 }
 
-.providerList {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.providerCard {
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-bg-container);
-  padding: 12px 14px;
-}
-
-.providerHeader {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.providerMeta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.providerDetails {
-  margin-top: 8px;
-  color: var(--color-text-secondary);
-  font-size: 12px;
-}
-
-.jsonActions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 12px;
-}
-
-.providerForm {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.modalSection {
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-bg-elevated);
-  padding: 14px 16px;
-}
-
-.modalGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.advancedEditor {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.advancedToggle {
-  margin-top: -4px;
-}
-
-.apiOptionDescription {
-  font-size: 10px;
-  line-height: 14px;
-  color: var(--color-text-tertiary);
-  white-space: normal;
-}
-
-.advancedToggleButton {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: auto;
-  padding: 0;
-}
-
 @media (max-width: 920px) {
-  .pageHeader {
-    flex-direction: column;
-  }
-
-  .pathText {
-    max-width: 100%;
-  }
-
   .modelSettingsGrid {
-    grid-template-columns: 1fr;
-  }
-
-  .modalGrid {
     grid-template-columns: 1fr;
   }
 }

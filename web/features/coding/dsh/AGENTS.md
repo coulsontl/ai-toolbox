@@ -9,7 +9,7 @@
 - 唯一读入口是 `readDshRuntimeConfig()`（后端 `read_dsh_runtime_config`），页面不推导、不缓存、不合成派生状态。
 - `runtimeConfig.configPath` 是**当前写入层**：dsh 0.1.7+ 为 `profiles/<profile>/cordis.patch.yml`，否则是 legacy `settings.yaml`。页面不要假设文件名；预览 Tab 标题、保存提示、迁移说明都以 `profile` / `settingsYamlPath` / `migratedFromSettings` 为准。
 - `runtimeConfig.profile` 是后端实际选中的 profile（固定值 → `desktop` → `web` → 最新）。顶部 `配置 Profile` 选择器把用户选择写进 `dsh_settings_config.profile`：`''` 表示恢复自动检测，省略 `profile` 字段则保留原固定值（这是 `saveDshSettingsConfig` 的三态契约，不要改成 `null` 即清空）。`profiles.length === 0` 时（legacy 层）隐藏选择器。
-- `migratedFromSettings === true` 时页面顶部必须显示迁移说明：`settings.yaml` 已被导入 `configPath` 并改名为 `settingsYamlPath + '.imported'`，旧文件不再生效。
+- `migratedFromSettings === true` 时页面顶部显示迁移说明（`components/DshMigrationNotice.tsx`）：`settings.yaml` 已被导入 `configPath` 并改名为 `settingsYamlPath + '.imported'`，旧文件不再生效。**这条说明可关闭、且记住关闭状态**（localStorage `dsh.migrationNoticeDismissedPath`，存的是它宣告的那个补丁路径）：迁移是一次性事件，常驻横幅会从「信息」变成「家具」；按路径而不是布尔记住，是为了 pin 另一个已迁移 profile 时能重新提示一次。**说明抽成独立组件而不是内联在页面里**，因为 `DshPage` 挂了 30+ 个 IPC 命令、夹具无法挂载，而「× 到底渲不渲染」完全由这几个 props 决定——夹具抄一份 props 会与页面漂移。**antd 6 的 `closable` 必须是 `{ closeIcon: …, onClose }`**：对象形式只有在带 `closeIcon` / `closeText` 时才算「可关闭」，裸 `{ onClose }` **一个 × 都不渲染**（`Alert.js` 的 `isClosable`），文字改成 `title`（不是 `message` + `description`），否则又变回两行横幅。守护：`pnpm run test:dsh-migration-notice`（7 项，含「点掉后重挂载仍然隐藏」，已验证「去掉 `closeIcon` 会红」）。
 - 所有写命令（保存默认模型 / 供应商 / 凭据 / 其他配置）**都返回整份新的 `DshRuntimeConfig`**。页面必须用返回值整体替换 state（`setRuntimeConfig(nextConfig)` 后再 `setOtherSettings(nextConfig.otherSettings || {})`），不要只做局部 patch——后端才是文件内容的事实源，本地 patch 会与磁盘漂移。
 - `runtimeConfig.providers` 里**包含没有配置文件条目的 route**：后端把 `agent-default-model.provider` 也并进 key 集合。此时 `provider.provider === undefined`（无条目），与"有条目但内容为空对象"是两种语义，删除与保存分支都依赖这个区别。
 - 模型记录一律经 `getDshModelRecords()` 三层回退取得：显式 `models` → 适配器内置目录（`modelSource === 'builtin'` 时的 `builtinModels`）→ 空。不要在组件里另写一套回退，否则卡片显示、拉取模型、连通性测试三处会看到不同的模型集合。
@@ -61,16 +61,21 @@ sequenceDiagram
 - 几乎所有写操作成功后都要 `refreshTrayMenu()`：托盘 provider 菜单是另一条独立消费路径，不刷新会显示陈旧状态。
 - 「设为默认模型」除了 `saveDshModelSettings` 还要同步 `modelForm` 的三个字段，否则表单显示与 `runtimeConfig` 不一致，下一次 `onValuesChange` 会拿旧值去比较并触发一次多余保存。
 
+- **页面容器的间距规则（2026-10-22 修）**：`.pageContent` 只写 `display: block`，**不要 `flex` + `gap`**——`CodingPageHeader` 自带 `marginBottom: 16`，容器再加 16px 的 gap 会让页头与第一个区块之间变成 32px（OpenCode 2026-10-19、pi / oh_my_pi / dsh / hermes 2026-10-22 各犯一次）。间距一律由区块类 `.dshSection { margin-bottom: 16px; }` 自带，使 `block` 布局下的 margin 折叠生效。任何时刻改 `.pageContent` / 区块类都要跑 `pnpm run test:page-rhythm`（真浏览器量页头→首区块与区块→区块，必须都是 16px）。层级同理：`styles.xxx` 在 CSS Modules 里少一个键只得到 `undefined`，元素会渲染成 `class=""`——改名后跑 `pnpm run test:css-module-classes`。
 ## 跨模块依赖
 
 - 后端 `dsh::*` 命令（`web/services/dshApi.ts` 一一对应）。**settings.yaml / .credentials.yaml 的 YAML 语义、凭据版本化布局、会话产物命名规则、cordis patch 适配都不在本文件重复**，见 `tauri/src/coding/dsh/AGENTS.md`。
 - 共享层：`shared/providerList`（搜索/排序/批量/收藏备份）、`shared/providerShare`、`shared/prompt`（`dshPromptApi`）、`shared/sessionManager`（`tool="dsh"`）、`shared/useRootDirectoryConfig` + `shared/RootDirectoryModal`。
+- **页面外壳与卡片全部走共享组件**（2026-10-22 迁移）：页头 `CodingPageHeader`（`configPathKind="directory"`——`rootPathInfo.path` 是配置**目录**，真正的写入层在里面；`extraActions` 放「同步模型」「打开 Web UI」与**配置 Profile 选择器**）、供应商区 `ProviderListSection`、卡片 `OpenCodeStyleCard`（薄映射层 `components/DshProviderCard.tsx`）、卡片视图 `ProviderCompactCard` + `ProviderModelSection`、编辑弹窗 `components/DshProviderFormModal.tsx`（横向布局，因此被 `verify-form-modal-layout` 覆盖）。dsh 有 per-provider 模型目录、没有 provider 级「应用」（默认指针在 `agent-default-model`），所以是 OpenCode 式。**卡片视图必须自己传 `detail.secondaryActions`**：格子只带「更多」菜单，编辑 / 复制 / 分享 / 删除只在详情侧栏里；内置/目录型渠道不传这些 handler，按钮因此自然不渲染。
+- **内置/目录型渠道（`provider.isBuiltin || modelSource === 'builtin'`）只禁「删除」与「拖拽」**：删除按钮不渲染（它属于已安装的适配器，不是用户建的条目）；拖拽把手也不渲染（它没有可写的配置行）。编辑 / 复制 / 分享与模型区的添加 / 编辑 / 复制 / 删除**都保留**——在内置 route 上写一份显式 `models` 列表正是覆盖 catalog 的方式，整套只读会让这个能力没法用。卡片用 `nameTags` 陈述「内置 · 适配器默认模型」与 `apiKeyEnv`，而不是把它们拼进 Base URL（那是伪造 URL，见 OpenClaw/Hermes 的先例）。
+- **「这个 route 是否由适配器目录托管」只问 `isCatalogOwnedRoute(provider, copy)`**（`utils/providerConfig.ts`）。弹窗用它决定是否隐藏「显示名称 / API 类型」，页面用它决定保存时是否 `delete` 这两个键——两处曾各写一份条件，只有弹窗那份漏了 `copy`，于是**复制一个内置渠道会得到一个既没有名字也没有协议的 route**。**复制出来的 route 是新 key，目录里没有它，所以它总是拥有这两个字段**。回归：`web/test/features/coding/dsh/utils/isCatalogOwnedRoute.test.ts`。
+- **供应商拖拽是「把手 + 行为 + 存取」三件套**：顺序就是配置文件里 providers 字典的键序，拖动调后端 `reorder_dsh_providers`。`build_provider_views` 必须跟随该字典序（悬空的默认 provider 排最后），**不要用 `BTreeSet` 重建**；写盘按序列化文本比较变化。没有配置行的 route（`provider.provider === undefined`）不参与拖拽。
 - 事件：`config-changed`、`TRAY_CONFIG_REFRESH_EVENT`（托盘刷新回灌 `loadConfig(true)`）。
 - 收藏 provider 走 `favoriteProviders` 的 `dsh` source 前缀；payload 形如 `{ providerKey, credential?, modelsProvider }`，凭据与 route 一起存，重导入时两份都要重放。
 
 ## 典型变更场景（按需）
 
-- 新增供应商字段：同时检查表单回填、`handleSaveProviderModal` 的 `setOptionalStringField`/删除分支、内置渠道的"不写"名单、分享快照（`onShare` 的 `settingsConfig`）、收藏 payload 五处。
+- 新增供应商字段：同时检查 `components/DshProviderFormModal.tsx` 的字段与回填、`handleSaveProviderModal` 的 `setOptionalStringField`/删除分支、内置渠道的"不写"名单、分享快照（`onShare` 的 `settingsConfig`）、收藏 payload 五处。
 - 改凭据相关逻辑：同时检查 `credentialRefFromProviderKey`、`buildDshCredentialRef`、批量删除 plan、收藏备份、导入顺序（provider 先）四处一致性。
 - 改模型字段：先确认是否要进 `DSH_KNOWN_MODEL_FIELDS`，再检查 `ModelFormModal` 的 `show*` 开关与 `extractDshExtraParams` 的边界。
 

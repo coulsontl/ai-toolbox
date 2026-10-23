@@ -13,6 +13,7 @@ use super::types::*;
 use crate::coding::db_id::db_new_id;
 use crate::coding::open_code::shell_env;
 use crate::coding::prompt_file::{read_prompt_content_file, write_prompt_content_file};
+use crate::coding::provider_order;
 use crate::coding::runtime_location;
 use crate::coding::skills::commands::resync_all_skills_if_tool_path_changed;
 use crate::db::helpers::{
@@ -236,6 +237,35 @@ fn credential_kind(credential: Option<&Value>, is_builtin: bool) -> PiCredential
     }
 }
 
+/// The provider keys in the order the runtime files list them.
+///
+/// `models.json`'s `providers` map is the only sequence the user can drag, so
+/// it leads. Providers that exist only in `auth.json` follow in auth order,
+/// and a default that neither file mentions comes last.
+///
+/// A `BTreeSet` here (the previous shape) re-sorted every key alphabetically,
+/// which silently discarded the stored order — a drag would write the new
+/// sequence and the next read would hand back the old one.
+fn ordered_provider_keys(
+    models_entries: &[(String, Value)],
+    auth_entries: &[(String, Value)],
+    default_provider: Option<&str>,
+) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::with_capacity(models_entries.len() + auth_entries.len());
+    let mut seen = BTreeSet::new();
+    for (key, _) in models_entries.iter().chain(auth_entries.iter()) {
+        if seen.insert(key.clone()) {
+            keys.push(key.clone());
+        }
+    }
+    if let Some(default_provider) = default_provider {
+        if !default_provider.trim().is_empty() && seen.insert(default_provider.to_string()) {
+            keys.push(default_provider.to_string());
+        }
+    }
+    keys
+}
+
 fn model_ids_from_provider(provider: Option<&Value>) -> Vec<String> {
     provider
         .and_then(|value| value.get("models"))
@@ -376,18 +406,7 @@ fn build_provider_views(
     let auth_map: Map<String, Value> = auth_entries.iter().cloned().collect();
     let models_map: Map<String, Value> = models_entries.iter().cloned().collect();
 
-    let mut keys = BTreeSet::new();
-    for (key, _) in &auth_entries {
-        keys.insert(key.clone());
-    }
-    for (key, _) in &models_entries {
-        keys.insert(key.clone());
-    }
-    if let Some(default_provider) = &default_provider {
-        if !default_provider.trim().is_empty() {
-            keys.insert(default_provider.clone());
-        }
-    }
+    let keys = ordered_provider_keys(&models_entries, &auth_entries, default_provider.as_deref());
 
     let mut views = Vec::new();
     for provider_key in keys {
@@ -809,6 +828,39 @@ pub async fn save_pi_models_provider<R: tauri::Runtime>(
     read_pi_runtime_config(state).await
 }
 
+/// Persist the drag order of `models.json`'s `providers` map.
+///
+/// Only that map's key order changes: entries, other top-level keys and the
+/// file mode are untouched. Change detection compares **serialized text**, not
+/// `Value` equality — this crate enables `preserve_order`, whose map equality
+/// ignores key order, so a pure reorder would look like "no change" and the
+/// write would be skipped (the same defect OpenClaw had).
+#[tauri::command]
+pub async fn reorder_pi_providers<R: tauri::Runtime>(
+    state: tauri::State<'_, SqliteDbState>,
+    app: tauri::AppHandle<R>,
+    provider_keys: Vec<String>,
+) -> Result<PiRuntimeConfig, String> {
+    let db = state.db();
+    let models_path = get_pi_models_path_async(&db).await?;
+    let mut models = read_json_object_or_empty(&models_path)?;
+    let before = serde_json::to_string(&models)
+        .map_err(|error| format!("Failed to serialize {}: {error}", models_path.display()))?;
+
+    let Some(providers) = models.get_mut("providers").and_then(Value::as_object_mut) else {
+        return read_pi_runtime_config(state).await;
+    };
+    *providers = provider_order::reorder_map_by_keys(providers, &provider_keys);
+
+    let after = serde_json::to_string(&models)
+        .map_err(|error| format!("Failed to serialize {}: {error}", models_path.display()))?;
+    if before != after {
+        write_json_object(&models_path, &models)?;
+        emit_config_changed(&app, "window");
+    }
+    read_pi_runtime_config(state).await
+}
+
 #[tauri::command]
 pub async fn delete_pi_runtime_provider(
     state: tauri::State<'_, SqliteDbState>,
@@ -1132,6 +1184,31 @@ pub async fn save_pi_local_prompt_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The models map is the sequence the user drags, so it leads; auth-only
+    /// keys follow and a dangling default comes last.
+    ///
+    /// The reorder rule itself is covered by `coding::provider_order`'s tests.
+    /// This one pins the **read** side, which is the half that made drags
+    /// vanish silently: the view order must follow the stored key order.
+    #[test]
+    fn provider_views_follow_the_models_providers_order() {
+        let models = json!({
+            "providers": {
+                "zulu": {},
+                "alpha": {}
+            }
+        });
+        let auth = json!({
+            "beta": { "type": "api_key", "key": "x" },
+            "yankee": { "type": "api_key", "key": "y" }
+        });
+        let settings = json!({ "defaultProvider": "omega" });
+
+        let views = build_provider_views(&settings, &auth, &models);
+        let keys: Vec<&str> = views.iter().map(|view| view.provider_key.as_str()).collect();
+        assert_eq!(keys, vec!["zulu", "alpha", "beta", "yankee", "omega"]);
+    }
 
     #[test]
     fn thinking_level_map_only_defaults_standard_omitted_levels_to_supported() {

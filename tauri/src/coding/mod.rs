@@ -39,6 +39,9 @@ pub mod pi;
 // common model-discovery and connectivity commands.
 pub mod pi_config_value;
 pub mod preset_models;
+// Rebuild a provider map in a new key order; shared by the drag-sortable CLIs
+// (pi / oh_my_pi / dsh) so the rule cannot drift between their reorder commands.
+pub(crate) mod provider_order;
 pub mod proxy_gateway;
 pub mod reapply_applied_runtime;
 pub mod runtime_location;

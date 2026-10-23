@@ -18,6 +18,7 @@ use super::types::*;
 use crate::coding::db_id::db_new_id;
 use crate::coding::open_code::shell_env;
 use crate::coding::prompt_file::{read_prompt_content_file, write_prompt_content_file};
+use crate::coding::provider_order;
 use crate::coding::runtime_location;
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put, db_update_applied_status,
@@ -149,9 +150,15 @@ pub fn get_dsh_config_path_from_root(root_dir: &Path) -> PathBuf {
 ///
 /// dsh >= 0.1.7 imports `settings.yaml` once into `profiles/<profile>/cordis.patch.yml`
 /// and keeps writing there; the old file is renamed to `settings.yaml.imported`
-/// and no longer reaches the composition. Everything below therefore treats
-/// the profile patch as the source of truth whenever a profile exists, and
-/// only falls back to `settings.yaml` for dsh versions that still read it.
+/// and no longer reaches the composition.
+///
+/// **The migration marker — not the existence of a profile — decides.** A
+/// `profiles/<name>/` directory only says dsh once booted that profile; it says
+/// nothing about which file the providers live in. dsh 0.1.5 provisions
+/// `profiles/web/` at install time yet still reads `settings.yaml`, so "any
+/// profile exists ⇒ profile layer" made the editor show an empty list while
+/// the real configuration sat in `settings.yaml` untouched (issue: empty dsh
+/// page on a 0.1.5 install).
 enum DshConfigLayer {
     ProfilePatch {
         profile: String,
@@ -178,14 +185,27 @@ impl DshConfigLayer {
 }
 
 /// Resolve the writable configuration layer for `root_dir`.
+///
+/// `settings.yaml` is authoritative while it still exists: dsh renames it to
+/// `settings.yaml.imported` exactly when its one-shot import succeeds, so the
+/// original file's presence means the running dsh still reads it (every
+/// pre-0.1.7 release, and a 0.1.7+ install that has not booted yet). Once the
+/// marker exists the profile patch is the only layer that reaches dsh.
 fn resolve_config_layer(root_dir: &Path, configured_profile: Option<&str>) -> DshConfigLayer {
+    let legacy_settings_path = get_dsh_config_path_from_root(root_dir);
+    let migration_marker = root_dir.join(DSH_IMPORTED_SETTINGS_FILE);
+    if legacy_settings_path.is_file() && !migration_marker.is_file() {
+        return DshConfigLayer::SettingsYaml {
+            path: legacy_settings_path,
+        };
+    }
     match profile_patch::detect_profile(root_dir, configured_profile) {
         Some(profile) => DshConfigLayer::ProfilePatch {
             path: profile_patch::profile_patch_path(root_dir, &profile),
             profile,
         },
         None => DshConfigLayer::SettingsYaml {
-            path: get_dsh_config_path_from_root(root_dir),
+            path: legacy_settings_path,
         },
     }
 }
@@ -708,13 +728,20 @@ fn build_provider_views(
 
     let providers = get_providers_dict(config);
 
-    let mut keys = BTreeSet::new();
+    // The providers dict's own key order is what the user drags, so it leads;
+    // a default route the dict does not contain comes last. A `BTreeSet` here
+    // (the previous shape) re-sorted everything alphabetically and silently
+    // discarded the stored order on the next read.
+    let mut seen = BTreeSet::new();
+    let mut keys = Vec::with_capacity(providers.len() + 1);
     for (route, _) in &providers {
-        keys.insert(route.clone());
+        if seen.insert(route.clone()) {
+            keys.push(route.clone());
+        }
     }
     if let Some(default_provider) = &default_provider {
-        if !default_provider.trim().is_empty() {
-            keys.insert(default_provider.clone());
+        if !default_provider.trim().is_empty() && seen.insert(default_provider.clone()) {
+            keys.push(default_provider.clone());
         }
     }
 
@@ -1067,6 +1094,44 @@ pub async fn save_dsh_models_provider<R: tauri::Runtime>(
         write_config_sections(&layer, &config)?;
     }
     emit_config_changed(&app, "window");
+    read_dsh_runtime_config(state).await
+}
+
+/// Persist the drag order of `llm-pi-ai.providers`.
+///
+/// Only the key order changes. Change detection compares **serialized text**:
+/// this crate enables `preserve_order`, whose map equality ignores key order, so
+/// a pure reorder would look like "no change" and the write would be skipped.
+/// `read_config_sections` / `write_config_sections` already preserve the other
+/// patch entries and sections, so only the dict is rebuilt here.
+#[tauri::command]
+pub async fn reorder_dsh_providers<R: tauri::Runtime>(
+    state: tauri::State<'_, SqliteDbState>,
+    app: tauri::AppHandle<R>,
+    provider_keys: Vec<String>,
+) -> Result<DshRuntimeConfig, String> {
+    let db = state.db();
+    let layer = resolve_config_layer_from_db(&db).await?;
+    let mut config = read_config_sections(&layer)?;
+    let before = serde_json::to_string(&config)
+        .map_err(|error| format!("Failed to serialize {}: {error}", layer.path().display()))?;
+
+    let Some(providers) = config
+        .get_mut(DSH_LLM_PI_AI_SECTION)
+        .and_then(|section| section.get_mut(DSH_PROVIDERS_KEY))
+        .and_then(Value::as_object_mut)
+    else {
+        return read_dsh_runtime_config(state).await;
+    };
+
+    *providers = provider_order::reorder_map_by_keys(providers, &provider_keys);
+
+    let after = serde_json::to_string(&config)
+        .map_err(|error| format!("Failed to serialize {}: {error}", layer.path().display()))?;
+    if before != after {
+        write_config_sections(&layer, &config)?;
+        emit_config_changed(&app, "window");
+    }
     read_dsh_runtime_config(state).await
 }
 
@@ -1654,16 +1719,57 @@ mod tests {
         .unwrap();
     }
 
-    /// The desktop profile wins over web, and its patch is the writable layer.
+    /// With the migration marker present, the desktop profile wins over web and
+    /// its patch is the writable layer.
     #[test]
-    fn profile_layer_is_detected_before_legacy_settings() {
+    fn profile_layer_is_detected_after_the_settings_migration() {
         let dir = tempfile::tempdir().unwrap();
         seed_profile(dir.path(), super::profile_patch::DSH_WEB_PROFILE);
         seed_profile(dir.path(), super::profile_patch::DSH_DESKTOP_PROFILE);
         fs::write(dir.path().join(DSH_SETTINGS_FILE), "agent-default-model: {}\n").unwrap();
+        fs::write(dir.path().join(DSH_IMPORTED_SETTINGS_FILE), "").unwrap();
 
         let layer = resolve_config_layer(dir.path(), None);
         assert_eq!(layer.profile(), Some(super::profile_patch::DSH_DESKTOP_PROFILE));
+        assert!(layer.path().ends_with("cordis.patch.yml"));
+    }
+
+    /// A profile directory alone does not mean dsh migrated: 0.1.5 provisions
+    /// `profiles/web/` at install time and still reads `settings.yaml`. Reading
+    /// the (empty) profile patch instead made the whole page look unconfigured
+    /// while the real providers sat in `settings.yaml`.
+    #[test]
+    fn an_unmigrated_settings_yaml_wins_over_an_existing_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_profile(dir.path(), super::profile_patch::DSH_WEB_PROFILE);
+        fs::write(
+            dir.path().join(DSH_SETTINGS_FILE),
+            "llm-pi-ai:\n  providers:\n    relay:\n      api: openai-completions\n",
+        )
+        .unwrap();
+
+        let layer = resolve_config_layer(dir.path(), None);
+        assert_eq!(layer.profile(), None);
+        assert!(layer.path().ends_with(DSH_SETTINGS_FILE));
+
+        let config = read_config_sections(&layer).unwrap();
+        assert_eq!(
+            config["llm-pi-ai"]["providers"]["relay"]["api"],
+            json!("openai-completions")
+        );
+    }
+
+    /// Once dsh renames the source, the same directory must follow the profile
+    /// patch — the marker is what flips the layer, not the file's absence.
+    #[test]
+    fn the_migration_marker_hands_the_layer_to_the_profile_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_profile(dir.path(), super::profile_patch::DSH_WEB_PROFILE);
+        fs::write(dir.path().join(DSH_SETTINGS_FILE), "llm-pi-ai: {}\n").unwrap();
+        fs::write(dir.path().join(DSH_IMPORTED_SETTINGS_FILE), "llm-pi-ai: {}\n").unwrap();
+
+        let layer = resolve_config_layer(dir.path(), None);
+        assert_eq!(layer.profile(), Some(super::profile_patch::DSH_WEB_PROFILE));
         assert!(layer.path().ends_with("cordis.patch.yml"));
     }
 
@@ -1810,6 +1916,20 @@ mod tests {
         assert_eq!(config["agent"]["auto_accept"], true);
         assert!(config["llm-pi-ai"]["providers"].get("deepseek").is_some());
         assert!(config["llm-pi-ai"].get("should-not-overwrite").is_none());
+    }
+
+    /// The providers dict's key order is what the user drags; a dangling
+    /// default route comes last instead of being folded into a sorted set.
+    #[test]
+    fn build_provider_views_follow_the_providers_dict_order() {
+        let config = json!({
+            "llm-pi-ai": { "providers": { "zulu": {}, "alpha": {} } },
+            "agent-default-model": { "provider": "omega", "model": "m" }
+        });
+
+        let views = build_provider_views(&config, &CredentialsDocument::from_document(Map::new()));
+        let keys: Vec<&str> = views.iter().map(|view| view.provider_key.as_str()).collect();
+        assert_eq!(keys, vec!["zulu", "alpha", "omega"]);
     }
 
     #[test]

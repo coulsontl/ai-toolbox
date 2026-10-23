@@ -6,11 +6,13 @@
 
 ## Source of Truth
 
-- **写入层随 dsh 版本切换。** dsh >= 0.1.7 不再读 `$DSH_HOME/settings.yaml`：`@deepseek-ai/dsh-settings` 在 Loader 就绪后把它一次性导入当前 profile 的 `profiles/<profile>/cordis.patch.yml`，随后把源文件改名为 `settings.yaml.imported`（见上游 `packages/settings/settings/src/index.ts` 的 `importLegacyDocument`）。因此 `commands.rs` 里的 `DshConfigLayer` 是唯一分层入口：
-  - 存在 profile（`profiles/<name>/package.json`）→ 写 `ProfilePatch`：`llm-pi-ai` / `agent-default-model` 各是一行 `{ id, name, config }` patch entry，其余插件行原样保留。
-  - 没有任何 profile → 写 `SettingsYaml`（pre-0.1.7 兼容路径）。
+- **写入层随 dsh 版本切换，判据是「dsh 自己有没有完成迁移」，不是「有没有 profile 目录」。** dsh >= 0.1.7 不再读 `$DSH_HOME/settings.yaml`：`@deepseek-ai/dsh-settings` 在 Loader 就绪后把它一次性导入当前 profile 的 `profiles/<profile>/cordis.patch.yml`，随后把源文件改名为 `settings.yaml.imported`（见上游 `packages/settings/settings/src/index.ts` 的 `importLegacyDocument`）。**`profiles/web/` 是 dsh 0.1.5 安装时就会创建的**，它的存在只说明 dsh 启动过这个 profile，不说明供应商数据在哪一层。因此 `commands.rs` 里的 `DshConfigLayer` 是唯一分层入口：
+  - `settings.yaml` 仍存在、且没有 `settings.yaml.imported` → 写 `SettingsYaml`。这是 dsh < 0.1.7 的常态，也是 0.1.7+ 尚未启动过的状态；此时 `profiles/<name>/cordis.patch.yml` 里通常只有 `webserver` 之类，硬读它会得到一个**空供应商列表**（真实故障：0.1.5-rc.3 机器上整页空白，而配置完整躺在 `settings.yaml` 里）。
+  - 迁移标记 `settings.yaml.imported` 存在 → 写 `ProfilePatch`：`llm-pi-ai` / `agent-default-model` 各是一行 `{ id, name, config }` patch entry，其余插件行原样保留。
+  - 既无 `settings.yaml` 也无标记（全新安装且从未写 legacy 文件）→ 有 profile 就走 `ProfilePatch`，否则 `SettingsYaml`。
   - profile 解析顺序：DB 固定值 → `desktop` → `web` → mtime 最新的 profile（`profile_patch::detect_profile`）。desktop 端固定启动 `profiles/desktop`（`apps/desktop/src/paths.ts`），`dsh web` 初始化 `profiles/web`。
   - patch 的 `config` 是**整行替换**语义（`applyEntryPatches` 做 `target[key] = value`），所以读写都按完整对象处理；section 为空时必须删除整行，不能写空对象。
+  - 回归：`commands::tests::an_unmigrated_settings_yaml_wins_over_an_existing_profile`（有 profile 但无标记 → 仍读 legacy）与 `the_migration_marker_hands_the_layer_to_the_profile_patch`（标记一出现 → 立刻切到 profile 层）。
 - 旧版 `settings.yaml` 的语义（legacy 层仍在用）是**单个 namespaced YAML 文件**，栈内按插件短名分节。本模块负责三类 section：
   1. `llm-pi-ai.providers.<route>`：供应商字典（key 即 route id），对应 Hermes 的 custom_providers。
   2. `agent-default-model`：默认模型 `{ provider, model, reasoningEffort }`。

@@ -209,6 +209,8 @@ export interface ProviderCardModels {
   onTestModels?: () => void;
   testModelsDisabled?: boolean;
   testModelsDisabledTooltip?: string;
+  /** A caveat shown even while the test button is enabled (see `ModelListSection`). */
+  testModelsHint?: string;
   onFetchModels?: () => void;
   fetchDisabled?: boolean;
   fetchDisabledTooltip?: string;

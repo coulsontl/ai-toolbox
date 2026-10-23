@@ -212,6 +212,8 @@ const OmoNativePage: React.FC = () => {
           docsUrl={OMO_NATIVE_DOCS_URL}
           // 与 OMP / Pi 同类语义：显示的是引擎状态目录，不是单个配置文件。
           configPath={pathInfo?.path ?? '~/.omo/agent'}
+          // Same meaning as Pi / OMP: the engine state directory, not a file.
+          configPathKind="directory"
           onPreviewConfig={() => setPreviewModalOpen(true)}
           onCustomizeConfig={() => setRootDirectoryModalOpen(true)}
           onOpenFolder={() => void handleOpenRootFolder()}

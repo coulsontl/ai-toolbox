@@ -23,6 +23,14 @@ export interface CodingPageHeaderProps {
 
   /** Resolved config path; callers own their own fallback value. */
   configPath: string;
+  /**
+   * What `configPath` points at. Some CLIs manage a root **directory** rather
+   * than one file (pi, oh_my_pi, dsh, hermes, omo_native), and calling a
+   * directory a "config file path" is wrong rather than merely worded
+   * differently. Both labels live in `common.*`; the caller only says which
+   * kind of thing its path is. Defaults to `'file'`.
+   */
+  configPathKind?: 'file' | 'directory';
   /** Shows the "customize config dir" button when provided. */
   onCustomizeConfig?: () => void;
   customizeConfigDisabled?: boolean;
@@ -61,6 +69,7 @@ const CodingPageHeader: React.FC<CodingPageHeaderProps> = ({
   docsUrl,
   onPreviewConfig,
   configPath,
+  configPathKind = 'file',
   onCustomizeConfig,
   customizeConfigDisabled,
   customizeConfigDisabledReason,
@@ -106,7 +115,7 @@ const CodingPageHeader: React.FC<CodingPageHeaderProps> = ({
           </div>
           <Space size="small">
             <Text type="secondary" style={{ fontSize: 12 }}>
-              {t('common.configPath')}:
+              {t(configPathKind === 'directory' ? 'common.configDir' : 'common.configPath')}:
             </Text>
             <Text code style={{ fontSize: 12 }}>
               {configPath}

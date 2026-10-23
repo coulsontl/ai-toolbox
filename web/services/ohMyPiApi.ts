@@ -70,6 +70,13 @@ export const saveOmpModelsProvider = async (
   return await invoke<OmpRuntimeConfig>('save_omp_models_provider', { input });
 };
 
+/** Persist the drag order of `models.yml`'s `providers` mapping. */
+export const reorderOmpProviders = async (
+  providerKeys: string[],
+): Promise<OmpRuntimeConfig> => {
+  return await invoke<OmpRuntimeConfig>('reorder_omp_providers', { providerKeys });
+};
+
 export const deleteOmpRuntimeProvider = async (
   providerKey: string,
 ): Promise<OmpRuntimeConfig> => {

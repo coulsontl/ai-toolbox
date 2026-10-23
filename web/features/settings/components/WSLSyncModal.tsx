@@ -6,7 +6,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Modal, Form, Switch, Select, Button, List, Space, Typography, Alert, Spin, Tag, Modal as AntdModal, Tabs, Tooltip, Progress } from 'antd';
-import { CheckCircleOutlined, CloseCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ClearOutlined, CodeOutlined, FolderOpenOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, CloseCircleOutlined, CloseOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ClearOutlined, CodeOutlined, FolderOpenOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useWSLSync } from '@/features/settings/hooks/useWSLSync';
 import { useSettingsStore } from '@/stores';
@@ -757,8 +757,10 @@ export const WSLSyncModal: React.FC<WSLSyncModalProps> = ({ open, onClose }) => 
                   type="warning"
                   message={translateSyncMessage(syncWarning, 'wsl', t)}
                   showIcon
-                  closable
-                  onClose={dismissSyncWarning}
+                  // antd 6 moved the handler into `closable`; the top-level
+                  // `onClose` is deprecated (and the object form needs
+                  // `closeIcon`, or the × is not rendered at all).
+                  closable={{ closeIcon: <CloseOutlined />, onClose: dismissSyncWarning }}
                   style={{ marginTop: 12 }}
                 />
               )}

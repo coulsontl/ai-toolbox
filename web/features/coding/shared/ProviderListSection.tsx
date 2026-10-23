@@ -191,6 +191,9 @@ export interface ProviderListSectionProps {
 
   onBatchTest?: () => void;
   batchTesting?: boolean;
+  /** Set when no provider in the list can be tested; the button then explains itself. */
+  batchTestDisabled?: boolean;
+  batchTestDisabledReason?: string;
   onOpenCommonConfig?: () => void;
   onAddProvider: () => void;
 
@@ -267,6 +270,8 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
   dragDisabledBySort = false,
   onBatchTest,
   batchTesting = false,
+  batchTestDisabled = false,
+  batchTestDisabledReason,
   onOpenCommonConfig,
   onAddProvider,
   headerExtra,
@@ -513,19 +518,27 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
                   </Tooltip>
                 )}
                 {onBatchTest && (
-                  <Button
-                    type="link"
-                    size="small"
-                    style={toolbarButtonStyle}
-                    icon={<ThunderboltOutlined />}
-                    loading={batchTesting}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onBatchTest();
-                    }}
-                  >
-                    {t('common.batchTest')}
-                  </Button>
+                  // An empty target set still resolves: the click would flash a
+                  // spinner and then clear every status badge without a result.
+                  // The reason says why instead.
+                  <Tooltip title={batchTestDisabled ? batchTestDisabledReason : undefined}>
+                    <span>
+                      <Button
+                        type="link"
+                        size="small"
+                        style={toolbarButtonStyle}
+                        icon={<ThunderboltOutlined />}
+                        loading={batchTesting}
+                        disabled={batchTestDisabled}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onBatchTest();
+                        }}
+                      >
+                        {t('common.batchTest')}
+                      </Button>
+                    </span>
+                  </Tooltip>
                 )}
                 {onOpenCommonConfig && (
                   <Button

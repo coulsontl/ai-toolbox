@@ -22,6 +22,7 @@
 - 值没变时直接 return（对比 `runtimeConfig.modelSettings`），不写文件、不刷托盘。
 - 供应商弹窗的四个「高级 JSON」（credential / headers / compat / modelOverrides）各自持有独立 state，保存时统一按「空则删键、非空则整块覆盖」回写。这是保留 `models.json` 未知字段的方式，但**空编辑器 = 删除该键**，不是「不动」；凭据编辑器为空时干脆不调用 `savePiAuthProvider`。
 - 「获取模型」与「连通性测试」必须带 `configValueMode: 'pi'`，让后端按 Pi 的配置值语法解析 `apiKey` / header 再发请求。前端不解析模板，也不能把模板值拼进预览 URL。
+- **出网请求的 apiKey 走 `resolvePiProviderApiKey()`（`utils/providerConfig.ts`），不要只读 `models.json`**（issue #435）。Pi 的解析优先级是「`auth.json` 存储凭据 > `models.json` 的 `apiKey` > 环境变量」（上游 `packages/ai/README.md` 的 Credential Store 与 `provider-composer.ts` 的 `composeApiKeyAuth.resolve`）。只读 `models.json` 会让 `/login` 或弹窗「高级 JSON」写入的 key 在「模型测试 / 获取模型」时完全不发送，后端兜底读的是 **OpenCode** 的 `auth.json`，对 Pi 的 provider key 取不到值，于是裸请求 401。OAuth 凭据（`type: 'oauth'` 或无 `type` 的未知形状）不取——它与页面已有的 `credentialUnavailable` 判定一致。`buildPiOpenCodeProvider()` 保持「存储渠道」形状（收藏/分享按它的 `apiKey` 去重），只在出网调用点用 `withResolvedPiApiKey()` 覆盖，不要改 builder 本身。回归：`web/test/features/coding/pi/utils/providerConfig.test.ts`。
 - Fetch Models 命中 preset 时只借用能力元数据：写回 `models.json` 的 model id 必须是上游返回的原文（含大小写）。
 
 ## 关键流程
@@ -65,8 +66,11 @@ sequenceDiagram
 - 「其他配置」编辑的是后端切出的 `settings.json` 切片（隐藏 `defaultProvider` / `defaultModel` / `defaultThinkingLevel` 与 `packages`），失焦保存；基底由后端重读文件，前端只负责文本与合法性。
 - 本页**不参与 Gateway 接管**：Pi 不在 `GatewayCliKey::supported_mvp()` 里，只有用量统计包含它（`GATEWAY_USAGE_TOOLS`）。所以页面没有网关代理胶囊 / 恢复直连，也不要为了「跟其他 tab 一致」补上去；供应商表单里的计费 / 自定义请求头 / 模型改写这类「只由网关消费」的分区同理不应出现。
 - 侧栏折叠状态读 `sidebarHiddenByPage.pi`、写 `setSidebarHidden('pi', …)`，两处都用 `pi`。
-- 页头显示的是**配置目录**（`rootPathInfo.path`）而不是配置文件路径，这是 pi/ohMyPi 独有的真实差异；两页尚未迁移到共享 `CodingPageHeader`（见 `docs/new-cli-onboarding-sop.md` §4.3），迁移时应加 `configPathLabel` 之类的 prop，而不是把差异抹平。
+- 页头显示的是**配置目录**（`rootPathInfo.path`）而不是配置文件路径——`auth.json` / `models.json` / `settings.json` 都从它派生。共享 `CodingPageHeader` 用 `configPathKind="directory"` 表达这个差异（标签取 `common.configDir`），**不要改成自由文案 prop**。
+- **页面外壳与卡片全部走共享组件**（2026-10-22 迁移）：页头 `CodingPageHeader`、供应商区 `ProviderListSection`、卡片 `OpenCodeStyleCard`（薄映射层 `components/PiProviderCard.tsx`）、卡片视图 `ProviderCompactCard` + `ProviderModelSection`、编辑弹窗 `components/PiProviderFormModal.tsx`（横向布局，因此被 `verify-form-modal-layout` 覆盖）。Pi 有 per-provider 模型目录、没有 provider 级「应用」（默认指针是 `modelSettings.defaultProvider` + `modelId`），所以头部无主操作，`设为默认` 在模型行上——这是 OpenCode 式的判据，不是随手选的。布局改动一律改 `shared/providerCardVariants/`（Hard Rule 14，`pnpm run test:provider-card-layout` 守护）。**卡片视图必须自己传 `detail.secondaryActions`**：格子只带「更多」菜单，编辑 / 复制 / 分享 / 删除只在详情侧栏里；漏传不会报错，只会让卡片视图少掉这四个入口（列表视图照旧有）。
+- **供应商拖拽是「把手 + 行为 + 存取」三件套**：顺序存在 `models.json` 的 `providers` 键序里，拖动调后端 `reorder_pi_providers`。`build_provider_views` 按该键序出视图（**不要用 `BTreeSet` 重建顺序**，那会把拖拽结果读回字母序）；写盘按序列化文本比较变化（`preserve_order` 下 `Value` 相等与键序无关）。只读视图里没有 `models_json` 来源的 provider 不参与拖拽。
 
+- **页面容器的间距规则（2026-10-22 修）**：`.pageContent` 只写 `display: block`，**不要 `flex` + `gap`**——`CodingPageHeader` 自带 `marginBottom: 16`，容器再加 16px 的 gap 会让页头与第一个区块之间变成 32px（OpenCode 2026-10-19、pi / oh_my_pi / dsh / hermes 2026-10-22 各犯一次）。间距一律由区块类 `.piSection { margin-bottom: 16px; }` 自带，使 `block` 布局下的 margin 折叠生效。任何时刻改 `.pageContent` / 区块类都要跑 `pnpm run test:page-rhythm`（真浏览器量页头→首区块与区块→区块，必须都是 16px）。层级同理：`styles.xxx` 在 CSS Modules 里少一个键只得到 `undefined`，元素会渲染成 `class=""`——改名后跑 `pnpm run test:css-module-classes`（同类的错配在 oh_my_pi 上真实发生过，见该模块说明）。
 ## 跨模块依赖
 
 - 后端 `pi::*` 命令（`web/services/piApi.ts` 一一对应）、prompt presets 走 `piPromptApi`。
@@ -75,8 +79,9 @@ sequenceDiagram
 
 ## 典型变更场景（按需）
 
-- 新增 provider 字段：同时检查 `openProviderModal` 的回填、`handleSaveProviderModal` 的 `setOptionalStringField` / 显式 delete 分支、`buildPiFavoriteProviderConfig` 的归一化，以及 `fetchModelsProviderInfo` / `connectivityInfo` 的取值。
+- 新增 provider 字段：同时检查 `openProviderModal` 的入参、弹窗 `components/PiProviderFormModal.tsx` 的字段与回填、`handleSaveProviderModal` 的 `setOptionalStringField` / 显式 delete 分支、`buildPiFavoriteProviderConfig` 的归一化、`utils/providerConfig.ts` 的默认值，以及 `fetchModelsProviderInfo` / `connectivityInfo` 的取值。
 - 新增模型字段：检查 `ModelFormModal` 的 `show*` 开关与 `messageOverrides`、`handleSavePiModel` 的「有值才写、无值删键」映射、以及 `buildPiModelFromPreset` 是否也要补。
+  > ⚠️ **`models.json` 的持久字段名与弹窗的字段名不同**：落盘的是 `contextWindow` / `maxTokens`，弹窗里叫 `contextLimit` / `outputLimit`。卡片（`PiProviderCard` 的 `modelRows`）读的必须是**落盘名**——读成表单名不会报错，只是每一行都少了长度后缀（2026-10-22 的真实缺陷）。
 - 改思考档位：`utils/piModelMetadata.ts`、模型弹窗、后端校验白名单三处必须同步（`ultra` 属于 Codex，不属于 Pi）。
 - 改「获取模型」应用逻辑：确认 preset 只补能力、id 保持上游原文。
 

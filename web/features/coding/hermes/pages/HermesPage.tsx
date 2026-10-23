@@ -1532,6 +1532,8 @@ const HermesPage: React.FC = () => {
             docsUrl="https://hermes-agent.nousresearch.com/docs/"
             onPreviewConfig={() => setPreviewModalOpen(true)}
             configPath={runtimeConfig?.rootPathInfo.path || '~/.hermes'}
+            // The root is the config directory; `config.yaml` lives inside it.
+            configPathKind="directory"
             onCustomizeConfig={() => setRootDirectoryModalOpen(true)}
             onOpenFolder={handleOpenRootFolder}
             onRefresh={handleRefreshConfig}

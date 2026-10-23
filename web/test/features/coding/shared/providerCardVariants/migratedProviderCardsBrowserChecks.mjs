@@ -645,6 +645,178 @@ export async function verifyMigratedProviderCards({ send, evaluate, baseUrl, art
       && hermesCardSubtitle.includes('当前主模型')),
   );
 
+  /* ------------------------------------------------------- Pi / Oh My Pi / dsh */
+
+  // Pi's old card fell back through the credential mask and the source labels
+  // before printing a "Base URL". The shared card has a real endpoint line, and
+  // the mask lives in the detail sidebar only.
+  await fixture('expandModels("pi-list")');
+  const piList = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="pi-list"]');
+      const text = root.textContent.replace(/\\s+/g, ' ').trim();
+      return {
+        text,
+        grip: Boolean(root.querySelector('[data-provider-card-handle]')),
+      };
+    })()
+  `);
+  check(
+    'the Pi card states its endpoint and protocol',
+    piList.text.includes('https://openrouter.ai/api/v1') && piList.text.includes('@ai-sdk/openai-compatible'),
+  );
+  check('the Pi card offers no provider-level apply', !piList.text.includes('应用'));
+  check('the Pi credential is not printed as an endpoint', !piList.text.includes('sk-or-v1-fixture-key-1234'));
+  check('the Pi provider card carries a drag grip', piList.grip);
+  const piRows = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="pi-list"]');
+      return [...root.querySelectorAll('[data-model-row]')]
+        .map(row => row.textContent.replace(/\\s+/g, ' ').trim());
+    })()
+  `);
+  check(
+    'the Pi default model row is marked as the current one',
+    piRows.some(text => text.includes('claude-opus-4-8') && text.includes('当前主模型')),
+  );
+  // The row reads `contextWindow` / `maxTokens` (Pi's stored names); reading
+  // the form field names instead silently dropped this suffix from every row.
+  check(
+    'the Pi model row states its context window',
+    piRows.some(text => text.includes('claude-opus-4-8') && text.includes('200K')),
+  );
+
+  // The old card printed the credential mask / source names *in place of* the
+  // endpoint when there was none. The shared card names the sources as tags,
+  // but must not turn any of them into a link.
+  const piBuiltin = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="pi-builtin-list"]');
+      return {
+        tags: [...root.querySelectorAll('.ant-tag')].map(node => node.textContent.trim()),
+        links: [...root.querySelectorAll('a[href^="http"]')].map(node => node.getAttribute('href')),
+      };
+    })()
+  `);
+  check(
+    'a built-in Pi key names its sources as tags',
+    piBuiltin.tags.includes('内置') && piBuiltin.tags.includes('settings.json'),
+  );
+  check(
+    'a built-in Pi key renders without a fabricated endpoint',
+    piBuiltin.links.length === 0,
+  );
+
+  await fixture('expandModels("omp-list")');
+  const ompList = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="omp-list"]');
+      return {
+        text: root.textContent.replace(/\\s+/g, ' ').trim(),
+        grip: Boolean(root.querySelector('[data-provider-card-handle]')),
+      };
+    })()
+  `);
+  check(
+    'the Oh My Pi card states its endpoint and protocol',
+    ompList.text.includes('https://openrouter.ai/api/v1') && ompList.text.includes('@ai-sdk/openai-compatible'),
+  );
+  check('the Oh My Pi card carries a drag grip', ompList.grip);
+
+  // The subscription block is a list member of its own: it must reach the real
+  // page, not a stub, for this check to mean anything.
+  const ompSubscriptionText = await fixture('text("omp-subscription-block")');
+  check(
+    'the Oh My Pi subscription block states its OAuth status',
+    ompSubscriptionText.includes('凭据已存储'),
+  );
+  // The list card folds its account rows away (Codex's call, user-requested for
+  // OMP on 2026-10-22). `OfficialAccountsSection` draws a caret only when the
+  // host passes `onToggleCollapsed`, so the presence of that button *is* the
+  // collapse affordance — the rows alone would render either way.
+  const ompAccountTitleButton = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="omp-subscription-block"]');
+      const button = [...root.querySelectorAll('button')]
+        .find(candidate => candidate.textContent.includes('账号列表'));
+      return Boolean(button);
+    })()
+  `);
+  check('the Oh My Pi account list is collapsible', ompAccountTitleButton);
+  check(
+    'clicking the Oh My Pi account list title expands it',
+    await fixture('expandAccounts("omp-subscription-block")'),
+  );
+
+  const dshList = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="dsh-list"]');
+      return {
+        text: root.textContent.replace(/\\s+/g, ' ').trim(),
+        grip: Boolean(root.querySelector('[data-provider-card-handle]')),
+      };
+    })()
+  `);
+  check(
+    'the dsh card states its endpoint and SDK family',
+    dshList.text.includes('https://api.deepseek.com/v1')
+      && dshList.text.includes('@ai-sdk/openai-compatible'),
+  );
+  check('the dsh card carries a drag grip', dshList.grip);
+  check(
+    'the dsh card names the credential ref the key is stored under',
+    dshList.text.includes('DEEPSEEK_CUSTOM_API_KEY'),
+  );
+
+  const dshBuiltin = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="dsh-builtin-list"]');
+      const text = root.textContent.replace(/\\s+/g, ' ').trim();
+      const headerIcons = [...root.querySelectorAll('button')]
+        .map(node => node.querySelector('.anticon')?.className ?? '')
+        .filter(name => name);
+      // The model toolbar's "批量删除" also carries a delete icon, so a plain
+      // icon search would report a provider-level delete that is not there.
+      // The provider-level row is icon-only; the model toolbar's buttons all
+      // carry a label.
+      const iconOnlyDelete = [...root.querySelectorAll('button')]
+        .some(node => node.querySelector('.anticon-delete') && !node.textContent.trim());
+      return {
+        text,
+        grip: Boolean(root.querySelector('[data-provider-card-handle]')),
+        edit: headerIcons.some(name => name.includes('anticon-edit')),
+        del: iconOnlyDelete,
+      };
+    })()
+  `);
+  check(
+    'a catalog-backed dsh route is tagged as the bundled catalog',
+    dshBuiltin.text.includes('内置 · 适配器默认模型'),
+  );
+  check(
+    'a catalog-backed dsh route keeps editing but offers no delete and no grip',
+    dshBuiltin.edit && !dshBuiltin.del && !dshBuiltin.grip,
+  );
+  check(
+    'a catalog-backed dsh route still lets the user declare its own models',
+    dshBuiltin.text.includes('添加模型'),
+  );
+
+  // The grid cell only carries "more"; edit / copy / share / delete live in the
+  // detail sidebar. A card that forgets `detail.secondaryActions` silently loses
+  // every one of them in card mode while the list layout still shows them.
+  for (const [block, label] of [
+    ['pi-card', 'Pi'],
+    ['omp-card', 'Oh My Pi'],
+    ['dsh-card', 'dsh'],
+  ]) {
+    check(
+      `the ${label} detail sidebar keeps the quieter actions`,
+      await fixture(`detailFooterActions("${block}")`),
+      ['编辑', '复制', '分享', '删除'],
+    );
+  }
+
   await screenshot('migrated-provider-cards-light');
 
   /* ---------------------------------------------------------------- dark theme */

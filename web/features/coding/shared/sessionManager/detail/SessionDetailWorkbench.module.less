@@ -104,58 +104,7 @@
   white-space: nowrap;
 }
 
-.commandTitleArea {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.commandTitleBlock {
-  min-width: 0;
-}
-
-.commandTitle {
-  overflow: hidden;
-  color: var(--color-text-primary);
-  font-size: 16px;
-  font-weight: 650;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.commandSubtitle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  color: var(--color-text-tertiary);
-  font-size: 12px;
-
-  span {
-    overflow: hidden;
-    min-width: 0;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  code {
-    flex: 0 0 auto;
-    color: var(--color-text-secondary);
-    font-size: 12px;
-  }
-}
-
-.commandControls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-
 .detailSearchGroup,
-.filterGroup,
 .actionGroup {
   display: flex;
   align-items: center;
@@ -200,10 +149,6 @@
   font-size: 12px;
   white-space: nowrap;
   background: var(--color-bg-container);
-}
-
-.filterSelect {
-  min-width: 116px;
 }
 
 .actionGroup {
@@ -1623,10 +1568,8 @@
     padding: 8px;
   }
 
-  .commandControls,
   .searchScopeToggle,
   .detailSearchGroup,
-  .filterGroup,
   .actionGroup {
     width: 100%;
     max-width: none;
@@ -1640,8 +1583,7 @@
     flex: 1 1 0;
   }
 
-  .detailSearchInput,
-  .filterSelect {
+  .detailSearchInput {
     min-width: 0;
     flex: 1 1 0;
   }

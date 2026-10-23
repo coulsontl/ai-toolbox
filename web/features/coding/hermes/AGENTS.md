@@ -38,6 +38,7 @@ sequenceDiagram
 - 通用配置编辑面的保存**不能**改成前端拼整份配置落盘：后端的切片读-改-写是 MCP/provider/模型不被回退的唯一保证。
 - 新增受保护键时同时改后端 `HERMES_OTHER_SETTINGS_PROTECTED_KEYS` 与 `build_other_settings()`，前端不需要维护第二份名单。
 
+- **页面容器的间距规则（2026-10-22 修）**：`.pageContent` 只写 `display: block`，**不要 `flex` + `gap`**——`CodingPageHeader` 自带 `marginBottom: 16`，容器再加 16px 的 gap 会让页头与第一个区块之间变成 32px（OpenCode 2026-10-19、pi / oh_my_pi / dsh / hermes 2026-10-22 各犯一次）。间距一律由区块类 `.hermesSection { margin-bottom: 16px; }` 自带，使 `block` 布局下的 margin 折叠生效。任何时刻改 `.pageContent` / 区块类都要跑 `pnpm run test:page-rhythm`（真浏览器量页头→首区块与区块→区块，必须都是 16px）。层级同理：`styles.xxx` 在 CSS Modules 里少一个键只得到 `undefined`，元素会渲染成 `class=""`——改名后跑 `pnpm run test:css-module-classes`。
 ## 跨模块依赖
 
 - 依赖后端 `hermes::commands` 的 runtime config / memory / provider 命令。

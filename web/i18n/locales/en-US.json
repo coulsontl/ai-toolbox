@@ -1949,7 +1949,8 @@
       "default": "Default"
     },
     "more": "More",
-    "copyFailed": "Copy failed"
+    "copyFailed": "Copy failed",
+    "configDir": "Config Directory"
   },
   "sessionManager": {
     "title": "Session Manager",
@@ -4573,7 +4574,6 @@
   },
   "pi": {
     "rootPathSource": {
-      "customize": "Customize Root Directory",
       "modal": {
         "title": "Customize Pi Root Directory",
         "currentSource": "Current Source",
@@ -4596,10 +4596,6 @@
       }
     },
     "title": "Pi Configuration",
-    "viewDocs": "Docs",
-    "configPath": "Root directory",
-    "openFolder": "Open folder",
-    "refreshConfig": "Refresh config",
     "syncModels": "Sync preset models",
     "modelsRefreshSuccess": "Preset models synced",
     "pageHint": "Pi runtime files remain the source of truth. This page is a visual editor and writes changes directly to settings.json, auth.json, models.json, and AGENTS.md.",
@@ -4618,8 +4614,6 @@
     },
     "provider": {
       "title": "Provider list",
-      "emptyText": "No provider entries in runtime files",
-      "builtinHint": "Built-in provider. Credentials may come from environment variables or Pi login state.",
       "deleteCredential": "Delete credential",
       "deleteProviderConfig": "Delete provider config",
       "deleteConfirmTitle": "Delete provider entry",
@@ -4633,13 +4627,11 @@
       "providerKeyRequired": "Provider key is required",
       "providerKey": "Provider key",
       "providerKeyPlaceholder": "e.g. openrouter",
-      "addSupplier": "Add provider",
       "addSupplierTitle": "Add Pi provider",
       "editSupplierTitle": "Edit {{name}}",
       "displayName": "Display name",
       "displayNamePlaceholder": "e.g. OpenRouter",
       "credentialAdvancedJson": "Advanced auth.json JSON for official subscription or login state. Optional.",
-      "configSection": "Third-party provider config models.json",
       "apiType": "API type",
       "apiTypePlaceholder": "Select or enter API type",
       "baseUrl": "Base URL",
@@ -4683,7 +4675,8 @@
       "importAllApiHubOpenAiCompatTitle": "Review before importing",
       "importAllApiHubReviewConfirm": "Continue import",
       "importAllApiHubOpenAiCompatDesc": "Some selected providers will be imported as OpenAI-compatible APIs, and this guess may be inaccurate. After importing, open the provider editor and review the API type, Base URL, and related settings.",
-      "importAllApiHubMissingApiKeyDesc": "Some selected providers do not have an API key available. After importing, enter the provider API key manually in the provider editor."
+      "importAllApiHubMissingApiKeyDesc": "Some selected providers do not have an API key available. After importing, enter the provider API key manually in the provider editor.",
+      "sourcesLabel": "Sources"
     },
     "otherConfig": {
       "title": "Other configuration",
@@ -4695,9 +4688,6 @@
       "outputLimit": "Output",
       "idRequired": "Model ID is required",
       "idExists": "This model ID already exists",
-      "batchDelete": "Batch delete",
-      "cancelBatchDelete": "Cancel batch delete",
-      "deleteSelected": "Delete selected {{count}}",
       "batchDeleteSuccess": "Deleted {{count}} models",
       "setAsPrimarySuccess": "Default model set: {{name}}",
       "idPlaceholder": "e.g. claude-sonnet-4.5",
@@ -4715,7 +4705,6 @@
       "button": "Model test"
     },
     "fetchModels": {
-      "button": "Fetch models",
       "applySuccess": "Added {{addCount}} models, removed {{removeCount}} models"
     },
     "extensions": {
@@ -5073,7 +5062,6 @@
   },
   "ohMyPi": {
     "rootPathSource": {
-      "customize": "Customize Root Directory",
       "modal": {
         "title": "Customize Oh My Pi Root Directory",
         "currentSource": "Current Source",
@@ -5096,9 +5084,6 @@
       }
     },
     "title": "Oh My Pi Configuration",
-    "viewDocs": "Docs",
-    "configPath": "Root directory",
-    "openFolder": "Open folder",
     "refreshConfig": "Refresh config",
     "syncModels": "Sync preset models",
     "modelsRefreshSuccess": "Preset models synced",
@@ -5164,8 +5149,6 @@
     },
     "provider": {
       "title": "Provider list",
-      "emptyText": "No provider entries in runtime files",
-      "builtinHint": "Built-in provider. Credentials may come from environment variables or Oh My Pi login state.",
       "deleteConfirmTitle": "Delete provider entry",
       "deleteConfirmContent": "Delete {{scope}} for {{providerKey}}?",
       "deleteDisabledDefault": "This is the default provider and cannot be deleted",
@@ -5175,12 +5158,10 @@
       "providerKeyRequired": "Provider key is required",
       "providerKey": "Provider key",
       "providerKeyPlaceholder": "e.g. openrouter",
-      "addSupplier": "Add API provider",
       "addSupplierTitle": "Add Oh My Pi API provider",
       "editSupplierTitle": "Edit {{name}}",
       "displayName": "Display name",
       "displayNamePlaceholder": "e.g. OpenRouter",
-      "configSection": "Third-party provider config models.yml",
       "apiType": "API type",
       "apiTypePlaceholder": "Select or enter API type",
       "baseUrl": "Base URL",
@@ -5220,7 +5201,8 @@
       "importAllApiHubOpenAiCompatTitle": "Review before importing",
       "importAllApiHubReviewConfirm": "Continue import",
       "importAllApiHubOpenAiCompatDesc": "Some selected providers will be imported as OpenAI-compatible APIs, and this guess may be inaccurate. After importing, open the provider editor and review the API type, Base URL, and related settings.",
-      "importAllApiHubMissingApiKeyDesc": "Some selected providers do not have an API key available. After importing, enter the provider API key manually in the provider editor."
+      "importAllApiHubMissingApiKeyDesc": "Some selected providers do not have an API key available. After importing, enter the provider API key manually in the provider editor.",
+      "sourcesLabel": "Sources"
     },
     "otherConfig": {
       "title": "Other configuration",
@@ -5235,9 +5217,6 @@
       "outputLimit": "Output",
       "idRequired": "Model ID is required",
       "idExists": "This model ID already exists",
-      "batchDelete": "Batch delete",
-      "cancelBatchDelete": "Cancel batch delete",
-      "deleteSelected": "Delete selected {{count}}",
       "batchDeleteSuccess": "Deleted {{count}} models",
       "setAsPrimarySuccess": "Default model set: {{name}}",
       "idPlaceholder": "e.g. claude-sonnet-4.5",
@@ -5254,7 +5233,6 @@
       "button": "Model test"
     },
     "fetchModels": {
-      "button": "Fetch models",
       "applySuccess": "Added {{addCount}} models, removed {{removeCount}} models"
     },
     "extensions": {
@@ -5335,7 +5313,8 @@
       "unsupportedApi": "Connectivity testing is not available for {{api}}. Verify it with the OMP CLI.",
       "mixedConnections": "Models use different protocols or endpoints. Each model is tested with its own connection.",
       "noTestableModel": "The protocols these models use cannot be connectivity tested. Verify them with the OMP CLI.",
-      "modelDiscoveryUnavailable": "Model discovery is not available for this connection. Add models manually."
+      "modelDiscoveryUnavailable": "Model discovery is not available for this connection. Add models manually.",
+      "noTestableProvider": "No provider in this list can be tested. Check the protocols with the OMP CLI."
     },
     "subagents": {
       "title": "Subagents",
@@ -5437,10 +5416,6 @@
   "dsh": {
     "title": "DeepSeek Harness Configuration",
     "pageHint": "Manage dsh (DeepSeek Harness) model providers, the default model, and the global prompt.",
-    "viewDocs": "Official Documentation",
-    "configPath": "Configuration File Path",
-    "openFolder": "Open Folder",
-    "refreshConfig": "Refresh Config",
     "syncModels": "Sync Models",
     "modelsRefreshSuccess": "Preset models refreshed",
     "openWebUi": "Open Web UI",
@@ -5463,10 +5438,9 @@
       "label": "Configuration Profile",
       "auto": "Auto-detect ({{profile}})",
       "autoDetecting": "Auto-detect",
-      "migrationTitle": "Configuration moved to the profile layer",
-      "migrationWithFile": "dsh 0.1.7+ no longer reads settings.yaml: it was imported into {{patchPath}} and renamed to {{importedPath}}. This page now writes providers and the default model into the profile patch; the old file is history only.",
       "otherSettingsFrozenTitle": "Other configuration is owned by dsh",
-      "otherSettingsFrozenDesc": "The profile patch holds configuration rows for every dsh plugin, so editing it wholesale can break unrelated plugins. Maintain those values in dsh's own settings pages (Settings → Plugins); this page manages providers and the default model only."
+      "otherSettingsFrozenDesc": "The profile patch holds configuration rows for every dsh plugin, so editing it wholesale can break unrelated plugins. Maintain those values in dsh's own settings pages (Settings → Plugins); this page manages providers and the default model only.",
+      "migrationNotice": "Configuration moved to the profile layer: settings.yaml was imported into {{patchPath}} and renamed to {{importedPath}}; the old file no longer applies."
     },
     "modelSettings": {
       "title": "Default Model",
@@ -5479,11 +5453,8 @@
     },
     "provider": {
       "title": "Provider List",
-      "addSupplier": "Add Provider",
       "addSupplierTitle": "Add Provider",
       "editSupplierTitle": "Edit Provider {{name}}",
-      "emptyText": "No providers yet",
-      "builtinHint": "Built-in provider",
       "providerKey": "Provider Key",
       "providerKeyPlaceholder": "e.g., deepseek",
       "providerKeyRequired": "Please enter a provider key",
@@ -5507,7 +5478,8 @@
       },
       "deleteScopeModalTitle": "Delete Provider",
       "deleteScopeModalContent": "This provider has both provider config and API credentials. Deleting will remove both and cannot be undone. Delete provider {{providerKey}}?",
-      "confirmDelete": "Confirm Delete"
+      "confirmDelete": "Confirm Delete",
+      "builtinHint": "Built-in provider"
     },
     "model": {
       "modelSourceBuiltin": "Built-in · adapter default models",
@@ -5515,15 +5487,11 @@
       "idPlaceholder": "Model identifier, e.g., deepseek-chat",
       "idRequired": "Please enter a model ID",
       "idExists": "This model ID already exists",
-      "batchDelete": "Batch Delete",
-      "cancelBatchDelete": "Exit Batch Delete",
-      "deleteSelected": "Delete Selected ({{count}})",
       "batchDeleteSuccess": "Deleted {{count}} model(s)",
       "thinkingLevelMapHint": "Model-level thinking level support/mapping table.",
       "extraParamsHint": "Additional model parameters (e.g., input modalities, compat flags). These will be preserved as-is in the config file."
     },
     "fetchModels": {
-      "button": "Fetch Models",
       "applySuccess": "Applied {{addCount}} model(s), removed {{removeCount}}"
     },
     "connectivity": {
@@ -5535,7 +5503,6 @@
       "autoSaveHint": "Auto-save"
     },
     "rootPathSource": {
-      "customize": "Customize Root Directory",
       "modal": {
         "title": "Customize Config Directory",
         "currentSource": "Current Source",

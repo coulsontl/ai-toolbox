@@ -2,46 +2,44 @@ import React from 'react';
 import {
   Button,
   Collapse,
-  Empty,
   Form,
-  Input,
   Modal,
   Select,
   Space,
   Spin,
-  Switch,
-  Tooltip,
   Typography,
   message,
 } from 'antd';
 import {
-  ApiOutlined,
   AppstoreAddOutlined,
-  CheckSquareOutlined,
-  CloudDownloadOutlined,
   CloudSyncOutlined,
   DatabaseOutlined,
-  DeleteOutlined,
-  DownOutlined,
-  EditOutlined,
-  EllipsisOutlined,
-  EyeOutlined,
   FileTextOutlined,
-  FolderOpenOutlined,
-  LinkOutlined,
   MessageOutlined,
-  PlusOutlined,
-  QuestionCircleOutlined,
-  ReloadOutlined,
-  RightOutlined,
   RobotOutlined,
   SettingOutlined,
   TeamOutlined,
-  ThunderboltOutlined,
   ToolOutlined,
   ImportOutlined,
 } from '@ant-design/icons';
-import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  rectSortingStrategy,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { restrictToVerticalAxis, restrictToWindowEdges } from '@dnd-kit/modifiers';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 
 import { useProviderSharing } from '@/features/coding/shared/providerShare';
@@ -49,11 +47,8 @@ import AllApiHubIcon from '@/components/common/AllApiHubIcon';
 import ImportProviderModal from '@/components/common/ImportProviderModal';
 import JsonEditor from '@/components/common/JsonEditor';
 import FileConfigPreviewModal from '@/components/common/FileConfigPreviewModal';
-import ProviderCard from '@/components/common/ProviderCard';
 import type {
-  ModelDisplayData,
   ProviderConnectivityStatusItem,
-  ProviderDisplayData,
 } from '@/components/common/ProviderCard/types';
 import ModelFormModal from '@/components/common/ModelFormModal';
 import type { ModelFormValues } from '@/components/common/ModelFormModal';
@@ -66,12 +61,19 @@ import SidebarSettingsModal from '@/components/common/SidebarSettingsModal';
 import CliManualPathSetting from '@/components/common/CliManualPathSetting';
 import { TRAY_CONFIG_REFRESH_EVENT } from '@/constants/configEvents';
 import { findPresetModelById } from '@/constants/presetModels';
+import { OMP_API_OPTIONS } from '../utils/ompApiOptions';
 import {
-  getOmpApiBaseUrlUpdate,
-  OMP_API_DESCRIPTION_I18N_KEYS,
-  OMP_API_OPTIONS,
-  type OmpApiValue,
-} from '../utils/ompApiOptions';
+  asRecord,
+  createDefaultProviderConfig,
+  getStringField,
+  hasProviderConfigContent,
+  isRecordEmpty,
+  setOptionalStringField,
+} from '../utils/ompProviderConfig';
+import {
+  buildOmpProviderConfigFromForm,
+  ompProviderKeySaveError,
+} from '../utils/ompProviderForm';
 import {
   getOmpDiagnostics,
   getTestableOmpModelIds,
@@ -93,17 +95,21 @@ import { SessionManagerPanel } from '@/features/coding/shared/sessionManager';
 import {
   PROVIDER_SORT_MODES_BASIC,
   backupProvidersBeforeDelete,
-  ProviderBatchToolbar,
-  ProviderSearchEmpty,
-  ProviderSearchInput,
-  ProviderSortDropdown,
   filterProviderItems,
   sortProviderItems,
   providerSelectionDisabledReason,
   useProviderBatchSelection,
   useProviderListSort,
+  useProviderListViewPrefs,
   type ProviderSelectionBlockReason,
 } from '@/features/coding/shared/providerList';
+import ProviderListSection from '@/features/coding/shared/ProviderListSection';
+import CodingPageHeader from '@/features/coding/shared/CodingPageHeader';
+import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
+import OmpProviderCard from '../components/OmpProviderCard';
+import OmpProviderFormModal, {
+  type OmpProviderDraft,
+} from '../components/OmpProviderFormModal';
 import {
   fetchRemotePresetModels,
   hasAllApiHubExtension,
@@ -138,6 +144,7 @@ import {
   saveOmpModelSettings,
   saveOmpModelsProvider,
   saveOmpOtherSettings,
+  reorderOmpProviders,
   saveOmpSettingsConfig,
 } from '@/services/ohMyPiApi';
 import { ohMyPiPromptApi } from '@/services/ohMyPiPromptApi';
@@ -158,13 +165,15 @@ import OmpSubscriptionCard from '../components/OmpSubscriptionCard';
 import { getOmpRuntimeModelIds, getOmpRuntimeModelRecords, mergeOmpRuntimeCatalog, type OmpRuntimeCatalog } from '../utils/ompRuntimeModels';
 import styles from './OhMyPiPage.module.less';
 
-const { Title, Text, Link } = Typography;
+const { Title, Text } = Typography;
 
 // OMP 与 Pi 复用同一套收藏供应商结构。
 type OmpFavoriteProviderPayload = PiFavoriteProviderPayload;
 
 interface ProviderJsonModalState {
   provider?: OmpRuntimeProviderView;
+  /** Pre-fill from `provider`, save under `<key>_copy`. */
+  copy?: boolean;
 }
 
 interface OmpModelModalState {
@@ -181,17 +190,6 @@ const SIDEBAR_ICON_BY_SECTION_ID: Record<string, React.ReactNode> = {
   'pi-global-prompt': <FileTextOutlined />,
   'pi-other-configuration': <ToolOutlined />,
   'pi-session-manager': <MessageOutlined />,
-};
-
-const asRecord = (value: unknown): Record<string, unknown> => (
-  value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {}
-);
-
-const getStringField = (value: Record<string, unknown>, key: string): string => {
-  const fieldValue = value[key];
-  return typeof fieldValue === 'string' ? fieldValue : '';
 };
 
 const getNumberField = (value: Record<string, unknown>, key: string): number | undefined => {
@@ -236,44 +234,6 @@ const parseStringArray = (value: string | undefined): string[] => {
     return [];
   }
 };
-
-const setOptionalStringField = (
-  target: Record<string, unknown>,
-  key: string,
-  value: unknown,
-) => {
-  if (typeof value === 'string' && value.trim()) {
-    target[key] = value.trim();
-  } else {
-    delete target[key];
-  }
-};
-
-const isRecordEmpty = (value: Record<string, unknown>): boolean => Object.keys(value).length === 0;
-
-const createDefaultProviderConfig = (): Record<string, unknown> => ({
-  api: 'openai-completions',
-  baseUrl: '',
-  models: [],
-});
-
-const hasProviderConfigContent = (providerConfig: Record<string, unknown>): boolean => (
-  Object.values(providerConfig).some((value) => {
-    if (value === null || value === undefined) {
-      return false;
-    }
-    if (typeof value === 'string') {
-      return value.trim() !== '';
-    }
-    if (Array.isArray(value)) {
-      return value.length > 0;
-    }
-    if (typeof value === 'object') {
-      return !isRecordEmpty(asRecord(value));
-    }
-    return true;
-  })
-);
 
 const isOmpThinkingLevelSupported = (
   thinkingLevel: string | undefined,
@@ -522,18 +482,13 @@ const OhMyPiPage: React.FC = () => {
   currentRootRef.current = rootPath;
   const [modelForm] = Form.useForm();
   const [providerModal, setProviderModal] = React.useState<ProviderJsonModalState | null>(null);
-  const [providerModalForm] = Form.useForm();
-  const automaticProviderBaseUrlRef = React.useRef<string | undefined>(undefined);
-  const [providerConfigJson, setProviderConfigJson] = React.useState<Record<string, unknown>>({});
-  const [providerHeadersJson, setProviderHeadersJson] = React.useState<Record<string, unknown>>({});
-  const [providerCompatJson, setProviderCompatJson] = React.useState<Record<string, unknown>>({});
-  const [providerModelOverridesJson, setProviderModelOverridesJson] = React.useState<Record<string, unknown>>({});
-  const [providerConfigJsonValid, setProviderConfigJsonValid] = React.useState(true);
-  const [providerHeadersJsonValid, setProviderHeadersJsonValid] = React.useState(true);
-  const [providerCompatJsonValid, setProviderCompatJsonValid] = React.useState(true);
-  const [providerModelOverridesJsonValid, setProviderModelOverridesJsonValid] = React.useState(true);
-  const [providerAdvancedExpanded, setProviderAdvancedExpanded] = React.useState(false);
   const [ompModelModal, setOmpModelModal] = React.useState<OmpModelModalState | null>(null);
+  const [providerListCollapsed, setProviderListCollapsed] = React.useState(false);
+  const { viewMode, setViewMode } = useProviderListViewPrefs('omp');
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
   const [batchDeleteProviderId, setBatchDeleteProviderId] = React.useState<string | null>(null);
   const [selectedModelIdsByProvider, setSelectedModelIdsByProvider] = React.useState<Record<string, string[]>>({});
   const [fetchModelsProviderId, setFetchModelsProviderId] = React.useState<string | null>(null);
@@ -781,6 +736,12 @@ const OhMyPiPage: React.FC = () => {
     () => runtimeConfig?.providers ?? [],
     [runtimeConfig?.providers],
   );
+  /**
+   * The provider `config.yml`'s `modelRoles.default` points at, or `''` when
+   * nothing is applied. Passed even as `''`: the locate control then explains
+   * that nothing is applied instead of silently disappearing.
+   */
+  const defaultProviderId = ompProviders.find((provider) => provider.isDefault)?.providerKey ?? '';
   const existingProviderIds = React.useMemo(
     () => ompProviders.map((provider) => provider.providerKey),
     [ompProviders],
@@ -958,119 +919,57 @@ const OhMyPiPage: React.FC = () => {
     provider?: OmpRuntimeProviderView,
     options?: { copy?: boolean },
   ) => {
-    const isCopy = options?.copy === true;
-    const isExistingProviderEdit = !!provider && !isCopy;
-    automaticProviderBaseUrlRef.current = provider ? undefined : '';
-    const nextProviderConfigJson = provider?.modelsProvider
-      ? asRecord(provider.modelsProvider)
-      : isExistingProviderEdit
-        ? {}
-        : createDefaultProviderConfig();
-
-    setProviderModal({ provider: isCopy ? undefined : provider });
-    setProviderConfigJson(nextProviderConfigJson);
-    setProviderHeadersJson(asRecord(nextProviderConfigJson.headers));
-    setProviderCompatJson(asRecord(nextProviderConfigJson.compat));
-    setProviderModelOverridesJson(asRecord(nextProviderConfigJson.modelOverrides));
-    setProviderConfigJsonValid(true);
-    setProviderHeadersJsonValid(true);
-    setProviderCompatJsonValid(true);
-    setProviderModelOverridesJsonValid(true);
-    setProviderAdvancedExpanded(false);
-    providerModalForm.setFieldsValue({
-      providerKey: isCopy && provider ? `${provider.providerKey}_copy` : provider?.providerKey,
-      displayName: getStringField(nextProviderConfigJson, 'name'),
-      api: getStringField(nextProviderConfigJson, 'api') || undefined,
-      baseUrl: getStringField(nextProviderConfigJson, 'baseUrl'),
-      providerApiKey: getStringField(nextProviderConfigJson, 'apiKey'),
-      authHeader: typeof nextProviderConfigJson.authHeader === 'boolean'
-        ? nextProviderConfigJson.authHeader
-        : undefined,
-    });
+    setProviderModal({ provider, copy: options?.copy === true });
   };
 
-  const handleProviderApiChange = (apiValue?: string) => {
-    const nextBaseUrl = getOmpApiBaseUrlUpdate(
-      apiValue, providerModalForm.getFieldValue('baseUrl'), automaticProviderBaseUrlRef.current,
-    );
-    automaticProviderBaseUrlRef.current = nextBaseUrl;
-    if (nextBaseUrl !== undefined) providerModalForm.setFieldValue('baseUrl', nextBaseUrl);
-  };
-
-  const handleProviderBaseUrlChange = () => {
-    automaticProviderBaseUrlRef.current = undefined;
-  };
-
-  const handleSaveProviderModal = async () => {
-    if (
-      !providerModal
-      || !providerConfigJsonValid
-      || !providerHeadersJsonValid
-      || !providerCompatJsonValid
-      || !providerModelOverridesJsonValid
-    ) {
+  /**
+   * Save what the modal handed back.
+   *
+   * OMP has no separate credential file: the API key is a key on the provider
+   * in `models.yml`, so one write covers both. A provider that exists only in
+   * `config.yml` as the default route still gets a `models.yml` entry once the
+   * user fills the channel in.
+   */
+  const handleSaveProviderModal = async (draft: OmpProviderDraft) => {
+    if (!providerModal) {
       return;
     }
-    const values = await providerModalForm.validateFields();
-    const providerKey = values.providerKey?.trim();
+    const providerKey = draft.values.providerKey?.trim();
     if (!providerKey) {
       message.error(t('ohMyPi.provider.providerKeyRequired'));
       return;
     }
-    if (providerKey === 'openai-codex' && !providerModal.provider?.sources.includes('models_yml')) {
-      message.error(t('ohMyPi.subscription.useLoginGuidance'));
+    const keySaveError = ompProviderKeySaveError(providerKey, providerModal.provider);
+    if (keySaveError) {
+      message.error(t(`ohMyPi.subscription.${keySaveError}`));
       return;
     }
 
     setSaving(true);
     try {
-      let nextConfig: OmpRuntimeConfig | null = null;
-      const nextProviderConfigJson = { ...providerConfigJson };
-      setOptionalStringField(nextProviderConfigJson, 'name', values.displayName);
-      setOptionalStringField(nextProviderConfigJson, 'api', values.api);
-      setOptionalStringField(nextProviderConfigJson, 'baseUrl', values.baseUrl);
-      setOptionalStringField(nextProviderConfigJson, 'apiKey', values.providerApiKey);
-      if (
-        typeof values.authHeader === 'boolean'
-        && (
-          values.authHeader
-          || Object.prototype.hasOwnProperty.call(providerConfigJson, 'authHeader')
-        )
-      ) {
-        nextProviderConfigJson.authHeader = values.authHeader;
-      } else {
-        delete nextProviderConfigJson.authHeader;
-      }
-      if (isRecordEmpty(providerHeadersJson)) {
-        delete nextProviderConfigJson.headers;
-      } else {
-        nextProviderConfigJson.headers = providerHeadersJson;
-      }
-      if (isRecordEmpty(providerCompatJson)) {
-        delete nextProviderConfigJson.compat;
-      } else {
-        nextProviderConfigJson.compat = providerCompatJson;
-      }
-      if (isRecordEmpty(providerModelOverridesJson)) {
-        delete nextProviderConfigJson.modelOverrides;
-      } else {
-        nextProviderConfigJson.modelOverrides = providerModelOverridesJson;
-      }
+      const baseConfig = providerModal.provider?.modelsProvider
+        ? asRecord(providerModal.provider.modelsProvider)
+        : createDefaultProviderConfig();
+      const nextProviderConfigJson = buildOmpProviderConfigFromForm(
+        baseConfig,
+        draft.values,
+        draft,
+      );
+      // An edit of a channel-only provider keeps writing `models.yml` even when
+      // every field was blanked (that is how the user deletes the channel);
+      // adding a provider writes it only when something was filled in.
       const shouldSaveProviderConfig = !providerModal.provider
         || providerModal.provider.sources.includes('models_yml')
         || hasProviderConfigContent(nextProviderConfigJson);
-      if (shouldSaveProviderConfig) {
-        nextConfig = await saveOmpModelsProvider({ providerKey, provider: nextProviderConfigJson });
-      }
-      if (!nextConfig) {
+      if (!shouldSaveProviderConfig) {
         return;
       }
-      if (shouldSaveProviderConfig) {
-        try {
-          await upsertOmpFavoriteProvider(providerKey, nextProviderConfigJson, undefined, values.displayName);
-        } catch (error) {
-          console.error('Failed to save Pi favorite provider:', error);
-        }
+
+      const nextConfig = await saveOmpModelsProvider({ providerKey, provider: nextProviderConfigJson });
+      try {
+        await upsertOmpFavoriteProvider(providerKey, nextProviderConfigJson, undefined, draft.values.displayName);
+      } catch (error) {
+        console.error('Failed to save Oh My Pi favorite provider:', error);
       }
       setRuntimeConfig(nextConfig);
       setOtherSettings(nextConfig.otherSettings || {});
@@ -1078,7 +977,7 @@ const OhMyPiPage: React.FC = () => {
       await refreshTrayMenu();
       message.success(t('common.success'));
     } catch (error) {
-      console.error('Failed to save Pi provider:', error);
+      console.error('Failed to save Oh My Pi provider:', error);
       message.error(t('common.error'));
     } finally {
       setSaving(false);
@@ -1861,12 +1760,25 @@ const OhMyPiPage: React.FC = () => {
     }
   };
 
-  const renderProvider = (provider: OmpRuntimeProviderView) => {
+  /**
+   * One mapper for every layout. `ProviderListSection` renders the same node in
+   * the list and the grid, so the two cannot offer different actions.
+   */
+  const renderProviderCard = (provider: OmpRuntimeProviderView) => {
     const isSubscription = provider.providerKey === 'openai-codex';
     const providerConfig = provider.modelsProvider ?? {};
     const hasCredential = Object.prototype.hasOwnProperty.call(providerConfig, 'apiKey')
       && !isRecordEmpty({ apiKey: providerConfig.apiKey });
     const hasProviderConfig = provider.sources.includes('models_yml');
+    const canDeleteProvider = hasCredential || hasProviderConfig;
+    const isBatchDeleteMode = batchDeleteProviderId === provider.providerKey;
+    const selectedModelIds = selectedModelIdsByProvider[provider.providerKey] ?? [];
+    const diagnostics = getOmpDiagnostics(providerConfig);
+    const hasModelIds = getProviderModelRecords(provider.modelsProvider).length > 0;
+
+    // The subscription channel is managed by its own account block. Without a
+    // `models.yml` entry that block *is* the list member; with one, the block
+    // still opens above the card so its login state stays reachable.
     const subscriptionCard = isSubscription ? (
       <OmpSubscriptionCard
         key={`${provider.providerKey}:${runtimeConfig?.rootPathInfo.path}`}
@@ -1881,155 +1793,128 @@ const OhMyPiPage: React.FC = () => {
           setCatalogRefreshKey((key) => key + 1);
           await loadConfig(true);
         }}
+        viewMode={viewMode}
       />
     ) : null;
-    if (isSubscription && !hasProviderConfig) return subscriptionCard;
-    const canDeleteProvider = hasCredential || hasProviderConfig;
-    const deleteDisabledReason = canDeleteProvider && provider.isDefault
-      ? t('ohMyPi.provider.deleteDisabledDefault', { defaultValue: '该渠道已设为默认，不可删除' })
-      : undefined;
-    const isBatchDeleteMode = batchDeleteProviderId === provider.providerKey;
-    const selectedModelIds = selectedModelIdsByProvider[provider.providerKey] ?? [];
-    const selectedModelCount = selectedModelIds.length;
-    const providerBaseUrl = getStringField(providerConfig, 'baseUrl');
-    const diagnostics = getOmpDiagnostics(providerConfig);
-    const hasModelIds = getProviderModelRecords(provider.modelsProvider).length > 0;
-    const connectivityTooltip = !diagnostics.supportsConnectivity
-      // 有模型却测不了，说明每个模型各自用了不支持的协议。
-      ? hasModelIds
-        ? t('ohMyPi.diagnostics.noTestableModel')
-        : t('ohMyPi.diagnostics.unsupportedApi', { api: diagnostics.api || t('common.notSet') })
-      : !diagnostics.baseUrl
-      ? t('common.baseUrlMissing')
-      : !hasModelIds
-        ? t('common.modelMissing')
-        // 混用连接不再是禁用理由，只是提示：测试会按各模型自己的连接分别发。
-        : diagnostics.mixedConnections
-          ? t('ohMyPi.diagnostics.mixedConnections')
-          : '';
-    const fetchModelsTooltip = !diagnostics.supportsModelDiscovery
-      ? t('ohMyPi.diagnostics.modelDiscoveryUnavailable')
-      : !diagnostics.baseUrl ? t('common.baseUrlMissing') : '';
-    const providerDisplay: ProviderDisplayData = {
-      id: provider.providerKey,
-      name: isSubscription ? provider.displayName + ' · ' + t('ohMyPi.subscription.yamlOverride') : provider.displayName,
-      sdkName: getStringField(providerConfig, 'api') || provider.categories.join(', ') || 'omp',
-      baseUrl: providerBaseUrl
-        // Inline template (not via a prefix-taking helper) so the i18n key
-        // scanner sees `ohMyPi.sourceLabels.` as a live dynamic prefix — the
-        // helper indirection once hid it and `i18n:prune` deleted live copy.
-        || provider.sources.map((source) => t(`ohMyPi.sourceLabels.${source}`, { defaultValue: source })).join(' / ')
-        || t('ohMyPi.provider.builtinHint'),
-    };
-    const modelDisplayList: ModelDisplayData[] = getProviderModelRecords(provider.modelsProvider).map((entry) => ({
-      id: entry.id,
-      name: getStringField(entry.model, 'name') || entry.id,
-      isPrimary: provider.isDefault && runtimeConfig?.modelSettings.modelId === entry.id,
-    }));
+    if (isSubscription && !hasProviderConfig) {
+      return <React.Fragment key={provider.providerKey}>{subscriptionCard}</React.Fragment>;
+    }
 
     return (
       <React.Fragment key={provider.providerKey}>
         {subscriptionCard}
-      <ProviderCard
-        key={provider.providerKey}
-        provider={providerDisplay}
-        models={modelDisplayList}
-        onEdit={() => openProviderModal(provider)}
-        onCopy={!isSubscription ? () => openProviderModal(provider, { copy: true }) : undefined}
-        onShare={!isSubscription ? () => shareProvider({
-          id: provider.providerKey, name: provider.displayName, category: 'custom',
-          settingsConfig: JSON.stringify(providerConfig), credential: provider.credential,
-          credentialUnavailable: provider.credentialKind === 'oauth' || provider.credentialKind === 'env_possible',
-          defaultModel: provider.isDefault ? runtimeConfig?.modelSettings.modelId ?? undefined : undefined,
-        }) : undefined}
-        onDelete={canDeleteProvider ? () => handleDeleteSupplier(provider) : undefined}
-        deleteConfirm={false}
-        deleteDisabledReason={deleteDisabledReason}
-        selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.providerKey)}
-        selected={providerBatch.selectedIds.has(provider.providerKey)}
-        onSelectChange={(checked) => providerBatch.toggleSelect(provider.providerKey, checked)}
-        selectDisabledReason={providerBatch.selectionMode
-          ? providerSelectionDisabledReason(t, batchBlockReason(provider))
-          : undefined}
-        connectivityStatus={diagnostics.supportsConnectivity ? connectivityStatuses[provider.providerKey] : undefined}
-        extraActions={
-          <Space size={0}>
-            <Button
-              size="small"
-              type="text"
-              icon={<DeleteOutlined />}
-              style={{ fontSize: 12 }}
-              onClick={() => handleToggleBatchDeleteMode(provider.providerKey)}
-            >
-              {isBatchDeleteMode
-                ? t('ohMyPi.model.cancelBatchDelete')
-                : t('ohMyPi.model.batchDelete')}
-            </Button>
-            {isBatchDeleteMode && (
-              <Button
-                size="small"
-                type="text"
-                danger
-                style={{ fontSize: 12 }}
-                disabled={selectedModelCount === 0}
-                onClick={() => {
-                  Modal.confirm({
-                    title: t('common.model.batchDeleteConfirmTitle'),
-                    content: t('common.model.batchDeleteConfirmContent', { count: selectedModelCount }),
-                    okText: t('common.confirm'),
-                    cancelText: t('common.cancel'),
-                    onOk: async () => {
-                      await handleBatchDeleteModels(provider);
-                    },
-                  });
-                }}
-              >
-                {t('ohMyPi.model.deleteSelected', { count: selectedModelCount })}
-              </Button>
-            )}
-            <Tooltip title={connectivityTooltip}>
-              <span>
-                <Button
-                  size="small"
-                  type="text"
-                  style={{ fontSize: 12 }}
-                  onClick={() => handleOpenConnectivityTest(provider.providerKey)}
-                  disabled={!diagnostics.supportsConnectivity || !diagnostics.baseUrl || !hasModelIds}
-                >
-                  <ApiOutlined style={{ marginRight: 4 }} />
-                  {t('ohMyPi.connectivity.button')}
-                </Button>
-              </span>
-            </Tooltip>
-            <Tooltip title={fetchModelsTooltip}>
-              <span>
-                <Button
-                  size="small"
-                  type="text"
-                  style={{ fontSize: 12 }}
-                  onClick={() => handleOpenFetchModels(provider.providerKey)}
-                  disabled={!diagnostics.supportsModelDiscovery || !diagnostics.baseUrl}
-                >
-                  <CloudDownloadOutlined style={{ marginRight: 4 }} />
-                  {t('ohMyPi.fetchModels.button')}
-                </Button>
-              </span>
-            </Tooltip>
-          </Space>
-        }
-        onAddModel={() => openOmpModelModal(provider)}
-        onEditModel={(modelId) => openOmpModelModal(provider, modelId)}
-        onCopyModel={(modelId) => openOmpModelModal(provider, modelId, { copy: true })}
-        onDeleteModel={(modelId) => handleDeleteOmpModel(provider, modelId)}
-        onSetPrimaryModel={(modelId) => handleSetPrimaryModel(provider, modelId)}
-        modelSelectionMode={isBatchDeleteMode}
-        selectedModelIds={selectedModelIds}
-        onToggleModelSelection={(modelId, selected) => handleToggleModelSelection(provider.providerKey, modelId, selected)}
-        modelsDraggable={!isBatchDeleteMode}
-        onReorderModels={(modelIds) => handleReorderModels(provider, modelIds)}
-      />
+        <OmpProviderCard
+          provider={provider}
+          defaultModelId={provider.isDefault
+            ? runtimeConfig?.modelSettings.modelId ?? undefined
+            : undefined}
+          viewMode={viewMode}
+          isSubscription={isSubscription}
+          selectable={providerBatch.selectionMode && providerBatch.isSelectable(provider.providerKey)}
+          selected={providerBatch.selectedIds.has(provider.providerKey)}
+          onSelectChange={(checked) => providerBatch.toggleSelect(provider.providerKey, checked)}
+          selectDisabledReason={providerBatch.selectionMode
+            ? providerSelectionDisabledReason(t, batchBlockReason(provider))
+            : undefined}
+          connectivityStatus={diagnostics.supportsConnectivity
+            ? connectivityStatuses[provider.providerKey]
+            : undefined}
+          dragDisabled={providerBatchDragDisabled || !hasProviderConfig}
+          onEdit={() => openProviderModal(provider)}
+          onCopy={() => openProviderModal(provider, { copy: true })}
+          onShare={() => shareProvider({
+            id: provider.providerKey, name: provider.displayName, category: 'custom',
+            settingsConfig: JSON.stringify(providerConfig), credential: provider.credential,
+            credentialUnavailable: provider.credentialKind === 'oauth' || provider.credentialKind === 'env_possible',
+            defaultModel: provider.isDefault ? runtimeConfig?.modelSettings.modelId ?? undefined : undefined,
+          })}
+          onDelete={canDeleteProvider ? () => handleDeleteSupplier(provider) : undefined}
+          deleteDisabledReason={canDeleteProvider && provider.isDefault
+            ? t('ohMyPi.provider.deleteDisabledDefault', { defaultValue: '该渠道已设为默认，不可删除' })
+            : undefined}
+          onAddModel={() => openOmpModelModal(provider)}
+          onEditModel={(modelId) => openOmpModelModal(provider, modelId)}
+          onCopyModel={(modelId) => openOmpModelModal(provider, modelId, { copy: true })}
+          onDeleteModel={(modelId) => handleDeleteOmpModel(provider, modelId)}
+          onSetPrimaryModel={(modelId) => handleSetPrimaryModel(provider, modelId)}
+          modelSelectionMode={isBatchDeleteMode}
+          selectedModelIds={selectedModelIds}
+          onToggleModelSelection={(modelId, selected) => handleToggleModelSelection(provider.providerKey, modelId, selected)}
+          onReorderModels={(modelIds) => handleReorderModels(provider, modelIds)}
+          onToggleBatchDeleteMode={() => handleToggleBatchDeleteMode(provider.providerKey)}
+          onBatchDeleteModels={() => {
+            Modal.confirm({
+              title: t('common.model.batchDeleteConfirmTitle'),
+              content: t('common.model.batchDeleteConfirmContent', { count: selectedModelIds.length }),
+              okText: t('common.confirm'),
+              cancelText: t('common.cancel'),
+              onOk: async () => {
+                await handleBatchDeleteModels(provider);
+              },
+            });
+          }}
+          onTestModels={() => handleOpenConnectivityTest(provider.providerKey)}
+          testModelsDisabled={!diagnostics.supportsConnectivity || !diagnostics.baseUrl || !hasModelIds}
+          testModelsDisabledTooltip={!diagnostics.supportsConnectivity
+            // 有模型却测不了，说明每个模型各自用了不支持的协议。
+            ? hasModelIds
+              ? t('ohMyPi.diagnostics.noTestableModel')
+              : t('ohMyPi.diagnostics.unsupportedApi', { api: diagnostics.api || t('common.notSet') })
+            : !diagnostics.baseUrl
+              ? t('common.baseUrlMissing')
+              : !hasModelIds
+                ? t('common.modelMissing')
+                : undefined}
+          // 混用连接不是禁用理由，只是一句提示：测试会按各模型自己的连接分别发。
+          // 它必须挂在启用态也能显示的槽上，否则这条信息会随按钮可用一起消失。
+          testModelsHint={diagnostics.mixedConnections
+            ? t('ohMyPi.diagnostics.mixedConnections')
+            : undefined}
+          onFetchModels={() => handleOpenFetchModels(provider.providerKey)}
+          fetchDisabled={!diagnostics.supportsModelDiscovery || !diagnostics.baseUrl}
+          fetchDisabledTooltip={!diagnostics.supportsModelDiscovery
+            ? t('ohMyPi.diagnostics.modelDiscoveryUnavailable')
+            : !diagnostics.baseUrl
+              ? t('common.baseUrlMissing')
+              : undefined}
+        />
       </React.Fragment>
     );
+  };
+
+  // Dragging rewrites `models.yml`'s `providers` key order. Search and
+  // non-`custom` sort modes show an order the file does not contain, so a drop
+  // there would persist something the user is not looking at.
+  const providerDragDisabled = sortMode !== 'custom' || providerKeyword.trim() !== '';
+  const providerBatchDragDisabled = providerDragDisabled || providerBatch.selectionMode;
+
+  const handleProviderDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) {
+      return;
+    }
+    // Only keys that live in `models.yml` have a position; the OAuth route and
+    // auth-only entries are not part of that mapping.
+    const providerKeys = ompProviders
+      .filter((provider) => provider.sources.includes('models_yml'))
+      .map((provider) => provider.providerKey);
+    const oldIndex = providerKeys.indexOf(active.id as string);
+    const newIndex = providerKeys.indexOf(over.id as string);
+    if (oldIndex < 0 || newIndex < 0) {
+      return;
+    }
+    const movedKeys = arrayMove(providerKeys, oldIndex, newIndex);
+    const previousConfig = runtimeConfig;
+    try {
+      const nextConfig = await reorderOmpProviders(movedKeys);
+      setRuntimeConfig(nextConfig);
+      setOtherSettings(nextConfig.otherSettings || {});
+      await refreshTrayMenu();
+    } catch (error) {
+      console.error('Failed to reorder Oh My Pi providers:', error);
+      setRuntimeConfig(previousConfig);
+      message.error(t('common.error'));
+    }
   };
 
   return (
@@ -2042,86 +1927,30 @@ const OhMyPiPage: React.FC = () => {
         getIcon={(id) => SIDEBAR_ICON_BY_SECTION_ID[id] ?? null}
       >
         <div className={styles.pageContent}>
-          <div className={styles.pageHeader}>
-            <div>
-              <div className={styles.titleRow}>
-                <Title level={4} className={styles.pageTitle}>
-                  {t('ohMyPi.title')}
-                </Title>
-                <Link
-                  type="secondary"
-                  className={styles.headerLink}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void openUrl('https://omp.sh/docs');
-                  }}
-                >
-                  <LinkOutlined /> {t('ohMyPi.viewDocs')}
-                </Link>
-                <Link
-                  type="secondary"
-                  className={styles.headerLink}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setPreviewModalOpen(true);
-                  }}
-                >
-                  <EyeOutlined /> {t('common.previewConfig')}
-                </Link>
-              </div>
-              <Space className={styles.pathToolbar} wrap>
-                <Text type="secondary" className={styles.pathLabel}>
-                  {t('ohMyPi.configPath')}:
-                </Text>
-                <Text code className={styles.pathText}>
-                  {runtimeConfig?.rootPathInfo.path}
-                </Text>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<EditOutlined />}
-                  onClick={() => setRootDirectoryModalOpen(true)}
-                  className={styles.textAction}
-                >
-                  {t('ohMyPi.rootPathSource.customize')}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<FolderOpenOutlined />}
-                  onClick={handleOpenRootFolder}
-                  className={styles.textAction}
-                >
-                  {t('ohMyPi.openFolder')}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<ReloadOutlined />}
-                  onClick={handleRefreshConfig}
-                  className={styles.textAction}
-                >
-                  {t('ohMyPi.refreshConfig')}
-                </Button>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<CloudSyncOutlined />}
-                  onClick={handleRefreshModelsCache}
-                  loading={refreshingModels}
-                  className={styles.textAction}
-                >
-                  {t('ohMyPi.syncModels')}
-                </Button>
-              </Space>
-            </div>
-            <Button type="text" icon={<EllipsisOutlined />} onClick={() => setSettingsModalOpen(true)}>
-              {t('common.moreOptions')}
-            </Button>
-          </div>
-          <div className={styles.pageHint}>
-            {t('ohMyPi.pageHint')}
-          </div>
+          <CodingPageHeader
+            title={t('ohMyPi.title')}
+            docsUrl="https://omp.sh/docs"
+            onPreviewConfig={() => setPreviewModalOpen(true)}
+            configPath={runtimeConfig?.rootPathInfo.path ?? ''}
+            // The root is a directory (`config.yml` / `models.yml` derive from it).
+            configPathKind="directory"
+            onCustomizeConfig={() => setRootDirectoryModalOpen(true)}
+            onOpenFolder={handleOpenRootFolder}
+            onRefresh={handleRefreshConfig}
+            onMoreOptions={() => setSettingsModalOpen(true)}
+            extraActions={(
+              <Button
+                type="text"
+                size="small"
+                icon={<CloudSyncOutlined />}
+                onClick={handleRefreshModelsCache}
+                loading={refreshingModels}
+                style={{ padding: 0, fontSize: 12 }}
+              >
+                {t('ohMyPi.syncModels')}
+              </Button>
+            )}
+          />
 
           <div
             id="pi-model-settings"
@@ -2172,132 +2001,97 @@ const OhMyPiPage: React.FC = () => {
             </div>
           </div>
 
-          <div
-            id="pi-providers"
-            className={styles.ompSection}
-            data-pi-sidebar-section="true"
-            data-sidebar-title={t('ohMyPi.provider.title')}
+          <ProviderListSection
+            sectionId="pi-providers"
+            collapsed={providerListCollapsed}
+            onCollapsedChange={setProviderListCollapsed}
+            loading={loading}
+            providerCount={ompProviders.length}
+            visibleCount={visibleProviders.length}
+            batch={providerBatch}
+            batchSelectableIds={batchSelectableIds}
+            keyword={providerKeyword}
+            onKeywordChange={setProviderKeyword}
+            sortMode={sortMode}
+            sortModes={PROVIDER_SORT_MODES_BASIC}
+            onSortModeChange={setSortMode}
+            dragDisabledBySort={providerDragDisabled}
+            locateProviderId={defaultProviderId}
+            viewMode={viewMode}
+            onViewModeChange={setViewMode}
+            onBatchTest={handleBatchTestProviders}
+            batchTesting={batchTestingProviders}
+            // No route with a testable protocol means an empty target set: the
+            // old toolbar disabled the button, and an empty batch would clear
+            // every status badge while reporting nothing.
+            batchTestDisabled={!ompProviders.some(provider => (
+              getOmpDiagnostics(provider.modelsProvider ?? {}).supportsConnectivity
+            ))}
+            batchTestDisabledReason={t('ohMyPi.diagnostics.noTestableProvider')}
+            onAddProvider={() => openProviderModal()}
+            hint={<div>{t('ohMyPi.pageHint')}</div>}
+            footer={(
+              <Space wrap>
+                <Button
+                  type="dashed"
+                  icon={<ImportOutlined />}
+                  onClick={() => setImportModalOpen(true)}
+                >
+                  {t('ohMyPi.provider.importFavorite')}
+                </Button>
+                {allApiHubAvailable && (
+                  <Button
+                    type="dashed"
+                    icon={<AllApiHubIcon />}
+                    onClick={() => setAllApiHubImportModalOpen(true)}
+                  >
+                    {t('ohMyPi.provider.importAllApiHub')}
+                  </Button>
+                )}
+                {ccSwitchAvailable && (
+                  <Button
+                    type="dashed"
+                    icon={<ImportOutlined />}
+                    onClick={() => setCcSwitchImportModalOpen(true)}
+                  >
+                    {t('common.ccSwitch.importFromCcSwitch')}
+                  </Button>
+                )}
+              </Space>
+            )}
           >
-            <Collapse
-              className={styles.collapseCard}
-              items={[
-                {
-                  key: 'providers',
-                  label: (
-                    <Space>
-                      <ApiOutlined />
-                      <Text strong>{t('ohMyPi.provider.title')}</Text>
-                    </Space>
-                  ),
-                  extra: (
-                    <Space onClick={(event) => event.stopPropagation()}>
-                      <Button
-                        type="link"
-                        size="small"
-                        style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (providerBatch.selectionMode) {
-                            providerBatch.exitSelection();
-                          } else {
-                            providerBatch.enterSelection();
-                          }
-                        }}
-                      >
-                        <CheckSquareOutlined style={{ fontSize: 13, lineHeight: 1 }} />
-                        <span>
-                          {providerBatch.selectionMode
-                            ? t('common.batch.exit')
-                            : t('common.batch.manage')}
-                        </span>
-                      </Button>
-                      {providerBatch.selectionMode && (
-                        <ProviderBatchToolbar
-                          hasSelection={providerBatch.hasSelection}
-                          visibleCount={batchSelectableIds.length}
-                          isAllSelected={providerBatch.isAllSelected}
-                          indeterminate={providerBatch.indeterminate}
-                          onSelectAll={providerBatch.selectAllFiltered}
-                          onBatchDelete={providerBatch.batchDelete}
-                          disabled={loading}
-                        />
-                      )}
-                      <ProviderSearchInput value={providerKeyword} onChange={setProviderKeyword} />
-                      <ProviderSortDropdown
-                        mode={sortMode}
-                        modes={PROVIDER_SORT_MODES_BASIC}
-                        onChange={setSortMode}
-                      />
-                      <Button
-                        type="link"
-                        size="small"
-                        style={{ fontSize: 12 }}
-                        icon={<ThunderboltOutlined />}
-                        loading={batchTestingProviders}
-                        disabled={!ompProviders.some(provider => getOmpDiagnostics(provider.modelsProvider ?? {}).supportsConnectivity)}
-                        onClick={handleBatchTestProviders}
-                      >
-                        {t('common.batchTest')}
-                      </Button>
-                      <Button
-                        type="link"
-                        size="small"
-                        style={{ fontSize: 12 }}
-                        icon={<PlusOutlined />}
-                        onClick={() => openProviderModal()}
-                      >
-                        {t('ohMyPi.provider.addSupplier')}
-                      </Button>
-                    </Space>
-                  ),
-                  children: (
-                    <div>
-                      {runtimeConfig?.providers.length ? (
-                        <div className={styles.providerList}>
-                          {visibleProviders.length ? (
-                            visibleProviders.map(renderProvider)
-                          ) : (
-                            <ProviderSearchEmpty />
-                          )}
-                        </div>
-                      ) : (
-                        <Empty description={t('ohMyPi.provider.emptyText')} />
-                      )}
-                      <div style={{ marginTop: 12 }}>
-                        <Space wrap>
-                          <Button
-                            type="dashed"
-                            icon={<ImportOutlined />}
-                            onClick={() => setImportModalOpen(true)}
-                          >
-                            {t('ohMyPi.provider.importFavorite')}
-                          </Button>
-                          {allApiHubAvailable && (
-                            <Button
-                              type="dashed"
-                              icon={<AllApiHubIcon />}
-                              onClick={() => setAllApiHubImportModalOpen(true)}
-                            >
-                              {t('ohMyPi.provider.importAllApiHub')}
-                            </Button>
-                          )}
-                          {ccSwitchAvailable && (
-                            <Button
-                              type="dashed"
-                              icon={<ImportOutlined />}
-                              onClick={() => setCcSwitchImportModalOpen(true)}
-                            >
-                              {t('common.ccSwitch.importFromCcSwitch')}
-                            </Button>
-                          )}
-                        </Space>
-                      </div>
-                    </div>
-                  ),
-                },
-              ]}
-            />
-          </div>
+            {/* One `DndContext` serves both layouts; only the sorting strategy
+                and the drag modifier change with the view. The order it writes
+                is `models.yml`'s `providers` key order, which is also what
+                `build_provider_views` reads back. */}
+            <DndContext
+              sensors={providerBatchDragDisabled ? [] : sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleProviderDragEnd}
+              modifiers={[viewMode === 'card' ? restrictToWindowEdges : restrictToVerticalAxis]}
+            >
+              <SortableContext
+                items={visibleProviders.map((provider) => provider.providerKey)}
+                strategy={viewMode === 'card' ? rectSortingStrategy : verticalListSortingStrategy}
+              >
+                {viewMode === 'card' ? (
+                  <ProviderCardGrid
+                    items={visibleProviders}
+                    getKey={(provider) => provider.providerKey}
+                    renderItem={(provider) => renderProviderCard(provider)}
+                  />
+                ) : (
+                  <div>
+                    {visibleProviders.map((provider) => (
+                      <React.Fragment key={provider.providerKey}>
+                        {renderProviderCard(provider)}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                )}
+              </SortableContext>
+            </DndContext>
+          </ProviderListSection>
 
           <div
             id="pi-agents"
@@ -2406,139 +2200,14 @@ const OhMyPiPage: React.FC = () => {
           onReset={handleResetRootDirectory}
         />
 
-        <Modal
-          title={providerModal?.provider
-            ? t('ohMyPi.provider.editSupplierTitle', { name: providerModal.provider.displayName })
-            : t('ohMyPi.provider.addSupplierTitle')}
+        <OmpProviderFormModal
           open={!!providerModal}
-          width={860}
-          confirmLoading={saving}
+          provider={providerModal?.provider}
+          copy={providerModal?.copy}
+          saving={saving}
           onCancel={() => setProviderModal(null)}
-          onOk={handleSaveProviderModal}
-          destroyOnHidden
-        >
-          <Form form={providerModalForm} layout="vertical" className={styles.providerForm}>
-            <div className={styles.modalSection}>
-              <div className={styles.modalGrid}>
-                <Form.Item
-                  label={t('ohMyPi.provider.providerKey')}
-                  name="providerKey"
-                  rules={[{ required: true, message: t('ohMyPi.provider.providerKeyRequired') }]}
-                >
-                  <Input
-                    disabled={!!providerModal?.provider}
-                    placeholder={t('ohMyPi.provider.providerKeyPlaceholder')}
-                  />
-                </Form.Item>
-                <Form.Item label={t('ohMyPi.provider.displayName')} name="displayName">
-                  <Input placeholder={t('ohMyPi.provider.displayNamePlaceholder')} />
-                </Form.Item>
-              </div>
-            </div>
-
-            <div className={styles.modalSection}>
-              <Text strong>{t('ohMyPi.provider.configSection')}</Text>
-              <div className={styles.modalGrid}>
-                <Form.Item label={t('ohMyPi.provider.apiType')} name="api">
-                  <Select
-                    allowClear
-                    showSearch
-                    options={OMP_API_OPTIONS}
-                    onChange={handleProviderApiChange}
-                    optionRender={(option) => {
-                      const description = OMP_API_DESCRIPTION_I18N_KEYS[
-                        String(option.value) as OmpApiValue
-                      ];
-                      return (
-                        <div>
-                          <div>{option.label}</div>
-                          {description ? (
-                            <div className={styles.apiOptionDescription}>{t(description)}</div>
-                          ) : null}
-                        </div>
-                      );
-                    }}
-                    placeholder={t('ohMyPi.provider.apiTypePlaceholder')}
-                  />
-                </Form.Item>
-                <Form.Item label={t('ohMyPi.provider.baseUrl')} name="baseUrl">
-                  <Input placeholder="https://api.example.com/v1" onChange={handleProviderBaseUrlChange} />
-                </Form.Item>
-                <Form.Item label={t('ohMyPi.provider.providerApiKey')} name="providerApiKey">
-                  <Input.Password autoComplete="off" />
-                </Form.Item>
-                <Form.Item
-                  label={(
-                    <Space size={4}>
-                      <span>{t('ohMyPi.provider.authHeader')}</span>
-                      <Tooltip title={t('ohMyPi.provider.authHeaderHint')}>
-                        <QuestionCircleOutlined style={{ color: 'var(--color-text-tertiary)' }} />
-                      </Tooltip>
-                    </Space>
-                  )}
-                  name="authHeader"
-                  valuePropName="checked"
-                >
-                  <Switch />
-                </Form.Item>
-              </div>
-            </div>
-
-            <div className={styles.advancedToggle}>
-              <Button
-                type="link"
-                onClick={() => setProviderAdvancedExpanded(!providerAdvancedExpanded)}
-                className={styles.advancedToggleButton}
-              >
-                {providerAdvancedExpanded ? <DownOutlined /> : <RightOutlined />}
-                <span>{t('common.advancedSettings')}</span>
-              </Button>
-            </div>
-            {providerAdvancedExpanded && (
-              <div className={styles.modalSection}>
-                <div className={styles.advancedEditor}>
-                  <Text type="secondary">{t('ohMyPi.provider.headersJson')}</Text>
-                  <JsonEditor
-                    value={isRecordEmpty(providerHeadersJson) ? undefined : providerHeadersJson}
-                    height={160}
-                    onChange={(value, isValid) => {
-                      if (isValid) {
-                        setProviderHeadersJson(asRecord(value));
-                      }
-                      setProviderHeadersJsonValid(isValid);
-                    }}
-                  />
-                </div>
-                <div className={styles.advancedEditor}>
-                  <Text type="secondary">{t('ohMyPi.provider.compatJson')}</Text>
-                  <JsonEditor
-                    value={isRecordEmpty(providerCompatJson) ? undefined : providerCompatJson}
-                    height={180}
-                    onChange={(value, isValid) => {
-                      if (isValid) {
-                        setProviderCompatJson(asRecord(value));
-                      }
-                      setProviderCompatJsonValid(isValid);
-                    }}
-                  />
-                </div>
-                <div className={styles.advancedEditor}>
-                  <Text type="secondary">{t('ohMyPi.provider.modelOverridesJson')}</Text>
-                  <JsonEditor
-                    value={isRecordEmpty(providerModelOverridesJson) ? undefined : providerModelOverridesJson}
-                    height={200}
-                    onChange={(value, isValid) => {
-                      if (isValid) {
-                        setProviderModelOverridesJson(asRecord(value));
-                      }
-                      setProviderModelOverridesJsonValid(isValid);
-                    }}
-                  />
-                </div>
-              </div>
-            )}
-          </Form>
-        </Modal>
+          onSubmit={(draft) => void handleSaveProviderModal(draft)}
+        />
 
         <ModelFormModal
           open={!!ompModelModal}

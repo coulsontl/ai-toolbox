@@ -6,7 +6,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { Modal, Switch, Select, Button, List, Space, Typography, Alert, Spin, Tag, Modal as AntdModal, Tabs, Tooltip, Progress, theme } from 'antd';
-import { CheckCircleOutlined, CloseCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ClearOutlined, ApiOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, CloseCircleOutlined, CloseOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ClearOutlined, ApiOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useSSHSync } from '@/features/settings/hooks/useSSHSync';
 import {
@@ -876,7 +876,9 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
                 type="warning"
                 title={translateSyncMessage(syncWarning, 'ssh', t)}
                 showIcon
-                closable={{ onClose: dismissSyncWarning }}
+                // antd 6: an object-form `closable` without `closeIcon` is not
+                // treated as closable, so the × never rendered here.
+                closable={{ closeIcon: <CloseOutlined />, onClose: dismissSyncWarning }}
                 style={{ marginTop: 12 }}
               />
             )}

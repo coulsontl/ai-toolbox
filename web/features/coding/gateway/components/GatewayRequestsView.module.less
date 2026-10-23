@@ -74,11 +74,6 @@
   }
 }
 
-.requestGrid {
-  display: block;
-  min-width: 0;
-}
-
 .filterBar {
   position: sticky;
   /* Pins below the page header (top: 0, z-index 7), whose measured height
@@ -374,84 +369,10 @@
   color: var(--color-text-primary);
 }
 
-.requestList,
 .detailStack {
   display: flex;
   min-width: 0;
   flex-direction: column;
-}
-
-.requestList {
-  max-height: calc(100vh - 270px);
-  overflow: auto;
-}
-
-.requestRow {
-  display: grid;
-  width: 100%;
-  min-height: 40px;
-  grid-template-columns: 56px minmax(0, 1fr) 54px 58px;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border: none;
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-bg-container);
-  color: inherit;
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
-
-  &:hover {
-    background: var(--color-bg-hover);
-  }
-
-  &:last-child {
-    border-bottom: none;
-  }
-}
-
-.requestRowActive {
-  background: var(--color-bg-selected);
-}
-
-.requestMethod,
-.statusCode,
-.requestDuration {
-  color: var(--color-text-secondary);
-  font-size: 11px;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.requestMain {
-  display: flex;
-  min-width: 0;
-  align-items: baseline;
-  gap: 8px;
-
-  strong,
-  small {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  strong {
-    min-width: 0;
-    flex: 0 1 auto;
-    color: var(--color-text-primary);
-    font-size: 12px;
-    font-weight: 650;
-  }
-
-  small {
-    min-width: 0;
-    flex: 1 1 auto;
-    color: var(--color-text-tertiary);
-    font-size: 11px;
-  }
 }
 
 .statusCodeSuccess {
@@ -460,14 +381,6 @@
 
 .statusCodeError {
   color: var(--color-status-error);
-}
-
-.requestBadges {
-  display: inline-flex;
-  min-width: 0;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
 }
 
 .detailGrid {
@@ -737,14 +650,6 @@
 }
 
 @media (max-width: 720px) {
-  .requestRow {
-    grid-template-columns: 48px minmax(0, 1fr) 44px;
-  }
-
-  .requestDuration {
-    display: none;
-  }
-
   .detailGrid {
     grid-template-columns: 1fr;
     gap: 4px;

@@ -1949,7 +1949,8 @@
       "default": "默认"
     },
     "more": "更多",
-    "copyFailed": "复制失败"
+    "copyFailed": "复制失败",
+    "configDir": "配置目录路径"
   },
   "sessionManager": {
     "title": "会话管理",
@@ -4570,7 +4571,6 @@
   },
   "pi": {
     "rootPathSource": {
-      "customize": "自定义配置目录",
       "modal": {
         "title": "自定义 Pi 配置目录",
         "currentSource": "当前来源",
@@ -4593,10 +4593,6 @@
       }
     },
     "title": "Pi 配置管理",
-    "viewDocs": "官方文档",
-    "configPath": "配置目录路径",
-    "openFolder": "打开文件夹",
-    "refreshConfig": "刷新配置",
     "syncModels": "同步预设模型",
     "modelsRefreshSuccess": "预设模型已同步",
     "pageHint": "Pi 的配置始终以本地运行时文件为准，本页面仅做可视化编辑，所有更改直接读写 settings.json、auth.json、models.json 和 AGENTS.md。",
@@ -4615,8 +4611,6 @@
     },
     "provider": {
       "title": "供应商列表",
-      "emptyText": "运行时文件中暂无渠道配置",
-      "builtinHint": "内置供应商，认证信息可能来自环境变量或 Pi 登录状态。",
       "deleteCredential": "删除认证",
       "deleteProviderConfig": "删除渠道配置",
       "deleteConfirmTitle": "删除渠道条目",
@@ -4630,13 +4624,11 @@
       "providerKeyRequired": "请输入供应商 Key",
       "providerKey": "供应商 Key",
       "providerKeyPlaceholder": "例如：openrouter",
-      "addSupplier": "添加供应商",
       "addSupplierTitle": "添加 Pi 供应商",
       "editSupplierTitle": "编辑 {{name}}",
       "displayName": "显示名称",
       "displayNamePlaceholder": "例如：OpenRouter",
       "credentialAdvancedJson": "auth.json 高级 JSON（官方订阅 / 登录态，可选）",
-      "configSection": "第三方渠道配置 models.json",
       "apiType": "API 类型",
       "apiTypePlaceholder": "选择或输入 API 类型",
       "baseUrl": "Base URL",
@@ -4680,7 +4672,8 @@
       "importAllApiHubOpenAiCompatTitle": "导入前确认",
       "importAllApiHubReviewConfirm": "继续导入",
       "importAllApiHubOpenAiCompatDesc": "检测到所选供应商会按 OpenAI 兼容 API 导入，这个判断未必准确。建议导入后立即进入编辑页，手动检查 API 类型、Base URL 以及其他配置。",
-      "importAllApiHubMissingApiKeyDesc": "部分所选供应商暂时没有读取到 API Key，导入后需要在供应商编辑页手动填写渠道 API Key。"
+      "importAllApiHubMissingApiKeyDesc": "部分所选供应商暂时没有读取到 API Key，导入后需要在供应商编辑页手动填写渠道 API Key。",
+      "sourcesLabel": "来源"
     },
     "otherConfig": {
       "title": "其他配置",
@@ -4692,9 +4685,6 @@
       "outputLimit": "输出",
       "idRequired": "请输入模型 ID",
       "idExists": "该模型 ID 已存在",
-      "batchDelete": "批量删除",
-      "cancelBatchDelete": "取消批量删除",
-      "deleteSelected": "删除已选 {{count}} 个",
       "batchDeleteSuccess": "已删除 {{count}} 个模型",
       "setAsPrimarySuccess": "已设为默认模型：{{name}}",
       "idPlaceholder": "例如：claude-sonnet-4.5",
@@ -4712,7 +4702,6 @@
       "button": "模型测试"
     },
     "fetchModels": {
-      "button": "获取模型",
       "applySuccess": "已添加 {{addCount}} 个模型，移除 {{removeCount}} 个模型"
     },
     "extensions": {
@@ -5070,7 +5059,6 @@
   },
   "ohMyPi": {
     "rootPathSource": {
-      "customize": "自定义配置目录",
       "modal": {
         "title": "自定义 Oh My Pi 配置目录",
         "currentSource": "当前来源",
@@ -5093,9 +5081,6 @@
       }
     },
     "title": "Oh My Pi 配置管理",
-    "viewDocs": "官方文档",
-    "configPath": "配置目录路径",
-    "openFolder": "打开文件夹",
     "refreshConfig": "刷新配置",
     "syncModels": "同步预设模型",
     "modelsRefreshSuccess": "预设模型已同步",
@@ -5161,8 +5146,6 @@
     },
     "provider": {
       "title": "供应商列表",
-      "emptyText": "运行时文件中暂无渠道配置",
-      "builtinHint": "内置供应商，认证信息可能来自环境变量或 Oh My Pi 登录状态。",
       "deleteConfirmTitle": "删除渠道条目",
       "deleteConfirmContent": "确定要删除 {{providerKey}} 的{{scope}}吗？",
       "deleteDisabledDefault": "该渠道已设为默认，不可删除",
@@ -5172,12 +5155,10 @@
       "providerKeyRequired": "请输入供应商 Key",
       "providerKey": "供应商 Key",
       "providerKeyPlaceholder": "例如：openrouter",
-      "addSupplier": "添加 API 供应商",
       "addSupplierTitle": "添加 Oh My Pi API 供应商",
       "editSupplierTitle": "编辑 {{name}}",
       "displayName": "显示名称",
       "displayNamePlaceholder": "例如：OpenRouter",
-      "configSection": "第三方渠道配置 models.yml",
       "apiType": "API 类型",
       "apiTypePlaceholder": "选择或输入 API 类型",
       "baseUrl": "Base URL",
@@ -5217,7 +5198,8 @@
       "importAllApiHubOpenAiCompatTitle": "导入前确认",
       "importAllApiHubReviewConfirm": "继续导入",
       "importAllApiHubOpenAiCompatDesc": "检测到所选供应商会按 OpenAI 兼容 API 导入，这个判断未必准确。建议导入后立即进入编辑页，手动检查 API 类型、Base URL 以及其他配置。",
-      "importAllApiHubMissingApiKeyDesc": "部分所选供应商暂时没有读取到 API Key，导入后需要在供应商编辑页手动填写渠道 API Key。"
+      "importAllApiHubMissingApiKeyDesc": "部分所选供应商暂时没有读取到 API Key，导入后需要在供应商编辑页手动填写渠道 API Key。",
+      "sourcesLabel": "来源"
     },
     "otherConfig": {
       "title": "其他配置",
@@ -5232,9 +5214,6 @@
       "outputLimit": "输出",
       "idRequired": "请输入模型 ID",
       "idExists": "该模型 ID 已存在",
-      "batchDelete": "批量删除",
-      "cancelBatchDelete": "取消批量删除",
-      "deleteSelected": "删除已选 {{count}} 个",
       "batchDeleteSuccess": "已删除 {{count}} 个模型",
       "setAsPrimarySuccess": "已设为默认模型：{{name}}",
       "idPlaceholder": "例如：claude-sonnet-4.5",
@@ -5251,7 +5230,6 @@
       "button": "模型测试"
     },
     "fetchModels": {
-      "button": "获取模型",
       "applySuccess": "已添加 {{addCount}} 个模型，移除 {{removeCount}} 个模型"
     },
     "extensions": {
@@ -5332,7 +5310,8 @@
       "unsupportedApi": "暂不支持 {{api}} 的连通性测试，请使用 OMP CLI 验证。",
       "mixedConnections": "模型使用不同的协议或地址，将按各自连接分别测试。",
       "noTestableModel": "模型各自使用的协议暂不支持连通性测试，请使用 OMP CLI 验证。",
-      "modelDiscoveryUnavailable": "此连接暂不支持获取模型，请手动添加模型。"
+      "modelDiscoveryUnavailable": "此连接暂不支持获取模型，请手动添加模型。",
+      "noTestableProvider": "这个列表里没有可测试的渠道。请用 OMP CLI 验证协议。"
     },
     "subagents": {
       "title": "Subagents 集中配置",
@@ -5434,10 +5413,6 @@
   "dsh": {
     "title": "DeepSeek Harness 配置管理",
     "pageHint": "管理 dsh（DeepSeek Harness）的模型供应商、默认模型与全局提示词。",
-    "viewDocs": "官方文档",
-    "configPath": "配置文件路径",
-    "openFolder": "打开文件夹",
-    "refreshConfig": "刷新配置",
     "syncModels": "同步模型",
     "modelsRefreshSuccess": "预设模型已刷新",
     "openWebUi": "打开 Web UI",
@@ -5460,10 +5435,9 @@
       "label": "配置 Profile",
       "auto": "自动检测（{{profile}}）",
       "autoDetecting": "自动检测",
-      "migrationTitle": "配置已迁移到 profile 层",
-      "migrationWithFile": "dsh 0.1.7 起不再读取 settings.yaml：它已被导入到 {{patchPath}} 并重命名为 {{importedPath}}。本页的供应商与默认模型现在直接写入 profile 补丁文件，旧文件仅作历史记录。",
       "otherSettingsFrozenTitle": "其他配置已由 dsh 自身管理",
-      "otherSettingsFrozenDesc": "profile 补丁文件里是 dsh 全部插件的配置行，直接编辑容易破坏其它插件。请使用 dsh 设置页（设置 → 插件）维护这些配置；本页只管理供应商与默认模型。"
+      "otherSettingsFrozenDesc": "profile 补丁文件里是 dsh 全部插件的配置行，直接编辑容易破坏其它插件。请使用 dsh 设置页（设置 → 插件）维护这些配置；本页只管理供应商与默认模型。",
+      "migrationNotice": "配置已迁移到 profile 层：settings.yaml 已导入 {{patchPath}} 并改名为 {{importedPath}}，旧文件不再生效。"
     },
     "modelSettings": {
       "title": "默认模型",
@@ -5476,11 +5450,8 @@
     },
     "provider": {
       "title": "供应商列表",
-      "addSupplier": "新增供应商",
       "addSupplierTitle": "新增供应商",
       "editSupplierTitle": "编辑供应商 {{name}}",
-      "emptyText": "暂无供应商",
-      "builtinHint": "内置供应商",
       "providerKey": "供应商 Key",
       "providerKeyPlaceholder": "如 deepseek",
       "providerKeyRequired": "请输入供应商 Key",
@@ -5504,7 +5475,8 @@
       },
       "deleteScopeModalTitle": "删除供应商",
       "deleteScopeModalContent": "该供应商同时包含供应商配置与 API 凭证，删除后将一并清除且无法恢复。确定删除供应商 {{providerKey}} 吗？",
-      "confirmDelete": "确认删除"
+      "confirmDelete": "确认删除",
+      "builtinHint": "内置供应商"
     },
     "model": {
       "modelSourceBuiltin": "内置 · 适配器默认模型",
@@ -5512,15 +5484,11 @@
       "idPlaceholder": "模型标识符，如 deepseek-chat",
       "idRequired": "请输入模型 ID",
       "idExists": "该模型 ID 已存在",
-      "batchDelete": "批量删除",
-      "cancelBatchDelete": "退出批量删除",
-      "deleteSelected": "删除所选 {{count}}",
       "batchDeleteSuccess": "已删除 {{count}} 个模型",
       "thinkingLevelMapHint": "模型级思考等级支持/映射表。",
       "extraParamsHint": "模型的额外参数（如输入类型、兼容性标记等），将原样保留在配置文件中。"
     },
     "fetchModels": {
-      "button": "拉取模型",
       "applySuccess": "已应用 {{addCount}} 个模型，移除 {{removeCount}} 个"
     },
     "connectivity": {
@@ -5532,7 +5500,6 @@
       "autoSaveHint": "自动保存"
     },
     "rootPathSource": {
-      "customize": "自定义配置目录",
       "modal": {
         "title": "自定义配置目录",
         "currentSource": "当前来源",

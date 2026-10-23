@@ -19,10 +19,11 @@
  * not render its own `<Card>`, and does not hand-roll the selection checkbox.
  * All three are `CardShell`'s job.
  *
- * The migration is not finished, so the check runs as a **ratchet**: the four
- * cards still holding their own chrome are listed in `PENDING_MIGRATION`. The
- * set may only shrink — migrating one without removing it from the list is an
- * error, so the list cannot silently go stale.
+ * The migration is finished (2026-10-22, the last three were pi / oh_my_pi /
+ * dsh), but the check keeps running as a **ratchet**: a card that legitimately
+ * cannot migrate yet would be listed in `PENDING_MIGRATION`, and that set may
+ * only shrink — migrating one without removing it from the list is an error, so
+ * the list cannot silently go stale.
  *
  * Scope: `web/features/coding/<cli>/components/*ProviderCard.tsx` **and**
  * `*OfficialAccountCard.tsx` (see `GOVERNED_SUFFIXES`). Files whose name matches

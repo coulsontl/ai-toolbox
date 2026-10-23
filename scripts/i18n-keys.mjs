@@ -70,9 +70,6 @@ const DEFAULT_DYNAMIC_IDENTIFIER_VALUES_BY_FILE = {
     // made `i18n:prune` delete the omoNative copy the card still renders.
     i18nPrefix: ['opencode', 'omoNative'],
   },
-  'web/components/common/ProviderCard/index.tsx': {
-    i18nPrefix: ['opencode', 'openclaw'],
-  },
   'web/features/coding/shared/prompt/GlobalPromptConfigCard.tsx': {
     translationKeyPrefix: ['claudecode.prompt', 'codex.prompt', 'geminicli.prompt', 'opencode.prompt'],
   },

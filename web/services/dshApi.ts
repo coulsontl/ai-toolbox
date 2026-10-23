@@ -46,6 +46,13 @@ export const saveDshModelsProvider = async (
   return await invoke<DshRuntimeConfig>('save_dsh_models_provider', { input });
 };
 
+/** Persist the drag order of `llm-pi-ai.providers`. */
+export const reorderDshProviders = async (
+  providerKeys: string[],
+): Promise<DshRuntimeConfig> => {
+  return await invoke<DshRuntimeConfig>('reorder_dsh_providers', { providerKeys });
+};
+
 export const saveDshCredential = async (
   input: DshCredentialInput,
 ): Promise<DshRuntimeConfig> => {
