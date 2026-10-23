@@ -62,13 +62,18 @@ pub enum AnthropicThinkingPlan {
 /// Claude models that still require the legacy `enabled` + `budget_tokens`
 /// pair, i.e. the 4.5 generation and older.
 ///
-/// This is deliberately an allowlist of the *old* spellings: every id that is
-/// not listed here is treated as adaptive thinking. Claude 4.6 replaced manual
-/// budgets with `thinking.type=adaptive` + `output_config.effort`, and 4.7+
-/// answer 400 to the legacy pair (issue #437). Keeping the list on the legacy
-/// side means a newly released Claude model works without touching this code.
+/// This is deliberately an allowlist of the *old* spellings: every Claude id
+/// that is not listed here is treated as adaptive thinking. Claude 4.6 replaced
+/// manual budgets with `thinking.type=adaptive` + `output_config.effort`, and
+/// 4.7+ answer 400 to the legacy pair (issue #437). Keeping the list on the
+/// legacy side means a newly released Claude model works without touching this
+/// code. Non-Claude ids never reach this list: `uses_legacy_thinking_budget`
+/// answers for them first.
 const LEGACY_THINKING_BUDGET_MODEL_MARKERS: &[&str] = &[
+    "claude-1",           // claude-instant-1, claude-1.x
+    "claude-2",           // claude-2.0 / claude-2.1
     "claude-3",           // claude-3-7-sonnet, claude-3-5-haiku, ...
+    "claude-instant",     // claude-instant-1.2
     "claude-opus-4-2025", // claude-opus-4-20250514 (the 4.0 release)
     "claude-opus-4-1",
     "claude-opus-4-5",
@@ -86,6 +91,13 @@ fn canonical_model_id(model: &str) -> String {
 
 fn uses_legacy_thinking_budget(model: &str) -> bool {
     let normalized = canonical_model_id(model);
+    // Non-Claude models reach an Anthropic target through relays that imitate
+    // the older Messages API (DeepSeek/GLM/Kimi `/anthropic` endpoints). They
+    // are not part of the Claude generation split, so keep the long-standing
+    // budget spelling rather than guessing that they accept `adaptive`.
+    if !normalized.contains("claude") {
+        return true;
+    }
     LEGACY_THINKING_BUDGET_MODEL_MARKERS
         .iter()
         .any(|marker| normalized.contains(marker))
@@ -157,11 +169,46 @@ mod thinking_plan_tests {
             "claude-fable-5-1",
             "claude-haiku-5-5",
             "claude-opus-4-7",
-            "a-model-released-next-year",
+            // A Claude id that does not exist yet: new generations must work
+            // without touching the legacy allowlist.
+            "claude-opus-7-0",
         ] {
             assert_eq!(
                 plan(model, "medium"),
                 Some(AnthropicThinkingPlan::Adaptive { effort: "medium" }),
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn pre_claude_3_ids_count_as_legacy() {
+        for model in ["claude-instant-1.2", "claude-2.1", "claude-1.x"] {
+            assert!(
+                matches!(
+                    plan(model, "high"),
+                    Some(AnthropicThinkingPlan::Budget { .. })
+                ),
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_claude_relays_keep_the_budget_spelling() {
+        // DeepSeek/GLM/Kimi expose Anthropic-compatible endpoints that imitate
+        // the older Messages API; they must not receive `adaptive`.
+        for model in [
+            "deepseek-v4-pro",
+            "glm-5.3",
+            "kimi-k2.8",
+            "some-private-alias",
+        ] {
+            assert!(
+                matches!(
+                    plan(model, "high"),
+                    Some(AnthropicThinkingPlan::Budget { .. })
+                ),
                 "{model}"
             );
         }

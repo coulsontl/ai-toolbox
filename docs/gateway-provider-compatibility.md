@@ -925,7 +925,8 @@ xAI native Responses passthrough 不是用户开关控制，而是严格自动�
 
 请求侧，thinking 形态按 Claude 代际分流（issue #437，实现位于 transformer `shared/thinking_config.rs`，不是 provider 兼容层）：
 
-- 目标模型匹配旧模型白名单（`LEGACY_THINKING_BUDGET_MODEL_MARKERS`，覆盖 4.5 及更早）时，`reasoning_effort` 写 `thinking.type=enabled` + `budget_tokens`；`none` 写 `disabled`。
+- **非 Claude 模型名一律保持旧写法**：DeepSeek / GLM / Kimi 等中转的 `/anthropic` 兼容端点模仿的是旧版 Messages API，不能被当成新版 Claude。判断条件是模型 id 含 `claude`，不含就属于这一类。
+- 目标模型匹配旧模型白名单（`LEGACY_THINKING_BUDGET_MODEL_MARKERS`，覆盖 4.5 及更早、以及 2.x/Instant）时，`reasoning_effort` 写 `thinking.type=enabled` + `budget_tokens`；`none` 写 `disabled`。
 - 其余所有模型（4.6 起，含未来新 id）写 `thinking.type=adaptive` + `display=summarized` + `output_config.effort`；`none` 改为只写 `output_config.effort=low` 并省略 `thinking`，因为 5.5 代拒绝 `disabled`。
 - `xhigh` 在 4.6 上降级为 `high`（该代尚不支持），`minimal` 一律收敛为 `low`。
 - 只影响跨协议转换（Codex/Grok/Gemini/Kimi -> Anthropic）；Claude Code 自身发起的同协议请求直通，不经过这段改写。

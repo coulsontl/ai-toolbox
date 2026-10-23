@@ -191,7 +191,7 @@ flowchart TD
 - runtime 在转换前改写源 body 的 `model` 字段为 provider 映射后的上游模型，并剥离 `[1M]` / `[1m]` 上下文标记。Gemini source 如果 body 没有 `model`，转换前会补一个。
 - Gemini source 的 stream route 转到非 Gemini target 时，runtime 会在 body 里写 `stream=true`。
 - `strip_thinking_for_retry` 只用于 thinking/signature 兼容 4xx 后的重试，不是正常转换前的默认行为。
-- 真正结构转换只发生在 `convert_request_body_with_context()`。转 Anthropic target 时，`reasoning_effort` 写成哪种 thinking 形态由 transformer 按目标模型分代决定（issue #437）：4.5 及更早只接受 `thinking.type=enabled` + `budget_tokens`，4.6+ 必须用 `thinking.type=adaptive` + `output_config.effort`。分档用旧模型白名单实现（`shared/thinking_config.rs::LEGACY_THINKING_BUDGET_MODEL_MARKERS`），未列出的 id（含未来新模型）默认按 adaptive 处理。
+- 真正结构转换只发生在 `convert_request_body_with_context()`。转 Anthropic target 时，`reasoning_effort` 写成哪种 thinking 形态由 transformer 按目标模型分代决定（issue #437）：4.5 及更早只接受 `thinking.type=enabled` + `budget_tokens`，4.6+ 必须用 `thinking.type=adaptive` + `output_config.effort`。分档用旧模型白名单实现（`shared/thinking_config.rs::LEGACY_THINKING_BUDGET_MODEL_MARKERS`），未列出的**含 `claude` 的** id（含未来新模型）默认按 adaptive 处理；不含 `claude` 的 id（DeepSeek/GLM/Kimi 等 Anthropic 兼容中转）继续用旧式 budget。
 - 转换后如果 target 是 Gemini，runtime 可能用 `GeminiShadowStore` 回放上一轮带 `thoughtSignature` 的 model functionCall。
 - 转换后如果 target 是 OpenAI Responses，runtime 可能补 `prompt_cache_key` fallback。
 - 转换后统一跑 outbound provider pipeline，包括 provider body 兼容、billing CCH 回填、显式 `defaultMaxTokens` 限制。
