@@ -923,6 +923,13 @@ xAI native Responses passthrough 不是用户开关控制，而是严格自动�
 - Bedrock native `web_search` 通过 body `anthropic_beta=["web-search-2025-03-05"]`。
 - Vertex/LongCat/普通非 Direct、非 Bedrock 平台过滤 native web_search tool。
 
+请求侧，thinking 形态按 Claude 代际分流（issue #437，实现位于 transformer `shared/thinking_config.rs`，不是 provider 兼容层）：
+
+- 目标模型匹配旧模型白名单（`LEGACY_THINKING_BUDGET_MODEL_MARKERS`，覆盖 4.5 及更早）时，`reasoning_effort` 写 `thinking.type=enabled` + `budget_tokens`；`none` 写 `disabled`。
+- 其余所有模型（4.6 起，含未来新 id）写 `thinking.type=adaptive` + `display=summarized` + `output_config.effort`；`none` 改为只写 `output_config.effort=low` 并省略 `thinking`，因为 5.5 代拒绝 `disabled`。
+- `xhigh` 在 4.6 上降级为 `high`（该代尚不支持），`minimal` 一律收敛为 `low`。
+- 只影响跨协议转换（Codex/Grok/Gemini/Kimi -> Anthropic）；Claude Code 自身发起的同协议请求直通，不经过这段改写。
+
 响应侧：
 
 - 没有平台专用 response wrapper；走 Anthropic response/SSE conversion 和通用 failure classification。
@@ -934,6 +941,9 @@ xAI native Responses passthrough 不是用户开关控制，而是严格自动�
 - `anthropic_direct_web_search_adds_beta_header`
 - `anthropic_vertex_filters_native_web_search_tool`
 - `anthropic_vertex_provider_uses_raw_predict_path_and_version_header`
+- `openai_reasoning_effort_maps_to_adaptive_thinking_on_claude_4_6_and_later`（transformer kernel；覆盖 issue #437 的 adaptive 写法与 4.6 的 `xhigh` 降级）
+- `openai_reasoning_effort_maps_to_anthropic_budget_tokens_on_legacy_models`（4.5 及更早仍走旧式 budget）
+- `disabling_thinking_on_claude_5_omits_the_field_instead_of_sending_disabled`
 
 ### 5.16 Gemini Direct / Vertex
 

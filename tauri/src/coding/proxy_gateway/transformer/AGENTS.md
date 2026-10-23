@@ -173,7 +173,7 @@
 - `metadata["user_id"]` 要输出到 Anthropic `metadata.user_id`。
 - 无最终 tools 时清理 `tool_choice` 属于 Gateway runtime outbound adapter 兼容，不属于纯协议结构转换。
 - URL/header/auth/Bedrock/Vertex/LongCat 平台差异不在本模块，由 Gateway runtime target protocol/header/auth 决策负责。
-- `ReasoningEffort` 可转 Anthropic thinking budget，`none` 转 disabled；不承载 `ReasoningBudget`、thinking display/adaptive、output_config metadata。
+- `ReasoningEffort` 的写法按模型分代（issue #437）：`shared/thinking_config.rs::anthropic_thinking_plan` 用**旧模型白名单**（`LEGACY_THINKING_BUDGET_MODEL_MARKERS`，即 4.5 及更早）决定是否写旧式 `thinking.type=enabled` + `budget_tokens`；**不在白名单里的任何模型（含未来新模型）一律按 adaptive 处理**，写 `thinking.type=adaptive` + `display=summarized` + `output_config.effort`。`none` 在 adaptive 模型上不能写 `disabled`（5.x 会 400），改为只写 `output_config.effort=low` 并省略 `thinking`；`xhigh` 在 4.6 上降级为 `high`，`minimal` 收敛为 `low`。新增模型时不需要改这段代码，只有「发现某个新模型其实仍只接受旧 budget」才往白名单里加。
 - user/assistant text、image data URL -> base64 source、普通 image URL -> URL source 都支持。
 - Tool call 转 `tool_use`；tool result messages 聚合为 user `tool_result`，同一 Anthropic 原始 user message 的 tool_result + 后续文本可根据 message index 合并。
 - `is_error` 和 tool_result `cache_control` 支持；tool arguments 必须走 `tool_arguments_value()`：标准 JSON 解析成功则输出对象/数组；标准 JSON 失败后先走 `json5`，再走轻量 repair（注释、trailing comma、单引号字符串、bare object key 等）；仍无法解析时保留原始字符串，不能再 fallback 成 `{}` 吞掉工具参数。
@@ -242,7 +242,7 @@
   - Gemini `functionResponse.name` 和缺失的 id 通过同一请求里的历史 functionCall 做 best-effort 补全；没有历史时用 id/name fallback。Transformer 不做跨请求影子状态；runtime `GeminiShadowStore` 可在转换前后记录/回放带 `thoughtSignature` 的上一轮 model functionCall。
 - Reasoning 映射：
   - Chat `reasoning` / `reasoning_content`、Responses `reasoning.summary[].text`、Anthropic `thinking`、Gemini `thought: true` 文本互转。
-  - Anthropic 顶层 `thinking` / `output_config.effort` 转 OpenAI Chat `reasoning_effort` 或 Responses `reasoning.effort`；反向转 Anthropic 时用 `reasoning_effort` 生成 `thinking` 配置。
+  - Anthropic 顶层 `thinking` / `output_config.effort` 转 OpenAI Chat `reasoning_effort` 或 Responses `reasoning.effort`；反向转 Anthropic 时用 `reasoning_effort` 生成 `thinking` 配置，目标模型是 4.6+ 时写 adaptive（见 §07 的分代规则）。
   - Runtime 的 thinking rectifier 不应在正常转换前删除 `thinking` 或 `output_config.effort`；它只在上游 4xx thinking/signature 兼容错误后重建并重试一次请求。协议转换层继续按 source payload 显式字段做 reasoning 映射。
   - Gemini `generationConfig.thinkingConfig` 转 `reasoning_effort`；反向转 Gemini 时用 `reasoning_effort` 生成 `thinkingConfig`，并保持 `includeThoughts` 与 `thinkingLevel`/budget 语义。
   - Anthropic `thinking.signature`、Anthropic `redacted_thinking`、Responses `encrypted_content`、Gemini `thoughtSignature` 支持 provider-local 生命周期：同 provider roundtrip 保真，跨 provider 不泄漏、不伪造。

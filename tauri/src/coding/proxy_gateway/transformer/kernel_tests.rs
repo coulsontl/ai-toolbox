@@ -1495,32 +1495,51 @@ fn anthropic_thinking_maps_to_openai_reasoning_effort() {
     assert_eq!(xhigh["reasoning"]["effort"], "xhigh");
 }
 
-#[test]
-fn openai_reasoning_effort_maps_to_anthropic_budget_tokens() {
-    let medium = convert_request_value(
+/// Converts a Codex Responses request carrying `effort` to Anthropic Messages.
+fn responses_effort_to_anthropic(model: &str, effort: &str) -> Value {
+    convert_request_value(
         ConversionRoute::new(AiProtocol::OpenAiResponses, AiProtocol::AnthropicMessages),
         json!({
-            "model": "claude-sonnet-4-6",
+            "model": model,
             "max_output_tokens": 20000,
-            "reasoning": {"effort": "medium"},
+            "reasoning": {"effort": effort},
             "input": "think"
         }),
     )
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn openai_reasoning_effort_maps_to_anthropic_budget_tokens_on_legacy_models() {
+    let medium = responses_effort_to_anthropic("claude-sonnet-4-5-20250929", "medium");
     assert_eq!(medium["thinking"]["type"], "enabled");
     assert_eq!(medium["thinking"]["budget_tokens"], 10240);
+    assert!(medium.get("output_config").is_none());
 
-    let xhigh = convert_request_value(
-        ConversionRoute::new(AiProtocol::OpenAiResponses, AiProtocol::AnthropicMessages),
-        json!({
-            "model": "claude-sonnet-4-6",
-            "max_output_tokens": 20000,
-            "reasoning": {"effort": "xhigh"},
-            "input": "think"
-        }),
-    )
-    .unwrap();
+    let xhigh = responses_effort_to_anthropic("claude-sonnet-4-5-20250929", "xhigh");
     assert_eq!(xhigh["thinking"]["budget_tokens"], 20000);
+}
+
+#[test]
+fn openai_reasoning_effort_maps_to_adaptive_thinking_on_claude_4_6_and_later() {
+    // Issue #437: `enabled` + `budget_tokens` is a 400 on these models.
+    let medium = responses_effort_to_anthropic("claude-opus-5-5", "medium");
+    assert_eq!(medium["thinking"]["type"], "adaptive");
+    assert_eq!(medium["thinking"]["display"], "summarized");
+    assert!(medium["thinking"].get("budget_tokens").is_none());
+    assert_eq!(medium["output_config"]["effort"], "medium");
+
+    // 4.6 accepted adaptive but predates `xhigh`.
+    let xhigh = responses_effort_to_anthropic("claude-sonnet-4-6", "xhigh");
+    assert_eq!(xhigh["thinking"]["type"], "adaptive");
+    assert_eq!(xhigh["output_config"]["effort"], "high");
+}
+
+#[test]
+fn disabling_thinking_on_claude_5_omits_the_field_instead_of_sending_disabled() {
+    let none = responses_effort_to_anthropic("claude-opus-5-5", "none");
+    assert!(none.get("thinking").is_none());
+    assert_eq!(none["output_config"]["effort"], "low");
 }
 
 #[test]

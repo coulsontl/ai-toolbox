@@ -4,12 +4,13 @@ use super::super::llm::{
     TOOL_TYPE_ANTHROPIC_NATIVE, TOOL_TYPE_ANTHROPIC_WEB_SEARCH, TOOL_TYPE_FUNCTION,
 };
 use super::super::shared::signature::{decode_signature_for, SignatureProvider};
+use super::super::shared::thinking_config::{anthropic_thinking_plan, AnthropicThinkingPlan};
 use super::super::shared::tool_media::{
     inline_image_data, plan_tool_result_images, ToolImageScope, TOOL_RESULT_MEDIA_ATTACHED_MARKER,
 };
 use super::super::shared::{
-    normalize_function_parameters_owned, reasoning_effort_to_budget_tokens, stop_to_value,
-    tool_arguments_value, tool_choice_to_anthropic,
+    normalize_function_parameters_owned, stop_to_value, tool_arguments_value,
+    tool_choice_to_anthropic,
 };
 use super::super::traits::OutboundTransformer;
 use super::super::types::AiProtocol;
@@ -151,6 +152,15 @@ pub fn llm_request_to_anthropic(request: Request) -> Value {
         }
     }
 
+    let resolved_max_tokens = request
+        .max_tokens
+        .or(request.max_completion_tokens)
+        .unwrap_or(8192);
+    let thinking_plan = request
+        .reasoning_effort
+        .as_deref()
+        .and_then(|effort| anthropic_thinking_plan(&request.model, effort, resolved_max_tokens));
+
     let mut body = json!({
         "model": request.model,
         "messages": messages
@@ -167,10 +177,6 @@ pub fn llm_request_to_anthropic(request: Request) -> Value {
             json!(system_chunks.join("\n\n"))
         };
     }
-    let resolved_max_tokens = request
-        .max_tokens
-        .or(request.max_completion_tokens)
-        .unwrap_or(8192);
     body["max_tokens"] = json!(resolved_max_tokens);
     if let Some(user_id) = request
         .metadata
@@ -179,18 +185,7 @@ pub fn llm_request_to_anthropic(request: Request) -> Value {
     {
         body["metadata"] = json!({ "user_id": user_id });
     }
-    if let Some(reasoning_effort) = request.reasoning_effort {
-        if reasoning_effort == "none" {
-            body["thinking"] = json!({ "type": "disabled" });
-        } else if let Some(budget_tokens) =
-            reasoning_effort_to_budget_tokens(&reasoning_effort, Some(resolved_max_tokens))
-        {
-            body["thinking"] = json!({
-                "type": "enabled",
-                "budget_tokens": budget_tokens
-            });
-        }
-    }
+    apply_anthropic_thinking(&mut body, thinking_plan);
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
@@ -247,6 +242,29 @@ pub fn llm_request_to_anthropic(request: Request) -> Value {
         body["tool_choice"] = tool_choice;
     }
     body
+}
+
+/// Writes the thinking fields the model's generation actually accepts.
+fn apply_anthropic_thinking(body: &mut Value, plan: Option<AnthropicThinkingPlan>) {
+    match plan {
+        Some(AnthropicThinkingPlan::Disabled) => {
+            body["thinking"] = json!({ "type": "disabled" });
+        }
+        Some(AnthropicThinkingPlan::Budget { budget_tokens }) => {
+            body["thinking"] = json!({
+                "type": "enabled",
+                "budget_tokens": budget_tokens
+            });
+        }
+        Some(AnthropicThinkingPlan::Adaptive { effort }) => {
+            body["thinking"] = json!({ "type": "adaptive", "display": "summarized" });
+            body["output_config"]["effort"] = json!(effort);
+        }
+        Some(AnthropicThinkingPlan::EffortOnly { effort }) => {
+            body["output_config"]["effort"] = json!(effort);
+        }
+        None => {}
+    }
 }
 
 fn anthropic_thinking_block(message: &Message, reasoning: &str) -> Value {
