@@ -1638,6 +1638,8 @@ Extensions / packages：
 
 ## MCP 非目标
 
+> **已过时（2026-10-23）**：Pi 0.99+ 已原生支持 MCP，读取 `~/.pi/agent/mcp.json`（项目级 `.pi/mcp.json`），`pi-mcp-adapter` 读取同一文件；AI Toolbox 早已把 Pi 注册为 MCP 同步目标。本节仅保留为历史决策记录，现行事实以 `tauri/src/coding/pi/AGENTS.md` 与 `tauri/src/coding/mcp/AGENTS.md` 为准。
+
 用户已明确 MCP 暂时不接。本计划只保留非目标边界：
 
 - 不在 `tauri/src/coding/mcp/` 给 Pi 注册内置 MCP target。

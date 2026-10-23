@@ -373,6 +373,88 @@ fn packages_dir_display(runtime_location: &RuntimeLocationInfo) -> String {
     }
 }
 
+/// npm 12 在项目级安装里不接受从用户级 `.npmrc` 继承的 `allow-scripts`。
+/// 失败后把用户已经声明的同一行复制到 `<agentDir>/npm/.npmrc`，再重试一次，
+/// 避免用户手动改文件。返回是否真的写了文件（已配置或缺来源时返回 false）。
+fn try_repair_npm_allow_scripts(runtime_location: &RuntimeLocationInfo) -> bool {
+    let Some(user_npmrc) = user_npmrc_path(runtime_location) else {
+        return false;
+    };
+    let project_npmrc = runtime_location.host_path.join("npm").join(".npmrc");
+    repair_npm_allow_scripts(&project_npmrc, &user_npmrc).unwrap_or(false)
+}
+
+fn user_npmrc_path(runtime_location: &RuntimeLocationInfo) -> Option<PathBuf> {
+    match runtime_location.mode {
+        RuntimeLocationMode::WslDirect => {
+            let wsl = runtime_location.wsl.as_ref()?;
+            let user_root = wsl.linux_user_root.as_deref()?;
+            Some(crate::coding::runtime_location::build_windows_unc_path(
+                &wsl.distro,
+                &format!("{}/.npmrc", user_root.trim_end_matches('/')),
+            ))
+        }
+        RuntimeLocationMode::LocalWindows => dirs::home_dir().map(|home| home.join(".npmrc")),
+    }
+}
+
+fn npmrc_key(line: &str) -> Option<&str> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+        return None;
+    }
+    line.split_once('=').map(|(key, _)| key.trim())
+}
+
+fn npmrc_has_allow_scripts(content: &str) -> bool {
+    content
+        .lines()
+        .any(|line| npmrc_key(line) == Some("allow-scripts"))
+}
+
+fn read_npmrc_allow_scripts(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()?
+        .lines()
+        .map(str::trim)
+        .find(|line| npmrc_key(line) == Some("allow-scripts"))
+        .map(str::to_string)
+}
+
+fn repair_npm_allow_scripts(project_npmrc: &Path, user_npmrc: &Path) -> Result<bool, String> {
+    let Some(user_line) = read_npmrc_allow_scripts(user_npmrc) else {
+        return Ok(false);
+    };
+    // 文件存在但读不出来时必须放弃：当成空文件继续写会抹掉用户原有配置。
+    let existing = match std::fs::read_to_string(project_npmrc) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(format!(
+                "Failed to read {}: {error}",
+                project_npmrc.display()
+            ))
+        }
+    };
+    // 用户自己已经给该目录配过 allow-scripts 时不覆盖，哪怕重试仍失败。
+    if npmrc_has_allow_scripts(&existing) {
+        return Ok(false);
+    }
+    if let Some(parent) = project_npmrc.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
+    }
+    let mut updated = existing;
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str(&user_line);
+    updated.push('\n');
+    std::fs::write(project_npmrc, updated)
+        .map_err(|error| format!("Failed to write {}: {error}", project_npmrc.display()))?;
+    Ok(true)
+}
+
 /// 失败输出里若含 npm 策略错误，追加提示；否则原样返回。
 fn annotate_npm_policy_error(message: String, runtime_location: &RuntimeLocationInfo) -> String {
     match npm_policy_hint(&message, runtime_location) {
@@ -619,6 +701,15 @@ pub async fn run_cli_command_preferring_no_approve(
                 fallback_args.iter().map(|arg| (*arg).to_string()).collect(),
             ))
         }
+        Err(error) if error.contains("EALLOWSCRIPTS") => {
+            if try_repair_npm_allow_scripts(runtime_location) {
+                let output =
+                    run_cli_command(spec, program, runtime_location, args, offline).await?;
+                Ok((output, used_args))
+            } else {
+                Err(error)
+            }
+        }
         Err(error) => Err(error),
     }
 }
@@ -860,6 +951,19 @@ fn effective_package_entry<'a>(
     packages?
         .iter()
         .find(|entry| package_entry_source(entry) == Some(source))
+}
+
+/// 某个包 source 在给定 `settings.json` 里是否**实际加载**。
+///
+/// 只看「出现在 `packages` 里」不够：本页的开关就是把条目写成四类 `[]` 来禁用，
+/// 被禁用的包仍在 `packages` 里却不加载。给 MCP 同步判定 Pi 的内置/adapter
+/// 归属时，必须按这个语义读，否则用户禁用 adapter 后我们仍会以为它在。
+pub fn package_source_is_active(spec: &CliExtensionSpec, settings: &Value, source: &str) -> bool {
+    let packages = settings.get("packages").and_then(Value::as_array);
+    match effective_package_entry(packages, source) {
+        Some(entry) => !is_disabled_package_entry(spec, entry),
+        None => false,
+    }
 }
 
 /// 镜像上游 `isEnabledByOverrides`：先 `!` 排除，再 `+` 强制包含，最后 `-` 强制排除。
@@ -2647,5 +2751,81 @@ npm error --allow-scripts is not allowed in project-scoped installs. Add the ent
             Some("plain".to_string())
         );
         assert_eq!(extract_refused_package("no marker here"), None);
+    }
+
+    #[test]
+    fn npm_allow_scripts_is_copied_into_the_agent_npm_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let user_npmrc = directory.path().join(".npmrc");
+        let project_npmrc = directory.path().join("npm").join(".npmrc");
+        std::fs::write(
+            &user_npmrc,
+            "registry=https://example.com\nallow-scripts=a,b\n",
+        )
+        .unwrap();
+
+        assert!(repair_npm_allow_scripts(&project_npmrc, &user_npmrc).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&project_npmrc).unwrap(),
+            "allow-scripts=a,b\n"
+        );
+
+        // 幂等：第二次不应再追加一行。
+        assert!(!repair_npm_allow_scripts(&project_npmrc, &user_npmrc).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&project_npmrc).unwrap(),
+            "allow-scripts=a,b\n"
+        );
+    }
+
+    #[test]
+    fn npm_allow_scripts_repair_preserves_existing_project_config() {
+        let directory = tempfile::tempdir().unwrap();
+        let user_npmrc = directory.path().join(".npmrc");
+        let project_npmrc = directory.path().join("npm").join(".npmrc");
+        std::fs::write(&user_npmrc, "allow-scripts=a\n").unwrap();
+        std::fs::create_dir_all(project_npmrc.parent().unwrap()).unwrap();
+        std::fs::write(&project_npmrc, "registry=https://example.com").unwrap();
+
+        assert!(repair_npm_allow_scripts(&project_npmrc, &user_npmrc).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&project_npmrc).unwrap(),
+            "registry=https://example.com\nallow-scripts=a\n"
+        );
+    }
+
+    #[test]
+    fn npm_allow_scripts_repair_keeps_existing_file_when_it_cannot_be_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let user_npmrc = directory.path().join(".npmrc");
+        std::fs::write(&user_npmrc, "allow-scripts=a\n").unwrap();
+        // 把「项目 .npmrc」指成一个目录：read_to_string 必然失败，且不是 NotFound。
+        let project_npmrc = directory.path().join("npm").join(".npmrc");
+        std::fs::create_dir_all(&project_npmrc).unwrap();
+
+        assert!(repair_npm_allow_scripts(&project_npmrc, &user_npmrc).is_err());
+        assert!(project_npmrc.is_dir());
+    }
+
+    #[test]
+    fn npm_allow_scripts_repair_never_overrides_project_config_or_invents_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let user_npmrc = directory.path().join(".npmrc");
+        let project_npmrc = directory.path().join("npm").join(".npmrc");
+        std::fs::write(&user_npmrc, "allow-scripts=a\n").unwrap();
+        std::fs::create_dir_all(project_npmrc.parent().unwrap()).unwrap();
+        std::fs::write(&project_npmrc, "allow-scripts=b\n").unwrap();
+
+        assert!(!repair_npm_allow_scripts(&project_npmrc, &user_npmrc).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&project_npmrc).unwrap(),
+            "allow-scripts=b\n"
+        );
+
+        // 用户级配置没有该键时不能凭空造一个文件。
+        std::fs::remove_file(&user_npmrc).unwrap();
+        std::fs::remove_file(&project_npmrc).unwrap();
+        assert!(!repair_npm_allow_scripts(&project_npmrc, &user_npmrc).unwrap());
+        assert!(!project_npmrc.exists());
     }
 }

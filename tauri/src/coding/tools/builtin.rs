@@ -228,7 +228,8 @@ pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
         mcp_config_format: None,
         mcp_field: None,
     },
-    // Pi - Skills plus MCP config consumed by the pi-mcp-adapter extension.
+    // Pi - Skills plus MCP config. Pi 0.99+ has built-in MCP support and
+    // pi-mcp-adapter reads the same `mcp.json`, so this one target covers both.
     BuiltinTool {
         key: "pi",
         display_name: "Pi",

@@ -233,6 +233,17 @@ fn sync_server_to_path(
     let format_config = get_format_config(&tool.key);
     let should_wrap_cmd = should_wrap_cmd_for_config_path(config_path);
 
+    // Pi's built-in MCP (0.99+) rejects the legacy SSE transport, while
+    // pi-mcp-adapter supports it. Both read the same `mcp.json`, so only report
+    // the mismatch when the built-in implementation is the one loading it.
+    if tool.key == "pi" && server.server_type == "sse" && !pi_adapter_active(config_path) {
+        return Err(
+            "Pi's built-in MCP does not support SSE transports. Use a streamable HTTP URL, \
+             or install pi-mcp-adapter if the server only offers SSE."
+                .to_string(),
+        );
+    }
+
     if tool.key == "kimi" {
         remove_legacy_kimi_toml_mcp_table(config_path);
     }
@@ -297,6 +308,43 @@ fn sync_server_to_path(
 
 fn should_wrap_cmd_for_config_path(config_path: &Path) -> bool {
     cfg!(windows) && should_wrap_cmd_for_windows_config_path(config_path)
+}
+
+/// `pi-mcp-adapter` 是否正在 Pi 里生效。
+///
+/// Pi 0.99+ 的内置 MCP 与 adapter 共用 `<root>/mcp.json`，但只有 adapter 支持 SSE。
+/// adapter 只在以包形式安装且**未被禁用**时替换内置实现：本页的禁用开关把条目
+/// 写成四类 `[]`，条目仍留在 `packages` 里却不再加载，所以不能只看它出现过。
+/// 读不到或解析失败一律按「内置实现生效」处理：宁可报一个可见错误，也不要写出
+/// 一条会被静默跳过的配置。
+fn pi_adapter_active(config_path: &Path) -> bool {
+    let Some(root) = config_path.parent() else {
+        return false;
+    };
+    let Ok(raw) = std::fs::read_to_string(root.join("settings.json")) else {
+        return false;
+    };
+    let Ok(settings) = serde_json::from_str::<Value>(&raw) else {
+        return false;
+    };
+    settings
+        .get("packages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            entry
+                .as_str()
+                .or_else(|| entry.get("source").and_then(Value::as_str))
+        })
+        .filter(|source| source.contains("pi-mcp-adapter"))
+        .any(|source| {
+            crate::coding::cli_extensions::package_source_is_active(
+                &crate::coding::pi::extensions::PI_EXTENSION_SPEC,
+                &settings,
+                source,
+            )
+        })
 }
 
 fn should_wrap_cmd_for_windows_config_path(config_path: &Path) -> bool {
@@ -2465,6 +2513,74 @@ X-Test = "yes"
                 "@sammysnake/fast-context-mcp"
             ])
         );
+    }
+
+    #[test]
+    fn pi_sse_sync_reports_error_without_writing_when_adapter_is_absent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mcp.json");
+        let tool = RuntimeTool::from(crate::coding::tools::builtin_tool_by_key("pi").unwrap());
+        let mut server = build_http_server();
+        server.server_type = "sse".to_string();
+
+        let error = sync_server_to_path(&tool, &path, &server, true).unwrap_err();
+        assert!(error.contains("does not support SSE"));
+        assert!(!path.exists());
+
+        server.server_type = "http".to_string();
+        sync_server_to_path(&tool, &path, &server, true).unwrap();
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["mcpServers"]["remote"]["type"], "http");
+    }
+
+    #[test]
+    fn pi_sse_sync_still_writes_when_pi_mcp_adapter_is_active() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mcp.json");
+        std::fs::write(
+            directory.path().join("settings.json"),
+            json!({ "packages": ["npm:pi-mcp-adapter"] }).to_string(),
+        )
+        .unwrap();
+        let tool = RuntimeTool::from(crate::coding::tools::builtin_tool_by_key("pi").unwrap());
+        let mut server = build_http_server();
+        server.server_type = "sse".to_string();
+
+        sync_server_to_path(&tool, &path, &server, true).unwrap();
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["mcpServers"]["remote"]["type"], "sse");
+    }
+
+    #[test]
+    fn pi_adapter_detection_only_counts_an_active_package() {
+        let directory = tempfile::tempdir().unwrap();
+        let settings_path = directory.path().join("settings.json");
+        let config_path = directory.path().join("mcp.json");
+
+        assert!(!pi_adapter_active(&config_path));
+
+        // 只在 extensions 一类上加了 `[]`：其它三类仍按默认加载，包是生效的。
+        std::fs::write(
+            &settings_path,
+            json!({ "packages": [{ "source": "npm:pi-mcp-adapter", "extensions": [] }] })
+                .to_string(),
+        )
+        .unwrap();
+        assert!(pi_adapter_active(&config_path));
+
+        // 四类全空 = 本页的「禁用」形态，内置实现接管。
+        std::fs::write(
+            &settings_path,
+            json!({ "packages": [{
+                "source": "npm:pi-mcp-adapter",
+                "extensions": [], "skills": [], "prompts": [], "themes": []
+            }] })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(!pi_adapter_active(&config_path));
     }
 
     #[test]
