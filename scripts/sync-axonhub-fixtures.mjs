@@ -28,7 +28,10 @@ const fixtureMappings = [
 
 function parseArgs(argv) {
   const options = {
-    axonhubRoot: '/mnt/d/GitHub/axonhub',
+    // No baked-in default: the AxonHub checkout is a local reference repo, not
+    // something every contributor has at the same path. Pass --axonhub or set
+    // AXONHUB_ROOT.
+    axonhubRoot: process.env.AXONHUB_ROOT ?? '',
     write: false,
     prune: false,
   };
@@ -169,6 +172,11 @@ function printResult(result, options) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  if (!options.axonhubRoot) {
+    throw new Error(
+      'Missing AxonHub checkout path. Pass --axonhub <path> or set AXONHUB_ROOT.'
+    );
+  }
   const results = [];
   for (const mapping of fixtureMappings) {
     results.push(await syncMapping(options, mapping));

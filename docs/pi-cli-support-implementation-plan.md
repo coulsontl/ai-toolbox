@@ -16,7 +16,7 @@
   - Session File Format: `https://pi.dev/docs/latest/session-format`
   - Skills / Extensions: `https://pi.dev/docs/latest/skills`, `https://pi.dev/docs/latest/extensions`
 - 当前项目：
-  - `/mnt/d/GitHub/ai-toolbox`
+  - 本仓库工作目录
   - 已阅读根 `AGENTS.md`，以及 Claude Code / Codex / OpenCode 前后端模块级 `AGENTS.md`
 
 ## 官方事实

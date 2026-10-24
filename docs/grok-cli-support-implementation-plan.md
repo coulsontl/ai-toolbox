@@ -709,7 +709,7 @@ Writer 只替换 fixture 已确认的 OAuth managed fields，保留 unknown/runt
 
 ### 7.6 Grok 官方账号 Device Code
 
-实现参考 `/mnt/d/GitHub/cli-proxy-api` 只读 checkout（研究时 HEAD `9418054a3b2184cc6fa618f1bbef51ffca17c32d`）中的 `internal/auth/xai/`、`sdk/auth/xai.go`、`internal/cmd/xai_login.go` 和 `internal/runtime/executor/xai_executor.go`。
+实现参考 `cli-proxy-api` 的只读 checkout（研究时 HEAD `9418054a3b2184cc6fa618f1bbef51ffca17c32d`）中的 `internal/auth/xai/`、`sdk/auth/xai.go`、`internal/cmd/xai_login.go` 和 `internal/runtime/executor/xai_executor.go`。
 
 协议基线：
 
@@ -1488,7 +1488,7 @@ Phase 0 必须对官方 Overview、Settings、CLI Reference 和本机 `grok --he
 
 ### 22.1 当前实现与参考
 
-主要入口为 `tauri/src/coding/codex/official_accounts.rs`，参考 `/mnt/d/GitHub/cli-proxy-api/internal/auth/codex/`、`sdk/auth/codex.go`、`sdk/auth/codex_device.go`。本机 `codex-cli 0.144.1` 已确认支持 `codex login --device-auth`。
+主要入口为 `tauri/src/coding/codex/official_accounts.rs`，参考 `cli-proxy-api` 的 `internal/auth/codex/`、`sdk/auth/codex.go`、`sdk/auth/codex_device.go`。`codex-cli 0.144.1` 已确认支持 `codex login --device-auth`。
 
 保留现有浏览器 OAuth；Device Code 用于 WSL、SSH、headless、1455 端口被占用、无法打开浏览器等场景，或作为 callback bind 失败后的明确 fallback。
 
