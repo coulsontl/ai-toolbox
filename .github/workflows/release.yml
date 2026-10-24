@@ -63,12 +63,19 @@ jobs:
             echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Move the rolling beta tag to this commit
+      - name: Move the rolling beta tag and archive the build commit
         if: github.event_name == 'workflow_dispatch'
+        env:
+          BETA_VERSION: ${{ steps.beta_version.outputs.version }}
         run: |
           set -euo pipefail
           git tag -f beta "$GITHUB_SHA"
           git push origin "refs/tags/beta" --force
+          # Every rolling build also leaves a permanent tag so a version
+          # number always resolves back to the exact commit it was built
+          # from, even after `beta` moves on.
+          git tag -f "beta/${BETA_VERSION}" "$GITHUB_SHA"
+          git push origin "refs/tags/beta/${BETA_VERSION}"
 
       - name: Create Release
         id: create_release
@@ -77,6 +84,7 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ github.event_name == 'workflow_dispatch' && format('AI Toolbox Beta {0}', steps.get_version.outputs.version) || format('AI Toolbox {0}', env.RELEASE_TAG) }}
           body: |
+            ${{ github.event_name == 'workflow_dispatch' && format('Built from commit {0}', github.sha) || '' }}
             See the assets to download this version and install.
 
             ⚠️ Mac安装提示：`"应用程序"已损坏` 解决方法：`xattr -cr /Applications/AI\ Toolbox.app`
