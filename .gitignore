@@ -33,7 +33,8 @@ nul
 .pi
 .playwright-mcp
 
-# Agent skills are junctions to ~/.agents/memories/skills (the single source
-# shared by every agent). The body must not be duplicated into the repository,
-# or the two copies drift.
+# Repository-specific agent skills live in the personal memory store
+# (~/.agents/memories/skills) and reach this repo through junctions, so the
+# body is never duplicated here. `.claude/skills` is a symlink to this
+# directory and inherits the same view.
 .codex/skills/
