@@ -1138,8 +1138,7 @@ const GeneralSettingsPage: React.FC = () => {
                 </Button>
                 {updateInfo?.hasUpdate && !updateInfo.scoopInstall && !updateInfo.debInstall && (
                   <Button type="primary" onClick={handleGoToDownload}>
-                    {t('settings.about.goToDownload')} (v{updateInfo.latestVersion}
-                    {updateInfo.isBetaChannel ? ' Beta' : ''})
+                    {t('settings.about.goToDownload')} (v{updateInfo.latestVersion})
                   </Button>
                 )}
                 {updateInfo?.hasUpdate && updateInfo.scoopInstall && (
