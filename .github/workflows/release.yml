@@ -21,7 +21,7 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     outputs:
-      release_id: ${{ steps.create_release.outputs.id }}
+      release_id: ${{ steps.create_release.outputs.id || steps.ensure_beta_release.outputs.id }}
       version: ${{ steps.get_version.outputs.version }}
     steps:
       - name: Checkout repository
@@ -88,22 +88,43 @@ jobs:
           # build wins.
           git push origin "refs/tags/beta-${BETA_VERSION}" --force
 
+      # The rolling beta release is created once with a minimal body; later
+      # dispatches only refresh the title and the prerelease flag so a body
+      # filled in by the release-notes skill survives rebuilds.
+      - name: Ensure rolling beta release
+        if: github.event_name == 'workflow_dispatch'
+        id: ensure_beta_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BETA_VERSION: ${{ steps.get_version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view beta --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/beta" --jq '.id')
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+              -f "name=AI Toolbox Beta ${BETA_VERSION}" -F prerelease=true >/dev/null
+          else
+            release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name=beta -f "target_commitish=${GITHUB_SHA}" \
+              -f "name=AI Toolbox Beta ${BETA_VERSION}" \
+              -F prerelease=true \
+              -f "body=Built from commit ${GITHUB_SHA}" \
+              --jq '.id')
+          fi
+          echo "id=${release_id}" >> "$GITHUB_OUTPUT"
+
       - name: Create Release
+        if: github.event_name == 'push'
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: ${{ github.event_name == 'workflow_dispatch' && format('AI Toolbox Beta {0}', steps.get_version.outputs.version) || format('AI Toolbox {0}', env.RELEASE_TAG) }}
+          name: ${{ format('AI Toolbox {0}', env.RELEASE_TAG) }}
           body: |
-            ${{ github.event_name == 'workflow_dispatch' && format('Built from commit {0}', github.sha) || '' }}
             See the assets to download this version and install.
 
             ⚠️ Mac安装提示：`"应用程序"已损坏` 解决方法：`xattr -cr /Applications/AI\ Toolbox.app`
-          # Formal tag pushes stay drafts until published by hand; the rolling
-          # beta must be published right away (prerelease) or its asset URLs
-          # would not be downloadable by the in-app beta channel.
-          draft: ${{ github.event_name == 'push' }}
-          prerelease: ${{ github.event_name == 'workflow_dispatch' }}
+          draft: true
 
   test:
     name: Run Full Test Suite
