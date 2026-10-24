@@ -33,9 +33,9 @@ nul
 .pi
 .playwright-mcp
 
-# Agent skills are provided per machine and never committed. `.agents/skills`
-# is what Codex scans; `.claude/skills` points at the same directory for Claude
-# Code. Never track either one: git applies a deletion through the link and
-# removes whatever it points at.
+# Agent state is per machine and never committed. `.claude/` holds the local
+# permission allowlist and skill links; `.agents/skills/` is what Codex scans.
+# Never track these: git applies a deletion through a link and removes
+# whatever it points at.
+.claude/
 .agents/skills/
-.claude/skills
