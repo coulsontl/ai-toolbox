@@ -83,7 +83,10 @@ jobs:
             fi
           done
           git tag -f "beta-${BETA_VERSION}" "$GITHUB_SHA"
-          git push origin "refs/tags/beta-${BETA_VERSION}"
+          # A same-day re-dispatch reuses the version number, so the archive
+          # tag may already exist pointing at the earlier build; the latest
+          # build wins.
+          git push origin "refs/tags/beta-${BETA_VERSION}" --force
 
       - name: Create Release
         id: create_release
