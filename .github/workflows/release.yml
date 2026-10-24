@@ -284,7 +284,10 @@ jobs:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           tauriScript: pnpm tauri
           projectPath: tauri
-          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundle }}
+          # WiX msi requires a numeric-only prerelease identifier (<= 65535),
+          # which the rolling beta stamp `beta.261024a` can never satisfy; the
+          # beta channel ships NSIS only, formal releases keep both bundles.
+          args: --target ${{ matrix.target }} --bundles ${{ github.event_name == 'workflow_dispatch' && matrix.platform == 'windows-latest' && 'nsis' || matrix.bundle }}
 
       - name: List generated bundles (debug)
         if: always()
