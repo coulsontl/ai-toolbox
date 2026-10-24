@@ -1373,7 +1373,19 @@ const OpenClawPage: React.FC = () => {
         selectedModelIds={selectedModelIdsByProvider[providerId] ?? []}
         onToggleModelSelection={(modelId, selected) => handleToggleModelSelection(providerId, modelId, selected)}
         onToggleBatchDeleteMode={() => handleToggleBatchDeleteMode(providerId)}
-        onBatchDeleteModels={() => handleBatchDeleteModels(providerId)}
+        onBatchDeleteModels={() => {
+          Modal.confirm({
+            title: t('common.model.batchDeleteConfirmTitle'),
+            content: t('common.model.batchDeleteConfirmContent', {
+              count: (selectedModelIdsByProvider[providerId] ?? []).length,
+            }),
+            okText: t('common.confirm'),
+            cancelText: t('common.cancel'),
+            onOk: async () => {
+              await handleBatchDeleteModels(providerId);
+            },
+          });
+        }}
       />
     );
   };

@@ -1512,7 +1512,19 @@ const HermesPage: React.FC = () => {
         selectedModelIds={selectedModelIdsByProvider[provider.providerKey] ?? []}
         onToggleModelSelection={(modelId, selected) => handleToggleModelSelection(provider.providerKey, modelId, selected)}
         onToggleBatchDeleteMode={isReadOnly ? undefined : () => handleToggleBatchDeleteMode(provider.providerKey)}
-        onBatchDeleteModels={isReadOnly ? undefined : () => void handleBatchDeleteModels(provider.providerKey)}
+        onBatchDeleteModels={isReadOnly ? undefined : () => {
+          Modal.confirm({
+            title: t('common.model.batchDeleteConfirmTitle'),
+            content: t('common.model.batchDeleteConfirmContent', {
+              count: (selectedModelIdsByProvider[provider.providerKey] ?? []).length,
+            }),
+            okText: t('common.confirm'),
+            cancelText: t('common.cancel'),
+            onOk: async () => {
+              await handleBatchDeleteModels(provider.providerKey);
+            },
+          });
+        }}
       />
     );
   };
