@@ -8,6 +8,12 @@ use tauri_plugin_updater::UpdaterExt;
 use crate::db::SqliteDbState;
 use crate::http_client;
 
+const GITHUB_REPO: &str = "coulsontl/ai-toolbox";
+const STABLE_LATEST_JSON_URL: &str =
+    "https://github.com/coulsontl/ai-toolbox/releases/latest/download/latest.json";
+const BETA_LATEST_JSON_URL: &str =
+    "https://github.com/coulsontl/ai-toolbox/releases/download/beta/latest.json";
+
 /// Response from GitHub latest.json
 #[derive(Debug, Serialize, Deserialize)]
 struct LatestRelease {
@@ -65,10 +71,7 @@ fn beta_channel_enabled(app: &tauri::AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-async fn fetch_latest_release(
-    app: &tauri::AppHandle,
-    url: &str,
-) -> Result<LatestRelease, String> {
+async fn fetch_latest_release(app: &tauri::AppHandle, url: &str) -> Result<LatestRelease, String> {
     // Prefer DB-backed proxy client; in recovery mode (DB not managed) use
     // an env-proxy client.
     let response = match app.try_state::<SqliteDbState>() {
@@ -111,17 +114,7 @@ struct UpdateCandidate {
 /// unreachable beta release degrades to the stable candidate: the beta
 /// channel simply has nothing newer to offer yet.
 async fn select_update_candidate(app: &tauri::AppHandle) -> Result<UpdateCandidate, String> {
-    const GITHUB_REPO: &str = "coulsontl/ai-toolbox";
-    let stable_url = format!(
-        "https://github.com/{}/releases/latest/download/latest.json",
-        GITHUB_REPO
-    );
-    let beta_url = format!(
-        "https://github.com/{}/releases/download/beta/latest.json",
-        GITHUB_REPO
-    );
-
-    let stable = fetch_latest_release(app, &stable_url).await?;
+    let stable = fetch_latest_release(app, STABLE_LATEST_JSON_URL).await?;
     if !beta_channel_enabled(app) {
         return Ok(UpdateCandidate {
             release: stable,
@@ -129,7 +122,7 @@ async fn select_update_candidate(app: &tauri::AppHandle) -> Result<UpdateCandida
         });
     }
 
-    match fetch_latest_release(app, &beta_url).await {
+    match fetch_latest_release(app, BETA_LATEST_JSON_URL).await {
         Ok(beta) => {
             let beta_version = beta.version.trim_start_matches('v');
             let stable_version = stable.version.trim_start_matches('v');
@@ -154,8 +147,6 @@ async fn select_update_candidate(app: &tauri::AppHandle) -> Result<UpdateCandida
 
 #[tauri::command]
 pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateCheckResult, String> {
-    const GITHUB_REPO: &str = "coulsontl/ai-toolbox";
-
     // Get current version from package info
     let current_version = app.package_info().version.to_string();
 
@@ -360,7 +351,7 @@ async fn run_updater_download(app: &tauri::AppHandle) -> Result<bool, String> {
     // endpoint — the winning channel's — is configured here.
     let candidate = select_update_candidate(app).await?;
     let updater = if candidate.beta_channel {
-        let endpoint = "https://github.com/coulsontl/ai-toolbox/releases/download/beta/latest.json"
+        let endpoint = BETA_LATEST_JSON_URL
             .parse()
             .map_err(|e| format!("Invalid beta update endpoint: {e}"))?;
         app.updater_builder()
@@ -579,9 +570,7 @@ fn parse_identifiers(text: &str) -> Vec<VersionIdentifier> {
 fn compare_identifiers(left: &[VersionIdentifier], right: &[VersionIdentifier]) -> i32 {
     for index in 0..left.len().max(right.len()) {
         let ordering = match (left.get(index), right.get(index)) {
-            (Some(VersionIdentifier::Numeric(a)), Some(VersionIdentifier::Numeric(b))) => {
-                a.cmp(b)
-            }
+            (Some(VersionIdentifier::Numeric(a)), Some(VersionIdentifier::Numeric(b))) => a.cmp(b),
             (Some(VersionIdentifier::Numeric(_)), Some(VersionIdentifier::Alphanumeric(_))) => {
                 std::cmp::Ordering::Less
             }

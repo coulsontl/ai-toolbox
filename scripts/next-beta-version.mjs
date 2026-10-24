@@ -111,10 +111,21 @@ function fetchStableVersion() {
 }
 
 function fetchCurrentBetaVersion() {
-  let release;
+  // The rolling beta release is a draft for the whole build, and
+  // `releases/tags/<tag>` answers 404 for drafts — reading it through the
+  // list endpoint instead keeps the same-day letter counting even when a
+  // re-dispatch happens mid-build. Losing this would reset the letter to
+  // `a`, colliding with an already-published version.
+  let release = null;
   try {
-    release = JSON.parse(ghOutput(['api', `repos/{owner}/{repo}/releases/tags/${BETA_TAG}`]));
+    const releases = JSON.parse(
+      ghOutput(['api', 'repos/{owner}/{repo}/releases?per_page=20'])
+    );
+    release = releases.find((candidate) => candidate.tag_name === BETA_TAG) || null;
   } catch {
+    return null;
+  }
+  if (!release) {
     return null; // no rolling beta release yet
   }
   const asset = (release.assets || []).find((candidate) => candidate.name === 'latest.json');

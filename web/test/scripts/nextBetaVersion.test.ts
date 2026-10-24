@@ -14,6 +14,9 @@ test('bumpPatch carries the .9 boundaries', () => {
   assert.equal(bumpPatch('1.2.0'), '1.2.1');
   assert.equal(bumpPatch('1.2.9'), '1.3.0');
   assert.equal(bumpPatch('1.9.9'), '2.0.0');
+  // A two-digit patch never exists under this project's one-digit-patch
+  // rule; if one slips in anyway the bump carries instead of growing it.
+  assert.equal(bumpPatch('1.2.10'), '1.3.0');
   assert.throws(() => bumpPatch('1.2.0-beta.1'), /plain semver/);
 });
 
