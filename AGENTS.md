@@ -420,7 +420,7 @@ fn command_name(param: &str) -> Result<ReturnType, String> {
 #### Rolling Beta Update Channel
 
 - Beta 发布走固定 tag `beta`（永远 prerelease，资产每轮覆盖）：`gh workflow run release.yml` 零输入即发滚动 beta，版本号 `<最新正式+1 patch>-beta.<YYMMDD><字母>`（北京时间，`.9` 逐段进位），由 `scripts/next-beta-version.mjs` 计算、`scripts/set-tauri-version.mjs` 构建前注入（版本号不进仓库，仓库 `tauri.conf.json` 永远只写正式版本）。YYMMDD 打头保证字典序=时间序，不要“优化”成 MMDD 或时间戳到秒的格式——semver 对字母数字标识符按 ASCII 比，跨月会判反。
-- 客户端双通道（`update.rs`）：`receive_beta_updates` 开关开启后，check 并行拉正式与 beta 两份 `latest.json` 并 semver 取大者；安装前重新选通道并用 `updater_builder().endpoints([胜出通道])` 指定唯一 endpoint（插件 endpoint 是 failover 不是 newest-wins）。上游发布与填文案的完整流程见个人记忆库 `ai-toolbox-release-workflow` 与项目 skill `.claude/skills/release-notes`。
+- 客户端双通道（`update.rs`）：`receive_beta_updates` 开关开启后，check 并行拉正式与 beta 两份 `latest.json` 并 semver 取大者；安装前重新选通道并用 `updater_builder().endpoints([胜出通道])` 指定唯一 endpoint（插件 endpoint 是 failover 不是 newest-wins）。上游发布与填文案的完整流程见个人记忆库 `ai-toolbox-release-workflow` 与 skill `release-notes`（本体在 `~/.agents/memories/skills/release-notes/`，经 junction 分发到 `~/.claude/skills`、`~/.codex/skills` 与项目 `.codex/skills`；不在本仓库提交副本）。
 
 #### HTTP / TLS Compatibility
 

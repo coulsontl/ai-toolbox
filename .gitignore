@@ -32,3 +32,8 @@ nul
 .workflow
 .pi
 .playwright-mcp
+
+# Agent skills are junctions to ~/.agents/memories/skills (the single source
+# shared by every agent). The body must not be duplicated into the repository,
+# or the two copies drift.
+.codex/skills/
