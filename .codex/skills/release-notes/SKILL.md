@@ -218,6 +218,7 @@ Rules for the beta variant:
 
 - The first line above the template in the chat reply should name the exact rolling version (for example `1.2.1-beta.261024a`); the release body itself does not need to repeat it because the release title already carries it.
 - `gh release edit beta --notes-file <file>` replaces the whole body each build; never append to the previous body.
+- The release body's first line must remain `Built from commit <full sha>` (resolve it with `git rev-list -n 1 beta-<version>`; every build also archives a permanent `beta-<version>` tag pointing at its commit). Keep that line when rewriting the body.
 
 ## Style rules
 
