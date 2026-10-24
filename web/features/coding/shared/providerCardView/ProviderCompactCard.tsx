@@ -1,5 +1,5 @@
 import React from 'react';
-import { Drawer, Dropdown, Tooltip } from 'antd';
+import { Drawer, Dropdown, Modal, Tooltip } from 'antd';
 import { HolderOutlined, MoreOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useSortable } from '@dnd-kit/sortable';
@@ -298,6 +298,33 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
   const canOpenDetail = Boolean(detail) && !inSelectionMode;
 
   /**
+   * Delete from the menu, honouring `actions.deleteConfirm`.
+   *
+   * The list card wraps its delete in a `Popconfirm` when that flag is set, but
+   * the menu used to call `onDelete` directly — so switching to the grid layout
+   * turned a confirmed delete into an instant one. The cell has no room for a
+   * popover, so the confirmation is a `Modal` here, which is how the detail
+   * sidebar already asks (a drawer is not a `Popconfirm` host either).
+   *
+   * CLIs whose own handler already confirms (Codex, ZCode, OpenClaw, Hermes)
+   * pass `deleteConfirm: false` and are unaffected.
+   */
+  const handleDeleteClick = () => {
+    if (!actions?.deleteConfirm) {
+      actions?.onDelete?.();
+      return;
+    }
+    Modal.confirm({
+      title: t('common.provider.deleteProvider'),
+      content: t('common.provider.confirmDelete', { name: provider.name }),
+      okText: t('common.confirm'),
+      cancelText: t('common.cancel'),
+      okButtonProps: { danger: true },
+      onOk: actions.onDelete,
+    });
+  };
+
+  /**
    * The card body opens the detail sidebar; anything that is itself a control
    * handles its own click. Without this guard, dragging the grip, ticking the
    * checkbox or pressing a footer button would also open the sidebar.
@@ -382,7 +409,13 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
                 trigger={['click']}
                 menu={{
                   items: menuItems,
-                  onClick: ({ key }) => dispatchProviderCardMenuClick(key, actions),
+                  onClick: ({ key }) => {
+                    if (key === 'delete') {
+                      handleDeleteClick();
+                      return;
+                    }
+                    dispatchProviderCardMenuClick(key, actions);
+                  },
                 }}
               >
                 <button type="button" className={styles.miniBtn} title={t('common.more')} aria-label={t('common.more')}>

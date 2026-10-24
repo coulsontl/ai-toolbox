@@ -64,7 +64,13 @@ export function ProviderCardGrid<TItem>({
       } as React.CSSProperties)}
     >
       {items.map((item) => (
-        <React.Fragment key={getKey(item)}>{renderItem(item)}</React.Fragment>
+        // A cell is one grid item, so a mapping layer that returns a fragment
+        // (OMP: the subscription card plus its catalog warning) must have it
+        // wrapped. Without the wrapper each child was its own cell, splitting
+        // one provider across two columns and pushing its neighbours along.
+        <div key={getKey(item)} data-provider-grid-cell>
+          {renderItem(item)}
+        </div>
       ))}
     </div>
   );
