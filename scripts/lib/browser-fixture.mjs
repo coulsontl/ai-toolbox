@@ -56,7 +56,12 @@ async function killBrowserTree(browser, profilePath) {
   if (profilePath) {
     const swept = await sweepByProfile(profilePath);
     if (swept > 0) console.error(`[fixture] swept ${swept} orphaned browser processes`);
-    return;
+    // The sweep is the primary kill: re-parented helpers survive a `/T` kill of
+    // the launcher, which is why it runs first. Still fall back to the launcher
+    // kill when the sweep found nothing — a profile match can miss (a process
+    // started before the command line was readable, a non-Windows host), and
+    // leaving the browser running is worse than one redundant taskkill.
+    if (swept > 0) return;
   }
   await new Promise(resolve => {
     const killer = spawn('taskkill', ['/PID', String(browser.pid), '/T', '/F'], { stdio: 'ignore' });
@@ -73,20 +78,34 @@ async function killBrowserTree(browser, profilePath) {
  * be a process this fixture started.
  */
 async function sweepByProfile(profilePath) {
+  // The assignment and the pipeline are separate statements: joining every line
+  // with a space turned `$needle = "..."; Get-CimInstance ...` into
+  // `$needle = "..." Get-CimInstance ...`, which PowerShell rejects, so the
+  // sweep silently did nothing and orphaned browsers piled up between runs.
   const script = [
-    `$needle = ${JSON.stringify(profilePath)}`,
+    `$needle = ${JSON.stringify(profilePath)};`,
     'Get-CimInstance Win32_Process',
     "| Where-Object { $_.Name -in @('chrome.exe','msedge.exe') -and $_.CommandLine -and $_.CommandLine.Contains($needle) }",
     '| ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $_.ProcessId }',
   ].join(' ');
   return new Promise(resolve => {
     const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
-      stdio: ['ignore', 'pipe', 'ignore'],
+      // stderr is captured so a future parse failure is visible instead of
+      // reading as "nothing to sweep".
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = '';
+    let err = '';
     child.stdout.on('data', data => { out += data; });
-    child.once('exit', () => resolve(out.trim().split(/\s+/).filter(Boolean).length));
-    child.once('error', () => resolve(0));
+    child.stderr.on('data', data => { err += data; });
+    child.once('exit', () => {
+      if (err.trim()) console.error(`[fixture] sweep failed: ${err.trim()}`);
+      resolve(out.trim().split(/\s+/).filter(Boolean).length);
+    });
+    child.once('error', error => {
+      console.error(`[fixture] sweep failed: ${error.message}`);
+      resolve(0);
+    });
   });
 }
 
