@@ -258,6 +258,10 @@ pub struct AppSettings {
     pub last_auto_backup_time: Option<String>,
     /// Auto check for updates on startup (default: true)
     pub auto_check_update: bool,
+    /// Join the beta update channel: update checks also consider the rolling
+    /// prerelease published on the fixed `beta` tag and always offer the
+    /// newer of the stable and beta builds (default: false)
+    pub receive_beta_updates: bool,
     /// Visible tabs in the tab bar (default: all tabs shown)
     pub visible_tabs: Vec<String>,
     /// Sidebar hidden state by page
@@ -351,6 +355,7 @@ impl Default for AppSettings {
             auto_backup_max_keep: 10,
             last_auto_backup_time: None,
             auto_check_update: true,
+            receive_beta_updates: false,
             visible_tabs: vec![
                 "opencode".to_string(),
                 "claudecode".to_string(),

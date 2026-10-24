@@ -5,17 +5,15 @@ on:
     tags:
       - 'v*'
       - '!v*-beta*'
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Beta release tag, e.g. v1.2.3-beta or v1.2.3-beta1'
-        required: true
-        type: string
+  # Manual dispatch builds the next rolling beta: the version is computed
+  # from the latest stable release (see scripts/next-beta-version.mjs) and
+  # the artifacts land on the fixed prerelease tag `beta`.
+  workflow_dispatch: {}
 
 env:
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: short
-  RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+  RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || 'beta' }}
 
 jobs:
   create-release:
@@ -29,16 +27,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Validate manual beta tag
+      - name: Compute next beta version
         if: github.event_name == 'workflow_dispatch'
+        id: beta_version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta[0-9]*$ ]]; then
-            echo "::error::Manual release only accepts beta tags like v1.2.3-beta or v1.2.3-beta1"
-            exit 1
-          fi
-          echo "Manual beta release tag validated: $RELEASE_TAG"
+          DECISION=$(node scripts/next-beta-version.mjs --compute)
+          echo "decision=$DECISION"
+          echo "version=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).nextVersion)' "$DECISION")" >> "$GITHUB_OUTPUT"
 
       - name: Validate version consistency
         if: github.event_name == 'push' && startsWith(github.ref_name, 'v') && !contains(github.ref_name, 'beta')
@@ -55,20 +54,36 @@ jobs:
 
       - name: Get version from tag
         id: get_version
-        run: echo "version=${RELEASE_TAG#v}" >> $GITHUB_OUTPUT
+        env:
+          BETA_VERSION: ${{ steps.beta_version.outputs.version }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${BETA_VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Move the rolling beta tag to this commit
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          git tag -f beta "$GITHUB_SHA"
+          git push origin "refs/tags/beta" --force
 
       - name: Create Release
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: 'AI Toolbox ${{ env.RELEASE_TAG }}'
+          name: ${{ github.event_name == 'workflow_dispatch' && format('AI Toolbox Beta {0}', steps.get_version.outputs.version) || format('AI Toolbox {0}', env.RELEASE_TAG) }}
           body: |
             See the assets to download this version and install.
 
             ⚠️ Mac安装提示：`"应用程序"已损坏` 解决方法：`xattr -cr /Applications/AI\ Toolbox.app`
-          draft: true
-          # Manual beta builds should be Pre-release; formal tag pushes stay as normal releases.
+          # Formal tag pushes stay drafts until published by hand; the rolling
+          # beta must be published right away (prerelease) or its asset URLs
+          # would not be downloadable by the in-app beta channel.
+          draft: ${{ github.event_name == 'push' }}
           prerelease: ${{ github.event_name == 'workflow_dispatch' }}
 
   test:
@@ -158,6 +173,13 @@ jobs:
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
+
+      # The committed tauri.conf.json always carries the stable version; a
+      # beta build injects the computed rolling version so the executable,
+      # `app.getVersion()` and latest.json all agree on it.
+      - name: Inject rolling beta version
+        if: github.event_name == 'workflow_dispatch'
+        run: node scripts/set-tauri-version.mjs "${{ needs.create-release.outputs.version }}"
 
       - name: Update models.dev.json from models.dev
         run: node scripts/update-models.mjs
@@ -486,7 +508,7 @@ jobs:
   assemble-latest-json:
     name: Assemble latest.json
     runs-on: ubuntu-latest
-    needs: [build, test]
+    needs: [create-release, build, test]
     permissions:
       contents: write
     steps:
@@ -495,6 +517,26 @@ jobs:
           gh --version || (type -p curl >/dev/null && sudo apt-get update && sudo apt-get install -y gh || true)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # A rolling beta renames every installer asset (the version is in the
+      # file name), so the previous build's artifacts would pile up and, worse,
+      # the glob below could pick a stale one. Drop everything except
+      # latest.json before scanning; the fresh latest.json upload below
+      # clobbers it. Stable releases create a fresh release per tag, where
+      # this loop simply finds nothing to delete.
+      - name: Purge stale release assets
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate \
+            --jq '.[] | select(.name != "latest.json") | [.id, .name] | @tsv' \
+          | while IFS=$'\t' read -r asset_id asset_name; do
+              echo "Deleting stale asset: $asset_name"
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+            done
 
       - name: Download all release assets
         env:
@@ -510,9 +552,10 @@ jobs:
         env:
           REPO: ${{ github.repository }}
           TAG: ${{ env.RELEASE_TAG }}
+          VERSION: ${{ needs.create-release.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${TAG#v}"
+          VERSION="${VERSION}"
           PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           base_url="https://github.com/$REPO/releases/download/$TAG"
 

@@ -54,6 +54,7 @@ function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     auto_backup_max_keep: 10,
     last_auto_backup_time: null,
     auto_check_update: true,
+    receive_beta_updates: false,
     visible_tabs: ['opencode', 'claudecode', 'codex', 'geminicli', 'openclaw', 'pi', 'oh_my_pi', 'gateway', 'image', 'ssh', 'wsl'],
     sidebar_hidden_by_page: {
       opencode: false,

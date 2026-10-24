@@ -417,6 +417,11 @@ fn command_name(param: &str) -> Result<ReturnType, String> {
 - Linux 上 `dpkg` 托管的安装（`/usr/...` 且 `dpkg -S` 命中，即 `.deb` 安装）同样不下发内置安装器 payload，`install_update` 也必须拒绝（前端退回"打开下载页"）。这是结构性约束，不是保守策略：`latest.json` 的 `linux-x86_64` 只有 AppImage 一种 payload（`tauri-plugin-updater` 没有 deb 专用 target key），而插件按**运行中的可执行文件**而不是 payload 选择安装策略——`/usr` 下被 dpkg 托管的二进制会走它的 `install_deb` 分支，然后用 `InvalidUpdaterFormat` 拒掉这个 AppImage。即使另外发布 deb payload 也救不回来：`install_deb` 依赖 `pkexec` / `zenity` / `kdialog` 或交互式终端 `sudo` 提权，纯 GUI 会话（WSL 尤其）一个都没有。给 deb 用户的可行动作只有"重装新 .deb"或"改用 AppImage"。
 - 自动更新失败的原因必须能被用户取回。`install_update` 的失败串要交给 `log`（target 归属 `ai_toolbox*`）并透传到 UI 弹窗；`setup_logging` 里 `WriteLogger` 的 `add_filter_allow_str("tauri_plugin_updater")` 是刻意的 allowlist 条目，改动日志配置时不要删掉它，否则插件侧的安装失败在日志文件里同样不可见，更新问题又会退化成只有一句"自动更新失败"的 issue（#383）。
 
+#### Rolling Beta Update Channel
+
+- Beta 发布走固定 tag `beta`（永远 prerelease，资产每轮覆盖）：`gh workflow run release.yml` 零输入即发滚动 beta，版本号 `<最新正式+1 patch>-beta.<YYMMDD><字母>`（北京时间，`.9` 逐段进位），由 `scripts/next-beta-version.mjs` 计算、`scripts/set-tauri-version.mjs` 构建前注入（版本号不进仓库，仓库 `tauri.conf.json` 永远只写正式版本）。YYMMDD 打头保证字典序=时间序，不要“优化”成 MMDD 或时间戳到秒的格式——semver 对字母数字标识符按 ASCII 比，跨月会判反。
+- 客户端双通道（`update.rs`）：`receive_beta_updates` 开关开启后，check 并行拉正式与 beta 两份 `latest.json` 并 semver 取大者；安装前重新选通道并用 `updater_builder().endpoints([胜出通道])` 指定唯一 endpoint（插件 endpoint 是 failover 不是 newest-wins）。上游发布与填文案的完整流程见个人记忆库 `ai-toolbox-release-workflow` 与项目 skill `.claude/skills/release-notes`。
+
 #### HTTP / TLS Compatibility
 
 - 后端发起 HTTPS 请求时，默认优先复用仓库里的全局 `http_client`，不要在业务模块里随手 new 一个默认 `reqwest::Client`。

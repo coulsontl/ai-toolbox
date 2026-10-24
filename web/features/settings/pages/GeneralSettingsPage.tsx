@@ -39,6 +39,7 @@ import { useThemeStore, type ThemeMode } from '@/stores/themeStore';
 import { SYSTEM_LANGUAGE, languages, type LanguagePreference } from '@/i18n';
 import { BackupSettingsModal, RemoteBackupRestoreModal, type RemoteBackupSelection } from '../components';
 import UpdateProgressModal from '@/components/common/UpdateProgressModal';
+import FieldHelp from '@/components/common/FieldHelp';
 import { platform } from '@tauri-apps/plugin-os';
 import {
   backupDatabase,
@@ -216,6 +217,8 @@ const GeneralSettingsPage: React.FC = () => {
     lastAutoBackupTime,
     autoCheckUpdate,
     setAutoCheckUpdate,
+    receiveBetaUpdates,
+    setReceiveBetaUpdates,
     visibleTabs,
     setVisibleTabs,
   } = useSettingsStore();
@@ -1115,6 +1118,16 @@ const GeneralSettingsPage: React.FC = () => {
                   onChange={setAutoCheckUpdate}
                 />
               </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Space size={4}>
+                  <Text>{t('settings.about.receiveBetaUpdates')}</Text>
+                  <FieldHelp text={t('settings.about.receiveBetaUpdatesHelp')} />
+                </Space>
+                <Switch
+                  checked={receiveBetaUpdates}
+                  onChange={setReceiveBetaUpdates}
+                />
+              </div>
               <Space wrap>
                 <Button
                   icon={<SyncOutlined spin={checkingUpdate} />}
@@ -1125,7 +1138,8 @@ const GeneralSettingsPage: React.FC = () => {
                 </Button>
                 {updateInfo?.hasUpdate && !updateInfo.scoopInstall && !updateInfo.debInstall && (
                   <Button type="primary" onClick={handleGoToDownload}>
-                    {t('settings.about.goToDownload')} (v{updateInfo.latestVersion})
+                    {t('settings.about.goToDownload')} (v{updateInfo.latestVersion}
+                    {updateInfo.isBetaChannel ? ' Beta' : ''})
                   </Button>
                 )}
                 {updateInfo?.hasUpdate && updateInfo.scoopInstall && (

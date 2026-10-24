@@ -1505,7 +1505,9 @@
       "scoopUpdateHint": "New version {{version}} found. This app is installed via Scoop; run `scoop update ai-toolbox` to upgrade.",
       "debUpdateHint": "New version {{version}} is available. This app was installed from a .deb package and cannot self-update; reinstall the new .deb or switch to the AppImage build.",
       "updateFailedReason": "Reason",
-      "openDownloadPage": "Open download page"
+      "openDownloadPage": "Open download page",
+      "receiveBetaUpdates": "Receive beta updates",
+      "receiveBetaUpdatesHelp": "When enabled, update checks compare both the stable and the rolling beta build (e.g. 1.2.1-beta.261024a) and always offer the newer one: beta users are also notified when a stable ships, then follow beta again once a newer beta appears. Scoop / deb installs ignore this switch; they upgrade only through their package manager."
     },
     "dataDir": {
       "title": "Data Directory",

@@ -152,6 +152,7 @@ export interface AppSettings {
   auto_backup_max_keep: number;
   last_auto_backup_time: string | null;
   auto_check_update: boolean;
+  receive_beta_updates: boolean;
   visible_tabs: string[];
   sidebar_hidden_by_page: SidebarHiddenByPage;
   opencode_allow_clear_applied_oh_my_config: boolean;
@@ -237,6 +238,7 @@ export const defaultSettings: AppSettings = {
   auto_backup_max_keep: 10,
   last_auto_backup_time: null,
   auto_check_update: true,
+  receive_beta_updates: false,
   visible_tabs: ['opencode', 'claudecode', 'claudedesktop', 'codex', 'grok', 'geminicli', 'antigravity', 'zcode', 'kimi', 'openclaw', 'pi', 'oh_my_pi', 'omo_native', 'hermes', 'dsh', 'gateway', 'image', 'ssh', 'wsl'],
   sidebar_hidden_by_page: createDefaultSidebarHiddenByPage(),
   opencode_allow_clear_applied_oh_my_config: false,

@@ -33,6 +33,9 @@ pub struct UpdateCheckResult {
     pub release_notes: String,
     pub signature: Option<String>,
     pub url: Option<String>,
+    /// Whether the offered build comes from the rolling prerelease on the
+    /// fixed `beta` tag (only ever true with `receive_beta_updates` on).
+    pub is_beta_channel: bool,
     /// Whether the running app is managed by Scoop. When true the in-app
     /// installer payload is dropped (see `check_for_updates`) and the user
     /// must upgrade via `scoop update ai-toolbox`.
@@ -49,30 +52,33 @@ pub struct UpdateCheckResult {
 /// startup). When the database is not managed yet (recovery / "schema too
 /// new" startup path), falls back to `create_client_with_env_proxy` which
 /// honors `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` environment variables.
-#[tauri::command]
-pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateCheckResult, String> {
-    const GITHUB_REPO: &str = "coulsontl/ai-toolbox";
-    let latest_json_url = format!(
-        "https://github.com/{}/releases/latest/download/latest.json",
-        GITHUB_REPO
-    );
+/// Whether update checks also consider the rolling prerelease published on
+/// the fixed `beta` tag (AppSettings `receive_beta_updates`). Unknown or
+/// missing settings read as off.
+fn beta_channel_enabled(app: &tauri::AppHandle) -> bool {
+    app.try_state::<SqliteDbState>()
+        .and_then(|state| {
+            crate::settings::store::load_settings_from_sqlite_state(&state)
+                .map(|settings| settings.receive_beta_updates)
+                .ok()
+        })
+        .unwrap_or(false)
+}
 
-    // Get current version from package info
-    let current_version = app.package_info().version.to_string();
-
-    // Detect current platform
-    let current_platform = detect_current_platform();
-
-    // Fetch latest.json. Prefer DB-backed proxy client; in recovery mode
-    // (DB not managed) use an env-proxy client.
+async fn fetch_latest_release(
+    app: &tauri::AppHandle,
+    url: &str,
+) -> Result<LatestRelease, String> {
+    // Prefer DB-backed proxy client; in recovery mode (DB not managed) use
+    // an env-proxy client.
     let response = match app.try_state::<SqliteDbState>() {
         Some(state) => {
             let client = http_client::client(&state).await?;
-            client.get(&latest_json_url).send().await
+            client.get(url).send().await
         }
         None => {
             let client = http_client::create_client_with_env_proxy(30)?;
-            client.get(&latest_json_url).send().await
+            client.get(url).send().await
         }
     }
     .map_err(|e| format!("Failed to fetch latest.json: {}", e))?;
@@ -84,10 +90,81 @@ pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateCheckResul
         ));
     }
 
-    let release: LatestRelease = response
+    response
         .json()
         .await
-        .map_err(|e| format!("Failed to parse latest.json: {}", e))?;
+        .map_err(|e| format!("Failed to parse latest.json: {}", e))
+}
+
+/// One channel's latest.json plus which channel it came from.
+struct UpdateCandidate {
+    release: LatestRelease,
+    beta_channel: bool,
+}
+
+/// Picks the update candidate for this installation.
+///
+/// With the beta channel off this is simply the stable release. With it on,
+/// the candidate is the semver-newer of the stable release and the rolling
+/// prerelease on the fixed `beta` tag, so a shipped stable supersedes an
+/// older beta and a fresh beta supersedes the stable again. A missing or
+/// unreachable beta release degrades to the stable candidate: the beta
+/// channel simply has nothing newer to offer yet.
+async fn select_update_candidate(app: &tauri::AppHandle) -> Result<UpdateCandidate, String> {
+    const GITHUB_REPO: &str = "coulsontl/ai-toolbox";
+    let stable_url = format!(
+        "https://github.com/{}/releases/latest/download/latest.json",
+        GITHUB_REPO
+    );
+    let beta_url = format!(
+        "https://github.com/{}/releases/download/beta/latest.json",
+        GITHUB_REPO
+    );
+
+    let stable = fetch_latest_release(app, &stable_url).await?;
+    if !beta_channel_enabled(app) {
+        return Ok(UpdateCandidate {
+            release: stable,
+            beta_channel: false,
+        });
+    }
+
+    match fetch_latest_release(app, &beta_url).await {
+        Ok(beta) => {
+            let beta_version = beta.version.trim_start_matches('v');
+            let stable_version = stable.version.trim_start_matches('v');
+            if compare_versions(beta_version, stable_version) > 0 {
+                Ok(UpdateCandidate {
+                    release: beta,
+                    beta_channel: true,
+                })
+            } else {
+                Ok(UpdateCandidate {
+                    release: stable,
+                    beta_channel: false,
+                })
+            }
+        }
+        Err(_) => Ok(UpdateCandidate {
+            release: stable,
+            beta_channel: false,
+        }),
+    }
+}
+
+#[tauri::command]
+pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateCheckResult, String> {
+    const GITHUB_REPO: &str = "coulsontl/ai-toolbox";
+
+    // Get current version from package info
+    let current_version = app.package_info().version.to_string();
+
+    // Detect current platform
+    let current_platform = detect_current_platform();
+
+    let candidate = select_update_candidate(&app).await?;
+    let release = candidate.release;
+    let is_beta_channel = candidate.beta_channel;
 
     let latest_version = release.version.trim_start_matches('v').to_string();
 
@@ -123,13 +200,18 @@ pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateCheckResul
         has_update,
         current_version,
         latest_version: latest_version.clone(),
-        release_url: format!(
-            "https://github.com/{}/releases/tag/v{}",
-            GITHUB_REPO, latest_version
-        ),
+        release_url: if is_beta_channel {
+            format!("https://github.com/{}/releases/tag/beta", GITHUB_REPO)
+        } else {
+            format!(
+                "https://github.com/{}/releases/tag/v{}",
+                GITHUB_REPO, latest_version
+            )
+        },
         release_notes: release.notes.unwrap_or_default(),
         signature,
         url,
+        is_beta_channel,
         scoop_install,
         deb_install,
     })
@@ -263,7 +345,23 @@ fn detect_current_platform() -> String {
 /// This is DB-free; proxy handling is the caller's responsibility (the
 /// `tauri-plugin-updater` reads `HTTP_PROXY` / `HTTPS_PROXY` env vars).
 async fn run_updater_download(app: &tauri::AppHandle) -> Result<bool, String> {
-    let updater = app.updater().map_err(|e| e.to_string())?;
+    // Re-run the channel selection instead of caching the check result:
+    // another channel may have published between check and install. The
+    // plugin's own endpoint list is failover, not newest-wins, so exactly one
+    // endpoint — the winning channel's — is configured here.
+    let candidate = select_update_candidate(app).await?;
+    let updater = if candidate.beta_channel {
+        let endpoint = "https://github.com/coulsontl/ai-toolbox/releases/download/beta/latest.json"
+            .parse()
+            .map_err(|e| format!("Invalid beta update endpoint: {e}"))?;
+        app.updater_builder()
+            .endpoints(vec![endpoint])
+            .map_err(|e| format!("Failed to configure the beta update endpoint: {e}"))?
+            .build()
+            .map_err(|e| format!("Failed to build the updater: {e}"))?
+    } else {
+        app.updater().map_err(|e| e.to_string())?
+    };
     let update = updater
         .check()
         .await
@@ -451,25 +549,101 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<bool, String> {
 
 /// Compare two version strings (e.g., "1.2.3" vs "1.2.4")
 /// Returns: 1 if v1 > v2, -1 if v1 < v2, 0 if equal
-fn compare_versions(v1: &str, v2: &str) -> i32 {
-    let parts1: Vec<i32> = v1.split('.').filter_map(|s| s.parse().ok()).collect();
-    let parts2: Vec<i32> = v2.split('.').filter_map(|s| s.parse().ok()).collect();
+/// One dot- or hyphen-separated semver identifier. Numeric identifiers
+/// compare numerically and rank below alphanumeric ones (semver §11).
+enum VersionIdentifier {
+    Numeric(u64),
+    Alphanumeric(String),
+}
 
-    let max_len = parts1.len().max(parts2.len());
+fn parse_identifiers(text: &str) -> Vec<VersionIdentifier> {
+    text.split('.')
+        .map(|part| match part.parse::<u64>() {
+            Ok(number) if !part.starts_with('0') || part == "0" => {
+                VersionIdentifier::Numeric(number)
+            }
+            _ => VersionIdentifier::Alphanumeric(part.to_string()),
+        })
+        .collect()
+}
 
-    for i in 0..max_len {
-        let num1 = parts1.get(i).copied().unwrap_or(0);
-        let num2 = parts2.get(i).copied().unwrap_or(0);
-
-        if num1 > num2 {
-            return 1;
+fn compare_identifiers(left: &[VersionIdentifier], right: &[VersionIdentifier]) -> i32 {
+    for index in 0..left.len().max(right.len()) {
+        let ordering = match (left.get(index), right.get(index)) {
+            (Some(VersionIdentifier::Numeric(a)), Some(VersionIdentifier::Numeric(b))) => {
+                a.cmp(b)
+            }
+            (Some(VersionIdentifier::Numeric(_)), Some(VersionIdentifier::Alphanumeric(_))) => {
+                std::cmp::Ordering::Less
+            }
+            (Some(VersionIdentifier::Alphanumeric(_)), Some(VersionIdentifier::Numeric(_))) => {
+                std::cmp::Ordering::Greater
+            }
+            (
+                Some(VersionIdentifier::Alphanumeric(a)),
+                Some(VersionIdentifier::Alphanumeric(b)),
+            ) => a.cmp(b),
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (None, None) => std::cmp::Ordering::Equal,
+        };
+        match ordering {
+            std::cmp::Ordering::Less => return -1,
+            std::cmp::Ordering::Greater => return 1,
+            std::cmp::Ordering::Equal => continue,
         }
-        if num1 < num2 {
-            return -1;
+    }
+    0
+}
+
+/// Full semver comparison, prerelease identifiers included.
+///
+/// Beyond the plain numeric core this encodes the two rules the rolling beta
+/// channel relies on: `1.2.1 > 1.2.1-beta.<stamp>` (a shipped stable
+/// supersedes its betas) and `beta.261024b > beta.261024a` (alphanumeric
+/// identifiers compare per ASCII, which keeps dictionary order equal to
+/// chronological order for the `YYMMDD<letter>` stamp). Build metadata after
+/// `+` is ignored, as semver prescribes.
+fn split_version(value: &str) -> (&str, Option<&str>) {
+    match value.split_once('-') {
+        Some((core, prerelease)) => (core, Some(prerelease)),
+        None => (value, None),
+    }
+}
+
+fn strip_version(value: &str) -> &str {
+    value.trim().trim_start_matches('v')
+}
+
+fn compare_versions(v1: &str, v2: &str) -> i32 {
+    let core_numbers = |core: &str| -> Vec<u64> {
+        core.split('.')
+            .map(|part| part.parse::<u64>().unwrap_or(0))
+            .collect()
+    };
+
+    let (core1, prerelease1) = split_version(strip_version(v1));
+    let (core2, prerelease2) = split_version(strip_version(v2));
+    let numbers1 = core_numbers(core1);
+    let numbers2 = core_numbers(core2);
+
+    for index in 0..numbers1.len().max(numbers2.len()) {
+        let a = numbers1.get(index).copied().unwrap_or(0);
+        let b = numbers2.get(index).copied().unwrap_or(0);
+        if a != b {
+            return if a > b { 1 } else { -1 };
         }
     }
 
-    0
+    match (prerelease1, prerelease2) {
+        (None, None) => 0,
+        // A version without a prerelease outranks the same version with one.
+        (None, Some(_)) => 1,
+        (Some(_), None) => -1,
+        (Some(left), Some(right)) => {
+            compare_identifiers(&parse_identifiers(left), &parse_identifiers(right))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -560,5 +734,35 @@ mod tests {
             r"\\?\UNC\server\tools\apps\ai-toolbox\current\ai-toolbox.exe",
             &[r"\\server\tools".to_string()],
         ));
+    }
+
+    /// The rolling beta timeline every channel decision depends on: a beta
+    /// outranks the older stable, a shipped stable outranks its own betas,
+    /// and a same-day rebuild outranks the earlier build by stamp.
+    #[test]
+    fn semver_comparison_covers_the_rolling_beta_timeline() {
+        use super::compare_versions as cmp;
+
+        // Plain core ordering still decides first.
+        assert_eq!(cmp("1.2.1-beta.261024a", "1.2.0"), 1);
+        assert_eq!(cmp("1.2.0", "1.2.1-beta.261024a"), -1);
+        // A shipped stable supersedes its own betas: no prerelease wins ties.
+        assert_eq!(cmp("1.2.1", "1.2.1-beta.261025b"), 1);
+        assert_eq!(cmp("1.2.1-beta.261025b", "1.2.1"), -1);
+        // Same base, later stamp wins (ASCII keeps dictionary order equal to
+        // chronological order across days, months, and years).
+        assert_eq!(cmp("1.2.1-beta.261024b", "1.2.1-beta.261024a"), 1);
+        assert_eq!(cmp("1.2.1-beta.261024z", "1.2.1-beta.261024a"), 1);
+        assert_eq!(cmp("1.2.1-beta.261024za", "1.2.1-beta.261024z"), 1);
+        assert_eq!(cmp("1.2.1-beta.261025a", "1.2.1-beta.261024z"), 1);
+        assert_eq!(cmp("1.2.1-beta.261101a", "1.2.1-beta.261031a"), 1);
+        assert_eq!(cmp("1.2.2-beta.270301a", "1.2.1-beta.261231z"), 1);
+        // Equal is equal.
+        assert_eq!(cmp("1.2.1-beta.261024a", "1.2.1-beta.261024a"), 0);
+        assert_eq!(cmp("1.2.0", "1.2.0"), 0);
+        // A newer core on the beta side still loses to a newer stable core.
+        assert_eq!(cmp("1.2.2-beta.261024a", "1.2.3"), -1);
+        // The `v` prefix and stray whitespace are tolerated.
+        assert_eq!(cmp("v1.2.1", " 1.2.0 "), 1);
     }
 }

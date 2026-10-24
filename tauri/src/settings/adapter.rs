@@ -1,8 +1,7 @@
 use super::types::{
     default_backup_file_filter_rules, default_sidebar_hidden_by_page, AppSettings,
-    BackupCustomEntry, BackupEncryptionConfig, BackupFileFilterRule,
-    GatewayUsageRangeSelection, S3Config, SessionContentFilter, SessionDetailFilters,
-    SessionRoleFilter, WebDAVConfig,
+    BackupCustomEntry, BackupEncryptionConfig, BackupFileFilterRule, GatewayUsageRangeSelection,
+    S3Config, SessionContentFilter, SessionDetailFilters, SessionRoleFilter, WebDAVConfig,
 };
 /**
  * Settings Adapter Layer
@@ -53,6 +52,7 @@ pub fn from_db_value(value: Value) -> AppSettings {
         auto_backup_max_keep: get_u32(&value, "auto_backup_max_keep", 10),
         last_auto_backup_time: get_opt_str(&value, "last_auto_backup_time"),
         auto_check_update: get_bool(&value, "auto_check_update", true),
+        receive_beta_updates: get_bool(&value, "receive_beta_updates", false),
         visible_tabs: normalize_visible_tabs_order(get_string_array(
             &value,
             "visible_tabs",
@@ -855,10 +855,7 @@ mod tests {
             "visible_tabs": ["codex", "opencode", "gateway"],
         }));
 
-        assert_eq!(
-            settings.visible_tabs,
-            vec!["codex", "opencode", "gateway"]
-        );
+        assert_eq!(settings.visible_tabs, vec!["codex", "opencode", "gateway"]);
     }
 
     #[test]
@@ -1309,13 +1306,7 @@ mod tests {
         assert!(settings.sidebar_hidden_by_page.get("openclaw").copied() == Some(true));
         assert!(settings.sidebar_hidden_by_page.get("pi").copied() == Some(false));
         assert!(settings.sidebar_hidden_by_page.get("oh_my_pi").copied() == Some(true));
-        assert!(
-            settings
-                .sidebar_hidden_by_page
-                .get("omo_native")
-                .copied()
-                == Some(false)
-        );
+        assert!(settings.sidebar_hidden_by_page.get("omo_native").copied() == Some(false));
         assert!(settings.sidebar_hidden_by_page.get("hermes").copied() == Some(true));
         assert!(settings.sidebar_hidden_by_page.get("dsh").copied() == Some(true));
     }

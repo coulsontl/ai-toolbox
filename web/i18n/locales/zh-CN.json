@@ -1505,7 +1505,9 @@
       "scoopUpdateHint": "发现新版本 {{version}}。当前应用通过 Scoop 安装，请使用 `scoop update ai-toolbox` 升级",
       "debUpdateHint": "发现新版本 {{version}}。当前应用由 deb 包安装，无法在应用内升级，请下载新的 .deb 重新安装，或改用 AppImage 版本",
       "updateFailedReason": "失败原因",
-      "openDownloadPage": "打开下载页"
+      "openDownloadPage": "打开下载页",
+      "receiveBetaUpdates": "接收 Beta 更新",
+      "receiveBetaUpdatesHelp": "开启后检查更新会同时比较正式版与滚动 Beta 版（形如 1.2.1-beta.261024a，日期到秒级构建号），始终提示较新的那个：正式版发布后 Beta 用户也会收到正式版提醒，之后 Beta 再次更新时继续跟随 Beta。Scoop / deb 安装不受此开关影响，它们只能通过各自包管理器升级正式版。"
     },
     "dataDir": {
       "title": "数据目录",

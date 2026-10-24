@@ -32,6 +32,8 @@ export interface UpdateInfo {
   scoopInstall: boolean;
   /** The app came from the release `.deb`; the in-app updater is unavailable. */
   debInstall: boolean;
+  /** The offered build is the rolling prerelease from the `beta` tag. */
+  isBetaChannel: boolean;
 }
 
 interface UpdateCheckResult {
@@ -43,6 +45,7 @@ interface UpdateCheckResult {
   signature?: string;
   url?: string;
   scoop_install?: boolean;
+  is_beta_channel?: boolean;
   deb_install?: boolean;
 }
 
@@ -69,6 +72,7 @@ export const checkForUpdates = async (): Promise<UpdateInfo> => {
     url: result.url,
     scoopInstall: result.scoop_install ?? false,
     debInstall: result.deb_install ?? false,
+    isBetaChannel: result.is_beta_channel ?? false,
   };
 };
 

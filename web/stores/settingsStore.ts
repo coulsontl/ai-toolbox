@@ -106,6 +106,7 @@ interface SettingsState extends KeepAwakeSettingsState {
 
   // Update settings
   autoCheckUpdate: boolean;
+  receiveBetaUpdates: boolean;
 
   // Tab visibility settings
   visibleTabs: string[];
@@ -153,6 +154,7 @@ interface SettingsState extends KeepAwakeSettingsState {
   setProxyUrl: (url: string) => Promise<void>;
   setLastAutoBackupTime: (time: string) => void;
   setAutoCheckUpdate: (enabled: boolean) => Promise<void>;
+  setReceiveBetaUpdates: (enabled: boolean) => Promise<void>;
   setVisibleTabs: (tabs: string[]) => Promise<void>;
   setSidebarHidden: (page: SidebarPageKey, hidden: boolean) => Promise<void>;
   setOpencodeAllowClearAppliedOhMyConfig: (enabled: boolean) => Promise<void>;
@@ -243,6 +245,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   autoBackupMaxKeep: 10,
   lastAutoBackupTime: null,
   autoCheckUpdate: true,
+  receiveBetaUpdates: false,
   visibleTabs: defaultSettings.visible_tabs,
   sidebarHiddenByPage: normalizeSidebarHiddenByPage(),
   opencodeAllowClearAppliedOhMyConfig: false,
@@ -287,6 +290,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         autoBackupMaxKeep: settings.auto_backup_max_keep ?? 10,
         lastAutoBackupTime: settings.last_auto_backup_time ?? null,
         autoCheckUpdate: settings.auto_check_update ?? true,
+        receiveBetaUpdates: settings.receive_beta_updates ?? false,
         visibleTabs: settings.visible_tabs ?? defaultSettings.visible_tabs,
         sidebarHiddenByPage: normalizeSidebarHiddenByPage(settings.sidebar_hidden_by_page),
         opencodeAllowClearAppliedOhMyConfig: settings.opencode_allow_clear_applied_oh_my_config ?? false,
@@ -464,6 +468,17 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     const newSettings: AppSettings = {
       ...currentSettings,
       auto_check_update: enabled,
+    };
+    await saveSettings(newSettings);
+  },
+
+  setReceiveBetaUpdates: async (enabled) => {
+    set({ receiveBetaUpdates: enabled });
+
+    const currentSettings = await getSettings();
+    const newSettings: AppSettings = {
+      ...currentSettings,
+      receive_beta_updates: enabled,
     };
     await saveSettings(newSettings);
   },
