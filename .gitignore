@@ -33,8 +33,9 @@ nul
 .pi
 .playwright-mcp
 
-# Repository-specific agent skills live in the personal memory store
-# (~/.agents/memories/skills) and reach this repo through junctions, so the
-# body is never duplicated here. `.claude/skills` is a symlink to this
-# directory and inherits the same view.
-.codex/skills/
+# Agent skills are provided per machine and never committed. `.agents/skills`
+# is what Codex scans; `.claude/skills` points at the same directory for Claude
+# Code. Never track either one: git applies a deletion through the link and
+# removes whatever it points at.
+.agents/skills/
+.claude/skills
