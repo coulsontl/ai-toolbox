@@ -39,7 +39,8 @@ pub fn normalize_reasoning_effort(value: &str) -> Option<String> {
         "low" => Some("low".to_string()),
         "medium" => Some("medium".to_string()),
         "high" => Some("high".to_string()),
-        "xhigh" | "extra_high" | "max" => Some(normalized),
+        "xhigh" | "extra_high" => Some("xhigh".to_string()),
+        "max" => Some("max".to_string()),
         _ => None,
     }
 }
@@ -75,6 +76,7 @@ const LEGACY_THINKING_BUDGET_MODEL_MARKERS: &[&str] = &[
     "claude-3",           // claude-3-7-sonnet, claude-3-5-haiku, ...
     "claude-instant",     // claude-instant-1.2
     "claude-opus-4-2025", // claude-opus-4-20250514 (the 4.0 release)
+    "claude-opus-4-0",    // alias of claude-opus-4-20250514
     "claude-opus-4-1",
     "claude-opus-4-5",
     "claude-sonnet-4-2025", // claude-sonnet-4-20250514
@@ -134,20 +136,23 @@ pub fn anthropic_thinking_plan(
 }
 
 /// Anthropic accepts `low`/`medium`/`high`/`xhigh`/`max`; `minimal` collapses
-/// to `low`, and `xhigh` falls back to `high` on models that do not list it.
+/// to `low`, and `xhigh`/`max` fall back to `high` on models that do not list
+/// the levels above `high`.
 fn adaptive_effort(effort: &str, supports_xhigh: bool) -> &'static str {
     match effort {
         "medium" => "medium",
         "high" => "high",
         "xhigh" if supports_xhigh => "xhigh",
         "xhigh" => "high",
-        "max" => "max",
+        "max" if supports_xhigh => "max",
+        "max" => "high",
         _ => "low",
     }
 }
 
-/// Claude 4.6 is adaptive but predates the `xhigh` level, and Codex defaults to
-/// `xhigh`, so this one pair needs an explicit cap.
+/// Claude 4.6 is adaptive but predates the effort levels above `high`
+/// (`xhigh`, `max`), and Codex defaults to `xhigh`, so this one pair needs an
+/// explicit cap.
 fn supports_xhigh_effort(model: &str) -> bool {
     let normalized = canonical_model_id(model);
     !(normalized.contains("claude-opus-4-6") || normalized.contains("claude-sonnet-4-6"))
@@ -238,6 +243,24 @@ mod thinking_plan_tests {
     }
 
     #[test]
+    fn max_falls_back_like_xhigh_on_models_that_do_not_list_it() {
+        // 4.6 predates the levels above `high` entirely, so `max` must cap to
+        // `high` just like `xhigh` instead of being forwarded verbatim.
+        assert_eq!(
+            plan("claude-opus-4-6", "max"),
+            Some(AnthropicThinkingPlan::Adaptive { effort: "high" })
+        );
+        assert_eq!(
+            plan("claude-sonnet-4.6", "max"),
+            Some(AnthropicThinkingPlan::Adaptive { effort: "high" })
+        );
+        assert_eq!(
+            plan("claude-opus-4-7", "max"),
+            Some(AnthropicThinkingPlan::Adaptive { effort: "max" })
+        );
+    }
+
+    #[test]
     fn legacy_models_keep_the_budget_mapping() {
         assert_eq!(
             plan("claude-sonnet-4-5-20250929", "medium"),
@@ -255,6 +278,12 @@ mod thinking_plan_tests {
                 budget_tokens: 4_096
             })
         );
+        // The 4.0-generation alias must stay on the budget spelling like the
+        // dated form and its sonnet twin already do.
+        assert!(matches!(
+            plan("claude-opus-4-0", "high"),
+            Some(AnthropicThinkingPlan::Budget { .. })
+        ));
     }
 
     #[test]
@@ -275,6 +304,24 @@ mod thinking_plan_tests {
     fn unknown_efforts_write_no_thinking_field() {
         assert_eq!(plan("claude-opus-5-5", "turbo"), None);
         assert_eq!(plan("claude-sonnet-4-5-20250929", "turbo"), None);
+    }
+
+    #[test]
+    fn extra_high_maps_like_xhigh_on_both_paths() {
+        // Adaptive: the alias must not fall through to the "low" arm.
+        assert_eq!(
+            plan("claude-opus-5-5", "extra_high"),
+            Some(AnthropicThinkingPlan::Adaptive { effort: "xhigh" })
+        );
+        assert_eq!(
+            plan("claude-opus-4-6", "extra_high"),
+            Some(AnthropicThinkingPlan::Adaptive { effort: "high" })
+        );
+        // Legacy: the alias must map to the same budget as `xhigh`, not None.
+        assert_eq!(
+            plan("claude-sonnet-4-5", "extra_high"),
+            plan("claude-sonnet-4-5", "xhigh")
+        );
     }
 
     #[test]

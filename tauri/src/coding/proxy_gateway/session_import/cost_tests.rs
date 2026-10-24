@@ -429,9 +429,14 @@ fn local_dsh_cost_reconciliation_on_a_snapshot() {
         pricing::upsert_model_pricing(&fresh, model).unwrap();
     }
     let now = Utc::now().timestamp();
-    assert_eq!(sync_sources(&fresh, &sources, now).unwrap().failed_files, 0);
+    assert_eq!(
+        sync_sources(&fresh, &sources, now, false)
+            .unwrap()
+            .failed_files,
+        0
+    );
     let expected = cost_summary(&fresh);
-    let result = sync_sources(&db, &sources, now).unwrap();
+    let result = sync_sources(&db, &sources, now, false).unwrap();
     assert_eq!(result.failed_files, 0);
     let after = cost_summary(&db);
     println!(
@@ -447,6 +452,11 @@ fn local_dsh_cost_reconciliation_on_a_snapshot() {
     assert_eq!(after.total_tokens, before.total_tokens);
     assert_eq!(after.total_cost_usd, expected.total_cost_usd);
     assert_ne!(after.total_cost_usd, "0.000000");
-    assert_eq!(sync_sources(&db, &sources, now).unwrap().updated_records, 0);
+    assert_eq!(
+        sync_sources(&db, &sources, now, false)
+            .unwrap()
+            .updated_records,
+        0
+    );
     assert_eq!(cost_summary(&db), after);
 }

@@ -1148,7 +1148,7 @@ fn local_native_sources_read_only_smoke() {
             .map(move |root| (tool, root))
     })
     .collect::<Vec<_>>();
-    let result = sync_sources(&db, &sources, Utc::now().timestamp()).unwrap();
+    let result = sync_sources(&db, &sources, Utc::now().timestamp(), false).unwrap();
     assert_eq!(result.failed_files, 0);
     let before = usage_stats::usage_summary_by_cli(&db, None, None, true).unwrap();
     for item in &before {
@@ -1159,7 +1159,7 @@ fn local_native_sources_read_only_smoke() {
             item.summary.total_tokens
         );
     }
-    let repeated = sync_sources(&db, &sources, Utc::now().timestamp()).unwrap();
+    let repeated = sync_sources(&db, &sources, Utc::now().timestamp(), false).unwrap();
     assert_eq!(repeated.inserted_records, 0);
     assert_eq!(
         usage_stats::usage_summary_by_cli(&db, None, None, true).unwrap(),
@@ -1240,10 +1240,15 @@ fn local_dsh_parser_upgrade_on_a_snapshot() {
         usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::Dsh), true).unwrap();
     let fresh = SqliteDbState::in_memory_for_test().unwrap();
     let now = Utc::now().timestamp();
-    assert_eq!(sync_sources(&fresh, &sources, now).unwrap().failed_files, 0);
+    assert_eq!(
+        sync_sources(&fresh, &sources, now, false)
+            .unwrap()
+            .failed_files,
+        0
+    );
     let expected =
         usage_stats::usage_summary(&fresh, None, None, Some(GatewayUsageTool::Dsh), true).unwrap();
-    let upgraded = sync_sources(&db, &sources, now).unwrap();
+    let upgraded = sync_sources(&db, &sources, now, false).unwrap();
     assert_eq!(upgraded.failed_files, 0);
     let after =
         usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::Dsh), true).unwrap();
@@ -1251,7 +1256,9 @@ fn local_dsh_parser_upgrade_on_a_snapshot() {
     assert_eq!(after.total_requests, expected.total_requests);
     assert_eq!(after.total_tokens, expected.total_tokens);
     assert_eq!(
-        sync_sources(&db, &sources, now).unwrap().inserted_records,
+        sync_sources(&db, &sources, now, false)
+            .unwrap()
+            .inserted_records,
         0
     );
     assert_eq!(

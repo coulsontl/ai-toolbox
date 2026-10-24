@@ -37,7 +37,7 @@ fn run_sync(
     cli: impl Into<GatewayUsageTool>,
     root: &Path,
 ) -> GatewaySessionUsageImportResult {
-    sync_sources(db, &[(cli.into(), root.to_path_buf())], NOW).unwrap()
+    sync_sources(db, &[(cli.into(), root.to_path_buf())], NOW, false).unwrap()
 }
 
 fn count(db: &SqliteDbState) -> u64 {
@@ -206,9 +206,13 @@ fn claude_message_start_placeholders_are_not_imported() {
 
     let result = run_sync(&db, GatewayCliKey::Claude, root.path());
     assert_eq!(result.inserted_records, 2);
-    let logs = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
-        .unwrap();
-    let ids = logs.data.iter().map(|row| row.trace_id.as_str()).collect::<Vec<_>>();
+    let logs =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    let ids = logs
+        .data
+        .iter()
+        .map(|row| row.trace_id.as_str())
+        .collect::<Vec<_>>();
     assert!(ids.contains(&"SESSION:gateway-message"));
     assert!(ids.contains(&"SESSION:settled-small"));
     let placeholder = logs
@@ -1535,6 +1539,17 @@ fn final_usage_rechecks_an_earlier_heuristic_proxy_match() {
     );
 }
 
+/// Tests that drive the process-global rebuild panel serialize on this lock:
+/// Rust runs the tests of one module on parallel threads by default, and two
+/// tests claiming the single slot at once would fail spuriously.
+static REBUILD_PANEL_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn rebuild_panel_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    REBUILD_PANEL_TEST_MUTEX
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// The background rebuild exposes one task slot: a second start must be
 /// rejected while the first is running so two rebuilds never clear the same
 /// CLI concurrently. A finished (or failed) task releases the slot.
@@ -1560,12 +1575,76 @@ fn rebuild_slot_rejects_overlapping_starts_until_the_first_finishes() {
     claim_rebuild_slot(&mut task).expect("a failed rebuild releases the slot too");
 }
 
+/// A rebuild task that dies from a panic must still write a terminal record:
+/// `claim_rebuild_slot` only accepts finished progress, so without the panic
+/// guard the slot would stay claimed until the app restarts.
+#[test]
+fn a_panicked_rebuild_writes_a_terminal_record_and_frees_the_slot() {
+    let payload: Box<dyn std::any::Any + Send> = Box::new("scan exploded".to_string());
+    let message = panic_payload_message(payload.as_ref());
+    assert!(message.contains("scan exploded"));
+
+    let progress = panicked_rebuild_progress(message);
+    assert!(progress.is_finished());
+    assert!(progress
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("panicked")));
+
+    let mut task = RebuildTask::default();
+    claim_rebuild_slot(&mut task).unwrap();
+    *task.progress.as_mut().unwrap() = progress;
+    claim_rebuild_slot(&mut task).expect("a panicked rebuild releases the slot");
+}
+
+/// The 60-second sync shares `sync_sources` with a rebuild. A sync pass must
+/// not report through the rebuild progress panel: while a freshly claimed
+/// rebuild still waits on the sync mutex, an in-flight sync's scan phase would
+/// otherwise overwrite the new task's panel before it even starts.
+#[test]
+fn a_periodic_sync_does_not_touch_the_rebuild_progress_panel() {
+    let _panel = rebuild_panel_test_lock();
+    let root = tempfile::tempdir().unwrap();
+    write_jsonl(
+        &root.path().join("session.jsonl"),
+        &[claude_message("one", 10)],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    {
+        let guard = rebuild_task();
+        let mut task = guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        claim_rebuild_slot(&mut task).unwrap();
+    }
+
+    let result = sync_sources(
+        &db,
+        &[(GatewayCliKey::Claude.into(), root.path().to_path_buf())],
+        NOW,
+        false,
+    )
+    .unwrap();
+    assert_eq!(result.inserted_records, 1, "the sync itself must still run");
+
+    assert_eq!(
+        take_rebuild_progress().map(|progress| progress.phase),
+        Some(SessionRebuildPhase::BackingUp),
+        "the sync must not have written its own phase into the pending rebuild"
+    );
+    update_rebuild_progress(|progress| {
+        progress.phase = SessionRebuildPhase::Failed;
+    });
+    take_rebuild_progress();
+}
+
 /// Switching tabs unmounts the requests view, so the progress it polls must
 /// live in the backend. A running task stays readable for every poll; a
 /// finished one is handed out once and then cleared, otherwise every later
 /// visit would re-report "rebuild finished".
 #[test]
 fn a_running_rebuild_snapshot_persists_while_a_finished_one_is_reported_once() {
+    let _panel = rebuild_panel_test_lock();
     {
         let guard = rebuild_task();
         let mut task = guard
@@ -1677,6 +1756,7 @@ fn proxy_execution_interval_and_delayed_session_writes_converge() {
                 &db,
                 &[(GatewayCliKey::Gemini.into(), root.path().to_path_buf())],
                 NOW + 7200,
+                false,
             )
             .unwrap();
             assert_eq!(result.failed_files, 0);
@@ -1708,8 +1788,8 @@ fn a_proxy_match_removes_the_session_estimate_instead_of_merging_it() {
     write_jsonl(&root.path().join("session-guess.jsonl"), &[message]);
     let db = SqliteDbState::in_memory_for_test().unwrap();
     run_sync(&db, GatewayCliKey::Gemini, root.path());
-    let before = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
-        .unwrap();
+    let before =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
     assert_eq!(before.data[0].data_source, "session");
 
     insert_proxy(&db, "gateway-copy");
@@ -1723,8 +1803,8 @@ fn a_proxy_match_removes_the_session_estimate_instead_of_merging_it() {
     })
     .unwrap();
     run_sync(&db, GatewayCliKey::Gemini, root.path());
-    let after = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
-        .unwrap();
+    let after =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
     assert_eq!(after.data.len(), 1);
     assert_eq!(after.data[0].data_source, "proxy");
     assert_eq!(after.data[0].duration_ms, 4_321);
@@ -1951,6 +2031,7 @@ fn pending_usage_is_rechecked_without_another_file_write() {
         &db,
         &[(GatewayCliKey::Claude.into(), root.path().to_path_buf())],
         NOW + 4,
+        false,
     )
     .unwrap();
     assert_eq!(result.inserted_records, 1);
@@ -3064,14 +3145,8 @@ fn session_rows_carry_the_duration_estimated_from_adjacent_events() {
     write_jsonl(&root.path().join("claude.jsonl"), &[prompt, reply]);
     let db = SqliteDbState::in_memory_for_test().unwrap();
     run_sync(&db, GatewayCliKey::Claude, root.path());
-    let rows = usage_stats::request_logs(
-        &db,
-        &GatewayRequestLogFilters::default(),
-        0,
-        10,
-        true,
-    )
-    .unwrap();
+    let rows =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
     assert_eq!(rows.data.len(), 1);
     assert_eq!(rows.data[0].duration_ms, 12_500);
     // An unchanged transcript is not re-timed or re-billed.
@@ -3079,8 +3154,8 @@ fn session_rows_carry_the_duration_estimated_from_adjacent_events() {
         run_sync(&db, GatewayCliKey::Claude, root.path()).parsed_records,
         0
     );
-    let again = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
-        .unwrap();
+    let again =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
     assert_eq!(again.data[0].duration_ms, 12_500);
 }
 
@@ -3096,8 +3171,8 @@ fn session_timing_beyond_the_sanity_window_is_not_written() {
     write_jsonl(&root.path().join("claude.jsonl"), &[prompt, reply]);
     let db = SqliteDbState::in_memory_for_test().unwrap();
     run_sync(&db, GatewayCliKey::Claude, root.path());
-    let rows = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
-        .unwrap();
+    let rows =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
     assert_eq!(rows.data[0].duration_ms, 0);
 }
 
@@ -3124,14 +3199,13 @@ fn codex_authoritative_records_use_the_sending_event_as_start() {
     );
     let db = SqliteDbState::in_memory_for_test().unwrap();
     run_sync(&db, GatewayCliKey::Codex, &sessions);
-    let rows = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
-        .unwrap();
+    let rows =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
     assert_eq!(rows.data.len(), 1);
     // The tool result at +5s is the start; task_started at +1s belongs to the
     // turn, not to this call.
     assert_eq!(rows.data[0].duration_ms, 4_250);
 }
-
 
 /// Every native adapter stores the call's own elapsed time when its source
 /// records one; a source without timing leaves the field empty instead of
@@ -3160,10 +3234,7 @@ fn native_sources_record_their_own_durations() {
     native
         .execute(
             "UPDATE model_usage SET started_at = ?1, completed_at = ?2",
-            [
-                (THEN - 4) * 1000,
-                (THEN - 4) * 1000 + 1_854,
-            ],
+            [(THEN - 4) * 1000, (THEN - 4) * 1000 + 1_854],
         )
         .unwrap();
     let db = SqliteDbState::in_memory_for_test().unwrap();
@@ -3187,9 +3258,11 @@ fn native_sources_record_their_own_durations() {
     fs::create_dir_all(&logs).unwrap();
     write_jsonl(
         &logs.join("unified.jsonl"),
-        &[json!({"ts":THEN,"sid":"grok-session","msg":"shell.turn.inference_done",
+        &[
+            json!({"ts":THEN,"sid":"grok-session","msg":"shell.turn.inference_done",
             "ctx":{"loop_index":1,"attempts":1,"prompt_tokens":100,
-                "completion_tokens":10,"model_elapsed_ms":5_466}})],
+                "completion_tokens":10,"model_elapsed_ms":5_466}}),
+        ],
     );
     let db = SqliteDbState::in_memory_for_test().unwrap();
     run_sync(&db, GatewayUsageTool::Grok, root.path());
@@ -3212,11 +3285,13 @@ fn native_sources_record_their_own_durations() {
     fs::create_dir_all(&session).unwrap();
     write_jsonl(
         &session.join("session.jsonl"),
-        &[json!({"stream":{"id":"muse-session"},"payload_type":"runtime.session",
+        &[
+            json!({"stream":{"id":"muse-session"},"payload_type":"runtime.session",
             "payload":{"kind":"run","run_id":"run-1","event":{"kind":"model_completed",
                 "duration_ms":3_250,
                 "usage":{"input_tokens":100,"output_tokens":10}}},
-            "recorded_at":THEN * 1000,"source_run_record_id":"record-1"})],
+            "recorded_at":THEN * 1000,"source_run_record_id":"record-1"}),
+        ],
     );
     let db = SqliteDbState::in_memory_for_test().unwrap();
     run_sync(&db, GatewayUsageTool::Musecode, root.path());
@@ -3239,9 +3314,11 @@ fn native_sources_record_their_own_durations() {
     fs::create_dir_all(&usage).unwrap();
     write_jsonl(
         &usage.join("token-usage-2026-09-20.jsonl"),
-        &[json!({"schemaVersion":1,"id":"req-1","sessionId":"qwen-session",
+        &[
+            json!({"schemaVersion":1,"id":"req-1","sessionId":"qwen-session",
             "model":"qwen-model","timestamp":THEN,"inputTokens":100,"outputTokens":10,
-            "apiDurationMs":7_500,"localDate":"2026-09-20"})],
+            "apiDurationMs":7_500,"localDate":"2026-09-20"}),
+        ],
     );
     let db = SqliteDbState::in_memory_for_test().unwrap();
     run_sync(&db, GatewayUsageTool::Qwencode, root.path());

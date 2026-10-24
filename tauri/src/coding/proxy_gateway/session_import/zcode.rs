@@ -28,8 +28,8 @@ use rusqlite::Connection;
 use serde_json::Value;
 
 use super::parsers::{native_record, session_duration_ms, ParsedSession};
-use crate::coding::proxy_gateway::usage_parser::TokenUsage;
 use super::{GatewayUsageTool, SessionUsageRecord};
+use crate::coding::proxy_gateway::usage_parser::TokenUsage;
 
 /// Columns read from `model_usage`, in order. The project is a property of the
 /// session row, so it comes from a correlated subquery; the `session` table is
@@ -166,9 +166,7 @@ impl UsageRow {
         // `started_at` and `completed_at` bracket this one upstream request,
         // so the difference is the call's real elapsed time.
         record.duration_ms = session_duration_ms(self.started_at, self.completed_at);
-        record.project_path = self
-            .project_path
-            .filter(|path| !path.trim().is_empty());
+        record.project_path = self.project_path.filter(|path| !path.trim().is_empty());
         record
     }
 }
@@ -239,7 +237,10 @@ mod tests {
         // `input_tokens` includes the cached part: 100 - 30 read - 0 write.
         assert_eq!(record.usage.input_tokens, Some(70));
         assert_eq!(record.usage.cache_read_tokens, Some(30));
-        assert_eq!(record.metadata.native_provider.as_deref(), Some("account:zai"));
+        assert_eq!(
+            record.metadata.native_provider.as_deref(),
+            Some("account:zai")
+        );
         assert_eq!(record.metadata.reported_total_tokens, Some(150));
         // `completed_at` wins over `started_at`; milliseconds on disk, seconds
         // in the record.
@@ -337,19 +338,23 @@ mod end_to_end_tests {
         let db = crate::db::SqliteDbState::in_memory_for_test().expect("db");
         let sources = [(GatewayUsageTool::Zcode, path.clone())];
 
-        let first = super::super::sync_sources(&db, &sources, 1_800_000_000).expect("first sync");
+        let first =
+            super::super::sync_sources(&db, &sources, 1_800_000_000, false).expect("first sync");
         assert_eq!(first.inserted_records, 2);
 
-        let summary = usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::Zcode), true)
-            .expect("summary");
+        let summary =
+            usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::Zcode), true)
+                .expect("summary");
         assert_eq!(summary.total_requests, 2);
 
         // Unchanged file: the ledger must keep it out of the second pass.
-        let second = super::super::sync_sources(&db, &sources, 1_800_000_060).expect("second sync");
+        let second =
+            super::super::sync_sources(&db, &sources, 1_800_000_060, false).expect("second sync");
         assert_eq!(second.inserted_records, 0);
         assert_eq!(second.updated_records, 0);
-        let summary = usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::Zcode), true)
-            .expect("summary");
+        let summary =
+            usage_stats::usage_summary(&db, None, None, Some(GatewayUsageTool::Zcode), true)
+                .expect("summary");
         assert_eq!(summary.total_requests, 2);
     }
 

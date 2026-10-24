@@ -334,10 +334,15 @@ fn failed_native_sources_are_not_counted_twice_and_do_not_block_other_tools() {
         (GatewayUsageTool::OhMyPi, omp_root.path().to_path_buf()),
     ];
     let db = SqliteDbState::in_memory_for_test().unwrap();
-    assert_eq!(sync_sources(&db, &sources, NOW).unwrap().failed_files, 0);
+    assert_eq!(
+        sync_sources(&db, &sources, NOW, false)
+            .unwrap()
+            .failed_files,
+        0
+    );
     fs::write(pi_root.path().join("broken.jsonl"), "invalid session\n").unwrap();
     cost_pricing(&db, "mixed-source-model", "2", "4", "0.2");
-    let partial = sync_sources(&db, &sources, NOW).unwrap();
+    let partial = sync_sources(&db, &sources, NOW, false).unwrap();
     assert_eq!(partial.failed_files, 1);
     assert_eq!(partial.updated_records, 1);
     assert_eq!(
@@ -353,7 +358,7 @@ fn failed_native_sources_are_not_counted_twice_and_do_not_block_other_tools() {
         "{\"type\":\"session\",\"id\":\"empty\"}\n",
     )
     .unwrap();
-    let retried = sync_sources(&db, &sources, NOW).unwrap();
+    let retried = sync_sources(&db, &sources, NOW, false).unwrap();
     assert_eq!(retried.failed_files, 0);
     assert_eq!(retried.updated_records, 1);
     assert_eq!(
@@ -488,7 +493,7 @@ fn local_other_cli_costs_on_a_snapshot() {
                 pricing::upsert_model_pricing(&fresh, model).unwrap();
             }
             assert_eq!(
-                sync_sources(&fresh, &sources, Utc::now().timestamp())
+                sync_sources(&fresh, &sources, Utc::now().timestamp(), false)
                     .unwrap()
                     .failed_files,
                 0

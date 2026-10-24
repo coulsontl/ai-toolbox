@@ -6,11 +6,13 @@ use super::usage_parser::TokenUsage;
 use super::usage_stats::{calculate_session_costs, format_decimal_cost};
 use crate::db::SqliteDbState;
 use chrono::Utc;
+use futures_util::FutureExt;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, UNIX_EPOCH};
@@ -335,7 +337,10 @@ pub fn take_rebuild_progress() -> Option<SessionRebuildProgress> {
 /// spinning for tens of minutes with no phase, no progress and no way to
 /// leave the page. The returned result is the progress record to poll; the
 /// final figures land there when the task finishes.
-pub fn start_rebuild(db: SqliteDbState, input: GatewaySessionUsageImportInput) -> Result<(), String> {
+pub fn start_rebuild(
+    db: SqliteDbState,
+    input: GatewaySessionUsageImportInput,
+) -> Result<(), String> {
     {
         let guard = rebuild_task();
         let mut task = guard
@@ -344,9 +349,15 @@ pub fn start_rebuild(db: SqliteDbState, input: GatewaySessionUsageImportInput) -
         claim_rebuild_slot(&mut task)?;
     }
     let app_handle = tauri::async_runtime::spawn(async move {
-        let result = rebuild_session_usage(db.clone(), input).await;
+        // A panic must still free the single slot: `claim_rebuild_slot` only
+        // accepts a finished progress record, and nothing else would ever
+        // write one, so an unwind here would keep the slot claimed until the
+        // app restarts.
+        let result = AssertUnwindSafe(rebuild_session_usage(db.clone(), input))
+            .catch_unwind()
+            .await;
         match result {
-            Ok(import_result) => {
+            Ok(Ok(import_result)) => {
                 update_rebuild_progress(|progress| {
                     progress.phase = SessionRebuildPhase::Done;
                     progress.inserted_records = import_result.inserted_records;
@@ -357,11 +368,17 @@ pub fn start_rebuild(db: SqliteDbState, input: GatewaySessionUsageImportInput) -
                     progress.finished_at = Some(Utc::now().to_rfc3339());
                 });
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 update_rebuild_progress(|progress| {
                     progress.phase = SessionRebuildPhase::Failed;
                     progress.error = Some(error);
                     progress.finished_at = Some(Utc::now().to_rfc3339());
+                });
+            }
+            Err(panic) => {
+                let message = panic_payload_message(panic.as_ref());
+                update_rebuild_progress(|progress| {
+                    *progress = panicked_rebuild_progress(message);
                 });
             }
         }
@@ -369,6 +386,26 @@ pub fn start_rebuild(db: SqliteDbState, input: GatewaySessionUsageImportInput) -
     // The task owns its own handle; detaching is the point of this command.
     drop(app_handle);
     Ok(())
+}
+
+/// What a panicking rebuild task died of, for its failure record.
+fn panic_payload_message(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(text) = panic.downcast_ref::<&str>() {
+        (*text).to_string()
+    } else if let Some(text) = panic.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "unknown cause".to_string()
+    }
+}
+
+/// A terminal record for a rebuild that died from a panic.
+fn panicked_rebuild_progress(message: String) -> SessionRebuildProgress {
+    let mut progress = SessionRebuildProgress::new();
+    progress.phase = SessionRebuildPhase::Failed;
+    progress.error = Some(format!("Session usage rebuild panicked: {message}"));
+    progress.finished_at = Some(Utc::now().to_rfc3339());
+    progress
 }
 
 /// Discard everything this collector derived for `cli_key` and re-import it.
@@ -474,14 +511,11 @@ fn rebuild_sources(
     create_rebuild_backup(db)?;
     update_rebuild_progress(|progress| progress.phase = SessionRebuildPhase::Clearing);
     clear_imported_usage(db, cli_keys)?;
-    sync_sources(db, sources, now)
+    sync_sources(db, sources, now, true)
 }
 
 /// How many session-sourced detail rows the given CLIs currently hold.
-fn count_imported_usage(
-    db: &SqliteDbState,
-    cli_keys: &[GatewayUsageTool],
-) -> Result<u64, String> {
+fn count_imported_usage(db: &SqliteDbState, cli_keys: &[GatewayUsageTool]) -> Result<u64, String> {
     db.with_conn(|conn| {
         let mut total: u64 = 0;
         for cli_key in cli_keys {
@@ -652,7 +686,7 @@ pub async fn import_session_usage(
                     .map(move |root| (cli_key, root))
             })
             .collect::<Vec<_>>();
-        sync_sources(&db, &sources, Utc::now().timestamp())
+        sync_sources(&db, &sources, Utc::now().timestamp(), false)
     })
     .await
     .map_err(|error| format!("Failed to sync local session usage: {error}"))?;
@@ -1343,6 +1377,7 @@ fn sync_sources(
     db: &SqliteDbState,
     sources: &[(GatewayUsageTool, PathBuf)],
     now: i64,
+    reports_rebuild_progress: bool,
 ) -> Result<GatewaySessionUsageImportResult, String> {
     let mut states = load_states(db)?;
     let mut claimed_proxies = states
@@ -1416,7 +1451,18 @@ fn sync_sources(
     let mut result = GatewaySessionUsageImportResult::default();
     let mut retired_records = Vec::new();
     let mut failed_tools = HashSet::new();
-    update_rebuild_progress(|progress| {
+    // Only a rebuild reports through the rebuild progress panel. The 60-second
+    // sync shares this function; while a freshly claimed rebuild still waits on
+    // the sync mutex, an in-flight periodic sync would otherwise write its own
+    // scan phase and counters into the new task's panel.
+    macro_rules! report_progress {
+        ($update:expr) => {
+            if reports_rebuild_progress {
+                update_rebuild_progress($update);
+            }
+        };
+    }
+    report_progress!(|progress| {
         progress.phase = SessionRebuildPhase::ImportingFiles;
         progress.total_files = files.len() as u64;
     });
@@ -1456,9 +1502,11 @@ fn sync_sources(
                     Some(parent_paths) => read_codex_parent_snapshots(parent_paths, fallback)?,
                     None => match states.get(&format!("codex:{parent_id}")) {
                         Some(state) => state.codex_snapshots.clone(),
-                        None => return Err(format!(
+                        None => {
+                            return Err(format!(
                             "Parent Codex rollout {parent_id} is unavailable; deferred child usage"
-                        )),
+                        ))
+                        }
                     },
                 };
                 parsers::exclude_codex_replay(&mut parsed, &parent);
@@ -1501,7 +1549,7 @@ fn sync_sources(
                 }
             }
         }
-        update_rebuild_progress(|progress| {
+        report_progress!(|progress| {
             progress.processed_files = progress.processed_files.saturating_add(1);
             progress.inserted_records = result.inserted_records;
             progress.updated_records = result.updated_records;
@@ -1646,9 +1694,9 @@ fn sync_sources(
             }
         }
     }
-    update_rebuild_progress(|progress| progress.phase = SessionRebuildPhase::ReconcileLateRows);
+    report_progress!(|progress| progress.phase = SessionRebuildPhase::ReconcileLateRows);
     result.updated_records += reconcile_late_proxy_rows(db, &mut states, &mut claimed_proxies)?;
-    update_rebuild_progress(|progress| progress.phase = SessionRebuildPhase::RetireDesktopRecords);
+    report_progress!(|progress| progress.phase = SessionRebuildPhase::RetireDesktopRecords);
     result.updated_records +=
         reconciliation::retire_desktop_records(db, &mut states, retired_records)?;
     for cli_key in GatewayUsageTool::all()
@@ -1657,7 +1705,7 @@ fn sync_sources(
         // tools can still reconcile, and this tool retries on the next sync.
         .filter(|tool| cost_reconciliation::supports(*tool) && !failed_tools.contains(tool))
     {
-        update_rebuild_progress(|progress| progress.phase = SessionRebuildPhase::ReconcileCosts);
+        report_progress!(|progress| progress.phase = SessionRebuildPhase::ReconcileCosts);
         match cost_reconciliation::reconcile_session_costs(db, cli_key, sources, &mut states) {
             Ok(updated) => result.updated_records += updated,
             Err(error) => {
@@ -1669,7 +1717,7 @@ fn sync_sources(
             }
         }
     }
-    update_rebuild_progress(|progress| progress.phase = SessionRebuildPhase::RollupAndPrune);
+    report_progress!(|progress| progress.phase = SessionRebuildPhase::RollupAndPrune);
     // Backfills can add old rows after the proxy writer's pruning throttle has
     // run. Archive them now, even when the gateway itself has never started.
     let maintenance = super::settings::load_settings_from_sqlite_state(db).and_then(|settings| {
