@@ -2806,6 +2806,16 @@ fn project_stats_group_usage_by_the_recorded_working_directory() {
     );
 }
 
+/// ISO timestamps relative to the real clock. Qoder fixtures must not pin
+/// calendar dates: the sync's retention maintenance prunes detail rows older
+/// than `log_retention_days` (default 7) measured from `Local::now()`, so a
+/// hard-coded date turns the test into a time bomb that starts failing
+/// exactly one week after the fixture was written (observed 2026-10-24).
+fn relative_iso_timestamp(offset_secs: i64) -> String {
+    use chrono::{Duration, SecondsFormat, Utc};
+    (Utc::now() - Duration::seconds(offset_secs)).to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
 fn qoder_cli_assistant(request: &str, model: &str, credits: f64, timestamp: &str) -> Value {
     json!({
         "type": "assistant",
@@ -2837,16 +2847,16 @@ fn qoder_cli_keeps_zero_token_calls_and_reads_the_working_directory() {
         &[
             json!({"type":"runtime-config","sessionId":"qoder-session","model":"qfmodel"}),
             json!({"type":"user","sessionId":"qoder-session","cwd":"D:/work/qoder-repo",
-                "timestamp":"2026-10-17T12:00:00.000Z","message":{"role":"user","content":"hi"}}),
+                "timestamp":&relative_iso_timestamp(40),"message":{"role":"user","content":"hi"}}),
             // A row without usage is not a model call.
             json!({"type":"assistant","sessionId":"qoder-session","cwd":"D:/work/qoder-repo",
-                "timestamp":"2026-10-17T12:00:01.000Z","message":{"id":"chatcmpl-plain","model":"qfmodel"}}),
-            qoder_cli_assistant("req-1", "qfmodel", 0.25, "2026-10-17T12:00:02.000Z"),
+                "timestamp":&relative_iso_timestamp(30),"message":{"id":"chatcmpl-plain","model":"qfmodel"}}),
+            qoder_cli_assistant("req-1", "qfmodel", 0.25, &relative_iso_timestamp(20)),
             // The same provider response repeated while streaming is one call.
-            qoder_cli_assistant("req-1", "qfmodel", 0.25, "2026-10-17T12:00:03.000Z"),
+            qoder_cli_assistant("req-1", "qfmodel", 0.25, &relative_iso_timestamp(10)),
             // The credit-limit notice is not a reply.
             json!({"type":"assistant","sessionId":"qoder-session","cwd":"D:/work/qoder-repo",
-                "timestamp":"2026-10-17T12:00:04.000Z",
+                "timestamp":&relative_iso_timestamp(5),
                 "message":{"id":"chatcmpl-synthetic","model":"<synthetic>","usage":{}}}),
         ],
     );
@@ -2879,7 +2889,7 @@ fn qoder_cli_reads_the_nested_cache_creation_pair_and_the_config_model() {
         &[
             json!({"type":"runtime-config","sessionId":"qoder-session","model":"configured-model"}),
             json!({"type":"assistant","sessionId":"qoder-session","cwd":"D:/work/qoder-repo",
-            "timestamp":"2026-10-17T12:00:02.000Z",
+            "timestamp":&relative_iso_timestamp(20),
             "message":{"id":"chatcmpl-nested","usage":{
                 "input_tokens":1000,
                 "output_tokens":50,
@@ -2914,7 +2924,7 @@ fn qoder_cn_transcripts_stay_separate_from_the_international_cli() {
             "req-cn",
             "dfmodel",
             0.5,
-            "2026-10-17T12:00:02.000Z",
+            &relative_iso_timestamp(20),
         )],
     );
     let db = SqliteDbState::in_memory_for_test().unwrap();
@@ -3083,8 +3093,8 @@ fn qoder_credits_are_stored_beside_zero_tokens() {
     write_jsonl(
         &root.path().join("qd.jsonl"),
         &[
-            qoder_cli_assistant("req-a", "qfmodel", 0.25, "2026-10-17T12:00:02.000Z"),
-            qoder_cli_assistant("req-b", "qfmodel", 0.75, "2026-10-17T12:00:03.000Z"),
+            qoder_cli_assistant("req-a", "qfmodel", 0.25, &relative_iso_timestamp(20)),
+            qoder_cli_assistant("req-b", "qfmodel", 0.75, &relative_iso_timestamp(10)),
         ],
     );
     let db = SqliteDbState::in_memory_for_test().unwrap();
