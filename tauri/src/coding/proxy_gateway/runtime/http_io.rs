@@ -619,10 +619,19 @@ async fn write_streaming_body(
         SseUsageCollector::with_provider_type(response.provider_type.as_deref());
     // Hosted-tool markers are scanned on the bytes actually forwarded, so the
     // detail dialog can say whether the upstream really ran a native tool. This
-    // is independent of body storage, which is off by default. The scan is a
-    // byte search, so it is restricted to the upstream's own dialect.
+    // is independent of body storage, which is off by default.
+    //
+    // The scan is a byte search, so it has to use the dialect those bytes are
+    // in: the stream reaching this writer has already been converted to the
+    // *client's* protocol when a conversion route applied. Scanning it with the
+    // upstream dialect found nothing on every cross-protocol turn, which made
+    // the flag flip with `stream` alone (the non-streaming path reads the
+    // pre-conversion body in `target_protocol`).
     let mut used_tool_scanner = super::observations::UsedToolScanner::new(
-        response.target_protocol.unwrap_or(AiProtocol::OpenAiResponses),
+        response
+            .source_protocol
+            .or(response.target_protocol)
+            .unwrap_or(AiProtocol::OpenAiResponses),
     );
     response.response_body_bytes = 0;
     response.body.clear();
@@ -1197,6 +1206,42 @@ mod tests {
         drop(client);
         let received = String::from_utf8_lossy(&reader.await.unwrap()).to_string();
         (response, result, received)
+    }
+
+    /// The scanner must read the forwarded bytes in *their* dialect. On a
+    /// cross-protocol turn those bytes are already the client's protocol
+    /// (`source_protocol`), not the upstream's (`target_protocol`); scanning
+    /// with the latter found no marker and left `used` empty.
+    #[tokio::test]
+    async fn streamed_tool_markers_are_scanned_in_the_forwarded_dialect() {
+        let body = "event: content_block_delta data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"web_search_tool_result\"}} event: message_stop data: {\"type\":\"message_stop\"}";
+        let (mut client, reader) = connect_write_pair().await;
+        let mut response = test_streaming_response(vec![Ok(body.as_bytes().to_vec())]);
+        // Upstream spoke Responses; the forwarded stream is Anthropic.
+        response.target_protocol = Some(AiProtocol::OpenAiResponses);
+        response.source_protocol = Some(AiProtocol::AnthropicMessages);
+
+        let result = write_streaming_body(
+            &mut client,
+            &mut response,
+            Instant::now(),
+            &ProxyGatewaySettings::default(),
+        )
+        .await;
+        drop(client);
+        let _ = reader.await.unwrap();
+
+        assert!(result.is_ok());
+        assert!(
+            response
+                .observations
+                .native_tools
+                .iter()
+                .any(|tool| tool.used
+                    && tool.kind
+                        == crate::coding::proxy_gateway::runtime::observations::TOOL_WEB_SEARCH),
+            "the Anthropic marker in the forwarded stream should have been seen"
+        );
     }
 
     #[tokio::test]

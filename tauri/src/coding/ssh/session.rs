@@ -564,8 +564,11 @@ async fn exec_capture(
         }
     }
 
+    // Both streams get the same decoder: a localized Windows banner (`cmd /c
+    // ver`) is GBK on the stdout side too, and decoding only stderr left the
+    // probe's `server_info` full of replacement characters.
     Ok(CommandOutput {
-        stdout: String::from_utf8_lossy(&stdout_buf).to_string(),
+        stdout: decode_remote_text(&stdout_buf),
         stderr: decode_remote_text(&stderr_buf),
         exit_code,
     })

@@ -1118,9 +1118,6 @@ fn compaction_retry_body(
                 Some(privacy) => privacy.prepare(&prepared.body, &provider.id).ok()?,
                 None => prepared.body,
             };
-            // The retry is a different request: its markers replace the native
-            // attempt's (which only offered the trigger and was refused).
-            turn.response.observations = prepared.observations;
             let compaction = turn.compaction.as_mut()?;
             // Capture the native attempt's verdict before the retry resets it.
             // Empty/ordinary replies are refusals; failed/truncated turns are
@@ -1132,6 +1129,12 @@ fn compaction_retry_body(
             if !compaction.begin_summarizing_retry() {
                 return None;
             }
+            // The retry is a different request: its markers replace the native
+            // attempt's (which only offered the trigger and was refused). This
+            // only runs once the retry is actually going ahead — replacing them
+            // on a `None` return would leave the request detail describing a
+            // request that was never sent.
+            turn.response.observations = prepared.observations;
             // The log records what was finally asked, matching the HTTP route.
             // Both attempts' frames still accumulate in the response snapshot,
             // which is where the refusal stays visible.

@@ -264,9 +264,26 @@ pub async fn ssh_save_config(
         log::info!("SSH sync enabled, triggering full sync...");
 
         if session.try_acquire_sync_lock() {
-            let _ = session.ensure_connected().await;
-            let result = do_full_sync(&state, &app, &session, &config, None, None).await;
+            // A failed connect must be reported as such: `do_full_sync` probes
+            // the shell next, and a probe without a session answers `Unknown`,
+            // which the user reads as "the remote shell is not POSIX" when the
+            // real problem was the connection.
+            let result = match session.ensure_connected().await {
+                Ok(()) => Some(do_full_sync(&state, &app, &session, &config, None, None).await),
+                Err(error) => {
+                    log::warn!("SSH full sync skipped, connect failed: {error}");
+                    None
+                }
+            };
             session.release_sync_lock();
+
+            let result = result.unwrap_or_else(|| SyncResult {
+                success: false,
+                synced_files: Vec::new(),
+                skipped_files: Vec::new(),
+                errors: vec!["SSH 连接失败，同步未启动".to_string()],
+                warnings: Vec::new(),
+            });
 
             if !result.errors.is_empty() {
                 log::warn!("SSH full sync errors: {:?}", result.errors);
@@ -1782,10 +1799,7 @@ pub async fn resolve_dynamic_paths_with_db(
                     mapping.remote_path = omp_remote_target_path_from_location(&location, "agents");
                 }
             }
-            "omo-native-config"
-            | "omo-native-models"
-            | "omo-native-mcp"
-            | "omo-native-auth"
+            "omo-native-config" | "omo-native-models" | "omo-native-mcp" | "omo-native-auth"
             | "omo-native-prompt" => {
                 if let Ok(location) =
                     runtime_location::get_omo_native_runtime_location_async(db).await
@@ -1851,8 +1865,7 @@ pub async fn resolve_dynamic_paths_with_db(
                         .await
                         .unwrap_or_else(|| profile_patch::DSH_DESKTOP_PROFILE.to_string());
                     let relative = format!("profiles/{profile}/{}", DSH_MCP_FILE);
-                    mapping.local_path =
-                        config_dir.join(&relative).to_string_lossy().to_string();
+                    mapping.local_path = config_dir.join(&relative).to_string_lossy().to_string();
                     mapping.remote_path = format!("~/.dsh/{relative}");
                 }
             }
@@ -1876,9 +1889,7 @@ pub async fn resolve_dynamic_paths_with_db(
                     "zcode-skills" => crate::coding::zcode::constants::ZCODE_SKILLS_DIR_NAME,
                     _ => crate::coding::zcode::constants::ZCODE_PROMPT_FILE_NAME,
                 };
-                if let Ok(location) =
-                    runtime_location::get_zcode_runtime_location_async(db).await
-                {
+                if let Ok(location) = runtime_location::get_zcode_runtime_location_async(db).await {
                     mapping.local_path = location
                         .host_path
                         .join(relative)

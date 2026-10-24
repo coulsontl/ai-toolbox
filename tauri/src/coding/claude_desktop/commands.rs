@@ -333,7 +333,14 @@ pub async fn toggle_claude_desktop_provider_disabled(
 
     // If this provider is currently applied, rewrite the on-disk profile (the
     // apply path checks is_disabled internally and skips disabled providers).
+    //
+    // This is the same write the explicit apply command performs, so it needs
+    // the same direct-connection guard: a provider whose model routes need the
+    // gateway must not have a gateway profile written while the gateway is not
+    // taking the CLI over — that leaves a profile that looks applied but cannot
+    // serve.
     if is_applied {
+        ensure_claude_desktop_provider_native_for_direct(&db, &provider_id)?;
         apply_config_internal(&db, &app, &provider_id, false).await?;
     }
 
@@ -478,7 +485,8 @@ fn ensure_claude_desktop_provider_native_for_direct(
         &provider.settings_config,
     ) {
         return Err(
-            "该渠道的模型映射需要通过本地网关转发，请使用「应用并代理」或先开启网关接管".to_string(),
+            "该渠道的模型映射需要通过本地网关转发，请使用「应用并代理」或先开启网关接管"
+                .to_string(),
         );
     }
     Ok(())
@@ -979,8 +987,7 @@ mod tests {
         // That row wins over the fixed id, so the list does not grow a second
         // official card next to the one the user already sees and renamed.
         let db = test_db();
-        put_provider_to_sqlite(&db, "legacy-official", &official_row("My 1P"))
-            .expect("put");
+        put_provider_to_sqlite(&db, "legacy-official", &official_row("My 1P")).expect("put");
         ensure_official_provider_row(&db).expect("seed");
         let providers = list_providers_from_sqlite(&db).expect("list");
         assert_eq!(providers.len(), 1);
@@ -997,7 +1004,9 @@ mod tests {
         ensure_official_provider_row(&db).expect("seed");
         let providers = list_providers_from_sqlite(&db).expect("list");
         assert_eq!(providers.len(), 2);
-        assert!(providers.iter().any(|provider| provider.id == OFFICIAL_PROVIDER_ID));
+        assert!(providers
+            .iter()
+            .any(|provider| provider.id == OFFICIAL_PROVIDER_ID));
     }
 
     /// The delete guard is "the first official row", not "category = official":
@@ -1005,10 +1014,8 @@ mod tests {
     #[test]
     fn first_official_row_is_the_protected_one() {
         let db = test_db();
-        put_provider_to_sqlite(&db, "first-official", &official_row("A"))
-            .expect("put");
-        put_provider_to_sqlite(&db, "copy-official", &official_row("A copy"))
-            .expect("put");
+        put_provider_to_sqlite(&db, "first-official", &official_row("A")).expect("put");
+        put_provider_to_sqlite(&db, "copy-official", &official_row("A copy")).expect("put");
         let official_channel_id = list_providers_from_sqlite(&db)
             .expect("list")
             .into_iter()
@@ -1018,8 +1025,12 @@ mod tests {
         assert_eq!(official_channel_id, "first-official");
 
         delete_provider_from_sqlite(&db, "copy-official").expect("delete copy");
-        assert!(get_provider_from_sqlite(&db, "copy-official").expect("get").is_none());
-        assert!(get_provider_from_sqlite(&db, "first-official").expect("get").is_some());
+        assert!(get_provider_from_sqlite(&db, "copy-official")
+            .expect("get")
+            .is_none());
+        assert!(get_provider_from_sqlite(&db, "first-official")
+            .expect("get")
+            .is_some());
     }
 
     #[test]
