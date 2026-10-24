@@ -563,22 +563,25 @@ jobs:
 
       # A rolling beta renames every installer asset (the version is in the
       # file name), so the previous build's artifacts would pile up and, worse,
-      # the glob below could pick a stale one. Drop everything except
-      # latest.json before scanning; the fresh latest.json upload below
-      # clobbers it. Stable releases create a fresh release per tag, where
-      # this loop simply finds nothing to delete.
+      # the glob below could pick a stale one. Only assets whose file name
+      # does not carry this build's version are stale; the build job uploaded
+      # this build's installers moments ago and they must survive. latest.json
+      # is left for the clobber upload below.
       - name: Purge stale release assets
         if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          VERSION: ${{ needs.create-release.outputs.version }}
         run: |
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate \
             --jq '.[] | select(.name != "latest.json") | [.id, .name] | @tsv' \
           | while IFS=$'\t' read -r asset_id asset_name; do
-              echo "Deleting stale asset: $asset_name"
-              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+              if [[ "$asset_name" != *"$VERSION"* ]]; then
+                echo "Deleting stale asset: $asset_name"
+                gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+              fi
             done
 
       - name: Download all release assets
@@ -677,4 +680,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # An empty platform map would tell every client there is nothing to
+          # install; fail loudly instead of publishing it.
+          if ! grep -q 'dar\|win\|linux' latest.json; then
+            echo "::error::latest.json carries no platform entries; refusing to publish an empty manifest"
+            exit 1
+          fi
           gh release upload "$RELEASE_TAG" latest.json --clobber --repo "$GITHUB_REPOSITORY"
