@@ -62,6 +62,16 @@ If `gh` metadata is unavailable, degrade gracefully to commit-based notes. Do no
 - Do not focus only on working tree changes. Released or tagged history is usually the real scope.
 - When choosing the base with git, do not stop at `git describe --tags --abbrev=0` if that tag is a prerelease. Walk newer tags and pick the latest stable tag that is an ancestor of `HEAD` (or of the requested end ref).
 
+## Rolling beta channel rules
+
+Since the v1.2.1 update rework, this repository publishes betas differently from the legacy versioned `v1.2.3-beta` tags:
+
+- The rolling prerelease lives on the **fixed tag `beta`** (always GitHub prerelease, artifacts overwritten per build). It is never a release-range base for stable notes — the stable base rules above apply unchanged.
+- Beta versions look like `1.2.1-beta.261024a`: `<latest stable +1 patch>-beta.<YYMMDD><letter>` (Asia/Shanghai clock; the letter increments per same-day build, `1.2.9 -> 1.3.0` carries). The stamp is deliberately lexicographic: semver's ASCII comparison on alphanumeric identifiers keeps dictionary order equal to chronological order, so do not "normalize" or reformat it.
+- When the user asks for **beta release notes**, the range starts where the previous beta build was cut, not at the last stable tag. Find the previous beta boundary via `gh api repos/{owner}/{repo}/releases/tags/beta --jq '.created_at'` (or the commit the `beta` tag pointed at with `git rev-list -n 1 beta`), then range `that boundary..HEAD`. Commit-only range is fine; the stable base rule does not apply to beta notes because every beta ships the full diff since the previous beta.
+- Fill the notes with `gh release edit beta --notes-file <file>` — the rolling release body is rewritten each build; do not append.
+- A beta body must end with the beta notice below instead of (not in addition to) the stable-only wording, and the version under draft must name the exact rolling version the workflow computed (see the run log or `gh release view beta`).
+
 ## Dirty worktree rules
 
 - After collecting the default release range, check whether the worktree contains relevant staged or unstaged changes that belong to the same upcoming release.
@@ -194,6 +204,21 @@ Template rules:
 - Include the database upgrade notice only when a SQLite schema/user_version upgrade is in scope.
 - Prefer the shortest acceptable wording that still preserves the user-facing meaning.
 
+### Beta release body variant
+
+Rolling beta notes reuse the same `## What's Changed` body but end with the beta notice (after the database upgrade notice when applicable, before the Mac notice):
+
+```md
+⚠️ Beta 预发布版本：此版本为滚动 Beta 构建，可能不稳定。在应用「设置 → 关于」开启「接收 Beta 更新」后，可通过应用内检查更新获取；正式版发布后也会自动收到正式版提醒。Scoop / deb 安装请等待正式版。
+
+⚠️ Mac安装提示：`"应用程序"已损坏` 解决方法：`xattr -cr /Applications/AI\ Toolbox.app`
+```
+
+Rules for the beta variant:
+
+- The first line above the template in the chat reply should name the exact rolling version (for example `1.2.1-beta.261024a`); the release body itself does not need to repeat it because the release title already carries it.
+- `gh release edit beta --notes-file <file>` replaces the whole body each build; never append to the previous body.
+
 ## Style rules
 
 - Keep the tone factual, compact, and release-ready.
@@ -301,3 +326,4 @@ Before finalizing, verify:
 9. Relevant uncommitted changes are included by default for next-release drafting unless the user explicitly asks for committed-only notes.
 10. If the release includes a SQLite schema/user_version upgrade, the database upgrade notice is present before the Mac install notice.
 11. Beta-period commits between the last stable tag and `HEAD` are included in the next formal release notes, not omitted just because a beta tag exists.
+12. For a rolling beta body: the range starts at the previous `beta` build boundary (not the last stable tag), the exact rolling version is named outside the fence, the beta notice is present, and the plan is `gh release edit beta --notes-file` (replace, not append).
