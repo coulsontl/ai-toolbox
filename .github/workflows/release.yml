@@ -71,11 +71,17 @@ jobs:
           set -euo pipefail
           git tag -f beta "$GITHUB_SHA"
           git push origin "refs/tags/beta" --force
-          # Every rolling build also leaves a permanent tag so a version
-          # number always resolves back to the exact commit it was built
-          # from, even after `beta` moves on. The prefix is `beta-` rather
-          # than `beta/`: a leaf ref `refs/tags/beta` cannot also be a
-          # directory prefix.
+          # Every rolling build leaves a permanent tag so the version number
+          # resolves back to the exact commit it was built from. Only the
+          # newest archive tag is kept — previous betas are superseded, so
+          # their archives are pruned here. The prefix is `beta-` rather than
+          # `beta/`: a leaf ref `refs/tags/beta` cannot also be a directory
+          # prefix.
+          for stale in $(git ls-remote --tags origin "refs/tags/beta-*" | awk '{print $2}' | sed 's|refs/tags/||'); do
+            if [ "$stale" != "beta-${BETA_VERSION}" ]; then
+              git push origin ":refs/tags/${stale}"
+            fi
+          done
           git tag -f "beta-${BETA_VERSION}" "$GITHUB_SHA"
           git push origin "refs/tags/beta-${BETA_VERSION}"
 
