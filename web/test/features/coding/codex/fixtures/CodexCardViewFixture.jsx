@@ -19,6 +19,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { App, ConfigProvider, theme } from 'antd';
 import i18n from '@/i18n';
 import { useAppStore } from '@/stores/appStore';
+import { TRAY_CONFIG_REFRESH_EVENT } from '@/constants/configEvents';
 import { updateGatewayProviderProfiles } from '@/features/coding/shared/gateway/providerProfiles';
 import { createCodexPageInvoke } from '../../shared/providerList/fixtures/codexPageStubs.js';
 // Imported before the page on purpose: the page sits in a real import cycle
@@ -209,6 +210,27 @@ const state = {
   ],
 };
 
+// Opt-in usage scenarios exercise the real page and command wrapper with synthetic data.
+const pendingUsage = [];
+const pendingAccountLists = [];
+let deferAccountList = false;
+const baseInvoke = createCodexPageInvoke(state);
+const invoke = async (command, args) => {
+  if (parameters.has('credits') && command === 'list_codex_official_accounts' && deferAccountList) {
+    deferAccountList = false;
+    const snapshot = await baseInvoke(command, args);
+    return new Promise(resolve => pendingAccountLists.push(() => resolve(snapshot)));
+  }
+  if (parameters.has('credits') && command === 'refresh_codex_official_account_limits') {
+    state.requests.push({ command, args: structuredClone(args) });
+    const account = structuredClone(state.officialAccounts.find((item) =>
+      item.id === args.accountId && item.providerId === args.providerId));
+    if (!account) throw new Error('Synthetic account not found');
+    return new Promise((resolve, reject) => pendingUsage.push({ account, resolve, reject }));
+  }
+  return baseInvoke(command, args);
+};
+
 const eventListeners = new Map();
 let nextEventId = 0;
 /** The clipboard is recorded, not written to: the sidebar's copy buttons are
@@ -230,7 +252,7 @@ window.__TAURI_INTERNALS__ = {
   unregisterCallback(id) {
     eventListeners.delete(id);
   },
-  invoke: createCodexPageInvoke(state),
+  invoke,
 };
 
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -256,6 +278,56 @@ const iconName = (element) => element?.querySelector('.anticon')?.getAttribute('
 
 window.codexCardViewFixture = {
   state,
+  pendingUsageCount: () => pendingUsage.length,
+  deferNextAccountList() { deferAccountList = true; },
+  pendingAccountListCount: () => pendingAccountLists.length,
+  respondAccountList() {
+    const resolve = pendingAccountLists.shift();
+    if (!resolve) throw new Error('No pending synthetic account list');
+    resolve();
+  },
+  respondUsage(patch, error) {
+    const pending = pendingUsage.shift();
+    if (!pending) throw new Error('No pending synthetic usage request');
+    if (error) {
+      state.officialAccounts = state.officialAccounts.map((current) =>
+        current.id === pending.account.id && current.providerId === pending.account.providerId
+          && current.email === pending.account.email
+          ? { ...current, credits: undefined, lastError: error } : current);
+      pending.reject(new Error(error));
+      return;
+    }
+    const next = { ...pending.account, lastError: undefined,
+      lastLimitsFetchedAt: '2026-10-24T12:34:56Z', ...patch };
+    // A delayed response must not rewrite the fixture's newly selected login.
+    state.officialAccounts = state.officialAccounts.map((current) =>
+      current.id === next.id && current.providerId === next.providerId
+        && current.email === next.email && current.accountId === next.accountId ? next : current);
+    pending.resolve(next);
+  },
+  reloadAccounts(accounts) {
+    state.officialAccounts = accounts;
+    window.dispatchEvent(new Event(TRAY_CONFIG_REFRESH_EVENT));
+  },
+  accountRow(email) {
+    return [...document.querySelectorAll('div')].find((element) =>
+      element.style.borderBottom && element.textContent.includes(email)) ?? null;
+  },
+  accountAction(email, icon) {
+    // AntD replaces the action icon with a spinner while pending; the translated
+    // button label remains stable and lets a real second click test suppression.
+    const label = icon === 'sync' ? i18n.t('common.officialAccount.refresh')
+      : icon === 'eye' ? i18n.t('common.officialAccount.details') : null;
+    const button = label
+      ? [...(this.accountRow(email)?.querySelectorAll('button') ?? [])]
+        .find((item) => item.textContent.trim() === label)
+      : this.accountRow(email)?.querySelector(`.anticon-${icon}`)?.closest('button');
+    if (!button) throw new Error('Account action not found: ' + email + '/' + icon);
+    return button;
+  },
+  clickAccountAction(email, icon) {
+    this.accountAction(email, icon).click();
+  },
   /** The layout toggle's centre, found by its data attribute: the label is
    *  卡片/列表 whichever way it reads, and copy is free to change. */
   layoutToggleCenter() {
