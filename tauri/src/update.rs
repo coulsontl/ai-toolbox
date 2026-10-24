@@ -168,7 +168,16 @@ pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateCheckResul
 
     let latest_version = release.version.trim_start_matches('v').to_string();
 
-    let has_update = compare_versions(&latest_version, &current_version) > 0;
+    // Defense against a partial manifest (a build round still uploading, or
+    // any channel publishing for other platforms only): a version whose
+    // platforms map has no entry for this machine is not an update for it,
+    // whatever the version number says.
+    let platform_ready = release
+        .platforms
+        .get(&current_platform)
+        .is_some_and(|info| info.url.as_deref().is_some_and(|url| !url.is_empty()));
+
+    let has_update = platform_ready && compare_versions(&latest_version, &current_version) > 0;
 
     // Get signature and url for current platform
     let platform_info = release.platforms.get(&current_platform);

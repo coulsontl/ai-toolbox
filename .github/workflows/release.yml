@@ -90,7 +90,10 @@ jobs:
 
       # The rolling beta release is created once with a minimal body; later
       # dispatches only refresh the title and the prerelease flag so a body
-      # filled in by the release-notes skill survives rebuilds.
+      # filled in by the release-notes skill survives rebuilds. The release
+      # stays a draft while assets upload — draft asset URLs are not publicly
+      # downloadable, so beta clients never see a half-built round — and the
+      # assemble job publishes it once the full manifest exists.
       - name: Ensure rolling beta release
         if: github.event_name == 'workflow_dispatch'
         id: ensure_beta_release
@@ -102,12 +105,12 @@ jobs:
           if gh release view beta --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/beta" --jq '.id')
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
-              -f "name=AI Toolbox Beta ${BETA_VERSION}" -F prerelease=true >/dev/null
+              -f "name=AI Toolbox Beta ${BETA_VERSION}" -F prerelease=true -F draft=true >/dev/null
           else
             release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
               -f tag_name=beta -f "target_commitish=${GITHUB_SHA}" \
               -f "name=AI Toolbox Beta ${BETA_VERSION}" \
-              -F prerelease=true \
+              -F prerelease=true -F draft=true \
               -f "body=Built from commit ${GITHUB_SHA}" \
               --jq '.id')
           fi
@@ -305,6 +308,11 @@ jobs:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           tauriScript: pnpm tauri
           projectPath: tauri
+          # The action would upload a merged latest.json as soon as each
+          # platform finishes, exposing a partial manifest to beta clients
+          # mid-build. The manifest is assembled once, after every platform
+          # uploaded its installers (Assemble latest.json).
+          includeUpdaterJson: false
           # WiX msi requires a numeric-only prerelease identifier (<= 65535),
           # which the rolling beta stamp `beta.261024a` can never satisfy; the
           # beta channel ships NSIS only, formal releases keep both bundles.
@@ -687,3 +695,13 @@ jobs:
             exit 1
           fi
           gh release upload "$RELEASE_TAG" latest.json --clobber --repo "$GITHUB_REPOSITORY"
+
+      # The single visibility flip for the whole round: until now the beta
+      # release was a draft and its asset URLs answered 404 to clients. Only
+      # with every installer and a complete manifest in place does it become
+      # publicly downloadable.
+      - name: Publish the beta release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --repo "$GITHUB_REPOSITORY"
