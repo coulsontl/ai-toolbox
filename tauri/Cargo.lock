@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "ai-toolbox"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "apple-native-keyring-store",
