@@ -1,6 +1,6 @@
 use chrono::Local;
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -1178,25 +1178,24 @@ fn order_providers_by_keys(providers: &[Value], provider_keys: &[String]) -> Vec
             .and_then(Value::as_str)
             .map(str::to_string)
     };
-    let by_name: HashMap<String, &Value> = providers
-        .iter()
-        .filter_map(|provider| name_of(provider).map(|name| (name, provider)))
-        .collect();
 
+    // Track placement by index, not by name: an entry without a string `name`
+    // (hand-edited or exported by another tool) and duplicate names must both
+    // survive the rewrite — the whole section is written back, so dropping or
+    // merging them would delete providers from the file.
+    let mut placed = vec![false; providers.len()];
     let mut ordered: Vec<Value> = Vec::with_capacity(providers.len());
-    let mut placed = BTreeSet::new();
     for key in provider_keys {
-        if let Some(provider) = by_name.get(key) {
-            if placed.insert(key.clone()) {
-                ordered.push((*provider).clone());
+        for (index, provider) in providers.iter().enumerate() {
+            if !placed[index] && name_of(provider).as_deref() == Some(key.as_str()) {
+                placed[index] = true;
+                ordered.push(provider.clone());
             }
         }
     }
-    for provider in providers {
-        if let Some(name) = name_of(provider) {
-            if placed.insert(name) {
-                ordered.push(provider.clone());
-            }
+    for (index, provider) in providers.iter().enumerate() {
+        if !placed[index] {
+            ordered.push(provider.clone());
         }
     }
     ordered
@@ -1917,13 +1916,19 @@ model:
         });
         assert_eq!(
             model_ids_from_provider(&denormalized),
-            vec!["deepseek-v4.1-flash".to_string(), "minimax-m3.1-flash".to_string()],
+            vec![
+                "deepseek-v4.1-flash".to_string(),
+                "minimax-m3.1-flash".to_string()
+            ],
         );
 
         let raw = json!({
             "models": { "alpha": {}, "beta": {} },
         });
-        assert_eq!(model_ids_from_provider(&raw), vec!["alpha".to_string(), "beta".to_string()]);
+        assert_eq!(
+            model_ids_from_provider(&raw),
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
     }
 
     #[test]
@@ -1932,7 +1937,10 @@ model:
             "models": [{ "id": "alpha" }, { "id": "alpha" }, { "id": "  " }],
             "model": "alpha",
         });
-        assert_eq!(model_ids_from_provider(&provider), vec!["alpha".to_string()]);
+        assert_eq!(
+            model_ids_from_provider(&provider),
+            vec!["alpha".to_string()]
+        );
     }
 
     #[test]
@@ -2122,11 +2130,7 @@ model:
     #[test]
     fn order_providers_by_keys_ignores_unknown_and_duplicate_keys() {
         let providers = vec![json!({ "name": "alpha" }), json!({ "name": "beta" })];
-        let requested = vec![
-            "gone".to_string(),
-            "beta".to_string(),
-            "beta".to_string(),
-        ];
+        let requested = vec!["gone".to_string(), "beta".to_string(), "beta".to_string()];
 
         let ordered = order_providers_by_keys(&providers, &requested);
 
@@ -2135,6 +2139,46 @@ model:
             .filter_map(|provider| provider.get("name").and_then(Value::as_str))
             .collect();
         assert_eq!(names, vec!["beta", "alpha"]);
+    }
+
+    /// Entries without a string `name` are invisible to the drag list but must
+    /// still survive the rewrite — the section is replaced wholesale.
+    #[test]
+    fn order_providers_by_keys_keeps_unnamed_entries() {
+        let providers = vec![
+            json!({ "name": "alpha" }),
+            json!({ "url": "https://example.com" }),
+            json!({ "name": 42 }),
+            json!({ "name": "beta" }),
+        ];
+        let requested = vec!["beta".to_string()];
+
+        let ordered = order_providers_by_keys(&providers, &requested);
+
+        assert_eq!(ordered.len(), providers.len());
+        assert_eq!(ordered[0], json!({ "name": "beta" }));
+        assert_eq!(ordered[1], json!({ "name": "alpha" }));
+        assert_eq!(ordered[2], json!({ "url": "https://example.com" }));
+        assert_eq!(ordered[3], json!({ "name": 42 }));
+    }
+
+    /// Two entries sharing a name are separate rows in the UI; a reorder must
+    /// keep both instead of collapsing them into one.
+    #[test]
+    fn order_providers_by_keys_keeps_duplicate_named_entries() {
+        let providers = vec![
+            json!({ "name": "dup", "id": 1 }),
+            json!({ "name": "alpha" }),
+            json!({ "name": "dup", "id": 2 }),
+        ];
+        let requested = vec!["alpha".to_string(), "dup".to_string()];
+
+        let ordered = order_providers_by_keys(&providers, &requested);
+
+        assert_eq!(ordered.len(), 3);
+        assert_eq!(ordered[0], json!({ "name": "alpha" }));
+        assert_eq!(ordered[1], json!({ "name": "dup", "id": 1 }));
+        assert_eq!(ordered[2], json!({ "name": "dup", "id": 2 }));
     }
 
     #[test]
