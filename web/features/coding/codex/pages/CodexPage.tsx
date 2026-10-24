@@ -65,7 +65,13 @@ import {
 import { codexPromptApi } from '@/services/codexPromptApi';
 import CodexDeviceAuthModal from '../components/CodexDeviceAuthModal';
 import { refreshTrayMenu, hasAllApiHubExtension } from '@/services/appApi';
-import { formatQuotaResetRemainingText } from '../utils/codexQuotaDisplay';
+import { formatQuotaResetRemainingText, formatOfficialAccountCredits } from '../utils/codexQuotaDisplay';
+import {
+  matchesOfficialAccountRefresh,
+  markOfficialAccountRefreshFailed,
+  reconcileOfficialAccountUsage,
+  type OfficialAccountUsageResult,
+} from '../utils/codexAccountRefresh';
 import { useKeepAlive } from '@/components/layout/KeepAliveOutlet';
 import { TRAY_CONFIG_REFRESH_EVENT, DEEP_LINK_IMPORT_COMPLETED } from '@/constants/configEvents';
 import { useSettingsStore } from '@/stores';
@@ -558,7 +564,15 @@ const CodexPage: React.FC = () => {
     },
   ], [t]);
 
+  const officialAccountRefreshVersions = React.useRef(new Map<string, number>());
+  const officialAccountLoadGeneration = React.useRef(0);
+  const officialAccountUsageRevision = React.useRef(0);
+  const officialAccountUsageResults = React.useRef(new Map<string, OfficialAccountUsageResult>());
+
   const loadConfig = React.useCallback(async (silent = false) => {
+    // A root/login reload invalidates results captured for the previous account list.
+    const generation = ++officialAccountLoadGeneration.current;
+    const usageRevision = officialAccountUsageRevision.current;
     setLoading(true);
     try {
       const [path, nextRootPathInfo, providerList] = await Promise.all([
@@ -566,9 +580,7 @@ const CodexPage: React.FC = () => {
         getCodexRootPathInfo(),
         listCodexProviders(),
       ]);
-      setConfigPath(path);
-      setRootPathInfo(nextRootPathInfo);
-      setProviders(providerList);
+      if (officialAccountLoadGeneration.current !== generation) return;
       const officialAccountEntries = await Promise.all(
         providerList.map(async (provider) => [
           provider.id,
@@ -577,20 +589,40 @@ const CodexPage: React.FC = () => {
             : [],
         ] as const),
       );
-      setOfficialAccountsByProviderId(Object.fromEntries(officialAccountEntries));
+      if (officialAccountLoadGeneration.current !== generation) return;
+      setConfigPath(path);
+      setRootPathInfo(nextRootPathInfo);
+      setProviders(providerList);
+      const accountsByProviderId = Object.fromEntries(officialAccountEntries.map(([providerId, accounts]) => [
+        providerId,
+        accounts.map((account) => reconcileOfficialAccountUsage(
+          account,
+          officialAccountUsageResults.current.get(`${providerId}:${account.id}`),
+          usageRevision,
+        )),
+      ]));
+      setOfficialAccountsByProviderId(accountsByProviderId);
+      setOfficialAccountDetails((current) => {
+        if (!current) return null;
+        const provider = providerList.find((item) => item.id === current.provider.id);
+        const account = accountsByProviderId[current.provider.id]?.find((item) =>
+          matchesOfficialAccountRefresh(item, current.account));
+        return provider && account ? { provider, account } : null;
+      });
       setPluginPanelRefreshToken((value) => value + 1);
       // The `__local__` bridge is flagged applied by the backend but wears no
       // applied tag on its card, so it is not what 定位 should point at.
       const applied = providerList.find((p) => p.isApplied && !isLocalConfigId(p.id));
       setAppliedProviderId(applied?.id || '');
     } catch (error) {
+      if (officialAccountLoadGeneration.current !== generation) return;
       console.error('Failed to load config:', error);
       if (!silent) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         message.error(errorMsg || t('common.error'));
       }
     } finally {
-      setLoading(false);
+      if (officialAccountLoadGeneration.current === generation) setLoading(false);
     }
   }, [t]);
 
@@ -1016,31 +1048,48 @@ const CodexPage: React.FC = () => {
     provider: CodexProvider,
     account: CodexOfficialAccount,
   ) => {
-    try {
-      setRefreshingOfficialAccountId(account.id);
-      const refreshedAccount = await refreshCodexOfficialAccountLimits(provider.id, account.id);
+    const key = `${provider.id}:${account.id}`;
+    const version = (officialAccountRefreshVersions.current.get(key) ?? 0) + 1;
+    officialAccountRefreshVersions.current.set(key, version);
+    const isCurrentRequest = () => officialAccountRefreshVersions.current.get(key) === version;
+    const updateAccount = (next: CodexOfficialAccount) => {
+      const result = {
+        account: next,
+        revision: ++officialAccountUsageRevision.current,
+      };
+      officialAccountUsageResults.current.set(key, result);
       setOfficialAccountsByProviderId((previous) => ({
         ...previous,
         [provider.id]: (previous[provider.id] || []).map((currentAccount) =>
-          currentAccount.id === refreshedAccount.id ? refreshedAccount : currentAccount,
+          reconcileOfficialAccountUsage(currentAccount, result, -1),
         ),
       }));
       setOfficialAccountDetails((current) => {
-        if (!current || current.account.id !== refreshedAccount.id) {
+        if (!current || !matchesOfficialAccountRefresh(current.account, account)) {
           return current;
         }
         return {
           provider: current.provider,
-          account: refreshedAccount,
+          account: reconcileOfficialAccountUsage(current.account, result, -1),
         };
       });
+    };
+    try {
+      setRefreshingOfficialAccountId(account.id);
+      const refreshedAccount = await refreshCodexOfficialAccountLimits(provider.id, account.id);
+      if (!isCurrentRequest() || !matchesOfficialAccountRefresh(refreshedAccount, account)) return;
+      updateAccount(refreshedAccount);
       message.success(t('codex.provider.officialAccountRefreshSuccess'));
     } catch (error) {
+      if (!isCurrentRequest()) return;
       console.error('Failed to refresh Codex official account usage:', error);
       const errorMsg = error instanceof Error ? error.message : String(error);
+      updateAccount(markOfficialAccountRefreshFailed(account, errorMsg || t('common.error')));
       message.error(errorMsg || t('common.error'));
     } finally {
-      setRefreshingOfficialAccountId((current) => (current === account.id ? null : current));
+      if (officialAccountRefreshVersions.current.get(key) === version) {
+        setRefreshingOfficialAccountId((current) => (current === account.id ? null : current));
+      }
     }
   };
 
@@ -2993,6 +3042,10 @@ const CodexPage: React.FC = () => {
               </Descriptions.Item>
               <Descriptions.Item label={t('codex.provider.officialAccountMonthlyResetAt')}>
                 {formatResetMoment(officialAccountDetails.account.limitMonthlyResetAt)}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('codex.provider.officialAccountCreditsLabel')}>
+                {formatOfficialAccountCredits(officialAccountDetails.account, t)
+                  ?? t('codex.provider.officialAccountCreditsUnknown')}
               </Descriptions.Item>
               <Descriptions.Item label={t('codex.provider.officialAccountResetCreditsLabel')}>
                 {typeof officialAccountDetails.account.resetCreditsAvailable === 'number'

@@ -3141,7 +3141,14 @@
       "deviceAuthTitle": "Codex 设备码登录",
       "deviceAuthHint": "在浏览器中打开登录页面并输入下方设备码。",
       "deviceAuthOpenBrowser": "打开登录页面",
-      "deviceAuthStatus": "状态：{{status}}，剩余 {{seconds}} 秒"
+      "deviceAuthStatus": "状态：{{status}}，剩余 {{seconds}} 秒",
+      "officialAccountCreditsLabel": "额外积分余额",
+      "officialAccountCreditsUnlimited": "不限量",
+      "officialAccountCreditsNone": "无可用积分",
+      "officialAccountCreditsAvailable": "可用（余额未知）",
+      "officialAccountCreditsUnknown": "未知，请刷新额度",
+      "officialAccountCreditsBalance": "{{balance}} 积分",
+      "officialAccountCreditsBalanceUnavailable": "{{balance}} 积分（无可用积分）"
     },
     "import": {
       "title": "从 OpenCode 导入",

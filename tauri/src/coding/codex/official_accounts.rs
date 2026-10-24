@@ -17,7 +17,7 @@ use super::commands::{
     apply_config_internal, get_codex_root_dir_from_db_async, get_codex_root_dir_without_db,
 };
 use super::constants::CODEX_LOCAL_PROVIDER_ID;
-use super::types::{CodexOfficialAccount, CodexOfficialAccountContent, CodexProvider};
+use super::types::{CodexCredits, CodexOfficialAccount, CodexOfficialAccountContent, CodexProvider};
 use crate::coding::db_id::db_new_id;
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_patch_fields, db_put, db_query_by_field,
@@ -166,6 +166,7 @@ pub(crate) struct UsageSnapshot {
     pub(crate) limit_weekly_reset_at: Option<i64>,
     limit_monthly_reset_at: Option<i64>,
     reset_credits_available: Option<i64>,
+    credits: Option<CodexCredits>,
 }
 
 fn oauth_scopes() -> &'static str {
@@ -798,6 +799,7 @@ fn build_virtual_local_account(auth: &Value) -> CodexOfficialAccount {
         limit_weekly_reset_at: None,
         limit_monthly_reset_at: None,
         reset_credits_available: None,
+        credits: None,
         last_limits_fetched_at: None,
         last_error: None,
         sort_index: None,
@@ -1306,6 +1308,27 @@ fn extract_reset_credits_available(body: &Value) -> Option<i64> {
         .filter(|count| *count >= 0)
 }
 
+fn extract_codex_credits(body: &Value) -> Option<CodexCredits> {
+    let credits = body.get("credits")?.as_object()?;
+    let has_credits = credits.get("has_credits").and_then(Value::as_bool);
+    let unlimited = credits.get("unlimited").and_then(Value::as_bool);
+    let balance = credits
+        .get("balance")
+        .and_then(|value| {
+            value
+                .as_f64()
+                .or_else(|| value.as_str()?.trim().parse::<f64>().ok())
+        })
+        .filter(|balance| balance.is_finite());
+    // Do not turn an absent/malformed response into zero. Negative balances are
+    // valid: concurrent Codex tasks can temporarily spend beyond the balance.
+    (has_credits.is_some() || unlimited.is_some() || balance.is_some()).then_some(CodexCredits {
+        has_credits,
+        unlimited,
+        balance,
+    })
+}
+
 fn parse_usage_snapshot(body: &Value, plan_type: Option<&str>) -> UsageSnapshot {
     let (short_window, weekly_window, monthly_window) = classify_rate_windows(body);
     // Usage reports the current tier; native credential metadata can be stale.
@@ -1351,6 +1374,7 @@ fn parse_usage_snapshot(body: &Value, plan_type: Option<&str>) -> UsageSnapshot 
         limit_monthly_reset_at: monthly_window
             .and_then(|window| extract_reset_timestamp(window.value)),
         reset_credits_available: extract_reset_credits_available(body),
+        credits: extract_codex_credits(body),
     }
 }
 
@@ -1441,6 +1465,7 @@ fn build_account_content_from_auth_snapshot(
         limit_monthly_reset_at: usage_snapshot.and_then(|snapshot| snapshot.limit_monthly_reset_at),
         reset_credits_available: usage_snapshot
             .and_then(|snapshot| snapshot.reset_credits_available),
+        credits: usage_snapshot.and_then(|snapshot| snapshot.credits.clone()),
         last_limits_fetched_at: usage_snapshot.map(|_| now.clone()),
         last_error: None,
         sort_index: None,
@@ -1565,6 +1590,11 @@ async fn persist_usage_snapshot(
                         .map(|value| serde_json::json!(value))
                         .unwrap_or(Value::Null),
                 ),
+                (
+                    "credits",
+                    serde_json::to_value(&usage_snapshot.credits)
+                        .map_err(|error| format!("Failed to serialize Codex credits: {error}"))?,
+                ),
                 ("last_limits_fetched_at", Value::String(now.clone())),
                 (
                     "last_error",
@@ -1592,26 +1622,46 @@ async fn persist_refreshed_account_snapshot(
         None,
         Some(&account.name),
     )?;
-    let payload = adapter::to_db_value_official_account(&CodexOfficialAccountContent {
-        is_applied: account.is_applied,
-        created_at: account.created_at.clone(),
-        updated_at: Local::now().to_rfc3339(),
-        limit_short_label: account.limit_short_label.clone(),
-        limit_5h_text: account.limit_5h_text.clone(),
-        limit_weekly_text: account.limit_weekly_text.clone(),
-        limit_monthly_text: account.limit_monthly_text.clone(),
-        limit_5h_reset_at: account.limit_5h_reset_at,
-        limit_weekly_reset_at: account.limit_weekly_reset_at,
-        limit_monthly_reset_at: account.limit_monthly_reset_at,
-        reset_credits_available: account.reset_credits_available,
-        last_limits_fetched_at: account.last_limits_fetched_at.clone(),
-        last_error: account.last_error.clone(),
-        sort_index: account.sort_index,
-        ..parsed_content
-    });
-    db.with_conn(|conn| db_put(conn, DbTable::CodexOfficialAccount, &account.id, &payload))?;
+    let payload = adapter::to_db_value_official_account(&parsed_content);
+    db.with_conn(|conn| {
+        let fields = [
+            "email", "auth_snapshot", "auth_mode", "account_id", "plan_type",
+            "last_refresh", "updated_at",
+        ]
+        .map(|key| (key, payload.get(key).cloned().unwrap_or(Value::Null)));
+        db_patch_fields(conn, DbTable::CodexOfficialAccount, &account.id, &fields).map(|_| ())
+    })?;
 
     load_official_account(db, &account.id).await
+}
+
+async fn persist_usage_result(
+    db: &SqliteDbState,
+    account_id: &str,
+    result: Result<UsageSnapshot, String>,
+) -> Result<CodexOfficialAccount, String> {
+    match result {
+        Ok(snapshot) => persist_usage_snapshot(db, account_id, &snapshot, None).await,
+        Err(error) => {
+            // A failed read is neither a zero balance nor a successful refresh.
+            // Keep the old success timestamp, but do not display cached credits.
+            db.with_conn(|conn| {
+                db_patch_fields(
+                    conn,
+                    DbTable::CodexOfficialAccount,
+                    account_id,
+                    &[
+                        ("credits", Value::Null),
+                        ("last_error", Value::String(error.clone())),
+                        ("updated_at", Value::String(Local::now().to_rfc3339())),
+                    ],
+                )
+                .map(|_| ())
+            })
+            .map_err(|storage_error| format!("{error}; failed to save usage error: {storage_error}"))?;
+            Err(error)
+        }
+    }
 }
 
 fn merge_official_runtime_auth(existing_auth: &Value, next_auth: &Value) -> Value {
@@ -2285,6 +2335,7 @@ pub async fn refresh_codex_official_account_limits(
         account.limit_weekly_reset_at = usage_snapshot.limit_weekly_reset_at;
         account.limit_monthly_reset_at = usage_snapshot.limit_monthly_reset_at;
         account.reset_credits_available = usage_snapshot.reset_credits_available;
+        account.credits = usage_snapshot.credits;
         account.last_limits_fetched_at = Some(Local::now().to_rfc3339());
         return Ok(account);
     }
@@ -2293,30 +2344,42 @@ pub async fn refresh_codex_official_account_limits(
     if account.provider_id != provider_id {
         return Err("Official account does not belong to the selected provider".to_string());
     }
-    let snapshot = account
-        .auth_snapshot
-        .as_deref()
-        .ok_or_else(|| "Official account snapshot is missing".to_string())?;
-    let auth_snapshot = auth_json_from_snapshot(snapshot)?;
-    let access_token = auth_snapshot
-        .pointer("/tokens/access_token")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "Official account is missing access token".to_string())?;
-    let usage_account_id = account
-        .account_id
-        .clone()
-        .or_else(|| usage_account_id_from_auth(&auth_snapshot));
-    let usage_snapshot = fetch_usage_snapshot(
-        &db,
-        access_token,
-        usage_account_id.as_deref(),
-        account.plan_type.as_deref(),
-    )
-    .await?;
+    refresh_persisted_account_usage(&db, &account).await
+}
 
-    persist_usage_snapshot(&db, &account_id, &usage_snapshot, None).await
+async fn refresh_persisted_account_usage(
+    db: &SqliteDbState,
+    account: &CodexOfficialAccount,
+) -> Result<CodexOfficialAccount, String> {
+    // Preparation errors invalidate cached credits just like HTTP errors do.
+    let result = async {
+        let snapshot = account
+            .auth_snapshot
+            .as_deref()
+            .ok_or_else(|| "Official account snapshot is missing".to_string())?;
+        let auth_snapshot = auth_json_from_snapshot(snapshot)?;
+        let access_token = auth_snapshot
+            .pointer("/tokens/access_token")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Official account is missing access token".to_string())?;
+        let usage_account_id = account
+            .account_id
+            .clone()
+            .or_else(|| usage_account_id_from_auth(&auth_snapshot));
+        let usage_snapshot = fetch_usage_snapshot(
+            db,
+            access_token,
+            usage_account_id.as_deref(),
+            account.plan_type.as_deref(),
+        )
+        .await;
+
+        usage_snapshot
+    }
+    .await;
+    persist_usage_result(db, &account.id, result).await
 }
 
 #[tauri::command]
@@ -2359,6 +2422,149 @@ pub async fn copy_codex_official_account_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_credits_parse_strings_numbers_and_preserve_subscription_windows() {
+        for balance in [serde_json::json!("62500.25"), serde_json::json!(62500.25)] {
+            let snapshot = parse_usage_snapshot(&serde_json::json!({
+                "rate_limit": {"primary_window": {
+                    "used_percent": 25, "limit_window_seconds": WEEK_WINDOW_SECONDS
+                }},
+                "rate_limit_reset_credits": {"available_count": 2},
+                "credits": {"has_credits": true, "unlimited": false, "balance": balance}
+            }), Some("pro"));
+            assert_eq!(snapshot.limit_weekly_text.as_deref(), Some("75%"));
+            assert_eq!(snapshot.reset_credits_available, Some(2));
+            assert_eq!(snapshot.credits, Some(CodexCredits {
+                has_credits: Some(true), unlimited: Some(false), balance: Some(62500.25)
+            }));
+        }
+    }
+
+    #[test]
+    fn codex_credits_preserve_zero_negative_and_conflicting_availability() {
+        for balance in ["0", "-0.25", " 12.5 "] {
+            for has_credits in [false, true] {
+                let snapshot = parse_usage_snapshot(&serde_json::json!({
+                    "credits": {"has_credits": has_credits, "unlimited": true, "balance": balance}
+                }), None);
+                let credits = snapshot.credits.expect("credits without rate windows");
+                assert_eq!(credits.balance, Some(balance.trim().parse::<f64>().unwrap()));
+                assert_eq!(credits.has_credits, Some(has_credits));
+                assert_eq!(credits.unlimited, Some(true));
+            }
+        }
+    }
+
+    #[test]
+    fn codex_credits_malformed_fields_do_not_fail_or_invent_a_balance() {
+        for body in [serde_json::json!({}), serde_json::json!({"credits": null}),
+            serde_json::json!({"credits": []}), serde_json::json!({"credits": "bad"}),
+            serde_json::json!({"credits": {"has_credits": "true", "unlimited": 1}})] {
+            assert_eq!(parse_usage_snapshot(&body, None).credits, None);
+        }
+        for balance in [serde_json::json!(null), serde_json::json!(true), serde_json::json!({}),
+            serde_json::json!(""), serde_json::json!("NaN"), serde_json::json!("Infinity"),
+            serde_json::json!("1e999"), serde_json::json!("not-a-number")] {
+            let snapshot = parse_usage_snapshot(&serde_json::json!({
+                "credits": {"has_credits": true, "balance": balance},
+                "rate_limit": {"primary_window": {
+                    "used_percent": 25, "limit_window_seconds": WEEK_WINDOW_SECONDS
+                }}
+            }), Some("pro"));
+            assert_eq!(snapshot.credits.unwrap().balance, None);
+            assert_eq!(snapshot.limit_weekly_text.as_deref(), Some("75%"));
+        }
+    }
+
+    #[tokio::test]
+    async fn codex_credits_round_trip_refresh_clear_and_failure_are_account_scoped() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let auth = serde_json::json!({"tokens": {"account_id": "synthetic-account"}});
+        let snapshot = parse_usage_snapshot(&serde_json::json!({
+            "credits": {"has_credits": true, "unlimited": false, "balance": "42.5"},
+            "rate_limit": {"primary_window": {
+                "used_percent": 25, "limit_window_seconds": WEEK_WINDOW_SECONDS
+            }}
+        }), Some("pro"));
+        let content = build_account_content_from_auth_snapshot("provider-a", &auth, Some(&snapshot), None).unwrap();
+        let first = save_official_account(&db, &content).await.unwrap();
+        let second = save_official_account(&db, &content).await.unwrap();
+        assert_eq!(first.credits.as_ref().unwrap().balance, Some(42.5));
+        let wire = serde_json::to_value(&first).unwrap();
+        assert_eq!(wire["credits"]["hasCredits"], true);
+        assert_eq!(wire["credits"]["balance"], 42.5);
+        assert!(wire.get("authSnapshot").is_none());
+
+        let refreshed = persist_refreshed_account_snapshot(&db, &first, &auth).await.unwrap();
+        assert_eq!(refreshed.credits, first.credits);
+        assert_eq!(refreshed.last_limits_fetched_at, first.last_limits_fetched_at);
+
+        let error = persist_usage_result(&db, &first.id, Err("synthetic usage failure".to_string())).await;
+        assert_eq!(error.unwrap_err(), "synthetic usage failure");
+        let failed = load_official_account(&db, &first.id).await.unwrap();
+        assert_eq!(failed.credits, None);
+        assert_eq!(failed.last_limits_fetched_at, first.last_limits_fetched_at);
+        assert_eq!(failed.limit_weekly_text.as_deref(), Some("75%"));
+        assert_eq!(failed.last_error.as_deref(), Some("synthetic usage failure"));
+        assert_eq!(load_official_account(&db, &second.id).await.unwrap().credits, second.credits);
+
+        let recovered = persist_usage_result(&db, &first.id, Ok(snapshot)).await.unwrap();
+        assert_eq!(recovered.credits, first.credits);
+        assert_eq!(recovered.last_error, None);
+        let omitted = parse_usage_snapshot(&serde_json::json!({}), None);
+        let cleared = persist_usage_result(&db, &first.id, Ok(omitted)).await.unwrap();
+        assert_eq!(cleared.credits, None);
+        assert_eq!(load_official_account(&db, &first.id).await.unwrap().credits, None);
+    }
+
+    #[test]
+    fn codex_credits_old_records_and_virtual_logins_have_no_invented_balance() {
+        let old = adapter::from_db_value_official_account(serde_json::json!({
+            "id": "legacy-account", "auth_snapshot": "{}", "limit_weekly_text": "75%"
+        }));
+        assert_eq!(old.credits, None);
+        assert_eq!(old.limit_weekly_text.as_deref(), Some("75%"));
+        assert_eq!(build_virtual_local_account(&serde_json::json!({})).credits, None);
+    }
+
+    #[tokio::test]
+    async fn codex_credits_preparation_failure_clears_persisted_balance() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let auth = serde_json::json!({"tokens": {"account_id": "synthetic-account"}});
+        let snapshot = parse_usage_snapshot(&serde_json::json!({
+            "credits": {"has_credits": true, "balance": "42"}
+        }), None);
+        for auth_snapshot in [None, Some("not-json"), Some("{}"), Some(r#"{"tokens":{"access_token":" "}}"#)] {
+            let content = build_account_content_from_auth_snapshot("provider-a", &auth, Some(&snapshot), None).unwrap();
+            let mut account = save_official_account(&db, &content).await.unwrap();
+            account.auth_snapshot = auth_snapshot.map(str::to_string);
+            assert!(refresh_persisted_account_usage(&db, &account).await.is_err());
+            let stored = load_official_account(&db, &account.id).await.unwrap();
+            assert_eq!(stored.credits, None);
+            assert!(stored.last_error.is_some());
+            assert_eq!(stored.last_limits_fetched_at, account.last_limits_fetched_at);
+        }
+    }
+
+    #[tokio::test]
+    async fn codex_credits_oauth_refresh_does_not_restore_an_older_usage_snapshot() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let auth = serde_json::json!({"tokens": {"account_id": "synthetic-account"}});
+        let old_usage = parse_usage_snapshot(&serde_json::json!({
+            "credits": {"has_credits": true, "balance": "42"}
+        }), None);
+        let content = build_account_content_from_auth_snapshot("provider-a", &auth, Some(&old_usage), None).unwrap();
+        let old_account = save_official_account(&db, &content).await.unwrap();
+        let new_usage = parse_usage_snapshot(&serde_json::json!({
+            "credits": {"has_credits": false, "balance": "-1.5"}
+        }), None);
+        let latest = persist_usage_result(&db, &old_account.id, Ok(new_usage)).await.unwrap();
+        let refreshed = persist_refreshed_account_snapshot(&db, &old_account, &auth).await.unwrap();
+        assert_eq!(refreshed.credits, latest.credits);
+        assert_eq!(refreshed.last_limits_fetched_at, latest.last_limits_fetched_at);
+        assert_eq!(refreshed.last_error, latest.last_error);
+    }
 
     fn test_id_token(account_id: &str) -> String {
         let payload = serde_json::json!({
@@ -2919,6 +3125,7 @@ mod tests {
             limit_weekly_reset_at: None,
             limit_monthly_reset_at: None,
             reset_credits_available: None,
+            credits: None,
             last_limits_fetched_at: None,
             last_error: None,
             sort_index: None,
@@ -2976,6 +3183,7 @@ mod tests {
             limit_weekly_reset_at: None,
             limit_monthly_reset_at: None,
             reset_credits_available: None,
+            credits: None,
             last_limits_fetched_at: None,
             last_error: None,
             sort_index: None,

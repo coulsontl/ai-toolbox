@@ -79,7 +79,7 @@ import {
   shouldShowCodexOfficialAccounts,
 } from '../utils/localProvider';
 import { codexProviderNeedsGatewayProxy, resolveCodexProviderApiFormat } from '../utils/codexGatewayProxyNeed';
-import { buildOfficialAccountResetLine } from '../utils/codexQuotaDisplay';
+import { buildOfficialAccountResetLine, formatOfficialAccountCredits } from '../utils/codexQuotaDisplay';
 import { codexCatalogRowKey } from '../utils/codexCatalogModels';
 
 const { Text } = Typography;
@@ -535,6 +535,10 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
           metaLines.push(
             `${t('codex.provider.officialAccountMonthlyLimitLabel')}: ${account.limitMonthlyText}`,
           );
+        }
+        const credits = formatOfficialAccountCredits(account, t);
+        if (credits) {
+          metaLines.push(`${t('codex.provider.officialAccountCreditsLabel')}: ${credits}`);
         }
         const resetLine = buildOfficialAccountResetLine(account, t);
         if (resetLine) {
