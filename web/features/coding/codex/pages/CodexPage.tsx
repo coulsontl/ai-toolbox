@@ -581,6 +581,12 @@ const CodexPage: React.FC = () => {
         listCodexProviders(),
       ]);
       if (officialAccountLoadGeneration.current !== generation) return;
+      // The provider list is what the page is; fill it before the per-provider
+      // account fan-out. An account read can fail (unreadable auth.json on a
+      // WSL/UNC root) and must not blank a list the page could already show.
+      setConfigPath(path);
+      setRootPathInfo(nextRootPathInfo);
+      setProviders(providerList);
       const officialAccountEntries = await Promise.all(
         providerList.map(async (provider) => [
           provider.id,
@@ -590,9 +596,6 @@ const CodexPage: React.FC = () => {
         ] as const),
       );
       if (officialAccountLoadGeneration.current !== generation) return;
-      setConfigPath(path);
-      setRootPathInfo(nextRootPathInfo);
-      setProviders(providerList);
       const accountsByProviderId = Object.fromEntries(officialAccountEntries.map(([providerId, accounts]) => [
         providerId,
         accounts.map((account) => reconcileOfficialAccountUsage(
@@ -1074,6 +1077,26 @@ const CodexPage: React.FC = () => {
         };
       });
     };
+    // A failed read is not new usage: mark the rows that are on screen now and
+    // leave their quota windows alone. The cached success is dropped, because a
+    // reload would otherwise re-apply a balance this failure just invalidated —
+    // the one path a virtual row (never persisted by the backend) has back.
+    const markFailed = (error: string) => {
+      officialAccountUsageResults.current.delete(key);
+      const mark = (currentAccount: CodexOfficialAccount) =>
+        markOfficialAccountRefreshFailed(currentAccount, error);
+      setOfficialAccountsByProviderId((previous) => ({
+        ...previous,
+        [provider.id]: (previous[provider.id] || []).map((currentAccount) =>
+          matchesOfficialAccountRefresh(currentAccount, account) ? mark(currentAccount) : currentAccount),
+      }));
+      setOfficialAccountDetails((current) => {
+        if (!current || !matchesOfficialAccountRefresh(current.account, account)) {
+          return current;
+        }
+        return { provider: current.provider, account: mark(current.account) };
+      });
+    };
     try {
       setRefreshingOfficialAccountId(account.id);
       const refreshedAccount = await refreshCodexOfficialAccountLimits(provider.id, account.id);
@@ -1084,7 +1107,7 @@ const CodexPage: React.FC = () => {
       if (!isCurrentRequest()) return;
       console.error('Failed to refresh Codex official account usage:', error);
       const errorMsg = error instanceof Error ? error.message : String(error);
-      updateAccount(markOfficialAccountRefreshFailed(account, errorMsg || t('common.error')));
+      markFailed(errorMsg || t('common.error'));
       message.error(errorMsg || t('common.error'));
     } finally {
       if (officialAccountRefreshVersions.current.get(key) === version) {

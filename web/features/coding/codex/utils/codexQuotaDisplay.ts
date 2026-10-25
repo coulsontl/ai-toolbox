@@ -113,6 +113,20 @@ export function buildOfficialAccountResetLine(
   return `${t('codex.provider.officialAccountResetLinePrefix')}${segments.join(' · ')}`;
 }
 
+/**
+ * A credit balance is a count, not currency: no thousands grouping, at most two
+ * decimals, and no floating-point artifacts (`0.1 + 0.2`) or exponent notation
+ * on the label. `en-US` is deliberate — the digits must not depend on the host
+ * locale.
+ */
+function formatCreditsBalance(balance: number): string {
+  const normalized = balance === 0 ? 0 : balance; // -0 reads as "0", not "-0"
+  return normalized.toLocaleString('en-US', {
+    useGrouping: false,
+    maximumFractionDigits: 2,
+  });
+}
+
 /** Additional credits do not alter the subscription/reset-card presentation. */
 export function formatOfficialAccountCredits(
   account: CodexOfficialAccount,
@@ -130,7 +144,7 @@ export function formatOfficialAccountCredits(
     const key = credits.hasCredits === false
       ? 'codex.provider.officialAccountCreditsBalanceUnavailable'
       : 'codex.provider.officialAccountCreditsBalance';
-    return t(key, { balance: String(credits.balance) });
+    return t(key, { balance: formatCreditsBalance(credits.balance) });
   }
   if (credits.hasCredits === false) {
     return t('codex.provider.officialAccountCreditsNone');

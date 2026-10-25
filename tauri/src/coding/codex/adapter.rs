@@ -4,8 +4,8 @@ use serde_json::Value;
 
 use super::commands::infer_codex_provider_category_from_settings;
 use super::types::{
-    CodexCommonConfig, CodexOfficialAccount, CodexOfficialAccountContent, CodexPromptConfig,
-    CodexPromptConfigContent, CodexProvider, CodexProviderContent,
+    CodexCommonConfig, CodexCredits, CodexOfficialAccount, CodexOfficialAccountContent,
+    CodexPromptConfig, CodexPromptConfigContent, CodexProvider, CodexProviderContent,
 };
 use crate::coding::db_id::db_extract_id;
 
@@ -211,6 +211,38 @@ pub fn to_db_value_provider(content: &CodexProviderContent) -> Value {
 // Official Account Adapter Functions
 // ============================================================================
 
+/// Additional credits are stored with snake_case keys, like every other field
+/// of the row. `has_credits` is also accepted in camelCase because an earlier
+/// build of this field wrote it that way; both spellings read the same.
+fn credits_from_db_value(value: &Value) -> Option<CodexCredits> {
+    let object = value.as_object()?;
+    let has_credits = object
+        .get("has_credits")
+        .or_else(|| object.get("hasCredits"))
+        .and_then(Value::as_bool);
+    let unlimited = object.get("unlimited").and_then(Value::as_bool);
+    let balance = object.get("balance").and_then(Value::as_f64);
+    (has_credits.is_some() || unlimited.is_some() || balance.is_some()).then_some(CodexCredits {
+        has_credits,
+        unlimited,
+        balance,
+    })
+}
+
+fn credits_to_db_value(credits: &CodexCredits) -> Value {
+    let mut object = serde_json::Map::new();
+    if let Some(has_credits) = credits.has_credits {
+        object.insert("has_credits".to_string(), Value::Bool(has_credits));
+    }
+    if let Some(unlimited) = credits.unlimited {
+        object.insert("unlimited".to_string(), Value::Bool(unlimited));
+    }
+    if let Some(balance) = credits.balance {
+        object.insert("balance".to_string(), serde_json::json!(balance));
+    }
+    Value::Object(object)
+}
+
 pub fn from_db_value_official_account(value: Value) -> CodexOfficialAccount {
     let id = db_extract_id(&value);
     let auth_snapshot = value
@@ -282,10 +314,7 @@ pub fn from_db_value_official_account(value: Value) -> CodexOfficialAccount {
         reset_credits_available: value
             .get("reset_credits_available")
             .and_then(|v| v.as_i64()),
-        credits: value
-            .get("credits")
-            .cloned()
-            .and_then(|value| serde_json::from_value(value).ok()),
+        credits: value.get("credits").and_then(credits_from_db_value),
         last_limits_fetched_at: value
             .get("last_limits_fetched_at")
             .and_then(|v| v.as_str())
@@ -397,7 +426,7 @@ pub fn to_db_value_official_account(content: &CodexOfficialAccountContent) -> Va
     }
     if let Some(ref credits) = content.credits {
         // Credits parsed from usage contain only finite numbers and booleans.
-        map.insert("credits".to_string(), serde_json::json!(credits));
+        map.insert("credits".to_string(), credits_to_db_value(credits));
     }
     if let Some(ref last_limits_fetched_at) = content.last_limits_fetched_at {
         map.insert(

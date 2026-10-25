@@ -1309,8 +1309,18 @@ fn extract_reset_credits_available(body: &Value) -> Option<i64> {
 }
 
 fn extract_codex_credits(body: &Value) -> Option<CodexCredits> {
-    let credits = body.get("credits")?.as_object()?;
-    let has_credits = credits.get("has_credits").and_then(Value::as_bool);
+    // Same tolerance as extract_reset_credits_available: the field can arrive
+    // top-level or under a `data` wrapper, in either naming style. Narrowness
+    // here is not harmless — a successful read that parses to None clears the
+    // stored balance.
+    let credits = body
+        .get("credits")
+        .or_else(|| body.get("data").and_then(|data| data.get("credits")))?
+        .as_object()?;
+    let has_credits = credits
+        .get("has_credits")
+        .or_else(|| credits.get("hasCredits"))
+        .and_then(Value::as_bool);
     let unlimited = credits.get("unlimited").and_then(Value::as_bool);
     let balance = credits
         .get("balance")
@@ -2496,6 +2506,14 @@ mod tests {
         assert_eq!(wire["credits"]["balance"], 42.5);
         assert!(wire.get("authSnapshot").is_none());
 
+        // The row keeps snake_case keys; the wire keeps camelCase.
+        let stored = db
+            .with_conn(|conn| db_get(conn, DbTable::CodexOfficialAccount, &first.id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored["credits"]["has_credits"], true);
+        assert!(stored["credits"].get("hasCredits").is_none());
+
         let refreshed = persist_refreshed_account_snapshot(&db, &first, &auth).await.unwrap();
         assert_eq!(refreshed.credits, first.credits);
         assert_eq!(refreshed.last_limits_fetched_at, first.last_limits_fetched_at);
@@ -2526,6 +2544,46 @@ mod tests {
         assert_eq!(old.credits, None);
         assert_eq!(old.limit_weekly_text.as_deref(), Some("75%"));
         assert_eq!(build_virtual_local_account(&serde_json::json!({})).credits, None);
+    }
+
+    #[test]
+    fn codex_credits_accept_the_same_wrappers_as_reset_credits() {
+        let expected = Some(CodexCredits {
+            has_credits: Some(true),
+            unlimited: Some(false),
+            balance: Some(42.5),
+        });
+        for body in [
+            serde_json::json!({"credits": {"has_credits": true, "unlimited": false, "balance": 42.5}}),
+            serde_json::json!({"credits": {"hasCredits": true, "unlimited": false, "balance": 42.5}}),
+            serde_json::json!({"data": {"credits": {"has_credits": true, "unlimited": false, "balance": 42.5}}}),
+        ] {
+            assert_eq!(parse_usage_snapshot(&body, None).credits, expected);
+        }
+    }
+
+    #[test]
+    fn codex_credits_read_both_stored_spellings() {
+        let read = |credits: serde_json::Value| {
+            adapter::from_db_value_official_account(serde_json::json!({
+                "id": "account", "auth_snapshot": "{}", "credits": credits
+            }))
+            .credits
+        };
+        // Rows written by the current build use snake_case.
+        assert_eq!(read(serde_json::json!({
+            "has_credits": true, "unlimited": false, "balance": 42.5
+        })), Some(CodexCredits {
+            has_credits: Some(true), unlimited: Some(false), balance: Some(42.5)
+        }));
+        // Rows written by the first build of this field stay readable.
+        assert_eq!(read(serde_json::json!({
+            "hasCredits": true, "unlimited": false, "balance": 42.5
+        })), read(serde_json::json!({
+            "has_credits": true, "unlimited": false, "balance": 42.5
+        })));
+        assert_eq!(read(serde_json::json!(null)), None);
+        assert_eq!(read(serde_json::json!({"balance": "nope"})), None);
     }
 
     #[tokio::test]

@@ -65,7 +65,8 @@ sequenceDiagram
 - `save_codex_local_config` 收编 `__local__` 时仍要保留 provider `meta`，包括 Gateway 计费配置里的 `costMultiplier` / `pricingModelSource`；不要只保存 settings/common 而把表单提交的 meta 丢成 `None`。
 - `adapter::to_db_value_provider` 是 Codex provider 持久化的最后一道写库入口；新增或调整 provider 级扩展字段时必须确认它也写入 JSONB。尤其 Gateway 计费 `meta` 不能只在 command 层结构体里保留，否则页面保存后重新 list 会丢失。
 - 官方账号额度来自 Codex usage windows，后端负责按窗口语义解析并持久化 `5h`、weekly、monthly；前端只展示后端投影结果，不自行按套餐或字段顺序推断窗口类型。
-- `wham/usage.credits` 是独立于套餐窗口及重置卡的额外 Codex 积分，不是美元、API 余额或百分比。保留 `has_credits` / `unlimited` 与有限余额（含字符串、零、负值），不能用 availability 标志抹掉余额；未知字段不能补零。每次成功读取都替换整份 credits（缺失即清掉旧值），失败清余额并保留上次成功时间；OAuth token 刷新不代表额度刷新。
+- `wham/usage.credits` 是独立于套餐窗口及重置卡的额外 Codex 积分，不是美元、API 余额或百分比。保留 `has_credits` / `unlimited` 与有限余额（含字符串、零、负值），不能用 availability 标志抹掉余额；未知字段不能补零。每次成功读取都替换整份 credits（缺失即清掉旧值），失败清余额并保留上次成功时间；OAuth token 刷新不代表额度刷新。解析宽容度必须与 `extract_reset_credits_available` 对齐（顶层或 `data` 包装、`has_credits`/`hasCredits` 两种拼写）——**因为「缺失即清空」，解析面窄了会在每次成功刷新时抹掉余额**。
+- credits 的**存储键是 snake_case**（`has_credits`），由 `adapter::credits_to_db_value` / `credits_from_db_value` 手工映射；`CodexCredits` 上的 `rename_all = "camelCase"` 只服务 IPC wire。读取同时接受早期的 `hasCredits` 拼写，所以改属性名不会静默孤立存量行。
 - usage 响应里的 `rate_limit_reset_credits.available_count`（含 camelCase 别名）同样由后端解析并持久化为 `reset_credits_available`：字段缺失写 null，`0` 是有效值必须保留；只读展示不做重置次数明细接口和消耗操作。
 - 拉取官方账号额度时必须带 `Chatgpt-Account-Id`，否则多账号/组织账号可能拿错 usage；解析 usage 时同时检查顶层 `rate_limit` 和 `additional_rate_limits`，monthly 这类窗口可能出现在 additional rate limits 中。
 - 官方模型目录按 CLIProxyAPI 的 Codex plan 语义选择 `free/team/plus/pro` tier；未知 plan 默认按 `pro` 处理，并补入 Codex 内置模型 `gpt-image-2`。

@@ -242,6 +242,11 @@ pub struct CodexSettings {
 
 /// Additional Codex credits, independent of subscription windows and reset cards.
 /// Optional flags distinguish an omitted/invalid field from an explicit false.
+///
+/// This is the IPC wire shape (camelCase, read by the web layer). The JSONB
+/// column uses snake_case like every other field of the row, so the database
+/// representation is mapped by hand in `adapter` (`credits_from_db_value` /
+/// `credits_to_db_value`) rather than by this struct's serde attributes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexCredits {

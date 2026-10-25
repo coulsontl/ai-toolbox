@@ -40,6 +40,37 @@ test('a failed refresh clears credits without inventing zero or advancing freshn
   assert.equal(account.credits?.balance, 42);
 });
 
+test('a failure marks the newest row instead of restoring the click-time snapshot', () => {
+  // The list read that completed mid-flight is newer than the click; a failed
+  // usage read says nothing about it and must not roll it back.
+  const fresherRow = {
+    ...account,
+    limitWeeklyText: '90%',
+    lastLimitsFetchedAt: '2026-10-24T13:00:00Z',
+  };
+  const failed = markOfficialAccountRefreshFailed(fresherRow, 'boom');
+  assert.equal(failed.limitWeeklyText, '90%');
+  assert.equal(failed.lastLimitsFetchedAt, '2026-10-24T13:00:00Z');
+  assert.equal(failed.credits, undefined);
+  assert.equal(failed.lastError, 'boom');
+});
+
+test('a cleared balance stays cleared until a success replaces it', () => {
+  // The page drops the cached success on failure. Without that, a virtual row
+  // (which the backend never persists) would get the stale balance re-applied
+  // by the next list reload, resurrecting a value the failure invalidated.
+  const marked = markOfficialAccountRefreshFailed(account, 'boom');
+  // Rendering after the failure: the row carries no balance.
+  assert.equal(marked.credits, undefined);
+  // Once the cache entry is gone there is nothing left to reconcile.
+  const reconciled = reconcileOfficialAccountUsage(marked, undefined, 0);
+  assert.equal(reconciled.credits, undefined);
+  assert.equal(reconciled.limitWeeklyText, '75%');
+  // A later success is the only thing that brings a balance back.
+  const recovered = { account: { ...account, credits: { hasCredits: true, balance: 7 } }, revision: 2 };
+  assert.equal(reconcileOfficialAccountUsage(marked, recovered, 1).credits?.balance, 7);
+});
+
 test('virtual usage survives same-login reloads, but never crosses runtime identities', () => {
   const listed = { ...account, credits: undefined, name: 'Current metadata' };
   const result = { account, revision: 1 };

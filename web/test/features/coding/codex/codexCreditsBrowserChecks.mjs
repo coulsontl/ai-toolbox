@@ -41,9 +41,11 @@ export async function verifyCodexCredits({ send, evaluate, baseUrl, artifactRoot
     await waitFor("!document.querySelector('.ant-modal-wrap:not([style*=\"display: none\"])')", 'details closed');
   };
 
+  // Light, dark and system, each in a different language/layout combination:
+  // the repo requires all three themes, and repeating a theme adds no coverage.
   for (const [language, theme, viewMode] of [
     ['zh-CN', 'light', 'list'], ['en-US', 'dark', 'card'],
-    ['zh-CN', 'dark', 'card'], ['en-US', 'light', 'list'],
+    ['zh-CN', 'system', 'list'], ['en-US', 'system', 'card'],
   ]) {
     const prefix = `${language}/${theme}/${viewMode}`;
     const label = language === 'zh-CN' ? '额外积分余额' : 'Additional credits';

@@ -16,11 +16,15 @@ export function matchesOfficialAccountRefresh(
         && current.accessTokenPreview === requested.accessTokenPreview));
 }
 
+/**
+ * A failed read is not new usage. It only hides the balance and states why:
+ * quota windows and the last successful fetch time stay, and the result is
+ * never cached — a later account list must win over a stale failure.
+ */
 export function markOfficialAccountRefreshFailed(
   account: CodexOfficialAccount,
   error: string,
 ): CodexOfficialAccount {
-  // Keep the last successful fetch time: a failed refresh is not fresh usage.
   return { ...account, credits: undefined, lastError: error };
 }
 
@@ -35,6 +39,9 @@ export function reconcileOfficialAccountUsage(
   result: OfficialAccountUsageResult | undefined,
   listStartedAtRevision: number,
 ): CodexOfficialAccount {
+  // Virtual usage is never persisted by the backend, so a list can only ever
+  // return the row without it; keep the revision gate for stored accounts,
+  // whose rows do carry usage and must win whenever the read is newer.
   if (!result || !matchesOfficialAccountRefresh(listed, result.account)
     || (!listed.isVirtual && result.revision <= listStartedAtRevision)) {
     return listed;

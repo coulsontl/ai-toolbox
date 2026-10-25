@@ -171,3 +171,17 @@ test('formatOfficialAccountCredits does not invent a balance for invalid or stal
     credits: { hasCredits: true, balance: 12 }, lastError: 'usage request failed',
   }), translate), null);
 });
+
+test('formatOfficialAccountCredits renders a count, not a raw float', () => {
+  const render = (balance: number) => formatOfficialAccountCredits(
+    buildAccount({ credits: { hasCredits: true, balance } }), translate,
+  );
+  // Floating-point artifacts and exponent notation must not reach the label.
+  assert.equal(render(0.1 + 0.2), '0.3 积分');
+  assert.equal(render(1e21), '1000000000000000000000 积分');
+  // A count never gets thousands grouping, and -0 reads as 0.
+  assert.equal(render(62500.25), '62500.25 积分');
+  assert.equal(render(-0), '0 积分');
+  // Fraction digits are bounded without rounding a whole balance away.
+  assert.equal(render(1.005), '1.01 积分');
+});
