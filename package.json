@@ -7,6 +7,8 @@
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "dev": "vite",
+    "dev:debug": "node ./scripts/dev-debug.mjs",
+    "inspect": "node ./scripts/inspect-page.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "design:lint": "designmd lint DESIGN.md",

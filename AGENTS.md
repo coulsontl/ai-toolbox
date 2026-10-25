@@ -278,6 +278,22 @@ cd tauri && cargo test test_name
 - 浏览器夹具（`scripts/verify-*.mjs` 经 `scripts/lib/browser-fixture.mjs`）每个脚本都会起一个 headless 浏览器，清理语义有两条必须知道的事实：① 脚本自身的 teardown 不依赖 `Browser.close` 握手成功，握手失败会升级为整棵进程树的强杀（`killBrowserTree`），且 `server.closeAllConnections()` 防住 keep-alive 连接把 teardown 挂死；② **顺手 kill 掉 node 进程（命令超时、Ctrl+C、管道提前终止、外部中断）时，node 来不及跑 teardown，整棵浏览器进程树会留下来**（每棵约 8 个进程、几百 MB，profile 仍在 Temp 的 artifact 目录里），后续脚本会因为机器变重而出现与自身改动无关的 `Browser command timed out: Runtime.evaluate`。识别与清理：找出 `--user-data-dir=*Temp*browser-profile-*` 的 `msedge` / `chrome`，**确认其父进程已退出**再结束；不要只按 artifact 前缀批量杀——并发工作的另一个 worktree / 会话可能正在跑同名 fixture。夹具报错时优先看 `Browser exceptions:`（真实前端错误）与脚本自己的 `Timed out waiting for:`（渲染没到位），两者都不是超时抖动。
 - 新增或修复高价值回归时，应优先补**最贴近用户路径**的自动化用例；不要只补实现细节测试而漏掉“表单提交 -> 持久化 -> 再读取”这类关键往返语义。
 
+### Live Page Inspection (styles and runtime logic)
+
+Styles and layout cannot be verified by reading source: CSS Modules hash class names, antd injects its CSS-in-JS at runtime, and the cascade decides what actually wins. Never ask the user to paste HTML/CSS, and do not build a throwaway test page — attach to the running app instead.
+
+```bash
+pnpm dev:debug                 # tauri dev with WebView2 CDP on 9223 (auto-increments if taken)
+pnpm inspect <command> [args]  # from another terminal
+```
+
+- Commands: `wait`, `snapshot`, `rules`, `computed`, `vars`, `box`, `overlaps`, `a11y`, `diff`, `screenshot`, `console`, `eval`.
+- `pnpm inspect rules <selector>` is the one to reach for first on a style bug: it returns the matched selectors **with source file and line**, which is how a hashed class (`_header_d1am0_38`) maps back to `styles.module.less:38`. Read the file at that location; do not infer the cascade by hand.
+- Distinguish the two failure shapes before investigating: an empty `#root` **that never fills** means React failed to mount (check `console` for a `TypeError`); a non-empty `#root` with wrong visuals is a style/layout problem (`rules` / `box` / `overlaps`).
+- **A cold start legitimately takes ~14s and is not a blank screen.** Measured on this repo: window opens at 1s on `about:blank`, navigates at 5s, `#root` stays empty while Vite transforms 1500+ modules, renders at 14s. Never call `Page.navigate` or `Page.reload` during that window — it interrupts the webview's own first navigation and, if retried, turns a normal 14s load into a genuinely blank window (this shipped once). `scripts/dev-debug.mjs` therefore only injects the debug port and does not touch the page; observe passively with `pnpm inspect wait`.
+- `CSS.enable` is expensive on this page (~1400 antd `<style>` nodes) and needs up to 120s on a cold run; do not enable the DOM/CSS domains for commands that only read computed styles.
+- Do not hard-kill the dev process tree to restart it: the app can come back white. Stop it normally, or let `scripts/dev-debug.mjs` sweep on Ctrl+C.
+
 ## Code Style Guidelines
 
 ### TypeScript/React
