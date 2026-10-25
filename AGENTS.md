@@ -421,6 +421,10 @@ fn command_name(param: &str) -> Result<ReturnType, String> {
 
 - Beta 发布走固定 tag `beta`（永远 prerelease，资产每轮覆盖）：`gh workflow run release.yml` 零输入即发滚动 beta，版本号 `<最新正式+1 patch>-beta.<YYMMDD><字母>`（北京时间，`.9` 逐段进位），由 `scripts/next-beta-version.mjs` 计算、`scripts/set-tauri-version.mjs` 构建前注入（版本号不进仓库，仓库 `tauri.conf.json` 永远只写正式版本）。YYMMDD 打头保证字典序=时间序，不要“优化”成 MMDD 或时间戳到秒的格式——semver 对字母数字标识符按 ASCII 比，跨月会判反。
 - 客户端双通道（`update.rs`）：`receive_beta_updates` 开关开启后，check 并行拉正式与 beta 两份 `latest.json` 并 semver 取大者；安装前重新选通道并用 `updater_builder().endpoints([胜出通道])` 指定唯一 endpoint（插件 endpoint 是 failover 不是 newest-wins）。发布与填文案的完整流程见 skill `release-notes`（仓库内 `.agents/skills/release-notes`，由本机工具链提供；该目录不进仓库，新 clone 需自行准备）。
+- 同一时刻只允许一轮滚动 beta。`release.yml` 的 `concurrency` 必须保持 `cancel-in-progress: false`：每轮都移动同一个 `beta` tag、写同一个 release、按版本号清旧资产，两轮重叠会互相删掉对方刚上传的产物；而中途取消会留下半套资产和指向半成品的 tag。手动派发前先查 `gh run list --workflow=release.yml`，已有 `in_progress` 的 run 时不要重复派发——先核对 `actor` 与 `head_sha`，若是同一发布意图就接管那一轮。
+- 构建失败时 `assemble-latest-json` 整个 job 不会运行（`needs` 不满足），所以失败收尾是独立的 `mark-beta-failed` job：它把失败与 run 链接写回 release body 并保持 draft。draft 的资产 URL 对客户端返回 404，也就是“beta 静默停止更新”，因此失败轮必须留下可读的原因，不要把这段删掉。
+- `scripts/next-beta-version.mjs` 里“读不到 beta release”和“GitHub API 失败”必须分开：前者返回 `null` 才会退回字母 `a`，后者必须抛错。把 API 失败也吞成 `null` 会在已有 `b` 之后重新算出 `a`，与已发布版本号撞车。
+- `build` job 刻意不设 `timeout-minutes`：冷缓存下 Windows/macOS 打包可能远超常规耗时，超时会把正常的慢构建误杀成失败轮。`test`、`create-release`、`assemble-latest-json` 仍有超时，避免卡死占住 release。
 
 #### HTTP / TLS Compatibility
 

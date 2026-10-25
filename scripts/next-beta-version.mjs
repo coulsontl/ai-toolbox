@@ -116,15 +116,14 @@ function fetchCurrentBetaVersion() {
   // list endpoint instead keeps the same-day letter counting even when a
   // re-dispatch happens mid-build. Losing this would reset the letter to
   // `a`, colliding with an already-published version.
-  let release = null;
-  try {
-    const releases = JSON.parse(
-      ghOutput(['api', 'repos/{owner}/{repo}/releases?per_page=20'])
-    );
-    release = releases.find((candidate) => candidate.tag_name === BETA_TAG) || null;
-  } catch {
-    return null;
-  }
+  //
+  // A list request that fails is NOT the same as "no beta release yet":
+  // treating them alike would silently fall back to letter `a` and collide.
+  // Only an absent release or an absent `latest.json` means "nothing built".
+  const releases = JSON.parse(
+    ghOutput(['api', 'repos/{owner}/{repo}/releases?per_page=20'])
+  );
+  const release = releases.find((candidate) => candidate.tag_name === BETA_TAG) || null;
   if (!release) {
     return null; // no rolling beta release yet
   }
@@ -132,18 +131,17 @@ function fetchCurrentBetaVersion() {
   if (!asset) {
     return null; // release exists but has never published a build
   }
-  try {
-    const latestJson = ghOutput([
-      'api',
-      '-H',
-      'Accept: application/octet-stream',
-      `repos/{owner}/{repo}/releases/assets/${asset.id}`,
-    ]);
-    const version = JSON.parse(latestJson).version;
-    return typeof version === 'string' ? version : null;
-  } catch {
-    return null;
+  const latestJson = ghOutput([
+    'api',
+    '-H',
+    'Accept: application/octet-stream',
+    `repos/{owner}/{repo}/releases/assets/${asset.id}`,
+  ]);
+  const version = JSON.parse(latestJson).version;
+  if (typeof version !== 'string') {
+    throw new Error('Latest beta manifest carries no string `version` field');
   }
+  return version;
 }
 
 function main() {
