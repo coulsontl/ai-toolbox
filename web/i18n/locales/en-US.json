@@ -3144,7 +3144,14 @@
       "deviceAuthTitle": "Codex device sign-in",
       "deviceAuthHint": "Open the sign-in page in a browser and enter the device code below.",
       "deviceAuthOpenBrowser": "Open sign-in page",
-      "deviceAuthStatus": "Status: {{status}}, {{seconds}} seconds remaining"
+      "deviceAuthStatus": "Status: {{status}}, {{seconds}} seconds remaining",
+      "officialAccountCreditsLabel": "Additional credits",
+      "officialAccountCreditsUnlimited": "Unlimited",
+      "officialAccountCreditsNone": "No credits available",
+      "officialAccountCreditsAvailable": "Available (balance unknown)",
+      "officialAccountCreditsUnknown": "Unknown; refresh usage",
+      "officialAccountCreditsBalance": "{{balance}} credits",
+      "officialAccountCreditsBalanceUnavailable": "{{balance}} credits (none available)"
     },
     "import": {
       "title": "Import from OpenCode",

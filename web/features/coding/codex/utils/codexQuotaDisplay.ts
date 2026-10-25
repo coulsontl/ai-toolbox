@@ -112,3 +112,31 @@ export function buildOfficialAccountResetLine(
   }
   return `${t('codex.provider.officialAccountResetLinePrefix')}${segments.join(' · ')}`;
 }
+
+/** Additional credits do not alter the subscription/reset-card presentation. */
+export function formatOfficialAccountCredits(
+  account: CodexOfficialAccount,
+  t: TFunction,
+): string | null {
+  const credits = account.credits;
+  if (account.lastError || !credits) {
+    return null;
+  }
+  if (credits.unlimited === true) {
+    return t('codex.provider.officialAccountCreditsUnlimited');
+  }
+  if (typeof credits.balance === 'number' && Number.isFinite(credits.balance)) {
+    // Availability is not the balance: retain even negative/contradictory values.
+    const key = credits.hasCredits === false
+      ? 'codex.provider.officialAccountCreditsBalanceUnavailable'
+      : 'codex.provider.officialAccountCreditsBalance';
+    return t(key, { balance: String(credits.balance) });
+  }
+  if (credits.hasCredits === false) {
+    return t('codex.provider.officialAccountCreditsNone');
+  }
+  if (credits.hasCredits !== true) {
+    return null;
+  }
+  return t('codex.provider.officialAccountCreditsAvailable');
+}

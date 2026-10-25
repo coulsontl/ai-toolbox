@@ -6,6 +6,7 @@ import type { TFunction } from 'i18next';
 
 import {
   buildOfficialAccountResetLine,
+  formatOfficialAccountCredits,
   formatQuotaResetAbsoluteText,
   formatQuotaResetRemainingText,
   formatQuotaResetText,
@@ -28,6 +29,16 @@ const translate = ((key: string, options?: Record<string, unknown>) => {
       return '月限额';
     case 'codex.provider.officialAccountResetCredits':
       return `重置卡 ${String(options?.count)} 张`;
+    case 'codex.provider.officialAccountCreditsUnlimited':
+      return '不限量';
+    case 'codex.provider.officialAccountCreditsNone':
+      return '无可用积分';
+    case 'codex.provider.officialAccountCreditsBalanceUnavailable':
+      return `${String(options?.balance)} 积分（无可用积分）`;
+    case 'codex.provider.officialAccountCreditsAvailable':
+      return '可用（余额未知）';
+    case 'codex.provider.officialAccountCreditsBalance':
+      return `${String(options?.balance)} 积分`;
     default:
       return key;
   }
@@ -113,4 +124,50 @@ test('buildOfficialAccountResetLine marks expired windows with the translated la
     buildOfficialAccountResetLine(account, translate, NOW),
     '重置：周限额 已重置',
   );
+});
+
+test('formatOfficialAccountCredits keeps credits separate from weekly allowance and reset cards', () => {
+  const account = buildAccount({
+    limitWeeklyText: '75%',
+    resetCreditsAvailable: 2,
+    credits: { hasCredits: true, unlimited: false, balance: 62500.25 },
+  });
+  assert.equal(formatOfficialAccountCredits(account, translate), '62500.25 积分');
+  assert.equal(account.limitWeeklyText, '75%');
+  assert.equal(buildOfficialAccountResetLine(account, translate, NOW), '重置：重置卡 2 张');
+});
+
+test('formatOfficialAccountCredits distinguishes absent, zero, unavailable and unlimited', () => {
+  assert.equal(formatOfficialAccountCredits(buildAccount(), translate), null);
+  assert.equal(formatOfficialAccountCredits(buildAccount({ credits: {} }), translate), null);
+  assert.equal(formatOfficialAccountCredits(buildAccount({
+    credits: { hasCredits: true, balance: 0 },
+  }), translate), '0 积分');
+  assert.equal(formatOfficialAccountCredits(buildAccount({
+    credits: { hasCredits: false, balance: 123 },
+  }), translate), '123 积分（无可用积分）');
+  assert.equal(formatOfficialAccountCredits(buildAccount({
+    credits: { hasCredits: false, unlimited: true, balance: 0 },
+  }), translate), '不限量');
+});
+
+test('formatOfficialAccountCredits does not invent a balance for invalid or stale data', () => {
+  for (const balance of [undefined, NaN, Infinity]) {
+    assert.equal(formatOfficialAccountCredits(buildAccount({
+      credits: { hasCredits: true, balance },
+    }), translate), '可用（余额未知）');
+  }
+  assert.equal(formatOfficialAccountCredits(buildAccount({ credits: { balance: 12 } }), translate), '12 积分');
+  assert.equal(formatOfficialAccountCredits(buildAccount({
+    credits: { hasCredits: false, balance: -0.25 },
+  }), translate), '-0.25 积分（无可用积分）');
+  assert.equal(formatOfficialAccountCredits(buildAccount({
+    credits: { hasCredits: false },
+  }), translate), '无可用积分');
+  assert.equal(formatOfficialAccountCredits(buildAccount({
+    credits: { hasCredits: true, balance: -0.25 },
+  }), translate), '-0.25 积分');
+  assert.equal(formatOfficialAccountCredits(buildAccount({
+    credits: { hasCredits: true, balance: 12 }, lastError: 'usage request failed',
+  }), translate), null);
 });

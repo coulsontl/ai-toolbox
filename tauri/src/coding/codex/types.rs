@@ -240,6 +240,19 @@ pub struct CodexSettings {
 // Codex Official Account Types
 // ============================================================================
 
+/// Additional Codex credits, independent of subscription windows and reset cards.
+/// Optional flags distinguish an omitted/invalid field from an explicit false.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexCredits {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_credits: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unlimited: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub balance: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodexOfficialAccountRecord {
     pub id: String,
@@ -273,6 +286,8 @@ pub struct CodexOfficialAccountRecord {
     pub limit_monthly_reset_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reset_credits_available: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credits: Option<CodexCredits>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_limits_fetched_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -326,6 +341,8 @@ pub struct CodexOfficialAccount {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reset_credits_available: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub credits: Option<CodexCredits>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_limits_fetched_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
@@ -361,6 +378,7 @@ impl From<CodexOfficialAccountRecord> for CodexOfficialAccount {
             limit_weekly_reset_at: record.limit_weekly_reset_at,
             limit_monthly_reset_at: record.limit_monthly_reset_at,
             reset_credits_available: record.reset_credits_available,
+            credits: record.credits,
             last_limits_fetched_at: record.last_limits_fetched_at,
             last_error: record.last_error,
             sort_index: record.sort_index,
@@ -404,6 +422,8 @@ pub struct CodexOfficialAccountContent {
     pub limit_monthly_reset_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reset_credits_available: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credits: Option<CodexCredits>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_limits_fetched_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

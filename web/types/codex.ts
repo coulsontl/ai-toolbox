@@ -180,6 +180,13 @@ export interface CodexSettings {
 
 export type CodexOfficialAccountKind = 'oauth' | 'local';
 
+export interface CodexCredits {
+  hasCredits?: boolean;
+  unlimited?: boolean;
+  /** Native Codex credits, not currency, tokens or a percentage. May be negative. */
+  balance?: number;
+}
+
 export interface CodexOfficialAccount {
   id: string;
   providerId: string;
@@ -201,6 +208,7 @@ export interface CodexOfficialAccount {
   limitWeeklyResetAt?: number;
   limitMonthlyResetAt?: number;
   resetCreditsAvailable?: number;
+  credits?: CodexCredits;
   lastLimitsFetchedAt?: string;
   lastError?: string;
   sortIndex?: number;

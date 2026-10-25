@@ -282,6 +282,10 @@ pub fn from_db_value_official_account(value: Value) -> CodexOfficialAccount {
         reset_credits_available: value
             .get("reset_credits_available")
             .and_then(|v| v.as_i64()),
+        credits: value
+            .get("credits")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
         last_limits_fetched_at: value
             .get("last_limits_fetched_at")
             .and_then(|v| v.as_str())
@@ -390,6 +394,10 @@ pub fn to_db_value_official_account(content: &CodexOfficialAccountContent) -> Va
             "reset_credits_available".to_string(),
             Value::Number(reset_credits_available.into()),
         );
+    }
+    if let Some(ref credits) = content.credits {
+        // Credits parsed from usage contain only finite numbers and booleans.
+        map.insert("credits".to_string(), serde_json::json!(credits));
     }
     if let Some(ref last_limits_fetched_at) = content.last_limits_fetched_at {
         map.insert(
