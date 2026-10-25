@@ -15,11 +15,20 @@ env:
   RUST_BACKTRACE: short
   RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || 'beta' }}
 
+# Every rolling round moves the same `beta` tag and uploads into the same
+# `beta` release, so two overlapping dispatches would fight over the tag,
+# the archive tag and each other's asset purge. Queue instead of cancel:
+# cancelling mid-build would leave a half-uploaded asset set behind.
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && 'beta' || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   create-release:
     permissions:
       contents: write
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       release_id: ${{ steps.create_release.outputs.id || steps.ensure_beta_release.outputs.id }}
       version: ${{ steps.get_version.outputs.version }}
@@ -132,6 +141,7 @@ jobs:
   test:
     name: Run Full Test Suite
     runs-on: ubuntu-22.04
+    timeout-minutes: 90
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -551,12 +561,43 @@ jobs:
           git pull --rebase origin "${DEFAULT_BRANCH}"
           git push origin "HEAD:${DEFAULT_BRANCH}"
 
+  # A failed round leaves the rolling release in draft: its asset URLs answer
+  # 404, so beta clients silently stop receiving updates instead of seeing a
+  # broken link. Record the failure on the release body so the next round (and
+  # whoever reads the release page) knows this draft is not a shippable build.
+  # `assemble-latest-json` cannot do this itself — its `needs` prevents it from
+  # running at all once build or test fails.
+  mark-beta-failed:
+    name: Mark the beta round as failed
+    runs-on: ubuntu-latest
+    needs: [create-release, build, test]
+    if: github.event_name == 'workflow_dispatch' && failure()
+    permissions:
+      contents: write
+    steps:
+      - name: Record the failure on the release body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" >/dev/null
+          printf 'Built from commit %s\n\n## ⚠️ This beta build failed\n\nVersion `%s` did not build completely, so this release stays a draft and carries no downloadable installers. Beta clients keep the last successful build.\n\nSee %s for the failing jobs.\n\n⚠️ Mac安装提示：`"应用程序"已损坏` 解决方法：`xattr -cr /Applications/AI\\ Toolbox.app`\n' \
+            "$COMMIT" "$VERSION" "$RUN_URL" > /tmp/body.md
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            -F "body=@/tmp/body.md" -F draft=true -F prerelease=true >/dev/null
+          echo "Marked release $RELEASE_ID as a failed build."
+
   assemble-latest-json:
     name: Assemble latest.json
     runs-on: ubuntu-latest
     needs: [create-release, build, test]
     permissions:
       contents: write
+    timeout-minutes: 30
     steps:
       - name: Prepare GH
         run: |
