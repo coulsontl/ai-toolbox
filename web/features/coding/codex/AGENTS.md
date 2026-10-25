@@ -47,6 +47,7 @@ sequenceDiagram
 - 页面粘贴导入 `auth.json` 时只把内容提交给后端保存为账号快照；运行时 `auth.json` 只有在用户点击“应用”后才会更新。
 - 额外 credits 与周额度、重置卡分开展示，不做货币兑换。`unlimited` 优先；有效余额（含零/负数）原样展示，`hasCredits=false` 时同时显示无可用积分提示；只有标志可用而余额未知时明确标未知。余额按「计数」格式化（固定小数位、不做千分位、不出现浮点误差或科学计数法），不要直接 `String(f64)`。刷新结果必须同时匹配 provider、账号及本地登录身份，旧根目录/旧列表请求和已关闭详情不应被晚到结果覆盖。
 - **刷新失败只做标记，不回退数据、不进缓存**：失败结果只写到当前屏幕上的那一行（清 `credits`、记 `lastError`），额度窗口与上次成功时间保持不动，也不能写进 `officialAccountUsageResults` —— 否则点击时的旧快照会盖掉期间列表已拉到的新值，virtual 行还会把失败反复重放到后续每次 reload。缓存里只允许存在成功结果。
+- **重授权错误单独本地化**：后端把不可恢复的凭证问题统一带上 `codex_reauth_required:` 前缀。前端只在展示层用 `formatCodexOfficialAccountError` 换成 `codex.provider.officialAccountReauthRequired`，**行内 `lastError` 与缓存里保存的仍是原始字符串**（reload 后仍可识别，不会被本地化文案覆盖掉标记）。其它错误（429 / 5xx / 超时 / 解析失败）保持原文，不要为它们也编一套文案。
 - 官方账号卡片的额度摘要仍以百分比为主；重置信息（各窗口重置时间、剩余时长、重置卡数量）另起 10px 辅助文字一行，统一走 `utils/codexQuotaDisplay.ts`。剩余时长由绝对时间戳在渲染时计算，不要把相对文案落库或写进类型；重置卡数量只展示后端 `resetCreditsAvailable` 投影，前端不自行请求明细或推断。
 - provider 模式只允许在空白新增 provider 时选择。模式入口并入表单顶部“渠道”选择行：空白新增可在“自定义/官方/内置渠道”之间切换；复制 provider 仍走创建新记录语义，但必须沿用源 provider 的 `category`；编辑已保存 provider 也必须保留既有 `category`，不要允许官方/自定义互相切换。
 - 自定义模式下的内置供应商 endpoint 会填入 Base URL、API 格式和模型映射，但只锁定 API 格式，不锁定 Base URL；保存内置 endpoint 时只写 `meta.gatewayProfile={tool:"codex",profileId,endpointId}` 引用，`settingsConfig.config` 中的 `base_url` 必须使用用户当前表单里的 Base URL。切回普通“自定义”时必须清掉 `gatewayProfile`，只保留用户手动选择的 `apiFormat`；不要把 `providerType` / `apiKeyField` / `reasoningField` / `defaultMaxTokens` / 图片策略这类 profile 派生快照写进 provider meta。

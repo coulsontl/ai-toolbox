@@ -65,6 +65,15 @@ sequenceDiagram
 - `save_codex_local_config` 收编 `__local__` 时仍要保留 provider `meta`，包括 Gateway 计费配置里的 `costMultiplier` / `pricingModelSource`；不要只保存 settings/common 而把表单提交的 meta 丢成 `None`。
 - `adapter::to_db_value_provider` 是 Codex provider 持久化的最后一道写库入口；新增或调整 provider 级扩展字段时必须确认它也写入 JSONB。尤其 Gateway 计费 `meta` 不能只在 command 层结构体里保留，否则页面保存后重新 list 会丢失。
 - 官方账号额度来自 Codex usage windows，后端负责按窗口语义解析并持久化 `5h`、weekly、monthly；前端只展示后端投影结果，不自行按套餐或字段顺序推断窗口类型。
+- **额度刷新的凭证链路（issue #440）**：`refresh_codex_official_account_limits` 必须先经过 `prepare_persisted_account_credential` / `prepare_local_credential` 再发请求，禁止像旧实现那样直接从 `auth_snapshot` 取 access token。凭证选择规则：已应用账号可以采纳运行时 `auth.json`，但必须同时满足「身份相同」（`auth_identities_match`，账号 id → 邮箱 → refresh token 的优先级，refresh token 放最后是因为轮换会正常改变它）和「运行时的 access token `exp` 严格晚于库内」（`runtime_credential_is_newer`）。**「值不同」不等于「运行时更新」**，拿不准就继续用库内凭证。采纳后立即 `persist_refreshed_account_snapshot`，否则数据库会继续落后于运行时。未应用账号全程只读写自己的记录，绝不借 runtime、绝不写 live。
+- **轮换必须先落库再生效**：`exchange_official_auth_locked` 拿到新凭证后，调用方要先把完整快照（含新 refresh token）写入 SQLite，再写 live（仅 applied），最后才请求 usage。顺序颠倒会让「交换成功 + usage 失败」丢掉唯一的 refresh token。`prepare_persisted_account_credential` / `prepare_local_credential` 都遵守这个顺序；新增调用点也必须遵守。
+- **OAuth 锁内必须重读**：`OAUTH_REFRESH_LOCK` 只提供互斥，不提供新鲜度。进入锁后要重新读取持久化/运行时凭证再判断 `exp`，否则两个并发刷新会先后消费同一个 refresh token（第二个会拿到 `refresh_token_reused`）。`ensure_fresh_official_runtime_auth` 现在只做「判断 + 拿锁 + 调用 locked 版本」；需要强制续期时直接调 `exchange_official_auth_locked(db, auth, true)`。
+- **401 恢复有明确上限**：usage 请求返回 `UsageRequestError`（保留 HTTP status），只有 401 触发 `recover_persisted_account_credential` / `prepare_local_credential(force)`，且只重试一次；第二次 401 或 refresh token 缺失/被拒统一返回 `codex_reauth_error`（带 `codex_reauth_required:` 前缀）。**超时 / 429 / 5xx / JSON 解析失败一律不交换 token**，保留原有语义。`ensure_fresh` 只看 `exp`，对「未过期但被服务端拒绝」的 token 是空操作，这正是必须有强制续期分支的原因。
+- **写 live 前再确认归属**：`write_runtime_credential_if_still_applied` 会重新加载账号并核对 `is_applied` 与 runtime 身份。用户在 await 期间切走账号时函数返回 `false`、不改文件；不要为了「保证写入成功」去掉这层检查。
+- **写 live 必须发同步事件**：`prepare_*` / `recover_*` 返回的 `runtime_written` 为真时，命令层要调 `emit_runtime_credential_changed`（`config-changed` + Windows 下的 `wsl-sync-request-codex`），与 apply 对齐；后台 pass 用一个累积 flag 在循环结束后发一次。漏掉会让托盘和 WSL 副本继续持有旧 token。
+- **后台 pass 必须走同一套准备逻辑**：`refresh_applied_codex_accounts_if_needed` 现在直接调 `prepare_persisted_account_credential`。不要为它另写一份「先读 snapshot 再 ensure_fresh」的简版——那正是旧实现让 DB 永久落后于 runtime 的原因。
+- `codex_reauth_required:` 是前后端契约：前端 `formatCodexOfficialAccountError` 只把这一前缀换成 `codex.provider.officialAccountReauthRequired` 的本地化文案，其余错误原样展示。后端错误文案可以改，前缀不能改。
+- credits 的失败语义不要和新凭证链路混在一起：`persist_usage_result` 失败时只清 `credits`、写 `last_error`、保留额度窗口和 `last_limits_fetched_at`；凭证准备失败同样走这条路径（`refresh_account_usage_inner` 的错误交给 `persist_usage_result`，不在中间提前 return）。
 - `wham/usage.credits` 是独立于套餐窗口及重置卡的额外 Codex 积分，不是美元、API 余额或百分比。保留 `has_credits` / `unlimited` 与有限余额（含字符串、零、负值），不能用 availability 标志抹掉余额；未知字段不能补零。每次成功读取都替换整份 credits（缺失即清掉旧值），失败清余额并保留上次成功时间；OAuth token 刷新不代表额度刷新。解析宽容度必须与 `extract_reset_credits_available` 对齐（顶层或 `data` 包装、`has_credits`/`hasCredits` 两种拼写）——**因为「缺失即清空」，解析面窄了会在每次成功刷新时抹掉余额**。
 - credits 的**存储键是 snake_case**（`has_credits`），由 `adapter::credits_to_db_value` / `credits_from_db_value` 手工映射；`CodexCredits` 上的 `rename_all = "camelCase"` 只服务 IPC wire。读取同时接受早期的 `hasCredits` 拼写，所以改属性名不会静默孤立存量行。
 - usage 响应里的 `rate_limit_reset_credits.available_count`（含 camelCase 别名）同样由后端解析并持久化为 `reset_credits_available`：字段缺失写 null，`0` 是有效值必须保留；只读展示不做重置次数明细接口和消耗操作。
@@ -117,6 +126,7 @@ sequenceDiagram
 
 ## 最小验证
 
+- 改额度刷新 / 凭证准备 / 401 恢复时，跑 `cargo test --lib usage_credential_tests -- --test-threads=1`：这 19 个用例覆盖 issue #440 的全部验收场景（复用库内凭证不交换、过期续期、采纳运行时新凭证、跨账号不借用、未应用不改 live、401 强制恢复、二次 401 要求重授权、refresh token 被拒/缺失、轮换先落库、瞬态错误不交换、`__local__` 续期与 401 恢复、后台收敛未应用账号、锁内重读、切换账号后不写 live、坏快照不发请求、账号头跟随最终凭证、失败保留旧窗口）。用例依赖 `TEST_AUTH_ROOT` 与 `TEST_ENDPOINTS` 两个进程级测试钩子，**必须串行执行**；新增用例要复用 `TestEnv` / `MockServer` 并拿 `TEST_GUARD`，`MockServer` 的 accept 循环已处理 Windows 上 accept 继承非阻塞的问题，别删 `set_nonblocking(false)`。
 - 至少验证：common/provider 合并后顶层键仍在根级，表结构未错位。
 - 改无项目对话残留逻辑时，跑 `cargo test --lib scratch_workspace`，并核对四条底线：真实项目路径不匹配模式、含 `.git` 的目录被拒绝、symlink 组件被拒绝、`projects` 表被删空后整表移除且文件其余内容（注释、`#:schema`）原样保留。
 - 至少验证：编辑已应用配置后仍会发出 `wsl-sync-request-codex`。

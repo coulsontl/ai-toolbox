@@ -80,6 +80,7 @@ import {
 } from '../utils/localProvider';
 import { codexProviderNeedsGatewayProxy, resolveCodexProviderApiFormat } from '../utils/codexGatewayProxyNeed';
 import { buildOfficialAccountResetLine, formatOfficialAccountCredits } from '../utils/codexQuotaDisplay';
+import { formatCodexOfficialAccountError } from '../utils/codexAccountRefresh';
 import { codexCatalogRowKey } from '../utils/codexCatalogModels';
 
 const { Text } = Typography;
@@ -557,7 +558,9 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
         isApplied: showOfficialRuntimeState && account.isApplied,
         isVirtual: account.isVirtual,
         lastError: account.lastError
-          ? t('codex.provider.officialAccountLastError', { message: account.lastError })
+          ? t('codex.provider.officialAccountLastError', {
+            message: formatCodexOfficialAccountError(account.lastError, t),
+          })
           : undefined,
       };
     });

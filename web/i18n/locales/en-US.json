@@ -3151,7 +3151,8 @@
       "officialAccountCreditsAvailable": "Available (balance unknown)",
       "officialAccountCreditsUnknown": "Unknown; refresh usage",
       "officialAccountCreditsBalance": "{{balance}} credits",
-      "officialAccountCreditsBalanceUnavailable": "{{balance}} credits (none available)"
+      "officialAccountCreditsBalanceUnavailable": "{{balance}} credits (none available)",
+      "officialAccountReauthRequired": "This account needs to be authorized again. Use OAuth sign-in above, then refresh the limits."
     },
     "import": {
       "title": "Import from OpenCode",

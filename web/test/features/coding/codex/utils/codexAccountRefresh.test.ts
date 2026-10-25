@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CodexOfficialAccount } from '../../../../../types/codex.ts';
 import {
+  formatCodexOfficialAccountError,
+  isCodexReauthRequiredError,
   matchesOfficialAccountRefresh,
   markOfficialAccountRefreshFailed,
   reconcileOfficialAccountUsage,
@@ -96,4 +98,26 @@ test('saved-account results only override list reads started before completion',
   assert.equal(lateFailure.isApplied, true);
   assert.equal(lateFailure.name, 'Renamed');
   assert.equal(lateFailure.accessTokenPreview, 'new-token');
+});
+
+test('only the reauth marker gets localized copy; other errors stay actionable as-is', () => {
+  const t = ((key: string) => `translated:${key}`) as unknown as Parameters<
+    typeof formatCodexOfficialAccountError
+  >[1];
+  const reauth = 'codex_reauth_required: Codex official account authorization expired (x). Sign in again.';
+  assert.equal(isCodexReauthRequiredError(reauth), true);
+  assert.equal(
+    formatCodexOfficialAccountError(reauth, t),
+    'translated:codex.provider.officialAccountReauthRequired',
+  );
+  for (const message of [
+    'Codex usage request failed: HTTP status 429 Too Many Requests',
+    'Codex usage request failed: HTTP status 503 Service Unavailable',
+    'Failed to fetch usage: request timed out',
+    'Failed to parse usage response: expected value',
+  ]) {
+    assert.equal(isCodexReauthRequiredError(message), false);
+    assert.equal(formatCodexOfficialAccountError(message, t), message);
+  }
+  assert.equal(isCodexReauthRequiredError(undefined), false);
 });

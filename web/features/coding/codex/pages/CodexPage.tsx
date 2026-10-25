@@ -67,6 +67,7 @@ import CodexDeviceAuthModal from '../components/CodexDeviceAuthModal';
 import { refreshTrayMenu, hasAllApiHubExtension } from '@/services/appApi';
 import { formatQuotaResetRemainingText, formatOfficialAccountCredits } from '../utils/codexQuotaDisplay';
 import {
+  formatCodexOfficialAccountError,
   matchesOfficialAccountRefresh,
   markOfficialAccountRefreshFailed,
   reconcileOfficialAccountUsage,
@@ -1107,8 +1108,10 @@ const CodexPage: React.FC = () => {
       if (!isCurrentRequest()) return;
       console.error('Failed to refresh Codex official account usage:', error);
       const errorMsg = error instanceof Error ? error.message : String(error);
+      // The raw message stays on the row (it identifies the failure on reload);
+      // only the toast gets the localized reauth wording.
       markFailed(errorMsg || t('common.error'));
-      message.error(errorMsg || t('common.error'));
+      message.error(errorMsg ? formatCodexOfficialAccountError(errorMsg, t) : t('common.error'));
     } finally {
       if (officialAccountRefreshVersions.current.get(key) === version) {
         setRefreshingOfficialAccountId((current) => (current === account.id ? null : current));
@@ -3105,7 +3108,9 @@ const CodexPage: React.FC = () => {
               </Descriptions.Item>
               {officialAccountDetails.account.lastError && (
                 <Descriptions.Item label={t('codex.provider.officialAccountLastErrorLabel')}>
-                  <Text type="danger">{officialAccountDetails.account.lastError}</Text>
+                  <Text type="danger">
+                    {formatCodexOfficialAccountError(officialAccountDetails.account.lastError, t)}
+                  </Text>
                 </Descriptions.Item>
               )}
             </Descriptions>

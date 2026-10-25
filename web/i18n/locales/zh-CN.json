@@ -3148,7 +3148,8 @@
       "officialAccountCreditsAvailable": "可用（余额未知）",
       "officialAccountCreditsUnknown": "未知，请刷新额度",
       "officialAccountCreditsBalance": "{{balance}} 积分",
-      "officialAccountCreditsBalanceUnavailable": "{{balance}} 积分（无可用积分）"
+      "officialAccountCreditsBalanceUnavailable": "{{balance}} 积分（无可用积分）",
+      "officialAccountReauthRequired": "该账号需要重新授权：请点击上方「OAuth 登录」完成登录后再刷新额度"
     },
     "import": {
       "title": "从 OpenCode 导入",

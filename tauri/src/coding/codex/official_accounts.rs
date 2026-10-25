@@ -50,6 +50,60 @@ static OAUTH_REFRESH_CACHE: LazyLock<
 static DEVICE_AUTH_SESSIONS: LazyLock<Mutex<HashMap<String, watch::Sender<bool>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Test-only endpoint override so the OAuth exchange and usage request can be
+/// pointed at a local mock server.
+#[cfg(test)]
+static TEST_ENDPOINTS: LazyLock<Mutex<Option<(String, String)>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+#[cfg(test)]
+fn set_test_endpoints(usage_url: &str, token_url: &str) {
+    *TEST_ENDPOINTS.lock().expect("test endpoint lock") =
+        Some((usage_url.to_string(), token_url.to_string()));
+}
+
+#[cfg(test)]
+fn clear_test_endpoints() {
+    *TEST_ENDPOINTS.lock().expect("test endpoint lock") = None;
+}
+
+fn codex_usage_url() -> String {
+    #[cfg(test)]
+    if let Some((usage_url, _)) = TEST_ENDPOINTS
+        .lock()
+        .expect("test endpoint lock")
+        .as_ref()
+    {
+        return usage_url.clone();
+    }
+    CODEX_USAGE_URL.to_string()
+}
+
+fn codex_oauth_token_url() -> String {
+    #[cfg(test)]
+    if let Some((_, token_url)) = TEST_ENDPOINTS
+        .lock()
+        .expect("test endpoint lock")
+        .as_ref()
+    {
+        return token_url.clone();
+    }
+    CODEX_OAUTH_TOKEN_URL.to_string()
+}
+
+/// Machine-readable marker for "this account cannot be recovered; the user must
+/// authorize again". The frontend matches this prefix and shows localized copy,
+/// so the trailing English text is only a fallback for logs and older builds.
+const CODEX_REAUTH_REQUIRED_MARKER: &str = "codex_reauth_required:";
+
+/// Every unrecoverable credential problem ends up here so the UI can offer
+/// "sign in again" instead of replaying a generic HTTP error.
+fn codex_reauth_error(reason: &str) -> String {
+    format!(
+        "{CODEX_REAUTH_REQUIRED_MARKER} Codex official account authorization expired ({reason}). Sign in again with OAuth."
+    )
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexOfficialAccountTokenCopyInput {
@@ -400,7 +454,7 @@ async fn refresh_oauth_token(
 ) -> Result<OAuthTokenResponse, String> {
     let client = crate::http_client::client_with_timeout(db, 20).await?;
     let response = client
-        .post(CODEX_OAUTH_TOKEN_URL)
+        .post(codex_oauth_token_url())
         .form(&OAuthRefreshRequest {
             grant_type: "refresh_token",
             client_id: CODEX_OAUTH_CLIENT_ID,
@@ -422,13 +476,15 @@ async fn refresh_oauth_token(
                 .and_then(Value::as_str)
                 .map(str::to_string)
         });
-        if error_code.as_deref() == Some("refresh_token_reused")
-            || body.contains("refresh_token_reused")
+        if matches!(
+            error_code.as_deref(),
+            Some("refresh_token_reused" | "invalid_grant")
+        ) || body.contains("refresh_token_reused")
+            || body.contains("invalid_grant")
         {
-            return Err(
-                "refresh_token_reused: Codex refresh token has already been rotated; sign in again"
-                    .to_string(),
-            );
+            return Err(codex_reauth_error(
+                "the refresh token was rotated, revoked, or rejected",
+            ));
         }
         return Err(format!("OAuth token refresh failed ({status}): {body}"));
     }
@@ -542,19 +598,104 @@ fn token_expiration_unix(token: &str) -> Option<i64> {
     decode_jwt_payload(token).ok()?.exp
 }
 
+fn access_token_expiration(auth: &Value) -> Option<i64> {
+    auth.pointer("/tokens/access_token")
+        .and_then(Value::as_str)
+        .and_then(token_expiration_unix)
+}
+
 fn official_auth_needs_refresh(auth: &Value) -> bool {
     let now = chrono::Utc::now().timestamp();
-    let expiration = auth
-        .pointer("/tokens/access_token")
-        .and_then(|value| value.as_str())
-        .and_then(token_expiration_unix)
-        .or_else(|| {
-            auth.pointer("/tokens/id_token")
-                .and_then(|value| value.as_str())
-                .and_then(token_expiration_unix)
-        });
+    let expiration = access_token_expiration(auth).or_else(|| {
+        auth.pointer("/tokens/id_token")
+            .and_then(|value| value.as_str())
+            .and_then(token_expiration_unix)
+    });
 
     matches!(expiration, Some(expiration) if expiration <= now + AUTH_REFRESH_LEAD_SECONDS)
+}
+
+fn auth_refresh_token(auth: &Value) -> Option<&str> {
+    auth.pointer("/tokens/refresh_token")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn auth_email(auth: &Value) -> Option<String> {
+    auth.pointer("/tokens/id_token")
+        .and_then(|value| value.as_str())
+        .map(parse_id_token)
+        .and_then(|parsed| parsed.email)
+        .map(|email| email.trim().to_ascii_lowercase())
+        .filter(|email| !email.is_empty())
+}
+
+/// Two credentials belong to the same ChatGPT login.
+///
+/// Refresh tokens are compared last on purpose: rotation legitimately changes
+/// them, so an equal account id or email must win.
+fn auth_identities_match(left: &Value, right: &Value) -> bool {
+    if let (Some(left_id), Some(right_id)) =
+        (usage_account_id_from_auth(left), usage_account_id_from_auth(right))
+    {
+        return left_id == right_id;
+    }
+    if let (Some(left_email), Some(right_email)) = (auth_email(left), auth_email(right)) {
+        return left_email == right_email;
+    }
+    match (auth_refresh_token(left), auth_refresh_token(right)) {
+        (Some(left_token), Some(right_token)) => left_token == right_token,
+        _ => false,
+    }
+}
+
+/// A runtime credential is adopted only when it provably outlives the stored
+/// one. "Different" is not "newer": the stored value may be the fresh one.
+fn runtime_credential_is_newer(runtime: &Value, stored: &Value) -> bool {
+    match (
+        access_token_expiration(runtime),
+        access_token_expiration(stored),
+    ) {
+        (Some(runtime_expiration), Some(stored_expiration)) => {
+            runtime_expiration > stored_expiration
+        }
+        _ => false,
+    }
+}
+
+/// Exchange the refresh token for a new credential. The caller must already
+/// hold `OAUTH_REFRESH_LOCK`, and must have re-read the stored credential
+/// inside the lock so a concurrently rotated refresh token is not consumed
+/// twice. `force` skips the expiry check, which is what a 401 with an
+/// unexpired token needs.
+async fn exchange_official_auth_locked(
+    db: &SqliteDbState,
+    auth: &Value,
+    force: bool,
+) -> Result<Value, String> {
+    if !force && !official_auth_needs_refresh(auth) {
+        return Ok(auth.clone());
+    }
+    let refresh_token = auth_refresh_token(auth)
+        .ok_or_else(|| codex_reauth_error("the account has no usable refresh token"))?;
+    if !force {
+        let cached_response = OAUTH_REFRESH_CACHE
+            .lock()
+            .await
+            .get(refresh_token)
+            .filter(|(created_at, _)| created_at.elapsed() <= Duration::from_secs(30))
+            .map(|(_, response)| response.clone());
+        if let Some(response) = cached_response {
+            return build_auth_snapshot(&response, Some(auth));
+        }
+    }
+    let response = refresh_oauth_token(db, refresh_token).await?;
+    OAUTH_REFRESH_CACHE.lock().await.insert(
+        refresh_token.to_string(),
+        (std::time::Instant::now(), response.clone()),
+    );
+    build_auth_snapshot(&response, Some(auth))
 }
 
 async fn ensure_fresh_official_runtime_auth(
@@ -564,35 +705,179 @@ async fn ensure_fresh_official_runtime_auth(
     if !official_auth_needs_refresh(auth) {
         return Ok(auth.clone());
     }
+    let _refresh_guard = OAUTH_REFRESH_LOCK.lock().await;
+    exchange_official_auth_locked(db, auth, false).await
+}
+
+/// The runtime credential when it belongs to the same login and is newer than
+/// `stored_auth`. Never borrows another account's login.
+async fn newer_runtime_credential(
+    db: &SqliteDbState,
+    stored_auth: &Value,
+) -> Result<Option<Value>, String> {
+    let runtime_auth = read_auth_json_from_disk(Some(db)).await?;
+    if !auth_has_official_runtime(&runtime_auth)
+        || !auth_identities_match(stored_auth, &runtime_auth)
+        || !runtime_credential_is_newer(&runtime_auth, stored_auth)
+    {
+        return Ok(None);
+    }
+    Ok(Some(runtime_auth))
+}
+
+/// Credential a usage request should use, plus the account row it belongs to.
+struct PreparedOfficialCredential {
+    account: CodexOfficialAccount,
+    auth: Value,
+    /// A rotated credential was written back to the runtime `auth.json`.
+    runtime_written: bool,
+}
+
+/// Picks the newest credential this account may use, without exchanging.
+///
+/// Applied accounts may adopt the runtime `auth.json` credential, but only
+/// when it is provably the same login *and* outlives the stored token. The
+/// adopted credential is persisted immediately, so the database stops
+/// lagging behind the runtime.
+async fn newest_account_credential(
+    db: &SqliteDbState,
+    account: &CodexOfficialAccount,
+) -> Result<(CodexOfficialAccount, Value), String> {
+    let stored = stored_auth_from_account(account)?;
+    if !account.is_applied {
+        return Ok((account.clone(), stored));
+    }
+    let Some(runtime_auth) = newer_runtime_credential(db, &stored).await? else {
+        return Ok((account.clone(), stored));
+    };
+    let updated = persist_refreshed_account_snapshot(db, account, &runtime_auth).await?;
+    Ok((updated, runtime_auth))
+}
+
+/// Fresh credential for an account. Any rotation is persisted before this
+/// returns, so a later usage failure can never discard a rotated refresh token.
+///
+/// A runtime-derived credential needs no exchange (it is the newest thing we
+/// have); otherwise the stored snapshot is re-read under the OAuth lock before
+/// the expiry check, so a concurrent refresh is not exchanged twice.
+async fn prepare_persisted_account_credential(
+    db: &SqliteDbState,
+    account_id: &str,
+) -> Result<PreparedOfficialCredential, String> {
+    let (account, auth) =
+        newest_account_credential(db, &load_official_account(db, account_id).await?).await?;
+    if !official_auth_needs_refresh(&auth) {
+        return Ok(PreparedOfficialCredential {
+            account,
+            auth,
+            runtime_written: false,
+        });
+    }
 
     let _refresh_guard = OAUTH_REFRESH_LOCK.lock().await;
-    if !official_auth_needs_refresh(auth) {
-        return Ok(auth.clone());
+    // Re-read inside the lock: the account may have been refreshed by the
+    // background pass or another click while we were waiting.
+    let (latest, base) =
+        newest_account_credential(db, &load_official_account(db, account_id).await?).await?;
+    if !official_auth_needs_refresh(&base) {
+        return Ok(PreparedOfficialCredential {
+            account: latest,
+            auth: base,
+            runtime_written: false,
+        });
     }
-    let refresh_token = auth
-        .pointer("/tokens/refresh_token")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "Official account is missing refresh token".to_string())?;
-    let cached_response = OAUTH_REFRESH_CACHE
-        .lock()
-        .await
-        .get(refresh_token)
-        .filter(|(created_at, _)| created_at.elapsed() <= Duration::from_secs(30))
-        .map(|(_, response)| response.clone());
-    let refreshed_token_response = match cached_response {
-        Some(response) => response,
-        None => {
-            let response = refresh_oauth_token(db, refresh_token).await?;
-            OAUTH_REFRESH_CACHE.lock().await.insert(
-                refresh_token.to_string(),
-                (std::time::Instant::now(), response.clone()),
-            );
-            response
+    let next = exchange_official_auth_locked(db, &base, false).await?;
+    let account = persist_refreshed_account_snapshot(db, &latest, &next).await?;
+    let runtime_written = write_runtime_credential_if_still_applied(db, account_id, &next).await?;
+    Ok(PreparedOfficialCredential {
+        account,
+        auth: next,
+        runtime_written,
+    })
+}
+
+/// One controlled recovery after the usage endpoint rejected a credential:
+/// prefer a newer same-account runtime credential, otherwise force exactly one
+/// OAuth exchange. The exchange itself reports "sign in again" when the
+/// refresh token is gone or rejected.
+async fn recover_persisted_account_credential(
+    db: &SqliteDbState,
+    account_id: &str,
+    attempted_auth: &Value,
+) -> Result<PreparedOfficialCredential, String> {
+    let account = load_official_account(db, account_id).await?;
+    if account.is_applied {
+        if let Some(runtime_auth) = newer_runtime_credential(db, attempted_auth).await? {
+            let updated = persist_refreshed_account_snapshot(db, &account, &runtime_auth).await?;
+            return Ok(PreparedOfficialCredential {
+                account: updated,
+                auth: runtime_auth,
+                runtime_written: false,
+            });
         }
-    };
-    build_auth_snapshot(&refreshed_token_response, Some(auth))
+    }
+
+    let _refresh_guard = OAUTH_REFRESH_LOCK.lock().await;
+    let (latest, base) =
+        newest_account_credential(db, &load_official_account(db, account_id).await?).await?;
+    let next = exchange_official_auth_locked(db, &base, true).await?;
+    let updated = persist_refreshed_account_snapshot(db, &latest, &next).await?;
+    let runtime_written = write_runtime_credential_if_still_applied(db, account_id, &next).await?;
+    Ok(PreparedOfficialCredential {
+        account: updated,
+        auth: next,
+        runtime_written,
+    })
+}
+
+fn stored_auth_from_account(account: &CodexOfficialAccount) -> Result<Value, String> {
+    let snapshot = account
+        .auth_snapshot
+        .as_deref()
+        .filter(|snapshot| !snapshot.trim().is_empty())
+        .ok_or_else(|| "Official account snapshot is missing".to_string())?;
+    auth_json_from_snapshot(snapshot)
+}
+
+/// Writes a rotated credential into the runtime `auth.json`, but only while
+/// this account is still the applied one and the file still holds the same
+/// login. A concurrent account switch therefore never gets overwritten.
+async fn write_runtime_credential_if_still_applied(
+    db: &SqliteDbState,
+    account_id: &str,
+    next_auth: &Value,
+) -> Result<bool, String> {
+    let current_account = load_official_account(db, account_id).await?;
+    if !current_account.is_applied {
+        return Ok(false);
+    }
+    let current_auth = read_auth_json_from_disk(Some(db)).await?;
+    if !auth_has_official_runtime(&current_auth)
+        || !auth_identities_match(&current_auth, next_auth)
+    {
+        return Ok(false);
+    }
+    let merged = merge_official_runtime_auth(&current_auth, next_auth);
+    write_auth_json_to_disk(db, &merged).await?;
+    Ok(true)
+}
+
+/// Same guard for the `__local__` virtual account, whose runtime file *is* the
+/// credential. `previous_auth` identifies the login the read started from.
+async fn write_local_runtime_credential(
+    db: &SqliteDbState,
+    previous_auth: &Value,
+    next_auth: &Value,
+) -> Result<bool, String> {
+    let current_auth = read_auth_json_from_disk(Some(db)).await?;
+    if !auth_has_official_runtime(&current_auth)
+        || !auth_identities_match(previous_auth, &current_auth)
+    {
+        return Ok(false);
+    }
+    let merged = merge_official_runtime_auth(&current_auth, next_auth);
+    write_auth_json_to_disk(db, &merged).await?;
+    Ok(true)
 }
 
 fn auth_json_from_snapshot(snapshot: &str) -> Result<Value, String> {
@@ -616,12 +901,29 @@ fn parse_imported_auth_json(content: &str) -> Result<Value, String> {
     Ok(auth)
 }
 
+/// Test-only root override so credential flows can run against a temp dir
+/// without touching the global runtime-location cache.
+#[cfg(test)]
+static TEST_AUTH_ROOT: LazyLock<Mutex<Option<std::path::PathBuf>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+async fn codex_auth_root(db: Option<&crate::db::SqliteDbState>) -> Result<std::path::PathBuf, String> {
+    #[cfg(test)]
+    if let Some(root) = TEST_AUTH_ROOT
+        .lock()
+        .expect("test auth root lock")
+        .clone()
+    {
+        return Ok(root);
+    }
+    match db {
+        Some(db) => get_codex_root_dir_from_db_async(db).await,
+        None => get_codex_root_dir_without_db(),
+    }
+}
+
 async fn read_auth_json_from_disk(db: Option<&crate::db::SqliteDbState>) -> Result<Value, String> {
-    let root_dir = if let Some(db) = db {
-        get_codex_root_dir_from_db_async(db).await?
-    } else {
-        get_codex_root_dir_without_db()?
-    };
+    let root_dir = codex_auth_root(db).await?;
     let auth_path = root_dir.join("auth.json");
     if !auth_path.exists() {
         return Ok(serde_json::json!({}));
@@ -635,7 +937,7 @@ async fn write_auth_json_to_disk(
     db: &crate::db::SqliteDbState,
     auth: &Value,
 ) -> Result<(), String> {
-    let root_dir = get_codex_root_dir_from_db_async(db).await?;
+    let root_dir = codex_auth_root(Some(db)).await?;
     if !root_dir.exists() {
         fs::create_dir_all(&root_dir)
             .map_err(|error| format!("Failed to create Codex root directory: {error}"))?;
@@ -1388,16 +1690,34 @@ fn parse_usage_snapshot(body: &Value, plan_type: Option<&str>) -> UsageSnapshot 
     }
 }
 
-pub(crate) async fn fetch_usage_snapshot(
+/// Outcome of one usage request. The HTTP status is kept so the caller can
+/// distinguish "the token was rejected" from timeouts, rate limits and 5xx.
+struct UsageRequestError {
+    status: Option<u16>,
+    message: String,
+}
+
+impl UsageRequestError {
+    fn is_unauthorized(&self) -> bool {
+        self.status == Some(reqwest::StatusCode::UNAUTHORIZED.as_u16())
+    }
+}
+
+async fn request_usage_snapshot(
     db: &crate::db::SqliteDbState,
     access_token: &str,
     account_id: Option<&str>,
     plan_type: Option<&str>,
-) -> Result<UsageSnapshot, String> {
-    let client = crate::http_client::client_with_timeout(db, 20).await?;
+) -> Result<UsageSnapshot, UsageRequestError> {
+    let client = crate::http_client::client_with_timeout(db, 20)
+        .await
+        .map_err(|message| UsageRequestError {
+            status: None,
+            message,
+        })?;
 
     let mut request = client
-        .get(CODEX_USAGE_URL)
+        .get(codex_usage_url())
         .header("Authorization", format!("Bearer {access_token}"))
         .header(
             "User-Agent",
@@ -1411,18 +1731,37 @@ pub(crate) async fn fetch_usage_snapshot(
         request = request.header("Chatgpt-Account-Id", account_id);
     }
 
-    let response = request
-        .send()
-        .await
-        .map_err(|error| format!("Failed to fetch usage: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("Codex usage request failed: {error}"))?;
+    let response = request.send().await.map_err(|error| UsageRequestError {
+        status: None,
+        message: format!("Failed to fetch usage: {error}"),
+    })?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(UsageRequestError {
+            status: Some(status.as_u16()),
+            message: format!("Codex usage request failed: HTTP status {status}"),
+        });
+    }
 
     let body = response
         .json::<Value>()
         .await
-        .map_err(|error| format!("Failed to parse usage response: {error}"))?;
+        .map_err(|error| UsageRequestError {
+            status: Some(status.as_u16()),
+            message: format!("Failed to parse usage response: {error}"),
+        })?;
     Ok(parse_usage_snapshot(&body, plan_type))
+}
+
+pub(crate) async fn fetch_usage_snapshot(
+    db: &crate::db::SqliteDbState,
+    access_token: &str,
+    account_id: Option<&str>,
+    plan_type: Option<&str>,
+) -> Result<UsageSnapshot, String> {
+    request_usage_snapshot(db, access_token, account_id, plan_type)
+        .await
+        .map_err(|error| error.message)
 }
 
 fn build_account_content_from_auth_snapshot(
@@ -2234,58 +2573,16 @@ pub async fn refresh_applied_codex_accounts_if_needed(
 
     let mut wrote_runtime = false;
     for account in accounts {
-        let Some(snapshot) = account.auth_snapshot.as_deref() else {
-            continue;
-        };
-        let snapshot_auth = match auth_json_from_snapshot(snapshot) {
-            Ok(value) => value,
+        // The same preparation path a manual refresh uses: adopt a newer
+        // same-account runtime credential first, then exchange only when the
+        // chosen credential is inside the refresh window. Without this the pass
+        // would spend an older (possibly already rotated) refresh token and
+        // leave the database permanently behind the runtime.
+        match prepare_persisted_account_credential(db, &account.id).await {
+            Ok(prepared) => wrote_runtime |= prepared.runtime_written,
             Err(error) => {
                 log::debug!(
-                    "Codex official account '{}' snapshot parse failed: {error}",
-                    account.id
-                );
-                continue;
-            }
-        };
-        match ensure_fresh_official_runtime_auth(db, &snapshot_auth).await {
-            Ok(refreshed) => {
-                if refreshed != snapshot_auth {
-                    if let Err(error) =
-                        persist_refreshed_account_snapshot(db, &account, &refreshed).await
-                    {
-                        log::debug!(
-                            "Codex official account '{}' persist failed: {error}",
-                            account.id
-                        );
-                        continue;
-                    }
-                    if !account.is_applied {
-                        continue;
-                    }
-                    match read_auth_json_from_disk(Some(db)).await {
-                        Ok(current_auth) => {
-                            let merged = merge_official_runtime_auth(&current_auth, &refreshed);
-                            if let Err(error) = write_auth_json_to_disk(db, &merged).await {
-                                log::debug!(
-                                    "Codex official account '{}' runtime write failed: {error}",
-                                    account.id
-                                );
-                            } else {
-                                wrote_runtime = true;
-                            }
-                        }
-                        Err(error) => {
-                            log::debug!(
-                                "Codex official account '{}' runtime read failed: {error}",
-                                account.id
-                            );
-                        }
-                    }
-                }
-            }
-            Err(error) => {
-                log::debug!(
-                    "Codex official account '{}' ensure_fresh failed: {error}",
+                    "Codex official account '{}' refresh failed: {error}",
                     account.id
                 );
             }
@@ -2304,6 +2601,7 @@ pub async fn refresh_applied_codex_accounts_if_needed(
 #[tauri::command]
 pub async fn refresh_codex_official_account_limits(
     state: tauri::State<'_, SqliteDbState>,
+    app: tauri::AppHandle,
     provider_id: String,
     account_id: String,
 ) -> Result<CodexOfficialAccount, String> {
@@ -2315,38 +2613,16 @@ pub async fn refresh_codex_official_account_limits(
     }
 
     if account_id == LOCAL_OFFICIAL_ACCOUNT_ID {
-        let auth = read_auth_json_from_disk(Some(&db)).await?;
-        if !auth_has_official_runtime(&auth) {
-            return Err(
-                "Current local auth.json does not contain an official Codex login".to_string(),
-            );
-        }
-        let access_token = auth
-            .pointer("/tokens/access_token")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "Local official auth is missing access token".to_string())?;
-        let plan_type = usage_plan_type_from_auth(&auth);
-        let usage_account_id = usage_account_id_from_auth(&auth);
-        let usage_snapshot = fetch_usage_snapshot(
-            &db,
-            access_token,
-            usage_account_id.as_deref(),
-            plan_type.as_deref(),
-        )
-        .await?;
-        let mut account = assign_provider_id(build_virtual_local_account(&auth), &provider_id);
-        account.limit_short_label = usage_snapshot.limit_short_label;
-        account.limit_5h_text = usage_snapshot.limit_5h_text;
-        account.limit_weekly_text = usage_snapshot.limit_weekly_text;
-        account.limit_monthly_text = usage_snapshot.limit_monthly_text;
-        account.limit_5h_reset_at = usage_snapshot.limit_5h_reset_at;
-        account.limit_weekly_reset_at = usage_snapshot.limit_weekly_reset_at;
-        account.limit_monthly_reset_at = usage_snapshot.limit_monthly_reset_at;
-        account.reset_credits_available = usage_snapshot.reset_credits_available;
-        account.credits = usage_snapshot.credits;
+        let prepared = refresh_local_account_usage(&db).await?;
+        // Built from the credential that answered the request: re-reading the
+        // file could pick up a login the user switched to mid-refresh.
+        let mut account =
+            assign_provider_id(build_virtual_local_account(&prepared.credential), &provider_id);
+        apply_usage_snapshot_to_account(&mut account, &prepared.usage);
         account.last_limits_fetched_at = Some(Local::now().to_rfc3339());
+        if prepared.runtime_written {
+            emit_runtime_credential_changed(&app);
+        }
         return Ok(account);
     }
 
@@ -2354,42 +2630,212 @@ pub async fn refresh_codex_official_account_limits(
     if account.provider_id != provider_id {
         return Err("Official account does not belong to the selected provider".to_string());
     }
-    refresh_persisted_account_usage(&db, &account).await
+    let (refreshed, runtime_written) =
+        refresh_persisted_account_usage(&db, &account.id).await?;
+    if runtime_written {
+        emit_runtime_credential_changed(&app);
+    }
+    Ok(refreshed)
 }
 
+/// The live `auth.json` now holds a rotated credential, so the same consumers
+/// as apply need to be told (tray + WSL sync target).
+fn emit_runtime_credential_changed(app: &tauri::AppHandle) {
+    let _ = app.emit("config-changed", "window");
+    #[cfg(target_os = "windows")]
+    let _ = app.emit("wsl-sync-request-codex", ());
+}
+
+fn apply_usage_snapshot_to_account(account: &mut CodexOfficialAccount, usage: &UsageSnapshot) {
+    account.limit_short_label = usage.limit_short_label.clone();
+    account.limit_5h_text = usage.limit_5h_text.clone();
+    account.limit_weekly_text = usage.limit_weekly_text.clone();
+    account.limit_monthly_text = usage.limit_monthly_text.clone();
+    account.limit_5h_reset_at = usage.limit_5h_reset_at;
+    account.limit_weekly_reset_at = usage.limit_weekly_reset_at;
+    account.limit_monthly_reset_at = usage.limit_monthly_reset_at;
+    account.reset_credits_available = usage.reset_credits_available;
+    account.credits = usage.credits.clone();
+}
+
+/// What a `__local__` refresh produced: the credential that answered, its
+/// usage, and whether the runtime file was rewritten.
+struct LocalUsageResult {
+    credential: Value,
+    usage: UsageSnapshot,
+    runtime_written: bool,
+}
+
+/// Usage for the `__local__` virtual account. The runtime credential is rotated
+/// and written back like any applied account: it *is* the login.
+async fn refresh_local_account_usage(db: &SqliteDbState) -> Result<LocalUsageResult, String> {
+    let auth = read_auth_json_from_disk(Some(db)).await?;
+    if !auth_has_official_runtime(&auth) {
+        return Err(
+            "Current local auth.json does not contain an official Codex login".to_string(),
+        );
+    }
+    let (mut credential, mut runtime_written) = prepare_local_credential(db, &auth, false).await?;
+    match request_usage_from_local(db, &credential).await {
+        Ok(usage) => Ok(LocalUsageResult {
+            credential,
+            usage,
+            runtime_written,
+        }),
+        // A 401 on an unexpired token still deserves one forced exchange: the
+        // server may have revoked it early. Any other status keeps its meaning.
+        Err(error) if error.is_unauthorized() => {
+            let (next, forced_written) = prepare_local_credential(db, &credential, true).await?;
+            credential = next;
+            runtime_written |= forced_written;
+            request_usage_from_local(db, &credential)
+                .await
+                .map(|usage| LocalUsageResult {
+                    credential,
+                    usage,
+                    runtime_written,
+                })
+                .map_err(|error| {
+                    if error.is_unauthorized() {
+                        codex_reauth_error("the usage endpoint keeps rejecting the credential")
+                    } else {
+                        error.message
+                    }
+                })
+        }
+        Err(error) => Err(error.message),
+    }
+}
+
+async fn request_usage_from_local(
+    db: &SqliteDbState,
+    credential: &Value,
+) -> Result<UsageSnapshot, UsageRequestError> {
+    let access_token = access_token_from_auth(credential).map_err(|message| UsageRequestError {
+        status: None,
+        message,
+    })?;
+    request_usage_snapshot(
+        db,
+        access_token,
+        usage_account_id_from_auth(credential).as_deref(),
+        usage_plan_type_from_auth(credential).as_deref(),
+    )
+    .await
+}
+
+/// Local runtime credential, refreshed when due (or forced after a 401) and
+/// written back before any usage request. Returns it with the write flag.
+async fn prepare_local_credential(
+    db: &SqliteDbState,
+    auth: &Value,
+    force: bool,
+) -> Result<(Value, bool), String> {
+    if !force && !official_auth_needs_refresh(auth) {
+        return Ok((auth.clone(), false));
+    }
+    let _refresh_guard = OAUTH_REFRESH_LOCK.lock().await;
+    let latest = read_auth_json_from_disk(Some(db)).await?;
+    // Re-read under the lock so a concurrent rotation is not consumed twice.
+    if !auth_has_official_runtime(&latest) || !auth_identities_match(auth, &latest) {
+        // The user switched the runtime login while we were working. Rotating
+        // the old account's refresh token now would invalidate it for nothing
+        // and the answer would belong to a row that is no longer on screen.
+        return Err("The local Codex login changed during the refresh; retry".to_string());
+    }
+    let next = exchange_official_auth_locked(db, &latest, force).await?;
+    let written = if next != latest {
+        write_local_runtime_credential(db, &latest, &next).await?
+    } else {
+        false
+    };
+    Ok((next, written))
+}
+
+fn access_token_from_auth(auth: &Value) -> Result<&str, String> {
+    auth.pointer("/tokens/access_token")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Official account is missing access token".to_string())
+}
+
+/// One manual refresh for a stored account.
+///
+/// Credential preparation runs first, so the request never carries the stale
+/// SQLite token while the runtime already holds a newer one. A 401 gets exactly
+/// one recovery attempt (adopt a newer same-account credential, otherwise force
+/// one OAuth exchange) and then one retry — never a loop.
+/// Returns the refreshed row and whether the runtime `auth.json` was rewritten
+/// (the caller then emits the same sync events as apply).
 async fn refresh_persisted_account_usage(
     db: &SqliteDbState,
-    account: &CodexOfficialAccount,
-) -> Result<CodexOfficialAccount, String> {
+    account_id: &str,
+) -> Result<(CodexOfficialAccount, bool), String> {
     // Preparation errors invalidate cached credits just like HTTP errors do.
-    let result = async {
-        let snapshot = account
-            .auth_snapshot
-            .as_deref()
-            .ok_or_else(|| "Official account snapshot is missing".to_string())?;
-        let auth_snapshot = auth_json_from_snapshot(snapshot)?;
-        let access_token = auth_snapshot
-            .pointer("/tokens/access_token")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "Official account is missing access token".to_string())?;
-        let usage_account_id = account
-            .account_id
-            .clone()
-            .or_else(|| usage_account_id_from_auth(&auth_snapshot));
-        let usage_snapshot = fetch_usage_snapshot(
-            db,
-            access_token,
-            usage_account_id.as_deref(),
-            account.plan_type.as_deref(),
-        )
-        .await;
+    let (result, runtime_written) = refresh_account_usage_inner(db, account_id).await;
+    let account = persist_usage_result(db, account_id, result).await?;
+    Ok((account, runtime_written))
+}
 
-        usage_snapshot
-    }
-    .await;
-    persist_usage_result(db, &account.id, result).await
+async fn refresh_account_usage_inner(
+    db: &SqliteDbState,
+    account_id: &str,
+) -> (Result<UsageSnapshot, String>, bool) {
+    let prepared = match prepare_persisted_account_credential(db, account_id).await {
+        Ok(prepared) => prepared,
+        Err(error) => return (Err(error), false),
+    };
+    let mut runtime_written = prepared.runtime_written;
+    let result = match request_usage_from_prepared(db, &prepared).await {
+        Ok(snapshot) => Ok(snapshot),
+        Err(error) if error.is_unauthorized() => {
+            match recover_persisted_account_credential(db, account_id, &prepared.auth).await {
+                Ok(recovered) => {
+                    runtime_written |= recovered.runtime_written;
+                    request_usage_from_prepared(db, &recovered)
+                        .await
+                        .map_err(|retry| {
+                            if retry.is_unauthorized() {
+                                codex_reauth_error(
+                                    "the usage endpoint keeps rejecting the credential",
+                                )
+                            } else {
+                                retry.message
+                            }
+                        })
+                }
+                Err(error) => Err(error),
+            }
+        }
+        Err(error) => Err(error.message),
+    };
+    (result, runtime_written)
+}
+
+async fn request_usage_from_prepared(
+    db: &SqliteDbState,
+    prepared: &PreparedOfficialCredential,
+) -> Result<UsageSnapshot, UsageRequestError> {
+    // Account id and plan type come from the credential actually used, so a
+    // recovered token never travels with the previous login's context.
+    let usage_account_id = usage_account_id_from_auth(&prepared.auth)
+        .or_else(|| prepared.account.account_id.clone());
+    let plan_type = usage_plan_type_from_auth(&prepared.auth)
+        .or_else(|| prepared.account.plan_type.clone());
+    let access_token = access_token_from_auth(&prepared.auth).map_err(|message| {
+        UsageRequestError {
+            status: None,
+            message,
+        }
+    })?;
+    request_usage_snapshot(
+        db,
+        access_token,
+        usage_account_id.as_deref(),
+        plan_type.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2595,9 +3041,21 @@ mod tests {
         }), None);
         for auth_snapshot in [None, Some("not-json"), Some("{}"), Some(r#"{"tokens":{"access_token":" "}}"#)] {
             let content = build_account_content_from_auth_snapshot("provider-a", &auth, Some(&snapshot), None).unwrap();
-            let mut account = save_official_account(&db, &content).await.unwrap();
-            account.auth_snapshot = auth_snapshot.map(str::to_string);
-            assert!(refresh_persisted_account_usage(&db, &account).await.is_err());
+            let account = save_official_account(&db, &content).await.unwrap();
+            // The refresh path re-reads the row, so the bad snapshot must be stored.
+            db.with_conn(|conn| {
+                db_patch_fields(
+                    conn,
+                    DbTable::CodexOfficialAccount,
+                    &account.id,
+                    &[("auth_snapshot", auth_snapshot.map(|value| Value::String(value.to_string())).unwrap_or(Value::Null))],
+                )
+                .map(|_| ())
+            })
+            .unwrap();
+            assert!(refresh_persisted_account_usage(&db, &account.id)
+                .await
+                .is_err());
             let stored = load_official_account(&db, &account.id).await.unwrap();
             assert_eq!(stored.credits, None);
             assert!(stored.last_error.is_some());
@@ -3306,4 +3764,972 @@ pub async fn sync_codex_official_account_apply_status(
         .map(|account| account.id.clone());
 
     update_official_account_apply_status(db, matched_account_id.as_deref()).await
+}
+
+/// Regression suite for issue #440: credential selection, rotation persistence
+/// and the bounded 401 recovery of Codex usage refreshes.
+///
+/// Everything runs against a local mock server plus a temp Codex root, so no
+/// real account or network is involved. `TEST_GUARD` serializes the tests
+/// because `TEST_ENDPOINTS` and `TEST_AUTH_ROOT` are process-wide.
+#[cfg(test)]
+mod usage_credential_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    static TEST_GUARD: LazyLock<tokio::sync::Mutex<()>> =
+        LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+    /// One captured HTTP request against the mock server.
+    #[derive(Debug, Clone)]
+    struct MockRequest {
+        path: String,
+        headers: String,
+        body: String,
+    }
+
+    impl MockRequest {
+        fn header(&self, name: &str) -> Option<String> {
+            let needle = format!("{}:", name.to_ascii_lowercase());
+            self.headers
+                .lines()
+                .find_map(|line| line.to_ascii_lowercase().starts_with(&needle).then(|| {
+                    line.split_once(':')
+                        .map(|(_, value)| value.trim().to_string())
+                        .unwrap_or_default()
+                }))
+        }
+    }
+
+    struct MockReply {
+        status: u16,
+        body: String,
+    }
+
+    /// Distinct email per account id keeps the identity checks meaningful: with
+    /// a shared address every synthetic account would "match" every other one.
+    fn test_id_token(account_id: &str) -> String {
+        let payload = serde_json::json!({
+            "email": format!("{account_id}@example.com"),
+            "https://api.openai.com/auth": { "chatgpt_account_id": account_id }
+        });
+        format!(
+            "e30.{}.sig",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(serde_json::to_vec(&payload).expect("serialize JWT payload"))
+        )
+    }
+
+    fn usage_body(used_percent: f64) -> String {
+        serde_json::json!({
+            "rate_limit": {"primary_window": {
+                "used_percent": used_percent, "limit_window_seconds": WEEK_WINDOW_SECONDS
+            }},
+            "credits": {"has_credits": true, "balance": "12"}
+        })
+        .to_string()
+    }
+
+    fn token_body(access: &str, refresh: &str) -> String {
+        serde_json::json!({
+            "access_token": access,
+            "refresh_token": refresh,
+            "id_token": test_id_token("account-a")
+        })
+        .to_string()
+    }
+
+    /// Serves `replies.len()` requests in order on a background thread.
+    struct MockServer {
+        usage_url: String,
+        token_url: String,
+        requests: Arc<std::sync::Mutex<Vec<MockRequest>>>,
+        usage_count: Arc<AtomicUsize>,
+        token_count: Arc<AtomicUsize>,
+        stopped: Arc<std::sync::atomic::AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl MockServer {
+        fn start(usage_replies: Vec<MockReply>, token_replies: Vec<MockReply>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+            let address = listener.local_addr().expect("mock address");
+            let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let usage_count = Arc::new(AtomicUsize::new(0));
+            let token_count = Arc::new(AtomicUsize::new(0));
+            let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let expected = usage_replies.len() + token_replies.len();
+            let requests_thread = requests.clone();
+            let usage_thread = usage_count.clone();
+            let token_thread = token_count.clone();
+            let stopped_thread = stopped.clone();
+            let handle = std::thread::spawn(move || {
+                listener
+                    .set_nonblocking(true)
+                    .expect("mock listener nonblocking");
+                // A client making fewer calls than budgeted must fail its own
+                // assertion instead of hanging teardown, so the wait is bounded
+                // and teardown can stop the loop early.
+                let deadline = std::time::Instant::now() + Duration::from_secs(20);
+                let mut served = 0;
+                while served < expected
+                    && !stopped_thread.load(Ordering::SeqCst)
+                    && std::time::Instant::now() < deadline
+                {
+                    let Ok((mut socket, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    };
+                    // Accepted sockets inherit the listener's nonblocking mode on
+                    // Windows; reads must block or the request looks empty.
+                    socket
+                        .set_nonblocking(false)
+                        .expect("mock socket blocking");
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(10)))
+                        .expect("mock read timeout");
+                    let Some(request) = read_http_request(&mut socket) else {
+                        continue;
+                    };
+                    let (status, body) = if request.path.contains("/oauth/token") {
+                        let index = token_thread.fetch_add(1, Ordering::SeqCst);
+                        let reply = &token_replies[index];
+                        (reply.status, reply.body.clone())
+                    } else {
+                        let index = usage_thread.fetch_add(1, Ordering::SeqCst);
+                        let reply = &usage_replies[index];
+                        (reply.status, reply.body.clone())
+                    };
+                    requests_thread.lock().expect("requests lock").push(request);
+                    served += 1;
+                    let _ = write!(
+                        socket,
+                        "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                }
+            });
+            Self {
+                usage_url: format!("http://{address}/backend-api/wham/usage"),
+                token_url: format!("http://{address}/oauth/token"),
+                requests,
+                usage_count,
+                token_count,
+                stopped,
+                handle: Some(handle),
+            }
+        }
+
+        fn requests(&self) -> Vec<MockRequest> {
+            self.requests.lock().expect("requests lock").clone()
+        }
+
+        fn usage_calls(&self) -> usize {
+            self.usage_count.load(Ordering::SeqCst)
+        }
+
+        fn token_calls(&self) -> usize {
+            self.token_count.load(Ordering::SeqCst)
+        }
+
+        fn authorization_headers(&self) -> Vec<String> {
+            self.requests()
+                .into_iter()
+                .filter(|request| !request.path.contains("/oauth/token"))
+                .filter_map(|request| request.header("Authorization"))
+                .collect()
+        }
+
+        /// Form bodies of the OAuth exchange requests, in order.
+        fn token_request_bodies(&self) -> Vec<String> {
+            self.requests()
+                .into_iter()
+                .filter(|request| request.path.contains("/oauth/token"))
+                .map(|request| request.body)
+                .collect()
+        }
+    }
+
+    impl Drop for MockServer {
+        fn drop(&mut self) {
+            self.stopped.store(true, Ordering::SeqCst);
+            if let Some(handle) = self.handle.take() {
+                // The listener lives inside the thread, so the signal plus the
+                // short sleep in the accept loop is what releases it.
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn read_http_request(socket: &mut std::net::TcpStream) -> Option<MockRequest> {
+        let mut bytes = Vec::new();
+        let mut buffer = [0u8; 4096];
+        let header_end = loop {
+            let count = socket.read(&mut buffer).ok()?;
+            if count == 0 {
+                return None;
+            }
+            bytes.extend_from_slice(&buffer[..count]);
+            if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                break index + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&bytes[..header_end]).to_string();
+        let length = headers
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .map(|value| value.trim().parse::<usize>().unwrap_or(0))
+            })
+            .unwrap_or(0);
+        while bytes.len() < header_end + length {
+            let count = socket.read(&mut buffer).ok()?;
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..count]);
+        }
+        let path = headers
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .unwrap_or_default()
+            .to_string();
+        Some(MockRequest {
+            path,
+            headers,
+            body: String::from_utf8_lossy(&bytes[header_end..]).to_string(),
+        })
+    }
+
+    fn reply(status: u16, body: impl Into<String>) -> MockReply {
+        MockReply {
+            status,
+            body: body.into(),
+        }
+    }
+
+    fn ok_usage(used_percent: f64) -> MockReply {
+        reply(200, usage_body(used_percent))
+    }
+
+    /// JWT-shaped token whose `exp` is `offset_seconds` from now.
+    fn token(suffix: &str, offset_seconds: i64) -> String {
+        let expiration = chrono::Utc::now().timestamp() + offset_seconds;
+        let payload = serde_json::json!({ "exp": expiration, "sub": suffix });
+        format!(
+            "e30.{}.{suffix}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(serde_json::to_vec(&payload).unwrap())
+        )
+    }
+
+    fn auth_with(
+        access_token: &str,
+        refresh_token: &str,
+        account_id: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "auth_mode": "chatgpt",
+            "last_refresh": "2026-01-01T00:00:00Z",
+            "tokens": {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "id_token": test_id_token(account_id),
+                "account_id": account_id,
+            }
+        })
+    }
+
+    struct TestEnv {
+        _root: tempfile::TempDir,
+        db: SqliteDbState,
+        provider_id: String,
+    }
+
+    impl TestEnv {
+        fn new() -> Self {
+            let root = tempfile::tempdir().expect("temp codex root");
+            *TEST_AUTH_ROOT.lock().expect("test auth root lock") = Some(root.path().to_path_buf());
+            let db = SqliteDbState::in_memory_for_test().expect("in-memory db");
+            // A direct proxy keeps reqwest from picking up env proxies for the
+            // loopback mock server.
+            db.with_conn(|conn| {
+                db_put(conn, DbTable::Settings, "app", &serde_json::json!({"proxy_mode": "direct"}))
+            })
+            .expect("settings");
+            let provider_id = "provider-a".to_string();
+            db.with_conn(|conn| {
+                db_put(
+                    conn,
+                    DbTable::CodexProvider,
+                    &provider_id,
+                    &serde_json::json!({"category": "official", "name": "Official"}),
+                )
+            })
+            .expect("provider");
+            Self {
+                _root: root,
+                db,
+                provider_id,
+            }
+        }
+
+        fn write_runtime_auth(&self, auth: &serde_json::Value) {
+            std::fs::write(
+                self._root.path().join("auth.json"),
+                serde_json::to_string_pretty(auth).unwrap(),
+            )
+            .expect("write runtime auth");
+        }
+
+        fn read_runtime_auth(&self) -> serde_json::Value {
+            std::fs::read_to_string(self._root.path().join("auth.json"))
+                .ok()
+                .and_then(|content| serde_json::from_str(&content).ok())
+                .unwrap_or_else(|| serde_json::json!({}))
+        }
+
+        async fn save_account(&self, auth: &serde_json::Value, applied: bool) -> CodexOfficialAccount {
+            let mut content = build_account_content_from_auth_snapshot(
+                &self.provider_id,
+                auth,
+                None,
+                None,
+            )
+            .expect("account content");
+            content.is_applied = applied;
+            save_official_account(&self.db, &content)
+                .await
+                .expect("save account")
+        }
+
+        async fn refresh(&self, account_id: &str) -> Result<CodexOfficialAccount, String> {
+            refresh_persisted_account_usage(&self.db, account_id)
+                .await
+                .map(|(account, _)| account)
+        }
+
+        async fn stored_snapshot(&self, account_id: &str) -> serde_json::Value {
+            let account = load_official_account(&self.db, account_id)
+                .await
+                .expect("load account");
+            auth_json_from_snapshot(account.auth_snapshot.as_deref().unwrap()).expect("snapshot")
+        }
+    }
+
+    impl Drop for TestEnv {
+        fn drop(&mut self) {
+            *TEST_AUTH_ROOT.lock().expect("test auth root lock") = None;
+            clear_test_endpoints();
+            // The 30s refresh cache is keyed by refresh token and process-wide;
+            // a leftover entry would let a later test skip its OAuth exchange.
+            if let Ok(mut cache) = OAUTH_REFRESH_CACHE.try_lock() {
+                cache.clear();
+            }
+        }
+    }
+
+    /// Scenario 1: usable stored credential, outside the refresh window.
+    #[tokio::test]
+    async fn usable_stored_credential_skips_exchange_and_persists_usage() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let server = MockServer::start(vec![ok_usage(25.0)], Vec::new());
+        set_test_endpoints(&server.usage_url, &server.token_url);
+
+        let access = token("access-a", 30 * 24 * 60 * 60);
+        let account = env
+            .save_account(&auth_with(&access, "refresh-a", "account-a"), false)
+            .await;
+        let refreshed = env.refresh(&account.id).await.expect("refresh");
+
+        assert_eq!(server.usage_calls(), 1);
+        assert_eq!(server.token_calls(), 0, "no OAuth exchange when the token is fresh");
+        assert_eq!(server.authorization_headers(), vec![format!("Bearer {access}")]);
+        assert_eq!(refreshed.limit_weekly_text.as_deref(), Some("75%"));
+        assert_eq!(refreshed.last_error, None);
+        assert!(refreshed.last_limits_fetched_at.is_some());
+    }
+
+    /// Scenario 2: stored token expired; usage must wait for the rotation.
+    #[tokio::test]
+    async fn expired_stored_credential_is_rotated_before_usage() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let fresh_access = token("access-new", 30 * 24 * 60 * 60);
+        let server = MockServer::start(
+            vec![ok_usage(10.0)],
+            vec![reply(200, token_body(&fresh_access, "refresh-new"))],
+        );
+        set_test_endpoints(&server.usage_url, &server.token_url);
+
+        let expired = token("access-old", -3600);
+        let account = env
+            .save_account(&auth_with(&expired, "refresh-old", "account-a"), false)
+            .await;
+        env.refresh(&account.id).await.expect("refresh");
+
+        assert_eq!(server.token_calls(), 1);
+        // The exchange must consume the stored refresh token, not a stale one.
+        assert!(server.token_request_bodies()[0].contains("refresh-old"));
+        assert_eq!(server.usage_calls(), 1);
+        assert_eq!(
+            server.authorization_headers(),
+            vec![format!("Bearer {fresh_access}")]
+        );
+        let stored = env.stored_snapshot(&account.id).await;
+        assert_eq!(stored["tokens"]["access_token"], fresh_access);
+        assert_eq!(stored["tokens"]["refresh_token"], "refresh-new");
+        // Not applied: the runtime file must stay untouched.
+        assert_eq!(env.read_runtime_auth(), serde_json::json!({}));
+    }
+
+    /// Scenario 3: stored token expired, same-account runtime token still valid.
+    #[tokio::test]
+    async fn applied_account_adopts_newer_same_account_runtime_credential() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let server = MockServer::start(vec![ok_usage(20.0)], Vec::new());
+        set_test_endpoints(&server.usage_url, &server.token_url);
+
+        let runtime_access = token("access-runtime", 10 * 24 * 60 * 60);
+        let runtime_auth = auth_with(&runtime_access, "refresh-runtime", "account-a");
+        let account = env
+            .save_account(
+                &auth_with(&token("access-stored", -3600), "refresh-stored", "account-a"),
+                true,
+            )
+            .await;
+        env.write_runtime_auth(&runtime_auth);
+
+        env.refresh(&account.id).await.expect("refresh");
+
+        assert_eq!(server.token_calls(), 0, "the runtime credential is used as-is");
+        assert_eq!(
+            server.authorization_headers(),
+            vec![format!("Bearer {runtime_access}")]
+        );
+        let stored = env.stored_snapshot(&account.id).await;
+        assert_eq!(stored["tokens"]["access_token"], runtime_access);
+        assert_eq!(stored["tokens"]["refresh_token"], "refresh-runtime");
+    }
+
+    /// Scenario 4: the runtime file belongs to a different login.
+    #[tokio::test]
+    async fn runtime_credential_of_another_account_is_never_borrowed() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let server = MockServer::start(vec![ok_usage(30.0)], Vec::new());
+        set_test_endpoints(&server.usage_url, &server.token_url);
+
+        let other_access = token("access-other", 20 * 24 * 60 * 60);
+        let other_auth = auth_with(&other_access, "refresh-other", "account-b");
+        let target_access = token("access-target", 20 * 24 * 60 * 60);
+        let account = env
+            .save_account(
+                &auth_with(&target_access, "refresh-target", "account-a"),
+                true,
+            )
+            .await;
+        env.write_runtime_auth(&other_auth);
+
+        env.refresh(&account.id).await.expect("refresh");
+
+        assert_eq!(
+            server.authorization_headers(),
+            vec![format!("Bearer {target_access}")]
+        );
+        assert_eq!(server.token_calls(), 0);
+        assert_eq!(
+            env.read_runtime_auth(),
+            other_auth,
+            "another account's runtime login must be left alone"
+        );
+        assert_eq!(
+            env.stored_snapshot(&account.id).await["tokens"]["access_token"],
+            target_access
+        );
+    }
+
+    /// Scenario 5: refreshing an unapplied account must not touch live state.
+    #[tokio::test]
+    async fn refreshing_unapplied_account_leaves_runtime_login_untouched() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let server = MockServer::start(vec![ok_usage(40.0)], Vec::new());
+        set_test_endpoints(&server.usage_url, &server.token_url);
+
+        let live_auth = auth_with(
+            &token("access-live", 20 * 24 * 60 * 60),
+            "refresh-live",
+            "account-a",
+        );
+        env.write_runtime_auth(&live_auth);
+        let account = env
+            .save_account(
+                &auth_with(
+                    &token("access-stored", 20 * 24 * 60 * 60),
+                    "refresh-stored",
+                    "account-a",
+                ),
+                false,
+            )
+            .await;
+
+        env.refresh(&account.id).await.expect("refresh");
+
+        assert_eq!(server.token_calls(), 0);
+        assert_eq!(env.read_runtime_auth(), live_auth);
+        assert_eq!(
+            env.stored_snapshot(&account.id).await["tokens"]["access_token"],
+            token("access-stored", 20 * 24 * 60 * 60)
+        );
+    }
+
+    /// Scenario 6: unexpired token rejected once — force exactly one exchange.
+    #[tokio::test]
+    async fn unexpired_token_rejected_with_401_triggers_one_forced_recovery() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let rotated_access = token("access-rotated", 30 * 24 * 60 * 60);
+        let server = MockServer::start(
+            vec![reply(401, "{}"), ok_usage(15.0)],
+            vec![reply(200, token_body(&rotated_access, "refresh-rotated"))],
+        );
+        set_test_endpoints(&server.usage_url, &server.token_url);
+
+        let original_access = token("access-original", 20 * 24 * 60 * 60);
+        let account = env
+            .save_account(&auth_with(&original_access, "refresh-original", "account-a"), false)
+            .await;
+
+        env.refresh(&account.id).await.expect("refresh after recovery");
+
+        assert_eq!(server.usage_calls(), 2, "one retry, not a loop");
+        assert_eq!(server.token_calls(), 1);
+        assert_eq!(
+            server.authorization_headers(),
+            vec![
+                format!("Bearer {original_access}"),
+                format!("Bearer {rotated_access}")
+            ]
+        );
+        let stored = env.stored_snapshot(&account.id).await;
+        assert_eq!(stored["tokens"]["access_token"], rotated_access);
+        assert_eq!(stored["tokens"]["refresh_token"], "refresh-rotated");
+    }
+
+    /// Scenario 7: recovery is bounded; the second 401 asks for reauth.
+    #[tokio::test]
+    async fn second_401_after_recovery_reports_reauth_without_looping() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let rotated_access = token("access-rotated", 30 * 24 * 60 * 60);
+        let server = MockServer::start(
+            vec![reply(401, "{}"), reply(401, "{}")],
+            vec![reply(200, token_body(&rotated_access, "refresh-rotated"))],
+        );
+        set_test_endpoints(&server.usage_url, &server.token_url);
+
+        let account = env
+            .save_account(
+                &auth_with(&token("access-original", 20 * 24 * 60 * 60), "refresh-original", "account-a"),
+                false,
+            )
+            .await;
+
+        let error = env.refresh(&account.id).await.expect_err("still unauthorized");
+
+        assert!(error.contains(CODEX_REAUTH_REQUIRED_MARKER), "{error}");
+        assert_eq!(server.usage_calls(), 2);
+        assert_eq!(server.token_calls(), 1);
+        let stored = load_official_account(&env.db, &account.id).await.unwrap();
+        assert_eq!(stored.last_error.as_deref(), Some(error.as_str()));
+        // Neither a success nor a new balance: the usage windows stay as they were.
+        assert_eq!(stored.credits, None);
+        assert_eq!(stored.limit_weekly_text, None);
+    }
+
+    /// Scenario 8: the refresh token itself is rejected.
+    #[tokio::test]
+    async fn rejected_refresh_token_reports_reauth_and_keeps_the_account() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let server = MockServer::start(
+            vec![reply(401, "{}")],
+            vec![reply(400, r#"{"error":"invalid_grant"}"#)],
+        );
+        set_test_endpoints(&server.usage_url, &server.token_url);
+
+        let original = auth_with(
+            &token("access-original", 20 * 24 * 60 * 60),
+            "refresh-original",
+            "account-a",
+        );
+        let account = env.save_account(&original, false).await;
+
+        let error = env.refresh(&account.id).await.expect_err("reauth required");
+
+        assert!(error.contains(CODEX_REAUTH_REQUIRED_MARKER), "{error}");
+        assert_eq!(server.usage_calls(), 1);
+        assert_eq!(server.token_calls(), 1);
+        let stored = load_official_account(&env.db, &account.id).await.unwrap();
+        assert_eq!(
+            stored.auth_snapshot.as_deref().map(auth_json_from_snapshot),
+            Some(Ok(original)),
+            "the account record survives a reauth error"
+        );
+        assert!(stored.last_error.is_some());
+    }
+
+    /// Scenario 8b: an account stored without a refresh token.
+    #[tokio::test]
+    async fn missing_refresh_token_reports_reauth_without_any_request() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let server = MockServer::start(Vec::new(), Vec::new());
+        set_test_endpoints(&server.usage_url, &server.token_url);
+        let mut auth = auth_with(&token("access-a", -3600), "", "account-a");
+        auth["tokens"]
+            .as_object_mut()
+            .unwrap()
+            .remove("refresh_token");
+
+        let account = env.save_account(&auth, false).await;
+        let error = env.refresh(&account.id).await.expect_err("no refresh token");
+
+        assert!(error.contains(CODEX_REAUTH_REQUIRED_MARKER), "{error}");
+        assert_eq!(server.usage_calls(), 0);
+        assert_eq!(server.token_calls(), 0);
+    }
+
+    /// Scenario 8c: an unapplied account is refreshed by the background pass too.
+    #[tokio::test]
+    async fn background_pass_persists_a_non_applied_account_rotation() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let fresh_access = token("access-new", 30 * 24 * 60 * 60);
+        let server = MockServer::start(
+            Vec::new(),
+            vec![reply(200, token_body(&fresh_access, "refresh-new"))],
+        );
+        set_test_endpoints(&server.usage_url, &server.token_url);
+        let account = env
+            .save_account(
+                &auth_with(&token("access-old", -3600), "refresh-old", "account-a"),
+                false,
+            )
+            .await;
+
+        let prepared = prepare_persisted_account_credential(&env.db, &account.id)
+            .await
+            .expect("background preparation");
+
+        assert_eq!(server.token_calls(), 1);
+        assert_eq!(prepared.auth["tokens"]["refresh_token"], "refresh-new");
+        assert!(!prepared.runtime_written);
+        assert_eq!(
+            env.stored_snapshot(&account.id).await["tokens"]["refresh_token"],
+            "refresh-new"
+        );
+    }
+
+    /// Scenario 9: rotation persists even when the usage call afterwards fails.
+    #[tokio::test]
+    async fn rotated_credential_is_persisted_before_a_failing_usage_call() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let fresh_access = token("access-new", 30 * 24 * 60 * 60);
+        let server = MockServer::start(
+            vec![reply(500, "{}")],
+            vec![reply(200, token_body(&fresh_access, "refresh-new"))],
+        );
+        set_test_endpoints(&server.usage_url, &server.token_url);
+
+        let account = env
+            .save_account(
+                &auth_with(&token("access-old", -3600), "refresh-old", "account-a"),
+                false,
+            )
+            .await;
+
+        let error = env.refresh(&account.id).await.expect_err("usage failed");
+        assert!(!error.contains(CODEX_REAUTH_REQUIRED_MARKER), "{error}");
+        assert!(error.contains("500"), "{error}");
+
+        let stored = env.stored_snapshot(&account.id).await;
+        assert_eq!(stored["tokens"]["refresh_token"], "refresh-new");
+        assert_eq!(stored["tokens"]["access_token"], fresh_access);
+        let row = load_official_account(&env.db, &account.id).await.unwrap();
+        assert_eq!(row.credits, None);
+        assert_eq!(row.last_limits_fetched_at, None);
+    }
+
+    /// Scenario 10: transient errors keep their meaning and never rotate.
+    #[tokio::test]
+    async fn transient_usage_errors_do_not_trigger_a_token_exchange() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        for (status, expected) in [(429u16, "429"), (500, "500"), (503, "503")] {
+            let server = MockServer::start(vec![reply(status, "{}")], Vec::new());
+            set_test_endpoints(&server.usage_url, &server.token_url);
+            let account = env
+                .save_account(
+                    &auth_with(&token("access-a", 20 * 24 * 60 * 60), "refresh-a", "account-a"),
+                    false,
+                )
+                .await;
+
+            let error = env.refresh(&account.id).await.expect_err("usage failed");
+
+            assert!(error.contains(expected), "{error}");
+            assert!(!error.contains(CODEX_REAUTH_REQUIRED_MARKER), "{error}");
+            assert_eq!(server.usage_calls(), 1);
+            assert_eq!(server.token_calls(), 0);
+        }
+    }
+
+    /// Scenario 11: the `__local__` virtual account expires and refreshes in place.
+    #[tokio::test]
+    async fn local_virtual_account_refreshes_its_expired_runtime_credential() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let fresh_access = token("access-new", 30 * 24 * 60 * 60);
+        let server = MockServer::start(
+            vec![ok_usage(12.0)],
+            vec![reply(200, token_body(&fresh_access, "refresh-new"))],
+        );
+        set_test_endpoints(&server.usage_url, &server.token_url);
+        env.write_runtime_auth(&auth_with(
+            &token("access-old", -3600),
+            "refresh-old",
+            "account-a",
+        ));
+
+        let result = refresh_local_account_usage(&env.db)
+            .await
+            .expect("local usage");
+
+        assert_eq!(result.usage.limit_weekly_text.as_deref(), Some("88%"));
+        // The returned credential is the one that answered, not a later read.
+        assert_eq!(result.credential["tokens"]["access_token"], fresh_access);
+        assert!(result.runtime_written);
+        assert_eq!(server.token_calls(), 1);
+        assert_eq!(
+            server.authorization_headers(),
+            vec![format!("Bearer {fresh_access}")]
+        );
+        let runtime = env.read_runtime_auth();
+        assert_eq!(runtime["tokens"]["access_token"], fresh_access);
+        assert_eq!(runtime["tokens"]["refresh_token"], "refresh-new");
+        // No persisted account was created as a side effect.
+        assert!(list_persisted_official_accounts(&env.db, &env.provider_id)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    /// Scenario 12: a concurrent rotation must not consume the old token twice.
+    #[tokio::test]
+    async fn credential_is_reread_after_waiting_for_the_oauth_lock() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let server = MockServer::start(vec![ok_usage(18.0)], Vec::new());
+        set_test_endpoints(&server.usage_url, &server.token_url);
+        let account = env
+            .save_account(
+                &auth_with(&token("access-a", 20 * 24 * 60 * 60), "refresh-a", "account-a"),
+                false,
+            )
+            .await;
+
+        // Simulate another writer rotating the row while this refresh waits.
+        let rotated_access = token("access-rotated", 30 * 24 * 60 * 60);
+        let rotated = auth_with(&rotated_access, "refresh-rotated", "account-a");
+        let row = load_official_account(&env.db, &account.id).await.unwrap();
+        persist_refreshed_account_snapshot(&env.db, &row, &rotated)
+            .await
+            .expect("simulated concurrent rotation");
+
+        env.refresh(&account.id).await.expect("refresh");
+
+        assert_eq!(server.token_calls(), 0, "the rotated credential is still fresh");
+        assert_eq!(
+            server.authorization_headers(),
+            vec![format!("Bearer {rotated_access}")]
+        );
+    }
+
+    /// Scenario 11b: the `__local__` account also recovers from a 401.
+    #[tokio::test]
+    async fn local_virtual_account_recovers_from_401_with_a_forced_exchange() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let rotated_access = token("access-rotated", 30 * 24 * 60 * 60);
+        let server = MockServer::start(
+            vec![reply(401, "{}"), ok_usage(8.0)],
+            vec![reply(200, token_body(&rotated_access, "refresh-rotated"))],
+        );
+        set_test_endpoints(&server.usage_url, &server.token_url);
+        let original_access = token("access-original", 20 * 24 * 60 * 60);
+        let mut initial = auth_with(&original_access, "refresh-original", "account-a");
+        // A field Codex itself owns and AI Toolbox must keep verbatim.
+        initial["runtime_owned"] = serde_json::json!({ "keep": true });
+        env.write_runtime_auth(&initial);
+
+        let result = refresh_local_account_usage(&env.db)
+            .await
+            .expect("local usage after recovery");
+
+        assert_eq!(server.usage_calls(), 2);
+        assert_eq!(server.token_calls(), 1);
+        assert_eq!(result.usage.limit_weekly_text.as_deref(), Some("92%"));
+        assert!(result.runtime_written);
+        let runtime = env.read_runtime_auth();
+        assert_eq!(runtime["tokens"]["access_token"], rotated_access);
+        assert_eq!(runtime["tokens"]["refresh_token"], "refresh-rotated");
+        assert_eq!(runtime["runtime_owned"]["keep"], true);
+    }
+
+    /// Scenario 13: a late response cannot overwrite the newly applied account.
+    #[tokio::test]
+    async fn runtime_write_is_skipped_when_the_account_was_switched_away() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let switched_auth = auth_with(
+            &token("access-switched", 25 * 24 * 60 * 60),
+            "refresh-switched",
+            "account-b",
+        );
+        env.write_runtime_auth(&switched_auth);
+        let rotated = auth_with(
+            &token("access-rotated", 30 * 24 * 60 * 60),
+            "refresh-rotated",
+            "account-a",
+        );
+
+        // The row was applied when the request started but is no longer applied.
+        let account = env
+            .save_account(
+                &auth_with(&token("access-a", 20 * 24 * 60 * 60), "refresh-a", "account-a"),
+                false,
+            )
+            .await;
+        let wrote = write_runtime_credential_if_still_applied(&env.db, &account.id, &rotated)
+            .await
+            .expect("write check");
+
+        assert!(!wrote);
+        assert_eq!(env.read_runtime_auth(), switched_auth);
+    }
+
+    /// Scenario 14: a missing or broken snapshot never sends a usage request.
+    #[tokio::test]
+    async fn missing_or_broken_snapshot_sends_no_usage_request() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let server = MockServer::start(Vec::new(), Vec::new());
+        set_test_endpoints(&server.usage_url, &server.token_url);
+
+        for snapshot in [
+            serde_json::Value::Null,
+            serde_json::Value::String("not-json".to_string()),
+            serde_json::json!(r#"{"tokens":{"access_token":" "}}"#),
+        ] {
+            let account = env
+                .save_account(
+                    &auth_with(&token("access-a", 20 * 24 * 60 * 60), "refresh-a", "account-a"),
+                    false,
+                )
+                .await;
+            env.db
+                .with_conn(|conn| {
+                    db_patch_fields(
+                        conn,
+                        DbTable::CodexOfficialAccount,
+                        &account.id,
+                        &[("auth_snapshot", snapshot.clone())],
+                    )
+                    .map(|_| ())
+                })
+                .unwrap();
+
+            let error = env.refresh(&account.id).await.expect_err("unusable snapshot");
+            assert!(!error.is_empty());
+        }
+
+        assert_eq!(server.usage_calls(), 0);
+        assert_eq!(server.token_calls(), 0);
+    }
+
+    /// Scenario 15: header account id follows the credential actually used.
+    #[tokio::test]
+    async fn account_header_comes_from_the_recovered_credential() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let server = MockServer::start(
+            vec![reply(401, "{}"), ok_usage(22.0)],
+            vec![reply(
+                200,
+                serde_json::json!({
+                    "access_token": token("access-a-rotated", 30 * 24 * 60 * 60),
+                    "refresh_token": "refresh-a-rotated",
+                    "id_token": test_id_token("account-a"),
+                })
+                .to_string(),
+            )],
+        );
+        set_test_endpoints(&server.usage_url, &server.token_url);
+        let account = env
+            .save_account(
+                &auth_with(&token("access-a", 20 * 24 * 60 * 60), "refresh-a", "account-a"),
+                false,
+            )
+            .await;
+
+        env.refresh(&account.id).await.expect("refresh");
+
+        let headers: Vec<String> = server
+            .requests()
+            .into_iter()
+            .filter(|request| !request.path.contains("/oauth/token"))
+            .filter_map(|request| request.header("Chatgpt-Account-Id"))
+            .collect();
+        assert_eq!(headers, vec!["account-a".to_string(), "account-a".to_string()]);
+    }
+
+    /// Scenario 16: a failed refresh stays a failure on the stored row.
+    #[tokio::test]
+    async fn failed_refresh_keeps_previous_usage_and_records_the_error() {
+        let _guard = TEST_GUARD.lock().await;
+        let env = TestEnv::new();
+        let success = MockServer::start(vec![ok_usage(35.0)], Vec::new());
+        set_test_endpoints(&success.usage_url, &success.token_url);
+        let account = env
+            .save_account(
+                &auth_with(&token("access-a", 20 * 24 * 60 * 60), "refresh-a", "account-a"),
+                false,
+            )
+            .await;
+        let first = env.refresh(&account.id).await.expect("first refresh");
+        assert_eq!(first.limit_weekly_text.as_deref(), Some("65%"));
+        let first_fetched_at = first.last_limits_fetched_at.clone();
+
+        let failing = MockServer::start(vec![reply(503, "{}")], Vec::new());
+        set_test_endpoints(&failing.usage_url, &failing.token_url);
+        let error = env.refresh(&account.id).await.expect_err("second refresh fails");
+
+        let stored = load_official_account(&env.db, &account.id).await.unwrap();
+        assert_eq!(stored.last_error.as_deref(), Some(error.as_str()));
+        // Windows and the last success time are not rewritten by a failure.
+        assert_eq!(stored.limit_weekly_text.as_deref(), Some("65%"));
+        assert_eq!(stored.last_limits_fetched_at, first_fetched_at);
+        // Credits are the exception: the cached balance is invalidated.
+        assert_eq!(stored.credits, None);
+    }
 }

@@ -1,4 +1,29 @@
+import type { TFunction } from 'i18next';
 import type { CodexOfficialAccount } from '@/types/codex';
+
+/**
+ * Backend marker for "this account cannot recover on its own; authorize again".
+ * The backend keeps a stable prefix in `lastError` so a reloaded list can be
+ * localized here instead of showing the raw English fallback.
+ */
+export const CODEX_REAUTH_REQUIRED_MARKER = 'codex_reauth_required:';
+
+export function isCodexReauthRequiredError(message: string | undefined): boolean {
+  return Boolean(message?.includes(CODEX_REAUTH_REQUIRED_MARKER));
+}
+
+/**
+ * Copy for a stored or freshly returned `lastError`.
+ *
+ * Reauth is the only class that gets its own wording: the raw backend text says
+ * "sign in again" in English and carries internal detail the user cannot act on.
+ * Every other error is already actionable as-is (status code, timeout, parse).
+ */
+export function formatCodexOfficialAccountError(message: string, t: TFunction): string {
+  return isCodexReauthRequiredError(message)
+    ? t('codex.provider.officialAccountReauthRequired')
+    : message;
+}
 
 /** The local row reuses __local__ across providers and different runtime logins. */
 export function matchesOfficialAccountRefresh(
