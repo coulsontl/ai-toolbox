@@ -4270,13 +4270,13 @@ mod usage_credential_tests {
             "account-a",
         );
         env.write_runtime_auth(&live_auth);
+        // Build the stored token once: `token()` stamps a fresh `exp` from
+        // `Utc::now()`, so calling it again for the assertion yields a
+        // different string whenever a whole second elapses in between.
+        let stored_access = token("access-stored", 20 * 24 * 60 * 60);
         let account = env
             .save_account(
-                &auth_with(
-                    &token("access-stored", 20 * 24 * 60 * 60),
-                    "refresh-stored",
-                    "account-a",
-                ),
+                &auth_with(&stored_access, "refresh-stored", "account-a"),
                 false,
             )
             .await;
@@ -4287,7 +4287,7 @@ mod usage_credential_tests {
         assert_eq!(env.read_runtime_auth(), live_auth);
         assert_eq!(
             env.stored_snapshot(&account.id).await["tokens"]["access_token"],
-            token("access-stored", 20 * 24 * 60 * 60)
+            stored_access
         );
     }
 
