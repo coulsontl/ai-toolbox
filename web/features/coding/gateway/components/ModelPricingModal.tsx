@@ -436,7 +436,7 @@ const ModelPricingModal: React.FC<ModelPricingModalProps> = ({ open, onClose }) 
             columns={pricingColumns}
             dataSource={pricingList}
             loading={pricingLoading}
-            pagination={{ pageSize: 10, size: 'small' }}
+            pagination={{ defaultPageSize: 10, size: 'small' }}
             scroll={{ x: 840 }}
           />
         </section>
