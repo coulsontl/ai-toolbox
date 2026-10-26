@@ -1527,7 +1527,17 @@
       "restartFailed": "目录设置已保存，但重启失败：{{error}}。请手动退出并重新打开应用。",
       "cancelChange": "撤销目录变更"
     },
-    "languageSystemDefault": "系统默认"
+    "languageSystemDefault": "系统默认",
+    "rendering": {
+      "title": "Linux 界面渲染",
+      "compatible": "兼容优先（默认）",
+      "performance": "性能优先",
+      "description": "滚动卡顿时可尝试性能优先；遇到白屏或显示异常时选择兼容优先。仅保存到本机，重启后生效。",
+      "environmentOverride": "当前启动参数已指定渲染方式，请移除相关环境变量后再更改。",
+      "restartRequired": "已保存，下次启动生效。当前仍使用：{{mode}}。",
+      "failed": "未能更新渲染设置：{{error}}",
+      "automaticFallback": "本次启动遇到显示异常，已自动回退到兼容渲染。"
+    }
   },
   "theme": {
     "light": "浅色",
@@ -1952,7 +1962,8 @@
     },
     "more": "更多",
     "copyFailed": "复制失败",
-    "configDir": "配置目录路径"
+    "configDir": "配置目录路径",
+    "retry": "重试"
   },
   "sessionManager": {
     "title": "会话管理",

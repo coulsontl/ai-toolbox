@@ -29,6 +29,7 @@ pub mod db;
 pub mod http_client;
 pub mod keep_awake;
 pub mod lightweight;
+pub mod linux_webview;
 pub mod mini_browser;
 pub mod settings;
 pub mod single_instance;
@@ -336,6 +337,7 @@ fn set_env_if_missing(key: &str, value: &str) -> bool {
         return false;
     }
     std::env::set_var(key, value);
+    linux_webview::record_injected_environment(key, value);
     true
 }
 
@@ -543,41 +545,70 @@ fn wayland_webview_workaround_level_path() -> Option<std::path::PathBuf> {
 struct WaylandWorkaroundLevelRecord {
     level: u8,
     app_version: String,
+    #[serde(default)]
+    rendering_mode: linux_webview::RenderingMode,
 }
 
 // Pure helpers are compiled under `test` on every platform so the version-reset
 // semantics can be unit-tested on Windows dev machines; Linux-only callers use
 // them through the normal `target_os = "linux"` cfg.
 #[cfg(any(target_os = "linux", test))]
-fn parse_wayland_workaround_level_record(raw: &str, current_app_version: &str) -> u8 {
+fn parse_wayland_workaround_level_record_for_mode(
+    raw: &str,
+    current_app_version: &str,
+    mode: linux_webview::RenderingMode,
+) -> u8 {
     let Ok(record) = serde_json::from_str::<WaylandWorkaroundLevelRecord>(raw) else {
         // Legacy plain-number format or corrupt content: reset to default.
         return 0;
     };
-    if record.app_version != current_app_version {
+    if record.app_version != current_app_version || record.rendering_mode != mode {
         return 0;
     }
     record.level.min(WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL)
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn render_wayland_workaround_level_record(level: u8, app_version: &str) -> String {
+fn render_wayland_workaround_level_record_for_mode(
+    level: u8,
+    app_version: &str,
+    mode: linux_webview::RenderingMode,
+) -> String {
     serde_json::to_string(&WaylandWorkaroundLevelRecord {
         level: level.min(WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL),
         app_version: app_version.to_string(),
+        rendering_mode: mode,
     })
     .unwrap_or_else(|_| level.min(WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL).to_string())
 }
 
+#[cfg(test)]
+fn parse_wayland_workaround_level_record(raw: &str, version: &str) -> u8 {
+    parse_wayland_workaround_level_record_for_mode(
+        raw,
+        version,
+        linux_webview::RenderingMode::Compatible,
+    )
+}
+
+#[cfg(test)]
+fn render_wayland_workaround_level_record(level: u8, version: &str) -> String {
+    render_wayland_workaround_level_record_for_mode(
+        level,
+        version,
+        linux_webview::RenderingMode::Compatible,
+    )
+}
+
 #[cfg(target_os = "linux")]
-fn read_wayland_webview_workaround_level() -> u8 {
+fn read_wayland_webview_workaround_level(mode: linux_webview::RenderingMode) -> u8 {
     let Some(path) = wayland_webview_workaround_level_path() else {
         return 0;
     };
     let Ok(raw) = fs::read_to_string(&path) else {
         return 0;
     };
-    parse_wayland_workaround_level_record(&raw, env!("CARGO_PKG_VERSION"))
+    parse_wayland_workaround_level_record_for_mode(&raw, env!("CARGO_PKG_VERSION"), mode)
 }
 
 #[cfg(target_os = "linux")]
@@ -590,7 +621,11 @@ fn write_wayland_webview_workaround_level(level: u8) {
     }
     let _ = fs::write(
         &path,
-        render_wayland_workaround_level_record(level, env!("CARGO_PKG_VERSION")),
+        render_wayland_workaround_level_record_for_mode(
+            level,
+            env!("CARGO_PKG_VERSION"),
+            linux_webview::active_mode(),
+        ),
     );
 }
 
@@ -766,7 +801,7 @@ fn start_linux_wayland_webview_auto_downgrade_watchdog(
                     let _ = guard.take();
                 }
 
-                let current_exe = match std::env::current_exe() {
+                let current_exe = match appimage_reexec_target() {
                     Ok(p) => p,
                     Err(e) => {
                         error!("Failed to get current executable for restart: {}", e);
@@ -775,11 +810,11 @@ fn start_linux_wayland_webview_auto_downgrade_watchdog(
                 };
                 let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
 
-                match std::process::Command::new(&current_exe)
-                    .args(args)
-                    .env("AI_TOOLBOX_RESTART_WAIT_LOCK", "1")
-                    .spawn()
-                {
+                let mut restart = std::process::Command::new(&current_exe);
+                restart.args(args).env("AI_TOOLBOX_RESTART_WAIT_LOCK", "1");
+                linux_webview::configure_restart_environment(&mut restart);
+                tauri_plugin_single_instance::destroy(&app_handle);
+                match restart.spawn() {
                     Ok(_) => {
                         std::process::exit(0);
                     }
@@ -798,40 +833,22 @@ fn start_linux_wayland_webview_auto_downgrade_watchdog(
     });
 }
 
-/// Workaround: On some Linux environments, especially AppImage builds running on modern Wayland
-/// stacks, WebKitGTK can fail to initialize GPU rendering and the webview shows a white screen.
+/// Linux WebKitGTK 白屏兼容级别：0 保留原生渲染，1 禁 DMABuf，2 禁 GPU 进程，
+/// 3 禁合成模式，4 在此前基础上回退 X11。
 ///
-/// We apply WebKitGTK GPU/DMABuf workarounds based on a fallback level:
-/// - 0: Default (GPU/DMABuf enabled)
-/// - 1: Disable DMABuf renderer
-/// - 2: Disable GPU process
-/// - 3: Disable compositing mode
-/// - 4: Fallback to X11 backend (GDK_BACKEND=x11)
-///
-/// Notes:
-/// - AppImage + Wayland first tries a one-time re-exec with system libwayland-client via
-///   LD_PRELOAD, before WebKitGTK loads its bundled Wayland/EGL stack.
-/// - Debug builds default to level 4 to avoid dev-time white screens.
-/// - Release builds default to at least level 1 on Wayland sessions (any installation
-///   method) and for AppImage on any session type; the DMABUF/Skia rendering path is the
-///   main source of WebKitGTK 2.50+ scroll jank and input-field freezes (issue #301).
-///   Mitigation is GPU-driver-dependent: on AMD iGPUs (radeonsi) only level 2 (disable
-///   the GPU process, software compositing) clears the freeze — level 1 + single-thread
-///   Skia painting still freezes in a clean env; on Intel iGPUs (iris) level 0 + Skia
-///   single-thread painting (`WEBKIT_SKIA_GPU_PAINTING_THREADS=0`) is enough and keeps
-///   GPU acceleration. So `WEBKIT_SKIA_GPU_PAINTING_THREADS=0` is a valid lightweight
-///   workaround for Intel, while AMD still needs the level-2 fallback.
-/// - The persisted level is bound to the app version that wrote it; upgrading the app
-///   resets it so a downgrade forced by an old WebKitGTK regression does not pin newer
-///   releases (or newer system WebKitGTK builds) to a slower rendering path.
-/// - Set `AI_TOOLBOX_DISABLE_WAYLAND_WEBVIEW_WORKAROUND=1` to opt out of both mitigations.
-/// - Set `AI_TOOLBOX_WAYLAND_WEBVIEW_WORKAROUND_LEVEL=0..4` to override.
+/// 兼容模式保留原有默认值：开发构建用 4，正式 Wayland/AppImage 至少用 1。
+/// 性能模式显式从 0 探索，仍按应用版本和渲染模式读取启动失败回退记录。
+/// 历史环境中 AMD/Intel 的 Skia 规避效果不同；本机 2.50.4 的 Level 0 比 1/2 更流畅，
+/// 不能按显卡品牌保证某一级有效。用户设置的环境覆盖保持最高优先级。
+/// AppImage 的系统 Wayland 库预加载发生在这段逻辑之前，不受性能模式选择影响。
 #[cfg(target_os = "linux")]
 fn setup_linux_wayland_webview_workaround() -> u8 {
+    let mode = linux_webview::load_startup_mode();
     if std::env::var_os("AI_TOOLBOX_DISABLE_WAYLAND_WEBVIEW_WORKAROUND").is_some() {
         info!(
             "WebKitGTK webview workaround disabled via AI_TOOLBOX_DISABLE_WAYLAND_WEBVIEW_WORKAROUND"
         );
+        linux_webview::record_startup(mode, 0);
         return 0;
     }
 
@@ -841,54 +858,27 @@ fn setup_linux_wayland_webview_workaround() -> u8 {
         "X11"
     };
 
-    // Release builds start at least at level 1 (disable the DMABUF renderer) for every
-    // installation method on Wayland sessions, and for AppImage regardless of session
-    // type because it bundles its own graphics stack. The DMABUF/Skia path is the main
-    // source of WebKitGTK 2.50+ scroll jank and input-field freezes on AMD/KDE Wayland
-    // (issue #301, verified against WebKitGTK rendering regressions in psysonic#342).
-    let appimage_min_level = if !cfg!(debug_assertions) && is_appimage_runtime() {
-        1
-    } else {
-        0
-    };
-    let wayland_min_level = if !cfg!(debug_assertions) && is_wayland_session() {
-        1
-    } else {
-        0
-    };
-    let default_min_level = appimage_min_level.max(wayland_min_level);
-
-    // WSL2/WSLg: the Wayland compositor (Weston) lacks the text-input-v3
-    // protocol, so IME (Chinese input) cannot reach WebKitGTK, and the
-    // Mesa/Zink GPU path routinely fails (issue #341). Force level 4
-    // (GDK_BACKEND=x11 via XWayland) unless the user explicitly overrides
-    // the level — XWayland supports fcitx5/ibus and software rendering.
-    let wsl_min_level = if is_wsl_runtime() {
-        WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL
-    } else {
-        0
-    };
-    let default_min_level = default_min_level.max(wsl_min_level);
-
+    // 默认保留兼容模式；本机显式选择性能模式后启用原生 GPU/DMABuf，并保留启动失败回退。
+    // 显式环境变量仍具有最高优先级，WSLg 也遵循这条规则。
     let level = std::env::var("AI_TOOLBOX_WAYLAND_WEBVIEW_WORKAROUND_LEVEL")
         .ok()
         .and_then(|v| v.trim().parse::<u8>().ok())
         .map(|v| v.min(WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL))
         .unwrap_or_else(|| {
-            if cfg!(debug_assertions) {
-                WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL
-            } else {
-                read_wayland_webview_workaround_level().max(default_min_level)
-            }
+            linux_webview::initial_level(
+                cfg!(debug_assertions),
+                is_wayland_session(),
+                is_appimage_runtime(),
+                is_wsl_runtime(),
+                mode,
+                read_wayland_webview_workaround_level(mode),
+            )
         });
-
-    if default_min_level > 0 && level == default_min_level {
-        info!(
-            "Detected AppImage runtime and/or Wayland session{}; using safer initial workaround level {} (DMABUF renderer disabled)",
-            if wsl_min_level > 0 { " and WSL2/WSLg runtime" } else { "" },
-            default_min_level
-        );
-    }
+    let wsl_min_level = if is_wsl_runtime() {
+        WAYLAND_WEBVIEW_WORKAROUND_MAX_LEVEL
+    } else {
+        0
+    };
 
     let mut changed = false;
     if level >= 1 {
@@ -929,6 +919,7 @@ fn setup_linux_wayland_webview_workaround() -> u8 {
         }
     }
 
+    linux_webview::record_startup(mode, level);
     level
 }
 
@@ -2163,6 +2154,8 @@ pub fn run() {
             settings::get_auto_launch_status,
             settings::set_keep_awake,
             settings::restart_app,
+            linux_webview::get_linux_webview_rendering,
+            linux_webview::set_linux_webview_rendering,
             settings::test_proxy_connection,
             // Proxy Gateway
             coding::proxy_gateway::proxy_gateway_get_settings,
@@ -3111,5 +3104,42 @@ mod wayland_workaround_level_record_tests {
     fn round_trips_level_zero() {
         let raw = render_wayland_workaround_level_record(0, "1.1.4");
         assert_eq!(parse_wayland_workaround_level_record(&raw, "1.1.4"), 0);
+    }
+}
+
+#[cfg(test)]
+mod rendering_mode_fallback_tests {
+    use super::*;
+    use linux_webview::RenderingMode::{Compatible, Performance};
+
+    #[test]
+    fn failure_levels_are_scoped_to_the_rendering_mode_and_app_version() {
+        let raw = render_wayland_workaround_level_record_for_mode(3, "1.2.1", Compatible);
+        assert_eq!(
+            parse_wayland_workaround_level_record_for_mode(&raw, "1.2.1", Compatible),
+            3
+        );
+        assert_eq!(
+            parse_wayland_workaround_level_record_for_mode(&raw, "1.2.1", Performance),
+            0
+        );
+        let performance = render_wayland_workaround_level_record_for_mode(1, "1.2.1", Performance);
+        assert_eq!(
+            parse_wayland_workaround_level_record_for_mode(&performance, "1.2.1", Performance),
+            1
+        );
+        assert_eq!(
+            parse_wayland_workaround_level_record_for_mode(&performance, "1.2.2", Performance),
+            0
+        );
+        let legacy = r#"{"level":2,"app_version":"1.2.1"}"#;
+        assert_eq!(
+            parse_wayland_workaround_level_record_for_mode(legacy, "1.2.1", Compatible),
+            2
+        );
+        assert_eq!(
+            parse_wayland_workaround_level_record_for_mode(legacy, "1.2.1", Performance),
+            0
+        );
     }
 }

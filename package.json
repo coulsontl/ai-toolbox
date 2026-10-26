@@ -25,7 +25,7 @@
     "test:provider-card-layout": "node ./scripts/verify-provider-card-layout.mjs",
     "test:provider-card-view": "node ./scripts/verify-provider-card-view.mjs",
     "test:ime-autocomplete": "node ./scripts/verify-ime-safe-autocomplete.mjs",
-    "test": "pnpm run test:web && pnpm run test:form-modal-layout && pnpm run test:provider-card-layout && pnpm run test:css-module-classes && pnpm run test:provider-card-view && pnpm run test:codex-card-view && pnpm run test:zcode-card-view && pnpm run test:kimi-card-view && pnpm run test:provider-list-drag && pnpm run test:provider-list-locate && pnpm run test:official-account-card && pnpm run test:zcode-official-account && pnpm run test:codex-official-accounts && pnpm run test:codex-credits && pnpm run test:provider-card-spacing && pnpm run test:page-rhythm && pnpm run test:dsh-migration-notice && pnpm run test:migrated-provider-cards && pnpm run test:official-accounts-shared && pnpm run test:connectivity-modal-layout && pnpm run test:gateway-trend && pnpm run test:gateway-heatmap",
+    "test": "pnpm run test:web && pnpm run test:form-modal-layout && pnpm run test:provider-card-layout && pnpm run test:css-module-classes && pnpm run test:provider-card-view && pnpm run test:codex-card-view && pnpm run test:zcode-card-view && pnpm run test:kimi-card-view && pnpm run test:provider-list-drag && pnpm run test:provider-list-locate && pnpm run test:official-account-card && pnpm run test:zcode-official-account && pnpm run test:codex-official-accounts && pnpm run test:codex-credits && pnpm run test:provider-card-spacing && pnpm run test:page-rhythm && pnpm run test:dsh-migration-notice && pnpm run test:migrated-provider-cards && pnpm run test:official-accounts-shared && pnpm run test:connectivity-modal-layout && pnpm run test:gateway-trend && pnpm run test:gateway-heatmap && pnpm run test:linux-rendering",
     "sync:version": "node scripts/sync-tauri-version.mjs",
     "tauri": "tauri",
     "prepare": "husky",
@@ -46,7 +46,8 @@
     "test:zcode-card-view": "node ./scripts/verify-zcode-card-view.mjs",
     "test:kimi-card-view": "node ./scripts/verify-kimi-card-view.mjs",
     "test:gateway-trend": "node ./scripts/verify-gateway-trend.mjs",
-    "test:gateway-heatmap": "node ./scripts/verify-gateway-heatmap.mjs"
+    "test:gateway-heatmap": "node ./scripts/verify-gateway-heatmap.mjs",
+    "test:linux-rendering": "node ./scripts/verify-linux-rendering.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "6.2.5",

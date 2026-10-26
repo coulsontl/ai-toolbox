@@ -1527,7 +1527,17 @@
       "restartFailed": "Directory settings are saved, but restart failed: {{error}}. Please quit and reopen the app.",
       "cancelChange": "Cancel directory change"
     },
-    "languageSystemDefault": "System Default"
+    "languageSystemDefault": "System Default",
+    "rendering": {
+      "title": "Linux interface rendering",
+      "compatible": "Compatibility (default)",
+      "performance": "Performance",
+      "description": "Try Performance for slow scrolling, or Compatibility for blank screens or display issues. Saved on this machine and applied after restart.",
+      "environmentOverride": "Rendering is overridden by launch environment variables. Remove the override to change this setting.",
+      "restartRequired": "Saved for the next launch. Currently using: {{mode}}.",
+      "failed": "Could not update rendering settings: {{error}}",
+      "automaticFallback": "A display issue during startup triggered an automatic compatibility fallback."
+    }
   },
   "theme": {
     "light": "Light",
@@ -1952,7 +1962,8 @@
     },
     "more": "More",
     "copyFailed": "Copy failed",
-    "configDir": "Config Directory"
+    "configDir": "Config Directory",
+    "retry": "Retry"
   },
   "sessionManager": {
     "title": "Session Manager",

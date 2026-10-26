@@ -217,7 +217,7 @@ pub async fn set_keep_awake(enabled: bool) -> Result<(), String> {
 
 /// Restart the application
 #[tauri::command]
-pub fn restart_app() -> Result<(), String> {
+pub fn restart_app(_app: tauri::AppHandle) -> Result<(), String> {
     // Get the current executable path
     let current_exe =
         std::env::current_exe().map_err(|e| format!("Failed to get current executable: {}", e))?;
@@ -265,9 +265,16 @@ pub fn restart_app() -> Result<(), String> {
     {
         use std::process::Command;
         let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-        Command::new(&current_exe)
-            .args(args)
-            .env("AI_TOOLBOX_RESTART_WAIT_LOCK", "1")
+        let launch_target = if crate::is_appimage_runtime() {
+            crate::appimage_reexec_target()?
+        } else {
+            current_exe
+        };
+        let mut restart = Command::new(launch_target);
+        restart.args(args).env("AI_TOOLBOX_RESTART_WAIT_LOCK", "1");
+        crate::linux_webview::configure_restart_environment(&mut restart);
+        tauri_plugin_single_instance::destroy(&_app);
+        restart
             .spawn()
             .map_err(|e| format!("Failed to spawn new process: {}", e))?;
     }

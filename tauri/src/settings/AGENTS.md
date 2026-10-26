@@ -8,6 +8,8 @@
 
 ## Source of Truth
 
+- Linux 渲染偏好是启动期、机器专属的例外，归根级 `linux_webview.rs`：存于默认 bootstrap 数据目录的 `linux_webview_rendering.json`，在 GTK/SQLite 初始化前读取，不放进 `AppSettings`、数据库备份或 CLI 同步。自定义数据目录不搬迁它；隔离测试的 `AI_TOOLBOX_DATA_DIR` 仍覆盖其根目录。
+
 - 权威数据是 SQLite `settings/app` 记录里的 JSONB；`AppSettings` 只是它的 Rust 投影，`adapter` 是唯一转换层（`from_db_value` 容错读取、`to_db_value` 全量序列化）。前端、托盘、各 coding 模块读到的都是这份记录。
 - 记录不存在时读取返回 `AppSettings::default()`，**不会**回写；首次写入由各写入口按需创建。
 - `settings` 表里还有别的 id：`backup_repository` 与 legacy `repository_sync`（备份域，见 backup 文档）。不要假设这张表只有一条记录。
