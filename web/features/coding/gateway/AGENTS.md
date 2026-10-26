@@ -99,6 +99,7 @@ sequenceDiagram
 - 设置 Tab 自动保存有 debounce；顶部启动按钮必须优先使用设置面板当前 draft 立即保存后启动，不能重新读取旧的后端 settings 后启动。
 - 统计图表直接使用 Recharts；不要为了网关统计引入额外图表封装层。图表必须有 tooltip；单指标趋势图用右上角分段控件替代 legend（多序列场景才需要 legend），并使用主题变量保证浅色/深色模式可读。
 - 定价管理弹窗遵循全局 Modal 规范：不重度覆盖 Ant Design Modal chrome，上半部分用 `sectionCard` 风格承载默认配置，下半部分用 Ant Design Table 原生样式展示模型定价。
+- 定价列表是后端返回的完整列表，分页状态交给 Ant Design Table：默认每页 10 条使用 `defaultPageSize`，不能传固定 `pageSize` 却不接更新状态，否则用户选择 20/50/100 条会在下一次渲染被覆盖。不要为这个显示偏好改动定价数据、总数或持久化接口。
 - 定价管理弹窗里的“同步官方价格”按钮位于模型定价标题行右侧、添加按钮左边；成功后提示新增条数并刷新表格，失败只在当前操作中提示错误。远端源列表由后端维护，前端只按 `attempts.length > 1` 区分“主源成功”和“镜像兜底”，镜像兜底用 `officialSyncFromMirror` 说明来源，不要在前端硬编码源 URL。
 - 如果未来新增视图依赖的后端查询命令还没暴露，页面只能显示真实空态，不能用假数据填充图表。
 - Gateway 辅助说明文字统一使用 `fontSize: 10` 和 `color: var(--color-text-tertiary)`，避免设置页和统计页说明文字风格漂移。
@@ -135,6 +136,8 @@ sequenceDiagram
 - 隐私详情仅在实际命中/还原/失败时展示，来自 JSONL 的 privacy 字段；不从当前开关推测旧请求是否脱敏。日志标注独立脱敏副本，不能把脱敏副本说成客户端实际收到的原始正文。
 
 ## 最小验证
+
+- 定价页大小回归：`node --import ./scripts/register-node-ts-extension-loader.mjs --test web/test/features/coding/gateway/components/ModelPricingPagination.test.ts`。测试从真实 Table 提取分页 props，运行已安装 Ant Design 的真实分页 hook，仅模拟 React state，覆盖页大小、当前页越界、总数变更、空结果和反复切换；不是浏览器 DOM 或原生桌面验收。
 
 - 至少验证：`visibleTabs` 包含 `gateway` 时，顶栏在 `Image` 左侧显示网关入口。
 - 至少验证：关闭 `gateway` 后，`/gateway/*` 会跳回可见页面，但不会调用停止网关命令。
