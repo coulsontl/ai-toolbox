@@ -3357,3 +3357,48 @@ fn rfc3339_millis(millis: i64) -> String {
         .unwrap()
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
+
+#[test]
+fn scoped_envelope_lookup_stays_bounded_with_large_mixed_history() {
+    use rusqlite::StatementStatus;
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    db.with_conn(|conn| {
+        conn.execute_batch(
+            "WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<12000)
+             INSERT INTO proxy_request_logs
+                (request_id, provider_id, app_type, model, created_at, request_kind, data_source)
+             SELECT 'SESSION:codex:provider:proxy-' || n, 'provider', 'codex', 'gpt-5', 1800000000, 'request', 'proxy' FROM numbers;
+             WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<12000)
+             INSERT INTO proxy_request_logs
+                (request_id, provider_id, app_type, model, created_at, request_kind, data_source)
+             SELECT 'SESSION:codex:session:native-' || n, 'session', 'codex', 'gpt-5', 1800000000, 'request', 'session' FROM numbers;
+             INSERT INTO proxy_request_logs
+                (request_id, provider_id, app_type, model, created_at, request_kind, data_source)
+             VALUES ('SESSION:codex:provider:with:colon:请求:one', 'provider:with:colon', 'codex', 'gpt-5', 1800000000, 'request', 'proxy'),
+                    ('SESSION:codex:provider:warmup', 'provider', 'codex', 'gpt-5', 1800000000, 'prewarm', 'proxy'),
+                    ('BROKEN!:codex:provider:forged', 'provider', 'codex', 'gpt-5', 1800000000, 'request', 'proxy');"
+        ).map_err(|error| error.to_string())?;
+        let plan = conn.prepare(&format!("EXPLAIN QUERY PLAN {SCOPED_PROXY_ENVELOPE_LOOKUP}"))
+            .unwrap().query_map(params!["codex", "missing", Option::<&str>::None], |row| row.get::<_, String>(3))
+            .unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        assert!(plan.iter().any(|line| line.contains("idx_request_logs_proxy_envelope") && line.contains("<expr>=?")), "{plan:?}");
+        let mut statement = conn.prepare_cached(SCOPED_PROXY_ENVELOPE_LOOKUP).unwrap();
+        for (cli, envelope, only, expected) in [
+            ("codex", "proxy-12000", None, Some("SESSION:codex:provider:proxy-12000")),
+            ("codex", "请求:one", None, Some("SESSION:codex:provider:with:colon:请求:one")),
+            ("codex", "proxy-12000", Some("another-id"), None),
+            ("claude", "proxy-12000", None, None),
+            ("codex", "native-12000", None, None),
+            ("codex", "warmup", None, None),
+            ("codex", "forged", None, None),
+            ("codex", "missing", None, None),
+        ] {
+            let before = statement.get_status(StatementStatus::VmStep);
+            let result = statement.query_row(params![cli, envelope, only], |row| row.get::<_, String>(0)).optional().unwrap();
+            assert_eq!(result.as_deref(), expected);
+            let steps = statement.get_status(StatementStatus::VmStep) - before;
+            assert!(steps < 300, "{cli}/{envelope}: {steps} VM steps; history must not be scanned");
+        }
+        Ok(())
+    }).unwrap();
+}

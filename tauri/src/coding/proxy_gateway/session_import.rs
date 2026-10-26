@@ -51,6 +51,16 @@ const SESSION_SETTLE_SECONDS: i64 = 3;
 const PROXY_MATCH_START_GRACE_SECONDS: i64 = 10;
 const PROXY_MATCH_END_GRACE_SECONDS: i64 = 30;
 
+// 索引表达式和过滤条件必须与 v30 迁移一致；完整 ID 校验排除后缀相同的非规范 ID。
+const SCOPED_PROXY_ENVELOPE_LOOKUP: &str = "SELECT request_id FROM proxy_request_logs
+     WHERE app_type = ?1
+       AND substr(request_id, length('SESSION:' || app_type || ':' || provider_id || ':') + 1) = ?2
+       AND request_id = 'SESSION:' || app_type || ':' || provider_id || ':' || ?2
+       AND COALESCE(data_source, 'proxy') = 'proxy'
+       AND request_kind = 'request'
+       AND (?3 IS NULL OR request_id = ?3)
+     LIMIT 1";
+
 #[derive(Clone, Debug)]
 struct SessionUsageRecord {
     metadata: SessionUsageMetadata,
@@ -1927,12 +1937,8 @@ fn find_matching_proxy(
     only_proxy_id: Option<&str>,
 ) -> Result<Option<String>, String> {
     if let Some(envelope_id) = &record.usage.envelope_id {
-        // Two index-friendly lookups instead of one `OR` of concatenated
-        // expressions: SQLite gives up the `request_id` primary-key index as
-        // soon as a branch concatenates columns, and then every record scans
-        // the whole history (measured ~180 ms per lookup on 60k rows, which
-        // made a full rebuild take tens of minutes). Each half is now a
-        // constant-time lookup.
+        // 裸 ID 与带作用域的 ID 分别做精确索引查询，避免每次未命中时持有共享连接锁
+        // 扫描该 CLI 的全部原生和代理历史。
         //
         // Claude writes the bare form; every other CLI scopes the id by app
         // and provider (`stable_usage_request_id`). Both forms are tried so
@@ -1954,21 +1960,11 @@ fn find_matching_proxy(
         if exact.is_some() {
             return Ok(exact);
         }
-        // A range bounds the lookup to `SESSION:<cli>:...`; the equality on
-        // the constructed id pins `app_type`, so no separate app filter is
-        // needed (and leaving it out keeps the primary-key index in use).
-        let prefix = format!("SESSION:{}:", record.cli_key.as_str());
-        let upper = format!("SESSION:{};", record.cli_key.as_str());
         let scoped = conn
+            .prepare_cached(SCOPED_PROXY_ENVELOPE_LOOKUP)
+            .map_err(|error| error.to_string())?
             .query_row(
-                "SELECT request_id FROM proxy_request_logs
-                 WHERE request_id >= ?1 AND request_id < ?2
-                   AND request_id = 'SESSION:' || app_type || ':' || provider_id || ':' || ?3
-                   AND COALESCE(data_source, 'proxy') = 'proxy'
-                   AND request_kind = 'request'
-                   AND (?4 IS NULL OR request_id = ?4)
-                 LIMIT 1",
-                params![prefix, upper, envelope_id, only_proxy_id],
+                params![record.cli_key.as_str(), envelope_id, only_proxy_id],
                 |row| row.get::<_, String>(0),
             )
             .optional()
