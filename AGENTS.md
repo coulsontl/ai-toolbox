@@ -294,6 +294,74 @@ pnpm inspect <command> [args]  # from another terminal
 - `CSS.enable` is expensive on this page (~1400 antd `<style>` nodes) and needs up to 120s on a cold run; do not enable the DOM/CSS domains for commands that only read computed styles.
 - Do not hard-kill the dev process tree to restart it: the app can come back white. Stop it normally, or let `scripts/dev-debug.mjs` sweep on Ctrl+C.
 
+#### Driving the live page (navigation, clicks, inputs)
+
+`eval` is the only command that mutates state; `pnpm inspect` has no click/type subcommands. Everything below goes through `eval` and is written for this app's two quirks.
+
+**Never navigate by assigning `location.hash`.** The app is a SPA whose routes come from React Router; `location.hash = '#/coding/codex'` changes the URL without mounting the route, so the page keeps rendering the old module and you debug the wrong screen. Click the real navigation control instead — the top tab bar holds them:
+
+```bash
+pnpm inspect eval "(async () => {
+  const tab = [...document.querySelectorAll('.ant-tabs-tab')]
+    .find(t => /Codex/.test(t.textContent));
+  tab.click();
+  await new Promise(r => setTimeout(r, 2000));   // route + data load
+  return JSON.stringify({ path: location.pathname });
+})()"
+```
+
+Tab labels are the module names (`OpenCode`, `Claude Code`, `Codex`, `DeepSeekdsh`, …), not route paths.
+
+**Filter for visibility on every query — this is the one that silently wastes the most time.** `KeepAliveOutlet` keeps every visited page mounted and hides the inactive ones with `display: none`, and antd portals a modal's DOM somewhere else in the tree. So `document.querySelector('.ant-modal')` returns *a* modal, just not the visible one: you read another page's stale content, conclude a feature did not render, and start "fixing" working code. I hit exactly this twice on the Codex "More Options" modal (it kept returning OpenCode's copy) before filtering:
+
+```bash
+pnpm inspect eval "(() => {
+  const visible = (el) => el && el.offsetParent !== null;   // display:none ancestors => null
+  const modals = [...document.querySelectorAll('.ant-modal')].filter(visible);
+  return JSON.stringify(modals.map(m => m.querySelector('.ant-modal-title')?.textContent.trim()));
+})()"
+```
+
+Use `offsetParent` rather than reading `getComputedStyle` up the chain: it is one property, and it is null for anything under a `display: none` ancestor. Apply it to every list (`button`, `.ant-modal`, `.ant-select-dropdown`, …) before you pick from it.
+
+**Identify targets by text, not by nth-child.** Class names are hashed and order shifts with state. Match on trimmed `textContent` (exact for buttons, a regex for tabs/options) and filter for visibility in the same pass:
+
+```bash
+pnpm inspect eval "(() => {
+  const visible = (el) => el && el.offsetParent !== null;
+  const btn = [...document.querySelectorAll('button')]
+    .find(b => b.textContent.trim() === '更多选项' && visible(b));
+  btn.click();
+})()"
+```
+
+**antd `Select` needs `mousedown`, not `click`.** A bare `.click()` on the control leaves the dropdown shut. Dispatch `mousedown` on `.ant-select`, then read `.ant-select-item-option` from the *visible* `.ant-select-dropdown`:
+
+```bash
+pnpm inspect eval "(() => {
+  const visible = (el) => el && el.offsetParent !== null;
+  document.querySelector('.ant-select').dispatchEvent(
+    new MouseEvent('mousedown', { bubbles: true }));
+})()"
+# then, in a second eval: click the visible .ant-select-item-option whose text matches
+```
+
+**React-controlled inputs need the native value setter.** Assigning `input.value = 'x'` updates the DOM but React never sees it, so state and UI silently disagree. Go through the prototype setter and dispatch `input`:
+
+```bash
+pnpm inspect eval "(() => {
+  const input = document.querySelector('input');   // filter for visibility first
+  const setValue = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype, 'value').set;
+  setValue.call(input, 'AxonHub');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+})()"
+```
+
+**Assert on the real state, not just the UI.** After driving a control, read what actually persisted — `window.__TAURI_INTERNALS__.invoke('<command>', …)` calls the same backend commands the UI does, so `get_settings` confirms a write landed rather than the control merely *looking* changed. That is how the stale-modal trap above was caught.
+
+**Restore what you changed.** Driving the live app touches the user's real configuration. Put settings back and close what you opened before finishing; a debug session that leaves the app re-configured is worse than no verification.
+
 ## Code Style Guidelines
 
 ### TypeScript/React
