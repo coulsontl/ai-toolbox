@@ -300,6 +300,9 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
   const [processedBaseUrl, setProcessedBaseUrl] = React.useState<string>('');
   const [fetchedModels, setFetchedModels] = React.useState<FetchedModel[]>([]);
   const [loadingModels, setLoadingModels] = React.useState(false);
+  const modelFetchSequence = React.useRef(0);
+  const [modelPickerSearch, setModelPickerSearch] = React.useState('');
+  const [modelFetchStatus, setModelFetchStatus] = React.useState<'idle' | 'empty' | 'error'>('idle');
   // 当前表单的 baseUrl（仅用于辅助匹配 OpenCode 导入候选）
   const [currentBaseUrl, setCurrentBaseUrl] = React.useState<string>('');
   const [billingConfig, setBillingConfig] = React.useState(() => getBillingConfigFromMeta(provider?.meta));
@@ -361,6 +364,17 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
   const modelsSdkType = selectedApiFormat === 'anthropic_messages'
     ? '@ai-sdk/anthropic'
     : selectedApiFormat === 'gemini_native' ? '@ai-sdk/google' : '@ai-sdk/openai';
+  // A result belongs to this editor session and connection, never the next one.
+  // Tauri invokes cannot be aborted, so invalidate both results and notifications.
+  React.useEffect(() => {
+    modelFetchSequence.current += 1;
+    setFetchedModels([]);
+    setLoadingModels(false);
+    setModelPickerSearch('');
+    setModelFetchStatus('idle');
+    return () => { modelFetchSequence.current += 1; };
+  }, [open, provider, mode, isCopy, isOfficialMode, codexBaseUrl, codexApiKey, modelsSdkType]);
+
   const selectedProviderProfileId = Form.useWatch('providerProfileId', watchOptions) as string | undefined;
   const selectedIsCustomProviderProfile = (selectedProviderProfileId || CUSTOM_PROVIDER_PROFILE_ID) === CUSTOM_PROVIDER_PROFILE_ID;
   // A protocol selector only means something when the gateway can take this
@@ -880,10 +894,15 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
   }));
 
   const handleFetchModels = async () => {
+    const sequence = ++modelFetchSequence.current;
+    const isCurrent = () => sequence === modelFetchSequence.current;
+    setModelFetchStatus('idle');
+    setModelPickerSearch('');
     if (isOfficialMode) {
       setLoadingModels(true);
       try {
         const response = await fetchCodexOfficialModels();
+        if (!isCurrent()) return;
         const models = response.models.length > 0 ? response.models : CODEX_OFFICIAL_FALLBACK_MODELS;
         setFetchedModels(models);
 
@@ -893,11 +912,12 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
           message.success(t('codex.fetchModels.officialUpdated', { count: models.length }));
         }
       } catch (error) {
+        if (!isCurrent()) return;
         console.error('Failed to fetch Codex official models:', error);
         setFetchedModels(CODEX_OFFICIAL_FALLBACK_MODELS);
         message.info(t('codex.fetchModels.officialBundled', { count: CODEX_OFFICIAL_FALLBACK_MODELS.length }));
       } finally {
-        setLoadingModels(false);
+        if (isCurrent()) setLoadingModels(false);
       }
       return;
     }
@@ -921,17 +941,21 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
         },
       });
 
+      if (!isCurrent()) return;
       setFetchedModels(response.models);
+      setModelFetchStatus(response.models.length > 0 ? 'idle' : 'empty');
       if (response.models.length > 0) {
         message.success(t('codex.fetchModels.success', { count: response.models.length }));
       } else {
         message.info(t('codex.fetchModels.noModels'));
       }
     } catch (error) {
+      if (!isCurrent()) return;
+      setModelFetchStatus('error');
       console.error('Failed to fetch Codex models:', error);
       message.error(t('codex.fetchModels.failed'));
     } finally {
-      setLoadingModels(false);
+      if (isCurrent()) setLoadingModels(false);
     }
   };
 
@@ -1158,8 +1182,8 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
         label={t('codex.provider.modelName')}
         help={<Text type="secondary" style={{ fontSize: 12 }}>{t('codex.provider.modelNameHelp')}</Text>}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
+        <div className={styles.modelFieldRow}>
+          <div className={styles.modelInput}>
             <Form.Item name="model" noStyle>
               <ImeSafeAutoComplete
                 options={modelOptions}
@@ -1182,11 +1206,42 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
             </Button>
           )}
           {fetchedModels.length > 0 && (
-            <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>
-              {t('codex.fetchModels.loaded', { count: fetchedModels.length })}
-            </Text>
+            <Select
+              className={styles.modelPicker}
+              aria-label={t('codex.fetchModels.choose')}
+              placeholder={t('codex.fetchModels.browse', { count: fetchedModels.length })}
+              // Keep browsing independent of the manually entered model. In
+              // particular, an unknown current id must not filter out all results.
+              value={undefined}
+              showSearch
+              searchValue={modelPickerSearch}
+              onSearch={setModelPickerSearch}
+              onOpenChange={() => setModelPickerSearch('')}
+              optionFilterProp="label"
+              options={fetchedModels.map((model) => ({
+                value: model.id,
+                label: model.name && model.name !== model.id
+                  ? `${model.name} (${model.id})`
+                  : model.id,
+                title: model.name && model.name !== model.id
+                  ? `${model.name} (${model.id})`
+                  : model.id,
+              }))}
+              onChange={(modelId: string) => {
+                form.setFieldValue('model', modelId);
+                handleModelChange(modelId);
+                setModelPickerSearch('');
+              }}
+              disabled={loadingModels}
+              notFoundContent={t('codex.fetchModels.noMatches')}
+            />
           )}
         </div>
+        {modelFetchStatus !== 'idle' && (
+          <Text role="status" type={modelFetchStatus === 'error' ? 'danger' : 'secondary'}>
+            {modelFetchStatus === 'error' ? t('codex.fetchModels.failed') : t('codex.fetchModels.noModels')}
+          </Text>
+        )}
         {!isOfficialMode && (
           <Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
             {t('codex.provider.modelMappingMovedHint')}
@@ -1368,7 +1423,10 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
             : t('codex.provider.addProvider')
       }
       open={open}
-      onCancel={onCancel}
+      onCancel={() => {
+        modelFetchSequence.current += 1;
+        onCancel();
+      }}
       onOk={handleSubmit}
       confirmLoading={loading}
       width="min(960px, 92vw)"
