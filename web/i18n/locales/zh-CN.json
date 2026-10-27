@@ -3183,7 +3183,10 @@
       "failed": "获取模型列表失败",
       "officialUpdated": "已从官方订阅模型目录更新 {{count}} 个模型",
       "officialBundled": "远程模型目录不可用，已加载内置 {{count}} 个模型",
-      "baseUrlRequired": "请先填写 Base URL"
+      "baseUrlRequired": "请先填写 Base URL",
+      "choose": "选择已加载的模型",
+      "browse": "查看 / 选择 {{count}} 个模型",
+      "noMatches": "没有匹配的模型"
     },
     "conflict": {
       "title": "检测到重复导入",

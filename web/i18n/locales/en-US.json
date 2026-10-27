@@ -3186,7 +3186,10 @@
       "failed": "Failed to fetch models",
       "officialUpdated": "Updated {{count}} model(s) from the official subscription catalog",
       "officialBundled": "Remote model catalog is unavailable; loaded {{count}} bundled model(s)",
-      "baseUrlRequired": "Please enter Base URL first"
+      "baseUrlRequired": "Please enter Base URL first",
+      "choose": "Select a loaded model",
+      "browse": "Browse / select {{count}} models",
+      "noMatches": "No matching models"
     },
     "conflict": {
       "title": "Duplicate Import Detected",
