@@ -33,4 +33,4 @@
 - 语义覆盖要同时包含：未闭合串、普通 closed 串、真实 Codex `notify` 风格 Windows 路径 closed 串，以及会触发指数回溯的 adversarial closed 串。
 - 指数回溯回归必须在可终止的 Worker 中执行（超时即失败），避免危险正则重新出现时把完整测试进程永久卡住。
 - 修改 `FetchModelsModal` 排序或 `onSuccess` 契约后，运行 `web/test/components/common/FetchModelsModal/sort.test.ts`；改动 URL/请求契约（如 `configValueMode`）后，同时运行 `web/test/components/common/FetchModelsModal/request.test.ts`，并确认 `onSuccess` 新增字段对所有消费方（OpenCode/Grok/Pi/DSH/Hermes/OhMyPi/OpenClaw 页面与 Codex 表单）是纯增量。
-- 搜索选择和协议切换使用 `pnpm test:codex-model-import` 验证真实共享弹窗；需要已安装 Chrome/Edge，可传 `--browser` 指定路径。模型接口和保存由隔离桩提供，不写用户配置。
+- 搜索选择、协议切换和过期响应用 `pnpm test:codex-model-import` 验证真实共享弹窗（`web/test/features/coding/codex/components/fetchedModelsModalBrowserChecks.mjs`，29 项断言，夹具直接挂载 `FetchModelsModal`）；需要已安装 Chrome/Edge，可传 `--browser` 指定路径。模型接口和保存由隔离桩提供，不写用户配置。它在 `pnpm test` 链上，改本组件时必须保持通过。
