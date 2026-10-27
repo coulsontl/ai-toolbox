@@ -21,7 +21,11 @@ import {
   type BackupRepositoryConfigFE,
   type BackupSettingsSaveOutcome,
 } from '@/services/backupApi';
-import { setCodexPreserveOfficialAuthOnSwitch as setCodexPreserveOfficialAuthOnSwitchApi } from '@/services/codexApi';
+import {
+  setCodexPreserveOfficialAuthOnSwitch as setCodexPreserveOfficialAuthOnSwitchApi,
+  setCodexDaemonRestartMode as setCodexDaemonRestartModeApi,
+} from '@/services/codexApi';
+import type { CodexDaemonRestartMode } from '@/types/codex';
 import { createKeepAwakeSettingsSlice, type KeepAwakeSettingsState } from './keepAwakeSettings';
 import { backupSettingsStatePatch, buildLaunchOnStartupSettings } from './settingsStoreUtils';
 
@@ -122,6 +126,8 @@ interface SettingsState extends KeepAwakeSettingsState {
 
   // Codex options
   codexPreserveOfficialAuthOnSwitch: boolean;
+  /** What to do after an apply while a Codex process still holds the old config. */
+  codexDaemonRestartMode: CodexDaemonRestartMode;
   codexUnifiedSessionHistoryEnabled: boolean;
 
   // Claude Code options
@@ -162,6 +168,7 @@ interface SettingsState extends KeepAwakeSettingsState {
   setOpencodeOmoUpgradeConfirmed: (confirmed: boolean) => Promise<void>;
   setOpencodeDualWriteReasoningVariant: (enabled: boolean) => Promise<void>;
   setCodexPreserveOfficialAuthOnSwitch: (enabled: boolean) => Promise<void>;
+  setCodexDaemonRestartMode: (mode: CodexDaemonRestartMode) => Promise<void>;
   setCodexUnifiedSessionHistoryEnabled: (enabled: boolean) => void;
   setClaudeCliLaunchFullAccess: (enabled: boolean) => Promise<void>;
   setPreferredTerminal: (terminal: string) => Promise<void>;
@@ -253,6 +260,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   opencodeOmoUpgradeConfirmed: false,
   opencodeDualWriteReasoningVariant: false,
   codexPreserveOfficialAuthOnSwitch: false,
+  codexDaemonRestartMode: 'prompt',
   codexUnifiedSessionHistoryEnabled: false,
   claudeCliLaunchFullAccess: false,
   preferredTerminal: null,
@@ -298,6 +306,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         opencodeOmoUpgradeConfirmed: settings.opencode_omo_upgrade_confirmed ?? false,
         opencodeDualWriteReasoningVariant: settings.opencode_dual_write_reasoning_variant ?? false,
         codexPreserveOfficialAuthOnSwitch: settings.codex_preserve_official_auth_on_switch ?? false,
+        codexDaemonRestartMode: settings.codex_daemon_restart_mode ?? 'prompt',
         codexUnifiedSessionHistoryEnabled: settings.codex_unified_session_history_enabled ?? false,
         claudeCliLaunchFullAccess: settings.claude_cli_launch_full_access ?? false,
         preferredTerminal: settings.preferred_terminal ?? null,
@@ -564,6 +573,13 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     // backend command (direct apply, or restore → apply → re-engage under Gateway).
     const result = await setCodexPreserveOfficialAuthOnSwitchApi(enabled);
     set({ codexPreserveOfficialAuthOnSwitch: result.enabled });
+  },
+
+  setCodexDaemonRestartMode: async (mode) => {
+    // Backend persists and echoes the value back; no optimistic flip, so a
+    // rejected mode cannot leave the store disagreeing with the database.
+    const result = await setCodexDaemonRestartModeApi(mode);
+    set({ codexDaemonRestartMode: result.mode });
   },
 
   setCodexUnifiedSessionHistoryEnabled: (enabled) => {

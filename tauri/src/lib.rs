@@ -2436,6 +2436,7 @@ pub fn run() {
             coding::codex::restore_latest_codex_history_backup,
             coding::codex::set_codex_unified_session_history,
             coding::codex::set_codex_preserve_official_auth_on_switch,
+            coding::codex::set_codex_daemon_restart_mode,
             coding::codex::has_codex_unified_history_backup,
             coding::codex::restore_codex_unified_session_history,
             coding::codex::get_codex_config_file_path,

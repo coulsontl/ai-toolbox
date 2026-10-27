@@ -582,6 +582,16 @@ export interface CodexScratchCleanResult {
 export type CodexConfigHolder = 'daemon' | 'desktopApp';
 
 /**
+ * What to do after applying a provider while a holder is still running.
+ *
+ * - `prompt`: show the restart notification (default; the behaviour before this
+ *   setting existed).
+ * - `auto`: restart without asking, then report the outcome.
+ * - `off`: neither prompt nor restart; the user restarts Codex themselves.
+ */
+export type CodexDaemonRestartMode = 'prompt' | 'auto' | 'off';
+
+/**
  * State of the processes holding the Codex config.
  *
  * Codex 0.16x reads config and credentials once when an app-server starts, so

@@ -92,6 +92,7 @@ pub fn from_db_value(value: Value) -> AppSettings {
             "codex_preserve_official_auth_on_switch",
             false,
         ),
+        codex_daemon_restart_mode: get_codex_daemon_restart_mode(&value),
         codex_unified_session_history_enabled: get_bool(
             &value,
             "codex_unified_session_history_enabled",
@@ -142,6 +143,18 @@ fn get_opt_str(value: &Value, key: &str) -> Option<String> {
 
 fn get_bool(value: &Value, key: &str, default: bool) -> bool {
     value.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
+}
+
+/// Codex stale-config restart mode, whitelisted: an unknown or missing value
+/// (older database, hand-edited JSON) falls back to `prompt`, which is the
+/// behaviour users already had before this setting existed.
+fn get_codex_daemon_restart_mode(value: &Value) -> String {
+    value
+        .get("codex_daemon_restart_mode")
+        .and_then(|v| v.as_str())
+        .filter(|mode| matches!(*mode, "prompt" | "auto" | "off"))
+        .unwrap_or(crate::settings::types::DEFAULT_CODEX_DAEMON_RESTART_MODE)
+        .to_string()
 }
 
 fn get_proxy_mode(value: &Value) -> String {
@@ -591,6 +604,7 @@ fn get_backup_file_filter_rules(value: &Value) -> Vec<BackupFileFilterRule> {
 #[cfg(test)]
 mod tests {
     use super::from_db_value;
+    use crate::settings::DEFAULT_CODEX_DAEMON_RESTART_MODE;
     use serde_json::json;
 
     #[test]
@@ -1166,6 +1180,35 @@ mod tests {
         }));
 
         assert!(settings.opencode_dual_write_reasoning_variant);
+    }
+
+    #[test]
+    fn codex_daemon_restart_mode_defaults_to_prompt() {
+        // A database written before this setting existed must keep the
+        // behaviour those users already had (the issue #443 notification).
+        assert_eq!(
+            from_db_value(json!({})).codex_daemon_restart_mode,
+            DEFAULT_CODEX_DAEMON_RESTART_MODE
+        );
+    }
+
+    #[test]
+    fn codex_daemon_restart_mode_preserves_known_values() {
+        for mode in ["prompt", "auto", "off"] {
+            let settings = from_db_value(json!({ "codex_daemon_restart_mode": mode }));
+            assert_eq!(settings.codex_daemon_restart_mode, mode);
+        }
+    }
+
+    #[test]
+    fn codex_daemon_restart_mode_falls_back_on_unknown_value() {
+        // A hand-edited or future value must not leave the frontend with a mode
+        // it cannot interpret, which would silently disable the behaviour.
+        let settings = from_db_value(json!({ "codex_daemon_restart_mode": "sometimes" }));
+        assert_eq!(
+            settings.codex_daemon_restart_mode,
+            DEFAULT_CODEX_DAEMON_RESTART_MODE
+        );
     }
 
     #[test]

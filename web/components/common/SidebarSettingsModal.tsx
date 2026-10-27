@@ -43,6 +43,11 @@ export interface SettingsSelectRowProps {
   value: string;
   options: { value: string; label: string }[];
   disabled?: boolean;
+  /**
+   * Select width in px. Long option labels (e.g. a sentence-length mode name)
+   * need more than the 160px default or the selected label gets ellipsised.
+   */
+  selectWidth?: number;
   onChange: (value: string) => void | Promise<void>;
 }
 
@@ -53,6 +58,7 @@ export const SettingsSelectRow: React.FC<SettingsSelectRowProps> = ({
   value,
   options,
   disabled = false,
+  selectWidth = 160,
   onChange,
 }) => (
   <div className={styles.row}>
@@ -66,7 +72,7 @@ export const SettingsSelectRow: React.FC<SettingsSelectRowProps> = ({
         options={options}
         disabled={disabled}
         onChange={onChange}
-        style={{ width: 160 }}
+        style={{ width: selectWidth }}
       />
     </div>
   </div>

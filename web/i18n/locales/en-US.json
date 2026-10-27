@@ -3180,7 +3180,6 @@
     },
     "fetchModels": {
       "button": "Fetch Models",
-      "loaded": "{{count}} model(s) loaded",
       "success": "Successfully fetched {{count}} model(s)",
       "noModels": "No models found",
       "failed": "Failed to fetch models",
@@ -3435,7 +3434,15 @@
       "unifiedSessionHistorySkippedNoBackupLedger": "No restoreable migration ledger was found",
       "unifiedSessionHistorySkippedNothingToRestore": "Ledgered official history does not need restoration now",
       "unifiedSessionHistorySkippedToggleOn": "Unified session history is still enabled",
-      "unifiedSessionHistorySkippedMigrationFailed": "Migration failed. You can retry later"
+      "unifiedSessionHistorySkippedMigrationFailed": "Migration failed. You can retry later",
+      "daemonRestartMode": "Restart behaviour after applying a provider",
+      "daemonRestartModeHint": "Codex's background service and the ChatGPT app each hold a copy of the configuration they read at startup. This decides what happens when they are still running as a new provider is applied. The default is to ask first.",
+      "daemonRestartModePrompt": "Ask me first",
+      "daemonRestartModeAuto": "Restart without asking",
+      "daemonRestartModeOff": "Do nothing",
+      "daemonRestartModePromptSaved": "Saved: you will be asked to restart after applying",
+      "daemonRestartModeAutoSaved": "Saved: applying will restart automatically without asking",
+      "daemonRestartModeOffSaved": "Saved: applying will neither prompt nor restart"
     },
     "memories": {
       "title": "Memories",
@@ -3518,7 +3525,8 @@
       "staleDescriptionBoth": "The configuration was written, but both the Codex background service and the ChatGPT app still hold the previous provider. Restarting applies the new configuration to both.",
       "restartConfirmDescriptionDesktop": "This restarts the ChatGPT app and interrupts any conversation running in it. The new configuration takes effect right after the restart.",
       "restartDesktopApp": "Restart the ChatGPT app",
-      "desktopAppRestarted": "The ChatGPT app has been restarted; the new configuration is now active"
+      "desktopAppRestarted": "The ChatGPT app has been restarted; the new configuration is now active",
+      "autoRestarting": "Restarting Codex so it picks up the new configuration…"
     }
   },
   "geminicli": {

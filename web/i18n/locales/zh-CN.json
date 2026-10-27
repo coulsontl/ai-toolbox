@@ -3177,7 +3177,6 @@
     },
     "fetchModels": {
       "button": "获取模型",
-      "loaded": "已加载 {{count}} 个模型",
       "success": "成功获取 {{count}} 个模型",
       "noModels": "未找到可用模型",
       "failed": "获取模型列表失败",
@@ -3432,7 +3431,15 @@
       "unifiedSessionHistorySkippedNoBackupLedger": "未找到可恢复的迁移账本",
       "unifiedSessionHistorySkippedNothingToRestore": "账本中的官方历史当前无需恢复",
       "unifiedSessionHistorySkippedToggleOn": "统一会话历史仍处于开启状态",
-      "unifiedSessionHistorySkippedMigrationFailed": "迁移执行失败，可稍后重试"
+      "unifiedSessionHistorySkippedMigrationFailed": "迁移执行失败，可稍后重试",
+      "daemonRestartMode": "应用供应商后的重启方式",
+      "daemonRestartModeHint": "Codex 的后台服务和 ChatGPT 客户端启动时会读入一份配置并一直持有。应用新供应商时这些进程若仍在运行，这里决定如何处理。默认「提示后我再决定」。",
+      "daemonRestartModePrompt": "提示后我再决定",
+      "daemonRestartModeAuto": "自动重启，不询问",
+      "daemonRestartModeOff": "不提示也不重启",
+      "daemonRestartModePromptSaved": "已改为：应用后提示你重启",
+      "daemonRestartModeAutoSaved": "已改为：应用后自动重启，无需确认",
+      "daemonRestartModeOffSaved": "已改为：应用后不再提示，也不会自动重启"
     },
     "memories": {
       "title": "记忆管理",
@@ -3515,7 +3522,8 @@
       "staleDescriptionBoth": "配置已写入，但 Codex 后台服务和 ChatGPT 客户端都仍持有切换前的供应商。重启后两者都会使用新配置。",
       "restartConfirmDescriptionDesktop": "这会重启 ChatGPT 客户端，客户端内正在进行的对话会中断。重启后新配置立即生效。",
       "restartDesktopApp": "重启 ChatGPT 客户端",
-      "desktopAppRestarted": "ChatGPT 客户端已重启，新配置已生效"
+      "desktopAppRestarted": "ChatGPT 客户端已重启，新配置已生效",
+      "autoRestarting": "正在重启 Codex 进程以载入新配置…"
     }
   },
   "geminicli": {

@@ -14,18 +14,51 @@ import { useCallback } from 'react';
 import { App, Button, Space } from 'antd';
 import { useTranslation } from 'react-i18next';
 import { getCodexDaemonStatus, restartCodexDaemon } from '@/services/codexApi';
+import { useSettingsStore } from '@/stores';
 import {
   describeCodexDaemonHolders,
-  shouldPromptCodexDaemonRestart,
+  resolveCodexDaemonRestartAction,
 } from '../utils/codexDaemonNotice';
 
 export const useCodexDaemonNotice = () => {
   const { t } = useTranslation();
   const { notification, message, modal } = App.useApp();
+  // Read lazily at call time rather than capturing it in the callback: the mode
+  // can change in the settings modal while a page stays mounted.
+  const codexDaemonRestartMode = useSettingsStore(
+    (state) => state.codexDaemonRestartMode,
+  );
+
+  /**
+   * Run the restart and report the outcome. Shared by the confirmed (manual)
+   * and `auto` paths so the two cannot report differently.
+   */
+  const runRestart = useCallback(
+    async (hasDesktopApp: boolean): Promise<boolean> => {
+      try {
+        await restartCodexDaemon();
+        message.success(
+          hasDesktopApp
+            ? t('codex.daemon.desktopAppRestarted')
+            : t('codex.daemon.restartSuccess'),
+        );
+        return true;
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        message.error(t('codex.daemon.restartFailed', { error: errorMessage }));
+        return false;
+      }
+    },
+    [message, t],
+  );
 
   /**
    * Probe the holders and, when one is running, explain that the just-applied
    * config is not live yet and offer the restart.
+   *
+   * The user's `codexDaemonRestartMode` decides whether this prompts, restarts
+   * silently, or does nothing (see `resolveCodexDaemonRestartAction`).
    *
    * Never throws: a failed probe must not turn a successful apply into an
    * error in the caller's catch block.
@@ -38,12 +71,44 @@ export const useCodexDaemonNotice = () => {
       console.error('Failed to probe Codex config holders:', error);
       return;
     }
-    if (!shouldPromptCodexDaemonRestart(status)) {
+    const action = resolveCodexDaemonRestartAction(
+      status,
+      codexDaemonRestartMode,
+    );
+    if (action === 'none') {
       return;
     }
     const { hasDaemon, hasDesktopApp } = describeCodexDaemonHolders(
       status?.holders ?? [],
     );
+
+    // `auto`: restart without asking, then report the outcome. A failure here
+    // is surfaced, not swallowed — the user chose to skip the prompt, but they
+    // still must not be left believing the new config is live.
+    if (action === 'auto') {
+      console.info(
+        'A Codex process is holding the previous config; restarting it automatically:',
+        status,
+      );
+      // The backend bounds this (8s waiting for the desktop app to exit, 60s
+      // for the daemon), but it can still take seconds with no other feedback,
+      // which reads as a frozen UI. Hold a loading toast for the duration.
+      const autoKey = 'codex-daemon-auto-restart';
+      message.loading({
+        key: autoKey,
+        content: t('codex.daemon.autoRestarting'),
+        duration: 0,
+      });
+      try {
+        await runRestart(hasDesktopApp);
+      } finally {
+        // Destroy only the loading toast; the outcome message has its own
+        // (implicit) key and must survive this call.
+        message.destroy(autoKey);
+      }
+      return;
+    }
+
     console.info(
       'A Codex process is holding the previous config; prompting to restart it:',
       status,
@@ -87,21 +152,10 @@ export const useCodexDaemonNotice = () => {
                   : t('codex.daemon.restart'),
                 cancelText: t('common.cancel'),
                 onOk: async () => {
-                  try {
-                    await restartCodexDaemon();
-                    notification.destroy(notificationKey);
-                    message.success(
-                      hasDesktopApp
-                        ? t('codex.daemon.desktopAppRestarted')
-                        : t('codex.daemon.restartSuccess'),
-                    );
-                  } catch (error) {
-                    const errorMessage =
-                      error instanceof Error ? error.message : String(error);
-                    message.error(
-                      t('codex.daemon.restartFailed', { error: errorMessage }),
-                    );
-                  }
+                  // Drop the prompt either way; the outcome arrives as a
+                  // message, so leaving it up would contradict the toast.
+                  notification.destroy(notificationKey);
+                  await runRestart(hasDesktopApp);
                 },
               });
             }}
@@ -113,7 +167,7 @@ export const useCodexDaemonNotice = () => {
         </Space>
       ),
     });
-  }, [message, modal, notification, t]);
+  }, [codexDaemonRestartMode, modal, notification, runRestart, t]);
 
   return { notifyIfDaemonHoldsStaleConfig };
 };

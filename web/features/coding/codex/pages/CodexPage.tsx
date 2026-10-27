@@ -33,6 +33,7 @@ import type {
   CodexSettingsConfig,
   ImportConflictInfo,
   ImportConflictAction,
+  CodexDaemonRestartMode,
 } from '@/types/codex';
 import {
   getCodexConfigFilePath,
@@ -109,6 +110,7 @@ import { isLocalConfigId } from '@/features/coding/shared/localConfig';
 import ShareProviderModal from '@/features/coding/shared/providerShare';
 import { hasCcSwitchDb, type CcSwitchProviderCandidate } from '@/services/ccSwitchApi';
 import SidebarSettingsModal, {
+  SettingsSelectRow,
   SettingsToggleRow,
 } from '@/components/common/SidebarSettingsModal';
 import ImportProviderModal from '@/components/common/ImportProviderModal';
@@ -307,8 +309,10 @@ const CodexPage: React.FC = () => {
     sidebarHiddenByPage,
     setSidebarHidden,
     codexPreserveOfficialAuthOnSwitch,
+    codexDaemonRestartMode,
     codexUnifiedSessionHistoryEnabled,
     setCodexPreserveOfficialAuthOnSwitch,
+    setCodexDaemonRestartMode,
     setCodexUnifiedSessionHistoryEnabled,
   } = useSettingsStore();
   const [loading, setLoading] = React.useState(false);
@@ -525,6 +529,7 @@ const CodexPage: React.FC = () => {
   }, []);
   const [settingsModalOpen, setSettingsModalOpen] = React.useState(false);
   const [savingCodexAuthPreservation, setSavingCodexAuthPreservation] = React.useState(false);
+  const [savingCodexDaemonRestartMode, setSavingCodexDaemonRestartMode] = React.useState(false);
   const sidebarHidden = sidebarHiddenByPage.codex;
 
   // 配置拖拽传感器
@@ -2339,6 +2344,33 @@ const CodexPage: React.FC = () => {
     }
   };
 
+  const handleCodexDaemonRestartModeChange = async (
+    mode: CodexDaemonRestartMode,
+  ) => {
+    if (mode === codexDaemonRestartMode) {
+      return;
+    }
+    setSavingCodexDaemonRestartMode(true);
+    try {
+      await setCodexDaemonRestartMode(mode);
+      // Name the chosen behaviour in the toast: the Select sits in a modal the
+      // user is about to close, so this is the only confirmation they get.
+      const confirmationKey =
+        mode === 'auto'
+          ? 'codex.settings.daemonRestartModeAutoSaved'
+          : mode === 'off'
+            ? 'codex.settings.daemonRestartModeOffSaved'
+            : 'codex.settings.daemonRestartModePromptSaved';
+      message.success(t(confirmationKey));
+    } catch (error) {
+      console.error('Failed to update Codex daemon restart mode:', error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      message.error(errorMsg || t('common.error'));
+    } finally {
+      setSavingCodexDaemonRestartMode(false);
+    }
+  };
+
   const unifiedHistorySkippedText = (reason?: string) => {
     switch (reason) {
       case 'live_not_unified':
@@ -3007,6 +3039,32 @@ const CodexPage: React.FC = () => {
           sidebarVisible={!sidebarHidden}
           onSidebarVisibleChange={(visible) => setSidebarHidden('codex', !visible)}
         >
+          <SettingsSelectRow
+            title={t('codex.settings.daemonRestartMode')}
+            hint={t('codex.settings.daemonRestartModeHint')}
+            value={codexDaemonRestartMode}
+            disabled={savingCodexDaemonRestartMode}
+            selectWidth={220}
+            options={[
+              {
+                value: 'prompt',
+                label: t('codex.settings.daemonRestartModePrompt'),
+              },
+              {
+                value: 'auto',
+                label: t('codex.settings.daemonRestartModeAuto'),
+              },
+              {
+                value: 'off',
+                label: t('codex.settings.daemonRestartModeOff'),
+              },
+            ]}
+            onChange={(mode) => {
+              void handleCodexDaemonRestartModeChange(
+                mode as CodexDaemonRestartMode,
+              );
+            }}
+          />
           <SettingsToggleRow
             title={t('codex.settings.preserveOfficialAuthOnSwitch')}
             hint={t('codex.settings.preserveOfficialAuthOnSwitchHint')}

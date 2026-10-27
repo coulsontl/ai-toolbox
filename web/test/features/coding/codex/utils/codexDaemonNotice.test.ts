@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 
 import {
   describeCodexDaemonHolders,
+  resolveCodexDaemonRestartAction,
   shouldPromptCodexDaemonRestart,
 } from '../../../../../features/coding/codex/utils/codexDaemonNotice.ts';
 
@@ -45,6 +46,29 @@ test('stays silent when the probe is missing or failed', () => {
   // prompting here would turn a backend hiccup into user-facing noise.
   assert.equal(shouldPromptCodexDaemonRestart(null), false);
   assert.equal(shouldPromptCodexDaemonRestart(undefined), false);
+});
+
+test('the mode decides the action once a holder is running', () => {
+  const running = { running: true, holders: ['daemon'] as const };
+  // `prompt` is the pre-existing behaviour and stays the default.
+  assert.equal(resolveCodexDaemonRestartAction({ ...running, holders: ['daemon'] }, 'prompt'), 'prompt');
+  assert.equal(resolveCodexDaemonRestartAction({ ...running, holders: ['daemon'] }, 'auto'), 'auto');
+  assert.equal(resolveCodexDaemonRestartAction({ ...running, holders: ['daemon'] }, 'off'), 'none');
+});
+
+test('no action in any mode when nothing holds the config', () => {
+  const idle = { running: false, holders: [] as const };
+  assert.equal(resolveCodexDaemonRestartAction({ ...idle, holders: [] }, 'prompt'), 'none');
+  assert.equal(resolveCodexDaemonRestartAction({ ...idle, holders: [] }, 'auto'), 'none');
+  assert.equal(resolveCodexDaemonRestartAction({ ...idle, holders: [] }, 'off'), 'none');
+});
+
+test('a failed probe stays silent in every mode', () => {
+  // Even `auto` must not act on a probe that never answered: there is nothing
+  // to restart, and a backend hiccup must not look like a holder.
+  assert.equal(resolveCodexDaemonRestartAction(null, 'prompt'), 'none');
+  assert.equal(resolveCodexDaemonRestartAction(null, 'auto'), 'none');
+  assert.equal(resolveCodexDaemonRestartAction(undefined, 'auto'), 'none');
 });
 
 test('describes each holder kind so the prompt can tell them apart', () => {

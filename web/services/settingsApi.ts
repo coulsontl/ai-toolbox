@@ -5,6 +5,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import type { CodexDaemonRestartMode } from '@/types/codex';
 
 // Types matching Rust structures
 export interface WebDAVConfig {
@@ -160,6 +161,12 @@ export interface AppSettings {
   opencode_omo_upgrade_confirmed: boolean;
   opencode_dual_write_reasoning_variant: boolean;
   codex_preserve_official_auth_on_switch: boolean;
+  /**
+   * What to do after applying a Codex provider while a process still holds the
+   * previous config (issue #443): `prompt` | `auto` | `off`. The backend
+   * already normalises unknown values to `prompt`.
+   */
+  codex_daemon_restart_mode: CodexDaemonRestartMode;
   codex_unified_session_history_enabled: boolean;
   claude_cli_launch_full_access: boolean;
   /** Windows terminal preference for the Claude CLI launch: `cmd` | `powershell` | `wt` | `gitbash`. */
@@ -246,6 +253,7 @@ export const defaultSettings: AppSettings = {
   opencode_omo_upgrade_confirmed: false,
   opencode_dual_write_reasoning_variant: false,
   codex_preserve_official_auth_on_switch: false,
+  codex_daemon_restart_mode: 'prompt',
   codex_unified_session_history_enabled: false,
   claude_cli_launch_full_access: false,
   preferred_terminal: null,
@@ -281,6 +289,7 @@ export const getSettings = async (): Promise<AppSettings> => {
       backup_file_filter_rules: settings.backup_file_filter_rules ?? [],
       backup_cli_config_files_enabled: settings.backup_cli_config_files_enabled ?? true,
       codex_preserve_official_auth_on_switch: settings.codex_preserve_official_auth_on_switch ?? false,
+      codex_daemon_restart_mode: settings.codex_daemon_restart_mode ?? 'prompt',
       codex_unified_session_history_enabled: settings.codex_unified_session_history_enabled ?? false,
       sidebar_hidden_by_page: normalizeSidebarHiddenByPage(
         settings.sidebar_hidden_by_page ?? settings.sidebar_visibility_by_page

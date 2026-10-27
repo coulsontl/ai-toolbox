@@ -1368,6 +1368,50 @@ pub async fn set_codex_preserve_official_auth_on_switch(
     })
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexDaemonRestartModeInput {
+    pub mode: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexDaemonRestartModeUpdateResult {
+    pub mode: String,
+}
+
+/// Persist what to do after applying a provider while a Codex process still
+/// holds the previous config (issue #443).
+///
+/// Nothing else has to happen here: the setting only steers the frontend,
+/// which reads it back from the store before each apply. Unlike the auth
+/// preservation toggle this does not reproject live config — it changes no
+/// files, only how the next apply reports itself.
+#[tauri::command]
+pub async fn set_codex_daemon_restart_mode(
+    state: tauri::State<'_, SqliteDbState>,
+    input: CodexDaemonRestartModeInput,
+) -> Result<CodexDaemonRestartModeUpdateResult, String> {
+    // Reject unknown values instead of silently persisting something the
+    // frontend cannot interpret; the reader would fall back to `prompt` and the
+    // user's choice would appear to be forgotten.
+    if !matches!(input.mode.as_str(), "prompt" | "auto" | "off") {
+        return Err(format!("未知的重启模式: {}", input.mode));
+    }
+
+    let db = state.db();
+    let mut settings = crate::settings::store::load_settings_from_sqlite_state(&db)?;
+    if settings.codex_daemon_restart_mode == input.mode {
+        return Ok(CodexDaemonRestartModeUpdateResult {
+            mode: input.mode,
+        });
+    }
+    settings.codex_daemon_restart_mode = input.mode.clone();
+    crate::settings::store::save_settings_to_sqlite_state(&db, &settings)?;
+
+    Ok(CodexDaemonRestartModeUpdateResult { mode: input.mode })
+}
+
 #[tauri::command]
 pub async fn has_codex_unified_history_backup(
     state: tauri::State<'_, SqliteDbState>,

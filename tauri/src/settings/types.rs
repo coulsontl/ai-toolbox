@@ -281,6 +281,12 @@ pub struct AppSettings {
     pub opencode_dual_write_reasoning_variant: bool,
     /// Keep Codex official OAuth login when applying third-party providers (default: false)
     pub codex_preserve_official_auth_on_switch: bool,
+    /// What to do after applying a Codex provider while a process still holds
+    /// the previous config (issue #443): `prompt` shows the restart notification,
+    /// `auto` restarts without asking, `off` does neither. Stored as a string so
+    /// a future mode does not force a schema migration; unknown values fall back
+    /// to `prompt` (see `web/utils/codexDaemonRestartMode.ts`).
+    pub codex_daemon_restart_mode: String,
     /// Let official Codex sessions use the shared custom history bucket (default: false)
     pub codex_unified_session_history_enabled: bool,
     /// Append --dangerously-skip-permissions when launching Claude provider CLI (default: false)
@@ -383,6 +389,7 @@ impl Default for AppSettings {
             opencode_omo_upgrade_confirmed: false,
             opencode_dual_write_reasoning_variant: false,
             codex_preserve_official_auth_on_switch: false,
+            codex_daemon_restart_mode: default_codex_daemon_restart_mode(),
             codex_unified_session_history_enabled: false,
             claude_cli_launch_full_access: false,
             preferred_terminal: None,
@@ -395,6 +402,14 @@ impl Default for AppSettings {
             gateway_usage_range: GatewayUsageRangeSelection::default(),
         }
     }
+}
+
+/// Default for `codex_daemon_restart_mode`: keep the existing behaviour, where
+/// a running holder triggers the restart notification (issue #443).
+pub const DEFAULT_CODEX_DAEMON_RESTART_MODE: &str = "prompt";
+
+pub fn default_codex_daemon_restart_mode() -> String {
+    DEFAULT_CODEX_DAEMON_RESTART_MODE.to_string()
 }
 
 pub fn default_sidebar_hidden_by_page() -> HashMap<String, bool> {

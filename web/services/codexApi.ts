@@ -36,6 +36,7 @@ import type {
   CodexScratchResidue,
   CodexScratchCleanResult,
   CodexDaemonStatus,
+  CodexDaemonRestartMode,
 } from '@/types/codex';
 import type { OpenCodeAllApiHubProvider, OpenCodeAllApiHubProvidersResult } from '@/services/opencodeApi';
 
@@ -479,4 +480,18 @@ export const getCodexDaemonStatus = async (): Promise<CodexDaemonStatus> => {
  */
 export const restartCodexDaemon = async (): Promise<void> => {
   await invoke('restart_codex_daemon');
+};
+
+/**
+ * Persist what to do after an apply while a Codex process still holds the old
+ * config (issue #443). The backend rejects unknown modes and echoes the stored
+ * one back so the store never disagrees with the database.
+ */
+export const setCodexDaemonRestartMode = async (
+  mode: CodexDaemonRestartMode,
+): Promise<{ mode: CodexDaemonRestartMode }> => {
+  return await invoke<{ mode: CodexDaemonRestartMode }>(
+    'set_codex_daemon_restart_mode',
+    { input: { mode } },
+  );
 };

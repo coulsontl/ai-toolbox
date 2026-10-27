@@ -12,7 +12,11 @@
  * React or a backend.
  */
 
-import type { CodexConfigHolder, CodexDaemonStatus } from '@/types/codex';
+import type {
+  CodexConfigHolder,
+  CodexDaemonRestartMode,
+  CodexDaemonStatus,
+} from '@/types/codex';
 
 /**
  * Whether a just-applied config is being masked by a running holder.
@@ -24,6 +28,29 @@ import type { CodexConfigHolder, CodexDaemonStatus } from '@/types/codex';
 export const shouldPromptCodexDaemonRestart = (
   status: CodexDaemonStatus | null | undefined,
 ): boolean => status?.running === true;
+
+/**
+ * What the caller should do after an apply, given the probe and the user's
+ * configured mode.
+ *
+ * Kept separate from `shouldPromptCodexDaemonRestart` so the mode decides the
+ * action, not the caller: `off` must stay silent even when a holder is running,
+ * and `auto` must act without a notification. `null`/`undefined` status means
+ * the probe failed and yields `none` in every mode — the apply succeeded, and a
+ * failed probe is not evidence of stale settings.
+ */
+export const resolveCodexDaemonRestartAction = (
+  status: CodexDaemonStatus | null | undefined,
+  mode: CodexDaemonRestartMode,
+): 'none' | 'prompt' | 'auto' => {
+  if (!shouldPromptCodexDaemonRestart(status)) {
+    return 'none';
+  }
+  if (mode === 'off') {
+    return 'none';
+  }
+  return mode === 'auto' ? 'auto' : 'prompt';
+};
 
 /**
  * Which holders to name in the prompt body.
