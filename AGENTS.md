@@ -451,13 +451,15 @@ fn command_name(param: &str) -> Result<ReturnType, String> {
 
 #### Linux AppImage WebView Compatibility
 
+- 排查 Linux AppImage 卡顿时，以运行进程 `/proc/<pid>/maps` 中实际加载的 WebKitGTK / JavaScriptCore 路径和对应库版本为准；`pacman -Q webkit2gtk-4.1` 只说明宿主版本，AppImage 可能仍加载包内旧版本。渲染 workaround 的实际生效值优先看启动日志和 WebKit 子进程环境：主进程启动后通过 `set_var` 添加的变量不一定出现在 `/proc/<pid>/environ` 中，不能因为主进程中查不到就判定未设置。线程 CPU/I/O 异常与渲染兼容问题分别取证，不能仅凭进程总 CPU 或线程名认定具体业务函数。
 - 新版 Fedora/Arch/CachyOS 等发行版上，AppImage 内置的 Wayland/EGL/GBM 相关库可能与宿主 Mesa/Wayland ABI 冲突，导致 WebKitGTK webview 白屏或 EGL 初始化崩溃；这不是前端资源缺失，也不应只靠升级 Tauri 来判断解决。
 - AppImage + Wayland 的启动级兼容处理必须发生在 Tauri/WebKitGTK 初始化之前；优先用系统 `libwayland-client.so.0` 做一次性 `LD_PRELOAD` re-exec，再继续走 WebKitGTK GPU/DMABuf fallback level。
 - 系统 `libwayland-client.so.0` 搜索路径必须覆盖常见 x86_64 和 aarch64 Debian/Ubuntu multiarch 路径，不能只写 `/usr/lib64` 或 x86_64 专用路径。
 - 不要覆盖用户显式设置的 `LD_PRELOAD`，并且必须有 sentinel 环境变量防止重启循环；`AI_TOOLBOX_DISABLE_WAYLAND_WEBVIEW_WORKAROUND=1` 应禁用这类启动兼容处理。
 - Linux 发版如果新增或调整 AppImage 兼容策略，应同时确认 release workflow 的 Linux 产物覆盖 Fedora 用户可安装的 `rpm`，而不是只发布 `deb` 和 `AppImage`。
 - WebKitGTK 2.50+ 的 Skia 线程化渲染管线在 Wayland（尤其 AMD + KDE）上会引发滚动掉帧和「聚焦输入框冻结 UI」；应用版本对这类问题不可检测（界面能显示，watchdog 的 frontend-ready 超时/EGL 失败都不触发），只能靠预设级别规避（issue #301）。规避效果与 GPU 驱动强相关，呈分档态势：AMD 集显（Radeon 780M / radeonsi）下只有 `level 2` 即 `WEBKIT_DISABLE_GPU_PROCESS=1`（关 GPU 进程走软件合成）能消除冻结，`level 1 + WEBKIT_SKIA_GPU_PAINTING_THREADS=0` 干净环境仍卡死；Intel 集显（Iris Xe / iris）下 `level 0 + WEBKIT_SKIA_GPU_PAINTING_THREADS=0`（保留 GPU 进程、仅 Skia 单线程绘制）即可消除冻结且不牺牲 GPU 加速。即 `WEBKIT_SKIA_GPU_PAINTING_THREADS=0` 是有效的轻量规避，但仅对 Intel 路径完整修复，AMD 仍需 Level 2 兜底；固化时若按驱动分档（Intel 默认走 Skia 单线程、AMD 默认走 Level 2），可让 Intel 用户保留更流畅的 GPU 合成。同类先例：psysonic#342、tauri-apps/tauri#9088。
-- Release 构建下，Wayland 会话的所有安装方式（不只 AppImage）默认 min level 1（禁 DMABUF renderer）；watchdog 自动降级仍只覆盖白屏/崩溃类失败。
+- 上述是历史环境的规避结论，不能据 GPU 品牌保证 Level 2 在任意构建都有效，也不能把级别越高视作越流畅。本机 Arch/KDE Wayland + AMD Phoenix + 1.2.1 AppImage（内置 WebKitGTK 2.50.4）的真实页面对照中，Level 1/2 的滚动 rAF 间隔约 239/251 ms，Level 0 约 16 ms，聚焦也未复现长停顿；因此调整默认级别前必须用实际安装包、同页面/视口、滚动与聚焦路径做对照。rAF 衡量回调间隔，不等于显示器实际呈现帧率；同时独立检查后台负载，不能用降级开关掩盖慢 SQL。
+- 默认的兼容模式下，Release 构建的 Wayland 会话（所有安装方式）和 AppImage 仍以 min level 1（禁 DMABUF renderer）启动；本机显式选择性能模式后以 level 0 探索，白屏/EGL watchdog 仍可回退。WSLg 默认 level 4 与显式环境覆盖优先级不变。机器专属偏好由 `linux_webview.rs` 在 GTK/SQLite 初始化前读默认 bootstrap 根目录的 `linux_webview_rendering.json`，不进入数据库备份或 CLI 同步；失败级别同时绑定 app 版本和渲染模式，切换模式不会误用另一模式的历史降级。启动日志必须记录实际加载的 WebKitGTK 版本/库路径和生效开关。 Linux 重启先释放旧进程的单实例 D-Bus 名称，再启动新进程；应用内重启只清除当前进程注入且未被改写的渲染变量，保留用户显式变量；AppImage 重启优先使用原安装包，避免依赖旧进程退出后失效的挂载路径。
 - 持久化 level 文件（`wayland_webview_workaround_level`）是 JSON 记录，绑定写入时的 app 版本；版本不一致或旧版纯数字格式一律按默认处理。这样应用升级后自动重新探索级别，避免旧 WebKitGTK 回归触发的降级永久拖累新版本，也让系统 WebKitGTK 修复后能回到更高渲染路径。相关纯函数挂 `#[cfg(any(target_os = "linux", test))]` 以便在 Windows 上单测版本重置语义。
 
 #### Async Runtime Safety

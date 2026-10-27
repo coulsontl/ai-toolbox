@@ -125,6 +125,7 @@ export async function runBrowserFixture({ fixtureDirectory, fixtureFilename, art
       '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
       '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
       '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome',
+      '/usr/bin/google-chrome-stable', '/opt/google/chrome/chrome',
     ].filter(Boolean);
     for (const candidate of candidates) {
       try { await access(candidate); return candidate; } catch { /* Try the next installed browser. */ }

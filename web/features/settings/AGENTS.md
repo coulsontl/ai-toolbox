@@ -36,6 +36,8 @@ sequenceDiagram
 
 ## 易错点与历史坑（Gotchas）
 
+- Linux 渲染偏好走独立的启动配置命令，不进入全量 `AppSettings`。界面必须区分已保存模式和当前进程模式：保存后保留“下次启动生效”和重启入口，失败不切换已保存选项；环境变量覆盖时禁用选择并说明原因，性能模式启动失败后的兼容回退也要显示。组件只在 Linux 挂载，不增加其它平台的启动读取。
+
 - 备份设置三渠道（local/webdav/repository）保存走统一入口 `saveBackupSettingsUnified` → 后端 `save_backup_settings`（只 patch 备份字段 + 同事务更新 `settings:backup_repository`）。不要改回两次全量 `save_settings` 或把仓库 Token 放进 AppSettings payload；保存失败要展示后端错误、保留草稿并禁用重复提交。
 - `BackupSettingsModal` 保存时 `validateFields()` 只返回当前挂载的表单项：webdav/repository 的 Form.Item 按渠道条件渲染，缺渠道的值必须从 `form.getFieldsValue(true)`（打开时 setFieldsValue 过的保留值）取，再兜底到打开时加载的 store 值（`loadedRepositoryConfig`）；直接用 `validateFields()` 返回值会得到 undefined 导致崩溃或静默清空已存连接。保存后的 store 同步走 `settingsStoreUtils.ts::backupSettingsStatePatch`——**新增保存字段时必须同时补这个 patch**（曾漏掉 autoBackup 三参数导致弹窗重开读旧值、再保存覆盖新值）。
 - 仓库草稿仅在选择仓库渠道保存时提交为修改；本地/WebDAV 保存使用已加载连接，后端也必须保留自己的当前仓库记录，忽略隐藏的半填或过期草稿。仓库加载完成前禁用保存与编辑，加载失败不允许用默认空草稿清空旧连接；关闭弹窗后忽略未完成加载的返回。已配置仓库的空 directory 表示根目录，不能用 truthy 默认值替换。

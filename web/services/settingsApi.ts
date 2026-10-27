@@ -492,3 +492,21 @@ export const setAppDataDirOverride = async (path: string | null): Promise<AppDat
 export const testProxyConnection = async (proxyUrl: string): Promise<void> => {
   await invoke('test_proxy_connection', { proxyUrl });
 };
+
+/** 本机启动偏好，在 WebKit 和 SQLite 初始化前应用。 */
+export type LinuxRenderingMode = 'compatible' | 'performance';
+
+export interface LinuxRenderingInfo {
+  supported: boolean;
+  mode: LinuxRenderingMode;
+  active_mode: LinuxRenderingMode;
+  workaround_level: number | null;
+  environment_override: boolean;
+  restart_required: boolean;
+}
+
+export const getLinuxWebviewRendering = (): Promise<LinuxRenderingInfo> =>
+  invoke('get_linux_webview_rendering');
+
+export const setLinuxWebviewRendering = (mode: LinuxRenderingMode): Promise<LinuxRenderingInfo> =>
+  invoke('set_linux_webview_rendering', { mode });

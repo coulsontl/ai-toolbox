@@ -39,6 +39,7 @@ import { useThemeStore, type ThemeMode } from '@/stores/themeStore';
 import { SYSTEM_LANGUAGE, languages, type LanguagePreference } from '@/i18n';
 import { BackupSettingsModal, RemoteBackupRestoreModal, type RemoteBackupSelection } from '../components';
 import UpdateProgressModal from '@/components/common/UpdateProgressModal';
+import LinuxRenderingSetting from '../components/LinuxRenderingSetting';
 import FieldHelp from '@/components/common/FieldHelp';
 import { platform } from '@tauri-apps/plugin-os';
 import {
@@ -224,6 +225,7 @@ const GeneralSettingsPage: React.FC = () => {
   } = useSettingsStore();
 
   const isWindows = React.useMemo(() => platform() === 'windows', []);
+  const isLinux = React.useMemo(() => platform() === 'linux', []);
 
   const handleKeepComputerAwakeChange = (enabled: boolean) => {
     void setKeepComputerAwake(enabled).catch((error) => {
@@ -1035,6 +1037,7 @@ const GeneralSettingsPage: React.FC = () => {
                   style={{ width: 160 }}
                 />
               </div>
+              {isLinux && <LinuxRenderingSetting />}
             </div>
 
             <Divider />
