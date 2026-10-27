@@ -534,7 +534,8 @@ fn schema_migration_rejects_future_user_version() {
 fn v21_websocket_upgrade_defaults_old_logs_to_http_without_changing_usage() {
     let mut conn = test_conn();
     conn.execute_batch(
-        "ALTER TABLE proxy_request_logs DROP COLUMN transport;
+        "DROP INDEX idx_request_logs_proxy_envelope;
+         ALTER TABLE proxy_request_logs DROP COLUMN transport;
          ALTER TABLE proxy_request_logs DROP COLUMN request_kind;
          INSERT INTO proxy_request_logs (request_id,provider_id,app_type,model,input_tokens,created_at,usage_request_count)
          VALUES ('before-websocket','provider','codex','test-model',123,1780000000,2);
@@ -1286,3 +1287,48 @@ fn v29_adds_the_credits_columns_in_the_same_step_as_the_project_dimension() {
     assert_eq!(log_credits, None);
 }
 
+#[test]
+fn v30_migration_preserves_history_and_indexes_legacy_proxy_envelopes() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("history.db");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        initialize_connection(&mut conn).unwrap();
+        conn.execute_batch(
+            "DROP INDEX idx_request_logs_proxy_envelope;
+             INSERT INTO proxy_request_logs
+                 (request_id, provider_id, app_type, model, input_tokens, output_tokens, created_at, data_source, request_kind)
+             VALUES ('SESSION:codex:provider:old-proxy', 'provider', 'codex', 'gpt-5', 101, 12, 1780000000, 'proxy', 'request'),
+                    ('SESSION:codex:session:old-native', 'session', 'codex', 'gpt-5', 202, 24, 1780000000, 'session', 'request');"
+        ).unwrap();
+        migrations::set_user_version(&conn, 29).unwrap();
+    }
+    let db = SqliteDbState::open(path.clone()).unwrap();
+    db.with_conn(|conn| {
+        assert_eq!(migrations::get_user_version(conn).unwrap(), TARGET_SCHEMA_VERSION);
+        let totals: (i64, i64, i64) = conn.query_row(
+            "SELECT COUNT(*), SUM(input_tokens), SUM(output_tokens) FROM proxy_request_logs", [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(totals, (2, 303, 36));
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM proxy_request_logs INDEXED BY idx_request_logs_proxy_envelope WHERE COALESCE(data_source, 'proxy') = 'proxy' AND request_kind = 'request'", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 1, "legacy proxy rows are indexed; native rows are excluded");
+        Ok(())
+    }).unwrap();
+    drop(db);
+    let mut conn = Connection::open(path).unwrap();
+    migrations::set_user_version(&conn, 29).unwrap();
+    migrations::run_all(&mut conn).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        fs::read_dir(root.path().join(SQLITE_MIGRATION_BACKUP_DIR))
+            .unwrap()
+            .count(),
+        1
+    );
+}

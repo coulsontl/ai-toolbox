@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::schema::{sql_string_literal, DbTable, JsonFieldPath, ALL_TABLES};
 
-pub const TARGET_SCHEMA_VERSION: i32 = 29;
+pub const TARGET_SCHEMA_VERSION: i32 = 30;
 const FUTURE_SCHEMA_ERROR_PREFIX: &str = "AI_TOOLBOX_SQLITE_SCHEMA_TOO_NEW";
 
 pub fn run_all(conn: &mut Connection) -> Result<(), String> {
@@ -94,6 +94,9 @@ pub fn run_all(conn: &mut Connection) -> Result<(), String> {
     }
     if current_version < 29 {
         run_migration_step(conn, 29, migrate_v29)?;
+    }
+    if current_version < 30 {
+        run_migration_step(conn, 30, migrate_v30)?;
     }
 
     Ok(())
@@ -659,6 +662,20 @@ fn migrate_v29(conn: &Connection) -> Result<(), String> {
             ON usage_daily_rollups(project_path);",
     )
     .map_err(|error| format!("Failed to rebuild usage rollups for project dimension: {error}"))
+}
+
+/// 原生用量按 envelope 对照代理请求。主键前缀范围在每次未命中时仍会扫描整段历史，
+/// 因此直接索引 envelope，并从候选集合排除纯原生用量。
+fn migrate_v30(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_request_logs_proxy_envelope
+         ON proxy_request_logs (
+             app_type,
+             substr(request_id, length('SESSION:' || app_type || ':' || provider_id || ':') + 1)
+         )
+         WHERE COALESCE(data_source, 'proxy') = 'proxy' AND request_kind = 'request';",
+    )
+    .map_err(|error| format!("Failed to create proxy envelope lookup index: {error}"))
 }
 
 fn create_jsonb_table(conn: &Connection, table: DbTable) -> Result<(), String> {
