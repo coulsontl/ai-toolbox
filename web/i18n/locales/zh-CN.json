@@ -1535,7 +1535,7 @@
       "compatible": "兼容优先（默认）",
       "performance": "性能优先",
       "description": "滚动卡顿时可尝试性能优先；遇到白屏或显示异常时选择兼容优先。仅保存到本机，重启后生效。",
-      "environmentOverride": "当前启动参数已指定渲染方式，请移除相关环境变量后再更改。",
+      "environmentOverride": "当前启动参数已指定渲染方式（包括手动设置的 WEBKIT_* 或 GDK_BACKEND 环境变量），请移除相关环境变量后再更改。",
       "restartRequired": "已保存，下次启动生效。当前仍使用：{{mode}}。",
       "failed": "未能更新渲染设置：{{error}}",
       "automaticFallback": "本次启动遇到显示异常，已自动回退到兼容渲染。"

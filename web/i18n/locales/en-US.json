@@ -1535,7 +1535,7 @@
       "compatible": "Compatibility (default)",
       "performance": "Performance",
       "description": "Try Performance for slow scrolling, or Compatibility for blank screens or display issues. Saved on this machine and applied after restart.",
-      "environmentOverride": "Rendering is overridden by launch environment variables. Remove the override to change this setting.",
+      "environmentOverride": "Rendering is overridden by launch environment variables, including manually set WEBKIT_* or GDK_BACKEND values. Remove the override to change this setting.",
       "restartRequired": "Saved for the next launch. Currently using: {{mode}}.",
       "failed": "Could not update rendering settings: {{error}}",
       "automaticFallback": "A display issue during startup triggered an automatic compatibility fallback."

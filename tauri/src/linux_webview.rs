@@ -3,7 +3,47 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+#[cfg(target_os = "linux")]
+use std::sync::Mutex;
+use std::sync::OnceLock;
+
+/// 应用会为兼容级别设置的 WebKit/GDK 开关。用户若在启动环境里预先设了其中
+/// 任何一个，本进程就不会覆盖它，`性能优先` 也就无法恢复原生渲染。
+#[cfg(any(target_os = "linux", test))]
+pub(crate) const MANAGED_ENVIRONMENT_VARIABLES: [&str; 4] = [
+    "WEBKIT_DISABLE_DMABUF_RENDERER",
+    "WEBKIT_DISABLE_GPU_PROCESS",
+    "WEBKIT_DISABLE_COMPOSITING_MODE",
+    "GDK_BACKEND",
+];
+
+/// 用户预置的开关：变量存在，但本进程从未注入过它。应用只覆盖自己注入的值，
+/// 所以这些变量会一直压过用户选择的渲染模式。
+#[cfg(any(target_os = "linux", test))]
+fn preset_variables_from(
+    injected: &[(String, std::ffi::OsString)],
+    exists: impl Fn(&str) -> bool,
+) -> Vec<&'static str> {
+    MANAGED_ENVIRONMENT_VARIABLES
+        .into_iter()
+        .filter(|name| exists(name) && !injected.iter().any(|(key, _)| key == name))
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn preset_variables() -> Vec<&'static str> {
+    let injected = INJECTED_ENV
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    preset_variables_from(&injected, |name| std::env::var_os(name).is_some())
+}
+
+/// 非 Linux 平台不会应用这些开关，渲染设置本身也不受支持。
+#[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
+fn preset_variables() -> Vec<&'static str> {
+    Vec::new()
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -15,6 +55,8 @@ pub enum RenderingMode {
 
 #[derive(Default, Serialize, Deserialize)]
 struct Preference {
+    // 旧版本或未来版本写下的记录可能缺这个字段，缺省按兼容优先处理。
+    #[serde(default)]
     mode: RenderingMode,
 }
 
@@ -75,9 +117,10 @@ fn preference_path() -> std::path::PathBuf {
 
 fn load_mode_at(path: &Path) -> Result<RenderingMode, String> {
     match fs::read_to_string(path) {
-        Ok(raw) => serde_json::from_str::<Preference>(&raw)
+        // 损坏或无法识别的记录只影响“保存的偏好”，读取失败不应让设置界面永久报错。
+        Ok(raw) => Ok(serde_json::from_str::<Preference>(&raw)
             .map(|value| value.mode)
-            .map_err(|error| format!("Failed to read Linux rendering preference: {error}")),
+            .unwrap_or_default()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(RenderingMode::default()),
         Err(error) => Err(format!(
             "Failed to read Linux rendering preference: {error}"
@@ -91,8 +134,10 @@ fn save_mode_at(path: &Path, mode: RenderingMode) -> Result<(), String> {
         .ok_or("Invalid Linux rendering preference path")?;
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     let raw = serde_json::to_vec(&Preference { mode }).map_err(|error| error.to_string())?;
-    fs::write(path, raw).map_err(|error| error.to_string())?;
-    Ok(())
+    // 先写临时文件再改名，避免保存期间被强杀留下截断的 JSON。
+    let temporary = path.with_extension("json.tmp");
+    fs::write(&temporary, raw).map_err(|error| error.to_string())?;
+    fs::rename(&temporary, path).map_err(|error| error.to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -122,6 +167,13 @@ pub(crate) fn initial_level(
 #[cfg(target_os = "linux")]
 pub(crate) fn record_startup(mode: RenderingMode, level: u8) {
     let _ = STARTUP.set(Startup { mode, level });
+    let presets = preset_variables();
+    if !presets.is_empty() {
+        log::warn!(
+            "Linux WebView environment: user preset {} keeps the selected rendering mode from taking effect",
+            presets.join(", ")
+        );
+    }
     for name in [
         "WEBKIT_DISABLE_DMABUF_RENDERER",
         "WEBKIT_DISABLE_GPU_PROCESS",
@@ -180,7 +232,9 @@ fn rendering_info() -> Result<RenderingInfo, String> {
             .ok()
             .and_then(|value| value.trim().parse::<u8>().ok())
             .is_some()
-            || std::env::var_os("AI_TOOLBOX_DISABLE_WAYLAND_WEBVIEW_WORKAROUND").is_some(),
+            || std::env::var_os("AI_TOOLBOX_DISABLE_WAYLAND_WEBVIEW_WORKAROUND").is_some()
+            // 用户预置的 WebKit 开关不会被应用覆盖，性能模式因此无法恢复到原生渲染。
+            || !preset_variables().is_empty(),
         restart_required: mode != active_mode,
     })
 }
@@ -245,8 +299,46 @@ mod tests {
             save_mode_at(&path, mode).unwrap();
             assert_eq!(load_mode_at(&path).unwrap(), mode);
         }
-        fs::write(&path, r#"{"mode":"invalid"}"#).unwrap();
-        assert!(load_mode_at(&path).is_err());
+        // 截断、未知枚举值或缺字段的记录都只是“没有偏好”，不能让设置界面永久报错。
+        for corrupt in [
+            r#"{"mode":"perf"#,
+            r#"{"mode":"invalid"}"#,
+            r#"{}"#,
+            "not-json",
+        ] {
+            fs::write(&path, corrupt).unwrap();
+            assert_eq!(load_mode_at(&path).unwrap(), RenderingMode::Compatible);
+        }
+        save_mode_at(&path, RenderingMode::Performance).unwrap();
+        assert!(!root.path().join("bootstrap/linux_webview_rendering.json.tmp").exists());
+    }
+
+    #[test]
+    fn preset_variables_counts_only_values_the_app_never_injected() {
+        let injected = vec![
+            ("WEBKIT_DISABLE_DMABUF_RENDERER".to_string(), "1".into()),
+            ("GDK_BACKEND".to_string(), "x11".into()),
+        ];
+        // 环境里只有应用注入的这两个变量时，没有用户预置项。
+        let only_injected = |name: &str| {
+            injected.iter().any(|(key, _)| key == name)
+        };
+        assert!(preset_variables_from(&injected, only_injected).is_empty());
+        // 用户自己设的 WEBKIT 开关会压过所选渲染模式。
+        assert_eq!(
+            preset_variables_from(&injected, |name| {
+                only_injected(name) || name == "WEBKIT_DISABLE_GPU_PROCESS"
+            }),
+            vec!["WEBKIT_DISABLE_GPU_PROCESS"]
+        );
+        // 应用注入过的变量即使存在，也不算用户预置。
+        assert_eq!(
+            preset_variables_from(&injected, |name| {
+                only_injected(name) || name == "WEBKIT_DISABLE_DMABUF_RENDERER"
+            }),
+            Vec::<&str>::new()
+        );
+        assert!(preset_variables_from(&[], |_| false).is_empty());
     }
 
     #[test]
