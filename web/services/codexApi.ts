@@ -35,6 +35,7 @@ import type {
   CodexMemoryFileContent,
   CodexScratchResidue,
   CodexScratchCleanResult,
+  CodexDaemonStatus,
 } from '@/types/codex';
 import type { OpenCodeAllApiHubProvider, OpenCodeAllApiHubProvidersResult } from '@/services/opencodeApi';
 
@@ -461,4 +462,21 @@ export const cleanCodexScratchResidue = async (
     trustKeys,
     dateDirs,
   });
+};
+
+/**
+ * Whether Codex's background app-server daemon is currently answering.
+ *
+ * Used after applying a provider: the daemon serves later Codex launches from
+ * the config it read at startup, so a switch stays invisible until it restarts.
+ */
+export const getCodexDaemonStatus = async (): Promise<CodexDaemonStatus> => {
+  return await invoke<CodexDaemonStatus>('get_codex_daemon_status');
+};
+
+/**
+ * Restart the background daemon so it reloads the config AI Toolbox just wrote.
+ */
+export const restartCodexDaemon = async (): Promise<void> => {
+  await invoke('restart_codex_daemon');
 };

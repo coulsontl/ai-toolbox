@@ -2427,6 +2427,8 @@ pub fn run() {
             coding::magic_context::run_magic_context_doctor,
             // Codex
             coding::codex::get_codex_config_dir_path,
+            coding::codex::get_codex_daemon_status,
+            coding::codex::restart_codex_daemon,
             coding::codex::get_codex_root_path_info,
             coding::codex::get_codex_history_sync_status,
             coding::codex::backup_codex_history,

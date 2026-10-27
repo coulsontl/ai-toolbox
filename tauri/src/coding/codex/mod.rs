@@ -1,6 +1,7 @@
 pub mod adapter;
 pub mod commands;
 pub(crate) mod constants;
+pub mod daemon_status;
 pub mod history_sync;
 pub mod memories;
 pub mod official_accounts;
@@ -15,6 +16,7 @@ pub mod types;
 pub mod unified_history;
 
 pub use commands::*;
+pub use daemon_status::*;
 pub use official_accounts::*;
 pub use plugin_types::*;
 pub use types::*;

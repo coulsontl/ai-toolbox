@@ -3500,6 +3500,22 @@
       "partialHint": "以下项目未按预期清理，可重新扫描后再试。",
       "failureItem": "{{target}}：{{error}}",
       "skipItem": "{{target}}：{{reason}}"
+    },
+    "daemon": {
+      "staleTitle": "Codex 后台服务仍在运行",
+      "staleDescription": "配置已写入，但 Codex 后台服务仍持有切换前的供应商。需要重启该服务，下次打开 Codex 才会生效。",
+      "restart": "重启后台服务",
+      "dismiss": "稍后再说",
+      "restartConfirmTitle": "重启 Codex 后台服务？",
+      "restartConfirmDescription": "重启会中断该服务中正在进行的 Codex 对话。确认后新配置立即生效。",
+      "restartSuccess": "后台服务已重启，新配置已生效",
+      "restartFailed": "重启后台服务失败：{{error}}",
+      "staleTitleDesktop": "ChatGPT 客户端仍在运行",
+      "staleDescriptionDesktop": "配置已写入，但 ChatGPT 客户端自带的 Codex 服务仍持有切换前的供应商。重启客户端后才会生效。",
+      "staleDescriptionBoth": "配置已写入，但 Codex 后台服务和 ChatGPT 客户端都仍持有切换前的供应商。重启后两者都会使用新配置。",
+      "restartConfirmDescriptionDesktop": "这会重启 ChatGPT 客户端，客户端内正在进行的对话会中断。重启后新配置立即生效。",
+      "restartDesktopApp": "重启 ChatGPT 客户端",
+      "desktopAppRestarted": "ChatGPT 客户端已重启，新配置已生效"
     }
   },
   "geminicli": {

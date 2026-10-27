@@ -34,6 +34,7 @@ import {
 import { refreshTrayMenu } from '@/services/appApi';
 import { extractCodexBaseUrl, extractCodexModel, extractCodexReasoningEffort } from '@/utils/codexConfigUtils';
 import AppliedTag from '@/components/common/AppliedTag';
+import { useCodexDaemonNotice } from '../hooks/useCodexDaemonNotice';
 import ProxyTag from '@/components/common/ProxyTag';
 import ProviderNameLink from '@/components/common/ProviderNameLink';
 import type { ModelDisplayData } from '@/components/common/ProviderCard/types';
@@ -220,6 +221,7 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const { notifyIfDaemonHoldsStaleConfig } = useCodexDaemonNotice();
   /**
    * The account block's fold, for the list card. The detail sidebar renders the
    * same block open, so nothing reads this on that path — and one piece of state
@@ -450,6 +452,9 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
       onGatewayStatusChange?.(nextStatus);
       refreshTrayAfterGatewayChange();
       message.success(t('gateway.proxy.notice.enabled'));
+      // Takeover rewrites config.toml/auth.json; a running Codex daemon keeps
+      // the direct-connect settings until it restarts (issue #443).
+      await notifyIfDaemonHoldsStaleConfig();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       message.error(t('gateway.proxy.notice.enableFailed', { error: errorMessage }));
@@ -465,6 +470,7 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
       await onGatewayStatusChange?.(nextStatus);
       refreshTrayAfterGatewayChange();
       message.success(t('gateway.proxy.notice.enabled'));
+      await notifyIfDaemonHoldsStaleConfig();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       message.error(t('gateway.proxy.notice.enableFailed', { error: errorMessage }));
@@ -480,6 +486,9 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
       onGatewayStatusChange?.(nextStatus);
       refreshTrayAfterGatewayChange();
       message.success(t('gateway.proxy.notice.restored'));
+      // Restoring direct also rewrites config.toml/auth.json back to the
+      // provider's own settings; the daemon needs the same restart (issue #443).
+      await notifyIfDaemonHoldsStaleConfig();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       message.error(t('gateway.proxy.notice.restoreFailed', { error: errorMessage }));
@@ -495,6 +504,7 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
       await onGatewayStatusChange?.(nextStatus);
       refreshTrayAfterGatewayChange();
       message.success(t('gateway.proxy.notice.switched'));
+      await notifyIfDaemonHoldsStaleConfig();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       message.error(t('gateway.proxy.notice.switchFailed', { error: errorMessage }));

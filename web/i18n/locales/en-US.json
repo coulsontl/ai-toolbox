@@ -3503,6 +3503,22 @@
       "partialHint": "The following items were not cleaned as expected; rescan and retry.",
       "failureItem": "{{target}}: {{error}}",
       "skipItem": "{{target}}: {{reason}}"
+    },
+    "daemon": {
+      "staleTitle": "Codex background service is still running",
+      "staleDescription": "The configuration was written, but the Codex background service still holds the previous provider. Restart it so the next Codex launch uses the new settings.",
+      "restart": "Restart background service",
+      "dismiss": "Not now",
+      "restartConfirmTitle": "Restart the Codex background service?",
+      "restartConfirmDescription": "Restarting interrupts any Codex conversation running in that service. Once confirmed, the new configuration takes effect immediately.",
+      "restartSuccess": "Background service restarted; the new configuration is now active",
+      "restartFailed": "Failed to restart the background service: {{error}}",
+      "staleTitleDesktop": "The ChatGPT app is still running",
+      "staleDescriptionDesktop": "The configuration was written, but the Codex service bundled with the ChatGPT app still holds the previous provider. Restart the app for it to take effect.",
+      "staleDescriptionBoth": "The configuration was written, but both the Codex background service and the ChatGPT app still hold the previous provider. Restarting applies the new configuration to both.",
+      "restartConfirmDescriptionDesktop": "This restarts the ChatGPT app and interrupts any conversation running in it. The new configuration takes effect right after the restart.",
+      "restartDesktopApp": "Restart the ChatGPT app",
+      "desktopAppRestarted": "The ChatGPT app has been restarted; the new configuration is now active"
     }
   },
   "geminicli": {

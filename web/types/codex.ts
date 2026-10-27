@@ -570,3 +570,27 @@ export interface CodexScratchCleanResult {
   skipped: CodexScratchCleanSkip[];
   failures: CodexScratchCleanFailure[];
 }
+
+/**
+ * A process that keeps serving Codex from the config it read at startup.
+ *
+ * `daemon` is the CLI's detached background service; `desktopApp` is the
+ * ChatGPT desktop app, which runs its own bundled app-server. Both hold
+ * `config.toml` / `auth.json`, so an applied provider stays invisible until the
+ * holder restarts (issue #443).
+ */
+export type CodexConfigHolder = 'daemon' | 'desktopApp';
+
+/**
+ * State of the processes holding the Codex config.
+ *
+ * Codex 0.16x reads config and credentials once when an app-server starts, so
+ * anything AI Toolbox writes afterwards is invisible to that process (issue #443).
+ */
+export interface CodexDaemonStatus {
+  running: boolean;
+  /** Every holder found; empty when nothing is running. */
+  holders: CodexConfigHolder[];
+  /** Version reported by the CLI daemon; absent when it did not answer. */
+  appServerVersion?: string | null;
+}

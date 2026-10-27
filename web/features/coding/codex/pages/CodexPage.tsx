@@ -74,6 +74,7 @@ import {
   type OfficialAccountUsageResult,
 } from '../utils/codexAccountRefresh';
 import { useKeepAlive } from '@/components/layout/KeepAliveOutlet';
+import { useCodexDaemonNotice } from '../hooks/useCodexDaemonNotice';
 import { TRAY_CONFIG_REFRESH_EVENT, DEEP_LINK_IMPORT_COMPLETED } from '@/constants/configEvents';
 import { useSettingsStore } from '@/stores';
 import CodexProviderCard from '../components/CodexProviderCard';
@@ -301,6 +302,7 @@ function renderTokenPreview(
 const CodexPage: React.FC = () => {
   const { t } = useTranslation();
   const { isActive } = useKeepAlive();
+  const { notifyIfDaemonHoldsStaleConfig } = useCodexDaemonNotice();
   const {
     sidebarHiddenByPage,
     setSidebarHidden,
@@ -867,6 +869,9 @@ const CodexPage: React.FC = () => {
       noteProviderUsed(provider.id);
       await loadConfig();
       await refreshTrayMenu();
+      // The switch is written to disk but a running Codex daemon keeps serving
+      // the previous provider until it restarts (issue #443).
+      await notifyIfDaemonHoldsStaleConfig();
     } catch (error) {
       console.error('Failed to select provider:', error);
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -995,6 +1000,8 @@ const CodexPage: React.FC = () => {
       message.success(t('codex.apply.success'));
       await loadConfig();
       await refreshTrayMenu();
+      // Applying an account rewrites auth.json/config.toml (issue #443).
+      await notifyIfDaemonHoldsStaleConfig();
     } catch (error) {
       console.error('Failed to apply Codex official account:', error);
       const errorMsg = error instanceof Error ? error.message : String(error);
