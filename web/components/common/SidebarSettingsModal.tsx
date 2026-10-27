@@ -93,7 +93,9 @@ const SidebarSettingsModal: React.FC<SidebarSettingsModalProps> = ({
   onClose,
   sidebarVisible,
   onSidebarVisibleChange,
-  width = 600,
+  // 720 clears the two-column row comfortably: hint text wraps to 2-3 lines
+  // instead of 4-5, and a `SettingsSelectRow` label fits beside its hint.
+  width = 720,
   children,
 }) => {
   const { t } = useTranslation();
