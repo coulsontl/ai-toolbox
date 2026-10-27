@@ -99,7 +99,8 @@ sequenceDiagram
 - 设置 Tab 自动保存有 debounce；顶部启动按钮必须优先使用设置面板当前 draft 立即保存后启动，不能重新读取旧的后端 settings 后启动。
 - 统计图表直接使用 Recharts；不要为了网关统计引入额外图表封装层。图表必须有 tooltip；单指标趋势图用右上角分段控件替代 legend（多序列场景才需要 legend），并使用主题变量保证浅色/深色模式可读。
 - 定价管理弹窗遵循全局 Modal 规范：不重度覆盖 Ant Design Modal chrome，上半部分用 `sectionCard` 风格承载默认配置，下半部分用 Ant Design Table 原生样式展示模型定价。
-- 定价列表是后端返回的完整列表，分页状态交给 Ant Design Table：默认每页 10 条使用 `defaultPageSize`，不能传固定 `pageSize` 却不接更新状态，否则用户选择 20/50/100 条会在下一次渲染被覆盖。不要为这个显示偏好改动定价数据、总数或持久化接口。
+- 定价列表是后端返回的完整列表，页大小交给 Ant Design Table：默认每页 10 条使用 `defaultPageSize`，不能传固定 `pageSize` 却不接更新状态，否则用户选择 20/50/100 条会在下一次渲染被覆盖。`current` 可以受控，但只为「关键词变化回到第 1 页」服务；不得借此把 `pageSize` 也改成固定受控值。不要为这个显示偏好改动定价数据、总数或持久化接口。
+- 定价列表的模型搜索是**本地即时过滤**：后端 `get_model_pricing_list` 已返回完整价格表，前端只按 `model_id` / `display_name` 做大小写不敏感的包含匹配（`utils/modelPricing.ts::filterModelPricing`，底层复用 `filterProviderItems`），不要新增后端查询命令或分页接口。价格字段不参与搜索——它们是 `"0"`、`"5"` 这类数字串，纳入后一位数就能命中几乎所有行。这条与请求页「文本输入草稿 + 提交」的规则（因为那里是服务端筛选）不冲突。
 - 定价管理弹窗里的“同步官方价格”按钮位于模型定价标题行右侧、添加按钮左边；成功后提示新增条数并刷新表格，失败只在当前操作中提示错误。远端源列表由后端维护，前端只按 `attempts.length > 1` 区分“主源成功”和“镜像兜底”，镜像兜底用 `officialSyncFromMirror` 说明来源，不要在前端硬编码源 URL。
 - 如果未来新增视图依赖的后端查询命令还没暴露，页面只能显示真实空态，不能用假数据填充图表。
 - Gateway 辅助说明文字统一使用 `fontSize: 10` 和 `color: var(--color-text-tertiary)`，避免设置页和统计页说明文字风格漂移。
@@ -137,7 +138,8 @@ sequenceDiagram
 
 ## 最小验证
 
-- 定价页大小回归：`node --import ./scripts/register-node-ts-extension-loader.mjs --test web/test/features/coding/gateway/components/ModelPricingPagination.test.ts`。测试从真实 Table 提取分页 props，运行已安装 Ant Design 的真实分页 hook，仅模拟 React state，覆盖页大小、当前页越界、总数变更、空结果和反复切换；不是浏览器 DOM 或原生桌面验收。
+- 定价页大小回归：`node --import ./scripts/register-node-ts-extension-loader.mjs --test web/test/features/coding/gateway/components/ModelPricingPagination.test.ts`。测试从真实 Table 提取分页 props，运行已安装 Ant Design 的真实分页 hook，仅模拟 React state（含组件受控的页码 state），覆盖页大小、当前页越界、总数变更、空结果、反复切换，以及「搜索回到第 1 页但保留已选页大小」；不是浏览器 DOM 或原生桌面验收。
+- 定价搜索回归：`node --import ./scripts/register-node-ts-extension-loader.mjs --test web/test/features/coding/gateway/components/ModelPricingSearch.test.ts web/test/features/coding/gateway/utils/modelPricing.test.ts`。前者从组件源码提取搜索框 `onChange`、Table `dataSource` / `locale` / `pagination` 并真实执行，后者覆盖大小写、trim、空关键词返回原数组、无结果和「价格字段不可搜」。
 
 - 至少验证：`visibleTabs` 包含 `gateway` 时，顶栏在 `Image` 左侧显示网关入口。
 - 至少验证：关闭 `gateway` 后，`/gateway/*` 会跳回可见页面，但不会调用停止网关命令。
@@ -156,4 +158,5 @@ sequenceDiagram
 - 至少验证：已选站点在面板里的顺序与 Codex 供应商列表顺序一致，面板内没有拖拽把手/上下移按钮，只显示 `orderHint` 提示；在供应商列表调整顺序后重新打开面板，顺序随之一致。
 - 至少验证：CLI 已由网关接管（single/failover/aggregate 任一），在供应商列表把另一个站点拖到最前后开启聚合，能成功接管（面板先恢复直连再聚合），不会再出现英文 `Restore direct mode before switching the primary ...` 报错；当前主供应商需要协议转换时则被拦下并显示本地化提示。
 - 至少验证：没有草稿时打开聚合表单默认选中当前已应用的供应商；取消勾选最后一个站点被拒绝并提示，`全选` 仍可用。
+- 至少验证：定价弹窗搜索框输入模型 ID 或显示名称时列表即时收窄（大小写不敏感），清空后恢复完整列表；停在第 5 页输入关键词后回到第 1 页，且已选的每页条数保持不变（搜索不重置页大小）；无匹配时显示「未找到匹配的模型」而不是通用空态；关闭再打开弹窗时搜索词与页码都已清空。
 - 至少验证：草稿里存在已删除/已禁用的站点时，打开表单会丢弃它们、提示已移除，并把选择回落到当前已应用的供应商。

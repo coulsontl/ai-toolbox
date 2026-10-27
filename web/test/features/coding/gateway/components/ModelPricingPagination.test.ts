@@ -41,13 +41,28 @@ type Pagination = {
   size?: string;
   onChange: (page: number, pageSize: number) => void;
 };
-const actualProps = () => ({ ...runInNewContext(`(${paginationExpressions[0]})`, {}, { timeout: 1000 }) });
+
+type PricingState = { page: number };
+
+// The production pagination props are controlled for `current` only: the
+// component owns the page number (so a new search starts at page one) while
+// Ant Design keeps the page size from `defaultPageSize`. Evaluating the props
+// therefore needs the component's page state; the props are re-evaluated on
+// every render so `onChange` feeds back into the next one.
+const actualProps = (pricingState: PricingState) => () => ({
+  ...runInNewContext(`(${paginationExpressions[0]})`, {
+    pricingPage: pricingState.page,
+    setPricingPage: (page: number) => { pricingState.page = page; },
+  }, { timeout: 1000 }),
+});
 const require = createRequire(import.meta.url);
 const hookPath = require.resolve('antd/lib/table/hooks/usePagination.js');
 const hookRequire = createRequire(hookPath);
 const hookCode = readFileSync(hookPath, 'utf8');
 
-function createPagination(total = 137, props = actualProps) {
+function createPagination(total = 137, options: { props?: () => object; page?: number } = {}) {
+  const pricingState: PricingState = { page: options.page ?? 1 };
+  const props = options.props ?? actualProps(pricingState);
   let initialized = false;
   let state: unknown;
   let stateCalls = 0;
@@ -70,7 +85,7 @@ function createPagination(total = 137, props = actualProps) {
     assert.equal(stateCalls, 1, 'fail visibly if the installed hook changes its state contract');
     return pagination;
   };
-  return { render, changes };
+  return { render, changes, pricingState };
 }
 
 test('pricing Table starts at ten rows and preserves the actual total', () => {
@@ -158,8 +173,36 @@ test('pricing Table handles empty results and later data without losing the sele
 });
 
 test('hook harness detects a deliberately fixed controlled page size', () => {
-  const table = createPagination(137, () => ({ pageSize: 10, size: 'small' }));
+  const table = createPagination(137, { props: () => ({ pageSize: 10, size: 'small' }) });
   table.render().onChange(1, 20);
   assert.equal(table.render().pageSize, 10);
   assert.deepEqual(table.changes, [[1, 20]]);
+});
+
+// The component keeps `pageSize` with Ant Design but controls `current`, so a
+// page number written by the component must reach the next render.
+test('a controlled current page survives a rerender', () => {
+  const table = createPagination(137, { page: 3 });
+  assert.equal(table.render().current, 3);
+  assert.equal(table.render().current, 3);
+});
+
+// Ordinary pagination writes the page back into the component state through
+// the props' own onChange, and the next render reads it back.
+test('clicking a page writes it back into the component page state', () => {
+  const table = createPagination();
+  table.render().onChange(4, 10);
+  assert.equal(table.pricingState.page, 4);
+  assert.equal(table.render().current, 4);
+});
+
+// A search resets the page to one without touching the selected page size.
+test('starting a new search keeps the selected page size', () => {
+  const table = createPagination();
+  table.render().onChange(1, 50);
+  table.pricingState.page = 1;
+  const page = table.render(20);
+  assert.equal(page.current, 1);
+  assert.equal(page.pageSize, 50);
+  assert.equal(page.total, 20);
 });

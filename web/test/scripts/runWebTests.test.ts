@@ -21,6 +21,13 @@ for (const shouldFail of [false, true]) {
     for (const name of ['run-web-tests.mjs', 'register-node-ts-extension-loader.mjs', 'node-ts-extension-loader.mjs']) {
       await copyFile(path.join(scriptsDirectory, name), path.join(fixtureScripts, name));
     }
+    // The fixture sits in the OS temp directory, outside this repository, so no
+    // ancestor package.json marks it as ESM. Node then loads `.test.ts` as
+    // CommonJS and every fixture file dies on its `import` statement. CI passes
+    // only because Linux resolves it differently; declare the module type so the
+    // check exercises the runner instead of the ambient directory layout.
+    await writeFile(path.join(fixtureRoot, 'package.json'), '{"type":"module"}');
+
     await writeFile(path.join(fixtureTests, 'first.test.ts'), `
 import test from 'node:test';
 test('first file passes', () => {});

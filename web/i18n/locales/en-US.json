@@ -208,7 +208,9 @@
         "saveModelFailed": "Failed to save model pricing: {{error}}",
         "deleteConfirmTitle": "Delete model pricing",
         "deleteConfirmDesc": "Delete pricing for {{modelId}}?",
-        "officialSyncFromMirror": "Primary source unreachable; synced from mirror, {{count}} new rows added"
+        "officialSyncFromMirror": "Primary source unreachable; synced from mirror, {{count}} new rows added",
+        "searchPlaceholder": "Search model ID or name",
+        "noSearchResults": "No matching models found"
       },
       "modelHealthState": {
         "healthy": "Healthy"

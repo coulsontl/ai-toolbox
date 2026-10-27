@@ -1,7 +1,7 @@
 import React from 'react';
 import { Alert, Button, Input, Modal, Select, Spin, Table, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   deleteModelPricing,
@@ -12,6 +12,7 @@ import {
   type GatewayPricingConfig,
   type ModelPricing,
 } from '@/services';
+import { filterModelPricing } from '../utils/modelPricing';
 import ModelPricingEditModal from './ModelPricingEditModal';
 import styles from './ModelPricingModal.module.less';
 
@@ -80,6 +81,8 @@ const ModelPricingModal: React.FC<ModelPricingModalProps> = ({ open, onClose }) 
     React.useState<PricingConfigState | null>(null);
   const [editingPricing, setEditingPricing] = React.useState<ModelPricing | null>(null);
   const [isAddingPricing, setIsAddingPricing] = React.useState(false);
+  const [pricingKeyword, setPricingKeyword] = React.useState('');
+  const [pricingPage, setPricingPage] = React.useState(1);
 
   const loadPricingList = React.useCallback(async () => {
     setPricingLoading(true);
@@ -126,6 +129,17 @@ const ModelPricingModal: React.FC<ModelPricingModalProps> = ({ open, onClose }) 
     }
   }, [t]);
 
+  // The modal stays mounted and only toggles `open`, so the previous visit's
+  // search must not leak into this one. Keyed on `open` alone: the loaders
+  // below depend on `t`, and clearing the box on a language switch would wipe
+  // what the user is typing.
+  React.useEffect(() => {
+    if (open) {
+      setPricingKeyword('');
+      setPricingPage(1);
+    }
+  }, [open]);
+
   React.useEffect(() => {
     if (!open) {
       return;
@@ -134,6 +148,11 @@ const ModelPricingModal: React.FC<ModelPricingModalProps> = ({ open, onClose }) 
     void loadPricingConfigs();
     void loadPricingList();
   }, [loadPricingConfigs, loadPricingList, open]);
+
+  const filteredPricingList = React.useMemo(
+    () => filterModelPricing(pricingList, pricingKeyword),
+    [pricingList, pricingKeyword],
+  );
 
   const dirty = isConfigDirty(pricingConfigs, originalPricingConfigs);
 
@@ -411,6 +430,21 @@ const ModelPricingModal: React.FC<ModelPricingModalProps> = ({ open, onClose }) 
               <span>{t('gateway.page.pricing.perMillion')}</span>
             </h3>
             <div className={styles.headerActions}>
+              <Input
+                size="small"
+                allowClear
+                className={styles.searchInput}
+                value={pricingKeyword}
+                placeholder={t('gateway.page.pricing.searchPlaceholder')}
+                aria-label={t('gateway.page.pricing.searchPlaceholder')}
+                prefix={<Search size={14} aria-hidden="true" />}
+                onChange={(event) => {
+                  // The list is already local, so the keyword filters as the
+                  // user types; a new result set always starts at page one.
+                  setPricingKeyword(event.target.value);
+                  setPricingPage(1);
+                }}
+              />
               <Button
                 size="small"
                 icon={<RefreshCw size={14} />}
@@ -434,9 +468,19 @@ const ModelPricingModal: React.FC<ModelPricingModalProps> = ({ open, onClose }) 
             rowKey="model_id"
             size="small"
             columns={pricingColumns}
-            dataSource={pricingList}
+            dataSource={filteredPricingList}
             loading={pricingLoading}
-            pagination={{ defaultPageSize: 10, size: 'small' }}
+            pagination={{
+              current: pricingPage,
+              defaultPageSize: 10,
+              size: 'small',
+              onChange: (page) => setPricingPage(page),
+            }}
+            locale={
+              pricingKeyword.trim()
+                ? { emptyText: t('gateway.page.pricing.noSearchResults') }
+                : undefined
+            }
             scroll={{ x: 840 }}
           />
         </section>

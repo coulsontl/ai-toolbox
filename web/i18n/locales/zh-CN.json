@@ -208,7 +208,9 @@
         "saveModelFailed": "保存模型定价失败：{{error}}",
         "deleteConfirmTitle": "删除模型定价",
         "deleteConfirmDesc": "确定删除 {{modelId}} 的定价吗？",
-        "officialSyncFromMirror": "主源不可达，已通过镜像源同步，新增 {{count}} 条"
+        "officialSyncFromMirror": "主源不可达，已通过镜像源同步，新增 {{count}} 条",
+        "searchPlaceholder": "搜索模型 ID 或名称",
+        "noSearchResults": "未找到匹配的模型"
       },
       "modelHealthState": {
         "healthy": "正常"
