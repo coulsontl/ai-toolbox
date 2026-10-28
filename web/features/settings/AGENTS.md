@@ -86,7 +86,7 @@ sequenceDiagram
 
 ## 最小验证
 
-- `node scripts/verify-backup-settings.mjs` 运行真实设置表单、真实 store 与远端列表，模拟 Tauri 持久化响应；验证三渠道保存往返、自动备份回显、加载前禁止保存、Token 平台切换、失败保留密码草稿，以及零额外滚动高度的渐变。HTTP/SQLite/系统凭据的后端行为必须另跑 Rust 回归，不能把前端 mock 当成真实远端验证。
+- `pnpm test:backup-settings`（`scripts/verify-backup-settings.mjs`，40 项断言，已在 `pnpm test` 链上）运行真实设置表单、真实 store 与远端列表，模拟 Tauri 持久化响应；验证三渠道保存往返、自动备份回显、加载前禁止保存、Token 平台切换、失败保留密码草稿、目录条目的排除正则，以及零额外滚动高度的渐变。**排除正则的前端检查只拦 Rust 不兼容语法**（`rustRegexCompat.ts` 的 `findRustRegexIncompatibility`），结构错误（如 `[`、`*a`）故意放给后端编译器——所以浏览器断言必须用 `\1` 这类 Rust 拒绝、JS 接受的构造，用 `[` 会误判为前端该拦。HTTP/SQLite/系统凭据的后端行为必须另跑 Rust 回归，不能把前端 mock 当成真实远端验证。
 - Skills 警告翻译回归位于 `web/test/features/settings/utils/syncMessageTranslator.test.ts`；同步 UI 需验证有警告完成后的单次展示，以及下一次无警告同步后提示清空。
 - 防休眠改动验证 `web/test/stores/keepAwakeSettings.test.ts` 和 Rust `keep_awake::tests` / `keep_awake_preference_round_trips_and_old_records_default_to_disabled`；覆盖连续开关、保存失败、系统失败后重试、跨线程释放和旧配置的默认值。
 - 至少验证：打开设置页能正常加载 config、status 和默认 mappings。

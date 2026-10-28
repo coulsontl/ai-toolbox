@@ -870,7 +870,7 @@ pub fn to_db_value(settings: &AppSettings) -> Value {
 - 新建普通记录优先用 `db_create(conn, DbTable::X, &payload)`；需要手动 ID 时使用 `db_new_id()`，单例记录使用固定 ID。
 - 局部更新用 `db_patch_fields`；批量谓词更新若影响互斥状态必须包在 `db_transaction` 或使用专用 helper。需要原子更新多张表时用 `db_transaction`。
 - 表名必须来自 `DbTable` 或经过 identifier 校验，不要拼接未经校验的外部输入。
-- 旧 SurrealDB 查询规则只允许存在于 `tauri/src/db/surreal_import.rs` 和 `tauri/src/db_migration/`，用于读取老用户旧库并导入 SQLite。业务模块、Tauri command、store、tray、backup、WSL/SSH 同步路径都不能新增 SurrealQL。
+- 旧 SurrealDB 查询规则只允许存在于一次性导入老用户旧库到 SQLite 的迁移代码中（`tauri/src/db/` 下的导入模块；2026-10 时该模块与 `db_migration/` 已移除，如无遗留则此限制不再适用）。业务模块、Tauri command、store、tray、backup、WSL/SSH 同步路径都不能新增 SurrealQL。
 
 ```rust
 #[tauri::command]
@@ -1213,8 +1213,8 @@ let proxy_url = http_client::get_proxy_from_settings(&state).await?;
 - `tauri/src/update.rs` - Update checking
 - `tauri/src/settings/backup/webdav.rs` - WebDAV operations
 - `tauri/src/coding/open_code/models_api.rs` - Provider model fetching
-- `tauri/src/skills/installer.rs` - Git operations proxy
-- `tauri/src/skills/commands.rs` - Git operations proxy
+- `tauri/src/coding/skills/installer.rs` - Git operations proxy
+- `tauri/src/coding/skills/commands.rs` - Git operations proxy
 
 ## Tab / Page-Key Allowlist Rules
 

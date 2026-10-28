@@ -192,10 +192,21 @@ export async function verifyBackupSettings({ send, evaluate, baseUrl, artifactRo
   await call('nestedClickButton', 'settings.backupSettings.customEntries.addExcludePattern');
   assert.equal(await call('nestedExcludePatternCount'), 1);
   await screenshot('custom-entry-exclude-modal');
-  await call('nestedInput', 'settings.backupSettings.customEntries.excludePatterns', '[', 0);
+  // The frontend check is a *Rust-syntax* pre-check, not a regex validator:
+  // structural typos like `[` are deliberately passed through to the backend
+  // compiler (see `rustRegexCompat.ts`). Use a construct Rust rejects but
+  // JavaScript accepts — a backreference — so the inline error is the Rust
+  // incompatibility message and not a false positive.
+  await call('nestedInput', 'settings.backupSettings.customEntries.excludePatterns', '(a)\\1', 0);
   await call('nestedClickButton', 'common.save');
-  assert.equal(await call('visibleModalCount'), 2, 'invalid regex keeps the entry modal open');
-  assert.ok(await evaluate('!!document.querySelector(".ant-form-item-explain-error")'), 'invalid regex shows an inline error');
+  assert.equal(await call('visibleModalCount'), 2, 'an incompatible pattern keeps the entry modal open');
+  assert.ok(await evaluate('!!document.querySelector(".ant-form-item-explain-error")'), 'an incompatible pattern shows an inline error');
+  // This scenario runs in zh-CN; assert the specific Rust-incompatibility
+  // message rather than the generic "invalid" one.
+  assert.ok(
+    await evaluate('document.body.textContent.includes("反向引用")'),
+    'the inline error names the Rust incompatibility, not a generic failure',
+  );
   await call('nestedInput', 'settings.backupSettings.customEntries.excludePatterns', '^local$', 0);
   await call('nestedClickButton', 'settings.backupSettings.customEntries.addExcludePattern');
   await call('nestedInput', 'settings.backupSettings.customEntries.excludePatterns', '(^|/)\\.git$', 1);

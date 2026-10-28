@@ -94,7 +94,7 @@ HTTP 本地隐私错误按客户端协议输出：OpenAI 使用 `error.message/t
 
 审查补充了 JSON 工具结果、namespace 定义、跨协议嵌套工具参数与 Unicode 转义、空 error 非终态、短值日志替换、活动请求 TTL、自定义正则完整匹配与重叠优先级，以及 Anthropic 完整响应的媒体/签名边界回归。SQLite 用例覆盖部分更新保留开关与真实只读写失败；WS 往返覆盖关闭时在途还原、旧轮次重复终态及没有待处理请求时的未关联事件。浏览器检查在真实设置分区样式中验证固定选项完整显示和按钮与下方说明的外部间距。
 
-前端行为与视觉回归可运行 `node scripts/verify-gateway-privacy.mjs`（需要本机 Chrome/Edge；可用 `--browser` 指定）。该夹具挂载真实组件、用模拟 Tauri 命令检验表单读写、保存失败、并发开关、预览过期和亮/暗/system/窄窗口，并将截图和结果写入系统临时目录；它不替代 Rust 后端往返测试或真实第三方模型联调。
+前端行为与视觉回归可运行 `pnpm test:gateway-privacy`（`scripts/verify-gateway-privacy.mjs`，23 项断言，已在 `pnpm test` 链上；需要本机 Chrome/Edge，可用 `--browser` 指定）。该夹具挂载真实组件、用模拟 Tauri 命令检验表单读写、保存失败、并发开关、预览过期和亮/暗/system/窄窗口，并将截图和结果写入系统临时目录；它不替代 Rust 后端往返测试或真实第三方模型联调。
 
 本次参考已拉到相对兄弟目录：`../veil`（`e2a98a8`）、`../cpa-plugin-privacyfilter`（`a3db9d1`）、`../privacy-filter`（`64b8de3`）、`../maskit`（`898bdd3`）、`../CosyRedactGateway`（`b3dc290`）。吸收规则/内存映射分离和逻辑流通道的行为约束，没有复制其网关架构；AGPL 的 Maskit 只参考行为和测试。
 
