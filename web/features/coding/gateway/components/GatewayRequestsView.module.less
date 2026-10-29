@@ -284,9 +284,10 @@
   white-space: nowrap;
 }
 
-/* Billed Fast/Ultrafast service tier badge; highlights that the request cost
-   more than the standard token price. */
-.modelTier {
+/* Compact request-summary badge: billed Fast/Ultrafast tier, compaction mode,
+   actual transport, and native tools the upstream invoked. One badge language
+   keeps the model row scannable as more markers are added. */
+.modelBadge {
   flex: 0 0 auto;
   padding: 0 4px;
   border: 1px solid var(--color-border-secondary);

@@ -1,9 +1,10 @@
 use super::request_log;
 use super::types::{
-    normalize_pricing_model_source, GatewayModelStats, GatewayPaginatedRequestLogs,
-    GatewayProviderStats, GatewayRequestLogDetail, GatewayRequestLogFilters, GatewayRequestLogItem,
-    GatewayRequestLogSummary, GatewayStreamOutcome, GatewayUsageSummary, GatewayUsageSummaryByCli,
-    GatewayUsageTool, GatewayUsageTrendPoint, ProxyGatewaySettings,
+    normalize_pricing_model_source, GatewayModelStats, GatewayNativeToolRecord,
+    GatewayPaginatedRequestLogs, GatewayProviderStats, GatewayRequestLogDetail,
+    GatewayRequestLogFilters, GatewayRequestLogItem, GatewayRequestLogSummary,
+    GatewayStreamOutcome, GatewayUsageSummary, GatewayUsageSummaryByCli, GatewayUsageTool,
+    GatewayUsageTrendPoint, ProxyGatewaySettings,
 };
 use crate::db::SqliteDbState;
 use chrono::{Duration, Local, TimeZone, Utc};
@@ -299,6 +300,11 @@ pub fn record_request_summary(
         let route_name = optional_compact_string(&summary.route_name);
         let method = optional_compact_string(&summary.method);
         let path = optional_compact_string(&request_log::redact_request_path(&summary.path));
+        // Only the tools the upstream actually invoked. `declared` / `forwarded`
+        // stay in the JSONL detail; the list renders this and nothing filters on
+        // it. `NULL` (not `[]`) when nothing was observed keeps "not inspected"
+        // distinguishable from a future explicit empty result.
+        let native_tools_used = serialize_native_tools_used(&detail.native_tools);
         let costs = pricing
             .as_ref()
             .map(|pricing| {
@@ -399,7 +405,7 @@ pub fn record_request_summary(
                 cost_multiplier, pricing_model_source, created_at, data_source, detail_file,
                 detail_offset, route_name, method, path, upstream_status_code,
                 stream_outcome, error_category, attempt_count, total_attempt_count, reasoning_effort, transport, request_kind, usage_request_count,
-                service_tier, service_tier_multiplier, compaction_mode
+                service_tier, service_tier_multiplier, compaction_mode, native_tools_used
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5,
                 ?6, ?7, ?8, ?9,
@@ -407,7 +413,8 @@ pub fn record_request_summary(
                 ?14, ?15, ?16, ?17,
                 ?18, ?19, ?20, ?21, ?22,
                 ?23, ?24, ?25, 'proxy', ?26, ?27, ?28, ?29, ?30, ?31,
-                ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42
+                ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42,
+                ?43
             )"
         );
         let affected_rows = conn
@@ -456,6 +463,7 @@ pub fn record_request_summary(
                     summary.service_tier,
                     summary.service_tier_multiplier,
                     summary.compaction_mode,
+                    native_tools_used,
                 ],
             )
             .map_err(|error| format!("Failed to record proxy gateway request summary: {error}"))?;
@@ -732,7 +740,7 @@ pub fn request_logs(
                     status_code, error_message, created_at, is_streaming,
                     route_name, method, path, stream_outcome, reasoning_effort,
                     COALESCE(data_source, 'proxy'), json(usage_metadata), extra_tokens, transport, request_kind,
-                    service_tier, compaction_mode
+                    service_tier, compaction_mode, native_tools_used
              FROM proxy_request_logs l
              {where_clause}
              ORDER BY created_at DESC
@@ -755,6 +763,7 @@ pub fn request_logs(
                 Ok(Some(GatewayRequestLogItem {
                     transport: super::types::GatewayRequestTransport::from_str(&row.get::<_, String>(25)?),
                     request_kind: super::types::GatewayRequestKind::from_str(&row.get::<_, String>(26)?),
+                    native_tools_used: parse_native_tools_used(row.get(29)?),
                     stream_outcome: row.get::<_, Option<String>>(20)?.as_deref().and_then(GatewayStreamOutcome::from_str),
                     usage_metadata: row.get::<_, Option<String>>(23)?.and_then(|value| serde_json::from_str(&value).ok()),
                     extra_tokens: row.get::<_, i64>(24)?.max(0) as u64,
@@ -826,6 +835,36 @@ pub fn request_logs(
 fn optional_compact_string(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Compact form of the request's native-tool markers: the canonical kinds the
+/// upstream actually invoked, deduped and sorted.
+///
+/// `None` when nothing was observed, so the column stays `NULL`. Writing `[]`
+/// would claim "inspected, nothing ran", which the Gateway cannot know for
+/// legacy rows, imported session usage, or a request it rejected locally. Tool
+/// kinds are bounded by the collector's own record cap, so no extra limit here.
+fn serialize_native_tools_used(tools: &[GatewayNativeToolRecord]) -> Option<String> {
+    let mut kinds: Vec<&str> = tools
+        .iter()
+        .filter(|tool| tool.used)
+        .map(|tool| tool.kind.as_str())
+        .collect();
+    kinds.sort_unstable();
+    kinds.dedup();
+    if kinds.is_empty() {
+        return None;
+    }
+    // A serialization failure would otherwise store an empty string, which the
+    // read side cannot distinguish from a real value it failed to parse.
+    serde_json::to_string(&kinds).ok()
+}
+
+/// Inverse of [`serialize_native_tools_used`]. A malformed or absent value reads
+/// as "nothing observed"; this is a display column and must never fail a query.
+fn parse_native_tools_used(raw: Option<String>) -> Vec<String> {
+    raw.and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
+        .unwrap_or_default()
 }
 
 pub fn usage_summary(
@@ -2805,7 +2844,7 @@ pub fn request_log_detail_from_summary(
                     route_name, method, path, upstream_status_code,
                     stream_outcome, error_category, attempt_count, total_attempt_count, reasoning_effort,
                     COALESCE(data_source, 'proxy'), json(usage_metadata), extra_tokens, transport, request_kind,
-                    service_tier, service_tier_multiplier, compaction_mode
+                    service_tier, service_tier_multiplier, compaction_mode, native_tools_used
              FROM proxy_request_logs
              WHERE request_id = ?1",
             [trace_id],
@@ -2838,9 +2877,18 @@ pub fn request_log_detail_from_summary(
                 Ok(GatewayRequestLogDetail {
                     privacy: None,
                     websocket: None,
-                    // Observation markers live only in the JSONL detail; a
-                    // summary-fallback detail has none to show.
-                    native_tools: Vec::new(),
+                    // The compact column only carries "observed to run", so the
+                    // fallback detail can still say a tool ran. `declared` /
+                    // `forwarded` were never collected there and stay false.
+                    native_tools: parse_native_tools_used(row.get(39)?)
+                        .into_iter()
+                        .map(|kind| GatewayNativeToolRecord {
+                            kind,
+                            declared: false,
+                            forwarded: false,
+                            used: true,
+                        })
+                        .collect(),
                     rewrites: Vec::new(),
                     summary: GatewayRequestLogSummary {
                         transport: super::types::GatewayRequestTransport::from_str(&row.get::<_, String>(34)?),
@@ -3574,6 +3622,96 @@ mod tests {
                 "{trace_id} must survive the summary fallback"
             );
         }
+    }
+
+    /// Only the tools actually invoked reach the compact column, and a request
+    /// with none observed stores NULL rather than an empty array: "not
+    /// inspected" and "inspected, nothing ran" must stay distinguishable so the
+    /// list never renders a negative it cannot prove.
+    #[test]
+    fn native_tools_used_records_only_invoked_tools_and_stays_null_otherwise() {
+        use super::super::types::GatewayNativeToolRecord;
+
+        let db = test_db();
+        let settings = ProxyGatewaySettings::default();
+        let tool = |kind: &str, declared, forwarded, used| GatewayNativeToolRecord {
+            kind: kind.to_string(),
+            declared,
+            forwarded,
+            used,
+        };
+        let cases: [(&str, Vec<GatewayNativeToolRecord>); 3] = [
+            // Declared and forwarded but never called: not usage.
+            (
+                "trace-tools-declared-only",
+                vec![tool("web_search", true, true, false)],
+            ),
+            // A provider-side default search the client never declared.
+            ("trace-tools-used", vec![tool("web_search", false, false, true)]),
+            ("trace-tools-none", Vec::new()),
+        ];
+        for (trace_id, native_tools) in cases {
+            let mut detail =
+                make_detail_for_cli(GatewayCliKey::Codex, trace_id, "provider-alpha", 200, 1_000, 20);
+            detail.native_tools = native_tools;
+            record_request_summary(&db, &settings, &detail).expect("record summary");
+        }
+        // Neighbouring compact columns must stay independent: a column-index
+        // slip in the read path would silently return the wrong one, and every
+        // one of these is NULL or a short string, so only a distinct sentinel
+        // catches it.
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE proxy_request_logs SET compaction_mode = 'native', service_tier = 'ultrafast'
+                 WHERE request_id = 'trace-tools-used'",
+                [],
+            )
+            .map_err(|error| error.to_string())
+        })
+        .expect("label neighbours");
+
+        let stored = |trace_id: &str| -> Option<String> {
+            db.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT native_tools_used FROM proxy_request_logs WHERE request_id = ?1",
+                    [trace_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .expect("stored column")
+        };
+        assert_eq!(stored("trace-tools-declared-only"), None);
+        assert_eq!(stored("trace-tools-used").as_deref(), Some(r#"["web_search"]"#));
+        assert_eq!(stored("trace-tools-none"), None);
+
+        // The list DTO carries it; the summary fallback detail rebuilds the
+        // single dimension it can prove.
+        let listed = request_logs(
+            &db,
+            &GatewayRequestLogFilters::default(),
+            0,
+            MAX_PAGE_SIZE,
+            true,
+        )
+        .expect("list requests");
+        let used_row = listed
+            .data
+            .iter()
+            .find(|row| row.trace_id == "trace-tools-used")
+            .expect("used row listed");
+        assert_eq!(used_row.native_tools_used, vec!["web_search".to_string()]);
+        let unused_row = listed
+            .data
+            .iter()
+            .find(|row| row.trace_id == "trace-tools-declared-only")
+            .expect("declared-only row listed");
+        assert!(unused_row.native_tools_used.is_empty());
+
+        let fallback = request_log_detail_from_summary(&db, "trace-tools-used")
+            .expect("fallback detail")
+            .expect("summary detail exists");
+        assert_eq!(fallback.native_tools, vec![tool("web_search", false, false, true)]);
     }
 
     #[test]

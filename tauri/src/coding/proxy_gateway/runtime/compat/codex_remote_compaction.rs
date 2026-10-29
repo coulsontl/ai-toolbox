@@ -149,6 +149,11 @@ pub(in crate::coding::proxy_gateway::runtime) const COMPACTION_MODE_FALLBACK: &s
 /// Log label: the target protocol could never serve the turn natively, so the
 /// trigger was never forwarded at all.
 pub(in crate::coding::proxy_gateway::runtime) const COMPACTION_MODE_SIMULATED: &str = "simulated";
+/// Log label: Codex asked the model for a compaction summary on the ordinary
+/// `/responses` path (no `compaction_trigger`). The Gateway does nothing here —
+/// the reply is an ordinary assistant summary and Codex installs it as local
+/// history itself — but the request list still needs to say what the turn was.
+pub(in crate::coding::proxy_gateway::runtime) const COMPACTION_MODE_LOCAL: &str = "local";
 
 /// How the current Codex request relates to remote compaction.
 ///
@@ -359,6 +364,38 @@ pub(super) fn is_remote_compaction_v2_request(body: &Value) -> bool {
 
 fn is_compaction_trigger_item(item: &Value) -> bool {
     item.get("type").and_then(Value::as_str) == Some("compaction_trigger")
+}
+
+/// Whether Codex marked this request as a **local** checkpoint compaction.
+///
+/// This is the one thing the metadata is good for. It must never feed
+/// [`is_remote_compaction_v2_request`] or [`RemoteCompactionCompat::resolve`]:
+/// the Gateway's job on such a turn is to leave the ordinary assistant summary
+/// alone, and rewriting it into a `compaction` item would destroy real context.
+/// Reading it only to *label* the turn keeps those two decisions apart.
+///
+/// Codex sends the metadata twice — a direct `x-codex-turn-metadata` header and
+/// the canonical `client_metadata["x-codex-turn-metadata"]` string — so both
+/// are consulted. The body copy is what makes a WebSocket turn work: its
+/// `DebugHttpRequest` carries the handshake's headers, not the frame's.
+pub(in crate::coding::proxy_gateway::runtime) fn is_local_compaction_request(
+    body: &Value,
+    turn_metadata: Option<&str>,
+) -> bool {
+    let from_body = body
+        .get("client_metadata")
+        .and_then(|metadata| metadata.get("x-codex-turn-metadata"))
+        .and_then(Value::as_str);
+    from_body
+        .or(turn_metadata)
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|metadata| {
+            metadata
+                .get("request_kind")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .is_some_and(|kind| kind == "compaction")
 }
 
 /// Whether any input item is a compaction item carrying this Gateway's capsule.
@@ -1093,6 +1130,57 @@ mod tests {
                 "x-codex-turn-metadata": "{\"request_kind\":\"compaction\"}"
             }
         })));
+    }
+
+    /// The same metadata is still the only signal that a turn was a local
+    /// compaction. Reading it for the log label is a separate decision from the
+    /// rewrite, which the test above pins.
+    #[test]
+    fn local_checkpoint_metadata_is_recognized_for_labelling() {
+        let local = serde_json::json!({
+            "input": [],
+            "client_metadata": {
+                "x-codex-turn-metadata": "{\"request_kind\":\"compaction\",\"turn_id\":\"t\"}"
+            }
+        });
+        assert!(is_local_compaction_request(&local, None));
+        assert!(!is_remote_compaction_v2_request(&local));
+
+        // The header is the fallback for a request body that carries no
+        // metadata of its own.
+        assert!(is_local_compaction_request(
+            &serde_json::json!({ "input": [] }),
+            Some("{\"request_kind\":\"compaction\"}"),
+        ));
+        // The body wins when both are present, and a non-compaction body is not
+        // rescued by a compaction header.
+        assert!(!is_local_compaction_request(
+            &serde_json::json!({
+                "client_metadata": { "x-codex-turn-metadata": "{\"request_kind\":\"turn\"}" }
+            }),
+            Some("{\"request_kind\":\"compaction\"}"),
+        ));
+
+        for kind in ["turn", "prewarm", "memory"] {
+            let other = serde_json::json!({
+                "input": [],
+                "client_metadata": {
+                    "x-codex-turn-metadata": format!("{{\"request_kind\":\"{kind}\"}}")
+                }
+            });
+            assert!(!is_local_compaction_request(&other, None), "request_kind={kind}");
+        }
+
+        // Absent, malformed, or non-object metadata is simply not a label.
+        assert!(!is_local_compaction_request(&serde_json::json!({ "input": [] }), None));
+        assert!(!is_local_compaction_request(
+            &serde_json::json!({ "client_metadata": { "x-codex-turn-metadata": "not json" } }),
+            None,
+        ));
+        assert!(!is_local_compaction_request(
+            &serde_json::json!({ "client_metadata": { "x-codex-turn-metadata": "[]" } }),
+            None,
+        ));
     }
 
     #[test]

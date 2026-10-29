@@ -14,6 +14,9 @@ import {
   formatModelQualifiers,
   formatTps,
   formatUsd,
+  gatewayTransportBadgeKey,
+  nativeToolBadgeKey,
+  nativeToolBadges,
   gatewayProjectName,
   compactionModeKey,
   gatewayRequestDisplayKind,
@@ -252,10 +255,99 @@ test('compaction badges name the side that wrote the item', () => {
   assert.equal(compactionModeKey(' Native '), 'gateway.page.requests.compaction.native');
   assert.equal(compactionModeKey('fallback'), 'gateway.page.requests.compaction.fallback');
   assert.equal(compactionModeKey('simulated'), 'gateway.page.requests.compaction.simulated');
+  // Codex's own checkpoint compaction produces no `compaction` item at all; the
+  // badge still reports that the turn was a compaction.
+  assert.equal(compactionModeKey('local'), 'gateway.page.requests.compaction.local');
   // An ordinary turn, and any value the backend stops sending, stays unlabelled.
   for (const mode of [null, undefined, '', '  ', 'unknown']) {
     assert.equal(compactionModeKey(mode), null);
   }
+});
+
+test('native tool badges cover only tools that were actually invoked', () => {
+  const cases: Array<[string, string]> = [
+    ['web_search', 'gateway.page.requests.nativeTools.webSearch'],
+    ['image_generation', 'gateway.page.requests.nativeTools.imageGeneration'],
+    ['code_interpreter', 'gateway.page.requests.nativeTools.codeInterpreter'],
+    ['file_search', 'gateway.page.requests.nativeTools.fileSearch'],
+    ['mcp', 'gateway.page.requests.nativeTools.mcp'],
+    ['computer_use', 'gateway.page.requests.nativeTools.computerUse'],
+    ['local_shell', 'gateway.page.requests.nativeTools.localShell'],
+  ];
+  for (const [kind, key] of cases) {
+    assert.equal(nativeToolBadgeKey(kind), key, kind);
+    assert.equal(nativeToolBadgeKey(` ${kind.toUpperCase()} `), key, `${kind} is case/space insensitive`);
+  }
+  // Unknown kinds render nothing rather than the raw machine key.
+  for (const kind of [null, undefined, '', 'declared_only', 'web_search_call']) {
+    assert.equal(nativeToolBadgeKey(kind), null);
+  }
+});
+
+test('native tool badges cap at two and collapse the rest into a count', () => {
+  const empty = nativeToolBadges(undefined);
+  assert.deepEqual(empty, { keys: [], labels: [], hiddenCount: 0, allKinds: [] });
+  assert.deepEqual(nativeToolBadges([]), { keys: [], labels: [], hiddenCount: 0, allKinds: [] });
+
+  const one = nativeToolBadges(['web_search']);
+  assert.deepEqual(one, {
+    keys: ['gateway.page.requests.nativeTools.webSearch'],
+    labels: ['gateway.page.requests.nativeTools.webSearch'],
+    hiddenCount: 0,
+    allKinds: ['web_search'],
+  });
+
+  const many = nativeToolBadges(['web_search', 'mcp', 'code_interpreter']);
+  assert.deepEqual(many.keys, [
+    'gateway.page.requests.nativeTools.webSearch',
+    'gateway.page.requests.nativeTools.mcp',
+  ]);
+  assert.equal(many.hiddenCount, 1);
+  // The tooltip names every invoked tool, including the collapsed one, and in
+  // the user's words rather than wire-level kind ids.
+  assert.deepEqual(many.allKinds, ['web_search', 'mcp', 'code_interpreter']);
+  assert.deepEqual(many.labels, [
+    'gateway.page.requests.nativeTools.webSearch',
+    'gateway.page.requests.nativeTools.mcp',
+    'gateway.page.requests.nativeTools.codeInterpreter',
+  ]);
+
+  // Unknown kinds are not tools this list can name, so they neither render nor
+  // inflate the overflow count.
+  const withUnknown = nativeToolBadges(['web_search', 'mystery_tool', 'mcp']);
+  assert.equal(withUnknown.keys.length, 2);
+  assert.equal(withUnknown.labels.length, 2);
+  assert.equal(withUnknown.hiddenCount, 0);
+});
+
+test('transport badge reports the transport actually used, not the one attempted', () => {
+  // A handshake is the Gateway declining an upgrade, not a WebSocket turn.
+  assert.equal(
+    gatewayTransportBadgeKey({ transport: 'websocket', request_kind: 'websocket_handshake', status_code: 426 }),
+    'gateway.page.requests.websocket.fallback',
+  );
+  // Other handshake failures are already reported by the status column.
+  for (const status of [401, 500, 0, null]) {
+    assert.equal(
+      gatewayTransportBadgeKey({ transport: 'websocket', request_kind: 'websocket_handshake', status_code: status }),
+      null,
+      String(status),
+    );
+  }
+  assert.equal(
+    gatewayTransportBadgeKey({ transport: 'websocket', request_kind: 'request' }),
+    'gateway.page.requests.websocket.badge',
+  );
+  assert.equal(
+    gatewayTransportBadgeKey({ transport: 'websocket', request_kind: 'websocket_warmup' }),
+    'gateway.page.requests.websocket.badge',
+  );
+  assert.equal(gatewayTransportBadgeKey({ transport: 'http', request_kind: 'request' }), null);
+  // Imported session usage was never a gateway request at all.
+  assert.equal(
+    gatewayTransportBadgeKey({ transport: 'http', request_kind: 'request', data_source: 'session' }),
+    null,
+  );
 });
 
 test('model qualifiers join effort and service tier without inventing placeholders', () => {

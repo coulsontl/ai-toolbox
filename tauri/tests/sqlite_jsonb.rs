@@ -1332,3 +1332,64 @@ fn v30_migration_preserves_history_and_indexes_legacy_proxy_envelopes() {
         1
     );
 }
+
+/// v31 adds the compact "tools actually invoked" column. Old rows must keep
+/// their history and read as `NULL` — "never inspected" is not "nothing ran" —
+/// and the upgrade has to survive being applied to a database that already has
+/// the column.
+#[test]
+fn v31_migration_adds_the_native_tools_column_without_touching_history() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("history.db");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        initialize_connection(&mut conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO proxy_request_logs
+                 (request_id, provider_id, app_type, model, input_tokens, output_tokens, created_at, data_source, request_kind)
+             VALUES ('SESSION:codex:provider:old-proxy', 'provider', 'codex', 'gpt-5', 101, 12, 1780000000, 'proxy', 'request'),
+                    ('SESSION:codex:session:old-native', 'session', 'codex', 'gpt-5', 202, 24, 1780000000, 'session', 'request');",
+        )
+        .unwrap();
+        migrations::set_user_version(&conn, 30).unwrap();
+    }
+    let db = SqliteDbState::open(path.clone()).unwrap();
+    db.with_conn(|conn| {
+        assert_eq!(migrations::get_user_version(conn).unwrap(), TARGET_SCHEMA_VERSION);
+        let totals: (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), SUM(input_tokens), SUM(output_tokens),
+                        SUM(CASE WHEN native_tools_used IS NULL THEN 1 ELSE 0 END)
+                 FROM proxy_request_logs",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(totals, (2, 303, 36, 2), "history is preserved and unlabelled");
+        Ok(())
+    })
+    .unwrap();
+    drop(db);
+    // Re-running the migration must not fail on the now-present column.
+    let mut conn = Connection::open(path).unwrap();
+    migrations::set_user_version(&conn, 30).unwrap();
+    migrations::run_all(&mut conn).unwrap();
+    conn.execute(
+        "UPDATE proxy_request_logs SET native_tools_used = ?1 WHERE request_id = ?2",
+        rusqlite::params![r#"["web_search"]"#, "SESSION:codex:provider:old-proxy"],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE proxy_request_logs SET native_tools_used = ?1 WHERE request_id = ?2",
+        rusqlite::params![r#"["web_search"]"#, "SESSION:codex:provider:old-proxy"],
+    )
+    .unwrap();
+    let stored: String = conn
+        .query_row(
+            "SELECT native_tools_used FROM proxy_request_logs WHERE request_id = ?1",
+            ["SESSION:codex:provider:old-proxy"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, r#"["web_search"]"#);
+}

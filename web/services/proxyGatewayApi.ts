@@ -306,6 +306,13 @@ export interface GatewayPaginatedRequestLogs {
 export interface GatewayRequestLogItem {
   transport?: 'http' | 'websocket';
   request_kind?: 'request' | 'websocket_handshake' | 'websocket_warmup';
+  /**
+   * Canonical kinds of native/hosted tools the upstream actually invoked.
+   * Empty means "nothing observed" — legacy rows, imported session usage and
+   * locally rejected requests were never inspected — so it must never render
+   * as "no tool was used".
+   */
+  native_tools_used?: string[];
   stream_outcome?: 'completed' | 'failed' | 'incomplete' | 'canceled' | null;
   usage_metadata?: SessionUsageMetadata | null;
   extra_tokens?: number;

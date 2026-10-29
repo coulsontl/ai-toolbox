@@ -120,9 +120,14 @@ export const serviceTierLabel = (serviceTier?: string | null) => {
 /**
  * i18n key for the compaction badge on a Codex remote compaction v2 turn.
  *
- * All three values describe which side wrote the `compaction` item — the wire
+ * All three v2 values describe which side wrote the `compaction` item — the wire
  * looks identical either way, so this badge is the only place a user can tell
  * them apart without reading the upstream response.
+ *
+ * `local` is a different thing: Codex asked for a plain summary on the ordinary
+ * `/responses` path and installs it itself, so no `compaction` item exists at
+ * all. It is labelled anyway because the request list is the only place to see
+ * that the turn was a compaction.
  */
 export const compactionModeKey = (compactionMode?: string | null): string | null => {
   const mode = compactionMode?.trim().toLowerCase();
@@ -135,7 +140,94 @@ export const compactionModeKey = (compactionMode?: string | null): string | null
   if (mode === 'simulated') {
     return 'gateway.page.requests.compaction.simulated';
   }
+  if (mode === 'local') {
+    return 'gateway.page.requests.compaction.local';
+  }
   return null;
+};
+
+/**
+ * i18n key for one native/hosted tool that the upstream actually invoked.
+ *
+ * Returns literal keys so `i18n:check` can see every one of them. An unknown
+ * kind renders nothing rather than the raw machine key: this badge is a
+ * summary, and the detail dialog still lists the kind verbatim for debugging.
+ */
+export const nativeToolBadgeKey = (kind?: string | null): string | null => {
+  switch (kind?.trim().toLowerCase()) {
+    case 'web_search':
+      return 'gateway.page.requests.nativeTools.webSearch';
+    case 'image_generation':
+      return 'gateway.page.requests.nativeTools.imageGeneration';
+    case 'code_interpreter':
+      return 'gateway.page.requests.nativeTools.codeInterpreter';
+    case 'file_search':
+      return 'gateway.page.requests.nativeTools.fileSearch';
+    case 'mcp':
+      return 'gateway.page.requests.nativeTools.mcp';
+    case 'computer_use':
+      return 'gateway.page.requests.nativeTools.computerUse';
+    case 'local_shell':
+      return 'gateway.page.requests.nativeTools.localShell';
+    default:
+      return null;
+  }
+};
+
+/** How many tool badges a row shows before collapsing the rest into `+N`. */
+export const NATIVE_TOOL_BADGE_LIMIT = 2;
+
+/**
+ * Tool badges for a request summary row.
+ *
+ * Only kinds the backend observed running become badges, so a declaration that
+ * was merely forwarded never shows up here. Unknown kinds are dropped; the
+ * overflow is counted into `hiddenCount`. `labels` carries the same tools in
+ * the order they are shown (recognized kinds only) so the tooltip can name the
+ * collapsed ones without exposing wire-level ids.
+ */
+export const nativeToolBadges = (
+  kinds: readonly string[] | null | undefined,
+): { keys: string[]; labels: string[]; hiddenCount: number; allKinds: string[] } => {
+  const keys: string[] = [];
+  const labels: string[] = [];
+  const allKinds: string[] = [];
+  for (const kind of kinds ?? []) {
+    const badgeKey = nativeToolBadgeKey(kind);
+    if (!badgeKey) {
+      continue;
+    }
+    allKinds.push(kind.trim());
+    labels.push(badgeKey);
+    if (keys.length < NATIVE_TOOL_BADGE_LIMIT) {
+      keys.push(badgeKey);
+    }
+  }
+  return { keys, labels, hiddenCount: allKinds.length - keys.length, allKinds };
+};
+
+/**
+ * Transport badge for a request summary row, or null when there is nothing
+ * useful to say.
+ *
+ * A handshake row is the Gateway declining an upgrade, not a WebSocket turn:
+ * showing `WS` on it would claim the request used a transport it never got. The
+ * 426 case gets its own `回退 HTTP` badge instead, and every other handshake
+ * outcome stays silent because the status column already reports it.
+ */
+export const gatewayTransportBadgeKey = (record: {
+  transport?: string;
+  request_kind?: string;
+  data_source?: string | null;
+  status_code?: number | null;
+}): string | null => {
+  if (record.data_source === 'session') {
+    return null;
+  }
+  if (record.request_kind === 'websocket_handshake') {
+    return record.status_code === 426 ? 'gateway.page.requests.websocket.fallback' : null;
+  }
+  return record.transport === 'websocket' ? 'gateway.page.requests.websocket.badge' : null;
 };
 
 export const formatCacheHitRate = (rate?: number | null) =>

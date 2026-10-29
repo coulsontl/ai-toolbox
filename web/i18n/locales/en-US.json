@@ -310,7 +310,8 @@
           "native": "Native compact",
           "fallback": "Fallback compact",
           "simulated": "Gateway compact",
-          "hint": "Codex remote compaction v2: which side wrote the `compaction` item. Native compact: the upstream answered with its own item. Fallback compact: the trigger was forwarded first, the upstream did not answer with an item, so the gateway summarized the turn itself. Gateway compact: the provider reaches the upstream through a protocol conversion, where a native answer is impossible, so the trigger was never forwarded. The item looks identical on the wire in all three cases."
+          "hint": "A Codex compaction turn. Native compact: the upstream answered with its own `compaction` item. Fallback compact: the trigger was forwarded first, the upstream did not answer with an item, so the gateway summarized the turn itself. Gateway compact: the provider reaches the upstream through a protocol conversion, where a native answer is impossible, so the trigger was never forwarded. Those three look identical on the wire. Local compact: Codex asked for a plain summary on the ordinary `/responses` path and installs it itself; the gateway does not rewrite it.",
+          "local": "Local compact"
         },
         "localSession": "Session",
         "localSessionHint": "From local CLI session logs, without HTTP status. The duration is an end-to-end estimate derived from transcript timestamps, not a gateway measurement. Cost uses the CLI-reported value when available, otherwise model pricing.",
@@ -357,7 +358,8 @@
           "failed": "Failed",
           "requestHeaders": "Client handshake headers",
           "responseHeaders": "Gateway handshake headers",
-          "handshakeAttempts": "Handshake attempts"
+          "handshakeAttempts": "Handshake attempts",
+          "badge": "WS"
         },
         "cacheHitRateHint": "Cache-read tokens / (fresh input + cache creation + cache-read tokens). Shows - when there is no input usage.",
         "tokenTotalCell": "Total: {{value}}",
@@ -388,7 +390,19 @@
           "rollup_and_prune": "Archiving old detail rows…",
           "done": "Rebuild complete",
           "failed": "Rebuild failed"
-        }
+        },
+        "nativeTools": {
+          "webSearch": "Native search",
+          "imageGeneration": "Native image",
+          "codeInterpreter": "Native code",
+          "fileSearch": "Native files",
+          "mcp": "Native MCP",
+          "computerUse": "Native computer",
+          "localShell": "Native shell",
+          "hint": "Native tools the upstream actually invoked: {{tools}}. Shown only for confirmed calls; absence here does not mean none were used.",
+          "more": "+{{count}}"
+        },
+        "transportHint": "The transport this request actually used. A refused or downgraded handshake did not use WebSocket."
       },
       "requestRateHint": "RPM counts requests entering the gateway for the selected CLI in the last 60 seconds. It refreshes every 5 seconds, is independent of the date filter, and excludes local session imports.",
       "rpm": "RPM"

@@ -60,7 +60,7 @@ sequenceDiagram
 - 聚合表单种子的 effect 只能依赖「已启用配置的内容 key（`activeAggregateKey`）+ 候选集 + 草稿加载 revision + provider 列表」，**不能依赖 `selectedStatus` 对象身份**：状态每轮刷新都会换新对象，按身份重新种子会把用户刚改的内容回滚。同理，保存草稿成功后只更新 ref 与提示状态，不要重新种子。
 - 草稿写入必须串行化在 `runGatewayAggregateMutation` 通道内，避免慢的旧写入后到、把新选择覆盖回去；保存回调按 `draftRequestRef` 丢弃过期结果。
 - `[agents]` 默认值只在**已启用**时应用：输入框失焦 / effort 下拉变更都只在 `engaged` 时重新接管；未启用时编辑它不会落任何后端文件（草稿只管站点选择、分隔符、别名和模板）。种子 effect 重跑时（候选集 / 草稿 revision / provider 列表变化）会从 `manifest.aggregate.subagent` 重新回填，未启用则清空——这是刻意的，避免把不再被接管的键显示成「接管中」。
-- `transport=websocket` 的普通请求按 `stream_outcome` 显示业务终态，不展示内部 HTTP 占位 `0`，也不把握手 `101` 展示为模型成功。`websocket_handshake` 的 `426` 是 HTTP 回退提示，使用中性文本；真实握手错误仍展示状态。WS 标记和预热标记沿用现有紧凑副文本，主题状态色只作辅助。
+- `transport=websocket` 的普通请求按 `stream_outcome` 显示业务终态，不展示内部 HTTP 占位 `0`，也不把握手 `101` 展示为模型成功。`websocket_handshake` 的 `426` 是 HTTP 回退提示，使用中性文本；真实握手错误仍展示状态。WS 徽标与预热标记已经挪到请求摘要行与供应商副文本，见下方徽标条目，主题状态色只作辅助。
 - WS/HTTP 标记反映每条请求的实际传输，不由当前设置或 provider 推断；不同 Codex 会话可以对同一 provider 使用不同传输。默认关闭的 Codex WebSocket 开关在设置页“转发与容错 / 传输方式”，不隐藏或改写历史 WS 明细；排查混合记录要核对详情中的 path、会话标识和终态，不能直接当成重复记账或同会话回退。
 - WS 握手不展示 Token/费用；预热只在后端有真实 Token 时展示用量。连接/response/previous/stream ID、握手状态/尝试和事件错误从 JSONL detail 读取，长 ID 要能悬停查看，回退原因允许换行；summary-only 不伪造这些详情。Headers tab 标明所显示的是客户端握手请求和网关握手响应。
 - 不要把 `gateway` 加入 WSL/SSH 的 runtime 同步模块集合；它在 `visibleTabs` 里只是顶栏入口 key。
@@ -68,7 +68,10 @@ sequenceDiagram
 - 明细 Tab 的列表占满主视图，筛选栏顺序为 CLI、时间、来源、状态、搜索、操作；点击记录后再以大弹窗展示“请求记录 / 请求体 / Headers / Response”详情。不要为了列表页一次性拉大 body，也不要把详情文件字段同步进列表 store。
 - 请求列表只展示后端数据库摘要 DTO；点击具体请求后再读取详情文件。不要把 request/response body、完整 headers、attempt 明细或大块 JSON 放进列表状态。
 - 请求列表应保持高密度表格展示：时间、供应商、请求摘要、词元、耗时、令牌/秒、成本、状态来自摘要表（成本、状态固定最后两列）；模型生成请求显示模型与用量，模型列表、上下文压缩、连接探测等无模型请求显示脱敏后的方法/路径摘要；尝试次数只放详情记录里，不在列表 badge 里展示，避免误解 provider 内尝试和总尝试。请求/模型列副标题显示紧凑 Token 明细（输入/输出/缓存），「不完整」与「额外 Token」标记追加其后。
-- Codex 远程压缩 v2 的 `compaction` 徽章（`compactionModeKey`）是用户**唯一**能分辨「上游原生压缩」与「网关自封装」的地方——两者在线路上的 item 形状完全一样，所以后端专门持久化了 `compaction_mode`。三值语义不同不能合并：`native` 上游自己写了该项、`fallback` 先转发过 trigger 被拒才改由网关摘要、`simulated` 协议转换目标根本不可能原生。**失败轮次没有徽章**（没有任何一侧写出 item，没有「哪一侧」可报），所以前端遇到未知值要静默不渲染，不能在摘要里补一个默认值。
+- Codex 远程压缩 v2 的 `compaction` 徽章（`compactionModeKey`）是用户**唯一**能分辨「上游原生压缩」与「网关自封装」的地方——两者在线路上的 item 形状完全一样，所以后端专门持久化了 `compaction_mode`。四值语义不同不能合并：`native` 上游自己写了该项、`fallback` 先转发过 trigger 被拒才改由网关摘要、`simulated` 协议转换目标根本不可能原生、`local` 是 Codex 自己在普通 `/responses` 上要摘要并自行装入历史（没有 `compaction` item，网关不改写）。**失败轮次没有徽章**（没有任何一侧写出 item，没有「哪一侧」可报），所以前端遇到未知值要静默不渲染，不能在摘要里补一个默认值。
+- **请求摘要行的徽标全都只陈述「实际发生了什么」**，统一用 `.modelBadge` 一套描边徽标语言（服务档、压缩、传输、原生工具），顺序固定为 模型名 → effort → 服务档 → 压缩 → 传输 → 原生工具：
+  - 传输徽标（`gatewayTransportBadgeKey`）：真实 WS 轮次显示 `WS`；握手行 **不显示 `WS`**（那只是尝试升级），426 显示 `回退 HTTP`，其它握手失败交给状态列。供应商列副文本因此**不再拼 `WS · `**——它曾在握手行同时出现「WS ·」与「回退 HTTP」，自相矛盾。
+  - 原生工具徽标（`nativeToolBadges`）：只来自摘要列 `native_tools_used`（后端只收录实际调用过的 kind），最多 2 个，其余折叠成 `+N`。`labels` 是全部已识别 kind 的 i18n key（按显示顺序），悬停 tooltip 用 `t(label)` 拼出来给用户看的是「原生搜索、原生 MCP」，**不能直接拼机器 kind**。**空值/未知 kind 一律不渲染**：这一列无法证明「没使用」，不得补「未使用」标记。三态完整诊断（已声明／已转发／已调用）仍只在详情的 `native_tools` 段。
 - 词元列展示两行：上 `总计: {total}`，下缓存命中率 `{rate} 缓存命中`（`缓存读取 /（非缓存输入 + 缓存写入 + 缓存读取）`；`null` 显示 `-`，真实 `0` 显示 `0.0% 缓存命中`）；不要把 token 数拆成独立「读缓存」列（已按用户决策移除，Token 明细由请求/模型列副标题承载）；耗时列展示 `首字 {value}` / `总耗时 {value}` 两行；数字用千分位全量格式，不用紧凑缩写。统计页供应商/模型统计表共用同一列骨架（主列、请求数、词元、缓存命中率、成功率、平均耗时、成本），成本固定最后一列；模型表的成功率/命中率由后端 `proxy_gateway_model_stats` 真实返回，成功率只统计网关（proxy）流量，纯 session 模型组显示 `-`，不要用空白占位列替代真实数据。
 - 请求列表的词元 / 成本列只对模型生成请求和 Codex Compact 请求显示数值；模型列表、连接探测和普通无模型请求没有 usage 语义，应显示 `-`，不要把摘要里的 `0` 格式化成真实用量。
 - `data_source=session` 的本地记录即使未记录模型名，也必须显示已有 token/费用，来源显示“Session”；HTTP 状态、流式标记、尝试次数显示 `-`，不能把 SQLite 的兼容占位值当成实测。耗时列改为展示解析器估算的端到端耗时（`sessionDurationText`：`duration_ms > 0` 才显示，否则 `-`），悬停文案 `gateway.page.requests.sessionDurationHint` 是用户唯一能看到估算口径的地方；TPS 对 session 行按估算的端到端耗时计算（含首字等待，`formatTps` 对 session 行忽略 `first_token_ms`），没有估算耗时显示 `-`。供应商不可从当前配置推测，native 供应商统计不显示 HTTP 成功率，模型统计的未知名称显示“未记录模型”，平均耗时 null 显示 `-`。

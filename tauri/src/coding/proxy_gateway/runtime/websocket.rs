@@ -4,8 +4,8 @@
 
 use super::compat::codex_remote_compaction::{
     self as codex_remote_compaction, CompactionStreamSummary, CompactionSummaryError,
-    RemoteCompactionCompat, COMPACTION_MODE_FALLBACK, COMPACTION_MODE_NATIVE,
-    COMPACTION_MODE_SIMULATED,
+    RemoteCompactionCompat, COMPACTION_MODE_FALLBACK, COMPACTION_MODE_LOCAL,
+    COMPACTION_MODE_NATIVE, COMPACTION_MODE_SIMULATED,
 };
 use super::compat::provider_kind::ProviderBodyCompat;
 use super::http_io::{
@@ -884,6 +884,14 @@ impl PendingTurn {
         }
         if self.response.token_usage.envelope_id.is_none() {
             self.response.token_usage.envelope_id = self.metadata.response_id.clone();
+        }
+        // Codex's local checkpoint compaction runs on this same frame type; the
+        // relay carries it as an ordinary turn and only the log has to say so.
+        // Never set for a v2 turn, whose resolver already labelled it.
+        if self.response.compaction_mode.is_none()
+            && upstream::request_is_local_compaction(&self.request)
+        {
+            self.response.compaction_mode = Some(COMPACTION_MODE_LOCAL.to_string());
         }
         if self.kind == GatewayRequestKind::Request
             && self.response.upstream_model_id.is_some()

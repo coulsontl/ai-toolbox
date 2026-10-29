@@ -43,11 +43,13 @@ import {
   formatDuration,
   formatCacheHitRate,
   formatGatewayError,
+  gatewayTransportBadgeKey,
   gatewayWebSocketStatusKey,
   formatInteger,
   formatModelQualifiers,
   formatTps,
   compactionModeKey,
+  nativeToolBadges,
   serviceTierLabel,
   formatUsd,
   GATEWAY_USAGE_RANGE_PRESETS,
@@ -970,12 +972,17 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
     {
       title: t('gateway.page.requests.columns.provider'),
       dataIndex: 'provider_name',
-      render: (_, record) => (
-        <div className={styles.tableMainCell}>
-          <strong title={providerDisplayName(t, record.provider_id, record.provider_name, record.usage_metadata?.native_provider)}>{providerDisplayName(t, record.provider_id, record.provider_name, record.usage_metadata?.native_provider)}</strong>
-          <small>{record.transport === 'websocket' ? 'WS · ' : ''}{record.request_kind === 'websocket_warmup' ? `${t('gateway.page.requests.websocket.warmup')} · ` : ''}{providerDisplayMeta(t, record.cli_key, record.provider_id)}</small>
-        </div>
-      ),
+      render: (_, record) => {
+        // `WS` and `回退 HTTP` are badges in the request column now. Keeping the
+        // old `WS ·` prefix here made fallback rows read "WS · … 回退 HTTP",
+        // claiming a transport those requests never obtained.
+        return (
+          <div className={styles.tableMainCell}>
+            <strong title={providerDisplayName(t, record.provider_id, record.provider_name, record.usage_metadata?.native_provider)}>{providerDisplayName(t, record.provider_id, record.provider_name, record.usage_metadata?.native_provider)}</strong>
+            <small>{record.request_kind === 'websocket_warmup' ? `${t('gateway.page.requests.websocket.warmup')} · ` : ''}{providerDisplayMeta(t, record.cli_key, record.provider_id)}</small>
+          </div>
+        );
+      },
     },
     {
       title: t('gateway.page.requests.columns.request'),
@@ -989,6 +996,15 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
               : requestDisplay.titleKey ? t(requestDisplay.titleKey) : requestDisplay.modelText;
             const tierLabel = serviceTierLabel(record.service_tier);
             const compactionLabelKey = compactionModeKey(record.compaction_mode);
+            const transportBadgeKey = gatewayTransportBadgeKey(record);
+            const toolBadges = nativeToolBadges(record.native_tools_used);
+            // The badges share one tooltip: the full list in the user's own
+            // words, not the wire-level kind ids.
+            const toolBadgeTitle = toolBadges.labels.length > 0
+              ? t('gateway.page.requests.nativeTools.hint', {
+                  tools: toolBadges.labels.map((labelKey) => t(labelKey)).join(', '),
+                })
+              : undefined;
             return (
               <>
                 <div className={styles.modelTitle} title={formatModelQualifiers(requestDisplayTitle, [record.reasoning_effort, tierLabel])}>
@@ -999,13 +1015,28 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
                     </span>
                   ) : null}
                   {requestDisplay.modelApplicable && tierLabel ? (
-                    <span className={styles.modelTier} title={t('gateway.page.requests.serviceTierHint')}>
+                    <span className={styles.modelBadge} title={t('gateway.page.requests.serviceTierHint')}>
                       {tierLabel}
                     </span>
                   ) : null}
                   {compactionLabelKey ? (
-                    <span className={styles.modelTier} title={t('gateway.page.requests.compaction.hint')}>
+                    <span className={styles.modelBadge} title={t('gateway.page.requests.compaction.hint')}>
                       {t(compactionLabelKey)}
+                    </span>
+                  ) : null}
+                  {transportBadgeKey ? (
+                    <span className={styles.modelBadge} title={t('gateway.page.requests.transportHint')}>
+                      {t(transportBadgeKey)}
+                    </span>
+                  ) : null}
+                  {toolBadges.keys.map((badgeKey) => (
+                    <span key={badgeKey} className={styles.modelBadge} title={toolBadgeTitle}>
+                      {t(badgeKey)}
+                    </span>
+                  ))}
+                  {toolBadges.hiddenCount > 0 ? (
+                    <span className={styles.modelBadge} title={toolBadgeTitle}>
+                      {t('gateway.page.requests.nativeTools.more', { count: toolBadges.hiddenCount })}
                     </span>
                   ) : null}
                 </div>

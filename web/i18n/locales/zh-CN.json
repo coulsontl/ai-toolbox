@@ -310,7 +310,8 @@
           "native": "原生压缩",
           "fallback": "回退压缩",
           "simulated": "网关压缩",
-          "hint": "Codex 远程压缩 v2：这条 `compaction` 项由哪一侧写出。「原生压缩」＝上游自己回了该项；「回退压缩」＝先把 trigger 原样转发过，上游没有回该项，网关改为自行摘要并封装；「网关压缩」＝该供应商要经协议转换才能到达上游，原生不可能实现，因此没有转发过 trigger。三者在线路上的形状完全一致。"
+          "hint": "Codex 压缩请求。「原生压缩」＝上游自己回了 `compaction` 项；「回退压缩」＝先把 trigger 原样转发过，上游没有回该项，网关改为自行摘要并封装；「网关压缩」＝该供应商要经协议转换才能到达上游，原生不可能实现，因此没有转发过 trigger；这三种在线路上的形状完全一致。「本地压缩」＝Codex 自己在普通 `/responses` 上要一份摘要并自行装入历史，网关不参与改写。",
+          "local": "本地压缩"
         },
         "localSession": "Session",
         "localSessionHint": "来自 CLI 本地会话日志，不包含 HTTP 状态。耗时是解析器按转录时间戳估算的端到端时长，不是网关测量值。成本优先使用 CLI 上报值，缺失时按模型价格估算。",
@@ -357,7 +358,8 @@
           "failed": "失败",
           "requestHeaders": "客户端握手 Headers",
           "responseHeaders": "网关握手 Headers",
-          "handshakeAttempts": "握手尝试"
+          "handshakeAttempts": "握手尝试",
+          "badge": "WS"
         },
         "cacheHitRateHint": "缓存读取 token /（非缓存输入 + 缓存写入 + 缓存读取 token）。无输入用量显示 -。",
         "tokenTotalCell": "总计: {{value}}",
@@ -388,7 +390,19 @@
           "rollup_and_prune": "正在归档旧明细…",
           "done": "重建完成",
           "failed": "重建失败"
-        }
+        },
+        "nativeTools": {
+          "webSearch": "原生搜索",
+          "imageGeneration": "原生绘图",
+          "codeInterpreter": "原生代码",
+          "fileSearch": "原生文件",
+          "mcp": "原生 MCP",
+          "computerUse": "原生桌面",
+          "localShell": "原生 Shell",
+          "hint": "上游实际调用过的原生工具：{{tools}}。仅在确认调用时显示；这里没有不代表没有使用。",
+          "more": "+{{count}}"
+        },
+        "transportHint": "这条请求实际使用的传输方式。握手被拒绝或回退的请求不算使用 WebSocket。"
       },
       "requestRateHint": "RPM 表示所选 CLI 最近 60 秒进入网关的请求数，每 5 秒刷新，不受日期筛选影响；本地会话用量不计入实时网关速率。",
       "rpm": "RPM"

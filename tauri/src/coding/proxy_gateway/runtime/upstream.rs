@@ -1,6 +1,6 @@
 use super::compat::codex_remote_compaction::{
     self as codex_remote_compaction, RemoteCompactionCompat, COMPACTION_MODE_FALLBACK,
-    COMPACTION_MODE_NATIVE, COMPACTION_MODE_SIMULATED,
+    COMPACTION_MODE_LOCAL, COMPACTION_MODE_NATIVE, COMPACTION_MODE_SIMULATED,
 };
 use super::compat::codex_responses_compact::{
     CodexResponsesCompactCompat, CODEX_RESPONSES_COMPACT_COMPAT_HEADER,
@@ -2472,7 +2472,11 @@ async fn build_gateway_response(
         // either way, so the log says which side wrote the item.
         let native_compaction = remote_compaction.is_passthrough()
             && codex_remote_compaction::is_native_compaction_response(&body);
-        let compaction_mode = compaction_mode_label(remote_compaction, native_compaction);
+        let compaction_mode = compaction_mode_label(
+            remote_compaction,
+            native_compaction,
+            request_is_local_compaction(request),
+        );
         if remote_compaction.is_compaction_turn() {
             if !native_compaction {
                 // Usage is read from the aggregated body (the provider's own
@@ -2791,7 +2795,13 @@ async fn build_gateway_response(
     // A turn that failed produced no item at all, so there is no side to
     // report and the label stays absent.
     let compaction_mode = served
-        .then(|| compaction_mode_label(remote_compaction, native_compaction))
+        .then(|| {
+            compaction_mode_label(
+                remote_compaction,
+                native_compaction,
+                request_is_local_compaction(request),
+            )
+        })
         .flatten();
     if remote_compaction.is_compaction_turn() && served {
         if !native_compaction {
@@ -2966,12 +2976,15 @@ fn sse_aggregation_kind_for_non_streaming_client(
 /// way to satisfy the contract either way.
 /// The request-log label for a compaction turn, or `None` on every other turn.
 ///
-/// The three values answer the only question a user has about a compaction
-/// turn: which side wrote the `compaction` item. The wire looks identical
-/// whichever it is, so this label is where the difference becomes visible.
-fn compaction_mode_label(
+/// The values answer the only question a user has about a compaction turn: who
+/// produced the summary. On a v2 turn that is which side wrote the `compaction`
+/// item; on a local turn Codex asked for a plain summary on the ordinary
+/// `/responses` path and installs it itself, so the Gateway only labels the
+/// turn — it never rewrites that reply.
+pub(super) fn compaction_mode_label(
     remote_compaction: RemoteCompactionCompat,
     native: bool,
+    local_compaction: bool,
 ) -> Option<String> {
     match remote_compaction {
         // Only a pass-through turn can be native. Reaching here without one
@@ -2987,8 +3000,29 @@ fn compaction_mode_label(
         ),
         RemoteCompactionCompat::Summarize => Some(COMPACTION_MODE_SIMULATED.to_string()),
         RemoteCompactionCompat::Fallback => Some(COMPACTION_MODE_FALLBACK.to_string()),
-        RemoteCompactionCompat::None | RemoteCompactionCompat::ReplayCapsules => None,
+        // A v2 shape always wins: the trigger is real even if Codex also marked
+        // the turn, and the two must not be reported as one label.
+        RemoteCompactionCompat::None | RemoteCompactionCompat::ReplayCapsules => local_compaction
+            .then(|| COMPACTION_MODE_LOCAL.to_string()),
     }
+}
+
+/// Whether Codex marked this request as a local checkpoint compaction.
+///
+/// Read from the canonical `client_metadata["x-codex-turn-metadata"]` blob, so
+/// it works for HTTP and WebSocket turns alike. Label-only: it never feeds the
+/// compaction rewrite decision, which must keep treating such a turn as an
+/// ordinary request.
+pub(super) fn request_is_local_compaction(request: &DebugHttpRequest) -> bool {
+    let Ok(body) = serde_json::from_slice::<Value>(&request.body) else {
+        return false;
+    };
+    // The body copy travels with the turn and survives on both transports; the
+    // header only exists for HTTP.
+    codex_remote_compaction::is_local_compaction_request(
+        &body,
+        header_value_ci(&request.headers, "x-codex-turn-metadata"),
+    )
 }
 
 /// Whether a pass-through compaction turn's reply has to be read and decided on.
@@ -19944,24 +19978,48 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
         use RemoteCompactionCompat::{Fallback, Passthrough, ReplayCapsules, Summarize};
 
         assert_eq!(
-            compaction_mode_label(Passthrough, true).as_deref(),
+            compaction_mode_label(Passthrough, true, false).as_deref(),
             Some(COMPACTION_MODE_NATIVE)
         );
         assert_eq!(
-            compaction_mode_label(Fallback, false).as_deref(),
+            compaction_mode_label(Fallback, false, false).as_deref(),
             Some(COMPACTION_MODE_FALLBACK)
         );
         // A converted target that was never offered the trigger.
         assert_eq!(
-            compaction_mode_label(Summarize, false).as_deref(),
+            compaction_mode_label(Summarize, false, false).as_deref(),
             Some(COMPACTION_MODE_SIMULATED)
         );
         // An ordinary turn, and a replay, carry no label at all.
         assert_eq!(
-            compaction_mode_label(RemoteCompactionCompat::None, false),
+            compaction_mode_label(RemoteCompactionCompat::None, false, false),
             None
         );
-        assert_eq!(compaction_mode_label(ReplayCapsules, false), None);
+        assert_eq!(compaction_mode_label(ReplayCapsules, false, false), None);
+    }
+
+    /// Codex's local checkpoint compaction is an ordinary `/responses` turn the
+    /// Gateway must not rewrite, but the list still says what the turn was.
+    ///
+    /// The v2 shape always wins: a turn carrying both the trigger and the
+    /// metadata is a real v2 turn, and collapsing it into "local" would hide
+    /// which side wrote the item.
+    #[test]
+    fn a_local_compaction_turn_is_labelled_without_being_rewritten() {
+        use RemoteCompactionCompat::{Passthrough, Summarize};
+
+        assert_eq!(
+            compaction_mode_label(RemoteCompactionCompat::None, false, true).as_deref(),
+            Some(COMPACTION_MODE_LOCAL)
+        );
+        assert_eq!(
+            compaction_mode_label(Passthrough, true, true).as_deref(),
+            Some(COMPACTION_MODE_NATIVE)
+        );
+        assert_eq!(
+            compaction_mode_label(Summarize, false, true).as_deref(),
+            Some(COMPACTION_MODE_SIMULATED)
+        );
     }
 
     /// A configuration that refused a native turn is not offered one again in

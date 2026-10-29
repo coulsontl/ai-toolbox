@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::schema::{sql_string_literal, DbTable, JsonFieldPath, ALL_TABLES};
 
-pub const TARGET_SCHEMA_VERSION: i32 = 30;
+pub const TARGET_SCHEMA_VERSION: i32 = 31;
 const FUTURE_SCHEMA_ERROR_PREFIX: &str = "AI_TOOLBOX_SQLITE_SCHEMA_TOO_NEW";
 
 pub fn run_all(conn: &mut Connection) -> Result<(), String> {
@@ -97,6 +97,9 @@ pub fn run_all(conn: &mut Connection) -> Result<(), String> {
     }
     if current_version < 30 {
         run_migration_step(conn, 30, migrate_v30)?;
+    }
+    if current_version < 31 {
+        run_migration_step(conn, 31, migrate_v31)?;
     }
 
     Ok(())
@@ -676,6 +679,22 @@ fn migrate_v30(conn: &Connection) -> Result<(), String> {
          WHERE COALESCE(data_source, 'proxy') = 'proxy' AND request_kind = 'request';",
     )
     .map_err(|error| format!("Failed to create proxy envelope lookup index: {error}"))
+}
+
+/// Native/hosted tools the upstream actually invoked, as a JSON array of
+/// canonical kinds (`["web_search"]`).
+///
+/// Detail-only markers (`declared` / `forwarded` triples and the rewrite list)
+/// stay in the JSONL record. This column exists because the request list reads
+/// the compact table and cannot see them; it carries only what was **observed
+/// to run**. NULL means "nothing observed", never "not used": legacy rows,
+/// imported session usage and requests the gateway rejected locally were never
+/// inspected, and the UI must not read that as a negative.
+///
+/// No index and no filter: the list renders it per row and nothing queries by
+/// it.
+fn migrate_v31(conn: &Connection) -> Result<(), String> {
+    add_column_if_missing(conn, "proxy_request_logs", "native_tools_used", "TEXT")
 }
 
 fn create_jsonb_table(conn: &Connection, table: DbTable) -> Result<(), String> {

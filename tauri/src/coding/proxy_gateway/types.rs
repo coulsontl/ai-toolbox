@@ -1113,6 +1113,12 @@ pub struct GatewayRequestLogItem {
     pub transport: GatewayRequestTransport,
     #[serde(default)]
     pub request_kind: GatewayRequestKind,
+    /// Canonical kinds of native/hosted tools the upstream actually invoked
+    /// (`web_search`, `mcp`, …). Empty means "nothing observed": legacy rows,
+    /// imported session usage and locally rejected requests were never
+    /// inspected, so this must not read as "no tool was used".
+    #[serde(default)]
+    pub native_tools_used: Vec<String>,
     #[serde(default)]
     pub stream_outcome: Option<GatewayStreamOutcome>,
     #[serde(default)]
