@@ -260,6 +260,46 @@ const withDetail = (
 		detail: translateSyncMessage(detail, mode, t),
 	});
 
+/**
+ * Translate the WSL claude.json diagnostics.
+ *
+ * These are parsed as whole messages, before the generic "; " split, because
+ * the distro name, the target path and the json5 detail are all free-form and
+ * may themselves contain "; ".
+ */
+const translateClaudeJsonWarning = (
+	value: string,
+	t: TFunction,
+): string | null => {
+	const patterns: Array<[RegExp, (...args: string[]) => string]> = [
+		[
+			/^(?:Onboarding sync: )?Failed to parse WSL claude\.json \(distro '(.+)', (.+?)\): (.+)\. The file was left untouched\.$/s,
+			(distro, path, detail) =>
+				t("settings.syncMessages.onboardingSyncParseFailed", {
+					distro,
+					path,
+					// The detail is a raw json5 error, not a sync message: keep it
+					// verbatim instead of running it through the message parser.
+					detail,
+				}),
+		],
+		[
+			/^(?:Onboarding sync: )?WSL claude\.json is not a JSON object \(distro '(.+)', (.+?)\)\. The file was left untouched\.$/s,
+			(distro, path) =>
+				t("settings.syncMessages.onboardingSyncNotObject", { distro, path }),
+		],
+	];
+
+	for (const [pattern, formatter] of patterns) {
+		const match = value.match(pattern);
+		if (match) {
+			return formatter(...match.slice(1));
+		}
+	}
+
+	return null;
+};
+
 const translateSkillsWarning = (value: string, mode: SyncMode, t: TFunction): string | null => {
 	const patterns: Array<[RegExp, (...args: string[]) => string]> = [
 		[
@@ -328,6 +368,12 @@ export const translateSyncMessage = (
 	// command's diagnostic spans multiple lines. Parse it before joined errors.
 	const skillsWarning = translateSkillsWarning(trimmed, mode, t);
 	if (skillsWarning !== null) return skillsWarning;
+
+	// Same reasoning for the claude.json diagnostics: the distro name, the path
+	// and the json5 detail are free-form, so a "; " inside them must not split
+	// the message into fragments that no longer match the structured patterns.
+	const claudeJsonWarning = translateClaudeJsonWarning(trimmed, t);
+	if (claudeJsonWarning !== null) return claudeJsonWarning;
 
 	if (trimmed.includes("; ")) {
 		return translateJoinedParts(trimmed, mode, t);

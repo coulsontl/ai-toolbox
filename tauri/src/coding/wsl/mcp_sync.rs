@@ -48,6 +48,7 @@ async fn get_file_mappings(state: &SqliteDbState) -> Result<Vec<FileMapping>, St
 
 /// Sync MCP configuration to WSL (called on mcp-changed event)
 pub async fn sync_mcp_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<(), String> {
+    let _sync_guard = super::sync_lock::acquire().await;
     let config = get_wsl_config(state).await?;
 
     if !config.enabled || !config.sync_mcp {
@@ -63,10 +64,55 @@ pub async fn sync_mcp_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<()
             return Ok(());
         }
     };
+
+    let pass = run_mcp_sync_pass(state, &app, &distro).await?;
+
+    // 根据真实结果更新状态
+    let sync_result = pass.into_sync_result();
+    let _ = super::commands::update_sync_status(state, &sync_result).await;
+    let _ = super::commands::update_sync_warnings(state, &sync_result.warnings).await;
+
+    // Emit event for UI feedback
+    let _ = app.emit("wsl-mcp-sync-completed", ());
+    let _ = app.emit("wsl-sync-completed", &sync_result);
+
+    Ok(())
+}
+
+/// Everything one MCP sync pass actually does, with no persistence or
+/// completion events.
+///
+/// Full sync embeds this pass, so it must stay a pure "do the work and report
+/// what happened" unit: when the pass also persisted `last_sync_status` and
+/// emitted `wsl-sync-completed`, the enclosing full sync immediately overwrote
+/// both with its own result and the MCP outcome was lost.
+pub(super) struct McpSyncPass {
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl McpSyncPass {
+    pub fn into_sync_result(self) -> super::types::SyncResult {
+        super::types::SyncResult {
+            success: self.errors.is_empty(),
+            synced_files: vec![],
+            skipped_files: vec![],
+            errors: self.errors,
+            warnings: self.warnings,
+        }
+    }
+}
+
+pub(super) async fn run_mcp_sync_pass(
+    state: &SqliteDbState,
+    app: &AppHandle,
+    distro: &str,
+) -> Result<McpSyncPass, String> {
     let direct_modules = runtime_location::get_wsl_direct_modules_async(state.db()).await?;
 
     // 收集所有错误
     let mut all_errors: Vec<String> = vec![];
+    let mut all_warnings: Vec<String> = vec![];
 
     // Emit progress for MCP sync
     let _ = app.emit(
@@ -89,16 +135,15 @@ pub async fn sync_mcp_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<()
         .collect();
 
     if !direct_modules.contains("claude") {
-        if let Err(e) = sync_mcp_to_wsl_claude(state, &distro, &claude_servers).await {
+        if let Err(e) = sync_mcp_to_wsl_claude(state, distro, &claude_servers).await {
             log::warn!("Skipped claude.json MCP sync: {}", e);
-            all_errors.push(format!("Claude Code: {}", e));
-            let _ = app.emit(
-                "wsl-sync-warning",
-                format!(
-                    "WSL ~/.claude.json 同步已跳过：文件解析失败，请检查该文件格式是否正确。({})",
-                    e
-                ),
+            let warning = format!(
+                "WSL ~/.claude.json 同步已跳过：文件解析失败，请检查该文件格式是否正确。({})",
+                e
             );
+            all_errors.push(format!("Claude Code: {}", e));
+            all_warnings.push(warning.clone());
+            let _ = app.emit("wsl-sync-warning", warning);
         }
     }
 
@@ -122,7 +167,7 @@ pub async fn sync_mcp_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<()
 
             if !mcp_mappings.is_empty() {
                 let resolved = resolve_dynamic_paths_with_db(&state.db(), mcp_mappings).await;
-                let result = sync_mappings(&resolved, &distro, None);
+                let result = sync_mappings(&resolved, distro, None);
                 if !result.errors.is_empty() {
                     let msg = result.errors.join("; ");
                     log::warn!("MCP file mapping sync errors: {}", msg);
@@ -149,7 +194,7 @@ pub async fn sync_mcp_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<()
                         && synced_paths.contains(&mapping.wsl_path)
                     {
                         if let Err(e) = strip_cmd_c_from_wsl_mcp_file(
-                            &distro,
+                            distro,
                             &mapping.wsl_path,
                             &mapping.module,
                         ) {
@@ -180,21 +225,10 @@ pub async fn sync_mcp_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<()
         claude_servers.len()
     );
 
-    // 根据真实结果更新状态
-    let sync_result = super::types::SyncResult {
-        success: all_errors.is_empty(),
-        synced_files: vec![],
-        skipped_files: vec![],
+    Ok(McpSyncPass {
         errors: all_errors,
-        warnings: vec![],
-    };
-    let _ = super::commands::update_sync_status(state, &sync_result).await;
-
-    // Emit event for UI feedback
-    let _ = app.emit("wsl-mcp-sync-completed", ());
-    let _ = app.emit("wsl-sync-completed", &sync_result);
-
-    Ok(())
+        warnings: all_warnings,
+    })
 }
 
 /// Sync MCP servers to WSL Claude Code ~/.claude.json
@@ -209,12 +243,17 @@ async fn sync_mcp_to_wsl_claude(
     // 1. Read existing WSL ~/.claude.json
     let existing_content = read_wsl_file(distro, wsl_config_path.as_str())?;
 
-    // 2. Parse JSON, update mcpServers field
+    // 2. Parse JSON, update mcpServers field. A parse failure returns before
+    // any write: the user's file is reported, never replaced or truncated.
     let mut config: Value = if existing_content.trim().is_empty() {
         serde_json::json!({})
     } else {
-        json5::from_str(&existing_content)
-            .map_err(|e| format!("Failed to parse WSL claude.json: {}", e))?
+        json5::from_str(&existing_content).map_err(|e| {
+            format!(
+                "Failed to parse WSL claude.json (distro '{}', {}): {}. The file was left untouched.",
+                distro, wsl_config_path, e
+            )
+        })?
     };
 
     // 3. Build mcpServers object
@@ -227,7 +266,12 @@ async fn sync_mcp_to_wsl_claude(
     // 4. Update only the mcpServers field, preserve other fields
     config
         .as_object_mut()
-        .ok_or("WSL claude.json is not a JSON object")?
+        .ok_or_else(|| {
+            format!(
+                "WSL claude.json is not a JSON object (distro '{}', {}). The file was left untouched.",
+                distro, wsl_config_path
+            )
+        })?
         .insert("mcpServers".to_string(), Value::Object(mcp_servers));
 
     // 5. Write back to WSL

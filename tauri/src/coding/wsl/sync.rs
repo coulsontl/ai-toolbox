@@ -1,4 +1,5 @@
 use super::types::{normalize_directory_excludes, FileMapping, SyncResult, WSLDetectResult};
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
@@ -332,6 +333,61 @@ pub fn sync_file_mapping(mapping: &FileMapping, distro: &str) -> Result<Vec<Stri
     }
 }
 
+/// Resolve a symlinked target to the file it points at.
+///
+/// `cat > target` and `cp -f src target` write through a symlink; `mv` onto the
+/// link would replace the link itself with a regular file and silently detach it
+/// from, say, a dotfiles repository. Resolving first keeps that behavior.
+const RESOLVE_SYMLINK_TARGET: &str = "if [ -L \"$target\" ]; then \
+     resolved=$(readlink -f \"$target\") && [ -n \"$resolved\" ] && target=\"$resolved\"; \
+     fi";
+
+/// Build the shell snippet that replaces `target` atomically.
+///
+/// The payload arrives on stdin and is written to a sibling temp file first;
+/// only a completed write is renamed onto the target. A truncated or failed
+/// write therefore never replaces a file the user's CLI still needs to parse,
+/// and the mode of an existing target is preserved (mktemp always creates 0600).
+fn build_atomic_stdin_write_command(target: &str) -> String {
+    format!(
+        "set -e; \
+         target=\"{}\"; \
+         {RESOLVE_SYMLINK_TARGET}; \
+         parent=$(dirname \"$target\"); \
+         mkdir -p \"$parent\"; \
+         tmp=$(mktemp \"$parent/.ai-toolbox-write.XXXXXX\"); \
+         trap 'rm -f \"$tmp\"' EXIT; \
+         cat > \"$tmp\"; \
+         if [ -f \"$target\" ]; then chmod --reference=\"$target\" \"$tmp\" 2>/dev/null || true; fi; \
+         mv -f \"$tmp\" \"$target\"; \
+         trap - EXIT",
+        target
+    )
+}
+
+/// Build the shell snippet that copies `source` onto `target` atomically.
+///
+/// Same temp-then-rename shape as [`build_atomic_stdin_write_command`]: a `cp`
+/// straight onto the target leaves a half-written file behind when it fails
+/// midway.
+fn build_atomic_file_copy_command(source: &str, target: &str) -> String {
+    format!(
+        "set -e; \
+         source=\"{}\"; \
+         target=\"{}\"; \
+         {RESOLVE_SYMLINK_TARGET}; \
+         parent=$(dirname \"$target\"); \
+         mkdir -p \"$parent\"; \
+         tmp=$(mktemp \"$parent/.ai-toolbox-sync.XXXXXX\"); \
+         trap 'rm -f \"$tmp\"' EXIT; \
+         cp -f \"$source\" \"$tmp\"; \
+         if [ -f \"$target\" ]; then chmod --reference=\"$target\" \"$tmp\" 2>/dev/null || true; fi; \
+         mv -f \"$tmp\" \"$target\"; \
+         trap - EXIT",
+        source, target
+    )
+}
+
 /// Sync a single file
 pub fn sync_single_file(
     windows_path: &str,
@@ -342,12 +398,7 @@ pub fn sync_single_file(
 
     // Expand ~ in WSL path
     let wsl_target_path = wsl_path.replace("~", "$HOME");
-
-    // Create the WSL command
-    let command = format!(
-        "mkdir -p \"$(dirname \"{}\")\" && cp -f \"{}\" \"{}\"",
-        wsl_target_path, wsl_source_path, wsl_target_path
-    );
+    let command = build_atomic_file_copy_command(&wsl_source_path, &wsl_target_path);
 
     let output = create_wsl_command()
         .args(["-d", distro, "--exec", "bash", "-c", &command])
@@ -523,6 +574,51 @@ mod tests {
             "$HOME/.codex/plugins"
         );
         assert_eq!(normalize_directory_target_path("/"), "/");
+    }
+
+    #[test]
+    fn atomic_stdin_write_uses_temp_file_before_replacing_target() {
+        let command = build_atomic_stdin_write_command("$HOME/.claude.json");
+
+        assert!(command.contains("tmp=$(mktemp \"$parent/.ai-toolbox-write.XXXXXX\")"));
+        assert!(command.contains("cat > \"$tmp\""));
+        assert!(command.contains("mv -f \"$tmp\" \"$target\""));
+        // The payload must never reach the real target before the rename.
+        assert!(!command.contains("cat > \"$target\""));
+
+        let write_index = command.find("cat > \"$tmp\"").expect("write command");
+        let replace_index = command.find("mv -f").expect("replace command");
+        assert!(write_index < replace_index);
+    }
+
+    #[test]
+    fn atomic_writes_resolve_symlinked_targets_before_replacing_them() {
+        // `cat > link` writes through the link; `mv` onto the link would replace
+        // the link with a plain file and detach a dotfiles-managed config.
+        for command in [
+            build_atomic_stdin_write_command("$HOME/.claude.json"),
+            build_atomic_file_copy_command("/tmp/src.json", "$HOME/.claude.json"),
+        ] {
+            assert!(command.contains("if [ -L \"$target\" ]; then"));
+            assert!(command.contains("readlink -f \"$target\""));
+
+            let resolve_index = command.find("readlink -f").expect("resolve");
+            let mktemp_index = command.find("mktemp").expect("mktemp");
+            assert!(resolve_index < mktemp_index);
+        }
+    }
+
+    #[test]
+    fn single_file_copy_goes_through_a_temp_file() {
+        let command = build_atomic_file_copy_command(
+            "/mnt/c/Users/Test User/.claude/settings.json",
+            "$HOME/.claude/settings.json",
+        );
+
+        assert!(command.contains("cp -f \"$source\" \"$tmp\""));
+        assert!(command.contains("mv -f \"$tmp\" \"$target\""));
+        assert!(!command.contains("cp -f \"$source\" \"$target\""));
+        assert!(command.contains("trap 'rm -f \"$tmp\"' EXIT"));
     }
 
     #[test]
@@ -805,40 +901,49 @@ pub fn read_wsl_file(distro: &str, wsl_path: &str) -> Result<String, String> {
     ))
 }
 
-/// Write content to a WSL file
+/// Write content to a WSL file.
+///
+/// The write goes to a temp file in the target directory and is renamed onto
+/// the target only after `cat` completes. Several writers can reach the same
+/// WSL config file (this app's sync tasks and the user's CLI inside WSL), and a
+/// plain `cat > target` truncates first, so an interrupted or racing write can
+/// leave the CLI reading a file that is a prefix plus a tail of another write.
 pub fn write_wsl_file(distro: &str, wsl_path: &str, content: &str) -> Result<(), String> {
     let wsl_target = wsl_path.replace("~", "$HOME");
-
-    // Use heredoc to write content, avoiding escape issues
-    let command = format!(
-        "mkdir -p \"$(dirname \"{}\")\" && cat > \"{}\"",
-        wsl_target, wsl_target
-    );
+    let command = build_atomic_stdin_write_command(&wsl_target);
 
     let mut child = create_wsl_command()
         .args(["-d", distro, "--exec", "bash", "-c", &command])
         .stdin(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to spawn WSL command: {}", e))?;
 
     if let Some(mut stdin) = child.stdin.take() {
-        use std::io::Write;
         stdin
             .write_all(content.as_bytes())
             .map_err(|e| format!("Failed to write to stdin: {}", e))?;
     }
 
-    let status = child
-        .wait()
+    let output = child
+        .wait_with_output()
         .map_err(|e| format!("Failed to wait for WSL command: {}", e))?;
 
-    if status.success() {
+    if output.status.success() {
         Ok(())
     } else {
-        Err("WSL write command failed".to_string())
+        let stderr = decode_wsl_output(&output.stderr);
+        Err(format!(
+            "WSL write failed: {} ({})",
+            if stderr.trim().is_empty() {
+                output.status.to_string()
+            } else {
+                stderr.trim().to_string()
+            },
+            wsl_path
+        ))
     }
 }
-
 /// Remove a file or directory in WSL
 pub fn remove_wsl_path(distro: &str, wsl_path: &str) -> Result<(), String> {
     // 安全检查：禁止删除空路径或根路径

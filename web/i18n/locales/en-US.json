@@ -1205,7 +1205,9 @@
       "fileLooksBinary": "File {{path}} looks binary or corrupted. Please verify its content.",
       "mcpSyncFailed": "MCP sync failed: {{detail}}",
       "skillsSyncFailed": "Skills sync failed: {{detail}}",
-      "onboardingSyncFailed": "Onboarding sync failed: {{detail}}",
+      "onboardingSyncFailed": "Onboarding state was not synced; the rest of the sync is unaffected: {{detail}}",
+      "onboardingSyncParseFailed": "{{path}} in WSL distro '{{distro}}' could not be parsed ({{detail}}). The file was left untouched — check its format, then sync again.",
+      "onboardingSyncNotObject": "{{path}} in WSL distro '{{distro}}' is not a top-level JSON object. The file was left untouched.",
       "wslMcpSyncSkipped": "WSL MCP sync skipped: {{detail}}",
       "wslClaudeJsonSyncSkipped": "WSL ~/.claude.json sync skipped because the file could not be parsed. Please verify its format. ({{detail}})",
       "openCodeCodexConfigSyncPartialFailed": "OpenCode/Codex config sync partially failed: {{detail}}",
@@ -1342,10 +1344,10 @@
       "stopped": "Stopped",
       "connectionStatusTooltip": "Connection Status: Indicates whether the WSL distribution is installed and recognized by the system",
       "runningStateTooltip": "Running State: Indicates whether the WSL instance is currently running. Running instances are ready to use; stopped instances will start automatically on first access",
-      "autoSyncHint": "MCP servers and Skills for OpenCode, Claude, and Codex, and Skills for OpenClaw are automatically synced — no manual mapping needed. If a module already points directly to a WSL config directory, it is treated as already running inside WSL and duplicate sync is skipped.",
+      "autoSyncHint": "MCP servers and Skills for OpenCode, Claude, and Codex, and Skills for OpenClaw are automatically synced — no manual mapping needed. Sync also writes the Windows Claude Code onboarding state into WSL's ~/.claude.json; that file never needs a mapping. If a module already points directly to a WSL config directory, it is treated as already running inside WSL and duplicate sync is skipped.",
       "inWsl": "In WSL",
       "wslDirectHint": "This module already points at a config directory inside WSL. AI Toolbox will continue using that WSL user directory directly, so another sync from this dialog is unnecessary.",
-      "lastSyncWarnings": "Last Skills sync warnings"
+      "lastSyncWarnings": "Last sync warnings"
     },
     "ssh": {
       "title": "SSH Config Sync Settings",
