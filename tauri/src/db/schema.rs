@@ -34,6 +34,22 @@ pub enum DbTable {
     ZcodeOfficialAccount,
     ClaudeDesktopProvider,
     ClaudeDesktopPromptConfig,
+    /// WorkBuddy desktop: only the config-root override lives here. The channel
+    /// list is a view over `models.json`, and the four identity documents are
+    /// edited in place, so neither needs a table of its own.
+    WorkbuddySettingsConfig,
+    /// WorkBuddy desktop gateway provider records.
+    ///
+    /// The channel list the page shows is still a view over `models.json`;
+    /// these rows exist for the gateway only, which needs a stable provider id
+    /// and persistable settings (enable flag, sort order, failover config) that
+    /// a derived view cannot carry.
+    WorkbuddyProvider,
+    /// CodeBuddy Code CLI: settings + `CODEBUDDY.md` prompt presets.
+    CodebuddySettingsConfig,
+    CodebuddyPromptConfig,
+    /// CodeBuddy Code CLI gateway provider records (see `WorkbuddyProvider`).
+    CodebuddyProvider,
     HermesSettingsConfig,
     HermesPromptConfig,
     DshSettingsConfig,
@@ -110,6 +126,11 @@ pub const ALL_TABLES: &[DbTable] = &[
     DbTable::ZcodeOfficialAccount,
     DbTable::ClaudeDesktopProvider,
     DbTable::ClaudeDesktopPromptConfig,
+    DbTable::WorkbuddySettingsConfig,
+    DbTable::WorkbuddyProvider,
+    DbTable::CodebuddySettingsConfig,
+    DbTable::CodebuddyPromptConfig,
+    DbTable::CodebuddyProvider,
     DbTable::HermesSettingsConfig,
     DbTable::HermesPromptConfig,
     DbTable::DshSettingsConfig,
@@ -188,6 +209,11 @@ impl DbTable {
             DbTable::ZcodeOfficialAccount => "zcode_official_account",
             DbTable::ClaudeDesktopProvider => "claude_desktop_provider",
             DbTable::ClaudeDesktopPromptConfig => "claude_desktop_prompt_config",
+            DbTable::WorkbuddySettingsConfig => "workbuddy_settings_config",
+            DbTable::WorkbuddyProvider => "workbuddy_provider",
+            DbTable::CodebuddySettingsConfig => "codebuddy_settings_config",
+            DbTable::CodebuddyPromptConfig => "codebuddy_prompt_config",
+            DbTable::CodebuddyProvider => "codebuddy_provider",
             DbTable::HermesSettingsConfig => "hermes_settings_config",
             DbTable::HermesPromptConfig => "hermes_prompt_config",
             DbTable::DshSettingsConfig => "dsh_settings_config",

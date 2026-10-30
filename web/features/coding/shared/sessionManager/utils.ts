@@ -144,6 +144,10 @@ export function getToolLabel(tool: SessionMeta['providerId'], t: TFunction): str
       return t('subModules.pi');
     case 'dsh':
       return t('subModules.dsh');
+    case 'workbuddy':
+      return t('subModules.workbuddy');
+    case 'codebuddy':
+      return t('subModules.codebuddy');
     case 'codex':
     default:
       return t('subModules.codex');

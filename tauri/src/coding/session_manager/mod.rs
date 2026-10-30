@@ -20,6 +20,7 @@ mod open_code;
 mod pi;
 mod tool_normalizer;
 mod utils;
+mod workbuddy_family;
 mod zcode;
 
 use std::collections::{HashMap, HashSet};
@@ -366,6 +367,12 @@ enum ToolSessionContext {
     Dsh {
         sessions_root: PathBuf,
     },
+    /// WorkBuddy desktop and CodeBuddy Code share one transcript layout, so one
+    /// context serves both; `product` only selects the reported provider id.
+    WorkbuddyFamily {
+        projects_root: PathBuf,
+        product: workbuddy_family::FamilyProduct,
+    },
     Zcode {
         /// ZCode's data root — `~/.zcode`, or the app's configured override.
         ///
@@ -574,6 +581,8 @@ enum SessionTool {
     ClaudeDesktop,
     Hermes,
     Dsh,
+    Workbuddy,
+    Codebuddy,
     Zcode,
 }
 
@@ -594,6 +603,8 @@ impl SessionTool {
             "claudedesktop" | "claude_desktop" => Ok(Self::ClaudeDesktop),
             "hermes" => Ok(Self::Hermes),
             "dsh" => Ok(Self::Dsh),
+            "workbuddy" => Ok(Self::Workbuddy),
+            "codebuddy" => Ok(Self::Codebuddy),
             "zcode" | "zcode_cli" => Ok(Self::Zcode),
             _ => Err(format!("Unsupported session tool: {raw}")),
         }
@@ -615,6 +626,8 @@ impl SessionTool {
             Self::ClaudeDesktop => "claudedesktop",
             Self::Hermes => "hermes",
             Self::Dsh => "dsh",
+            Self::Workbuddy => "workbuddy",
+            Self::Codebuddy => "codebuddy",
             Self::Zcode => "zcode",
         }
     }
@@ -684,6 +697,12 @@ impl ToolSessionContext {
             }
             Self::Hermes { sessions_root } => format!("hermes:{}", sessions_root.display()),
             Self::Dsh { sessions_root } => format!("dsh:{}", sessions_root.display()),
+            // The two products read separate roots; the product name keeps
+            // their caches apart even if a root were ever shared.
+            Self::WorkbuddyFamily {
+                projects_root,
+                product,
+            } => format!("{}:{}", product.provider_id(), projects_root.display()),
             Self::Zcode {
                 data_root,
                 sqlite_db_path,
@@ -1762,6 +1781,11 @@ fn delete_session_from_meta(
         ToolSessionContext::Dsh { sessions_root } => {
             dsh::delete_session(sessions_root, &session.source_path)?;
         }
+        // Both products keep one transcript per session plus a sibling
+        // `<sessionId>/` directory for subagent runs.
+        ToolSessionContext::WorkbuddyFamily { .. } => {
+            workbuddy_family::delete_session(Path::new(&session.source_path))?;
+        }
         // Desktop transcripts are plain files; CLI rows are OpenCode v1 sqlite
         // entries, which `open_code` already knows how to remove.
         ToolSessionContext::Zcode { .. } => {
@@ -2306,6 +2330,7 @@ fn import_session_blocking(
         | ToolSessionContext::Antigravity { .. }
         | ToolSessionContext::Hermes { .. }
         | ToolSessionContext::Dsh { .. }
+        | ToolSessionContext::WorkbuddyFamily { .. }
         | ToolSessionContext::Zcode { .. } => {
             return Err("Session import is not supported for this tool".to_string());
         }
@@ -2454,6 +2479,7 @@ fn build_native_snapshot(
         | ToolSessionContext::Antigravity { .. }
         | ToolSessionContext::Hermes { .. }
         | ToolSessionContext::Dsh { .. }
+        | ToolSessionContext::WorkbuddyFamily { .. }
         | ToolSessionContext::Zcode { .. } => {
             Err("Session export is not supported for this tool".to_string())
         }
@@ -2548,6 +2574,10 @@ fn scan_sessions(context: &ToolSessionContext) -> Vec<SessionMeta> {
         ToolSessionContext::Kimi { sessions_root } => kimi::scan_sessions(sessions_root),
         ToolSessionContext::Hermes { sessions_root } => hermes::scan_sessions(sessions_root),
         ToolSessionContext::Dsh { sessions_root } => dsh::scan_sessions(sessions_root),
+        ToolSessionContext::WorkbuddyFamily {
+            projects_root,
+            product,
+        } => workbuddy_family::scan_sessions(projects_root, *product),
         ToolSessionContext::ClaudeDesktop { sessions_root } => {
             claude_desktop::scan_sessions(sessions_root)
         }
@@ -2628,6 +2658,10 @@ fn scan_recent_sessions(context: &ToolSessionContext, limit: usize) -> Vec<Sessi
         ToolSessionContext::Dsh { sessions_root } => {
             dsh::scan_recent_sessions(sessions_root, limit)
         }
+        ToolSessionContext::WorkbuddyFamily {
+            projects_root,
+            product,
+        } => workbuddy_family::scan_recent_sessions(projects_root, limit, *product),
         ToolSessionContext::ClaudeDesktop { sessions_root } => {
             claude_desktop::scan_recent_sessions(sessions_root, limit)
         }
@@ -2688,6 +2722,9 @@ fn load_messages(
         ToolSessionContext::Kimi { .. } => kimi::load_messages(Path::new(source_path)),
         ToolSessionContext::Hermes { .. } => hermes::load_messages(source_path),
         ToolSessionContext::Dsh { .. } => dsh::load_messages(source_path),
+        ToolSessionContext::WorkbuddyFamily { product, .. } => {
+            workbuddy_family::load_messages(Path::new(source_path), *product)
+        }
         ToolSessionContext::ClaudeDesktop { .. } => {
             claude_desktop::load_messages(Path::new(source_path))
         }
@@ -2713,6 +2750,9 @@ fn list_subagent_sessions(
         }
         ToolSessionContext::GeminiCli { .. } => {
             gemini_cli::list_subagent_sessions(Path::new(source_path))
+        }
+        ToolSessionContext::WorkbuddyFamily { .. } => {
+            workbuddy_family::list_subagent_sessions(Path::new(source_path))
         }
         ToolSessionContext::Codex { .. }
         | ToolSessionContext::Antigravity { .. }
@@ -2857,6 +2897,9 @@ fn scan_session_content_for_query(
             hermes::scan_messages_for_query(source_path, query_lower)
         }
         ToolSessionContext::Dsh { .. } => dsh::scan_messages_for_query(source_path, query_lower),
+        ToolSessionContext::WorkbuddyFamily { .. } => {
+            workbuddy_family::scan_messages_for_query(Path::new(source_path), query_lower)
+        }
         ToolSessionContext::ClaudeDesktop { .. } => Ok(false),
         ToolSessionContext::Zcode { .. } => {
             if source_path.starts_with("sqlite:") {
@@ -2970,6 +3013,9 @@ fn context_wsl_info(context: &ToolSessionContext) -> Option<WslLocationInfo> {
         ToolSessionContext::ClaudeDesktop { sessions_root } => path_wsl_info(sessions_root),
         ToolSessionContext::Hermes { sessions_root } => path_wsl_info(sessions_root),
         ToolSessionContext::Dsh { sessions_root } => path_wsl_info(sessions_root),
+        ToolSessionContext::WorkbuddyFamily { projects_root, .. } => {
+            path_wsl_info(projects_root)
+        }
         ToolSessionContext::Zcode { data_root, .. } => path_wsl_info(data_root),
     }
 }
@@ -3087,6 +3133,14 @@ fn build_default_wsl_session_context(
         }),
         SessionTool::Dsh => Some(ToolSessionContext::Dsh {
             sessions_root: wsl_home_path(distro, linux_home, ".dsh/sessions"),
+        }),
+        SessionTool::Workbuddy => Some(ToolSessionContext::WorkbuddyFamily {
+            projects_root: wsl_home_path(distro, linux_home, ".workbuddy/projects"),
+            product: workbuddy_family::FamilyProduct::Workbuddy,
+        }),
+        SessionTool::Codebuddy => Some(ToolSessionContext::WorkbuddyFamily {
+            projects_root: wsl_home_path(distro, linux_home, ".codebuddy/projects"),
+            product: workbuddy_family::FamilyProduct::Codebuddy,
         }),
         SessionTool::Zcode => {
             let data_root = wsl_home_path(distro, linux_home, ".zcode");
@@ -3264,6 +3318,22 @@ async fn resolve_context(
                 .unwrap_or_default();
             Ok(ToolSessionContext::Dsh {
                 sessions_root: config_dir.join("sessions"),
+            })
+        }
+        SessionTool::Workbuddy => {
+            let location =
+                crate::coding::runtime_location::get_workbuddy_runtime_location_async(db).await?;
+            Ok(ToolSessionContext::WorkbuddyFamily {
+                projects_root: location.host_path.join("projects"),
+                product: workbuddy_family::FamilyProduct::Workbuddy,
+            })
+        }
+        SessionTool::Codebuddy => {
+            let location =
+                crate::coding::runtime_location::get_codebuddy_runtime_location_async(db).await?;
+            Ok(ToolSessionContext::WorkbuddyFamily {
+                projects_root: location.host_path.join("projects"),
+                product: workbuddy_family::FamilyProduct::Codebuddy,
             })
         }
         SessionTool::Zcode => {

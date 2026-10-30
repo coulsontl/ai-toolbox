@@ -798,6 +798,8 @@ fn from_json_response_with_provider_type(
             value,
             &["/usage/cached_tokens", "/response/usage/cached_tokens"],
         ),
+        // OpenAI Chat, same as the other compatible CLIs; no extra cache path.
+        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => openai_usage(value),
         GatewayCliKey::Gemini | GatewayCliKey::Antigravity => gemini_usage(value),
     };
     if usage.envelope_id.is_none() {
@@ -815,6 +817,9 @@ fn extract_envelope_id(cli_key: GatewayCliKey, value: &Value) -> Option<String> 
             "/message_id",
             "/messageId",
         ],
+        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => {
+            &["/id", "/response/id", "/responseId"]
+        }
         GatewayCliKey::Gemini | GatewayCliKey::Antigravity => {
             &["/responseId", "/response/responseId", "/id"]
         }

@@ -72,6 +72,8 @@ function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
       hermes: false,
       dsh: false,
       zcode: false,
+      workbuddy: false,
+      codebuddy: false,
     },
     opencode_allow_clear_applied_oh_my_config: false,
     opencode_use_legacy_oh_my_config: false,

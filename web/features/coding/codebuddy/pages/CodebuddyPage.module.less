@@ -1,0 +1,57 @@
+/* CodeBuddy page rhythm.
+ *
+ * `display: block` with no `gap`: `CodingPageHeader` already carries a 16px
+ * bottom margin, so a flex/gap container would double the header→first-section
+ * gap to 32px (SOP §4.3.1, `pnpm run test:page-rhythm`).
+ */
+
+.pageContent {
+  display: block;
+}
+
+.pageHint {
+  margin-top: -12px;
+  margin-bottom: 16px;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+
+.codebuddySection {
+  margin-bottom: 16px;
+}
+
+.codebuddySection:last-child {
+  margin-bottom: 0;
+}
+
+/* Section card per DESIGN.md (1px border, 16px radius, elevated surface). The
+ * block is the card itself rather than a Collapse nested in a section. */
+.settingsPanel {
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-bg-elevated);
+  padding: 18px;
+  box-shadow: none;
+}
+
+.settingsPanelHeader {
+  margin-bottom: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+/* Read-only `settings.json` preview: same surface as other config dumps
+   (`commandOutput` in shared panels) so it reads as code, not as body text. */
+.settingsPreview {
+  margin: 0;
+  padding: 12px;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  line-height: 1.6;
+}

@@ -342,6 +342,25 @@ pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
         mcp_config_format: Some("json"),
         mcp_field: Some("mcpServers"),
     },
+    // CodeBuddy Code CLI - same engine as WorkBuddy desktop, but user-scope MCP
+    // does NOT live inside the config directory. Verified against the real CLI
+    // (v2.178.1) with `codebuddy mcp add -s <scope>`:
+    //   local   (default) -> ~/.codebuddy.json  projects[<cwd>].mcpServers
+    //   project           -> <cwd>/.mcp.json
+    //   user              -> ~/.codebuddy.json  top-level mcpServers
+    // Neither ~/.codebuddy/.mcp.json nor ~/.codebuddy/mcp.json is read or
+    // written: the CLI reports the modified path, and both files stay absent.
+    // User scope therefore targets the sibling `<home>/.codebuddy.json`, which
+    // is what `relative_detect_dir`'s parent implies.
+    BuiltinTool {
+        key: "codebuddy",
+        display_name: "CodeBuddy",
+        relative_skills_dir: Some("~/.codebuddy/skills"),
+        relative_detect_dir: Some("~/.codebuddy"),
+        mcp_config_path: Some("~/.codebuddy.json"),
+        mcp_config_format: Some("json"),
+        mcp_field: Some("mcpServers"),
+    },
     // Claude Desktop - config-file module; MCP lives in the normal config JSON's
     // `mcpServers`. Path is platform-resolved in detection.rs.
     BuiltinTool {

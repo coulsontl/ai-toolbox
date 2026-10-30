@@ -1281,8 +1281,16 @@ pub fn project_stats(
             params.push(Box::new(end));
         }
         if let Some(cli_key) = cli_key {
-            conditions.push(format!("l.app_type = ?{}", params.len() + 1));
-            params.push(Box::new(cli_key.as_str().to_string()));
+            let values = app_type_filter_values(cli_key);
+            let placeholders = values
+                .iter()
+                .map(|value| {
+                    params.push(Box::new(value.to_string()));
+                    format!("?{}", params.len())
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            conditions.push(format!("l.app_type IN ({placeholders})"));
         }
         let where_clause = format!("WHERE {}", conditions.join(" AND "));
         let refs = to_param_refs(&params);
@@ -1423,8 +1431,16 @@ fn merge_project_rollups(
         params.push(Box::new(end));
     }
     if let Some(cli_key) = cli_key {
-        conditions.push(format!("r.app_type = ?{}", params.len() + 1));
-        params.push(Box::new(cli_key.as_str().to_string()));
+        let values = app_type_filter_values(cli_key);
+        let placeholders = values
+            .iter()
+            .map(|value| {
+                params.push(Box::new(value.to_string()));
+                format!("?{}", params.len())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        conditions.push(format!("r.app_type IN ({placeholders})"));
     }
     let where_clause = format!("WHERE {}", conditions.join(" AND "));
     let refs = to_param_refs(&params);
@@ -1966,12 +1982,16 @@ fn build_detail_where(
         );
     }
     if let Some(cli_key) = filters.cli_key {
-        push_condition(
-            &mut conditions,
-            params,
-            "l.app_type",
-            cli_key.as_str().to_string(),
-        );
+        let values = app_type_filter_values(cli_key);
+        let placeholders = values
+            .iter()
+            .map(|value| {
+                params.push(Box::new(value.to_string()));
+                format!("?{}", params.len())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        conditions.push(format!("l.app_type IN ({placeholders})"));
     }
     if let Some(status_code) = filters.status_code {
         conditions.push("COALESCE(l.data_source, 'proxy') = 'proxy'".to_string());
@@ -2127,8 +2147,16 @@ fn build_stats_conditions(
         params.push(Box::new(end));
     }
     if let Some(cli_key) = cli_key {
-        conditions.push(format!("{alias}.app_type = ?{}", params.len() + 1));
-        params.push(Box::new(cli_key.as_str().to_string()));
+        let values = app_type_filter_values(cli_key);
+        let placeholders = values
+            .iter()
+            .map(|value| {
+                params.push(Box::new(value.to_string()));
+                format!("?{}", params.len())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        conditions.push(format!("{alias}.app_type IN ({placeholders})"));
     }
     conditions
 }
@@ -2175,8 +2203,16 @@ fn build_rollup_where(
         params.push(Box::new(end));
     }
     if let Some(cli_key) = cli_key {
-        conditions.push(format!("{prefix}app_type = ?{}", params.len() + 1));
-        params.push(Box::new(cli_key.as_str().to_string()));
+        let values = app_type_filter_values(cli_key);
+        let placeholders = values
+            .iter()
+            .map(|value| {
+                params.push(Box::new(value.to_string()));
+                format!("?{}", params.len())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        conditions.push(format!("{prefix}app_type IN ({placeholders})"));
     }
     // Native imports have a reserved provider identity even when their
     // transcript does not record a model name. Rollups retain that identity.
@@ -2311,6 +2347,11 @@ fn load_provider_names(conn: &Connection) -> Result<ProviderNameMap, String> {
         // Without this row, ZCode request rows already in the database are
         // silently dropped from the list and the statistics.
         ("zcode", "zcode_provider"),
+        // The WorkBuddy family files proxy rows under its takeover keys, which
+        // differ from its native-session keys; using the takeover spelling here
+        // keeps `provider_name` populated for gateway-served requests.
+        ("workbuddy_desktop", "workbuddy_provider"),
+        ("codebuddy_cli", "codebuddy_provider"),
     ] {
         let sql = format!("SELECT id, json_extract(data, '$.name') FROM {table}");
         let mut stmt = conn.prepare(&sql).map_err(|error| {
@@ -2374,10 +2415,44 @@ fn load_opencode_provider_names(
     Ok(())
 }
 
+/// Maps an `app_type` column value back to a usage tool.
+///
+/// Two writers share this column: proxy requests store
+/// `GatewayCliKey::as_str()`, native-session imports store
+/// `GatewayUsageTool::as_str()`. Usually the two strings are identical, so one
+/// lookup serves both. The WorkBuddy family is the exception — their takeover
+/// keys are `workbuddy_desktop` / `codebuddy_cli`, deliberately distinct from
+/// the native-session keys `workbuddy` / `codebuddy` so the two row kinds stay
+/// tellable apart in the table. Both belong to the same reported tool, so the
+/// takeover spelling is folded back onto it here; without this the gateway's
+/// own requests for those CLIs would be dropped from every list and statistic.
 fn cli_key_from_app_type(app_type: &str) -> Option<GatewayUsageTool> {
-    GatewayUsageTool::all()
+    if let Some(tool) = GatewayUsageTool::all()
         .into_iter()
         .find(|tool| tool.as_str() == app_type)
+    {
+        return Some(tool);
+    }
+    match app_type {
+        "workbuddy_desktop" => Some(GatewayUsageTool::Workbuddy),
+        "codebuddy_cli" => Some(GatewayUsageTool::Codebuddy),
+        _ => None,
+    }
+}
+
+/// Inverse of `cli_key_from_app_type` for WHERE clauses: every `app_type`
+/// spelling a filter on `tool` must match.
+///
+/// The WorkBuddy family stores two spellings for one reported tool — native
+/// transcripts write `workbuddy` / `codebuddy`, takeover proxy rows write
+/// `workbuddy_desktop` / `codebuddy_cli`. Filtering by only `tool.as_str()`
+/// hides every proxied request from the statistics and request pages.
+pub(crate) fn app_type_filter_values(tool: GatewayUsageTool) -> Vec<&'static str> {
+    match tool {
+        GatewayUsageTool::Workbuddy => vec!["workbuddy", "workbuddy_desktop"],
+        GatewayUsageTool::Codebuddy => vec!["codebuddy", "codebuddy_cli"],
+        other => vec![other.as_str()],
+    }
 }
 
 fn timestamp_to_utc(timestamp: i64) -> chrono::DateTime<Utc> {
@@ -3043,6 +3118,8 @@ mod tests {
             GatewayCliKey::Kimi => DbTable::KimiProvider,
             GatewayCliKey::Gemini => DbTable::GeminiCliProvider,
             GatewayCliKey::Antigravity => DbTable::AntigravityProvider,
+            GatewayCliKey::Workbuddy => DbTable::WorkbuddyProvider,
+            GatewayCliKey::Codebuddy => DbTable::CodebuddyProvider,
             GatewayCliKey::OpenCode => {
                 panic!("OpenCode provider insertion is not used by usage_stats unit tests")
             }
@@ -3158,6 +3235,8 @@ mod tests {
                 "antigravity_generate",
                 "/v1beta/models/antigravity:generateContent",
             ),
+            GatewayCliKey::Workbuddy => ("workbuddy_chat", "/v1/chat/completions"),
+            GatewayCliKey::Codebuddy => ("codebuddy_chat", "/v1/chat/completions"),
             GatewayCliKey::OpenCode => ("opencode", "/v1/chat/completions"),
         };
         GatewayRequestLogDetail {
@@ -3423,6 +3502,68 @@ mod tests {
 
         assert_eq!(logs.total, 1);
         assert_eq!(logs.data[0].provider_id, "provider-alpha");
+    }
+
+    /// One reported tool, two stored `app_type` spellings. A filter on the tool
+    /// must match both or the property page silently hides half the traffic:
+    /// gateway-served requests land under `workbuddy_desktop` (the takeover
+    /// key), native transcripts under `workbuddy`.
+    #[test]
+    fn request_logs_filter_matches_every_app_type_spelling_of_a_tool() {
+        let db = test_db();
+        let settings = ProxyGatewaySettings::default();
+
+        let proxy_row = make_detail_for_cli(
+            GatewayCliKey::Workbuddy,
+            "trace-workbuddy-proxy",
+            "provider-alpha",
+            200,
+            10,
+            5,
+        );
+        record_request_summary(&db, &settings, &proxy_row).expect("record proxy row");
+
+        // A native transcript row: same tool, the usage-collector spelling.
+        let mut native_row = make_detail_for_cli(
+            GatewayCliKey::Workbuddy,
+            "trace-workbuddy-native",
+            "provider-alpha",
+            200,
+            7,
+            3,
+        );
+        native_row.summary.cli_key = Some(GatewayUsageTool::Workbuddy);
+        record_request_summary(&db, &settings, &native_row).expect("record native row");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE proxy_request_logs SET app_type = 'workbuddy' \
+                 WHERE request_id = 'trace-workbuddy-native'",
+                [],
+            )
+            .map_err(|error| error.to_string())
+        })
+        .unwrap();
+
+        let filters = GatewayRequestLogFilters {
+            cli_key: Some(GatewayUsageTool::Workbuddy),
+            ..Default::default()
+        };
+        let logs = request_logs(&db, &filters, 0, 100, true).expect("filtered request logs");
+        let mut trace_ids = logs
+            .data
+            .iter()
+            .map(|entry| entry.trace_id.as_str())
+            .collect::<Vec<_>>();
+        trace_ids.sort_unstable();
+        assert_eq!(
+            trace_ids,
+            vec!["trace-workbuddy-native", "trace-workbuddy-proxy"],
+            "both app_type spellings belong to the Workbuddy filter"
+        );
+
+        let summary = usage_summary(&db, None, None, Some(GatewayUsageTool::Workbuddy), true)
+            .expect("filtered usage summary");
+        assert_eq!(summary.total_requests, 2, "the summary agrees with the list");
     }
 
     #[test]

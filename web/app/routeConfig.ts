@@ -1,6 +1,6 @@
 import type { ComponentType } from 'react';
 import { NotesPage } from '@/features/daily';
-import { OpenCodePage, ClaudeCodePage, ClaudeDesktopPage, HermesPage, DshPage, CodexPage, GrokPage, KimiPage, GeminiCliPage, AntigravityPage, PiPage, OhMyPiPage, OmoNativePage, ZcodePage } from '@/features/coding';
+import { OpenCodePage, ClaudeCodePage, ClaudeDesktopPage, HermesPage, DshPage, CodexPage, GrokPage, KimiPage, GeminiCliPage, AntigravityPage, PiPage, OhMyPiPage, OmoNativePage, ZcodePage, WorkbuddyPage, CodebuddyPage } from '@/features/coding';
 import { OpenClawPage } from '@/features/coding/openclaw';
 import { SettingsPage } from '@/features/settings';
 import { SkillsPage } from '@/features/coding/skills';
@@ -24,6 +24,8 @@ import {
   OmoNativeSessionDetailPage,
   HermesSessionDetailPage,
   DshSessionDetailPage,
+  WorkbuddySessionDetailPage,
+  CodebuddySessionDetailPage,
 } from '@/features/coding/shared/sessionManager/detail/SessionDetailPage';
 
 export interface RouteEntry {
@@ -218,6 +220,28 @@ export const PAGE_ROUTES: RouteEntry[] = [
       contentPadding: 'compact',
       ownerTabKey: 'dsh',
       parentPath: '/coding/dsh',
+    },
+  },
+  { path: '/coding/workbuddy', component: WorkbuddyPage, chrome: { contentPadding: 'compact' } },
+  {
+    path: '/coding/workbuddy/sessions/detail',
+    component: WorkbuddySessionDetailPage,
+    chrome: {
+      mode: 'secondary',
+      contentPadding: 'compact',
+      ownerTabKey: 'workbuddy',
+      parentPath: '/coding/workbuddy',
+    },
+  },
+  { path: '/coding/codebuddy', component: CodebuddyPage, chrome: { contentPadding: 'compact' } },
+  {
+    path: '/coding/codebuddy/sessions/detail',
+    component: CodebuddySessionDetailPage,
+    chrome: {
+      mode: 'secondary',
+      contentPadding: 'compact',
+      ownerTabKey: 'codebuddy',
+      parentPath: '/coding/codebuddy',
     },
   },
   { path: '/settings', component: SettingsPage },

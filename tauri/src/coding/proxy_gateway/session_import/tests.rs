@@ -994,6 +994,10 @@ fn codex_fork_records_never_bill_the_child() {
 /// transcripts. Gateway-served requests have no on-disk source and must survive.
 #[test]
 fn rebuild_reimports_session_usage_and_keeps_proxy_rows() {
+    // `rebuild_sources` writes the process-global rebuild panel
+    // (`ScanningFiles` / `BackingUp` / `Clearing`), so every test that calls it
+    // must hold the panel lock or a parallel test sees somebody else's phase.
+    let _panel = rebuild_panel_test_lock();
     let root = tempfile::tempdir().unwrap();
     let sessions = root.path().join("sessions");
     fs::create_dir_all(&sessions).unwrap();
@@ -1069,6 +1073,8 @@ fn rebuild_reimports_session_usage_and_keeps_proxy_rows() {
 /// doubled daily rollup is the marker the clear writes.
 #[test]
 fn a_rebuild_keeps_matches_for_archived_proxy_rows() {
+    // Same global-panel hazard as `rebuild_reimports_session_usage_...`.
+    let _panel = rebuild_panel_test_lock();
     let root = tempfile::tempdir().unwrap();
     let sessions = root.path().join("sessions");
     fs::create_dir_all(&sessions).unwrap();
@@ -1163,6 +1169,7 @@ fn a_rebuild_keeps_matches_for_archived_proxy_rows() {
 /// path keys on `cli_key`, not on what the scan found.
 #[test]
 fn a_rebuild_without_sources_refuses_to_clear_existing_usage() {
+    let _panel = rebuild_panel_test_lock();
     let root = tempfile::tempdir().unwrap();
     let sessions = root.path().join("sessions");
     fs::create_dir_all(&sessions).unwrap();
@@ -2717,6 +2724,118 @@ fn workbuddy_selects_one_usage_source_and_respects_inclusive_totals() {
     assert_eq!(summary.total_input_tokens, 600 + 10);
     assert_eq!(summary.total_output_tokens, 102);
     assert_eq!(summary.total_cache_read_tokens, 405);
+}
+
+/// The transcript's own timestamp wins over the file's mtime.
+///
+/// `parsers::timestamp` scans a *container* (it reads `pointer("/timestamp")`
+/// and friends). The first version passed `item.get("timestamp")` — a bare
+/// scalar — so the lookup always missed and every imported WorkBuddy row was
+/// stamped with the file mtime instead. That silently broke proxy/native
+/// de-duplication, whose grace window is measured in seconds: the two rows of
+/// one call looked minutes apart and both survived.
+#[test]
+fn workbuddy_uses_the_transcript_timestamp_not_the_file_mtime() {
+    let root = tempfile::tempdir().unwrap();
+    let project = root.path().join("projects/example");
+    fs::create_dir_all(&project).unwrap();
+    write_jsonl(
+        &project.join("wb-session.jsonl"),
+        &[json!({"type":"message","id":"item-1","timestamp":THEN * 1000,
+            "sessionId":"wb-session",
+            "message":{"role":"assistant","model":"wb-model",
+                "usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}})],
+    );
+    // The file was just written, so its mtime is "now" while the transcript
+    // says `THEN` (2027) — the two are far enough apart to tell apart.
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    let result = run_sync(&db, GatewayUsageTool::Workbuddy, root.path());
+    assert_eq!(result.failed_files, 0);
+    assert_eq!(result.inserted_records, 1);
+
+    let logs = usage_stats::request_logs(
+        &db,
+        &GatewayRequestLogFilters {
+            cli_key: Some(GatewayUsageTool::Workbuddy),
+            ..Default::default()
+        },
+        0,
+        10,
+        true,
+    )
+    .unwrap();
+    assert_eq!(logs.data.len(), 1);
+    assert_eq!(
+        logs.data[0].created_at.timestamp(),
+        THEN,
+        "the row must carry the item's timestamp, not the file mtime"
+    );
+}
+
+/// The same call must not be counted twice when the gateway served it.
+///
+/// Proxy rows are written with `GatewayCliKey::as_str()` (`workbuddy_desktop`)
+/// and native transcripts with `GatewayUsageTool::as_str()` (`workbuddy`).
+/// `find_matching_proxy` compared against the latter only, so every
+/// gateway-served WorkBuddy call appeared once as a proxy row and once as an
+/// imported session row — doubling every total on the statistics page.
+#[test]
+fn a_gateway_served_workbuddy_call_is_not_imported_a_second_time() {
+    // Same lock as the other tests that touch the global rebuild panel; this
+    // one only calls `sync_sources` (which reports nothing), but the helper
+    // below is shared with tests that do.
+    let _panel = rebuild_panel_test_lock();
+    let root = tempfile::tempdir().unwrap();
+    let project = root.path().join("projects/example");
+    fs::create_dir_all(&project).unwrap();
+    write_jsonl(
+        &project.join("wb-session.jsonl"),
+        &[json!({"type":"message","id":"item-1","timestamp":THEN * 1000,
+            "sessionId":"wb-session",
+            "message":{"role":"assistant","model":"wb-model",
+                // Exclusive total (total != input + output) so the buckets are
+                // used verbatim: with an inclusive total the importer subtracts
+                // the cached tokens and the counters would not match the proxy
+                // row this test expects it to recognise.
+                "usage":{"input_tokens":600,"output_tokens":100,"total_tokens":1100,
+                    "cache_read_input_tokens":400}}})],
+    );
+
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO proxy_request_logs (request_id,provider_id,app_type,model,request_model,
+                input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,created_at,
+                duration_ms,status_code,stream_outcome,transport,request_kind,data_source)
+             VALUES ('SESSION:workbuddy_desktop:provider:msg-1','provider','workbuddy_desktop',
+                'wb-model','wb-model',600,100,400,0,?1,2000,200,'completed','http','request','proxy')",
+            [THEN],
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+    .unwrap();
+
+    let result = run_sync(&db, GatewayUsageTool::Workbuddy, root.path());
+    assert_eq!(result.failed_files, 0);
+    assert_eq!(
+        result.inserted_records, 0,
+        "the proxy row already represents this call; importing it again doubles every total"
+    );
+
+    let logs = usage_stats::request_logs(
+        &db,
+        &GatewayRequestLogFilters {
+            cli_key: Some(GatewayUsageTool::Workbuddy),
+            ..Default::default()
+        },
+        0,
+        10,
+        true,
+    )
+    .unwrap();
+    assert_eq!(logs.data.len(), 1, "one call, one row");
+    assert_eq!(logs.data[0].data_source, "proxy");
 }
 
 #[test]

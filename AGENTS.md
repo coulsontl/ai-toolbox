@@ -41,6 +41,9 @@ This document provides essential information for AI coding agents working on thi
 | `tauri/src/coding/claude_code/` | Claude Code 后端配置、prompt、plugin、MCP 与 WSL 同步约束 |
 | `tauri/src/coding/codex/` | Codex 后端配置、auth/config.toml、prompt、plugin 与 WSL 同步约束 |
 | `tauri/src/coding/claude_desktop/` | Claude Desktop 3P profile 配置（deploymentMode+configLibrary+_meta）、Direct 应用、快照回滚与恢复官方；网关接管由 proxy_gateway 的 GatewayCliKey::ClaudeDesktop 驱动 |
+| `tauri/src/coding/workbuddy_family/` | WorkBuddy 桌面版与 CodeBuddy Code 共用的引擎契约：`models.json` 形状与 `availableModels` 三态、渠道聚合、原子写与容错解析 |
+| `tauri/src/coding/workbuddy/` | WorkBuddy 桌面版（`~/.workbuddy`）后端：配置根、`models.json` 渠道命令、按账号隔离的四个身份文件 |
+| `tauri/src/coding/codebuddy/` | CodeBuddy Code CLI（`~/.codebuddy`）后端：配置根、共享 `models.json` 渠道、`CODEBUDDY.md` 预案、`settings.json` 只读、`.mcp.json` 优先级 |
 | `tauri/src/coding/hermes/` | Hermes Agent 运行时 config.yaml 的 custom_providers/模型/MCP 可视化与同步 |
 | `tauri/src/coding/grok/` | Grok CLI 后端 provider、config/auth、官方账号、prompt、plugin 与同步约束 |
 | `tauri/src/coding/kimi/` | Kimi Code CLI 后端 provider、config/credentials、官方账号、prompt 与同步约束 |
@@ -66,6 +69,9 @@ This document provides essential information for AI coding agents working on thi
 | `web/features/coding/claudedesktop/` | Claude Desktop 前端页面、provider/模型映射与通用配置交互（卡片与页头走共享 `ClaudeStyleCard` / `ProviderCompactCard` / `CodingPageHeader` / `ProviderListSection`） |
 | `web/features/coding/dsh/` | DSH 前端页面、runtime 配置整份替换语义、凭证共享与删除计划、模型字段白名单 |
 | `web/features/coding/hermes/` | Hermes 前端页面、custom_providers 与模型设置交互（复用 pi 样式） |
+| `web/features/coding/shared/modelsJson/` | `models.json` 两个消费方（WorkBuddy 桌面 / CodeBuddy CLI）共用的渠道区块、卡片映射与模型弹窗；两侧页面只写自己的配置根与提示词部分（渠道无存储顺序，故无拖拽） |
+| `web/features/coding/workbuddy/` | WorkBuddy 桌面版页面：配置根、渠道列表（OpenCode 样式）、身份文件直接编辑 |
+| `web/features/coding/codebuddy/` | CodeBuddy Code CLI 页面：配置根、渠道列表（OpenCode 样式）、`CODEBUDDY.md` 全局提示词、`settings.json` 只读预览 |
 | `web/features/coding/pi/` | Pi 前端页面、provider/models、extensions 与导入映射 |
 | `web/features/coding/oh_my_pi/` | Oh My Pi 前端页面、models.yml provider、Codex 订阅卡片（官方账号共享组件的 embedded 宿主）、subagent 方案与 OMP 语义诊断（复用 pi 样式） |
 | `web/features/coding/omo_native/` | OmO Native 前端页面（供应商 / 内建渠道 / 扩展 / 全局提示词 / 其他配置 / 会话管理）、`models.json` provider 映射与插件版 OMO 的边界 |

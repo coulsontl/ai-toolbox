@@ -219,7 +219,11 @@ fn classify_gateway_vision(cli_key: GatewayCliKey, response_body: &Value) -> Res
         // `supports_gateway_vision_probe`, so this arm is unreachable at runtime;
         // it returns no text rather than guessing a response shape and only keeps
         // the match exhaustive.
-        GatewayCliKey::Kimi | GatewayCliKey::OpenCode | GatewayCliKey::Antigravity => {
+        GatewayCliKey::Kimi
+        | GatewayCliKey::OpenCode
+        | GatewayCliKey::Antigravity
+        | GatewayCliKey::Workbuddy
+        | GatewayCliKey::Codebuddy => {
             String::new()
         }
     };
@@ -273,7 +277,7 @@ fn build_gateway_connectivity_request(
                 "store": false,
             })
         }
-        GatewayCliKey::Kimi => json!({
+        GatewayCliKey::Kimi | GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => json!({
             "model": model_id,
             "messages": [{ "role": "user", "content": prompt }],
             "stream": stream,
@@ -351,6 +355,11 @@ fn gateway_connectivity_path(cli_key: GatewayCliKey, model_id: &str, stream: boo
                 action
             )
         }
+        // Both family products speak OpenAI Chat: their custom model entries
+        // point at a full `/chat/completions` URL, so the gateway also takes a
+        // Chat request body.
+        GatewayCliKey::Workbuddy => "/workbuddy/v1/chat/completions".to_string(),
+        GatewayCliKey::Codebuddy => "/codebuddy/v1/chat/completions".to_string(),
         GatewayCliKey::OpenCode => "/".to_string(),
     }
 }

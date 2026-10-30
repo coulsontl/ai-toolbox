@@ -149,6 +149,12 @@ pub async fn reapply_applied_runtime_after_restore<R: Runtime>(
     )
     .await;
 
+    let codebuddy_app = app.clone();
+    reapply_cli(&mut summary, "codebuddy", async move {
+        reapply_codebuddy(&codebuddy_app).await
+    })
+    .await;
+
     let plugin_summary = reapply_applied_opencode_plugins_after_restore(app).await;
     summary.applied.extend(plugin_summary.applied);
     summary.warnings.extend(plugin_summary.warnings);
@@ -250,6 +256,12 @@ fn wsl_module_for_reapply_label(label: &str) -> Option<&'static str> {
         "hermes" => Some("hermes"),
         "dsh" => Some("dsh"),
         "zcode" => Some("zcode"),
+        // CodeBuddy has an applied-flag prompt record, so a restore can rewrite
+        // `CODEBUDDY.md`; without this arm the re-apply would succeed but the
+        // follow-up WSL sync would be skipped. WorkBuddy has no such record
+        // (its identity files are edited in place), so it deliberately has no
+        // arm here.
+        "codebuddy" => Some("codebuddy"),
         _ => None,
     }
 }
@@ -281,6 +293,8 @@ pub fn unchanged_wsl_modules(changed_modules: &[String]) -> Vec<String> {
         "hermes",
         "dsh",
         "zcode",
+        "workbuddy",
+        "codebuddy",
     ];
 
     ALL_WSL_FILE_MODULES
@@ -1093,6 +1107,36 @@ async fn reapply_hermes<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult {
     result
 }
 
+/// CodeBuddy's provider/model fact source is `models.json` (always restored
+/// from the backup, and edited directly by the page), so only the DB-backed
+/// `CODEBUDDY.md` prompt preset is reapplied.
+///
+/// WorkBuddy has no reapply arm on purpose: its four identity documents are
+/// edited in place and there is no applied-flag prompt record to rebuild.
+async fn reapply_codebuddy<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult {
+    use crate::coding::codebuddy;
+
+    let db_state = app.state::<SqliteDbState>();
+    let db = db_state.db();
+    let mut result = ReapplyCliResult::default();
+    let prompt_id = resolve_record_id(
+        &mut result,
+        "prompt",
+        first_applied_prompt_id(&db, DbTable::CodebuddyPromptConfig),
+    );
+    if prompt_id.is_none() {
+        return result;
+    }
+
+    let apply_app = app.clone();
+    apply_record(&mut result, "prompt", prompt_id, |prompt_id| async move {
+        let state = apply_app.state::<SqliteDbState>();
+        codebuddy::apply_codebuddy_prompt_internal_without_events(state.db(), &prompt_id).await
+    })
+    .await;
+    result
+}
+
 async fn reapply_dsh<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult {
     use crate::coding::dsh;
 
@@ -1296,6 +1340,14 @@ mod tests {
             wsl_module_for_reapply_label("antigravity"),
             Some("antigravity")
         );
+        // CodeBuddy has an applied-flag prompt record, so its re-apply must
+        // also reach WSL. WorkBuddy deliberately has no arm: it has no
+        // applied-flag record to rebuild, and claiming a WSL module for a
+        // re-apply that cannot happen would make `changed_modules` lie.
+        assert_eq!(
+            wsl_module_for_reapply_label("codebuddy"),
+            Some("codebuddy")
+        );
     }
 
     #[test]
@@ -1308,6 +1360,11 @@ mod tests {
         assert!(skipped_modules.contains(&"openclaw".to_string()));
         assert!(skipped_modules.contains(&"geminicli".to_string()));
         assert!(skipped_modules.contains(&"pi".to_string()));
+        // Both new modules must be in `ALL_WSL_FILE_MODULES`; if they were
+        // missing, a restore would never skip them and every recovery would
+        // re-sync unrelated CLIs.
+        assert!(skipped_modules.contains(&"workbuddy".to_string()));
+        assert!(skipped_modules.contains(&"codebuddy".to_string()));
     }
 
     #[test]

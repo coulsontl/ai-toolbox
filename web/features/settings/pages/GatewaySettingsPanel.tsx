@@ -35,7 +35,15 @@ type BusyAction = 'load' | 'autosave';
 type NoticeKind = 'success' | 'error' | 'info';
 type SupportedGatewayCliKey = Extract<
   GatewayCliKey,
-  'claude' | 'codex' | 'grok' | 'kimi' | 'gemini' | 'antigravity' | 'claude_desktop'
+  | 'claude'
+  | 'codex'
+  | 'grok'
+  | 'kimi'
+  | 'gemini'
+  | 'antigravity'
+  | 'claude_desktop'
+  | 'workbuddy_desktop'
+  | 'codebuddy_cli'
 >;
 
 interface NoticeState {
@@ -76,6 +84,18 @@ const CLI_OPTIONS: CliOption[] = [
   {
     key: 'claude_desktop',
     labelKey: 'settings.gateway.cli.claude_desktop',
+  },
+  // Keys must equal the backend's `GatewayCliKey::as_str()`, which is
+  // deliberately `*_desktop` / `_cli`: it is also the `app_type` written for
+  // gateway-served requests, and must not collide with the native-session
+  // spelling of the same product. The labels reuse the plain product names.
+  {
+    key: 'workbuddy_desktop',
+    labelKey: 'settings.gateway.cli.workbuddy',
+  },
+  {
+    key: 'codebuddy_cli',
+    labelKey: 'settings.gateway.cli.codebuddy',
   },
 ];
 

@@ -378,6 +378,8 @@ impl Default for AppSettings {
                 "omo_native".to_string(),
                 "hermes".to_string(),
                 "dsh".to_string(),
+                "workbuddy".to_string(),
+                "codebuddy".to_string(),
                 "gateway".to_string(),
                 "image".to_string(),
                 "ssh".to_string(),
@@ -434,6 +436,8 @@ pub fn default_sidebar_hidden_by_page() -> HashMap<String, bool> {
         ("omo_native".to_string(), false),
         ("hermes".to_string(), false),
         ("dsh".to_string(), false),
+        ("workbuddy".to_string(), false),
+        ("codebuddy".to_string(), false),
     ])
 }
 

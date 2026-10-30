@@ -195,6 +195,33 @@ ZCode 是唯一一个**业务 id 合法含冒号**的模块——它的托管供
 - 漏加的表现：新 CLI **在设置页的模块显隐列表里完全不出现**，用户无法从设置页开关或排序它（kimi 集成时踩过）。
 - 右侧 `OTHER_TABS` 只在新增**非 coding** 模块时才需要动；新增 CLI 不要碰它。
 
+#### 3.1.2 「装好了却看不见」的三层排查顺序
+
+新 CLI 上架后用户报「设置里没有入口 / 侧边栏没有 tab」，**不要先怀疑注册清单**——按这三层查，越靠前越常见：
+
+| 层 | 判据 | 检查方式 |
+|---|---|---|
+| ① 跑的是不是旧构建 | 装的是已发布包，不是本轮 worktree | 先问清「你怎么启动的」。已安装的二进制不含本轮改动，任何注册都是徒劳 |
+| ② 迁移没跑到（**最隐蔽**） | `PRAGMA user_version` 已等于目标版本，但新表不存在 | 见下方命令块；命中即 `TARGET_SCHEMA_VERSION` 撞号，按模式一百一十四修 |
+| ③ `visible_tabs` 是自定义顺序 | 已存值不等于任何 `PRE_*_DEFAULT_VISIBLE_TABS` 基线 | `adapter.rs` **故意**不给自定义顺序的用户强插新 tab（否则会把用户关掉的 tab 每次重开）；这类用户只能去设置页手动打开 |
+
+```bash
+# 只读打开，确认「版本已到位、结构却缺失」的形状
+python - <<'PY'
+import os, sqlite3
+p = os.path.join(os.environ["APPDATA"], "com.ai-toolbox", "ai-toolbox.db")
+c = sqlite3.connect("file:" + p.replace("\\", "/") + "?mode=ro", uri=True)
+print("user_version =", c.execute("PRAGMA user_version").fetchone()[0])
+print("json =", c.execute("SELECT json(data) FROM settings WHERE id='app'")
+        .fetchone()[0].__class__)
+tabs = [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+print("新模块表 =", [t for t in tabs if "<新模块关键词>" in t])
+PY
+```
+
+> 第 ③ 层不是缺陷而是既有设计（根 `AGENTS.md`：自定义顺序用户**不**被强插新 tab，新 tab 只通过 full-replace 基线浮出）。向用户解释时要说明「去 设置 → 通用 → 模块显示 打开」，并确认该 chip 确实存在（即前两层已排除）。
+> **自查顺序反过来也是对的**：注册清单这层要能一次 grep 干净（§3.2 就是为此），所以它反而不该是第一个被怀疑的对象——真正会静默失效的是版本号和自定义顺序。
+
 ### 3.2 下游清单（逐一检查）
 
 - [ ] `web/constants/modules.tsx` 的 `MODULES` subTabs —— **侧边栏显示的唯一入口**，漏了 tab 静默不显示（kimi 踩过）
@@ -1987,6 +2014,19 @@ UI 表现异常时，**先排除进程 stale**，再怀疑代码：
 
 | 154 | **「这个 CLI 没有主操作」被当成了「这张格子不说话」**：ZCode 格子的动作槽一直空着，而它唯一的 per-provider 控件躺在「更多」菜单里 | ZCode 的 provider 永远不会被应用（`设为默认` 在模型行上），所以 `ProviderCompactCard` 的第二行动作槽没人用——而**每个邻居格子都在那个位置说自己的控件**（应用 / 网关代理）。用户 2026-10-15 指出：「**针对 zcode 这种不需要应用的渠道，把它在列表模式下的开关按钮放出来，放到现在应用的地方**」——列表卡片头部本来就画着那颗启用开关，格子这侧却把它折进了菜单 | **「没有主操作」不等于「没有控件」**：给卡片加 `cellControl` 插槽，让 CLI 把**它自己的那个控件**放进动作槽（ZCode 传共享的 `ProviderEnabledSwitch`，2026-10-15 同步把列表头部与菜单那两份收成**同一个组件**——三处各写一份，`checked` 的取反方向或 tooltip 文案迟早有一处漂）。**传了就撤掉菜单里那一条**（`cellControl ? undefined : onToggleDisabled`）：菜单收起它本来就是「旁边有 应用 会争抢」，格子那行没有主操作，理由不成立，留着就是同一张卡片说两遍。判据：**「这个位置别的格子都说了什么？本 CLI 对应的那个控件是什么？」**——不是「本 CLI 有没有 应用」。回归要真点一下（`toggle_zcode_provider_disabled` 的参数、卡片随即陈述「已禁用」、回来的路仍在同一行、点它不打开侧栏、菜单里没有第二条）。见 13.1 模式一百零四 |
 
+| 155 | **先写页面、后读 §4.0.2**：共享组件用对了，形态全错——自建 `Modal` + `Form` 取代 `ModelFormModal`，自建折叠区取代 `ProviderListSection`，页面里散着一堆 `<Alert>` | 接入 WorkBuddy / CodeBuddy 时，先按「能编译、能跑」写出两个页面：`Collapse` 手搓供应商区、`Modal` 手写模型表单、`Alert` 堆提示。用户随后要求「**注意要遵循 SOP**」。读完 §4 才发现 §4.0.2 的 A–H 逐项核对**根本没做**——不是漏了一个 prop，是整层外壳都没接 | ① **§4.0.2 的核对必须在写第一行前端代码之前**：先打开参照 CLI（本节指定 Codex / Pi / Hermes）逐行读，再动手；「编译通过」不是形态正确的证据。② 共享组件在写页面时先 `ls` 一遍 `web/features/coding/shared/`，把 `CodingPageHeader` / `ProviderListSection` / `providerCardVariants` / `ModelFormModal` / `GlobalPromptSettings` 逐个对照「我这个页面哪块该用它」。③ 两个同引擎的 tab 共用一段 UI 时，把它写进 `shared/`（本轮落到 `shared/modelsJson/`），不要让 A 的页面 import B 的组件目录——那会把「共享」伪装成「借用」，下一个改 B 的人不知道自己在改公共件。见 13.1 模式一百零五 |
+| 156 | **共享类型写了两遍**：`WorkbuddyModelInput` 与 `CodebuddyModelInput` 逐字段相同，两个页面的表单却各自绑定一份 | 两个产品同引擎、同 `models.json`，类型定义仍各写一份。改其中一处字段，另一处不会报错——共享弹窗组件的 `form` 与 `channel` 类型对不上，于是出现了 `as unknown as` / `as never` 的类型逃生口 | ① **类型不一致时先找是不是重复定义**，`as` 只在该处类型确实应该不同时才用；本轮修法是把三个形状下沉到 `web/types/workbuddyFamily.ts`，两个模块 `export type { X as Y }` 再导出，调用方一行不用改。② 判据：**「这两个 type 的字段列表能否逐行对上？」** 能 → 就是一份，不要两份。③ `as unknown as` / `as never` 出现在 PR 里本身就是信号：它在说「这里有两套不兼容的类型」，先查来源再消音。见 13.1 模式一百零六 |
+| 157 | **托盘「其它 tab 都有」被当成「我也要有」**：为两个模型形状不匹配的 tab 硬凑托盘 | 托盘语义是「在多个已应用 provider/模型之间切换」。WorkBuddy / CodeBuddy 既无单一 active provider，也无可靠的默认自定义模型指针（`preferences.json` 的 `defaultModelId` 桌面版不写），托盘上没有可切换的对象 | **接入前先问「托盘在这里切换的是什么」**：答不出具体对象，就不做，并把这个决定**写进计划文档**（本轮是 §10.1 第三条）——否则下一轮 review 会把它当遗漏补上。判据：**「本 CLI 有没有一个『当前生效』指针？」** 没有 → 托盘不适用，不是缺失。见 13.1 模式一百零七 |
+
+| 158 | **页面外壳没接 `SectionSidebarLayout`，行为上「能跑」，形态上和其他 16 个 tab 不是一个产品** | WorkBuddy / CodeBuddy 第一版页面直接 `<Spin><div style={{padding:16}}>` 把内容铺开：没有区块侧栏导航，也没有 `.pageContent` 的 `block` 布局；同时还漏了 `routeConfig` 的 `contentPadding: 'compact'`，内容区退回 24px。三件事都不报错——`tsc` 过、`i18n:check` 过、组件夹具过 | ① **新建 coding 页面先 `grep -c SectionSidebarLayout web/features/coding/*/pages/*.tsx`**：16/16 都有，新页面也必须有一个 `sections` 数组 + `data-<tool>-sidebar-section` 标记 + `getIcon`。② 容器类**只写 `display: block`**，间距由区块自己的 `margin-bottom: 16px` 承担（§4.3.1）。③ `routeConfig` 的每条 coding 路由都要 `chrome: { contentPadding: 'compact' }`，否则内容区内边距与其他页不同（24 vs 8+16）。④ **把新页面加进 `pageRhythmFixture` 的 `PAGES`**，让 `test:page-rhythm` 真的量它的页头→首区块间距——守卫只量名单里的页面，不在名单里的页面等于没被检查。见 13.1 模式一百零八 |
+| 159 | **预览弹窗把「解析后的视图」当成「文件内容」**：`models.json` 预览用 `JSON.stringify({providers, availableModels})` 现场拼 | WorkBuddy 第一版「预览配置」把 `FamilyRuntimeConfig` 重新序列化。那份视图**丢掉没有 URL 的条目、重排字段、且不含产品自有键**——用户看到的是一份磁盘上不存在的文件，而预览的全部意义是「我现在到底写进去了什么」 | **预览必须读原文**：后端加一个只 `std::fs::read_to_string` 的只读命令（本轮 `read_workbuddy_models_file`），前端直接渲染字符串。判据：**「这个预览的内容，`read_to_string` 能不能直接得到？」** 能就不要再 JSON 序列化一遍——任何 parse→serialize 往返都会改变用户文件的形状。同一条约束也适用于 `settings.json` 只读面板（`read_codebuddy_settings_file` 早已是这个形状）。见 13.1 模式一百零九 |
+| 160 | **补登记 i18n 动态前缀之后，`i18n:check` 立刻炸出 36 个缺失 key**——而在此之前它一直「通过」 | `useRootDirectoryConfig` 的 `translationKeyPrefix` 保护表里没有 `workbuddy` / `codebuddy`。保护表只影响 `prune` 的安全区，`check` 是**按保护表决定扫哪些展开式**的，于是这两个模块的 `rootPathSource.modal.*` 从来没被检查过。补上之后一次性暴露 18 个 key × 2 个工具（每个 key 在两种语言各报一条，共 72 行输出） | ① §12.1 那条「补完保护表后必须重跑 `i18n:check`」是**真的会红**，不是形式主义——它是这类缺口唯一的发现途径。② 新增 tab 用任何会拼 key 的共享组件（`useRootDirectoryConfig` / `GlobalPromptSettings` / `ModelFormModal`）时，**先登记前缀再写页面**。③ 缺失的一律按参照模块的措辞补齐（本轮照 `dsh.rootPathSource.modal.*`），工具名与环境变量名按本 CLI 替换；不要用空串或复制工具名占位。见 13.1 模式一百一十 |
+| 161 | **备份打包段用 `format!("external-configs/{tool}/")` 动态拼路径，于是 §12.1 的「打包 ↔ 恢复」集合核对看不见它** | 那条核对命令 grep 的是 `external-configs/<tool>` **字面量**。打包段写成循环 + `format!` 时，grep 在 utils 侧一个都抓不到，diff 的输出变成「restore 多了 workbuddy / codebuddy」——看上去像恢复端多了两个孤儿分支，实际是**打包端确实打包了，只是检查脚本看不见**。危险在于反向也成立：真漏一个工具时，同样的写法会让核对**假通过** | ① **两个集合必须写成字面量**：逐个工具直写 `"external-configs/workbuddy/"`，即使因此重复几行。这是「守卫可读性优先于 DRY」的一处正当例外——守卫看不见的 DRY 就是不可验证的代码。② 改完立刻跑核对命令，**输出必须为空**。③ 判据：**「这条不变量有没有机械守卫？守卫抓的是哪种写法？」** 有守卫就按守卫能看见的写法写，否则守卫只是装饰。④ 同理适用于任何按 `DbTable` / tool 循环构造**路径或 key** 的代码——先看守卫怎么抓。见 13.1 模式一百一十一 |
+
+| 162 | **页面接了 `SectionSidebarLayout`，但漏了 `SidebarSettingsModal`——侧栏隐藏后再也打不开** | 补完页面外壳后，「更多选项」弹窗与侧栏开关都没接。全仓 14 个 coding 页面都有这一对：页头 `onMoreOptions` → `SidebarSettingsModal`（内含「显示侧栏」开关）。漏掉的后果不是少一个入口，而是**不可逆的界面状态**——用户点掉侧栏后没有任何办法恢复 | ① **`grep -c SidebarSettingsModal web/features/coding/*/pages/*.tsx` 必须覆盖全部页面**，和 `SectionSidebarLayout` 一起查。② `sidebarHiddenByPage.<key>` 只被这个弹窗写，页面读；读侧漏了会显示错，写侧漏了会卡死。③ 判据：**「这个开关关掉之后，用户还能从这里打开吗？」** 不能 → 必须有反向入口。 |
+
+| 163 | **两个同引擎的 tab 共用一段文案时，把产品名写进了共享键里** | CodeBuddy 页面复用 `workbuddy.availableModelsFree`，而它的中文是「未限制可用模型：**WorkBuddy** 会显示内置模型…」。页面能跑、`i18n:check` 通过（键确实存在），但 CodeBuddy 用户读到的是「WorkBuddy 会显示…」 | ① 跨模块复用的文案必须下沉到 `common.*` 并**去掉产品名**（本轮 `common.availableModelsFree` / `common.availableModelsRestricted`）；② 判据——**「这句文案里有没有出现某一个模块的名字？」** 有 → 它就不是共享键，要么参数化 `{{tool}}`，要么留在该模块自己的命名空间；③ 迁移后按 SOP 的「只删真正无引用的」清理旧键（`i18n:prune --prefix <exact-key>`，注意 prune 的前缀是**精确键**而不是命名空间，`workbuddy.availableModels` 匹配不到 `workbuddy.availableModelsFree`）。 |
+
 ### 13.1 静默失效的模式（归纳）
 
 上表的坑可以归成下面几类，识别出模式就能提前防：
@@ -2677,6 +2717,89 @@ UI 表现异常时，**先排除进程 stale**，再怀疑代码：
 > 例（#153）：判断链条（官方渠道有没有被应用？CLI 的凭据文件里是哪份登录？那 `(2)` 是怎么来的？）全部落在**用户机器上的数据**里：`codex_provider.is_applied`（=AxonHub）、`codex_official_account.is_applied`（=0）、`~/.codex/auth.json`（`auth_mode=apikey` + 一份过期的官方 token）、`~/.kimi-code/config.toml`（未登录的默认桩）。读出来之后结论自明，且**每一步都能被用户核对**。
 >
 > **动作**：① 应用库 `ai-toolbox.db` 的 `data` 列是 **SQLite JSONB**，用 `sqlite3 -readonly <db> "select json_extract(data,'$.is_applied') from codex_official_account;"` 直接问（**别猜二进制格式**：本次先按 msgpack 解，字节对不上，白白绕了一圈——`sqlite3` 自带 `json_extract`）；② CLI 侧的事实读**磁盘上的真文件**（`auth.json` / `config.toml` / `credentials/`），它们才是「当前在跑什么」的证据；③ 报告时把**读到的值**摆出来（谁的 `is_applied`=1、哪一行 `(n)` 由什么组成），用户才能判断这是 bug 还是状态；④ `~/.codex/auth.json` 里的 token 可能属于**另一个账号**（本地行 = 磁盘上活着但库里没快照的那份登录），"官方渠道闲置" 与 "磁盘上有官方登录" 可以同时为真。
+
+**模式一百零五：能编译、能跑 ≠ 形态正确——§4.0.2 的核对必须在写第一行前端代码之前做。**
+> 例（#155）：两个新 tab 的页面写出来了，共享组件一个没用：手搓 `Modal`+`Form` 顶替 `ModelFormModal`、`Collapse` 顶替 `ProviderListSection`、`Alert` 堆提示。编译通过、`tsc` 干净，形却是自己的。
+>
+> **动作**：① 动手写页面前，先 `ls web/features/coding/shared/` 并按 §4.0.2 A–H 逐项核对**参照 CLI 的源码**，把「我这一页的哪块对应哪个共享件」列出来；② 「编译通过」只能证明类型对，不能证明形态对——SOP §12.3 已写明视觉核对不可用编译替代；③ 两个同引擎 tab 共用的一段 UI 落 `shared/<领域>/`，不要 A 的页面 import B 的组件目录。
+
+**模式一百零六：逐字段相同的两个 TypeScript 类型就是一份类型——出现 `as unknown as` 时，先删重复定义，别消音。**
+> 例（#156）：`WorkbuddyModelInput` 与 `CodebuddyModelInput` 一字不差；共享弹窗组件的 `form` / `channel` 类型对不上，于是代码里长出 `as unknown as` 和 `as never`。
+>
+> **动作**：① 判据——**「两个 type 的字段列表能否逐行对上？」** 能 → 下沉到共享文件，两侧 `export type { X as Y }` 再导出（调用方一行不用改）；② `as unknown as` / `as never` 是「这里有两套不兼容类型」的信号，先查来源；③ 结构上的共享比行为上的共享更重要——行为可以 Copy，类型一旦分叉就会用 `as` 掩盖。
+
+**模式一百零七：托盘不是「其它 tab 都有」的装饰，而是「切换当前生效对象」的控件——没有可切换对象就不做，并把这个决定写下来。**
+> 例（#157）：WorkBuddy / CodeBuddy 既无单一 active provider，也无可靠的默认自定义模型指针，托盘上没有可切换的东西。
+>
+> **动作**：① 判据——**「本 CLI 有没有一个『当前生效』指针？」** 没有 → 托盘不适用；② 不做也要**写进计划文档**（本轮 §10.1），否则下一轮 review 会把它当遗漏补上；③ 若将来出现可切换对象（如网关接管了多条渠道），再按当时的实际切换项补，而不是现在预埋空壳。
+
+**模式一百一十三：共享文案里出现产品名，就不是共享文案。**
+> 例（#163）：CodeBuddy 复用了 `workbuddy.availableModelsFree`，中文读作「WorkBuddy 会显示内置模型…」。键存在、检查通过、文案错人。
+>
+> **动作**：① 复用前读一遍目标语言的实际文本，找模块名；② 有产品名就下沉到 `common.*` 并改成中性表述（「会显示内置模型与本文件中的全部模型」）；③ 需要点名时用 `{{tool}}` 插值，而不是复制一份带名字的键。
+
+**模式一百一十四：`TARGET_SCHEMA_VERSION` 是全局单调游标——分叉期间 main 往前走一步，你这边写的迁移就整段作废，而且**不报错**。**
+> 例（#164）：本 worktree 从 `b61f7b9d` 分叉时基线是 v30，于是把「WorkBuddy/CodeBuddy 三张表」写成 `migrate_v31`。分叉后 main 上的 `0ca25b58` 也占用了 v31（给 `proxy_request_logs` 加 `native_tools_used`）。后果是**双向的、且两向都静默**：
+> ① 老用户库的 `user_version` 已是 31 → `if current_version < 31` 永不成立 → 三张表**一张都不会建**，页面读到空配置；`get_settings` 也不报错，只是模块入口按「未配置」处理，看起来就是「设置里没有这个 tab」。
+> ② 全新库跑到的是**我改写过的** v31 → main 的 `native_tools_used` 列**永远不会被创建** → 网关请求列表查询直接失败。这一向更危险：它在别人的功能上造成回归。
+> 实测证据（用户库，只读 `mode=ro`）：`user_version=31`、`native_tools_used` 存在、76 张表里 workbuddy/codebuddy 相关 = `[]`。三个事实同时成立，才定位到「版本号被复用」。
+>
+> **动作**：① **合并前必查**：`git log --oneline $(git merge-base HEAD main)..main -- <目标迁移文件>`，看 main 有没有在这期间动过版本号；② 写迁移前先 `git merge-base` 确认分叉点，**新版本号 = max(分叉点版本, main 当前版本) + 1**，不要用「我的旧基线 + 1」；③ 发现撞号时，**恢复 main 的那一段原样**（此处 v31 逐字还原为 `add_column_if_missing(..., "native_tools_used", ...)`），把自己的内容顺延到新版本号（v32），**不要**两者合并进同一个 `migrate_vN`——合并后内容与 main 不同，git 会把它当冲突区，且语义上两个不相关的变更被绑死；④ 回归必须从**「`user_version` 已是旧迁移版本、但缺我新加的字段/表」**起步（`v32_migration_adds_workbuddy_tables_to_an_already_v31_database`），把版本号降回去再跑是**假通过**——真实用户库正是「版本已高、表却缺」的形状；⑤ 老库补建的表一定用 `CREATE TABLE IF NOT EXISTS`（`create_jsonb_table` 已是），使新老库殊途同归、可重复执行。
+>
+> **判据（一句话）**：**「这条迁移在别人的库上有没有可能『已经算跑过了』？」** 会 → 版本号必须比 main 更高，且新加的每个表/列都要能被「版本已到位但结构缺失」的库补上。
+
+**模式一百一十五：接管类 CLI 只补 `From<CliKey> for UsageTool` 不够——`gateway_cli()` 是反向门，漏一组 arm 会让**每条请求都不落库**，且测试只报「记录数为 0」。**
+> 例（#165）：WorkBuddy / CodeBuddy 加进 `GatewayCliKey` 后，`From<GatewayCliKey> for GatewayUsageTool` 补了，接管流程能跑、上游能转发、客户端拿到 200，但 `record_request_summary` 开头 `summary.cli_key.and_then(GatewayUsageTool::gateway_cli)` 用的是**另一张匹配表**（当时是 `_ => return None` 兜底）→ 直接 `Ok(Skipped)`。现象：请求成功、统计页空、`proxy_request_logs` 里一行都没有。`privacy_matrix_tests` 把它抓出来，报错却是 `left: 0, right: 1`（详情条数），看不到「gateway_cli」这个名字。
+>
+> **动作**：① 新增 `GatewayCliKey` 变体后，把**两张**匹配表都补上：`From<GatewayCliKey> for GatewayUsageTool`（正向，接管 → 记账）和 `GatewayUsageTool::gateway_cli()`（反向，记账行 → 可接管）；② **反向表用穷举 match，不要 `_ => return None`**——后者把「忘了加」和「本来就不可接管」（Pi/Dsh 等纯采集工具）混成同一种静默；③ 回归断言要落在**落库结果**上（`request_logs(...).data.len() == 1`），不是只断言 HTTP 200。
+
+**模式一百一十六：一个产品两套 `app_type` 拼写时，「按 CLI 筛选」必须展开成 `IN (...)`——只比 `tool.as_str()` 会让代理行在统计页里凭空消失。**
+> 例（#166）：WorkBuddy 家族原生转录用 `workbuddy` / `codebuddy`（`GatewayUsageTool::as_str()`），网关代理行用 `workbuddy_desktop` / `codebuddy_cli`（`GatewayCliKey::as_str()`，刻意区分两者）。写入侧和读取时的**反查**（`cli_key_from_app_type`）都处理了两种拼写，唯独**筛选条件**没有——`usage_stats.rs` 里 5 处 `WHERE app_type = ?` 全部只绑 `cli_key.as_str()`。现象：请求详情能列出该行，一选「WorkBuddy」筛选就全空。
+>
+> **动作**：① 加一个 `app_type_filter_values(tool) -> Vec<&'static str>` 作为筛选用的事实源，特殊产品返回两种拼写，其余返回单个；② 5 处筛选点（详情列表 / 项目统计 / 日聚合 / 趋势 / 事件）**全部**改用它 + `IN (?, ?)`，不要只修用户最先看到的那一处；③ 回归要正面覆盖「同一工具的两条不同 `app_type` 行，在筛选后都在列表里，且 `usage_summary` 的 `total_requests` 与之一致」。
+
+**模式一百一十七：`pnpm test` 里出现与本轮改动无关的浏览器夹具失败时，先用**同一夹具连跑 5 次**判断是不是既有 flaky，再决定要不要二分——`git worktree` 基线对照会被 node_modules / Vite 缓存拖成伪证据。**
+> 例（#167）：`verify-codex-fetched-model-picker` 失败在 `official failure exposes bundled fallback`。本轮对 Codex 目录**零改动**（`git diff --stat HEAD -- web/features/coding/codex/ tauri/src/coding/codex/` 为空）。做了两件错事才发现真相：① 复制 `web/constants/modules.tsx` 到基线 worktree 后行为翻转，一度判成「新增 tab 导致 Codex 夹具静默失败」——实际是每次 `git checkout` 都连带清了 Vite 预构建缓存，**变量一次动了两个**；② 在基线 worktree 里连跑时用 `tail -3` 取结果，把 `}` / `Node.js v24` 这类无关行当成失败，得出「基线也挂」的错误结论。
+> 真相：**同一 worktree 连跑 5 次，4 次通过、1 次失败，失败点每轮不同**（`late cancelled fetch` / `late result from previous provider` / `official failure`），全是异步竞态断言，`actual: []` 表示那一轮的 `resolveNext` 没落地。这是夹具自身的时序脆弱，不是代码回归。
+>
+> **动作**：① 先跑 `git diff --stat HEAD -- <失败夹具的整个功能目录>`，为空就**强烈提示与改动无关**；② 同一夹具**连跑 5 次**，看失败点是否游走——游走即 flaky，固定才可能是回归；③ 需要基线对照时，**不要复制单个文件**（会连带改变构建图），要么整棵树 `git worktree add` + `pnpm install --offline`，要么干脆用「连跑 5 次」替代；④ **不要用 `tail -N` 判断通过与否**，要 grep `^Passed \d+ browser checks` 或 `AssertionError` 这样的确定性标记；⑤ 结论写进交付说明：跑了什么、哪条失败、是否为本轮新增、定位到的具体断言。
+
+**模式一百一十八：新增枚举变体时，「序列化拼写」和「业务字符串」是两份契约——`rename_all` 与 `as_str()` 一致只是历史巧合，不是保证。**
+
+> 例（#168）：`GatewayCliKey` 用 `rename_all = "snake_case"`，同时有手写的 `as_str()`。Claude/Codex/Grok/Gemini 这些变体两种拼写恰好相同，所以从没暴露过。新加的 `Workbuddy`/`Codebuddy` 需要 `workbuddy_desktop`/`codebuddy_cli`（必须与原生用量行的 `workbuddy`/`codebuddy` 区分），于是 `as_str()` 写成 `*_desktop`/`*_cli`、serde 仍出 `workbuddy`/`codebuddy`。后果链条：前端从 `proxy_gateway_supported_cli_keys` 拿到 `as_str()` 值 → 用它当 `app_configs` 的键写回 → `HashMap<GatewayCliKey, _>` 反序列化失败 → `settings_from_value` 的 `unwrap_or_else(|_| Default)` 把**整份**网关设置重置成默认值。用户感知只是「计费倍率没保存」，实际端口、日志保留期、超时、重试全丢了。
+>
+> **动作**：① 给任何与 `as_str()` 拼写不同的变体写显式 `#[serde(rename = "<as_str>", alias = "<旧/自然拼写>")]`，`alias` 保证存量行还能读；② 判断标准是**「这个枚举的值会不会被某个接口的返回值原样写回同一份存储？」** 会 → 两份拼写必须相同；③ 回归要断言**无关字段没被重置**（如 `listen_port` 仍是持久化值），只断言新字段读到了是漏测——`unwrap_or_default` 这个兜底会把「解析失败」伪装成「全是默认值」；④ 同类风险点还有 `GatewayUsageTool`、`SessionTool` 等带 `as_str()` + serde 的枚举，新增变体时逐个自查。
+
+**模式一百一十九：带 applied 语义的提示词是「恢复后要重建」的状态——漏接 reapply，备份恢复会静默丢掉 `CODEBUDDY.md` / `AGENTS.md` 的生效内容。**
+
+> 例（#169）：CodeBuddy 的全局提示词和 Hermes/ZCode 一样是 DB-backed applied preset（`codebuddy_prompt_config.is_applied`）。但 `reapply_applied_runtime_after_restore` 的标签清单里没有 `codebuddy`。恢复后 DB 记录回来了、`CODEBUDDY.md` 却停在恢复前的旧内容（备份包里没有 runtime 文件时），用户看到「配置都在、提示词没生效」。同时 `wsl_module_for_reapply_label` 缺 arm 会让即便有 reapply 也不触发后续 WSL 同步。
+>
+> **动作**：① 接入一个带 `is_applied` 提示词表的 CLI 时，同步查 `reapply_applied_runtime.rs` 三处：`reapply_<cli>` 函数、`reapply_applied_runtime_after_restore` 里的调用、`wsl_module_for_reapply_label` 的 arm；② **reapply 路径必须用 `*_without_events` 变体**——启动恢复期间 emit `config-changed` 会被托盘重建、WSL/SSH 自动同步当成一次用户编辑（新模块要顺手补这个无事件函数，参照 `apply_hermes_prompt_config_internal_without_events` / `apply_dsh_prompt_config_internal_without_events`）；③ **没有 applied 记录的 CLI（如 WorkBuddy 的身份文件）不要加 reapply arm**，否则 `changed_modules` 会声称同步了一个根本没发生的变化，让后续 WSL 跳过判断失真；④ 判据——**「这份配置在备份包里，还是在 runtime 文件里？」** 在 runtime 文件里 → 不需要 reapply；在 DB 里且有 applied 标记 → 必须 reapply。
+
+**模式一百一十二：可隐藏的 UI 必须自带「恢复显示」的路——否则那个开关是单程票。**
+> 例（#162）：两页都接了 `SectionSidebarLayout`，却没接 `SidebarSettingsModal`（全仓 14 个页面都有）。用户隐藏侧栏后再无入口。
+>
+> **动作**：① 新增 `SectionSidebarLayout` 页面时，同一条命令同时查 `SidebarSettingsModal` 覆盖率；② 任何「隐藏 X」的开关，问一句「关掉之后怎么打开」；③ 判据——**不可逆的界面状态比缺失的功能更糟**，缺功能用户会找，界面卡死用户只能重装。
+
+**模式一百零八：coding 页面外壳是「全家 16/16 都在用」的约定，不是可选装饰——新页面不在 `pageRhythmFixture` 名单里就等于没被量过。**
+> 例（#158）：WorkBuddy / CodeBuddy 第一版直接 `<Spin><div style={{padding:16}}>`，没有 `SectionSidebarLayout`、没有 `.pageContent { display: block }`、路由也没写 `contentPadding: 'compact'`。三处都不报错。
+>
+> **动作**：① 新建页面先 `grep -c SectionSidebarLayout web/features/coding/*/pages/*.tsx`——全仓 16 个页面都有，照做；② 容器只写 `display: block`，间距由区块 `margin-bottom: 16px` 承担；③ 每条 coding 路由都要 `contentPadding: 'compact'`；④ **把新页加进 `PageRhythmFixture` 的 `PAGES`**——守卫只量名单内的页面，名单外等于没检查。
+
+**模式一百零九：预览必须读原文——任何 parse → serialize 往返都会把用户文件改成「一份不存在的文件」。**
+> 例（#159）：`models.json` 预览用 `JSON.stringify` 现场拼视图，丢掉无 URL 条目、重排字段、不含产品自有键。
+>
+> **动作**：① 预览的数据源是 `read_to_string`，不是运行时视图；② 后端加一个只读命令（如 `read_workbuddy_models_file`）；③ 判据——**「`read_to_string` 能不能直接得到这份内容？」** 能就不要再序列化一遍。
+
+**模式一百一十：i18n 动态前缀保护表漏登记时，`i18n:check` 是「通过」的——它只在补登记之后才暴露全部缺口。**
+> 例（#160）：`useRootDirectoryConfig` 的保护表没有 `workbuddy` / `codebuddy`，补上后一次性爆出 72 条缺失（18 key × 2 语言 × 2 工具）。
+>
+> **动作**：① 用任何会拼 key 的共享组件前**先登记前缀**；② 补完必须重跑 `i18n:check`，红了就按参照模块措辞逐条补齐；③ 绝不用空串或复制工具名占位——那会让弹窗读出无意义文案而守卫全绿。
+
+**模式一百一十一：守卫看不见的 DRY 就是不可验证的代码——不变量靠 grep 时，被检查的路径必须写成字面量。**
+> 例（#161）：备份打包段用 `format!("external-configs/{tool}/")`，§12.1 的字面量核对完全看不见它。
+>
+> **动作**：① 「打包 ↔ 恢复」两个集合逐个工具直写 `"external-configs/<tool>/"`，宁可重复几行；② 改完立刻跑核对命令、输出必须为空；③ 判据——**「这条不变量有没有机械守卫？守卫抓的是哪种写法？」** 有守卫就按守卫看得见的写法写。
 
 **模式九十一：网格里的「高度/间距」是整行的事，不是这张卡片的事——断言要拿形态不同的两张比。**
 > 例（#142）：没有模型行的卡片矮 17px，网格把它拉高，差额落在分隔线上方，看起来像「这张卡片的间距错了」。逐张看数值都对，只有两张并排才看得出。

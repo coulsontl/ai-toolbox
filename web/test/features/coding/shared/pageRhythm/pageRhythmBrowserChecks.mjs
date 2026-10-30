@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 /**
- * Pins the page-level rhythm of the four "config directory" pages.
+ * Pins the page-level rhythm of the "config directory" pages.
  *
  * The number these checks protect is 16: `CodingPageHeader` brings its own 16px
  * bottom margin, and every section owns a 16px bottom margin of its own. A page
@@ -30,12 +30,19 @@ export async function verifyPageRhythm({ send, evaluate, baseUrl, artifactRoot }
 
   await send('Page.navigate', { url: `${baseUrl}/?runId=page-rhythm-${Date.now()}` });
   for (let attempt = 0; attempt < 400; attempt++) {
-    if (await evaluate('window.pageRhythmFixture && document.querySelectorAll("[data-page-shell]").length === 4')) break;
+    if (await evaluate('window.pageRhythmFixture && document.querySelectorAll("[data-page-shell]").length === 6')) break;
     await delay(125);
   }
   await delay(300);
 
-  for (const [pageKey, pageLabel] of [['pi', 'Pi'], ['omp', 'Oh My Pi'], ['dsh', 'DSH'], ['hermes', 'Hermes']]) {
+  for (const [pageKey, pageLabel] of [
+    ['pi', 'Pi'],
+    ['omp', 'Oh My Pi'],
+    ['dsh', 'DSH'],
+    ['hermes', 'Hermes'],
+    ['workbuddy', 'WorkBuddy'],
+    ['codebuddy', 'CodeBuddy'],
+  ]) {
     const headerGap = await evaluate(
       `pageRhythmFixture.headerGapToFirstSection(${JSON.stringify(pageKey)})`,
     );

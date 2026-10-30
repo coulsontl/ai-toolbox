@@ -1379,11 +1379,6 @@ fn v31_migration_adds_the_native_tools_column_without_touching_history() {
         rusqlite::params![r#"["web_search"]"#, "SESSION:codex:provider:old-proxy"],
     )
     .unwrap();
-    conn.execute(
-        "UPDATE proxy_request_logs SET native_tools_used = ?1 WHERE request_id = ?2",
-        rusqlite::params![r#"["web_search"]"#, "SESSION:codex:provider:old-proxy"],
-    )
-    .unwrap();
     let stored: String = conn
         .query_row(
             "SELECT native_tools_used FROM proxy_request_logs WHERE request_id = ?1",
@@ -1392,4 +1387,67 @@ fn v31_migration_adds_the_native_tools_column_without_touching_history() {
         )
         .unwrap();
     assert_eq!(stored, r#"["web_search"]"#);
+}
+
+/// A database that already ran v31 (the gateway `native_tools_used` column)
+/// but predates the WorkBuddy/CodeBuddy tables must still get them.
+///
+/// Version 31 was already released on `main` before these tables existed, so
+/// the tables live in v32. Do not lower the version marker to make this pass:
+/// that hides the exact state a shipping build leaves behind.
+#[test]
+fn v32_migration_adds_workbuddy_tables_to_an_already_v31_database() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("already-v31.db");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        initialize_connection(&mut conn).unwrap();
+        // Reproduce the real v31 shape: the gateway column exists, the three
+        // WorkBuddy/CodeBuddy tables do not.
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS workbuddy_settings_config;
+             DROP TABLE IF EXISTS codebuddy_settings_config;
+             DROP TABLE IF EXISTS codebuddy_prompt_config;",
+        )
+        .unwrap();
+        migrations::set_user_version(&conn, 31).unwrap();
+    }
+
+    let db = SqliteDbState::open(path.clone()).unwrap();
+    db.with_conn(|conn| {
+        assert_eq!(
+            migrations::get_user_version(conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
+        for table in [
+            "workbuddy_settings_config",
+            "codebuddy_settings_config",
+            "codebuddy_prompt_config",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table}"),
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("{table} missing after v32: {error}"))?;
+            assert_eq!(count, 0);
+        }
+        // The v31 column must survive: v32 must not replace that migration.
+        let has_native_tools_used = conn
+            .prepare("SELECT native_tools_used FROM proxy_request_logs")
+            .is_ok();
+        assert!(has_native_tools_used);
+        Ok(())
+    })
+    .unwrap();
+    drop(db);
+
+    // Reopening is a no-op, not a duplicate-table error.
+    let mut conn = Connection::open(&path).unwrap();
+    migrations::run_all(&mut conn).unwrap();
+    assert_eq!(
+        migrations::get_user_version(&conn).unwrap(),
+        TARGET_SCHEMA_VERSION
+    );
 }

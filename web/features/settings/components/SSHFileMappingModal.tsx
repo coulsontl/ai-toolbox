@@ -156,6 +156,8 @@ export const SSHFileMappingModal: React.FC<SSHFileMappingModalProps> = ({ open, 
             <Select.Option value="omo_native">omo</Select.Option>
             <Select.Option value="hermes">Hermes</Select.Option>
             <Select.Option value="dsh">dsh</Select.Option>
+            <Select.Option value="workbuddy">WorkBuddy</Select.Option>
+            <Select.Option value="codebuddy">CodeBuddy</Select.Option>
           </Select>
         </Form.Item>
 

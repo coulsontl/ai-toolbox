@@ -10,7 +10,12 @@ export type GatewayCliKey =
   | 'gemini'
   | 'antigravity'
   | 'opencode'
-  | 'claude_desktop';
+  | 'claude_desktop'
+  // Takeover keys for the WorkBuddy family. Deliberately spelled differently
+  // from the native-session keys so gateway-served requests stay distinguishable
+  // in the usage table; the backend maps both back to the same reported tool.
+  | 'workbuddy_desktop'
+  | 'codebuddy_cli';
 export type GatewayPricingModelSource = 'upstream' | 'requested';
 export type GatewayProxyMode = 'single' | 'failover' | 'aggregate';
 export type GatewayAggregateNamingMode = 'site_model' | 'model_at_site' | 'model_only';

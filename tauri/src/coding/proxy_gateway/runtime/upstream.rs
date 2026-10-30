@@ -1004,6 +1004,7 @@ fn is_cli_route_probe(request: &DebugHttpRequest, route: &GatewayRoute) -> bool 
         GatewayCliKey::Codex => route.forwarded_path == "/v1",
         GatewayCliKey::Grok => route.forwarded_path == "/v1",
         GatewayCliKey::Kimi => route.forwarded_path == "/v1",
+        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => route.forwarded_path == "/v1",
         GatewayCliKey::Gemini | GatewayCliKey::Antigravity => route.forwarded_path == "/v1beta",
         GatewayCliKey::OpenCode => false,
     }
@@ -6378,6 +6379,21 @@ fn resolve_upstream_model_id(
                 .unwrap_or(requested_model);
             strip_one_m_context_marker(resolved_model).to_string()
         }
+        // The takeover rewrites each entry's `url`/`apiKey` but leaves its `id`
+        // untouched, so the model name the product sends is already the upstream
+        // name. Failover candidates may differ, hence the same failover-only rule
+        // as Kimi.
+        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => {
+            if !apply_failover_model_mapping {
+                return strip_one_m_context_marker(requested_model).to_string();
+            }
+            let resolved_model = provider
+                .model_mapping
+                .default_model
+                .as_deref()
+                .unwrap_or(requested_model);
+            strip_one_m_context_marker(resolved_model).to_string()
+        }
         GatewayCliKey::Gemini | GatewayCliKey::Antigravity | GatewayCliKey::OpenCode => {
             strip_one_m_context_marker(requested_model).to_string()
         }
@@ -9992,6 +10008,16 @@ fn source_protocol_from_route(route: &GatewayRoute) -> Option<AiProtocol> {
                 None
             }
         }
+        // Both family products are OpenAI Chat only: their custom model entries
+        // point at a full `/chat/completions` URL and the app sends Chat bodies.
+        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => {
+            let path = route.forwarded_path.as_str();
+            if path == "/v1/chat/completions" || path == "/chat/completions" {
+                Some(AiProtocol::OpenAiChat)
+            } else {
+                None
+            }
+        }
         GatewayCliKey::Gemini | GatewayCliKey::Antigravity => {
             if route.forwarded_path.contains(":generateContent")
                 || route.forwarded_path.contains(":streamGenerateContent")
@@ -12084,7 +12110,10 @@ mod tests {
                 GatewayCliKey::Codex | GatewayCliKey::Grok => {
                     crate::coding::proxy_gateway::transformer::AiProtocol::OpenAiResponses
                 }
-                GatewayCliKey::Kimi | GatewayCliKey::OpenCode => {
+                GatewayCliKey::Kimi
+                | GatewayCliKey::OpenCode
+                | GatewayCliKey::Workbuddy
+                | GatewayCliKey::Codebuddy => {
                     crate::coding::proxy_gateway::transformer::AiProtocol::OpenAiChat
                 }
                 GatewayCliKey::Gemini | GatewayCliKey::Antigravity => {
@@ -12098,7 +12127,9 @@ mod tests {
                 GatewayCliKey::Codex
                 | GatewayCliKey::Grok
                 | GatewayCliKey::Kimi
-                | GatewayCliKey::OpenCode => ProviderAuthStrategy::Bearer,
+                | GatewayCliKey::OpenCode
+                | GatewayCliKey::Workbuddy
+                | GatewayCliKey::Codebuddy => ProviderAuthStrategy::Bearer,
                 GatewayCliKey::Gemini | GatewayCliKey::Antigravity => {
                     ProviderAuthStrategy::GoogleApiKey
                 }

@@ -28,7 +28,9 @@
     "dshFull": "DeepSeek Harness",
     "kimi": "Kimi",
     "zcode": "ZCode",
-    "omoNative": "OmO"
+    "omoNative": "OmO",
+    "workbuddy": "WorkBuddy",
+    "codebuddy": "CodeBuddy"
   },
   "providerBilling": {
     "title": "计费配置",
@@ -943,7 +945,9 @@
         "qoder_ide": "Qoder Desktop",
         "qoder_ide_cn": "Qoder CN Desktop",
         "qodercli": "Qoder CLI",
-        "qodercli_cn": "Qoder CN"
+        "qodercli_cn": "Qoder CN",
+        "workbuddy_desktop": "WorkBuddy",
+        "codebuddy_cli": "CodeBuddy"
       },
       "cliStatus": {
         "direct": "未接管",
@@ -1981,7 +1985,9 @@
     "more": "更多",
     "copyFailed": "复制失败",
     "configDir": "配置目录路径",
-    "retry": "重试"
+    "retry": "重试",
+    "availableModelsFree": "未限制可用模型：会显示内置模型与本文件中的全部模型。",
+    "availableModelsRestricted": "该文件通过 availableModels 限制了可用模型（{{count}} 个）。AI Toolbox 不会改动这个列表。"
   },
   "sessionManager": {
     "title": "会话管理",
@@ -6158,5 +6164,101 @@
     "remove": "删除此规则",
     "add": "添加规则",
     "description": "配置速度档改写规则：CLI 请求左列模型、且请求本身没有指定 Fast / Ultrafast 时，网关在转发前补写 service_tier。精确匹配（忽略大小写，去 [1M]）；仅在向上游发起 OpenAI Chat / Responses 请求时生效；CLI 自身显式选择的速度档始终优先。"
+  },
+  "workbuddy": {
+    "title": "WorkBuddy 配置管理",
+    "pageHint": "WorkBuddy 读取一个 models.json；渠道列表由该文件按「端点 + API Key」聚合得到。文件里没有渠道概念，所以卡片是视图而不是记录。",
+    "modelsPath": "模型配置文件",
+    "addModel": "添加模型",
+    "editModel": "编辑模型",
+    "deleteProvider": "删除渠道",
+    "deleteProviderConfirm": "将删除该渠道下的全部模型条目。确定继续？",
+    "model": {
+      "id": "模型 ID",
+      "name": "显示名称",
+      "vendor": "供应商",
+      "baseUrl": "端点",
+      "apiKey": "API Key",
+      "maxInputTokens": "最大输入 Token",
+      "maxOutputTokens": "最大输出 Token",
+      "temperature": "温度",
+      "supportsToolCall": "支持工具调用",
+      "supportsImages": "支持图片",
+      "supportsReasoning": "支持推理",
+      "onlyReasoning": "仅推理",
+      "useCustomProtocol": "自定义协议",
+      "useCustomProtocolHint": "开启后跳过 URL 规范化，端点按填写内容原样写入。",
+      "baseUrlChannelHint": "该条目属于已有渠道；修改端点会把它移出原渠道。"
+    },
+    "noModels": "还没有自定义模型。",
+    "identity": {
+      "title": "身份文件",
+      "hint": "WorkBuddy 把身份文件按账号保存；当前登录账号决定它们的存放目录。",
+      "dir": "身份目录",
+      "missing": "该文件尚未创建，保存后写入。",
+      "save": "保存",
+      "saved": "已保存 {{name}}"
+    },
+    "provider": {
+      "title": "供应商列表"
+    },
+    "rootPathSource": {
+      "modal": {
+        "title": "自定义配置目录",
+        "description": "WorkBuddy 的 models.json、mcp.json 与账号身份文件都从这个配置目录派生。",
+        "currentSource": "当前来源",
+        "customPath": "配置目录",
+        "placeholder": "输入或选择 WorkBuddy 配置目录",
+        "reset": "重置为默认",
+        "resetSuccess": "已重置为默认配置目录",
+        "saveSuccess": "WorkBuddy 配置目录已保存",
+        "sourceCustom": "应用内设置",
+        "sourceEnv": "环境变量 WORKBUDDY_CONFIG_DIR",
+        "sourceShell": "Shell 配置 WORKBUDDY_CONFIG_DIR",
+        "sourceDefault": "默认路径",
+        "envWarningTitle": "环境变量需手动配置",
+        "envWarningDesc": "应用内自定义路径只影响 AI Toolbox 的读写位置。如需 WorkBuddy 本体也使用该目录，请自行设置 WORKBUDDY_CONFIG_DIR。",
+        "envHint": "检测到环境变量 WORKBUDDY_CONFIG_DIR: {{path}}",
+        "shellHint": "检测到 Shell 配置 WORKBUDDY_CONFIG_DIR: {{path}}",
+        "folderOnlyTitle": "请选择文件夹",
+        "folderOnlyDesc": "不要选择具体文件，WorkBuddy 会在所选文件夹下派生 models.json、mcp.json 与账号身份文件。"
+      }
+    }
+  },
+  "codebuddy": {
+    "title": "CodeBuddy Code 配置管理",
+    "pageHint": "CodeBuddy Code 与 WorkBuddy 使用同一引擎：models.json 决定自定义模型，渠道列表由「端点 + API Key」聚合得到。",
+    "modelsPath": "模型配置文件",
+    "settingsPath": "settings.json",
+    "settingsEmpty": "该文件不存在。",
+    "settingsHint": "只读预览。settings.json 由 CodeBuddy 自己维护，AI Toolbox 不会改写它。",
+    "promptTitle": "全局提示词",
+    "promptFile": "CODEBUDDY.md",
+    "provider": {
+      "title": "供应商列表"
+    },
+    "rootPathSource": {
+      "modal": {
+        "title": "自定义配置目录",
+        "description": "CodeBuddy 的 models.json、.mcp.json、settings.json 与 CODEBUDDY.md 都从这个配置目录派生。",
+        "currentSource": "当前来源",
+        "customPath": "配置目录",
+        "placeholder": "输入或选择 CodeBuddy 配置目录",
+        "reset": "重置为默认",
+        "resetSuccess": "已重置为默认配置目录",
+        "saveSuccess": "CodeBuddy 配置目录已保存",
+        "sourceCustom": "应用内设置",
+        "sourceEnv": "环境变量 CODEBUDDY_CONFIG_DIR",
+        "sourceShell": "Shell 配置 CODEBUDDY_CONFIG_DIR",
+        "sourceDefault": "默认路径",
+        "envWarningTitle": "环境变量需手动配置",
+        "envWarningDesc": "应用内自定义路径只影响 AI Toolbox 的读写位置。如需 CodeBuddy 本体也使用该目录，请自行设置 CODEBUDDY_CONFIG_DIR。",
+        "envHint": "检测到环境变量 CODEBUDDY_CONFIG_DIR: {{path}}",
+        "shellHint": "检测到 Shell 配置 CODEBUDDY_CONFIG_DIR: {{path}}",
+        "folderOnlyTitle": "请选择文件夹",
+        "folderOnlyDesc": "不要选择具体文件，CodeBuddy 会在所选文件夹下派生 models.json、.mcp.json、settings.json 与 CODEBUDDY.md。"
+      }
+    },
+    "deleteProviderConfirm": "将删除该渠道下的全部模型条目。确定继续？"
   }
 }

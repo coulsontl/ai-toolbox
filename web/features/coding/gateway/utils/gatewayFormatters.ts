@@ -245,9 +245,22 @@ export const calculateCacheHitRate = (inputTokens: number, cacheReadTokens: numb
 const USAGE_ONLY_TOOLS: readonly GatewayUsageTool[] = [
   'pi', 'oh_my_pi', 'omo_native', 'dsh', 'hermes', 'openclaw', 'kimi_cli', 'zcode',
   'mimocode', 'prime_agent', 'devin', 'musecode', 'cmdcode', 'qwencode',
-  'workbuddy', 'workbuddy_ai', 'codebuddy', 'minimax',
+  'workbuddy_ai', 'minimax',
   'qoder_ide', 'qoder_ide_cn', 'qodercli', 'qodercli_cn',
 ];
+
+/**
+ * Usage spelling → takeover spelling, for the two tools that have both.
+ *
+ * A request rate is counted per *takeover* key (`GatewayCliKey::as_str()`:
+ * `workbuddy_desktop` / `codebuddy_cli`), while the filters and the usage list
+ * use the *usage* spelling (`workbuddy` / `codebuddy`). Without this the
+ * lookup missed and the rate could only be shown as `-`.
+ */
+const TAKEOVER_SPELLING_BY_USAGE_TOOL: Partial<Record<GatewayUsageTool, GatewayCliKey>> = {
+  workbuddy: 'workbuddy_desktop' as GatewayCliKey,
+  codebuddy: 'codebuddy_cli' as GatewayCliKey,
+};
 
 export const getGatewayRequestsPerMinute = (
   status: Pick<ProxyGatewayStatus, 'requests_per_minute' | 'requests_per_minute_by_cli'> | null | undefined,
@@ -264,9 +277,10 @@ export const getGatewayRequestsPerMinute = (
   if (USAGE_ONLY_TOOLS.includes(cliKey)) {
     return null;
   }
+  const rateKey = TAKEOVER_SPELLING_BY_USAGE_TOOL[cliKey] ?? (cliKey as GatewayCliKey);
   return status.requests_per_minute_by_cli == null
     ? null
-    : status.requests_per_minute_by_cli[cliKey as GatewayCliKey] ?? 0;
+    : status.requests_per_minute_by_cli[rateKey] ?? 0;
 };
 
 export const formatDateTime = (value: string | null | undefined) => {

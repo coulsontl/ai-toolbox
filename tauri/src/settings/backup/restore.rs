@@ -247,6 +247,8 @@ mod coverage_tests {
             "opencode",
             "pi",
             "zcode",
+            "workbuddy",
+            "codebuddy",
         ] {
             assert!(
                 handled.contains(tool),
@@ -255,6 +257,53 @@ mod coverage_tests {
             );
         }
     }
+}
+
+/// Writes one `external-configs/<workbuddy|codebuddy>/` entry to disk.
+///
+/// Both products share the same `models.json` layout, so the extraction itself
+/// is identical; only the destination directory differs.
+fn restore_workbuddy_family_entry<R: Read>(
+    restore_dir: &Path,
+    relative_path: &str,
+    file: &mut R,
+    restored_wsl_modules: &mut Vec<String>,
+    tool: &str,
+) -> Result<(), String> {
+    if !restore_dir.exists() {
+        fs::create_dir_all(restore_dir)
+            .map_err(|e| format!("Failed to create {tool} config directory: {e}"))?;
+    }
+    // CodeBuddy's user-scope MCP file is a sibling of the config directory
+    // (`~/.codebuddy.json`). It cannot go through the generic resolver — that
+    // helper rejects `..` to block zip path traversal — so the entry carries a
+    // marker name and is redirected to the parent here.
+    let sibling_target = if tool == "codebuddy"
+        && relative_path == crate::coding::codebuddy::constants::CODEBUDDY_SIBLING_MCP_ENTRY
+    {
+        restore_dir
+            .parent()
+            .map(|parent| parent.join(crate::coding::codebuddy::constants::CODEBUDDY_USER_MCP_FILE))
+    } else {
+        None
+    };
+    let resolved = match sibling_target {
+        Some(path) => Some(path),
+        None => resolve_external_config_restore_output_path(restore_dir, relative_path)?,
+    };
+    let Some(outpath) = resolved else {
+        return Ok(());
+    };
+    if let Some(parent) = outpath.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create {tool} parent directory: {e}"))?;
+        }
+    }
+    record_restored_external_config_wsl_module(restored_wsl_modules, tool);
+    let mut outfile = File::create(&outpath).map_err(|e| format!("Failed to create file: {e}"))?;
+    std::io::copy(file, &mut outfile).map_err(|e| format!("Failed to extract file: {e}"))?;
+    Ok(())
 }
 
 /// Shared restore pipeline over an already-open archive.
@@ -522,6 +571,43 @@ pub(crate) fn restore_from_archive<R: Read + Seek>(
         home_dir.join(".omo").join("agent"),
     );
     if let Some(warning) = omo_native_warning {
+        push_restore_warning(&mut restore_result, warning);
+    }
+
+    // WorkBuddy desktop / CodeBuddy Code are runtime-file-owned (always backed up),
+    // so their restore target follows the normal restore-dir rules: a packaged
+    // `root-dir.txt` wins when the caller allows root overrides, otherwise the
+    // product's own default directory is used.
+    let workbuddy_restore_dir_override = should_use_root_override_for_tool(
+        "workbuddy",
+        include_cli_config_files,
+        skip_cli_custom_roots,
+    )
+    .then(|| read_root_dir_override(archive, "external-configs/workbuddy/root-dir.txt"))
+    .flatten();
+    let codebuddy_restore_dir_override = should_use_root_override_for_tool(
+        "codebuddy",
+        include_cli_config_files,
+        skip_cli_custom_roots,
+    )
+    .then(|| read_root_dir_override(archive, "external-configs/codebuddy/root-dir.txt"))
+    .flatten();
+
+    let (workbuddy_restore_dir, workbuddy_warning) = resolve_restore_dir_override(
+        "workbuddy",
+        workbuddy_restore_dir_override,
+        crate::coding::workbuddy::paths::default_config_dir()?,
+    );
+    if let Some(warning) = workbuddy_warning {
+        push_restore_warning(&mut restore_result, warning);
+    }
+
+    let (codebuddy_restore_dir, codebuddy_warning) = resolve_restore_dir_override(
+        "codebuddy",
+        codebuddy_restore_dir_override,
+        crate::coding::codebuddy::paths::default_config_dir()?,
+    );
+    if let Some(warning) = codebuddy_warning {
         push_restore_warning(&mut restore_result, warning);
     }
 
@@ -1048,6 +1134,42 @@ pub(crate) fn restore_from_archive<R: Read + Seek>(
                 if relative_path == ".credentials.yaml" {
                     harden_restored_sensitive_file(&outpath)?;
                 }
+            } else if file_name.starts_with("external-configs/workbuddy/") {
+                let relative_path = &file_name["external-configs/workbuddy/".len()..];
+                if relative_path.is_empty()
+                    || file_name.ends_with('/')
+                    || relative_path == "root-dir.txt"
+                {
+                    continue;
+                }
+                if should_filter_external_config_entry(&filter_rules, "workbuddy", relative_path) {
+                    continue;
+                }
+                restore_workbuddy_family_entry(
+                    &workbuddy_restore_dir,
+                    relative_path,
+                    &mut file,
+                    &mut restored_wsl_modules,
+                    "workbuddy",
+                )?;
+            } else if file_name.starts_with("external-configs/codebuddy/") {
+                let relative_path = &file_name["external-configs/codebuddy/".len()..];
+                if relative_path.is_empty()
+                    || file_name.ends_with('/')
+                    || relative_path == "root-dir.txt"
+                {
+                    continue;
+                }
+                if should_filter_external_config_entry(&filter_rules, "codebuddy", relative_path) {
+                    continue;
+                }
+                restore_workbuddy_family_entry(
+                    &codebuddy_restore_dir,
+                    relative_path,
+                    &mut file,
+                    &mut restored_wsl_modules,
+                    "codebuddy",
+                )?;
             } else if file_name.starts_with("external-configs/omo_native/") {
                 let relative_path = &file_name["external-configs/omo_native/".len()..];
                 if relative_path.is_empty()

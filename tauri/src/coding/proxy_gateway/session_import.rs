@@ -1936,6 +1936,14 @@ fn find_matching_proxy(
     record: &SessionUsageRecord,
     only_proxy_id: Option<&str>,
 ) -> Result<Option<String>, String> {
+    // One reported tool, two stored `app_type` spellings: native transcripts
+    // use `GatewayUsageTool::as_str()` (`workbuddy`), gateway-served proxy rows
+    // use `GatewayCliKey::as_str()` (`workbuddy_desktop`). Matching on only the
+    // former missed every proxy row, so the same call was imported twice and
+    // the totals doubled.
+    let app_types = crate::coding::proxy_gateway::usage_stats::app_type_filter_values(
+        record.cli_key,
+    );
     if let Some(envelope_id) = &record.usage.envelope_id {
         // 裸 ID 与带作用域的 ID 分别做精确索引查询，避免每次未命中时持有共享连接锁
         // 扫描该 CLI 的全部原生和代理历史。
@@ -1944,33 +1952,47 @@ fn find_matching_proxy(
         // and provider (`stable_usage_request_id`). Both forms are tried so
         // ids written by older versions still match.
         let bare = format!("SESSION:{envelope_id}");
+        let placeholders = sql_placeholders(2, app_types.len());
+        let sql = format!(
+            "SELECT request_id FROM proxy_request_logs
+             WHERE request_id = ?1
+               AND COALESCE(data_source, 'proxy') = 'proxy'
+               AND app_type IN ({placeholders}) AND request_kind = 'request'
+               AND (?{} IS NULL OR request_id = ?{})
+             LIMIT 1",
+            app_types.len() + 2,
+            app_types.len() + 2,
+        );
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(bare)];
+        for app_type in &app_types {
+            params_vec.push(Box::new((*app_type).to_string()));
+        }
+        let mut param_refs: Vec<&dyn rusqlite::ToSql> =
+            params_vec.iter().map(|value| value.as_ref()).collect();
+        let only_proxy_slot: Box<dyn rusqlite::ToSql> = Box::new(only_proxy_id);
+        param_refs.push(only_proxy_slot.as_ref() as &dyn rusqlite::ToSql);
         let exact = conn
-            .query_row(
-                "SELECT request_id FROM proxy_request_logs
-                 WHERE request_id = ?1
-                   AND COALESCE(data_source, 'proxy') = 'proxy'
-                   AND app_type = ?2 AND request_kind = 'request'
-                   AND (?3 IS NULL OR request_id = ?3)
-                 LIMIT 1",
-                params![bare, record.cli_key.as_str(), only_proxy_id],
-                |row| row.get::<_, String>(0),
-            )
+            .query_row(&sql, param_refs.as_slice(), |row| row.get::<_, String>(0))
             .optional()
             .map_err(|error| error.to_string())?;
         if exact.is_some() {
             return Ok(exact);
         }
-        let scoped = conn
-            .prepare_cached(SCOPED_PROXY_ENVELOPE_LOOKUP)
-            .map_err(|error| error.to_string())?
-            .query_row(
-                params![record.cli_key.as_str(), envelope_id, only_proxy_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|error| error.to_string())?;
-        if scoped.is_some() {
-            return Ok(scoped);
+        // The scoped lookup builds the id from `app_type`, so it has to try
+        // each spelling rather than compare against one.
+        for app_type in &app_types {
+            let scoped = conn
+                .prepare_cached(SCOPED_PROXY_ENVELOPE_LOOKUP)
+                .map_err(|error| error.to_string())?
+                .query_row(
+                    params![app_type, envelope_id, only_proxy_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| error.to_string())?;
+            if scoped.is_some() {
+                return Ok(scoped);
+            }
         }
     }
     // Zero counters cannot identify an invocation. A known native envelope
@@ -1981,43 +2003,69 @@ fn find_matching_proxy(
     {
         return Ok(None);
     }
-    let mut query = conn
-        .prepare_cached(
-            "SELECT request_id FROM proxy_request_logs
-         WHERE COALESCE(data_source, 'proxy') = 'proxy' AND app_type = ?1
+    // `app_type IN (...)` rather than `= ?1`: see the spelling note above.
+    let app_type_count = app_types.len();
+    let tail_base = app_type_count + 1;
+    let sql = format!(
+        "SELECT request_id FROM proxy_request_logs
+         WHERE COALESCE(data_source, 'proxy') = 'proxy'
+           AND app_type IN ({})
            AND request_kind = 'request'
-           AND (?9 IS NULL OR request_id = ?9)
-           AND (?10 IS NULL OR request_id NOT GLOB 'SESSION:*')
+           AND (?{a} IS NULL OR request_id = ?{a})
+           AND (?{b} IS NULL OR request_id NOT GLOB 'SESSION:*')
            AND (stream_outcome = 'completed' OR (stream_outcome IS NULL AND status_code >= 200 AND status_code < 300))
-           AND (LOWER(model) = LOWER(?2) OR LOWER(request_model) = LOWER(?2))
-           AND input_tokens = ?3 AND output_tokens = ?4
-           AND cache_read_tokens = ?5 AND cache_creation_tokens = ?6
-           AND ?7 BETWEEN created_at - (MAX(COALESCE(duration_ms, 0), 0) + 999) / 1000 - ?8
-                      AND created_at + ?11
+           AND (LOWER(model) = LOWER(?{m}) OR LOWER(request_model) = LOWER(?{m}))
+           AND input_tokens = ?{i} AND output_tokens = ?{o}
+           AND cache_read_tokens = ?{cr} AND cache_creation_tokens = ?{cc}
+           AND ?{t} BETWEEN created_at - (MAX(COALESCE(duration_ms, 0), 0) + 999) / 1000 - ?{g}
+                      AND created_at + ?{e}
          LIMIT 2",
-        )
-        .map_err(|error| error.to_string())?;
+        sql_placeholders(1, app_type_count),
+        m = tail_base,
+        i = tail_base + 1,
+        o = tail_base + 2,
+        cr = tail_base + 3,
+        cc = tail_base + 4,
+        t = tail_base + 5,
+        g = tail_base + 6,
+        a = tail_base + 7,
+        b = tail_base + 8,
+        e = tail_base + 9,
+    );
+    let mut query = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    for app_type in &app_types {
+        params_vec.push(Box::new((*app_type).to_string()));
+    }
+    // Order must match the `?{...}` numbers exactly (1-based, declarations
+    // above) — `only_proxy_id` is the *narrowing* slot and `envelope_id` is the
+    // `NOT GLOB` guard; swapping them silently changes which rows are excluded.
+    params_vec.push(Box::new(record.model.clone()));
+    params_vec.push(Box::new(record.usage.input_tokens.unwrap_or(0) as i64));
+    params_vec.push(Box::new(record.usage.output_tokens.unwrap_or(0) as i64));
+    params_vec.push(Box::new(record.usage.cache_read_tokens.unwrap_or(0) as i64));
+    params_vec.push(Box::new(record.usage.cache_creation_tokens.unwrap_or(0) as i64));
+    params_vec.push(Box::new(record.created_at));
+    params_vec.push(Box::new(PROXY_MATCH_START_GRACE_SECONDS));
+    params_vec.push(Box::new(only_proxy_id));
+    params_vec.push(Box::new(record.usage.envelope_id.clone()));
+    params_vec.push(Box::new(PROXY_MATCH_END_GRACE_SECONDS));
+    let param_refs: Vec<&dyn rusqlite::ToSql> =
+        params_vec.iter().map(|value| value.as_ref()).collect();
     let matches = query
-        .query_map(
-            params![
-                record.cli_key.as_str(),
-                record.model,
-                record.usage.input_tokens.unwrap_or(0) as i64,
-                record.usage.output_tokens.unwrap_or(0) as i64,
-                record.usage.cache_read_tokens.unwrap_or(0) as i64,
-                record.usage.cache_creation_tokens.unwrap_or(0) as i64,
-                record.created_at,
-                PROXY_MATCH_START_GRACE_SECONDS,
-                only_proxy_id,
-                record.usage.envelope_id,
-                PROXY_MATCH_END_GRACE_SECONDS,
-            ],
-            |row| row.get::<_, String>(0),
-        )
+        .query_map(param_refs.as_slice(), |row| row.get::<_, String>(0))
         .map_err(|error| error.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
     Ok((matches.len() == 1).then(|| matches[0].clone()))
+}
+
+/// `?, ?, ?` starting at 1-based `first`.
+fn sql_placeholders(first: usize, count: usize) -> String {
+    (first..first + count)
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn write_record(conn: &Connection, record: &SessionUsageRecord) -> Result<(), String> {

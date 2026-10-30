@@ -7,13 +7,13 @@ use serde_json::Value;
 
 use crate::coding::open_code::shell_env;
 use crate::coding::{
-    antigravity, claude_code, codex, dsh, gemini_cli, grok, hermes, kimi, oh_my_pi, omo_native,
-    open_claw, open_code, pi, zcode,
+    antigravity, claude_code, codebuddy, codex, dsh, gemini_cli, grok, hermes, kimi, oh_my_pi,
+    omo_native, open_claw, open_code, pi, workbuddy, zcode,
 };
 use crate::db::helpers::{db_get, db_patch_fields};
 use crate::db::schema::DbTable;
 
-const MODULE_KEYS: [&str; 14] = [
+const MODULE_KEYS: [&str; 16] = [
     "opencode",
     "claude",
     "codex",
@@ -28,6 +28,8 @@ const MODULE_KEYS: [&str; 14] = [
     "omo_native",
     "hermes",
     "dsh",
+    "workbuddy",
+    "codebuddy",
 ];
 const OMO_LEGACY_BASENAME: &str = "oh-my-opencode";
 const OMO_CANONICAL_BASENAME: &str = "oh-my-openagent";
@@ -214,6 +216,8 @@ fn normalize_module_key(module: &str) -> Option<&'static str> {
         "omo_native" | "omo" => Some("omo_native"),
         "hermes" => Some("hermes"),
         "dsh" => Some("dsh"),
+        "workbuddy" => Some("workbuddy"),
+        "codebuddy" => Some("codebuddy"),
         _ => None,
     }
 }
@@ -299,6 +303,16 @@ pub async fn refresh_runtime_location_cache_for_module_async(
         Some("kimi") => {
             let location = resolve_kimi_runtime_location_uncached_async(db).await?;
             set_cached_runtime_location("kimi", location.clone());
+            Ok(location)
+        }
+        Some("workbuddy") => {
+            let location = resolve_workbuddy_runtime_location_uncached_async(db).await?;
+            set_cached_runtime_location("workbuddy", location.clone());
+            Ok(location)
+        }
+        Some("codebuddy") => {
+            let location = resolve_codebuddy_runtime_location_uncached_async(db).await?;
+            set_cached_runtime_location("codebuddy", location.clone());
             Ok(location)
         }
         Some("openclaw") => {
@@ -1363,6 +1377,76 @@ pub async fn get_kimi_wsl_target_path_async(
     }
 }
 
+pub fn get_workbuddy_runtime_location_sync(
+    db: &crate::db::SqliteDbState,
+) -> Result<RuntimeLocationInfo, String> {
+    let _ = db;
+    Ok(get_cached_or_fallback_runtime_location("workbuddy"))
+}
+
+pub async fn get_workbuddy_runtime_location_async(
+    db: &crate::db::SqliteDbState,
+) -> Result<RuntimeLocationInfo, String> {
+    get_cached_or_refresh_runtime_location_async(db, "workbuddy").await
+}
+
+async fn resolve_workbuddy_runtime_location_uncached_async(
+    db: &crate::db::SqliteDbState,
+) -> Result<RuntimeLocationInfo, String> {
+    let custom_path = get_custom_path_from_record(
+        db,
+        DbTable::WorkbuddySettingsConfig,
+        workbuddy::constants::WORKBUDDY_SETTINGS_CONFIG_ID,
+        |value| {
+            workbuddy::adapter::settings_from_db_value(value.clone())
+                .config_dir
+                .filter(|path| !path.trim().is_empty())
+        },
+    )
+    .await;
+    let (path, source) = if let Some(path) = custom_path {
+        (PathBuf::from(path), "custom".to_string())
+    } else {
+        workbuddy::paths::resolve_path_without_db()
+    };
+    Ok(build_runtime_location(path, source))
+}
+
+pub fn get_codebuddy_runtime_location_sync(
+    db: &crate::db::SqliteDbState,
+) -> Result<RuntimeLocationInfo, String> {
+    let _ = db;
+    Ok(get_cached_or_fallback_runtime_location("codebuddy"))
+}
+
+pub async fn get_codebuddy_runtime_location_async(
+    db: &crate::db::SqliteDbState,
+) -> Result<RuntimeLocationInfo, String> {
+    get_cached_or_refresh_runtime_location_async(db, "codebuddy").await
+}
+
+async fn resolve_codebuddy_runtime_location_uncached_async(
+    db: &crate::db::SqliteDbState,
+) -> Result<RuntimeLocationInfo, String> {
+    let custom_path = get_custom_path_from_record(
+        db,
+        DbTable::CodebuddySettingsConfig,
+        codebuddy::constants::CODEBUDDY_SETTINGS_CONFIG_ID,
+        |value| {
+            codebuddy::adapter::settings_from_db_value(value.clone())
+                .config_dir
+                .filter(|path| !path.trim().is_empty())
+        },
+    )
+    .await;
+    let (path, source) = if let Some(path) = custom_path {
+        (PathBuf::from(path), "custom".to_string())
+    } else {
+        codebuddy::paths::resolve_path_without_db()
+    };
+    Ok(build_runtime_location(path, source))
+}
+
 pub fn get_gemini_cli_runtime_location_sync(
     db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
@@ -2048,6 +2132,32 @@ pub fn get_tool_skills_path_sync(db: &crate::db::SqliteDbState, tool_key: &str) 
                 .host_path
                 .join("skills"),
         ),
+        "workbuddy" => get_workbuddy_runtime_location_sync(db).ok().map(|location| {
+            if let Some(wsl) = location.wsl {
+                build_windows_unc_path(
+                    &wsl.distro,
+                    &expand_home_from_user_root(
+                        wsl.linux_user_root.as_deref(),
+                        "~/.workbuddy/skills",
+                    ),
+                )
+            } else {
+                location.host_path.join("skills")
+            }
+        }),
+        "codebuddy" => get_codebuddy_runtime_location_sync(db).ok().map(|location| {
+            if let Some(wsl) = location.wsl {
+                build_windows_unc_path(
+                    &wsl.distro,
+                    &expand_home_from_user_root(
+                        wsl.linux_user_root.as_deref(),
+                        "~/.codebuddy/skills",
+                    ),
+                )
+            } else {
+                location.host_path.join("skills")
+            }
+        }),
         _ => None,
     }
 }
@@ -2189,6 +2299,38 @@ pub async fn get_tool_skills_path_async(
             .await
             .ok()
             .map(|location| location.host_path.join("skills")),
+        "workbuddy" => get_workbuddy_runtime_location_async(db)
+            .await
+            .ok()
+            .map(|location| {
+                if let Some(wsl) = location.wsl {
+                    build_windows_unc_path(
+                        &wsl.distro,
+                        &expand_home_from_user_root(
+                            wsl.linux_user_root.as_deref(),
+                            "~/.workbuddy/skills",
+                        ),
+                    )
+                } else {
+                    location.host_path.join("skills")
+                }
+            }),
+        "codebuddy" => get_codebuddy_runtime_location_async(db)
+            .await
+            .ok()
+            .map(|location| {
+                if let Some(wsl) = location.wsl {
+                    build_windows_unc_path(
+                        &wsl.distro,
+                        &expand_home_from_user_root(
+                            wsl.linux_user_root.as_deref(),
+                            "~/.codebuddy/skills",
+                        ),
+                    )
+                } else {
+                    location.host_path.join("skills")
+                }
+            }),
         _ => None,
     }
 }
@@ -2280,6 +2422,12 @@ fn get_pi_mcp_config_path_from_location(location: &RuntimeLocationInfo) -> PathB
     }
 }
 
+/// CodeBuddy's user-scope MCP file lives beside the config directory, not in it:
+/// `<parent>/.codebuddy.json` for a root of `<parent>/.codebuddy`.
+fn codebuddy_mcp_path_in(root: &Path) -> PathBuf {
+    root.join(codebuddy::constants::CODEBUDDY_USER_MCP_FILE)
+}
+
 pub fn get_tool_mcp_config_path_sync(
     db: &crate::db::SqliteDbState,
     tool_key: &str,
@@ -2305,6 +2453,26 @@ pub fn get_tool_mcp_config_path_sync(
         "omo_native" => get_omo_native_runtime_location_sync(db)
             .ok()
             .map(|location| get_omo_native_mcp_config_path_from_location(&location)),
+        // The desktop app writes `mcp.json`; the CLI reads its own `.mcp.json`
+        // before that file, so the two modules must not point at the same one.
+        "workbuddy" => get_workbuddy_runtime_location_sync(db)
+            .ok()
+            .map(|location| {
+                location
+                    .host_path
+                    .join(workbuddy::constants::WORKBUDDY_MCP_CONFIG_FILE)
+            }),
+        // CodeBuddy user-scope MCP is the **sibling** `~/.codebuddy.json`, not a
+        // file inside the config directory. Verified against the real CLI
+        // (v2.178.1): `codebuddy mcp add -s user` writes top-level
+        // `mcpServers` there, and neither `~/.codebuddy/.mcp.json` nor
+        // `~/.codebuddy/mcp.json` is read or created. This value wins over
+        // `builtin.rs` (`detection::resolve_mcp_config_path_with_db` tries
+        // runtime_location first), so pointing it at `.mcp.json` made every
+        // MCP sync report success while the CLI ignored the file.
+        "codebuddy" => get_codebuddy_runtime_location_sync(db)
+            .ok()
+            .and_then(|location| location.host_path.parent().map(codebuddy_mcp_path_in)),
         _ => None,
     }
 }
@@ -2339,6 +2507,22 @@ pub async fn get_tool_mcp_config_path_async(
             .await
             .ok()
             .map(|location| get_omo_native_mcp_config_path_from_location(&location)),
+        // The desktop app writes `mcp.json`; the CLI reads its own `.mcp.json`
+        // before that file, so the two modules must not point at the same one.
+        "workbuddy" => get_workbuddy_runtime_location_async(db)
+            .await
+            .ok()
+            .map(|location| {
+                location
+                    .host_path
+                    .join(workbuddy::constants::WORKBUDDY_MCP_CONFIG_FILE)
+            }),
+        // Sibling `~/.codebuddy.json`, not a file inside the config directory —
+        // see the sync counterpart above for the real-CLI evidence.
+        "codebuddy" => get_codebuddy_runtime_location_async(db)
+            .await
+            .ok()
+            .and_then(|location| location.host_path.parent().map(codebuddy_mcp_path_in)),
         _ => None,
     }
 }
@@ -2391,6 +2575,8 @@ fn resolve_config_path_without_db(module: &str) -> (PathBuf, String) {
         "omo_native" => resolve_omo_native_path_without_db(),
         "hermes" => hermes::commands::resolve_hermes_path_without_db(),
         "dsh" => dsh::commands::resolve_dsh_path_without_db(),
+        "workbuddy" => workbuddy::paths::resolve_path_without_db(),
+        "codebuddy" => codebuddy::paths::resolve_path_without_db(),
         _ => (PathBuf::new(), "default".to_string()),
     }
 }

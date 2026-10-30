@@ -164,6 +164,54 @@ mod tests {
         }
     }
 
+    /// The frontend keys `app_configs` by whatever `proxy_gateway_supported_cli_keys`
+    /// returned, which is `GatewayCliKey::as_str()` — `workbuddy_desktop` /
+    /// `codebuddy_cli`. If serde's spelling differs, `settings_from_value`
+    /// fails to parse and `unwrap_or_default` silently resets every gateway
+    /// setting, so the user's per-CLI timeout/retry config never persists.
+    #[test]
+    fn app_configs_keyed_by_the_takeover_spelling_survive_a_round_trip() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        db.with_conn(|conn| {
+            db_put(
+                conn,
+                DbTable::ProxyGatewaySettings,
+                SETTINGS_ID,
+                &json!({
+                    "listen_port": 38124,
+                    "app_configs": {
+                        "workbuddy_desktop": {"cost_multiplier": "1.5"},
+                        "codebuddy_cli": {"cost_multiplier": "2.0"}
+                    }
+                }),
+            )
+        })
+        .unwrap();
+
+        let settings = load_settings_from_sqlite_state(&db).unwrap();
+        // The reset would show up as the default port, not the persisted one.
+        assert_eq!(settings.listen_port, 38124, "settings were reset to defaults");
+        assert_eq!(
+            settings.default_cost_multiplier_for(GatewayCliKey::Workbuddy),
+            "1.5"
+        );
+        assert_eq!(
+            settings.default_cost_multiplier_for(GatewayCliKey::Codebuddy),
+            "2.0"
+        );
+
+        // And the value the page reads back must be under the same key.
+        let saved = serde_json::to_value(&settings).expect("serialize settings");
+        let keys = saved["app_configs"]
+            .as_object()
+            .expect("app_configs object")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(keys.contains(&"workbuddy_desktop".to_string()), "{keys:?}");
+        assert!(keys.contains(&"codebuddy_cli".to_string()), "{keys:?}");
+    }
+
     #[test]
     fn isolated_gateway_port_override_wins_over_persisted_record() {
         let mut settings = ProxyGatewaySettings::default();

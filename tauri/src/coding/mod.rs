@@ -6,6 +6,8 @@ pub mod claude_code;
 pub mod claude_desktop;
 pub mod cli_extensions;
 pub mod cli_resolver;
+// CodeBuddy Code CLI: same engine as WorkBuddy desktop, different config root.
+pub mod codebuddy;
 pub mod codex;
 pub mod config_cleanup;
 // Shared host (local vs WSL Direct) for provider config value resolution.
@@ -50,6 +52,10 @@ pub mod skills;
 pub mod ssh;
 pub mod tools;
 pub(crate) mod url_utils;
+// WorkBuddy desktop and CodeBuddy Code share one engine: their custom-model
+// contract and (desktop-only) identity files live in one place.
+pub mod workbuddy;
+pub mod workbuddy_family;
 pub mod wsl;
 pub mod zcode;
 

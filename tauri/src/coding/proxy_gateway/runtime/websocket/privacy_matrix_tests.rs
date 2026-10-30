@@ -256,7 +256,7 @@ fn assert_stream_response(protocol: &str, body: &str, case: &str) {
     );
 }
 
-const CLI_ENTRIES: [(GatewayCliKey, &str, &str); 8] = [
+const CLI_ENTRIES: [(GatewayCliKey, &str, &str); 10] = [
     (
         GatewayCliKey::Claude,
         "anthropic_messages",
@@ -296,6 +296,16 @@ const CLI_ENTRIES: [(GatewayCliKey, &str, &str); 8] = [
         GatewayCliKey::Antigravity,
         "gemini_native",
         "/antigravity/v1beta/models/test-model:generateContent",
+    ),
+    (
+        GatewayCliKey::Workbuddy,
+        "openai_chat",
+        "/workbuddy/v1/chat/completions",
+    ),
+    (
+        GatewayCliKey::Codebuddy,
+        "openai_chat",
+        "/codebuddy/v1/chat/completions",
     ),
 ];
 

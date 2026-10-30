@@ -21,10 +21,27 @@ interface ModelPricingModalProps {
   onClose: () => void;
 }
 
-type PricingCliKey = 'claude' | 'codex' | 'grok' | 'kimi' | 'gemini' | 'antigravity';
+type PricingCliKey =
+  | 'claude'
+  | 'codex'
+  | 'grok'
+  | 'kimi'
+  | 'gemini'
+  | 'antigravity'
+  | 'workbuddy_desktop'
+  | 'codebuddy_cli';
 type PricingConfigState = Record<PricingCliKey, GatewayPricingConfig>;
 
-const pricingCliKeys: readonly PricingCliKey[] = ['claude', 'codex', 'grok', 'kimi', 'gemini', 'antigravity'];
+const pricingCliKeys: readonly PricingCliKey[] = [
+  'claude',
+  'codex',
+  'grok',
+  'kimi',
+  'gemini',
+  'antigravity',
+  'workbuddy_desktop',
+  'codebuddy_cli',
+];
 const costPattern = /^\d+(?:\.\d+)?$/;
 
 const createDefaultPricingConfigs = (): PricingConfigState => ({
@@ -34,6 +51,8 @@ const createDefaultPricingConfigs = (): PricingConfigState => ({
   kimi: { cost_multiplier: '1.0', pricing_model_source: 'upstream' },
   gemini: { cost_multiplier: '1.0', pricing_model_source: 'upstream' },
   antigravity: { cost_multiplier: '1.0', pricing_model_source: 'upstream' },
+  workbuddy_desktop: { cost_multiplier: '1.0', pricing_model_source: 'upstream' },
+  codebuddy_cli: { cost_multiplier: '1.0', pricing_model_source: 'upstream' },
 });
 
 const createEmptyPricing = (): ModelPricing => ({

@@ -130,6 +130,8 @@ const SKILLS_TARGETS_FROM_RUNTIME_LOCATION: &[&str] = &[
     "antigravity_cli",
     "zcode",
     "omo_native",
+    "workbuddy",
+    "codebuddy",
 ];
 
 async fn get_remote_tool_skills_dir_with_db(

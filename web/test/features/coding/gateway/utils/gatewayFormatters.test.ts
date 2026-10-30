@@ -387,6 +387,29 @@ test('request rate follows the CLI filter and keeps no traffic distinct from unl
   assert.equal(getGatewayRequestsPerMinute({ requests_per_minute: 0, requests_per_minute_by_cli: {} }, 'claude'), 0);
 });
 
+/**
+ * The two products that are both usage tools and takeover targets.
+ *
+ * A request rate is counted under the *takeover* spelling
+ * (`workbuddy_desktop` / `codebuddy_cli`) while the filter passes the *usage*
+ * spelling, so a plain dictionary lookup never found the entry. Listing them as
+ * usage-only made the rate `-` even with real traffic; dropping the usage-only
+ * entry alone would have made it a confident `0`, which is worse.
+ */
+test('request rate resolves the takeover spelling of a dual-spelling tool', () => {
+  const status = {
+    requests_per_minute: 30,
+    requests_per_minute_by_cli: {
+      workbuddy_desktop: 4,
+      codebuddy_cli: 7,
+    } as Record<string, number>,
+  };
+  assert.equal(getGatewayRequestsPerMinute(status, 'workbuddy'), 4);
+  assert.equal(getGatewayRequestsPerMinute(status, 'codebuddy'), 7);
+  // The international WorkBuddy edition has no takeover path at all.
+  assert.equal(getGatewayRequestsPerMinute(status, 'workbuddy_ai'), null);
+});
+
 test('normalizeAttemptCounts falls back total attempts for legacy request logs', () => {
   assert.deepEqual(normalizeAttemptCounts({ attempt_count: 2, total_attempt_count: 0 }), {
     current: 2,

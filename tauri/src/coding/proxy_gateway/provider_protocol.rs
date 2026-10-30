@@ -9,6 +9,10 @@ pub(crate) fn native_cli_protocol(cli_key: GatewayCliKey) -> Option<AiProtocol> 
         GatewayCliKey::Codex => Some(AiProtocol::OpenAiResponses),
         GatewayCliKey::Grok => Some(AiProtocol::OpenAiResponses),
         GatewayCliKey::Kimi => Some(AiProtocol::OpenAiChat),
+        // Both products send OpenAI Chat requests: their custom model entries
+        // point at a full `.../v1/chat/completions` URL (verified against the
+        // real CLI and the desktop app's validator).
+        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => Some(AiProtocol::OpenAiChat),
         GatewayCliKey::Gemini | GatewayCliKey::Antigravity => Some(AiProtocol::GeminiNative),
         GatewayCliKey::OpenCode => None,
     }
@@ -106,6 +110,9 @@ fn provider_target_protocol(
         }
         GatewayCliKey::Gemini | GatewayCliKey::Antigravity => {
             protocol_from_meta_or_settings(meta, &settings).unwrap_or(AiProtocol::GeminiNative)
+        }
+        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => {
+            protocol_from_meta_or_settings(meta, &settings).unwrap_or(AiProtocol::OpenAiChat)
         }
         GatewayCliKey::OpenCode => AiProtocol::OpenAiResponses,
     }

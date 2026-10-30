@@ -1,3 +1,4 @@
+pub mod family_sync;
 pub mod manifest;
 
 use self::manifest::{
@@ -38,6 +39,11 @@ const CODEX_CONFIG_KIND: &str = "codex_config_toml";
 const CODEX_AUTH_KIND: &str = "codex_auth_json";
 const GROK_CONFIG_KIND: &str = "grok_config_toml";
 const KIMI_CONFIG_KIND: &str = "kimi_config_toml";
+/// WorkBuddy desktop custom-model file. Takeover rewrites each entry's
+/// `url` / `apiKey`; the file also holds product-owned keys, so the whole file
+/// is backed up and restored rather than field-patched back.
+const WORKBUDDY_MODELS_KIND: &str = "workbuddy_models_json";
+const CODEBUDDY_MODELS_KIND: &str = "codebuddy_models_json";
 const GEMINI_ENV_KIND: &str = "gemini_env";
 const GEMINI_SETTINGS_KIND: &str = "gemini_settings_json";
 const ANTIGRAVITY_ENV_KIND: &str = "antigravity_env";
@@ -624,6 +630,10 @@ pub async fn engage_single_cli(
     if !is_supported_cli(cli_key) {
         return Err("This CLI is not supported by the gateway MVP".to_string());
     }
+    // The family products derive their channel list from `models.json`, so the
+    // provider rows the candidate loader reads must be refreshed from that file
+    // first — otherwise a channel added in the product is invisible to takeover.
+    sync_family_store_before_engage(db, cli_key).await?;
     ensure_aggregate_takeover_can_engage_single(paths, cli_key)?;
     let Some(base_origin) = gateway_status.base_url.as_deref() else {
         return Err("Start the proxy gateway before enabling Gateway proxy".to_string());
@@ -1676,6 +1686,8 @@ pub fn is_supported_cli(cli_key: GatewayCliKey) -> bool {
             | GatewayCliKey::Grok
             | GatewayCliKey::Kimi
             | GatewayCliKey::Gemini
+            | GatewayCliKey::Workbuddy
+            | GatewayCliKey::Codebuddy
     )
 }
 
@@ -1728,6 +1740,12 @@ async fn resolve_targets(
         }
         GatewayCliKey::Antigravity => {
             runtime_location::get_antigravity_runtime_location_async(db).await?
+        }
+        GatewayCliKey::Workbuddy => {
+            runtime_location::get_workbuddy_runtime_location_async(db).await?
+        }
+        GatewayCliKey::Codebuddy => {
+            runtime_location::get_codebuddy_runtime_location_async(db).await?
         }
         GatewayCliKey::OpenCode => {
             return Err(
@@ -1794,6 +1812,18 @@ async fn resolve_targets(
                 managed_fields: static_managed_fields(&ANTIGRAVITY_SETTINGS_MANAGED_FIELDS),
             },
         ],
+        GatewayCliKey::Workbuddy => vec![CliProxyTarget {
+            kind: WORKBUDDY_MODELS_KIND,
+            path: runtime_root
+                .join(crate::coding::workbuddy_family::models_json::MODELS_FILE_NAME),
+            managed_fields: Vec::new(),
+        }],
+        GatewayCliKey::Codebuddy => vec![CliProxyTarget {
+            kind: CODEBUDDY_MODELS_KIND,
+            path: runtime_root
+                .join(crate::coding::workbuddy_family::models_json::MODELS_FILE_NAME),
+            managed_fields: Vec::new(),
+        }],
         GatewayCliKey::OpenCode => Vec::new(),
         GatewayCliKey::ClaudeDesktop => {
             unreachable!("ClaudeDesktop is handled by the early return in resolve_targets")
@@ -2451,9 +2481,52 @@ fn apply_gateway_config(
             )?;
             patch_gemini_settings(required_target_path(targets, ANTIGRAVITY_SETTINGS_KIND)?)
         }
+        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => {
+            let kind = models_kind_for(cli_key);
+            patch_workbuddy_family_models(
+                required_target_path(targets, kind)?,
+                &cli_gateway_endpoint(cli_key, base_origin),
+            )
+        }
         GatewayCliKey::OpenCode => {
             Err("OpenCode adapter is intentionally out of scope".to_string())
         }
+    }
+}
+
+/// The `models.json` target kind for each family product.
+/// Refreshes the family provider store from `models.json` right before a
+/// takeover reads candidates. No-op for every other CLI.
+async fn sync_family_store_before_engage(
+    db: &SqliteDbState,
+    cli_key: GatewayCliKey,
+) -> Result<(), String> {
+    let store = match cli_key {
+        GatewayCliKey::Workbuddy => family_sync::FamilyStore::Workbuddy,
+        GatewayCliKey::Codebuddy => family_sync::FamilyStore::Codebuddy,
+        _ => return Ok(()),
+    };
+    let location = match cli_key {
+        GatewayCliKey::Workbuddy => {
+            runtime_location::get_workbuddy_runtime_location_async(db).await?
+        }
+        _ => runtime_location::get_codebuddy_runtime_location_async(db).await?,
+    };
+    let outcome = family_sync::sync_family_providers(db, store, &location.host_path)?;
+    log::info!(
+        "[proxy-gateway] {} provider sync before engage: +{} kept {} orphaned {}",
+        store.label(),
+        outcome.inserted,
+        outcome.kept,
+        outcome.orphaned
+    );
+    Ok(())
+}
+
+fn models_kind_for(cli_key: GatewayCliKey) -> &'static str {
+    match cli_key {
+        GatewayCliKey::Codebuddy => CODEBUDDY_MODELS_KIND,
+        _ => WORKBUDDY_MODELS_KIND,
     }
 }
 
@@ -2570,6 +2643,17 @@ fn restore_gateway_config(
                 )
             }
         }
+        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => {
+            let kind = models_kind_for(cli_key);
+            let path = required_target_path(targets, kind)?;
+            if should_delete_gateway_created_file(manifest, kind) {
+                return delete_if_exists(path);
+            }
+            restore_workbuddy_family_models(
+                path,
+                backup_content(paths, cli_key, manifest, kind)?.as_deref(),
+            )
+        }
         GatewayCliKey::OpenCode => {
             Err("OpenCode adapter is intentionally out of scope".to_string())
         }
@@ -2632,6 +2716,12 @@ fn current_cli_gateway_endpoint(
         GatewayCliKey::Antigravity => {
             current_gemini_gateway_endpoint(required_target_path(targets, ANTIGRAVITY_ENV_KIND)?)
         }
+        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => {
+            current_workbuddy_family_endpoint(
+                cli_key,
+                required_target_path(targets, models_kind_for(cli_key))?,
+            )
+        }
         GatewayCliKey::OpenCode => Ok(None),
     }
 }
@@ -2646,6 +2736,9 @@ fn cli_gateway_endpoint(cli_key: GatewayCliKey, base_origin: &str) -> String {
         GatewayCliKey::Kimi => format!("{base_origin}/kimi/v1"),
         GatewayCliKey::Gemini => format!("{base_origin}/gemini/v1beta"),
         GatewayCliKey::Antigravity => format!("{base_origin}/antigravity/v1beta"),
+        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => {
+            format!("{base_origin}/{}/v1", family_route_segment(cli_key))
+        }
         GatewayCliKey::OpenCode => base_origin.to_string(),
     }
 }
@@ -3354,6 +3447,136 @@ fn patch_grok_config(path: &Path, gateway_endpoint: &str) -> Result<(), String> 
     gateway_model["api_backend"] = value("responses");
     model_root.insert(GATEWAY_PROVIDER_ID, Item::Table(gateway_model));
     write_toml_file(path, &document)
+}
+
+/// Rewrites every custom model in `models.json` to point at the local gateway.
+///
+/// Only entries carrying both a `url` and an `apiKey` are touched: those are the
+/// custom models. The products' built-in Tencent-hosted models live inside the
+/// app rather than in this file, so a takeover here cannot redirect them.
+///
+/// Restoration does not undo these fields one by one. The manifest already
+/// holds a whole-file backup written before this runs, and restoring that
+/// verbatim also brings back product-owned keys the gateway never understood;
+/// a field-level rollback would silently drop them.
+fn patch_workbuddy_family_models(path: &Path, gateway_base: &str) -> Result<(), String> {
+    let raw = fs::read_to_string(path).unwrap_or_default();
+    let mut document = crate::coding::workbuddy_family::models_json::ModelsDocument::parse(
+        &raw,
+        path.exists(),
+    )?;
+    let endpoint = format!(
+        "{}{}",
+        gateway_base.trim_end_matches('/'),
+        crate::coding::workbuddy_family::models_json::CHAT_COMPLETIONS_SUFFIX
+    );
+    for entry in document.models.iter_mut() {
+        let Some(object) = entry.as_object_mut() else {
+            continue;
+        };
+        let has_url = object
+            .get("url")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty());
+        let has_key = object
+            .get("apiKey")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty());
+        if !has_url || !has_key {
+            continue;
+        }
+        object.insert("url".to_string(), Value::String(endpoint.clone()));
+        object.insert(
+            "apiKey".to_string(),
+            Value::String(GATEWAY_API_KEY.to_string()),
+        );
+        // The gateway serves the raw OpenAI Chat path, so the product must stop
+        // appending its own `/chat/completions` (and must not rewrite the URL).
+        object.insert("useCustomProtocol".to_string(), Value::Bool(true));
+    }
+    let mut body = serde_json::to_string_pretty(&document.to_value())
+        .map_err(|error| format!("Failed to serialize models.json: {error}"))?;
+    body.push('\n');
+    // Atomic: both products watch `models.json` on a 1-second debounce and a
+    // half-written file parses as an error, which blanks their model list until
+    // the next successful read.
+    write_family_models_file(path, &body)
+}
+
+/// Temp-file + rename for the family's `models.json`.
+///
+/// Separate from the generic `write_text_file` because only this file has a
+/// watcher: the other CLIs' config files are read on demand, so a plain write
+/// there cannot be observed mid-flight.
+fn write_family_models_file(path: &Path, content: &str) -> Result<(), String> {
+    crate::coding::workbuddy_family::models_json::atomic_write(path, content.as_bytes())
+}
+
+/// Puts `models.json` back from the manifest backup.
+///
+/// A missing backup means the file did not exist before takeover; the caller
+/// handles that case by deleting the file the gateway created.
+fn restore_workbuddy_family_models(
+    path: &Path,
+    backup_content: Option<&str>,
+) -> Result<(), String> {
+    match backup_content {
+        Some(content) => write_family_models_file(path, content),
+        None => delete_if_exists(path),
+    }
+}
+
+/// The gateway endpoint currently written into `models.json`, if any.
+///
+/// Detection keys off the takeover path segment (`/workbuddy/v1` or
+/// `/codebuddy/v1`) rather than a port: the port changes with gateway settings,
+/// the segment does not.
+/// The URL segment the WorkBuddy family's gateway route lives under.
+///
+/// Shared by the patch (writes `<base>/<segment>/v1/chat/completions`), the
+/// probe (reads it back), and `cli_gateway_endpoint` (the expected value the
+/// probe is compared against). Three places deriving the same string by hand
+/// is how the probe ended up returning a suffixed URL that never matched.
+fn family_route_segment(cli_key: GatewayCliKey) -> &'static str {
+    match cli_key {
+        GatewayCliKey::Codebuddy => "codebuddy",
+        _ => "workbuddy",
+    }
+}
+
+fn current_workbuddy_family_endpoint(
+    cli_key: GatewayCliKey,
+    path: &Path,
+) -> Result<Option<String>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read {}: {}", path.display(), error))?;
+    let Ok(document) =
+        crate::coding::workbuddy_family::models_json::ModelsDocument::parse(&raw, true)
+    else {
+        return Ok(None);
+    };
+    let marker = format!(
+        "/{}/v1{}",
+        family_route_segment(cli_key),
+        crate::coding::workbuddy_family::models_json::CHAT_COMPLETIONS_SUFFIX
+    );
+    for entry in &document.models {
+        let Some(url) = entry.get("url").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(index) = url.find(&marker) {
+            // Return the **base**: `cli_gateway_endpoint` (the expected value
+            // this is compared against) has no `/chat/completions` suffix, so
+            // returning the full URL here made every engaged WorkBuddy /
+            // CodeBuddy report `Drifted` forever.
+            let prefix = &url[..index];
+            return Ok(Some(format!("{prefix}/{}/v1", family_route_segment(cli_key))));
+        }
+    }
+    Ok(None)
 }
 
 fn patch_kimi_config(path: &Path, gateway_endpoint: &str) -> Result<String, String> {

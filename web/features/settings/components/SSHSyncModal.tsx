@@ -49,6 +49,8 @@ const MODULE_NAMES: Record<string, string> = {
   omo_native: 'omo',
   hermes: 'Hermes',
   dsh: 'dsh',
+  workbuddy: 'WorkBuddy',
+  codebuddy: 'CodeBuddy',
 };
 
 // Module tag colors
@@ -68,6 +70,8 @@ const MODULE_COLORS: Record<string, string> = {
   omo_native: 'gold',
   hermes: 'volcano',
   dsh: 'red',
+  workbuddy: 'blue',
+  codebuddy: 'purple',
 };
 
 const AUTH_METHOD_TAG_COLORS: Record<SSHConnection['authMethod'], string> = {
@@ -107,9 +111,11 @@ const MODULE_TO_TAB: Record<string, string> = {
   omo_native: 'omo_native',
   hermes: 'hermes',
   dsh: 'dsh',
+  workbuddy: 'workbuddy',
+  codebuddy: 'codebuddy',
 };
 
-const ALL_MODULE_KEYS = ['opencode', 'claude', 'claude_desktop', 'codex', 'grok', 'kimi', 'geminicli', 'antigravity', 'zcode', 'openclaw', 'pi', 'oh_my_pi', 'omo_native', 'hermes', 'dsh'];
+const ALL_MODULE_KEYS = ['opencode', 'claude', 'claude_desktop', 'codex', 'grok', 'kimi', 'geminicli', 'antigravity', 'zcode', 'openclaw', 'pi', 'oh_my_pi', 'omo_native', 'hermes', 'dsh', 'workbuddy', 'codebuddy'];
 
 interface SSHSyncModalProps {
   open: boolean;

@@ -135,6 +135,8 @@ pub(crate) async fn load_candidate_providers_with_settings_and_selection(
         GatewayCliKey::Kimi => DbTable::KimiProvider,
         GatewayCliKey::Gemini => DbTable::GeminiCliProvider,
         GatewayCliKey::Antigravity => DbTable::AntigravityProvider,
+        GatewayCliKey::Workbuddy => DbTable::WorkbuddyProvider,
+        GatewayCliKey::Codebuddy => DbTable::CodebuddyProvider,
         GatewayCliKey::OpenCode => {
             return Err(
                 "OpenCode adapter is intentionally out of scope for the gateway MVP".to_string(),
@@ -179,6 +181,8 @@ pub(crate) async fn load_provider_by_id_for_connectivity_test(
         GatewayCliKey::Kimi => DbTable::KimiProvider,
         GatewayCliKey::Gemini => DbTable::GeminiCliProvider,
         GatewayCliKey::Antigravity => DbTable::AntigravityProvider,
+        GatewayCliKey::Workbuddy => DbTable::WorkbuddyProvider,
+        GatewayCliKey::Codebuddy => DbTable::CodebuddyProvider,
         GatewayCliKey::OpenCode => {
             return Err(
                 "OpenCode adapter is intentionally out of scope for the gateway MVP".to_string(),
@@ -851,6 +855,57 @@ fn provider_from_record(
                 meta,
             }))
         }
+        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => {
+            let provider =
+                crate::coding::workbuddy_family::gateway_provider::provider_from_db_value(record);
+            if provider.is_disabled || is_official_provider_category(&provider.category) {
+                return Ok(None);
+            }
+            // A row exists only because the gateway wrote it on engage. If its
+            // channel pair is unreadable or its channel left `models.json`, skip
+            // it — one malformed record must not blank out every candidate.
+            let Some((base_url, api_key)) =
+                crate::coding::workbuddy_family::gateway_provider::channel_from_settings_config(
+                    &provider.settings_config,
+                )
+            else {
+                return Ok(None);
+            };
+            let (base_url, is_full_url) = normalize_provider_base_url(base_url, meta.is_full_url);
+            let target_protocol = meta
+                .api_format
+                .as_deref()
+                .and_then(AiProtocol::from_api_format)
+                .unwrap_or(AiProtocol::OpenAiChat);
+            let mut auth_strategy = auth_strategy_for_target_protocol(
+                target_protocol,
+                meta.api_key_field.as_deref(),
+                &api_key,
+                ProviderAuthStrategy::Bearer,
+            );
+            if target_protocol == AiProtocol::AnthropicMessages
+                && anthropic_platform_uses_bearer_auth(&meta)
+            {
+                auth_strategy = ProviderAuthStrategy::Bearer;
+            }
+            Ok(Some(UpstreamProvider {
+                supports_websockets: None,
+                cli_key,
+                id: provider.id,
+                name: provider.name,
+                base_url,
+                api_key,
+                target_protocol,
+                auth_strategy,
+                is_full_url,
+                sort_index: provider.sort_index,
+                model_mapping: UpstreamModelMapping {
+                    rewrite_rules: model_rewrite_rules_from_meta(&meta),
+                    ..UpstreamModelMapping::default()
+                },
+                meta,
+            }))
+        }
         GatewayCliKey::Gemini => {
             let provider = gemini_cli::adapter::from_db_value_provider(record);
             if provider.is_disabled {
@@ -1297,6 +1352,9 @@ fn gateway_profile_tool_for_cli(cli_key: GatewayCliKey) -> Option<&'static str> 
         GatewayCliKey::Kimi => None,
         GatewayCliKey::Gemini => Some("gemini"),
         GatewayCliKey::Antigravity => Some("antigravity"),
+        // No verified built-in endpoint catalog for either product, so a stored
+        // `gatewayProfile` reference must not resolve (same reasoning as Kimi).
+        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => None,
         GatewayCliKey::OpenCode => None,
     }
 }

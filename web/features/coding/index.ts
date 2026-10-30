@@ -13,6 +13,8 @@ export * from './claudedesktop';
 export * from './hermes';
 export * from './zcode';
 export * from './dsh';
+export * from './workbuddy';
+export * from './codebuddy';
 export * from './skills';
 export * from './image';
 export * from './gateway';

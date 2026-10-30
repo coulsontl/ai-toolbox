@@ -75,7 +75,7 @@ export interface SessionDetailFilters {
   content_filter: SessionDetailContentFilter;
 }
 
-export const SIDEBAR_PAGE_KEYS = ['opencode', 'claudecode', 'claudedesktop', 'codex', 'grok', 'geminicli', 'antigravity', 'zcode', 'kimi', 'openclaw', 'pi', 'oh_my_pi', 'omo_native', 'hermes', 'dsh'] as const;
+export const SIDEBAR_PAGE_KEYS = ['opencode', 'claudecode', 'claudedesktop', 'codex', 'grok', 'geminicli', 'antigravity', 'zcode', 'kimi', 'openclaw', 'pi', 'oh_my_pi', 'omo_native', 'hermes', 'dsh', 'workbuddy', 'codebuddy'] as const;
 
 export type SidebarPageKey = typeof SIDEBAR_PAGE_KEYS[number];
 
@@ -103,6 +103,8 @@ export const createDefaultSidebarHiddenByPage = (): SidebarHiddenByPage => ({
   omo_native: false,
   hermes: false,
   dsh: false,
+  workbuddy: false,
+  codebuddy: false,
 });
 
 export const normalizeSidebarHiddenByPage = (
@@ -246,7 +248,7 @@ export const defaultSettings: AppSettings = {
   last_auto_backup_time: null,
   auto_check_update: true,
   receive_beta_updates: false,
-  visible_tabs: ['opencode', 'claudecode', 'claudedesktop', 'codex', 'grok', 'geminicli', 'antigravity', 'zcode', 'kimi', 'openclaw', 'pi', 'oh_my_pi', 'omo_native', 'hermes', 'dsh', 'gateway', 'image', 'ssh', 'wsl'],
+  visible_tabs: ['opencode', 'claudecode', 'claudedesktop', 'codex', 'grok', 'geminicli', 'antigravity', 'zcode', 'kimi', 'openclaw', 'pi', 'oh_my_pi', 'omo_native', 'hermes', 'dsh', 'workbuddy', 'codebuddy', 'gateway', 'image', 'ssh', 'wsl'],
   sidebar_hidden_by_page: createDefaultSidebarHiddenByPage(),
   opencode_allow_clear_applied_oh_my_config: false,
   opencode_use_legacy_oh_my_config: false,

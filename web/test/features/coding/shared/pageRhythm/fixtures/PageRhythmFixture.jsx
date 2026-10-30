@@ -1,6 +1,6 @@
 /**
- * Pins the **page** rhythm of the four `CodingPageHeader` pages that also own a
- * config *directory* (pi / oh_my_pi / dsh / hermes).
+ * Pins the **page** rhythm of every `CodingPageHeader` page that also owns a
+ * config *directory* (pi / oh_my_pi / dsh / hermes / workbuddy / codebuddy).
  *
  * Why this exists: every one of those pages was migrated onto `CodingPageHeader`
  * while keeping a `display: flex; column; gap: 16px` page container from its
@@ -28,6 +28,8 @@ import piStyles from '@/features/coding/pi/pages/PiPage.module.less';
 import ompStyles from '@/features/coding/oh_my_pi/pages/OhMyPiPage.module.less';
 import dshStyles from '@/features/coding/dsh/pages/DshPage.module.less';
 import hermesStyles from '@/features/coding/hermes/pages/HermesPage.module.less';
+import workbuddyStyles from '@/features/coding/workbuddy/pages/WorkbuddyPage.module.less';
+import codebuddyStyles from '@/features/coding/codebuddy/pages/CodebuddyPage.module.less';
 import '@/App.css';
 
 const parameters = new URLSearchParams(location.search);
@@ -46,6 +48,8 @@ const PAGES = [
   { key: 'omp', label: 'Oh My Pi', styles: ompStyles, sectionClass: 'ompSection' },
   { key: 'dsh', label: 'DeepSeek Harness', styles: dshStyles, sectionClass: 'dshSection' },
   { key: 'hermes', label: 'Hermes', styles: hermesStyles, sectionClass: 'hermesSection' },
+  { key: 'workbuddy', label: 'WorkBuddy', styles: workbuddyStyles, sectionClass: 'workbuddySection' },
+  { key: 'codebuddy', label: 'CodeBuddy', styles: codebuddyStyles, sectionClass: 'codebuddySection' },
 ];
 
 const PageShell = ({ page }) => (

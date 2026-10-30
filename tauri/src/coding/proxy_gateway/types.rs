@@ -13,6 +13,26 @@ pub enum GatewayCliKey {
     Gemini,
     Antigravity,
     OpenCode,
+    /// WorkBuddy desktop. Takeover rewrites every custom model's `url`/`apiKey`
+    /// in `models.json`; its built-in Tencent-hosted models cannot be proxied
+    /// and are left alone.
+    ///
+    /// The explicit rename is load-bearing. `as_str()` (the takeover key, the
+    /// manifest directory, the frontend's `app_configs` key — everything) is
+    /// `workbuddy_desktop`, but `rename_all = "snake_case"` would spell it
+    /// `workbuddy`. That mismatch makes the round trip fail in both
+    /// directions: the frontend writes `{"workbuddy_desktop": {...}}`,
+    /// `settings_from_value` cannot parse it, and its `unwrap_or_default`
+    /// silently resets EVERY gateway setting; on save the backend would write
+    /// `workbuddy`, which the frontend then cannot find.
+    ///
+    /// `workbuddy` stays as an alias so a row written before the rename still
+    /// loads.
+    #[serde(rename = "workbuddy_desktop", alias = "workbuddy")]
+    Workbuddy,
+    /// CodeBuddy Code CLI. Same `models.json` contract as WorkBuddy desktop.
+    #[serde(rename = "codebuddy_cli", alias = "codebuddy")]
+    Codebuddy,
 }
 
 impl GatewayCliKey {
@@ -26,6 +46,22 @@ impl GatewayCliKey {
             Self::Gemini => "gemini",
             Self::Antigravity => "antigravity",
             Self::OpenCode => "opencode",
+            // Deliberately different from the `snake_case` variant names, and
+            // from `GatewayUsageTool`'s strings.
+            //
+            // `proxy_request_logs.app_type` holds BOTH proxy rows (written via
+            // this `as_str`) and imported native-session rows (written via
+            // `GatewayUsageTool::as_str`). The reader reverse-maps `app_type`
+            // through `GatewayUsageTool` only, so a takeover row spelled
+            // `workbuddy` would be read back as *native session usage* — the
+            // gateway's own requests would silently vanish from the proxy
+            // statistics and inflate the session bucket.
+            //
+            // The frontend never sees these strings directly: it round-trips
+            // whatever `proxy_gateway_supported_cli_keys` returned, and the
+            // manifest directory only needs a stable name.
+            Self::Workbuddy => "workbuddy_desktop",
+            Self::Codebuddy => "codebuddy_cli",
         }
     }
 
@@ -38,6 +74,8 @@ impl GatewayCliKey {
             Self::Kimi,
             Self::Gemini,
             Self::Antigravity,
+            Self::Workbuddy,
+            Self::Codebuddy,
         ]
     }
 }
@@ -187,6 +225,11 @@ impl GatewayUsageTool {
             Self::Kimi => GatewayCliKey::Kimi,
             Self::Gemini => GatewayCliKey::Gemini,
             Self::Antigravity => GatewayCliKey::Antigravity,
+            // WorkBuddy and CodeBuddy are both takeover-capable and usage-only
+            // collectors; without these arms `record_request_summary` skips
+            // every proxied request and the statistics page stays empty.
+            Self::Workbuddy => GatewayCliKey::Workbuddy,
+            Self::Codebuddy => GatewayCliKey::Codebuddy,
             Self::OpenCode => GatewayCliKey::OpenCode,
             _ => return None,
         })
@@ -203,6 +246,14 @@ impl From<GatewayCliKey> for GatewayUsageTool {
             GatewayCliKey::Kimi => Self::Kimi,
             GatewayCliKey::Gemini => Self::Gemini,
             GatewayCliKey::Antigravity => Self::Antigravity,
+            // The usage tools for both products already existed (native
+            // transcript collection predates takeover), so takeover reuses them
+            // instead of adding a second pair. `GatewayCliKey::as_str` uses
+            // different strings (`workbuddy_desktop` / `codebuddy_cli`) for
+            // exactly this reason: `app_type` must not conflate a usage row with
+            // a takeover row.
+            GatewayCliKey::Workbuddy => Self::Workbuddy,
+            GatewayCliKey::Codebuddy => Self::Codebuddy,
             GatewayCliKey::OpenCode => Self::OpenCode,
         }
     }

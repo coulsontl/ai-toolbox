@@ -182,10 +182,12 @@ pub(super) fn usage_record(
         (input_total, cache_read, cache_write)
     };
 
-    let created_at = item
-        .get("timestamp")
-        .or_else(|| message.and_then(|message| message.get("timestamp")))
-        .and_then(timestamp)
+    // `timestamp` scans *containers* (`pointer("/timestamp")` etc.), so it takes
+    // `item` itself — passing `item.get("timestamp")` would hand it a bare
+    // scalar and always miss. `message` is a second container to fall back on
+    // because some builds stamp the timestamp on the nested message.
+    let created_at = timestamp(item)
+        .or_else(|| message.and_then(timestamp))
         .unwrap_or(fallback);
     let model = provider
         .and_then(|provider| {

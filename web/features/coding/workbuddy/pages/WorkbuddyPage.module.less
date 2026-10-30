@@ -1,0 +1,28 @@
+/* WorkBuddy page rhythm.
+ *
+ * `display: block` with no `gap`: `CodingPageHeader` already carries a 16px
+ * bottom margin, so a flex/gap container would double the header→first-section
+ * gap to 32px (SOP §4.3.1, `pnpm run test:page-rhythm`).
+ *
+ * Section spacing is carried by each block's own `margin-bottom`, so adjacent
+ * margins collapse rather than add.
+ */
+
+.pageContent {
+  display: block;
+}
+
+.pageHint {
+  margin-top: -12px;
+  margin-bottom: 16px;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+
+.workbuddySection {
+  margin-bottom: 16px;
+}
+
+.workbuddySection:last-child {
+  margin-bottom: 0;
+}

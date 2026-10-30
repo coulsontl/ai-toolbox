@@ -1115,6 +1115,15 @@ fn backup_filter_option_path(tool: &str, relative_path: &str) -> Option<String> 
         "hermes" => format!("~/.hermes/{relative_path}"),
         "dsh" => format!("~/.dsh/{relative_path}"),
         "zcode" => format!("~/.zcode/{relative_path}"),
+        "workbuddy" => format!("~/.workbuddy/{relative_path}"),
+        // The user-scope MCP file lives beside the config directory; showing it
+        // as `~/.codebuddy/sibling-mcp.json` would name a path that never exists.
+        "codebuddy"
+            if relative_path == crate::coding::codebuddy::constants::CODEBUDDY_SIBLING_MCP_ENTRY =>
+        {
+            "~/.codebuddy.json".to_string()
+        }
+        "codebuddy" => format!("~/.codebuddy/{relative_path}"),
         "claude_desktop" if relative_path == "claude_desktop_config.json" => {
             "%LOCALAPPDATA%/Claude/claude_desktop_config.json".to_string()
         }
@@ -1440,6 +1449,51 @@ pub async fn list_backup_file_filter_path_options(
         push_backup_filter_option(&mut options, &mut seen, "dsh", &relative);
     }
 
+    // WorkBuddy family: the exact file set `write_external_configs_to_backup_zip`
+    // writes for these two tools.
+    for (tool, files) in [
+        (
+            "workbuddy",
+            &[
+                crate::coding::workbuddy_family::models_json::MODELS_FILE_NAME,
+                crate::coding::workbuddy::constants::WORKBUDDY_MCP_CONFIG_FILE,
+            ][..],
+        ),
+        (
+            "codebuddy",
+            &[
+                crate::coding::workbuddy_family::models_json::MODELS_FILE_NAME,
+                crate::coding::codebuddy::constants::CODEBUDDY_SIBLING_MCP_ENTRY,
+                crate::coding::codebuddy::constants::CODEBUDDY_SETTINGS_FILE,
+                crate::coding::codebuddy::constants::CODEBUDDY_PROMPT_FILE,
+            ][..],
+        ),
+    ] {
+        let root = match tool {
+            "workbuddy" => runtime_location::get_workbuddy_runtime_location_async(db).await,
+            _ => runtime_location::get_codebuddy_runtime_location_async(db).await,
+        };
+        let Ok(location) = root else {
+            continue;
+        };
+        for relative_path in files {
+            let exists = if *relative_path
+                == crate::coding::codebuddy::constants::CODEBUDDY_SIBLING_MCP_ENTRY
+            {
+                location.host_path.parent().is_some_and(|parent| {
+                    parent
+                        .join(crate::coding::codebuddy::constants::CODEBUDDY_USER_MCP_FILE)
+                        .is_file()
+                })
+            } else {
+                location.host_path.join(relative_path).is_file()
+            };
+            if exists {
+                push_backup_filter_option(&mut options, &mut seen, tool, relative_path);
+            }
+        }
+    }
+
     if let Some((normal_config_path, config_library_path)) = get_claude_desktop_settings_paths() {
         if normal_config_path.exists() {
             push_backup_filter_option(
@@ -1556,6 +1610,11 @@ const ALWAYS_BACKUP_CLI_TOOLS: &[&str] = &[
     "omo_native",
     "hermes",
     "dsh",
+    // WorkBuddy desktop and CodeBuddy Code keep their custom channels only in
+    // `models.json`; there is no SQLite record to re-apply from, so skipping
+    // them on restore would silently lose every user-defined model.
+    "workbuddy",
+    "codebuddy",
 ];
 /// DB-backed CLIs: gated by `backup_cli_config_files_enabled`.
 const OPTIONAL_BACKUP_CLI_TOOLS: &[&str] = &[
@@ -1683,6 +1742,8 @@ fn wsl_module_for_external_config_tool(tool: &str) -> Option<&'static str> {
         "hermes" => Some("hermes"),
         "dsh" => Some("dsh"),
         "zcode" => Some("zcode"),
+        "workbuddy" => Some("workbuddy"),
+        "codebuddy" => Some("codebuddy"),
         _ => None,
     }
 }
@@ -2078,6 +2139,18 @@ pub async fn get_custom_root_dir_path_info(
                 .await
                 .ok()?;
             (source == "custom").then(|| config_dir.to_string_lossy().to_string())
+        }
+        "workbuddy" => {
+            let location = runtime_location::get_workbuddy_runtime_location_async(db)
+                .await
+                .ok()?;
+            (location.source == "custom").then(|| location.host_path.to_string_lossy().to_string())
+        }
+        "codebuddy" => {
+            let location = runtime_location::get_codebuddy_runtime_location_async(db)
+                .await
+                .ok()?;
+            (location.source == "custom").then(|| location.host_path.to_string_lossy().to_string())
         }
         _ => None,
     }
@@ -2929,6 +3002,8 @@ fn normalize_backup_filter_rule_path(tool: &str, file_path: &str) -> String {
         ],
         "dsh" => &["~/.dsh/"],
         "zcode" => &["~/.zcode/"],
+        "workbuddy" => &["~/.workbuddy/"],
+        "codebuddy" => &["~/.codebuddy/"],
         "claude_desktop" => &[
             "%LOCALAPPDATA%/Claude/",
             "%localappdata%/Claude/",
@@ -3940,6 +4015,100 @@ async fn write_external_configs_to_backup_zip<W: Write + Seek>(
             }
         }
     }
+
+    // WorkBuddy desktop and CodeBuddy Code are runtime-file-owned: `models.json`
+    // is their only channel store, so skipping them on restore would drop every
+    // user-defined model. They are packed unconditionally (subject to filter
+    // rules), like OpenCode / OpenClaw / Pi.
+    //
+    // The two blocks are written out one per tool, with the `external-configs/`
+    // entry names spelled as literals. That is deliberate: the backup/restore
+    // set reconciliation (SOP §12.1, "备份打包段 ↔ 恢复分支") greps for
+    // `external-configs/<tool>` literals on both sides, and a `format!` path
+    // would hide a missing restore branch from that check.
+    if let Ok(location) = runtime_location::get_workbuddy_runtime_location_async(db).await {
+        if let Some(custom_dir) = get_custom_root_dir_path_info(db, "workbuddy").await {
+            add_directory_to_zip_once(
+                zip,
+                added_zip_directories,
+                "external-configs/workbuddy/",
+                options,
+                "WorkBuddy directory",
+            )?;
+            add_text_to_zip(
+                zip,
+                "external-configs/workbuddy/root-dir.txt",
+                &custom_dir,
+                options,
+            )?;
+        }
+        for relative_path in [
+            crate::coding::workbuddy_family::models_json::MODELS_FILE_NAME,
+            crate::coding::workbuddy::constants::WORKBUDDY_MCP_CONFIG_FILE,
+        ] {
+            let path = location.host_path.join(relative_path);
+            if path.is_file() {
+                add_external_config_file_to_zip(
+                    zip,
+                    added_zip_directories,
+                    &path,
+                    "workbuddy",
+                    relative_path,
+                    filter_rules,
+                    options,
+                )?;
+            }
+        }
+    }
+
+    if let Ok(location) = runtime_location::get_codebuddy_runtime_location_async(db).await {
+        if let Some(custom_dir) = get_custom_root_dir_path_info(db, "codebuddy").await {
+            add_directory_to_zip_once(
+                zip,
+                added_zip_directories,
+                "external-configs/codebuddy/",
+                options,
+                "CodeBuddy directory",
+            )?;
+            add_text_to_zip(
+                zip,
+                "external-configs/codebuddy/root-dir.txt",
+                &custom_dir,
+                options,
+            )?;
+        }
+        for relative_path in [
+            crate::coding::workbuddy_family::models_json::MODELS_FILE_NAME,
+            crate::coding::codebuddy::constants::CODEBUDDY_SIBLING_MCP_ENTRY,
+            crate::coding::codebuddy::constants::CODEBUDDY_SETTINGS_FILE,
+            crate::coding::codebuddy::constants::CODEBUDDY_PROMPT_FILE,
+        ] {
+            // The user-scope MCP file is a *sibling* of the config directory
+            // (`~/.codebuddy.json`), not a file inside it — see
+            // `CODEBUDDY_USER_MCP_FILE`. Everything else is root-relative.
+            let path = if relative_path == crate::coding::codebuddy::constants::CODEBUDDY_SIBLING_MCP_ENTRY
+            {
+                match location.host_path.parent() {
+                    Some(parent) => parent.join(crate::coding::codebuddy::constants::CODEBUDDY_USER_MCP_FILE),
+                    None => continue,
+                }
+            } else {
+                location.host_path.join(relative_path)
+            };
+            if path.is_file() {
+                add_external_config_file_to_zip(
+                    zip,
+                    added_zip_directories,
+                    &path,
+                    "codebuddy",
+                    relative_path,
+                    filter_rules,
+                    options,
+                )?;
+            }
+        }
+    }
+
     Ok(())
 }
 

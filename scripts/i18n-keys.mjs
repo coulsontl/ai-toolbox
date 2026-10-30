@@ -86,6 +86,7 @@ const DEFAULT_DYNAMIC_IDENTIFIER_VALUES_BY_FILE = {
     translationKeyPrefix: [
       'antigravity',
       'claudecode',
+      'codebuddy',
       'codex',
       'dsh',
       'geminicli',
@@ -95,6 +96,7 @@ const DEFAULT_DYNAMIC_IDENTIFIER_VALUES_BY_FILE = {
       'ohMyPi',
       'omoNative',
       'pi',
+      'workbuddy',
       'zcode',
     ],
     // The second placeholder in

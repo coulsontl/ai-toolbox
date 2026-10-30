@@ -397,6 +397,31 @@ fn normalize_visible_tabs_order(tabs: Vec<String>) -> Vec<String> {
         "omo_native",
         "hermes",
         "dsh",
+        "workbuddy",
+        "codebuddy",
+        "gateway",
+        "image",
+        "ssh",
+        "wsl",
+    ];
+    // Snapshot of the default list immediately before WorkBuddy desktop and
+    // CodeBuddy Code were added.
+    const PRE_WORKBUDDY_DEFAULT_VISIBLE_TABS: &[&str] = &[
+        "opencode",
+        "claudecode",
+        "claudedesktop",
+        "codex",
+        "grok",
+        "geminicli",
+        "antigravity",
+        "zcode",
+        "kimi",
+        "openclaw",
+        "pi",
+        "oh_my_pi",
+        "omo_native",
+        "hermes",
+        "dsh",
         "gateway",
         "image",
         "ssh",
@@ -435,6 +460,7 @@ fn normalize_visible_tabs_order(tabs: Vec<String>) -> Vec<String> {
         || string_vec_matches(&tabs, PRE_KIMI_DEFAULT_VISIBLE_TABS)
         || string_vec_matches(&tabs, PRE_ANTIGRAVITY_DEFAULT_VISIBLE_TABS)
         || string_vec_matches(&tabs, PRE_ZCODE_DEFAULT_VISIBLE_TABS)
+        || string_vec_matches(&tabs, PRE_WORKBUDDY_DEFAULT_VISIBLE_TABS)
     {
         return CURRENT_DEFAULT_VISIBLE_TABS
             .iter()
@@ -750,11 +776,75 @@ mod tests {
                 "omo_native",
                 "hermes",
                 "dsh",
+                "workbuddy",
+                "codebuddy",
                 "gateway",
                 "image",
                 "ssh",
                 "wsl",
             ]
+        );
+    }
+
+    #[test]
+    fn visible_tabs_pre_workbuddy_default_is_migrated() {
+        let settings = from_db_value(json!({
+            // The historical default that predates WorkBuddy and CodeBuddy, not
+            // the current baseline: the migration must recognize it and
+            // re-emit the current default.
+            "visible_tabs": [
+                "opencode",
+                "claudecode",
+                "claudedesktop",
+                "codex",
+                "grok",
+                "geminicli",
+                "antigravity",
+                "zcode",
+                "kimi",
+                "openclaw",
+                "pi",
+                "oh_my_pi",
+                "omo_native",
+                "hermes",
+                "dsh",
+                "gateway",
+                "image",
+                "ssh",
+                "wsl",
+            ]
+        }));
+
+        assert_eq!(
+            settings.visible_tabs,
+            vec![
+                "opencode",
+                "claudecode",
+                "claudedesktop",
+                "codex",
+                "grok",
+                "geminicli",
+                "antigravity",
+                "zcode",
+                "kimi",
+                "openclaw",
+                "pi",
+                "oh_my_pi",
+                "omo_native",
+                "hermes",
+                "dsh",
+                "workbuddy",
+                "codebuddy",
+                "gateway",
+                "image",
+                "ssh",
+                "wsl",
+            ]
+        );
+        assert_eq!(
+            settings.visible_tabs.iter().position(|tab| tab == "workbuddy"),
+            Some(15),
+            "the new tabs land right after dsh, before gateway"
         );
     }
 
@@ -801,6 +891,8 @@ mod tests {
                 "omo_native",
                 "hermes",
                 "dsh",
+                "workbuddy",
+                "codebuddy",
                 "gateway",
                 "image",
                 "ssh",
@@ -829,6 +921,8 @@ mod tests {
                 "oh_my_pi",
                 "hermes",
                 "dsh",
+                "workbuddy",
+                "codebuddy",
                 "gateway",
                 "image",
                 "ssh",
@@ -853,6 +947,8 @@ mod tests {
                 "oh_my_pi",
                 "hermes",
                 "dsh",
+                "workbuddy",
+                "codebuddy",
                 "gateway",
                 "image",
                 "ssh",
@@ -905,6 +1001,8 @@ mod tests {
                 "omo_native",
                 "hermes",
                 "dsh",
+                "workbuddy",
+                "codebuddy",
                 "gateway",
                 "image",
                 "ssh",
@@ -946,6 +1044,8 @@ mod tests {
                 "omo_native",
                 "hermes",
                 "dsh",
+                "workbuddy",
+                "codebuddy",
                 "gateway",
                 "image",
                 "ssh",
@@ -1018,6 +1118,8 @@ mod tests {
                 "omo_native",
                 "hermes",
                 "dsh",
+                "workbuddy",
+                "codebuddy",
                 "gateway",
                 "image",
                 "ssh",
@@ -1066,6 +1168,8 @@ mod tests {
                 "omo_native",
                 "hermes",
                 "dsh",
+                "workbuddy",
+                "codebuddy",
                 "gateway",
                 "image",
                 "ssh",
@@ -1110,6 +1214,8 @@ mod tests {
                 "omo_native",
                 "hermes",
                 "dsh",
+                "workbuddy",
+                "codebuddy",
                 "gateway",
                 "image",
                 "ssh",

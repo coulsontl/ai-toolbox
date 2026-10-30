@@ -156,6 +156,8 @@ fn provider_table(cli_key: GatewayCliKey) -> Option<DbTable> {
         GatewayCliKey::Kimi => Some(DbTable::KimiProvider),
         GatewayCliKey::Gemini => Some(DbTable::GeminiCliProvider),
         GatewayCliKey::Antigravity => Some(DbTable::AntigravityProvider),
+        GatewayCliKey::Workbuddy => Some(DbTable::WorkbuddyProvider),
+        GatewayCliKey::Codebuddy => Some(DbTable::CodebuddyProvider),
         GatewayCliKey::OpenCode => None,
     }
 }
@@ -292,6 +294,12 @@ async fn apply_direct_provider<R: Runtime>(
             .await
         }
         GatewayCliKey::OpenCode => Err("This CLI is not supported by the gateway MVP".to_string()),
+        // The family products have no per-provider apply: their custom models all
+        // live in one file and several are usable at once, so there is no single
+        // "current" provider to switch to. Takeover works at the file level.
+        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => Err(
+            "This product has no per-provider apply; use the gateway takeover instead".to_string(),
+        ),
     }
 }
 
@@ -361,6 +369,9 @@ async fn apply_direct_provider_without_events<R: Runtime>(
             .await
         }
         GatewayCliKey::OpenCode => Err("This CLI is not supported by the gateway MVP".to_string()),
+        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => Err(
+            "This product has no per-provider apply; use the gateway takeover instead".to_string(),
+        ),
     }
 }
 
@@ -393,6 +404,8 @@ fn emit_gateway_cli_wsl_sync_request<R: Runtime>(app: &AppHandle<R>, cli_key: Ga
         GatewayCliKey::Kimi => "wsl-sync-request-kimi",
         GatewayCliKey::Gemini => "wsl-sync-request-geminicli",
         GatewayCliKey::Antigravity => "wsl-sync-request-antigravity",
+        GatewayCliKey::Workbuddy => "wsl-sync-request-workbuddy",
+        GatewayCliKey::Codebuddy => "wsl-sync-request-codebuddy",
         GatewayCliKey::OpenCode => return,
     };
     if let Err(error) = app.emit(event_name, ()) {

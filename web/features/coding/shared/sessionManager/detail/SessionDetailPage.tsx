@@ -523,5 +523,7 @@ export const OmoNativeSessionDetailPage = () => <SessionDetailPage tool="omo_nat
 export const HermesSessionDetailPage = () => <SessionDetailPage tool="hermes" />;
 export const ClaudeDesktopSessionDetailPage = () => <SessionDetailPage tool="claudedesktop" />;
 export const DshSessionDetailPage = () => <SessionDetailPage tool="dsh" />;
+export const WorkbuddySessionDetailPage = () => <SessionDetailPage tool="workbuddy" />;
+export const CodebuddySessionDetailPage = () => <SessionDetailPage tool="codebuddy" />;
 
 export default SessionDetailPage;

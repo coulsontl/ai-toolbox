@@ -13,7 +13,9 @@ export type SessionTool =
   | 'oh_my_pi'
   | 'omo_native'
   | 'hermes'
-  | 'dsh';
+  | 'dsh'
+  | 'workbuddy'
+  | 'codebuddy';
 
 export type SessionSourceMode = 'all' | 'local' | 'wsl';
 export type SessionTimeRange = 'all' | 'today' | '7d' | '30d' | 'older_30d';

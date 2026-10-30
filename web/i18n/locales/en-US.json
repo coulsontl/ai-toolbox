@@ -28,7 +28,9 @@
     "dshFull": "DeepSeek Harness",
     "kimi": "Kimi",
     "zcode": "ZCode",
-    "omoNative": "OmO"
+    "omoNative": "OmO",
+    "workbuddy": "WorkBuddy",
+    "codebuddy": "CodeBuddy"
   },
   "providerBilling": {
     "title": "Billing Config",
@@ -943,7 +945,9 @@
         "qoder_ide": "Qoder Desktop",
         "qoder_ide_cn": "Qoder CN Desktop",
         "qodercli": "Qoder CLI",
-        "qodercli_cn": "Qoder CN"
+        "qodercli_cn": "Qoder CN",
+        "workbuddy_desktop": "WorkBuddy",
+        "codebuddy_cli": "CodeBuddy"
       },
       "cliStatus": {
         "direct": "Direct",
@@ -1981,7 +1985,9 @@
     "more": "More",
     "copyFailed": "Copy failed",
     "configDir": "Config Directory",
-    "retry": "Retry"
+    "retry": "Retry",
+    "availableModelsFree": "No model restriction: the product shows its built-in models plus everything in this file.",
+    "availableModelsRestricted": "This file restricts the available models via availableModels ({{count}}). AI Toolbox never changes that list."
   },
   "sessionManager": {
     "title": "Session Manager",
@@ -6161,5 +6167,101 @@
     "remove": "Remove this rule",
     "add": "Add rule",
     "description": "Configure speed tier rewrite rules: when the CLI requests the left model and the request itself asks for no Fast / Ultrafast tier, the gateway writes service_tier before forwarding. Exact match (case-insensitive, [1M] stripped); only applies to OpenAI Chat / Responses upstream requests; an explicit tier chosen by the CLI always wins."
+  },
+  "workbuddy": {
+    "title": "WorkBuddy Configuration",
+    "pageHint": "WorkBuddy reads a single models.json. Channels are derived by grouping its entries by endpoint and API key — the file has no provider concept, so a card is a view rather than a record.",
+    "modelsPath": "Model config file",
+    "addModel": "Add model",
+    "editModel": "Edit model",
+    "deleteProvider": "Delete channel",
+    "deleteProviderConfirm": "This deletes every model entry in this channel. Continue?",
+    "model": {
+      "id": "Model ID",
+      "name": "Display name",
+      "vendor": "Vendor",
+      "baseUrl": "Endpoint",
+      "apiKey": "API Key",
+      "maxInputTokens": "Max input tokens",
+      "maxOutputTokens": "Max output tokens",
+      "temperature": "Temperature",
+      "supportsToolCall": "Supports tool calling",
+      "supportsImages": "Supports images",
+      "supportsReasoning": "Supports reasoning",
+      "onlyReasoning": "Reasoning only",
+      "useCustomProtocol": "Custom protocol",
+      "useCustomProtocolHint": "Skips URL normalization; the endpoint is written exactly as typed.",
+      "baseUrlChannelHint": "This entry belongs to an existing channel; changing the endpoint moves it out of that channel."
+    },
+    "noModels": "No custom models yet.",
+    "identity": {
+      "title": "Identity files",
+      "hint": "WorkBuddy stores identity files per account; the signed-in account decides where they live.",
+      "dir": "Identity directory",
+      "missing": "This file does not exist yet; saving creates it.",
+      "save": "Save",
+      "saved": "Saved {{name}}"
+    },
+    "provider": {
+      "title": "Providers"
+    },
+    "rootPathSource": {
+      "modal": {
+        "title": "Customize Config Directory",
+        "description": "WorkBuddy derives models.json, mcp.json, and the account identity files from this config directory.",
+        "currentSource": "Current Source",
+        "customPath": "Config directory",
+        "placeholder": "Enter or select the WorkBuddy config directory",
+        "reset": "Reset to Default",
+        "resetSuccess": "Reset to default config directory",
+        "saveSuccess": "WorkBuddy config directory saved",
+        "sourceCustom": "App Settings",
+        "sourceEnv": "Environment Variable WORKBUDDY_CONFIG_DIR",
+        "sourceShell": "Shell Config WORKBUDDY_CONFIG_DIR",
+        "sourceDefault": "Default Path",
+        "envWarningTitle": "Environment Variable Setup Required",
+        "envWarningDesc": "A custom path here only affects where AI Toolbox reads and writes. To have WorkBuddy itself use this directory, you must set WORKBUDDY_CONFIG_DIR manually.",
+        "envHint": "Environment variable WORKBUDDY_CONFIG_DIR detected: {{path}}",
+        "shellHint": "Shell config WORKBUDDY_CONFIG_DIR detected: {{path}}",
+        "folderOnlyTitle": "Select a Folder",
+        "folderOnlyDesc": "Do not select a specific file. WorkBuddy will derive models.json, mcp.json, and the account identity files under the chosen folder."
+      }
+    }
+  },
+  "codebuddy": {
+    "title": "CodeBuddy Code Configuration",
+    "pageHint": "CodeBuddy Code shares WorkBuddy's engine: models.json defines custom models and channels are derived by grouping them by endpoint and API key.",
+    "modelsPath": "Model config file",
+    "settingsPath": "settings.json",
+    "settingsEmpty": "This file does not exist.",
+    "settingsHint": "Read-only preview. CodeBuddy maintains settings.json itself; AI Toolbox never rewrites it.",
+    "promptTitle": "Global prompt",
+    "promptFile": "CODEBUDDY.md",
+    "provider": {
+      "title": "Providers"
+    },
+    "rootPathSource": {
+      "modal": {
+        "title": "Customize Config Directory",
+        "description": "CodeBuddy derives models.json, .mcp.json, settings.json, and CODEBUDDY.md from this config directory.",
+        "currentSource": "Current Source",
+        "customPath": "Config directory",
+        "placeholder": "Enter or select the CodeBuddy config directory",
+        "reset": "Reset to Default",
+        "resetSuccess": "Reset to default config directory",
+        "saveSuccess": "CodeBuddy config directory saved",
+        "sourceCustom": "App Settings",
+        "sourceEnv": "Environment Variable CODEBUDDY_CONFIG_DIR",
+        "sourceShell": "Shell Config CODEBUDDY_CONFIG_DIR",
+        "sourceDefault": "Default Path",
+        "envWarningTitle": "Environment Variable Setup Required",
+        "envWarningDesc": "A custom path here only affects where AI Toolbox reads and writes. To have CodeBuddy itself use this directory, you must set CODEBUDDY_CONFIG_DIR manually.",
+        "envHint": "Environment variable CODEBUDDY_CONFIG_DIR detected: {{path}}",
+        "shellHint": "Shell config CODEBUDDY_CONFIG_DIR detected: {{path}}",
+        "folderOnlyTitle": "Select a Folder",
+        "folderOnlyDesc": "Do not select a specific file. CodeBuddy will derive models.json, .mcp.json, settings.json, and CODEBUDDY.md under the chosen folder."
+      }
+    },
+    "deleteProviderConfirm": "This deletes every model entry in this channel. Continue?"
   }
 }

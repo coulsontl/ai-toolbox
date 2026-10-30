@@ -1655,6 +1655,8 @@ fn emit_gateway_cli_wsl_sync_request(app: &tauri::AppHandle, cli_key: GatewayCli
         GatewayCliKey::Kimi => "wsl-sync-request-kimi",
         GatewayCliKey::Gemini => "wsl-sync-request-geminicli",
         GatewayCliKey::Antigravity => "wsl-sync-request-antigravity",
+        GatewayCliKey::Workbuddy => "wsl-sync-request-workbuddy",
+        GatewayCliKey::Codebuddy => "wsl-sync-request-codebuddy",
         GatewayCliKey::OpenCode => return,
     };
     if let Err(error) = app.emit(event_name, ()) {

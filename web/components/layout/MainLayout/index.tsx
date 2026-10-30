@@ -31,6 +31,7 @@ import ChatgptIcon from '@/assets/chatgpt.svg';
 import PiIcon from '@/assets/pi.svg';
 import OmpIcon from '@/assets/omp.svg';
 import OmoNativeIcon from '@/assets/omo-native.svg';
+import WorkbuddyIcon from '@/assets/agent-icons/workbuddy.png';
 import { Antigravity, Gemini, Grok, HermesAgent, Kimi, OpenClaw as OpenClawIcon, DeepSeek, Zhipu } from '@lobehub/icons';
 
 const TAB_ICONS: Record<string, string> = {
@@ -41,6 +42,10 @@ const TAB_ICONS: Record<string, string> = {
   pi: PiIcon,
   oh_my_pi: OmpIcon,
   omo_native: OmoNativeIcon,
+  // WorkBuddy desktop and CodeBuddy Code are two front ends of one product, so
+  // both tabs use the product mark.
+  workbuddy: WorkbuddyIcon,
+  codebuddy: WorkbuddyIcon,
 };
 
 // macOS Overlay 模式需要为交通灯按钮预留空间，Windows/Linux 使用原生标题栏

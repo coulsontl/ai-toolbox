@@ -73,6 +73,14 @@ fn test_context_for_cli(
             DbTable::AntigravityProvider,
             json!({"env":{"GOOGLE_GEMINI_BASE_URL":upstream_url,"GEMINI_API_KEY":"upstream-test-key"}}),
         ),
+        GatewayCliKey::Workbuddy => (
+            DbTable::WorkbuddyProvider,
+            json!({"baseUrl": upstream_url, "apiKey": "upstream-test-key"}),
+        ),
+        GatewayCliKey::Codebuddy => (
+            DbTable::CodebuddyProvider,
+            json!({"baseUrl": upstream_url, "apiKey": "upstream-test-key"}),
+        ),
         GatewayCliKey::OpenCode => panic!("OpenCode has no gateway takeover route"),
     };
     let provider = db

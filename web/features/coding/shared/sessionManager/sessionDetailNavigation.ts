@@ -28,6 +28,8 @@ const SESSION_TOOL_BASE_PATH: Record<SessionTool, string> = {
   omo_native: '/coding/omo-native',
   hermes: '/coding/hermes',
   dsh: '/coding/dsh',
+  workbuddy: '/coding/workbuddy',
+  codebuddy: '/coding/codebuddy',
 };
 
 export const getSessionToolBasePath = (tool: SessionTool) => SESSION_TOOL_BASE_PATH[tool];

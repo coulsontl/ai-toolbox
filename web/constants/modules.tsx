@@ -37,6 +37,8 @@ export const MODULES: Module[] = [
       { key: 'claudedesktop', labelKey: 'subModules.claudedesktop', path: '/coding/claudedesktop' },
       { key: 'hermes', labelKey: 'subModules.hermes', path: '/coding/hermes' },
       { key: 'dsh', labelKey: 'subModules.dsh', path: '/coding/dsh' },
+      { key: 'workbuddy', labelKey: 'subModules.workbuddy', path: '/coding/workbuddy' },
+      { key: 'codebuddy', labelKey: 'subModules.codebuddy', path: '/coding/codebuddy' },
     ],
   },
   // {

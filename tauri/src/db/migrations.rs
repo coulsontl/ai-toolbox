@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::schema::{sql_string_literal, DbTable, JsonFieldPath, ALL_TABLES};
 
-pub const TARGET_SCHEMA_VERSION: i32 = 31;
+pub const TARGET_SCHEMA_VERSION: i32 = 32;
 const FUTURE_SCHEMA_ERROR_PREFIX: &str = "AI_TOOLBOX_SQLITE_SCHEMA_TOO_NEW";
 
 pub fn run_all(conn: &mut Connection) -> Result<(), String> {
@@ -100,6 +100,9 @@ pub fn run_all(conn: &mut Connection) -> Result<(), String> {
     }
     if current_version < 31 {
         run_migration_step(conn, 31, migrate_v31)?;
+    }
+    if current_version < 32 {
+        run_migration_step(conn, 32, migrate_v32)?;
     }
 
     Ok(())
@@ -695,6 +698,46 @@ fn migrate_v30(conn: &Connection) -> Result<(), String> {
 /// it.
 fn migrate_v31(conn: &Connection) -> Result<(), String> {
     add_column_if_missing(conn, "proxy_request_logs", "native_tools_used", "TEXT")
+}
+
+/// WorkBuddy desktop + CodeBuddy Code tables.
+///
+/// The **page** still derives its channel list from `models.json`: that file is
+/// the products' own source of truth and a derived view cannot carry an id or
+/// survive a round trip. `*_provider` is a separate, gateway-only record set:
+/// takeover needs a stable provider id plus persistable enable/sort/failover
+/// state, none of which `models.json` expresses. WorkBuddy's four identity
+/// documents are edited in place rather than as switchable presets, so only the
+/// config-root overrides and CodeBuddy's `CODEBUDDY.md` presets need anything
+/// else here.
+fn migrate_v32(conn: &Connection) -> Result<(), String> {
+    for table in [
+        DbTable::WorkbuddySettingsConfig,
+        DbTable::WorkbuddyProvider,
+        DbTable::CodebuddySettingsConfig,
+        DbTable::CodebuddyPromptConfig,
+        DbTable::CodebuddyProvider,
+    ] {
+        create_jsonb_table(conn, table)?;
+    }
+    create_json_index(
+        conn,
+        DbTable::CodebuddyPromptConfig,
+        &JsonFieldPath::new("is_applied")?,
+    )?;
+    create_json_index(
+        conn,
+        DbTable::CodebuddyPromptConfig,
+        &JsonFieldPath::new("sort_index")?,
+    )?;
+    // The gateway orders providers by `sort_index` then `updated_at`; without
+    // this index every candidate load falls back to a full-table scan of a
+    // JSONB blob.
+    for table in [DbTable::WorkbuddyProvider, DbTable::CodebuddyProvider] {
+        create_json_index(conn, table, &JsonFieldPath::new("sort_index")?)?;
+        create_json_index(conn, table, &JsonFieldPath::new("is_disabled")?)?;
+    }
+    Ok(())
 }
 
 fn create_jsonb_table(conn: &Connection, table: DbTable) -> Result<(), String> {

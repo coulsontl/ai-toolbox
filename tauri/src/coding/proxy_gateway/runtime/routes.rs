@@ -80,13 +80,78 @@ pub(super) fn match_gateway_route(request_target: &str) -> Option<GatewayRoute> 
                                         query,
                                     })
                                 }
-                                _ => None,
+                                _ => match_openai_chat_route(
+                                    &path,
+                                    "/workbuddy",
+                                    GatewayCliKey::Workbuddy,
+                                    "workbuddy",
+                                    query.clone(),
+                                )
+                                .or_else(|| {
+                                    match_openai_chat_route(
+                                        &path,
+                                        "/codebuddy",
+                                        GatewayCliKey::Codebuddy,
+                                        "codebuddy",
+                                        query.clone(),
+                                    )
+                                }),
                             },
                         },
                     },
                 },
             },
         },
+    }
+}
+
+/// OpenAI-Chat-only takeover routes: the WorkBuddy family serves the same two
+/// paths as Kimi (a bare `/v1` probe and `/v1/chat/completions`).
+fn match_openai_chat_route(
+    path: &str,
+    prefix: &str,
+    cli_key: GatewayCliKey,
+    route_name: &'static str,
+    query: Option<String>,
+) -> Option<GatewayRoute> {
+    let forwarded_path = strip_cli_prefix(path, prefix)?;
+    if !matches!(forwarded_path.as_str(), "/v1" | "/v1/chat/completions") {
+        return None;
+    }
+    Some(GatewayRoute {
+        cli_key,
+        route_name,
+        forwarded_path,
+        query,
+    })
+}
+
+#[cfg(test)]
+mod openai_chat_route_tests {
+    use super::*;
+
+    #[test]
+    fn family_routes_accept_probe_and_chat_only() {
+        for (prefix, cli_key, name) in [
+            ("/workbuddy", GatewayCliKey::Workbuddy, "workbuddy"),
+            ("/codebuddy", GatewayCliKey::Codebuddy, "codebuddy"),
+        ] {
+            // Drive the public entry point: it is what splits the query off
+            // before `strip_cli_prefix` sees the path.
+            let probe = match_gateway_route(&format!("{prefix}/v1")).expect("probe route");
+            assert_eq!(probe.cli_key, cli_key);
+            assert_eq!(probe.route_name, name);
+            assert_eq!(probe.forwarded_path, "/v1");
+
+            let chat =
+                match_gateway_route(&format!("{prefix}/v1/chat/completions?trace=1"))
+                    .expect("chat route");
+            assert_eq!(chat.cli_key, cli_key);
+            assert_eq!(chat.forwarded_path, "/v1/chat/completions");
+            assert_eq!(chat.query.as_deref(), Some("trace=1"));
+
+            assert!(match_gateway_route(&format!("{prefix}/v1/responses")).is_none());
+        }
     }
 }
 

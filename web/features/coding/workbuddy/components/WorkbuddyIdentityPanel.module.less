@@ -1,0 +1,18 @@
+/* The identity panel's own card, matching the sibling sections on the page
+ * (DESIGN.md: section card = 1px border, 16px radius, elevated surface). It
+ * brings its own chrome so the page does not wrap it in a second Collapse. */
+
+.panel {
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-bg-elevated);
+  padding: 18px;
+  box-shadow: none;
+}
+
+.panelHeader {
+  margin-bottom: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
