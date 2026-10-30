@@ -161,6 +161,50 @@ test('Antigravity CLI default mapping names translate to their own i18n keys', (
   );
 });
 
+test('WSL claude.json parse failure names the distro, path, and that the file was untouched', () => {
+  const message =
+    "Onboarding sync: Failed to parse WSL claude.json (distro 'Ubuntu-24.04', ~/.claude.json): trailing characters at line 308 column 2 (char 8799). The file was left untouched.";
+
+  assert.equal(
+    translateSyncMessage(message, 'wsl', stubT),
+    'settings.syncMessages.onboardingSyncParseFailed?' +
+      JSON.stringify({
+        distro: 'Ubuntu-24.04',
+        path: '~/.claude.json',
+        detail: 'trailing characters at line 308 column 2 (char 8799)',
+      }),
+  );
+});
+
+test('WSL claude.json non-object failure keeps distro and path', () => {
+  const message =
+    "Onboarding sync: WSL claude.json is not a JSON object (distro 'Debian', ~/.claude.json). The file was left untouched.";
+
+  assert.equal(
+    translateSyncMessage(message, 'wsl', stubT),
+    'settings.syncMessages.onboardingSyncNotObject?' +
+      JSON.stringify({ distro: 'Debian', path: '~/.claude.json' }),
+  );
+});
+
+test('claude.json diagnostics survive a "; " inside the json5 detail', () => {
+  // `translateSyncMessage` splits joined errors on "; " before pattern matching.
+  // The distro, path and json5 detail are free-form, so these messages must be
+  // parsed as a whole first or they fragment into untranslatable pieces.
+  const message =
+    "Onboarding sync: Failed to parse WSL claude.json (distro 'Ubuntu', ~/.claude.json): expected comma; found 2 at line 308. The file was left untouched.";
+
+  assert.equal(
+    translateSyncMessage(message, 'wsl', stubT),
+    'settings.syncMessages.onboardingSyncParseFailed?' +
+      JSON.stringify({
+        distro: 'Ubuntu',
+        path: '~/.claude.json',
+        detail: 'expected comma; found 2 at line 308',
+      }),
+  );
+});
+
 test('unsupported remote shell preflight is translated with the detected shell', () => {
   assert.equal(
     translateSyncMessage(

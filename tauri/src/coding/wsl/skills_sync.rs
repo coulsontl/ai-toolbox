@@ -146,17 +146,59 @@ fn get_all_skill_tool_keys() -> Vec<&'static str> {
 }
 
 /// Sync all skills to WSL (called on skills-changed event)
+///
+/// Owns the run's persisted outcome; [`sync_skills_to_wsl_with_warnings`] only
+/// does the work so an enclosing full sync can report the combined result.
 pub async fn sync_skills_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<(), String> {
+    let _sync_guard = super::sync_lock::acquire().await;
+
+    // Disabled sync must not rewrite the persisted status either: the pass
+    // returns early and would otherwise report a "successful" run.
+    let config = get_wsl_config(state).await?;
+    if !config.enabled || !config.sync_skills {
+        return Ok(());
+    }
+
     let mut warnings = Vec::new();
-    sync_skills_to_wsl_with_warnings(state, app, &mut warnings).await
+    let outcome = sync_skills_to_wsl_with_warnings(state, app.clone(), &mut warnings).await;
+
+    let sync_result = match &outcome {
+        Ok(()) => super::types::SyncResult {
+            success: true,
+            synced_files: vec![],
+            skipped_files: vec![],
+            errors: vec![],
+            warnings: warnings.clone(),
+        },
+        Err(error_message) => super::types::SyncResult {
+            success: false,
+            synced_files: vec![],
+            skipped_files: vec![],
+            errors: vec![error_message.clone()],
+            warnings: warnings.clone(),
+        },
+    };
+    let _ = super::commands::update_sync_status(state, &sync_result).await;
+    let _ = super::commands::update_sync_warnings(state, &warnings).await;
+
+    // Emit event for UI feedback
+    let _ = app.emit("wsl-skills-sync-completed", ());
+    let _ = app.emit("wsl-sync-completed", &sync_result);
+
+    outcome
 }
 
+/// Do the skills sync work, appending user-facing warnings to `warnings`.
+///
+/// Never persists status or emits completion events: full sync embeds this and
+/// reports one combined outcome, so a pass-local `update_sync_status` followed
+/// by an immediate overwrite would lose whichever ran second.
 pub(super) async fn sync_skills_to_wsl_with_warnings(
     state: &SqliteDbState,
     app: AppHandle,
     warnings: &mut Vec<String>,
 ) -> Result<(), String> {
-    let _sync_guard = SKILLS_WSL_SYNC_LOCK
+    let _skills_guard = SKILLS_WSL_SYNC_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
         .await;
@@ -376,19 +418,12 @@ pub(super) async fn sync_skills_to_wsl_with_warnings(
                     synced_count += 1;
                 }
                 Err(e) => {
-                    let error_message =
-                        format!("Skills WSL sync failed for '{}': {}", skill.name, e);
-                    let sync_result = super::types::SyncResult {
-                        success: false,
-                        synced_files: vec![],
-                        skipped_files: vec![],
-                        errors: vec![error_message.clone()],
-                        warnings: warnings.clone(),
-                    };
-                    let _ = super::commands::update_sync_status(state, &sync_result).await;
-                    let _ = super::commands::update_sync_warnings(state, warnings).await;
-                    let _ = app.emit("wsl-sync-completed", &sync_result);
-                    return Err(error_message);
+                    // Return the error only: the enclosing entry point persists
+                    // the status and emits the completion event.
+                    return Err(format!(
+                        "Skills WSL sync failed for '{}': {}",
+                        skill.name, e
+                    ));
                 }
             }
         }
@@ -452,21 +487,6 @@ pub(super) async fn sync_skills_to_wsl_with_warnings(
         synced_count,
         skills.len()
     );
-
-    // Update sync status
-    let sync_result = super::types::SyncResult {
-        success: true,
-        synced_files: vec![],
-        skipped_files: vec![],
-        errors: vec![],
-        warnings: warnings.clone(),
-    };
-    let _ = super::commands::update_sync_status(state, &sync_result).await;
-    let _ = super::commands::update_sync_warnings(state, warnings).await;
-
-    // Emit event for UI feedback
-    let _ = app.emit("wsl-skills-sync-completed", ());
-    let _ = app.emit("wsl-sync-completed", &sync_result);
 
     Ok(())
 }

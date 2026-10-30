@@ -3,6 +3,7 @@ mod commands;
 mod mcp_sync;
 mod skills_sync;
 mod sync;
+mod sync_lock;
 mod types;
 
 pub use commands::*;

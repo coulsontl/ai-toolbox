@@ -274,7 +274,10 @@ export const applyClaudeOnboardingSkip = async (): Promise<boolean> => {
 
 /**
  * Restore Claude Code initial setup confirmation
- * Removes hasCompletedOnboarding field from ~/.claude.json
+ *
+ * Writes an explicit `hasCompletedOnboarding: false` rather than deleting the
+ * field, so "the user asked to reset" stays distinguishable from "this machine
+ * never had the status" when the state is mirrored into WSL.
  */
 export const clearClaudeOnboardingSkip = async (): Promise<boolean> => {
   return await invoke<boolean>('clear_claude_onboarding_skip');

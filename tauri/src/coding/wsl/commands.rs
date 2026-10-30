@@ -275,7 +275,12 @@ pub async fn wsl_reset_file_mappings(
 // Sync Commands
 // ============================================================================
 
-/// Internal full sync implementation (reusable)
+/// Internal full sync implementation (reusable).
+///
+/// Takes the process-wide sync lock: several entry points (manual sync, every
+/// `wsl-sync-request-*` listener, startup and post-restore sync) can fire at
+/// once, and each one rewrites the same set of WSL config files. Runs are
+/// serialized so a later write never lands on top of an earlier read.
 pub(super) async fn do_full_sync(
     state: &SqliteDbState,
     app: &tauri::AppHandle,
@@ -283,6 +288,8 @@ pub(super) async fn do_full_sync(
     module: Option<&str>,
     skip_modules: Option<&[String]>,
 ) -> SyncResult {
+    let _sync_guard = super::sync_lock::acquire().await;
+
     // In particular, enabling sync receives a frontend config snapshot that
     // may predate a root-directory change. Resolve Direct status on the backend.
     let direct_modules = match runtime_location::get_wsl_direct_modules_async(state.db()).await {
@@ -347,6 +354,8 @@ pub(super) async fn do_full_sync(
     let skip_claude = merged_skip_modules.iter().any(|m| m == "claude");
     if !skip_claude && (module.is_none() || module == Some("claude")) {
         if let Err(error) = rewrite_claude_plugin_metadata_in_wsl(&db, &distro).await {
+            // Documented as best-effort: the main plugin directory sync already
+            // succeeded, so this only records a diagnostic.
             log::warn!("Claude plugin metadata WSL rewrite failed: {}", error);
             result
                 .errors
@@ -354,15 +363,32 @@ pub(super) async fn do_full_sync(
         }
     }
 
-    // Also sync MCP and Skills to WSL (full sync)
-    if config.sync_mcp {
-        if let Err(e) = super::mcp_sync::sync_mcp_to_wsl(state, app.clone()).await {
-            log::warn!("MCP WSL sync failed: {}", e);
-            result.errors.push(format!("MCP sync: {}", e));
-            result.success = false;
+    // Also sync MCP and Skills to WSL (full sync).
+    //
+    // The standalone MCP/Skills entry points gate themselves on `enabled`; the
+    // passes they share do not, so the enclosing run has to keep that gate here.
+    // "Sync Now" stays clickable while sync is off, and it must not start
+    // writing MCP configs the standalone path would have skipped.
+    if config.enabled && config.sync_mcp {
+        match super::mcp_sync::run_mcp_sync_pass(state, app, &distro).await {
+            Ok(pass) => {
+                // Judge this pass on its own errors: `result.errors` already
+                // holds the file-mapping phase's, and testing it here would mark
+                // a clean MCP run as failed because of an unrelated earlier one.
+                if !pass.errors.is_empty() {
+                    result.success = false;
+                }
+                result.errors.extend(pass.errors);
+                result.warnings.extend(pass.warnings);
+            }
+            Err(e) => {
+                log::warn!("MCP WSL sync failed: {}", e);
+                result.errors.push(format!("MCP sync: {}", e));
+                result.success = false;
+            }
         }
     }
-    if config.sync_skills {
+    if config.enabled && config.sync_skills {
         let mut skills_warnings = Vec::new();
         let skills_result = super::skills_sync::sync_skills_to_wsl_with_warnings(
             state,
@@ -378,13 +404,20 @@ pub(super) async fn do_full_sync(
         }
     }
 
-    // Sync Claude Code onboarding status from Windows to WSL
-    // Mirror the hasCompletedOnboarding field so WSL skips/shows initial setup accordingly
-    if !skip_claude && (module.is_none() || module == Some("claude")) {
+    // Sync Claude Code onboarding status from Windows to WSL.
+    //
+    // This is an extra step that no file mapping owns: it touches the WSL
+    // `~/.claude.json`, which is a file the user never maps. A failure here is
+    // reported as a warning, not as a failed sync — the files, MCP servers and
+    // skills above may all have been written successfully, and turning the
+    // whole run red tells the user the opposite of what happened.
+    //
+    // Gated on `enabled` like the MCP/Skills steps: "Sync Now" is clickable
+    // with sync off, and nothing here should reach WSL in that state.
+    if config.enabled && !skip_claude && (module.is_none() || module == Some("claude")) {
         if let Err(e) = sync_onboarding_to_wsl(state, &distro).await {
             log::warn!("Onboarding WSL sync failed: {}", e);
-            result.errors.push(format!("Onboarding sync: {}", e));
-            result.success = false;
+            result.warnings.push(format!("Onboarding sync: {}", e));
         }
     }
 
@@ -393,6 +426,19 @@ pub(super) async fn do_full_sync(
     if !skip_openclaw && (module.is_none() || module == Some("openclaw")) {
         if let Err(e) = ensure_openclaw_config_in_wsl(state, &distro).await {
             log::warn!("OpenClaw WSL config init failed: {}", e);
+        }
+    }
+
+    // This run collected the warnings of every sub-step it owns (files, MCP,
+    // skills, onboarding), so it also owns the persisted snapshot. Sub-runs no
+    // longer write it themselves; otherwise the last one to finish would erase
+    // the others' diagnostics.
+    //
+    // Only when sync is enabled: with it off the warning-producing steps do not
+    // run, and persisting the empty list would erase the last real diagnostics.
+    if config.enabled {
+        if let Err(e) = update_sync_warnings(state, &result.warnings).await {
+            log::warn!("Failed to persist WSL sync warnings: {}", e);
         }
     }
 
@@ -1643,10 +1689,7 @@ pub(super) async fn resolve_dynamic_paths_with_db(
                     mapping.wsl_path = omp_wsl_target_path_from_location(&location, "agents");
                 }
             }
-            "omo-native-config"
-            | "omo-native-models"
-            | "omo-native-mcp"
-            | "omo-native-auth"
+            "omo-native-config" | "omo-native-models" | "omo-native-mcp" | "omo-native-auth"
             | "omo-native-prompt" => {
                 if let Ok(location) =
                     runtime_location::get_omo_native_runtime_location_async(db).await
@@ -1673,7 +1716,8 @@ pub(super) async fn resolve_dynamic_paths_with_db(
                         .join(file_name)
                         .to_string_lossy()
                         .to_string();
-                    mapping.wsl_path = omo_native_wsl_target_path_from_location(&location, file_name);
+                    mapping.wsl_path =
+                        omo_native_wsl_target_path_from_location(&location, file_name);
                 }
             }
             "hermes-config" | "hermes-prompt" => {
@@ -1793,9 +1837,12 @@ pub(super) async fn update_sync_status(
     )
 }
 
-/// Replace the persisted Skills sync warnings. Only the Skills sync chain
-/// calls this so that unrelated silent chains (e.g. file mappings) cannot
-/// clear or mix warnings from a different sub-run.
+/// Replace the persisted sync warnings.
+///
+/// Called by the two entry points that own a whole run — full sync and the
+/// standalone skills/MCP syncs — with the warnings that run collected. Sub-runs
+/// must not call it: a nested pass that writes here erases its siblings'
+/// diagnostics with whatever it happened to collect.
 pub(super) async fn update_sync_warnings(
     state: &SqliteDbState,
     warnings: &[String],
@@ -2594,52 +2641,43 @@ pub fn default_file_mappings() -> Vec<FileMapping> {
 ///
 /// Reads the Windows-side ~/.claude.json status and mirrors it to WSL's ~/.claude.json,
 /// preserving all other fields in the WSL file.
+///
+/// This is an extra step that no file mapping owns: the WSL `~/.claude.json` is
+/// touched even though the user never mapped it.
+///
+/// The Windows side is three-valued on purpose. "No file" and "no
+/// `hasCompletedOnboarding` field" both mean *no opinion* — a user who only runs
+/// Claude Code inside WSL is the normal case, and treating their missing Windows
+/// file as an explicit `false` used to delete the WSL field and re-trigger the
+/// CLI's onboarding. Only an explicit `false` written by the reset action clears
+/// the WSL side.
 async fn sync_onboarding_to_wsl(state: &SqliteDbState, distro: &str) -> Result<(), String> {
     // 1. Read Windows-side onboarding status
     let db = state.db();
     let windows_config_path = runtime_location::get_claude_mcp_config_path_async(&db).await?;
     let windows_status = read_claude_onboarding_status_from_path(&windows_config_path)?;
+    let Some(windows_status) = windows_status else {
+        log::info!(
+            "Onboarding sync skipped: Windows claude.json has no onboarding status ({})",
+            windows_config_path.display()
+        );
+        return Ok(());
+    };
 
     // 2. Read existing WSL ~/.claude.json
     let wsl_config_path = runtime_location::get_claude_wsl_claude_json_path_async(&db).await;
-    let existing_content = sync::read_wsl_file(distro, wsl_config_path.as_str())?;
+    let existing_content = sync::read_wsl_file(distro, wsl_config_path.as_str())
+        .map_err(|e| format!("{} (distro '{}', {})", e, distro, wsl_config_path))?;
 
-    // 3. Parse JSON or create empty object
-    let mut config: serde_json::Value = if existing_content.trim().is_empty() {
-        serde_json::json!({})
-    } else {
-        json5::from_str(&existing_content)
-            .map_err(|e| format!("Failed to parse WSL claude.json: {}", e))?
+    // 3. Parse, compare and decide. A parse failure returns before any write,
+    // so a file the CLI cannot read is never replaced by a half-understood one.
+    let action = plan_onboarding_sync(windows_status, &existing_content, distro, &wsl_config_path)?;
+
+    let OnboardingSyncAction::Write(content) = action else {
+        return Ok(());
     };
 
-    let obj = config
-        .as_object_mut()
-        .ok_or("WSL claude.json is not a JSON object")?;
-
-    // 4. Check current WSL-side value
-    let wsl_status = obj
-        .get("hasCompletedOnboarding")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    // 5. Skip if already in sync
-    if wsl_status == windows_status {
-        return Ok(());
-    }
-
-    // 6. Update the field
-    if windows_status {
-        obj.insert(
-            "hasCompletedOnboarding".to_string(),
-            serde_json::Value::Bool(true),
-        );
-    } else {
-        obj.remove("hasCompletedOnboarding");
-    }
-
-    // 7. Write back to WSL
-    let content = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    // 4. Write back to WSL
     sync::write_wsl_file(distro, wsl_config_path.as_str(), &content)?;
 
     log::info!(
@@ -2686,21 +2724,97 @@ fn merge_skip_modules(
     merged
 }
 
-fn read_claude_onboarding_status_from_path(path: &std::path::Path) -> Result<bool, String> {
+/// Read the Windows-side onboarding status.
+///
+/// `None` means "this machine has no opinion" — either the file is absent or the
+/// field is missing. Callers must not translate that into `false`: the reset
+/// action writes an explicit `false`, and that is the only value that should
+/// clear the WSL side.
+fn read_claude_onboarding_status_from_path(path: &std::path::Path) -> Result<Option<bool>, String> {
     if !path.exists() {
-        return Ok(false);
+        return Ok(None);
     }
 
-    let content =
-        std::fs::read_to_string(path).map_err(|e| format!("Failed to read config file: {}", e))?;
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        format!(
+            "Failed to read Windows claude.json ({}): {}",
+            path.display(),
+            e
+        )
+    })?;
 
-    let value: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse config file: {}", e))?;
+    let value: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+        format!(
+            "Failed to parse Windows claude.json ({}): {}",
+            path.display(),
+            e
+        )
+    })?;
 
     Ok(value
         .get("hasCompletedOnboarding")
+        .and_then(|v| v.as_bool()))
+}
+
+/// What an onboarding sync should do to the WSL file.
+#[derive(Debug, PartialEq, Eq)]
+enum OnboardingSyncAction {
+    /// Already consistent, or nothing to do without guessing.
+    None,
+    /// Replace the WSL file with this serialized content.
+    Write(String),
+}
+
+/// Decide what to do with the WSL `claude.json` for a known Windows status.
+///
+/// Kept pure so the three-valued semantics can be tested without a WSL distro:
+/// the caller never reaches this function for `None`, and only an explicit
+/// `Some(false)` removes the field.
+fn plan_onboarding_sync(
+    windows_status: bool,
+    existing_content: &str,
+    distro: &str,
+    wsl_path: &str,
+) -> Result<OnboardingSyncAction, String> {
+    let mut config: serde_json::Value = if existing_content.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        json5::from_str(existing_content).map_err(|e| {
+            format!(
+                "Failed to parse WSL claude.json (distro '{}', {}): {}. The file was left untouched.",
+                distro, wsl_path, e
+            )
+        })?
+    };
+
+    let obj = config.as_object_mut().ok_or_else(|| {
+        format!(
+            "WSL claude.json is not a JSON object (distro '{}', {}). The file was left untouched.",
+            distro, wsl_path
+        )
+    })?;
+
+    let wsl_status = obj
+        .get("hasCompletedOnboarding")
         .and_then(|v| v.as_bool())
-        .unwrap_or(false))
+        .unwrap_or(false);
+
+    if wsl_status == windows_status {
+        return Ok(OnboardingSyncAction::None);
+    }
+
+    if windows_status {
+        obj.insert(
+            "hasCompletedOnboarding".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    } else {
+        obj.remove("hasCompletedOnboarding");
+    }
+
+    let content = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    Ok(OnboardingSyncAction::Write(content))
 }
 
 #[cfg(test)]
@@ -3069,5 +3183,160 @@ mod tests {
         assert!(!codex_config_uses_ai_toolbox_model_catalog(
             "model_catalog_json = ["
         ));
+    }
+
+    // ------------------------------------------------------------------
+    // Onboarding sync semantics (issue #449)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn missing_windows_claude_json_means_no_opinion_not_false() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let missing = dir.path().join(".claude.json");
+
+        assert_eq!(
+            super::read_claude_onboarding_status_from_path(&missing).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn missing_onboarding_field_means_no_opinion_not_false() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join(".claude.json");
+        std::fs::write(&path, r#"{"numStartups": 3}"#).expect("write windows claude.json");
+
+        assert_eq!(
+            super::read_claude_onboarding_status_from_path(&path).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn explicit_false_is_read_as_a_reset_request() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join(".claude.json");
+        std::fs::write(&path, r#"{"hasCompletedOnboarding": false}"#)
+            .expect("write windows claude.json");
+
+        assert_eq!(
+            super::read_claude_onboarding_status_from_path(&path).unwrap(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn identical_onboarding_state_does_not_rewrite_the_wsl_file() {
+        for (windows_status, wsl_field) in [
+            (true, "\"hasCompletedOnboarding\": true"),
+            (false, "\"numStartups\": 1"),
+        ] {
+            let existing = format!("{{ {} }}", wsl_field);
+            assert_eq!(
+                super::plan_onboarding_sync(windows_status, &existing, "Ubuntu", "~/.claude.json")
+                    .unwrap(),
+                super::OnboardingSyncAction::None
+            );
+        }
+    }
+
+    #[test]
+    fn syncing_true_adds_only_the_onboarding_field() {
+        let action = super::plan_onboarding_sync(
+            true,
+            r#"{"numStartups": 4, "projects": {"/home/u": {}}}"#,
+            "Ubuntu",
+            "~/.claude.json",
+        )
+        .unwrap();
+
+        let super::OnboardingSyncAction::Write(content) = action else {
+            panic!("expected a write");
+        };
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["hasCompletedOnboarding"], serde_json::json!(true));
+        // Runtime-owned fields survive the rewrite.
+        assert_eq!(parsed["numStartups"], serde_json::json!(4));
+        assert!(parsed["projects"]["/home/u"].is_object());
+    }
+
+    #[test]
+    fn explicit_reset_removes_only_the_onboarding_field() {
+        let action = super::plan_onboarding_sync(
+            false,
+            r#"{"hasCompletedOnboarding": true, "numStartups": 4}"#,
+            "Ubuntu",
+            "~/.claude.json",
+        )
+        .unwrap();
+
+        let super::OnboardingSyncAction::Write(content) = action else {
+            panic!("expected a write");
+        };
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(parsed.get("hasCompletedOnboarding").is_none());
+        assert_eq!(parsed["numStartups"], serde_json::json!(4));
+    }
+
+    #[test]
+    fn trailing_garbage_fails_with_distro_and_path_and_writes_nothing() {
+        // The shape from issue #449: a valid object followed by leftover bytes.
+        let corrupted = "{\n  \"numStartups\": 1\n}\n2, {\"partial\": true}\n";
+        let error = super::plan_onboarding_sync(true, corrupted, "Ubuntu-24.04", "~/.claude.json")
+            .expect_err("corrupted claude.json must not be repaired silently");
+
+        assert!(error.contains("Ubuntu-24.04"), "error: {error}");
+        assert!(error.contains("~/.claude.json"), "error: {error}");
+        assert!(error.contains("left untouched"), "error: {error}");
+    }
+
+    #[test]
+    fn non_object_top_level_is_reported_without_a_write() {
+        let error = super::plan_onboarding_sync(true, "[1, 2, 3]", "Debian", "~/.claude.json")
+            .expect_err("array top level must not be rewritten");
+
+        assert!(error.contains("not a JSON object"), "error: {error}");
+        assert!(error.contains("Debian"), "error: {error}");
+    }
+
+    /// The sync lock must actually serialize overlapping runs: without it two
+    /// `do_full_sync` calls rewrite the same WSL configs and the later one drops
+    /// the earlier one's update.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn sync_lock_serializes_overlapping_runs() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        // Local state, so another test in this binary cannot reset the counters.
+        let concurrent = Arc::new(AtomicUsize::new(0));
+        let max_concurrent = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let concurrent = Arc::clone(&concurrent);
+                let max_concurrent = Arc::clone(&max_concurrent);
+                tokio::spawn(async move {
+                    let _guard = super::super::sync_lock::acquire().await;
+                    let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_concurrent.fetch_max(now, Ordering::SeqCst);
+                    // Yield and sleep while holding the guard: if the lock did
+                    // not serialize, the other tasks would enter here and the
+                    // recorded maximum would climb above one.
+                    tokio::task::yield_now().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    concurrent.fetch_sub(1, Ordering::SeqCst);
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.await.expect("sync task must not panic or deadlock");
+        }
+
+        assert_eq!(
+            max_concurrent.load(Ordering::SeqCst),
+            1,
+            "sync runs overlapped; the process-wide lock is not serializing them"
+        );
     }
 }

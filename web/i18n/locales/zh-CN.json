@@ -1191,7 +1191,9 @@
       "fileLooksBinary": "文件 {{path}} 内容疑似二进制或已损坏，请检查文件内容是否正确",
       "mcpSyncFailed": "MCP 同步失败：{{detail}}",
       "skillsSyncFailed": "Skills 同步失败：{{detail}}",
-      "onboardingSyncFailed": "Onboarding 同步失败：{{detail}}",
+      "onboardingSyncFailed": "Onboarding 状态未同步，其余同步结果不受影响：{{detail}}",
+      "onboardingSyncParseFailed": "WSL 发行版「{{distro}}」的 {{path}} 无法解析（{{detail}}）。原文件未被修改，请先检查该文件格式是否正确后再重新同步。",
+      "onboardingSyncNotObject": "WSL 发行版「{{distro}}」的 {{path}} 顶层不是 JSON 对象。原文件未被修改。",
       "wslMcpSyncSkipped": "WSL MCP 同步已跳过：{{detail}}",
       "wslClaudeJsonSyncSkipped": "WSL ~/.claude.json 同步已跳过：文件解析失败，请检查该文件格式是否正确。（{{detail}}）",
       "openCodeCodexConfigSyncPartialFailed": "OpenCode/Codex 配置同步部分失败：{{detail}}",
@@ -1328,10 +1330,10 @@
       "stopped": "已停止",
       "connectionStatusTooltip": "连接状态：表示该 WSL 发行版是否已安装且可被系统识别",
       "runningStateTooltip": "运行状态：表示该 WSL 实例当前是否正在运行。运行中的实例可以直接使用，已停止的实例会在首次访问时自动启动",
-      "autoSyncHint": "OpenCode、Claude、Codex 的 MCP 和 Skills，以及 OpenClaw 的 Skills 会在同步时自动处理，无需手动添加映射；如果某个模块的自定义配置已经直接指向 WSL，该模块会自动改为“已在 WSL 中”并跳过重复同步。",
+      "autoSyncHint": "OpenCode、Claude、Codex 的 MCP 和 Skills，以及 OpenClaw 的 Skills 会在同步时自动处理，无需手动添加映射；同步还会把 Windows 的 Claude Code Onboarding 状态写入 WSL 的 ~/.claude.json（该文件不需要添加映射）。如果某个模块的自定义配置已经直接指向 WSL，该模块会自动改为“已在 WSL 中”并跳过重复同步。",
       "inWsl": "已在 WSL 中",
       "wslDirectHint": "该模块的自定义配置已经直接指向 WSL 内的目录，AI Toolbox 会按该 WSL 用户目录继续工作，不需要再通过此处同步。",
-      "lastSyncWarnings": "上次 Skills 同步警告"
+      "lastSyncWarnings": "上次同步警告"
     },
     "ssh": {
       "title": "SSH 配置同步设置",

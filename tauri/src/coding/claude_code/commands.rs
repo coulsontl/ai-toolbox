@@ -2352,7 +2352,11 @@ pub async fn apply_claude_onboarding_skip(
 }
 
 /// Restore Claude Code initial setup confirmation
-/// Removes hasCompletedOnboarding field from ~/.claude.json
+///
+/// Writes an explicit `hasCompletedOnboarding: false` instead of removing the
+/// field. Removing it would make "the user asked to reset" indistinguishable
+/// from "this machine never had the status", and the Windows -> WSL onboarding
+/// sync deliberately leaves the WSL side alone in the latter case.
 #[tauri::command]
 pub async fn clear_claude_onboarding_skip(
     state: tauri::State<'_, SqliteDbState>,
@@ -2360,27 +2364,38 @@ pub async fn clear_claude_onboarding_skip(
     let db = state.db();
     let config_path = get_claude_mcp_config_path(&db).await?;
 
-    if !config_path.exists() {
-        return Ok(false);
-    }
-
-    let content = fs::read_to_string(&config_path)
-        .map_err(|e| format!("Failed to read config file: {}", e))?;
-
-    let mut obj: serde_json::Map<String, serde_json::Value> =
+    let mut obj: serde_json::Map<String, serde_json::Value> = if config_path.exists() {
+        let content = fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read config file: {}", e))?;
         match serde_json::from_str::<serde_json::Value>(&content) {
             Ok(serde_json::Value::Object(map)) => map,
-            _ => return Ok(false),
-        };
+            _ => serde_json::Map::new(),
+        }
+    } else {
+        serde_json::Map::new()
+    };
 
-    // Check if field exists
-    let existed = obj.remove("hasCompletedOnboarding").is_some();
+    // Nothing to do when the runtime does not currently skip onboarding.
+    let already_completed = obj
+        .get("hasCompletedOnboarding")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
-    if !existed {
+    if !already_completed {
         return Ok(false);
     }
 
-    // Write back to file
+    obj.insert(
+        "hasCompletedOnboarding".to_string(),
+        serde_json::Value::Bool(false),
+    );
+
+    if let Some(parent) = config_path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
+        }
+    }
+
     let serialized = serde_json::to_string_pretty(&serde_json::Value::Object(obj))
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
