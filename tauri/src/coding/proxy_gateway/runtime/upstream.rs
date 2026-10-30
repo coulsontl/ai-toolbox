@@ -3002,8 +3002,15 @@ pub(super) fn compaction_mode_label(
         RemoteCompactionCompat::Fallback => Some(COMPACTION_MODE_FALLBACK.to_string()),
         // A v2 shape always wins: the trigger is real even if Codex also marked
         // the turn, and the two must not be reported as one label.
-        RemoteCompactionCompat::None | RemoteCompactionCompat::ReplayCapsules => local_compaction
-            .then(|| COMPACTION_MODE_LOCAL.to_string()),
+        //
+        // `ReplayCapsules` belongs here rather than on its own arm: it says the
+        // *history* carries a capsule this Gateway wrote, which is orthogonal to
+        // what the turn is. Codex keeps `Compaction` items, so a local compaction
+        // whose earlier summary we sealed still replays one — and that turn is a
+        // local compaction, which is exactly what `local_compaction` reports.
+        RemoteCompactionCompat::None | RemoteCompactionCompat::ReplayCapsules => {
+            local_compaction.then(|| COMPACTION_MODE_LOCAL.to_string())
+        }
     }
 }
 
@@ -20006,7 +20013,7 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
     /// which side wrote the item.
     #[test]
     fn a_local_compaction_turn_is_labelled_without_being_rewritten() {
-        use RemoteCompactionCompat::{Passthrough, Summarize};
+        use RemoteCompactionCompat::{Passthrough, ReplayCapsules, Summarize};
 
         assert_eq!(
             compaction_mode_label(RemoteCompactionCompat::None, false, true).as_deref(),
@@ -20020,6 +20027,17 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
             compaction_mode_label(Summarize, false, true).as_deref(),
             Some(COMPACTION_MODE_SIMULATED)
         );
+        // Replaying a capsule says what the *history* holds, not what the turn
+        // is. Codex keeps `Compaction` items, so a local compaction whose
+        // earlier summary this Gateway sealed still replays one — it is a local
+        // compaction all the same, and the label has to survive.
+        assert_eq!(
+            compaction_mode_label(ReplayCapsules, false, true).as_deref(),
+            Some(COMPACTION_MODE_LOCAL)
+        );
+        // Replaying without the metadata is an ordinary turn: nothing was
+        // observed, so nothing is claimed.
+        assert_eq!(compaction_mode_label(ReplayCapsules, false, false), None);
     }
 
     /// A configuration that refused a native turn is not offered one again in
