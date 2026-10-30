@@ -271,9 +271,13 @@ const translateClaudeJsonWarning = (
 	value: string,
 	t: TFunction,
 ): string | null => {
+	// The same diagnostic reaches the UI from two chains: onboarding sync wraps
+	// it in `Onboarding sync: `, the MCP sync wraps it in `Claude Code: ` and
+	// then the older `WSL ~/.claude.json 同步已跳过` sentence. Accept the known
+	// wrappers here; anything else falls through unchanged.
 	const patterns: Array<[RegExp, (...args: string[]) => string]> = [
 		[
-			/^(?:Onboarding sync: )?Failed to parse WSL claude\.json \(distro '(.+)', (.+?)\): (.+)\. The file was left untouched\.$/s,
+			/^(?:Onboarding sync: |Claude Code: )?Failed to parse WSL claude\.json \(distro '(.+)', (.+?)\): (.+)\. The file was left untouched\.$/s,
 			(distro, path, detail) =>
 				t("settings.syncMessages.onboardingSyncParseFailed", {
 					distro,
@@ -284,7 +288,7 @@ const translateClaudeJsonWarning = (
 				}),
 		],
 		[
-			/^(?:Onboarding sync: )?WSL claude\.json is not a JSON object \(distro '(.+)', (.+?)\)\. The file was left untouched\.$/s,
+			/^(?:Onboarding sync: |Claude Code: )?WSL claude\.json is not a JSON object \(distro '(.+)', (.+?)\)\. The file was left untouched\.$/s,
 			(distro, path) =>
 				t("settings.syncMessages.onboardingSyncNotObject", { distro, path }),
 		],

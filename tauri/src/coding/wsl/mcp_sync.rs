@@ -67,10 +67,11 @@ pub async fn sync_mcp_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result<()
 
     let pass = run_mcp_sync_pass(state, &app, &distro).await?;
 
-    // 根据真实结果更新状态
+    // 根据真实结果更新状态. This is a partial run: merge warnings so the
+    // Skills chain's diagnostics are not cleared by an unrelated MCP change.
     let sync_result = pass.into_sync_result();
     let _ = super::commands::update_sync_status(state, &sync_result).await;
-    let _ = super::commands::update_sync_warnings(state, &sync_result.warnings).await;
+    let _ = super::commands::merge_sync_warnings(state, &sync_result.warnings).await;
 
     // Emit event for UI feedback
     let _ = app.emit("wsl-mcp-sync-completed", ());

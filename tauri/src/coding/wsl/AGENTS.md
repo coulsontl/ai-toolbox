@@ -38,10 +38,16 @@ sequenceDiagram
 
 - 不要把 WSL 自动同步理解成“保存数据库就自动发生”。真正触发点是事件监听器。
 - 同步设置保存只 patch 用户字段；配置、普通状态和警告写入都在同一次 SQLite 连接锁内完成，避免旧表单或其它链路清掉诊断。全量同步必须把 Skills 阶段警告合入返回结果与完成事件，失败时也保留已经收集的警告；WSL 孤立中央目录清理失败同样属于非致命警告。
-- **`last_sync_warnings` 由“拥有整轮同步”的入口写，子步骤不得自己写**（issue #449）。当前入口是 `do_full_sync`、独立的 `sync_mcp_to_wsl`、独立的 `sync_skills_to_wsl`；它们各自把本轮收集到的警告一次性写回。`run_mcp_sync_pass` / `sync_skills_to_wsl_with_warnings` 是纯执行 pass：只返回错误和警告，不写 `last_sync_status`、不写 warnings、不发 `wsl-sync-completed`。否则嵌在全量同步里的子步骤会先写一次状态和完成事件，随后被外层的合并结果覆盖，用户看到哪一份取决于时序。`do_full_sync` 在 `enabled=false` 时不写 warnings，避免把上一次的真实诊断清空。
-- **onboarding 同步的 Windows 侧是三态**：`read_claude_onboarding_status_from_path` 返回 `Option<bool>`，文件不存在或字段缺失都是 `None`（本机没有意见），此时必须直接跳过、不碰 WSL 文件。只有显式 `Some(false)` 才删除 WSL 的 `hasCompletedOnboarding`，`Some(true)` 才写入。这正是 issue #449 的破坏路径：旧实现把“Windows 没有这个文件”折叠成 `false`，于是只用 WSL 跑 Claude Code 的用户每次同步都会被删掉已完成状态、重新弹出 onboarding。`clear_claude_onboarding_skip` 因此改为写显式 `false`（而不是删字段），让“用户要求重置”和“本机从来没有该状态”可区分。
+- **`last_sync_status` / `last_sync_warnings` 由“拥有整轮同步”的入口写，子步骤不得自己写**（issue #449）。`run_mcp_sync_pass` / `sync_skills_to_wsl_with_warnings` 是纯执行 pass：只返回错误和警告，不写状态、不写 warnings、不发 `wsl-sync-completed`。否则嵌在全量同步里的子步骤会先写一次状态和完成事件，随后被外层的合并结果覆盖，用户看到哪一份取决于时序。
+- **全量同步在锁内持久化 status**。`do_full_sync` 持锁跑到最后就写 `last_sync_status`，调用方（`wsl_sync`、`wsl_save_config`）**不得再写一次**。锁外写会让已排队的下一次同步先完成，然后被更早那次的结果覆盖，最终状态反映的不是最后跑完的那次。
+- **独立 MCP / Skills 入口写 warnings 用 `merge_sync_warnings`，不是 `update_sync_warnings`**。它们只是部分运行，拿不到另一条链路的诊断；用替换语义会让一次干净的 MCP 同步清掉用户正盯着的 Skills 告警。空结果直接跳过，不覆盖。
+- `do_full_sync` 在 `enabled=false` 时不写 warnings，避免把上一次的真实诊断清空；它也把 MCP/Skills/onboarding 三段都挂在 `config.enabled` 上，因为独立入口的门槛在纯 pass 里已经没有了。
+- **onboarding 同步只传播 `true`，永远不删 WSL 的已完成状态**（issue #449）。`read_claude_onboarding_status_from_path` 返回 `Option<bool>`：文件不存在或字段缺失都是 `None`（本机没有意见），直接跳过、不碰 WSL 文件。`Some(false)` 同样**不写回**——`false` 是持久化的 Windows 状态而不是一次性指令，照它执行会让只用 WSL 的用户每次同步都被删掉 `hasCompletedOnboarding`、反复重新 onboarding（这正是 issue 的症状）。旧实现还有更早的一层折叠：把“Windows 没有这个文件”当成 `false`。两个坑都要保持当前实现：`plan_onboarding_sync` 在 `windows_status == false` 时第一行就返回 `None`，连文件都不解析。
+- **`clear_claude_onboarding_skip` 写显式 `false` 而不是删字段**。这是为了让 Windows 侧的状态可被 UI 读回（`get_claude_onboarding_status` 需要布尔），不代表重置意图会传播到 WSL。想改这条语义前先读上一条。
 - **onboarding 失败是 warning 不是 error**。它不属于任何文件映射，却会读写 WSL 的 `~/.claude.json`；文件/MCP/Skills 都成功时把它标成整轮失败会给出与事实相反的结论。错误文案必须带发行版、目标路径和“原文件未修改”，前端 `syncMessageTranslator` 有对应正则（`onboardingSyncParseFailed` / `onboardingSyncNotObject`）。解析失败时在任何写入之前返回，原文件字节不变。
 - **WSL 写入一律走原子替换**：`write_wsl_file`（stdin payload）和 `sync_single_file`（`cp`）都是“同目录 `mktemp` → 写入/复制 → `mv -f` 覆盖”，并 `chmod --reference` 保留原权限。不要退回 `cat > target` / `cp -f src target`：WSL 里的 CLI（Claude Code）也会写这些文件，非原子写一旦中断或与另一写者交错，会留下“完整前半段 + 另一份写入的尾部”这种 CLI 无法解析的残留。
+- **软链接目标必须先解析，且要用 `readlink -m` 而不是 `-f`**。`cat > link` 会穿透写入，`mv` 到 link 则会把链接替换成普通文件、静默切断 dotfiles 管理。`-f` 在目标尚未 checkout（dangling link）时失败，失败后 target 回到链接路径，链接照样被 `mv` 替换；`-m` 能规范化不存在的路径，正是我们要创建的那个文件。解析后还要 `|| resolved=` + `true` 兜底，避免 `set -e` 提前退出。
+- **stdin 写入失败时必须仍收集 stderr**。脚本在 `cat` 之前就有 `readlink`/`mkdir`/`mktemp` 三个失败点，任一处 `set -e` 退出都会让父进程 `write_all` 得到 EPIPE。若此时直接 `?` 返回，用户只会看到“Broken pipe”，真正的 `mkdir: Not a directory` 永远读不到。`write_wsl_file` 因此保留 write 错误、继续 `wait_with_output()`，再优先展示 stderr。
 - **所有 WSL 同步入口共享一把进程级锁**（`sync_lock::acquire()`）。14 个 `wsl-sync-request-*` 监听、`mcp-changed`、`skills-changed`、启动同步、恢复收尾同步和手动同步各自 `spawn`，没有锁时两次运行会各自读改写同一批文件，后写者静默覆盖先写者的更新。加锁顺序固定为「`sync_lock` → `SKILLS_WSL_SYNC_LOCK`」，不要反向。
 - 子步骤的 `enabled` 门槛不能丢。`run_mcp_sync_pass` / `sync_skills_to_wsl_with_warnings` 自身不判断 `config.enabled`（它们拿不到也不该拿配置），由独立的 `sync_mcp_to_wsl` / `sync_skills_to_wsl` 和 `do_full_sync` 各自把关。“Sync Now”在同步总开关关闭时仍可点击，这条门槛就是防止那种状态下往 WSL 写东西。
 - 恢复期间不能同时依赖启动同步、业务事件同步和恢复收尾同步。三条链路并发会让旧文件、半完成配置和新配置互相覆盖；恢复专用入口应抑制中间事件，启动同步应识别 restore flag，最终只保留恢复收尾的一次串行同步。
@@ -89,10 +95,12 @@ sequenceDiagram
 
 ## 最小验证
 
-- 同步警告回归：`cargo test --lib saving_sync_preferences_preserves_latest_skills_warnings` 和 `cargo test --lib concurrent_sync_status_and_warnings_preserve_both_snapshots` 覆盖旧表单保存、文件状态更新、Skills 清空警告及并发写入；警告必须在真实 SQLite 写入后读回验证。
-- onboarding 三态语义回归（issue #449）：`cargo test --lib coding::wsl::commands::tests` 下的 `missing_windows_claude_json_means_no_opinion_not_false`、`missing_onboarding_field_means_no_opinion_not_false`、`explicit_false_is_read_as_a_reset_request`、`identical_onboarding_state_does_not_rewrite_the_wsl_file`、`syncing_true_adds_only_the_onboarding_field`、`explicit_reset_removes_only_the_onboarding_field`、`trailing_garbage_fails_with_distro_and_path_and_writes_nothing`、`non_object_top_level_is_reported_without_a_write`。这些用例跑的是纯函数 `plan_onboarding_sync`，不需要真实 WSL。
-- 原子写入回归：`cargo test --lib coding::wsl::sync::tests` 的 `atomic_stdin_write_uses_temp_file_before_replacing_target` 与 `single_file_copy_goes_through_a_temp_file`；断言写入先落到临时文件、`mv` 在其后、payload 从不直达目标。
-- 前端翻译回归：`node --test web/test/features/settings/utils/syncMessageTranslator.test.ts` 覆盖 `Onboarding sync:` 前缀、distro/路径/“原文件未修改”的拆解。
+- 同步警告回归：`cargo test --lib saving_sync_preferences_preserves_latest_skills_warnings`、`concurrent_sync_status_and_warnings_preserve_both_snapshots` 和 `partial_runs_merge_warnings_instead_of_clearing_each_other` 覆盖旧表单保存、文件状态更新、Skills 清空警告、并发写入，以及部分运行（MCP/Skills）合并而不清空对方诊断。警告必须在真实 SQLite 写入后读回验证。
+- onboarding 语义回归（issue #449）：`cargo test --lib coding::wsl::commands::tests` 下的 `missing_windows_claude_json_means_no_opinion_not_false`、`missing_onboarding_field_means_no_opinion_not_false`、`explicit_false_is_read_as_a_reset_request`、`identical_onboarding_state_does_not_rewrite_the_wsl_file`、`syncing_true_adds_only_the_onboarding_field`、`windows_false_never_touches_the_wsl_side`、`windows_false_does_not_even_read_a_corrupted_file`、`trailing_garbage_fails_with_distro_and_path_and_writes_nothing`、`non_object_top_level_is_reported_without_a_write`。全部跑纯函数 `plan_onboarding_sync`，不需要真实 WSL。
+- 原子写入回归：`cargo test --lib coding::wsl::sync::tests` 的 `atomic_stdin_write_uses_temp_file_before_replacing_target`、`atomic_writes_resolve_symlinked_targets_before_replacing_them`（断言用 `readlink -m` 且不是 `-f`）、`single_file_copy_goes_through_a_temp_file`。
+- 锁串行化：`cargo test --lib sync_lock_serializes_overlapping_runs` 断言 8 个并发任务在锁内不重叠。它只验锁本身，不覆盖真实调用路径。
+- 前端翻译回归：`node --test web/test/features/settings/utils/syncMessageTranslator.test.ts` 覆盖 `Onboarding sync: ` 与 MCP 侧 `Claude Code: ` 两种前缀、distro/路径/“原文件未修改”的拆解，以及 detail 内含 `; ` 时不被打散。
+- shell 片段必须在**真实 Linux** 上验证，不要在 Git Bash 上跑：Windows 的 `ln -s` 是复制、`chmod` 是模拟，会给出假 PASS。用 `wsl.exe -d <distro> --exec bash <脚本>` 覆盖普通文件、软链接（含 dangling）、含空格路径、权限保留、失败不动原文件、无临时文件残留、非 ASCII。
 - `cargo test --test coding wsl_direct_status` 验证保存配置目录后的前端状态 payload 与后端跳过集合一致；`cargo test --lib coding::wsl::mcp_sync::tests` 验证 Direct 模块跳过、本机模块保留以及 MCP 文件边界。
 - 至少验证：启用 WSL sync 后首次全量同步会执行。
 - 至少验证：某个工具保存后发出 `wsl-sync-request-*` 时，在开启自动同步和关闭自动同步两种状态下行为不同。

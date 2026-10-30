@@ -187,6 +187,26 @@ test('WSL claude.json non-object failure keeps distro and path', () => {
   );
 });
 
+test('the MCP chain wrapping is translated too, not left as raw English', () => {
+  // The MCP sync wraps the same diagnostic in `Claude Code: ` and then in the
+  // older "skipped" sentence. Without accepting that prefix the Chinese UI
+  // embeds the whole English message.
+  const wrapped =
+    "WSL ~/.claude.json 同步已跳过：文件解析失败，请检查该文件格式是否正确。(Claude Code: Failed to parse WSL claude.json (distro 'Ubuntu', ~/.claude.json): trailing characters at line 308 column 2. The file was left untouched.)";
+
+  const translated = translateSyncMessage(wrapped, 'wsl', stubT);
+
+  assert.ok(
+    translated.startsWith('settings.syncMessages.wslClaudeJsonSyncSkipped?'),
+    translated,
+  );
+  assert.ok(
+    translated.includes('settings.syncMessages.onboardingSyncParseFailed'),
+    translated,
+  );
+  assert.ok(!translated.includes('The file was left untouched.'), translated);
+});
+
 test('claude.json diagnostics survive a "; " inside the json5 detail', () => {
   // `translateSyncMessage` splits joined errors on "; " before pattern matching.
   // The distro, path and json5 detail are free-form, so these messages must be

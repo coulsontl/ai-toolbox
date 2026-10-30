@@ -13,6 +13,7 @@
 - Skills 同步警告有两条展示路径：`wsl-sync-warning` / `ssh-sync-warning` 事件在同步过程中实时展示在弹窗（`syncWarning`，可关闭）；同步结束后持久化的 `status.lastSyncWarnings` 在 WSL/SSH 弹窗内常驻展示（warning Alert 列表）。警告文案经 `syncMessageTranslator` 的正则模式翻译，新增后端警告格式时必须同步补翻译模式和 i18n key。
 - WSL 的持久化警告不只来自 Skills：后端已把文件/MCP/Onboarding 的非致命问题也并入同一次 `lastSyncWarnings` 快照，因此 WSL 侧该字段的标题是「上次同步警告」（`settings.wsl.lastSyncWarnings`），SSH 侧仍只承载 Skills 警告。不要把 WSL 文案改回「上次 Skills 同步警告」。
 - Claude Onboarding 同步失败属于 warning 而非 error（issue #449）：后端把它 push 进 `warnings`，前端经 `Onboarding sync: …` 前缀进入 `onboardingSyncFailed`，再由 `onboardingSyncParseFailed` / `onboardingSyncNotObject` 拆出 distro、目标路径和“原文件未修改”。文案必须保留“其余同步结果不受影响”的语义，不能写成整轮同步失败。
+- 同一段 claude.json 诊断有两条到达路径：onboarding 同步用 `Onboarding sync: ` 包装，MCP 同步用 `Claude Code: ` 包装后又套进旧的 `WSL ~/.claude.json 同步已跳过：…` 句子。`translateClaudeJsonWarning` 必须同时接受这两种前缀（并且整体解析先于通用的 `"; "` 拆串），否则中文界面会嵌进一整段英文。`Claude plugins metadata rewrite` 属于 best-effort，走 warning 通道而不是 error，否则同一次同步会同时显示成功图标和红色错误横幅。
 
 ## 核心设计决策（Why）
 

@@ -338,8 +338,15 @@ pub fn sync_file_mapping(mapping: &FileMapping, distro: &str) -> Result<Vec<Stri
 /// `cat > target` and `cp -f src target` write through a symlink; `mv` onto the
 /// link would replace the link itself with a regular file and silently detach it
 /// from, say, a dotfiles repository. Resolving first keeps that behavior.
+///
+/// `readlink -m` rather than `-f`: a dotfiles symlink whose target has not been
+/// checked out yet is a real case, and `-f` fails there (its failure would then
+/// leave the link to be replaced). `-m` canonicalizes even when the target does
+/// not exist, which is exactly the file we then create.
 const RESOLVE_SYMLINK_TARGET: &str = "if [ -L \"$target\" ]; then \
-     resolved=$(readlink -f \"$target\") && [ -n \"$resolved\" ] && target=\"$resolved\"; \
+     resolved=$(readlink -m \"$target\") || resolved=; \
+     [ -n \"$resolved\" ] && target=\"$resolved\"; \
+     true; \
      fi";
 
 /// Build the shell snippet that replaces `target` atomically.
@@ -600,9 +607,12 @@ mod tests {
             build_atomic_file_copy_command("/tmp/src.json", "$HOME/.claude.json"),
         ] {
             assert!(command.contains("if [ -L \"$target\" ]; then"));
-            assert!(command.contains("readlink -f \"$target\""));
+            // `-m` (& not `-f`): a dotfiles link whose target is not checked out
+            // yet must still resolve, otherwise the link gets replaced.
+            assert!(command.contains("readlink -m \"$target\""));
+            assert!(!command.contains("readlink -f"));
 
-            let resolve_index = command.find("readlink -f").expect("resolve");
+            let resolve_index = command.find("readlink -m").expect("resolve");
             let mktemp_index = command.find("mktemp").expect("mktemp");
             assert!(resolve_index < mktemp_index);
         }
@@ -919,30 +929,33 @@ pub fn write_wsl_file(distro: &str, wsl_path: &str, content: &str) -> Result<(),
         .spawn()
         .map_err(|e| format!("Failed to spawn WSL command: {}", e))?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(content.as_bytes())
-            .map_err(|e| format!("Failed to write to stdin: {}", e))?;
-    }
+    // `write_all` fails with EPIPE whenever the script exits before reading
+    // stdin (mkdir/mktemp/readlink failing under `set -e`). The useful reason is
+    // on stderr, so a write error must not return before it is collected: the
+    // user would only ever see "Broken pipe".
+    let write_error = child
+        .stdin
+        .take()
+        .and_then(|mut stdin| stdin.write_all(content.as_bytes()).err());
 
     let output = child
         .wait_with_output()
         .map_err(|e| format!("Failed to wait for WSL command: {}", e))?;
 
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = decode_wsl_output(&output.stderr);
-        Err(format!(
-            "WSL write failed: {} ({})",
-            if stderr.trim().is_empty() {
-                output.status.to_string()
-            } else {
-                stderr.trim().to_string()
-            },
-            wsl_path
-        ))
+    if output.status.success() && write_error.is_none() {
+        return Ok(());
     }
+
+    let stderr = decode_wsl_output(&output.stderr);
+    let reason = if !stderr.trim().is_empty() {
+        stderr.trim().to_string()
+    } else if let Some(error) = write_error {
+        format!("failed to send content: {}", error)
+    } else {
+        output.status.to_string()
+    };
+
+    Err(format!("WSL write failed: {} ({})", reason, wsl_path))
 }
 /// Remove a file or directory in WSL
 pub fn remove_wsl_path(distro: &str, wsl_path: &str) -> Result<(), String> {

@@ -85,7 +85,7 @@ sequenceDiagram
 - Claude plugins 的 `known_marketplaces.json` 和 `installed_plugins.json` 会带运行环境相关路径。Windows 本机生成的 `installLocation` / `installPath` 不能在同步到 WSL/SSH 时原样保留，否则远端仍会指向 `C:\...` 而失效。
 - 重写后的 `installLocation` / `installPath` 必须是**真实绝对 Linux 路径**，不能写 `~/.claude/...`。Claude CLI 2.1.126+ 在校验 marketplace 时直接把字段值当 literal path 用，不展开 `~`，留 `~` 会被判定 corrupted。`plugin_metadata_sync::rewrite_claude_plugin_metadata_if_needed` 本身只做字符串拼接，不负责展开 `~`；调用方(WSL 端 / SSH 端)必须先通过 `sync::get_wsl_user_home(distro)` 或 `sync::get_remote_user_home(session)` 把 target_plugins_root 头部的 `~` 解析成真实 home，再传进来。
 - 本机自定义根目录只改变本机消费路径。普通 WSL/SSH 同步的远端目标仍保持 Claude 默认布局：`~/.claude/settings.json`、`~/.claude/CLAUDE.md`、`~/.claude/config.json`、`~/.claude/plugins`、`~/.claude/skills` 和 `~/.claude.json`。WSL Direct 自定义根目录是例外，目标应跟随该 Linux 根目录。
-- `hasCompletedOnboarding` 的“无值”与“显式 false”是两种不同语义，不能互相折叠（issue #449）。`clear_claude_onboarding_skip` 写 `false` 而不是删除字段，让“用户要求重置”可以传播到 WSL；字段缺失/文件不存在表示本机没有意见，WSL 侧必须原样保留。WSL 同步侧的三态读取与判定在 `wsl::commands::plan_onboarding_sync`，改这里之前先看 `tauri/src/coding/wsl/AGENTS.md` 对应条目。
+- `hasCompletedOnboarding` 的“无值”与“显式 false”是两种不同语义，不能互相折叠（issue #449）。`clear_claude_onboarding_skip` 写 `false` 而不是删除字段，这样 `get_claude_onboarding_status` 能如实读回“当前不跳过”；但**这个 `false` 不会传播到 WSL**，因为它是持久化状态而非一次性重置指令，照它执行会让只用 WSL 的用户每次同步都被删掉已完成状态。WSL 侧只镜像 `true`，判定在 `wsl::commands::plan_onboarding_sync`；改这里之前先看 `tauri/src/coding/wsl/AGENTS.md` 对应条目。
 
 ## 跨模块依赖
 

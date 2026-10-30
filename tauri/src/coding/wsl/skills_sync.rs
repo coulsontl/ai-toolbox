@@ -178,8 +178,10 @@ pub async fn sync_skills_to_wsl(state: &SqliteDbState, app: AppHandle) -> Result
             warnings: warnings.clone(),
         },
     };
+    // Partial run: merge rather than replace, so the MCP chain's diagnostics
+    // survive a skills-only trigger (and vice versa).
     let _ = super::commands::update_sync_status(state, &sync_result).await;
-    let _ = super::commands::update_sync_warnings(state, &warnings).await;
+    let _ = super::commands::merge_sync_warnings(state, &warnings).await;
 
     // Emit event for UI feedback
     let _ = app.emit("wsl-skills-sync-completed", ());
@@ -216,8 +218,12 @@ pub(super) async fn sync_skills_to_wsl_with_warnings(
     let distro = match super::sync::get_effective_distro(&config.distro) {
         Ok(d) => d,
         Err(e) => {
+            // Surface it instead of returning Ok: the standalone entry point
+            // would otherwise record a "successful" run for a sync that never
+            // reached WSL.
             log::warn!("WSL Skills sync skipped: {}", e);
-            return Ok(());
+            let _ = app.emit("wsl-sync-warning", format!("WSL Skills 同步已跳过：{}", e));
+            return Err(format!("WSL Skills sync skipped: {}", e));
         }
     };
     let direct_modules = runtime_location::get_wsl_direct_modules_async(state.db()).await?;

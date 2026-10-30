@@ -181,14 +181,12 @@ pub async fn wsl_save_config(
     if is_being_enabled {
         log::info!("WSL sync enabled, triggering full sync...");
 
+        // Persists its own status under the sync lock; do not write it again.
         let result = do_full_sync(&state, &app, &config, None, None).await;
 
         if !result.errors.is_empty() {
             log::warn!("WSL full sync errors: {:?}", result.errors);
         }
-
-        // Update sync status
-        update_sync_status(state.inner(), &result).await?;
 
         // Emit sync completed event
         let _ = app.emit("wsl-sync-completed", result);
@@ -354,11 +352,13 @@ pub(super) async fn do_full_sync(
     let skip_claude = merged_skip_modules.iter().any(|m| m == "claude");
     if !skip_claude && (module.is_none() || module == Some("claude")) {
         if let Err(error) = rewrite_claude_plugin_metadata_in_wsl(&db, &distro).await {
-            // Documented as best-effort: the main plugin directory sync already
-            // succeeded, so this only records a diagnostic.
+            // Best-effort by design: the plugin directory itself synced already.
+            // It belongs on the warning channel — pushing it into `errors` while
+            // leaving `success` true makes the modal show a green check next to
+            // a red error banner for the same run.
             log::warn!("Claude plugin metadata WSL rewrite failed: {}", error);
             result
-                .errors
+                .warnings
                 .push(format!("Claude plugins metadata rewrite: {}", error));
         }
     }
@@ -429,13 +429,22 @@ pub(super) async fn do_full_sync(
         }
     }
 
+    // Persist the outcome while still holding the lock.
+    //
     // This run collected the warnings of every sub-step it owns (files, MCP,
     // skills, onboarding), so it also owns the persisted snapshot. Sub-runs no
     // longer write it themselves; otherwise the last one to finish would erase
     // the others' diagnostics.
     //
-    // Only when sync is enabled: with it off the warning-producing steps do not
-    // run, and persisting the empty list would erase the last real diagnostics.
+    // Status goes here too: writing it after the lock is released lets an
+    // already-queued run finish first and then be overwritten by the older
+    // result, so the modal would show the outcome of whichever run happened to
+    // save last rather than the one that actually ran last.
+    //
+    // Warnings are only persisted when sync is enabled: with it off the
+    // warning-producing steps do not run, and the empty list would erase the
+    // last real diagnostics.
+    let _ = update_sync_status(state, &result).await;
     if config.enabled {
         if let Err(e) = update_sync_warnings(state, &result.warnings).await {
             log::warn!("Failed to persist WSL sync warnings: {}", e);
@@ -797,6 +806,8 @@ pub async fn wsl_sync(
 ) -> Result<SyncResult, String> {
     let config = wsl_get_config(state.clone()).await?;
 
+    // Persists its own status while holding the sync lock, so this must not
+    // write it again afterwards.
     let result = do_full_sync(
         &state,
         &app,
@@ -805,9 +816,6 @@ pub async fn wsl_sync(
         skip_modules.as_deref(),
     )
     .await;
-
-    // Update sync status
-    update_sync_status(state.inner(), &result).await?;
 
     // Emit event to update UI
     let _ = app.emit("wsl-sync-completed", result.clone());
@@ -1839,10 +1847,15 @@ pub(super) async fn update_sync_status(
 
 /// Replace the persisted sync warnings.
 ///
-/// Called by the two entry points that own a whole run — full sync and the
+/// Called by the entry points that own a whole run — full sync and the
 /// standalone skills/MCP syncs — with the warnings that run collected. Sub-runs
 /// must not call it: a nested pass that writes here erases its siblings'
 /// diagnostics with whatever it happened to collect.
+///
+/// A standalone MCP or Skills run is a *partial* run: it only knows about its
+/// own diagnostics, so writing an empty list would wipe the other chain's
+/// warnings that the user is still looking at. Those runs merge into the
+/// existing snapshot instead. Full sync owns every chain and replaces it.
 pub(super) async fn update_sync_warnings(
     state: &SqliteDbState,
     warnings: &[String],
@@ -1851,6 +1864,35 @@ pub(super) async fn update_sync_warnings(
         state,
         &[("last_sync_warnings", serde_json::json!(warnings))],
     )
+}
+
+/// Persist a partial run's warnings without discarding the other chain's.
+///
+/// Used by the standalone `mcp-changed` / `skills-changed` syncs. Their warnings
+/// are appended to the current snapshot; an empty result leaves it untouched so
+/// a clean MCP run does not erase the Skills diagnostics shown in the modal.
+pub(super) async fn merge_sync_warnings(
+    state: &SqliteDbState,
+    warnings: &[String],
+) -> Result<(), String> {
+    if warnings.is_empty() {
+        return Ok(());
+    }
+
+    let existing = state
+        .with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "config"))?
+        .map(|record| adapter::config_from_db_value(record, vec![]))
+        .map(|config| config.last_sync_warnings)
+        .unwrap_or_default();
+
+    let mut merged: Vec<String> = existing;
+    for warning in warnings {
+        if !merged.iter().any(|item| item == warning) {
+            merged.push(warning.clone());
+        }
+    }
+
+    update_sync_warnings(state, &merged).await
 }
 
 /// Get default file mappings
@@ -2767,15 +2809,23 @@ enum OnboardingSyncAction {
 
 /// Decide what to do with the WSL `claude.json` for a known Windows status.
 ///
-/// Kept pure so the three-valued semantics can be tested without a WSL distro:
-/// the caller never reaches this function for `None`, and only an explicit
-/// `Some(false)` removes the field.
+/// Kept pure so the semantics can be tested without a WSL distro.
+///
+/// Only `true` is ever propagated. Windows `false` deliberately does nothing to
+/// the WSL side: `false` is a *persisted* state, not a one-shot instruction, so
+/// acting on it would delete a WSL onboarding the user completed inside WSL on
+/// every single sync (issue #449). The same file feeds `mcpServers`, so a file
+/// that cannot be parsed must also never be rewritten.
 fn plan_onboarding_sync(
     windows_status: bool,
     existing_content: &str,
     distro: &str,
     wsl_path: &str,
 ) -> Result<OnboardingSyncAction, String> {
+    if !windows_status {
+        return Ok(OnboardingSyncAction::None);
+    }
+
     let mut config: serde_json::Value = if existing_content.trim().is_empty() {
         serde_json::json!({})
     } else {
@@ -2799,18 +2849,14 @@ fn plan_onboarding_sync(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    if wsl_status == windows_status {
+    if wsl_status {
         return Ok(OnboardingSyncAction::None);
     }
 
-    if windows_status {
-        obj.insert(
-            "hasCompletedOnboarding".to_string(),
-            serde_json::Value::Bool(true),
-        );
-    } else {
-        obj.remove("hasCompletedOnboarding");
-    }
+    obj.insert(
+        "hasCompletedOnboarding".to_string(),
+        serde_json::Value::Bool(true),
+    );
 
     let content = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
@@ -3260,22 +3306,79 @@ mod tests {
         assert!(parsed["projects"]["/home/u"].is_object());
     }
 
-    #[test]
-    fn explicit_reset_removes_only_the_onboarding_field() {
-        let action = super::plan_onboarding_sync(
-            false,
-            r#"{"hasCompletedOnboarding": true, "numStartups": 4}"#,
-            "Ubuntu",
-            "~/.claude.json",
-        )
-        .unwrap();
+    #[tokio::test]
+    async fn partial_runs_merge_warnings_instead_of_clearing_each_other() {
+        let state = crate::db::SqliteDbState::in_memory_for_test().unwrap();
+        super::save_wsl_config_record(&state, &super::WSLSyncConfig::default()).unwrap();
 
-        let super::OnboardingSyncAction::Write(content) = action else {
-            panic!("expected a write");
-        };
-        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert!(parsed.get("hasCompletedOnboarding").is_none());
-        assert_eq!(parsed["numStartups"], serde_json::json!(4));
+        // A full run reports both chains.
+        super::update_sync_warnings(
+            &state,
+            &["skills warning".to_string(), "mcp warning".to_string()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            super::load_wsl_config(&state).unwrap().last_sync_warnings,
+            vec!["skills warning".to_string(), "mcp warning".to_string()]
+        );
+
+        // A clean skills-only run must not erase the MCP diagnostic.
+        super::merge_sync_warnings(&state, &[]).await.unwrap();
+        assert_eq!(
+            super::load_wsl_config(&state).unwrap().last_sync_warnings,
+            vec!["skills warning".to_string(), "mcp warning".to_string()]
+        );
+
+        // A skills-only run adds its own without dropping the other chain's.
+        super::merge_sync_warnings(&state, &["new skills warning".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            super::load_wsl_config(&state).unwrap().last_sync_warnings,
+            vec![
+                "skills warning".to_string(),
+                "mcp warning".to_string(),
+                "new skills warning".to_string()
+            ]
+        );
+
+        // Repeating the same warning does not duplicate it.
+        super::merge_sync_warnings(&state, &["mcp warning".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            super::load_wsl_config(&state).unwrap().last_sync_warnings.len(),
+            3
+        );
+    }
+
+    #[test]
+    fn windows_false_never_touches_the_wsl_side() {
+        // Issue #449 regression: `false` is a persisted Windows state, so acting
+        // on it would delete a WSL onboarding the user completed inside WSL on
+        // every sync. Only `true` is mirrored.
+        for existing in [
+            r#"{"hasCompletedOnboarding": true, "numStartups": 4}"#,
+            r#"{"numStartups": 4}"#,
+            "",
+        ] {
+            assert_eq!(
+                super::plan_onboarding_sync(false, existing, "Ubuntu", "~/.claude.json").unwrap(),
+                super::OnboardingSyncAction::None,
+                "windows=false must not rewrite the WSL file (existing: {existing})"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_false_does_not_even_read_a_corrupted_file() {
+        // Nothing to do means no parse at all, so a broken WSL file cannot turn
+        // a reset into a sync warning either.
+        assert_eq!(
+            super::plan_onboarding_sync(false, "{ not json", "Ubuntu", "~/.claude.json").unwrap(),
+            super::OnboardingSyncAction::None
+        );
     }
 
     #[test]
