@@ -684,11 +684,13 @@ const CodebuddyPage: React.FC = () => {
                 key: 'models',
                 label: 'models.json',
                 content: modelsText ?? '',
+                language: 'json',
               },
               {
                 key: 'settings',
                 label: 'settings.json',
                 content: settingsText,
+                language: 'json',
               },
             ]}
           />

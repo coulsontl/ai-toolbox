@@ -609,6 +609,11 @@ const WorkbuddyPage: React.FC = () => {
                 key: 'models',
                 label: 'models.json',
                 content: previewText ?? '',
+                // Still the file's raw text — only the colouring changes.
+                // `JsonEditor` would run its own `JSON.parse` marker pass and
+                // flag the comments this file is allowed to carry; the `json`
+                // language alone highlights them (`allowComments: true`).
+                language: 'json',
               },
             ]}
           />
