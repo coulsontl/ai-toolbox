@@ -11,7 +11,6 @@ import {
   Divider,
 } from 'antd';
 import { useTranslation } from 'react-i18next';
-import { useAppStore } from '@/stores';
 import {
   PRESET_MODELS,
   getPresetModelsVersion,
@@ -27,7 +26,13 @@ import {
   type GrokModelFormValues,
 } from '../utils/grokProviderModels';
 
-import { MODEL_FORM_LAYOUT } from '@/features/coding/shared/modelFormLayout';
+import {
+  MODEL_FORM_CHECKBOX_STYLES,
+  MODEL_FORM_EXTRA_STYLE,
+  MODEL_FORM_LAYOUT,
+  MODEL_FORM_PAIR_STYLE,
+} from '@/features/coding/shared/modelFormLayout';
+import modelFormStyles from '../../shared/modelFormLayout.module.less';
 
 const { Text } = Typography;
 
@@ -61,7 +66,6 @@ const GrokModelFormModal: React.FC<GrokModelFormModalProps> = ({
   onSubmit,
 }) => {
   const { t } = useTranslation();
-  const language = useAppStore((state) => state.language);
   const [form] = Form.useForm<GrokModelFormValues>();
   const [submitting, setSubmitting] = React.useState(false);
   const [presetsExpanded, setPresetsExpanded] = React.useState(false);
@@ -207,6 +211,8 @@ const GrokModelFormModal: React.FC<GrokModelFormModalProps> = ({
       <Form
         form={form}
         layout={MODEL_FORM_LAYOUT}
+        classNames={{ label: modelFormStyles.label }}
+        styles={{ extra: MODEL_FORM_EXTRA_STYLE }}
         style={{ marginTop: 24 }}
       >
         <Form.Item label={t('grok.model.upstreamId')} required>
@@ -321,45 +327,49 @@ const GrokModelFormModal: React.FC<GrokModelFormModalProps> = ({
           <InputNumber min={1} style={{ width: '100%' }} placeholder="256000" />
         </Form.Item>
 
-        <Form.Item
-          name="reasoningEfforts"
-          label={t('grok.model.reasoningEfforts')}
-          extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('grok.model.reasoningEffortsHint')}</Text>}
-        >
-          <Select
-            mode="multiple"
-            allowClear
-            placeholder={t('grok.model.reasoningEffortsPlaceholder')}
-            options={GROK_MODEL_REASONING_EFFORT_OPTIONS.map((value) => ({
-              value,
-              label: value,
-            }))}
-            onChange={handleReasoningEffortsChange}
-          />
-        </Form.Item>
+        {/* The supported efforts and the default one are the same setting read
+            two ways — the default is a member of the list — so they share a
+            row (see `MODEL_FORM_PAIR_STYLE`). */}
+        <div style={MODEL_FORM_PAIR_STYLE}>
+          <Form.Item
+            name="reasoningEfforts"
+            label={t('grok.model.reasoningEfforts')}
+            extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('grok.model.reasoningEffortsHint')}</Text>}
+          >
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder={t('grok.model.reasoningEffortsPlaceholder')}
+              options={GROK_MODEL_REASONING_EFFORT_OPTIONS.map((value) => ({
+                value,
+                label: value,
+              }))}
+              onChange={handleReasoningEffortsChange}
+            />
+          </Form.Item>
 
-        <Form.Item
-          name="reasoningEffort"
-          label={t('grok.model.reasoningEffortDefault')}
-          extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('grok.model.reasoningEffortDefaultHint')}</Text>}
-        >
-          <Select
-            allowClear
-            placeholder={t('grok.model.reasoningEffortDefaultPlaceholder')}
-            options={(reasoningEfforts || []).map((value) => ({
-              value,
-              label: value,
-            }))}
-            disabled={!reasoningEfforts || reasoningEfforts.length === 0}
-          />
-        </Form.Item>
+          <Form.Item
+            name="reasoningEffort"
+            label={t('grok.model.reasoningEffortDefault')}
+            extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('grok.model.reasoningEffortDefaultHint')}</Text>}
+          >
+            <Select
+              allowClear
+              placeholder={t('grok.model.reasoningEffortDefaultPlaceholder')}
+              options={(reasoningEfforts || []).map((value) => ({
+                value,
+                label: value,
+              }))}
+              disabled={!reasoningEfforts || reasoningEfforts.length === 0}
+            />
+          </Form.Item>
+        </div>
 
-        <Form.Item
-          name="supportsBackendSearch"
-          valuePropName="checked"
-          wrapperCol={{ offset: language === 'zh-CN' ? 5 : 7, span: 19 }}
-        >
-          <Checkbox>{t('grok.model.supportsBackendSearch')}</Checkbox>
+        {/* No `wrapperCol` offset: it was a horizontal-layout way of lining the
+            checkbox up under the label column, and under `layout="vertical"`
+            there is no column — it only indented and narrowed the control. */}
+        <Form.Item name="supportsBackendSearch" valuePropName="checked">
+          <Checkbox styles={MODEL_FORM_CHECKBOX_STYLES}>{t('grok.model.supportsBackendSearch')}</Checkbox>
         </Form.Item>
       </Form>
     </Modal>

@@ -341,7 +341,9 @@ rg -n "<tool>" web/ tauri/src/ --glob '!node_modules' --glob '!*.test.*'
   > 正确做法：`okButtonProps` 只设 `disabled`，把进行中的视觉反馈放进弹窗正文（`<Spin>` 或局部 loading），保证「取消」始终可点。**任何有长耗时操作的弹窗都要单独验一次「操作进行中点取消」**。
 - [ ] 表单字段的**顺序与数量**：逐字段列出「参照有我没有」「我有参照没有」，确认每一处差异都是**有意的**
 - [ ] **分组子字段**（如「一组三态下拉」）：横向布局下内层 `Form.Item` 若带 `label` 会继承外层 labelCol 百分比，布局错乱。改成「纯文本子标签 + 无 label 的 `Form.Item`（`labelCol={{span:0}}` / `wrapperCol={{span:24}}`）」，既保持分组又保留校验错误显示。
-  > **何时可以用 `noStyle`**：分组内**没有**逐字段校验时（如「模型能力」勾选组——布尔字段永远有值，不存在「漏填」）用 `noStyle` 是正确的，它让勾选框自然横向排列。**有** `rules` 的字段必须留出 `wrapperCol`，否则校验错误无处渲染，手动模式漏填会「点了保存没反应」（13.1 模式三）。判断依据是**该字段有没有 rules**，不是「在不在分组里」。
+  > **何时可以用 `noStyle`**：分组内**没有**逐字段校验时（如「模型能力」勾选组——布尔字段永远有值，不存在「漏填」）用 `noStyle` 是正确的，它让勾选框自然横向排列。**有** `rules` 的字段不能 `noStyle`，否则校验错误无处渲染，手动模式漏填会「点了保存没反应」（13.1 模式三）。判断依据是**该字段有没有 rules**，不是「在不在分组里」。
+  >
+  > ⚠️ **但修法不是补 `wrapperCol`**（2026-11-01 更正）：纵排下 `wrapperCol` 只在给控件加缩进和压窄宽度，`labelCol` 则会把标签重新缩进成一个不存在的列——两条都会被 `test:form-modal-layout` 判为违规。正确做法是**保留 `Form.Item` 的默认列**（什么都不传），需要分组时用 `MODEL_FORM_PAIR_STYLE` / `MODEL_FORM_TRIPLE_STYLE` 的 grid 包住若干 `Form.Item`，每个 `Form.Item` 仍是 grid 的直接子节点（套一层会断开 label 关联）。
 
 **B. 第一行放什么**
 
@@ -354,6 +356,23 @@ rg -n "<tool>" web/ tauri/src/ --glob '!node_modules' --glob '!*.test.*'
   > ⚠️ **antd 6 的 `Input.Password` 自带显示/隐藏按钮**（`visibilityToggle` 默认 `true`，见 `antd/es/input/Password.js`），所以「用了 `Input.Password`」本身就满足这条，不需要额外 `addonAfter`。这条核对的是**结果**（用户能不能切换明文），不是写法。若某处 `visibilityToggle={false}` 或有自定义 `iconRender`，才需要单独确认。
 - [ ] 是否该用 `ImeSafeInput` / `ImeSafeAutoComplete`（IME 组合输入安全）
 - [ ] hint 走 `help` 还是 `extra`，字号是 11 还是 12
+  > **2026-11-01 变更：模型弹窗的字号层级由共享常量统一，不要再逐个字段写 `fontSize`。**
+  >
+  > 用户当时的原话是「下面内容的这些字体比标题小一点」——字段标题和它下面的说明、勾选框标签
+  > 全是同一个 14px，标题失去了「标题」的辨识度。现在三层由远及近：
+  >
+  > | 层 | 字号 | 怎么给 |
+  > |---|---|---|
+  > | 字段标题（含分组标题「能力开关」） | 14px | antd 默认；颜色与冒号由 `Form` 的 `classNames.label`（`modelFormStyles.label`）补 |
+  > | 勾选框文字（「支持工具调用」等） | 13px | `<Checkbox styles={MODEL_FORM_CHECKBOX_STYLES}>` |
+  > | 字段说明（`extra`） | 12px | `<Form styles={{ extra: MODEL_FORM_EXTRA_STYLE }}>`，一处生效全弹窗 |
+  >
+  > **必须走 antd 的语义 `styles`，不要写 CSS 类。** antd 自己给 `-extra` 和 `.ant-checkbox-wrapper`
+  > 写了 `font-size`，同权重下谁生效取决于样式表产出顺序；语义 `styles` 落成内联样式，稳赢。
+  > （反过来，**冒号和颜色**只能用类：伪元素无法内联，而这两条又恰好没有 antd 规则与之竞争。）
+  >
+  > 新建自建模型弹窗时只需抄两行：`classNames={{ label: modelFormStyles.label }}` +
+  > `styles={{ extra: MODEL_FORM_EXTRA_STYLE }}`，再给每个 `<Checkbox>` 加 `styles={MODEL_FORM_CHECKBOX_STYLES}`。
 - [ ] **说明性文字放在它所说明的控件下方**（输入框 / 编辑器之后），不是上方。
   > 放在上方时它读起来像一条需要先关掉的横幅；放在下方才是「这个框里该写什么」的说明。ZCode 通用配置的 `description` 原本在 `JsonEditor` **上方**，参照 Codex 挪到下方后才读得通。
   >
@@ -865,6 +884,29 @@ pnpm run test:provider-list-locate    # data-provider-id 契约在两种布局�
 > **实际教训**：ZCode 的模型弹窗从始至终没有预设入口，而同一批次的其他 4 个自建模型弹窗、以及共享的 `ModelFormModal` 都有。迁移时只核对了布局，没核对该有的能力，于是这个缺口一直没被发现，直到被指出来。
 >
 > **所以「有没有预设模型」必须单独进核对清单**（见 4.0.2-H）——它不属于「样式」，样式核对抓不到它。
+
+**字段排布：成对 / 成组的一律并排，不竖着堆。**
+
+纵排之后每条 `Form.Item` 都独占一整行，把语义上属于同一件事的字段拆成了好几屏。同组一律并排：
+
+| 组 | 形态 | 常量 |
+|---|---|---|
+| 上下文限制 / 输出限制（+ 温度，若该 CLI 有） | 2（3）列 grid | `MODEL_FORM_PAIR_STYLE` / `MODEL_FORM_TRIPLE_STYLE` |
+| 输入模态 / 输出模态 | 2 列 grid，说明文字放**这一行下面**（它不是「输出」的注脚） | `MODEL_FORM_PAIR_STYLE` |
+| 支持的思考档位 / 默认思考档位（各家叫法不同：`reasoningLevels`、`reasoningEfforts`、`supportEfforts`） | 2 列 grid | `MODEL_FORM_PAIR_STYLE` |
+| 能力开关（booleans） | 一个分组标题 + 一行折行的 `Checkbox` | `MODEL_FORM_CHIP_ROW_STYLE` |
+
+判定标准是**它们是不是一组**，不是「好不好看」：上下文与输出都是长度，输入与输出都是载荷形状，
+「支持哪些档位」和「默认用哪一档」是同一个设置的两面（默认值必须是列表里的成员），五个能力都是 bit。
+
+用户对这两条各有一次原话：「最关键的这些怎么还是在竖着排啊，太占空间了」（数值三合一）、
+「也和上下文一样，改成左右排列，它们是一组的」（模态并排）；
+2026-11-01 又点了名：「codex 的模型编辑弹窗里 支持的思考档位 默认思考档位 一组 输入模态 输出模态 一组，
+再检查一下其他的 cli 的模型编辑的布局是不是也有没有成组的」——**各 CLI 都漏了同一组**，因为当时只改了共享弹窗。
+
+**成组名单是写死的**：`scripts/verify-form-modal-layout.mjs` 的 `PAIRED_FIELD_NAMES` 列出已知的成对字段名，
+源码扫描保证它们被包在 `MODEL_FORM_PAIR_STYLE` 里；真实渲染的并排效果由 `test:model-dialog-pairing` 用
+`getBoundingClientRect().top` 断言（源码扫描看不出 `Select` 是否因宽度折行）。新增成对字段时**两处都要加**。
 
 **四个必须保证的交互**：
 

@@ -10,7 +10,12 @@ import {
   normalizeKimiStringArray,
 } from '../utils/kimiCatalogModels';
 
-import { MODEL_FORM_LAYOUT } from '@/features/coding/shared/modelFormLayout';
+import {
+  MODEL_FORM_EXTRA_STYLE,
+  MODEL_FORM_LAYOUT,
+  MODEL_FORM_PAIR_STYLE,
+} from '@/features/coding/shared/modelFormLayout';
+import modelFormStyles from '../../shared/modelFormLayout.module.less';
 
 const { Text } = Typography;
 
@@ -197,6 +202,8 @@ const KimiModelFormModal: React.FC<KimiModelFormModalProps> = ({
       <Form
         form={form}
         layout={MODEL_FORM_LAYOUT}
+        classNames={{ label: modelFormStyles.label }}
+        styles={{ extra: MODEL_FORM_EXTRA_STYLE }}
         style={{ marginTop: 24 }}
       >
         <Form.Item
@@ -301,32 +308,37 @@ const KimiModelFormModal: React.FC<KimiModelFormModalProps> = ({
           />
         </Form.Item>
 
-        <Form.Item
-          name="supportEfforts"
-          label={t('kimi.model.supportEfforts')}
-          extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('kimi.model.supportEffortsHint')}</Text>}
-        >
-          <Select
-            mode="multiple"
-            allowClear
-            placeholder={t('kimi.model.supportEffortsPlaceholder')}
-            options={EFFORT_OPTIONS}
-            onChange={handleSupportEffortsChange}
-          />
-        </Form.Item>
+        {/* The supported efforts and the default one are the same setting read
+            two ways — the default is a member of the list — so they share a
+            row (see `MODEL_FORM_PAIR_STYLE`). */}
+        <div style={MODEL_FORM_PAIR_STYLE}>
+          <Form.Item
+            name="supportEfforts"
+            label={t('kimi.model.supportEfforts')}
+            extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('kimi.model.supportEffortsHint')}</Text>}
+          >
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder={t('kimi.model.supportEffortsPlaceholder')}
+              options={EFFORT_OPTIONS}
+              onChange={handleSupportEffortsChange}
+            />
+          </Form.Item>
 
-        <Form.Item
-          name="defaultEffort"
-          label={t('kimi.model.defaultEffort')}
-          extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('kimi.model.defaultEffortHint')}</Text>}
-        >
-          <Select
-            allowClear
-            disabled={!supportEfforts || supportEfforts.length === 0}
-            placeholder={t('kimi.model.defaultEffort')}
-            options={(supportEfforts ?? []).map((value) => ({ value, label: value }))}
-          />
-        </Form.Item>
+          <Form.Item
+            name="defaultEffort"
+            label={t('kimi.model.defaultEffort')}
+            extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('kimi.model.defaultEffortHint')}</Text>}
+          >
+            <Select
+              allowClear
+              disabled={!supportEfforts || supportEfforts.length === 0}
+              placeholder={t('kimi.model.defaultEffort')}
+              options={(supportEfforts ?? []).map((value) => ({ value, label: value }))}
+            />
+          </Form.Item>
+        </div>
 
         <Form.Item style={{ marginBottom: 0 }}>
           <Text type="secondary" style={{ fontSize: 12 }}>

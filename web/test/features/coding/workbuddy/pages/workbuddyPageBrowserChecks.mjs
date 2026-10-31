@@ -287,6 +287,62 @@ export async function verifyWorkbuddyPage({ send, evaluate, baseUrl, artifactRoo
   // Captured with the model dialog open: its shape (labels above fields, the
   // paired limits on one row) is the thing that changed, and no assertion about
   // text can see it.
+  // The label hierarchy is invisible to every static check: the class lands on
+  // the node, the rule exists in the stylesheet, and `content` even computes to
+  // `":"` — antd hides its own colon under `layout="vertical"` with
+  // `visibility: hidden` at a deeper selector, which silently hid ours too.
+  // Only the computed style of the pseudo-element can see that.
+  const labelHierarchy = JSON.parse(await evaluate(`(() => {
+    const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+    const label = modal.querySelector('.ant-form-item-label > label');
+    const after = getComputedStyle(label, '::after');
+    const checkbox = modal.querySelector('.ant-checkbox-label');
+    const extra = modal.querySelector('.ant-form-item-extra');
+    return JSON.stringify({
+      colonContent: after.content,
+      colonVisibility: after.visibility,
+      labelColor: getComputedStyle(label).color,
+      labelSize: parseFloat(getComputedStyle(label).fontSize),
+      checkboxColor: checkbox ? getComputedStyle(checkbox).color : null,
+      checkboxSize: checkbox ? parseFloat(getComputedStyle(checkbox).fontSize) : null,
+      extraSize: extra ? parseFloat(getComputedStyle(extra).fontSize) : null,
+    });
+  })()`));
+  check('the field label draws a visible colon', labelHierarchy.colonContent.includes(':'));
+  check('antd does not hide the colon', labelHierarchy.colonVisibility, 'visible');
+  check(
+    'the caption is quieter than the label',
+    labelHierarchy.checkboxColor !== labelHierarchy.labelColor && labelHierarchy.checkboxColor !== null,
+  );
+  check(
+    'the hint is smaller than the label',
+    labelHierarchy.extraSize !== null && labelHierarchy.extraSize < labelHierarchy.labelSize,
+  );
+  check(
+    'checkbox captions and hints sit below the label size',
+    labelHierarchy.checkboxSize !== null && labelHierarchy.checkboxSize < labelHierarchy.labelSize,
+  );
+
+  // A block child with a bottom margin makes the label taller than its own line
+  // box, and the `::after` colon then sits *below* the caption instead of after
+  // it (user-reported 2026-11-01: 「能力开关后面的冒号掉下去了」). The group
+  // caption's span must therefore stay margin-free, which shows up as every
+  // label being exactly one line tall.
+  const labelLineBoxes = JSON.parse(await evaluate(`(() => {
+    const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+    return JSON.stringify([...modal.querySelectorAll('.ant-form-item-label > label')].map((node) => ({
+      text: node.textContent.replace(':', '').trim(),
+      height: Math.round(node.getBoundingClientRect().height),
+      lineHeight: Math.round(parseFloat(getComputedStyle(node).lineHeight)),
+    })));
+  })()`));
+  const overTallLabels = labelLineBoxes.filter((row) => row.height > row.lineHeight);
+  check(
+    'every label is exactly one line box tall (nothing pushes the colon down)',
+    overTallLabels.map((row) => row.text),
+    [],
+  );
+
   const modelDialogShot = await send('Page.captureScreenshot', { format: 'png' });
   await writeFile(
     path.join(artifactRoot, `workbuddy-model-dialog-${theme}.png`),

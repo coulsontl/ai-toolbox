@@ -1,0 +1,57 @@
+/* The model dialog's field labels.
+ *
+ * Why this file exists at all, when antd already renders a label element:
+ * antd's defaults do not separate a field name from its value.
+ *
+ * 1. **Colour carries the hierarchy.** Labels are the primary text colour
+ *    while values, hints and placeholders stay secondary grey. Weight is
+ *    deliberately untouched (user-directed, 2026-11-01: 「标题不加粗了」) — a
+ *    bold label in a form of forty fields reads as shouting.
+ *
+ * 2. **The colon is drawn here, not by antd.** antd only renders its colon
+ *    under `layout="horizontal"`; these forms are vertical, so a bare noun
+ *    ("端点") sat next to its value with nothing marking it as a field name.
+ *    A `::after` keeps it out of the label string, so no copy needs a `:` and
+ *    the required-mark asterisk still sits in its own element before the text.
+ *
+ * Applied through `Form`'s semantic `classNames.label`, which puts this class
+ * on the label node antd owns — reaching for `.ant-form-item-label` directly
+ * would be the same rule written where nobody looks.
+ *
+ * Size hierarchy for everything *under* a label is NOT here: hints use
+ * `MODEL_FORM_EXTRA_STYLE` and checkbox captions use
+ * `MODEL_FORM_CHECKBOX_STYLES`, both passed as antd semantic `styles` (inline
+ * styles). A class would only tie with antd's own `font-size` rules at the same
+ * specificity, leaving the winner to stylesheet order; an inline style wins
+ * outright.
+ */
+.label {
+  color: var(--color-text-primary);
+}
+
+/* The colon itself.
+ *
+ * It cannot live in the `.label` block above. Under `layout="vertical"` antd
+ * writes `visibility: hidden` onto `.ant-form-item-label > label::after`
+ * (`makeVerticalLayoutLabel` in antd's form styles) — it is hiding *its* colon,
+ * which it renders unconditionally, and the rule is two classes deep while
+ * `.label::after` is one. The first version of this file set `content` at that
+ * shallower specificity and the colon was invisible on screen while every
+ * static check passed: the DOM carried the right class, the stylesheet carried
+ * the right rule, and `getComputedStyle(node, '::after').content` even read
+ * `":"` — only `visibility` was `hidden`.
+ *
+ * So the selector is spelled out at antd's depth (and one class deeper, so it
+ * wins on specificity rather than on stylesheet order), and re-states
+ * `visibility: visible` explicitly.
+ */
+:global(.ant-form-vertical) :global(.ant-form-item-label) > label.label::after {
+  content: ':';
+  margin-inline-start: 2px;
+  visibility: visible;
+}
+
+/* A group caption (「能力开关」) has no single input of its own, so the label
+   element wraps a block; the colon still belongs to it. Nothing extra needed —
+   the shared `.label` rule covers it because it is rendered as a `Form.Item`
+   label too. */

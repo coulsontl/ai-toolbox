@@ -6190,7 +6190,7 @@
       "supportsReasoning": "Supports reasoning",
       "onlyReasoning": "Reasoning only",
       "useCustomProtocol": "Custom protocol",
-      "useCustomProtocolHint": "Skips URL normalization; the endpoint is written exactly as typed.",
+      "useCustomProtocolHint": "With \"Custom protocol\" on, the endpoint skips URL normalization and is written exactly as typed.",
       "baseUrlChannelHint": "This entry belongs to an existing channel; changing the endpoint moves it out of that channel.",
       "capabilities": "Capabilities"
     },

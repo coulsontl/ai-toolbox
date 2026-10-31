@@ -16,6 +16,7 @@
 - **模型弹窗用 `layout={MODEL_FORM_LAYOUT}`（纵排，标签在字段上方）**：常量在 `shared/modelFormLayout.ts`，与共享 `ModelFormModal` 及 codex / grok / kimi / zcode / openclaw 的自建弹窗同一形态。**不要再传 `labelCol` / `wrapperCol`**——列配置会压过 `layout`，得到「标签在上但仍被缩进」的混合形态，守卫会报错。`okButtonProps={{ disabled: saving }}` 而非 `loading`，因为 antd 的 `loading` 会把「取消」一起锁死（SOP §4.0.2 A）。
 - **预设展开区要限高**（`maxHeight` + `overflowY: auto`）：目录有 100+ 条，不限高时它会占满整个弹窗，其余字段全被挤到滚动条以下——弹窗看起来像预设浏览器挂了个表单。
 - **数值字段三合一、布尔字段合成一行**：`maxInputTokens` / `maxOutputTokens` / `temperature` 用 `MODEL_FORM_TRIPLE_STYLE` 并排；五个能力开关用一个标题 + 一行 `Checkbox`（`MODEL_FORM_CHIP_ROW_STYLE`，每个 `Form.Item` 用 `noStyle`）。纵排时每个开关占「标签行 + 控件行」两行，五个开关吃掉十行——布尔是最密的字段，一个 bit 不该占两行。回归断言：`the capability switches share one inline row`（按 `getBoundingClientRect().top` 的行数判断，折行回竖排会红）。
+- **字号三层，全部来自共享常量，不要逐字段写 `fontSize`**：标题 14px（antd 默认）+ `classNames={{ label: modelFormStyles.label }}` 补颜色与冒号；勾选框文字 13px（`<Checkbox styles={MODEL_FORM_CHECKBOX_STYLES}>`）；`extra` 说明 12px（`<Form styles={{ extra: MODEL_FORM_EXTRA_STYLE }}>`，一处生效全局）。**必须走 antd 语义 `styles`（内联）而不是 CSS 类**：antd 自己给 `-extra` 与 `.ant-checkbox-wrapper` 写了 `font-size`，同权重类规则谁赢取决于样式表产出顺序。2026-11-01 用户两次指出（「标题和下面的内容字体都是一样大」→「下面内容的这些字体比标题小一点」）。
 - **endpoint 与 apiKey 在每条模型上都可编辑**，不是提到渠道级头部：文件里没有 channel 对象，改模型本来就是改渠道 endpoint 的方式。
 
 ## 关键流程

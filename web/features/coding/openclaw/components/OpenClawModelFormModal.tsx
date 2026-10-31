@@ -12,7 +12,13 @@ import {
 import JsonEditor from '@/components/common/JsonEditor';
 import type { OpenClawModel } from '@/types/openclaw';
 
-import { MODEL_FORM_LAYOUT } from '@/features/coding/shared/modelFormLayout';
+import {
+  MODEL_FORM_CHECKBOX_STYLES,
+  MODEL_FORM_EXTRA_STYLE,
+  MODEL_FORM_LAYOUT,
+  MODEL_FORM_PAIR_STYLE,
+} from '@/features/coding/shared/modelFormLayout';
+import modelFormStyles from '../../shared/modelFormLayout.module.less';
 const { Text } = Typography;
 
 // Context limit options with display labels
@@ -231,6 +237,8 @@ const OpenClawModelFormModal: React.FC<Props> = ({
       <Form
         form={form}
         layout={MODEL_FORM_LAYOUT}
+        classNames={{ label: modelFormStyles.label }}
+        styles={{ extra: MODEL_FORM_EXTRA_STYLE }}
         style={{ marginTop: 24 }}
         autoComplete="off"
       >
@@ -314,46 +322,50 @@ const OpenClawModelFormModal: React.FC<Props> = ({
           <Input placeholder={t('openclaw.providers.modelNamePlaceholder')} />
         </Form.Item>
 
-        <Form.Item
-          name="contextWindow"
-          label={t('openclaw.providers.contextLimit')}
-          getValueFromEvent={(val) => {
-            const num = parseInt(val, 10);
-            return isNaN(num) ? undefined : num;
-          }}
-        >
-          <ImeSafeAutoComplete
-            options={CONTEXT_LIMIT_OPTIONS}
-            placeholder={t('openclaw.providers.contextLimitPlaceholder')}
-            style={{ width: '100%' }}
-            filterOption={(inputValue, option) =>
-              (option?.label.toLowerCase().includes(inputValue.toLowerCase()) ||
-                option?.value.includes(inputValue)) ?? false
-            }
-          />
-        </Form.Item>
+        {/* Both are lengths of the same payload, so they share a row (see
+            `MODEL_FORM_PAIR_STYLE`). */}
+        <div style={MODEL_FORM_PAIR_STYLE}>
+          <Form.Item
+            name="contextWindow"
+            label={t('openclaw.providers.contextLimit')}
+            getValueFromEvent={(val) => {
+              const num = parseInt(val, 10);
+              return isNaN(num) ? undefined : num;
+            }}
+          >
+            <ImeSafeAutoComplete
+              options={CONTEXT_LIMIT_OPTIONS}
+              placeholder={t('openclaw.providers.contextLimitPlaceholder')}
+              style={{ width: '100%' }}
+              filterOption={(inputValue, option) =>
+                (option?.label.toLowerCase().includes(inputValue.toLowerCase()) ||
+                  option?.value.includes(inputValue)) ?? false
+              }
+            />
+          </Form.Item>
 
-        <Form.Item
-          name="maxTokens"
-          label={t('openclaw.providers.outputLimit')}
-          getValueFromEvent={(val) => {
-            const num = parseInt(val, 10);
-            return isNaN(num) ? undefined : num;
-          }}
-        >
-          <ImeSafeAutoComplete
-            options={OUTPUT_LIMIT_OPTIONS}
-            placeholder={t('openclaw.providers.outputLimitPlaceholder')}
-            style={{ width: '100%' }}
-            filterOption={(inputValue, option) =>
-              (option?.label.toLowerCase().includes(inputValue.toLowerCase()) ||
-                option?.value.includes(inputValue)) ?? false
-            }
-          />
-        </Form.Item>
+          <Form.Item
+            name="maxTokens"
+            label={t('openclaw.providers.outputLimit')}
+            getValueFromEvent={(val) => {
+              const num = parseInt(val, 10);
+              return isNaN(num) ? undefined : num;
+            }}
+          >
+            <ImeSafeAutoComplete
+              options={OUTPUT_LIMIT_OPTIONS}
+              placeholder={t('openclaw.providers.outputLimitPlaceholder')}
+              style={{ width: '100%' }}
+              filterOption={(inputValue, option) =>
+                (option?.label.toLowerCase().includes(inputValue.toLowerCase()) ||
+                  option?.value.includes(inputValue)) ?? false
+              }
+            />
+          </Form.Item>
+        </div>
 
         <Form.Item name="reasoning" label={t('openclaw.providers.modelCapabilities')} valuePropName="checked">
-          <Checkbox>{t('openclaw.providers.reasoning')}</Checkbox>
+          <Checkbox styles={MODEL_FORM_CHECKBOX_STYLES}>{t('openclaw.providers.reasoning')}</Checkbox>
         </Form.Item>
 
         {/* Advanced: Cost fields + Extra params */}

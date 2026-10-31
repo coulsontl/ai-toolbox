@@ -18,7 +18,12 @@ import {
   type CodexCatalogPresetResolver,
 } from '../utils/codexCatalogModels';
 import { CODEX_SERVICE_TIER_OPTIONS } from './ServiceTiersEditor';
-import { MODEL_FORM_LAYOUT } from '@/features/coding/shared/modelFormLayout';
+import {
+  MODEL_FORM_EXTRA_STYLE,
+  MODEL_FORM_LAYOUT,
+  MODEL_FORM_PAIR_STYLE,
+} from '@/features/coding/shared/modelFormLayout';
+import modelFormStyles from '../../shared/modelFormLayout.module.less';
 
 const { Text } = Typography;
 
@@ -198,6 +203,8 @@ const CodexModelFormModal: React.FC<CodexModelFormModalProps> = ({
       <Form
         form={form}
         layout={MODEL_FORM_LAYOUT}
+        classNames={{ label: modelFormStyles.label }}
+        styles={{ extra: MODEL_FORM_EXTRA_STYLE }}
         style={{ marginTop: 24 }}
       >
         <Form.Item
@@ -283,32 +290,37 @@ const CodexModelFormModal: React.FC<CodexModelFormModalProps> = ({
           />
         </Form.Item>
 
-        <Form.Item
-          name="reasoningLevels"
-          label={t('codex.model.reasoningLevels')}
-          extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('codex.model.reasoningLevelsHint')}</Text>}
-        >
-          <Select
-            mode="multiple"
-            allowClear
-            placeholder={t('codex.model.reasoningLevelsPlaceholder')}
-            options={CODEX_REASONING_LEVELS.map((value) => ({ value, label: value }))}
-            onChange={handleReasoningLevelsChange}
-          />
-        </Form.Item>
+        {/* The supported levels and the default one are the same setting read
+            two ways — the default is a member of the list — so they share a
+            row (see `MODEL_FORM_PAIR_STYLE`). */}
+        <div style={MODEL_FORM_PAIR_STYLE}>
+          <Form.Item
+            name="reasoningLevels"
+            label={t('codex.model.reasoningLevels')}
+            extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('codex.model.reasoningLevelsHint')}</Text>}
+          >
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder={t('codex.model.reasoningLevelsPlaceholder')}
+              options={CODEX_REASONING_LEVELS.map((value) => ({ value, label: value }))}
+              onChange={handleReasoningLevelsChange}
+            />
+          </Form.Item>
 
-        <Form.Item
-          name="defaultReasoningLevel"
-          label={t('codex.model.defaultReasoningLevel')}
-          extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('codex.model.defaultReasoningLevelHint')}</Text>}
-        >
-          <Select
-            allowClear
-            disabled={!reasoningLevels || reasoningLevels.length === 0}
-            placeholder={t('codex.model.defaultReasoningLevelAuto')}
-            options={(reasoningLevels ?? []).map((value) => ({ value, label: value }))}
-          />
-        </Form.Item>
+          <Form.Item
+            name="defaultReasoningLevel"
+            label={t('codex.model.defaultReasoningLevel')}
+            extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('codex.model.defaultReasoningLevelHint')}</Text>}
+          >
+            <Select
+              allowClear
+              disabled={!reasoningLevels || reasoningLevels.length === 0}
+              placeholder={t('codex.model.defaultReasoningLevelAuto')}
+              options={(reasoningLevels ?? []).map((value) => ({ value, label: value }))}
+            />
+          </Form.Item>
+        </div>
 
         <Form.Item
           name="serviceTiers"
@@ -323,26 +335,32 @@ const CodexModelFormModal: React.FC<CodexModelFormModalProps> = ({
           />
         </Form.Item>
 
-        <Form.Item
-          name="inputModalities"
-          label={t('codex.model.inputModalities')}
-          extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('codex.model.capabilitiesHint')}</Text>}
-        >
-          <Select
-            mode="multiple"
-            allowClear
-            placeholder={t('codex.model.inputModalitiesPlaceholder')}
-            options={CODEX_MODALITY_OPTIONS}
-          />
-        </Form.Item>
+        {/* Input and output modalities describe one payload shape, so they sit
+            on one row. The hint belongs to both, so it goes under the pair. */}
+        <div style={MODEL_FORM_PAIR_STYLE}>
+          <Form.Item
+            name="inputModalities"
+            label={t('codex.model.inputModalities')}
+          >
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder={t('codex.model.inputModalitiesPlaceholder')}
+              options={CODEX_MODALITY_OPTIONS}
+            />
+          </Form.Item>
 
-        <Form.Item name="outputModalities" label={t('codex.model.outputModalities')}>
-          <Select
-            mode="multiple"
-            allowClear
-            placeholder={t('codex.model.outputModalitiesPlaceholder')}
-            options={CODEX_MODALITY_OPTIONS}
-          />
+          <Form.Item name="outputModalities" label={t('codex.model.outputModalities')}>
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder={t('codex.model.outputModalitiesPlaceholder')}
+              options={CODEX_MODALITY_OPTIONS}
+            />
+          </Form.Item>
+        </div>
+        <Form.Item style={{ marginTop: -12, marginBottom: 0 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>{t('codex.model.capabilitiesHint')}</Text>
         </Form.Item>
 
         <Form.Item style={{ marginBottom: 0 }}>

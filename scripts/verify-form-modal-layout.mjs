@@ -80,20 +80,103 @@ const files = [
   sharedModelFormModal,
 ].sort();
 
-/** Every layout literal a governed file states, with where it was found. */
+/**
+ * Every layout a governed file states, with where it was found.
+ *
+ * Comments are stripped first. The previous version tested
+ * `source.includes('MODEL_FORM_LAYOUT')`, so a comment that merely *named* the
+ * constant — every explanatory note added after the vertical migration does —
+ * counted as a second layout and the file failed with "states more than one
+ * layout". The interesting part is the constant actually being passed.
+ */
 const layoutOf = (source, relativePath) => {
+  const code = source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
   const layouts = new Set();
-  for (const match of source.matchAll(/layout=["'{](horizontal|vertical)/g)) {
+  for (const match of code.matchAll(/layout=["'{](horizontal|vertical)/g)) {
     layouts.add(match[1]);
   }
   // The shared constant also counts: a file can only be judged by what it
   // renders, and `layout={MODEL_FORM_LAYOUT}` renders `vertical`.
-  if (source.includes('MODEL_FORM_LAYOUT')) {
+  if (/layout=\{MODEL_FORM_LAYOUT\}/.test(code)) {
     layouts.add('via-constant');
   }
   void relativePath;
   return layouts;
 };
+
+/**
+ * Field-name pairs that are one fact split in two, and therefore must sit
+ * inside one `MODEL_FORM_PAIR_STYLE` grid.
+ *
+ * Kept as literal field names rather than a semantic rule because the set is
+ * small, stable and already decided (user-directed, 2026-11-01: 「支持的思考档位
+ * 默认思考档位 一组 输入模态 输出模态 一组」). The point is that the list is
+ * written down somewhere the next dialog cannot quietly ignore; a pair nobody
+ * has adjudicated falls through and stays a judgement call.
+ *
+ * `ModelsJsonModelModal` uses `MODEL_FORM_TRIPLE_STYLE` for its limits (both
+ * plus temperature), which the check accepts.
+ */
+const PAIRED_FIELD_NAMES = [
+  ['reasoningLevels', 'defaultReasoningLevel'],
+  ['reasoningEfforts', 'reasoningEffort'],
+  ['supportEfforts', 'defaultEffort'],
+  ['inputModalities', 'outputModalities'],
+  ['contextWindow', 'maxOutputTokensMax'],
+  ['contextWindow', 'maxTokens'],
+  ['maxInputTokens', 'maxOutputTokens'],
+];
+
+/**
+ * Start of the opening tag that encloses `position`, by counting JSX tag depth
+ * backwards from that point.
+ *
+ * `MODEL_FORM_PAIR_STYLE` is written on the wrapper `<div>` before the first
+ * field, so a naive "is the constant between the two `name=` attributes" test
+ * fails on every correctly-paired dialog. Walking back to the enclosing element
+ * asks the question the rule actually means: are both fields inside one grid?
+ *
+ * Only JSX open/close tags are counted (`<Tag`, `</Tag`, `<Tag … />`); braces,
+ * strings and comments are not — a cheap scan is enough for these files, and a
+ * miss falls through to "no violation" rather than a false positive.
+ */
+function precedingUnclosedTagStart(source, position) {
+  const before = source.slice(0, position);
+  const tags = [...before.matchAll(/<\/?([A-Za-z][\w.]*)([^<>]*?)(\/?)>/g)];
+  let depth = 0;
+  for (let index = tags.length - 1; index >= 0; index -= 1) {
+    const [full, , , selfClosing] = tags[index];
+    if (selfClosing) continue;
+    if (full.startsWith('</')) {
+      depth += 1;
+    } else if (depth === 0) {
+      return tags[index].index;
+    } else {
+      depth -= 1;
+    }
+  }
+  return -1;
+}
+
+/** Index of `needle` in `source`, ignoring matches that fall inside comments. */
+function codeIndexOf(source, needle) {
+  let from = 0;
+  for (;;) {
+    const at = source.indexOf(needle, from);
+    if (at === -1) return -1;
+    const before = source.slice(0, at);
+    const lastBlockOpen = before.lastIndexOf('/*');
+    const lastBlockClose = before.lastIndexOf('*/');
+    const lineStart = before.lastIndexOf('\n');
+    const linePrefix = before.slice(lineStart + 1);
+    const inBlockComment = lastBlockOpen > lastBlockClose;
+    const inLineComment = /(^|[^:])\/\//.test(linePrefix);
+    if (!inBlockComment && !inLineComment) return at;
+    from = at + needle.length;
+  }
+}
 
 /**
  * Files whose name matches the scan but which do not own a `<Form>`.
@@ -140,16 +223,51 @@ for (const file of files) {
   perFileLayout.set(relative, onlyLayout);
 
   // A `labelCol` wins over `layout="vertical"`: the label ends up above the
-  // field but still indented by a column that no longer exists.
-  if (onlyLayout !== 'horizontal' && /\blabelCol=/.test(source)) {
+  // field but still indented by a column that no longer exists. `wrapperCol`
+  // has the same effect on the control — Grok's backend-search checkbox kept
+  // `wrapperCol={{ offset: 5, span: 19 }}` long after the dialog went vertical,
+  // which indented it and squeezed it to 19/24 of the width for no reason.
+  if (onlyLayout !== 'horizontal') {
     for (const [index, line] of source.split('\n').entries()) {
-      if (/\blabelCol=/.test(line)) {
-        violations.push({
-          file: relative,
-          line: index + 1,
-          problem: 'passes `labelCol` alongside a non-horizontal layout (the column wins)',
-        });
-      }
+      const match = /\b(labelCol|wrapperCol)=/.exec(line);
+      if (!match) continue;
+      violations.push({
+        file: relative,
+        line: index + 1,
+        problem: `passes \`${match[1]}\` alongside a non-horizontal layout (the column wins)`,
+      });
+    }
+  }
+
+  // Fields that are one fact split in two must share a row
+  // (`MODEL_FORM_PAIR_STYLE`). This is a source scan because the defect is
+  // purely spatial: a stacked pair renders, validates and saves exactly like a
+  // paired one — it just costs a label line plus a control line per field, and
+  // a dialog of eight short selects outgrows the viewport.
+  //
+  // The check is name-based on purpose: it names the fields that are known to
+  // pair, so adding a new dialog with `reasoningLevels` stacked is caught
+  // without an AST. A field not in the list (a name, an id) is left alone —
+  // those genuinely belong on their own rows.
+  for (const [left, right] of PAIRED_FIELD_NAMES) {
+    const leftAt = codeIndexOf(source, `name="${left}"`);
+    const rightAt = codeIndexOf(source, `name="${right}"`);
+    if (leftAt === -1 || rightAt === -1) continue;
+    const firstAt = Math.min(leftAt, rightAt);
+    const lastAt = Math.max(leftAt, rightAt);
+    // The grid is not *between* the two `name=` attributes — it is the element
+    // enclosing both, so it appears before the first one and (as a closing tag)
+    // after the second. Look at the enclosing element: walk back to the nearest
+    // unclosed opening tag before `firstAt`.
+    const enclosingStart = precedingUnclosedTagStart(source, firstAt);
+    if (enclosingStart === -1) continue;
+    const enclosing = source.slice(enclosingStart, lastAt);
+    if (!enclosing.includes('MODEL_FORM_PAIR_STYLE') && !enclosing.includes('MODEL_FORM_TRIPLE_STYLE')) {
+      violations.push({
+        file: relative,
+        line: source.slice(0, lastAt).split('\n').length,
+        problem: `\`${left}\` and \`${right}\` are one fact in two halves but are not inside a \`MODEL_FORM_PAIR_STYLE\` grid`,
+      });
     }
   }
 }

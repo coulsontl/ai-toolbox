@@ -4,10 +4,13 @@ import ImeSafeAutoComplete from '@/components/common/ImeSafeAutoComplete';
 import { RightOutlined, DownOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import {
+  MODEL_FORM_CHECKBOX_STYLES,
+  MODEL_FORM_EXTRA_STYLE,
   MODEL_FORM_LAYOUT,
   MODEL_FORM_MODAL_WIDTH,
   MODEL_FORM_PAIR_STYLE,
 } from '@/features/coding/shared/modelFormLayout';
+import modelFormStyles from '../../../features/coding/shared/modelFormLayout.module.less';
 import JsonEditor from '@/components/common/JsonEditor';
 import {
   PRESET_MODELS,
@@ -877,6 +880,10 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
       <Form
         form={form}
         layout={MODEL_FORM_LAYOUT}
+        // Labels were the same size and weight as the values inside the inputs,
+        // so nothing separated "what this field is" from "what is in it".
+        classNames={{ label: modelFormStyles.label }}
+        styles={{ extra: MODEL_FORM_EXTRA_STYLE }}
         style={{ marginTop: 24 }}
       >
         <Form.Item
@@ -1033,7 +1040,7 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
             label={getKey('capabilities')}
             extra={<Text type="secondary" style={{ fontSize: 12 }}>{getKey('capabilitiesHint', { tool: toolName ?? '' })}</Text>}
           >
-            <Checkbox checked={capReasoning} onChange={(e) => setCapReasoning(e.target.checked)}>
+            <Checkbox styles={MODEL_FORM_CHECKBOX_STYLES} checked={capReasoning} onChange={(e) => setCapReasoning(e.target.checked)}>
               {getKey('reasoning')}
             </Checkbox>
           </Form.Item>
@@ -1060,46 +1067,61 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
               <>
                 {showModalities && (
                   <>
-                    <Form.Item
-                      label={t('common.model.inputModalities')}
-                    >
-                      <Select
-                        mode="multiple"
-                        allowClear
-                        placeholder={t('common.model.inputModalitiesPlaceholder')}
-                        options={MODALITY_OPTIONS}
-                        value={inputModalities}
-                        onChange={setInputModalities}
-                      />
-                    </Form.Item>
-                    <Form.Item
-                      label={t('common.model.outputModalities')}
-                      extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('common.model.modalitiesHint')}</Text>}
-                    >
-                      <Select
-                        mode="multiple"
-                        allowClear
-                        placeholder={t('common.model.outputModalitiesPlaceholder')}
-                        options={MODALITY_OPTIONS}
-                        value={outputModalities}
-                        onChange={setOutputModalities}
-                      />
+                    {/* Input and output are one fact — the shape of the payload
+                        the model accepts and returns — so they share a row the
+                        same way the two limits do. Stacked they were two
+                        full-width select boxes and half a screen of chrome for
+                        two short tag lists (user-directed, 2026-11-01:
+                        「也和上下文一样，改成左右排列，它们是一组的」).
+
+                        The hint belongs to the pair, not to 输出 alone: it
+                        describes both fields, so it sits under the row instead
+                        of under only the right-hand box. */}
+                    <div style={MODEL_FORM_PAIR_STYLE}>
+                      <Form.Item
+                        label={t('common.model.inputModalities')}
+                      >
+                        <Select
+                          mode="multiple"
+                          allowClear
+                          placeholder={t('common.model.inputModalitiesPlaceholder')}
+                          options={MODALITY_OPTIONS}
+                          value={inputModalities}
+                          onChange={setInputModalities}
+                        />
+                      </Form.Item>
+                      <Form.Item
+                        label={t('common.model.outputModalities')}
+                      >
+                        <Select
+                          mode="multiple"
+                          allowClear
+                          placeholder={t('common.model.outputModalitiesPlaceholder')}
+                          options={MODALITY_OPTIONS}
+                          value={outputModalities}
+                          onChange={setOutputModalities}
+                        />
+                      </Form.Item>
+                    </div>
+                    <Form.Item style={{ marginTop: -12 }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>{t('common.model.modalitiesHint')}</Text>
                     </Form.Item>
                     <Form.Item
                       label={t('common.model.capabilities')}
                       extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('common.model.capabilitiesHint')}</Text>}
                     >
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
-                        <Checkbox checked={capReasoning} onChange={(e) => setCapReasoning(e.target.checked)}>
+                        <Checkbox styles={MODEL_FORM_CHECKBOX_STYLES} checked={capReasoning} onChange={(e) => setCapReasoning(e.target.checked)}>
                           {t('common.model.reasoning')}
                         </Checkbox>
-                        <Checkbox checked={capToolCall} onChange={(e) => setCapToolCall(e.target.checked)}>
+                        <Checkbox styles={MODEL_FORM_CHECKBOX_STYLES} checked={capToolCall} onChange={(e) => setCapToolCall(e.target.checked)}>
                           {t('common.model.toolCall')}
                         </Checkbox>
-                        <Checkbox checked={capTemperature} onChange={(e) => setCapTemperature(e.target.checked)}>
+                        <Checkbox styles={MODEL_FORM_CHECKBOX_STYLES} checked={capTemperature} onChange={(e) => setCapTemperature(e.target.checked)}>
                           {t('common.model.temperatureSetting')}
                         </Checkbox>
                         <Checkbox
+                          styles={MODEL_FORM_CHECKBOX_STYLES}
                           checked={attachmentViaModalities
                             ? inputModalities.some((item) => item === 'image' || item === 'pdf')
                             : capAttachment}

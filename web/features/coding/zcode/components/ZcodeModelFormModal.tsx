@@ -36,7 +36,13 @@ import {
   zcodeModalityValuesFor,
 } from '../utils/zcodeModelFields';
 
-import { MODEL_FORM_LAYOUT } from '@/features/coding/shared/modelFormLayout';
+import {
+  MODEL_FORM_CHECKBOX_STYLES,
+  MODEL_FORM_EXTRA_STYLE,
+  MODEL_FORM_LAYOUT,
+  MODEL_FORM_PAIR_STYLE,
+} from '@/features/coding/shared/modelFormLayout';
+import modelFormStyles from '../../shared/modelFormLayout.module.less';
 
 const { Text } = Typography;
 
@@ -297,7 +303,8 @@ const ZcodeModelFormModal: React.FC<ZcodeModelFormModalProps> = ({
       okText={t('common.save')}
       cancelText={t('common.cancel')}
     >
-      <Form form={form} layout={MODEL_FORM_LAYOUT}>
+      <Form form={form} layout={MODEL_FORM_LAYOUT} classNames={{ label: modelFormStyles.label }}
+        styles={{ extra: MODEL_FORM_EXTRA_STYLE }}>
         <Form.Item label={t('zcode.model.modelId')} required>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <Form.Item
@@ -382,29 +389,35 @@ const ZcodeModelFormModal: React.FC<ZcodeModelFormModalProps> = ({
           </Radio.Group>
         </Form.Item>
 
-        <Form.Item
-          name="contextWindow"
-          label={labelWithHelp(t('zcode.model.contextWindow'), t('zcode.model.help.contextWindow'))}
-          rules={manualRequiredRule}
-        >
-          <InputNumber
-            min={1}
-            style={{ width: '100%' }}
-            placeholder={t('zcode.model.contextWindowPlaceholder')}
-          />
-        </Form.Item>
+        {/* Both are lengths of the same payload, so they share a row (see
+            `MODEL_FORM_PAIR_STYLE`). Each keeps its own `rules`: the two
+            `Form.Item`s stay direct children of the grid, and wrapping either
+            in another item would break its label association. */}
+        <div style={MODEL_FORM_PAIR_STYLE}>
+          <Form.Item
+            name="contextWindow"
+            label={labelWithHelp(t('zcode.model.contextWindow'), t('zcode.model.help.contextWindow'))}
+            rules={manualRequiredRule}
+          >
+            <InputNumber
+              min={1}
+              style={{ width: '100%' }}
+              placeholder={t('zcode.model.contextWindowPlaceholder')}
+            />
+          </Form.Item>
 
-        <Form.Item
-          name="maxOutputTokensMax"
-          label={labelWithHelp(t('zcode.model.maxOutputTokens'), t('zcode.model.help.maxOutputTokens'))}
-          rules={manualRequiredRule}
-        >
-          <InputNumber
-            min={1}
-            style={{ width: '100%' }}
-            placeholder={t('zcode.model.maxOutputTokensPlaceholder')}
-          />
-        </Form.Item>
+          <Form.Item
+            name="maxOutputTokensMax"
+            label={labelWithHelp(t('zcode.model.maxOutputTokens'), t('zcode.model.help.maxOutputTokens'))}
+            rules={manualRequiredRule}
+          >
+            <InputNumber
+              min={1}
+              style={{ width: '100%' }}
+              placeholder={t('zcode.model.maxOutputTokensPlaceholder')}
+            />
+          </Form.Item>
+        </div>
 
         <Form.Item
           name="inputModalities"
@@ -434,7 +447,7 @@ const ZcodeModelFormModal: React.FC<ZcodeModelFormModalProps> = ({
           <Space wrap size="small">
             {capabilityFields.map((field) => (
               <Form.Item key={field.name} name={field.name} valuePropName="checked" noStyle>
-                <Checkbox>{t(field.labelKey)}</Checkbox>
+                <Checkbox styles={MODEL_FORM_CHECKBOX_STYLES}>{t(field.labelKey)}</Checkbox>
               </Form.Item>
             ))}
           </Space>

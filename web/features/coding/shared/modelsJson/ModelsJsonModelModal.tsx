@@ -10,6 +10,7 @@ import {
   type FormInstance,
 } from 'antd';
 import { useTranslation } from 'react-i18next';
+import ImeSafeAutoComplete from '@/components/common/ImeSafeAutoComplete';
 import {
   PRESET_MODELS,
   getPresetModelsVersion,
@@ -23,11 +24,18 @@ import type {
 import { MODELS_JSON_PRESET_NPM, presetToModelsJsonFields } from './modelsJsonPresetFields';
 
 import {
+  MODEL_FORM_CHECKBOX_STYLES,
   MODEL_FORM_CHIP_ROW_STYLE,
+  MODEL_FORM_EXTRA_STYLE,
   MODEL_FORM_GROUP_LABEL_STYLE,
   MODEL_FORM_LAYOUT,
   MODEL_FORM_TRIPLE_STYLE,
 } from '@/features/coding/shared/modelFormLayout';
+import modelFormStyles from '../modelFormLayout.module.less';
+import {
+  CONTEXT_LIMIT_PRESETS,
+  OUTPUT_LIMIT_PRESETS,
+} from '@/features/coding/shared/modelLimitPresets';
 const { Text } = Typography;
 
 interface Props {
@@ -136,7 +144,12 @@ const ModelsJsonModelModal: React.FC<Props> = ({
       width={720}
       destroyOnHidden
     >
-      <Form form={form} layout={MODEL_FORM_LAYOUT}>
+      <Form
+        form={form}
+        layout={MODEL_FORM_LAYOUT}
+        classNames={{ label: modelFormStyles.label }}
+        styles={{ extra: MODEL_FORM_EXTRA_STYLE }}
+      >
         {/*
           `previousId` must be a registered field, not just a value parked on the
           form: `validateFields()` collects only registered names and drops the
@@ -225,13 +238,46 @@ const ModelsJsonModelModal: React.FC<Props> = ({
         </Form.Item>
         {/* One row: three numbers that describe the same thing (how big the
             model is, how hot it runs). Stacked they were three full-width rows
-            of six digits each. */}
+            of six digits each.
+
+            The two limits are `AutoComplete`s over the common values, the same
+            control the shared `ModelFormModal` uses: the dropdown offers 128K,
+            1M and friends while the box still accepts any number a provider
+            happens to use. */}
         <div style={MODEL_FORM_TRIPLE_STYLE}>
-          <Form.Item name="maxInputTokens" label={t('workbuddy.model.maxInputTokens')}>
-            <InputNumber min={1} style={{ width: '100%' }} />
+          <Form.Item
+            name="maxInputTokens"
+            label={t('workbuddy.model.maxInputTokens')}
+            getValueFromEvent={(value) => {
+              const parsed = parseInt(value, 10);
+              return Number.isNaN(parsed) ? undefined : parsed;
+            }}
+          >
+            <ImeSafeAutoComplete
+              options={CONTEXT_LIMIT_PRESETS}
+              style={{ width: '100%' }}
+              filterOption={(inputValue, option) =>
+                (option?.label.toLowerCase().includes(inputValue.toLowerCase())
+                  || option?.value.includes(inputValue)) ?? false
+              }
+            />
           </Form.Item>
-          <Form.Item name="maxOutputTokens" label={t('workbuddy.model.maxOutputTokens')}>
-            <InputNumber min={1} style={{ width: '100%' }} />
+          <Form.Item
+            name="maxOutputTokens"
+            label={t('workbuddy.model.maxOutputTokens')}
+            getValueFromEvent={(value) => {
+              const parsed = parseInt(value, 10);
+              return Number.isNaN(parsed) ? undefined : parsed;
+            }}
+          >
+            <ImeSafeAutoComplete
+              options={OUTPUT_LIMIT_PRESETS}
+              style={{ width: '100%' }}
+              filterOption={(inputValue, option) =>
+                (option?.label.toLowerCase().includes(inputValue.toLowerCase())
+                  || option?.value.includes(inputValue)) ?? false
+              }
+            />
           </Form.Item>
           <Form.Item name="temperature" label={t('workbuddy.model.temperature')}>
             <InputNumber min={0} max={2} step={0.1} style={{ width: '100%' }} />
@@ -244,24 +290,33 @@ const ModelsJsonModelModal: React.FC<Props> = ({
         <Form.Item label={<span style={MODEL_FORM_GROUP_LABEL_STYLE}>{t('workbuddy.model.capabilities')}</span>}>
           <div style={MODEL_FORM_CHIP_ROW_STYLE}>
             <Form.Item name="supportsToolCall" valuePropName="checked" noStyle>
-              <Checkbox>{t('workbuddy.model.supportsToolCall')}</Checkbox>
+              <Checkbox styles={MODEL_FORM_CHECKBOX_STYLES}>{t('workbuddy.model.supportsToolCall')}</Checkbox>
             </Form.Item>
             <Form.Item name="supportsImages" valuePropName="checked" noStyle>
-              <Checkbox>{t('workbuddy.model.supportsImages')}</Checkbox>
+              <Checkbox styles={MODEL_FORM_CHECKBOX_STYLES}>{t('workbuddy.model.supportsImages')}</Checkbox>
             </Form.Item>
             <Form.Item name="supportsReasoning" valuePropName="checked" noStyle>
-              <Checkbox>{t('workbuddy.model.supportsReasoning')}</Checkbox>
+              <Checkbox styles={MODEL_FORM_CHECKBOX_STYLES}>{t('workbuddy.model.supportsReasoning')}</Checkbox>
             </Form.Item>
             <Form.Item name="onlyReasoning" valuePropName="checked" noStyle>
-              <Checkbox>{t('workbuddy.model.onlyReasoning')}</Checkbox>
+              <Checkbox styles={MODEL_FORM_CHECKBOX_STYLES}>{t('workbuddy.model.onlyReasoning')}</Checkbox>
             </Form.Item>
             <Form.Item name="useCustomProtocol" valuePropName="checked" noStyle>
-              <Checkbox>{t('workbuddy.model.useCustomProtocol')}</Checkbox>
+              <Checkbox styles={MODEL_FORM_CHECKBOX_STYLES}>{t('workbuddy.model.useCustomProtocol')}</Checkbox>
             </Form.Item>
           </div>
-        </Form.Item>
-        <Form.Item style={{ marginTop: -12 }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
+          {/* The note explains one switch in the row above, so it belongs
+              *inside* this item, directly under the row it describes
+              (user-directed, 2026-11-01: 「这个提示是哪个选项的我也不知道」, then
+              「中间空的有点大」).
+
+              It used to be its own `Form.Item`, which cost 25px of air between
+              the row and the sentence: a sibling item brings antd's 24px
+              `itemMarginBottom` plus a 32px minimum control height, and the
+              `marginTop: -12` meant to claw that back only removed half of it.
+              As part of the control it inherits the row's own spacing (8px) and
+              cannot drift apart from the group it annotates. */}
+          <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 8 }}>
             {t('workbuddy.model.useCustomProtocolHint')}
           </Text>
         </Form.Item>

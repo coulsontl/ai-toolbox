@@ -1,6 +1,17 @@
 import type React from 'react';
 
 /**
+ * The class `Form`'s semantic `classNames.label` should receive.
+ *
+ * A CSS-Modules class name is resolved per import site, so the `.less` file is
+ * imported by each dialog that needs it and the name comes from
+ * `styles.label` there. This module re-exports nothing of the sort: exporting
+ * `styles.label` from here would read as a convenience but breaks the
+ * `verify-css-module-classes` scan, which resolves `styles.x` inside the file
+ * that imports the stylesheet.
+ */
+
+/**
  * The shape every model dialog in this app uses.
  *
  * ## Why labels sit above the field
@@ -52,6 +63,19 @@ export const MODEL_FORM_ITEM_STYLE: React.CSSProperties = {
 };
 
 /**
+ * The label's *inline* style — colour only.
+ *
+ * The colon is drawn by `.label::after` in the `.less` module, because a
+ * pseudo-element cannot be expressed as an inline style. This object stays for
+ * the cases where a caller sets a style on one specific label (a group caption)
+ * and must keep the same colour without dragging in the class.
+ */
+export const MODEL_FORM_LABEL_STYLE: React.CSSProperties = {
+  fontWeight: 400,
+  color: 'var(--color-text-primary)',
+};
+
+/**
  * Width every model dialog shares.
  *
  * Wider than the old 640: the fields now span the dialog, and a JSON editor at
@@ -61,11 +85,21 @@ export const MODEL_FORM_ITEM_STYLE: React.CSSProperties = {
 export const MODEL_FORM_MODAL_WIDTH = 720;
 
 /**
- * The grid for numeric fields that belong together (limits, temperature).
+ * The grid for two fields that are one fact split in two.
  *
- * They are one fact split across boxes and belong on one row; stacking them
- * made the dialog taller than the viewport while each input still held six
- * digits.
+ * Which pairs qualify: context/output limits, input/output modalities, a
+ * reasoning-level list and its default. They belong on one row because reading
+ * them apart is what costs the dialog its height — each on its own row is a
+ * label line plus a control line, and a dialog of eight short selects outgrows
+ * the viewport while every box still holds six digits or three words.
+ *
+ * What does *not* qualify: fields that merely sit next to each other (a name
+ * and an id), or controls of different heights (a select beside a JSON
+ * editor). Those keep their own rows.
+ *
+ * User-directed twice on 2026-11-01: 「最关键的这些怎么还是在竖着排啊，太占空间了」
+ * for the limits, then 「也和上下文一样，改成左右排列，它们是一组的」 for the
+ * modalities.
  */
 export const MODEL_FORM_PAIR_STYLE: React.CSSProperties = {
   display: 'grid',
@@ -80,6 +114,8 @@ export const MODEL_FORM_TRIPLE_STYLE: React.CSSProperties = {
   gap: 16,
 };
 
+
+
 /**
  * A label for a group of switches drawn as one inline row.
  *
@@ -87,12 +123,17 @@ export const MODEL_FORM_TRIPLE_STYLE: React.CSSProperties = {
  * bit — and giving each its own label line plus its own control line spent ten
  * rows on five bits. One caption above one wrapping checkbox row says the same
  * thing in two.
+ *
+ * **No `marginBottom` here.** This span is rendered *inside* the `<label>` that
+ * antd owns, and a block child with a bottom margin makes that label 30px tall
+ * instead of 22px — the label's line box then extends past the text, and the
+ * `::after` colon (which belongs to the same line box) drops to sit below
+ * 「能力开关」 instead of after it (user-reported, 2026-11-01). The gap to the
+ * checkbox row is antd's own vertical label padding, which is already correct.
  */
 export const MODEL_FORM_GROUP_LABEL_STYLE: React.CSSProperties = {
+  ...MODEL_FORM_LABEL_STYLE,
   display: 'block',
-  marginBottom: 8,
-  fontSize: 14,
-  color: 'var(--color-text)',
 };
 
 /**
@@ -100,9 +141,45 @@ export const MODEL_FORM_GROUP_LABEL_STYLE: React.CSSProperties = {
  *
  * `gap: 8px 20px` — the horizontal gap is wider than the vertical so the
  * labels read as separate items rather than as one sentence.
+ *
+ * Each checkbox inside also takes `MODEL_FORM_CHECKBOX_STYLES`: a size on this
+ * container would never reach the captions, because antd writes its own
+ * `font-size` onto every `.ant-checkbox-wrapper`.
  */
 export const MODEL_FORM_CHIP_ROW_STYLE: React.CSSProperties = {
   display: 'flex',
   flexWrap: 'wrap',
   gap: '8px 20px',
 };
+
+/**
+ * The hint line under a field (`Form.Item`'s `extra`), one size below a label.
+ *
+ * Passed through `Form`'s semantic `styles.extra` so every hint in a dialog is
+ * 12px without each field wrapping its own `<Text>`. antd already colours
+ * `-extra` secondary; the size was the problem — it matched the label exactly,
+ * so a hint under 「端点」 read as a second field name (user-directed,
+ * 2026-11-01: 「下面内容的这些字体比标题小一点」).
+ */
+export const MODEL_FORM_EXTRA_STYLE: React.CSSProperties = {
+  fontSize: 12,
+};
+
+/**
+ * A checkbox caption: one size below, and quieter than, the group caption.
+ *
+ * `<Checkbox styles={MODEL_FORM_CHECKBOX_STYLES}>` — antd puts the semantic
+ * style on the `<span>` that holds the caption, which is the node carrying both
+ * the text and antd's own `font-size` / `color`. Same inline-vs-class reasoning
+ * as `MODEL_FORM_EXTRA_STYLE`: at 14px and the primary colour, 「支持工具调用」
+ * was indistinguishable from the 「能力开关」 caption above it
+ * (user-directed, 2026-11-01: 「下面内容的这些字体比标题小一点」, then
+ * 「内容灰色也没做啊」).
+ *
+ * `color` is what makes them read as *values* of the group rather than as
+ * further headings. The box itself stays as antd draws it; only the caption
+ * text is muted, so a checked switch is still obvious.
+ */
+export const MODEL_FORM_CHECKBOX_STYLES = {
+  label: { fontSize: 13, color: 'var(--color-text-secondary)' },
+} satisfies Record<'label', React.CSSProperties>;
