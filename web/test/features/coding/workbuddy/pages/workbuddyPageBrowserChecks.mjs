@@ -284,6 +284,15 @@ export async function verifyWorkbuddyPage({ send, evaluate, baseUrl, artifactRoo
   })()`);
   check('the preset picker lists catalogue entries', presetCount > 0);
 
+  // Captured with the model dialog open: its shape (labels above fields, the
+  // paired limits on one row) is the thing that changed, and no assertion about
+  // text can see it.
+  const modelDialogShot = await send('Page.captureScreenshot', { format: 'png' });
+  await writeFile(
+    path.join(artifactRoot, `workbuddy-model-dialog-${theme}.png`),
+    Buffer.from(modelDialogShot.data, 'base64'),
+  );
+
   await evaluate(`(() => {
     const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
     modal.querySelector('.ant-modal-close').click();

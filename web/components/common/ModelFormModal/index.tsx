@@ -3,7 +3,11 @@ import { Modal, Form, Input, Button, Select, message, Typography, Tag, Divider, 
 import ImeSafeAutoComplete from '@/components/common/ImeSafeAutoComplete';
 import { RightOutlined, DownOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { useAppStore } from '@/stores';
+import {
+  MODEL_FORM_LAYOUT,
+  MODEL_FORM_MODAL_WIDTH,
+  MODEL_FORM_PAIR_STYLE,
+} from '@/features/coding/shared/modelFormLayout';
 import JsonEditor from '@/components/common/JsonEditor';
 import {
   PRESET_MODELS,
@@ -229,7 +233,6 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
   messageOverrides,
 }) => {
   const { t } = useTranslation();
-  const language = useAppStore((state) => state.language);
   const [form] = Form.useForm();
   const [loading, setLoading] = React.useState(false);
   const [jsonOptions, setJsonOptions] = React.useState<unknown>({});
@@ -354,8 +357,6 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
     setPresetsExpanded(false);
   };
 
-  const labelCol = { span: language === 'zh-CN' ? 4 : 6 };
-  const wrapperCol = { span: 20 };
 
   // Check if options or variants or modalities has content
   const hasAdvancedContent = React.useMemo(() => {
@@ -869,16 +870,13 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
           {t('common.save')}
         </Button>,
       ]}
-      // 640 matches the Codex catalog model modal, which was the reference the
-      // other CLIs' model forms were compared against. Callers can still pass
-      // `width` to override.
-      width={width ?? 640}
+      // Fields now span the dialog, so the width is what decides whether the
+      // JSON editors are readable (see `shared/modelFormLayout.ts`).
+      width={width ?? MODEL_FORM_MODAL_WIDTH}
     >
       <Form
         form={form}
-        layout="horizontal"
-        labelCol={labelCol}
-        wrapperCol={wrapperCol}
+        layout={MODEL_FORM_LAYOUT}
         style={{ marginTop: 24 }}
       >
         <Form.Item
@@ -918,8 +916,11 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
         </Form.Item>
 
         {presetsExpanded && presetModels.length > 0 && (
-          <Form.Item wrapperCol={{ offset: language === 'zh-CN' ? 4 : 6, span: 20 }} style={{ marginTop: -8 }}>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <Form.Item style={{ marginTop: -8 }}>
+            {/* Capped and scrollable: the catalogue is over 100 entries, and
+                letting it run the full height pushed every other field below the
+                fold. */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxHeight: 168, overflowY: 'auto', paddingRight: 4 }}>
               {presetModels.map((preset) => (
                 <Tag
                   key={preset.id}
@@ -965,45 +966,51 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
           <Input placeholder={nameRequired ? getKey('namePlaceholder') : getKey('nameOptionalPlaceholder')} />
         </Form.Item>
 
-        <Form.Item
-          label={getKey('contextLimit')}
-          name="contextLimit"
-          rules={limitRules}
-          getValueFromEvent={(val) => {
-            const num = parseInt(val, 10);
-            return isNaN(num) ? undefined : num;
-          }}
-        >
-          <ImeSafeAutoComplete
-            options={CONTEXT_LIMIT_OPTIONS}
-            placeholder={getKey('contextLimitPlaceholder')}
-            style={{ width: '100%' }}
-            filterOption={(inputValue, option) =>
-              (option?.label.toLowerCase().includes(inputValue.toLowerCase()) ||
-              option?.value.includes(inputValue)) ?? false
-            }
-          />
-        </Form.Item>
+        {/* The two limits are one fact split in two, so they share a row: stacked,
+            each six-digit input sat alone on a full-width line and the dialog grew
+            past the viewport. Both `Form.Item`s stay direct children of the grid —
+            wrapping one in another item would break its label association. */}
+        <div style={MODEL_FORM_PAIR_STYLE}>
+          <Form.Item
+            label={getKey('contextLimit')}
+            name="contextLimit"
+            rules={limitRules}
+            getValueFromEvent={(val) => {
+              const num = parseInt(val, 10);
+              return isNaN(num) ? undefined : num;
+            }}
+          >
+            <ImeSafeAutoComplete
+              options={CONTEXT_LIMIT_OPTIONS}
+              placeholder={getKey('contextLimitPlaceholder')}
+              style={{ width: '100%' }}
+              filterOption={(inputValue, option) =>
+                (option?.label.toLowerCase().includes(inputValue.toLowerCase()) ||
+                option?.value.includes(inputValue)) ?? false
+              }
+            />
+          </Form.Item>
 
-        <Form.Item
-          label={getKey('outputLimit')}
-          name="outputLimit"
-          rules={outputLimitRules}
-          getValueFromEvent={(val) => {
-            const num = parseInt(val, 10);
-            return isNaN(num) ? undefined : num;
-          }}
-        >
-          <ImeSafeAutoComplete
-            options={OUTPUT_LIMIT_OPTIONS}
-            placeholder={getKey('outputLimitPlaceholder')}
-            style={{ width: '100%' }}
-            filterOption={(inputValue, option) =>
-              (option?.label.toLowerCase().includes(inputValue.toLowerCase()) ||
-              option?.value.includes(inputValue)) ?? false
-            }
-          />
-        </Form.Item>
+          <Form.Item
+            label={getKey('outputLimit')}
+            name="outputLimit"
+            rules={outputLimitRules}
+            getValueFromEvent={(val) => {
+              const num = parseInt(val, 10);
+              return isNaN(num) ? undefined : num;
+            }}
+          >
+            <ImeSafeAutoComplete
+              options={OUTPUT_LIMIT_OPTIONS}
+              placeholder={getKey('outputLimitPlaceholder')}
+              style={{ width: '100%' }}
+              filterOption={(inputValue, option) =>
+                (option?.label.toLowerCase().includes(inputValue.toLowerCase()) ||
+                option?.value.includes(inputValue)) ?? false
+              }
+            />
+          </Form.Item>
+        </div>
 
         {showInputTypes && (
           <Form.Item

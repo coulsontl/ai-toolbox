@@ -27,6 +27,8 @@ import {
   type GrokModelFormValues,
 } from '../utils/grokProviderModels';
 
+import { MODEL_FORM_LAYOUT } from '@/features/coding/shared/modelFormLayout';
+
 const { Text } = Typography;
 
 interface GrokModelFormModalProps {
@@ -191,8 +193,6 @@ const GrokModelFormModal: React.FC<GrokModelFormModalProps> = ({
   };
 
   const previousModelId = (initialValues?.model || initialValues?.key || '').trim();
-  const labelCol = { span: language === 'zh-CN' ? 5 : 7 };
-  const wrapperCol = { span: 19 };
 
   return (
     <Modal
@@ -206,9 +206,7 @@ const GrokModelFormModal: React.FC<GrokModelFormModalProps> = ({
     >
       <Form
         form={form}
-        layout="horizontal"
-        labelCol={labelCol}
-        wrapperCol={wrapperCol}
+        layout={MODEL_FORM_LAYOUT}
         style={{ marginTop: 24 }}
       >
         <Form.Item label={t('grok.model.upstreamId')} required>
@@ -279,7 +277,7 @@ const GrokModelFormModal: React.FC<GrokModelFormModalProps> = ({
         </Form.Item>
 
         {presetsExpanded && allPresets.length > 0 && (
-          <Form.Item wrapperCol={{ offset: language === 'zh-CN' ? 5 : 7, span: 19 }} style={{ marginTop: -8 }}>
+          <Form.Item style={{ marginTop: -8 }}>
             {/* Primary: xAI + current channel API family. Other SDKs stay secondary. */}
             {primaryPresets.length > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxHeight: 220, overflowY: 'auto' }}>

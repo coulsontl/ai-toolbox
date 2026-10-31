@@ -13,7 +13,8 @@
 
 - **为什么共享而不是各写一份**：两个产品是同一引擎的两张皮，`models.json` 契约完全相同（见 `tauri/src/coding/workbuddy_family/AGENTS.md`）。分叉实现会让「改一个不知道另一个也在用」。
 - **列表布局用 `OpenCodeStyleCard`，卡片布局用 `ProviderCompactCard`**：扁平模型列表、多渠道路由、没有单一 active provider → 无主操作、无「设为默认」（选型依据见根 `AGENTS.md` Hard Rule 14 与 SOP §4.2.1）。**两种布局是密度差异，不是能力差异**——格子只陈述「端点 + 模型数」，模型管理进侧栏（`ProviderModelSection appearance="detail"`，常开），列表卡片照旧折叠。把列表卡片塞进网格格是错误形态：它的工具栏有五个文字按钮，350px 的格放不下，「模型列表」会竖排成单字一行、添加模型被挤出头部（2026-10-31 用户报障）。
-- **模型弹窗 `layout="horizontal"` + `labelCol {span:6}`**：对齐 DESIGN.md 的弹窗表单形态；`okButtonProps={{ disabled: saving }}` 而非 `loading`，因为 antd 的 `loading` 会把「取消」一起锁死（SOP §4.0.2 A）。
+- **模型弹窗用 `layout={MODEL_FORM_LAYOUT}`（纵排，标签在字段上方）**：常量在 `shared/modelFormLayout.ts`，与共享 `ModelFormModal` 及 codex / grok / kimi / zcode / openclaw 的自建弹窗同一形态。**不要再传 `labelCol` / `wrapperCol`**——列配置会压过 `layout`，得到「标签在上但仍被缩进」的混合形态，守卫会报错。`okButtonProps={{ disabled: saving }}` 而非 `loading`，因为 antd 的 `loading` 会把「取消」一起锁死（SOP §4.0.2 A）。
+- **预设展开区要限高**（`maxHeight` + `overflowY: auto`）：目录有 100+ 条，不限高时它会占满整个弹窗，其余字段全被挤到滚动条以下——弹窗看起来像预设浏览器挂了个表单。
 - **endpoint 与 apiKey 在每条模型上都可编辑**，不是提到渠道级头部：文件里没有 channel 对象，改模型本来就是改渠道 endpoint 的方式。
 
 ## 关键流程

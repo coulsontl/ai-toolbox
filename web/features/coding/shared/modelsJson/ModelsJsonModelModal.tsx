@@ -23,10 +23,8 @@ import type {
 } from '@/types/workbuddyFamily';
 import { MODELS_JSON_PRESET_NPM, presetToModelsJsonFields } from './modelsJsonPresetFields';
 
+import { MODEL_FORM_LAYOUT } from '@/features/coding/shared/modelFormLayout';
 const { Text } = Typography;
-
-const LABEL_COL = { span: 6 };
-const WRAPPER_COL = { span: 18 };
 
 interface Props {
   open: boolean;
@@ -134,7 +132,7 @@ const ModelsJsonModelModal: React.FC<Props> = ({
       width={720}
       destroyOnHidden
     >
-      <Form form={form} layout="horizontal" labelCol={LABEL_COL} wrapperCol={WRAPPER_COL}>
+      <Form form={form} layout={MODEL_FORM_LAYOUT}>
         {/*
           `previousId` must be a registered field, not just a value parked on the
           form: `validateFields()` collects only registered names and drops the
@@ -174,15 +172,25 @@ const ModelsJsonModelModal: React.FC<Props> = ({
         </Form.Item>
 
         {presetsExpanded && presetModels.length > 0 && (
-          <Form.Item
-            wrapperCol={{ offset: LABEL_COL.span, span: WRAPPER_COL.span }}
-            style={{ marginTop: -8 }}
-          >
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <Form.Item style={{ marginTop: -8 }}>
+            {/* Capped and scrollable: the catalogue is over 100 entries, and
+                letting it run the full height pushed every other field below
+                the fold — the dialog looked like a preset browser with a form
+                attached. */}
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 8,
+                maxHeight: 168,
+                overflowY: 'auto',
+                paddingRight: 4,
+              }}
+            >
               {presetModels.map((preset) => (
                 <Tag
                   key={preset.id}
-                  style={{ cursor: 'pointer', transition: 'all 0.2s' }}
+                  style={{ cursor: 'pointer', transition: 'all 0.2s', marginInlineEnd: 0 }}
                   onClick={() => handlePresetSelect(preset)}
                 >
                   {preset.name}
@@ -239,7 +247,7 @@ const ModelsJsonModelModal: React.FC<Props> = ({
         >
           <Switch />
         </Form.Item>
-        <Form.Item wrapperCol={{ offset: LABEL_COL.span, span: WRAPPER_COL.span }}>
+        <Form.Item>
           <Space>
             <Text type="secondary">{t('workbuddy.model.useCustomProtocolHint')}</Text>
           </Space>

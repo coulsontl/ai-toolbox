@@ -1,7 +1,6 @@
 import React from 'react';
 import { Modal, Form, Input, InputNumber, Select, Tag, Divider, Typography } from 'antd';
 import { useTranslation } from 'react-i18next';
-import { useAppStore } from '@/stores';
 import {
   PRESET_MODELS,
   getPresetModelsVersion,
@@ -19,6 +18,7 @@ import {
   type CodexCatalogPresetResolver,
 } from '../utils/codexCatalogModels';
 import { CODEX_SERVICE_TIER_OPTIONS } from './ServiceTiersEditor';
+import { MODEL_FORM_LAYOUT } from '@/features/coding/shared/modelFormLayout';
 
 const { Text } = Typography;
 
@@ -57,7 +57,6 @@ const CodexModelFormModal: React.FC<CodexModelFormModalProps> = ({
   onSubmit,
 }) => {
   const { t } = useTranslation();
-  const language = useAppStore((state) => state.language);
   const [form] = Form.useForm<CodexCatalogModelFormValues>();
   const [submitting, setSubmitting] = React.useState(false);
   const [presetsExpanded, setPresetsExpanded] = React.useState(false);
@@ -183,9 +182,6 @@ const CodexModelFormModal: React.FC<CodexModelFormModalProps> = ({
     }
   };
 
-  const labelCol = { span: language === 'zh-CN' ? 6 : 8 };
-  const wrapperCol = { span: 18 };
-  const hintWrapperCol = { offset: language === 'zh-CN' ? 6 : 8, span: 18 };
 
   return (
     <Modal
@@ -201,9 +197,7 @@ const CodexModelFormModal: React.FC<CodexModelFormModalProps> = ({
     >
       <Form
         form={form}
-        layout="horizontal"
-        labelCol={labelCol}
-        wrapperCol={wrapperCol}
+        layout={MODEL_FORM_LAYOUT}
         style={{ marginTop: 24 }}
       >
         <Form.Item
@@ -244,7 +238,7 @@ const CodexModelFormModal: React.FC<CodexModelFormModalProps> = ({
         </Form.Item>
 
         {presetsExpanded && presetModels.length > 0 && (
-          <Form.Item wrapperCol={hintWrapperCol} style={{ marginTop: -8 }}>
+          <Form.Item style={{ marginTop: -8 }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxHeight: 220, overflowY: 'auto' }}>
               {presetModels.map((preset) => (
                 <Tag
@@ -351,7 +345,7 @@ const CodexModelFormModal: React.FC<CodexModelFormModalProps> = ({
           />
         </Form.Item>
 
-        <Form.Item wrapperCol={hintWrapperCol} style={{ marginBottom: 0 }}>
+        <Form.Item style={{ marginBottom: 0 }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
             {t('codex.model.editModelHint')}
           </Text>

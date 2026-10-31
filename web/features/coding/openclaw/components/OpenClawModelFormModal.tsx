@@ -3,7 +3,6 @@ import { Modal, Form, Input, Button, InputNumber, Tag, Divider, Row, Col, Typogr
 import ImeSafeAutoComplete from '@/components/common/ImeSafeAutoComplete';
 import { RightOutlined, DownOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { useAppStore } from '@/stores';
 import {
   PRESET_MODELS,
   getPresetModelsVersion,
@@ -13,6 +12,7 @@ import {
 import JsonEditor from '@/components/common/JsonEditor';
 import type { OpenClawModel } from '@/types/openclaw';
 
+import { MODEL_FORM_LAYOUT } from '@/features/coding/shared/modelFormLayout';
 const { Text } = Typography;
 
 // Context limit options with display labels
@@ -100,7 +100,6 @@ const OpenClawModelFormModal: React.FC<Props> = ({
   onSubmit,
 }) => {
   const { t } = useTranslation();
-  const language = useAppStore((state) => state.language);
   const [form] = Form.useForm();
   // 复制走的是「新增」路径（新 id），只是预填了来源模型的值。
   const isEdit = !!editingModel && !isCopy;
@@ -114,8 +113,6 @@ const OpenClawModelFormModal: React.FC<Props> = ({
     getPresetModelsVersion,
   );
 
-  const labelCol = { span: language === 'zh-CN' ? 5 : 7 };
-  const wrapperCol = { span: 19 };
 
   // Get preset models for current provider type
   const npmType = apiProtocol ? API_TO_NPM[apiProtocol] : undefined;
@@ -233,9 +230,7 @@ const OpenClawModelFormModal: React.FC<Props> = ({
     >
       <Form
         form={form}
-        layout="horizontal"
-        labelCol={labelCol}
-        wrapperCol={wrapperCol}
+        layout={MODEL_FORM_LAYOUT}
         style={{ marginTop: 24 }}
         autoComplete="off"
       >
@@ -282,7 +277,7 @@ const OpenClawModelFormModal: React.FC<Props> = ({
         </Form.Item>
 
         {presetsExpanded && (
-          <Form.Item wrapperCol={{ offset: language === 'zh-CN' ? 5 : 7, span: 19 }} style={{ marginTop: -8 }}>
+          <Form.Item style={{ marginTop: -8 }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {(presetModels.length > 0 ? presetModels : allPresetModels).map((preset) => (
                 <Tag
@@ -404,24 +399,24 @@ const OpenClawModelFormModal: React.FC<Props> = ({
               </legend>
               <Row gutter={16}>
                 <Col span={12}>
-                  <Form.Item name="costInput" label={t('openclaw.providers.costInput')} labelCol={{ span: language === 'zh-CN' ? 10 : 14 }} wrapperCol={{ span: language === 'zh-CN' ? 14 : 10 }}>
+                  <Form.Item name="costInput" label={t('openclaw.providers.costInput')}>
                     <InputNumber min={0} step={0.01} style={{ width: '100%' }} />
                   </Form.Item>
                 </Col>
                 <Col span={12}>
-                  <Form.Item name="costOutput" label={t('openclaw.providers.costOutput')} labelCol={{ span: language === 'zh-CN' ? 10 : 14 }} wrapperCol={{ span: language === 'zh-CN' ? 14 : 10 }}>
+                  <Form.Item name="costOutput" label={t('openclaw.providers.costOutput')}>
                     <InputNumber min={0} step={0.01} style={{ width: '100%' }} />
                   </Form.Item>
                 </Col>
               </Row>
               <Row gutter={16}>
                 <Col span={12}>
-                  <Form.Item name="costCacheRead" label={t('openclaw.providers.costCacheRead')} labelCol={{ span: language === 'zh-CN' ? 10 : 14 }} wrapperCol={{ span: language === 'zh-CN' ? 14 : 10 }}>
+                  <Form.Item name="costCacheRead" label={t('openclaw.providers.costCacheRead')}>
                     <InputNumber min={0} step={0.01} style={{ width: '100%' }} />
                   </Form.Item>
                 </Col>
                 <Col span={12}>
-                  <Form.Item name="costCacheWrite" label={t('openclaw.providers.costCacheWrite')} labelCol={{ span: language === 'zh-CN' ? 10 : 14 }} wrapperCol={{ span: language === 'zh-CN' ? 14 : 10 }}>
+                  <Form.Item name="costCacheWrite" label={t('openclaw.providers.costCacheWrite')}>
                     <InputNumber min={0} step={0.01} style={{ width: '100%' }} />
                   </Form.Item>
                 </Col>
@@ -431,8 +426,6 @@ const OpenClawModelFormModal: React.FC<Props> = ({
             {/* Extra params — JSON editor */}
             <Form.Item
               label={t('openclaw.providers.extraParams')}
-              labelCol={labelCol}
-              wrapperCol={wrapperCol}
               extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('openclaw.providers.extraParamsHint')}</Text>}
             >
               <JsonEditor

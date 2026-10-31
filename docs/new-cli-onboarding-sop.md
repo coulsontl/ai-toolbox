@@ -317,11 +317,23 @@ rg -n "<tool>" web/ tauri/src/ --glob '!node_modules' --glob '!*.test.*'
 **A. 外层容器（共享组件管不到的部分）**
 
 - [ ] `layout` / `labelCol` / `wrapperCol` —— **共享组件只管内部，外层布局仍由调用方写**。
-  > ZCode 保留了 `layout="vertical"`（标签在输入框上方），而其他 5 个 CLI 全是 `layout="horizontal"` + `labelCol` / `wrapperCol`。弹窗看起来像另一个产品。
+  > **2026-10-31 变更**：模型弹窗统一改为 `layout="vertical"`（标签在字段上方），常量在
+  > `web/features/coding/shared/modelFormLayout.ts`（`MODEL_FORM_LAYOUT`）。
   >
-  > **同一个错误在 ZCode 犯了两次**：先是供应商弹窗，后是模型弹窗。**每一个 `<Form>` 都要单独核对**——供应商弹窗改对了不代表模型弹窗也对。
+  > **为什么改**：原来标签占左列，把每个控件都挤进右侧同一条窄带——JSON 编辑器只剩一个文本框的宽度，
+  > 能力勾选组折成参差不齐的一列。模型弹窗的字段是**异质的**（JSON 编辑器 / 勾选组 / 成对的数字框），
+  > 固定标签列对它不成立。改成纵排后每块都有整幅宽度，成对的 limit 也能并排。
   >
-  > `labelCol` 的 span 各 CLI 不同（shared 4/6、codex 6/8、grok 5/7、kimi 7/9、openclaw 5/7），**按本 CLI 最长的标签选**，不是照抄。**标签改了就要重算**：ZCode 原用 7/9，是因为最长标签是「推理等级（从低到高）」；标签简化为「推理等级」后改成 6/8。
+  > **规则仍然是「统一」，不是「纵排更好」**：当年 ZCode 的问题是**一个弹窗纵排、其余五个横排**，
+  > 一个页面像两个产品。所以判据是**同一族内不许分歧**，而不是方向本身。
+  >
+  > **两族分开核对**：模型弹窗（`*ModelFormModal` / `*ModelModal`）与供应商弹窗
+  > （`*ProviderFormModal`）字段形态不同、迁移日期不同，守卫按族比较，不跨族。
+  >
+  > **`labelCol` 与纵排不能并存**：antd 的列配置会压过 `layout`，得到「标签在上、但仍被一个不存在的列缩进」的
+  > 混合形态。守卫对非横排文件里出现 `labelCol=` 直接报错。
+  >
+  > **同一个错误在 ZCode 犯了两次**：先是供应商弹窗，后是模型弹窗。**每一个 `<Form>` 都要单独核对**。
 - [ ] `width` / `title` / `okText` / `cancelText` / `destroyOnHidden`
 - [ ] **弹窗的「进行中」状态用正文 `Spin` 表达，不要用 `okButtonProps={{ loading: true }}`。**
   > Ant Design 的 `loading` 会给按钮加 `pointer-events: none`，**同时锁死取消按钮**——用户看到的是一个变灰、点不动的「取消」，登录/提交卡住时无法退出（ZCode OAuth 登录弹窗踩过）。
@@ -1871,7 +1883,7 @@ UI 表现异常时，**先排除进程 stale**，再怀疑代码：
 | 16 | zcode：`format_configs.rs` 无专用格式 | `timeoutMs` 写成通用 `timeout`，CLI 静默丢值 | 加 `ZCODE_FORMAT` |
 | 17 | 共享组件：`omoNative.model.*` / `hermes.model.thinkingLevelHint` 整组键不存在 | 页面渲染字面键名 | 改为 `common.model.*` |
 | 18 | 共享组件：`ModelFormModal` 覆盖值存 i18n key | `i18n:prune` 把 key 判为未使用并删除 | 覆盖值存 `t(key)` 的结果（已是终态文本） |
-| 19 | zcode：迁移共享组件时保留 `layout="vertical"` | 标签在输入框上方，与其余 5 个 CLI 全不同 | 改 `horizontal` + `labelCol`/`wrapperCol`（见 4.0.2-A） |
+| 19 | zcode：迁移共享组件时保留 `layout="vertical"`，而其余 5 个 CLI 用 `horizontal` | 同一个页面两种弹窗形态，看起来像两个产品 | **当时的修法**是改 `horizontal`；**2026-10-31 起反过来**：全部模型弹窗统一 `vertical`（`MODEL_FORM_LAYOUT`），判据由「必须横排」改为「同一族不许分歧」，见 4.0.2-A |
 | 20 | zcode：API Key 用朴素 `Input.Password` | 当时判断为「缺显示/隐藏按钮，4/5 的 CLI 都有」 | 改 `masked input + addonAfter`（见 4.0.2-C）。**后注（2026-10-07）**：antd 6 的 `Input.Password` 其实**自带**切换按钮（`visibilityToggle` 默认开），这条的**结论对、理由不准**——真正要核对的是「用户能不能切到明文」，不是「有没有写 `addonAfter`」。两种写法都合规，不必统一 |
 | 21 | zcode：渠道字段排在第 3、4 位且分两行 | 用户第一眼看到「名称」而非「选渠道」 | 提为第一行，左渠道 + 右格式（见 4.0.2-B） |
 | 22 | zcode：用 `allowClear` + placeholder 表达「不选」 | 用户看不出「留空 = 自定义」 | 加显式「自定义」选项（见 4.0.2-D） |

@@ -2,7 +2,6 @@ import React from 'react';
 import { Modal, Form, Input, InputNumber, Select, Tooltip, Typography } from 'antd';
 import { InfoCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { useAppStore } from '@/stores';
 import type { KimiCatalogModel } from '@/types/kimi';
 import {
   KIMI_SUPPORTED_CAPABILITIES,
@@ -10,6 +9,8 @@ import {
   normalizeKimiCapabilities,
   normalizeKimiStringArray,
 } from '../utils/kimiCatalogModels';
+
+import { MODEL_FORM_LAYOUT } from '@/features/coding/shared/modelFormLayout';
 
 const { Text } = Typography;
 
@@ -127,7 +128,6 @@ const KimiModelFormModal: React.FC<KimiModelFormModalProps> = ({
   onSubmit,
 }) => {
   const { t } = useTranslation();
-  const language = useAppStore((state) => state.language);
   const [form] = Form.useForm<KimiModelFormValues>();
   const [submitting, setSubmitting] = React.useState(false);
   const supportEfforts = Form.useWatch('supportEfforts', form) as string[] | undefined;
@@ -181,9 +181,6 @@ const KimiModelFormModal: React.FC<KimiModelFormModalProps> = ({
     }
   };
 
-  const labelCol = { span: language === 'zh-CN' ? 7 : 9 };
-  const wrapperCol = { span: 17 };
-  const hintWrapperCol = { offset: language === 'zh-CN' ? 7 : 9, span: 17 };
 
   return (
     <Modal
@@ -199,9 +196,7 @@ const KimiModelFormModal: React.FC<KimiModelFormModalProps> = ({
     >
       <Form
         form={form}
-        layout="horizontal"
-        labelCol={labelCol}
-        wrapperCol={wrapperCol}
+        layout={MODEL_FORM_LAYOUT}
         style={{ marginTop: 24 }}
       >
         <Form.Item
@@ -333,7 +328,7 @@ const KimiModelFormModal: React.FC<KimiModelFormModalProps> = ({
           />
         </Form.Item>
 
-        <Form.Item wrapperCol={hintWrapperCol} style={{ marginBottom: 0 }}>
+        <Form.Item style={{ marginBottom: 0 }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
             {t('kimi.model.editModelHint')}
           </Text>

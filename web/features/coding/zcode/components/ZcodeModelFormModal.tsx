@@ -36,6 +36,8 @@ import {
   zcodeModalityValuesFor,
 } from '../utils/zcodeModelFields';
 
+import { MODEL_FORM_LAYOUT } from '@/features/coding/shared/modelFormLayout';
+
 const { Text } = Typography;
 
 /**
@@ -161,13 +163,11 @@ const ZcodeModelFormModal: React.FC<ZcodeModelFormModalProps> = ({
   onCancel,
   onSubmit,
 }) => {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const [form] = Form.useForm<ZcodeModelFormValues>();
   // Labels sit in a left column, as in every other model form (the shared
   // `ModelFormModal` and the four module-local ones). Spans match the shared
   // default — the longest label here is 最大输出参数映射, which fits.
-  const labelCol = { span: i18n.language === 'zh-CN' ? 6 : 8 };
-  const wrapperCol = { span: i18n.language === 'zh-CN' ? 18 : 16 };
   const [submitting, setSubmitting] = React.useState(false);
   const [presetsExpanded, setPresetsExpanded] = React.useState(false);
   const ruleKind = Form.useWatch('ruleKind', form) as 'smart' | 'manual' | undefined;
@@ -297,7 +297,7 @@ const ZcodeModelFormModal: React.FC<ZcodeModelFormModalProps> = ({
       okText={t('common.save')}
       cancelText={t('common.cancel')}
     >
-      <Form form={form} layout="horizontal" labelCol={labelCol} wrapperCol={wrapperCol}>
+      <Form form={form} layout={MODEL_FORM_LAYOUT}>
         <Form.Item label={t('zcode.model.modelId')} required>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <Form.Item
@@ -328,10 +328,7 @@ const ZcodeModelFormModal: React.FC<ZcodeModelFormModalProps> = ({
         </Form.Item>
 
         {presetsExpanded && (
-          <Form.Item
-            wrapperCol={{ offset: labelCol.span, span: wrapperCol.span }}
-            style={{ marginTop: -8 }}
-          >
+          <Form.Item style={{ marginTop: -8 }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {primaryPresets.map((preset) => (
                 <Tag
