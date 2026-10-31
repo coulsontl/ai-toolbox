@@ -5875,7 +5875,13 @@
       "batchDeleteSuccess": "已删除 {{count}} 个模型",
       "editModelHint": "模型目录写入 config.toml 的 [models] 表；应用供应商后才会投影到运行时文件。",
       "catalogMovedHint": "模型目录已移至供应商卡片的「模型列表」区域，保存后在卡片中编辑。",
-      "keyDuplicate": "该模型 Key 已被同供应商的其他模型占用。"
+      "keyDuplicate": "该模型 Key 已被同供应商的其他模型占用。",
+      "capabilityImageIn": "支持图片输入",
+      "capabilityVideoIn": "支持视频输入",
+      "capabilityAudioIn": "支持音频输入",
+      "capabilityThinking": "支持关闭思考",
+      "capabilityAlwaysThinking": "始终思考",
+      "capabilityToolUse": "支持工具调用"
     }
   },
   "zcode": {

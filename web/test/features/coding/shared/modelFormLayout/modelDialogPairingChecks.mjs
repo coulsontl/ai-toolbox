@@ -100,6 +100,31 @@ export async function verifyModelDialogPairing({ send, evaluate, baseUrl, artifa
       );
     }
 
+    // Kimi's capability declaration is six checkboxes, not a multi-select
+    // (user-directed, 2026-11-01: 「kimi 的能力声明 改成勾选」). A dropdown
+    // hides the whole vocabulary behind a click and shows bare identifiers;
+    // the checkboxes show readable captions and still store the identifiers.
+    if (dialog === 'kimi') {
+      const capabilityShape = JSON.parse(await evaluate(`(() => {
+        const labels = [...document.querySelectorAll('.ant-form-item-label > label')];
+        const label = labels.find((node) => node.textContent.includes('能力声明'));
+        const item = label?.closest('.ant-form-item');
+        return JSON.stringify({
+          checkboxes: item ? item.querySelectorAll('.ant-checkbox-wrapper').length : 0,
+          selects: item ? item.querySelectorAll('.ant-select').length : 0,
+          captions: item
+            ? [...item.querySelectorAll('.ant-checkbox-label')].map((node) => node.textContent.trim())
+            : [],
+        });
+      })()`));
+      check('kimi declares capabilities as checkboxes', capabilityShape.checkboxes, 6);
+      check('kimi has no capability dropdown', capabilityShape.selects, 0);
+      check(
+        'kimi capability captions are readable, not identifiers',
+        capabilityShape.captions.every((text) => !text.includes('_')),
+      );
+    }
+
     // Labels that carry a help icon must draw the colon in their own text, not
     // through the label's `::after`. The pseudo-element belongs to the
     // enclosing `<label>`, so it renders *after* the icon — 「上下文窗口 ⓘ:」.

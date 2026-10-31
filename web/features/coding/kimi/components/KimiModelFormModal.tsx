@@ -1,10 +1,14 @@
 import React from 'react';
-import { Modal, Form, Input, InputNumber, Select, Tooltip, Typography } from 'antd';
+import { Checkbox, Form, Input, Modal, Select, Tooltip, Typography } from 'antd';
 import { InfoCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { KimiCatalogModel } from '@/types/kimi';
+import ImeSafeAutoComplete from '@/components/common/ImeSafeAutoComplete';
 import {
-  KIMI_SUPPORTED_CAPABILITIES,
+  CONTEXT_LIMIT_PRESETS,
+  OUTPUT_LIMIT_PRESETS,
+} from '@/features/coding/shared/modelLimitPresets';
+import {
   KIMI_SUPPORTED_EFFORTS,
   normalizeKimiCapabilities,
   normalizeKimiStringArray,
@@ -20,10 +24,29 @@ import modelFormStyles from '../../shared/modelFormLayout.module.less';
 
 const { Text } = Typography;
 
-const CAPABILITY_OPTIONS = KIMI_SUPPORTED_CAPABILITIES.map((value) => ({
-  value,
-  label: value,
-}));
+/** `InputNumber`'s parse, kept as one object so the three size fields match. */
+const numberFromInput = (value: string | number | undefined) => {
+  const parsed = typeof value === 'number' ? value : parseInt(value ?? '', 10);
+  return Number.isNaN(parsed) ? undefined : parsed;
+};
+
+/**
+ * One switch per capability, in the order the CLI documents them.
+ *
+ * A `Select mode="multiple"` made the user open a dropdown, read six bare
+ * identifiers (`image_in`, `always_thinking`, …) and pick from a list whose
+ * meaning lived only in the hint underneath. Six booleans fit on one line, so
+ * each is a checkbox with a readable caption and the identifier stays in the
+ * stored value (user-directed, 2026-11-01: 「kimi 的能力声明 改成勾选」).
+ */
+const CAPABILITY_FIELDS: { value: string; labelKey: string }[] = [
+  { value: 'image_in', labelKey: 'kimi.model.capabilityImageIn' },
+  { value: 'video_in', labelKey: 'kimi.model.capabilityVideoIn' },
+  { value: 'audio_in', labelKey: 'kimi.model.capabilityAudioIn' },
+  { value: 'thinking', labelKey: 'kimi.model.capabilityThinking' },
+  { value: 'always_thinking', labelKey: 'kimi.model.capabilityAlwaysThinking' },
+  { value: 'tool_use', labelKey: 'kimi.model.capabilityToolUse' },
+];
 
 const EFFORT_OPTIONS = KIMI_SUPPORTED_EFFORTS.map((value) => ({
   value,
@@ -243,11 +266,19 @@ const KimiModelFormModal: React.FC<KimiModelFormModalProps> = ({
         {/* Three sizes of the same payload — how much it holds, how much may go
             in, how much may come back — so they share one row, the same shape
             `ModelsJsonModelModal` uses for its limits (see
-            `MODEL_FORM_TRIPLE_STYLE`). Stacked they were three full-width
-            boxes of six digits. */}
+            `MODEL_FORM_TRIPLE_STYLE`).
+
+            `ImeSafeAutoComplete` over the shared presets, not `InputNumber`:
+            the common values are a short, known list (128K / 200K / 256K for a
+            modern Kimi), and offering them beats asking a user to type six
+            digits from memory — while the box still accepts any number the
+            provider happens to use (user-directed, 2026-11-01: 「这3个也改成
+            select 的 option」). `getValueFromEvent` keeps the form value a
+            number, matching the stored shape. */}
         <div style={MODEL_FORM_TRIPLE_STYLE}>
           <Form.Item
             name="maxContextSize"
+            getValueFromEvent={numberFromInput}
             label={
               <span>
                 {t('kimi.model.contextSize')}:
@@ -257,11 +288,20 @@ const KimiModelFormModal: React.FC<KimiModelFormModalProps> = ({
               </span>
             }
           >
-            <InputNumber min={1} style={{ width: '100%' }} placeholder="262144" />
+            <ImeSafeAutoComplete
+              options={CONTEXT_LIMIT_PRESETS}
+              placeholder="262144"
+              style={{ width: '100%' }}
+              filterOption={(inputValue, option) =>
+                (option?.label.toLowerCase().includes(inputValue.toLowerCase())
+                  || option?.value.includes(inputValue)) ?? false
+              }
+            />
           </Form.Item>
 
           <Form.Item
             name="maxInputSize"
+            getValueFromEvent={numberFromInput}
             label={
               <span>
                 {t('kimi.model.maxInputSize')}:
@@ -271,11 +311,20 @@ const KimiModelFormModal: React.FC<KimiModelFormModalProps> = ({
               </span>
             }
           >
-            <InputNumber min={1} style={{ width: '100%' }} placeholder="262144" />
+            <ImeSafeAutoComplete
+              options={CONTEXT_LIMIT_PRESETS}
+              placeholder="262144"
+              style={{ width: '100%' }}
+              filterOption={(inputValue, option) =>
+                (option?.label.toLowerCase().includes(inputValue.toLowerCase())
+                  || option?.value.includes(inputValue)) ?? false
+              }
+            />
           </Form.Item>
 
           <Form.Item
             name="maxOutputSize"
+            getValueFromEvent={numberFromInput}
             label={
               <span>
                 {t('kimi.model.maxOutputSize')}:
@@ -285,7 +334,15 @@ const KimiModelFormModal: React.FC<KimiModelFormModalProps> = ({
               </span>
             }
           >
-            <InputNumber min={1} style={{ width: '100%' }} placeholder="262144" />
+            <ImeSafeAutoComplete
+              options={OUTPUT_LIMIT_PRESETS}
+              placeholder="262144"
+              style={{ width: '100%' }}
+              filterOption={(inputValue, option) =>
+                (option?.label.toLowerCase().includes(inputValue.toLowerCase())
+                  || option?.value.includes(inputValue)) ?? false
+              }
+            />
           </Form.Item>
         </div>
 
@@ -303,16 +360,22 @@ const KimiModelFormModal: React.FC<KimiModelFormModalProps> = ({
           <Input placeholder="reasoning_content" />
         </Form.Item>
 
+        {/* Six checkboxes instead of a multi-select: the field is a set of
+            independent flags, so a dropdown made the user open it just to see
+            what could be declared, and each option was a bare identifier
+            (`image_in`, `always_thinking`) whose meaning lived in the hint.
+
+            `Checkbox.Group` rather than six `Form.Item name={[...]}`: the stored
+            value is a flat `string[]`, and a nested field name would turn it
+            into an object. */}
         <Form.Item
           name="capabilities"
           label={t('kimi.model.capabilities')}
           extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('kimi.model.capabilitiesHint')}</Text>}
         >
-          <Select
-            mode="multiple"
-            allowClear
-            placeholder={t('kimi.model.capabilitiesPlaceholder')}
-            options={CAPABILITY_OPTIONS}
+          <Checkbox.Group
+            className={modelFormStyles.capabilityCheckboxGroup}
+            options={CAPABILITY_FIELDS.map((field) => ({ value: field.value, label: t(field.labelKey) }))}
           />
         </Form.Item>
 

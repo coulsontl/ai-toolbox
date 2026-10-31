@@ -78,3 +78,24 @@
    element wraps a block; the colon still belongs to it. Nothing extra needed —
    the shared `.label` rule covers it because it is rendered as a `Form.Item`
    label too. */
+
+/* A row of capability checkboxes bound through `Checkbox.Group`.
+ *
+ * Used where the stored value is a flat `string[]` and the caption needs to be
+ * readable text rather than the identifier itself (Kimi's six capability
+ * flags). A checkbox-row `Form.Item name={[parent, child]}` cannot express that:
+ * a nested field name turns the array into an object.
+ *
+ * Sizing cannot come from `MODEL_FORM_CHECKBOX_STYLES` here — `Checkbox.Group`
+ * renders its own wrappers — so the same two declarations are repeated: 13px
+ * and the secondary text colour, one step below the group caption. */
+.capabilityCheckboxGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+
+  :global(.ant-checkbox-wrapper) {
+    font-size: 13px;
+    color: var(--color-text-secondary);
+  }
+}

@@ -5878,7 +5878,13 @@
       "batchDeleteSuccess": "Deleted {{count}} models",
       "editModelHint": "The catalog is written to the [models] table in config.toml; it is projected to the runtime file only after the provider is applied.",
       "catalogMovedHint": "The model catalog now lives in the provider card's \"Model List\" section; edit it there after saving.",
-      "keyDuplicate": "This model key is already used by another model on this provider."
+      "keyDuplicate": "This model key is already used by another model on this provider.",
+      "capabilityImageIn": "Image input",
+      "capabilityVideoIn": "Video input",
+      "capabilityAudioIn": "Audio input",
+      "capabilityThinking": "Thinking toggleable",
+      "capabilityAlwaysThinking": "Always thinking",
+      "capabilityToolUse": "Tool use"
     }
   },
   "zcode": {
