@@ -15,11 +15,22 @@ export interface ModelsJsonProviderCardProps {
   onSelectChange?: (selected: boolean) => void;
   selectDisabledReason?: string;
 
-  onEdit?: () => void;
   onDelete?: () => void;
   onAddModel?: () => void;
   onEditModel?: (modelId: string) => void;
+  onCopyModel?: (modelId: string) => void;
   onDeleteModel?: (modelId: string) => void;
+
+  modelSelectionMode?: boolean;
+  selectedModelIds?: string[];
+  onToggleModelSelection?: (modelId: string, selected: boolean) => void;
+  onToggleBatchDeleteMode?: () => void;
+  onBatchDeleteModels?: () => void;
+
+  onTestModels?: () => void;
+  onFetchModels?: () => void;
+  fetchDisabled?: boolean;
+  fetchDisabledTooltip?: string;
 }
 
 /**
@@ -30,9 +41,14 @@ export interface ModelsJsonProviderCardProps {
  * shape: several channels are usable at once and none of them is "the active
  * one", so the card carries no apply action.
  *
- * There is deliberately no `设为默认`: neither product has a reliable pointer
- * for a default *custom* model, and writing one would only add a field the
- * product ignores.
+ * Deliberately absent, and each for a structural reason rather than an omission:
+ *
+ * - `onSetPrimaryModel` — `models.json` has no default-model pointer. The only
+ *   candidate, `availableModels`, is a *whitelist*: writing it hides every
+ *   built-in model the product ships with, which is the opposite of "pick a
+ *   default".
+ * - `modelsDraggable` / `onReorderModels` — the product never reads a channel or
+ *   model order back out of `models.json`.
  *
  * The two products are two front ends over one engine and share the whole
  * `models.json` contract, so this single mapper serves both pages.
@@ -43,11 +59,20 @@ const ModelsJsonProviderCard: React.FC<ModelsJsonProviderCardProps> = ({
   selected = false,
   onSelectChange,
   selectDisabledReason,
-  onEdit,
   onDelete,
   onAddModel,
   onEditModel,
+  onCopyModel,
   onDeleteModel,
+  modelSelectionMode,
+  selectedModelIds,
+  onToggleModelSelection,
+  onToggleBatchDeleteMode,
+  onBatchDeleteModels,
+  onTestModels,
+  onFetchModels,
+  fetchDisabled,
+  fetchDisabledTooltip,
 }) => {
   const modelRows = React.useMemo<ModelDisplayData[]>(
     () =>
@@ -64,7 +89,20 @@ const ModelsJsonProviderCard: React.FC<ModelsJsonProviderCardProps> = ({
     models: modelRows,
     onAddModel,
     onEditModel,
+    onCopyModel,
     onDeleteModel,
+    modelSelectionMode,
+    selectedModelIds,
+    onToggleModelSelection,
+    onToggleBatchDeleteMode,
+    onBatchDeleteModels,
+    onTestModels,
+    // Testing needs an endpoint to call; a channel always has one (it is the
+    // grouping key), but an empty model list would open an empty dialog.
+    testModelsDisabled: provider.models.length === 0,
+    onFetchModels,
+    fetchDisabled,
+    fetchDisabledTooltip,
   };
 
   const props: ProviderCardVariantProps = {
@@ -84,7 +122,6 @@ const ModelsJsonProviderCard: React.FC<ModelsJsonProviderCardProps> = ({
       selectDisabledReason,
     },
     actions: {
-      onEdit,
       onDelete,
       deleteConfirm: false,
     },

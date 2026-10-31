@@ -66,7 +66,52 @@ export async function verifyCodebuddyPage({ send, evaluate, baseUrl, artifactRoo
   })()`);
   check('provider cards are not nested inside each other', nestedCards, 0);
 
+  // SOP §4.2.1: the toolbar's 「添加供应商」 must open a *provider* form. This
+  // page used to wire it straight to the model form, so the button promised a
+  // provider and asked for a model id + every capability switch.
+  const visibleModal = (selector) => `
+    const visible = (el) => el && el.offsetParent !== null;
+    [...document.querySelectorAll('${selector}')].filter(visible)[0] ?? null`;
+  await evaluate(`(() => {
+    const visible = (el) => el && el.offsetParent !== null;
+    const button = [...document.querySelectorAll('button')]
+      .find((node) => node.textContent.trim() === '添加供应商' && visible(node));
+    if (!button) throw new Error('add-provider button not found');
+    button.click();
+  })()`);
+  await waitFor(`(() => { ${visibleModal('.ant-modal')}; return Boolean([
+    ...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).length); })()`);
+
+  const providerFormLabels = JSON.parse(await evaluate(`(() => {
+    ${visibleModal('.ant-modal')};
+    const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+    return JSON.stringify([...modal.querySelectorAll('.ant-form-item-label label')]
+      .map((node) => node.textContent.trim()));
+  })()`));
+  check(
+    'add-provider opens the provider form, not the model form',
+    providerFormLabels,
+    ['供应商', '端点', 'API Key', '首条模型 ID', '显示名称'],
+  );
+  check(
+    'the provider form carries no capability switches',
+    await evaluate(`(() => {
+      ${visibleModal('.ant-modal')};
+      const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+      return modal.querySelectorAll('.ant-switch').length;
+    })()`),
+    0,
+  );
+
+  await evaluate(`(() => {
+    ${visibleModal('.ant-modal')};
+    const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+    const close = modal.querySelector('.ant-modal-close');
+    if (!close) throw new Error('modal close button not found');
+    close.click();
+  })()`);
   await delay(600);
+
   const { data } = await send('Page.captureScreenshot', { format: 'png' });
   await writeFile(
     path.join(artifactRoot, `codebuddy-page-${theme}.png`),

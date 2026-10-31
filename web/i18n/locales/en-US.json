@@ -6226,7 +6226,14 @@
         "folderOnlyTitle": "Select a Folder",
         "folderOnlyDesc": "Do not select a specific file. WorkBuddy will derive models.json, mcp.json, and the account identity files under the chosen folder."
       }
-    }
+    },
+    "providerModal": {
+      "intro": "Enter the provider's connection and its first model. Add the rest from the card after saving.",
+      "firstModelId": "First model ID",
+      "firstModelIdHint": "Start with one; add more from the card afterwards",
+      "fetchDisabledCustomProtocol": "This channel has custom-protocol models, so the model list URL cannot be derived"
+    },
+    "deleteModelsConfirm": "This deletes the {{count}} selected model entries. Continue?"
   },
   "codebuddy": {
     "title": "CodeBuddy Code Configuration",
@@ -6262,6 +6269,7 @@
         "folderOnlyDesc": "Do not select a specific file. CodeBuddy will derive models.json, .mcp.json, settings.json, and CODEBUDDY.md under the chosen folder."
       }
     },
-    "deleteProviderConfirm": "This deletes every model entry in this channel. Continue?"
+    "deleteProviderConfirm": "This deletes every model entry in this channel. Continue?",
+    "deleteModelsConfirm": "This deletes the {{count}} selected model entries. Continue?"
   }
 }

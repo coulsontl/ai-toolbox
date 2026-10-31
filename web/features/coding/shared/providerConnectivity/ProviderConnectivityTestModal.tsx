@@ -57,7 +57,19 @@ interface ProviderConnectivityTestModalProps {
   removableModelIds?: string[];
   /** Remove selected failed models from the provider catalog/config. */
   onRemoveModels?: (modelIds: string[]) => Promise<void>;
-  gatewayCliKey?: Extract<GatewayCliKey, 'claude' | 'codex' | 'grok' | 'kimi' | 'gemini' | 'claude_desktop'>;
+  gatewayCliKey?: Extract<
+    GatewayCliKey,
+    | 'claude'
+    | 'codex'
+    | 'grok'
+    | 'kimi'
+    | 'gemini'
+    | 'claude_desktop'
+    // The WorkBuddy family is both a usage tool and a takeover target; the
+    // probe speaks the takeover spelling.
+    | 'workbuddy_desktop'
+    | 'codebuddy_cli'
+  >;
   useGateway?: boolean;
 }
 

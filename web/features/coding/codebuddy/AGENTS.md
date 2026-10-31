@@ -41,7 +41,7 @@ sequenceDiagram
 
 ## 最小验证
 
-- `pnpm run test:codebuddy-page`：真实页面 + 桩 Tauri 桥的浏览器夹具（`CODEBUDDY_PAGE_THEME=dark` 跑暗色）。守卡片越界、横向滚动、卡片套卡片、四区块标记、`availableModels` 限制提示走的是受限分支。
+- `pnpm run test:codebuddy-page`：真实页面 + 桩 Tauri 桥的浏览器夹具（`CODEBUDDY_PAGE_THEME=dark` 跑暗色）。守卡片越界、横向滚动、卡片套卡片、四区块标记、`availableModels` 限制提示走的是受限分支，以及**「添加供应商」打开的是供应商表单且不含任何能力开关**（SOP §4.2.1）。
 - `pnpm run test:page-rhythm`（含 CodeBuddy 两项）。
 - `pnpm run test:provider-card-layout` / `test:css-module-classes` / `test:form-modal-layout`。
 - **`read_codebuddy_settings_file` 的返回类型是 `string | null`，不是对象**：页面直接渲染这个值，夹具桩返回 `{ exists, path, content }` 会触发 React error #31（对象不能作为 child）。写桩前先看 `web/services/codebuddyApi.ts` 的签名，别按 REST 习惯构造。

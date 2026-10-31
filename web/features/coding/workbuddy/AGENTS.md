@@ -45,7 +45,7 @@ sequenceDiagram
 
 ## 最小验证
 
-- `pnpm run test:workbuddy-page`：真实页面 + 桩 Tauri 桥的浏览器夹具（亮/暗或 `WORKBUDDY_PAGE_THEME=dark`）。它守的是组件级测试看不见的东西：卡片越界、页面横向滚动、卡片套卡片、侧栏三区块标记齐全。
+- `pnpm run test:workbuddy-page`：真实页面 + 桩 Tauri 桥的浏览器夹具（亮/暗或 `WORKBUDDY_PAGE_THEME=dark`）。它守的是组件级测试看不见的东西：卡片越界、页面横向滚动、卡片套卡片、侧栏三区块标记齐全，以及**「添加供应商」打开的是供应商表单且不含任何能力开关**（SOP §4.2.1）。
 - `pnpm run test:page-rhythm`（含 WorkBuddy 两项：页头→首区块 16px、区块→区块 16px）。
 - `pnpm run test:provider-card-layout` / `test:css-module-classes` / `test:form-modal-layout`。
 - 手工：在产品里加一条模型 → 本页能看到 → 在本页编辑另一条 → 第一条不丢；点「预览配置」看到的是 `models.json` 原文（含注释/未知键）。

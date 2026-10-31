@@ -32,7 +32,14 @@ import type {
   CodebuddyRuntimeConfig,
 } from '@/types/codebuddy';
 import ModelsJsonModelModal from '@/features/coding/shared/modelsJson/ModelsJsonModelModal';
+import ModelsJsonProviderFormModal, {
+  type ModelsJsonProviderFormValues,
+} from '@/features/coding/shared/modelsJson/ModelsJsonProviderFormModal';
 import ModelsJsonProviderSection from '@/features/coding/shared/modelsJson/ModelsJsonProviderSection';
+import FetchModelsModal from '@/components/common/FetchModelsModal';
+import ProviderConnectivityTestModal, {
+  type ProviderConnectivityInfo,
+} from '@/features/coding/shared/providerConnectivity/ProviderConnectivityTestModal';
 import { SessionManagerPanel } from '@/features/coding/shared/sessionManager';
 import styles from './CodebuddyPage.module.less';
 
@@ -72,6 +79,12 @@ const CodebuddyPage: React.FC = () => {
   const [previewOpen, setPreviewOpen] = React.useState(false);
   const [modelsText, setModelsText] = React.useState<string | null>(null);
   const [form] = Form.useForm<CodebuddyModelInput>();
+
+  const [providerModalOpen, setProviderModalOpen] = React.useState(false);
+  const [providerSaving, setProviderSaving] = React.useState(false);
+  const [connectivityOpen, setConnectivityOpen] = React.useState(false);
+  const [connectivityChannelId, setConnectivityChannelId] = React.useState<string | null>(null);
+  const [fetchModelsChannelId, setFetchModelsChannelId] = React.useState<string | null>(null);
 
   const sidebarSections = React.useMemo<SidebarSectionMarker[]>(() => [
     {
@@ -138,20 +151,36 @@ const CodebuddyPage: React.FC = () => {
     },
   });
 
-  const openModelModal = (channel: CodebuddyProviderView | null, modelId?: string) => {
+  /**
+   * Opens the model editor.
+   *
+   * `channel` is required: a channel is derived from `(endpoint, api key)` and
+   * every model belongs to one, so there is no "model without a channel". The
+   * only exception is the provider form, which writes the first entry itself.
+   *
+   * `copy` pre-fills a duplicate under a new id and deliberately clears
+   * `previousId`, so saving appends a new entry instead of renaming the source
+   * onto itself.
+   */
+  const openModelModal = (
+    channel: CodebuddyProviderView,
+    modelId?: string,
+    options?: { copy?: boolean },
+  ) => {
+    const copy = options?.copy === true;
     setEditingChannel(channel);
-    setEditingModelId(modelId ?? null);
+    setEditingModelId(copy ? null : (modelId ?? null));
     form.resetFields();
-    const model = channel && modelId
+    const model = modelId
       ? channel.models.find((item) => item.id === modelId)
       : undefined;
     form.setFieldsValue({
-      previousId: model?.id ?? null,
-      id: model?.id ?? '',
-      name: model?.name ?? '',
-      vendor: channel?.vendor ?? '',
-      baseUrl: channel?.baseUrl ?? '',
-      apiKey: channel?.apiKey ?? '',
+      previousId: copy ? null : (model?.id ?? null),
+      id: copy && model ? `${model.id}_copy` : (model?.id ?? ''),
+      name: copy && model ? `${model.name || model.id} copy` : (model?.name ?? ''),
+      vendor: channel.vendor ?? '',
+      baseUrl: channel.baseUrl ?? '',
+      apiKey: channel.apiKey ?? '',
       maxInputTokens: model?.maxInputTokens,
       maxOutputTokens: model?.maxOutputTokens,
       temperature: model?.temperature,
@@ -162,6 +191,29 @@ const CodebuddyPage: React.FC = () => {
       useCustomProtocol: model?.useCustomProtocol ?? false,
     });
     setModelModalOpen(true);
+  };
+
+  /** Saves the provider form: one connection plus its first model entry. */
+  const handleSubmitProvider = async (values: ModelsJsonProviderFormValues) => {
+    try {
+      setRuntime(await saveCodebuddyModel({
+        id: values.modelId.trim(),
+        name: values.modelName?.trim() || values.modelId.trim(),
+        vendor: values.vendor?.trim() || undefined,
+        baseUrl: values.baseUrl.trim(),
+        apiKey: values.apiKey?.trim() || undefined,
+        supportsToolCall: true,
+        supportsImages: false,
+        supportsReasoning: false,
+        onlyReasoning: false,
+        useCustomProtocol: false,
+      }));
+      setProviderModalOpen(false);
+      message.success(t('common.success'));
+    } catch (error) {
+      console.error('Failed to save CodeBuddy provider:', error);
+      message.error(String(error));
+    }
   };
 
   const handleSubmitModel = async (values: CodebuddyModelInput) => {
@@ -247,6 +299,127 @@ const CodebuddyPage: React.FC = () => {
     }
   };
 
+  /**
+   * Batch-removes several models of one channel.
+   *
+   * Confirmed here, like the channel delete: the model list's batch button is
+   * the only caller and it must not destroy entries without asking.
+   */
+  const handleDeleteModels = async (channel: CodebuddyProviderView, modelIds: string[]) => {
+    if (modelIds.length === 0) {
+      return;
+    }
+    const confirmed = await new Promise<boolean>((resolve) => {
+      Modal.confirm({
+        title: t('common.model.batchDelete'),
+        content: t('codebuddy.deleteModelsConfirm', { count: modelIds.length }),
+        okText: t('common.confirm'),
+        cancelText: t('common.cancel'),
+        okButtonProps: { danger: true },
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false),
+      });
+    });
+    if (!confirmed) {
+      return;
+    }
+    try {
+      // Each delete returns the whole recomputed channel list, so the last
+      // response is the state to keep.
+      let next = runtime;
+      for (const modelId of modelIds) {
+        next = await deleteCodebuddyModel(modelId);
+      }
+      if (next) {
+        setRuntime(next);
+      }
+      message.success(t('common.success'));
+    } catch (error) {
+      console.error('Failed to delete CodeBuddy models:', error);
+      message.error(String(error));
+      await reload();
+    }
+    void channel;
+  };
+
+  const channels = runtime?.providers ?? [];
+  const availableModels = runtime?.availableModels;
+
+  const connectivityChannel = channels.find((item) => item.id === connectivityChannelId) ?? null;
+  const fetchModelsChannel = channels.find((item) => item.id === fetchModelsChannelId) ?? null;
+
+  /**
+   * The channel as an `OpenCodeProvider`, which is the shape the shared
+   * connectivity probe speaks.
+   *
+   * `ChannelView.baseUrl` has already had `/chat/completions` stripped
+   * (`models_json::normalize_channel_base_url`), and the probe appends it back,
+   * so the two agree.
+   */
+  const connectivityInfo = React.useMemo<ProviderConnectivityInfo | null>(() => {
+    if (!connectivityChannel) {
+      return null;
+    }
+    return {
+      providerId: connectivityChannel.id,
+      providerName: connectivityChannel.name || connectivityChannel.baseUrl,
+      providerConfig: {
+        npm: '@ai-sdk/openai-compatible',
+        name: connectivityChannel.name || connectivityChannel.baseUrl,
+        options: {
+          baseURL: connectivityChannel.baseUrl,
+          ...(connectivityChannel.apiKey ? { apiKey: connectivityChannel.apiKey } : {}),
+        },
+        models: Object.fromEntries(connectivityChannel.models.map((model) => [model.id, {}])),
+      },
+      modelIds: connectivityChannel.models.map((model) => model.id),
+    };
+  }, [connectivityChannel]);
+
+  /**
+   * Applies the models picked in the shared fetch dialog.
+   *
+   * Every new id becomes a plain entry on the same channel, so it inherits the
+   * endpoint and key by construction — `models.json` stores those per entry.
+   */
+  const handleFetchModelsSuccess = async (result: {
+    selectedModels: Array<{ id: string; name?: string }>;
+    removedModelIds: string[];
+  }) => {
+    setFetchModelsChannelId(null);
+    if (!fetchModelsChannel) {
+      return;
+    }
+    try {
+      let next = runtime;
+      for (const modelId of result.removedModelIds) {
+        next = await deleteCodebuddyModel(modelId);
+      }
+      for (const model of result.selectedModels) {
+        next = await saveCodebuddyModel({
+          id: model.id,
+          name: model.name || model.id,
+          vendor: fetchModelsChannel.vendor || undefined,
+          baseUrl: fetchModelsChannel.baseUrl,
+          apiKey: fetchModelsChannel.apiKey || undefined,
+          supportsToolCall: true,
+          supportsImages: false,
+          supportsReasoning: false,
+          onlyReasoning: false,
+          useCustomProtocol: false,
+        });
+      }
+      if (next) {
+        setRuntime(next);
+      }
+      message.success(t('common.success'));
+    } catch (error) {
+      console.error('Failed to apply fetched CodeBuddy models:', error);
+      message.error(String(error));
+      await reload();
+    }
+  };
+
   const handleOpenConfigFolder = () => {
     if (pathInfo?.path) {
       void revealItemInDir(pathInfo.path);
@@ -269,9 +442,6 @@ const CodebuddyPage: React.FC = () => {
       message.error(String(error));
     }
   };
-
-  const channels = runtime?.providers ?? [];
-  const availableModels = runtime?.availableModels;
 
   return (
     <Spin spinning={loading}>
@@ -314,10 +484,17 @@ const CodebuddyPage: React.FC = () => {
                     : t('common.availableModelsFree')}
                 </div>
               )}
+              onAddProvider={() => setProviderModalOpen(true)}
               onAddModel={openModelModal}
               onEditChannel={openModelModal}
               onDeleteChannels={requestDeleteChannels}
               onDeleteModel={handleDeleteModel}
+              onDeleteModels={handleDeleteModels}
+              onTestModels={(channel) => {
+                setConnectivityChannelId(channel.id);
+                setConnectivityOpen(true);
+              }}
+              onFetchModels={(channel) => setFetchModelsChannelId(channel.id)}
             />
           </div>
 
@@ -378,6 +555,45 @@ const CodebuddyPage: React.FC = () => {
             onCancel={() => setModelModalOpen(false)}
             onSubmit={handleSubmitModel}
           />
+
+          <ModelsJsonProviderFormModal
+            open={providerModalOpen}
+            saving={providerSaving}
+            onCancel={() => setProviderModalOpen(false)}
+            onSubmit={async (values) => {
+              setProviderSaving(true);
+              try {
+                await handleSubmitProvider(values);
+              } finally {
+                setProviderSaving(false);
+              }
+            }}
+          />
+
+          <ProviderConnectivityTestModal
+            open={connectivityOpen}
+            connectivityInfo={connectivityInfo}
+            onCancel={() => {
+              setConnectivityOpen(false);
+              setConnectivityChannelId(null);
+            }}
+          />
+
+          {fetchModelsChannel && (
+            <FetchModelsModal
+              open={Boolean(fetchModelsChannelId)}
+              providerId={fetchModelsChannel.id}
+              providerName={fetchModelsChannel.name || fetchModelsChannel.baseUrl}
+              baseUrl={fetchModelsChannel.baseUrl}
+              apiKey={fetchModelsChannel.apiKey}
+              sdkType="@ai-sdk/openai-compatible"
+              existingModelIds={fetchModelsChannel.models.map((model) => model.id)}
+              onCancel={() => setFetchModelsChannelId(null)}
+              onSuccess={(result) => {
+                void handleFetchModelsSuccess(result);
+              }}
+            />
+          )}
 
           <RootDirectoryModal
             open={rootDirectory.rootDirectoryModalOpen}

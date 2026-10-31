@@ -42,10 +42,15 @@ sequenceDiagram
 - **单卡删除的确认在页面层，不在这里**：卡片传 `deleteConfirm: false`（同 OpenClaw），页面 handler 里 `Modal.confirm` 后调删除。卡片没有自己的确认，漏掉页面层就是「一次误点清空整条渠道」。批量删除不再问第二次（批次栏已确认）。
 - **排序只提供 `custom` / `name`**：`created` 需要创建时间、`recent` 需要 `provider_last_used`，而这两个模块都没有「应用」动作（这正是 OpenCode 式卡片的定义），`noteProviderUsed` 无处可调。列出来只会是一个永远不生效的菜单项。
 - **渠道卡片没有「编辑渠道」入口**：渠道由 `(url, apiKey)` 派生，文件里没有渠道记录；卡片级 ✎ 只能打开一张空的「添加模型」表单，点确定还会因为缺 id 被拒。改渠道 endpoint 的方式是编辑它下面某条模型。
+- **「添加供应商」必须是供应商表单，不是模型表单**（SOP §4.2.1）：`ProviderListSection.onAddProvider` 打开 `ModelsJsonProviderFormModal`。这个弹窗只填渠道连接信息（`vendor` / `baseUrl` / `apiKey`）**加一条首条模型 ID** —— `models.json` 没有渠道记录，创建渠道的唯一办法就是写一条携带该连接的模型条目。**能力开关（tool call / images / reasoning / useCustomProtocol）不进这个弹窗**：它们属于模型，进卡片后用「添加模型」或铅笔改。上一轮把 `onAddProvider` 直接接到模型表单，用户点「添加供应商」却被要求填模型 ID 和一屏开关，回归由两个页面的浏览器夹具守护（`add-provider opens the provider form, not the model form` + `the provider form carries no capability switches`）。
+- **模型级批量删除一次只允许一个渠道处于选择模式**：`modelSelectionChannelId` 是单个 id 而不是集合。每张卡都渲染自己的模型列表，两张卡同时收集选择，用户无法判断「删除已选」作用于谁。
+- **`onSetPrimaryModel` 不接**：`models.json` 没有默认模型指针。唯一候选 `availableModels` 是**白名单**——写它会隐藏产品自带的全部内置模型，与「选默认」正好相反。`ModelDisplayData.isPrimary` 因此始终省略。
+- **`onFetchModels` 在含 `useCustomProtocol` 的渠道上必须禁用**：这类条目的 `url` 不一定是 `chat/completions` 形式，自动拼 `{base}/models` 会拼错。判据是渠道内**任一**模型带该标记。
 - **侧栏区块 id 与 `ProviderListSection` 的 `sectionId` 不能同名**：页面外层用 `id="<module>-providers"` 做侧栏锚点，共享外壳因此取 `<module>-providers-section`（与 Hermes 同一约定）。两个同名 id 是无效 HTML，`getElementById` 只会命中外层。
 
 ## 最小验证
 
 - `pnpm run test:provider-card-layout`（本目录的映射层必须是 `providerCardVariants` 的薄映射层）
-- `pnpm run test:form-modal-layout`（弹窗横向布局）
+- `pnpm run test:form-modal-layout`（弹窗横向布局；`ModelsJsonProviderFormModal` 靠文件名里的 `ProviderFormModal` 被扫描到）
+- `pnpm run test:workbuddy-page` / `test:codebuddy-page`：真实页面 + 桩桥，断言「添加供应商」打开的是供应商表单且不含任何 `.ant-switch`
 - 手工：在 WorkBuddy 加一条模型 → 在 CodeBuddy 打开另一个配置根，确认两边的布局偏好互不影响；切换列表/卡片视图后重启仍保持。

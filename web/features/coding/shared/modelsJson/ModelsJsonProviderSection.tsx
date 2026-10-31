@@ -20,11 +20,26 @@ export interface ModelsJsonProviderSectionProps {
   loading: boolean;
   /** Localized section hint; the shell owns its styling. */
   hint: React.ReactNode;
-  onAddModel: (channel: WorkbuddyProviderView | null) => void;
+  /**
+   * The toolbar's 「添加供应商」.
+   *
+   * A channel is derived from `(endpoint, api key)`, so creating one means
+   * writing a first model entry that carries the connection — the page opens a
+   * provider form for exactly that (SOP §4.2.1).
+   */
+  onAddProvider: () => void;
+  /** Adds one more model to an existing channel. */
+  onAddModel: (channel: WorkbuddyProviderView) => void;
   /** Opens the model modal; a `modelId` means that entry is being edited. */
-  onEditChannel: (channel: WorkbuddyProviderView, modelId: string) => void;
+  onEditChannel: (channel: WorkbuddyProviderView, modelId: string, options?: { copy?: boolean }) => void;
   onDeleteChannels: (channels: WorkbuddyProviderView[]) => Promise<boolean>;
   onDeleteModel: (channel: WorkbuddyProviderView, modelId: string) => void;
+  /** Batch-removes several models of one channel after the page confirms. */
+  onDeleteModels: (channel: WorkbuddyProviderView, modelIds: string[]) => Promise<void> | void;
+  /** Runs the shared connectivity probe for one channel. */
+  onTestModels: (channel: WorkbuddyProviderView) => void;
+  /** Opens the shared "fetch models" dialog for one channel. */
+  onFetchModels: (channel: WorkbuddyProviderView) => void;
 }
 
 /**
@@ -51,10 +66,14 @@ const ModelsJsonProviderSection: React.FC<ModelsJsonProviderSectionProps> = ({
   moduleKey,
   loading,
   hint,
+  onAddProvider,
   onAddModel,
   onEditChannel,
   onDeleteChannels,
   onDeleteModel,
+  onDeleteModels,
+  onTestModels,
+  onFetchModels,
 }) => {
   const { t } = useTranslation();
 
@@ -62,6 +81,21 @@ const ModelsJsonProviderSection: React.FC<ModelsJsonProviderSectionProps> = ({
   const [keyword, setKeyword] = React.useState('');
   const { viewMode, setViewMode } = useProviderListViewPrefs(moduleKey);
   const { sortMode, setSortMode } = useProviderListSort(moduleKey);
+
+  /**
+   * Model-level batch delete, keyed by channel.
+   *
+   * One channel can be in selection mode at a time: each card renders its own
+   * model list, and letting two cards collect selections at once would give the
+   * user no way to tell which delete button acts on what.
+   */
+  const [modelSelectionChannelId, setModelSelectionChannelId] = React.useState<string | null>(null);
+  const [selectedModelIds, setSelectedModelIds] = React.useState<string[]>([]);
+
+  const exitModelSelection = React.useCallback(() => {
+    setModelSelectionChannelId(null);
+    setSelectedModelIds([]);
+  }, []);
 
   const filtered = React.useMemo(
     () =>
@@ -120,7 +154,7 @@ const ModelsJsonProviderSection: React.FC<ModelsJsonProviderSectionProps> = ({
       // sort", which is false here — a channel has no stored position at all
       // (`models.json` is a flat list and the product never reads a channel
       // order back). The cards simply carry no grip, which is accurate.
-      onAddProvider={() => onAddModel(null)}
+      onAddProvider={onAddProvider}
       hint={hint}
     >
       <div
@@ -150,7 +184,36 @@ const ModelsJsonProviderSection: React.FC<ModelsJsonProviderSectionProps> = ({
             }}
             onAddModel={() => onAddModel(provider)}
             onEditModel={(modelId) => onEditChannel(provider, modelId)}
+            onCopyModel={(modelId) => onEditChannel(provider, modelId, { copy: true })}
             onDeleteModel={(modelId) => onDeleteModel(provider, modelId)}
+            modelSelectionMode={modelSelectionChannelId === provider.id}
+            selectedModelIds={modelSelectionChannelId === provider.id ? selectedModelIds : []}
+            onToggleModelSelection={(modelId, selected) => {
+              setSelectedModelIds((current) => selected
+                ? (current.includes(modelId) ? current : [...current, modelId])
+                : current.filter((id) => id !== modelId));
+            }}
+            onToggleBatchDeleteMode={() => {
+              if (modelSelectionChannelId === provider.id) {
+                exitModelSelection();
+                return;
+              }
+              setModelSelectionChannelId(provider.id);
+              setSelectedModelIds([]);
+            }}
+            onBatchDeleteModels={() => {
+              if (selectedModelIds.length === 0) {
+                return;
+              }
+              const deleting = [...selectedModelIds];
+              void Promise.resolve(onDeleteModels(provider, deleting)).then(exitModelSelection);
+            }}
+            onTestModels={() => onTestModels(provider)}
+            onFetchModels={() => onFetchModels(provider)}
+            // `models.json` writes one URL per entry, so a channel that mixes
+            // `useCustomProtocol` entries cannot be probed against `{base}/models`.
+            fetchDisabled={provider.models.some((model) => model.useCustomProtocol)}
+            fetchDisabledTooltip={t('workbuddy.providerModal.fetchDisabledCustomProtocol')}
           />
         ))}
       </div>

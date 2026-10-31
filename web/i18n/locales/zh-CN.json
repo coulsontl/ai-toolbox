@@ -6223,7 +6223,14 @@
         "folderOnlyTitle": "请选择文件夹",
         "folderOnlyDesc": "不要选择具体文件，WorkBuddy 会在所选文件夹下派生 models.json、mcp.json 与账号身份文件。"
       }
-    }
+    },
+    "providerModal": {
+      "intro": "填写供应商的连接信息和第一条模型。其余模型保存后在卡片里添加。",
+      "firstModelId": "首条模型 ID",
+      "firstModelIdHint": "先填一条，保存后可在卡片里继续添加",
+      "fetchDisabledCustomProtocol": "该渠道含自定义协议模型，无法自动推断模型列表地址"
+    },
+    "deleteModelsConfirm": "将删除选中的 {{count}} 个模型条目。确定继续？"
   },
   "codebuddy": {
     "title": "CodeBuddy Code 配置管理",
@@ -6259,6 +6266,7 @@
         "folderOnlyDesc": "不要选择具体文件，CodeBuddy 会在所选文件夹下派生 models.json、.mcp.json、settings.json 与 CODEBUDDY.md。"
       }
     },
-    "deleteProviderConfirm": "将删除该渠道下的全部模型条目。确定继续？"
+    "deleteProviderConfirm": "将删除该渠道下的全部模型条目。确定继续？",
+    "deleteModelsConfirm": "将删除选中的 {{count}} 个模型条目。确定继续？"
   }
 }

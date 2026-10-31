@@ -65,6 +65,57 @@ export async function verifyWorkbuddyPage({ send, evaluate, baseUrl, artifactRoo
   })()`);
   check('provider cards are not nested inside each other', nestedCards, 0);
 
+  // SOP §4.2.1: the toolbar's 「添加供应商」 must open a *provider* form. This
+  // page used to wire it straight to the model form, so the button promised a
+  // provider and asked for a model id + every capability switch.
+  const visibleModal = (selector) => `
+    const visible = (el) => el && el.offsetParent !== null;
+    [...document.querySelectorAll('${selector}')].filter(visible)[0] ?? null`;
+  await evaluate(`(() => {
+    const visible = (el) => el && el.offsetParent !== null;
+    const button = [...document.querySelectorAll('button')]
+      .find((node) => node.textContent.trim() === '添加供应商' && visible(node));
+    if (!button) throw new Error('add-provider button not found');
+    button.click();
+  })()`);
+  await waitFor(`(() => { ${visibleModal('.ant-modal')}; return Boolean([
+    ...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).length); })()`);
+
+  const providerFormShape = await evaluate(`(() => {
+    ${visibleModal('.ant-modal')};
+    const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+    const labels = [...modal.querySelectorAll('.ant-form-item-label label')]
+      .map((node) => node.textContent.trim());
+    return JSON.stringify({ title: modal.querySelector('.ant-modal-title')?.textContent.trim(), labels });
+  })()`);
+  const providerForm = JSON.parse(providerFormShape);
+  check(
+    'add-provider opens the provider form, not the model form',
+    providerForm.labels,
+    ['供应商', '端点', 'API Key', '首条模型 ID', '显示名称'],
+  );
+  check(
+    'the provider form carries no capability switches',
+    await evaluate(`(() => {
+      ${visibleModal('.ant-modal')};
+      const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+      return modal.querySelectorAll('.ant-switch').length;
+    })()`),
+    0,
+  );
+
+  // Close it so the screenshot captures the page, not a dialog. The footer's
+  // cancel label is antd's localized 「取 消」 (it inserts a space between two
+  // CJK characters), so match the close affordance instead of the text.
+  await evaluate(`(() => {
+    ${visibleModal('.ant-modal')};
+    const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+    const close = modal.querySelector('.ant-modal-close');
+    if (!close) throw new Error('modal close button not found');
+    close.click();
+  })()`);
+  await delay(600);
+
   // Let the spin wrapper finish its fade and the cards settle before capturing;
   // an early screenshot renders half-transparent cards, which reads as a real
   // styling defect rather than a timing artifact.
