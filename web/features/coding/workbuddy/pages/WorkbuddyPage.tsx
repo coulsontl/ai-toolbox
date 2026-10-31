@@ -33,6 +33,11 @@ import ModelsJsonProviderFormModal, {
   type ModelsJsonProviderFormValues,
 } from '@/features/coding/shared/modelsJson/ModelsJsonProviderFormModal';
 import ModelsJsonProviderSection from '@/features/coding/shared/modelsJson/ModelsJsonProviderSection';
+import {
+  MODELS_JSON_PRESET_NPM,
+  buildFetchedModelsJsonModel,
+} from '@/features/coding/shared/modelsJson/modelsJsonPresetFields';
+import { findPresetModelById } from '@/constants/presetModels';
 import FetchModelsModal from '@/components/common/FetchModelsModal';
 import ProviderConnectivityTestModal from '@/features/coding/shared/providerConnectivity/ProviderConnectivityTestModal';
 import type { ProviderConnectivityInfo } from '@/features/coding/shared/providerConnectivity/ProviderConnectivityTestModal';
@@ -401,6 +406,11 @@ const WorkbuddyPage: React.FC = () => {
    *
    * Every new id becomes a plain entry on the same channel, so it inherits the
    * endpoint and key by construction — `models.json` stores those per entry.
+   *
+   * Each id is matched against the preset catalogue first (SOP §4.2.5): without
+   * that, 「应用」 hands the user a bare id and every limit has to be looked up
+   * by hand. The ZCode regression was exactly this — entry present, dialog
+   * worked, no error, just no data.
    */
   const handleFetchModelsSuccess = async (result: {
     selectedModels: Array<{ id: string; name?: string }>;
@@ -416,15 +426,22 @@ const WorkbuddyPage: React.FC = () => {
         next = await deleteWorkbuddyModel(modelId);
       }
       for (const model of result.selectedModels) {
+        const fields = buildFetchedModelsJsonModel(
+          model,
+          findPresetModelById(model.id, MODELS_JSON_PRESET_NPM),
+          { supportsToolCall: true, supportsImages: false, supportsReasoning: false },
+        );
         next = await saveWorkbuddyModel({
-          id: model.id,
-          name: model.name || model.id,
+          id: fields.id,
+          name: fields.name,
           vendor: fetchModelsChannel.vendor || undefined,
           baseUrl: fetchModelsChannel.baseUrl,
           apiKey: fetchModelsChannel.apiKey || undefined,
-          supportsToolCall: true,
-          supportsImages: false,
-          supportsReasoning: false,
+          maxInputTokens: fields.maxInputTokens,
+          maxOutputTokens: fields.maxOutputTokens,
+          supportsToolCall: fields.supportsToolCall,
+          supportsImages: fields.supportsImages,
+          supportsReasoning: fields.supportsReasoning,
           onlyReasoning: false,
           useCustomProtocol: false,
         });

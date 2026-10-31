@@ -1,5 +1,5 @@
 import React from 'react';
-import { App, Form, Modal, Spin, Typography } from 'antd';
+import { App, Collapse, Form, Modal, Space, Spin, Typography } from 'antd';
 import { DatabaseOutlined, FileTextOutlined, HistoryOutlined, SettingOutlined } from '@ant-design/icons';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
@@ -36,6 +36,11 @@ import ModelsJsonProviderFormModal, {
   type ModelsJsonProviderFormValues,
 } from '@/features/coding/shared/modelsJson/ModelsJsonProviderFormModal';
 import ModelsJsonProviderSection from '@/features/coding/shared/modelsJson/ModelsJsonProviderSection';
+import {
+  MODELS_JSON_PRESET_NPM,
+  buildFetchedModelsJsonModel,
+} from '@/features/coding/shared/modelsJson/modelsJsonPresetFields';
+import { findPresetModelById } from '@/constants/presetModels';
 import FetchModelsModal from '@/components/common/FetchModelsModal';
 import ProviderConnectivityTestModal, {
   type ProviderConnectivityInfo,
@@ -48,7 +53,7 @@ const { Paragraph, Text } = Typography;
 const SIDEBAR_ICON_BY_SECTION_ID: Record<string, React.ReactNode> = {
   'codebuddy-providers': <DatabaseOutlined />,
   'codebuddy-global-prompt': <FileTextOutlined />,
-  'codebuddy-settings': <SettingOutlined />,
+  'codebuddy-other-configuration': <SettingOutlined />,
   'codebuddy-session-manager': <HistoryOutlined />,
 };
 
@@ -100,8 +105,8 @@ const CodebuddyPage: React.FC = () => {
       order: 2,
     },
     {
-      id: 'codebuddy-settings',
-      title: t('codebuddy.settingsPath'),
+      id: 'codebuddy-other-configuration',
+      title: t('codebuddy.otherConfig.title'),
       order: 3,
     },
     {
@@ -431,15 +436,24 @@ const CodebuddyPage: React.FC = () => {
         next = await deleteCodebuddyModel(modelId);
       }
       for (const model of result.selectedModels) {
+        // Preset match per SOP §4.2.5: 「应用」 must land a row that already
+        // carries its limits and capabilities, not a bare id.
+        const fields = buildFetchedModelsJsonModel(
+          model,
+          findPresetModelById(model.id, MODELS_JSON_PRESET_NPM),
+          { supportsToolCall: true, supportsImages: false, supportsReasoning: false },
+        );
         next = await saveCodebuddyModel({
-          id: model.id,
-          name: model.name || model.id,
+          id: fields.id,
+          name: fields.name,
           vendor: fetchModelsChannel.vendor || undefined,
           baseUrl: fetchModelsChannel.baseUrl,
           apiKey: fetchModelsChannel.apiKey || undefined,
-          supportsToolCall: true,
-          supportsImages: false,
-          supportsReasoning: false,
+          maxInputTokens: fields.maxInputTokens,
+          maxOutputTokens: fields.maxOutputTokens,
+          supportsToolCall: fields.supportsToolCall,
+          supportsImages: fields.supportsImages,
+          supportsReasoning: fields.supportsReasoning,
           onlyReasoning: false,
           useCustomProtocol: false,
         });
@@ -556,28 +570,40 @@ const CodebuddyPage: React.FC = () => {
           </div>
 
           <div
-            id="codebuddy-settings"
+            id="codebuddy-other-configuration"
             className={styles.codebuddySection}
             data-codebuddy-sidebar-section="true"
-            data-sidebar-title={t('codebuddy.settingsPath')}
+            data-sidebar-title={t('codebuddy.otherConfig.title')}
           >
-            {/* One section per block (Hermes / DSH shape): the card is the
-                section itself, not a Collapse inside a section. */}
-            <div className={styles.settingsPanel}>
-              <div className={styles.settingsPanelHeader}>{t('codebuddy.settingsPath')}</div>
-              {settingsText === null ? (
-                <Text type="secondary">{t('codebuddy.settingsEmpty')}</Text>
-              ) : (
-                <>
-                  {/* Read-only: the CLI owns this file, and re-serializing a
-                      parsed copy would lose key order. */}
-                  <pre className={styles.settingsPreview}>{settingsText}</pre>
-                  <Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
-                    {t('codebuddy.settingsHint')}
-                  </Paragraph>
-                </>
-              )}
-            </div>
+            {/* Same block as every other CLI's 其他配置 (opencode / dsh / pi /
+                hermes): a Collapse whose title is that phrase. The *content*
+                differs because this file has no write path — the CLI owns it
+                and re-serializing a parsed copy would drop key order and
+                comments, so it stays a read-only view rather than an editor
+                that looks editable and silently is not. */}
+            <Collapse
+              items={[{
+                key: 'other',
+                label: (
+                  <Space>
+                    <SettingOutlined />
+                    <Text strong>{t('codebuddy.otherConfig.title')}</Text>
+                  </Space>
+                ),
+                children: (
+                  <>
+                    <Paragraph type="secondary" style={{ marginTop: 0 }}>
+                      {t('codebuddy.otherConfig.hint')}
+                    </Paragraph>
+                    {settingsText === null ? (
+                      <Text type="secondary">{t('codebuddy.otherConfig.empty')}</Text>
+                    ) : (
+                      <pre className={styles.settingsPreview}>{settingsText}</pre>
+                    )}
+                  </>
+                ),
+              }]}
+            />
           </div>
 
           <div

@@ -6278,6 +6278,11 @@
       }
     },
     "deleteProviderConfirm": "This deletes every model entry in this channel. Continue?",
-    "deleteModelsConfirm": "This deletes the {{count}} selected model entries. Continue?"
+    "deleteModelsConfirm": "This deletes the {{count}} selected model entries. Continue?",
+    "otherConfig": {
+      "title": "Other Configuration",
+      "hint": "CodeBuddy owns settings.json; AI Toolbox shows it read-only and never rewrites it.",
+      "empty": "This file does not exist."
+    }
   }
 }

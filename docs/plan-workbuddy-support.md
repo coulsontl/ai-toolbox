@@ -251,8 +251,8 @@ SOP §4.0.2 的 H 节要求「参照 CLI 有的能力本 CLI 也要有，找不�
 
 | 能力 | 结论 | 理由 |
 |---|---|---|
-| 选择预设模型 | **不做** | `models.json` 的模型条目是「endpoint + key + 开关」的扁平记录，没有 Codex / ZCode 那种带推理档位、限量、模态的模型目录；预设在这里没有可填的地方 |
-| 「获取模型」（从上游拉取） | **做了（2026-10-31 改）** | 走仓库共享的 `fetch_provider_models`。原判「拉回来的只有 id 无处可填」不成立：新 id 就是一条继承渠道 endpoint/key 的模型条目，正是本页模型的最小形态。**含 `useCustomProtocol` 的渠道禁用**——这类条目 URL 不一定是 `chat/completions` 形式，自动拼 `{base}/models` 会拼错 |
+| 选择预设模型 | **做了（2026-10-31 改）** | 原判「预设没有可填的地方」是错的：`models.json` 有 `name` / `maxInputTokens` / `maxOutputTokens` / `supportsToolCall` / `supportsImages` / `supportsReasoning` 六个字段，正好是预设能提供的。SOP §4.2.4 明写「最重要的能力之一，不许漏」，模型弹窗的 ID 行右侧有入口。映射见 `shared/modelsJson/modelsJsonPresetFields.ts`：`temperature` 不映射（预设是布尔、文件是数值）、非 image 模态不折进 `supportsImages`、预设未声明的能力保持表单原值 |
+| 「获取模型」（从上游拉取） | **做了（2026-10-31 改）** | 走仓库共享的 `fetch_provider_models`。原判「拉回来的只有 id 无处可填」不成立：新 id 就是一条继承渠道 endpoint/key 的模型条目，正是本页模型的最小形态。**含 `useCustomProtocol` 的渠道禁用**——这类条目 URL 不一定是 `chat/completions` 形式，自动拼 `{base}/models` 会拼错。**应用时按 model id 匹配预设并带上参数**（SOP §4.2.5，`buildFetchedModelsJsonModel`）：只写裸 id 就是 ZCode #31 的复现 |
 | 模型级连通性测试 | **做了（2026-10-31 改）** | 走共享 `test_provider_model_connectivity`（`@ai-sdk/openai-compatible` → `{base}/chat/completions`，与 `models.json` 的 URL 规则一致）。原判「本模块没有网关侧探针链路」不成立：不需要网关，共享命令直连上游 |
 | 供应商级连通性测试 / 批量测试 | **未做** | 批量测试（`onBatchTest`）仍不接：它按 provider 各测一个模型，而这里同一渠道内的模型共用 endpoint/key，逐渠道批量测的收益低于界面复杂度 |
 | 「默认渠道」删除置灰并排除出批量选择 | **不适用** | 判据是「默认指针是否写在 provider 记录之外」。这里**根本没有默认指针**（见 §8），所以没有需要保护的默认项；批量删除覆盖全部渠道是正确的 |

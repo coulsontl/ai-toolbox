@@ -16,7 +16,17 @@ import i18n from '@/i18n';
 import { useAppStore } from '@/stores/appStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import WorkbuddyPage from '@/features/coding/workbuddy/pages/WorkbuddyPage';
+import { updatePresetModels } from '@/constants/presetModels';
+import bundledPresetModels from '../../../../../../../tauri/resources/preset_models.json';
 import '@/App.css';
+
+/**
+ * The catalogue the real app loads at startup (`load_cached_preset_models` →
+ * `fetch_remote_preset_models`). The fixture never runs that bootstrap, so
+ * without this the 「选择预设模型」 picker renders as an empty panel and any
+ * assertion about it either fails for the wrong reason or passes vacuously.
+ */
+updatePresetModels(bundledPresetModels);
 
 const parameters = new URLSearchParams(location.search);
 const language = parameters.get('language') || 'zh-CN';

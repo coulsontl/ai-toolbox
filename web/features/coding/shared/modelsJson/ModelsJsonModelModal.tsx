@@ -1,10 +1,27 @@
 import React from 'react';
-import { Form, Input, InputNumber, Modal, Space, Switch, Typography, type FormInstance } from 'antd';
+import {
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Space,
+  Switch,
+  Tag,
+  Typography,
+  type FormInstance,
+} from 'antd';
 import { useTranslation } from 'react-i18next';
+import {
+  PRESET_MODELS,
+  getPresetModelsVersion,
+  subscribePresetModels,
+  type PresetModel,
+} from '@/constants/presetModels';
 import type {
   WorkbuddyFamilyModelInput,
   WorkbuddyFamilyProviderView,
 } from '@/types/workbuddyFamily';
+import { MODELS_JSON_PRESET_NPM, presetToModelsJsonFields } from './modelsJsonPresetFields';
 
 const { Text } = Typography;
 
@@ -30,6 +47,13 @@ interface Props {
  *
  * `useCustomProtocol` skips the product's URL normalization, so its hint sits
  * directly under the switch instead of in a page-level note.
+ *
+ * The 「选择预设模型」 picker beside the id field is SOP §4.2.4's
+ * "most important capability, do not omit": a models.dev preset fills the name,
+ * both limits and the capability switches in one click instead of leaving the
+ * user to look up a dozen values. Two of its rules apply here — the id stays
+ * editable only when adding (an edit that changed the id would orphan the row),
+ * and selecting a preset while editing updates everything *except* the id.
  */
 const ModelsJsonModelModal: React.FC<Props> = ({
   open,
@@ -41,6 +65,50 @@ const ModelsJsonModelModal: React.FC<Props> = ({
 }) => {
   const { t } = useTranslation();
   const [saving, setSaving] = React.useState(false);
+  const [presetsExpanded, setPresetsExpanded] = React.useState(false);
+  const presetModelsVersion = React.useSyncExternalStore(
+    subscribePresetModels,
+    getPresetModelsVersion,
+    getPresetModelsVersion,
+  );
+
+  /**
+   * Every preset the catalogue knows, deduped by id.
+   *
+   * All `models.json` entries are OpenAI-compatible (the file stores a `url`,
+   * not a protocol), so that group is listed first — but entries from the other
+   * groups stay reachable rather than being hidden, because a `useCustomProtocol`
+   * entry may legitimately point at a differently shaped endpoint.
+   */
+  const presetModels = React.useMemo(() => {
+    const seen = new Set<string>();
+    const result: PresetModel[] = [];
+    const pushUnique = (preset: PresetModel) => {
+      const id = preset.id?.trim();
+      if (!id || seen.has(id)) {
+        return;
+      }
+      seen.add(id);
+      result.push(preset);
+    };
+    (PRESET_MODELS[MODELS_JSON_PRESET_NPM] || []).forEach(pushUnique);
+    Object.entries(PRESET_MODELS).forEach(([npmKey, models]) => {
+      if (npmKey === MODELS_JSON_PRESET_NPM) {
+        return;
+      }
+      models.forEach(pushUnique);
+    });
+    return result;
+    // The version bump is the only signal that the catalogue was (re)loaded.
+  }, [presetModelsVersion]);
+
+  /** Fills the form from a preset; the id is left alone while editing. */
+  const handlePresetSelect = (preset: PresetModel) => {
+    form.setFieldsValue({
+      ...(editing ? {} : { id: preset.id }),
+      ...presetToModelsJsonFields(preset),
+    });
+  };
 
   const handleOk = async () => {
     const values = await form.validateFields();
@@ -76,13 +144,53 @@ const ModelsJsonModelModal: React.FC<Props> = ({
         <Form.Item name="previousId" hidden noStyle>
           <Input />
         </Form.Item>
-        <Form.Item
-          name="id"
-          label={t('workbuddy.model.id')}
-          rules={[{ required: true, message: t('common.required') }]}
-        >
-          <Input placeholder="gpt-4.1" />
+        <Form.Item label={t('workbuddy.model.id')} required>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Form.Item
+              name="id"
+              noStyle
+              rules={[{ required: true, message: t('common.required') }]}
+            >
+              <Input placeholder="gpt-4.1" disabled={editing} style={{ flex: 1 }} />
+            </Form.Item>
+            {presetModels.length > 0 && (
+              <a
+                style={{
+                  flexShrink: 0,
+                  fontSize: 12,
+                  fontWeight: 500,
+                  color: 'var(--ant-color-text-secondary)',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  whiteSpace: 'nowrap',
+                }}
+                onClick={() => setPresetsExpanded(!presetsExpanded)}
+              >
+                {t('common.model.selectPreset')}
+                {presetsExpanded ? ' ▴' : ' ▾'}
+              </a>
+            )}
+          </div>
         </Form.Item>
+
+        {presetsExpanded && presetModels.length > 0 && (
+          <Form.Item
+            wrapperCol={{ offset: LABEL_COL.span, span: WRAPPER_COL.span }}
+            style={{ marginTop: -8 }}
+          >
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {presetModels.map((preset) => (
+                <Tag
+                  key={preset.id}
+                  style={{ cursor: 'pointer', transition: 'all 0.2s' }}
+                  onClick={() => handlePresetSelect(preset)}
+                >
+                  {preset.name}
+                </Tag>
+              ))}
+            </div>
+          </Form.Item>
+        )}
         <Form.Item name="name" label={t('workbuddy.model.name')}>
           <Input />
         </Form.Item>

@@ -240,6 +240,56 @@ export async function verifyWorkbuddyPage({ send, evaluate, baseUrl, artifactRoo
   })()`);
   await delay(400);
 
+  // SOP §4.2.4: 「选择预设模型」 is the model dialog's most important capability,
+  // not an optional enhancement. ZCode shipped without it and nobody noticed
+  // because style checks cannot see a missing button.
+  await evaluate(`(() => {
+    const add = [...document.querySelectorAll('button')]
+      .find((node) => node.textContent.trim() === '添加模型' && node.offsetParent !== null);
+    if (!add) throw new Error('add-model button not found');
+    add.click();
+  })()`);
+  await waitFor(`Boolean([...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).length)`);
+  check(
+    'the model dialog offers the preset-model picker',
+    await evaluate(`(() => {
+      const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+      return [...modal.querySelectorAll('a, button')]
+        .some((node) => node.textContent.includes('选择预设模型'));
+    })()`),
+  );
+  check(
+    'the preset picker sits on the model-id row',
+    await evaluate(`(() => {
+      const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+      const link = [...modal.querySelectorAll('a, button')]
+        .find((node) => node.textContent.includes('选择预设模型'));
+      const row = link?.closest('.ant-form-item');
+      return Boolean(row && row.querySelector('input'));
+    })()`),
+  );
+
+  // Expanded, it has to actually offer presets — a link that opens an empty
+  // panel is the same failure in a nicer shape.
+  await evaluate(`(() => {
+    const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+    const link = [...modal.querySelectorAll('a, button')]
+      .find((node) => node.textContent.includes('选择预设模型'));
+    link.click();
+  })()`);
+  await delay(300);
+  const presetCount = await evaluate(`(() => {
+    const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+    return modal.querySelectorAll('.ant-tag').length;
+  })()`);
+  check('the preset picker lists catalogue entries', presetCount > 0);
+
+  await evaluate(`(() => {
+    const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+    modal.querySelector('.ant-modal-close').click();
+  })()`);
+  await delay(400);
+
   // Identity files are the global-prompt card list with a **fixed** set of
   // rows: four built-in documents that can be edited, never added, deleted or
   // dragged. Each of those is a claim about what the section offers, so each

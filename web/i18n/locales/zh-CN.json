@@ -6275,6 +6275,11 @@
       }
     },
     "deleteProviderConfirm": "将删除该渠道下的全部模型条目。确定继续？",
-    "deleteModelsConfirm": "将删除选中的 {{count}} 个模型条目。确定继续？"
+    "deleteModelsConfirm": "将删除选中的 {{count}} 个模型条目。确定继续？",
+    "otherConfig": {
+      "title": "其他配置",
+      "hint": "settings.json 由 CodeBuddy 自己维护，AI Toolbox 只读预览、不会改写它。",
+      "empty": "该文件不存在。"
+    }
   }
 }

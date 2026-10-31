@@ -112,6 +112,29 @@ export async function verifyCodebuddyPage({ send, evaluate, baseUrl, artifactRoo
   })()`);
   await delay(600);
 
+  // SOP §4.2.4: the model dialog must offer the preset picker (ZCode shipped
+  // without it and nothing else noticed).
+  await evaluate(`(() => {
+    const add = [...document.querySelectorAll('button')]
+      .find((node) => node.textContent.trim() === '添加模型' && node.offsetParent !== null);
+    if (!add) throw new Error('add-model button not found');
+    add.click();
+  })()`);
+  await waitFor(`Boolean([...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).length)`);
+  check(
+    'the model dialog offers the preset-model picker',
+    await evaluate(`(() => {
+      const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+      return [...modal.querySelectorAll('a, button')]
+        .some((node) => node.textContent.includes('选择预设模型'));
+    })()`),
+  );
+  await evaluate(`(() => {
+    const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+    modal.querySelector('.ant-modal-close').click();
+  })()`);
+  await delay(400);
+
   // The card view is a density change, not the list card poured into a grid
   // cell: the full row's toolbar (five text buttons) broke 「模型列表」 onto one
   // character per line inside a 350px cell. Same rule as the WorkBuddy page, so

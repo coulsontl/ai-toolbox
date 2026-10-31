@@ -46,6 +46,8 @@ sequenceDiagram
 - **`onEditChannel` 与 `onEditConnection` 是两个不同的回调**：前者带 `modelId`，改的是某条模型；后者是渠道级连接改写。合用一个会让 `onEdit` 无从表达（它没有 `modelId`）。
 - **「添加供应商」必须是供应商表单，不是模型表单**（SOP §4.2.1）：`ProviderListSection.onAddProvider` 打开 `ModelsJsonProviderFormModal`。这个弹窗只填渠道连接信息（`vendor` / `baseUrl` / `apiKey`）**加一条首条模型 ID** —— `models.json` 没有渠道记录，创建渠道的唯一办法就是写一条携带该连接的模型条目。**能力开关（tool call / images / reasoning / useCustomProtocol）不进这个弹窗**：它们属于模型，进卡片后用「添加模型」或铅笔改。上一轮把 `onAddProvider` 直接接到模型表单，用户点「添加供应商」却被要求填模型 ID 和一屏开关，回归由两个页面的浏览器夹具守护（`add-provider opens the provider form, not the model form` + `the provider form carries no capability switches`）。
 - **模型级批量删除一次只允许一个渠道处于选择模式**：`modelSelectionChannelId` 是单个 id 而不是集合。每张卡都渲染自己的模型列表，两张卡同时收集选择，用户无法判断「删除已选」作用于谁。
+- **「选择预设模型」必须接**（SOP §4.2.4）：模型弹窗 ID 行右侧的链接 → 展开标签列表 → 点选填充 `name` / 两个 limit / 三个能力开关。**编辑态不改 ID**（改了会让整行换身份）。映射规则在 `modelsJsonPresetFields.ts`，三条判据都可能有坑：① `temperature` **不映射**——预设里是"模型接受 temperature 参数"（布尔），文件里是"要发送的默认值"（数值）；② 只有 `modalities.input` 含 `image` 才置 `supportsImages`，pdf/audio/video 不折进去（文件只有一个图片位，折进去会把 pdf-only 模型标成支持图片）；③ 预设没声明 `tool_call` / `reasoning` 时**保持表单原值**而不是写 `false`。回归：`modelsJsonPresetFields.test.mjs`。
+- **「获取模型 → 应用」必须做预设匹配**（SOP §4.2.5）：`buildFetchedModelsJsonModel` 按 id 查目录，命中就把 limit 与能力带进新条目。只写裸 id 不报错、界面正常，只是用户拿不到参数——这是 ZCode #31 的原样复现。
 - **`onSetPrimaryModel` 不接**：`models.json` 没有默认模型指针。唯一候选 `availableModels` 是**白名单**——写它会隐藏产品自带的全部内置模型，与「选默认」正好相反。`ModelDisplayData.isPrimary` 因此始终省略。
 - **`onFetchModels` 在含 `useCustomProtocol` 的渠道上必须禁用**：这类条目的 `url` 不一定是 `chat/completions` 形式，自动拼 `{base}/models` 会拼错。判据是渠道内**任一**模型带该标记。
 - **侧栏区块 id 与 `ProviderListSection` 的 `sectionId` 不能同名**：页面外层用 `id="<module>-providers"` 做侧栏锚点，共享外壳因此取 `<module>-providers-section`（与 Hermes 同一约定）。两个同名 id 是无效 HTML，`getElementById` 只会命中外层。
@@ -54,6 +56,7 @@ sequenceDiagram
 
 - `pnpm run test:provider-card-layout`（本目录的映射层必须是 `providerCardVariants` 的薄映射层）
 - `pnpm run test:form-modal-layout`（弹窗横向布局；`ModelsJsonProviderFormModal` 靠文件名里的 `ProviderFormModal` 被扫描到）
-- `pnpm run test:workbuddy-page` / `test:codebuddy-page`：真实页面 + 桩桥，断言「添加供应商」打开的是供应商表单且不含任何 `.ant-switch`，以及**卡片视图渲染的是紧凑格、格子里没有「模型列表」、模型管理在侧栏里**（切到卡片视图 → 检查 `[data-provider-grid-cell]` → 点开格子 → 断言 `[data-provider-detail-panel]` 含模型列表）
+- `pnpm run test:workbuddy-page` / `test:codebuddy-page`：真实页面 + 桩桥，断言「添加供应商」打开的是供应商表单且不含任何 `.ant-switch`、**模型弹窗有「选择预设模型」且展开后有条目**、**卡片视图渲染的是紧凑格、格子里没有「模型列表」、模型管理在侧栏里**（切到卡片视图 → 检查 `[data-provider-grid-cell]` → 点开格子 → 断言 `[data-provider-detail-panel]` 含模型列表）
+- **夹具必须自己灌预设目录**：真实应用在启动时调 `load_cached_preset_models` / `fetch_remote_preset_models` 填充 `PRESET_MODELS`，夹具不跑那段 bootstrap，于是预设列表是空的——断言会以「入口不存在」的形式失败，看起来像功能没做，实际是夹具缺数据。两个页面夹具都已 `updatePresetModels(bundled)`（读 `tauri/resources/preset_models.json`）
 - `waitFor` / `evaluate` 的表达式必须返回**可序列化值**：`document.querySelector(...)` 直接返回会抛 `Object reference chain is too long`，要包 `Boolean(...)`
 - 手工：在 WorkBuddy 加一条模型 → 在 CodeBuddy 打开另一个配置根，确认两边的布局偏好互不影响；切换列表/卡片视图后重启仍保持。
