@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import type { KimiCatalogModel } from '../../../../../types/kimi.ts';
 import {
+  KIMI_CAPABILITY_VALUES,
   KIMI_SUPPORTED_CAPABILITIES,
   KIMI_SUPPORTED_EFFORTS,
   buildKimiCatalogModelsFromPresets,
@@ -105,7 +106,7 @@ test('normalizeKimiStringArray trims and drops blanks without a vocabulary filte
 
 test('capability and effort vocabularies cover the CLI enums', () => {
   // Guards against silently dropping a capability the CLI accepts.
-  assert.deepEqual([...KIMI_SUPPORTED_CAPABILITIES], [
+  assert.deepEqual([...KIMI_CAPABILITY_VALUES], [
     'image_in',
     'video_in',
     'audio_in',
@@ -113,6 +114,12 @@ test('capability and effort vocabularies cover the CLI enums', () => {
     'always_thinking',
     'tool_use',
   ]);
+  // The dialog renders this same list; a caption pointing at a key that does
+  // not exist would render the literal key name.
+  assert.deepEqual(
+    [...KIMI_SUPPORTED_CAPABILITIES].map((item) => item.value),
+    [...KIMI_CAPABILITY_VALUES],
+  );
   assert.deepEqual([...KIMI_SUPPORTED_EFFORTS], ['low', 'medium', 'high', 'max']);
 });
 

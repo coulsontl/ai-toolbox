@@ -1,21 +1,31 @@
 import type { KimiCatalogModel, KimiPresetModel } from '@/types/kimi';
 
 /**
- * Capabilities the Kimi CLI understands. Values outside this set are dropped
- * when the model catalog is projected into `config.toml`.
+ * Capabilities the Kimi CLI understands, with the caption each shows in the
+ * model dialog. Values outside this set are dropped when the model catalog is
+ * projected into `config.toml`.
  *
  * `thinking` lets the user disable reasoning; `always_thinking` marks a model
  * that always reasons (the CLI adds one of the two automatically for known
  * Anthropic profiles). `*_in` entries declare input modalities.
+ *
+ * **One list, two consumers.** The dialog renders these as checkboxes and
+ * `normalizeKimiCapabilities` uses the same entries as its allowlist. They used
+ * to be two literals — a `CAPABILITY_FIELDS` table in the dialog and this array
+ * — so adding a capability meant remembering to edit both, and forgetting the
+ * second would silently drop the value on save.
  */
 export const KIMI_SUPPORTED_CAPABILITIES = [
-  'image_in',
-  'video_in',
-  'audio_in',
-  'thinking',
-  'always_thinking',
-  'tool_use',
+  { value: 'image_in', labelKey: 'kimi.model.capabilityImageIn' },
+  { value: 'video_in', labelKey: 'kimi.model.capabilityVideoIn' },
+  { value: 'audio_in', labelKey: 'kimi.model.capabilityAudioIn' },
+  { value: 'thinking', labelKey: 'kimi.model.capabilityThinking' },
+  { value: 'always_thinking', labelKey: 'kimi.model.capabilityAlwaysThinking' },
+  { value: 'tool_use', labelKey: 'kimi.model.capabilityToolUse' },
 ] as const;
+
+/** The identifiers alone, for validation and projection. */
+export const KIMI_CAPABILITY_VALUES = KIMI_SUPPORTED_CAPABILITIES.map((item) => item.value);
 
 /**
  * Thinking efforts the Kimi CLI ships profiles for. `support_efforts` is free
@@ -69,7 +79,7 @@ export function normalizeKimiCapabilities(value: unknown): string[] | undefined 
   if (!Array.isArray(value)) {
     return undefined;
   }
-  const allowed = new Set<string>(KIMI_SUPPORTED_CAPABILITIES);
+  const allowed = new Set<string>(KIMI_CAPABILITY_VALUES);
   const items = value
     .map((item) => (typeof item === 'string' ? item.trim() : ''))
     .filter((item) => allowed.has(item));

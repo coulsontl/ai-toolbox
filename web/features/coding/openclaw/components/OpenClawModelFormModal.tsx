@@ -13,6 +13,10 @@ import JsonEditor from '@/components/common/JsonEditor';
 import type { OpenClawModel } from '@/types/openclaw';
 
 import {
+  CONTEXT_LIMIT_PRESETS,
+  OUTPUT_LIMIT_PRESETS,
+} from '@/features/coding/shared/modelLimitPresets';
+import {
   MODEL_FORM_CHECKBOX_STYLES,
   MODEL_FORM_EXTRA_STYLE,
   MODEL_FORM_LAYOUT,
@@ -21,29 +25,7 @@ import {
 import modelFormStyles from '../../shared/modelFormLayout.module.less';
 const { Text } = Typography;
 
-// Context limit options with display labels
-const CONTEXT_LIMIT_OPTIONS = [
-  { value: '4096', label: '4K' },
-  { value: '8192', label: '8K' },
-  { value: '16384', label: '16K' },
-  { value: '32768', label: '32K' },
-  { value: '65536', label: '64K' },
-  { value: '128000', label: '128K' },
-  { value: '200000', label: '200K' },
-  { value: '256000', label: '256K' },
-  { value: '1000000', label: '1M' },
-  { value: '2000000', label: '2M' },
-];
 
-// Output limit options with display labels
-const OUTPUT_LIMIT_OPTIONS = [
-  { value: '2048', label: '2K' },
-  { value: '4096', label: '4K' },
-  { value: '8192', label: '8K' },
-  { value: '16384', label: '16K' },
-  { value: '32768', label: '32K' },
-  { value: '65536', label: '64K' },
-];
 
 /** Map OpenClaw API protocol to npm SDK type for preset models lookup */
 const API_TO_NPM: Record<string, string> = {
@@ -334,7 +316,7 @@ const OpenClawModelFormModal: React.FC<Props> = ({
             }}
           >
             <ImeSafeAutoComplete
-              options={CONTEXT_LIMIT_OPTIONS}
+              options={CONTEXT_LIMIT_PRESETS}
               placeholder={t('openclaw.providers.contextLimitPlaceholder')}
               style={{ width: '100%' }}
               filterOption={(inputValue, option) =>
@@ -353,7 +335,7 @@ const OpenClawModelFormModal: React.FC<Props> = ({
             }}
           >
             <ImeSafeAutoComplete
-              options={OUTPUT_LIMIT_OPTIONS}
+              options={OUTPUT_LIMIT_PRESETS}
               placeholder={t('openclaw.providers.outputLimitPlaceholder')}
               style={{ width: '100%' }}
               filterOption={(inputValue, option) =>

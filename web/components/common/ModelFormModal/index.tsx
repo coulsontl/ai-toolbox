@@ -4,6 +4,10 @@ import ImeSafeAutoComplete from '@/components/common/ImeSafeAutoComplete';
 import { RightOutlined, DownOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import {
+  CONTEXT_LIMIT_PRESETS,
+  OUTPUT_LIMIT_PRESETS,
+} from '@/features/coding/shared/modelLimitPresets';
+import {
   MODEL_FORM_CHECKBOX_STYLES,
   MODEL_FORM_EXTRA_STYLE,
   MODEL_FORM_LAYOUT,
@@ -56,29 +60,7 @@ export type ModelFormMessageKey =
 
 export type ModelFormMessageOverrides = Partial<Record<ModelFormMessageKey, string>>;
 
-// Context limit options with display labels
-const CONTEXT_LIMIT_OPTIONS = [
-  { value: '4096', label: '4K' },
-  { value: '8192', label: '8K' },
-  { value: '16384', label: '16K' },
-  { value: '32768', label: '32K' },
-  { value: '65536', label: '64K' },
-  { value: '128000', label: '128K' },
-  { value: '200000', label: '200K' },
-  { value: '256000', label: '256K' },
-  { value: '1000000', label: '1M' },
-  { value: '2000000', label: '2M' },
-];
 
-// Output limit options with display labels
-const OUTPUT_LIMIT_OPTIONS = [
-  { value: '2048', label: '2K' },
-  { value: '4096', label: '4K' },
-  { value: '8192', label: '8K' },
-  { value: '16384', label: '16K' },
-  { value: '32768', label: '32K' },
-  { value: '65536', label: '64K' },
-];
 
 // Modality options for input/output
 const MODALITY_OPTIONS = [
@@ -988,7 +970,7 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
             }}
           >
             <ImeSafeAutoComplete
-              options={CONTEXT_LIMIT_OPTIONS}
+              options={CONTEXT_LIMIT_PRESETS}
               placeholder={getKey('contextLimitPlaceholder')}
               style={{ width: '100%' }}
               filterOption={(inputValue, option) =>
@@ -1008,7 +990,7 @@ const ModelFormModal: React.FC<ModelFormModalProps> = ({
             }}
           >
             <ImeSafeAutoComplete
-              options={OUTPUT_LIMIT_OPTIONS}
+              options={OUTPUT_LIMIT_PRESETS}
               placeholder={getKey('outputLimitPlaceholder')}
               style={{ width: '100%' }}
               filterOption={(inputValue, option) =>

@@ -1,11 +1,17 @@
 /**
  * The context / output lengths people actually type.
  *
- * Every model dialog had its own copy of this list (the shared
- * `ModelFormModal`, OpenClaw's, and — after this change — modelsJson's), which
- * is the same numbers retyped three times and free to drift. The values are
- * the ones the catalogues use: powers of two up to 64K, then the round decimal
- * figures real providers publish (128000, 200000, 1000000).
+ * **One list for every model dialog.** Each of them used to carry its own copy
+ * — the shared `ModelFormModal`, OpenClaw, modelsJson, Kimi — which was the
+ * same numbers retyped and free to drift. All four now import from here.
+ *
+ * The values are the ones the catalogues use: powers of two up to 64K, then the
+ * round decimal figures real providers publish (128000, 200000, 1000000).
+ *
+ * Which list a field takes follows the **magnitude of that field**, not its
+ * position in a dialog: a context window and an input limit are both prompt-
+ * side and use `CONTEXT_LIMIT_PRESETS`; only the completion side is two orders
+ * of magnitude smaller and uses `OUTPUT_LIMIT_PRESETS`.
  *
  * `value` is a string because it is fed to `AutoComplete`/`InputNumber`, whose
  * input is text until it parses; `label` is what a reader recognises faster

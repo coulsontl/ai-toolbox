@@ -9,6 +9,7 @@ import {
   OUTPUT_LIMIT_PRESETS,
 } from '@/features/coding/shared/modelLimitPresets';
 import {
+  KIMI_SUPPORTED_CAPABILITIES,
   KIMI_SUPPORTED_EFFORTS,
   normalizeKimiCapabilities,
   normalizeKimiStringArray,
@@ -30,23 +31,7 @@ const numberFromInput = (value: string | number | undefined) => {
   return Number.isNaN(parsed) ? undefined : parsed;
 };
 
-/**
- * One switch per capability, in the order the CLI documents them.
- *
- * A `Select mode="multiple"` made the user open a dropdown, read six bare
- * identifiers (`image_in`, `always_thinking`, …) and pick from a list whose
- * meaning lived only in the hint underneath. Six booleans fit on one line, so
- * each is a checkbox with a readable caption and the identifier stays in the
- * stored value (user-directed, 2026-11-01: 「kimi 的能力声明 改成勾选」).
- */
-const CAPABILITY_FIELDS: { value: string; labelKey: string }[] = [
-  { value: 'image_in', labelKey: 'kimi.model.capabilityImageIn' },
-  { value: 'video_in', labelKey: 'kimi.model.capabilityVideoIn' },
-  { value: 'audio_in', labelKey: 'kimi.model.capabilityAudioIn' },
-  { value: 'thinking', labelKey: 'kimi.model.capabilityThinking' },
-  { value: 'always_thinking', labelKey: 'kimi.model.capabilityAlwaysThinking' },
-  { value: 'tool_use', labelKey: 'kimi.model.capabilityToolUse' },
-];
+
 
 const EFFORT_OPTIONS = KIMI_SUPPORTED_EFFORTS.map((value) => ({
   value,
@@ -365,17 +350,20 @@ const KimiModelFormModal: React.FC<KimiModelFormModalProps> = ({
             what could be declared, and each option was a bare identifier
             (`image_in`, `always_thinking`) whose meaning lived in the hint.
 
+            No `extra` hint: with the captions now readable, a paragraph
+            restating what each switch means was repeating the form back to the
+            reader (user-directed, 2026-11-01).
+
             `Checkbox.Group` rather than six `Form.Item name={[...]}`: the stored
             value is a flat `string[]`, and a nested field name would turn it
             into an object. */}
         <Form.Item
           name="capabilities"
           label={t('kimi.model.capabilities')}
-          extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('kimi.model.capabilitiesHint')}</Text>}
         >
           <Checkbox.Group
             className={modelFormStyles.capabilityCheckboxGroup}
-            options={CAPABILITY_FIELDS.map((field) => ({ value: field.value, label: t(field.labelKey) }))}
+            options={KIMI_SUPPORTED_CAPABILITIES.map((item) => ({ value: item.value, label: t(item.labelKey) }))}
           />
         </Form.Item>
 
@@ -410,12 +398,6 @@ const KimiModelFormModal: React.FC<KimiModelFormModalProps> = ({
             />
           </Form.Item>
         </div>
-
-        <Form.Item style={{ marginBottom: 0 }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            {t('kimi.model.editModelHint')}
-          </Text>
-        </Form.Item>
       </Form>
     </Modal>
   );
