@@ -318,6 +318,14 @@ jobs:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           tauriScript: pnpm tauri
           projectPath: tauri
+          # `tauri.conf.json` sets `createUpdaterArtifacts`, so every matrix leg
+          # produces its own `latest.json` and tries to upload it to the same
+          # release. They race: the first wins and the rest get
+          # `Not Found - update-a-release-asset` (2026-10-31, the Windows leg
+          # failed that way after macOS had already uploaded). The manifest is
+          # assembled once from all platforms by `assemble-latest-json`, so the
+          # per-leg upload is both redundant and the source of the race.
+          includeUpdaterJson: false
           # WiX msi requires a numeric-only prerelease identifier (<= 65535),
           # which the rolling beta stamp `beta.261024a` can never satisfy; the
           # beta channel ships NSIS only, formal releases keep both bundles.
