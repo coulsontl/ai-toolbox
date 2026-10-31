@@ -6191,7 +6191,8 @@
       "onlyReasoning": "Reasoning only",
       "useCustomProtocol": "Custom protocol",
       "useCustomProtocolHint": "Skips URL normalization; the endpoint is written exactly as typed.",
-      "baseUrlChannelHint": "This entry belongs to an existing channel; changing the endpoint moves it out of that channel."
+      "baseUrlChannelHint": "This entry belongs to an existing channel; changing the endpoint moves it out of that channel.",
+      "capabilities": "Capabilities"
     },
     "noModels": "No custom models yet.",
     "identity": {

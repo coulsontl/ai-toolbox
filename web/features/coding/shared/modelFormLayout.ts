@@ -61,15 +61,38 @@ export const MODEL_FORM_ITEM_STYLE: React.CSSProperties = {
 export const MODEL_FORM_MODAL_WIDTH = 720;
 
 /**
- * The two-column grid for paired limits (context / output).
+ * The grid for numeric fields that belong together (limits, temperature).
  *
- * They are one fact split in two and belong on one row; stacking them made the
- * dialog taller than the viewport while each input still held six digits.
+ * They are one fact split across boxes and belong on one row; stacking them
+ * made the dialog taller than the viewport while each input still held six
+ * digits.
  */
 export const MODEL_FORM_PAIR_STYLE: React.CSSProperties = {
   display: 'grid',
   gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
   gap: 16,
+};
+
+/** Three columns, for limits plus temperature. */
+export const MODEL_FORM_TRIPLE_STYLE: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+  gap: 16,
+};
+
+/**
+ * A label for a group of switches drawn as one inline row.
+ *
+ * Booleans are the densest fields a model has — five of them, each a single
+ * bit — and giving each its own label line plus its own control line spent ten
+ * rows on five bits. One caption above one wrapping checkbox row says the same
+ * thing in two.
+ */
+export const MODEL_FORM_GROUP_LABEL_STYLE: React.CSSProperties = {
+  display: 'block',
+  marginBottom: 8,
+  fontSize: 14,
+  color: 'var(--color-text)',
 };
 
 /**

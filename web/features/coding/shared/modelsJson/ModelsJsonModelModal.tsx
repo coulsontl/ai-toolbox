@@ -1,11 +1,10 @@
 import React from 'react';
 import {
+  Checkbox,
   Form,
   Input,
   InputNumber,
   Modal,
-  Space,
-  Switch,
   Tag,
   Typography,
   type FormInstance,
@@ -23,7 +22,12 @@ import type {
 } from '@/types/workbuddyFamily';
 import { MODELS_JSON_PRESET_NPM, presetToModelsJsonFields } from './modelsJsonPresetFields';
 
-import { MODEL_FORM_LAYOUT } from '@/features/coding/shared/modelFormLayout';
+import {
+  MODEL_FORM_CHIP_ROW_STYLE,
+  MODEL_FORM_GROUP_LABEL_STYLE,
+  MODEL_FORM_LAYOUT,
+  MODEL_FORM_TRIPLE_STYLE,
+} from '@/features/coding/shared/modelFormLayout';
 const { Text } = Typography;
 
 interface Props {
@@ -219,38 +223,47 @@ const ModelsJsonModelModal: React.FC<Props> = ({
           {/* `Input.Password` ships its own show/hide toggle in antd 6. */}
           <Input.Password />
         </Form.Item>
-        <Form.Item name="maxInputTokens" label={t('workbuddy.model.maxInputTokens')}>
-          <InputNumber min={1} style={{ width: '100%' }} />
+        {/* One row: three numbers that describe the same thing (how big the
+            model is, how hot it runs). Stacked they were three full-width rows
+            of six digits each. */}
+        <div style={MODEL_FORM_TRIPLE_STYLE}>
+          <Form.Item name="maxInputTokens" label={t('workbuddy.model.maxInputTokens')}>
+            <InputNumber min={1} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="maxOutputTokens" label={t('workbuddy.model.maxOutputTokens')}>
+            <InputNumber min={1} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="temperature" label={t('workbuddy.model.temperature')}>
+            <InputNumber min={0} max={2} step={0.1} style={{ width: '100%' }} />
+          </Form.Item>
+        </div>
+
+        {/* Five booleans, one caption, one wrapping row. Each on its own
+            Form.Item spent a label line plus a control line per bit — ten rows
+            for five switches. */}
+        <Form.Item label={<span style={MODEL_FORM_GROUP_LABEL_STYLE}>{t('workbuddy.model.capabilities')}</span>}>
+          <div style={MODEL_FORM_CHIP_ROW_STYLE}>
+            <Form.Item name="supportsToolCall" valuePropName="checked" noStyle>
+              <Checkbox>{t('workbuddy.model.supportsToolCall')}</Checkbox>
+            </Form.Item>
+            <Form.Item name="supportsImages" valuePropName="checked" noStyle>
+              <Checkbox>{t('workbuddy.model.supportsImages')}</Checkbox>
+            </Form.Item>
+            <Form.Item name="supportsReasoning" valuePropName="checked" noStyle>
+              <Checkbox>{t('workbuddy.model.supportsReasoning')}</Checkbox>
+            </Form.Item>
+            <Form.Item name="onlyReasoning" valuePropName="checked" noStyle>
+              <Checkbox>{t('workbuddy.model.onlyReasoning')}</Checkbox>
+            </Form.Item>
+            <Form.Item name="useCustomProtocol" valuePropName="checked" noStyle>
+              <Checkbox>{t('workbuddy.model.useCustomProtocol')}</Checkbox>
+            </Form.Item>
+          </div>
         </Form.Item>
-        <Form.Item name="maxOutputTokens" label={t('workbuddy.model.maxOutputTokens')}>
-          <InputNumber min={1} style={{ width: '100%' }} />
-        </Form.Item>
-        <Form.Item name="temperature" label={t('workbuddy.model.temperature')}>
-          <InputNumber min={0} max={2} step={0.1} style={{ width: '100%' }} />
-        </Form.Item>
-        <Form.Item name="supportsToolCall" label={t('workbuddy.model.supportsToolCall')} valuePropName="checked">
-          <Switch />
-        </Form.Item>
-        <Form.Item name="supportsImages" label={t('workbuddy.model.supportsImages')} valuePropName="checked">
-          <Switch />
-        </Form.Item>
-        <Form.Item name="supportsReasoning" label={t('workbuddy.model.supportsReasoning')} valuePropName="checked">
-          <Switch />
-        </Form.Item>
-        <Form.Item name="onlyReasoning" label={t('workbuddy.model.onlyReasoning')} valuePropName="checked">
-          <Switch />
-        </Form.Item>
-        <Form.Item
-          name="useCustomProtocol"
-          label={t('workbuddy.model.useCustomProtocol')}
-          valuePropName="checked"
-        >
-          <Switch />
-        </Form.Item>
-        <Form.Item>
-          <Space>
-            <Text type="secondary">{t('workbuddy.model.useCustomProtocolHint')}</Text>
-          </Space>
+        <Form.Item style={{ marginTop: -12 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {t('workbuddy.model.useCustomProtocolHint')}
+          </Text>
         </Form.Item>
       </Form>
     </Modal>

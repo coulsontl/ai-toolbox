@@ -6188,7 +6188,8 @@
       "onlyReasoning": "仅推理",
       "useCustomProtocol": "自定义协议",
       "useCustomProtocolHint": "开启后跳过 URL 规范化，端点按填写内容原样写入。",
-      "baseUrlChannelHint": "该条目属于已有渠道；修改端点会把它移出原渠道。"
+      "baseUrlChannelHint": "该条目属于已有渠道；修改端点会把它移出原渠道。",
+      "capabilities": "能力开关"
     },
     "noModels": "还没有自定义模型。",
     "identity": {

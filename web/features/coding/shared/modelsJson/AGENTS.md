@@ -15,6 +15,7 @@
 - **列表布局用 `OpenCodeStyleCard`，卡片布局用 `ProviderCompactCard`**：扁平模型列表、多渠道路由、没有单一 active provider → 无主操作、无「设为默认」（选型依据见根 `AGENTS.md` Hard Rule 14 与 SOP §4.2.1）。**两种布局是密度差异，不是能力差异**——格子只陈述「端点 + 模型数」，模型管理进侧栏（`ProviderModelSection appearance="detail"`，常开），列表卡片照旧折叠。把列表卡片塞进网格格是错误形态：它的工具栏有五个文字按钮，350px 的格放不下，「模型列表」会竖排成单字一行、添加模型被挤出头部（2026-10-31 用户报障）。
 - **模型弹窗用 `layout={MODEL_FORM_LAYOUT}`（纵排，标签在字段上方）**：常量在 `shared/modelFormLayout.ts`，与共享 `ModelFormModal` 及 codex / grok / kimi / zcode / openclaw 的自建弹窗同一形态。**不要再传 `labelCol` / `wrapperCol`**——列配置会压过 `layout`，得到「标签在上但仍被缩进」的混合形态，守卫会报错。`okButtonProps={{ disabled: saving }}` 而非 `loading`，因为 antd 的 `loading` 会把「取消」一起锁死（SOP §4.0.2 A）。
 - **预设展开区要限高**（`maxHeight` + `overflowY: auto`）：目录有 100+ 条，不限高时它会占满整个弹窗，其余字段全被挤到滚动条以下——弹窗看起来像预设浏览器挂了个表单。
+- **数值字段三合一、布尔字段合成一行**：`maxInputTokens` / `maxOutputTokens` / `temperature` 用 `MODEL_FORM_TRIPLE_STYLE` 并排；五个能力开关用一个标题 + 一行 `Checkbox`（`MODEL_FORM_CHIP_ROW_STYLE`，每个 `Form.Item` 用 `noStyle`）。纵排时每个开关占「标签行 + 控件行」两行，五个开关吃掉十行——布尔是最密的字段，一个 bit 不该占两行。回归断言：`the capability switches share one inline row`（按 `getBoundingClientRect().top` 的行数判断，折行回竖排会红）。
 - **endpoint 与 apiKey 在每条模型上都可编辑**，不是提到渠道级头部：文件里没有 channel 对象，改模型本来就是改渠道 endpoint 的方式。
 
 ## 关键流程

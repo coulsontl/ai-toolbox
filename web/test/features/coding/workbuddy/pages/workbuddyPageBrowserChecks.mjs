@@ -293,6 +293,31 @@ export async function verifyWorkbuddyPage({ send, evaluate, baseUrl, artifactRoo
     Buffer.from(modelDialogShot.data, 'base64'),
   );
 
+  // The lower half is where the capability group lives; the top of the dialog
+  // scrolls past it, so a single capture cannot show both.
+  await evaluate(`(() => {
+    const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+    const body = modal.querySelector('.ant-modal-body');
+    body.scrollTop = body.scrollHeight;
+  })()`);
+  await delay(300);
+  check(
+    'the capability switches share one inline row',
+    await evaluate(`(() => {
+      const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+      const boxes = [...modal.querySelectorAll('.ant-checkbox-wrapper')];
+      if (boxes.length < 5) return false;
+      // Distinct vertical positions say they wrapped into a column again.
+      const tops = new Set(boxes.map((node) => Math.round(node.getBoundingClientRect().top)));
+      return tops.size <= 2;
+    })()`),
+  );
+  const capabilityShot = await send('Page.captureScreenshot', { format: 'png' });
+  await writeFile(
+    path.join(artifactRoot, `workbuddy-model-dialog-capabilities-${theme}.png`),
+    Buffer.from(capabilityShot.data, 'base64'),
+  );
+
   await evaluate(`(() => {
     const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
     modal.querySelector('.ant-modal-close').click();
