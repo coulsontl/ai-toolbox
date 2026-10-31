@@ -101,10 +101,17 @@ export default FieldHelp;
  *
  * For plain-string labels (`Form.Item label={...}`); a caller that needs richer
  * label content should compose `<FieldHelp>` itself.
+ *
+ * **The colon is part of the text here, not drawn by the form's `.label::after`.**
+ * That pseudo-element hangs off the `<label>` node, so it lands after every
+ * child — i.e. after the help icon, reading 「上下文窗口 ⓘ:」 instead of
+ * 「上下文窗口: ⓘ」. The shared stylesheet suppresses its colon for any label
+ * that contains this icon (`:has(.anticon-question-circle)`), which is why the
+ * marker element is not optional.
  */
 export const labelWithHelp = (label: string, help: string): React.ReactNode => (
   <span>
-    {label}
+    {label}:
     <FieldHelp text={help} />
   </span>
 );

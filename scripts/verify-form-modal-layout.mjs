@@ -127,6 +127,13 @@ const PAIRED_FIELD_NAMES = [
   ['contextWindow', 'maxOutputTokensMax'],
   ['contextWindow', 'maxTokens'],
   ['maxInputTokens', 'maxOutputTokens'],
+  // Codex pairs the context window with its speed tiers (user-directed,
+  // 2026-11-01: 「上下文窗口 和 速度等级 放到一行吧」) — both size the model's
+  // output envelope.
+  ['contextWindow', 'serviceTiers'],
+  // Kimi's three payload sizes: how much the model holds, how much may go in,
+  // how much may come back (triple row).
+  ['maxContextSize', 'maxInputSize'],
 ];
 
 /**

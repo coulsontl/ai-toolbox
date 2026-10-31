@@ -21,9 +21,13 @@ const PAIRS = {
   codex: [
     ['支持的思考档位', '默认思考档位'],
     ['输入模态', '输出模态'],
+    ['上下文窗口', '速度等级'],
   ],
   grok: [['支持的思考等级', '默认思考等级']],
-  kimi: [['支持的思考档位', '默认思考档位']],
+  kimi: [
+    ['支持的思考档位', '默认思考档位'],
+    ['上下文大小', '最大输入'],
+  ],
   openclaw: [['上下文限制', '输出限制']],
   zcode: [['上下文窗口', '最大输出 Token']],
 };
@@ -74,7 +78,7 @@ export async function verifyModelDialogPairing({ send, evaluate, baseUrl, artifa
     const rows = JSON.parse(await evaluate(`(() => {
       const labels = [...document.querySelectorAll('.ant-form-item-label > label')];
       return JSON.stringify(labels.map((label) => ({
-        text: label.textContent.replace(':', '').trim(),
+        text: label.textContent.replace(/[:：]/g, '').trim(),
         top: Math.round(label.getBoundingClientRect().top),
         left: Math.round(label.getBoundingClientRect().left),
       })));
@@ -95,6 +99,35 @@ export async function verifyModelDialogPairing({ send, evaluate, baseUrl, artifa
         right.left > left.left,
       );
     }
+
+    // Labels that carry a help icon must draw the colon in their own text, not
+    // through the label's `::after`. The pseudo-element belongs to the
+    // enclosing `<label>`, so it renders *after* the icon — 「上下文窗口 ⓘ:」.
+    // The fix suppresses it via `:has(…anticon-*)` and writes the colon into
+    // the helper; this asserts the order actually lands that way.
+    const colonOrder = JSON.parse(await evaluate(`(() => {
+      const labels = [...document.querySelectorAll('.ant-form-item-label > label')];
+      return JSON.stringify(labels
+        .filter((node) => node.querySelector('.anticon-question-circle, .anticon-info-circle'))
+        .map((node) => {
+          const text = node.textContent.trim();
+          const after = getComputedStyle(node, '::after');
+          return {
+            text,
+            // A trailing colon in the label text means the helper wrote it.
+            textHasColon: /[:：]/.test(text.replace(/\\s/g, '')),
+            afterContent: after.content,
+          };
+        }));
+    })()`));
+    const badColonLabels = colonOrder
+      .filter((row) => !row.textHasColon || (row.afterContent !== 'none' && row.afterContent !== 'normal'))
+      .map((row) => row.text);
+    check(
+      `${dialog}: help-icon labels put the colon before the icon`,
+      badColonLabels,
+      [],
+    );
 
     const shot = await send('Page.captureScreenshot', { format: 'png' });
     await writeFile(

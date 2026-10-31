@@ -14,6 +14,7 @@ import {
   MODEL_FORM_EXTRA_STYLE,
   MODEL_FORM_LAYOUT,
   MODEL_FORM_PAIR_STYLE,
+  MODEL_FORM_TRIPLE_STYLE,
 } from '@/features/coding/shared/modelFormLayout';
 import modelFormStyles from '../../shared/modelFormLayout.module.less';
 
@@ -239,53 +240,60 @@ const KimiModelFormModal: React.FC<KimiModelFormModalProps> = ({
           <Input placeholder={t('kimi.model.displayNamePlaceholder')} />
         </Form.Item>
 
-        <Form.Item
-          name="maxContextSize"
-          label={
-            <span>
-              {t('kimi.model.contextSize')}
-              <Tooltip title={t('kimi.model.contextSizeTooltip')}>
-                <InfoCircleOutlined style={{ marginLeft: 6, color: 'var(--color-text-tertiary)' }} />
-              </Tooltip>
-            </span>
-          }
-        >
-          <InputNumber min={1} style={{ width: '100%' }} placeholder="262144" />
-        </Form.Item>
+        {/* Three sizes of the same payload — how much it holds, how much may go
+            in, how much may come back — so they share one row, the same shape
+            `ModelsJsonModelModal` uses for its limits (see
+            `MODEL_FORM_TRIPLE_STYLE`). Stacked they were three full-width
+            boxes of six digits. */}
+        <div style={MODEL_FORM_TRIPLE_STYLE}>
+          <Form.Item
+            name="maxContextSize"
+            label={
+              <span>
+                {t('kimi.model.contextSize')}:
+                <Tooltip title={t('kimi.model.contextSizeTooltip')}>
+                  <InfoCircleOutlined style={{ marginLeft: 6, color: 'var(--color-text-tertiary)' }} />
+                </Tooltip>
+              </span>
+            }
+          >
+            <InputNumber min={1} style={{ width: '100%' }} placeholder="262144" />
+          </Form.Item>
 
-        <Form.Item
-          name="maxInputSize"
-          label={
-            <span>
-              {t('kimi.model.maxInputSize')}
-              <Tooltip title={t('kimi.model.maxInputSizeTooltip')}>
-                <InfoCircleOutlined style={{ marginLeft: 6, color: 'var(--color-text-tertiary)' }} />
-              </Tooltip>
-            </span>
-          }
-        >
-          <InputNumber min={1} style={{ width: '100%' }} placeholder="262144" />
-        </Form.Item>
+          <Form.Item
+            name="maxInputSize"
+            label={
+              <span>
+                {t('kimi.model.maxInputSize')}:
+                <Tooltip title={t('kimi.model.maxInputSizeTooltip')}>
+                  <InfoCircleOutlined style={{ marginLeft: 6, color: 'var(--color-text-tertiary)' }} />
+                </Tooltip>
+              </span>
+            }
+          >
+            <InputNumber min={1} style={{ width: '100%' }} placeholder="262144" />
+          </Form.Item>
 
-        <Form.Item
-          name="maxOutputSize"
-          label={
-            <span>
-              {t('kimi.model.maxOutputSize')}
-              <Tooltip title={t('kimi.model.maxOutputSizeTooltip')}>
-                <InfoCircleOutlined style={{ marginLeft: 6, color: 'var(--color-text-tertiary)' }} />
-              </Tooltip>
-            </span>
-          }
-        >
-          <InputNumber min={1} style={{ width: '100%' }} placeholder="262144" />
-        </Form.Item>
+          <Form.Item
+            name="maxOutputSize"
+            label={
+              <span>
+                {t('kimi.model.maxOutputSize')}:
+                <Tooltip title={t('kimi.model.maxOutputSizeTooltip')}>
+                  <InfoCircleOutlined style={{ marginLeft: 6, color: 'var(--color-text-tertiary)' }} />
+                </Tooltip>
+              </span>
+            }
+          >
+            <InputNumber min={1} style={{ width: '100%' }} placeholder="262144" />
+          </Form.Item>
+        </div>
 
         <Form.Item
           name="reasoningKey"
           label={
             <span>
-              {t('kimi.model.reasoningKey')}
+              {t('kimi.model.reasoningKey')}:
               <Tooltip title={t('kimi.model.reasoningKeyTooltip')}>
                 <InfoCircleOutlined style={{ marginLeft: 6, color: 'var(--color-text-tertiary)' }} />
               </Tooltip>

@@ -892,6 +892,8 @@ pnpm run test:provider-list-locate    # data-provider-id 契约在两种布局�
 | 组 | 形态 | 常量 |
 |---|---|---|
 | 上下文限制 / 输出限制（+ 温度，若该 CLI 有） | 2（3）列 grid | `MODEL_FORM_PAIR_STYLE` / `MODEL_FORM_TRIPLE_STYLE` |
+| 上下文大小 / 最大输入 / 最大输出（Kimi 的三个尺寸） | 3 列 grid | `MODEL_FORM_TRIPLE_STYLE` |
+| 上下文窗口 / 速度等级（Codex） | 2 列 grid | `MODEL_FORM_PAIR_STYLE` |
 | 输入模态 / 输出模态 | 2 列 grid，说明文字放**这一行下面**（它不是「输出」的注脚） | `MODEL_FORM_PAIR_STYLE` |
 | 支持的思考档位 / 默认思考档位（各家叫法不同：`reasoningLevels`、`reasoningEfforts`、`supportEfforts`） | 2 列 grid | `MODEL_FORM_PAIR_STYLE` |
 | 能力开关（booleans） | 一个分组标题 + 一行折行的 `Checkbox` | `MODEL_FORM_CHIP_ROW_STYLE` |
@@ -903,6 +905,18 @@ pnpm run test:provider-list-locate    # data-provider-id 契约在两种布局�
 「也和上下文一样，改成左右排列，它们是一组的」（模态并排）；
 2026-11-01 又点了名：「codex 的模型编辑弹窗里 支持的思考档位 默认思考档位 一组 输入模态 输出模态 一组，
 再检查一下其他的 cli 的模型编辑的布局是不是也有没有成组的」——**各 CLI 都漏了同一组**，因为当时只改了共享弹窗。
+
+**label 自带图标时，冒号必须写在文字里，不能靠 `::after`。**
+
+`Form.Item` 的 `label` 若含 `<FieldHelp>`（`question-circle`）或 Kimi 那种内联的
+`<InfoCircleOutlined>`（`info-circle`），共享样式表的 `.label::after` 冒号会落在**整个
+`<label>` 的末尾**，于是渲染成「上下文窗口 ⓘ:」——冒号跑到图标后面去了。正确做法：
+
+- 文字里自带冒号：`{t('...')}:`
+- 共享 `.less` 用 `:has(.anticon-question-circle, .anticon-info-circle)::after { content: none }`
+  把全局那条冒号关掉
+
+`test:model-dialog-pairing` 会断言「带图标的 label 文本里有冒号，且 `::after` 的 content 是 none」。
 
 **成组名单是写死的**：`scripts/verify-form-modal-layout.mjs` 的 `PAIRED_FIELD_NAMES` 列出已知的成对字段名，
 源码扫描保证它们被包在 `MODEL_FORM_PAIR_STYLE` 里；真实渲染的并排效果由 `test:model-dialog-pairing` 用

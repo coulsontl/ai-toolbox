@@ -51,6 +51,29 @@
   visibility: visible;
 }
 
+/* A label that carries a help icon puts the colon in its own text instead.
+ *
+ * `labelWithHelp` renders `<span>上下文窗口<FieldHelp/></span>`, and the
+ * pseudo-element above belongs to the enclosing `<label>` — so it lands after
+ * the whole span, i.e. *after* the icon: 「上下文窗口 ⓘ:」. Suppressing it here
+ * and letting the helper write 「上下文窗口:」 itself puts the colon where it
+ * belongs and keeps the icon last (user-reported 2026-11-01).
+ *
+ * Two icon families exist and both mean "this label has trailing help":
+ * `labelWithHelp` renders a `question-circle`, while Kimi's dialog inlines
+ * `InfoCircleOutlined` (`info-circle`) around a `Tooltip`. Matching only the
+ * first family left Kimi's colon stranded after its icon.
+ *
+ * `:has()` is the right tool: the condition is "this label contains a help
+ * icon", which is exactly what the selector says, and it is supported by the
+ * Chromium the app ships on. */
+:global(.ant-form-vertical) :global(.ant-form-item-label) > label.label:has(
+    :global(.anticon-question-circle),
+    :global(.anticon-info-circle)
+  )::after {
+  content: none;
+}
+
 /* A group caption (「能力开关」) has no single input of its own, so the label
    element wraps a block; the colon still belongs to it. Nothing extra needed —
    the shared `.label` rule covers it because it is rendered as a `Form.Item`

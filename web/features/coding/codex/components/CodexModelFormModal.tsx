@@ -282,13 +282,31 @@ const CodexModelFormModal: React.FC<CodexModelFormModalProps> = ({
           <Input placeholder={t('codex.model.displayNamePlaceholder')} />
         </Form.Item>
 
-        <Form.Item name="contextWindow" label={t('codex.model.contextWindow')}>
-          <InputNumber
-            min={1}
-            style={{ width: '100%' }}
-            placeholder={t('codex.model.contextWindowPlaceholder')}
-          />
-        </Form.Item>
+        {/* Both size the model's output envelope — how much prompt it takes and
+            how fast it answers — so they share a row (user-directed,
+            2026-11-01: 「上下文窗口 和 速度等级 放到一行吧」). */}
+        <div style={MODEL_FORM_PAIR_STYLE}>
+          <Form.Item name="contextWindow" label={t('codex.model.contextWindow')}>
+            <InputNumber
+              min={1}
+              style={{ width: '100%' }}
+              placeholder={t('codex.model.contextWindowPlaceholder')}
+            />
+          </Form.Item>
+
+          <Form.Item
+            name="serviceTiers"
+            label={t('codex.model.serviceTiers')}
+            extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('codex.model.serviceTiersHint')}</Text>}
+          >
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder={t('codex.model.serviceTiersPlaceholder')}
+              options={CODEX_SERVICE_TIER_OPTIONS}
+            />
+          </Form.Item>
+        </div>
 
         {/* The supported levels and the default one are the same setting read
             two ways — the default is a member of the list — so they share a
@@ -321,19 +339,6 @@ const CodexModelFormModal: React.FC<CodexModelFormModalProps> = ({
             />
           </Form.Item>
         </div>
-
-        <Form.Item
-          name="serviceTiers"
-          label={t('codex.model.serviceTiers')}
-          extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('codex.model.serviceTiersHint')}</Text>}
-        >
-          <Select
-            mode="multiple"
-            allowClear
-            placeholder={t('codex.model.serviceTiersPlaceholder')}
-            options={CODEX_SERVICE_TIER_OPTIONS}
-          />
-        </Form.Item>
 
         {/* Input and output modalities describe one payload shape, so they sit
             on one row. The hint belongs to both, so it goes under the pair. */}
