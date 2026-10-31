@@ -115,8 +115,14 @@ export async function verifyCodexFetchedModelPicker({ send, evaluate, baseUrl, a
     return row.left >= 0 && row.right <= innerWidth;
   })()`));
   await openPicker();
-  await screenshot('narrow-model-picker');
+  // The dropdown is read **before** the screenshot, not after. Capturing the
+  // page takes long enough on a loaded CI runner that the `Select` can lose
+  // focus and close itself, and the assertion then reads an empty list from a
+  // picker that opened correctly — the failure says "no models" about a state
+  // the screenshot itself shows populated. Asserting first also means the check
+  // describes the moment `openPicker` waited for.
   check('narrow picker still exposes all models', await action('options()'), expectedLabels);
+  await screenshot('narrow-model-picker');
   check('fixture invoked only fake allowlisted commands', await action('state.requests.every(request => ["read_opencode_config", "proxy_gateway_supported_cli_keys", "fetch_codex_official_models"].includes(request.command))'));
   return checks;
 }
