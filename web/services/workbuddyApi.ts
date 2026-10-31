@@ -1,7 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
-  WorkbuddyIdentityFileInput,
-  WorkbuddyIdentityState,
   WorkbuddyModelInput,
   WorkbuddyPathInfo,
   WorkbuddyRuntimeConfig,
@@ -62,14 +60,4 @@ export const deleteWorkbuddyProvider = async (
     baseUrl,
     apiKey,
   });
-};
-
-export const getWorkbuddyIdentityState = async (): Promise<WorkbuddyIdentityState> => {
-  return await invoke<WorkbuddyIdentityState>('get_workbuddy_identity_state');
-};
-
-export const saveWorkbuddyIdentityFile = async (
-  input: WorkbuddyIdentityFileInput,
-): Promise<WorkbuddyIdentityState> => {
-  return await invoke<WorkbuddyIdentityState>('save_workbuddy_identity_file', { input });
 };

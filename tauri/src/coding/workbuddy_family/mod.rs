@@ -8,11 +8,9 @@
 //! - `channel`: the "provider" view derived by grouping model entries, which is
 //!   what both pages render.
 //! - `runtime_config`: the payload both pages load.
-//! - `identity`: the desktop app's per-account identity files.
 
 pub mod channel;
 pub mod gateway_provider;
-pub mod identity;
 pub mod models_json;
 pub mod runtime_config;
 

@@ -5,7 +5,6 @@ use super::adapter;
 use super::constants::WORKBUDDY_SETTINGS_CONFIG_ID;
 use super::paths;
 use super::types::*;
-use crate::coding::workbuddy_family::identity;
 use crate::coding::workbuddy_family::models_json::{self, ModelEntryInput, ModelsDocument};
 use crate::coding::workbuddy_family::runtime_config::{build_runtime_config, FamilyRuntimeConfig};
 use crate::db::helpers::db_get;
@@ -266,63 +265,6 @@ pub async fn delete_workbuddy_provider(
     Ok(build_runtime_config(&root, &document))
 }
 
-// ============================================================================
-// Identity files
-// ============================================================================
-
-fn build_identity_state(root: &Path) -> WorkbuddyIdentityState {
-    let Some(identity_dir) = identity::active_identity_dir(root) else {
-        return WorkbuddyIdentityState {
-            identity_dir: None,
-            unavailable_reason: Some("No WorkBuddy account is signed in".to_string()),
-            files: Vec::new(),
-        };
-    };
-
-    let files = identity::IDENTITY_FILES
-        .iter()
-        .map(|file_name| {
-            let content = identity::read_identity_file(&identity_dir, file_name)
-                .ok()
-                .flatten();
-            WorkbuddyIdentityFile {
-                file_name: (*file_name).to_string(),
-                content: content.clone().unwrap_or_default(),
-                exists: content.is_some(),
-            }
-        })
-        .collect();
-
-    WorkbuddyIdentityState {
-        identity_dir: Some(identity_dir.to_string_lossy().into_owned()),
-        unavailable_reason: None,
-        files,
-    }
-}
-
-#[tauri::command]
-pub async fn get_workbuddy_identity_state(
-    state: tauri::State<'_, SqliteDbState>,
-) -> Result<WorkbuddyIdentityState, String> {
-    let (root, _) = config_root_from_db(&state).await;
-    Ok(build_identity_state(&root))
-}
-
-#[tauri::command]
-pub async fn save_workbuddy_identity_file(
-    state: tauri::State<'_, SqliteDbState>,
-    input: WorkbuddyIdentityFileInput,
-    app: tauri::AppHandle,
-) -> Result<WorkbuddyIdentityState, String> {
-    let (root, _) = config_root_from_db(&state).await;
-    let identity_dir = identity::active_identity_dir(&root)
-        .ok_or_else(|| "No WorkBuddy account is signed in".to_string())?;
-    identity::write_identity_file(&identity_dir, &input.file_name, &input.content)?;
-
-    emit_config_changed(&app);
-    Ok(build_identity_state(&root))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,48 +273,6 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(dir.path()).expect("root");
         dir
-    }
-
-    #[test]
-    fn identity_state_explains_why_it_is_unavailable_without_an_account() {
-        let dir = seed_config_root();
-        let state = build_identity_state(dir.path());
-        assert!(state.identity_dir.is_none());
-        assert!(state.unavailable_reason.is_some());
-        assert!(state.files.is_empty());
-    }
-
-    #[test]
-    fn identity_state_lists_the_four_documents_and_their_content() {
-        let dir = seed_config_root();
-        let identity_dir = dir.path().join("user-abc-personal");
-        std::fs::create_dir_all(&identity_dir).expect("identity dir");
-        std::fs::write(identity_dir.join("IDENTITY.md"), "# Who I am").expect("seed");
-        let skeleton = dir.path().join("storage").join("skeleton");
-        std::fs::create_dir_all(&skeleton).expect("skeleton");
-        std::fs::write(
-            skeleton.join("account-snapshot.json"),
-            r#"{"primary":{"uid":"abc"}}"#,
-        )
-        .expect("snapshot");
-
-        let state = build_identity_state(dir.path());
-        assert!(state.unavailable_reason.is_none());
-        assert_eq!(state.files.len(), 4);
-        let identity_file = state
-            .files
-            .iter()
-            .find(|file| file.file_name == "IDENTITY.md")
-            .expect("IDENTITY.md listed");
-        assert!(identity_file.exists);
-        assert_eq!(identity_file.content, "# Who I am");
-        let soul = state
-            .files
-            .iter()
-            .find(|file| file.file_name == "SOUL.md")
-            .expect("SOUL.md listed");
-        assert!(!soul.exists);
-        assert!(soul.content.is_empty());
     }
 
     /// Save a model, read it back through the runtime view, and confirm the

@@ -60,31 +60,3 @@ pub struct WorkbuddyModelInput {
 fn default_true() -> bool {
     true
 }
-
-/// One identity document (`IDENTITY.md`, `USER.md`, `SOUL.md`, `BOOTSTRAP.md`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkbuddyIdentityFile {
-    pub file_name: String,
-    pub content: String,
-    pub exists: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkbuddyIdentityState {
-    /// Directory the files live in; `None` when no account is signed in.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub identity_dir: Option<String>,
-    /// Present when identity editing is unavailable, explaining why.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub unavailable_reason: Option<String>,
-    pub files: Vec<WorkbuddyIdentityFile>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkbuddyIdentityFileInput {
-    pub file_name: String,
-    pub content: String,
-}

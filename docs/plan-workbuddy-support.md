@@ -20,7 +20,7 @@
 | `models.json` | 自定义模型（**同一 schema**） | 自定义模型（**同一 schema**） |
 | `settings.json` | 桌面 sandbox 规则（*不是*模型配置） | 真正的用户设置（`model`/`permissions`/`env`…） |
 | `mcp.json` | user scope MCP | user scope MCP（**`.mcp.json` 优先级更高**） |
-| 全局提示词 | 身份文件 `user-<uid>-personal/{IDENTITY,USER,SOUL,BOOTSTRAP}.md` | `CODEBUDDY.md` |
+| 全局提示词 | **不做**（2026-11-01 移除；产品 seed 的是空白模板，两边口径对不上） | `CODEBUDDY.md` |
 | 会话 | `projects/<cwd编码>/<sessionId>.jsonl` + `workbuddy.db` | `projects/<cwd编码>/<sessionId>.jsonl` |
 
 决策：**两个独立 tab**（`workbuddy` / `codebuddy`），共享 `coding/workbuddy_family/` 里的 `models.json` 与转录解析逻辑。
@@ -35,7 +35,7 @@
 | Skills / MCP 联动 | ✅ | ✅ |
 | 会话管理 | ✅ | ✅ |
 | Gateway 接管（改写 `models.json` 的 `url`） | ✅ | ✅ |
-| 身份文件 / `CODEBUDDY.md` 提示词管理 | ✅ 身份文件 | ✅ `CODEBUDDY.md` |
+| 身份文件 / `CODEBUDDY.md` 提示词管理 | ❌ 已移除（2026-11-01） | ✅ `CODEBUDDY.md` |
 
 ### 2.2 不做
 
@@ -84,10 +84,9 @@
 
 ```
 tauri/src/coding/
-├── workbuddy_family/         # 共享：models.json 契约、身份文件、转录解析
+├── workbuddy_family/         # 共享：models.json 契约、转录解析
 │   ├── mod.rs
 │   ├── models_json.rs        # 读写/合并/原子写/URL 规范化
-│   ├── identity.rs           # user-<uid>-personal 定位与身份文件读写
 │   └── transcripts.rs        # projects/** 扫描（复用 session_import 的解析）
 ├── workbuddy/                # 桌面版 tab
 │   ├── mod.rs / constants.rs / types.rs / adapter.rs / commands.rs
@@ -106,7 +105,6 @@ tauri/src/coding/
 | 表 | 用途 |
 |---|---|
 | `workbuddy_provider` | 渠道记录（一个渠道 = 一组同 `url`+`apiKey` 的模型） |
-| `workbuddy_prompt_config` | 身份文件模板（`kind` 区分 IDENTITY/USER/SOUL/BOOTSTRAP） |
 | `codebuddy_provider` | 同上 |
 | `codebuddy_prompt_config` | `CODEBUDDY.md` 模板 |
 
@@ -124,22 +122,16 @@ tauri/src/coding/
 
 保存时反向展开：一张卡片 → N 条模型条目，逐条 upsert 回 `models`，**不属于本渠道的条目原样保留**。
 
-### 4.4 身份文件定位
+### 4.4 身份文件定位（已移除）
 
-桌面版身份文件是**按账号**存放的：
+桌面版把身份文件按账号存放在 `~/.workbuddy/user-<uid>-<enterpriseId|personal>/`，
+文件名是 `IDENTITY.md` / `USER.md` / `SOUL.md` / `BOOTSTRAP.md`。
 
-```
-~/.workbuddy/storage/skeleton/account-snapshot.json   → primary.uid
-~/.workbuddy/user-<uid>-personal/IDENTITY.md
-                                /USER.md
-                                /SOUL.md
-                                /BOOTSTRAP.md
-                                /workspace-state.json
-```
+**2026-11-01 起不再接入这个目录**（用户指定删除该模块）：产品 seed 的四份文档是
+**空白模板**（如「Fill this in when the moment fits」「pick something you like」），
+AI Toolbox 原样读出来会把样板文字当成有效配置展示，而产品自己的 UI 把它们读成
+「暂无内容」。两边口径对不上，模块已连同 `identity.rs` 与两个命令一并删除。
 
-`uid` 缺失时（未登录）该能力整体不可用，页面显示原因而不是报错。
-
-> 目录名规则已从 app 代码确认：`user-${uid}-${enterpriseId || 'personal'}`。
 
 ## 5. Gateway 接管
 
@@ -192,7 +184,6 @@ session-meta / message / reasoning / function_call / function_call_result
 ```
 页头（配置根路径 + 布局切换）
 ├── 供应商列表（卡片 / 卡片视图）
-├── 全局提示词（桌面：4 个身份文件；CLI：CODEBUDDY.md）
 ├── 其他配置（CLI 才有：settings.json 只读预览）
 └── 会话管理
 ```
@@ -234,7 +225,7 @@ session-meta / message / reasoning / function_call / function_call_result
 | P4 | Allowlist 全量注册（两个 key） | 全仓 `rg` 逐个确认 | ✅ |
 | P5 | 前端两个页面 + 卡片映射 | `pnpm tsc --noEmit` + 浏览器断言 | ✅ 编译、布局守卫、页面节奏（12 项浏览器断言）通过；**未做真机视觉核对**（见 §10.2） |
 | P0–P6 收尾 | 复查 §4.0.2 A–H / §12.1 机械清单 | 逐条跑命令 | ✅ 期间修掉 6 处静默缺陷（外壳/预览原文/i18n 前缀/备份对账/身份路径/改名丢键），已回写 SOP #158–#163 |
-| P6 | 身份文件 / `CODEBUDDY.md` 提示词 | 往返测试 | ✅ |
+| P6 | 身份文件 / `CODEBUDDY.md` 提示词 | 往返测试 | ❌ WorkBuddy 侧已移除 |
 | P7 | 会话管理 | `cargo test --lib session_manager` | ⬜ 未做 |
 | P8 | Gateway 接管 | `cargo test proxy_gateway` | ⬜ 未做（usage 采集早已存在且独立） |
 | P9 | Skills / MCP + 托盘 + 备份 + WSL/SSH | `pnpm test` + `cargo test` | 🟡 Skills/MCP 路径、备份、WSL/SSH **已做**；**托盘未做** |
@@ -262,7 +253,7 @@ SOP §4.0.2 的 H 节要求「参照 CLI 有的能力本 CLI 也要有，找不�
 | 模型拖拽排序 | **不做** | `models.json` 是扁平数组，产品不读回模型顺序 |
 | 渠道级「编辑」 | **做了（2026-10-31）** | 与「添加供应商」同一个弹窗的编辑态：改端点 / key / vendor 会逐条写回该渠道的全部模型，每条自己的 id / name / 能力开关原样带上（`upsert_model_renaming` 按 id 合并）。编辑态隐藏「首条模型 ID」 |
 | 「导入我使用过的供应商」/ 收藏 provider | **不做** | favorite provider 的语义是「历史库 + 诊断缓存」，其 key/payload 约定要求该 CLI 有稳定的 provider 标识。渠道 id 是 `(url, apiKey)` 的哈希、从不落盘，导入后也无法与「当前配置里的同一条」对齐 |
-| 全局提示词 | **做了** | CodeBuddy：`CODEBUDDY.md` 走标准预案；WorkBuddy：四个身份文件**复用同一套提示词卡片**（`GlobalPromptConfigCard` + `GlobalPromptConfigModal`），但集合固定——只能编辑内容，不能新增 / 删除 / 拖拽 / 应用（2026-10-31 用户指定）。结构性理由：产品只读这四个文件名；删除等于清空助手运行的文档（保存空内容才是可逆的清空）；文件本身就是记录，顺序无处可写 |
+| 全局提示词 | **移除** | 2026-11-01 用户指定删除整个身份文件模块。原因：产品 seed 的四份文档是**空白模板**（「Fill this in when the moment fits」），AI Toolbox 原样读出来会把样板文字当成有效配置展示，而产品自己的 UI 把它们当「未填写」——两边口径不一致。CodeBuddy 的 `CODEBUDDY.md` 不受影响 |
 | 会话管理 | **暂缓** | 见 §10.1 |
 | 预览配置 / 打开文件夹 / 刷新配置 | **做了** | 预览读文件原文：WorkBuddy 是 `models.json`；CodeBuddy 是 `models.json` + `settings.json` 两个 Tab（`read_workbuddy_models_file` / `read_codebuddy_models_file` / `read_codebuddy_settings_file`） |
 
@@ -279,7 +270,7 @@ SOP §12.3 要求「在界面上逐项指认」，并明确「若无法运行界
 
 - **没有在真实 Tauri 窗口里跑过这两个页面**。`pnpm dev:debug` + `pnpm inspect` 那条链路本轮未执行。
 - 完整 `pnpm test` 在本机无法稳定跑完：浏览器夹具会随机在某一步卡在 `Runtime.evaluate` 超时（`Browser exceptions: []`，即页面没抛错、是渲染进程不再响应）。**这不是本轮改动引入的**——在干净 `main`（`867506ea`）上跑同一条命令，同样在第 5 步 `test:provider-card-view` 以完全相同的形式失败；而把同一批夹具**逐条串行**执行时，各自单独运行都能通过。判据是「换一个夹具名 / 换一次运行就换一个失败点」，且失败点与本轮 diff 无因果关系。
-- 因此以下**尚未在真机确认**：亮/暗/system 三套主题下的实际观感、真实数据（含真实渠道、真实模型名、长路径）下的折行与截断、空态与加载态、`SectionSidebarLayout` 侧栏入口的滚动定位、`RootDirectoryModal` 的实际回填行为、身份文件面板在未登录/已登录两态下的呈现。
+- 因此以下**尚未在真机确认**：亮/暗/system 三套主题下的实际观感、真实数据（含真实渠道、真实模型名、长路径）下的折行与截断、空态与加载态、`SectionSidebarLayout` 侧栏入口的滚动定位、`RootDirectoryModal` 的实际回填行为。
 - 合并前如需补齐，执行：`pnpm dev:debug` 起带 CDP 的窗口，另开终端 `pnpm inspect wait` / `snapshot` / `box` 逐个量；驱动方式见根 `AGENTS.md` 的「Live Page Inspection」（注意冷启动约 14s、`location.hash` 不会挂载路由、查询必须过滤 `offsetParent`）。
 
 ## 11. 风险
@@ -291,7 +282,6 @@ SOP §12.3 要求「在界面上逐项指认」，并明确「若无法运行界
 | `useCustomProtocol` / URL 规范化差异 | 网关接管写完整 `/chat/completions` 路径 |
 | usage tool 与 takeover key 撞名 | 用不同 `app_type` 字符串，`data_source` 分组回归 |
 | CodeBuddy CLI 本机未装，无法实测 | 全部走文件级 fixture；文档标注「未在真机验证」 |
-| 桌面版身份文件按账号隔离 | uid 缺失时禁用能力并说明原因；`uid` / `enterpriseId` 按不可信输入校验（含分隔符/`..`/空即整体不可用），回归 `workbuddy_family::identity::tests::a_uid_that_could_escape_the_config_root_is_refused` |
 | 改名丢掉产品自有键、并把模型挪到列表末尾 | 改走 `upsert_model_renaming`；两侧各一条回归（把实现改回「先删后插」会从 2 行变 3 行） |
 | **schema 版本号与 main 撞车**（已发生并修复） | 本轮从 `b61f7b9d` 分叉时基线是 v30，把三张新表写成 `migrate_v31`；分叉后 main 的 `0ca25b58` 也占用了 v31（`native_tools_used`）。老库 `user_version=31` → 永不建表；新库则永久缺 main 的列。已把 v31 逐字还原为 main 原样，新表顺延到 `migrate_v32`，`TARGET_SCHEMA_VERSION = 32`。回归 `v32_migration_adds_workbuddy_tables_to_an_already_v31_database` 从「版本已是 31、表却缺失」起步。**合并前必须再查一次 main 有没有继续往前推版本号** |
 | 自定义 `visible_tabs` 用户看不到新 tab | 不是缺陷：`adapter.rs` 故意只对「仍是某个历史默认值」的用户做 full-replace，自定义顺序的用户不被强插（否则每次重开都会把他们关掉的 tab 加回来）。向用户说明入口在「设置 → 通用 → 模块显示」，并先排除「跑的是旧构建」与「迁移没跑到」两层 |

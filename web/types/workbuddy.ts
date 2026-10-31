@@ -41,23 +41,3 @@ export interface WorkbuddyRuntimeConfig {
   exists: boolean;
   path: string;
 }
-
-/** One identity document (`IDENTITY.md`, `USER.md`, `SOUL.md`, `BOOTSTRAP.md`). */
-export interface WorkbuddyIdentityFile {
-  fileName: string;
-  content: string;
-  exists: boolean;
-}
-
-export interface WorkbuddyIdentityState {
-  /** `null` when no WorkBuddy account is signed in. */
-  identityDir?: string;
-  /** Why identity editing is unavailable, when it is. */
-  unavailableReason?: string;
-  files: WorkbuddyIdentityFile[];
-}
-
-export interface WorkbuddyIdentityFileInput {
-  fileName: string;
-  content: string;
-}

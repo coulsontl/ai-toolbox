@@ -1,6 +1,6 @@
 import React from 'react';
 import { App, Form, Modal, Spin } from 'antd';
-import { DatabaseOutlined, FileTextOutlined, HistoryOutlined } from '@ant-design/icons';
+import { DatabaseOutlined, HistoryOutlined } from '@ant-design/icons';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 
@@ -42,17 +42,15 @@ import FetchModelsModal from '@/components/common/FetchModelsModal';
 import ProviderConnectivityTestModal from '@/features/coding/shared/providerConnectivity/ProviderConnectivityTestModal';
 import type { ProviderConnectivityInfo } from '@/features/coding/shared/providerConnectivity/ProviderConnectivityTestModal';
 import { SessionManagerPanel } from '@/features/coding/shared/sessionManager';
-import WorkbuddyIdentityPanel from '../components/WorkbuddyIdentityPanel';
 import styles from './WorkbuddyPage.module.less';
 
 const SIDEBAR_ICON_BY_SECTION_ID: Record<string, React.ReactNode> = {
   'workbuddy-providers': <DatabaseOutlined />,
-  'workbuddy-identity': <FileTextOutlined />,
   'workbuddy-session-manager': <HistoryOutlined />,
 };
 
 /**
- * WorkBuddy desktop: custom model channels plus the per-account identity files.
+ * WorkBuddy desktop: custom model channels.
  *
  * `models.json` is the only store of channels — there is no SQLite provider
  * table, so the page always renders what the file says and never keeps its own
@@ -91,14 +89,9 @@ const WorkbuddyPage: React.FC = () => {
       order: 1,
     },
     {
-      id: 'workbuddy-identity',
-      title: t('workbuddy.identity.title'),
-      order: 2,
-    },
-    {
       id: 'workbuddy-session-manager',
       title: t('sessionManager.title'),
-      order: 3,
+      order: 2,
     },
   ], [t]);
 
@@ -536,23 +529,6 @@ const WorkbuddyPage: React.FC = () => {
               }}
               onFetchModels={(channel) => setFetchModelsChannelId(channel.id)}
             />
-          </div>
-
-          <div
-            id="workbuddy-identity"
-            className={styles.workbuddySection}
-            data-workbuddy-sidebar-section="true"
-            data-sidebar-title={t('workbuddy.identity.title')}
-          >
-            {/* One section per block, matching Hermes / DSH: the panel owns its
-                own card chrome, so wrapping it in a Collapse would nest two
-                borders around the same content. */}
-            {/*
-              The panel reads the signed-in account of the *current* root, so the
-              root's path doubles as its refresh signal: after "自定义配置目录"
-              changes it, the panel must drop the previous root's files.
-            */}
-            <WorkbuddyIdentityPanel onSaved={reload} rootPath={pathInfo?.path} />
           </div>
 
           <div

@@ -38,7 +38,7 @@ export async function verifyWorkbuddyPage({ send, evaluate, baseUrl, artifactRoo
   const sidebarTitles = JSON.parse(
     await evaluate('JSON.stringify(window.__workbuddyFixture.sidebarSectionTitles())'),
   );
-  check('the three sections are marked for the sidebar', sidebarTitles.length, 3);
+  check('the two sections are marked for the sidebar', sidebarTitles.length, 2);
   check(
     'every sidebar marker carries a title',
     sidebarTitles.every((title) => typeof title === 'string' && title.trim().length > 0),
@@ -373,109 +373,6 @@ export async function verifyWorkbuddyPage({ send, evaluate, baseUrl, artifactRoo
     path.join(artifactRoot, `workbuddy-model-dialog-capabilities-${theme}.png`),
     Buffer.from(capabilityShot.data, 'base64'),
   );
-
-  await evaluate(`(() => {
-    const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
-    modal.querySelector('.ant-modal-close').click();
-  })()`);
-  await delay(400);
-
-  // Identity files are the global-prompt card list with a **fixed** set of
-  // rows: four built-in documents that can be edited, never added, deleted or
-  // dragged. Each of those is a claim about what the section offers, so each
-  // gets an assertion — a regression that quietly re-adds 删除 would still
-  // render and still work.
-  const identityShape = JSON.parse(await evaluate(`(() => {
-    const collapse = document.querySelector('#workbuddy-identity .ant-collapse');
-    if (!collapse) throw new Error('identity collapse not found');
-    const header = collapse.querySelector('.ant-collapse-header');
-    header.click();
-    return JSON.stringify({ found: true });
-  })()`));
-  check('the identity section renders as a prompt-style collapse', identityShape.found);
-  await delay(400);
-
-  check(
-    'the identity section lists the four built-in documents',
-    JSON.parse(await evaluate(`(() => {
-      const names = [...document.querySelectorAll('#workbuddy-identity .ant-card')]
-        .map((card) => card.innerText.split('\\n')[0].trim());
-      return JSON.stringify(names);
-    })()`)),
-    ['IDENTITY.md', 'USER.md', 'SOUL.md', 'BOOTSTRAP.md'],
-  );
-  // The four names are opaque on their own and the collapsed preview is front
-  // matter plus a heading, so the row has to say what the file is *for*.
-  check(
-    'every identity row states what its file is for',
-    JSON.parse(await evaluate(`(() => {
-      const rows = [...document.querySelectorAll('#workbuddy-identity .ant-card')];
-      const descriptions = rows.map((card) => {
-        const line = [...card.querySelectorAll('span')]
-          .map((node) => node.textContent.trim())
-          .find((text) => text.length > 6 && !text.endsWith('.md'));
-        return line ?? '';
-      });
-      return JSON.stringify(descriptions);
-    })()`)).every((text) => text.length > 6),
-  );
-
-  check(
-    'an identity row offers no add affordance',
-    await evaluate(`(() => {
-      const section = document.querySelector('#workbuddy-identity');
-      return [...section.querySelectorAll('button')]
-        .filter((node) => node.innerText.includes('新增') || node.innerText.includes('添加')).length;
-    })()`),
-    0,
-  );
-  check(
-    'an identity row has no drag handle',
-    await evaluate(
-      "document.querySelectorAll('#workbuddy-identity .anticon-holder').length",
-    ),
-    0,
-  );
-
-  // The one menu entry: edit. Delete/apply/disable would each be an operation
-  // the fixed set does not have.
-  await evaluate(`(() => {
-    const card = document.querySelector('#workbuddy-identity .ant-card');
-    const more = card.querySelector('button .anticon-more');
-    if (!more) throw new Error('identity row has no menu');
-    more.closest('button').click();
-  })()`);
-  await delay(300);
-  check(
-    'the identity row menu offers only edit',
-    JSON.parse(await evaluate(`(() => {
-      const items = [...document.querySelectorAll('.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item')]
-        .map((node) => node.innerText.trim());
-      return JSON.stringify(items);
-    })()`)),
-    ['编辑'],
-  );
-
-  // Editing opens the shared prompt dialog with the name locked: the name is
-  // the file on disk, so there is nothing to rename it to.
-  await evaluate(`(() => {
-    const item = [...document.querySelectorAll('.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item')]
-      .find((node) => node.innerText.trim() === '编辑');
-    item.click();
-  })()`);
-  await waitFor(`Boolean([...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).length)`);
-  const editDialog = JSON.parse(await evaluate(`(() => {
-    const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
-    const nameInput = modal.querySelector('#name');
-    return JSON.stringify({
-      name: nameInput?.value,
-      nameDisabled: Boolean(nameInput?.disabled),
-      hasEditor: Boolean(modal.querySelector('.cm-editor, textarea')),
-    });
-  })()`));
-  check('the identity editor loads the file name', editDialog.name, 'IDENTITY.md');
-  check('the identity editor refuses to rename the file', editDialog.nameDisabled);
-  check('the identity editor offers a content editor', editDialog.hasEditor);
 
   await evaluate(`(() => {
     const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();

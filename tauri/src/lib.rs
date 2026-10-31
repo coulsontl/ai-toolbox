@@ -2595,8 +2595,6 @@ pub fn run() {
             coding::workbuddy::save_workbuddy_model,
             coding::workbuddy::delete_workbuddy_model,
             coding::workbuddy::delete_workbuddy_provider,
-            coding::workbuddy::get_workbuddy_identity_state,
-            coding::workbuddy::save_workbuddy_identity_file,
             // CodeBuddy Code CLI
             coding::codebuddy::get_codebuddy_default_config_dir,
             coding::codebuddy::get_codebuddy_config_dir_without_db,

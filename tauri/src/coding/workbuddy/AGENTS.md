@@ -2,18 +2,17 @@
 
 ## 一句话职责
 
-- `workbuddy/` 是 WorkBuddy 桌面版（`~/.workbuddy`）的后端：配置根目录决议、`models.json` 渠道读写命令，以及四个按账号隔离的身份文件。
+- `workbuddy/` 是 WorkBuddy 桌面版（`~/.workbuddy`）的后端：配置根目录决议与 `models.json` 渠道读写命令。
 
 ## Source of Truth
 
 - **渠道数据不在 SQLite**。表 `workbuddy_settings_config` 只存一个字段：配置根目录覆盖（`config_dir`）。渠道永远从 `models.json` 现读，契约见 `../workbuddy_family/AGENTS.md`。
 - 配置根目录优先级：应用内 `config_dir` > `WORKBUDDY_CONFIG_DIR` > `CODEBUDDY_CONFIG_DIR` > shell 配置 > `~/.workbuddy`。
-- 身份文件目录：`user-<uid>-<enterpriseId|personal>`，`uid` 读自 `storage/skeleton/account-snapshot.json`。
 - `~/.workbuddy/app` 是 Electron 的 `userData`，不是配置根；`normalize_selected_root` 会把用户误选的这一层折回上一级，但只在父目录确实像个配置根时才这么做。
 
 ## 核心设计决策（Why）
 
-- **身份文件是「直接编辑的活文档」，不是可切换的提示词预案**。四个文件（`IDENTITY.md` / `USER.md` / `SOUL.md` / `BOOTSTRAP.md`）语义各不相同，且产品自己会读写它们；把它们建模成 DB 里的 `*_prompt_config` 记录会让「产品写的」和「我们以为的」分叉。因此 `save_workbuddy_identity_file` 直接写文件，`get_workbuddy_identity_state` 直接读文件，**没有** `workbuddy_prompt_config` 表。
+- **身份文件模块已整体移除**（2026-11-01，用户指定「删掉 身份文件 这个模块吧」）。原先的四份文档（`IDENTITY.md` / `USER.md` / `SOUL.md` / `BOOTSTRAP.md`）由产品自己 seed 成**空白模板**，AI Toolbox 原样读出来会把「Fill this in when the moment fits」这类样板文字当成有效配置展示，而产品自己的 UI 把它们当「未填写」。两边口径不一致，用户判断这个模块没有必要，连同 `get/save_workbuddy_identity_state|file` 两个命令与 `workbuddy_family/identity.rs` 一并删除。**不要在看到 `.workbuddy/user-*/` 目录时把它加回来**。
 - **删除渠道 = 删除该组下所有模型条目**，不是删一条记录。`delete_workbuddy_provider(base_url, api_key)` 先按分组键取出成员，再逐条删除；不属于该组的条目原样保留。
 - 改名走 `upsert_model_renaming(entry, previous_id)`（契约与回归在 `../workbuddy_family/AGENTS.md`）。**不要退回「先删旧 id、再 upsert 新 id」**：那样模型能改名，但产品写在条目上的键会丢，条目还会被挪到列表末尾。
 

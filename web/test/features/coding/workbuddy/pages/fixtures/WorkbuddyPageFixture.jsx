@@ -93,23 +93,6 @@ window.__TAURI_INTERNALS__ = {
         return { language, sidebar_hidden_by_page: {}, visible_tabs: ['workbuddy'] };
       case 'get_workbuddy_settings_config':
         return null;
-      case 'get_workbuddy_identity_state':
-        // The signed-in shape: the panel's real content. `identityDir` must be
-        // present or the section renders the unavailable notice instead of the
-        // list, and the four fixed rows would never be exercised.
-        return {
-          identityDir: 'C:/Users/Example/.workbuddy/user-abc-personal',
-          // camelCase: the Rust structs carry `#[serde(rename_all =
-          // "camelCase")]`, so a snake_case stub renders rows with no name and
-          // no title at all — the layout still looks plausible, which is why
-          // this is easy to miss.
-          files: [
-            { fileName: 'IDENTITY.md', content: '# Who the assistant is', exists: true },
-            { fileName: 'USER.md', content: '# Who the user is', exists: true },
-            { fileName: 'SOUL.md', content: '', exists: false },
-            { fileName: 'BOOTSTRAP.md', content: '# Bootstrap', exists: true },
-          ],
-        };
       default:
         // The session manager renders its empty state for anything it cannot
         // list, which is the shape a fresh install shows.

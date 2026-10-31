@@ -6195,19 +6195,6 @@
       "capabilities": "Capabilities"
     },
     "noModels": "No custom models yet.",
-    "identity": {
-      "title": "Identity files",
-      "hint": "WorkBuddy keeps identity files per account. These four are fixed: their content is editable, but they cannot be added or removed.",
-      "dir": "Identity directory",
-      "missing": "This file does not exist yet; saving creates it.",
-      "saved": "Saved {{name}}",
-      "files": {
-        "identity": "The assistant's identity: name, form, sense of self",
-        "user": "Your profile: name, occupation, city",
-        "soul": "The assistant's character and principles",
-        "bootstrap": "The first-run conversation that fills in the three files above"
-      }
-    },
     "provider": {
       "title": "Providers",
       "modelCount": "{{count}} models"

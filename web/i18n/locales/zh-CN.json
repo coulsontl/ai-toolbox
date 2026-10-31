@@ -6192,19 +6192,6 @@
       "capabilities": "能力开关"
     },
     "noModels": "还没有自定义模型。",
-    "identity": {
-      "title": "身份文件",
-      "hint": "WorkBuddy 把身份文件按账号保存；这四份是固定条目，只能编辑内容，不能新增或删除。",
-      "dir": "身份目录",
-      "missing": "该文件尚未创建，保存后写入。",
-      "saved": "已保存 {{name}}",
-      "files": {
-        "identity": "助手的身份：名字、形象与自我定位",
-        "user": "你的档案：称呼、职业、所在城市",
-        "soul": "助手的性格与行事原则",
-        "bootstrap": "首次对话的引导，用来把上面三份填好"
-      }
-    },
     "provider": {
       "title": "供应商列表",
       "modelCount": "{{count}} 个模型"
