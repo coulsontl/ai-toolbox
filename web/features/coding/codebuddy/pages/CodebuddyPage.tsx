@@ -82,6 +82,8 @@ const CodebuddyPage: React.FC = () => {
 
   const [providerModalOpen, setProviderModalOpen] = React.useState(false);
   const [providerSaving, setProviderSaving] = React.useState(false);
+  /** The channel whose connection the provider form is rewriting; `null` = add. */
+  const [editingConnection, setEditingConnection] = React.useState<CodebuddyProviderView | null>(null);
   const [connectivityOpen, setConnectivityOpen] = React.useState(false);
   const [connectivityChannelId, setConnectivityChannelId] = React.useState<string | null>(null);
   const [fetchModelsChannelId, setFetchModelsChannelId] = React.useState<string | null>(null);
@@ -193,22 +195,55 @@ const CodebuddyPage: React.FC = () => {
     setModelModalOpen(true);
   };
 
-  /** Saves the provider form: one connection plus its first model entry. */
+  /**
+   * Saves the provider form.
+   *
+   * Add mode writes one connection plus its first model entry. Edit mode writes
+   * that connection onto **every** entry of the channel — there is no channel
+   * record on disk, so rewriting the group is what "edit this provider" means,
+   * and each entry keeps its own id, name and capability switches because
+   * `upsert_model_renaming` merges by id.
+   */
   const handleSubmitProvider = async (values: ModelsJsonProviderFormValues) => {
     try {
-      setRuntime(await saveCodebuddyModel({
-        id: values.modelId.trim(),
-        name: values.modelName?.trim() || values.modelId.trim(),
-        vendor: values.vendor?.trim() || undefined,
-        baseUrl: values.baseUrl.trim(),
-        apiKey: values.apiKey?.trim() || undefined,
-        supportsToolCall: true,
-        supportsImages: false,
-        supportsReasoning: false,
-        onlyReasoning: false,
-        useCustomProtocol: false,
-      }));
+      if (editingConnection) {
+        let next = runtime;
+        for (const model of editingConnection.models) {
+          next = await saveCodebuddyModel({
+            id: model.id,
+            name: model.name,
+            vendor: values.vendor?.trim() ?? '',
+            baseUrl: values.baseUrl.trim(),
+            apiKey: values.apiKey?.trim() ?? '',
+            maxInputTokens: model.maxInputTokens,
+            maxOutputTokens: model.maxOutputTokens,
+            temperature: model.temperature,
+            supportsToolCall: model.supportsToolCall,
+            supportsImages: model.supportsImages,
+            supportsReasoning: model.supportsReasoning,
+            onlyReasoning: model.onlyReasoning,
+            useCustomProtocol: model.useCustomProtocol,
+          });
+        }
+        if (next) {
+          setRuntime(next);
+        }
+      } else {
+        setRuntime(await saveCodebuddyModel({
+          id: values.modelId.trim(),
+          name: values.modelName?.trim() || values.modelId.trim(),
+          vendor: values.vendor?.trim() || undefined,
+          baseUrl: values.baseUrl.trim(),
+          apiKey: values.apiKey?.trim() || undefined,
+          supportsToolCall: true,
+          supportsImages: false,
+          supportsReasoning: false,
+          onlyReasoning: false,
+          useCustomProtocol: false,
+        }));
+      }
       setProviderModalOpen(false);
+      setEditingConnection(null);
       message.success(t('common.success'));
     } catch (error) {
       console.error('Failed to save CodeBuddy provider:', error);
@@ -484,9 +519,16 @@ const CodebuddyPage: React.FC = () => {
                     : t('common.availableModelsFree')}
                 </div>
               )}
-              onAddProvider={() => setProviderModalOpen(true)}
+              onAddProvider={() => {
+                setEditingConnection(null);
+                setProviderModalOpen(true);
+              }}
               onAddModel={openModelModal}
               onEditChannel={openModelModal}
+              onEditConnection={(channel) => {
+                setEditingConnection(channel);
+                setProviderModalOpen(true);
+              }}
               onDeleteChannels={requestDeleteChannels}
               onDeleteModel={handleDeleteModel}
               onDeleteModels={handleDeleteModels}
@@ -559,7 +601,11 @@ const CodebuddyPage: React.FC = () => {
           <ModelsJsonProviderFormModal
             open={providerModalOpen}
             saving={providerSaving}
-            onCancel={() => setProviderModalOpen(false)}
+            channel={editingConnection}
+            onCancel={() => {
+              setProviderModalOpen(false);
+              setEditingConnection(null);
+            }}
             onSubmit={async (values) => {
               setProviderSaving(true);
               try {

@@ -19,6 +19,15 @@ interface GlobalPromptConfigModalProps {
    *  content placeholder and the local-file hint. */
   promptFileName: string;
   initialValues?: Partial<GlobalPromptConfig>;
+  /**
+   * Shows the name but refuses to change it.
+   *
+   * The identity files are a fixed set whose name *is* the file on disk
+   * (`IDENTITY.md`), so renaming one is not an operation that exists. The field
+   * stays a real `Form.Item` — `validateFields` only collects registered fields,
+   * and the submit path needs the name — it is simply disabled.
+   */
+  nameReadOnly?: boolean;
   onCancel: () => void;
   onSuccess: (values: GlobalPromptConfigFormValues) => Promise<void> | void;
 }
@@ -28,6 +37,7 @@ const GlobalPromptConfigModal: React.FC<GlobalPromptConfigModalProps> = ({
   toolName,
   promptFileName,
   initialValues,
+  nameReadOnly = false,
   onCancel,
   onSuccess,
 }) => {
@@ -95,7 +105,10 @@ const GlobalPromptConfigModal: React.FC<GlobalPromptConfigModalProps> = ({
               { max: 100, message: t('common.prompt.nameTooLong') },
             ]}
           >
-            <Input placeholder={t('common.prompt.namePlaceholder', { tool: toolName })} />
+            <Input
+              disabled={nameReadOnly}
+              placeholder={t('common.prompt.namePlaceholder', { tool: toolName })}
+            />
           </Form.Item>
           <Form.Item
             label={t('common.prompt.content')}

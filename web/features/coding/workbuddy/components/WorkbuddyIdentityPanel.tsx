@@ -1,11 +1,17 @@
 import React from 'react';
-import { Alert, App, Button, Input, Space, Spin, Typography } from 'antd';
+import { Alert, App, Collapse, Spin, Typography } from 'antd';
+import { FileTextOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import {
   getWorkbuddyIdentityState,
   saveWorkbuddyIdentityFile,
 } from '@/services/workbuddyApi';
 import type { WorkbuddyIdentityState } from '@/types/workbuddy';
+import type { GlobalPromptConfig } from '@/types/globalPrompt';
+import GlobalPromptConfigCard from '@/features/coding/shared/prompt/GlobalPromptConfigCard';
+import GlobalPromptConfigModal, {
+  type GlobalPromptConfigFormValues,
+} from '@/features/coding/shared/prompt/GlobalPromptConfigModal';
 import styles from './WorkbuddyIdentityPanel.module.less';
 
 const { Text } = Typography;
@@ -25,13 +31,27 @@ interface Props {
   rootPath?: string;
 }
 
+/** The fixed document set, in the order the app seeds them. */
+const IDENTITY_ORDER = ['IDENTITY.md', 'USER.md', 'SOUL.md', 'BOOTSTRAP.md'];
+
 /**
- * The four per-account identity documents.
+ * The four per-account identity documents, drawn as the global-prompt list.
  *
- * These are live files the product itself reads and rewrites, and each one is
- * a different document (`IDENTITY.md` = who the assistant is, `USER.md` = who
- * the user is, …). They are therefore edited in place, not modelled as
- * switchable prompt presets — there is no "apply" here, only save.
+ * They reuse that section's card, dialog and collapse — same chrome, same
+ * preview, same editor — because to a reader they *are* prompts. What differs
+ * is what the set allows, and each difference is structural rather than a
+ * preference:
+ *
+ * - **No add**: the app reads exactly these four files. A fifth row would be a
+ *   name the product never opens.
+ * - **No delete**: deleting the file is not deleting a preset, it is blanking a
+ *   document the assistant runs on. Saving an empty body is the reversible way
+ *   to empty one.
+ * - **No apply / disable badge**: there is no "current" preset here — all four
+ *   are live at once, which is exactly why this is not a preset list.
+ * - **No reorder**: the file *is* the record; order has nowhere to be written.
+ *
+ * Editing is the one operation, and it writes straight to disk.
  *
  * The directory is scoped to the signed-in account (`user-<uid>-<scope>`), so
  * without a login the whole section is unavailable and says why instead of
@@ -43,17 +63,12 @@ const WorkbuddyIdentityPanel: React.FC<Props> = ({ onSaved, rootPath }) => {
 
   const [state, setState] = React.useState<WorkbuddyIdentityState | null>(null);
   const [loading, setLoading] = React.useState(true);
-  const [drafts, setDrafts] = React.useState<Record<string, string>>({});
-  const [savingFile, setSavingFile] = React.useState<string | null>(null);
+  const [editing, setEditing] = React.useState<GlobalPromptConfig | null>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true);
     try {
-      const next = await getWorkbuddyIdentityState();
-      setState(next);
-      setDrafts(
-        Object.fromEntries(next.files.map((file) => [file.fileName, file.content])),
-      );
+      setState(await getWorkbuddyIdentityState());
     } catch (error) {
       console.error('Failed to load WorkBuddy identity state:', error);
       message.error(t('common.error'));
@@ -66,76 +81,93 @@ const WorkbuddyIdentityPanel: React.FC<Props> = ({ onSaved, rootPath }) => {
     void load();
   }, [load, rootPath]);
 
-  const handleSave = async (fileName: string) => {
-    setSavingFile(fileName);
+  const handleSave = async (values: GlobalPromptConfigFormValues) => {
+    if (!editing) {
+      return;
+    }
     try {
-      const next = await saveWorkbuddyIdentityFile({
-        fileName,
-        content: drafts[fileName] ?? '',
-      });
-      setState(next);
-      message.success(t('workbuddy.identity.saved', { name: fileName }));
+      setState(await saveWorkbuddyIdentityFile({
+        fileName: editing.id,
+        content: values.content,
+      }));
+      setEditing(null);
+      message.success(t('workbuddy.identity.saved', { name: editing.name }));
       await onSaved?.();
     } catch (error) {
       console.error('Failed to save WorkBuddy identity file:', error);
       message.error(String(error));
-    } finally {
-      setSavingFile(null);
     }
   };
 
-  if (loading && !state) {
-    return <Spin />;
-  }
-  if (!state) {
-    return null;
-  }
-  if (state.unavailableReason) {
-    return (
-      <div className={styles.panel}>
-        <div className={styles.panelHeader}>{t('workbuddy.identity.title')}</div>
-        <Alert type="info" showIcon message={state.unavailableReason} />
+  const content = (
+    <Spin spinning={loading}>
+      <div className={styles.hintBlock}>
+        <div>{t('workbuddy.identity.hint')}</div>
+        <Text type="secondary" copyable={{ text: state?.identityDir }}>
+          {t('workbuddy.identity.dir')}: {state?.identityDir}
+        </Text>
       </div>
-    );
-  }
+      <div>
+        {(state?.files ?? [])
+          // The backend already returns the four files; the sort just pins the
+          // order the app itself uses, so a backend reordering cannot reshuffle
+          // what the user reads as a fixed set.
+          .slice()
+          .sort((left, right) =>
+            IDENTITY_ORDER.indexOf(left.fileName) - IDENTITY_ORDER.indexOf(right.fileName))
+          .map((file) => (
+            <GlobalPromptConfigCard
+              key={file.fileName}
+              config={{
+                id: file.fileName,
+                name: file.fileName,
+                content: file.content,
+                isApplied: false,
+              }}
+              hint={!file.exists
+                ? (
+                  <Text type="secondary" className={styles.cardHint}>
+                    ({t('workbuddy.identity.missing')})
+                  </Text>
+                )
+                : undefined}
+              reorderable={false}
+              onEdit={setEditing}
+            />
+          ))}
+      </div>
+    </Spin>
+  );
 
   return (
-    <div className={styles.panel}>
-      <div className={styles.panelHeader}>{t('workbuddy.identity.title')}</div>
-      <Space direction="vertical" style={{ width: '100%' }} size={16}>
-        <Space direction="vertical" size={2}>
-          <Text type="secondary">{t('workbuddy.identity.hint')}</Text>
-          <Text type="secondary" copyable={{ text: state.identityDir }}>
-            {t('workbuddy.identity.dir')}: {state.identityDir}
-          </Text>
-        </Space>
-        {state.files.map((file) => (
-          <Space key={file.fileName} direction="vertical" style={{ width: '100%' }} size={4}>
-            <Space>
-              <Text strong>{file.fileName}</Text>
-              {!file.exists && <Text type="secondary">{t('workbuddy.identity.missing')}</Text>}
-            </Space>
-            <Input.TextArea
-              value={drafts[file.fileName] ?? ''}
-              autoSize={{ minRows: 4, maxRows: 16 }}
-              onChange={(event) => {
-                const value = event.target.value;
-                setDrafts((previous) => ({ ...previous, [file.fileName]: value }));
-              }}
-            />
-            <Button
-              size="small"
-              loading={savingFile === file.fileName}
-              onClick={() => {
-                void handleSave(file.fileName);
-              }}
-            >
-              {t('workbuddy.identity.save')}
-            </Button>
-          </Space>
-        ))}
-      </Space>
-    </div>
+    <>
+      <Collapse
+        style={{ marginBottom: 16 }}
+        items={[{
+          key: 'workbuddy-identity',
+          label: (
+            <Text strong>
+              <FileTextOutlined style={{ marginRight: 8 }} />
+              {t('workbuddy.identity.title')}
+            </Text>
+          ),
+          children: state?.unavailableReason
+            ? <Alert type="info" showIcon message={state.unavailableReason} />
+            : content,
+        }]}
+      />
+
+      <GlobalPromptConfigModal
+        open={Boolean(editing)}
+        // The name is the file on disk; there is nothing to rename it to.
+        nameReadOnly
+        toolName="WorkBuddy"
+        promptFileName={editing?.id ?? ''}
+        initialValues={editing ?? undefined}
+        onCancel={() => setEditing(null)}
+        onSuccess={handleSave}
+      />
+    </>
   );
 };
 

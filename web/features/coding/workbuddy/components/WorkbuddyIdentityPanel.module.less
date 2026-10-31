@@ -1,18 +1,16 @@
-/* The identity panel's own card, matching the sibling sections on the page
- * (DESIGN.md: section card = 1px border, 16px radius, elevated surface). It
- * brings its own chrome so the page does not wrap it in a second Collapse. */
+/* Matches `GlobalPromptSettings`' own hint block: the identity list is that
+ * section's card list with a fixed set of rows, so the explanatory text above
+ * it has to read as the same element, not as a near-miss. */
 
-.panel {
-  border: 1px solid var(--color-border);
-  border-radius: 16px;
-  background: var(--color-bg-elevated);
-  padding: 18px;
-  box-shadow: none;
+.hintBlock {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  border-left: 2px solid var(--color-border);
+  padding-left: 8px;
+  margin-bottom: 12px;
+  line-height: 1.6;
 }
 
-.panelHeader {
-  margin-bottom: 12px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--color-text-primary);
+.cardHint {
+  font-size: 11px;
 }

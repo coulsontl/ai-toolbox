@@ -12,7 +12,7 @@
 ## 核心设计决策（Why）
 
 - **为什么共享而不是各写一份**：两个产品是同一引擎的两张皮，`models.json` 契约完全相同（见 `tauri/src/coding/workbuddy_family/AGENTS.md`）。分叉实现会让「改一个不知道另一个也在用」。
-- **卡片用 `OpenCodeStyleCard`**：扁平模型列表、多渠道路由、没有单一 active provider → 无主操作、无「设为默认」（选型依据见根 `AGENTS.md` Hard Rule 14 与 SOP §4.2.1）。
+- **列表布局用 `OpenCodeStyleCard`，卡片布局用 `ProviderCompactCard`**：扁平模型列表、多渠道路由、没有单一 active provider → 无主操作、无「设为默认」（选型依据见根 `AGENTS.md` Hard Rule 14 与 SOP §4.2.1）。**两种布局是密度差异，不是能力差异**——格子只陈述「端点 + 模型数」，模型管理进侧栏（`ProviderModelSection appearance="detail"`，常开），列表卡片照旧折叠。把列表卡片塞进网格格是错误形态：它的工具栏有五个文字按钮，350px 的格放不下，「模型列表」会竖排成单字一行、添加模型被挤出头部（2026-10-31 用户报障）。
 - **模型弹窗 `layout="horizontal"` + `labelCol {span:6}`**：对齐 DESIGN.md 的弹窗表单形态；`okButtonProps={{ disabled: saving }}` 而非 `loading`，因为 antd 的 `loading` 会把「取消」一起锁死（SOP §4.0.2 A）。
 - **endpoint 与 apiKey 在每条模型上都可编辑**，不是提到渠道级头部：文件里没有 channel 对象，改模型本来就是改渠道 endpoint 的方式。
 
@@ -25,10 +25,11 @@ sequenceDiagram
   participant Card as ModelsJsonProviderCard
   participant Modal as ModelsJsonModelModal
 
-  Page->>Section: providers / onAddModel / onEditChannel / onDelete*
-  Section->>Card: 一条渠道 → OpenCodeStyleCard
+  Page->>Section: providers / onAddModel / onEditChannel / onEditConnection / onDelete*
+  Section->>Card: 一条渠道 + viewMode
+  Card-->>Page: 列表 → OpenCodeStyleCard；卡片 → ProviderCompactCard
   Card-->>Page: onEdit / onAddModel / onEditModel
-  Page->>Modal: form + channel
+  Page->>Modal: form + channel（编辑态）
   Modal-->>Page: onSubmit(values)
 ```
 
@@ -41,7 +42,8 @@ sequenceDiagram
 - **`previousId` 必须是注册过的 `Form.Item`，不能只用 `setFieldsValue` 塞进表单**：改模型 ID 的语义是「合并到原条目」（后端 `upsert_model_renaming` 靠 `previous_id` 找目标行）。`Form.validateFields()` 只收集**已注册**字段名，未注册的 `previousId` 会被丢掉 → `previous_id=null` → 后端走追加分支 → 旧条目连同产品自有键（`credits`/`tags`）留在原地、新条目追加到末尾，界面提示成功。回归：`web/test/features/coding/shared/modelsJson/modelModalPreviousId.test.mjs`。
 - **单卡删除的确认在页面层，不在这里**：卡片传 `deleteConfirm: false`（同 OpenClaw），页面 handler 里 `Modal.confirm` 后调删除。卡片没有自己的确认，漏掉页面层就是「一次误点清空整条渠道」。批量删除不再问第二次（批次栏已确认）。
 - **排序只提供 `custom` / `name`**：`created` 需要创建时间、`recent` 需要 `provider_last_used`，而这两个模块都没有「应用」动作（这正是 OpenCode 式卡片的定义），`noteProviderUsed` 无处可调。列出来只会是一个永远不生效的菜单项。
-- **渠道卡片没有「编辑渠道」入口**：渠道由 `(url, apiKey)` 派生，文件里没有渠道记录；卡片级 ✎ 只能打开一张空的「添加模型」表单，点确定还会因为缺 id 被拒。改渠道 endpoint 的方式是编辑它下面某条模型。
+- **渠道级「编辑」= 批量改整条渠道的连接**（2026-10-31 用户指定）：渠道由 `(url, apiKey)` 派生，文件里没有渠道记录，所以 ✎ 打开的仍是供应商表单（`ModelsJsonProviderFormModal`，传 `channel` 进编辑态），保存时把新的 `vendor` / `baseUrl` / `apiKey` 逐条写回该渠道的**每一个**模型。页面侧的循环必须原样带上每条模型自己的 `id` / `name` / `maxInputTokens` / 能力开关——`upsert_model_renaming` 按 id 合并，漏字段会被 `build_model_entry` 的默认值覆盖掉。编辑态隐藏「首条模型 ID」：渠道已经有模型，从这儿再建一条会让一个看起来像改名的弹窗静默加一行。
+- **`onEditChannel` 与 `onEditConnection` 是两个不同的回调**：前者带 `modelId`，改的是某条模型；后者是渠道级连接改写。合用一个会让 `onEdit` 无从表达（它没有 `modelId`）。
 - **「添加供应商」必须是供应商表单，不是模型表单**（SOP §4.2.1）：`ProviderListSection.onAddProvider` 打开 `ModelsJsonProviderFormModal`。这个弹窗只填渠道连接信息（`vendor` / `baseUrl` / `apiKey`）**加一条首条模型 ID** —— `models.json` 没有渠道记录，创建渠道的唯一办法就是写一条携带该连接的模型条目。**能力开关（tool call / images / reasoning / useCustomProtocol）不进这个弹窗**：它们属于模型，进卡片后用「添加模型」或铅笔改。上一轮把 `onAddProvider` 直接接到模型表单，用户点「添加供应商」却被要求填模型 ID 和一屏开关，回归由两个页面的浏览器夹具守护（`add-provider opens the provider form, not the model form` + `the provider form carries no capability switches`）。
 - **模型级批量删除一次只允许一个渠道处于选择模式**：`modelSelectionChannelId` 是单个 id 而不是集合。每张卡都渲染自己的模型列表，两张卡同时收集选择，用户无法判断「删除已选」作用于谁。
 - **`onSetPrimaryModel` 不接**：`models.json` 没有默认模型指针。唯一候选 `availableModels` 是**白名单**——写它会隐藏产品自带的全部内置模型，与「选默认」正好相反。`ModelDisplayData.isPrimary` 因此始终省略。
@@ -52,5 +54,6 @@ sequenceDiagram
 
 - `pnpm run test:provider-card-layout`（本目录的映射层必须是 `providerCardVariants` 的薄映射层）
 - `pnpm run test:form-modal-layout`（弹窗横向布局；`ModelsJsonProviderFormModal` 靠文件名里的 `ProviderFormModal` 被扫描到）
-- `pnpm run test:workbuddy-page` / `test:codebuddy-page`：真实页面 + 桩桥，断言「添加供应商」打开的是供应商表单且不含任何 `.ant-switch`
+- `pnpm run test:workbuddy-page` / `test:codebuddy-page`：真实页面 + 桩桥，断言「添加供应商」打开的是供应商表单且不含任何 `.ant-switch`，以及**卡片视图渲染的是紧凑格、格子里没有「模型列表」、模型管理在侧栏里**（切到卡片视图 → 检查 `[data-provider-grid-cell]` → 点开格子 → 断言 `[data-provider-detail-panel]` 含模型列表）
+- `waitFor` / `evaluate` 的表达式必须返回**可序列化值**：`document.querySelector(...)` 直接返回会抛 `Object reference chain is too long`，要包 `Boolean(...)`
 - 手工：在 WorkBuddy 加一条模型 → 在 CodeBuddy 打开另一个配置根，确认两边的布局偏好互不影响；切换列表/卡片视图后重启仍保持。

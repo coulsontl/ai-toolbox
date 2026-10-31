@@ -116,6 +116,217 @@ export async function verifyWorkbuddyPage({ send, evaluate, baseUrl, artifactRoo
   })()`);
   await delay(600);
 
+  // The card's pencil edits the *channel*, which means the provider form in its
+  // edit state: no "first model" fields (the channel already has one) and the
+  // connection pre-filled from the channel. Wiring it to the model form again
+  // would ask for a model id while promising to edit a provider.
+  await evaluate(`(() => {
+    const edit = document.querySelector('[data-provider-id] button .anticon-edit');
+    if (!edit) throw new Error('card edit control not found');
+    edit.closest('button').click();
+  })()`);
+  await waitFor(`Boolean([...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).length)`);
+  const channelEditShape = JSON.parse(await evaluate(`(() => {
+    ${visibleModal('.ant-modal')};
+    const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+    const value = (name) => modal.querySelector('[id$="' + name + '"]')?.value ?? null;
+    return JSON.stringify({
+      title: modal.querySelector('.ant-modal-title')?.textContent.trim(),
+      labels: [...modal.querySelectorAll('.ant-form-item-label label')].map((node) => node.textContent.trim()),
+      baseUrl: value('baseUrl'),
+    });
+  })()`));
+  check(
+    'the card edit opens the provider form in edit state',
+    channelEditShape.labels,
+    ['供应商', '端点', 'API Key'],
+  );
+  check(
+    'the edit form pre-fills the channel endpoint',
+    channelEditShape.baseUrl,
+    'https://api.example.com/v1',
+  );
+  await evaluate(`(() => {
+    const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+    modal.querySelector('.ant-modal-close').click();
+  })()`);
+  await delay(600);
+
+  // The card view is a *density* change, not the list card in a grid. Putting
+  // the full row inside a 350px cell broke 「模型列表」 onto one character per
+  // line and pushed 添加模型 out of the header (2026-10-31 report), which is why
+  // the cell must be `ProviderCompactCard` and the model manager must live in
+  // its sidebar instead.
+  await evaluate(`(() => {
+    const toggle = document.querySelector('[data-provider-view-toggle="list"]');
+    if (!toggle) throw new Error('view toggle not found');
+    toggle.click();
+  })()`);
+  // `evaluate` must return a serializable value: a bare `querySelector` hands
+  // CDP a DOM node, which fails with "Object reference chain is too long".
+  await waitFor('Boolean(document.querySelector("[data-provider-grid]"))');
+  await delay(400);
+
+  check(
+    'the card view renders the compact grid, not the list inside a grid',
+    await evaluate(`(() => {
+      const cells = [...document.querySelectorAll('[data-provider-grid-cell]')];
+      return cells.length > 0
+        && cells.every((cell) => cell.querySelectorAll('[data-provider-card-footer]').length <= 1);
+    })()`),
+  );
+  check(
+    'a grid cell does not render the model list',
+    await evaluate(`(() => {
+      // The model manager belongs to the sidebar; a cell that draws it is the
+      // list card again, and its toolbar is what broke the layout.
+      return [...document.querySelectorAll('[data-provider-grid-cell]')]
+        .filter((cell) => cell.innerText.includes('模型列表')).length;
+    })()`),
+    0,
+  );
+  check(
+    'a grid cell keeps its header on one line',
+    await evaluate(`(() => {
+      // The failure mode was a squeezed toolbar: the cell's own title row grew
+      // several lines tall. Anything above 40px means something overflowed.
+      return [...document.querySelectorAll('[data-provider-grid-cell]')]
+        .filter((cell) => cell.getBoundingClientRect().width < 280).length;
+    })()`),
+    0,
+  );
+
+  // Open one cell's sidebar: the model manager has to be reachable, otherwise
+  // the card view would be a strictly worse list.
+  await evaluate(`(() => {
+    const cell = document.querySelector('[data-provider-card-clickable]');
+    if (!cell) throw new Error('no clickable cell');
+    cell.click();
+  })()`);
+  await waitFor('Boolean(document.querySelector("[data-provider-detail-panel]"))');
+  // The drawer slides in; without this the screenshot catches it half open.
+  await delay(500);
+  check(
+    'the cell sidebar carries the model manager',
+    await evaluate(`(() => {
+      const panel = document.querySelector('[data-provider-detail-panel]');
+      return Boolean(panel) && panel.innerText.includes('模型列表');
+    })()`),
+  );
+
+  // Captured while the sidebar is open: that is the only way to see the model
+  // manager's layout in the card view, which is what the earlier report was
+  // about.
+  const sidebarShot = await send('Page.captureScreenshot', { format: 'png' });
+  await writeFile(
+    path.join(artifactRoot, `workbuddy-card-view-sidebar-${theme}.png`),
+    Buffer.from(sidebarShot.data, 'base64'),
+  );
+
+  await evaluate(`(() => {
+    // The dedicated close hook, not "the first button with an aria-label": the
+    // panel's field rows also carry copy buttons, and clicking one of those
+    // just copies and leaves the drawer open.
+    const close = document.querySelector('[data-provider-detail-close]');
+    if (!close) throw new Error('detail close button not found');
+    close.click();
+  })()`);
+  await delay(400);
+
+  // Back to the list so the screenshot matches what the page opens with.
+  await evaluate(`(() => {
+    const toggle = document.querySelector('[data-provider-view-toggle="card"]');
+    toggle?.click();
+  })()`);
+  await delay(400);
+
+  // Identity files are the global-prompt card list with a **fixed** set of
+  // rows: four built-in documents that can be edited, never added, deleted or
+  // dragged. Each of those is a claim about what the section offers, so each
+  // gets an assertion — a regression that quietly re-adds 删除 would still
+  // render and still work.
+  const identityShape = JSON.parse(await evaluate(`(() => {
+    const collapse = document.querySelector('#workbuddy-identity .ant-collapse');
+    if (!collapse) throw new Error('identity collapse not found');
+    const header = collapse.querySelector('.ant-collapse-header');
+    header.click();
+    return JSON.stringify({ found: true });
+  })()`));
+  check('the identity section renders as a prompt-style collapse', identityShape.found);
+  await delay(400);
+
+  check(
+    'the identity section lists the four built-in documents',
+    JSON.parse(await evaluate(`(() => {
+      const names = [...document.querySelectorAll('#workbuddy-identity .ant-card')]
+        .map((card) => card.innerText.split('\\n')[0].trim());
+      return JSON.stringify(names);
+    })()`)),
+    ['IDENTITY.md', 'USER.md', 'SOUL.md', 'BOOTSTRAP.md'],
+  );
+  check(
+    'an identity row offers no add affordance',
+    await evaluate(`(() => {
+      const section = document.querySelector('#workbuddy-identity');
+      return [...section.querySelectorAll('button')]
+        .filter((node) => node.innerText.includes('新增') || node.innerText.includes('添加')).length;
+    })()`),
+    0,
+  );
+  check(
+    'an identity row has no drag handle',
+    await evaluate(
+      "document.querySelectorAll('#workbuddy-identity .anticon-holder').length",
+    ),
+    0,
+  );
+
+  // The one menu entry: edit. Delete/apply/disable would each be an operation
+  // the fixed set does not have.
+  await evaluate(`(() => {
+    const card = document.querySelector('#workbuddy-identity .ant-card');
+    const more = card.querySelector('button .anticon-more');
+    if (!more) throw new Error('identity row has no menu');
+    more.closest('button').click();
+  })()`);
+  await delay(300);
+  check(
+    'the identity row menu offers only edit',
+    JSON.parse(await evaluate(`(() => {
+      const items = [...document.querySelectorAll('.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item')]
+        .map((node) => node.innerText.trim());
+      return JSON.stringify(items);
+    })()`)),
+    ['编辑'],
+  );
+
+  // Editing opens the shared prompt dialog with the name locked: the name is
+  // the file on disk, so there is nothing to rename it to.
+  await evaluate(`(() => {
+    const item = [...document.querySelectorAll('.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item')]
+      .find((node) => node.innerText.trim() === '编辑');
+    item.click();
+  })()`);
+  await waitFor(`Boolean([...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).length)`);
+  const editDialog = JSON.parse(await evaluate(`(() => {
+    const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+    const nameInput = modal.querySelector('#name');
+    return JSON.stringify({
+      name: nameInput?.value,
+      nameDisabled: Boolean(nameInput?.disabled),
+      hasEditor: Boolean(modal.querySelector('.cm-editor, textarea')),
+    });
+  })()`));
+  check('the identity editor loads the file name', editDialog.name, 'IDENTITY.md');
+  check('the identity editor refuses to rename the file', editDialog.nameDisabled);
+  check('the identity editor offers a content editor', editDialog.hasEditor);
+
+  await evaluate(`(() => {
+    const modal = [...document.querySelectorAll('.ant-modal')].filter((el) => el.offsetParent !== null).pop();
+    modal.querySelector('.ant-modal-close').click();
+  })()`);
+  await delay(400);
+
   // Let the spin wrapper finish its fade and the cards settle before capturing;
   // an early screenshot renders half-transparent cards, which reads as a real
   // styling defect rather than a timing artifact.

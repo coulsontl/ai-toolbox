@@ -9,6 +9,7 @@ import {
   useProviderListSort,
   useProviderListViewPrefs,
 } from '@/features/coding/shared/providerList';
+import { ProviderCardGrid } from '@/features/coding/shared/providerCardView';
 import type { WorkbuddyProviderView } from '@/types/workbuddy';
 import ModelsJsonProviderCard from './ModelsJsonProviderCard';
 
@@ -32,6 +33,16 @@ export interface ModelsJsonProviderSectionProps {
   onAddModel: (channel: WorkbuddyProviderView) => void;
   /** Opens the model modal; a `modelId` means that entry is being edited. */
   onEditChannel: (channel: WorkbuddyProviderView, modelId: string, options?: { copy?: boolean }) => void;
+  /**
+   * Rewrites the channel's connection across every entry (endpoint / key /
+   * vendor).
+   *
+   * There is no channel record to edit — a channel is derived from
+   * `(endpoint, key)` — so this applies one connection to the whole group,
+   * which is the only way to move a channel elsewhere without editing each
+   * model. The page opens the provider form for it.
+   */
+  onEditConnection: (channel: WorkbuddyProviderView) => void;
   onDeleteChannels: (channels: WorkbuddyProviderView[]) => Promise<boolean>;
   onDeleteModel: (channel: WorkbuddyProviderView, modelId: string) => void;
   /** Batch-removes several models of one channel after the page confirms. */
@@ -69,6 +80,7 @@ const ModelsJsonProviderSection: React.FC<ModelsJsonProviderSectionProps> = ({
   onAddProvider,
   onAddModel,
   onEditChannel,
+  onEditConnection,
   onDeleteChannels,
   onDeleteModel,
   onDeleteModels,
@@ -130,6 +142,53 @@ const ModelsJsonProviderSection: React.FC<ModelsJsonProviderSectionProps> = ({
     },
   });
 
+  const renderCard = (provider: WorkbuddyProviderView) => (
+    <ModelsJsonProviderCard
+      provider={provider}
+      viewMode={viewMode}
+      selectable={providerBatch.selectionMode}
+      selected={providerBatch.selectedIds.has(provider.id)}
+      onSelectChange={(checked) => providerBatch.toggleSelect(provider.id, checked)}
+      selectDisabledReason={providerSelectionDisabledReason(t, undefined)}
+      onEdit={() => onEditConnection(provider)}
+      onDelete={() => {
+        void onDeleteChannels([provider]);
+      }}
+      onAddModel={() => onAddModel(provider)}
+      onEditModel={(modelId) => onEditChannel(provider, modelId)}
+      onCopyModel={(modelId) => onEditChannel(provider, modelId, { copy: true })}
+      onDeleteModel={(modelId) => onDeleteModel(provider, modelId)}
+      modelSelectionMode={modelSelectionChannelId === provider.id}
+      selectedModelIds={modelSelectionChannelId === provider.id ? selectedModelIds : []}
+      onToggleModelSelection={(modelId, selected) => {
+        setSelectedModelIds((current) => selected
+          ? (current.includes(modelId) ? current : [...current, modelId])
+          : current.filter((id) => id !== modelId));
+      }}
+      onToggleBatchDeleteMode={() => {
+        if (modelSelectionChannelId === provider.id) {
+          exitModelSelection();
+          return;
+        }
+        setModelSelectionChannelId(provider.id);
+        setSelectedModelIds([]);
+      }}
+      onBatchDeleteModels={() => {
+        if (selectedModelIds.length === 0) {
+          return;
+        }
+        const deleting = [...selectedModelIds];
+        void Promise.resolve(onDeleteModels(provider, deleting)).then(exitModelSelection);
+      }}
+      onTestModels={() => onTestModels(provider)}
+      onFetchModels={() => onFetchModels(provider)}
+      // `models.json` writes one URL per entry, so a channel that mixes
+      // `useCustomProtocol` entries cannot be probed against `{base}/models`.
+      fetchDisabled={provider.models.some((model) => model.useCustomProtocol)}
+      fetchDisabledTooltip={t('workbuddy.providerModal.fetchDisabledCustomProtocol')}
+    />
+  );
+
   return (
     <ProviderListSection
       // The page already marks this block with `id="<module>-providers"` for
@@ -157,66 +216,19 @@ const ModelsJsonProviderSection: React.FC<ModelsJsonProviderSectionProps> = ({
       onAddProvider={onAddProvider}
       hint={hint}
     >
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns:
-            viewMode === 'card' ? 'repeat(auto-fill, minmax(320px, 1fr))' : '1fr',
-          gap: 12,
-        }}
-      >
-        {visibleProviders.map((provider) => (
-          <ModelsJsonProviderCard
-            key={provider.id}
-            provider={provider}
-            selectable={providerBatch.selectionMode}
-            selected={providerBatch.selectedIds.has(provider.id)}
-            onSelectChange={(checked) => providerBatch.toggleSelect(provider.id, checked)}
-            selectDisabledReason={providerSelectionDisabledReason(t, undefined)}
-            // No card-level edit action: a channel is *derived* from
-            // `(url, apiKey)`, there is no channel record to edit, and an
-            // "edit channel" entry could only open an empty "add model" form
-            // (which then refuses to submit without an id). The channel's
-            // endpoint is corrected by editing one of its models, which is what
-            // the per-model pencil does.
-            onDelete={() => {
-              void onDeleteChannels([provider]);
-            }}
-            onAddModel={() => onAddModel(provider)}
-            onEditModel={(modelId) => onEditChannel(provider, modelId)}
-            onCopyModel={(modelId) => onEditChannel(provider, modelId, { copy: true })}
-            onDeleteModel={(modelId) => onDeleteModel(provider, modelId)}
-            modelSelectionMode={modelSelectionChannelId === provider.id}
-            selectedModelIds={modelSelectionChannelId === provider.id ? selectedModelIds : []}
-            onToggleModelSelection={(modelId, selected) => {
-              setSelectedModelIds((current) => selected
-                ? (current.includes(modelId) ? current : [...current, modelId])
-                : current.filter((id) => id !== modelId));
-            }}
-            onToggleBatchDeleteMode={() => {
-              if (modelSelectionChannelId === provider.id) {
-                exitModelSelection();
-                return;
-              }
-              setModelSelectionChannelId(provider.id);
-              setSelectedModelIds([]);
-            }}
-            onBatchDeleteModels={() => {
-              if (selectedModelIds.length === 0) {
-                return;
-              }
-              const deleting = [...selectedModelIds];
-              void Promise.resolve(onDeleteModels(provider, deleting)).then(exitModelSelection);
-            }}
-            onTestModels={() => onTestModels(provider)}
-            onFetchModels={() => onFetchModels(provider)}
-            // `models.json` writes one URL per entry, so a channel that mixes
-            // `useCustomProtocol` entries cannot be probed against `{base}/models`.
-            fetchDisabled={provider.models.some((model) => model.useCustomProtocol)}
-            fetchDisabledTooltip={t('workbuddy.providerModal.fetchDisabledCustomProtocol')}
-          />
-        ))}
-      </div>
+      {viewMode === 'card' ? (
+        <ProviderCardGrid
+          items={visibleProviders}
+          getKey={(provider) => provider.id}
+          renderItem={(provider) => renderCard(provider)}
+        />
+      ) : (
+        <div>
+          {visibleProviders.map((provider) => (
+            <React.Fragment key={provider.id}>{renderCard(provider)}</React.Fragment>
+          ))}
+        </div>
+      )}
     </ProviderListSection>
   );
 };

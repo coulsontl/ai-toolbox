@@ -112,6 +112,68 @@ export async function verifyCodebuddyPage({ send, evaluate, baseUrl, artifactRoo
   })()`);
   await delay(600);
 
+  // The card view is a density change, not the list card poured into a grid
+  // cell: the full row's toolbar (five text buttons) broke 「模型列表」 onto one
+  // character per line inside a 350px cell. Same rule as the WorkBuddy page, so
+  // both pages guard it.
+  await evaluate(`(() => {
+    const toggle = document.querySelector('[data-provider-view-toggle="list"]');
+    if (!toggle) throw new Error('view toggle not found');
+    toggle.click();
+  })()`);
+  await waitFor('Boolean(document.querySelector("[data-provider-grid]"))');
+  await delay(400);
+
+  check(
+    'the card view renders the compact grid, not the list inside a grid',
+    await evaluate(`(() => {
+      const cells = [...document.querySelectorAll('[data-provider-grid-cell]')];
+      return cells.length > 0
+        && cells.every((cell) => cell.querySelectorAll('[data-provider-card-footer]').length <= 1);
+    })()`),
+  );
+  check(
+    'a grid cell does not render the model list',
+    await evaluate(`(() => {
+      return [...document.querySelectorAll('[data-provider-grid-cell]')]
+        .filter((cell) => cell.innerText.includes('模型列表')).length;
+    })()`),
+    0,
+  );
+
+  await evaluate(`(() => {
+    const cell = document.querySelector('[data-provider-card-clickable]');
+    if (!cell) throw new Error('no clickable cell');
+    cell.click();
+  })()`);
+  await waitFor('Boolean(document.querySelector("[data-provider-detail-panel]"))');
+  await delay(500);
+  check(
+    'the cell sidebar carries the model manager',
+    await evaluate(`(() => {
+      const panel = document.querySelector('[data-provider-detail-panel]');
+      return Boolean(panel) && panel.innerText.includes('模型列表');
+    })()`),
+  );
+
+  const sidebarShot = await send('Page.captureScreenshot', { format: 'png' });
+  await writeFile(
+    path.join(artifactRoot, `codebuddy-card-view-sidebar-${theme}.png`),
+    Buffer.from(sidebarShot.data, 'base64'),
+  );
+
+  await evaluate(`(() => {
+    const close = document.querySelector('[data-provider-detail-close]');
+    if (!close) throw new Error('detail close button not found');
+    close.click();
+  })()`);
+  await delay(400);
+  await evaluate(`(() => {
+    const toggle = document.querySelector('[data-provider-view-toggle="card"]');
+    toggle?.click();
+  })()`);
+  await delay(400);
+
   const { data } = await send('Page.captureScreenshot', { format: 'png' });
   await writeFile(
     path.join(artifactRoot, `codebuddy-page-${theme}.png`),

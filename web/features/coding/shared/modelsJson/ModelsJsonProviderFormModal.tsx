@@ -1,6 +1,7 @@
 import React from 'react';
 import { Form, Input, Modal, Typography } from 'antd';
 import { useTranslation } from 'react-i18next';
+import type { WorkbuddyFamilyProviderView } from '@/types/workbuddyFamily';
 
 const { Text } = Typography;
 
@@ -21,12 +22,21 @@ export interface ModelsJsonProviderFormValues {
 interface Props {
   open: boolean;
   saving?: boolean;
+  /**
+   * The channel whose connection is being rewritten.
+   *
+   * Present means edit mode: the endpoint and key apply to every entry of the
+   * channel, and the "first model" fields are hidden — an existing channel
+   * already has at least one model, and creating another from here would make
+   * a rename-looking dialog silently add a row.
+   */
+  channel?: WorkbuddyFamilyProviderView | null;
   onCancel: () => void;
   onSubmit: (values: ModelsJsonProviderFormValues) => Promise<void> | void;
 }
 
 /**
- * Creates one channel.
+ * Creates one channel, or rewrites an existing one's connection.
  *
  * `models.json` has no channel record: a channel is a *view* over model entries
  * grouped by `(endpoint, api key)` (`workbuddy_family/channel.rs`). So the only
@@ -35,6 +45,10 @@ interface Props {
  * endpoint. Everything else about that model (limits, capability switches) is
  * edited afterwards from the card, exactly like the second and third models.
  *
+ * Editing works the same way in reverse: there is nothing to rename on disk, so
+ * "edit" means writing the new endpoint/key/vendor onto every entry of the
+ * group, which is what moves the channel.
+ *
  * Deliberately no model capability switches here: this dialog is the SOP's
  * "添加供应商" step, and putting per-model options in it would recreate the
  * "add provider asks you to pick a model" problem this replaces.
@@ -42,11 +56,29 @@ interface Props {
 const ModelsJsonProviderFormModal: React.FC<Props> = ({
   open,
   saving = false,
+  channel,
   onCancel,
   onSubmit,
 }) => {
   const { t } = useTranslation();
   const [form] = Form.useForm<ModelsJsonProviderFormValues>();
+  const editing = Boolean(channel);
+
+  // Refill on every open: the dialog is reused for add and for each channel's
+  // edit, and `destroyOnHidden` only tears down the DOM, not this form instance.
+  React.useEffect(() => {
+    if (!open) {
+      return;
+    }
+    form.resetFields();
+    if (channel) {
+      form.setFieldsValue({
+        vendor: channel.vendor,
+        baseUrl: channel.baseUrl,
+        apiKey: channel.apiKey,
+      });
+    }
+  }, [open, channel, form]);
 
   const handleOk = async () => {
     const values = await form.validateFields();
@@ -56,7 +88,9 @@ const ModelsJsonProviderFormModal: React.FC<Props> = ({
   return (
     <Modal
       open={open}
-      title={t('common.provider.add')}
+      title={editing
+        ? t('workbuddy.providerModal.editTitle', { name: channel?.name })
+        : t('common.provider.add')}
       onCancel={onCancel}
       onOk={() => {
         void handleOk();
@@ -68,7 +102,9 @@ const ModelsJsonProviderFormModal: React.FC<Props> = ({
       destroyOnHidden
     >
       <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
-        {t('workbuddy.providerModal.intro')}
+        {editing
+          ? t('workbuddy.providerModal.editIntro')
+          : t('workbuddy.providerModal.intro')}
       </Text>
       <Form form={form} layout="horizontal" labelCol={LABEL_COL} wrapperCol={WRAPPER_COL}>
         <Form.Item name="vendor" label={t('workbuddy.model.vendor')}>
@@ -84,17 +120,21 @@ const ModelsJsonProviderFormModal: React.FC<Props> = ({
         <Form.Item name="apiKey" label={t('workbuddy.model.apiKey')}>
           <Input.Password />
         </Form.Item>
-        <Form.Item
-          name="modelId"
-          label={t('workbuddy.providerModal.firstModelId')}
-          rules={[{ required: true, message: t('common.required') }]}
-          extra={t('workbuddy.providerModal.firstModelIdHint')}
-        >
-          <Input placeholder="gpt-4.1" />
-        </Form.Item>
-        <Form.Item name="modelName" label={t('workbuddy.model.name')}>
-          <Input />
-        </Form.Item>
+        {!editing && (
+          <>
+            <Form.Item
+              name="modelId"
+              label={t('workbuddy.providerModal.firstModelId')}
+              rules={[{ required: true, message: t('common.required') }]}
+              extra={t('workbuddy.providerModal.firstModelIdHint')}
+            >
+              <Input placeholder="gpt-4.1" />
+            </Form.Item>
+            <Form.Item name="modelName" label={t('workbuddy.model.name')}>
+              <Input />
+            </Form.Item>
+          </>
+        )}
       </Form>
     </Modal>
   );

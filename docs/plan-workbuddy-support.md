@@ -178,11 +178,14 @@ session-meta / message / reasoning / function_call / function_call_result
 
 ## 8. 前端
 
-两个页面都按 §0.1.1 判定为**多渠道路由** → `OpenCodeStyleCard`：
+两个页面都按 §0.1.1 判定为**多渠道路由** → `OpenCodeStyleCard`（列表布局）/ `ProviderCompactCard`（卡片布局）：
 
-- 卡片只陈述「渠道名 / endpoint / 模型数」
+- 列表卡片陈述「渠道名 / ID / endpoint」，模型列表折叠在卡片内
+- 卡片视图的格子只陈述「渠道名 / endpoint / 模型数」，模型管理进侧栏（常开）；两种布局是**密度差异，不是能力差异**
 - 默认模型**不做**（没有可靠文件指针，`preferences.json` 的 `defaultModelId` 在桌面版未被写入）
 - 模型行支持增删改，不提供「设为默认」
+- 渠道级「编辑」（2026-10-31 改：**做了**）＝把新的端点 / key / vendor 写回该渠道的每一条模型；文件里没有渠道记录，这是唯一能移动渠道的方式
+- **不把列表卡片塞进网格格**：它的工具栏有五个文字按钮，350px 的格放不下，「模型列表」会竖排成单字一行（2026-10-31 用户报障，两个页面的浏览器夹具已守）
 
 页面区块（按 §4.0.2 并集核对后取）：
 
@@ -257,8 +260,9 @@ SOP §4.0.2 的 H 节要求「参照 CLI 有的能力本 CLI 也要有，找不�
 | 「复制模型」 | **做了（2026-10-31）** | 预填 `<id>_copy` 并清空 `previousId`，保存走新增分支。不清空 `previousId` 会退化成把源条目改名到自身 |
 | 模型级批量删除 | **做了（2026-10-31）** | 一次只允许一个渠道处于选择模式（`modelSelectionChannelId` 是单值），确认弹窗在页面层 |
 | 模型拖拽排序 | **不做** | `models.json` 是扁平数组，产品不读回模型顺序 |
+| 渠道级「编辑」 | **做了（2026-10-31）** | 与「添加供应商」同一个弹窗的编辑态：改端点 / key / vendor 会逐条写回该渠道的全部模型，每条自己的 id / name / 能力开关原样带上（`upsert_model_renaming` 按 id 合并）。编辑态隐藏「首条模型 ID」 |
 | 「导入我使用过的供应商」/ 收藏 provider | **不做** | favorite provider 的语义是「历史库 + 诊断缓存」，其 key/payload 约定要求该 CLI 有稳定的 provider 标识。渠道 id 是 `(url, apiKey)` 的哈希、从不落盘，导入后也无法与「当前配置里的同一条」对齐 |
-| 全局提示词 | **做了** | CodeBuddy：`CODEBUDDY.md` 走标准预案；WorkBuddy：四个身份文件直接编辑（语义不同，见 §4） |
+| 全局提示词 | **做了** | CodeBuddy：`CODEBUDDY.md` 走标准预案；WorkBuddy：四个身份文件**复用同一套提示词卡片**（`GlobalPromptConfigCard` + `GlobalPromptConfigModal`），但集合固定——只能编辑内容，不能新增 / 删除 / 拖拽 / 应用（2026-10-31 用户指定）。结构性理由：产品只读这四个文件名；删除等于清空助手运行的文档（保存空内容才是可逆的清空）；文件本身就是记录，顺序无处可写 |
 | 会话管理 | **暂缓** | 见 §10.1 |
 | 预览配置 / 打开文件夹 / 刷新配置 | **做了** | 预览读文件原文：WorkBuddy 是 `models.json`；CodeBuddy 是 `models.json` + `settings.json` 两个 Tab（`read_workbuddy_models_file` / `read_codebuddy_models_file` / `read_codebuddy_settings_file`） |
 

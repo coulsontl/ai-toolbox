@@ -84,13 +84,21 @@ window.__TAURI_INTERNALS__ = {
       case 'get_workbuddy_settings_config':
         return null;
       case 'get_workbuddy_identity_state':
-        // The signed-out shape. `identity_dir: null` + a reason is what the
-        // backend returns before an account exists; returning bare `null` makes
-        // the panel fail to parse and raises an error toast over the page.
+        // The signed-in shape: the panel's real content. `identityDir` must be
+        // present or the section renders the unavailable notice instead of the
+        // list, and the four fixed rows would never be exercised.
         return {
-          identity_dir: null,
-          unavailable_reason: 'No WorkBuddy account is signed in',
-          files: [],
+          identityDir: 'C:/Users/Example/.workbuddy/user-abc-personal',
+          // camelCase: the Rust structs carry `#[serde(rename_all =
+          // "camelCase")]`, so a snake_case stub renders rows with no name and
+          // no title at all — the layout still looks plausible, which is why
+          // this is easy to miss.
+          files: [
+            { fileName: 'IDENTITY.md', content: '# Who the assistant is', exists: true },
+            { fileName: 'USER.md', content: '# Who the user is', exists: true },
+            { fileName: 'SOUL.md', content: '', exists: false },
+            { fileName: 'BOOTSTRAP.md', content: '# Bootstrap', exists: true },
+          ],
         };
       default:
         // The session manager renders its empty state for anything it cannot

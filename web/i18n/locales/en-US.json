@@ -6196,14 +6196,14 @@
     "noModels": "No custom models yet.",
     "identity": {
       "title": "Identity files",
-      "hint": "WorkBuddy stores identity files per account; the signed-in account decides where they live.",
+      "hint": "WorkBuddy keeps identity files per account. These four are fixed: their content is editable, but they cannot be added or removed.",
       "dir": "Identity directory",
       "missing": "This file does not exist yet; saving creates it.",
-      "save": "Save",
       "saved": "Saved {{name}}"
     },
     "provider": {
-      "title": "Providers"
+      "title": "Providers",
+      "modelCount": "{{count}} models"
     },
     "rootPathSource": {
       "modal": {
@@ -6231,7 +6231,9 @@
       "intro": "Enter the provider's connection and its first model. Add the rest from the card after saving.",
       "firstModelId": "First model ID",
       "firstModelIdHint": "Start with one; add more from the card afterwards",
-      "fetchDisabledCustomProtocol": "This channel has custom-protocol models, so the model list URL cannot be derived"
+      "fetchDisabledCustomProtocol": "This channel has custom-protocol models, so the model list URL cannot be derived",
+      "editTitle": "Edit Provider {{name}}",
+      "editIntro": "Changes apply to every model entry of this channel. Leave the vendor blank to keep the models' own vendor."
     },
     "deleteModelsConfirm": "This deletes the {{count}} selected model entries. Continue?"
   },

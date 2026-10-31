@@ -25,20 +25,38 @@ const { Text } = Typography;
 interface GlobalPromptConfigCardProps {
   config: GlobalPromptConfig;
   /** Name of the runtime prompt file, interpolated into the local-file hint. */
-  promptFileName: string;
-  onEdit: (config: GlobalPromptConfig) => void;
-  onDelete: (config: GlobalPromptConfig) => void;
-  onApply: (config: GlobalPromptConfig) => void;
-  onDisable: (config: GlobalPromptConfig) => void;
+  promptFileName?: string;
+  /** Extra note beside the name (the local-file hint, "not created yet"). */
+  hint?: React.ReactNode;
+  /**
+   * Omit an action to hide it.
+   *
+   * Identity files are fixed built-ins: they can be edited, never applied,
+   * disabled, deleted or added, so that section passes `onEdit` alone and this
+   * card renders the same list without offering what does not exist there.
+   */
+  onEdit?: (config: GlobalPromptConfig) => void;
+  onDelete?: (config: GlobalPromptConfig) => void;
+  onApply?: (config: GlobalPromptConfig) => void;
+  onDisable?: (config: GlobalPromptConfig) => void;
+  /**
+   * Whether this entry takes part in the list's drag ordering.
+   *
+   * `false` for a fixed set (identity files): the grip would render and drag
+   * nothing, since there is no order to write back.
+   */
+  reorderable?: boolean;
 }
 
 const GlobalPromptConfigCard: React.FC<GlobalPromptConfigCardProps> = ({
   config,
   promptFileName,
+  hint,
   onEdit,
   onDelete,
   onApply,
   onDisable,
+  reorderable = true,
 }) => {
   const { t } = useTranslation();
   const { token } = theme.useToken();
@@ -46,6 +64,10 @@ const GlobalPromptConfigCard: React.FC<GlobalPromptConfigCardProps> = ({
   const isLocalConfig = config.id === LOCAL_CONFIG_ID;
   // `__local__` is only a local-file bridge, not a managed applied preset.
   const showAsApplied = config.isApplied && !isLocalConfig;
+  const draggable = reorderable && !isLocalConfig;
+  // Captured in a local: narrowing a destructured parameter does not survive
+  // into the click callback below.
+  const applyConfig = onApply;
   const {
     attributes,
     listeners,
@@ -53,7 +75,7 @@ const GlobalPromptConfigCard: React.FC<GlobalPromptConfigCardProps> = ({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: config.id, disabled: isLocalConfig });
+  } = useSortable({ id: config.id, disabled: !draggable });
 
   const sortableStyle: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
@@ -62,15 +84,17 @@ const GlobalPromptConfigCard: React.FC<GlobalPromptConfigCardProps> = ({
   };
 
   const menuItems: MenuProps['items'] = [
-    {
-      key: 'edit',
-      label: t('common.edit'),
-      icon: <EditOutlined />,
-      onClick: () => onEdit(config),
-    },
+    ...(onEdit
+      ? [{
+          key: 'edit',
+          label: t('common.edit'),
+          icon: <EditOutlined />,
+          onClick: () => onEdit(config),
+        }]
+      : []),
     // Only the managed applied preset can be disabled: `__local__` already
     // represents the "not managed" state, and unapplied presets need no disable.
-    ...(showAsApplied
+    ...(showAsApplied && onDisable
       ? [{
           key: 'disable',
           label: t('common.disable'),
@@ -78,7 +102,7 @@ const GlobalPromptConfigCard: React.FC<GlobalPromptConfigCardProps> = ({
           onClick: () => onDisable(config),
         }]
       : []),
-    ...(!isLocalConfig
+    ...(onDelete && !isLocalConfig
       ? [{
           type: 'divider' as const,
         }, {
@@ -106,18 +130,20 @@ const GlobalPromptConfigCard: React.FC<GlobalPromptConfigCardProps> = ({
         styles={{ body: { padding: '8px 12px' } }}
       >
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-          <div
-            className={styles.dragHandle}
-            {...(!isLocalConfig ? attributes : {})}
-            {...(!isLocalConfig ? listeners : {})}
-            style={{
-              cursor: isLocalConfig ? 'default' : (isDragging ? 'grabbing' : 'grab'),
-              touchAction: 'none',
-              padding: '4px 0',
-            }}
-          >
-            <HolderOutlined />
-          </div>
+          {draggable && (
+            <div
+              className={styles.dragHandle}
+              {...attributes}
+              {...listeners}
+              style={{
+                cursor: isDragging ? 'grabbing' : 'grab',
+                touchAction: 'none',
+                padding: '4px 0',
+              }}
+            >
+              <HolderOutlined />
+            </div>
+          )}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className={styles.cardHeader}>
               <div className={styles.cardTitleRow}>
@@ -127,6 +153,7 @@ const GlobalPromptConfigCard: React.FC<GlobalPromptConfigCardProps> = ({
                     ({t('common.prompt.localConfigHint', { file: promptFileName })})
                   </Text>
                 )}
+                {hint}
                 {showAsApplied && (
                   <AppliedTag>
                     {t('common.prompt.applied')}
@@ -134,14 +161,16 @@ const GlobalPromptConfigCard: React.FC<GlobalPromptConfigCardProps> = ({
                 )}
               </div>
               <Space size={4}>
-                {!isLocalConfig && !config.isApplied && (
-                  <Button type="link" size="small" icon={<CheckOutlined />} onClick={() => onApply(config)}>
+                {applyConfig && !isLocalConfig && !config.isApplied && (
+                  <Button type="link" size="small" icon={<CheckOutlined />} onClick={() => applyConfig(config)}>
                     {t('common.prompt.apply')}
                   </Button>
                 )}
-                <Dropdown menu={{ items: menuItems }} trigger={['click']}>
-                  <Button type="text" size="small" icon={<MoreOutlined />} />
-                </Dropdown>
+                {menuItems.length > 0 && (
+                  <Dropdown menu={{ items: menuItems }} trigger={['click']}>
+                    <Button type="text" size="small" icon={<MoreOutlined />} />
+                  </Dropdown>
+                )}
               </Space>
             </div>
             <div className={styles.cardContent}>

@@ -6193,14 +6193,14 @@
     "noModels": "还没有自定义模型。",
     "identity": {
       "title": "身份文件",
-      "hint": "WorkBuddy 把身份文件按账号保存；当前登录账号决定它们的存放目录。",
+      "hint": "WorkBuddy 把身份文件按账号保存；这四份是固定条目，只能编辑内容，不能新增或删除。",
       "dir": "身份目录",
       "missing": "该文件尚未创建，保存后写入。",
-      "save": "保存",
       "saved": "已保存 {{name}}"
     },
     "provider": {
-      "title": "供应商列表"
+      "title": "供应商列表",
+      "modelCount": "{{count}} 个模型"
     },
     "rootPathSource": {
       "modal": {
@@ -6228,7 +6228,9 @@
       "intro": "填写供应商的连接信息和第一条模型。其余模型保存后在卡片里添加。",
       "firstModelId": "首条模型 ID",
       "firstModelIdHint": "先填一条，保存后可在卡片里继续添加",
-      "fetchDisabledCustomProtocol": "该渠道含自定义协议模型，无法自动推断模型列表地址"
+      "fetchDisabledCustomProtocol": "该渠道含自定义协议模型，无法自动推断模型列表地址",
+      "editTitle": "编辑供应商 {{name}}",
+      "editIntro": "修改这条渠道的连接信息，会同步写入它的全部模型条目。供应商名留空则沿用模型自带的 vendor。"
     },
     "deleteModelsConfirm": "将删除选中的 {{count}} 个模型条目。确定继续？"
   },
