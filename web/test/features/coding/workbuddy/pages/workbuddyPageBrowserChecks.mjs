@@ -264,6 +264,22 @@ export async function verifyWorkbuddyPage({ send, evaluate, baseUrl, artifactRoo
     })()`)),
     ['IDENTITY.md', 'USER.md', 'SOUL.md', 'BOOTSTRAP.md'],
   );
+  // The four names are opaque on their own and the collapsed preview is front
+  // matter plus a heading, so the row has to say what the file is *for*.
+  check(
+    'every identity row states what its file is for',
+    JSON.parse(await evaluate(`(() => {
+      const rows = [...document.querySelectorAll('#workbuddy-identity .ant-card')];
+      const descriptions = rows.map((card) => {
+        const line = [...card.querySelectorAll('span')]
+          .map((node) => node.textContent.trim())
+          .find((text) => text.length > 6 && !text.endsWith('.md'));
+        return line ?? '';
+      });
+      return JSON.stringify(descriptions);
+    })()`)).every((text) => text.length > 6),
+  );
+
   check(
     'an identity row offers no add affordance',
     await evaluate(`(() => {

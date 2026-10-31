@@ -31,8 +31,27 @@ interface Props {
   rootPath?: string;
 }
 
-/** The fixed document set, in the order the app seeds them. */
-const IDENTITY_ORDER = ['IDENTITY.md', 'USER.md', 'SOUL.md', 'BOOTSTRAP.md'];
+/**
+ * The fixed document set, in the order the app seeds them, each with what it is
+ * for.
+ *
+ * The four names are opaque on their own — nothing about `SOUL.md` says it is
+ * about character rather than identity, and the file bodies do not help: what a
+ * reader sees collapsed is front matter and a heading. The description is the
+ * one thing the list can state that neither the name nor the preview does.
+ *
+ * Source: the documents' own headings, which the product seeds
+ * (`Who Am I?` / `About Your Human` / `Who You Are`) plus `BOOTSTRAP.md`'s own
+ * opening line.
+ */
+const IDENTITY_FILES: { name: string; descriptionKey: string }[] = [
+  { name: 'IDENTITY.md', descriptionKey: 'workbuddy.identity.files.identity' },
+  { name: 'USER.md', descriptionKey: 'workbuddy.identity.files.user' },
+  { name: 'SOUL.md', descriptionKey: 'workbuddy.identity.files.soul' },
+  { name: 'BOOTSTRAP.md', descriptionKey: 'workbuddy.identity.files.bootstrap' },
+];
+
+const IDENTITY_ORDER = IDENTITY_FILES.map((file) => file.name);
 
 /**
  * The four per-account identity documents, drawn as the global-prompt list.
@@ -115,26 +134,28 @@ const WorkbuddyIdentityPanel: React.FC<Props> = ({ onSaved, rootPath }) => {
           .slice()
           .sort((left, right) =>
             IDENTITY_ORDER.indexOf(left.fileName) - IDENTITY_ORDER.indexOf(right.fileName))
-          .map((file) => (
-            <GlobalPromptConfigCard
-              key={file.fileName}
-              config={{
-                id: file.fileName,
-                name: file.fileName,
-                content: file.content,
-                isApplied: false,
-              }}
-              hint={!file.exists
-                ? (
+          .map((file) => {
+            const definition = IDENTITY_FILES.find((item) => item.name === file.fileName);
+            return (
+              <GlobalPromptConfigCard
+                key={file.fileName}
+                config={{
+                  id: file.fileName,
+                  name: file.fileName,
+                  content: file.content,
+                  isApplied: false,
+                }}
+                hint={(
                   <Text type="secondary" className={styles.cardHint}>
-                    ({t('workbuddy.identity.missing')})
+                    {definition ? t(definition.descriptionKey) : null}
+                    {!file.exists && ` · ${t('workbuddy.identity.missing')}`}
                   </Text>
-                )
-                : undefined}
-              reorderable={false}
-              onEdit={setEditing}
-            />
-          ))}
+                )}
+                reorderable={false}
+                onEdit={setEditing}
+              />
+            );
+          })}
       </div>
     </Spin>
   );
