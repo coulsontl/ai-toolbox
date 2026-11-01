@@ -72,6 +72,73 @@ jobs:
             echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
           fi
 
+      # Order matters here, and it is the opposite of what it looks like.
+      #
+      # A draft release is bound to its tag by name. Move that tag while the
+      # release is still a draft and GitHub detaches it, renaming the release to
+      # `untagged-<uuid>`; every later lookup by `beta` then misses, and
+      # tauri-action creates a release of its own instead of uploading to this
+      # one. That is where the orphaned drafts came from -- the tag was moved at
+      # the start of each round, and a round that had failed left the release in
+      # draft to be detached by the next one.
+      #
+      # So: reconcile the release against the current `beta` tag first, and
+      # only then move the tag. The release is identified by its id, which no
+      # rename can change.
+      - name: Ensure rolling beta release
+        if: github.event_name == 'workflow_dispatch'
+        id: ensure_beta_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BETA_VERSION: ${{ steps.get_version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The rolling release is the only beta release that may exist. Prune
+          # anything else first, so a detached orphan cannot be mistaken for it
+          # and so the id lookup below returns exactly one row. `tag_name !=
+          # "beta"` is the whole test: a draft that lost its tag is renamed to
+          # `untagged-<uuid>` and matches; a published release of a previous
+          # version is not a draft and does not.
+          #
+          # Housekeeping must never fail the round: a delete that loses a race
+          # with a concurrent run has nothing left to clean.
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.tag_name != "beta") | select(.draft) | select(.name | test("Beta"; "i")) | .id' \
+          | while read -r orphan; do
+              [ -n "$orphan" ] || continue
+              if gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$orphan"; then
+                echo "Pruned orphaned beta draft release $orphan"
+              else
+                echo "::warning::Could not prune orphaned beta draft release $orphan"
+              fi
+            done
+
+          # Look the release up in the list, never through `releases/tags/beta`:
+          # that endpoint answers 404 for a draft, which is exactly the state a
+          # failed round leaves the release in.
+          release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '[.[] | select(.tag_name == "beta")][0].id // empty')
+          if [ -n "$release_id" ]; then
+            # PATCH the title and the flags only. Sending `target_commitish`
+            # re-points the release, and re-pointing a draft renames it to
+            # `untagged-<uuid>` -- measured directly: a PATCH that moved
+            # `target_commitish` detached the release even when the value
+            # matched the commit `beta` already pointed at. The tag is moved
+            # separately below, and the release follows it because it is bound
+            # by name and nothing reassigns the target.
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+              -f "name=AI Toolbox Beta ${BETA_VERSION}" \
+              -F prerelease=true -F draft=true >/dev/null
+          else
+            release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name=beta -f "target_commitish=${GITHUB_SHA}" \
+              -f "name=AI Toolbox Beta ${BETA_VERSION}" \
+              -F prerelease=true -F draft=true \
+              -f "body=Built from commit ${GITHUB_SHA}" \
+              --jq '.id')
+          fi
+          echo "id=${release_id}" >> "$GITHUB_OUTPUT"
+
       - name: Move the rolling beta tag and archive the build commit
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -97,76 +164,6 @@ jobs:
           # build wins.
           git push origin "refs/tags/beta-${BETA_VERSION}" --force
 
-      - name: Prune orphaned beta draft releases
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          # The rolling release is the only beta release that may exist. A
-          # failed round leaves it in draft, and while it sits there
-          # tauri-action can create a draft release of its own under an
-          # `untagged-<uuid>` tag instead of uploading to the rolling one.
-          # Nothing below ever touches that release: the asset purge targets
-          # the rolling release by id, and the tag prune above only removes
-          # git refs. So it survives every later round, holding whatever
-          # platforms happened to build that day.
-          #
-          # Two rounds left one behind (2026-10-25, 2026-10-31). Rather than
-          # rely on a diagnosis of tauri-action's internals, delete anything
-          # that is a beta-shaped draft but is not the rolling release. The
-          # rolling release is always tagged `beta`, so the tag name is the
-          # whole test. Run before the build so a prune can never race assets
-          # being uploaded by the round that is starting.
-          #
-          # Housekeeping must never fail the round: a delete that loses a race
-          # with a concurrent run has nothing left to clean and is not a
-          # build problem.
-          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq '.[] | select(.tag_name != "beta") | select(.draft) | select(.name | test("Beta"; "i")) | .id' \
-          | while read -r orphan; do
-              [ -n "$orphan" ] || continue
-              if gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$orphan"; then
-                echo "Pruned orphaned beta draft release $orphan"
-              else
-                echo "::warning::Could not prune orphaned beta draft release $orphan"
-              fi
-            done
-
-      # The rolling beta release is created once with a minimal body; later
-      # dispatches only refresh the title and the prerelease flag so a body
-      # filled in by the release-notes skill survives rebuilds. The release
-      # stays a draft while assets upload — draft asset URLs are not publicly
-      # downloadable, so beta clients never see a half-built round — and the
-      # assemble job publishes it once the full manifest exists.
-      - name: Ensure rolling beta release
-        if: github.event_name == 'workflow_dispatch'
-        id: ensure_beta_release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BETA_VERSION: ${{ steps.get_version.outputs.version }}
-        run: |
-          set -euo pipefail
-          # Look the release up in the list, never through `releases/tags/beta`:
-          # that endpoint answers 404 for a draft, which is exactly the state a
-          # failed round leaves the release in. `gh release view beta` succeeds
-          # there because it falls back to the list, so pairing the two made the
-          # check pass and the id lookup fail -- 2026-11-01, the round after the
-          # first failure died on `gh: Not Found (HTTP 404)`.
-          release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq '[.[] | select(.tag_name == "beta")][0].id // empty')
-          if [ -n "$release_id" ]; then
-            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
-              -f "name=AI Toolbox Beta ${BETA_VERSION}" -F prerelease=true -F draft=true >/dev/null
-          else
-            release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
-              -f tag_name=beta -f "target_commitish=${GITHUB_SHA}" \
-              -f "name=AI Toolbox Beta ${BETA_VERSION}" \
-              -F prerelease=true -F draft=true \
-              -f "body=Built from commit ${GITHUB_SHA}" \
-              --jq '.id')
-          fi
-          echo "id=${release_id}" >> "$GITHUB_OUTPUT"
 
       - name: Create Release
         if: github.event_name == 'push'
