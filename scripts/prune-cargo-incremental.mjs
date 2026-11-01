@@ -157,10 +157,45 @@ export async function pruneCargoIncremental({ tauriRoot }) {
   );
 }
 
+/**
+ * Sweep artifacts older than `maxAgeDays` with `cargo sweep`, which handles the
+ * build-graph-aware part this script cannot do by hand: `deps/` caches one copy
+ * per dependency version and feature set, and deleting the wrong file there
+ * breaks linking. `cargo sweep` only removes artifacts whose inputs have not
+ * changed in that window, so the newest build is untouched.
+ *
+ * Never throws, for the same reason as the prune above. A missing `cargo-sweep`
+ * is reported once and skipped rather than treated as an error -- it is an
+ * optional tool, not a build dependency.
+ */
+export async function sweepCargoArtifacts({ tauriRoot, maxAgeDays = 30, log = console.log }) {
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const run = promisify(execFile);
+    const { stdout } = await run('cargo', ['sweep', '--time', String(maxAgeDays)], {
+      cwd: tauriRoot,
+      // `cargo sweep` walks the whole target tree; give it room on a cold cache.
+      maxBuffer: 32 * 1024 * 1024,
+      timeout: 10 * 60 * 1000,
+    });
+    const cleaned = stdout.trim();
+    if (cleaned) log(`[prune-incremental] cargo sweep (>${maxAgeDays}d): ${cleaned.split('\n').pop()}`);
+  } catch (error) {
+    if (String(error).includes('no such command')) {
+      log('[prune-incremental] cargo-sweep not installed, skipped (cargo install cargo-sweep)');
+    } else {
+      console.warn(`[prune-incremental] cargo sweep skipped: ${error.message.split('\n')[0]}`);
+    }
+  }
+}
+
 const invokedDirectly =
   process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
 if (invokedDirectly) {
   const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
-  await pruneCargoIncremental({ tauriRoot: path.resolve(scriptDirectory, '..', 'tauri') });
+  const tauriRoot = path.resolve(scriptDirectory, '..', 'tauri');
+  await pruneCargoIncremental({ tauriRoot });
+  await sweepCargoArtifacts({ tauriRoot });
 }
