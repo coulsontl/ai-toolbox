@@ -2360,40 +2360,6 @@ pub fn run() {
             // Preset Models
             coding::preset_models::fetch_remote_preset_models,
             coding::preset_models::load_cached_preset_models,
-            // 2API (standalone API gateway with plugin-provided channels)
-            coding::relay::relay_list_channels,
-            coding::relay::relay_upsert_channel,
-            coding::relay::relay_delete_channel,
-            coding::relay::relay_list_models,
-            coding::relay::relay_replace_channel_models,
-            coding::relay::relay_list_plugins,
-            coding::relay::relay_upsert_plugin,
-            coding::relay::relay_delete_plugin,
-            coding::relay::relay_list_plugin_providers,
-            coding::relay::relay_upsert_plugin_provider,
-            coding::relay::relay_list_plugin_accounts,
-            coding::relay::relay_upsert_plugin_account,
-            coding::relay::relay_delete_plugin_account,
-            coding::relay::relay_list_access_keys,
-            coding::relay::relay_upsert_access_key,
-            coding::relay::relay_delete_access_key,
-            coding::relay::relay_list_checkin_schedules,
-            coding::relay::relay_upsert_checkin_schedule,
-            coding::relay::relay_list_checkin_records,
-            // 2API plugin host: Bun runtime, host process, plugin install/sign-in
-            coding::relay::relay_bun_status,
-            coding::relay::relay_bun_install,
-            coding::relay::relay_bun_uninstall,
-            coding::relay::relay_host_status,
-            coding::relay::relay_host_restart,
-            coding::relay::relay_host_stop,
-            coding::relay::relay_host_providers,
-            coding::relay::relay_install_plugin,
-            coding::relay::relay_uninstall_plugin,
-            coding::relay::relay_refresh_plugins,
-            coding::relay::relay_sign_in,
-            coding::relay::relay_oauth_callback,
-            coding::relay::relay_sign_out,
             // Gateway Provider Profiles
             coding::proxy_gateway::provider_profiles::fetch_remote_gateway_provider_profiles,
             coding::proxy_gateway::provider_profiles::load_cached_gateway_provider_profiles,
@@ -3105,16 +3071,6 @@ pub fn run() {
                     if code.is_none() && lightweight::is_lightweight_mode() {
                         api.prevent_exit();
                     }
-                }
-                // The plugin host is a Bun child process. Closing its stdin
-                // makes a well-behaved host exit, but a plugin can install an
-                // exit hook or block on sync I/O, so the kill path has to run
-                // too. `note_app_exit` first keeps that kill from being counted
-                // as a crash and restarted.
-                tauri::RunEvent::Exit => {
-                    tauri::async_runtime::block_on(
-                        coding::relay::runtime::host::shutdown_for_app_exit(),
-                    );
                 }
 
                 _ => {}

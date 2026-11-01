@@ -30,8 +30,7 @@
     "zcode": "ZCode",
     "omoNative": "OmO",
     "workbuddy": "WorkBuddy",
-    "codebuddy": "CodeBuddy",
-    "relay": "2API"
+    "codebuddy": "CodeBuddy"
   },
   "providerBilling": {
     "title": "Billing Config",
@@ -6298,105 +6297,6 @@
       "title": "Other Configuration",
       "hint": "CodeBuddy owns settings.json; AI Toolbox shows it read-only and never rewrites it.",
       "empty": "This file does not exist."
-    }
-  },
-  "relay": {
-    "navLabel": "2API",
-    "tooltip": "Standalone API gateway with plugin-provided channels",
-    "page": {
-      "title": "2API",
-      "subtitle": "Own channels · plugin extensions · protocol conversion",
-      "tabs": {
-        "channels": "Channels",
-        "plugins": "Plugins",
-        "checkin": "Check-in",
-        "settings": "Settings"
-      },
-      "channels": {
-        "empty": "No channels yet",
-        "kindHttp": "HTTP channel",
-        "kindPlugin": "Plugin channel"
-      },
-      "plugins": {
-        "empty": "No plugins installed"
-      },
-      "checkin": {
-        "empty": "No check-in records yet",
-        "columns": {
-          "time": "Time",
-          "provider": "Provider",
-          "account": "Account",
-          "outcome": "Outcome",
-          "message": "Message"
-        }
-      },
-      "settings": {
-        "placeholder": "The gateway address and access keys arrive in a later stage."
-      },
-      "enabled": "Enabled",
-      "disabled": "Disabled"
-    },
-    "common": {
-      "cancel": "Cancel"
-    },
-    "plugins": {
-      "runtime": {
-        "title": "Plugin runtime",
-        "installed": "Bun {version} installed ({asset})",
-        "missing": "Bun is not installed yet. The plugin host runs on it, so plugins stay unavailable until it is.",
-        "install": "Install Bun",
-        "downloading": "Downloading…",
-        "remove": "Remove runtime",
-        "restart": "Restart host",
-        "stop": "Stop host",
-        "hostRunning": "Host running",
-        "hostStopped": "Host stopped",
-        "crashed": "The host stopped auto-restarting after {count} crashes in a row. Fix the plugin, then press Restart host."
-      },
-      "packages": {
-        "title": "Installed packages",
-        "hint": "A plugin is an npm package; Bun resolves its dependencies on install. One package can export several plugins.",
-        "install": "Install plugin",
-        "empty": "No plugins installed yet.",
-        "needsRuntime": "Install the Bun runtime before adding plugins.",
-        "remove": "Uninstall and delete files",
-        "columns": {
-          "package": "Package",
-          "version": "Version",
-          "exports": "Exports",
-          "actions": "Actions"
-        }
-      },
-      "providers": {
-        "title": "Providers",
-        "hint": "What the running host process actually loaded. A plugin that failed to load does not appear here.",
-        "empty": "The installed plugins declare no providers.",
-        "needsRuntime": "Providers appear once the Bun runtime is installed.",
-        "refresh": "Refresh",
-        "modelCount": "{count} models",
-        "checkin": "Check-in",
-        "usage": "Usage",
-        "signedIn": "Signed in",
-        "signedOut": "Not signed in",
-        "signIn": "Sign in",
-        "signOut": "Sign out"
-      },
-      "install": {
-        "title": "Install a plugin",
-        "confirm": "Install",
-        "hint": "An npm package name, optionally with a version, e.g. @magpie-community/opencode-zcode-auth@0.1.19."
-      },
-      "signIn": {
-        "title": "Sign in to {provider}",
-        "confirm": "Sign in",
-        "hint": "The plugin keeps the credential itself; this app never interprets its contents.",
-        "keyPlaceholder": "Paste the API key"
-      },
-      "oauth": {
-        "title": "Finish signing in",
-        "confirm": "Submit the code",
-        "codePlaceholder": "Paste the authorization code"
-      }
     }
   }
 }

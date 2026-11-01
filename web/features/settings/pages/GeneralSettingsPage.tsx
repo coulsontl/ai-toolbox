@@ -937,7 +937,7 @@ const GeneralSettingsPage: React.FC = () => {
   // Order here drives the chip order in the "right side" row; keep it in the same
   // order as the header toolbar. The browser entry is opt-in and absent from the
   // backend default `visible_tabs`, so a fresh install shows no browser tab.
-  const OTHER_TABS = ['miniBrowser', 'gateway', 'relay', 'image', 'ssh', ...(isWindows ? ['wsl'] : [])] as string[];
+  const OTHER_TABS = ['miniBrowser', 'gateway', 'image', 'ssh', ...(isWindows ? ['wsl'] : [])] as string[];
 
   const [reorderMode, setReorderMode] = React.useState(false);
 

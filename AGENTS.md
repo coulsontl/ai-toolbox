@@ -86,7 +86,6 @@ This document provides essential information for AI coding agents working on thi
 | `web/features/coding/kimi/` | Kimi Code CLI 前端页面、根目录配置、provider、官方账号、prompt 与通用配置交互 |
 | `web/features/coding/gateway/` | Gateway 前端页面、统计/明细/设置 Tab、顶部入口与 visibleTabs 可见性 |
 | `web/features/coding/image/` | Image 前端页面、工作台、渠道管理、历史与结果交互 |
-| `web/features/coding/relay/` | 2API（relay）前端页面（渠道 / 插件 / 签到 / 设置）、顶栏入口与默认隐藏的开关登记 |
 | `web/features/coding/mcp/` | MCP 前端页面、服务器管理、导入流程与工具同步交互 |
 | `web/features/coding/opencode/` | OpenCode 前端页面、配置路径、provider、prompt 与模型刷新交互 |
 | `web/features/coding/openclaw/` | OpenClaw 前端页面、配置路径、provider 与配置文件交互 |
@@ -100,7 +99,6 @@ This document provides essential information for AI coding agents working on thi
 | `tauri/src/settings/` | 应用设置存储、adapter 全量替换语义、CLI 路径覆盖与托盘联动 |
 | `tauri/src/settings/backup/` | 备份恢复（本地/WebDAV/GitHub-Gitee 仓库）、可选加密、自动备份与恢复后续链路 |
 | `tauri/src/coding/image/` | Image 后端渠道配置、任务、资产落盘、图片 API 调用与备份联动 |
-| `tauri/src/coding/relay/` | 2API（relay）后端：独立渠道表（与 CLI 渠道无交集的语义）、OpenCode 插件宿主渠道、入站鉴权 key、签到计划与台账 |
 
 后续新增模块级 `AGENTS.md` 时，继续在此表追加，不在根文档其他位置零散登记。
 
@@ -283,7 +281,6 @@ cd tauri && cargo test test_name
 - macOS 本地全量 `cargo test` 有两个已知环境失败，不是代码回归：`tray::tests::skills_section_*` 会因 muda 要求 `Menu`/`MenuChild` 只能在主线程创建而 panic（CI/Linux 不受影响）；另外 `coding::codex::official_accounts::tests::browser_oauth_callback_rejects_invalid_state` 在全量高并行下偶发 flaky，单测重跑可通过。判断是否为既有失败时，用 `git worktree` 检出干净 HEAD 单跑同一测试对比，不要直接归因为本轮改动。
 - 涉及真实 CLI 的 session 导入导出往返测试（如 opencode round trip）在 macOS 上会遇到 `/var` -> `/private/var` symlink realpath 差异；断言前必须用 `normalize_test_path` + `ai-toolbox-session-manager-` marker 对 `path`/`directory` 等临时目录字段做归一化，不能直接比较原始绝对路径。
 - Windows 本地 `cargo test` 的 doctest 段偶发 `error[E0460]: found possibly newer version of crate 'windows'`（可伴随 `memory allocation of ... failed`、`failed to mmap ... os error 1455` / `页面文件太小`）：rustdoc 加载到损坏/半写状态的 rlib 元数据所致，常见诱因是 ① 并发构建写同一 target（其它 `cargo run`/`cargo build` 与测试共用 `tauri/target`）；② 本机或沙箱存在进程级 commit 配额时，默认高并行度的全量 `cargo test` 会让 rustdoc mmap 整个依赖图超限（物理内存再空闲也会报 1455）。自愈顺序：先 `cargo clean -p windows && cargo test --doc`（只重编 windows 相关产物，约 1-2 分钟）；若全量仍在 doctest 段复现 mmap/E0460，改用 `cargo test --jobs 2`（限并行后已验证稳定通过）或错开其它 cargo 构建进程。另一个 Windows 特有失败是 `failed to remove file target\debug\ai-toolbox.exe`：exe 被正在运行的进程锁定（如其它 `cargo run` 启动的应用）。cargo 的 `test` 系列命令（包括显式 `--test <name>` / `--lib --tests`）总会把 bin 纳入构建计划，lib 变更后 bin 必须重链，因此不能靠缩小 target 范围绕过；也不必杀掉用户正在使用的应用——Windows 允许重命名运行中的 exe，先 `mv target/debug/ai-toolbox.exe target/debug/ai-toolbox.exe.locked-by-running-app`（运行中进程的句柄仍指向旧文件，应用不受影响），cargo 即可重新链接出新 exe，全量测试照常执行；改名产物可在应用退出后删除。若全量 `cargo test` 仅 doctest 段失败而其余套件全过，应先按上述自愈流程处理，不要误判为本轮代码回归。还有一个 Windows lib 单元测试二进制的入口点失败：`exit code: 0xc0000139 (STATUS_ENTRYPOINT_NOT_FOUND)`，表现为测试二进制启动即崩、`dumpbin /imports` 显示静态导入与可用 baseline 完全一致、但 `RT_MANIFEST`（type 24）资源缺失 → common-controls v6 未激活 → 被链接进来的 `tauri-plugin-dialog` 的 `TaskDialogIndirect` 在 comctl32 v5 中无法解析。`tauri/build.rs` 的 `embed_windows_test_manifest` 本应经 `/MANIFEST:EMBED /MANIFESTINPUT:<OUT_DIR>/ai-toolbox-test.manifest` 注入该资源；全量 `cargo clean` 后的全新构建偶发不嵌入、而增量构建稳定嵌入（manifest 文件与 `cargo:rustc-link-arg-tests` 参数均存在却仍不嵌入，疑似 MSVC `link.exe` 在全新链接时的 arg 顺序或本机安全软件干扰）。判别与自愈：用 `git worktree` 检出干净 HEAD 单跑同一 `cargo test --lib` 对比——若 baseline 通过而本轮失败、且二进制确缺 `RT_MANIFEST`，先 `touch tauri/build.rs` 强制 build script 重跑、再增量 `cargo test --lib`（已验证通过）；不要把这种 fresh-build manifest 缺失误判为源码回归——影响测试二进制的 `#[cfg(not(test))]` 分支不参与测试编译，逻辑上不可能改变测试二进制链接图。
-- 浏览器夹具（`scripts/verify-*.mjs` 经 `scripts/lib/browser-fixture.mjs`）每个脚本都会起一个 headless 浏览器，清理语义有两条必须知道的事实：① 脚本自身的 teardown 不依赖 `Browser.close` 握手成功，握手失败会升级为整棵进程树的强杀（`killBrowserTree`），且 `server.closeAllConnections()` 防住 keep-alive 连接把 teardown 挂死；② **顺手 kill 掉 node 进程（命令超时、Ctrl+C、管道提前终止、外部中断）时，node 来不及跑 teardown，整棵浏览器进程树会留下来**（每棵约 8 个进程、几百 MB，profile 仍在 Temp 的 artifact 目录里），后续脚本会因为机器变重而出现与自身改动无关的 `Browser command timed out: Runtime.evaluate`。识别与清理：找出 `--user-data-dir=*Temp*browser-profile-*` 的 `msedge` / `chrome`，**确认其父进程已退出**再结束；不要只按 artifact 前缀批量杀——并发工作的另一个 worktree / 会话可能正在跑同名 fixture。夹具报错时优先看 `Browser exceptions:`（真实前端错误）与脚本自己的 `Timed out waiting for:`（渲染没到位），两者都不是超时抖动。
 - 新增或修复高价值回归时，应优先补**最贴近用户路径**的自动化用例；不要只补实现细节测试而漏掉“表单提交 -> 持久化 -> 再读取”这类关键往返语义。
 
 ### Live Page Inspection (styles and runtime logic)

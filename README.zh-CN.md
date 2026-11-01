@@ -38,18 +38,23 @@ AI Toolbox 是一个跨平台桌面应用，旨在帮助开发者高效管理各
 - **Codex 配置管理** - 管理 OpenAI Codex CLI 的官方账号/自定义渠道、模型映射、全局 Prompt、插件和会话历史
 - **Grok CLI 配置管理** - 管理 Grok CLI 的供应商、`config.toml` / `auth.json`、官方账号、全局 Prompt 和插件
 - **Gemini CLI 配置管理** - 管理 Gemini CLI 的官方账号/自定义渠道、`.env` / `settings.json`、全局 Prompt 和用量信息
+- **Antigravity 配置管理** - 管理 Antigravity 的 Google 官方 OAuth 账号，支持根目录设置、全局 Prompt 和会话管理
+- **ZCode 配置管理** - 管理 ZCode 的供应商与模型、官方账号切换与 OAuth 登录、通用配置、根目录、全局 Prompt 和会话浏览
 - **Kimi Code CLI 配置管理** - 管理 Kimi Code CLI 的供应商、`config.toml` / `credentials` 官方账号、全局 Prompt 和插件
+- **WorkBuddy 配置管理** - 管理 WorkBuddy 桌面版的根目录与 `models.json` 渠道，支持列表/卡片两种视图和模型增改
+- **CodeBuddy 配置管理** - 管理 CodeBuddy Code CLI 的根目录、`models.json` 渠道、`CODEBUDDY.md` 全局提示词和只读的 `settings.json` 预览
+- **OmO Native 配置管理** - 管理 OmO Native（`omo` 二进制 / senpi 引擎）的 Provider、`models.json` + `auth.json`、只读的内建渠道、全局提示词、`omo.jsonc` 共享键和会话
 - **OpenClaw 配置管理** - 管理 OpenClaw 的模型、供应商、配置文件路径和会话记录
 - **Pi 配置管理** - 管理 Pi CLI 的模型、供应商、扩展、Prompt 和运行时配置
 - **Oh My Pi 配置管理** - 管理 OMP 运行目录、`models.yml` 供应商、`config.yml` 设置和 subagent。本地配置和账号信息离线可用；原生模型目录独立加载，不阻塞打开或保存配置。Codex 订阅支持 OMP 原生登录、导入私密的 Codex CLI `auth.json`（最大 256 KiB）及手动切换账号。列表包含所选运行目录内的原生登录和导入账号，不合并其他目录；切换只启用所选账号，不删除其他凭据。支持逐账号手动查询 5 小时及周剩余额度和重置时间；Pro 订阅无 5 小时限额。额度查询只读、不刷新令牌，缺失或失败结果不伪造余额。不新增自动换号、负载均衡、故障转移或后台额度轮询。令牌仅留在 `agent.db`，不写入 YAML 或分享；导入检查结构，不保证会话有效。切换后已有 OMP 会话可能需要重启。账号写入要求原生认证 schema 8（已核对 OMP 18.8.7），不支持 broker、WSL/UNC 或 profile/XDG 重定向。登录和原生模型目录需 CLI 支持 `omp login openai-codex` 和 `omp models --json`。原生目录按需拉取（页面首次加载与订阅卡片的刷新按钮）并缓存，常规保存配置不会触发 CLI。
 - **Claude Desktop 配置管理** - 管理 Claude Desktop 的 3P 网关 profile 配置，支持一键网关接管
 - **Hermes Agent 配置管理** - 管理 Hermes Agent 的 `config.yaml`、供应商、默认模型、全局提示词和 memory 记忆文件
 - **DeepSeek Harness 配置管理** - 管理 DeepSeek Harness (dsh) 的 `settings.yaml` / `.credentials.yaml`、供应商、默认模型和全局提示词
-- **本机代理网关** - 提供统一本机代理入口，支持 Claude Code / Claude Desktop / Codex / Grok / Kimi / Gemini CLI 接管、协议转换、故障切换、请求日志、用量统计和模型价格管理
+- **本机代理网关** - 提供统一本机代理入口，支持 Claude Code / Claude Desktop / Codex / Grok / Kimi / Gemini CLI / Antigravity / OpenCode / WorkBuddy / CodeBuddy 接管、协议转换、故障切换、请求日志、用量统计和模型价格管理
 - **Image 工作台** - 管理图片生成/编辑渠道，创建图片任务，保存历史记录和生成资产
 - **MCP 服务器管理** - 集中管理 MCP（Model Context Protocol）服务器配置，支持导入/导出、收藏、分组和多工具同步
 - **Skills 技能管理** - 管理 Skills 中央仓库，支持从 Git 仓库/本地目录安装，按工具启停同步，自定义工具和分组管理
-- **会话管理** - 浏览、搜索、重命名、导入、导出和删除 OpenCode / Claude Code / Codex / Grok / Gemini CLI / Kimi / OpenClaw / Pi / Oh My Pi / Claude Desktop / Hermes / DeepSeek Harness 会话
+- **会话管理** - 浏览、搜索、重命名、导入、导出和删除 OpenCode / Claude Code / Codex / Grok / Gemini CLI / Antigravity / ZCode / Kimi / OpenClaw / Pi / Oh My Pi / OmO Native / Claude Desktop / Hermes / DeepSeek Harness / WorkBuddy / CodeBuddy 会话
 - **WSL 同步** - 将 Windows 端的各种 CLI 配置、MCP 和 Skills 配置同步到 WSL 环境，支持自动同步和自定义映射
 - **SSH 同步** - 将本机配置、MCP 和 Skills 同步到远程 SSH 主机，支持连接管理、路径映射和手动同步
 - **供应商管理** - 统一管理多个 AI 供应商（OpenAI、Anthropic、自定义代理等），支持跨编码工具共享与深链接导入
@@ -163,13 +168,18 @@ ai-toolbox/
 │   │   │   ├── codex/            # Codex 配置管理
 │   │   │   ├── grok/             # Grok CLI 配置管理
 │   │   │   ├── geminicli/        # Gemini CLI 配置管理
+│   │   │   ├── antigravity/      # Antigravity 配置管理
+│   │   │   ├── zcode/            # ZCode 配置管理
 │   │   │   ├── kimi/             # Kimi Code CLI 配置管理
 │   │   │   ├── openclaw/         # OpenClaw 配置管理
 │   │   │   ├── pi/               # Pi 配置管理
 │   │   │   ├── oh_my_pi/         # Oh My Pi 配置管理
+│   │   │   ├── omo_native/       # OmO Native 配置管理
 │   │   │   ├── claudedesktop/    # Claude Desktop 配置管理
 │   │   │   ├── hermes/           # Hermes Agent 配置管理
 │   │   │   ├── dsh/              # DeepSeek Harness 配置管理
+│   │   │   ├── workbuddy/        # WorkBuddy 桌面版配置管理
+│   │   │   ├── codebuddy/        # CodeBuddy Code CLI 配置管理
 │   │   │   ├── mcp/              # MCP 服务器管理
 │   │   │   ├── skills/           # Skills 技能管理
 │   │   │   ├── gateway/          # 本机代理网关
@@ -195,13 +205,19 @@ ai-toolbox/
 │   │       ├── open_code/        # OpenCode 后端
 │   │       ├── grok/             # Grok CLI 后端
 │   │       ├── gemini_cli/       # Gemini CLI 后端
+│   │       ├── antigravity/      # Antigravity 后端
+│   │       ├── zcode/            # ZCode 后端
 │   │       ├── kimi/             # Kimi Code CLI 后端
 │   │       ├── open_claw/        # OpenClaw 后端
 │   │       ├── pi/               # Pi 后端
 │   │       ├── oh_my_pi/         # Oh My Pi 后端
+│   │       ├── omo_native/       # OmO Native 后端
 │   │       ├── claude_desktop/   # Claude Desktop 3P 配置后端
 │   │       ├── hermes/           # Hermes Agent 后端
 │   │       ├── dsh/              # DeepSeek Harness 后端
+│   │       ├── workbuddy/        # WorkBuddy 桌面版后端
+│   │       ├── workbuddy_family/ # WorkBuddy / CodeBuddy 共享的 models.json 处理
+│   │       ├── codebuddy/        # CodeBuddy Code CLI 后端
 │   │       ├── oh_my_openagent/  # Oh My OpenAgent 后端
 │   │       ├── oh_my_opencode_slim/ # Oh My OpenCode Slim 后端
 │   │       ├── mcp/              # MCP 服务器后端
@@ -256,6 +272,7 @@ pnpm tsc --noEmit
 
 # Rust 代码检查
 cd tauri && cargo check
+cd tauri && cargo test
 ```
 
 ## 功能模块
@@ -267,10 +284,15 @@ cd tauri && cargo check
 | 编码 | Codex | ✅ 完成 | OpenAI Codex CLI 官方账号/自定义渠道管理，支持模型映射、Prompt、插件、会话管理 |
 | 编码 | Grok | ✅ 完成 | Grok CLI 供应商、`config.toml` / `auth.json`、官方账号、Prompt、插件和会话管理 |
 | 编码 | Gemini CLI | ✅ 完成 | Gemini CLI 官方账号/自定义渠道、Prompt、用量和会话管理 |
+| 编码 | Antigravity | ✅ 完成 | Antigravity 的 Google 官方 OAuth 账号、根目录设置、全局提示词和会话管理 |
+| 编码 | ZCode | ✅ 完成 | ZCode 供应商与模型、官方账号切换与 OAuth 登录、通用配置、根目录、提示词和会话管理 |
 | 编码 | Kimi | ✅ 完成 | Kimi Code CLI 供应商、`config.toml` / `credentials` 官方账号、Prompt、插件、MCP/Skills 和会话管理 |
 | 编码 | OpenClaw | ✅ 完成 | OpenClaw 模型、供应商、配置文件和会话管理 |
 | 编码 | Pi | ✅ 完成 | Pi CLI 模型、供应商、扩展、Prompt 和会话管理 |
 | 编码 | Oh My Pi | ✅ 完成 | Oh My Pi (OMP) 运行时根目录、`models.yml` 供应商、`config.yml` 设置、subagent 配置和会话管理 |
+| 编码 | OmO Native | ✅ 完成 | OmO Native（`omo` 二进制 / senpi 引擎）的 Provider、`models.json` + `auth.json`、只读的内建渠道、提示词、`omo.jsonc` 共享键和会话管理 |
+| 编码 | WorkBuddy | ✅ 完成 | WorkBuddy 桌面版根目录与 `models.json` 渠道，支持列表/卡片视图、模型编辑和会话管理 |
+| 编码 | CodeBuddy | ✅ 完成 | CodeBuddy Code CLI 根目录、`models.json` 渠道、`CODEBUDDY.md` 提示词、只读的 `settings.json` 预览和会话管理 |
 | 编码 | Claude Desktop | ✅ 完成 | Claude Desktop 3P 网关 profile 配置，支持网关接管和会话管理 |
 | 编码 | Hermes | ✅ 完成 | Hermes Agent `config.yaml`、供应商、默认模型、全局提示词、memory 和会话管理 |
 | 编码 | DeepSeek Harness | ✅ 完成 | DeepSeek Harness (dsh) `settings.yaml` / `.credentials.yaml`、供应商、默认模型、全局提示词和会话管理 |
@@ -286,91 +308,6 @@ cd tauri && cargo check
 | 设置 | S3 设置 | ✅ 完成 | S3 兼容存储配置 |
 | 设置 | 供应商设置 | ✅ 完成 | AI 供应商统一管理 |
 | 日常 | 笔记 | 🚧 开发中 | Markdown 笔记管理、搜索 |
-
-## 数据存储
-
-使用 SQLite 作为本地主数据库，并通过 JSONB 表保存各模块配置。另有少量结构化表（网关请求日志、用量日汇总、模型价格）使用常规列存储，便于聚合查询与索引。
-
-### 设计原则
-
-- **本地优先**：所有数据存储在本地，保护隐私
-- **服务层 API**：前端通过服务层与后端交互，不直接使用 localStorage
-- **灵活备份**：支持本地 ZIP、WebDAV 云端备份、自动备份、自定义备份项和外部配置文件备份
-
-### 数据表
-
-| 表名 | 描述 |
-|------|------|
-| `settings` | 应用设置 |
-| `app_migration` | 应用内部迁移记录 |
-| `opencode_common_config` | OpenCode 通用配置 |
-| `opencode_prompt_config` | OpenCode Prompt 配置 |
-| `opencode_favorite_provider` | OpenCode 收藏供应商 |
-| `opencode_favorite_plugin` | OpenCode 收藏插件 |
-| `claude_provider` | Claude Code 供应商配置 |
-| `claude_common_config` | Claude Code 通用配置 |
-| `claude_prompt_config` | Claude Code Prompt 配置 |
-| `codex_provider` | Codex 供应商配置 |
-| `codex_common_config` | Codex 通用配置 |
-| `codex_prompt_config` | Codex Prompt 配置 |
-| `codex_official_account` | Codex 官方账号配置 |
-| `codex_plugin_workspace_roots` | Codex 插件工作区根目录 |
-| `grok_provider` | Grok CLI 供应商配置 |
-| `grok_official_account` | Grok CLI 官方账号配置 |
-| `grok_common_config` | Grok CLI 通用配置 |
-| `grok_prompt_config` | Grok CLI Prompt 配置 |
-| `kimi_provider` | Kimi Code CLI 供应商配置 |
-| `kimi_official_account` | Kimi Code CLI 官方账号配置 |
-| `kimi_common_config` | Kimi Code CLI 通用配置 |
-| `kimi_prompt_config` | Kimi Code CLI Prompt 配置 |
-| `gemini_cli_provider` | Gemini CLI 供应商配置 |
-| `gemini_cli_common_config` | Gemini CLI 通用配置 |
-| `gemini_cli_prompt_config` | Gemini CLI Prompt 配置 |
-| `gemini_cli_official_account` | Gemini CLI 官方账号配置 |
-| `claude_desktop_provider` | Claude Desktop 供应商配置 |
-| `claude_desktop_prompt_config` | Claude Desktop Prompt 配置 |
-| `hermes_settings_config` | Hermes Agent 设置配置 |
-| `hermes_prompt_config` | Hermes Agent Prompt 配置 |
-| `dsh_settings_config` | DeepSeek Harness 设置配置 |
-| `dsh_prompt_config` | DeepSeek Harness Prompt 配置 |
-| `oh_my_pi_settings_config` | Oh My Pi 设置配置 |
-| `oh_my_pi_prompt_config` | Oh My Pi Prompt 配置 |
-| `oh_my_pi_agents_config` | Oh My Pi subagent 集中配置 |
-| `pi_settings_config` | Pi 设置配置 |
-| `pi_prompt_config` | Pi Prompt 配置 |
-| `openclaw_common_config` | OpenClaw 通用配置 |
-| `oh_my_openagent_config` | Oh My OpenAgent 配置 |
-| `oh_my_openagent_global_config` | Oh My OpenAgent 全局配置 |
-| `oh_my_opencode_slim_config` | Oh My OpenCode Slim 配置 |
-| `oh_my_opencode_slim_global_config` | Oh My OpenCode Slim 全局配置 |
-| `mcp_server` | MCP 服务器配置 |
-| `mcp_preferences` | MCP 服务器偏好配置 |
-| `favorite_mcp` | MCP 收藏配置 |
-| `mcp_group` | MCP 分组配置 |
-| `skill` | Skills 技能记录 |
-| `skill_group` | Skills 分组 |
-| `skill_repo` | Skills Git 仓库来源 |
-| `skill_preferences` | Skills 技能偏好配置 |
-| `skill_settings` | Skills 设置 |
-| `custom_tool` | Skills/MCP 自定义工具配置 |
-| `wsl_sync_config` | WSL 同步配置 |
-| `wsl_file_mapping` | WSL 文件映射 |
-| `ssh_sync_config` | SSH 同步配置 |
-| `ssh_connection` | SSH 连接配置 |
-| `ssh_file_mapping` | SSH 文件映射 |
-| `proxy_gateway_settings` | Gateway 设置 |
-| `gateway_session_usage_state` | Gateway 会话用量采集状态 |
-| `image_channel` | 图片渠道配置 |
-| `image_job` | 图片任务记录 |
-| `image_asset` | 图片资产记录 |
-
-其中以下 3 张表使用常规列而非 JSONB：
-
-| 表名 | 描述 |
-|------|------|
-| `proxy_request_logs` | Gateway 请求日志明细（含 token、成本、延迟） |
-| `usage_daily_rollups` | Gateway 按日聚合的用量统计 |
-| `model_pricing` | 模型价格表 |
 
 ## 贡献
 

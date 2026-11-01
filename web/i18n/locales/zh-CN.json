@@ -30,8 +30,7 @@
     "zcode": "ZCode",
     "omoNative": "OmO",
     "workbuddy": "WorkBuddy",
-    "codebuddy": "CodeBuddy",
-    "relay": "2API"
+    "codebuddy": "CodeBuddy"
   },
   "providerBilling": {
     "title": "计费配置",
@@ -6295,105 +6294,6 @@
       "title": "其他配置",
       "hint": "settings.json 由 CodeBuddy 自己维护，AI Toolbox 只读预览、不会改写它。",
       "empty": "该文件不存在。"
-    }
-  },
-  "relay": {
-    "navLabel": "2API",
-    "tooltip": "独立 API 网关与插件渠道",
-    "page": {
-      "title": "2API",
-      "subtitle": "自有渠道 · 插件扩展 · 协议转换",
-      "tabs": {
-        "channels": "渠道",
-        "plugins": "插件",
-        "checkin": "签到",
-        "settings": "设置"
-      },
-      "channels": {
-        "empty": "还没有渠道",
-        "kindHttp": "HTTP 渠道",
-        "kindPlugin": "插件渠道"
-      },
-      "plugins": {
-        "empty": "还没有安装插件"
-      },
-      "checkin": {
-        "empty": "还没有签到记录",
-        "columns": {
-          "time": "时间",
-          "provider": "提供商",
-          "account": "账号",
-          "outcome": "结果",
-          "message": "说明"
-        }
-      },
-      "settings": {
-        "placeholder": "网关地址与访问密钥将在后续阶段提供。"
-      },
-      "enabled": "已启用",
-      "disabled": "已停用"
-    },
-    "common": {
-      "cancel": "取消"
-    },
-    "plugins": {
-      "runtime": {
-        "title": "插件运行时",
-        "installed": "Bun {version} 已安装（{asset}）",
-        "missing": "尚未安装 Bun。插件宿主跑在它上面，装好之前插件不可用。",
-        "install": "下载 Bun",
-        "downloading": "下载中…",
-        "remove": "移除运行时",
-        "restart": "重启宿主",
-        "stop": "停止宿主",
-        "hostRunning": "宿主运行中",
-        "hostStopped": "宿主已停止",
-        "crashed": "宿主连续崩溃 {count} 次后已停止自动重启。修好插件后点「重启宿主」。"
-      },
-      "packages": {
-        "title": "已安装的插件包",
-        "hint": "插件是 npm 包，安装时由 Bun 解析依赖。一个包可以导出多个插件。",
-        "install": "安装插件",
-        "empty": "还没有安装任何插件。",
-        "needsRuntime": "先安装 Bun 运行时，才能安装插件。",
-        "remove": "卸载并删除文件",
-        "columns": {
-          "package": "包名",
-          "version": "版本",
-          "exports": "导出",
-          "actions": "操作"
-        }
-      },
-      "providers": {
-        "title": "插件提供的渠道类型",
-        "hint": "这里列出正在运行的宿主进程实际加载到的 provider。加载失败的插件不会出现。",
-        "empty": "已安装的插件没有申报任何 provider。",
-        "needsRuntime": "安装 Bun 运行时后，插件才会加载。",
-        "refresh": "刷新",
-        "modelCount": "{count} 个模型",
-        "checkin": "支持签到",
-        "usage": "报用量",
-        "signedIn": "已登录",
-        "signedOut": "未登录",
-        "signIn": "登录",
-        "signOut": "退出登录"
-      },
-      "install": {
-        "title": "安装插件",
-        "confirm": "安装",
-        "hint": "填 npm 包名，可以带版本，例如 @magpie-community/opencode-zcode-auth@0.1.19。"
-      },
-      "signIn": {
-        "title": "登录 {provider}",
-        "confirm": "登录",
-        "hint": "凭证交给插件自己保存，本仓库不解释它的内容。",
-        "keyPlaceholder": "粘贴 API Key"
-      },
-      "oauth": {
-        "title": "完成浏览器登录",
-        "confirm": "提交授权码",
-        "codePlaceholder": "粘贴授权码"
-      }
     }
   }
 }

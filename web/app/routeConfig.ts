@@ -7,7 +7,6 @@ import { SkillsPage } from '@/features/coding/skills';
 import { McpPage } from '@/features/coding/mcp';
 import { ImagePage } from '@/features/coding/image';
 import { GatewayPage } from '@/features/coding/gateway';
-import { RelayPage } from '@/features/coding/relay';
 import { MiniBrowserPage } from '@/features/mini-browser';
 import {
   ClaudeCodeSessionDetailPage,
@@ -249,7 +248,6 @@ export const PAGE_ROUTES: RouteEntry[] = [
   { path: '/skills', component: SkillsPage },
   { path: '/mcp', component: McpPage },
   { path: '/gateway', routePath: '/gateway/*', component: GatewayPage },
-  { path: '/2api', routePath: '/2api/*', component: RelayPage },
   { path: '/mini-browser', component: MiniBrowserPage },
   { path: '/images', component: ImagePage },
 ];

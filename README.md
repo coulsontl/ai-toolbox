@@ -40,18 +40,23 @@ AI Toolbox is a cross-platform desktop application that helps developers efficie
 - **Codex configuration management** - Manage OpenAI Codex CLI official accounts/custom channels, model mappings, global prompts, plugins, and session history
 - **Grok CLI configuration management** - Manage Grok CLI providers, `config.toml` / `auth.json`, official accounts, global prompts, and plugins
 - **Gemini CLI configuration management** - Manage Gemini CLI official accounts/custom channels, `.env` / `settings.json`, global prompts, and usage information
+- **Antigravity configuration management** - Manage Google official OAuth accounts for Antigravity, with root directory settings, global prompts, and session management
+- **ZCode configuration management** - Manage ZCode providers and models, official account switching and OAuth login, general configuration, root directory, global prompts, and session browsing
 - **Kimi Code CLI configuration management** - Manage Kimi Code CLI providers, `config.toml` / `credentials` official accounts, global prompts, and plugins
+- **WorkBuddy configuration management** - Manage the WorkBuddy desktop root directory and `models.json` channels, with list and card views plus model add/edit
+- **CodeBuddy configuration management** - Manage the CodeBuddy Code CLI root directory, `models.json` channels, `CODEBUDDY.md` global prompts, and a read-only `settings.json` preview
+- **OmO Native configuration management** - Manage OmO Native (the `omo` binary / senpi engine) providers, `models.json` + `auth.json`, read-only built-in channels, global prompts, shared `omo.jsonc` keys, and sessions
 - **OpenClaw configuration management** - Manage OpenClaw models, providers, config file paths, and session records
 - **Pi configuration management** - Manage Pi CLI models, providers, extensions, prompts, and runtime configuration
 - **Oh My Pi configuration management** - Manage the OMP runtime root, `models.yml` providers, `config.yml` settings, and subagents. Local configuration and account metadata remain available offline; independent native model discovery cannot block opening or saving configuration. Codex subscriptions support native OMP login, private Codex CLI `auth.json` import (up to 256 KiB), and manual account switching. The list includes native-login and imported accounts from the selected runtime directory only; switching enables the selected account without deleting other credentials. Each account supports manual queries for remaining 5-hour and weekly quota and reset times; Pro subscriptions have no 5-hour limit. Quota queries are read-only, do not refresh tokens, and leave unknown or failed results unknown. No automatic switching, balancing, failover, or background quota polling is added. Tokens stay in `agent.db`, never YAML or shared exports; import checks structure, not session validity. Existing OMP sessions may need restarting after a switch. Account writes require native auth schema 8 (verified with OMP 18.8.7), and reject broker, WSL/UNC, or profile/XDG redirection. Login and native model discovery require `omp login openai-codex` and `omp models --json`. The native catalog is fetched on demand — by the page's first load and by the subscription card's refresh button — and cached, so routine config saves never run the CLI.
 - **Claude Desktop configuration management** - Manage Claude Desktop 3P gateway profiles, with one-click gateway takeover
 - **Hermes Agent configuration management** - Manage Hermes Agent's `config.yaml`, providers, default model, global prompts, and memory files
 - **DeepSeek Harness configuration management** - Manage DeepSeek Harness (dsh) `settings.yaml` / `.credentials.yaml`, providers, default model, and global prompts
-- **Local proxy gateway** - A unified local proxy endpoint with Claude Code / Claude Desktop / Codex / Grok / Kimi / Gemini CLI takeover, protocol conversion, failover, request logs, usage statistics, and model pricing management
+- **Local proxy gateway** - A unified local proxy endpoint with Claude Code / Claude Desktop / Codex / Grok / Kimi / Gemini CLI / Antigravity / OpenCode / WorkBuddy / CodeBuddy takeover, protocol conversion, failover, request logs, usage statistics, and model pricing management
 - **Image workbench** - Manage image generation/editing channels, create image jobs, and keep history and generated assets
 - **MCP server management** - Centrally manage MCP (Model Context Protocol) server configurations, with import/export, favorites, groups, and multi-tool sync
 - **Skills management** - Manage a central Skills repository, install from Git repositories or local directories, enable/disable and sync per tool, plus custom tools and group management
-- **Session management** - Browse, search, rename, import, export, and delete sessions for OpenCode / Claude Code / Codex / Grok / Gemini CLI / Kimi / OpenClaw / Pi / Oh My Pi / Claude Desktop / Hermes / DeepSeek Harness
+- **Session management** - Browse, search, rename, import, export, and delete sessions for OpenCode / Claude Code / Codex / Grok / Gemini CLI / Antigravity / ZCode / Kimi / OpenClaw / Pi / Oh My Pi / OmO Native / Claude Desktop / Hermes / DeepSeek Harness / WorkBuddy / CodeBuddy
 - **WSL sync** - Sync the various CLI, MCP, and Skills configurations from Windows into a WSL environment, with automatic sync and custom mappings
 - **SSH sync** - Sync local configurations, MCP, and Skills to remote SSH hosts, with connection management, path mappings, and manual sync
 - **Provider management** - Unified management of multiple AI providers (OpenAI, Anthropic, custom proxies, etc.), with cross-coding-tool sharing and deep-link import
@@ -165,13 +170,18 @@ ai-toolbox/
 │   │   │   ├── codex/            # Codex configuration
 │   │   │   ├── grok/             # Grok CLI configuration
 │   │   │   ├── geminicli/        # Gemini CLI configuration
+│   │   │   ├── antigravity/      # Antigravity configuration
+│   │   │   ├── zcode/            # ZCode configuration
 │   │   │   ├── kimi/             # Kimi Code CLI configuration
 │   │   │   ├── openclaw/         # OpenClaw configuration
 │   │   │   ├── pi/               # Pi configuration
 │   │   │   ├── oh_my_pi/         # Oh My Pi configuration
+│   │   │   ├── omo_native/       # OmO Native configuration
 │   │   │   ├── claudedesktop/    # Claude Desktop configuration
 │   │   │   ├── hermes/           # Hermes Agent configuration
 │   │   │   ├── dsh/              # DeepSeek Harness configuration
+│   │   │   ├── workbuddy/        # WorkBuddy desktop configuration
+│   │   │   ├── codebuddy/        # CodeBuddy Code CLI configuration
 │   │   │   ├── mcp/              # MCP server management
 │   │   │   ├── skills/           # Skills management
 │   │   │   ├── gateway/          # Local proxy gateway
@@ -197,13 +207,19 @@ ai-toolbox/
 │   │       ├── open_code/        # OpenCode backend
 │   │       ├── grok/             # Grok CLI backend
 │   │       ├── gemini_cli/       # Gemini CLI backend
+│   │       ├── antigravity/      # Antigravity backend
+│   │       ├── zcode/            # ZCode backend
 │   │       ├── kimi/             # Kimi Code CLI backend
 │   │       ├── open_claw/        # OpenClaw backend
 │   │       ├── pi/               # Pi backend
 │   │       ├── oh_my_pi/         # Oh My Pi backend
+│   │       ├── omo_native/       # OmO Native backend
 │   │       ├── claude_desktop/   # Claude Desktop 3P configuration backend
 │   │       ├── hermes/           # Hermes Agent backend
 │   │       ├── dsh/              # DeepSeek Harness backend
+│   │       ├── workbuddy/        # WorkBuddy desktop backend
+│   │       ├── workbuddy_family/ # Shared WorkBuddy / CodeBuddy models.json handling
+│   │       ├── codebuddy/        # CodeBuddy Code CLI backend
 │   │       ├── oh_my_openagent/  # Oh My OpenAgent backend
 │   │       ├── oh_my_opencode_slim/ # Oh My OpenCode Slim backend
 │   │       ├── mcp/              # MCP server backend
@@ -258,6 +274,7 @@ pnpm tsc --noEmit
 
 # Rust checks
 cd tauri && cargo check
+cd tauri && cargo test
 ```
 
 ## Feature Modules
@@ -269,10 +286,15 @@ cd tauri && cargo check
 | Coding | Codex | ✅ Done | OpenAI Codex CLI official account/custom channel management, with model mappings, prompts, plugins, and session management |
 | Coding | Grok | ✅ Done | Grok CLI providers, `config.toml` / `auth.json`, official accounts, prompts, plugins, and session management |
 | Coding | Gemini CLI | ✅ Done | Gemini CLI official accounts/custom channels, prompts, usage, and session management |
+| Coding | Antigravity | ✅ Done | Antigravity Google official OAuth accounts, root directory settings, global prompts, and session management |
+| Coding | ZCode | ✅ Done | ZCode providers and models, official account switching and OAuth login, general configuration, root directory, prompts, and session management |
 | Coding | Kimi | ✅ Done | Kimi Code CLI providers, `config.toml` / `credentials` official accounts, prompts, plugins, MCP/Skills, and session management |
 | Coding | OpenClaw | ✅ Done | OpenClaw models, providers, configuration files, and session management |
 | Coding | Pi | ✅ Done | Pi CLI models, providers, extensions, prompts, and session management |
 | Coding | Oh My Pi | ✅ Done | Oh My Pi (OMP) runtime root, `models.yml` providers, `config.yml` settings, subagent configuration, and session management |
+| Coding | OmO Native | ✅ Done | OmO Native (`omo` binary / senpi engine) providers, `models.json` + `auth.json`, read-only built-in channels, prompts, `omo.jsonc` shared keys, and session management |
+| Coding | WorkBuddy | ✅ Done | WorkBuddy desktop root directory and `models.json` channels, with list/card views, model editing, and session management |
+| Coding | CodeBuddy | ✅ Done | CodeBuddy Code CLI root directory, `models.json` channels, `CODEBUDDY.md` prompts, read-only `settings.json` preview, and session management |
 | Coding | Claude Desktop | ✅ Done | Claude Desktop 3P gateway profile configuration, with gateway takeover and session management |
 | Coding | Hermes | ✅ Done | Hermes Agent `config.yaml`, providers, default model, global prompts, memory, and session management |
 | Coding | DeepSeek Harness | ✅ Done | DeepSeek Harness (dsh) `settings.yaml` / `.credentials.yaml`, providers, default model, global prompts, and session management |
@@ -288,91 +310,6 @@ cd tauri && cargo check
 | Settings | S3 | ✅ Done | S3-compatible storage configuration |
 | Settings | Providers | ✅ Done | Unified AI provider management |
 | Daily | Notes | 🚧 In progress | Markdown note management and search |
-
-## Data Storage
-
-SQLite is the local primary database, with per-module configuration stored in JSONB tables. A small number of structured tables (gateway request logs, daily usage rollups, model pricing) use regular columns instead, which keeps aggregation queries and indexes efficient.
-
-### Design Principles
-
-- **Local-first**: All data is stored locally to protect privacy
-- **Service-layer API**: The frontend talks to the backend through the service layer and does not use localStorage directly
-- **Flexible backup**: Local ZIP, WebDAV cloud backup, automatic backup, custom backup items, and external configuration file backups
-
-### Tables
-
-| Table | Description |
-|-------|-------------|
-| `settings` | Application settings |
-| `app_migration` | Internal application migration records |
-| `opencode_common_config` | OpenCode common configuration |
-| `opencode_prompt_config` | OpenCode prompt configuration |
-| `opencode_favorite_provider` | OpenCode favorite providers |
-| `opencode_favorite_plugin` | OpenCode favorite plugins |
-| `claude_provider` | Claude Code provider configuration |
-| `claude_common_config` | Claude Code common configuration |
-| `claude_prompt_config` | Claude Code prompt configuration |
-| `codex_provider` | Codex provider configuration |
-| `codex_common_config` | Codex common configuration |
-| `codex_prompt_config` | Codex prompt configuration |
-| `codex_official_account` | Codex official account configuration |
-| `codex_plugin_workspace_roots` | Codex plugin workspace roots |
-| `grok_provider` | Grok CLI provider configuration |
-| `grok_official_account` | Grok CLI official account configuration |
-| `grok_common_config` | Grok CLI common configuration |
-| `grok_prompt_config` | Grok CLI prompt configuration |
-| `kimi_provider` | Kimi Code CLI provider configuration |
-| `kimi_official_account` | Kimi Code CLI official account configuration |
-| `kimi_common_config` | Kimi Code CLI common configuration |
-| `kimi_prompt_config` | Kimi Code CLI prompt configuration |
-| `gemini_cli_provider` | Gemini CLI provider configuration |
-| `gemini_cli_common_config` | Gemini CLI common configuration |
-| `gemini_cli_prompt_config` | Gemini CLI prompt configuration |
-| `gemini_cli_official_account` | Gemini CLI official account configuration |
-| `claude_desktop_provider` | Claude Desktop provider configuration |
-| `claude_desktop_prompt_config` | Claude Desktop prompt configuration |
-| `hermes_settings_config` | Hermes Agent settings configuration |
-| `hermes_prompt_config` | Hermes Agent prompt configuration |
-| `dsh_settings_config` | DeepSeek Harness settings configuration |
-| `dsh_prompt_config` | DeepSeek Harness prompt configuration |
-| `oh_my_pi_settings_config` | Oh My Pi settings configuration |
-| `oh_my_pi_prompt_config` | Oh My Pi prompt configuration |
-| `oh_my_pi_agents_config` | Oh My Pi centralized subagent configuration |
-| `pi_settings_config` | Pi settings configuration |
-| `pi_prompt_config` | Pi prompt configuration |
-| `openclaw_common_config` | OpenClaw common configuration |
-| `oh_my_openagent_config` | Oh My OpenAgent configuration |
-| `oh_my_openagent_global_config` | Oh My OpenAgent global configuration |
-| `oh_my_opencode_slim_config` | Oh My OpenCode Slim configuration |
-| `oh_my_opencode_slim_global_config` | Oh My OpenCode Slim global configuration |
-| `mcp_server` | MCP server configuration |
-| `mcp_preferences` | MCP server preferences |
-| `favorite_mcp` | MCP favorites |
-| `mcp_group` | MCP groups |
-| `skill` | Skills records |
-| `skill_group` | Skills groups |
-| `skill_repo` | Skills Git repository sources |
-| `skill_preferences` | Skills preferences |
-| `skill_settings` | Skills settings |
-| `custom_tool` | Skills/MCP custom tool configuration |
-| `wsl_sync_config` | WSL sync configuration |
-| `wsl_file_mapping` | WSL file mappings |
-| `ssh_sync_config` | SSH sync configuration |
-| `ssh_connection` | SSH connection configuration |
-| `ssh_file_mapping` | SSH file mappings |
-| `proxy_gateway_settings` | Gateway settings |
-| `gateway_session_usage_state` | Gateway session usage collection state |
-| `image_channel` | Image channel configuration |
-| `image_job` | Image job records |
-| `image_asset` | Image asset records |
-
-The following 3 tables use regular columns instead of JSONB:
-
-| Table | Description |
-|-------|-------------|
-| `proxy_request_logs` | Gateway request log details (tokens, cost, latency) |
-| `usage_daily_rollups` | Gateway usage statistics aggregated by day |
-| `model_pricing` | Model pricing table |
 
 ## Contributing
 
