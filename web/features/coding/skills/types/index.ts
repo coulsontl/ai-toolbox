@@ -128,6 +128,44 @@ export interface AutoUpdateConfig {
   schedule: string;
 }
 
+/** One candidate directory the auto-discover pass can scan (issue #446). */
+export interface AutoSyncSource {
+  id: string;
+  label: string;
+  kind: 'central' | 'tool' | 'extra' | 'plugin' | 'custom';
+  path: string;
+  exists: boolean;
+  detected_count: number;
+  new_count: number;
+  locked: boolean;
+}
+
+export interface AutoSyncSourceList {
+  sources: AutoSyncSource[];
+}
+
+export interface AutoSyncConfig {
+  enabled: boolean;
+  sources: string[];
+  target_tools: string[] | null;
+}
+
+export interface AutoSyncConfigInput {
+  enabled: boolean;
+  sources: string[];
+  target_tools: string[] | null;
+}
+
+export interface AutoSyncRunResult {
+  discovered: number;
+  adopted: number;
+  refreshed: number;
+  synced_targets: number;
+  skipped_conflicts: string[];
+  skipped_names: string[];
+  errors: string[];
+}
+
 export interface GitSkillCandidate {
   name: string;
   description: string | null;

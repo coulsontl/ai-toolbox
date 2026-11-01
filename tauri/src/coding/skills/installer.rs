@@ -29,7 +29,7 @@ use crate::SqliteDbState;
 
 /// Install a skill from a local folder
 pub async fn install_local_skill(
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<impl tauri::Runtime>,
     state: &SqliteDbState,
     source_path: &Path,
     overwrite: bool,
@@ -155,7 +155,7 @@ pub fn list_local_skills(source_path: &Path) -> Result<Vec<GitSkillCandidate>> {
 
 /// Install a specific skill from a local folder selection (sub-folder)
 pub async fn install_local_skill_from_selection(
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<impl tauri::Runtime>,
     state: &SqliteDbState,
     source_path: &Path,
     subpath: &str,
@@ -603,7 +603,7 @@ pub async fn install_git_skill_from_selection(
 
 /// Update a managed skill from its source
 pub async fn update_managed_skill_from_source(
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<impl tauri::Runtime>,
     state: &SqliteDbState,
     skill_id: &str,
 ) -> Result<UpdateResult> {
@@ -884,7 +884,7 @@ pub async fn update_managed_skill_from_source(
 /// symlinked tool directory) can be recovered. Keeps the newest 5 copies per
 /// skill; failures here are logged, not fatal — the swap still proceeds.
 fn backup_central_before_replace(
-    _app: &tauri::AppHandle,
+    _app: &tauri::AppHandle<impl tauri::Runtime>,
     record: &Skill,
     central_path: &Path,
 ) -> Result<(), anyhow::Error> {
@@ -1170,7 +1170,7 @@ struct RepoCacheMeta {
 static GIT_CACHE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn clone_to_cache(
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<impl tauri::Runtime>,
     cache_ttl_secs: i64,
     clone_url: &str,
     branch: Option<&str>,

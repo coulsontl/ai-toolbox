@@ -55,11 +55,45 @@
   }
 }
 
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 .moreMenuTrigger {
   width: auto;
   padding: 0 10px;
   gap: 6px;
   white-space: nowrap;
+}
+
+// Auto-discover entry: a plain toolbar button whose dot reports the live
+// on/off state, so the state is visible without opening the dialog.
+.autoSyncTrigger {
+  width: auto;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.autoSyncTriggerLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.autoSyncDot {
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--color-border-secondary);
+  border-radius: 50%;
+  background: transparent;
+}
+
+.autoSyncDotOn {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
 }
 
 .pageHint {

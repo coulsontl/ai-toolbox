@@ -1,0 +1,197 @@
+// Dedicated auto-discover dialog (issue #446).
+// Section cards follow DESIGN.md's modal section pattern: full-width blocks
+// separated by spacing, no card-in-card nesting.
+
+.section {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-bg-elevated);
+
+  &:last-of-type {
+    margin-bottom: 0;
+  }
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.sectionTitle {
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.hint {
+  margin: 4px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  margin-top: 12px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 32px;
+  padding: 4px 0;
+
+  & + & {
+    border-top: 1px solid var(--color-border);
+  }
+}
+
+.rowMuted {
+  opacity: 0.55;
+}
+
+.rowLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-primary);
+  font-size: 13px;
+}
+
+.rowName {
+  white-space: nowrap;
+}
+
+.newBadge {
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--color-primary);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.rowMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+// Paths are the one value whose length is unpredictable: truncate with an
+// ellipsis and keep the full value in the tooltip / title attribute.
+.path {
+  max-width: 260px;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.count {
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.listActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.expandTools {
+  margin-top: 8px;
+}
+
+.toolGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 12px;
+  margin-top: 12px;
+}
+
+.toolCell {
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 2px 8px;
+  border: 1px dashed var(--color-border);
+  border-radius: 6px;
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--color-primary);
+  }
+}
+
+.toolCellActive {
+  border-style: solid;
+  border-color: var(--color-primary);
+}
+
+.runSection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.runSummary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.runDivider {
+  width: 1px;
+  height: 12px;
+  background: var(--color-border);
+}
+
+.result {
+  margin-top: 12px;
+
+  // A pass can fail for several targets at once; the description joins them
+  // with newlines, which only render as separate lines with this.
+  :global(.ant-alert-description) {
+    white-space: pre-line;
+  }
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.footerHint {
+  margin-right: auto;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .toolGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .path {
+    max-width: 150px;
+  }
+}

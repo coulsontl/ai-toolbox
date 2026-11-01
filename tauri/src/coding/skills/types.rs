@@ -88,6 +88,18 @@ pub struct SkillPreferences {
     pub auto_update_enabled: bool,            // Enable scheduled auto-update of all skills
     pub auto_update_schedule: String,         // 5-field cron expression (min hour dom mon dow)
     pub limit_add_more_to_preferred_tools: bool, // Add-more menus on Skill cards only show preferred tools
+    /// Enable the background discover pass (issue #446).
+    pub auto_sync_enabled: bool,
+    /// Enabled scan source identities (see `auto_discover`), e.g. `central`,
+    /// `tool:codex`, `extra:cc_switch`, `plugin:<id>`, `custom:<path>`.
+    /// `None` means "never configured" and resolves to central only.
+    pub auto_sync_sources: Option<Vec<String>>,
+    /// User-added directories shown in the source list. Kept separately from
+    /// the enabled set so unchecking a directory does not forget its path.
+    pub auto_sync_custom_dirs: Option<Vec<String>>,
+    /// Target tools for newly discovered Skills. `None` means the default
+    /// target only (the Universal directory); an empty list distributes nowhere.
+    pub auto_sync_target_tools: Option<Vec<String>>,
     pub updated_at: i64,
 }
 
@@ -106,6 +118,10 @@ impl Default for SkillPreferences {
             auto_update_enabled: false,
             auto_update_schedule: "0 3 * * *".to_string(),
             limit_add_more_to_preferred_tools: false,
+            auto_sync_enabled: false,
+            auto_sync_sources: None,
+            auto_sync_custom_dirs: None,
+            auto_sync_target_tools: None,
             updated_at: 0,
         }
     }
@@ -448,6 +464,67 @@ pub struct SkillsUpdateProgress {
 pub struct AutoUpdateConfigDto {
     pub enabled: bool,
     pub schedule: String,
+}
+
+/// One scan source offered by the auto-discover settings (issue #446).
+///
+/// `id` is the stable identity persisted in preferences; `path` is resolved at
+/// read time so WSL/custom runtime roots and cross-machine restores keep working.
+#[derive(Clone, Debug, Serialize)]
+pub struct AutoSyncSourceDto {
+    /// Stable identity: `central`, `tool:<key>`, `extra:<key>`, `plugin:<id>`, `custom:<path>`.
+    pub id: String,
+    pub label: String,
+    /// `central` | `tool` | `extra` | `plugin` | `custom`
+    pub kind: String,
+    pub path: String,
+    /// False when the directory does not currently exist on disk.
+    pub exists: bool,
+    /// Number of Skills currently found in this directory.
+    pub detected_count: usize,
+    /// Number of detected Skills that are not managed yet.
+    pub new_count: usize,
+    /// Central is always scanned; the UI shows it as locked-on.
+    pub locked: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AutoSyncSourceListDto {
+    pub sources: Vec<AutoSyncSourceDto>,
+}
+
+/// Auto-discover configuration returned by `skills_get_auto_sync`.
+#[derive(Clone, Debug, Serialize)]
+pub struct AutoSyncConfigDto {
+    pub enabled: bool,
+    pub sources: Vec<String>,
+    /// `None` means "not configured": the pass then targets the Universal
+    /// directory only (see `auto_discover::DEFAULT_TARGET_TOOL`).
+    pub target_tools: Option<Vec<String>>,
+}
+
+/// Input for `skills_set_auto_sync`.
+///
+/// Field names stay snake_case: `skills_get_auto_sync` returns a snake_case
+/// `AutoSyncConfigDto`, and the dialog round-trips the same object through both,
+/// so a camelCase rename here would silently drop `target_tools`.
+#[derive(Clone, Debug, Deserialize)]
+pub struct AutoSyncConfigInputDto {
+    pub enabled: bool,
+    pub sources: Vec<String>,
+    pub target_tools: Option<Vec<String>>,
+}
+
+/// Result of one discover pass (manual "scan now" or the background tick).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct AutoSyncRunResultDto {
+    pub discovered: usize,
+    pub adopted: usize,
+    pub refreshed: usize,
+    pub synced_targets: usize,
+    pub skipped_conflicts: Vec<String>,
+    pub skipped_names: Vec<String>,
+    pub errors: Vec<String>,
 }
 
 /// Git skill candidate for multi-skill repos

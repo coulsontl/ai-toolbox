@@ -36,7 +36,8 @@ use super::tool_adapters::{
 };
 use super::types::{
     now_ms, AdoptCentralSkillsResultDto, ApplyCentralRepoPathOptionsDto,
-    ApplyCentralRepoPathResultDto, AutoUpdateConfigDto, CentralRepoConflictDto,
+    ApplyCentralRepoPathResultDto, AutoSyncConfigDto, AutoSyncConfigInputDto, AutoSyncRunResultDto,
+    AutoSyncSourceListDto, AutoUpdateConfigDto, CentralRepoConflictDto,
     CentralRepoMigrationCandidateDto, CentralRepoPathPreviewDto, CentralRepoPathStatusDto,
     CentralRepoScanDto, CentralRepoTargetImpactDto, CentralSkillMatchDto,
     CentralSkillRepairCandidateDto, CustomTool, CustomToolDto, DeleteManagedSkillOptionsDto,
@@ -292,7 +293,7 @@ fn paths_equivalent(left: &Path, right: &Path) -> bool {
     }
 }
 
-fn normalize_central_relative_path(raw: &str) -> Result<String, String> {
+pub(crate) fn normalize_central_relative_path(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed == "." {
         return Err("Root-level SKILL.md is not supported as a managed Skill".to_string());
@@ -1581,8 +1582,8 @@ pub async fn skills_install_git_selection(
 
 // --- Sync Skills ---
 
-async fn resolve_skill_source_path<R: Runtime>(
-    app: &AppHandle<R>,
+async fn resolve_skill_source_path(
+    app: &AppHandle<impl Runtime>,
     state: &SqliteDbState,
     skill: &Skill,
 ) -> Result<PathBuf, String> {
@@ -1609,7 +1610,7 @@ fn source_target_overlap(source: &Path, target: &Path) -> bool {
     }
 }
 
-async fn sync_skill_to_tool_record(
+pub(crate) async fn sync_skill_to_tool_record(
     state: &SqliteDbState,
     skill: &Skill,
     tool: &str,
@@ -1744,8 +1745,8 @@ async fn remove_skill_targets_best_effort(
     Ok(())
 }
 
-async fn resolve_skill_source_path_for_cleanup<R: Runtime>(
-    app: &AppHandle<R>,
+async fn resolve_skill_source_path_for_cleanup(
+    app: &AppHandle<impl Runtime>,
     state: &SqliteDbState,
     skill: &Skill,
 ) -> Option<PathBuf> {
@@ -1834,12 +1835,11 @@ pub async fn skills_unsync_from_tool<R: Runtime>(
 
 // --- Update/Delete Skills ---
 
-#[tauri::command]
-#[allow(non_snake_case)]
-/// Update a single managed skill from its source (shared by single update and bulk update).
-async fn update_managed_skill_internal(
-    app: &tauri::AppHandle,
-    state: &State<'_, SqliteDbState>,
+/// Update a single managed skill from its source (shared by single update,
+/// bulk update and the auto-discover pass).
+pub(crate) async fn update_managed_skill_internal(
+    app: &tauri::AppHandle<impl Runtime>,
+    state: &SqliteDbState,
     skill_id: &str,
 ) -> Result<UpdateResultDto, String> {
     if let Some(mut skill) = skill_store::get_skill_by_id(state, skill_id).await? {
@@ -1910,7 +1910,7 @@ pub async fn skills_update_managed(
     state: State<'_, SqliteDbState>,
     skillId: String,
 ) -> Result<UpdateResultDto, String> {
-    let res = update_managed_skill_internal(&app, &state, &skillId).await?;
+    let res = update_managed_skill_internal(&app, state.inner(), &skillId).await?;
 
     // Emit skills-changed for WSL sync
     let _ = app.emit("skills-changed", "window");
@@ -2160,6 +2160,173 @@ pub async fn skills_preview_auto_update_schedule(
 ) -> Result<Vec<String>, String> {
     let count = (count.unwrap_or(10)).clamp(1, 100) as usize;
     super::cron_utils::next_n_occurrences(&schedule, count)
+}
+
+// --- Auto Discover (issue #446) ---
+
+/// Every candidate scan source with its live Skill counts, enabled flag included.
+#[tauri::command]
+pub async fn skills_get_auto_sync_sources(
+    app: AppHandle,
+    state: State<'_, SqliteDbState>,
+) -> Result<AutoSyncSourceListDto, String> {
+    let sources = super::auto_discover::build_source_list(&app, state.inner()).await?;
+    Ok(AutoSyncSourceListDto { sources })
+}
+
+#[tauri::command]
+pub async fn skills_get_auto_sync(
+    state: State<'_, SqliteDbState>,
+) -> Result<AutoSyncConfigDto, String> {
+    let prefs = skill_store::get_skill_preferences(&state).await?;
+    Ok(AutoSyncConfigDto {
+        enabled: prefs.auto_sync_enabled,
+        sources: super::auto_discover::effective_source_ids(prefs.auto_sync_sources.as_deref()),
+        target_tools: prefs.auto_sync_target_tools,
+    })
+}
+
+#[tauri::command]
+pub async fn skills_set_auto_sync(
+    state: State<'_, SqliteDbState>,
+    config: AutoSyncConfigInputDto,
+) -> Result<AutoSyncConfigDto, String> {
+    // Central is not optional: the storage directory is always a source.
+    let mut sources: Vec<String> = Vec::new();
+    for id in config.sources {
+        let id = id.trim().to_string();
+        if !id.is_empty() && !sources.contains(&id) {
+            sources.push(id);
+        }
+    }
+    if !sources.iter().any(|id| id == "central") {
+        sources.insert(0, "central".to_string());
+    }
+
+    // Same cleanup as `sources`: a target list must not carry blanks or dupes,
+    // but an explicit empty list is preserved (it means "distribute nowhere").
+    let target_tools = config.target_tools.map(|tools| {
+        let mut cleaned: Vec<String> = Vec::new();
+        for tool in tools {
+            let tool = tool.trim().to_string();
+            if !tool.is_empty() && !cleaned.contains(&tool) {
+                cleaned.push(tool);
+            }
+        }
+        cleaned
+    });
+
+    skill_store::set_setting(
+        &state,
+        "auto_sync_enabled",
+        if config.enabled { "true" } else { "false" },
+    )
+    .await?;
+    skill_store::set_setting(
+        &state,
+        "auto_sync_sources",
+        &serde_json::to_string(&sources).map_err(|e| e.to_string())?,
+    )
+    .await?;
+    skill_store::set_setting(
+        &state,
+        "auto_sync_target_tools",
+        &serde_json::to_string(&target_tools).map_err(|e| e.to_string())?,
+    )
+    .await?;
+
+    Ok(AutoSyncConfigDto {
+        enabled: config.enabled,
+        sources,
+        target_tools,
+    })
+}
+
+/// Add a user-chosen directory to the scan source list.
+///
+/// The directory is stored in portable form (`~/...` under home) and enabled
+/// for scanning. Re-adding the same directory is a no-op.
+#[tauri::command]
+pub async fn skills_add_auto_sync_dir(
+    state: State<'_, SqliteDbState>,
+    path: String,
+) -> Result<(), String> {
+    let stored = super::auto_discover::normalize_custom_dir(&path)
+        .ok_or_else(|| format!("Invalid directory: {path}"))?;
+
+    let prefs = skill_store::get_skill_preferences(&state).await?;
+    let mut dirs = prefs.auto_sync_custom_dirs.unwrap_or_default();
+    if !dirs.contains(&stored) {
+        dirs.push(stored.clone());
+    }
+    let mut sources = super::auto_discover::effective_source_ids(prefs.auto_sync_sources.as_deref());
+    let source_id = format!("custom:{}", stored.replace('\\', "/"));
+    if !sources.contains(&source_id) {
+        sources.push(source_id);
+    }
+
+    skill_store::set_setting(
+        &state,
+        "auto_sync_custom_dirs",
+        &serde_json::to_string(&dirs).map_err(|e| e.to_string())?,
+    )
+    .await?;
+    skill_store::set_setting(
+        &state,
+        "auto_sync_sources",
+        &serde_json::to_string(&sources).map_err(|e| e.to_string())?,
+    )
+    .await
+}
+
+/// Remove a user-added directory from the scan source list.
+///
+/// The caller passes the path shown in the dialog, which is the expanded
+/// absolute path; stored entries are portable (`~/...`), so normalize first or
+/// the ids never match and the removal silently does nothing.
+#[tauri::command]
+pub async fn skills_remove_auto_sync_dir(
+    state: State<'_, SqliteDbState>,
+    path: String,
+) -> Result<(), String> {
+    let normalized = super::auto_discover::normalize_custom_dir(&path)
+        .ok_or_else(|| format!("Invalid directory: {path}"))?;
+    let source_id = format!("custom:{}", normalized.replace('\\', "/"));
+    let prefs = skill_store::get_skill_preferences(&state).await?;
+    let dirs: Vec<String> = prefs
+        .auto_sync_custom_dirs
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|entry| format!("custom:{}", entry.replace('\\', "/")) != source_id)
+        .collect();
+    let sources: Vec<String> = super::auto_discover::effective_source_ids(
+        prefs.auto_sync_sources.as_deref(),
+    )
+    .into_iter()
+    .filter(|id| id != &source_id)
+    .collect();
+
+    skill_store::set_setting(
+        &state,
+        "auto_sync_custom_dirs",
+        &serde_json::to_string(&dirs).map_err(|e| e.to_string())?,
+    )
+    .await?;
+    skill_store::set_setting(
+        &state,
+        "auto_sync_sources",
+        &serde_json::to_string(&sources).map_err(|e| e.to_string())?,
+    )
+    .await
+}
+
+/// Run one discover pass now (settings "scan now" and the toolbar action).
+#[tauri::command]
+pub async fn skills_run_auto_sync(
+    app: AppHandle,
+    state: State<'_, SqliteDbState>,
+) -> Result<AutoSyncRunResultDto, String> {
+    super::auto_discover::run_pass(&app, state.inner(), true).await
 }
 
 // --- Preferred Tools ---

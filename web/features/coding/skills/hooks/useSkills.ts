@@ -17,10 +17,12 @@ export function useSkills() {
     }
   }, [store.isModalOpen]);
 
-  // Listen for skills-changed events from tray
+  // Listen for skills-changed events from the tray and the background
+  // auto-discover pass. The auto pass stays silent (no toast): it only refreshes
+  // the list so newly distributed Skills appear without the user asking.
   React.useEffect(() => {
     const unlisten = listen<string>('skills-changed', (event) => {
-      if (event.payload === 'tray') {
+      if (event.payload === 'tray' || event.payload === 'auto') {
         store.loadSkills();
       }
     });

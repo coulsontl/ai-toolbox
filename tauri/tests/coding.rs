@@ -27,6 +27,8 @@ mod oh_my_opencode_slim_adapter;
 mod open_code_opencode_roundtrip;
 #[path = "coding/proxy_gateway/mod.rs"]
 mod proxy_gateway;
+#[path = "coding/skills/auto_discover.rs"]
+mod skills_auto_discover;
 #[path = "coding/skills/sync_engine.rs"]
 mod skills_sync_engine;
 #[path = "coding/skills/tool_adapters.rs"]

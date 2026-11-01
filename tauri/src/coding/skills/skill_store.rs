@@ -581,6 +581,16 @@ pub async fn get_setting(state: &SqliteDbState, key: &str) -> Result<Option<Stri
         "limit_add_more_to_preferred_tools" => {
             Some(prefs.limit_add_more_to_preferred_tools.to_string())
         }
+        "auto_sync_enabled" => Some(prefs.auto_sync_enabled.to_string()),
+        "auto_sync_sources" => prefs
+            .auto_sync_sources
+            .map(|v| serde_json::to_string(&v).unwrap_or_default()),
+        "auto_sync_custom_dirs" => prefs
+            .auto_sync_custom_dirs
+            .map(|v| serde_json::to_string(&v).unwrap_or_default()),
+        "auto_sync_target_tools" => prefs
+            .auto_sync_target_tools
+            .map(|v| serde_json::to_string(&v).unwrap_or_default()),
         _ => None,
     };
 
@@ -625,6 +635,18 @@ pub async fn set_setting(state: &SqliteDbState, key: &str, value: &str) -> Resul
         }
         "limit_add_more_to_preferred_tools" => {
             prefs.limit_add_more_to_preferred_tools = value == "true";
+        }
+        "auto_sync_enabled" => {
+            prefs.auto_sync_enabled = value == "true";
+        }
+        "auto_sync_sources" => {
+            prefs.auto_sync_sources = serde_json::from_str(value).ok();
+        }
+        "auto_sync_custom_dirs" => {
+            prefs.auto_sync_custom_dirs = serde_json::from_str(value).ok();
+        }
+        "auto_sync_target_tools" => {
+            prefs.auto_sync_target_tools = serde_json::from_str(value).ok();
         }
         _ => return Err(format!("Unknown setting key: {}", key)),
     };

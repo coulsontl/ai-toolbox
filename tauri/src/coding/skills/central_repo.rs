@@ -30,16 +30,16 @@ fn load_authoritative_central_repo_path_sync(
 
 /// Resolve the central repo path from the authoritative skill_settings record
 /// or default to app_data_dir/skills.
-pub async fn resolve_central_repo_path<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub async fn resolve_central_repo_path(
+    app: &tauri::AppHandle<impl tauri::Runtime>,
     state: &crate::SqliteDbState,
 ) -> Result<PathBuf> {
     resolve_central_repo_path_sync(app, state)
 }
 
 /// Sync variant for backup/restore code that already runs outside async DB flows.
-pub fn resolve_central_repo_path_sync<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub fn resolve_central_repo_path_sync(
+    app: &tauri::AppHandle<impl tauri::Runtime>,
     state: &crate::SqliteDbState,
 ) -> Result<PathBuf> {
     // Try to get from settings first
@@ -53,8 +53,8 @@ pub fn resolve_central_repo_path_sync<R: tauri::Runtime>(
 }
 
 /// Resolve the default central repo path without reading user settings.
-pub fn resolve_default_central_repo_path<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub fn resolve_default_central_repo_path(
+    app: &tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<PathBuf> {
     let _ = app;
     let app_data_dir = crate::app_paths::resolved_data_dir();

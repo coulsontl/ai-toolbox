@@ -7,6 +7,10 @@ import type {
   UpdateResult,
   UpdateAllResult,
   AutoUpdateConfig,
+  AutoSyncConfig,
+  AutoSyncConfigInput,
+  AutoSyncRunResult,
+  AutoSyncSourceList,
   GitSkillCandidate,
   OnboardingPlan,
   SkillRepo,
@@ -173,6 +177,31 @@ export const previewAutoUpdateSchedule = async (
   count?: number,
 ): Promise<string[]> => {
   return invoke<string[]>('skills_preview_auto_update_schedule', { schedule, count });
+};
+
+// Auto Discover (issue #446)
+export const getAutoSyncSources = async (): Promise<AutoSyncSourceList> => {
+  return invoke<AutoSyncSourceList>('skills_get_auto_sync_sources');
+};
+
+export const getAutoSync = async (): Promise<AutoSyncConfig> => {
+  return invoke<AutoSyncConfig>('skills_get_auto_sync');
+};
+
+export const setAutoSync = async (config: AutoSyncConfigInput): Promise<AutoSyncConfig> => {
+  return invoke<AutoSyncConfig>('skills_set_auto_sync', { config });
+};
+
+export const addAutoSyncDir = async (path: string): Promise<void> => {
+  return invoke('skills_add_auto_sync_dir', { path });
+};
+
+export const removeAutoSyncDir = async (path: string): Promise<void> => {
+  return invoke('skills_remove_auto_sync_dir', { path });
+};
+
+export const runAutoSync = async (): Promise<AutoSyncRunResult> => {
+  return invoke<AutoSyncRunResult>('skills_run_auto_sync');
 };
 
 export const deleteManagedSkill = async (

@@ -25,6 +25,7 @@ import {
   PlusCircle,
   Power,
   PowerOff,
+  Radar,
   RefreshCw,
   Search,
   SlidersHorizontal,
@@ -56,6 +57,7 @@ import { AddSkillModal } from '../components/modals/AddSkillModal';
 import { BatchTagDialog } from '../components/modals/BatchTagDialog';
 import { ImportModal } from '../components/modals/ImportModal';
 import { SkillsSettingsModal } from '../components/modals/SkillsSettingsModal';
+import { SkillsAutoSyncModal } from '../components/modals/SkillsAutoSyncModal';
 import { DeleteConfirmModal } from '../components/modals/DeleteConfirmModal';
 import { NewToolsModal } from '../components/modals/NewToolsModal';
 import { SkillMetadataModal } from '../components/modals/SkillMetadataModal';
@@ -309,6 +311,23 @@ const SkillsPage: React.FC = () => {
   const [batchGroupValue, setBatchGroupValue] = React.useState('');
   const [groupsModalOpen, setGroupsModalOpen] = React.useState(false);
   const [inventoryModalOpen, setInventoryModalOpen] = React.useState(false);
+  const [autoSyncModalOpen, setAutoSyncModalOpen] = React.useState(false);
+  const [autoSyncEnabled, setAutoSyncEnabled] = React.useState(false);
+
+  // The header button must show the live on/off state, so read the config here
+  // (the dialog reads it again on open; both read the same backend settings).
+  const loadAutoSyncState = React.useCallback(async () => {
+    try {
+      const config = await api.getAutoSync();
+      setAutoSyncEnabled(config.enabled);
+    } catch (error) {
+      console.error('Failed to load auto sync state:', error);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void loadAutoSyncState();
+  }, [loadAutoSyncState]);
   const [enabledFilter, setEnabledFilter] = React.useState<SkillEnabledFilter>('all');
   const [tagFilter, setTagFilter] = React.useState<string[]>([]);
   const [batchTagModalOpen, setBatchTagModalOpen] = React.useState(false);
@@ -1069,14 +1088,31 @@ const SkillsPage: React.FC = () => {
           </div>
           <p className={styles.pageHint}>{t('skills.pageHint')}</p>
         </div>
-        <ManagementButton
-          variant="ghost"
-          icon={<MoreHorizontal size={16} aria-hidden="true" />}
-          className={styles.moreMenuTrigger}
-          onClick={() => setSettingsModalOpen(true)}
-        >
-          {t('skills.settings')}
-        </ManagementButton>
+        <div className={styles.headerActions}>
+          <ManagementButton
+            variant="subtle"
+            icon={<Radar size={14} aria-hidden="true" />}
+            className={styles.autoSyncTrigger}
+            onClick={() => setAutoSyncModalOpen(true)}
+            title={t('skills.autoSync.title')}
+          >
+            <span className={styles.autoSyncTriggerLabel}>
+              {t('skills.autoSync.entry')}
+              <span
+                className={`${styles.autoSyncDot}${autoSyncEnabled ? ` ${styles.autoSyncDotOn}` : ''}`}
+                aria-hidden="true"
+              />
+            </span>
+          </ManagementButton>
+          <ManagementButton
+            variant="ghost"
+            icon={<MoreHorizontal size={16} aria-hidden="true" />}
+            className={styles.moreMenuTrigger}
+            onClick={() => setSettingsModalOpen(true)}
+          >
+            {t('skills.settings')}
+          </ManagementButton>
+        </div>
       </div>
 
       <div className={styles.toolbar}>
@@ -1536,6 +1572,12 @@ const SkillsPage: React.FC = () => {
           onClose={() => setSettingsModalOpen(false)}
         />
       )}
+
+      <SkillsAutoSyncModal
+        open={autoSyncModalOpen}
+        onClose={() => setAutoSyncModalOpen(false)}
+        onConfigSaved={loadAutoSyncState}
+      />
 
       <DeleteConfirmModal
         open={!!deleteSkillId}

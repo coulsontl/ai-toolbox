@@ -34,6 +34,7 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
 | skill_store.rs | Skills 主数据增删改查操作；已切到 SQLite JSONB |
 | commands.rs | Tauri 命令（前端 API 接口） |
 | installer.rs | 技能安装逻辑（本地/Git） |
+| auto_discover.rs | 自动发现与分发：扫描来源解析、60s 轮询、纳管、只分发新 Skill、内容变化重同步 |
 | sync_engine.rs | 文件同步引擎（符号链接/接合点/复制） |
 | tool_adapters.rs | 工具检测和路径解析 |
 | onboarding.rs | 技能发现（扫描已安装工具） |
@@ -470,6 +471,37 @@ skills-git-cache/
 
 **更新替换前保护（installer::update_managed_skill_from_source）：** staging 构建完成后先与现有 central 目录做内容哈希比对，哈希一致直接跳过 swap：不重写目录、不重同步工具（`updated_targets` 为空），但仍然 `upsert_skill` 刷新 DB 行的 `updated_at`、把新拉的 git `source_revision` 落库、并归一 `status="ok"`，使该路径与其余三个刷新入口统一为「成功即改时间、失败不写库」；`central_path` 顺手 `to_relative_central_path` 归一。避免定时任务每次 tick 无谓重写目录、也避免"源内容未变"仍覆盖 mtime。哈希不一致需要替换时，先把旧 central 内容复制到 `{app_data}/skills-backup/{skill_id}-{ts}`（每 skill 保留最新 5 份）再删除重建；用户经 symlink 工具目录直接改写的 central 内容因此可恢复，备份失败只 warn 不阻断更新。
 
+### 4.6.2 自动发现与分发（issue #446）
+
+`auto_discover.rs` 每 60s 扫描「扫描来源」，把 DB 里还没有的 Skill 纳管，并**只把本次新纳管的**分发到目标工具。
+
+**来源身份**：偏好里存 id 而不是绝对路径，跨机器恢复、工具运行时根改动后重新解析：
+
+| id | 含义 |
+|----|------|
+| `central` | 中央仓库（`central_repo_path`），永远启用、不可取消 |
+| `tool:<key>` | 工具运行时 skills 目录（内置 + 自定义工具，跟着 WSL/自定义根走） |
+| `extra:<key>` | 第三方 store，当前只有 `cc_switch`（与 `onboarding::EXTRA_SKILL_SOURCES` 保持同步） |
+| `plugin:<id>` | Claude Code 插件的 `skills/` |
+| `custom:<归一化路径>` | 用户添加的目录，存 `~/...` 形式 |
+
+**纳管语义分裂是刻意的**：`central` 原地纳管（`source_type="central"`，不复制）；其余全部复制进中央仓库（`source_type="local"`、`source_ref=原目录`），因此删除来源目录不破坏已纳管内容，后续仍能从原目录拉更新。
+
+**关键不变量**：
+
+- 只分发本轮新纳管的 Skill。绝不能「每轮把所有 Skill 补齐到目标工具」——那会撤销用户手动取消的工具绑定（回归测试 `existing_tool_bindings_are_not_resurrected`）。
+- **指纹必须按「来源 + 名称」记，且只由真正拥有该 Skill 的来源判定**（`source_owns_skill`）：同名的 Skill 会同时出现在自己的目录、中央仓库副本和每个链接它的工具目录里。中央仓库只拥有 `source_type="central"` 的记录，否则复制进来的 Skill 下一轮就会被判定「内容变了」而无限重同步（`copied_skills_are_not_owned_by_the_central_source`）。
+- 目标工具未配置时只分发到 `shared_agents`（Universal，`~/.agents/skills`），**不是「全部已安装工具」**：后台 pass 不许写进用户没指过的 CLI（`unconfigured_targets_default_to_the_universal_directory_only`）。
+- 从 `tool:X` 来的 Skill 不参与分发到 `X`（那边是用户自己的目录，必然 `TARGET_EXISTS`）。
+- 分发一律 `overwrite=false`：工具目录里的同名外来目录永不自动覆盖，失败只记日志（`foreign_same_named_tool_directory_is_never_overwritten`）。
+- 同名冲突（两个目录 frontmatter 同名）整组跳过，不猜。
+- `management_enabled=false` 的 Skill 不复活、不刷新、不分发。
+- 不自动删除记录、中央仓库内容或任何工具目录。
+
+**内容变化**：每轮对每个已发现 Skill 计算廉价指纹（最新 mtime + 条目数），与存于 `skill_settings.auto_sync_fingerprints` 的上次值比较；变化时调用 `update_managed_skill_internal` 走现有更新链路（哈希一致会跳过替换；只重拷 copy 型目标，symlink/junction 自动跟随）。
+
+**并发**：`PASS_RUNNING` 只由后台调度器持有，用于跳过重叠的 tick；用户触发的「立即扫描」直接跑（app 的单写者 DB 锁已串行化）。
+
 ### 4.7 工具同步流程
 
 将技能同步到指定工具。
@@ -865,6 +897,12 @@ description: "可选的描述"
 | skills_update_all | 更新全部：遍历所有 managed skill 逐个从源更新，聚合结果，单点失败不阻断其余 |
 | skills_get_auto_update | 获取定时自动更新配置（enabled / schedule cron 表达式） |
 | skills_set_auto_update | 保存定时自动更新配置（保存前校验 cron 可解析） |
+| skills_get_auto_sync_sources | 列出全部候选扫描来源：路径、是否存在、已发现数、未纳管数、启用态 |
+| skills_get_auto_sync | 获取自动分发配置（enabled / sources / target_tools） |
+| skills_set_auto_sync | 保存自动分发配置；central 强制保留在 sources 中 |
+| skills_add_auto_sync_dir | 添加自定义扫描目录（归一化为 `~/...` 并启用） |
+| skills_remove_auto_sync_dir | 移除自定义扫描目录及其启用项 |
+| skills_run_auto_sync | 立即执行一次发现与分发（用户触发，返回统计） |
 | skills_preview_auto_update_schedule | 计算 cron 表达式最近 N 次触发时间（本地时区，count 1..=100 默认 10） |
 | skills_delete_managed | 删除技能 |
 | skills_get_onboarding_plan | 获取技能发现计划 |

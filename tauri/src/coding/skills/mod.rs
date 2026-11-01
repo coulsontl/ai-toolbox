@@ -2,6 +2,7 @@
 // Unified management for AI coding tool skills
 
 pub mod adapter;
+pub mod auto_discover;
 pub mod auto_update;
 pub mod cache_cleanup;
 pub mod central_repo;

@@ -1216,6 +1216,9 @@ pub fn run() {
                 // Scheduled skills auto-update: startup pass + configurable interval.
                 coding::skills::auto_update::start(app_handle.clone());
 
+                // Background Skill discovery + distribution (issue #446).
+                coding::skills::auto_discover::start(app_handle.clone());
+
                 // 注册 SSH 会话状态
                 let ssh_session = coding::ssh::SshSessionState(std::sync::Arc::new(
                     tokio::sync::Mutex::new(coding::ssh::SshSession::new()),
@@ -2925,6 +2928,12 @@ pub fn run() {
             coding::skills::skills_get_auto_update,
             coding::skills::skills_set_auto_update,
             coding::skills::skills_preview_auto_update_schedule,
+            coding::skills::skills_get_auto_sync_sources,
+            coding::skills::skills_get_auto_sync,
+            coding::skills::skills_set_auto_sync,
+            coding::skills::skills_add_auto_sync_dir,
+            coding::skills::skills_remove_auto_sync_dir,
+            coding::skills::skills_run_auto_sync,
             coding::skills::skills_delete_managed,
             coding::skills::skills_get_onboarding_plan,
             coding::skills::skills_import_existing,

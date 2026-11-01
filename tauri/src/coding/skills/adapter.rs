@@ -356,6 +356,13 @@ pub fn from_db_skill_preferences(value: Value) -> SkillPreferences {
             .get("limit_add_more_to_preferred_tools")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        auto_sync_enabled: value
+            .get("auto_sync_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        auto_sync_sources: parse_optional_string_list(value.get("auto_sync_sources")),
+        auto_sync_custom_dirs: parse_optional_string_list(value.get("auto_sync_custom_dirs")),
+        auto_sync_target_tools: parse_optional_string_list(value.get("auto_sync_target_tools")),
         updated_at: value
             .get("updated_at")
             .and_then(|v| v.as_i64())
@@ -378,6 +385,18 @@ pub(crate) fn normalize_group_mode(value: Option<&str>) -> String {
     }
 }
 
+/// Parse a JSON array of strings into `Option<Vec<String>>`.
+/// `None` means the key was absent (or not an array); an empty array stays
+/// `Some(vec![])` because "explicitly configured as empty" is meaningful for
+/// the auto-sync target tool list.
+fn parse_optional_string_list(value: Option<&Value>) -> Option<Vec<String>> {
+    value.and_then(|v| v.as_array()).map(|arr| {
+        arr.iter()
+            .filter_map(|item| item.as_str().map(|s| s.to_string()))
+            .collect()
+    })
+}
+
 /// Convert SkillPreferences to database payload
 pub fn to_skill_preferences_payload(prefs: &SkillPreferences) -> Value {
     serde_json::json!({
@@ -392,6 +411,10 @@ pub fn to_skill_preferences_payload(prefs: &SkillPreferences) -> Value {
         "auto_update_enabled": prefs.auto_update_enabled,
         "auto_update_schedule": prefs.auto_update_schedule,
         "limit_add_more_to_preferred_tools": prefs.limit_add_more_to_preferred_tools,
+        "auto_sync_enabled": prefs.auto_sync_enabled,
+        "auto_sync_sources": prefs.auto_sync_sources,
+        "auto_sync_custom_dirs": prefs.auto_sync_custom_dirs,
+        "auto_sync_target_tools": prefs.auto_sync_target_tools,
         "updated_at": prefs.updated_at,
     })
 }
