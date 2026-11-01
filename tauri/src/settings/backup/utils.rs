@@ -226,6 +226,7 @@ pub fn sanitize_restored_claude_database_for_current_os(
     #[cfg(not(target_os = "windows"))]
     {
         use crate::db::helpers::{db_get, db_list, db_put};
+        use crate::db::schema::{Cli, CliConfigKind, DbTable};
 
         fn sanitize_string_field(
             record: &mut serde_json::Value,
