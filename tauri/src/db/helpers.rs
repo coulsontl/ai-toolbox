@@ -248,6 +248,38 @@ pub fn db_max_i64(
         .map_err(|error| format!("Failed to read max value from {table_name}: {error}"))
 }
 
+/// Delete rows whose integer field is older than `cutoff`, inside one scope.
+///
+/// Rows without the field are left alone: a missing timestamp is not evidence
+/// that the row is old, and silently deleting it would lose data the schema
+/// never said was expendable.
+///
+/// The scope predicates are `?1..?n` and the cutoff takes `?n+1`; that is the
+/// same numbering `db_query_by_field` uses, but the comparison stays in SQL so
+/// a large backlog is trimmed in one statement instead of row by row.
+pub fn db_prune_before(
+    conn: &Connection,
+    table: DbTable,
+    field_path: &JsonFieldPath,
+    cutoff: i64,
+) -> Result<usize, String> {
+    let table_name = table.name();
+    let scope = table.scope();
+    let path = sql_string_literal(&field_path.to_sql_path());
+    let cutoff_slot = scope_len(&scope) + 1;
+    let mut predicates = scope_predicates(&scope);
+    predicates.push(format!(
+        "CAST(json_extract(data, {path}) AS INTEGER) < ?{cutoff_slot}"
+    ));
+    let sql = format!("DELETE FROM {table_name}{}", where_clause(&predicates));
+    let mut params: Vec<Box<dyn ToSql>> = Vec::new();
+    params.push(Box::new(cutoff));
+    let bound = with_scope(&scope, params);
+    conn.execute(&sql, params_from_iter(bound))
+        .map(|removed| removed as usize)
+        .map_err(|error| format!("Failed to prune {table_name}: {error}"))
+}
+
 pub fn db_patch_fields(
     conn: &Connection,
     table: DbTable,

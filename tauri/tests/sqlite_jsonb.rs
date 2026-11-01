@@ -8,8 +8,8 @@ use ai_toolbox_lib::db::change_hook::{install_change_recorder, DbChangeAction};
 use ai_toolbox_lib::db::health;
 use ai_toolbox_lib::db::helpers::{
     db_count, db_create, db_delete, db_delete_all, db_get, db_list, db_max_i64, db_patch_fields,
-    db_patch_where_bool, db_put, db_query_by_bool, db_query_by_field, db_transaction,
-    db_update_applied_status,
+    db_patch_where_bool, db_prune_before, db_put, db_query_by_bool, db_query_by_field,
+    db_transaction, db_update_applied_status,
 };
 use ai_toolbox_lib::db::migrations::{self, TARGET_SCHEMA_VERSION};
 use ai_toolbox_lib::db::schema::{
@@ -2024,5 +2024,70 @@ fn a_fresh_database_matches_an_upgraded_one() {
     assert_eq!(
         fresh_fingerprint.1, upgraded_fingerprint.1,
         "fresh and upgraded databases disagree on indexes"
+    );
+}
+
+/// The check-in ledger is the one consolidated table that grows without bound:
+/// one row per account per day, appended, never read in bulk. Trimming must
+/// delete only rows past the retention window, and only inside its own kind --
+/// a missing scope here would delete another relay table's history.
+#[test]
+fn pruning_the_checkin_ledger_drops_only_old_rows_in_its_own_scope() {
+    let conn = test_conn();
+    let ledger = DbTable::RelayEntity(RelayKind::CheckinRecord);
+    let field = JsonFieldPath::new("ts").unwrap();
+    let day_ms = 24 * 60 * 60 * 1000_i64;
+    let now = 1_800_000_000_000_i64;
+
+    // Two recent and two expired ledger rows.
+    for (id, age_days) in [("recent-1", 1), ("recent-2", 89), ("old-1", 91), ("old-2", 400)] {
+        db_put(&conn, ledger, id, &json!({ "ts": now - age_days * day_ms })).unwrap();
+    }
+    // A channel row carrying the same `ts` shape must survive: different kind.
+    let channel = DbTable::RelayEntity(RelayKind::Channel);
+    db_put(&conn, channel, "channel-old", &json!({ "ts": 0 })).unwrap();
+    // A ledger row with no `ts` at all is not evidence of age; keep it.
+    db_put(&conn, ledger, "no-ts", &json!({ "outcome": "claimed" })).unwrap();
+
+    let cutoff = now - 90 * day_ms;
+    let removed = db_prune_before(&conn, ledger, &field, cutoff).unwrap();
+    assert_eq!(removed, 2, "only the two expired ledger rows should go");
+
+    let left: Vec<String> = db_list(&conn, ledger, None)
+        .unwrap()
+        .into_iter()
+        .filter_map(|row| row["id"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(left.len(), 3, "recent-1, recent-2 and no-ts stay: {left:?}");
+    assert!(left.contains(&"recent-1".to_string()));
+    assert!(left.contains(&"recent-2".to_string()));
+    assert!(left.contains(&"no-ts".to_string()));
+
+    assert_eq!(
+        db_count(&conn, channel).unwrap(),
+        1,
+        "the channel kind must not be touched by a ledger prune"
+    );
+}
+
+/// A scoped prune must not reach a sibling scope either: the same helper runs
+/// against `cli_config`, where the scope is `(cli_key, kind)`.
+#[test]
+fn pruning_one_config_scope_leaves_the_others_alone() {
+    let conn = test_conn();
+    let field = JsonFieldPath::new("updated_ts").unwrap();
+    let claude_prompt = DbTable::CliConfig(Cli::Claude, CliConfigKind::Prompt);
+    let claude_common = DbTable::CliConfig(Cli::Claude, CliConfigKind::Common);
+
+    db_put(&conn, claude_prompt, "stale", &json!({ "updated_ts": 1 })).unwrap();
+    db_put(&conn, claude_common, "stale", &json!({ "updated_ts": 1 })).unwrap();
+
+    let removed = db_prune_before(&conn, claude_prompt, &field, 1_000).unwrap();
+    assert_eq!(removed, 1);
+    assert_eq!(db_count(&conn, claude_prompt).unwrap(), 0);
+    assert_eq!(
+        db_count(&conn, claude_common).unwrap(),
+        1,
+        "the other kind under the same cli_key must survive"
     );
 }

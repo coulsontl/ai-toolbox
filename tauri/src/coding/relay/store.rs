@@ -6,7 +6,7 @@ use super::types::{
     RelayPlugin, RelayPluginAccount, RelayPluginProvider,
 };
 use crate::coding::db_id::{db_clean_id, db_new_id};
-use crate::db::helpers::{db_delete, db_get, db_list, db_put};
+use crate::db::helpers::{db_delete, db_get, db_list, db_prune_before, db_put};
 use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec, RelayKind};
 use crate::SqliteDbState;
 
@@ -357,6 +357,11 @@ pub async fn list_checkin_records(
     })
 }
 
+/// How long the check-in ledger is kept. Three months covers every question the
+/// page is asked (this week's streak, last month's claims) while bounding a
+/// table that is appended to once per account per day and never read in bulk.
+pub const CHECKIN_RECORD_RETENTION_DAYS: i64 = 90;
+
 pub async fn append_checkin_record(
     state: &SqliteDbState,
     mut record: RelayCheckinRecord,
@@ -371,8 +376,29 @@ pub async fn append_checkin_record(
         let payload = serde_json::to_value(&record)
             .map_err(|error| format!("Failed to serialize 2API check-in record: {error}"))?;
         db_put(conn, DbTable::RelayEntity(RelayKind::CheckinRecord), &record.id, &payload)?;
+        // Trim on append rather than on a timer: the ledger only grows by
+        // appending, so that is exactly when trimming is worth doing, and no
+        // background task has to be owned and cancelled with the app. A failed
+        // prune is maintenance debt, not a reason to report the check-in as
+        // failed -- the row is already written and the vendor already paid out.
+        if let Err(error) = prune_checkin_records(conn) {
+            log::warn!("Failed to prune 2API check-in records: {error}");
+        }
         Ok(record)
     })
+}
+
+/// Drop ledger rows older than [`CHECKIN_RECORD_RETENTION_DAYS`], inside the
+/// check-in scope only.
+fn prune_checkin_records(conn: &rusqlite::Connection) -> Result<usize, String> {
+    let cutoff = super::types::now_ms() - CHECKIN_RECORD_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    let field = JsonFieldPath::new("ts")?;
+    db_prune_before(
+        conn,
+        DbTable::RelayEntity(RelayKind::CheckinRecord),
+        &field,
+        cutoff,
+    )
 }
 
 #[allow(dead_code)]
