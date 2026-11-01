@@ -40,10 +40,7 @@ type SupportedGatewayCliKey = Extract<
   | 'grok'
   | 'kimi'
   | 'gemini'
-  | 'antigravity'
   | 'claude_desktop'
-  | 'workbuddy_desktop'
-  | 'codebuddy_cli'
 >;
 
 interface NoticeState {
@@ -56,6 +53,13 @@ interface CliOption {
   labelKey: string;
 }
 
+// Only the CLIs that can actually be taken over appear here. The per-card
+// fields are *overrides* for a CLI whose traffic the gateway serves, so a card
+// for a CLI that can never be engaged is a dead control: Antigravity has no
+// takeover implementation (`is_supported_cli` excludes it) and always reported
+// "暂不支持", while WorkBuddy/CodeBuddy are supported by the backend but have
+// no engage entry point in the UI, so they always reported "无可代理渠道"
+// (user-directed, 2026-11-01: "不支持写那干啥").
 const CLI_OPTIONS: CliOption[] = [
   {
     key: 'claude',
@@ -78,24 +82,8 @@ const CLI_OPTIONS: CliOption[] = [
     labelKey: 'settings.gateway.cli.gemini',
   },
   {
-    key: 'antigravity',
-    labelKey: 'settings.gateway.cli.antigravity',
-  },
-  {
     key: 'claude_desktop',
     labelKey: 'settings.gateway.cli.claude_desktop',
-  },
-  // Keys must equal the backend's `GatewayCliKey::as_str()`, which is
-  // deliberately `*_desktop` / `_cli`: it is also the `app_type` written for
-  // gateway-served requests, and must not collide with the native-session
-  // spelling of the same product. The labels reuse the plain product names.
-  {
-    key: 'workbuddy_desktop',
-    labelKey: 'settings.gateway.cli.workbuddy',
-  },
-  {
-    key: 'codebuddy_cli',
-    labelKey: 'settings.gateway.cli.codebuddy',
   },
 ];
 

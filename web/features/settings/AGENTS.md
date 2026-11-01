@@ -66,6 +66,7 @@ sequenceDiagram
 - 防休眠开关的完整“读取偏好 → 保存 → 应用系统状态”流程必须串行执行。`save_settings` 保存后会等待托盘刷新，而合并刷新可能让后发请求先返回；不能只依靠后端系统调用互斥来保证最后一次操作生效。操作期间显示 loading/disabled，失败后解除忙碌状态并允许重试。
 - 防休眠开关显示持久化偏好；系统应用失败时保留已保存的偏好，单独显示可访问的行内错误，不能让 rejected Promise 静默消失，也不能把尚未保存的值显示成已保存。启动恢复失败必须记录后端日志；系统资源的线程归属遵守根文档的 Async Runtime Safety 规则。
 - Gateway 设置页会按 `appProxyConfigKeys` 判断每 CLI 的 `app_configs` 是否为空。后续给 `AppProxyConfig` 增加字段时必须同步更新这个 key 集合，否则设置页清空超时/重试字段时可能误删相邻功能保存的配置。
+- Gateway 设置页的每 CLI 超时/重试卡片（`CLI_OPTIONS`）**只列能真正被接管的 CLI**，不要按 `GatewayCliKey::supported_mvp()` 或 `GATEWAY_USAGE_TOOLS` 铺开。这些字段是「网关代理某 CLI 流量时」的覆盖值，接管不了的 CLI 填了也不会被读取：Antigravity 没有接管实现（`cli_proxy::is_supported_cli` 不含它），WorkBuddy / CodeBuddy 后端可接管但前端没有 engage 入口（`GatewayFailoverButton` 只挂在 claude / claude_desktop / codex / grok / kimi / gemini 六个页面）。这三张卡片曾长期显示恒定的「暂不支持」/「无可代理渠道」，2026-11-01 按要求删除。`app_configs` 里已存的对应条目不会因此丢失——保存走的是整份 `draftSettings`，读回来的全量对象原样回写。将来给某个 CLI 补上 engage 入口时，再把它加回 `CLI_OPTIONS`。
 - Gateway 的“数据脱敏”分区委托 gateway 模块组件处理，使用独立 privacy 配置命令；不能放进此页普通 settings 的全量自动保存 payload。开关和规则分别更新，本地预览不启用实际流量处理，详细规则见 `web/features/coding/gateway/AGENTS.md`。
 - Gateway 设置页的 `ProxyGatewaySettings` 运行态开关必须和后端字段同步暴露；例如 `lossy_rejection_enabled` 是用户控制“有损转换是否直接 400”的开关，默认关闭，UI 放在“转发与容错 / 请求整流”里 `Thinking budget 修正` 下方。
 - Codex WebSocket 总开关位于“转发与容错 / 传输方式”，默认关闭，沿用普通网关 settings 的自动保存；保存期间禁用操作，后端保存响应作为持久化状态。说明需保留“关闭后新连接走 HTTP/SSE、已有连接空闲后关闭；开启后新建 Codex 会话或重启客户端重试”的边界，不能把开关开启描述成所有请求强制 WS，也不能通过切换开关改写 CLI 接管配置。
