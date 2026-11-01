@@ -18,3 +18,4 @@ export * from './codebuddy';
 export * from './skills';
 export * from './image';
 export * from './gateway';
+export * from './relay';

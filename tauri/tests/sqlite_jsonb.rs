@@ -1451,3 +1451,76 @@ fn v32_migration_adds_workbuddy_tables_to_an_already_v31_database() {
         TARGET_SCHEMA_VERSION
     );
 }
+
+/// A database that already ran v32 (WorkBuddy/CodeBuddy tables) but predates
+/// the 2API tables must still get them.
+///
+/// Version 32 was already released on `main` before these tables existed, so
+/// the tables live in v33. Do not lower the version marker to make this pass:
+/// that hides the exact state a shipping build leaves behind.
+#[test]
+fn v33_migration_adds_relay_tables_to_an_already_v32_database() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("already-v32.db");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        initialize_connection(&mut conn).unwrap();
+        // Reproduce the real v32 shape: the WorkBuddy/CodeBuddy tables exist,
+        // the eight 2API tables do not.
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS relay_entity;
+             DROP TABLE IF EXISTS relay_entity;
+             DROP TABLE IF EXISTS relay_entity;
+             DROP TABLE IF EXISTS relay_entity;
+             DROP TABLE IF EXISTS relay_entity;
+             DROP TABLE IF EXISTS relay_entity;
+             DROP TABLE IF EXISTS relay_entity;
+             DROP TABLE IF EXISTS relay_entity;",
+        )
+        .unwrap();
+        migrations::set_user_version(&conn, 32).unwrap();
+    }
+
+    let db = SqliteDbState::open(path.clone()).unwrap();
+    db.with_conn(|conn| {
+        assert_eq!(
+            migrations::get_user_version(conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
+        for table in [
+            "relay_entity",
+            "relay_entity",
+            "relay_entity",
+            "relay_entity",
+            "relay_entity",
+            "relay_entity",
+            "relay_entity",
+            "relay_entity",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table}"),
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("{table} missing after v33: {error}"))?;
+            assert_eq!(count, 0);
+        }
+        // The v32 tables must survive: v33 must not replace that migration.
+        let has_workbuddy = conn
+            .prepare("SELECT COUNT(*) FROM workbuddy_provider")
+            .is_ok();
+        assert!(has_workbuddy);
+        Ok(())
+    })
+    .unwrap();
+    drop(db);
+
+    // Reopening is a no-op, not a duplicate-table error.
+    let mut conn = Connection::open(&path).unwrap();
+    migrations::run_all(&mut conn).unwrap();
+    assert_eq!(
+        migrations::get_user_version(&conn).unwrap(),
+        TARGET_SCHEMA_VERSION
+    );
+}

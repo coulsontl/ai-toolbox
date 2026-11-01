@@ -91,6 +91,18 @@ pub enum DbTable {
     ImageChannel,
     ImageJob,
     ImageAsset,
+    /// 2API channels are deliberately independent of the per-CLI provider
+    /// tables: a 2API channel is a plain upstream (or a plugin-backed one)
+    /// that serves generic API clients, not a provider a local CLI is taken
+    /// over onto.
+    RelayChannel,
+    RelayModel,
+    RelayPlugin,
+    RelayPluginProvider,
+    RelayPluginAccount,
+    RelayAccessKey,
+    RelayCheckinSchedule,
+    RelayCheckinRecord,
 }
 
 pub const ALL_TABLES: &[DbTable] = &[
@@ -172,6 +184,14 @@ pub const ALL_TABLES: &[DbTable] = &[
     DbTable::ImageChannel,
     DbTable::ImageJob,
     DbTable::ImageAsset,
+    DbTable::RelayChannel,
+    DbTable::RelayModel,
+    DbTable::RelayPlugin,
+    DbTable::RelayPluginProvider,
+    DbTable::RelayPluginAccount,
+    DbTable::RelayAccessKey,
+    DbTable::RelayCheckinSchedule,
+    DbTable::RelayCheckinRecord,
 ];
 
 impl DbTable {
@@ -255,6 +275,14 @@ impl DbTable {
             DbTable::ImageChannel => "image_channel",
             DbTable::ImageJob => "image_job",
             DbTable::ImageAsset => "image_asset",
+            DbTable::RelayChannel => "relay_entity",
+            DbTable::RelayModel => "relay_entity",
+            DbTable::RelayPlugin => "relay_entity",
+            DbTable::RelayPluginProvider => "relay_entity",
+            DbTable::RelayPluginAccount => "relay_entity",
+            DbTable::RelayAccessKey => "relay_entity",
+            DbTable::RelayCheckinSchedule => "relay_entity",
+            DbTable::RelayCheckinRecord => "relay_entity",
         }
     }
 }

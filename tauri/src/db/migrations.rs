@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::schema::{sql_string_literal, DbTable, JsonFieldPath, ALL_TABLES};
 
-pub const TARGET_SCHEMA_VERSION: i32 = 32;
+pub const TARGET_SCHEMA_VERSION: i32 = 33;
 const FUTURE_SCHEMA_ERROR_PREFIX: &str = "AI_TOOLBOX_SQLITE_SCHEMA_TOO_NEW";
 
 pub fn run_all(conn: &mut Connection) -> Result<(), String> {
@@ -103,6 +103,9 @@ pub fn run_all(conn: &mut Connection) -> Result<(), String> {
     }
     if current_version < 32 {
         run_migration_step(conn, 32, migrate_v32)?;
+    }
+    if current_version < 33 {
+        run_migration_step(conn, 33, migrate_v33)?;
     }
 
     Ok(())
@@ -737,6 +740,56 @@ fn migrate_v32(conn: &Connection) -> Result<(), String> {
         create_json_index(conn, table, &JsonFieldPath::new("sort_index")?)?;
         create_json_index(conn, table, &JsonFieldPath::new("is_disabled")?)?;
     }
+    Ok(())
+}
+
+/// 2API: its own channel/model/plugin/check-in tables.
+///
+/// These are deliberately not `*_provider` tables — a 2API channel has no CLI
+/// and is not written into any runtime config file, so it shares nothing with
+/// the per-CLI provider schema.
+fn migrate_v33(conn: &Connection) -> Result<(), String> {
+    for table in [
+        DbTable::RelayChannel,
+        DbTable::RelayModel,
+        DbTable::RelayPlugin,
+        DbTable::RelayPluginProvider,
+        DbTable::RelayPluginAccount,
+        DbTable::RelayAccessKey,
+        DbTable::RelayCheckinSchedule,
+        DbTable::RelayCheckinRecord,
+    ] {
+        create_jsonb_table(conn, table)?;
+    }
+    // Channels and models are listed in `sort_index` order on every page load.
+    create_json_index(
+        conn,
+        DbTable::RelayChannel,
+        &JsonFieldPath::new("sort_index")?,
+    )?;
+    create_json_index(
+        conn,
+        DbTable::RelayModel,
+        &JsonFieldPath::new("sort_index")?,
+    )?;
+    // Models are read per channel, plugins per package, accounts per provider.
+    create_json_index(conn, DbTable::RelayModel, &JsonFieldPath::new("channel_id")?)?;
+    create_json_index(
+        conn,
+        DbTable::RelayPluginProvider,
+        &JsonFieldPath::new("plugin_id")?,
+    )?;
+    create_json_index(
+        conn,
+        DbTable::RelayPluginAccount,
+        &JsonFieldPath::new("plugin_provider_id")?,
+    )?;
+    // The check-in ledger is read newest-first.
+    create_json_index(
+        conn,
+        DbTable::RelayCheckinRecord,
+        &JsonFieldPath::new("ts")?,
+    )?;
     Ok(())
 }
 

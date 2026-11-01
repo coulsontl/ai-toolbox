@@ -1,0 +1,31 @@
+.relayButton {
+  display: flex;
+  height: 32px;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background 0.3s,
+    color 0.3s;
+
+  &:hover {
+    background: color-mix(in srgb, var(--ant-color-primary) 6%, transparent);
+    color: var(--ant-color-primary);
+  }
+
+  &.active {
+    color: var(--ant-color-primary);
+  }
+}
+
+.icon {
+  flex: 0 0 auto;
+}
+
+.text {
+  font-size: 14px;
+}

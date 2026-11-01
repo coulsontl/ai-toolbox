@@ -86,6 +86,7 @@ This document provides essential information for AI coding agents working on thi
 | `web/features/coding/kimi/` | Kimi Code CLI 前端页面、根目录配置、provider、官方账号、prompt 与通用配置交互 |
 | `web/features/coding/gateway/` | Gateway 前端页面、统计/明细/设置 Tab、顶部入口与 visibleTabs 可见性 |
 | `web/features/coding/image/` | Image 前端页面、工作台、渠道管理、历史与结果交互 |
+| `web/features/coding/relay/` | 2API（relay）前端页面（渠道 / 插件 / 签到 / 设置）、顶栏入口与默认隐藏的开关登记 |
 | `web/features/coding/mcp/` | MCP 前端页面、服务器管理、导入流程与工具同步交互 |
 | `web/features/coding/opencode/` | OpenCode 前端页面、配置路径、provider、prompt 与模型刷新交互 |
 | `web/features/coding/openclaw/` | OpenClaw 前端页面、配置路径、provider 与配置文件交互 |
@@ -99,6 +100,7 @@ This document provides essential information for AI coding agents working on thi
 | `tauri/src/settings/` | 应用设置存储、adapter 全量替换语义、CLI 路径覆盖与托盘联动 |
 | `tauri/src/settings/backup/` | 备份恢复（本地/WebDAV/GitHub-Gitee 仓库）、可选加密、自动备份与恢复后续链路 |
 | `tauri/src/coding/image/` | Image 后端渠道配置、任务、资产落盘、图片 API 调用与备份联动 |
+| `tauri/src/coding/relay/` | 2API（relay）后端：独立渠道表（与 CLI 渠道无交集的语义）、OpenCode 插件宿主渠道、入站鉴权 key、签到计划与台账 |
 
 后续新增模块级 `AGENTS.md` 时，继续在此表追加，不在根文档其他位置零散登记。
 

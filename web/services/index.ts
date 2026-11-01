@@ -7,6 +7,7 @@
 
 export * from './settingsApi';
 export * from './proxyGatewayApi';
+export * from './relayApi';
 export * from './backupApi';
 export * from './opencodeApi';
 export * from '../features/coding/image/services/imageApi';

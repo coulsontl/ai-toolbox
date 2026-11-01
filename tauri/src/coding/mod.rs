@@ -1,5 +1,11 @@
 pub mod all_api_hub;
 pub mod antigravity;
+// Relay: the "2API" tab's backend — a standalone API gateway whose channels
+// are user-defined and whose capabilities come from OpenCode plugins,
+// independent of the per-CLI tables. Named `relay` rather than `api2api`
+// because "2API" already means "to an API"; an `api2api` prefix would read as
+// "API to API".
+pub mod relay;
 pub mod auth_refresh;
 pub mod cc_switch;
 pub mod claude_code;
