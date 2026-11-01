@@ -382,6 +382,37 @@ const CodebuddyPage: React.FC = () => {
     void channel;
   };
 
+  /**
+   * Removes the failed models picked in the connectivity dialog.
+   *
+   * No confirmation here: the dialog's own `Popconfirm` already asked, and
+   * `handleDeleteModels` above would ask a second time. Every id belongs to the
+   * channel the dialog was opened for, because `removableModelIds` is that
+   * channel's model list.
+   *
+   * Rejects on failure so the dialog reports it instead of claiming success.
+   * An earlier id may already be gone by then, so re-read the real state first
+   * — otherwise the list keeps rendering entries that no longer exist.
+   */
+  const handleRemoveConnectivityModels = async (modelIds: string[]) => {
+    if (modelIds.length === 0) {
+      return;
+    }
+    try {
+      let next = runtime;
+      for (const modelId of modelIds) {
+        next = await deleteCodebuddyModel(modelId);
+      }
+      if (next) {
+        setRuntime(next);
+      }
+    } catch (error) {
+      console.error('Failed to remove CodeBuddy models after connectivity test:', error);
+      await reload();
+      throw error;
+    }
+  };
+
   const channels = runtime?.providers ?? [];
   const availableModels = runtime?.availableModels;
 
@@ -645,6 +676,8 @@ const CodebuddyPage: React.FC = () => {
           <ProviderConnectivityTestModal
             open={connectivityOpen}
             connectivityInfo={connectivityInfo}
+            removableModelIds={connectivityInfo?.modelIds}
+            onRemoveModels={handleRemoveConnectivityModels}
             onCancel={() => {
               setConnectivityOpen(false);
               setConnectivityChannelId(null);

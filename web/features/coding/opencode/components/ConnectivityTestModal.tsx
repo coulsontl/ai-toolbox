@@ -25,6 +25,10 @@ import {
   visionProbeMismatchesDeclaration,
   type VisionProbeStatus,
 } from '@/features/coding/shared/providerConnectivity/visionProbe';
+import {
+  canOfferModelRemoval,
+  selectRemovableModelIds,
+} from '@/features/coding/shared/providerConnectivity/removableModels';
 import styles from './ConnectivityTestModal.module.less';
 
 
@@ -39,6 +43,11 @@ interface ConnectivityTestModalProps {
   /** Per-model connection overrides (OMP `models.yml` allows per-model api/baseUrl). */
   modelConnections?: ProviderModelConnections;
   modelIds: string[];
+  /**
+   * Models the caller is willing to delete. Omit it and the modal offers no
+   * removal at all — being testable is not the same as being removable (the
+   * probe also covers config-only ids and official read-only entries).
+   */
   removableModelIds?: string[];
   diagnostics?: OpenCodeDiagnosticsConfig;
   onSaveDiagnostics: (diagnostics: OpenCodeDiagnosticsConfig) => Promise<void>;
@@ -84,6 +93,14 @@ const ConnectivityTestModal: React.FC<ConnectivityTestModalProps> = ({
   // 统一的选择状态：测试前用于选择要测试的模型，测试后用于选择要删除的模型
   const [selectedModelIds, setSelectedModelIds] = React.useState<string[]>([]);
   const [removing, setRemoving] = React.useState(false);
+  // Removal is opt-in per model: a caller that does not say which ids are
+  // deletable gets no removal button, instead of one that deletes everything
+  // it just probed.
+  const removableModelIdSet = React.useMemo(
+    () => new Set(removableModelIds ?? []),
+    [removableModelIds],
+  );
+  const canRemoveModels = canOfferModelRemoval(onRemoveModels, removableModelIds);
   
   // JSON editor states
   const [headersJson, setHeadersJson] = React.useState<unknown>({});
@@ -345,8 +362,8 @@ const ConnectivityTestModal: React.FC<ConnectivityTestModalProps> = ({
       if (failedModelIds.length > 0) {
         // 有失败的：自动选中可删除的失败模型（用于删除）
         setSelectedModelIds(
-          onRemoveModels
-            ? failedModelIds.filter((modelId) => (removableModelIds || modelIds).includes(modelId))
+          canRemoveModels
+            ? selectRemovableModelIds(failedModelIds, removableModelIds)
             : failedModelIds,
         );
       }
@@ -375,14 +392,13 @@ const ConnectivityTestModal: React.FC<ConnectivityTestModalProps> = ({
   const handleRemoveModels = async () => {
     if (!onRemoveModels || selectedModelIds.length === 0) return;
 
-    const removableSet = new Set(removableModelIds || modelIds);
-    const readonlyIds = selectedModelIds.filter((modelId) => !removableSet.has(modelId));
+    const readonlyIds = selectedModelIds.filter((modelId) => !removableModelIdSet.has(modelId));
     if (readonlyIds.length > 0) {
       message.warning(t('opencode.connectivity.removeReadonlyHint', { count: readonlyIds.length }));
       return;
     }
 
-    const removedIds = selectedModelIds.filter((modelId) => removableSet.has(modelId));
+    const removedIds = selectedModelIds.filter((modelId) => removableModelIdSet.has(modelId));
     if (removedIds.length === 0) return;
     setRemoving(true);
     try {
@@ -568,7 +584,7 @@ const ConnectivityTestModal: React.FC<ConnectivityTestModalProps> = ({
         <Button key="cancel" onClick={onCancel}>
           {t('common.close')}
         </Button>,
-        isTestCompleted && hasFailedModels && onRemoveModels && (
+        isTestCompleted && hasFailedModels && canRemoveModels && (
           <Popconfirm
             key="remove"
             title={t('opencode.connectivity.removeConfirmTitle')}

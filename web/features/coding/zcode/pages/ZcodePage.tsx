@@ -1130,14 +1130,45 @@ const ZcodePage: React.FC = () => {
    * 单个 provider 的「模型测试」：打开共享的连通性测试弹窗。
    *
    * ⚠️ **不要退回 inline 状态徽标**。共享 `ProviderConnectivityTestModal` 是
-   * 其余 10 个页面的标准做法（逐个模型列出结果、可移除失败项），本页此前是
-   * 全仓仅有的两个例外之一（另一个是 OmO Native），用户报「模型测试没弹窗」
-   * （2026-10-07 修）。卡片头部的**批量**测试仍走 inline 徽标——那与 Codex 一致。
+   * 其余页面的标准做法（逐个模型列出结果、可移除失败项），本页此前是例外之一，
+   * 用户报「模型测试没弹窗」（2026-10-07 修）。卡片头部的**批量**测试仍走
+   * inline 徽标——那与 Codex 一致。
    */
   const handleTestProviderModels = React.useCallback((provider: ZcodeProvider) => {
     setConnectivityInfo(buildZcodeProviderConnectivityInfo(provider));
     setConnectivityModalOpen(true);
   }, []);
+
+  /** The provider behind the open connectivity dialog, if it still exists. */
+  const connectivityProvider = React.useMemo(
+    () => (connectivityInfo
+      ? providers.find((provider) => provider.id === connectivityInfo.providerId) ?? null
+      : null),
+    [connectivityInfo, providers],
+  );
+
+  /**
+   * 弹窗里勾选「移除失败的模型」后，从该 provider 的模型目录删掉这些行。
+   *
+   * 不在这里二次确认：弹窗自带的 `Popconfirm` 已经问过一次。
+   */
+  const handleRemoveConnectivityModels = React.useCallback(async (modelIds: string[]) => {
+    if (!connectivityProvider || modelIds.length === 0) {
+      return;
+    }
+    const settings = parseZcodeProviderSettings(connectivityProvider.settingsConfig);
+    if (!settings) {
+      return;
+    }
+    const removed = new Set(modelIds);
+    const nextModels = settings.models.filter((model) => !removed.has(model.modelId));
+    // Dropping the default row would leave the provider unappliable, so the
+    // first survivor inherits the flag (same rule as `handleDeleteModel`).
+    if (!nextModels.some((model) => model.isDefault) && nextModels.length > 0) {
+      nextModels[0] = { ...nextModels[0], isDefault: true };
+    }
+    await persistProviderModels(connectivityProvider, nextModels);
+  }, [connectivityProvider, persistProviderModels]);
 
   const fetchModelsProvider = React.useMemo(
     () => providers.find((provider) => provider.id === fetchModelsProviderId) ?? null,
@@ -1543,6 +1574,8 @@ const ZcodePage: React.FC = () => {
       <ProviderConnectivityTestModal
         open={connectivityModalOpen}
         connectivityInfo={connectivityInfo}
+        removableModelIds={connectivityInfo?.modelIds}
+        onRemoveModels={handleRemoveConnectivityModels}
         onCancel={() => setConnectivityModalOpen(false)}
       />
 

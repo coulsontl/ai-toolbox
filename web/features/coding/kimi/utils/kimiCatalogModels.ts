@@ -49,6 +49,21 @@ export function findKimiCatalogRowIndex(models: KimiCatalogModel[], rowKey: stri
   return models.findIndex((item) => kimiCatalogRowKey(item) === rowKey);
 }
 
+/**
+ * Every identifier a catalog row answers to: its alias key and its upstream
+ * `model` id, deduped and trimmed.
+ *
+ * Connectivity tests probe **upstream** ids (the alias key never reaches the
+ * endpoint), while every catalog edit addresses the row by **key**. Removing a
+ * failed model therefore has to match on both, or an aliased row would be
+ * reported as a failure and never be deletable.
+ */
+export function kimiCatalogModelIds(model: KimiCatalogModel): string[] {
+  const key = kimiCatalogRowKey(model);
+  const upstream = model.model?.trim();
+  return [...new Set([key, upstream || key])];
+}
+
 /** Replace the row behind `previousRowKey`, or append when it is gone. */
 export function upsertKimiCatalogModel(
   models: KimiCatalogModel[],

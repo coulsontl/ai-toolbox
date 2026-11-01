@@ -24,6 +24,7 @@
 - **`ZCODE_MODALITY_FIELDS` 把「多选」投影回「独立布尔」**：ZCode 在 `properties.inputFormat` 里为每种模态各声明一个布尔（`supportsText` / `supportsImage` / …），而表单展示的是多选。`storageKey` 是两边映射的锚点，改模态清单必须同时改这里和后端类型。
 - **收藏（favorites）按 npm SDK family 分组**（`ZCODE_FAVORITE_NPM_BY_API_TYPE`），让 ZCode 的 provider 能和别的 CLI 的等价 provider 并排展示。未知格式回退到 openai 系——这是「未指定的 OpenAI 形状端点」最可能的事实。
 - **导入来源统一收敛**：CC Switch（凭据在 `env`）与 All API Hub（在 `providerConfig.options`）各自抽成 `ZcodeImportedProvider`，**由一个 builder 产出 ZCode 形状**。新增来源时加一个 extractor，不要复制 builder。
+- **连通性弹窗的「移除选中」走 `persistProviderModels`**（issue #451，2026-11-01 补）：共享弹窗只有在页面传了 `removableModelIds` 时才渲染移除按钮，本页传 `connectivityInfo.modelIds`（`buildZcodeProviderConnectivityInfo` 的 modelIds 就是 provider 目录里的 `modelId`）。`handleRemoveConnectivityModels` 删完行后必须保证还有一行 `isDefault`——否则 provider 变成不可应用状态；沿用 `handleDeleteModel` 的同一条回落规则。**不要复用 `handleBatchDeleteModels`**：它自带 `Modal.confirm`，会与弹窗的 `Popconfirm` 重复确认，且只认卡片勾选状态。
 
 ## 页面结构（与其他 tab 同构）
 

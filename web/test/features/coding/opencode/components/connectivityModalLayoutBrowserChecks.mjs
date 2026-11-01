@@ -3,7 +3,9 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 /**
- * Pins the collapsed-config layout of the shared connectivity test modal.
+ * Pins the collapsed-config layout of the shared connectivity test modal, plus
+ * the rule that model removal only appears when the caller declares which ids
+ * it owns (`removableModelIds`) — being testable is not being deletable.
  *
  * The failure this catches is invisible to types and to static checks: the
  * modal still renders, the form still works, the tests still pass — but the
@@ -134,6 +136,66 @@ export async function verifyConnectivityModalLayout({ send, evaluate, baseUrl, a
 
   await send('Page.captureScreenshot', { format: 'png' }).then(async (result) =>
     writeFile(path.join(artifactRoot, 'narrow-collapsed.png'), Buffer.from(result.data, 'base64')));
+
+  // 8. Removal is opt-in. The fixture passes `onRemoveModels` but no
+  //    `removableModelIds`, so every probe can fail without the footer growing
+  //    a button — that default used to be "everything the probe touched".
+  await send('Emulation.clearDeviceMetricsOverride');
+  await send('Page.navigate', { url: `${baseUrl}/?runId=removal-${Date.now()}` });
+  await waitFor('!!window.connectivityModalFixture && !!document.querySelector(".ant-modal-body")', 'the modal to remount for the removal check');
+  await delay(400);
+
+  check('removal is not offered without removable model ids', await evaluate('window.connectivityModalFixture.removalButtonText()') === null);
+  await evaluate('window.connectivityModalFixture.runFailingTest()');
+  const failedWithoutRemovable = await evaluate('window.connectivityModalFixture.removalButtonText()');
+  console.log('INFO removal button without removableModelIds: ' + JSON.stringify(failedWithoutRemovable));
+  check('a failing test still offers no removal without removable model ids', failedWithoutRemovable === null);
+
+  // 9. The same failing test with the list declared does offer removal, and
+  //    pre-checks only the declared rows.
+  await evaluate('window.connectivityModalFixture.mountModal({ removableModelIds: ["openai/gpt-5.5"] })');
+  await delay(400);
+  await evaluate('window.connectivityModalFixture.runFailingTest()');
+  const removalText = await evaluate('window.connectivityModalFixture.removalButtonText()');
+  console.log('INFO removal button with removableModelIds: ' + JSON.stringify(removalText));
+  check('declaring removable model ids adds the footer action', removalText !== null);
+  // Every row fails, but only the declared id may be pre-checked: that is what
+  // keeps a config-only or official id out of the delete path.
+  assert.deepEqual(
+    await evaluate('window.connectivityModalFixture.checkedModelIds()'),
+    ['openai/gpt-5.5'],
+    'declaring removable model ids pre-checks exactly those rows',
+  );
+  checks.push('declaring removable model ids pre-checks exactly those rows');
+
+  await send('Page.captureScreenshot', { format: 'png' }).then(async (result) =>
+    writeFile(path.join(artifactRoot, 'removal-offered.png'), Buffer.from(result.data, 'base64')));
+
+  // 10. The whole path a user takes: confirm the Popconfirm, the caller gets
+  //     exactly the declared ids, and the modal closes itself.
+  const clickInBrowser = async (point) => {
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+  };
+  await clickInBrowser(await evaluate('window.connectivityModalFixture.openRemovalPopconfirm()'));
+  await delay(500);
+  const confirmPoint = await evaluate('window.connectivityModalFixture.confirmButtonPoint()');
+  assert.ok(confirmPoint, 'the removal Popconfirm opened');
+  await clickInBrowser(confirmPoint);
+  await delay(900);
+  assert.deepEqual(
+    await evaluate('window.connectivityModalFixture.removedModelIds()'),
+    ['openai/gpt-5.5'],
+    'removal hands the caller exactly the declared failed ids',
+  );
+  checks.push('removal hands the caller exactly the declared failed ids');
+  // antd keeps the dialog mounted through its closing animation.
+  for (let attempt = 0; attempt < 40; attempt++) {
+    if (await evaluate('window.connectivityModalFixture.modalClosed()')) break;
+    await delay(100);
+  }
+  check('a successful removal closes the modal', await evaluate('window.connectivityModalFixture.modalClosed()'));
 
   return checks;
 }

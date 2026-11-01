@@ -20,6 +20,7 @@
 - `favoriteProviders.ts` 用 source 前缀和 payload 约定把 OpenCode/Claude/Codex/OpenClaw 的收藏 provider 统一建模，避免不同页面各存一套不兼容 key。
 - `GlobalPromptSettings`、`SessionManagerPanel`、`ProviderConnectivityTestModal` 等共享组件都要求业务方通过 service/api 注入，不自己硬编码某个模块的存储细节。
 - 连通性 `apiFormat` 与 npm 分开传递；OMP 的 Codex 专用 Responses 标记必须贯穿单项弹窗和批量请求，批量也必须保留供应商 headers。专用 Codex 诊断强制流式，禁用不适用的温度/输出上限控件；端点转换由调用方负责，不回写收藏或运行时配置。
+- 连通性弹窗的「移除选中」是**显式声明**才出现的：`removableModelIds` 必须由页面传入，不传就不渲染移除按钮（`providerConnectivity/removableModels.ts` 的 `canOfferModelRemoval` / `selectRemovableModelIds` 是唯一判定源）。`modelIds` 是探测范围（含只读的配置项与官方模型），**不等于**可删除集合；把两者相等是 issue #451 的成因。各页面的可移除集合必须取自该页面自己的模型目录，官方 / `__local__` 等只读行一律排除。回归：`web/test/features/coding/shared/providerConnectivity/removableModels.test.ts` + `pnpm test:connectivity-modal-layout`（夹具直接验证「不传则无按钮、传则只勾选声明的行」）。
 - 连通性视觉探测（issue #410）是共享语义：`providerConnectivity/visionProbe.ts` 是「声明视觉能力 vs 实测结果」比对的唯一纯函数源（`declaredVisionCapability` 读 `supportsImage`/`vision`/`attachment`/`modalities.input`；`visionProbeMismatchesDeclaration` 只在实测为 `passed`/`failed` 且声明明确时判不一致）。请求侧 `visionProbe` 与结果侧 `visionStatus`/`visionError` 由各页面弹窗透传；不要把比对逻辑复制进各 CLI 页面。回归：`web/test/features/coding/shared/providerConnectivity/visionProbe.test.ts`。
 - Grok 连通性测试的 modelIds 只能是上游模型 ID。`settingsConfig.defaultModelKey` 是本地 catalog key（可能是 `custom`），不是 API model 名；必须从 `modelCatalog.models[].model` 取。
 - `SessionManagerPanel` 的标题栏可通过 `extra` 注入模块自有动作；动作归 owning page 处理，shared 面板只负责摆放入口，不接管模块业务状态。

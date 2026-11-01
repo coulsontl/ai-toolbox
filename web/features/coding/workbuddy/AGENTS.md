@@ -41,6 +41,7 @@ sequenceDiagram
 - `translationKeyPrefix: 'workbuddy'` 与 `sidebarHiddenByPage.workbuddy` 必须同名；从别的 CLI 复制页面时读侧最容易残留来源模块的 key。
 - **页面夹具的桩必须复刻后端的真实形状与字段拼写**：`WorkbuddyProviderView.id` 必须给——卡片用 `data-provider-id` 做定位锚点，缺了它卡片仍然渲染，但「定位」静默失效；`WorkbuddyFamilyModelInput` 的字段是 camelCase。这是 2026-10-30 做真机视觉核对时踩到的。
 - **`App` provider 不能省**：页面用 `App.useApp()` 取 `message`，夹具只包 `ConfigProvider` 时会抛 `t.error is not a function`。
+- **连通性弹窗的「移除选中」必须传 `removableModelIds`**（issue #451，2026-11-01 补）：共享弹窗只在页面声明了可移除集合时才渲染移除按钮。WorkBuddy 的可移除集合就是当前渠道的 `models`（`models.json` 是扁平模型列表，渠道内的每个模型都是本页自己写的），`handleRemoveConnectivityModels` 直接逐个 `deleteWorkbuddyModel` 并复用返回的完整 runtime。**不要复用 `handleDeleteModels`**：它自己带一次 `Modal.confirm`，而弹窗的 `Popconfirm` 已经确认过，接上去会连问两次。
 
 ## 最小验证
 

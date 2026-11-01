@@ -140,6 +140,7 @@ import {
 } from '../utils/providerSaveFlow';
 import {
   importModelsIntoKimiCatalog,
+  kimiCatalogModelIds,
   kimiCatalogRowKey,
   removeKimiCatalogModels,
   upsertKimiCatalogModel,
@@ -788,6 +789,55 @@ const KimiPage: React.FC = () => {
     setConnectivityModalOpen(true);
   };
 
+  /**
+   * Catalog key of the provider behind the open dialog, or `null`.
+   *
+   * The probe sends upstream model ids, but a catalog row is addressed by its
+   * key — the two differ whenever the key is an alias (`kimi-code/kimi-k2`).
+   * `buildKimiProviderConnectivityInfo` emits upstream ids only, so removal has
+   * to resolve back to the catalog before it can delete anything.
+   */
+  const connectivityProvider = React.useMemo(
+    () => (connectivityInfo
+      ? providers.find((provider) => provider.id === connectivityInfo.providerId) ?? null
+      : null),
+    [connectivityInfo, providers],
+  );
+
+  /**
+   * Models the connectivity dialog may delete — never the `__local__`
+   * projection of the on-disk config, which owns no row of its own.
+   */
+  const connectivityRemovableModelIds = React.useMemo(() => {
+    if (!connectivityProvider || connectivityProvider.id === KIMI_LOCAL_PROVIDER_ID) {
+      return [];
+    }
+    return [
+      ...new Set(
+        parseKimiSettingsConfig(connectivityProvider.settingsConfig)
+          .catalogModels
+          .flatMap(kimiCatalogModelIds),
+      ),
+    ];
+  }, [connectivityProvider]);
+
+  /**
+   * Removes the failed models picked in the connectivity dialog.
+   *
+   * No confirmation here: the dialog's own `Popconfirm` already asked.
+   */
+  const handleRemoveConnectivityModels = React.useCallback(async (modelIds: string[]) => {
+    if (!connectivityProvider || modelIds.length === 0) {
+      return;
+    }
+    const currentModels = parseKimiSettingsConfig(connectivityProvider.settingsConfig).catalogModels;
+    const matches = new Set(modelIds);
+    const nextModels = currentModels.filter(
+      (model) => !kimiCatalogModelIds(model).some((modelId) => matches.has(modelId)),
+    );
+    await persistProviderCatalog(connectivityProvider, nextModels);
+  }, [connectivityProvider, persistProviderCatalog]);
+
   const handleBatchTestProviders = React.useCallback(async () => {
     if (providers.length === 0) {
       return;
@@ -1242,6 +1292,8 @@ const KimiPage: React.FC = () => {
         open={connectivityModalOpen}
         connectivityInfo={connectivityInfo}
         gatewayCliKey="kimi"
+        removableModelIds={connectivityRemovableModelIds}
+        onRemoveModels={handleRemoveConnectivityModels}
         onCancel={() => setConnectivityModalOpen(false)}
       />
 

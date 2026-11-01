@@ -1972,6 +1972,7 @@ const OpenClawPage: React.FC = () => {
                 providerName={connectivityProviderInfo.name}
                 providerConfig={connectivityProviderInfo.config}
                 modelIds={connectivityProviderInfo.modelIds}
+                removableModelIds={connectivityProviderInfo.modelIds}
                 diagnostics={findDiagnosticsForProvider(favoriteProviders, 'openclaw', connectivityProviderId)}
                 onSaveDiagnostics={handleSaveDiagnostics}
                 onRemoveModels={handleRemoveModels}

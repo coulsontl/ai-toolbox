@@ -783,6 +783,7 @@ const OmoNativeProvidersSection: React.FC<OmoNativeProvidersSectionProps> = ({
       <ProviderConnectivityTestModal
         open={connectivityModalOpen}
         connectivityInfo={connectivityInfo}
+        removableModelIds={connectivityInfo?.modelIds}
         onRemoveModels={handleRemoveConnectivityModels}
         onCancel={() => setConnectivityModalOpen(false)}
       />

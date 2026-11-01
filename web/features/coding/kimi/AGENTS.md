@@ -27,6 +27,8 @@
 
 ## 关键设计决策与 Why
 
+- **连通性弹窗的移除按 catalog key 解析，不能直接用探测的 model id**（issue #451，2026-11-01）：连通性测试发送的是**上游** `model` id（别名 key 永远不会到达端点），而目录行只能按 **key** 删除。`utils/kimiCatalogModels.ts` 的 `kimiCatalogModelIds`（key ∪ upstream，去重）是唯一匹配源，`connectivityRemovableModelIds` 与 `handleRemoveConnectivityModels` 都用它；漏掉这一步会让别名行「测试失败但永远删不掉」。`connectivityRemovableModelIds` 还必须排除 `KIMI_LOCAL_PROVIDER_ID`（`__local__` 是磁盘配置的投影，本就没有自己的目录行），官方渠道在 `handleTestProvider` 处已被拦住。移除走 `persistProviderCatalog`，由它负责把 `defaultModelKey` 重新指向存活行。
+
 - 批量删除资格以 `utils/providerDeletion.ts` 的 `canDeleteKimiProvider` 为前端共用判断：临时本地项、已应用项和仍绑定官方账号的项不能进入选择集合。后端仍是最终守卫；其拒绝或中途失败必须刷新列表、保留未处理选择。旅程测试中的内存后端也必须拒绝删除 applied provider，不能用允许删除的假实现掩盖真实拒绝路径。
 
 - **保存决策由页面态 `editingProvider` 决定，不是表单回传值**：`KimiProviderFormModal` 提交的 `KimiProviderFormData` 不含 `id`；曾因 `handleSaveProvider` 依赖 `values.id` 导致编辑永远走新建分支（点确认就多一条未应用记录，原 applied 状态丢失，代理按钮随之消失）。决策逻辑已抽到 `utils/providerSaveFlow.ts` 的 `buildKimiProviderSavePlan`（`adopt_local` / `update` / `create`）和 `shouldReengageKimiGatewayOnSave`，修改保存链路先看这两个纯函数和 `web/test/features/coding/kimi/kimiProviderJourney.test.ts` 的旅程用例。

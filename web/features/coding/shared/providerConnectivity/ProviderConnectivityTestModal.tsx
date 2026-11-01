@@ -53,7 +53,13 @@ interface ProviderConnectivityTestModalProps {
   onCancel: () => void;
   diagnostics?: OpenCodeDiagnosticsConfig;
   onSaveDiagnostics?: (diagnostics: OpenCodeDiagnosticsConfig) => Promise<void>;
-  /** Model IDs that may be removed after a failed connectivity test. */
+  /**
+   * Model IDs that may be removed after a failed connectivity test.
+   *
+   * Required for removal to appear at all: the probe's `modelIds` also carry
+   * config-only ids (a default model that has no catalog row) and official
+   * read-only entries, so the two lists are not interchangeable.
+   */
   removableModelIds?: string[];
   /** Remove selected failed models from the provider catalog/config. */
   onRemoveModels?: (modelIds: string[]) => Promise<void>;
@@ -329,7 +335,7 @@ const ProviderConnectivityTestModal: React.FC<ProviderConnectivityTestModalProps
       configValueMode={connectivityInfo.configValueMode}
       modelConnections={connectivityInfo.modelConnections}
       modelIds={connectivityInfo.modelIds}
-      removableModelIds={removableModelIds ?? connectivityInfo.modelIds}
+      removableModelIds={removableModelIds}
       diagnostics={diagnostics}
       onSaveDiagnostics={onSaveDiagnostics || (async () => {})}
       onRemoveModels={onRemoveModels}

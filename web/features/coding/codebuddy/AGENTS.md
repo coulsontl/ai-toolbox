@@ -39,6 +39,8 @@ sequenceDiagram
 - **i18n 动态前缀已登记**（`useRootDirectoryConfig` 保护表加了 `codebuddy`）；漏登记时 `i18n:check` 仍通过，但 `i18n:prune` 会删掉整块 `codebuddy.rootPathSource.modal.*`。
 - 三个区块标记（`codebuddy-providers` / `codebuddy-global-prompt` / `codebuddy-settings`）必须同时出现在 DOM 标记、`sidebarSections` 数组与 `SIDEBAR_ICON_BY_SECTION_ID` 三处。
 
+- **连通性弹窗的「移除选中」必须传 `removableModelIds`**（issue #451，2026-11-01 补）：共享弹窗只在页面声明了可移除集合时才渲染移除按钮。CodeBuddy 与 WorkBuddy 同源同格式，可移除集合就是当前渠道的 `models`，`handleRemoveConnectivityModels` 直接逐个 `deleteCodebuddyModel` 并复用返回的完整 runtime。**不要复用 `handleDeleteModels`**：它自带一次 `Modal.confirm`，会与弹窗的 `Popconfirm` 重复确认。
+
 ## 最小验证
 
 - `pnpm run test:codebuddy-page`：真实页面 + 桩 Tauri 桥的浏览器夹具（`CODEBUDDY_PAGE_THEME=dark` 跑暗色）。守卡片越界、横向滚动、卡片套卡片、四区块标记、`availableModels` 限制提示走的是受限分支、**「添加供应商」打开的是供应商表单且不含任何能力开关**（SOP §4.2.1），以及**卡片视图是紧凑格 + 模型管理在侧栏**。
