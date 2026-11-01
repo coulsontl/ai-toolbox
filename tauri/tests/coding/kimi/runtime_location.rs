@@ -10,7 +10,7 @@ use ai_toolbox_lib::coding::runtime_location::{
     self, get_kimi_config_path_async, get_kimi_prompt_path_async, get_kimi_runtime_location_async,
 };
 use ai_toolbox_lib::db::helpers::db_put;
-use ai_toolbox_lib::db::schema::DbTable;
+use ai_toolbox_lib::db::schema::{Cli, CliConfigKind, DbTable};
 use ai_toolbox_lib::db::sqlite_state::SqliteDbState;
 use tempfile::TempDir;
 
@@ -135,7 +135,7 @@ fn kimi_custom_db_root_dir_takes_highest_precedence() {
 
     let common_val = adapter::common_to_db_value("", Some(custom_root.to_str().unwrap()));
     state
-        .with_conn(|conn| db_put(conn, DbTable::KimiCommonConfig, "common", &common_val))
+        .with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Common), "common", &common_val))
         .expect("db_put common");
 
     block_on(async {

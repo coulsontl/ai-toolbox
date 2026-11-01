@@ -23,7 +23,7 @@ use crate::coding::runtime_location;
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put, db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use tauri::{Emitter, Runtime};
 
@@ -83,7 +83,7 @@ pub(crate) fn resolve_dsh_path_without_db() -> (PathBuf, String) {
 /// The shared runtime-location cache calls this resolver so WSL Direct status
 /// follows the same directory precedence as dsh's file operations.
 pub async fn get_dsh_custom_config_dir_async(db: &SqliteDbState) -> Option<PathBuf> {
-    db.with_conn(|conn| db_get(conn, DbTable::DshSettingsConfig, "common"))
+    db.with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Settings), "common"))
         .ok()
         .flatten()
         .and_then(|value| adapter::settings_from_db_value(value).config_dir)
@@ -102,13 +102,13 @@ pub async fn get_dsh_config_dir_from_db_async(
 
 fn get_dsh_settings_config_record(db: &SqliteDbState) -> Result<Option<DshSettingsConfig>, String> {
     Ok(db
-        .with_conn(|conn| db_get(conn, DbTable::DshSettingsConfig, "common"))?
+        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Settings), "common"))?
         .map(adapter::settings_from_db_value))
 }
 
 fn get_dsh_config_dir_from_db_sync(db: &SqliteDbState) -> Result<(PathBuf, String), String> {
     let custom = db
-        .with_conn(|conn| db_get(conn, DbTable::DshSettingsConfig, "common"))
+        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Settings), "common"))
         .ok()
         .flatten()
         .and_then(|value| adapter::settings_from_db_value(value).config_dir)
@@ -882,7 +882,7 @@ pub async fn get_dsh_settings_config(
 ) -> Result<Option<DshSettingsConfig>, String> {
     Ok(state
         .db()
-        .with_conn(|conn| db_get(conn, DbTable::DshSettingsConfig, "common"))?
+        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Settings), "common"))?
         .map(adapter::settings_from_db_value))
 }
 
@@ -912,7 +912,7 @@ pub async fn save_dsh_settings_config<R: Runtime>(
         None => existing.and_then(|value| value.profile),
     };
     let data = adapter::settings_to_db_value(config_dir.as_deref(), profile.as_deref());
-    db.with_conn(|conn| db_put(conn, DbTable::DshSettingsConfig, "common", &data))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Settings), "common", &data))?;
     runtime_location::refresh_runtime_location_cache_for_module_async(db, "dsh").await?;
     let _ = app.emit("wsl-config-changed", ());
     emit_config_changed(&app, "window");
@@ -1402,7 +1402,7 @@ fn put_dsh_prompt_to_sqlite(
     content: &DshPromptConfigContent,
 ) -> Result<(), String> {
     let value = adapter::prompt_to_db_value(content);
-    db.with_conn(|conn| db_put(conn, DbTable::DshPromptConfig, id, &value))
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt), id, &value))
 }
 
 fn get_dsh_prompt_from_sqlite(
@@ -1410,7 +1410,7 @@ fn get_dsh_prompt_from_sqlite(
     id: &str,
 ) -> Result<Option<DshPromptConfig>, String> {
     Ok(db
-        .with_conn(|conn| db_get(conn, DbTable::DshPromptConfig, id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt), id))?
         .map(adapter::prompt_from_db_value))
 }
 
@@ -1448,7 +1448,7 @@ pub async fn list_dsh_prompt_configs(
     let db = state.db();
     let mut prompts = db.with_conn(|conn| {
         Ok(
-            db_list(conn, DbTable::DshPromptConfig, Some(&prompt_order()?))?
+            db_list(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt), Some(&prompt_order()?))?
                 .into_iter()
                 .map(adapter::prompt_from_db_value)
                 .collect::<Vec<_>>(),
@@ -1473,7 +1473,7 @@ pub async fn create_dsh_prompt_config(
     let next_sort_index = db.with_conn(|conn| {
         Ok(db_max_i64(
             conn,
-            DbTable::DshPromptConfig,
+            DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt),
             &JsonFieldPath::new("sort_index")?,
         )?
         .map(|value| value as i32 + 1)
@@ -1542,7 +1542,7 @@ pub async fn delete_dsh_prompt_config(
     // Only delete the DB prompt record. The live AGENTS.md on disk is kept so
     // deleting a saved prompt never wipes the local runtime prompt.
     let db = state.db();
-    db.with_conn(|conn| db_delete(conn, DbTable::DshPromptConfig, &id).map(|_| ()))?;
+    db.with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt), &id).map(|_| ()))?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -1587,7 +1587,7 @@ async fn apply_dsh_prompt_config_internal_with_events<R: Runtime>(
         .ok_or_else(|| format!("Prompt config '{config_id}' not found"))?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::DshPromptConfig, Some(config_id), &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt), Some(config_id), &now)
     })?;
     write_prompt_content_to_file(&db, Some(prompt.content.as_str())).await?;
     if emit_events {
@@ -1617,7 +1617,7 @@ pub async fn disable_dsh_prompt_config(
     get_dsh_prompt_from_sqlite(&db, &config_id)?
         .ok_or_else(|| format!("Prompt config '{config_id}' not found"))?;
     let now = Local::now().to_rfc3339();
-    db.with_conn_mut(|conn| db_update_applied_status(conn, DbTable::DshPromptConfig, None, &now))?;
+    db.with_conn_mut(|conn| db_update_applied_status(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt), None, &now))?;
     write_prompt_content_to_file(&db, Some("")).await?;
     emit_config_changed(&app, "window");
     Ok(())
@@ -1634,7 +1634,7 @@ pub async fn reorder_dsh_prompt_configs(
         db.with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::DshPromptConfig,
+                DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt),
                 id,
                 &[("sort_index", json!(index as i64))],
             )

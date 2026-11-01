@@ -14,7 +14,7 @@
 use crate::coding::workbuddy_family::channel;
 use crate::coding::workbuddy_family::gateway_provider;
 use crate::coding::workbuddy_family::models_json::ModelsDocument;
-use crate::db::schema::DbTable;
+use crate::db::schema::{Cli, DbTable};
 use crate::db::SqliteDbState;
 
 /// Which store to sync. Kept separate from `GatewayCliKey` so this module does
@@ -28,8 +28,8 @@ pub enum FamilyStore {
 impl FamilyStore {
     pub fn table(self) -> DbTable {
         match self {
-            Self::Workbuddy => DbTable::WorkbuddyProvider,
-            Self::Codebuddy => DbTable::CodebuddyProvider,
+            Self::Workbuddy => DbTable::CliProvider(Cli::Workbuddy),
+            Self::Codebuddy => DbTable::CliProvider(Cli::Codebuddy),
         }
     }
 

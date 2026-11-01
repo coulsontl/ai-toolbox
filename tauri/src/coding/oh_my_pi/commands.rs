@@ -16,7 +16,7 @@ use crate::coding::skills::commands::resync_all_skills_if_tool_path_changed;
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put, db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use tauri::{Emitter, Runtime};
 
@@ -754,7 +754,7 @@ pub async fn get_omp_settings_config(
 ) -> Result<Option<OmpSettingsConfig>, String> {
     Ok(state
         .db()
-        .with_conn(|conn| db_get(conn, DbTable::OhMyPiSettingsConfig, "common"))?
+        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Settings), "common"))?
         .map(adapter::settings_from_db_value))
 }
 
@@ -811,7 +811,7 @@ pub async fn save_omp_settings_config(
             .or_else(|| existing.and_then(|value| value.root_dir))
     };
     let data = adapter::settings_to_db_value(root_dir.as_deref());
-    db.with_conn(|conn| db_put(conn, DbTable::OhMyPiSettingsConfig, "common", &data))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Settings), "common", &data))?;
     runtime_location::refresh_runtime_location_cache_for_module_async(&db, "oh_my_pi").await?;
     resync_all_skills_if_tool_path_changed(
         app.clone(),
@@ -1205,7 +1205,7 @@ fn put_omp_prompt_to_sqlite(
     content: &OmpPromptConfigContent,
 ) -> Result<(), String> {
     let value = adapter::prompt_to_db_value(content);
-    db.with_conn(|conn| db_put(conn, DbTable::OhMyPiPromptConfig, id, &value))
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Prompt), id, &value))
 }
 
 fn get_omp_prompt_from_sqlite(
@@ -1213,7 +1213,7 @@ fn get_omp_prompt_from_sqlite(
     id: &str,
 ) -> Result<Option<OmpPromptConfig>, String> {
     Ok(db
-        .with_conn(|conn| db_get(conn, DbTable::OhMyPiPromptConfig, id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Prompt), id))?
         .map(adapter::prompt_from_db_value))
 }
 
@@ -1251,7 +1251,7 @@ pub async fn list_omp_prompt_configs(
     let db = state.db();
     let mut prompts = db.with_conn(|conn| {
         Ok(
-            db_list(conn, DbTable::OhMyPiPromptConfig, Some(&prompt_order()?))?
+            db_list(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Prompt), Some(&prompt_order()?))?
                 .into_iter()
                 .map(adapter::prompt_from_db_value)
                 .collect::<Vec<_>>(),
@@ -1276,7 +1276,7 @@ pub async fn create_omp_prompt_config(
     let next_sort_index = db.with_conn(|conn| {
         Ok(db_max_i64(
             conn,
-            DbTable::OhMyPiPromptConfig,
+            DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Prompt),
             &JsonFieldPath::new("sort_index")?,
         )?
         .map(|value| value as i32 + 1)
@@ -1343,7 +1343,7 @@ pub async fn delete_omp_prompt_config(
     id: String,
 ) -> Result<(), String> {
     let db = state.db();
-    db.with_conn(|conn| db_delete(conn, DbTable::OhMyPiPromptConfig, &id).map(|_| ()))?;
+    db.with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Prompt), &id).map(|_| ()))?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -1368,7 +1368,7 @@ pub async fn apply_omp_prompt_config_internal<R: Runtime>(
         .ok_or_else(|| format!("Prompt config '{}' not found", config_id))?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::OhMyPiPromptConfig, Some(config_id), &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Prompt), Some(config_id), &now)
     })?;
     write_prompt_content_to_file(&db, Some(prompt.content.as_str())).await?;
     emit_config_changed(app, if from_tray { "tray" } else { "window" });
@@ -1393,7 +1393,7 @@ pub async fn apply_omp_prompt_config_internal_without_events<R: Runtime>(
         .ok_or_else(|| format!("Prompt config '{}' not found", config_id))?;
     let now = Local::now().to_rfc3339();
     state.db().with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::OhMyPiPromptConfig, Some(config_id), &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Prompt), Some(config_id), &now)
     })?;
     write_prompt_content_to_file(state.db(), Some(prompt.content.as_str())).await?;
     let _ = app;
@@ -1422,7 +1422,7 @@ pub async fn disable_omp_prompt_config(
         .ok_or_else(|| format!("Prompt config '{}' not found", config_id))?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::OhMyPiPromptConfig, None, &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Prompt), None, &now)
     })?;
     write_prompt_content_to_file(&db, Some("")).await?;
     emit_config_changed(&app, "window");
@@ -1440,7 +1440,7 @@ pub async fn reorder_omp_prompt_configs(
         db.with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::OhMyPiPromptConfig,
+                DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Prompt),
                 id,
                 &[("sort_index", json!(index as i64))],
             )

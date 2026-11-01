@@ -25,7 +25,7 @@ use crate::coding::skills::commands::resync_all_skills_if_tool_path_changed;
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_max_i64, db_put, db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use tauri::Emitter;
 
@@ -495,7 +495,7 @@ fn list_claude_providers_from_sqlite(
 ) -> Result<Vec<ClaudeCodeProvider>, String> {
     let order = claude_provider_order()?;
     sqlite_state.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::ClaudeProvider, Some(&order))?
+        Ok(db_list(conn, DbTable::CliProvider(Cli::Claude), Some(&order))?
             .into_iter()
             .map(adapter::from_db_value_provider)
             .collect())
@@ -508,7 +508,7 @@ fn get_claude_provider_from_sqlite(
 ) -> Result<Option<ClaudeCodeProvider>, String> {
     sqlite_state.with_conn(|conn| {
         Ok(
-            db_get(conn, DbTable::ClaudeProvider, provider_id)?
+            db_get(conn, DbTable::CliProvider(Cli::Claude), provider_id)?
                 .map(adapter::from_db_value_provider),
         )
     })
@@ -522,7 +522,7 @@ fn put_claude_provider_to_sqlite(
     sqlite_state.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::ClaudeProvider,
+            DbTable::CliProvider(Cli::Claude),
             provider_id,
             &adapter::to_db_value_provider(content),
         )
@@ -533,7 +533,7 @@ fn delete_claude_provider_from_sqlite(
     sqlite_state: &SqliteDbState,
     provider_id: &str,
 ) -> Result<(), String> {
-    sqlite_state.with_conn(|conn| db_delete(conn, DbTable::ClaudeProvider, provider_id).map(|_| ()))
+    sqlite_state.with_conn(|conn| db_delete(conn, DbTable::CliProvider(Cli::Claude), provider_id).map(|_| ()))
 }
 
 fn list_claude_prompts_from_sqlite(
@@ -541,7 +541,7 @@ fn list_claude_prompts_from_sqlite(
 ) -> Result<Vec<ClaudePromptConfig>, String> {
     let order = claude_prompt_order()?;
     sqlite_state.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::ClaudePromptConfig, Some(&order))?
+        Ok(db_list(conn, DbTable::CliConfig(Cli::Claude, CliConfigKind::Prompt), Some(&order))?
             .into_iter()
             .map(adapter::from_db_value_prompt)
             .collect())
@@ -554,7 +554,7 @@ fn get_claude_prompt_from_sqlite(
 ) -> Result<Option<ClaudePromptConfig>, String> {
     sqlite_state.with_conn(|conn| {
         Ok(
-            db_get(conn, DbTable::ClaudePromptConfig, config_id)?
+            db_get(conn, DbTable::CliConfig(Cli::Claude, CliConfigKind::Prompt), config_id)?
                 .map(adapter::from_db_value_prompt),
         )
     })
@@ -568,7 +568,7 @@ fn put_claude_prompt_to_sqlite(
     sqlite_state.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::ClaudePromptConfig,
+            DbTable::CliConfig(Cli::Claude, CliConfigKind::Prompt),
             config_id,
             &adapter::to_db_value_prompt(content),
         )
@@ -580,14 +580,14 @@ fn delete_claude_prompt_from_sqlite(
     config_id: &str,
 ) -> Result<(), String> {
     sqlite_state
-        .with_conn(|conn| db_delete(conn, DbTable::ClaudePromptConfig, config_id).map(|_| ()))
+        .with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::Claude, CliConfigKind::Prompt), config_id).map(|_| ()))
 }
 
 fn get_claude_common_from_sqlite(
     sqlite_state: &SqliteDbState,
 ) -> Result<Option<ClaudeCommonConfig>, String> {
     sqlite_state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::ClaudeCommonConfig, "common")?.map(adapter::from_db_value_common))
+        Ok(db_get(conn, DbTable::CliConfig(Cli::Claude, CliConfigKind::Common), "common")?.map(adapter::from_db_value_common))
     })
 }
 
@@ -599,7 +599,7 @@ fn put_claude_common_to_sqlite(
     sqlite_state.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::ClaudeCommonConfig,
+            DbTable::CliConfig(Cli::Claude, CliConfigKind::Common),
             "common",
             &adapter::to_db_value_common(config, root_dir),
         )
@@ -1299,7 +1299,7 @@ pub async fn create_claude_prompt_config(
         .with_conn(|conn| {
             db_max_i64(
                 conn,
-                DbTable::ClaudePromptConfig,
+                DbTable::CliConfig(Cli::Claude, CliConfigKind::Prompt),
                 &JsonFieldPath::new("sort_index")?,
             )
         })?
@@ -1494,7 +1494,7 @@ pub async fn disable_claude_prompt_config(
 
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::ClaudePromptConfig, None, &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::Claude, CliConfigKind::Prompt), None, &now)
     })?;
     write_prompt_content_to_file(Some(&db), Some("")).await?;
 

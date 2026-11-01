@@ -14,7 +14,7 @@ use ai_toolbox_lib::coding::kimi::types::{
 };
 use ai_toolbox_lib::coding::runtime_location::{self, get_kimi_prompt_path_async};
 use ai_toolbox_lib::db::helpers::{db_get, db_list, db_put};
-use ai_toolbox_lib::db::schema::DbTable;
+use ai_toolbox_lib::db::schema::{Cli, CliConfigKind, DbTable};
 use ai_toolbox_lib::db::sqlite_state::SqliteDbState;
 use serde_json::json;
 use tempfile::TempDir;
@@ -38,7 +38,7 @@ fn setup_test_env() -> (TempDir, SqliteDbState) {
     // Configure the custom root_dir in KimiCommonConfig so all commands point to temp_dir
     let common_val = adapter::common_to_db_value("", Some(temp_dir.path().to_str().unwrap()));
     state
-        .with_conn(|conn| db_put(conn, DbTable::KimiCommonConfig, "common", &common_val))
+        .with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Common), "common", &common_val))
         .expect("db_put common config");
 
     block_on(async {
@@ -117,12 +117,12 @@ api_key = "sk-existing"
 
     let db_val = adapter::provider_to_db_value(&provider_content);
     state
-        .with_conn(|conn| db_put(conn, DbTable::KimiProvider, provider_id, &db_val))
+        .with_conn(|conn| db_put(conn, DbTable::CliProvider(Cli::Kimi), provider_id, &db_val))
         .expect("db_put provider");
 
     // 3. Read back from DB and verify fields via adapter and db_list
     let raw_db_row: Option<serde_json::Value> = state
-        .with_conn(|conn| db_get(conn, DbTable::KimiProvider, provider_id))
+        .with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Kimi), provider_id))
         .expect("db_get");
     assert!(raw_db_row.is_some(), "Provider should exist in DB");
     let read_provider: KimiProvider = adapter::provider_from_db_value(raw_db_row.unwrap());
@@ -254,7 +254,7 @@ api_key = "sk-ant"
         .with_conn(|conn| {
             db_put(
                 conn,
-                DbTable::KimiProvider,
+                DbTable::CliProvider(Cli::Kimi),
                 provider_a_id,
                 &adapter::provider_to_db_value(&provider_a_content),
             )
@@ -330,7 +330,7 @@ api_key = "sk-ant"
         .with_conn(|conn| {
             db_put(
                 conn,
-                DbTable::KimiProvider,
+                DbTable::CliProvider(Cli::Kimi),
                 provider_b_id,
                 &adapter::provider_to_db_value(&provider_b_content),
             )
@@ -441,7 +441,7 @@ fn common_config_save_and_reapply_preserves_provider_projection() {
         .with_conn(|conn| {
             db_put(
                 conn,
-                DbTable::KimiProvider,
+                DbTable::CliProvider(Cli::Kimi),
                 provider_id,
                 &adapter::provider_to_db_value(&provider_content),
             )
@@ -462,7 +462,7 @@ temperature = 0.7
     let common_val =
         adapter::common_to_db_value(common_toml, Some(temp_dir.path().to_str().unwrap()));
     state
-        .with_conn(|conn| db_put(conn, DbTable::KimiCommonConfig, "common", &common_val))
+        .with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Common), "common", &common_val))
         .expect("db_put common");
 
     // Reapply provider (which reads common config and combines)
@@ -512,12 +512,12 @@ fn prompt_config_crud_and_atomic_write_to_agents_md() {
 
     let prompt_db_val = adapter::prompt_to_db_value(&prompt_content);
     state
-        .with_conn(|conn| db_put(conn, DbTable::KimiPromptConfig, prompt_id, &prompt_db_val))
+        .with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt), prompt_id, &prompt_db_val))
         .expect("db_put prompt");
 
     // 2. Read prompt back from DB
     let raw_prompts = state
-        .with_conn(|conn| db_list(conn, DbTable::KimiPromptConfig, None))
+        .with_conn(|conn| db_list(conn, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt), None))
         .expect("db_list prompt");
     assert_eq!(raw_prompts.len(), 1);
     let read_prompt: KimiPromptConfig = adapter::prompt_from_db_value(raw_prompts[0].clone());
@@ -536,7 +536,7 @@ fn prompt_config_crud_and_atomic_write_to_agents_md() {
     let written_content = fs::read_to_string(&agents_md_path).expect("read AGENTS.md");
     assert_eq!(written_content, prompt_content.content);
     let applied_raw = state
-        .with_conn(|conn| db_get(conn, DbTable::KimiPromptConfig, prompt_id))
+        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt), prompt_id))
         .expect("db_get prompt")
         .expect("prompt row exists");
     assert!(
@@ -564,7 +564,7 @@ fn disable_prompt_clears_agents_md_and_keeps_record() {
         .with_conn(|conn| {
             db_put(
                 conn,
-                DbTable::KimiPromptConfig,
+                DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt),
                 prompt_id,
                 &adapter::prompt_to_db_value(&prompt_content),
             )
@@ -583,7 +583,7 @@ fn disable_prompt_clears_agents_md_and_keeps_record() {
     assert_eq!(cleared, "", "disable must empty the runtime prompt file");
 
     let record = state
-        .with_conn(|conn| db_get(conn, DbTable::KimiPromptConfig, prompt_id))
+        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt), prompt_id))
         .expect("db_get prompt")
         .expect("disable must keep the DB record");
     let read_back = adapter::prompt_from_db_value(record);
@@ -692,7 +692,7 @@ fn legacy_credential_names_are_migrated_to_fixed_file_name() {
         .with_conn(|conn| {
             db_put(
                 conn,
-                DbTable::KimiOfficialAccount,
+                DbTable::CliOfficialAccount(Cli::Kimi),
                 "account_legacy",
                 &legacy_row,
             )
@@ -757,7 +757,7 @@ fn put_provider_row(state: &SqliteDbState, id: &str, category: &str, is_applied:
         .with_conn(|conn| {
             db_put(
                 conn,
-                DbTable::KimiProvider,
+                DbTable::CliProvider(Cli::Kimi),
                 id,
                 &adapter::provider_to_db_value(&content),
             )
@@ -799,7 +799,7 @@ fn store_login(state: &SqliteDbState, snapshot: &serde_json::Value) -> KimiOffic
         "updated_at": now,
     });
     state
-        .with_conn(|conn| db_put(conn, DbTable::KimiOfficialAccount, &id, &content))
+        .with_conn(|conn| db_put(conn, DbTable::CliOfficialAccount(Cli::Kimi), &id, &content))
         .expect("db_put account");
     official_accounts::list_kimi_official_accounts_with_state(state)
         .expect("list accounts")
@@ -888,7 +888,7 @@ fn live_login_adoption_is_a_no_op_without_a_usable_official_login() {
         .with_conn(|conn| {
             db_put(
                 conn,
-                DbTable::KimiOfficialAccount,
+                DbTable::CliOfficialAccount(Cli::Kimi),
                 "account_existing",
                 &existing,
             )
@@ -1216,7 +1216,7 @@ fn delete_kimi_provider_internal_rejects_applied_provider() {
             .with_conn(|conn| {
                 db_put(
                     conn,
-                    DbTable::KimiProvider,
+                    DbTable::CliProvider(Cli::Kimi),
                     id,
                     &adapter::provider_to_db_value(&content),
                 )
@@ -1233,7 +1233,7 @@ fn delete_kimi_provider_internal_rejects_applied_provider() {
         .expect_err("applied provider must not be deletable");
     assert!(error.contains("applied"), "unexpected error: {error}");
     let still_there: Option<serde_json::Value> = state
-        .with_conn(|conn| db_get(conn, DbTable::KimiProvider, "provider_applied"))
+        .with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Kimi), "provider_applied"))
         .expect("db_get");
     assert!(still_there.is_some(), "applied provider must remain in DB");
 
@@ -1241,7 +1241,7 @@ fn delete_kimi_provider_internal_rejects_applied_provider() {
     block_on(async { delete_kimi_provider_internal(&state, "provider_idle").await })
         .expect("non-applied provider must be deletable");
     let gone: Option<serde_json::Value> = state
-        .with_conn(|conn| db_get(conn, DbTable::KimiProvider, "provider_idle"))
+        .with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Kimi), "provider_idle"))
         .expect("db_get");
     assert!(gone.is_none());
 }

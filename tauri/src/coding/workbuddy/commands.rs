@@ -8,7 +8,7 @@ use super::types::*;
 use crate::coding::workbuddy_family::models_json::{self, ModelEntryInput, ModelsDocument};
 use crate::coding::workbuddy_family::runtime_config::{build_runtime_config, FamilyRuntimeConfig};
 use crate::db::helpers::db_get;
-use crate::db::schema::DbTable;
+use crate::db::schema::{Cli, CliConfigKind, DbTable};
 use crate::db::SqliteDbState;
 use tauri::{Emitter, Runtime};
 
@@ -29,7 +29,7 @@ fn lock_models_write() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn custom_config_dir_from_db(db: &SqliteDbState) -> Option<PathBuf> {
-    db.with_conn(|conn| db_get(conn, DbTable::WorkbuddySettingsConfig, WORKBUDDY_SETTINGS_CONFIG_ID))
+    db.with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Workbuddy, CliConfigKind::Settings), WORKBUDDY_SETTINGS_CONFIG_ID))
         .ok()
         .flatten()
         .and_then(|value| adapter::settings_from_db_value(value).config_dir)
@@ -78,7 +78,7 @@ pub async fn get_workbuddy_settings_config(
     state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Option<WorkbuddySettingsConfig>, String> {
     let record = state
-        .with_conn(|conn| db_get(conn, DbTable::WorkbuddySettingsConfig, WORKBUDDY_SETTINGS_CONFIG_ID))
+        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Workbuddy, CliConfigKind::Settings), WORKBUDDY_SETTINGS_CONFIG_ID))
         .map_err(|error| format!("Failed to read WorkBuddy settings: {error}"))?;
     Ok(record.map(adapter::settings_from_db_value))
 }
@@ -117,7 +117,7 @@ pub async fn save_workbuddy_settings_config(
         .with_conn(|conn| {
             crate::db::helpers::db_put(
                 conn,
-                DbTable::WorkbuddySettingsConfig,
+                DbTable::CliConfig(Cli::Workbuddy, CliConfigKind::Settings),
                 WORKBUDDY_SETTINGS_CONFIG_ID,
                 &adapter::settings_to_db_value(normalized.as_deref()),
             )

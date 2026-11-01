@@ -11,6 +11,7 @@ use ai_toolbox_lib::coding::proxy_gateway::{
 use ai_toolbox_lib::db::{helpers::db_put, schema::DbTable, SqliteDbState};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use ai_toolbox_lib::db::schema::{Cli};
 
 fn codex_provider_record(name: &str, sort_index: i64) -> Value {
     codex_provider_record_with_models(name, sort_index, &["fixture-model"])
@@ -49,7 +50,7 @@ fn draft_test_db(providers: &[(&str, &str)]) -> SqliteDbState {
         for (index, (id, name)) in providers.iter().enumerate() {
             db_put(
                 connection,
-                DbTable::CodexProvider,
+                DbTable::CliProvider(Cli::Codex),
                 id,
                 &codex_provider_record(name, index as i64),
             )?;
@@ -71,7 +72,7 @@ fn draft_test_db_with_models(models: &[&str]) -> SqliteDbState {
         )?;
         db_put(
             connection,
-            DbTable::CodexProvider,
+            DbTable::CliProvider(Cli::Codex),
             "site-a",
             &codex_provider_record_with_models("Site A", 0, models),
         )?;

@@ -16,7 +16,7 @@ use ai_toolbox_lib::coding::zcode::commands::{
 };
 use ai_toolbox_lib::coding::zcode::types::ZcodeProviderInput;
 use ai_toolbox_lib::db::helpers::db_put;
-use ai_toolbox_lib::db::schema::DbTable;
+use ai_toolbox_lib::db::schema::{Cli, CliConfigKind, DbTable};
 use ai_toolbox_lib::db::sqlite_state::SqliteDbState;
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -34,7 +34,7 @@ fn state_with_root(root: &Path) -> SqliteDbState {
     let state = SqliteDbState::in_memory_for_test().expect("sqlite state");
     let common = json!({ "config": "{}", "root_dir": root.to_str().unwrap() });
     state
-        .with_conn(|conn| db_put(conn, DbTable::ZcodeCommonConfig, "common", &common))
+        .with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common), "common", &common))
         .expect("db_put zcode common");
     state
 }
@@ -136,7 +136,7 @@ fn a_taken_provider_id_is_suffixed_in_the_row_id_and_the_settings() {
         is_disabled: false,
     });
     state
-        .with_conn(|conn| db_put(conn, DbTable::ZcodeProvider, "custom:deepseek-chat", &existing))
+        .with_conn(|conn| db_put(conn, DbTable::CliProvider(Cli::Zcode), "custom:deepseek-chat", &existing))
         .expect("db_put existing");
 
     let settings = json!({
@@ -208,7 +208,7 @@ fn select_resolves_a_legacy_generated_row_id_through_the_stored_settings() {
         is_disabled: false,
     });
     state
-        .with_conn(|conn| db_put(conn, DbTable::ZcodeProvider, "generated-row-id", &legacy))
+        .with_conn(|conn| db_put(conn, DbTable::CliProvider(Cli::Zcode), "generated-row-id", &legacy))
         .expect("db_put legacy row");
 
     block_on(select_zcode_provider_internal_without_events(
@@ -229,7 +229,7 @@ fn select_resolves_a_legacy_generated_row_id_through_the_stored_settings() {
 
     // The applied flag lands on the row whose settings carry the registry id.
     let stored = state
-        .with_conn(|conn| ai_toolbox_lib::db::helpers::db_get(conn, DbTable::ZcodeProvider, "generated-row-id"))
+        .with_conn(|conn| ai_toolbox_lib::db::helpers::db_get(conn, DbTable::CliProvider(Cli::Zcode), "generated-row-id"))
         .expect("db_get")
         .expect("row exists");
     assert_eq!(

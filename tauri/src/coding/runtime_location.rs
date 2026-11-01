@@ -11,7 +11,7 @@ use crate::coding::{
     omo_native, open_claw, open_code, pi, workbuddy, zcode,
 };
 use crate::db::helpers::{db_get, db_patch_fields};
-use crate::db::schema::DbTable;
+use crate::db::schema::{Cli, CliConfigKind, DbTable};
 
 const MODULE_KEYS: [&str; 16] = [
     "opencode",
@@ -694,7 +694,7 @@ async fn resolve_claude_runtime_location_uncached_async(
     db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     let path_info =
-        get_custom_path_from_record(db, DbTable::ClaudeCommonConfig, "common", |value| {
+        get_custom_path_from_record(db, DbTable::CliConfig(Cli::Claude, CliConfigKind::Common), "common", |value| {
             crate::coding::claude_code::adapter::from_db_value_common(value)
                 .root_dir
                 .filter(|path| !path.trim().is_empty())
@@ -923,7 +923,7 @@ async fn resolve_codex_runtime_location_uncached_async(
     db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     let path_info =
-        get_custom_path_from_record(db, DbTable::CodexCommonConfig, "common", |value| {
+        get_custom_path_from_record(db, DbTable::CliConfig(Cli::Codex, CliConfigKind::Common), "common", |value| {
             crate::coding::codex::adapter::from_db_value_common(value)
                 .root_dir
                 .filter(|path| !path.trim().is_empty())
@@ -1059,7 +1059,7 @@ async fn resolve_grok_runtime_location_uncached_async(
     db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     let custom_path =
-        get_custom_path_from_record(db, DbTable::GrokCommonConfig, "common", |value| {
+        get_custom_path_from_record(db, DbTable::CliConfig(Cli::Grok, CliConfigKind::Common), "common", |value| {
             crate::coding::grok::adapter::common_from_db_value(value)
                 .root_dir
                 .filter(|path| !path.trim().is_empty())
@@ -1142,7 +1142,7 @@ async fn resolve_zcode_runtime_location_uncached_async(
     db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     let custom_path =
-        get_custom_path_from_record(db, DbTable::ZcodeCommonConfig, "common", |value| {
+        get_custom_path_from_record(db, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common), "common", |value| {
             crate::coding::zcode::adapter::from_db_value_common(value)
                 .root_dir
                 .filter(|path| !path.trim().is_empty())
@@ -1290,7 +1290,7 @@ async fn resolve_kimi_runtime_location_uncached_async(
     db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     let custom_path =
-        get_custom_path_from_record(db, DbTable::KimiCommonConfig, "common", |value| {
+        get_custom_path_from_record(db, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Common), "common", |value| {
             crate::coding::kimi::adapter::common_from_db_value(value)
                 .root_dir
                 .filter(|path| !path.trim().is_empty())
@@ -1395,7 +1395,7 @@ async fn resolve_workbuddy_runtime_location_uncached_async(
 ) -> Result<RuntimeLocationInfo, String> {
     let custom_path = get_custom_path_from_record(
         db,
-        DbTable::WorkbuddySettingsConfig,
+        DbTable::CliConfig(Cli::Workbuddy, CliConfigKind::Settings),
         workbuddy::constants::WORKBUDDY_SETTINGS_CONFIG_ID,
         |value| {
             workbuddy::adapter::settings_from_db_value(value.clone())
@@ -1430,7 +1430,7 @@ async fn resolve_codebuddy_runtime_location_uncached_async(
 ) -> Result<RuntimeLocationInfo, String> {
     let custom_path = get_custom_path_from_record(
         db,
-        DbTable::CodebuddySettingsConfig,
+        DbTable::CliConfig(Cli::Codebuddy, CliConfigKind::Settings),
         codebuddy::constants::CODEBUDDY_SETTINGS_CONFIG_ID,
         |value| {
             codebuddy::adapter::settings_from_db_value(value.clone())
@@ -1507,7 +1507,7 @@ fn normalize_stored_oh_my_pi_root_dir(
     // root / root/agent 各做最多 5 次 is_file/is_dir,必须在连接闭包外进行,
     // 避免在 SQLite 锁持有的同时做文件 I/O)。
     let stored_root_dir: Option<String> = db.with_conn(|conn| {
-        let Some(record) = db_get(conn, DbTable::OhMyPiSettingsConfig, "common")? else {
+        let Some(record) = db_get(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Settings), "common")? else {
             return Ok(None);
         };
         Ok(
@@ -1527,7 +1527,7 @@ fn normalize_stored_oh_my_pi_root_dir(
         let _ = db.with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::OhMyPiSettingsConfig,
+                DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Settings),
                 "common",
                 &[("root_dir", Value::String(normalized_root_dir.clone()))],
             )
@@ -1609,7 +1609,7 @@ async fn resolve_omo_native_runtime_location_uncached_async(
     db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     let stored_root_dir: Option<String> = db.with_conn(|conn| {
-        let Some(record) = db_get(conn, DbTable::OmoNativeSettingsConfig, "common")? else {
+        let Some(record) = db_get(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Settings), "common")? else {
             return Ok(None);
         };
         Ok(omo_native::adapter::settings_from_db_value(record)
@@ -1641,7 +1641,7 @@ async fn resolve_pi_runtime_location_uncached_async(
 
 fn normalize_stored_pi_root_dir(db: &crate::db::SqliteDbState) -> Result<Option<String>, String> {
     db.with_conn(|conn| {
-        let Some(record) = db_get(conn, DbTable::PiSettingsConfig, "common")? else {
+        let Some(record) = db_get(conn, DbTable::CliConfig(Cli::Pi, CliConfigKind::Settings), "common")? else {
             return Ok(None);
         };
         let Some(root_dir) = crate::coding::pi::adapter::settings_from_db_value(record)
@@ -1654,7 +1654,7 @@ fn normalize_stored_pi_root_dir(db: &crate::db::SqliteDbState) -> Result<Option<
         if normalized_root_dir != root_dir {
             if let Err(error) = db_patch_fields(
                 conn,
-                DbTable::PiSettingsConfig,
+                DbTable::CliConfig(Cli::Pi, CliConfigKind::Settings),
                 "common",
                 &[("root_dir", Value::String(normalized_root_dir.clone()))],
             ) {
@@ -1669,7 +1669,7 @@ async fn resolve_gemini_cli_runtime_location_uncached_async(
     db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     let path_info =
-        get_custom_path_from_record(db, DbTable::GeminiCliCommonConfig, "common", |value| {
+        get_custom_path_from_record(db, DbTable::CliConfig(Cli::Gemini, CliConfigKind::Common), "common", |value| {
             crate::coding::gemini_cli::adapter::from_db_value_common(value)
                 .root_dir
                 .filter(|path| !path.trim().is_empty())
@@ -1828,7 +1828,7 @@ async fn resolve_antigravity_runtime_location_uncached_async(
     db: &crate::db::SqliteDbState,
 ) -> Result<RuntimeLocationInfo, String> {
     let path_info =
-        get_custom_path_from_record(db, DbTable::AntigravityCommonConfig, "common", |value| {
+        get_custom_path_from_record(db, DbTable::CliConfig(Cli::Antigravity, CliConfigKind::Common), "common", |value| {
             crate::coding::antigravity::adapter::from_db_value_common(value)
                 .root_dir
                 .filter(|path| !path.trim().is_empty())
@@ -2777,7 +2777,7 @@ async fn resolve_opencode_config_path_async(
     db: &crate::db::SqliteDbState,
 ) -> Result<(PathBuf, String), String> {
     let custom_path =
-        get_custom_path_from_record(db, DbTable::OpenCodeCommonConfig, "common", |value| {
+        get_custom_path_from_record(db, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Common), "common", |value| {
             open_code::adapter::from_db_value(value)
                 .config_path
                 .filter(|path| !path.trim().is_empty())
@@ -2818,7 +2818,7 @@ async fn resolve_openclaw_config_path_async(
     db: &crate::db::SqliteDbState,
 ) -> Result<(PathBuf, String), String> {
     let custom_path =
-        get_custom_path_from_record(db, DbTable::OpenClawCommonConfig, "common", |value| {
+        get_custom_path_from_record(db, DbTable::CliConfig(Cli::OpenClaw, CliConfigKind::Common), "common", |value| {
             open_claw::adapter::from_db_value(value)
                 .config_path
                 .filter(|path| !path.trim().is_empty())
@@ -2866,7 +2866,7 @@ mod tests {
         CODEX_OVERRIDE_PROMPT_FILE_NAME,
     };
     use crate::db::helpers::{db_delete, db_get, db_put};
-    use crate::db::schema::DbTable;
+    use crate::db::schema::{Cli, CliConfigKind, DbTable};
     use crate::db::SqliteDbState;
     use std::ffi::OsString;
     use std::path::PathBuf;
@@ -2910,7 +2910,7 @@ mod tests {
         db.with_conn(|conn| {
             db_put(
                 conn,
-                DbTable::ClaudeCommonConfig,
+                DbTable::CliConfig(Cli::Claude, CliConfigKind::Common),
                 "common",
                 &serde_json::json!({
                     "config": "{}",
@@ -2922,7 +2922,7 @@ mod tests {
     }
 
     fn delete_claude_common_config(db: &SqliteDbState) {
-        db.with_conn(|conn| db_delete(conn, DbTable::ClaudeCommonConfig, "common").map(|_| ()))
+        db.with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::Claude, CliConfigKind::Common), "common").map(|_| ()))
             .expect("delete claude common config");
     }
 
@@ -3564,7 +3564,7 @@ mod tests {
         db.with_conn(|conn| {
             db_put(
                 conn,
-                DbTable::PiSettingsConfig,
+                DbTable::CliConfig(Cli::Pi, CliConfigKind::Settings),
                 "common",
                 &serde_json::json!({
                     "root_dir": r"\\wsl.localhost\Ubuntu\home\tester\.pi",
@@ -3587,7 +3587,7 @@ mod tests {
             Some("/home/tester/.pi")
         );
         let stored_record = db
-            .with_conn(|conn| db_get(conn, DbTable::PiSettingsConfig, "common"))
+            .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Pi, CliConfigKind::Settings), "common"))
             .expect("read migrated Pi root")
             .expect("Pi settings record");
         assert_eq!(

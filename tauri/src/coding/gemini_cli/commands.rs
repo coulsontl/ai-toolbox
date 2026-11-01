@@ -16,7 +16,7 @@ use crate::db::helpers::{
     db_count, db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put, db_query_by_bool,
     db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use crate::http_client;
 use tauri::Emitter;
@@ -785,7 +785,7 @@ fn list_gemini_providers_from_sqlite(
 ) -> Result<Vec<GeminiCliProvider>, String> {
     let order = gemini_provider_order()?;
     sqlite_state.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::GeminiCliProvider, Some(&order))?
+        Ok(db_list(conn, DbTable::CliProvider(Cli::Gemini), Some(&order))?
             .into_iter()
             .map(adapter::from_db_value_provider)
             .collect())
@@ -797,7 +797,7 @@ fn get_gemini_provider_from_sqlite(
     provider_id: &str,
 ) -> Result<Option<GeminiCliProvider>, String> {
     sqlite_state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::GeminiCliProvider, provider_id)?
+        Ok(db_get(conn, DbTable::CliProvider(Cli::Gemini), provider_id)?
             .map(adapter::from_db_value_provider))
     })
 }
@@ -810,7 +810,7 @@ fn put_gemini_provider_to_sqlite(
     sqlite_state.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::GeminiCliProvider,
+            DbTable::CliProvider(Cli::Gemini),
             provider_id,
             &adapter::to_db_value_provider(content),
         )
@@ -821,7 +821,7 @@ fn get_gemini_common_from_sqlite(
     sqlite_state: &SqliteDbState,
 ) -> Result<Option<GeminiCliCommonConfig>, String> {
     sqlite_state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::GeminiCliCommonConfig, "common")?
+        Ok(db_get(conn, DbTable::CliConfig(Cli::Gemini, CliConfigKind::Common), "common")?
             .map(adapter::from_db_value_common))
     })
 }
@@ -831,7 +831,7 @@ fn list_gemini_prompts_from_sqlite(
 ) -> Result<Vec<GeminiCliPromptConfig>, String> {
     let order = gemini_prompt_order()?;
     sqlite_state.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::GeminiCliPromptConfig, Some(&order))?
+        Ok(db_list(conn, DbTable::CliConfig(Cli::Gemini, CliConfigKind::Prompt), Some(&order))?
             .into_iter()
             .map(adapter::from_db_value_prompt)
             .collect())
@@ -843,7 +843,7 @@ fn get_gemini_prompt_from_sqlite(
     config_id: &str,
 ) -> Result<Option<GeminiCliPromptConfig>, String> {
     sqlite_state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::GeminiCliPromptConfig, config_id)?
+        Ok(db_get(conn, DbTable::CliConfig(Cli::Gemini, CliConfigKind::Prompt), config_id)?
             .map(adapter::from_db_value_prompt))
     })
 }
@@ -856,7 +856,7 @@ fn put_gemini_prompt_to_sqlite(
     sqlite_state.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::GeminiCliPromptConfig,
+            DbTable::CliConfig(Cli::Gemini, CliConfigKind::Prompt),
             config_id,
             &adapter::to_db_value_prompt(content),
         )
@@ -881,7 +881,7 @@ async fn rewrite_applied_prompt_to_current_file(
     let prompts = db.with_conn(|conn| {
         db_query_by_bool(
             conn,
-            DbTable::GeminiCliPromptConfig,
+            DbTable::CliConfig(Cli::Gemini, CliConfigKind::Prompt),
             &JsonFieldPath::new("is_applied")?,
             true,
             None,
@@ -1161,7 +1161,7 @@ pub async fn import_gemini_cli_default_provider_from_local_files(
     db: &crate::db::SqliteDbState,
     require_local_official_runtime: bool,
 ) -> Result<Option<GeminiCliProvider>, String> {
-    if db.with_conn(|conn| db_count(conn, DbTable::GeminiCliProvider))? > 0 {
+    if db.with_conn(|conn| db_count(conn, DbTable::CliProvider(Cli::Gemini)))? > 0 {
         return Ok(None);
     }
 
@@ -1195,12 +1195,12 @@ pub async fn import_gemini_cli_default_provider_from_local_files(
 
     let provider_id = db_new_id();
     let inserted = db.with_conn(|conn| {
-        if db_count(conn, DbTable::GeminiCliProvider)? > 0 {
+        if db_count(conn, DbTable::CliProvider(Cli::Gemini))? > 0 {
             return Ok(false);
         }
         db_put(
             conn,
-            DbTable::GeminiCliProvider,
+            DbTable::CliProvider(Cli::Gemini),
             &provider_id,
             &adapter::to_db_value_provider(&content),
         )?;
@@ -1404,7 +1404,7 @@ pub async fn delete_gemini_cli_provider(
 ) -> Result<(), String> {
     let db = state.db();
     super::official_accounts::ensure_gemini_cli_provider_has_no_official_accounts(&db, &id).await?;
-    db.with_conn(|conn| db_delete(conn, DbTable::GeminiCliProvider, &id).map(|_| ()))?;
+    db.with_conn(|conn| db_delete(conn, DbTable::CliProvider(Cli::Gemini), &id).map(|_| ()))?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -1420,7 +1420,7 @@ pub async fn reorder_gemini_cli_providers(
         db.with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::GeminiCliProvider,
+                DbTable::CliProvider(Cli::Gemini),
                 id,
                 &[
                     (
@@ -1518,7 +1518,7 @@ async fn apply_config_internal_with_events<R: tauri::Runtime>(
     let now = Local::now().to_rfc3339();
 
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::GeminiCliProvider, Some(provider_id), &now)
+        db_update_applied_status(conn, DbTable::CliProvider(Cli::Gemini), Some(provider_id), &now)
     })?;
 
     if emit_config_changed {
@@ -1569,7 +1569,7 @@ pub async fn toggle_gemini_cli_provider_disabled(
     db.with_conn(|conn| {
         db_patch_fields(
             conn,
-            DbTable::GeminiCliProvider,
+            DbTable::CliProvider(Cli::Gemini),
             &provider_id,
             &[
                 ("is_disabled", serde_json::Value::Bool(is_disabled)),
@@ -1636,14 +1636,14 @@ pub async fn save_gemini_cli_common_config(
             .or_else(|| existing_common.and_then(|config| config.root_dir))
     };
     let common_data = adapter::to_db_value_common(&input.config, root_dir.as_deref());
-    db.with_conn(|conn| db_put(conn, DbTable::GeminiCliCommonConfig, "common", &common_data))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Gemini, CliConfigKind::Common), "common", &common_data))?;
     runtime_location::refresh_runtime_location_cache_for_module_async(&db, "geminicli").await?;
 
     let applied_provider = db
         .with_conn(|conn| {
             db_query_by_bool(
                 conn,
-                DbTable::GeminiCliProvider,
+                DbTable::CliProvider(Cli::Gemini),
                 &JsonFieldPath::new("is_applied")?,
                 true,
                 None,
@@ -1761,7 +1761,7 @@ pub async fn save_gemini_cli_local_config(
             .or(existing_custom_root)
     };
     let common_data = adapter::to_db_value_common(&common_config, root_dir.as_deref());
-    db.with_conn(|conn| db_put(conn, DbTable::GeminiCliCommonConfig, "common", &common_data))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Gemini, CliConfigKind::Common), "common", &common_data))?;
     runtime_location::refresh_runtime_location_cache_for_module_async(&db, "geminicli").await?;
     apply_config_internal(&db, &app, &provider_id, false).await?;
     Ok(())
@@ -1792,7 +1792,7 @@ pub async fn create_gemini_cli_prompt_config(
     let next_sort_index = db.with_conn(|conn| {
         Ok(db_max_i64(
             conn,
-            DbTable::GeminiCliPromptConfig,
+            DbTable::CliConfig(Cli::Gemini, CliConfigKind::Prompt),
             &JsonFieldPath::new("sort_index")?,
         )?
         .map(|value| value as i32 + 1)
@@ -1876,7 +1876,7 @@ pub async fn delete_gemini_cli_prompt_config(
     // Keep the live prompt file on disk so deleting a saved prompt never wipes
     // the local runtime file. Matches Claude Code / OpenCode / Grok / Codex.
     let db = state.db();
-    db.with_conn(|conn| db_delete(conn, DbTable::GeminiCliPromptConfig, &id).map(|_| ()))?;
+    db.with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::Gemini, CliConfigKind::Prompt), &id).map(|_| ()))?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -1924,7 +1924,7 @@ async fn apply_prompt_config_internal_with_events<R: tauri::Runtime>(
         .ok_or_else(|| format!("Prompt config '{}' not found", config_id))?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::GeminiCliPromptConfig, Some(config_id), &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::Gemini, CliConfigKind::Prompt), Some(config_id), &now)
     })?;
     write_prompt_content_to_file(Some(&db), Some(prompt_config.content.as_str())).await?;
     if emit_events {
@@ -1958,7 +1958,7 @@ pub async fn disable_gemini_cli_prompt_config(
 
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::GeminiCliPromptConfig, None, &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::Gemini, CliConfigKind::Prompt), None, &now)
     })?;
     write_prompt_content_to_file(Some(&db), Some("")).await?;
 
@@ -1978,7 +1978,7 @@ pub async fn reorder_gemini_cli_prompt_configs(
         db.with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::GeminiCliPromptConfig,
+                DbTable::CliConfig(Cli::Gemini, CliConfigKind::Prompt),
                 id,
                 &[(
                     "sort_index",

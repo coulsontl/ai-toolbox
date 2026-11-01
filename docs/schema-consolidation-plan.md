@@ -1,6 +1,6 @@
 # 数据库表合并方案（Schema Consolidation）
 
-> 状态：**方案已定，待执行**。执行前需用户最终确认。
+> 状态：**已落地**（分支 `feat/relay-schema-consolidation`）。
 > 最后更新：2026-11-01
 
 ## 一、问题
@@ -49,93 +49,62 @@ CLI 之间的真实差异全部装在 `settings_config: String` 这个不透明�
 | AgentsConfig | 3 | Omp: `model_roles`；Omo: `categories + model_profiles`；Slim: `agents + council + fallback` | 自由 JSON，单列 |
 | GlobalConfig | 2 | `sisyphus_agent` / `council` 等各自不同的整块 JSON | 自由 JSON，单列 |
 
-## 三、目标结构
+## 三、目标结构（实际落地）
 
-### 3.1 四张 CLI 表（42 → 4）
+### 3.1 三张 CLI 表（55 → 3）
 
 ```sql
--- 1) 渠道配置
 CREATE TABLE cli_provider (
-    id          TEXT PRIMARY KEY NOT NULL,
-    cli_key     TEXT NOT NULL,
-    data        BLOB NOT NULL CHECK (json_valid(data, 4)),
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    id TEXT NOT NULL, cli_key TEXT NOT NULL,
+    data BLOB NOT NULL CHECK (json_valid(data, 4)),
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (cli_key, id)
 );
-CREATE INDEX idx_cli_provider_cli_key ON cli_provider(cli_key);
 
--- 2) 官方账号
 CREATE TABLE cli_official_account (
-    id          TEXT PRIMARY KEY NOT NULL,
-    cli_key     TEXT NOT NULL,
-    data        BLOB NOT NULL CHECK (json_valid(data, 4)),
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    id TEXT NOT NULL, cli_key TEXT NOT NULL,
+    data BLOB NOT NULL CHECK (json_valid(data, 4)),
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (cli_key, id)
 );
-CREATE INDEX idx_cli_official_account_cli_key   ON cli_official_account(cli_key);
-CREATE INDEX idx_cli_official_account_provider  ON cli_official_account(cli_key, json_extract(data,'$.provider_id'));
 
--- 3) 结构化配置（common / prompt / settings）
 CREATE TABLE cli_config (
-    id          TEXT PRIMARY KEY NOT NULL,
-    cli_key     TEXT NOT NULL,
-    kind        TEXT NOT NULL,          -- common | prompt | settings
-    data        BLOB NOT NULL CHECK (json_valid(data, 4)),
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    id TEXT NOT NULL, cli_key TEXT NOT NULL, kind TEXT NOT NULL,
+    data BLOB NOT NULL CHECK (json_valid(data, 4)),
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (cli_key, kind, id)
 );
-CREATE INDEX idx_cli_config_key_kind ON cli_config(cli_key, kind);
-
--- 4) 自由 JSON profile（agents / global）
-CREATE TABLE cli_profile (
-    id          TEXT PRIMARY KEY NOT NULL,
-    cli_key     TEXT NOT NULL,
-    kind        TEXT NOT NULL,          -- agents | global
-    data        BLOB NOT NULL CHECK (json_valid(data, 4)),
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
-);
-CREATE INDEX idx_cli_profile_key_kind ON cli_profile(cli_key, kind);
 ```
 
-**为什么 config 与 profile 分两张**：前 29 张能精确映射到 `id/name/content/is_applied/sort_index` 这类固定列，后 8 张本质是「一整块用户自定义 JSON」。混在一张会让 `kind=agents` 的行带一堆永远为空的字段。
+`kind` 的取值：`common` / `prompt` / `settings` / `agents` / `global`。
 
-### 3.2 五张 relay 表（8 → 5，命名从 `api2api_*` 改为 `relay_*`）
+**原方案把 `cli_config` 拆成 `cli_config` + `cli_profile` 两张，已取消**：拆分理由是「前 29 张有固定列、后 8 张是整块 JSON」，但这些表**全是 JSONB**，物理列只有 `id/data/created_at/updated_at`，没有一列是类型化的。理由不成立，合并为一张。
+
+### 3.2 三张 relay 表（8 → 3）
 
 ```sql
--- 低频配置类：9 种 kind 共用
-CREATE TABLE relay_entity (
-    id          TEXT PRIMARY KEY NOT NULL,
-    kind        TEXT NOT NULL,
-    data        BLOB NOT NULL CHECK (json_valid(data, 4)),
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+CREATE TABLE relay_entity (          -- 9 种 kind 共用
+    id TEXT NOT NULL, kind TEXT NOT NULL,
+    data BLOB NOT NULL CHECK (json_valid(data, 4)),
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (kind, id)
 );
-CREATE INDEX idx_relay_entity_kind ON relay_entity(kind);
-
--- 余额当前值（每账号一行，频繁 UPDATE）
-CREATE TABLE relay_quota_snapshot (
-    id          TEXT PRIMARY KEY NOT NULL,
-    kind        TEXT NOT NULL,
-    data        BLOB NOT NULL CHECK (json_valid(data, 4)),
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
-);
-CREATE INDEX idx_relay_quota_snapshot_kind ON relay_quota_snapshot(kind);
-
--- 余额趋势点（每次查询追加一行，只增不删）
-CREATE TABLE relay_quota_point (
-    id          TEXT PRIMARY KEY NOT NULL,
-    kind        TEXT NOT NULL,
-    data        BLOB NOT NULL CHECK (json_valid(data, 4)),
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
-);
-CREATE INDEX idx_relay_quota_point_kind_at ON relay_quota_point(kind, json_extract(data,'$.at'));
+CREATE TABLE relay_quota_snapshot (...);  -- 每次轮询重写
+CREATE TABLE relay_quota_point   (...);   -- 每次轮询追加
 ```
 
 `relay_entity` 的 9 个 `kind`：
 `channel` / `model` / `plugin` / `plugin_provider` / `plugin_account` / `access_key` / `checkin_schedule` / `checkin_record` / `claim_record`
+
+### 3.3 作用域由 `DbTable` 变体携带
+
+```rust
+DbTable::CliProvider(Cli::Codex)                     // cli_provider, cli_key='codex'
+DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt) // cli_config, cli_key='kimi' AND kind='prompt'
+DbTable::RelayEntity(RelayKind::Channel)             // relay_entity, kind='channel'
+```
+
+所有 helper 自动加作用域谓词，不提供裸表入口。见第五节。
 
 ## 四、主键策略
 
@@ -164,9 +133,9 @@ pub struct RelayScope { pub kind: &'static str }
 
 ## 六、迁移
 
-### 6.1 前置清理（需用户批准，已批准）
+### 6.1 前置清理（已执行）
 
-本机真实库 `%APPDATA%\com.ai-toolbox\ai-toolbox.db`：
+本机真实库 `%APPDATA%/com.ai-toolbox/ai-toolbox.db`（原为 8 张空 `api2api_*`）：
 
 ```sql
 DROP TABLE IF EXISTS api2api_channel;
@@ -200,17 +169,19 @@ PRAGMA user_version = 32;
 ## 七、最终表数量
 
 ```
-现在                           86
-- Provider 12 → 1             -11
-- OfficialAccount 6 → 1        -5
-- Config 29 → 1               -28
-- Profile 8 → 1                -7
-- api2api 8 → relay 3          -5
-────────────────────────────────────
-最终                           30
+合并前不同物理表名                 79   （86 个 DbTable 变体，relay 8 个变体指向同一张表）
+- Provider       10 → 1          -9
+- OfficialAccount 6 → 1          -5
+- Config         39 → 1          -38
+- api2api/relay   1 → 3 (拆成 entity + 2 张 quota 表)  +2
+──────────────────────────────────────
+合并后                             31   （28 张业务 JSONB 表 + model_pricing / proxy_request_logs / usage_daily_rollups）
 ```
 
-注：`ssh_sync_config` / `wsl_sync_config` 与 CLI 无关，保持独立，不进 `cli_config`。
+注：
+- `opencode_favorite_plugin` / `opencode_favorite_provider` 保持独立——它们是用户收藏列表，映射不到 `cli_config` 的任何 `kind`。
+- `ssh_sync_config` / `wsl_sync_config` 与 CLI 无关，保持独立。
+- `model_pricing` / `proxy_request_logs` / `usage_daily_rollups` 是列式表，从来不在 `DbTable` 内。
 
 ## 八、relay 功能字段（对应「模型列表 / 余额 / 领取 / 平台 / Token 续期 / LLM 请求 / 签到」）
 
@@ -243,16 +214,31 @@ PRAGMA user_version = 32;
 
 1. **前置清理**（DBA 操作，用户已批准）
 2. 目录与类型改名 `api2api` → `relay`
-3. `DbTable` 收敛：86 → 30
-4. 写 `migrate_v33`：建 7 张新表 + 搬迁 + 删旧表
-5. 加 `CliScope` / `RelayScope` 读写层
-6. 改所有调用点（Provider 109 处、OfficialAccount 30 处、Config 若干）
-7. 补 relay 功能字段
-8. `GatewayUsageTool` + `app_type` 登记
-9. 验证：`cargo test --test sqlite_jsonb`、`cargo check --lib`、`pnpm test`、`pnpm exec tsc --noEmit`
+3. `DbTable` 收敛：86 → 31（作用域直接放进变体，不另加 `CliScope`/`RelayScope` 参数）
+4. 写 `migrate_v33`：建 6 张新表 + 搬迁 + 删旧表
+5. helper 层自动施加作用域（`db_get`/`db_list`/`db_put`/`db_delete`/`db_count`/`db_patch_*`/`db_update_applied_status`）
+6. 改所有调用点（655 处 `DbTable::` 引用、60 个文件）
+7. 验证：`cargo test`、`cargo test --test sqlite_jsonb`、`cargo check --all-targets`
 
-## 十一、待确认
+**本次未做（独立任务）**：relay 功能字段补全（模型列表/余额/领取/平台/Token 续期/签到）、`GatewayUsageTool::Relay` 登记。这两项与表合并正交——JSONB 加字段不需要迁移，合并完成后再做不会触发 schema 变更。
 
-- [ ] 执行顺序是否调整（先改名 vs 先合并）
-- [ ] `cli_config` 的 `kind` 是否需要更多的值
-- [ ] relay 字段清单是否还有遗漏
+## 十一、验证结果
+
+### 落地前（真实库，`%APPDATA%/com.ai-toolbox/ai-toolbox.db`）
+
+| 项目 | 结果 |
+|---|---|
+| 迁移前备份 | `ai-toolbox.pre-consolidation-20261101.db`，121.5 MB，`integrity_check: ok` |
+| 迁移前状态 | `user_version=32`，81 张表，待合并的 55 张表共 51 行 |
+| 演练 | 用备份副本跑真实 `run_all`：81 → 34 张表，51 行逐条核对全部落位且内容不变 |
+| 旧表清理 | 53 张旧表全部 `DROP`，无残留 |
+| 索引 | 20 个作用域前缀索引全部建立 |
+
+### 测试
+
+| 命令 | 结果 |
+|---|---|
+| `cargo test` | 3445 passed, 0 failed（含 14 ignored） |
+| `cargo test --test sqlite_jsonb` | 43 passed（其中 7 条为本次新增的作用域回归用例） |
+
+新增回归用例锁死的失败模式：`db_list` 串读、`db_get` 跨 CLI 命中、`db_delete`/`db_count` 越界、`db_update_applied_status` 清空别人的 applied、字面量 id `common`/`global` 互相覆盖、重写记录产生重复行或丢 `created_at`、`relay_entity` 的 kind 串读。

@@ -18,7 +18,7 @@ use super::types::{
 use crate::coding::claude_desktop::config_writer as claude_desktop_config_writer;
 use crate::coding::runtime_location::{self, RuntimeLocationMode};
 use crate::db::helpers::{db_get, db_list};
-use crate::db::schema::DbTable;
+use crate::db::schema::{Cli, DbTable};
 use crate::db::SqliteDbState;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -1142,7 +1142,7 @@ async fn load_aggregate_site_specs(
     providers: &[UpstreamProvider],
 ) -> Result<Vec<(String, String, Value)>, String> {
     let records = db
-        .with_conn(|conn| db_list(conn, DbTable::CodexProvider, None))
+        .with_conn(|conn| db_list(conn, DbTable::CliProvider(Cli::Codex), None))
         .map_err(|error| format!("Failed to list Codex providers: {error}"))?;
 
     let mut specs = Vec::with_capacity(providers.len());
@@ -2777,7 +2777,7 @@ fn desktop_gateway_model_specs(
     db: &SqliteDbState,
     provider_id: &str,
 ) -> Result<Vec<claude_desktop_config_writer::GatewayModelSpec>, String> {
-    let raw = db.with_conn(|conn| db_get(conn, DbTable::ClaudeDesktopProvider, provider_id))?;
+    let raw = db.with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::ClaudeDesktop), provider_id))?;
     let Some(raw) = raw else {
         log::debug!("[desktop-gateway] no provider row found for id {provider_id}");
         return Ok(Vec::new());

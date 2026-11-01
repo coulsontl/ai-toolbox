@@ -4,7 +4,7 @@ use super::provider_protocol;
 use super::runtime::ProxyGatewayState;
 use super::types::{GatewayCliKey, GatewayCliTakeoverStatus, GatewayProxyMode, ProxyGatewayStatus};
 use crate::db::helpers::db_get;
-use crate::db::schema::DbTable;
+use crate::db::schema::{Cli, DbTable};
 use crate::db::SqliteDbState;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
@@ -149,15 +149,15 @@ fn provider_needs_gateway_proxy_for_switch(
 
 fn provider_table(cli_key: GatewayCliKey) -> Option<DbTable> {
     match cli_key {
-        GatewayCliKey::Claude => Some(DbTable::ClaudeProvider),
-        GatewayCliKey::ClaudeDesktop => Some(DbTable::ClaudeDesktopProvider),
-        GatewayCliKey::Codex => Some(DbTable::CodexProvider),
-        GatewayCliKey::Grok => Some(DbTable::GrokProvider),
-        GatewayCliKey::Kimi => Some(DbTable::KimiProvider),
-        GatewayCliKey::Gemini => Some(DbTable::GeminiCliProvider),
-        GatewayCliKey::Antigravity => Some(DbTable::AntigravityProvider),
-        GatewayCliKey::Workbuddy => Some(DbTable::WorkbuddyProvider),
-        GatewayCliKey::Codebuddy => Some(DbTable::CodebuddyProvider),
+        GatewayCliKey::Claude => Some(DbTable::CliProvider(Cli::Claude)),
+        GatewayCliKey::ClaudeDesktop => Some(DbTable::CliProvider(Cli::ClaudeDesktop)),
+        GatewayCliKey::Codex => Some(DbTable::CliProvider(Cli::Codex)),
+        GatewayCliKey::Grok => Some(DbTable::CliProvider(Cli::Grok)),
+        GatewayCliKey::Kimi => Some(DbTable::CliProvider(Cli::Kimi)),
+        GatewayCliKey::Gemini => Some(DbTable::CliProvider(Cli::Gemini)),
+        GatewayCliKey::Antigravity => Some(DbTable::CliProvider(Cli::Antigravity)),
+        GatewayCliKey::Workbuddy => Some(DbTable::CliProvider(Cli::Workbuddy)),
+        GatewayCliKey::Codebuddy => Some(DbTable::CliProvider(Cli::Codebuddy)),
         GatewayCliKey::OpenCode => None,
     }
 }

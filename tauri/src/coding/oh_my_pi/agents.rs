@@ -30,7 +30,7 @@ use crate::db::helpers::{
     db_create, db_delete, db_get, db_list, db_patch_fields, db_put, db_query_by_bool,
     db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 
 /// 扫描目录:canonical `agents/`(落点)+ legacy `agent/`(仅读兼容)。
@@ -356,7 +356,7 @@ fn list_agents_configs_from_sqlite(db: &SqliteDbState) -> Result<Vec<OmpAgentsCo
     let mut configs = db.with_conn(|conn| {
         Ok(db_list(
             conn,
-            DbTable::OhMyPiAgentsConfig,
+            DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Agents),
             Some(&agents_config_order()?),
         )
         .map(|records| {
@@ -380,7 +380,7 @@ fn get_agents_config_from_sqlite(
     config_id: &str,
 ) -> Result<Option<OmpAgentsConfig>, String> {
     db.with_conn(|conn| {
-        db_get(conn, DbTable::OhMyPiAgentsConfig, config_id)
+        db_get(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Agents), config_id)
             .map(|record| record.map(adapter::agents_from_db_value))
     })
 }
@@ -390,7 +390,7 @@ fn put_agents_config_to_sqlite(
     config_id: &str,
     data: &Value,
 ) -> Result<(), String> {
-    db.with_conn(|conn| db_put(conn, DbTable::OhMyPiAgentsConfig, config_id, data))
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Agents), config_id, data))
 }
 
 /// 列出所有 OMP subagent 方案;空库时返回本地已有的 `agents/*.md` 桥接态
@@ -541,7 +541,7 @@ pub async fn create_omp_agents_config(
         updated_at: now,
     };
     let data = adapter::agents_to_db_value(&content);
-    let created = db.with_conn(|conn| db_create(conn, DbTable::OhMyPiAgentsConfig, &data))?;
+    let created = db.with_conn(|conn| db_create(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Agents), &data))?;
     let _ = app.emit("config-changed", "window");
     Ok(adapter::agents_from_db_value(created))
 }
@@ -602,7 +602,7 @@ pub async fn delete_omp_agents_config(
     id: String,
 ) -> Result<(), String> {
     let db = state.db();
-    db.with_conn(|conn| db_delete(conn, DbTable::OhMyPiAgentsConfig, &id).map(|_| ()))?;
+    db.with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Agents), &id).map(|_| ()))?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -617,7 +617,7 @@ pub async fn reorder_omp_agents_configs(
         db.with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::OhMyPiAgentsConfig,
+                DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Agents),
                 id,
                 &[("sort_index", json!(index as i32))],
             )
@@ -640,7 +640,7 @@ pub async fn toggle_omp_agents_config_disabled(
         .with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::OhMyPiAgentsConfig,
+                DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Agents),
                 &config_id,
                 &[
                     ("is_disabled", Value::Bool(is_disabled)),
@@ -795,7 +795,7 @@ async fn clear_omp_agents_applied_config_internal<R: tauri::Runtime>(
     apply_model_roles_to_settings(db, None).await?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::OhMyPiAgentsConfig, None, &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Agents), None, &now)
     })?;
     emit_omp_agents_changed(app);
     Ok(())
@@ -868,7 +868,7 @@ pub async fn apply_omp_agents_config_internal<R: tauri::Runtime>(
         apply_model_roles_to_settings(db, None).await?;
         let now = Local::now().to_rfc3339();
         db.with_conn_mut(|conn| {
-            db_update_applied_status(conn, DbTable::OhMyPiAgentsConfig, None, &now)
+            db_update_applied_status(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Agents), None, &now)
         })?;
         let payload = if from_tray { "tray" } else { "window" };
         let _ = app.emit("config-changed", payload);
@@ -893,7 +893,7 @@ pub async fn apply_omp_agents_config_internal_without_events(
     apply_omp_agents_config_to_dir(db, config_id).await?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::OhMyPiAgentsConfig, Some(config_id), &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Agents), Some(config_id), &now)
     })?;
     Ok(())
 }
@@ -1168,7 +1168,7 @@ pub async fn get_applied_omp_agents_config_id(
     let records = db.with_conn(|conn| {
         db_query_by_bool(
             conn,
-            DbTable::OhMyPiAgentsConfig,
+            DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Agents),
             &JsonFieldPath::new("is_applied")?,
             true,
             None,

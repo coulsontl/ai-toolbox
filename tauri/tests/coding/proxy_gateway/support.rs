@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use ai_toolbox_lib::db::schema::{Cli};
 
 /// How much of each request/response body the gateway is asked to record.
 ///
@@ -85,7 +86,7 @@ impl RunningGateway {
             )?;
             db_create(
                 connection,
-                DbTable::CodexProvider,
+                DbTable::CliProvider(Cli::Codex),
                 &json!({
                     "name": "Parallel tool fixture", "category": "custom",
                     "is_applied": true, "is_disabled": false,

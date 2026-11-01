@@ -16,7 +16,7 @@ use crate::db::helpers::{
     db_count, db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put,
     db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 
 // ============================================================================
@@ -778,7 +778,7 @@ fn list_opencode_prompts_from_sqlite(
 ) -> Result<Vec<OpenCodePromptConfig>, String> {
     let order = opencode_prompt_order()?;
     sqlite_state.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::OpenCodePromptConfig, Some(&order))?
+        Ok(db_list(conn, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt), Some(&order))?
             .into_iter()
             .map(adapter::from_db_value_prompt_config)
             .collect())
@@ -790,7 +790,7 @@ fn get_opencode_prompt_from_sqlite(
     config_id: &str,
 ) -> Result<Option<OpenCodePromptConfig>, String> {
     sqlite_state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::OpenCodePromptConfig, config_id)?
+        Ok(db_get(conn, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt), config_id)?
             .map(adapter::from_db_value_prompt_config))
     })
 }
@@ -803,7 +803,7 @@ fn put_opencode_prompt_to_sqlite(
     sqlite_state.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::OpenCodePromptConfig,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt),
             config_id,
             &adapter::to_db_value_prompt_config(content),
         )
@@ -1291,7 +1291,7 @@ pub async fn create_opencode_prompt_config(
     let next_sort_index = state.with_conn(|conn| {
         Ok(db_max_i64(
             conn,
-            DbTable::OpenCodePromptConfig,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt),
             &JsonFieldPath::new("sort_index")?,
         )?
         .map(|value| value as i32 + 1)
@@ -1381,7 +1381,7 @@ pub async fn delete_opencode_prompt_config(
     app: tauri::AppHandle,
     id: String,
 ) -> Result<(), String> {
-    state.with_conn(|conn| db_delete(conn, DbTable::OpenCodePromptConfig, &id).map(|_| ()))?;
+    state.with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt), &id).map(|_| ()))?;
 
     let _ = app.emit("config-changed", "window");
 
@@ -1433,7 +1433,7 @@ async fn apply_prompt_config_internal_with_events<R: tauri::Runtime>(
     let now = chrono::Local::now().to_rfc3339();
 
     state.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::OpenCodePromptConfig, Some(config_id), &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt), Some(config_id), &now)
     })?;
 
     write_prompt_content_to_file(state.clone(), Some(prompt_config.content.as_str())).await?;
@@ -1469,7 +1469,7 @@ pub async fn disable_opencode_prompt_config(
 
     let now = chrono::Local::now().to_rfc3339();
     state.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::OpenCodePromptConfig, None, &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt), None, &now)
     })?;
     write_prompt_content_to_file(state.clone(), Some("")).await?;
 
@@ -1488,7 +1488,7 @@ pub async fn reorder_opencode_prompt_configs(
         state.with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::OpenCodePromptConfig,
+                DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt),
                 id,
                 &[(
                     "sort_index",
@@ -1544,7 +1544,7 @@ pub async fn get_opencode_common_config(
     state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Option<OpenCodeCommonConfig>, String> {
     state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::OpenCodeCommonConfig, "common")?.map(adapter::from_db_value))
+        Ok(db_get(conn, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Common), "common")?.map(adapter::from_db_value))
     })
 }
 
@@ -1577,7 +1577,7 @@ pub async fn save_opencode_common_config(
 
     let json_data = adapter::to_db_value(&config);
 
-    db.with_conn(|conn| db_put(conn, DbTable::OpenCodeCommonConfig, "common", &json_data))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Common), "common", &json_data))?;
     runtime_location::refresh_runtime_location_cache_for_module_async(&db, "opencode").await?;
 
     resync_all_skills_if_tool_path_changed(app, state.inner(), "opencode", previous_skills_path)

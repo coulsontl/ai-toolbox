@@ -23,7 +23,7 @@ use crate::coding::db_id::{db_extract_id, db_new_id};
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_patch_fields, db_put, db_update_applied_status,
 };
-use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, DbTable, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use crate::http_client;
 
@@ -101,7 +101,7 @@ struct TokenResponse {
 
 fn load_official_provider(db: &SqliteDbState, provider_id: &str) -> Result<KimiProvider, String> {
     let provider = db
-        .with_conn(|conn| db_get(conn, DbTable::KimiProvider, provider_id))
+        .with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Kimi), provider_id))
         .map(|value| value.map(adapter::provider_from_db_value))?;
     match provider {
         Some(provider) if provider.category == "official" => Ok(provider),
@@ -609,7 +609,7 @@ async fn store_official_account(
         "created_at": created_at,
         "updated_at": now,
     });
-    db.with_conn(|conn| db_put(conn, DbTable::KimiOfficialAccount, &id, &content))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliOfficialAccount(Cli::Kimi), &id, &content))?;
     if is_applied {
         // Push the fresh token into credentials/<name>.json right away so the
         // CLI never keeps running on the pre-login token.
@@ -643,7 +643,7 @@ pub fn list_kimi_official_accounts_with_state(
         OrderField::created_at(OrderDirection::Asc),
     ]);
     state
-        .with_conn(|conn| db_list(conn, DbTable::KimiOfficialAccount, Some(&order)))
+        .with_conn(|conn| db_list(conn, DbTable::CliOfficialAccount(Cli::Kimi), Some(&order)))
         .map(|values| {
             values
                 .into_iter()
@@ -796,7 +796,7 @@ pub async fn save_kimi_official_local_login(
         "created_at": now,
         "updated_at": now,
     });
-    db.with_conn(|conn| db_put(conn, DbTable::KimiOfficialAccount, &id, &content))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliOfficialAccount(Cli::Kimi), &id, &content))?;
     get_account(db, &id)?.ok_or_else(|| "Failed to read back the saved Kimi account".to_string())
 }
 
@@ -900,7 +900,7 @@ fn account_from_db_value(value: Value) -> KimiOfficialAccount {
 }
 
 fn get_account(db: &SqliteDbState, id: &str) -> Result<Option<KimiOfficialAccount>, String> {
-    db.with_conn(|conn| db_get(conn, DbTable::KimiOfficialAccount, id))
+    db.with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Kimi), id))
         .map(|value| value.map(account_from_db_value))
 }
 
@@ -973,10 +973,10 @@ pub async fn apply_kimi_official_account(
     super::commands::apply_kimi_provider_to_file(state.db(), &provider_id).await?;
     let now = Local::now().to_rfc3339();
     state.db().with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::KimiOfficialAccount, Some(&account_id), &now)
+        db_update_applied_status(conn, DbTable::CliOfficialAccount(Cli::Kimi), Some(&account_id), &now)
     })?;
     state.db().with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::KimiProvider, Some(&provider_id), &now)
+        db_update_applied_status(conn, DbTable::CliProvider(Cli::Kimi), Some(&provider_id), &now)
     })?;
     let _ = app.emit("config-changed", "window");
     emit_kimi_sync(&app);
@@ -1003,7 +1003,7 @@ pub async fn delete_kimi_official_account(
     // the CLI out of the account still in use.
     state
         .db()
-        .with_conn(|conn| db_delete(conn, DbTable::KimiOfficialAccount, &account_id).map(|_| ()))?;
+        .with_conn(|conn| db_delete(conn, DbTable::CliOfficialAccount(Cli::Kimi), &account_id).map(|_| ()))?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -1106,7 +1106,7 @@ pub async fn adopt_live_login_as_account(db: &SqliteDbState) -> Result<(), Strin
     // The provider table was empty a moment ago, and the CLI is signed in, so
     // the official channel is what the live config.toml already points at.
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::KimiProvider, Some(&provider.id), &now)
+        db_update_applied_status(conn, DbTable::CliProvider(Cli::Kimi), Some(&provider.id), &now)
     })?;
     let content = json!({
         "provider_id": provider.id,
@@ -1136,7 +1136,7 @@ pub async fn adopt_live_login_as_account(db: &SqliteDbState) -> Result<(), Strin
         "created_at": now,
         "updated_at": now,
     });
-    db.with_conn(|conn| db_put(conn, DbTable::KimiOfficialAccount, &db_new_id(), &content))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliOfficialAccount(Cli::Kimi), &db_new_id(), &content))?;
     log::info!(
         "[kimi-oauth] Adopted the live CLI login at {} as the official channel",
         credential_path.display()
@@ -1270,7 +1270,7 @@ pub async fn refresh_applied_kimi_accounts_if_needed<R: tauri::Runtime>(
         state.db().with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::KimiOfficialAccount,
+                DbTable::CliOfficialAccount(Cli::Kimi),
                 &account.id,
                 &[
                     ("auth_snapshot", json!(new_snapshot.to_string())),
@@ -1307,7 +1307,7 @@ async fn record_account_refresh_error(
     db.with_conn(|conn| {
         db_patch_fields(
             conn,
-            DbTable::KimiOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Kimi),
             account_id,
             &[
                 ("last_error", Value::String(message.to_string())),
@@ -1323,7 +1323,7 @@ pub async fn clear_all_kimi_official_account_apply_status(
 ) -> Result<(), String> {
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::KimiOfficialAccount, None, &now)
+        db_update_applied_status(conn, DbTable::CliOfficialAccount(Cli::Kimi), None, &now)
     })?;
     Ok(())
 }
@@ -1334,14 +1334,14 @@ pub async fn sync_kimi_official_account_apply_status(
 ) -> Result<(), String> {
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        let accounts = db_list(conn, DbTable::KimiOfficialAccount, None)?;
+        let accounts = db_list(conn, DbTable::CliOfficialAccount(Cli::Kimi), None)?;
         for account in accounts {
             let account_id = db_extract_id(&account);
             let owns_provider =
                 account.get("provider_id").and_then(Value::as_str) == Some(provider_id);
             db_patch_fields(
                 conn,
-                DbTable::KimiOfficialAccount,
+                DbTable::CliOfficialAccount(Cli::Kimi),
                 &account_id,
                 &[
                     ("is_applied", Value::Bool(owns_provider)),

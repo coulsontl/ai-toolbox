@@ -8,7 +8,7 @@ use crate::coding::all_api_hub;
 use crate::coding::runtime_location;
 use crate::coding::skills::commands::resync_all_skills_if_tool_path_changed;
 use crate::db::helpers::{db_get, db_put};
-use crate::db::schema::DbTable;
+use crate::db::schema::{Cli, CliConfigKind, DbTable};
 use crate::db::SqliteDbState;
 
 // ============================================================================
@@ -278,7 +278,7 @@ pub async fn get_openclaw_common_config(
     state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Option<OpenClawCommonConfig>, String> {
     state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::OpenClawCommonConfig, "common")?.map(adapter::from_db_value))
+        Ok(db_get(conn, DbTable::CliConfig(Cli::OpenClaw, CliConfigKind::Common), "common")?.map(adapter::from_db_value))
     })
 }
 
@@ -293,7 +293,7 @@ pub async fn save_openclaw_common_config(
     let previous_skills_path = runtime_location::get_tool_skills_path_async(&db, "openclaw").await;
 
     let json_data = adapter::to_db_value(&config);
-    db.with_conn(|conn| db_put(conn, DbTable::OpenClawCommonConfig, "common", &json_data))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::OpenClaw, CliConfigKind::Common), "common", &json_data))?;
     runtime_location::refresh_runtime_location_cache_for_module_async(&db, "openclaw").await?;
 
     resync_all_skills_if_tool_path_changed(app, state.inner(), "openclaw", previous_skills_path)

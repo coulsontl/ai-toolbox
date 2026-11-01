@@ -19,7 +19,7 @@ use crate::coding::runtime_location;
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put, db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 
 const PRODUCT_NAME: &str = "OmO";
@@ -53,7 +53,7 @@ fn put_prompt_to_sqlite(
     content: &OmoNativePromptConfigContent,
 ) -> Result<(), String> {
     let value = super::adapter::prompt_to_db_value(content);
-    db.with_conn(|conn| db_put(conn, DbTable::OmoNativePromptConfig, id, &value))
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Prompt), id, &value))
 }
 
 fn get_prompt_from_sqlite(
@@ -61,7 +61,7 @@ fn get_prompt_from_sqlite(
     id: &str,
 ) -> Result<Option<OmoNativePromptConfig>, String> {
     Ok(db
-        .with_conn(|conn| db_get(conn, DbTable::OmoNativePromptConfig, id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Prompt), id))?
         .map(super::adapter::prompt_from_db_value))
 }
 
@@ -104,7 +104,7 @@ pub async fn list_omo_native_prompt_configs(
     let db = state.db();
     let mut prompts = db.with_conn(|conn| {
         Ok(
-            db_list(conn, DbTable::OmoNativePromptConfig, Some(&prompt_order()?))?
+            db_list(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Prompt), Some(&prompt_order()?))?
                 .into_iter()
                 .map(super::adapter::prompt_from_db_value)
                 .collect::<Vec<_>>(),
@@ -129,7 +129,7 @@ pub async fn create_omo_native_prompt_config(
     let next_sort_index = db.with_conn(|conn| {
         Ok(db_max_i64(
             conn,
-            DbTable::OmoNativePromptConfig,
+            DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Prompt),
             &JsonFieldPath::new("sort_index")?,
         )?
         .map(|value| value as i32 + 1)
@@ -197,7 +197,7 @@ pub async fn delete_omo_native_prompt_config(
     // 只删数据库记录，保留磁盘上的 `AGENTS.md`——与其余 CLI 一致：
     // 删一条预设不应该顺手清掉用户正在用的运行时文件。
     let db = state.db();
-    db.with_conn(|conn| db_delete(conn, DbTable::OmoNativePromptConfig, &id).map(|_| ()))?;
+    db.with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Prompt), &id).map(|_| ()))?;
     emit_config_changed(&app);
     Ok(())
 }
@@ -250,7 +250,7 @@ async fn apply_omo_native_prompt_config_internal(
         .ok_or_else(|| format!("Prompt config '{}' not found", config_id))?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::OmoNativePromptConfig, Some(config_id), &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Prompt), Some(config_id), &now)
     })?;
     write_prompt_content_to_file(db, Some(prompt.content.as_str())).await
 }
@@ -267,7 +267,7 @@ pub async fn disable_omo_native_prompt_config(
         .ok_or_else(|| format!("Prompt config '{}' not found", config_id))?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::OmoNativePromptConfig, None, &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Prompt), None, &now)
     })?;
     write_prompt_content_to_file(&db, Some("")).await?;
     emit_config_changed(&app);
@@ -285,7 +285,7 @@ pub async fn reorder_omo_native_prompt_configs(
         db.with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::OmoNativePromptConfig,
+                DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Prompt),
                 id,
                 &[("sort_index", json!(index as i64))],
             )

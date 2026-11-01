@@ -1,5 +1,5 @@
 use super::*;
-use crate::db::schema::DbTable;
+use crate::db::schema::{Cli, CliConfigKind, DbTable};
 
 fn seed_root() -> tempfile::TempDir {
     tempfile::tempdir().expect("tempdir")
@@ -132,9 +132,13 @@ fn settings_records_drop_an_empty_config_dir_instead_of_persisting_blank() {
 #[test]
 fn the_prompt_table_exists_in_the_schema() {
     // Guards against the table being dropped from `ALL_TABLES` while the
-    // commands still reference it.
+    // commands still reference it. CodeBuddy's prompts now share `cli_config`
+    // with every other CLI's, so what is worth pinning is the scope: a wrong
+    // `cli_key` or `kind` would silently read another CLI's presets.
+    let table = DbTable::CliConfig(Cli::Codebuddy, CliConfigKind::Prompt);
+    assert_eq!(table.name(), "cli_config");
     assert_eq!(
-        DbTable::CodebuddyPromptConfig.name(),
-        "codebuddy_prompt_config"
+        table.scope(),
+        crate::db::schema::TableScope::cli_kind("codebuddy", "prompt")
     );
 }

@@ -21,7 +21,7 @@ use crate::coding::db_id::{db_extract_id, db_new_id};
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_patch_fields, db_put, db_update_applied_status,
 };
-use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, DbTable, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use crate::http_client;
 
@@ -236,7 +236,7 @@ pub fn list_grok_official_accounts(
     ]);
     state
         .db()
-        .with_conn(|conn| db_list(conn, DbTable::GrokOfficialAccount, Some(&order)))
+        .with_conn(|conn| db_list(conn, DbTable::CliOfficialAccount(Cli::Grok), Some(&order)))
         .map(|values| {
             values
                 .into_iter()
@@ -298,7 +298,7 @@ pub async fn apply_grok_official_account(
     write_auth_json(&auth_path, &merged)?;
     let now = Local::now().to_rfc3339();
     state.db().with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::GrokOfficialAccount, Some(&account_id), &now)
+        db_update_applied_status(conn, DbTable::CliOfficialAccount(Cli::Grok), Some(&account_id), &now)
     })?;
     let _ = app.emit("config-changed", "window");
     emit_grok_sync(&app);
@@ -376,7 +376,7 @@ pub async fn delete_grok_official_account(
     let account = get_account(state.db(), &account_id)?;
     state
         .db()
-        .with_conn(|conn| db_delete(conn, DbTable::GrokOfficialAccount, &account_id).map(|_| ()))?;
+        .with_conn(|conn| db_delete(conn, DbTable::CliOfficialAccount(Cli::Grok), &account_id).map(|_| ()))?;
     if let Some(account) = account.filter(|account| account.is_applied) {
         let snapshot: Value = serde_json::from_str(
             account
@@ -440,7 +440,7 @@ pub async fn logout_grok_official_runtime(
     }
     let now = Local::now().to_rfc3339();
     state.db().with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::GrokOfficialAccount, None, &now)
+        db_update_applied_status(conn, DbTable::CliOfficialAccount(Cli::Grok), None, &now)
     })?;
     let _ = app.emit("config-changed", "window");
     emit_grok_sync(&app);
@@ -768,7 +768,7 @@ fn save_account(
     let sort_index = db.with_conn(|conn| {
         Ok(crate::db::helpers::db_max_i64(
             conn,
-            DbTable::GrokOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Grok),
             &crate::db::schema::JsonFieldPath::new("sort_index")?,
         )?
         .map(|value| value as i32 + 1)
@@ -859,12 +859,12 @@ fn save_account_with_id(
             }
         }
     }
-    db.with_conn(|conn| db_put(conn, DbTable::GrokOfficialAccount, id, &data))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliOfficialAccount(Cli::Grok), id, &data))?;
     get_account(db, id)?.ok_or_else(|| "Failed to read saved Grok account".to_string())
 }
 
 fn get_account(db: &SqliteDbState, id: &str) -> Result<Option<GrokOfficialAccount>, String> {
-    db.with_conn(|conn| db_get(conn, DbTable::GrokOfficialAccount, id))
+    db.with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Grok), id))
         .map(|value| value.map(account_from_db_value))
 }
 
@@ -1245,7 +1245,7 @@ pub async fn refresh_applied_grok_accounts_if_needed(
         OrderField::created_at(OrderDirection::Asc),
     ]);
     let accounts = db
-        .with_conn(|conn| db_list(conn, DbTable::GrokOfficialAccount, Some(&order)))?
+        .with_conn(|conn| db_list(conn, DbTable::CliOfficialAccount(Cli::Grok), Some(&order)))?
         .into_iter()
         .map(account_from_db_value)
         .collect::<Vec<_>>();
@@ -1587,7 +1587,7 @@ fn persist_usage_snapshot(
         ("last_error", Value::Null),
     ];
     db.with_conn(|conn| {
-        db_patch_fields(conn, DbTable::GrokOfficialAccount, account_id, &patch)?;
+        db_patch_fields(conn, DbTable::CliOfficialAccount(Cli::Grok), account_id, &patch)?;
         Ok(())
     })?;
     get_account(db, account_id)?.ok_or_else(|| "Failed to read updated Grok account".to_string())
@@ -1597,7 +1597,7 @@ fn persist_usage_error(db: &SqliteDbState, account_id: &str, error: &str) -> Res
     db.with_conn(|conn| {
         db_patch_fields(
             conn,
-            DbTable::GrokOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Grok),
             account_id,
             &[("last_error", Value::String(error.to_string()))],
         )?;
@@ -1609,7 +1609,7 @@ fn clear_account_last_error(db: &SqliteDbState, account_id: &str) -> Result<(), 
     db.with_conn(|conn| {
         db_patch_fields(
             conn,
-            DbTable::GrokOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Grok),
             account_id,
             &[("last_error", Value::Null)],
         )?;
@@ -1619,7 +1619,7 @@ fn clear_account_last_error(db: &SqliteDbState, account_id: &str) -> Result<(), 
 
 fn ensure_official_provider(db: &SqliteDbState, provider_id: &str) -> Result<(), String> {
     let provider = db
-        .with_conn(|conn| db_get(conn, DbTable::GrokProvider, provider_id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Grok), provider_id))?
         .map(adapter::provider_from_db_value)
         .ok_or_else(|| format!("Grok provider '{provider_id}' not found"))?;
     if provider.category != "official" {
@@ -1634,7 +1634,7 @@ pub async fn clear_all_grok_official_account_apply_status(
 ) -> Result<(), String> {
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::GrokOfficialAccount, None, &now)
+        db_update_applied_status(conn, DbTable::CliOfficialAccount(Cli::Grok), None, &now)
     })?;
     Ok(())
 }
@@ -1661,7 +1661,7 @@ pub async fn sync_grok_official_account_apply_status(
     db.with_conn_mut(|conn| {
         db_update_applied_status(
             conn,
-            DbTable::GrokOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Grok),
             matched_account_id.as_deref(),
             &now,
         )
@@ -1677,7 +1677,7 @@ fn list_persisted_official_accounts(
         OrderField::json_integer("sort_index", OrderDirection::Asc)?,
         OrderField::created_at(OrderDirection::Asc),
     ]);
-    db.with_conn(|conn| db_list(conn, DbTable::GrokOfficialAccount, Some(&order)))
+    db.with_conn(|conn| db_list(conn, DbTable::CliOfficialAccount(Cli::Grok), Some(&order)))
         .map(|values| {
             values
                 .into_iter()

@@ -26,7 +26,7 @@ use crate::db::helpers::{
     db_count, db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put,
     db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use tauri::Emitter;
 
@@ -199,7 +199,7 @@ pub async fn list_kimi_providers(
 
 pub fn list_kimi_providers_for_db(db: &SqliteDbState) -> Result<Vec<KimiProvider>, String> {
     let order = provider_order()?;
-    db.with_conn(|conn| db_list(conn, DbTable::KimiProvider, Some(&order)))
+    db.with_conn(|conn| db_list(conn, DbTable::CliProvider(Cli::Kimi), Some(&order)))
         .map(|values| {
             values
                 .into_iter()
@@ -219,7 +219,7 @@ pub async fn create_kimi_provider<R: tauri::Runtime>(
     let now = Local::now().to_rfc3339();
     let sort_index = match provider.sort_index {
         Some(value) => Some(value),
-        None => Some(next_sort_index(db, DbTable::KimiProvider)?),
+        None => Some(next_sort_index(db, DbTable::CliProvider(Cli::Kimi))?),
     };
     let content = KimiProviderContent {
         name: provider.name,
@@ -241,7 +241,7 @@ pub async fn create_kimi_provider<R: tauri::Runtime>(
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::KimiProvider,
+            DbTable::CliProvider(Cli::Kimi),
             &id,
             &adapter::provider_to_db_value(&content),
         )
@@ -279,7 +279,7 @@ pub fn ensure_kimi_official_provider(db: &SqliteDbState) -> Result<KimiProvider,
         notes: None,
         icon: None,
         icon_color: None,
-        sort_index: Some(next_sort_index(db, DbTable::KimiProvider)?),
+        sort_index: Some(next_sort_index(db, DbTable::CliProvider(Cli::Kimi))?),
         meta: None,
         is_applied: false,
         is_disabled: false,
@@ -290,7 +290,7 @@ pub fn ensure_kimi_official_provider(db: &SqliteDbState) -> Result<KimiProvider,
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::KimiProvider,
+            DbTable::CliProvider(Cli::Kimi),
             &id,
             &adapter::provider_to_db_value(&content),
         )
@@ -349,7 +349,7 @@ pub async fn update_kimi_provider(
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::KimiProvider,
+            DbTable::CliProvider(Cli::Kimi),
             &provider.id,
             &adapter::provider_to_db_value(&content),
         )
@@ -394,7 +394,7 @@ pub async fn delete_kimi_provider_internal(db: &SqliteDbState, id: &str) -> Resu
         return Err("The applied Kimi provider cannot be deleted".to_string());
     }
     let has_accounts = db.with_conn(|conn| {
-        let accounts = db_list(conn, DbTable::KimiOfficialAccount, None)?;
+        let accounts = db_list(conn, DbTable::CliOfficialAccount(Cli::Kimi), None)?;
         Ok(accounts
             .iter()
             .any(|account| account.get("provider_id").and_then(Value::as_str) == Some(id)))
@@ -402,7 +402,7 @@ pub async fn delete_kimi_provider_internal(db: &SqliteDbState, id: &str) -> Resu
     if has_accounts {
         return Err("Delete the Kimi official accounts before deleting this provider".to_string());
     }
-    db.with_conn(|conn| db_delete(conn, DbTable::KimiProvider, id).map(|_| ()))?;
+    db.with_conn(|conn| db_delete(conn, DbTable::CliProvider(Cli::Kimi), id).map(|_| ()))?;
     Ok(())
 }
 
@@ -416,7 +416,7 @@ pub async fn reorder_kimi_providers(
         state.db().with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::KimiProvider,
+                DbTable::CliProvider(Cli::Kimi),
                 id,
                 &[
                     ("sort_index", json!(index as i64)),
@@ -444,7 +444,7 @@ pub async fn toggle_kimi_provider_disabled(
     state.db().with_conn(|conn| {
         db_patch_fields(
             conn,
-            DbTable::KimiProvider,
+            DbTable::CliProvider(Cli::Kimi),
             &id,
             &[("is_disabled", Value::Bool(disabled))],
         )
@@ -487,7 +487,7 @@ pub async fn select_kimi_provider_internal_with_sync<R: tauri::Runtime>(
     apply_kimi_provider_to_file(state, id).await?;
     let now = Local::now().to_rfc3339();
     state.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::KimiProvider, Some(id), &now)
+        db_update_applied_status(conn, DbTable::CliProvider(Cli::Kimi), Some(id), &now)
     })?;
     if provider.category == "official" {
         super::official_accounts::sync_kimi_official_account_apply_status(state, id).await?;
@@ -564,7 +564,7 @@ pub async fn select_kimi_model_internal<R: tauri::Runtime>(
     state.with_conn(|conn| {
         db_patch_fields(
             conn,
-            DbTable::KimiProvider,
+            DbTable::CliProvider(Cli::Kimi),
             &provider.id,
             &[
                 ("settings_config", Value::String(next_settings_config)),
@@ -779,7 +779,7 @@ pub async fn save_kimi_common_config(
             .or(existing_root)
     };
     let value = adapter::common_to_db_value(&input.config, root_dir.as_deref());
-    db.with_conn(|conn| db_put(conn, DbTable::KimiCommonConfig, "common", &value))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Common), "common", &value))?;
     runtime_location::refresh_runtime_location_cache_for_module_async(db, "kimi").await?;
     if let Some(provider) = get_applied_provider(db)? {
         apply_kimi_provider_to_file_locked(
@@ -869,7 +869,7 @@ pub async fn save_kimi_local_config(
         sort_index: provider_input
             .as_ref()
             .and_then(|provider| provider.sort_index)
-            .or(Some(next_sort_index(db, DbTable::KimiProvider)?)),
+            .or(Some(next_sort_index(db, DbTable::CliProvider(Cli::Kimi))?)),
         meta: provider_input
             .as_ref()
             .and_then(|provider| provider.meta.clone())
@@ -886,7 +886,7 @@ pub async fn save_kimi_local_config(
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::KimiProvider,
+            DbTable::CliProvider(Cli::Kimi),
             &provider_id,
             &adapter::provider_to_db_value(&provider_content),
         )
@@ -907,7 +907,7 @@ pub async fn save_kimi_local_config(
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::KimiCommonConfig,
+            DbTable::CliConfig(Cli::Kimi, CliConfigKind::Common),
             "common",
             &adapter::common_to_db_value(&common_config, root_dir.as_deref()),
         )
@@ -922,7 +922,7 @@ pub async fn save_kimi_local_config(
     )
     .await?;
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::KimiProvider, Some(&provider_id), &now)
+        db_update_applied_status(conn, DbTable::CliProvider(Cli::Kimi), Some(&provider_id), &now)
     })?;
     drop(config_write_guard);
     if provider_content.category == "official" {
@@ -949,7 +949,7 @@ pub async fn list_kimi_prompt_configs(
     let order = prompt_order()?;
     let prompts = state
         .db()
-        .with_conn(|conn| db_list(conn, DbTable::KimiPromptConfig, Some(&order)))
+        .with_conn(|conn| db_list(conn, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt), Some(&order)))
         .map(|values| {
             values
                 .into_iter()
@@ -975,7 +975,7 @@ pub async fn create_kimi_prompt_config(
         name: input.name,
         content: input.content,
         is_applied: false,
-        sort_index: Some(next_sort_index(state.db(), DbTable::KimiPromptConfig)?),
+        sort_index: Some(next_sort_index(state.db(), DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt))?),
         created_at: now.clone(),
         updated_at: now,
     };
@@ -983,7 +983,7 @@ pub async fn create_kimi_prompt_config(
     state.db().with_conn(|conn| {
         db_put(
             conn,
-            DbTable::KimiPromptConfig,
+            DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt),
             &id,
             &adapter::prompt_to_db_value(&content),
         )
@@ -1016,7 +1016,7 @@ pub async fn update_kimi_prompt_config(
     state.db().with_conn(|conn| {
         db_put(
             conn,
-            DbTable::KimiPromptConfig,
+            DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt),
             &id,
             &adapter::prompt_to_db_value(&content),
         )
@@ -1041,7 +1041,7 @@ pub async fn delete_kimi_prompt_config(
     // Only delete the DB prompt record. Keep the live AGENTS.md on disk.
     state
         .db()
-        .with_conn(|conn| db_delete(conn, DbTable::KimiPromptConfig, &id).map(|_| ()))?;
+        .with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt), &id).map(|_| ()))?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -1090,7 +1090,7 @@ pub async fn apply_kimi_prompt_config(
 pub async fn disable_kimi_prompt_runtime(state: &SqliteDbState) -> Result<(), String> {
     let now = Local::now().to_rfc3339();
     state.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::KimiPromptConfig, None, &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt), None, &now)
     })?;
     write_text_atomic(&get_kimi_prompt_path_async(state).await?, "")?;
     Ok(())
@@ -1160,7 +1160,7 @@ pub async fn write_kimi_prompt_and_mark_applied(
     write_text_atomic(&get_kimi_prompt_path_async(state).await?, &prompt.content)?;
     let now = Local::now().to_rfc3339();
     state.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::KimiPromptConfig, Some(config_id), &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt), Some(config_id), &now)
     })?;
     Ok(())
 }
@@ -1174,7 +1174,7 @@ pub async fn reorder_kimi_prompt_configs(
         state.db().with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::KimiPromptConfig,
+                DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt),
                 id,
                 &[("sort_index", json!(index as i64))],
             )
@@ -1415,7 +1415,7 @@ async fn load_temp_kimi_provider_from_file(
 async fn import_kimi_local_provider_from_files(
     db: &SqliteDbState,
 ) -> Result<Option<String>, String> {
-    if db.with_conn(|conn| db_count(conn, DbTable::KimiProvider))? > 0 {
+    if db.with_conn(|conn| db_count(conn, DbTable::CliProvider(Cli::Kimi)))? > 0 {
         return Ok(None);
     }
 
@@ -1444,12 +1444,12 @@ async fn import_kimi_local_provider_from_files(
 
     let provider_id = db_new_id();
     let inserted = db.with_conn(|conn| {
-        if db_count(conn, DbTable::KimiProvider)? > 0 {
+        if db_count(conn, DbTable::CliProvider(Cli::Kimi))? > 0 {
             return Ok(false);
         }
         db_put(
             conn,
-            DbTable::KimiProvider,
+            DbTable::CliProvider(Cli::Kimi),
             &provider_id,
             &adapter::provider_to_db_value(&content),
         )?;
@@ -1463,7 +1463,7 @@ async fn import_kimi_local_provider_from_files(
     // state; an existing row (root_dir semantics) is never overwritten.
     if get_common_config(db)?.is_none() {
         let common = adapter::common_to_db_value(&snapshot.common_config, None);
-        db.with_conn(|conn| db_put(conn, DbTable::KimiCommonConfig, "common", &common))?;
+        db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Common), "common", &common))?;
     }
     Ok(Some(provider_id))
 }
@@ -1482,7 +1482,7 @@ fn toml_item_to_json(item: &Item) -> Result<Value, String> {
 }
 
 fn get_provider(db: &SqliteDbState, id: &str) -> Result<Option<KimiProvider>, String> {
-    db.with_conn(|conn| db_get(conn, DbTable::KimiProvider, id))
+    db.with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Kimi), id))
         .map(|value| value.map(adapter::provider_from_db_value))
 }
 
@@ -1493,12 +1493,12 @@ fn get_applied_provider(db: &SqliteDbState) -> Result<Option<KimiProvider>, Stri
 }
 
 fn get_common_config(db: &SqliteDbState) -> Result<Option<KimiCommonConfig>, String> {
-    db.with_conn(|conn| db_get(conn, DbTable::KimiCommonConfig, "common"))
+    db.with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Common), "common"))
         .map(|value| value.map(adapter::common_from_db_value))
 }
 
 fn get_prompt(db: &SqliteDbState, id: &str) -> Result<Option<KimiPromptConfig>, String> {
-    db.with_conn(|conn| db_get(conn, DbTable::KimiPromptConfig, id))
+    db.with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt), id))
         .map(|value| value.map(adapter::prompt_from_db_value))
 }
 

@@ -17,7 +17,7 @@ use crate::coding::prompt_file::{read_prompt_content_file, write_prompt_content_
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_max_i64, db_put, db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use tauri::Emitter;
 
@@ -45,7 +45,7 @@ fn list_prompts_from_sqlite(
     let order = desktop_prompt_order()?;
     sqlite_state.with_conn(|conn| {
         Ok(
-            db_list(conn, DbTable::ClaudeDesktopPromptConfig, Some(&order))?
+            db_list(conn, DbTable::CliConfig(Cli::ClaudeDesktop, CliConfigKind::Prompt), Some(&order))?
                 .into_iter()
                 .map(adapter::from_db_value_prompt)
                 .collect(),
@@ -58,7 +58,7 @@ fn get_prompt_from_sqlite(
     config_id: &str,
 ) -> Result<Option<ClaudeDesktopPromptConfig>, String> {
     sqlite_state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::ClaudeDesktopPromptConfig, config_id)?
+        Ok(db_get(conn, DbTable::CliConfig(Cli::ClaudeDesktop, CliConfigKind::Prompt), config_id)?
             .map(adapter::from_db_value_prompt))
     })
 }
@@ -71,7 +71,7 @@ fn put_prompt_to_sqlite(
     sqlite_state.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::ClaudeDesktopPromptConfig,
+            DbTable::CliConfig(Cli::ClaudeDesktop, CliConfigKind::Prompt),
             config_id,
             &adapter::to_db_value_prompt(content),
         )
@@ -80,7 +80,7 @@ fn put_prompt_to_sqlite(
 
 fn delete_prompt_from_sqlite(sqlite_state: &SqliteDbState, config_id: &str) -> Result<(), String> {
     sqlite_state.with_conn(|conn| {
-        db_delete(conn, DbTable::ClaudeDesktopPromptConfig, config_id).map(|_| ())
+        db_delete(conn, DbTable::CliConfig(Cli::ClaudeDesktop, CliConfigKind::Prompt), config_id).map(|_| ())
     })
 }
 
@@ -141,7 +141,7 @@ pub async fn create_claude_desktop_prompt_config(
         .with_conn(|conn| {
             db_max_i64(
                 conn,
-                DbTable::ClaudeDesktopPromptConfig,
+                DbTable::CliConfig(Cli::ClaudeDesktop, CliConfigKind::Prompt),
                 &JsonFieldPath::new("sort_index")?,
             )
         })?
@@ -327,7 +327,7 @@ pub async fn disable_claude_desktop_prompt_config(
 
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::ClaudeDesktopPromptConfig, None, &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::ClaudeDesktop, CliConfigKind::Prompt), None, &now)
     })?;
     write_prompt_content_to_file(Some("")).await?;
 

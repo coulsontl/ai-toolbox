@@ -12,7 +12,7 @@ use ai_toolbox_lib::coding::tools::detection::{
 };
 use ai_toolbox_lib::coding::tools::types::RuntimeTool;
 use ai_toolbox_lib::db::helpers::db_put;
-use ai_toolbox_lib::db::schema::DbTable;
+use ai_toolbox_lib::db::schema::{Cli, CliConfigKind, DbTable};
 use ai_toolbox_lib::db::sqlite_state::SqliteDbState;
 use serde_json::json;
 use tempfile::TempDir;
@@ -46,7 +46,7 @@ fn store_custom_root_dir(db: &SqliteDbState, root: &str) {
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::ZcodeCommonConfig,
+            DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common),
             "common",
             &json!({
                 "config": "",

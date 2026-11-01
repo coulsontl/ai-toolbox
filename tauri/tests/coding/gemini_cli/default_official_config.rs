@@ -5,7 +5,7 @@ use ai_toolbox_lib::coding::gemini_cli::{
 };
 use ai_toolbox_lib::coding::runtime_location;
 use ai_toolbox_lib::db::helpers::{db_count, db_get, db_put};
-use ai_toolbox_lib::db::schema::DbTable;
+use ai_toolbox_lib::db::schema::{Cli, CliConfigKind, DbTable};
 use ai_toolbox_lib::db::sqlite_state::SqliteDbState;
 use serde_json::{json, Value};
 use std::sync::{Mutex, OnceLock};
@@ -60,7 +60,7 @@ fn db_with_gemini_cli_root(root_dir: &std::path::Path) -> SqliteDbState {
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::GeminiCliCommonConfig,
+            DbTable::CliConfig(Cli::Gemini, CliConfigKind::Common),
             "common",
             &adapter::to_db_value_common("{}", Some(&root_dir.to_string_lossy())),
         )
@@ -121,7 +121,7 @@ fn save_official_account(db: &SqliteDbState, provider_id: &str) {
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::GeminiCliOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Gemini),
             "official-account",
             &adapter::to_db_value_official_account(&content),
         )
@@ -145,7 +145,7 @@ fn official_only_import_requires_local_official_runtime() {
 
     assert!(imported.is_none());
     let count = db
-        .with_conn(|conn| db_count(conn, DbTable::GeminiCliProvider))
+        .with_conn(|conn| db_count(conn, DbTable::CliProvider(Cli::Gemini)))
         .expect("count providers");
     assert_eq!(count, 0);
 }
@@ -166,7 +166,7 @@ fn lazy_list_imports_local_official_runtime_without_persisted_account() {
     assert_eq!(providers[0].category, "official");
     assert!(providers[0].is_applied);
     let count = db
-        .with_conn(|conn| db_count(conn, DbTable::GeminiCliProvider))
+        .with_conn(|conn| db_count(conn, DbTable::CliProvider(Cli::Gemini)))
         .expect("count providers");
     assert_eq!(count, 1);
 }
@@ -211,12 +211,12 @@ fn import_uses_fresh_provider_id_even_when_official_account_exists() {
     assert!(imported.is_applied);
 
     let count = db
-        .with_conn(|conn| db_count(conn, DbTable::GeminiCliProvider))
+        .with_conn(|conn| db_count(conn, DbTable::CliProvider(Cli::Gemini)))
         .expect("count providers");
     assert_eq!(count, 1);
 
     let stored = db
-        .with_conn(|conn| db_get(conn, DbTable::GeminiCliProvider, &imported.id))
+        .with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Gemini), &imported.id))
         .expect("get provider")
         .expect("stored provider");
     assert_eq!(stored["category"], "official");
@@ -239,7 +239,7 @@ fn startup_and_lazy_import_are_idempotent() {
 
     assert!(second.is_none());
     let count = db
-        .with_conn(|conn| db_count(conn, DbTable::GeminiCliProvider))
+        .with_conn(|conn| db_count(conn, DbTable::CliProvider(Cli::Gemini)))
         .expect("count providers");
     assert_eq!(count, 1);
 }
@@ -263,7 +263,7 @@ fn startup_keeps_third_party_local_config_temporary_even_with_official_runtime()
 
     block_on(init_gemini_cli_provider_from_settings(&db)).expect("startup import");
     let count = db
-        .with_conn(|conn| db_count(conn, DbTable::GeminiCliProvider))
+        .with_conn(|conn| db_count(conn, DbTable::CliProvider(Cli::Gemini)))
         .expect("count providers");
     assert_eq!(count, 0);
 
@@ -286,7 +286,7 @@ fn does_not_create_provider_without_local_config_files() {
 
     assert!(imported.is_none());
     let count = db
-        .with_conn(|conn| db_count(conn, DbTable::GeminiCliProvider))
+        .with_conn(|conn| db_count(conn, DbTable::CliProvider(Cli::Gemini)))
         .expect("count providers");
     assert_eq!(count, 0);
 }

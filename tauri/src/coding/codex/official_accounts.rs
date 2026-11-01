@@ -23,7 +23,7 @@ use crate::db::helpers::{
     db_delete, db_get, db_list, db_patch_fields, db_put, db_query_by_field,
     db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use tauri::{Emitter, Manager};
 
@@ -979,7 +979,7 @@ async fn query_provider(
     db: &crate::db::SqliteDbState,
     provider_id: &str,
 ) -> Result<CodexProvider, String> {
-    db.with_conn(|conn| db_get(conn, DbTable::CodexProvider, provider_id))?
+    db.with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Codex), provider_id))?
         .map(adapter::from_db_value_provider)
         .ok_or_else(|| format!("Codex provider '{}' not found", provider_id))
 }
@@ -997,7 +997,7 @@ async fn list_persisted_official_accounts(
     db.with_conn(|conn| {
         Ok(db_query_by_field(
             conn,
-            DbTable::CodexOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Codex),
             &provider_id_path,
             &provider_id_value,
             Some(&order),
@@ -1830,7 +1830,7 @@ async fn save_official_account(
 ) -> Result<CodexOfficialAccount, String> {
     let account_id = db_new_id();
     let payload = adapter::to_db_value_official_account(content);
-    db.with_conn(|conn| db_put(conn, DbTable::CodexOfficialAccount, &account_id, &payload))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliOfficialAccount(Cli::Codex), &account_id, &payload))?;
     load_official_account(db, &account_id).await
 }
 
@@ -1851,7 +1851,7 @@ async fn update_official_account_apply_status(
 ) -> Result<(), String> {
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::CodexOfficialAccount, account_id, &now)
+        db_update_applied_status(conn, DbTable::CliOfficialAccount(Cli::Codex), account_id, &now)
     })?;
 
     Ok(())
@@ -1861,7 +1861,7 @@ async fn load_official_account(
     db: &crate::db::SqliteDbState,
     account_id: &str,
 ) -> Result<CodexOfficialAccount, String> {
-    db.with_conn(|conn| db_get(conn, DbTable::CodexOfficialAccount, account_id))?
+    db.with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Codex), account_id))?
         .map(adapter::from_db_value_official_account)
         .ok_or_else(|| format!("Official account '{}' not found", account_id))
 }
@@ -1876,7 +1876,7 @@ async fn persist_usage_snapshot(
     db.with_conn(|conn| {
         db_patch_fields(
             conn,
-            DbTable::CodexOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Codex),
             account_id,
             &[
                 (
@@ -1978,7 +1978,7 @@ async fn persist_refreshed_account_snapshot(
             "last_refresh", "updated_at",
         ]
         .map(|key| (key, payload.get(key).cloned().unwrap_or(Value::Null)));
-        db_patch_fields(conn, DbTable::CodexOfficialAccount, &account.id, &fields).map(|_| ())
+        db_patch_fields(conn, DbTable::CliOfficialAccount(Cli::Codex), &account.id, &fields).map(|_| ())
     })?;
 
     load_official_account(db, &account.id).await
@@ -1997,7 +1997,7 @@ async fn persist_usage_result(
             db.with_conn(|conn| {
                 db_patch_fields(
                     conn,
-                    DbTable::CodexOfficialAccount,
+                    DbTable::CliOfficialAccount(Cli::Codex),
                     account_id,
                     &[
                         ("credits", Value::Null),
@@ -2549,7 +2549,7 @@ pub async fn delete_codex_official_account(
         return Err("The applied official account cannot be deleted".to_string());
     }
 
-    db.with_conn(|conn| db_delete(conn, DbTable::CodexOfficialAccount, &account_id).map(|_| ()))?;
+    db.with_conn(|conn| db_delete(conn, DbTable::CliOfficialAccount(Cli::Codex), &account_id).map(|_| ()))?;
 
     let _ = app.emit("config-changed", "window");
     Ok(())
@@ -2564,7 +2564,7 @@ pub async fn refresh_applied_codex_accounts_if_needed(
     app: &tauri::AppHandle,
 ) -> Result<(), String> {
     let accounts = db.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::CodexOfficialAccount, None)?
+        Ok(db_list(conn, DbTable::CliOfficialAccount(Cli::Codex), None)?
             .into_iter()
             .map(adapter::from_db_value_official_account)
             .filter(|account| account.id != LOCAL_OFFICIAL_ACCOUNT_ID)
@@ -2954,7 +2954,7 @@ mod tests {
 
         // The row keeps snake_case keys; the wire keeps camelCase.
         let stored = db
-            .with_conn(|conn| db_get(conn, DbTable::CodexOfficialAccount, &first.id))
+            .with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Codex), &first.id))
             .unwrap()
             .unwrap();
         assert_eq!(stored["credits"]["has_credits"], true);
@@ -3046,7 +3046,7 @@ mod tests {
             db.with_conn(|conn| {
                 db_patch_fields(
                     conn,
-                    DbTable::CodexOfficialAccount,
+                    DbTable::CliOfficialAccount(Cli::Codex),
                     &account.id,
                     &[("auth_snapshot", auth_snapshot.map(|value| Value::String(value.to_string())).unwrap_or(Value::Null))],
                 )
@@ -3743,7 +3743,7 @@ pub async fn clear_all_codex_official_account_apply_status(
 ) -> Result<(), String> {
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::CodexOfficialAccount, None, &now)
+        db_update_applied_status(conn, DbTable::CliOfficialAccount(Cli::Codex), None, &now)
     })?;
     Ok(())
 }
@@ -4066,7 +4066,7 @@ mod usage_credential_tests {
             db.with_conn(|conn| {
                 db_put(
                     conn,
-                    DbTable::CodexProvider,
+                    DbTable::CliProvider(Cli::Codex),
                     &provider_id,
                     &serde_json::json!({"category": "official", "name": "Official"}),
                 )
@@ -4651,7 +4651,7 @@ mod usage_credential_tests {
                 .with_conn(|conn| {
                     db_patch_fields(
                         conn,
-                        DbTable::CodexOfficialAccount,
+                        DbTable::CliOfficialAccount(Cli::Codex),
                         &account.id,
                         &[("auth_snapshot", snapshot.clone())],
                     )

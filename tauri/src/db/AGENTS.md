@@ -11,7 +11,10 @@
 - 主库是 `{app_data}/ai-toolbox.db`（`db::SQLITE_DATABASE_FILE`），全局只有一个 `SqliteDbState`，在 `lib.rs` 启动时 `open` 后 `app.manage`。
 - **schema 版本的事实源是 SQLite 自己的 `PRAGMA user_version`，没有 `_migrations` 台账表**（`_migrations` 是 OMO 配置文件里的概念，别找错地方）。当前目标版本是常量 `migrations::TARGET_SCHEMA_VERSION`，历史版本号是冻结契约。
 - `DbTable::AppMigration` 虽然占了一个表名，但全仓没有任何读写点，是历史遗留；不要以为迁移台账存在那里。
-- 表名的唯一来源是 `schema::DbTable`（`ALL_TABLES` 是建表全集）；表名与 JSON 字段路径都要经过 identifier 校验（字母/数字/下划线，首字符必须是字母或下划线），外部输入不得直接 `format!` 进 SQL。
+- 表名的唯一来源是 `schema::DbTable`；表名与 JSON 字段路径都要经过 identifier 校验（字母/数字/下划线，首字符必须是字母或下划线），外部输入不得直接 `format!` 进 SQL。
+- **`DbTable` 是「带作用域的表的引用」，不是表本身**：`CliProvider(Cli::Codex)` 与 `CliProvider(Cli::Kimi)` 都是 `cli_provider`。作用域由变体自己携带（`DbTable::scope()`），所有 helper 自动加 `cli_key` / `kind` 谓词，**不需要也不允许调用方另传**。
+  - 这样设计是因为 `db_update_applied_status` 会先清空整个作用域内的 `is_applied` 再置位：作用域一旦漏传，就会把别的 CLI 的 applied 状态全部清掉，不报任何错。放进变体后结构上无法漏。
+  - 建表用 `ALL_TABLES` 时它按 `name()` 去重（`all_table_names()`），因为同一个物理表有多个变体。
 - 少数**非 JSONB 的独立物理表**不在 `DbTable` 里：`proxy_request_logs`、`usage_daily_rollups`（网关用量，归 `proxy_gateway/`）与 `model_pricing`（模型定价，归 `proxy_gateway/pricing.rs` 与本文的 seed）。它们用列式 schema，读写走原生 SQL，不套 `db_get`/`db_put`。
 - 模型定价的默认数据按「app data 缓存文件 `model_pricing.json` → 内置 `resources/model_pricing.json`」逐条补齐，远端 URL 列表由后端独占维护（主源 + jsDelivr 镜像，顺序回退，前端不传 URL）。缓存文件只是远端数据的缓存；`model_pricing` 表里已有的行（用户可改）才是事实源，seed 只补不覆盖。
 
@@ -64,9 +67,12 @@ sequenceDiagram
 ## 跨模块依赖
 
 - 被全仓依赖：业务模块通过 `db::helpers` + `db::schema::DbTable` 读写，通过 `db::SqliteDbState`（`lib.rs` re-export）拿连接。
-- 对外契约：JSONB 记录形状与 `id`/`created_at`/`updated_at` 注入语义、`DbTable` 枚举（新增表必须同时进 `ALL_TABLES`，否则 v1 建表与测试覆盖都会漏）、`TARGET_SCHEMA_VERSION` 与迁移函数顺序、`AI_TOOLBOX_SQLITE_SCHEMA_TOO_NEW` 前缀。
+- 对外契约：JSONB 记录形状与 `id`/`created_at`/`updated_at` 注入语义、`DbTable` 枚举与它的作用域语义（新增表必须同时进 `ALL_TABLES`）、`TARGET_SCHEMA_VERSION` 与迁移函数顺序、`AI_TOOLBOX_SQLITE_SCHEMA_TOO_NEW` 前缀。
 - 被 `settings/backup` 依赖：打包用 `backup_to_path` + `migrations::get_user_version`，恢复用「原地 `conn.restore` → 同连接 `run_all` 迁移 → 失败回滚」。
-- 新增表/索引：`DbTable` + `ALL_TABLES` + 一个新的 `migrate_vN`（建表 + `create_json_index`）；只加普通业务字段不需要迁移。
+- 新增**表**：`DbTable` + `ALL_TABLES` + 一个新的 `migrate_vN`（建表 + `create_json_index`）；只加普通业务字段不需要迁移。
+- 新增一个 **CLI**：只在 `schema::Cli` 里加一行，**不建表、不写迁移**。这是 v33 合并的目的——`cli_provider` / `cli_official_account` / `cli_config` 三张表以 `cli_key` 承载所有 CLI。
+- 新增一种 relay 实体：在 `schema::RelayKind` 加一行，落在 `relay_entity`。
+- **已发布的迁移函数必须逐字冻结**：`migrate_v1..v32` 里的表名是字符串字面量，不是 `DbTable`（那些变体已经不存在了）。改写成新表名会让老库在升级时凭空造出空表、丢掉真实数据。
 
 ## 最小验证
 

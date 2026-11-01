@@ -19,6 +19,7 @@ use std::{
     time::Duration,
 };
 use tempfile::TempDir;
+use ai_toolbox_lib::db::schema::Cli;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -74,7 +75,7 @@ impl RunningAggregateGateway {
             for (index, (id, name, upstream_url, models)) in providers.iter().enumerate() {
                 db_put(
                     connection,
-                    DbTable::CodexProvider,
+                    DbTable::CliProvider(Cli::Codex),
                     id,
                     &codex_provider_record(name, upstream_url, models, index as i64),
                 )?;

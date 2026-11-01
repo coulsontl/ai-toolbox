@@ -35,7 +35,7 @@ use crate::db::helpers::{
     db_count, db_delete, db_delete_all, db_get, db_list, db_max_i64, db_patch_fields, db_put,
     db_query_by_bool, db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use crate::http_client;
 use chrono::Local;
@@ -887,7 +887,7 @@ fn list_codex_providers_from_sqlite(
 ) -> Result<Vec<CodexProvider>, String> {
     let order = codex_provider_order()?;
     sqlite_state.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::CodexProvider, Some(&order))?
+        Ok(db_list(conn, DbTable::CliProvider(Cli::Codex), Some(&order))?
             .into_iter()
             .map(adapter::from_db_value_provider)
             .collect())
@@ -899,7 +899,7 @@ fn get_codex_provider_from_sqlite(
     provider_id: &str,
 ) -> Result<Option<CodexProvider>, String> {
     sqlite_state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::CodexProvider, provider_id)?.map(adapter::from_db_value_provider))
+        Ok(db_get(conn, DbTable::CliProvider(Cli::Codex), provider_id)?.map(adapter::from_db_value_provider))
     })
 }
 
@@ -911,7 +911,7 @@ fn put_codex_provider_to_sqlite(
     sqlite_state.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::CodexProvider,
+            DbTable::CliProvider(Cli::Codex),
             provider_id,
             &adapter::to_db_value_provider(content),
         )
@@ -922,7 +922,7 @@ fn delete_codex_provider_from_sqlite(
     sqlite_state: &SqliteDbState,
     provider_id: &str,
 ) -> Result<(), String> {
-    sqlite_state.with_conn(|conn| db_delete(conn, DbTable::CodexProvider, provider_id).map(|_| ()))
+    sqlite_state.with_conn(|conn| db_delete(conn, DbTable::CliProvider(Cli::Codex), provider_id).map(|_| ()))
 }
 
 fn list_codex_prompts_from_sqlite(
@@ -930,7 +930,7 @@ fn list_codex_prompts_from_sqlite(
 ) -> Result<Vec<CodexPromptConfig>, String> {
     let order = codex_prompt_order()?;
     sqlite_state.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::CodexPromptConfig, Some(&order))?
+        Ok(db_list(conn, DbTable::CliConfig(Cli::Codex, CliConfigKind::Prompt), Some(&order))?
             .into_iter()
             .map(adapter::from_db_value_prompt)
             .collect())
@@ -942,7 +942,7 @@ fn get_codex_prompt_from_sqlite(
     config_id: &str,
 ) -> Result<Option<CodexPromptConfig>, String> {
     sqlite_state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::CodexPromptConfig, config_id)?.map(adapter::from_db_value_prompt))
+        Ok(db_get(conn, DbTable::CliConfig(Cli::Codex, CliConfigKind::Prompt), config_id)?.map(adapter::from_db_value_prompt))
     })
 }
 
@@ -954,7 +954,7 @@ fn put_codex_prompt_to_sqlite(
     sqlite_state.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::CodexPromptConfig,
+            DbTable::CliConfig(Cli::Codex, CliConfigKind::Prompt),
             config_id,
             &adapter::to_db_value_prompt(content),
         )
@@ -966,19 +966,19 @@ fn delete_codex_prompt_from_sqlite(
     config_id: &str,
 ) -> Result<(), String> {
     sqlite_state
-        .with_conn(|conn| db_delete(conn, DbTable::CodexPromptConfig, config_id).map(|_| ()))
+        .with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::Codex, CliConfigKind::Prompt), config_id).map(|_| ()))
 }
 
 fn get_codex_common_from_sqlite(
     sqlite_state: &SqliteDbState,
 ) -> Result<Option<CodexCommonConfig>, String> {
     sqlite_state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::CodexCommonConfig, "common")?.map(adapter::from_db_value_common))
+        Ok(db_get(conn, DbTable::CliConfig(Cli::Codex, CliConfigKind::Common), "common")?.map(adapter::from_db_value_common))
     })
 }
 
 fn put_codex_common_to_sqlite(sqlite_state: &SqliteDbState, data: &Value) -> Result<(), String> {
-    sqlite_state.with_conn(|conn| db_put(conn, DbTable::CodexCommonConfig, "common", data))
+    sqlite_state.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Codex, CliConfigKind::Common), "common", data))
 }
 
 fn emit_codex_plugin_config_changed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
@@ -1619,7 +1619,7 @@ pub async fn import_codex_default_provider_from_local_files(
     db: &crate::db::SqliteDbState,
     require_local_official_runtime: bool,
 ) -> Result<Option<CodexProvider>, String> {
-    if db.with_conn(|conn| db_count(conn, DbTable::CodexProvider))? > 0 {
+    if db.with_conn(|conn| db_count(conn, DbTable::CliProvider(Cli::Codex)))? > 0 {
         return Ok(None);
     }
 
@@ -1656,12 +1656,12 @@ pub async fn import_codex_default_provider_from_local_files(
 
     let provider_id = db_new_id();
     let inserted = db.with_conn(|conn| {
-        if db_count(conn, DbTable::CodexProvider)? > 0 {
+        if db_count(conn, DbTable::CliProvider(Cli::Codex))? > 0 {
             return Ok(false);
         }
         db_put(
             conn,
-            DbTable::CodexProvider,
+            DbTable::CliProvider(Cli::Codex),
             &provider_id,
             &adapter::to_db_value_provider(&content),
         )?;
@@ -1768,7 +1768,7 @@ async fn get_applied_codex_provider(
     let providers = db.with_conn(|conn| {
         db_query_by_bool(
             conn,
-            DbTable::CodexProvider,
+            DbTable::CliProvider(Cli::Codex),
             &JsonFieldPath::new("is_applied")?,
             true,
             None,
@@ -4672,7 +4672,7 @@ pub async fn repair_codex_providers(
     state: tauri::State<'_, SqliteDbState>,
 ) -> Result<String, String> {
     let db = state.db();
-    db.with_conn(|conn| db_delete_all(conn, DbTable::CodexProvider).map(|_| ()))?;
+    db.with_conn(|conn| db_delete_all(conn, DbTable::CliProvider(Cli::Codex)).map(|_| ()))?;
 
     Ok("All Codex providers have been deleted. Please recreate them.".to_string())
 }
@@ -4874,7 +4874,7 @@ pub async fn reorder_codex_providers(
         db.with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::CodexProvider,
+                DbTable::CliProvider(Cli::Codex),
                 id,
                 &[
                     (
@@ -4926,7 +4926,7 @@ async fn update_is_applied_status(
     let target_id = target_id.to_string(); // Clone for bind
 
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::CodexProvider, Some(&target_id), &now)
+        db_update_applied_status(conn, DbTable::CliProvider(Cli::Codex), Some(&target_id), &now)
     })?;
 
     Ok(())
@@ -5156,7 +5156,7 @@ pub async fn toggle_codex_provider_disabled(
     db.with_conn(|conn| {
         db_patch_fields(
             conn,
-            DbTable::CodexProvider,
+            DbTable::CliProvider(Cli::Codex),
             &provider_id,
             &[
                 ("is_disabled", serde_json::Value::Bool(is_disabled)),
@@ -5286,7 +5286,7 @@ pub async fn create_codex_prompt_config(
     let next_sort_index = db.with_conn(|conn| {
         Ok(db_max_i64(
             conn,
-            DbTable::CodexPromptConfig,
+            DbTable::CliConfig(Cli::Codex, CliConfigKind::Prompt),
             &JsonFieldPath::new("sort_index")?,
         )?
         .map(|value| value as i32 + 1)
@@ -5436,7 +5436,7 @@ async fn apply_prompt_config_internal_with_events<R: tauri::Runtime>(
     let now = Local::now().to_rfc3339();
 
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::CodexPromptConfig, Some(config_id), &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::Codex, CliConfigKind::Prompt), Some(config_id), &now)
     })?;
     write_prompt_content_to_file(Some(&db), Some(prompt_config.content.as_str())).await?;
 
@@ -5479,7 +5479,7 @@ fn disable_prompt_config_at_root(
     }
 
     let now = Local::now().to_rfc3339();
-    db.with_conn_mut(|conn| db_update_applied_status(conn, DbTable::CodexPromptConfig, None, &now))
+    db.with_conn_mut(|conn| db_update_applied_status(conn, DbTable::CliConfig(Cli::Codex, CliConfigKind::Prompt), None, &now))
 }
 
 #[tauri::command]
@@ -5509,7 +5509,7 @@ pub async fn reorder_codex_prompt_configs(
         db.with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::CodexPromptConfig,
+                DbTable::CliConfig(Cli::Codex, CliConfigKind::Prompt),
                 id,
                 &[(
                     "sort_index",

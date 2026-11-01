@@ -24,7 +24,7 @@ use crate::coding::db_id::db_new_id;
 use crate::coding::omo_jsonc_patch::{self, patch_top_level_block, remove_top_level_key};
 use crate::coding::runtime_location;
 use crate::db::helpers::{db_get, db_list, db_patch_fields, db_put, db_update_applied_status};
-use crate::db::schema::DbTable;
+use crate::db::schema::{Cli, CliConfigKind, DbTable};
 use crate::db::SqliteDbState;
 
 /// 顶层控制键：不属于任何 harness，读取时永不折叠进生效视图。
@@ -211,7 +211,7 @@ pub async fn get_omo_native_settings_config(
     state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Option<OmoNativeSettingsConfig>, String> {
     let db = state.db();
-    let value = db.with_conn(|conn| db_get(conn, DbTable::OmoNativeSettingsConfig, "common"))?;
+    let value = db.with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Settings), "common"))?;
     Ok(value.map(super::adapter::settings_from_db_value))
 }
 
@@ -234,7 +234,7 @@ pub async fn save_omo_native_settings_config(
     };
 
     let value = super::adapter::settings_to_db_value(root_dir.as_deref());
-    db.with_conn(|conn| db_put(conn, DbTable::OmoNativeSettingsConfig, "common", &value))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Settings), "common", &value))?;
 
     runtime_location::refresh_runtime_location_cache_for_module_async(&db, "omo_native").await?;
 
@@ -752,7 +752,7 @@ fn list_agents_configs_from_sqlite(
     db: &SqliteDbState,
 ) -> Result<Vec<OmoNativeAgentsConfig>, String> {
     let mut configs: Vec<OmoNativeAgentsConfig> = db.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::OmoNativeAgentsConfig, None)?
+        Ok(db_list(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Agents), None)?
             .into_iter()
             .map(super::adapter::agents_from_db_value)
             .collect::<Vec<_>>())
@@ -770,7 +770,7 @@ fn get_agents_config_from_sqlite(
     db: &SqliteDbState,
     id: &str,
 ) -> Result<Option<OmoNativeAgentsConfig>, String> {
-    let value = db.with_conn(|conn| db_get(conn, DbTable::OmoNativeAgentsConfig, id))?;
+    let value = db.with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Agents), id))?;
     Ok(value.map(super::adapter::agents_from_db_value))
 }
 
@@ -881,7 +881,7 @@ pub async fn create_omo_native_agents_config(
     let mut content = build_agents_config_content(&config, &now);
     content.sort_index = Some(next_sort_index(&db)?);
     let value = super::adapter::agents_to_db_value(&content);
-    db.with_conn(|conn| db_put(conn, DbTable::OmoNativeAgentsConfig, &id, &value))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Agents), &id, &value))?;
     get_agents_config_from_sqlite(&db, &id)?
         .ok_or_else(|| "Failed to read back the created config".to_string())
 }
@@ -898,7 +898,7 @@ pub async fn update_omo_native_agents_config(
         .ok_or_else(|| "Config id is required for update".to_string())?;
     let now = Local::now().to_rfc3339();
 
-    let existing = db.with_conn(|conn| db_get(conn, DbTable::OmoNativeAgentsConfig, &id))?
+    let existing = db.with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Agents), &id))?
         .ok_or_else(|| format!("Config '{}' not found", id))?;
 
     let mut content = build_agents_config_content(&config, &now);
@@ -913,7 +913,7 @@ pub async fn update_omo_native_agents_config(
         .map(|value| value as i32);
 
     let value = super::adapter::agents_to_db_value(&content);
-    db.with_conn(|conn| db_put(conn, DbTable::OmoNativeAgentsConfig, &id, &value))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Agents), &id, &value))?;
 
     // 已应用的方案改动后要重新落到文件。
     if existing
@@ -938,7 +938,7 @@ pub async fn delete_omo_native_agents_config(
         conn.execute(
             &format!(
                 "DELETE FROM {} WHERE id = ?1",
-                DbTable::OmoNativeAgentsConfig.name()
+                DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Agents).name()
             ),
             [&config_id],
         )
@@ -957,7 +957,7 @@ pub async fn reorder_omo_native_agents_configs(
         db.with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::OmoNativeAgentsConfig,
+                DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Agents),
                 id,
                 &[("sort_index", json!(index as i32))],
             )
@@ -980,7 +980,7 @@ pub async fn toggle_omo_native_agents_config_disabled(
         .with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::OmoNativeAgentsConfig,
+                DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Agents),
                 &config_id,
                 &[
                     ("is_disabled", Value::Bool(is_disabled)),
@@ -1000,7 +1000,7 @@ pub async fn toggle_omo_native_agents_config_disabled(
             // 禁用已应用方案 = 撤回运行目录，不留「已禁用但仍生效」的悬挂状态。
             clear_agents_config_from_file(&db).await?;
             db.with_conn_mut(|conn| {
-                db_update_applied_status(conn, DbTable::OmoNativeAgentsConfig, None, &now)
+                db_update_applied_status(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Agents), None, &now)
             })?;
         } else {
             write_agents_config_to_file(&db, &config_id).await?;
@@ -1023,7 +1023,7 @@ pub async fn apply_omo_native_agents_config(
     write_agents_config_to_file(&db, &config_id).await?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::OmoNativeAgentsConfig, Some(&config_id), &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Agents), Some(&config_id), &now)
     })?;
     let _ = app.emit("config-changed", "omo_native");
     #[cfg(target_os = "windows")]
@@ -1042,7 +1042,7 @@ pub async fn clear_omo_native_applied_config(
     let now = Local::now().to_rfc3339();
     let _ = config_id;
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::OmoNativeAgentsConfig, None, &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Agents), None, &now)
     })?;
     let _ = app.emit("config-changed", "omo_native");
     #[cfg(target_os = "windows")]
@@ -1063,7 +1063,7 @@ pub async fn save_omo_native_local_config(
     content.is_applied = false;
     content.sort_index = Some(next_sort_index(&db)?);
     let value = super::adapter::agents_to_db_value(&content);
-    db.with_conn(|conn| db_put(conn, DbTable::OmoNativeAgentsConfig, &id, &value))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Agents), &id, &value))?;
     get_agents_config_from_sqlite(&db, &id)?
         .ok_or_else(|| "Failed to read back the saved config".to_string())
 }

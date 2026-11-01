@@ -3,7 +3,7 @@ use crate::coding::proxy_gateway::{
     cli_proxy, paths::ProxyGatewayPaths, provider_switch, types::GatewayCliKey,
 };
 use crate::db::helpers::db_list;
-use crate::db::schema::DbTable;
+use crate::db::schema::{Cli, DbTable};
 use crate::db::SqliteDbState;
 use serde_json::Value;
 use tauri::{AppHandle, Manager, Runtime};
@@ -52,7 +52,7 @@ pub async fn get_antigravity_tray_data<R: Runtime>(
     let state = app.state::<SqliteDbState>();
     let db = state.db();
     let gateway_switch_locked = gateway_provider_switch_locked(app);
-    let records = db.with_conn(|conn| db_list(conn, DbTable::AntigravityProvider, None))?;
+    let records = db.with_conn(|conn| db_list(conn, DbTable::CliProvider(Cli::Antigravity), None))?;
     let mut items = records
         .into_iter()
         .filter_map(|record| {

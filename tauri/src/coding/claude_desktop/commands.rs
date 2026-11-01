@@ -12,7 +12,7 @@ use crate::coding::proxy_gateway::{
     types::GatewayCliKey,
 };
 use crate::db::helpers::{db_delete, db_get, db_list, db_put};
-use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, DbTable, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use tauri::{Emitter, Runtime};
 
@@ -30,7 +30,7 @@ fn provider_order() -> Result<OrderSpec, String> {
 fn list_providers_from_sqlite(db: &SqliteDbState) -> Result<Vec<ClaudeDesktopProvider>, String> {
     let order = provider_order()?;
     db.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::ClaudeDesktopProvider, Some(&order))?
+        Ok(db_list(conn, DbTable::CliProvider(Cli::ClaudeDesktop), Some(&order))?
             .into_iter()
             .map(adapter::from_db_value_provider)
             .filter(|provider| provider.id != COMMON_CONFIG_ID)
@@ -43,7 +43,7 @@ fn get_provider_from_sqlite(
     provider_id: &str,
 ) -> Result<Option<ClaudeDesktopProvider>, String> {
     db.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::ClaudeDesktopProvider, provider_id)?
+        Ok(db_get(conn, DbTable::CliProvider(Cli::ClaudeDesktop), provider_id)?
             .map(adapter::from_db_value_provider))
     })
 }
@@ -56,7 +56,7 @@ fn put_provider_to_sqlite(
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::ClaudeDesktopProvider,
+            DbTable::CliProvider(Cli::ClaudeDesktop),
             provider_id,
             &adapter::to_db_value_provider(content),
         )
@@ -64,13 +64,13 @@ fn put_provider_to_sqlite(
 }
 
 fn delete_provider_from_sqlite(db: &SqliteDbState, provider_id: &str) -> Result<(), String> {
-    db.with_conn(|conn| db_delete(conn, DbTable::ClaudeDesktopProvider, provider_id).map(|_| ()))
+    db.with_conn(|conn| db_delete(conn, DbTable::CliProvider(Cli::ClaudeDesktop), provider_id).map(|_| ()))
 }
 
 fn get_common_from_sqlite(db: &SqliteDbState) -> Result<Option<ClaudeDesktopCommonConfig>, String> {
     db.with_conn(|conn| {
         Ok(
-            db_get(conn, DbTable::ClaudeDesktopProvider, COMMON_CONFIG_ID)?
+            db_get(conn, DbTable::CliProvider(Cli::ClaudeDesktop), COMMON_CONFIG_ID)?
                 .map(adapter::from_db_value_common),
         )
     })
@@ -80,7 +80,7 @@ fn put_common_to_sqlite(db: &SqliteDbState, config: &str) -> Result<(), String> 
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::ClaudeDesktopProvider,
+            DbTable::CliProvider(Cli::ClaudeDesktop),
             COMMON_CONFIG_ID,
             &adapter::to_db_value_common(config),
         )
@@ -808,7 +808,7 @@ pub async fn import_claude_desktop_providers_from_claude(
     let now = Local::now().to_rfc3339();
 
     let claude_providers = db.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::ClaudeProvider, None)?
+        Ok(db_list(conn, DbTable::CliProvider(Cli::Claude), None)?
             .into_iter()
             .map(crate::coding::claude_code::adapter::from_db_value_provider)
             .collect::<Vec<_>>())

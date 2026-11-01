@@ -13,7 +13,8 @@ use ai_toolbox_lib::db::helpers::{
 };
 use ai_toolbox_lib::db::migrations::{self, TARGET_SCHEMA_VERSION};
 use ai_toolbox_lib::db::schema::{
-    validate_identifier, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec, ALL_TABLES,
+    validate_identifier, Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField,
+    OrderSpec, RelayKind, ALL_TABLES,
 };
 use ai_toolbox_lib::db::sqlite_state::{
     initialize_connection, SqliteDbState, SQLITE_MIGRATION_BACKUP_DIR,
@@ -49,18 +50,21 @@ fn jsonb_probe_and_schema_migration_create_all_tables() {
         assert_eq!(exists, 1, "missing table {}", table.name());
     }
 
+    // The per-CLI indexes from v8/v9/v16/v23/v25/v32 no longer exist as such:
+    // v33 folds those tables into the scope-prefixed indexes below. Asserting
+    // the old names would pin the schema to a shape it no longer has.
     for index_name in [
-        "idx_grok_provider_is_applied",
-        "idx_grok_provider_sort_index",
-        "idx_grok_official_account_provider_id",
-        "idx_grok_official_account_is_applied",
-        "idx_grok_official_account_sort_index",
-        "idx_grok_prompt_config_is_applied",
-        "idx_grok_prompt_config_sort_index",
-        // v9: Oh My Pi prompt indexes are only created by migrate_v9 (no
-        // create_initial_indexes fallback), so assert them explicitly.
-        "idx_oh_my_pi_prompt_config_is_applied",
-        "idx_oh_my_pi_prompt_config_sort_index",
+        "idx_cli_provider_applied",
+        "idx_cli_provider_sort",
+        "idx_cli_provider_disabled",
+        "idx_cli_official_account_applied",
+        "idx_cli_official_account_sort",
+        "idx_cli_official_account_provider",
+        "idx_cli_config_applied",
+        "idx_cli_config_sort",
+        "idx_cli_config_key_kind",
+        "idx_relay_entity_kind",
+        "idx_relay_quota_point_kind_at",
     ] {
         let exists: i64 = conn
             .query_row(
@@ -70,6 +74,32 @@ fn jsonb_probe_and_schema_migration_create_all_tables() {
             )
             .expect("query sqlite index");
         assert_eq!(exists, 1, "missing index {index_name}");
+    }
+
+    // Scope-first, not just present: an index on `is_applied` alone would let
+    // one CLI's rows dominate the planner's choice for another CLI's query.
+    for (index_name, leading_column) in [
+        ("idx_cli_provider_applied", "cli_key"),
+        ("idx_cli_official_account_provider", "cli_key"),
+        ("idx_cli_config_applied", "cli_key"),
+        ("idx_relay_entity_channel", "kind"),
+    ] {
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                [index_name],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|error| panic!("missing index {index_name}: {error}"));
+        let first_column = sql
+            .split_once('(')
+            .and_then(|(_, rest)| rest.split(',').next())
+            .map(|column| column.trim().to_string())
+            .unwrap_or_default();
+        assert_eq!(
+            first_column, leading_column,
+            "{index_name} must lead with {leading_column}; got {sql}"
+        );
     }
 
     let proxy_request_log_columns = conn
@@ -837,21 +867,21 @@ fn list_orders_by_json_integer_then_column() {
     let conn = test_conn();
     db_put(
         &conn,
-        DbTable::ClaudeProvider,
+        DbTable::CliProvider(Cli::Claude),
         "a",
         &json!({"name": "A", "sort_index": 2}),
     )
     .expect("put a");
     db_put(
         &conn,
-        DbTable::ClaudeProvider,
+        DbTable::CliProvider(Cli::Claude),
         "b",
         &json!({"name": "B", "sort_index": 1}),
     )
     .expect("put b");
     db_put(
         &conn,
-        DbTable::ClaudeProvider,
+        DbTable::CliProvider(Cli::Claude),
         "c",
         &json!({"name": "C", "sort_index": 1}),
     )
@@ -861,7 +891,7 @@ fn list_orders_by_json_integer_then_column() {
         OrderField::json_integer("sort_index", OrderDirection::Asc).expect("sort_index order"),
         OrderField::id(OrderDirection::Desc),
     ]);
-    let records = db_list(&conn, DbTable::ClaudeProvider, Some(&order)).expect("list");
+    let records = db_list(&conn, DbTable::CliProvider(Cli::Claude), Some(&order)).expect("list");
     let ids: Vec<_> = records
         .iter()
         .map(|record| record["id"].as_str().unwrap())
@@ -874,14 +904,14 @@ fn query_by_bool_string_number_and_max_work() {
     let conn = test_conn();
     db_put(
         &conn,
-        DbTable::CodexOfficialAccount,
+        DbTable::CliOfficialAccount(Cli::Codex),
         "one",
         &json!({"provider_id": "p1", "is_applied": true, "sort_index": 3}),
     )
     .expect("put one");
     db_put(
         &conn,
-        DbTable::CodexOfficialAccount,
+        DbTable::CliOfficialAccount(Cli::Codex),
         "two",
         &json!({"provider_id": "p2", "is_applied": false, "sort_index": 9}),
     )
@@ -889,7 +919,7 @@ fn query_by_bool_string_number_and_max_work() {
 
     let applied = db_query_by_bool(
         &conn,
-        DbTable::CodexOfficialAccount,
+        DbTable::CliOfficialAccount(Cli::Codex),
         &JsonFieldPath::new("is_applied").expect("path"),
         true,
         None,
@@ -901,7 +931,7 @@ fn query_by_bool_string_number_and_max_work() {
 
     let provider_records = db_query_by_field(
         &conn,
-        DbTable::CodexOfficialAccount,
+        DbTable::CliOfficialAccount(Cli::Codex),
         &JsonFieldPath::new("provider_id").expect("path"),
         &Value::String("p2".to_string()),
         None,
@@ -913,7 +943,7 @@ fn query_by_bool_string_number_and_max_work() {
 
     let max_sort_index = db_max_i64(
         &conn,
-        DbTable::CodexOfficialAccount,
+        DbTable::CliOfficialAccount(Cli::Codex),
         &JsonFieldPath::new("sort_index").expect("path"),
     )
     .expect("max sort index");
@@ -925,7 +955,7 @@ fn query_by_field_supports_array_and_object_values() {
     let conn = test_conn();
     db_put(
         &conn,
-        DbTable::CodexProvider,
+        DbTable::CliProvider(Cli::Codex),
         "one",
         &json!({
             "name": "one",
@@ -936,7 +966,7 @@ fn query_by_field_supports_array_and_object_values() {
     .expect("put one");
     db_put(
         &conn,
-        DbTable::CodexProvider,
+        DbTable::CliProvider(Cli::Codex),
         "two",
         &json!({
             "name": "two",
@@ -948,7 +978,7 @@ fn query_by_field_supports_array_and_object_values() {
 
     let tagged = db_query_by_field(
         &conn,
-        DbTable::CodexProvider,
+        DbTable::CliProvider(Cli::Codex),
         &JsonFieldPath::new("tags").expect("tags path"),
         &json!(["official", "fast"]),
         None,
@@ -960,7 +990,7 @@ fn query_by_field_supports_array_and_object_values() {
 
     let metadata = db_query_by_field(
         &conn,
-        DbTable::CodexProvider,
+        DbTable::CliProvider(Cli::Codex),
         &JsonFieldPath::new("metadata").expect("metadata path"),
         &json!({"tier": "free", "enabled": false}),
         None,
@@ -976,7 +1006,7 @@ fn patch_preserves_unknown_fields_and_supports_nested_paths() {
     let conn = test_conn();
     db_put(
         &conn,
-        DbTable::GeminiCliProvider,
+        DbTable::CliProvider(Cli::Gemini),
         "provider",
         &json!({
             "name": "Gemini",
@@ -988,7 +1018,7 @@ fn patch_preserves_unknown_fields_and_supports_nested_paths() {
 
     let patched = db_patch_fields(
         &conn,
-        DbTable::GeminiCliProvider,
+        DbTable::CliProvider(Cli::Gemini),
         "provider",
         &[
             ("settings_config.env.GEMINI_API_KEY", json!("secret")),
@@ -1013,14 +1043,14 @@ fn patch_where_bool_updates_all_matching_records() {
     let conn = test_conn();
     db_put(
         &conn,
-        DbTable::ClaudePromptConfig,
+        DbTable::CliConfig(Cli::Claude, CliConfigKind::Prompt),
         "old",
         &json!({"name": "old", "is_applied": true}),
     )
     .expect("put old");
     db_put(
         &conn,
-        DbTable::ClaudePromptConfig,
+        DbTable::CliConfig(Cli::Claude, CliConfigKind::Prompt),
         "new",
         &json!({"name": "new", "is_applied": true}),
     )
@@ -1028,7 +1058,7 @@ fn patch_where_bool_updates_all_matching_records() {
 
     let changed = db_patch_where_bool(
         &conn,
-        DbTable::ClaudePromptConfig,
+        DbTable::CliConfig(Cli::Claude, CliConfigKind::Prompt),
         &JsonFieldPath::new("is_applied").expect("path"),
         true,
         &[("is_applied", json!(false))],
@@ -1038,7 +1068,7 @@ fn patch_where_bool_updates_all_matching_records() {
 
     let applied = db_query_by_bool(
         &conn,
-        DbTable::ClaudePromptConfig,
+        DbTable::CliConfig(Cli::Claude, CliConfigKind::Prompt),
         &JsonFieldPath::new("is_applied").expect("path"),
         true,
         None,
@@ -1053,14 +1083,14 @@ fn update_applied_status_switches_records_inside_one_transaction() {
     let mut conn = test_conn();
     db_put(
         &conn,
-        DbTable::CodexProvider,
+        DbTable::CliProvider(Cli::Codex),
         "old",
         &json!({"name": "old", "is_applied": true}),
     )
     .expect("put old");
     db_put(
         &conn,
-        DbTable::CodexProvider,
+        DbTable::CliProvider(Cli::Codex),
         "new",
         &json!({"name": "new", "is_applied": false}),
     )
@@ -1068,7 +1098,7 @@ fn update_applied_status_switches_records_inside_one_transaction() {
 
     db_update_applied_status(
         &mut conn,
-        DbTable::CodexProvider,
+        DbTable::CliProvider(Cli::Codex),
         Some("new"),
         "2026-01-02T00:00:00+00:00",
     )
@@ -1076,7 +1106,7 @@ fn update_applied_status_switches_records_inside_one_transaction() {
 
     let applied = db_query_by_bool(
         &conn,
-        DbTable::CodexProvider,
+        DbTable::CliProvider(Cli::Codex),
         &JsonFieldPath::new("is_applied").expect("path"),
         true,
         None,
@@ -1419,20 +1449,29 @@ fn v32_migration_adds_workbuddy_tables_to_an_already_v31_database() {
             migrations::get_user_version(conn).unwrap(),
             TARGET_SCHEMA_VERSION
         );
-        for table in [
-            "workbuddy_settings_config",
-            "codebuddy_settings_config",
-            "codebuddy_prompt_config",
+        // v32's own tables are transient — v33 folds them into `cli_config`
+        // and drops them. What this test still has to prove is that v32's *work*
+        // survives into the consolidated shape: WorkBuddy and CodeBuddy each
+        // land under their own `cli_key` rather than being lost in the fold.
+        for (cli, kind) in [
+            (Cli::Workbuddy, CliConfigKind::Settings),
+            (Cli::Codebuddy, CliConfigKind::Settings),
+            (Cli::Codebuddy, CliConfigKind::Prompt),
         ] {
-            let count: i64 = conn
-                .query_row(
-                    &format!("SELECT COUNT(*) FROM {table}"),
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(|error| format!("{table} missing after v32: {error}"))?;
+            let table = DbTable::CliConfig(cli, kind);
+            assert_eq!(table.name(), "cli_config");
+            let count = db_count(conn, table)
+                .unwrap_or_else(|error| panic!("{cli:?}/{kind:?} after v32: {error}"));
             assert_eq!(count, 0);
         }
+        // The WorkBuddy/CodeBuddy provider tables folded too, under scopes that
+        // must not collide with any other CLI's.
+        assert_eq!(db_count(conn, DbTable::CliProvider(Cli::Workbuddy)).unwrap(), 0);
+        assert_eq!(db_count(conn, DbTable::CliProvider(Cli::Codebuddy)).unwrap(), 0);
+        assert_ne!(
+            DbTable::CliProvider(Cli::Workbuddy).scope(),
+            DbTable::CliProvider(Cli::Codebuddy).scope()
+        );
         // The v31 column must survive: v32 must not replace that migration.
         let has_native_tools_used = conn
             .prepare("SELECT native_tools_used FROM proxy_request_logs")
@@ -1452,30 +1491,27 @@ fn v32_migration_adds_workbuddy_tables_to_an_already_v31_database() {
     );
 }
 
-/// A database that already ran v32 (WorkBuddy/CodeBuddy tables) but predates
-/// the 2API tables must still get them.
+/// A database at v32 must reach v33 with the consolidated tables built.
 ///
-/// Version 32 was already released on `main` before these tables existed, so
-/// the tables live in v33. Do not lower the version marker to make this pass:
-/// that hides the exact state a shipping build leaves behind.
+/// v33 is the consolidation step, so this test asserts the *shape it produces*
+/// rather than the per-CLI tables it retires: the three shared tables exist with
+/// their scope columns, the legacy tables are gone, and reopening is idempotent.
 #[test]
-fn v33_migration_adds_relay_tables_to_an_already_v32_database() {
+fn v33_consolidates_the_per_cli_tables_on_an_already_v32_database() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("already-v32.db");
     {
         let mut conn = Connection::open(&path).unwrap();
         initialize_connection(&mut conn).unwrap();
-        // Reproduce the real v32 shape: the WorkBuddy/CodeBuddy tables exist,
-        // the eight 2API tables do not.
+        // A real v32 database still has the per-CLI tables; build them the way
+        // v32 left them so the migration has something to fold.
         conn.execute_batch(
-            "DROP TABLE IF EXISTS relay_entity;
-             DROP TABLE IF EXISTS relay_entity;
-             DROP TABLE IF EXISTS relay_entity;
-             DROP TABLE IF EXISTS relay_entity;
-             DROP TABLE IF EXISTS relay_entity;
-             DROP TABLE IF EXISTS relay_entity;
-             DROP TABLE IF EXISTS relay_entity;
-             DROP TABLE IF EXISTS relay_entity;",
+            "CREATE TABLE IF NOT EXISTS workbuddy_settings_config (
+                 id TEXT PRIMARY KEY NOT NULL,
+                 data BLOB NOT NULL CHECK (json_valid(data, 4)),
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+             );",
         )
         .unwrap();
         migrations::set_user_version(&conn, 32).unwrap();
@@ -1487,16 +1523,8 @@ fn v33_migration_adds_relay_tables_to_an_already_v32_database() {
             migrations::get_user_version(conn).unwrap(),
             TARGET_SCHEMA_VERSION
         );
-        for table in [
-            "relay_entity",
-            "relay_entity",
-            "relay_entity",
-            "relay_entity",
-            "relay_entity",
-            "relay_entity",
-            "relay_entity",
-            "relay_entity",
-        ] {
+
+        for table in ["cli_provider", "cli_official_account", "cli_config"] {
             let count: i64 = conn
                 .query_row(
                     &format!("SELECT COUNT(*) FROM {table}"),
@@ -1504,13 +1532,27 @@ fn v33_migration_adds_relay_tables_to_an_already_v32_database() {
                     |row| row.get(0),
                 )
                 .map_err(|error| format!("{table} missing after v33: {error}"))?;
-            assert_eq!(count, 0);
+            assert_eq!(count, 0, "{table} should start empty on this fixture");
         }
-        // The v32 tables must survive: v33 must not replace that migration.
-        let has_workbuddy = conn
-            .prepare("SELECT COUNT(*) FROM workbuddy_provider")
-            .is_ok();
-        assert!(has_workbuddy);
+
+        // Every folded table is gone; the shared ones remain.
+        for retired in [
+            "workbuddy_settings_config",
+            "workbuddy_provider",
+            "codebuddy_provider",
+            "claude_provider",
+            "grok_prompt_config",
+            "oh_my_pi_agents_config",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [retired],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 0, "{retired} should have been dropped by v33");
+        }
         Ok(())
     })
     .unwrap();
@@ -1523,4 +1565,366 @@ fn v33_migration_adds_relay_tables_to_an_already_v32_database() {
         migrations::get_user_version(&conn).unwrap(),
         TARGET_SCHEMA_VERSION
     );
+}
+
+/// The rows themselves have to survive the fold, not just the tables.
+///
+/// This is the failure mode that matters: a v33 that builds the new schema but
+/// copies nothing would pass every "table exists" assertion while silently
+/// deleting every provider and preset the user ever configured.
+#[test]
+fn v33_moves_every_legacy_row_into_the_shared_tables_with_its_scope() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("legacy-rows.db");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        // Stop at v32 rather than `initialize_connection`, which would run v33
+        // and drop the very tables this fixture needs to seed. The gateway
+        // tables (model_pricing, proxy_request_logs, ...) still have to exist
+        // because the upgrade path seeds them on the way through.
+        initialize_connection(&mut conn).unwrap();
+        for table in ["cli_provider", "cli_official_account", "cli_config"] {
+            conn.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))
+                .unwrap();
+        }
+        for table in migrations::legacy_tables_for_test() {
+            conn.execute_batch(&format!(
+                "CREATE TABLE IF NOT EXISTS {table} (
+                     id TEXT PRIMARY KEY NOT NULL,
+                     data BLOB NOT NULL CHECK (json_valid(data, 4)),
+                     created_at TEXT NOT NULL,
+                     updated_at TEXT NOT NULL
+                 );"
+            ))
+            .unwrap();
+        }
+        // Two CLIs' providers, two CLIs' common configs (both with the literal
+        // id `common` — the collision the composite key exists for), and a
+        // Grok prompt preset with `is_applied` set.
+        conn.execute_batch(
+            r#"INSERT INTO claude_provider (id, data, created_at, updated_at)
+                 VALUES ('p-claude', jsonb('{"name":"Claude One","sort_index":1}'), 't', 't');
+               INSERT INTO codex_provider (id, data, created_at, updated_at)
+                 VALUES ('p-codex', jsonb('{"name":"Codex One","sort_index":2}'), 't', 't');
+               INSERT INTO claude_common_config (id, data, created_at, updated_at)
+                 VALUES ('common', jsonb('{"config":"{\"claude\":true}"}'), 't', 't');
+               INSERT INTO codex_common_config (id, data, created_at, updated_at)
+                 VALUES ('common', jsonb('{"config":"{\"codex\":true}"}'), 't', 't');
+               INSERT INTO grok_prompt_config (id, data, created_at, updated_at)
+                 VALUES ('pr-grok', jsonb('{"name":"Grok Prompt","is_applied":true}'), 't', 't');"#,
+        )
+        .unwrap();
+        migrations::set_user_version(&conn, 32).unwrap();
+    }
+
+    let db = SqliteDbState::open(path).unwrap();
+    db.with_conn(|conn| {
+        let providers = db_list(conn, DbTable::CliProvider(Cli::Claude), None).unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0]["name"], "Claude One");
+
+        let codex = db_list(conn, DbTable::CliProvider(Cli::Codex), None).unwrap();
+        assert_eq!(codex.len(), 1);
+        assert_eq!(codex[0]["name"], "Codex One");
+
+        // The literal `common` id survives in both scopes instead of one
+        // overwriting the other.
+        let claude_common =
+            db_get(conn, DbTable::CliConfig(Cli::Claude, CliConfigKind::Common), "common")
+                .unwrap()
+                .expect("claude common config");
+        assert_eq!(claude_common["config"], "{\"claude\":true}");
+        let codex_common =
+            db_get(conn, DbTable::CliConfig(Cli::Codex, CliConfigKind::Common), "common")
+                .unwrap()
+                .expect("codex common config");
+        assert_eq!(codex_common["config"], "{\"codex\":true}");
+
+        // `is_applied` moved with the row, so the applied preset is still the
+        // one the CLI resolves on startup.
+        let applied = db_query_by_bool(
+            conn,
+            DbTable::CliConfig(Cli::Grok, CliConfigKind::Prompt),
+            &JsonFieldPath::new("is_applied").unwrap(),
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0]["name"], "Grok Prompt");
+        Ok(())
+    })
+    .unwrap();
+}
+
+// ---- second-round regression cases for the scope consolidation --------------
+//
+// These exist because of one specific failure mode: with fifty-five per-CLI
+// tables, "forgetting a table" was a compile error. With three shared tables,
+// forgetting a scope filter is a *silent* cross-CLI read or write. Every test
+// below fails if a scope is dropped anywhere in the helper chain.
+
+/// `db_list` must never return another CLI's rows.
+#[test]
+fn scoped_list_never_returns_another_cli_rows() {
+    let conn = test_conn();
+    for (cli, name) in [(Cli::Codex, "codex-a"), (Cli::Kimi, "kimi-a")] {
+        db_put(
+            &conn,
+            DbTable::CliProvider(cli),
+            &format!("{name}-id"),
+            &json!({ "id": format!("{name}-id"), "name": name }),
+        )
+        .unwrap();
+    }
+
+    let codex = db_list(&conn, DbTable::CliProvider(Cli::Codex), None).unwrap();
+    assert_eq!(codex.len(), 1);
+    assert_eq!(codex[0]["name"], "codex-a");
+
+    let kimi = db_list(&conn, DbTable::CliProvider(Cli::Kimi), None).unwrap();
+    assert_eq!(kimi.len(), 1);
+    assert_eq!(kimi[0]["name"], "kimi-a");
+
+    // The physical table really does hold both: the split is the scope's doing,
+    // not an empty table.
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM cli_provider", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(total, 2);
+}
+
+/// `db_get` addresses a row *within* a scope, so a correct id under the wrong
+/// CLI must read as absent rather than returning a foreign record.
+#[test]
+fn scoped_get_is_not_addressable_from_another_cli() {
+    let conn = test_conn();
+    db_put(
+        &conn,
+        DbTable::CliProvider(Cli::Codex),
+        "shared-id",
+        &json!({ "id": "shared-id", "name": "codex-only" }),
+    )
+    .unwrap();
+
+    assert!(db_get(&conn, DbTable::CliProvider(Cli::Codex), "shared-id")
+        .unwrap()
+        .is_some());
+    assert!(db_get(&conn, DbTable::CliProvider(Cli::Grok), "shared-id")
+        .unwrap()
+        .is_none());
+}
+
+/// `db_delete` and `db_count` must honour the scope too. A delete that ignored
+/// it would silently remove another CLI's provider while reporting success.
+#[test]
+fn scoped_delete_and_count_stay_inside_the_scope() {
+    let conn = test_conn();
+    for cli in [Cli::Codex, Cli::Kimi] {
+        db_put(
+            &conn,
+            DbTable::CliProvider(cli),
+            "same-id",
+            &json!({ "id": "same-id", "name": cli.as_str() }),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        db_count(&conn, DbTable::CliProvider(Cli::Codex)).unwrap(),
+        1
+    );
+    assert_eq!(db_count(&conn, DbTable::CliProvider(Cli::Kimi)).unwrap(), 1);
+
+    // Same id in both scopes: only Kimi's row may disappear.
+    assert!(db_delete(&conn, DbTable::CliProvider(Cli::Kimi), "same-id").unwrap());
+    assert_eq!(db_count(&conn, DbTable::CliProvider(Cli::Kimi)).unwrap(), 0);
+    assert_eq!(
+        db_count(&conn, DbTable::CliProvider(Cli::Codex)).unwrap(),
+        1
+    );
+}
+
+/// The single most dangerous helper: `db_update_applied_status` clears
+/// `is_applied` across the whole *scope* before setting the target. Without the
+/// scope it would clear every other CLI's applied preset, and startup would
+/// then resolve a different provider with no error anywhere.
+#[test]
+fn applied_status_only_clears_inside_its_own_cli() {
+    let mut conn = test_conn();
+    for (cli, id) in [
+        (Cli::Codex, "codex-applied"),
+        (Cli::Kimi, "kimi-applied"),
+        (Cli::Grok, "grok-applied"),
+    ] {
+        db_put(
+            &conn,
+            DbTable::CliProvider(cli),
+            id,
+            &json!({ "id": id, "name": id, "is_applied": true }),
+        )
+        .unwrap();
+    }
+
+    db_update_applied_status(
+        &mut conn,
+        DbTable::CliProvider(Cli::Kimi),
+        Some("kimi-applied"),
+        "2026-11-01T00:00:00Z",
+    )
+    .unwrap();
+
+    let applied = |table| -> Vec<String> {
+        db_query_by_bool(
+            &conn,
+            table,
+            &JsonFieldPath::new("is_applied").unwrap(),
+            true,
+            None,
+            None,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|record| record["name"].as_str().unwrap().to_string())
+        .collect()
+    };
+
+    assert_eq!(applied(DbTable::CliProvider(Cli::Kimi)), ["kimi-applied"]);
+    assert_eq!(applied(DbTable::CliProvider(Cli::Codex)), ["codex-applied"]);
+    assert_eq!(applied(DbTable::CliProvider(Cli::Grok)), ["grok-applied"]);
+}
+
+/// `cli_config` keys on `(cli_key, kind, id)`. Six CLIs' common configs and two
+/// CLIs' globals all use a literal id, so `id` alone would collide and one
+/// CLI's config would overwrite another's.
+#[test]
+fn literal_config_ids_coexist_across_clis_and_kinds() {
+    let conn = test_conn();
+    for (cli, payload) in [(Cli::Claude, "claude"), (Cli::Codex, "codex")] {
+        db_put(
+            &conn,
+            DbTable::CliConfig(cli, CliConfigKind::Common),
+            "common",
+            &json!({ "id": "common", "config": payload }),
+        )
+        .unwrap();
+    }
+    for (cli, payload) in [
+        (Cli::OhMyOpenAgent, "openagent"),
+        (Cli::OhMyOpenCodeSlim, "slim"),
+    ] {
+        db_put(
+            &conn,
+            DbTable::CliConfig(cli, CliConfigKind::Global),
+            "global",
+            &json!({ "id": "global", "config": payload }),
+        )
+        .unwrap();
+    }
+
+    for (cli, expected) in [(Cli::Claude, "claude"), (Cli::Codex, "codex")] {
+        let record = db_get(&conn, DbTable::CliConfig(cli, CliConfigKind::Common), "common")
+            .unwrap()
+            .expect("common config must survive its sibling");
+        assert_eq!(record["config"], expected);
+    }
+    for (cli, expected) in [
+        (Cli::OhMyOpenAgent, "openagent"),
+        (Cli::OhMyOpenCodeSlim, "slim"),
+    ] {
+        let record = db_get(&conn, DbTable::CliConfig(cli, CliConfigKind::Global), "global")
+            .unwrap()
+            .expect("global config must survive its sibling");
+        assert_eq!(record["config"], expected);
+    }
+
+    // Same cli_key and id, different kind, must also stay separate.
+    db_put(
+        &conn,
+        DbTable::CliConfig(Cli::Claude, CliConfigKind::Prompt),
+        "common",
+        &json!({ "id": "common", "content": "prompt body" }),
+    )
+    .unwrap();
+    let common = db_get(
+        &conn,
+        DbTable::CliConfig(Cli::Claude, CliConfigKind::Common),
+        "common",
+    )
+    .unwrap()
+    .unwrap();
+    let prompt = db_get(
+        &conn,
+        DbTable::CliConfig(Cli::Claude, CliConfigKind::Prompt),
+        "common",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(common["config"], "claude");
+    assert_eq!(prompt["content"], "prompt body");
+}
+
+/// Rewriting a record must update it in place, not insert a second scoped row
+/// or lose the original `created_at`.
+#[test]
+fn rewriting_a_scoped_record_updates_in_place() {
+    let conn = test_conn();
+    let table = DbTable::CliProvider(Cli::Codex);
+    db_put(&conn, table, "p1", &json!({ "id": "p1", "name": "first" })).unwrap();
+    let created = db_get(&conn, table, "p1").unwrap().unwrap()["created_at"].clone();
+
+    db_put(&conn, table, "p1", &json!({ "id": "p1", "name": "second" })).unwrap();
+
+    let rows = db_list(&conn, table, None).unwrap();
+    assert_eq!(rows.len(), 1, "re-put must not create a duplicate row");
+    assert_eq!(rows[0]["name"], "second");
+    assert_eq!(
+        rows[0]["created_at"], created,
+        "created_at must survive a rewrite"
+    );
+    assert_eq!(db_count(&conn, DbTable::CliProvider(Cli::Kimi)).unwrap(), 0);
+}
+
+/// `relay_entity` holds nine kinds in one table; a kind scope is what keeps
+/// channels and check-in records apart.
+#[test]
+fn relay_kinds_do_not_see_each_other() {
+    let conn = test_conn();
+    db_put(
+        &conn,
+        DbTable::RelayEntity(RelayKind::Channel),
+        "e1",
+        &json!({ "id": "e1", "name": "a channel" }),
+    )
+    .unwrap();
+    db_put(
+        &conn,
+        DbTable::RelayEntity(RelayKind::Model),
+        "e2",
+        &json!({ "id": "e2", "model_id": "gpt-5.5", "channel_id": "e1" }),
+    )
+    .unwrap();
+    db_put(
+        &conn,
+        DbTable::RelayEntity(RelayKind::CheckinRecord),
+        "e3",
+        &json!({ "id": "e3", "ts": 1 }),
+    )
+    .unwrap();
+
+    assert_eq!(
+        db_list(&conn, DbTable::RelayEntity(RelayKind::Channel), None)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        db_list(&conn, DbTable::RelayEntity(RelayKind::Model), None)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(db_list(&conn, DbTable::RelayEntity(RelayKind::Plugin), None)
+        .unwrap()
+        .is_empty());
 }

@@ -19,7 +19,7 @@ use crate::coding::skills::commands::resync_all_skills_if_tool_path_changed;
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put, db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use tauri::{Emitter, Runtime};
 
@@ -61,7 +61,7 @@ pub fn get_pi_root_dir_without_db() -> Result<PathBuf, String> {
 }
 
 pub async fn get_pi_custom_root_dir_async(db: &SqliteDbState) -> Option<PathBuf> {
-    db.with_conn(|conn| db_get(conn, DbTable::PiSettingsConfig, "common"))
+    db.with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Pi, CliConfigKind::Settings), "common"))
         .ok()
         .flatten()
         .and_then(|value| adapter::settings_from_db_value(value).root_dir)
@@ -528,7 +528,7 @@ pub async fn get_pi_settings_config(
 ) -> Result<Option<PiSettingsConfig>, String> {
     Ok(state
         .db()
-        .with_conn(|conn| db_get(conn, DbTable::PiSettingsConfig, "common"))?
+        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Pi, CliConfigKind::Settings), "common"))?
         .map(adapter::settings_from_db_value))
 }
 
@@ -589,7 +589,7 @@ pub async fn save_pi_settings_config(
             .or_else(|| existing.and_then(|value| value.root_dir))
     };
     let data = adapter::settings_to_db_value(root_dir.as_deref());
-    db.with_conn(|conn| db_put(conn, DbTable::PiSettingsConfig, "common", &data))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Pi, CliConfigKind::Settings), "common", &data))?;
     runtime_location::refresh_runtime_location_cache_for_module_async(&db, "pi").await?;
     resync_all_skills_if_tool_path_changed(app.clone(), state.inner(), "pi", previous_skills_path)
         .await;
@@ -908,7 +908,7 @@ fn put_pi_prompt_to_sqlite(
     content: &PiPromptConfigContent,
 ) -> Result<(), String> {
     let value = adapter::prompt_to_db_value(content);
-    db.with_conn(|conn| db_put(conn, DbTable::PiPromptConfig, id, &value))
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Pi, CliConfigKind::Prompt), id, &value))
 }
 
 fn get_pi_prompt_from_sqlite(
@@ -916,7 +916,7 @@ fn get_pi_prompt_from_sqlite(
     id: &str,
 ) -> Result<Option<PiPromptConfig>, String> {
     Ok(db
-        .with_conn(|conn| db_get(conn, DbTable::PiPromptConfig, id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Pi, CliConfigKind::Prompt), id))?
         .map(adapter::prompt_from_db_value))
 }
 
@@ -954,7 +954,7 @@ pub async fn list_pi_prompt_configs(
     let db = state.db();
     let mut prompts = db.with_conn(|conn| {
         Ok(
-            db_list(conn, DbTable::PiPromptConfig, Some(&prompt_order()?))?
+            db_list(conn, DbTable::CliConfig(Cli::Pi, CliConfigKind::Prompt), Some(&prompt_order()?))?
                 .into_iter()
                 .map(adapter::prompt_from_db_value)
                 .collect::<Vec<_>>(),
@@ -979,7 +979,7 @@ pub async fn create_pi_prompt_config(
     let next_sort_index = db.with_conn(|conn| {
         Ok(db_max_i64(
             conn,
-            DbTable::PiPromptConfig,
+            DbTable::CliConfig(Cli::Pi, CliConfigKind::Prompt),
             &JsonFieldPath::new("sort_index")?,
         )?
         .map(|value| value as i32 + 1)
@@ -1049,7 +1049,7 @@ pub async fn delete_pi_prompt_config(
     // Keep the live prompt file on disk so deleting a saved prompt never wipes
     // the local runtime file. Matches Claude Code / OpenCode / Grok / Codex / Gemini.
     let db = state.db();
-    db.with_conn(|conn| db_delete(conn, DbTable::PiPromptConfig, &id).map(|_| ()))?;
+    db.with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::Pi, CliConfigKind::Prompt), &id).map(|_| ()))?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -1094,7 +1094,7 @@ async fn apply_pi_prompt_config_internal_with_events<R: Runtime>(
         .ok_or_else(|| format!("Prompt config '{}' not found", config_id))?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::PiPromptConfig, Some(config_id), &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::Pi, CliConfigKind::Prompt), Some(config_id), &now)
     })?;
     write_prompt_content_to_file(&db, Some(prompt.content.as_str())).await?;
     if emit_events {
@@ -1124,7 +1124,7 @@ pub async fn disable_pi_prompt_config(
     get_pi_prompt_from_sqlite(&db, &config_id)?
         .ok_or_else(|| format!("Prompt config '{}' not found", config_id))?;
     let now = Local::now().to_rfc3339();
-    db.with_conn_mut(|conn| db_update_applied_status(conn, DbTable::PiPromptConfig, None, &now))?;
+    db.with_conn_mut(|conn| db_update_applied_status(conn, DbTable::CliConfig(Cli::Pi, CliConfigKind::Prompt), None, &now))?;
     write_prompt_content_to_file(&db, Some("")).await?;
     emit_config_changed(&app, "window");
     Ok(())
@@ -1141,7 +1141,7 @@ pub async fn reorder_pi_prompt_configs(
         db.with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::PiPromptConfig,
+                DbTable::CliConfig(Cli::Pi, CliConfigKind::Prompt),
                 id,
                 &[("sort_index", json!(index as i64))],
             )

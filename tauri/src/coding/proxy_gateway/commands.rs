@@ -24,7 +24,7 @@ use super::types::{
 };
 use super::usage_stats;
 use crate::db::helpers::db_list;
-use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, DbTable, OrderDirection, OrderField, OrderSpec};
 use crate::db::{model_pricing_seed, SqliteDbState};
 use chrono::Utc;
 use serde_json::Value;
@@ -1669,13 +1669,13 @@ async fn load_provider_name_map(
 ) -> Result<HashMap<(GatewayCliKey, String), String>, String> {
     let mut provider_names = HashMap::new();
     for (cli_key, table) in [
-        (GatewayCliKey::Claude, DbTable::ClaudeProvider),
-        (GatewayCliKey::ClaudeDesktop, DbTable::ClaudeDesktopProvider),
-        (GatewayCliKey::Codex, DbTable::CodexProvider),
-        (GatewayCliKey::Grok, DbTable::GrokProvider),
-        (GatewayCliKey::Kimi, DbTable::KimiProvider),
-        (GatewayCliKey::Gemini, DbTable::GeminiCliProvider),
-        (GatewayCliKey::Antigravity, DbTable::AntigravityProvider),
+        (GatewayCliKey::Claude, DbTable::CliProvider(Cli::Claude)),
+        (GatewayCliKey::ClaudeDesktop, DbTable::CliProvider(Cli::ClaudeDesktop)),
+        (GatewayCliKey::Codex, DbTable::CliProvider(Cli::Codex)),
+        (GatewayCliKey::Grok, DbTable::CliProvider(Cli::Grok)),
+        (GatewayCliKey::Kimi, DbTable::CliProvider(Cli::Kimi)),
+        (GatewayCliKey::Gemini, DbTable::CliProvider(Cli::Gemini)),
+        (GatewayCliKey::Antigravity, DbTable::CliProvider(Cli::Antigravity)),
     ] {
         let order = OrderSpec::single(OrderField::id(OrderDirection::Asc));
         let records = db.with_conn(|conn| db_list(conn, table, Some(&order)))?;

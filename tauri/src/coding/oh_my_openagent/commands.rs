@@ -11,7 +11,7 @@ use crate::db::helpers::{
     db_create, db_delete, db_get, db_list, db_patch_fields, db_put, db_query_by_bool,
     db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath};
+use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath};
 use crate::db::SqliteDbState;
 use tauri::Emitter;
 
@@ -163,7 +163,7 @@ fn list_configs_from_sqlite(
     sqlite_state: &SqliteDbState,
 ) -> Result<Vec<OhMyOpenAgentAgentsProfile>, String> {
     let mut configs = sqlite_state.with_conn(|conn| {
-        db_list(conn, DbTable::OhMyOpenAgentConfig, None).map(|records| {
+        db_list(conn, DbTable::CliConfig(Cli::OhMyOpenAgent, CliConfigKind::Agents), None).map(|records| {
             records
                 .into_iter()
                 .map(adapter::from_db_value)
@@ -184,7 +184,7 @@ fn get_config_from_sqlite(
     config_id: &str,
 ) -> Result<Option<OhMyOpenAgentAgentsProfile>, String> {
     sqlite_state.with_conn(|conn| {
-        db_get(conn, DbTable::OhMyOpenAgentConfig, config_id)
+        db_get(conn, DbTable::CliConfig(Cli::OhMyOpenAgent, CliConfigKind::Agents), config_id)
             .map(|record| record.map(adapter::from_db_value))
     })
 }
@@ -193,7 +193,7 @@ fn get_global_config_from_sqlite(
     sqlite_state: &SqliteDbState,
 ) -> Result<Option<OhMyOpenAgentGlobalConfig>, String> {
     sqlite_state.with_conn(|conn| {
-        db_get(conn, DbTable::OhMyOpenAgentGlobalConfig, "global")
+        db_get(conn, DbTable::CliConfig(Cli::OhMyOpenAgent, CliConfigKind::Global), "global")
             .map(|record| record.map(adapter::global_config_from_db_value))
     })
 }
@@ -203,11 +203,11 @@ fn put_config_to_sqlite(
     config_id: &str,
     data: &Value,
 ) -> Result<(), String> {
-    sqlite_state.with_conn(|conn| db_put(conn, DbTable::OhMyOpenAgentConfig, config_id, data))
+    sqlite_state.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::OhMyOpenAgent, CliConfigKind::Agents), config_id, data))
 }
 
 fn put_global_config_to_sqlite(sqlite_state: &SqliteDbState, data: &Value) -> Result<(), String> {
-    sqlite_state.with_conn(|conn| db_put(conn, DbTable::OhMyOpenAgentGlobalConfig, "global", data))
+    sqlite_state.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::OhMyOpenAgent, CliConfigKind::Global), "global", data))
 }
 
 /// Normalize agent key to lowercase for backward compatibility
@@ -594,7 +594,7 @@ pub async fn create_oh_my_openagent_config(
 
     let json_data = adapter::to_db_value(&content);
 
-    let created = db.with_conn(|conn| db_create(conn, DbTable::OhMyOpenAgentConfig, &json_data))?;
+    let created = db.with_conn(|conn| db_create(conn, DbTable::CliConfig(Cli::OhMyOpenAgent, CliConfigKind::Agents), &json_data))?;
     let _ = app.emit("config-changed", "window");
     Ok(adapter::from_db_value(created))
 }
@@ -666,7 +666,7 @@ pub async fn delete_oh_my_openagent_config(
     id: String,
 ) -> Result<(), String> {
     let db = state.db();
-    db.with_conn(|conn| db_delete(conn, DbTable::OhMyOpenAgentConfig, &id).map(|_| ()))?;
+    db.with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::OhMyOpenAgent, CliConfigKind::Agents), &id).map(|_| ()))?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -710,7 +710,7 @@ pub async fn clear_oh_my_openagent_applied_config(
 
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::OhMyOpenAgentConfig, None, &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::OhMyOpenAgent, CliConfigKind::Agents), None, &now)
     })?;
 
     let _ = app.emit("config-changed", "window");
@@ -1109,7 +1109,7 @@ async fn apply_config_internal_with_events<R: tauri::Runtime>(
     let now = Local::now().to_rfc3339();
 
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::OhMyOpenAgentConfig, Some(config_id), &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::OhMyOpenAgent, CliConfigKind::Agents), Some(config_id), &now)
     })?;
 
     if emit_events {
@@ -1136,7 +1136,7 @@ pub async fn reorder_oh_my_openagent_configs(
         db.with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::OhMyOpenAgentConfig,
+                DbTable::CliConfig(Cli::OhMyOpenAgent, CliConfigKind::Agents),
                 id,
                 &[("sort_index", serde_json::json!(index as i32))],
             )
@@ -1161,7 +1161,7 @@ pub async fn toggle_oh_my_openagent_config_disabled(
         .with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::OhMyOpenAgentConfig,
+                DbTable::CliConfig(Cli::OhMyOpenAgent, CliConfigKind::Agents),
                 &config_id,
                 &[
                     ("is_disabled", Value::Bool(is_disabled)),
@@ -1257,7 +1257,7 @@ pub async fn save_oh_my_openagent_global_config(
     let applied_configs = db.with_conn(|conn| {
         db_query_by_bool(
             conn,
-            DbTable::OhMyOpenAgentConfig,
+            DbTable::CliConfig(Cli::OhMyOpenAgent, CliConfigKind::Agents),
             &JsonFieldPath::new("is_applied")?,
             true,
             None,
@@ -1298,7 +1298,7 @@ pub async fn save_oh_my_openagent_local_config(
 
     let config_json = adapter::to_db_value(&config_content);
     let created_config_value =
-        db.with_conn(|conn| db_create(conn, DbTable::OhMyOpenAgentConfig, &config_json))?;
+        db.with_conn(|conn| db_create(conn, DbTable::CliConfig(Cli::OhMyOpenAgent, CliConfigKind::Agents), &config_json))?;
     let created_config = adapter::from_db_value(created_config_value);
 
     let global_content = build_local_global_content(input.global_config, base_global, &now);

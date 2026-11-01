@@ -18,6 +18,7 @@
 //! 仍在读写同一份数据（先例见 `oh_my_pi/AGENTS.md` 对 `listOmpAgents` 的同类说明）。
 
 use tauri::{AppHandle, Emitter, Manager, Runtime};
+use crate::db::schema::{Cli, CliConfigKind};
 
 /// 无托盘调用点，保留给「方案编辑界面回归」或其它消费者。见模块文档。
 #[derive(Debug, Clone)]
@@ -271,7 +272,7 @@ pub async fn apply_omo_native_agents_config<R: Runtime>(
     db.with_conn_mut(|conn| {
         crate::db::helpers::db_update_applied_status(
             conn,
-            crate::db::schema::DbTable::OmoNativeAgentsConfig,
+            crate::db::schema::DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Agents),
             Some(config_id),
             &now,
         )

@@ -5,7 +5,7 @@ use ai_toolbox_lib::coding::grok::adapter;
 use ai_toolbox_lib::coding::grok::commands::write_grok_common_config_without_provider;
 use ai_toolbox_lib::coding::runtime_location;
 use ai_toolbox_lib::db::helpers::db_put;
-use ai_toolbox_lib::db::schema::DbTable;
+use ai_toolbox_lib::db::schema::{Cli, CliConfigKind, DbTable};
 use ai_toolbox_lib::db::sqlite_state::SqliteDbState;
 use tempfile::TempDir;
 
@@ -27,7 +27,7 @@ fn setup_test_env() -> (TempDir, SqliteDbState) {
 
     let common_val = adapter::common_to_db_value("", Some(temp_dir.path().to_str().unwrap()));
     state
-        .with_conn(|conn| db_put(conn, DbTable::GrokCommonConfig, "common", &common_val))
+        .with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Grok, CliConfigKind::Common), "common", &common_val))
         .expect("db_put common config");
 
     block_on(async {

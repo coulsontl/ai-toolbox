@@ -16,7 +16,7 @@ use crate::coding::proxy_gateway::{
 };
 use crate::coding::{antigravity, claude_code, claude_desktop, codex, gemini_cli, grok, kimi};
 use crate::db::helpers::db_list;
-use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, DbTable, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -128,15 +128,15 @@ pub(crate) async fn load_candidate_providers_with_settings_and_selection(
     selection: Option<&GatewayProviderSelection>,
 ) -> Result<Vec<UpstreamProvider>, String> {
     let table = match cli_key {
-        GatewayCliKey::Claude => DbTable::ClaudeProvider,
-        GatewayCliKey::ClaudeDesktop => DbTable::ClaudeDesktopProvider,
-        GatewayCliKey::Codex => DbTable::CodexProvider,
-        GatewayCliKey::Grok => DbTable::GrokProvider,
-        GatewayCliKey::Kimi => DbTable::KimiProvider,
-        GatewayCliKey::Gemini => DbTable::GeminiCliProvider,
-        GatewayCliKey::Antigravity => DbTable::AntigravityProvider,
-        GatewayCliKey::Workbuddy => DbTable::WorkbuddyProvider,
-        GatewayCliKey::Codebuddy => DbTable::CodebuddyProvider,
+        GatewayCliKey::Claude => DbTable::CliProvider(Cli::Claude),
+        GatewayCliKey::ClaudeDesktop => DbTable::CliProvider(Cli::ClaudeDesktop),
+        GatewayCliKey::Codex => DbTable::CliProvider(Cli::Codex),
+        GatewayCliKey::Grok => DbTable::CliProvider(Cli::Grok),
+        GatewayCliKey::Kimi => DbTable::CliProvider(Cli::Kimi),
+        GatewayCliKey::Gemini => DbTable::CliProvider(Cli::Gemini),
+        GatewayCliKey::Antigravity => DbTable::CliProvider(Cli::Antigravity),
+        GatewayCliKey::Workbuddy => DbTable::CliProvider(Cli::Workbuddy),
+        GatewayCliKey::Codebuddy => DbTable::CliProvider(Cli::Codebuddy),
         GatewayCliKey::OpenCode => {
             return Err(
                 "OpenCode adapter is intentionally out of scope for the gateway MVP".to_string(),
@@ -174,15 +174,15 @@ pub(crate) async fn load_provider_by_id_for_connectivity_test(
     settings: Option<&ProxyGatewaySettings>,
 ) -> Result<UpstreamProvider, String> {
     let table = match cli_key {
-        GatewayCliKey::Claude => DbTable::ClaudeProvider,
-        GatewayCliKey::ClaudeDesktop => DbTable::ClaudeDesktopProvider,
-        GatewayCliKey::Codex => DbTable::CodexProvider,
-        GatewayCliKey::Grok => DbTable::GrokProvider,
-        GatewayCliKey::Kimi => DbTable::KimiProvider,
-        GatewayCliKey::Gemini => DbTable::GeminiCliProvider,
-        GatewayCliKey::Antigravity => DbTable::AntigravityProvider,
-        GatewayCliKey::Workbuddy => DbTable::WorkbuddyProvider,
-        GatewayCliKey::Codebuddy => DbTable::CodebuddyProvider,
+        GatewayCliKey::Claude => DbTable::CliProvider(Cli::Claude),
+        GatewayCliKey::ClaudeDesktop => DbTable::CliProvider(Cli::ClaudeDesktop),
+        GatewayCliKey::Codex => DbTable::CliProvider(Cli::Codex),
+        GatewayCliKey::Grok => DbTable::CliProvider(Cli::Grok),
+        GatewayCliKey::Kimi => DbTable::CliProvider(Cli::Kimi),
+        GatewayCliKey::Gemini => DbTable::CliProvider(Cli::Gemini),
+        GatewayCliKey::Antigravity => DbTable::CliProvider(Cli::Antigravity),
+        GatewayCliKey::Workbuddy => DbTable::CliProvider(Cli::Workbuddy),
+        GatewayCliKey::Codebuddy => DbTable::CliProvider(Cli::Codebuddy),
         GatewayCliKey::OpenCode => {
             return Err(
                 "OpenCode adapter is intentionally out of scope for the gateway MVP".to_string(),

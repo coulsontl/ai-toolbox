@@ -17,7 +17,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put, db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 
 use super::constants::*;
@@ -70,7 +70,7 @@ pub(crate) fn write_text_atomic(path: &Path, content: &str) -> Result<(), String
 
 fn zcode_root_dir_from_db(state: &SqliteDbState) -> Result<Option<String>, String> {
     let record = state.with_conn(|conn| {
-        crate::db::helpers::db_get(conn, DbTable::ZcodeCommonConfig, "common")
+        crate::db::helpers::db_get(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common), "common")
     })?;
     Ok(record
         .map(super::adapter::from_db_value_common)
@@ -178,7 +178,7 @@ pub async fn get_zcode_common_config(
     state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Value, String> {
     let record = state.with_conn(|conn| {
-        crate::db::helpers::db_get(conn, DbTable::ZcodeCommonConfig, "common")
+        crate::db::helpers::db_get(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common), "common")
     })?;
     match record {
         Some(value) => {
@@ -201,7 +201,7 @@ pub async fn get_zcode_common_config(
 /// Reads the common-config record, or an empty one when nothing is stored yet.
 fn read_common_record(state: &SqliteDbState) -> Result<super::types::ZcodeCommonConfigRecord, String> {
     let record = state.with_conn(|conn| {
-        crate::db::helpers::db_get(conn, DbTable::ZcodeCommonConfig, "common")
+        crate::db::helpers::db_get(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common), "common")
     })?;
     Ok(record
         .map(super::adapter::from_db_value_common)
@@ -235,7 +235,7 @@ pub async fn save_zcode_common_config(
         existing.official_account_index,
     );
     state.with_conn(|conn| {
-        crate::db::helpers::db_put(conn, DbTable::ZcodeCommonConfig, "common", &payload)
+        crate::db::helpers::db_put(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common), "common", &payload)
     })?;
     crate::coding::runtime_location::refresh_runtime_location_cache_for_module_async(&state, "zcode")
         .await
@@ -261,7 +261,7 @@ pub async fn save_zcode_official_account_index(
         Some(index.max(0)),
     );
     state.with_conn(|conn| {
-        crate::db::helpers::db_put(conn, DbTable::ZcodeCommonConfig, "common", &payload)
+        crate::db::helpers::db_put(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common), "common", &payload)
     })
 }
 
@@ -377,7 +377,7 @@ pub async fn save_zcode_cli_config(
 
 pub fn list_zcode_providers_for_db(db: &SqliteDbState) -> Result<Vec<super::types::ZcodeProvider>, String> {
     let order = provider_order()?;
-    db.with_conn(|conn| db_list(conn, DbTable::ZcodeProvider, Some(&order))).map(|values| {
+    db.with_conn(|conn| db_list(conn, DbTable::CliProvider(Cli::Zcode), Some(&order))).map(|values| {
         values
             .into_iter()
             .map(super::adapter::from_db_value_provider)
@@ -403,7 +403,7 @@ fn sync_applied_flag_with_selection(db: &SqliteDbState, provider_id: &str) -> Re
         .map(|provider| provider.id);
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::ZcodeProvider, target_id.as_deref(), &now)
+        db_update_applied_status(conn, DbTable::CliProvider(Cli::Zcode), target_id.as_deref(), &now)
     })
 }
 
@@ -416,7 +416,7 @@ pub async fn list_zcode_providers(
 
 fn next_sort_index(db: &SqliteDbState) -> Result<i64, String> {
     db.with_conn(|conn| {
-        Ok(db_max_i64(conn, DbTable::ZcodeProvider, &JsonFieldPath::new("sort_index")?)?
+        Ok(db_max_i64(conn, DbTable::CliProvider(Cli::Zcode), &JsonFieldPath::new("sort_index")?)?
             .map(|value| value + 1)
             .unwrap_or(0))
     })
@@ -490,7 +490,7 @@ pub fn derive_zcode_row_id_and_settings(
     let mut suffix = 2;
     loop {
         let taken = db
-            .with_conn(|conn| db_get(conn, DbTable::ZcodeProvider, &row_id))?
+            .with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Zcode), &row_id))?
             .is_some();
         if !taken {
             return Ok((row_id, settings_config));
@@ -542,10 +542,10 @@ pub async fn create_zcode_provider(
     payload["created_at"] = json!(now);
     payload["updated_at"] = json!(now);
     payload["is_applied"] = json!(false);
-    db.with_conn(|conn| db_put(conn, DbTable::ZcodeProvider, &id, &payload))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliProvider(Cli::Zcode), &id, &payload))?;
 
     let saved = db
-        .with_conn(|conn| db_get(conn, DbTable::ZcodeProvider, &id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Zcode), &id))?
         .map(super::adapter::from_db_value_provider)
         .ok_or_else(|| "Failed to read back the created ZCode provider".to_string())?;
     let _ = app.emit("config-changed", "window");
@@ -561,7 +561,7 @@ pub async fn update_zcode_provider(
     let _guard = CONFIG_WRITE_LOCK.lock().await;
     let db = state.inner();
     let existing = db
-        .with_conn(|conn| db_get(conn, DbTable::ZcodeProvider, &provider.id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Zcode), &provider.id))?
         .ok_or_else(|| format!("ZCode provider '{}' not found", provider.id))?;
     let previous = super::adapter::from_db_value_provider(existing);
 
@@ -582,10 +582,10 @@ pub async fn update_zcode_provider(
     payload["created_at"] = json!(previous.created_at);
     payload["updated_at"] = json!(Local::now().to_rfc3339());
     payload["is_applied"] = json!(provider.is_applied);
-    db.with_conn(|conn| db_put(conn, DbTable::ZcodeProvider, &provider.id, &payload))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliProvider(Cli::Zcode), &provider.id, &payload))?;
 
     let saved = db
-        .with_conn(|conn| db_get(conn, DbTable::ZcodeProvider, &provider.id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Zcode), &provider.id))?
         .map(super::adapter::from_db_value_provider)
         .ok_or_else(|| "Failed to read back the updated ZCode provider".to_string())?;
     let _ = app.emit("config-changed", "window");
@@ -601,7 +601,7 @@ pub async fn delete_zcode_provider(
     let _guard = CONFIG_WRITE_LOCK.lock().await;
     let db = state.inner();
     let record = db
-        .with_conn(|conn| db_get(conn, DbTable::ZcodeProvider, &id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Zcode), &id))?
         .ok_or_else(|| format!("ZCode provider '{id}' not found"))?;
     let provider = super::adapter::from_db_value_provider(record);
     let settings: Option<super::types::ZcodeSettingsConfig> =
@@ -620,7 +620,7 @@ pub async fn delete_zcode_provider(
             projection::atomic_write_json(&path, &base)?;
         }
     }
-    db.with_conn(|conn| db_delete(conn, DbTable::ZcodeProvider, &id).map(|_| ()))?;
+    db.with_conn(|conn| db_delete(conn, DbTable::CliProvider(Cli::Zcode), &id).map(|_| ()))?;
     let _ = app.emit("config-changed", "window");
     let _ = app.emit("wsl-sync-request-zcode", ());
     Ok(())
@@ -636,7 +636,7 @@ pub async fn reorder_zcode_providers(
         db.with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::ZcodeProvider,
+                DbTable::CliProvider(Cli::Zcode),
                 id,
                 &[("sort_index", json!(index as i64))],
             )
@@ -657,7 +657,7 @@ pub async fn toggle_zcode_provider_disabled(
     db.with_conn(|conn| {
         db_patch_fields(
             conn,
-            DbTable::ZcodeProvider,
+            DbTable::CliProvider(Cli::Zcode),
             &provider_id,
             &[("is_disabled", json!(is_disabled))],
         )
@@ -721,7 +721,7 @@ pub async fn save_zcode_provider(
         .as_deref()
         .ok_or_else(|| "ZCode provider id is required to project the registry".to_string())?;
     let stored = db
-        .with_conn(|conn| db_get(conn, DbTable::ZcodeProvider, row_id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Zcode), row_id))?
         .ok_or_else(|| format!("ZCode provider '{row_id}' not found"))?;
     let mut settings: super::types::ZcodeSettingsConfig =
         serde_json::from_str(&super::adapter::from_db_value_provider(stored).settings_config)
@@ -796,7 +796,7 @@ pub async fn select_zcode_provider_internal_without_events(
         // registry identity. Resolve through the stored settings so "set as
         // default" keeps working for those rows.
         let stored = db
-            .with_conn(|conn| db_get(conn, DbTable::ZcodeProvider, provider_id))?
+            .with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Zcode), provider_id))?
             .ok_or_else(|| {
                 format!("Provider '{provider_id}' is not present in the ZCode registry.")
             })?;
@@ -838,7 +838,7 @@ async fn get_zcode_prompt_record(
     db: &SqliteDbState,
     id: &str,
 ) -> Result<Option<ZcodePromptConfig>, String> {
-    db.with_conn(|conn| db_get(conn, DbTable::ZcodePromptConfig, id))
+    db.with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt), id))
         .map(|value| value.map(super::adapter::from_db_value_prompt))
 }
 
@@ -878,7 +878,7 @@ pub async fn list_zcode_prompt_configs(
 ) -> Result<Vec<ZcodePromptConfig>, String> {
     let order = prompt_order()?;
     let mut prompts = state
-        .with_conn(|conn| db_list(conn, DbTable::ZcodePromptConfig, Some(&order)))
+        .with_conn(|conn| db_list(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt), Some(&order)))
         .map(|values| {
             values
                 .into_iter()
@@ -903,7 +903,7 @@ pub async fn create_zcode_prompt_config(
     let id = input.id.clone().unwrap_or_else(crate::coding::db_id::db_new_id);
     let now = Local::now().to_rfc3339();
     let sort_index = db.with_conn(|conn| {
-        Ok(db_max_i64(conn, DbTable::ZcodePromptConfig, &JsonFieldPath::new("sort_index")?)?
+        Ok(db_max_i64(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt), &JsonFieldPath::new("sort_index")?)?
             .map(|value| value + 1)
             .unwrap_or(0))
     })?;
@@ -915,7 +915,7 @@ pub async fn create_zcode_prompt_config(
         "created_at": now,
         "updated_at": now,
     });
-    db.with_conn(|conn| db_put(conn, DbTable::ZcodePromptConfig, &id, &payload))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt), &id, &payload))?;
     let _ = app.emit("config-changed", "window");
     get_zcode_prompt_record(db, &id)
         .await?
@@ -939,7 +939,7 @@ pub async fn update_zcode_prompt_config(
     db.with_conn(|conn| {
         db_patch_fields(
             conn,
-            DbTable::ZcodePromptConfig,
+            DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt),
             &id,
             &[
                 ("name", json!(input.name)),
@@ -968,7 +968,7 @@ pub async fn delete_zcode_prompt_config(
     app: tauri::AppHandle,
     id: String,
 ) -> Result<(), String> {
-    state.with_conn(|conn| db_delete(conn, DbTable::ZcodePromptConfig, &id).map(|_| ()))?;
+    state.with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt), &id).map(|_| ()))?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -998,7 +998,7 @@ pub async fn apply_zcode_prompt_config_internal_without_events(
     write_text_atomic(&zcode_prompt_path(db)?, &prompt.content)?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::ZcodePromptConfig, Some(config_id), &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt), Some(config_id), &now)
     })?;
     Ok(())
 }
@@ -1016,7 +1016,7 @@ pub async fn disable_zcode_prompt_config(
         .ok_or_else(|| format!("ZCode prompt '{config_id}' not found"))?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::ZcodePromptConfig, None, &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt), None, &now)
     })?;
     write_text_atomic(&zcode_prompt_path(db)?, "")?;
     let _ = app.emit("config-changed", "window");
@@ -1033,7 +1033,7 @@ pub async fn reorder_zcode_prompt_configs(
         state.with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::ZcodePromptConfig,
+                DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt),
                 id,
                 &[("sort_index", json!(index as i64))],
             )

@@ -23,7 +23,7 @@ use crate::coding::skills::commands::resync_all_skills_if_tool_path_changed;
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put, db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use tauri::Emitter;
 
@@ -285,7 +285,7 @@ pub async fn list_grok_providers(
 
 pub fn list_grok_providers_for_db(db: &SqliteDbState) -> Result<Vec<GrokProvider>, String> {
     let order = provider_order()?;
-    db.with_conn(|conn| db_list(conn, DbTable::GrokProvider, Some(&order)))
+    db.with_conn(|conn| db_list(conn, DbTable::CliProvider(Cli::Grok), Some(&order)))
         .map(|values| {
             values
                 .into_iter()
@@ -315,7 +315,7 @@ pub async fn create_grok_provider_inner<R: tauri::Runtime>(
     let now = Local::now().to_rfc3339();
     let sort_index = match provider.sort_index {
         Some(value) => Some(value),
-        None => Some(next_sort_index(db, DbTable::GrokProvider)?),
+        None => Some(next_sort_index(db, DbTable::CliProvider(Cli::Grok))?),
     };
     let content = GrokProviderContent {
         name: provider.name,
@@ -337,7 +337,7 @@ pub async fn create_grok_provider_inner<R: tauri::Runtime>(
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::GrokProvider,
+            DbTable::CliProvider(Cli::Grok),
             &id,
             &adapter::provider_to_db_value(&content),
         )
@@ -380,7 +380,7 @@ pub async fn update_grok_provider(
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::GrokProvider,
+            DbTable::CliProvider(Cli::Grok),
             &provider.id,
             &adapter::provider_to_db_value(&content),
         )
@@ -410,7 +410,7 @@ pub async fn delete_grok_provider(
         return Err("Local Grok provider must be saved before it can be deleted".to_string());
     }
     let has_accounts = state.db().with_conn(|conn| {
-        let accounts = db_list(conn, DbTable::GrokOfficialAccount, None)?;
+        let accounts = db_list(conn, DbTable::CliOfficialAccount(Cli::Grok), None)?;
         Ok(accounts
             .iter()
             .any(|account| account.get("provider_id").and_then(Value::as_str) == Some(id.as_str())))
@@ -420,7 +420,7 @@ pub async fn delete_grok_provider(
     }
     state
         .db()
-        .with_conn(|conn| db_delete(conn, DbTable::GrokProvider, &id).map(|_| ()))?;
+        .with_conn(|conn| db_delete(conn, DbTable::CliProvider(Cli::Grok), &id).map(|_| ()))?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -435,7 +435,7 @@ pub async fn reorder_grok_providers(
         state.db().with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::GrokProvider,
+                DbTable::CliProvider(Cli::Grok),
                 id,
                 &[
                     ("sort_index", json!(index as i64)),
@@ -463,7 +463,7 @@ pub async fn toggle_grok_provider_disabled(
     state.db().with_conn(|conn| {
         db_patch_fields(
             conn,
-            DbTable::GrokProvider,
+            DbTable::CliProvider(Cli::Grok),
             &id,
             &[("is_disabled", Value::Bool(disabled))],
         )
@@ -505,7 +505,7 @@ pub async fn select_grok_provider_internal_with_sync<R: tauri::Runtime>(
     apply_grok_provider_to_file(state, id).await?;
     let now = Local::now().to_rfc3339();
     state.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::GrokProvider, Some(id), &now)
+        db_update_applied_status(conn, DbTable::CliProvider(Cli::Grok), Some(id), &now)
     })?;
     // Mirror Codex: only official runtime can own account "applied" tags.
     // Switching to custom/local must clear stale official-account applied markers.
@@ -589,7 +589,7 @@ pub async fn select_grok_model_internal<R: tauri::Runtime>(
     state.with_conn(|conn| {
         db_patch_fields(
             conn,
-            DbTable::GrokProvider,
+            DbTable::CliProvider(Cli::Grok),
             &provider.id,
             &[
                 ("settings_config", Value::String(next_settings_config)),
@@ -748,7 +748,7 @@ pub async fn save_grok_common_config(
             .or(existing_root)
     };
     let value = adapter::common_to_db_value(&input.config, root_dir.as_deref());
-    db.with_conn(|conn| db_put(conn, DbTable::GrokCommonConfig, "common", &value))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Grok, CliConfigKind::Common), "common", &value))?;
     runtime_location::refresh_runtime_location_cache_for_module_async(db, "grok").await?;
     if let Some(provider) = get_applied_provider(db)? {
         apply_grok_provider_to_file_with_previous_settings(
@@ -824,7 +824,7 @@ pub async fn save_grok_local_config(
         sort_index: provider_input
             .as_ref()
             .and_then(|provider| provider.sort_index)
-            .or(Some(next_sort_index(db, DbTable::GrokProvider)?)),
+            .or(Some(next_sort_index(db, DbTable::CliProvider(Cli::Grok))?)),
         meta: provider_input
             .as_ref()
             .and_then(|provider| provider.meta.clone())
@@ -841,7 +841,7 @@ pub async fn save_grok_local_config(
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::GrokProvider,
+            DbTable::CliProvider(Cli::Grok),
             &provider_id,
             &adapter::provider_to_db_value(&provider_content),
         )
@@ -865,7 +865,7 @@ pub async fn save_grok_local_config(
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::GrokCommonConfig,
+            DbTable::CliConfig(Cli::Grok, CliConfigKind::Common),
             "common",
             &adapter::common_to_db_value(&common_config, root_dir.as_deref()),
         )
@@ -880,7 +880,7 @@ pub async fn save_grok_local_config(
     )
     .await?;
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::GrokProvider, Some(&provider_id), &now)
+        db_update_applied_status(conn, DbTable::CliProvider(Cli::Grok), Some(&provider_id), &now)
     })?;
     if provider_content.category == "official" {
         super::official_accounts::sync_grok_official_account_apply_status(db, &provider_id).await?;
@@ -921,7 +921,7 @@ pub async fn list_grok_prompt_configs(
     let order = prompt_order()?;
     let prompts = state
         .db()
-        .with_conn(|conn| db_list(conn, DbTable::GrokPromptConfig, Some(&order)))
+        .with_conn(|conn| db_list(conn, DbTable::CliConfig(Cli::Grok, CliConfigKind::Prompt), Some(&order)))
         .map(|values| {
             values
                 .into_iter()
@@ -947,7 +947,7 @@ pub async fn create_grok_prompt_config(
         name: input.name,
         content: input.content,
         is_applied: false,
-        sort_index: Some(next_sort_index(state.db(), DbTable::GrokPromptConfig)?),
+        sort_index: Some(next_sort_index(state.db(), DbTable::CliConfig(Cli::Grok, CliConfigKind::Prompt))?),
         created_at: now.clone(),
         updated_at: now,
     };
@@ -955,7 +955,7 @@ pub async fn create_grok_prompt_config(
     state.db().with_conn(|conn| {
         db_put(
             conn,
-            DbTable::GrokPromptConfig,
+            DbTable::CliConfig(Cli::Grok, CliConfigKind::Prompt),
             &id,
             &adapter::prompt_to_db_value(&content),
         )
@@ -988,7 +988,7 @@ pub async fn update_grok_prompt_config(
     state.db().with_conn(|conn| {
         db_put(
             conn,
-            DbTable::GrokPromptConfig,
+            DbTable::CliConfig(Cli::Grok, CliConfigKind::Prompt),
             &id,
             &adapter::prompt_to_db_value(&content),
         )
@@ -1016,7 +1016,7 @@ pub async fn delete_grok_prompt_config(
     // as "delete local prompt file".
     state
         .db()
-        .with_conn(|conn| db_delete(conn, DbTable::GrokPromptConfig, &id).map(|_| ()))?;
+        .with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::Grok, CliConfigKind::Prompt), &id).map(|_| ()))?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -1072,7 +1072,7 @@ pub async fn disable_grok_prompt_config(
     get_prompt(db, &config_id)?.ok_or_else(|| format!("Grok prompt '{config_id}' not found"))?;
 
     let now = Local::now().to_rfc3339();
-    db.with_conn_mut(|conn| db_update_applied_status(conn, DbTable::GrokPromptConfig, None, &now))?;
+    db.with_conn_mut(|conn| db_update_applied_status(conn, DbTable::CliConfig(Cli::Grok, CliConfigKind::Prompt), None, &now))?;
     write_text_atomic(&get_grok_prompt_path_async(db).await?, "")?;
 
     let _ = app.emit("config-changed", "window");
@@ -1107,7 +1107,7 @@ async fn apply_grok_prompt_config_internal_with_events<R: tauri::Runtime>(
     write_text_atomic(&get_grok_prompt_path_async(state).await?, &prompt.content)?;
     let now = Local::now().to_rfc3339();
     state.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::GrokPromptConfig, Some(config_id), &now)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::Grok, CliConfigKind::Prompt), Some(config_id), &now)
     })?;
     if emit_events {
         let _ = app.emit("config-changed", "window");
@@ -1125,7 +1125,7 @@ pub async fn reorder_grok_prompt_configs(
         state.db().with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::GrokPromptConfig,
+                DbTable::CliConfig(Cli::Grok, CliConfigKind::Prompt),
                 id,
                 &[("sort_index", json!(index as i64))],
             )
@@ -1338,7 +1338,7 @@ fn toml_item_to_json(item: &Item) -> Result<Value, String> {
 }
 
 fn get_provider(db: &SqliteDbState, id: &str) -> Result<Option<GrokProvider>, String> {
-    db.with_conn(|conn| db_get(conn, DbTable::GrokProvider, id))
+    db.with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Grok), id))
         .map(|value| value.map(adapter::provider_from_db_value))
 }
 
@@ -1349,12 +1349,12 @@ fn get_applied_provider(db: &SqliteDbState) -> Result<Option<GrokProvider>, Stri
 }
 
 fn get_common_config(db: &SqliteDbState) -> Result<Option<GrokCommonConfig>, String> {
-    db.with_conn(|conn| db_get(conn, DbTable::GrokCommonConfig, "common"))
+    db.with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Grok, CliConfigKind::Common), "common"))
         .map(|value| value.map(adapter::common_from_db_value))
 }
 
 fn get_prompt(db: &SqliteDbState, id: &str) -> Result<Option<GrokPromptConfig>, String> {
-    db.with_conn(|conn| db_get(conn, DbTable::GrokPromptConfig, id))
+    db.with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Grok, CliConfigKind::Prompt), id))
         .map(|value| value.map(adapter::prompt_from_db_value))
 }
 

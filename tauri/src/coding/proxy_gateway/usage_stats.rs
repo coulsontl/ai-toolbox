@@ -2334,47 +2334,67 @@ fn push_condition<T: ToSql + 'static>(
     params.push(Box::new(value));
 }
 
+/// Resolve `(app_type, provider_id) -> display name` for the usage tables.
+///
+/// One query over the shared `cli_provider` table, keyed by `cli_key`. The
+/// `app_type` spelling is not always the `cli_key` spelling — the gateway files
+/// WorkBuddy's proxy rows under its takeover key `workbuddy_desktop` — so the
+/// mapping stays explicit. A missing row means those requests lose their name
+/// and, for some readers, disappear from the list entirely.
 fn load_provider_names(conn: &Connection) -> Result<ProviderNameMap, String> {
     let mut names = HashMap::new();
-    for (app_type, table) in [
-        ("claude", "claude_provider"),
-        ("claude_desktop", "claude_desktop_provider"),
-        ("codex", "codex_provider"),
-        ("gemini", "gemini_cli_provider"),
-        ("antigravity", "antigravity_provider"),
-        ("grok", "grok_provider"),
-        ("kimi", "kimi_provider"),
-        // Without this row, ZCode request rows already in the database are
-        // silently dropped from the list and the statistics.
-        ("zcode", "zcode_provider"),
-        // The WorkBuddy family files proxy rows under its takeover keys, which
-        // differ from its native-session keys; using the takeover spelling here
-        // keeps `provider_name` populated for gateway-served requests.
-        ("workbuddy_desktop", "workbuddy_provider"),
-        ("codebuddy_cli", "codebuddy_provider"),
-    ] {
-        let sql = format!("SELECT id, json_extract(data, '$.name') FROM {table}");
-        let mut stmt = conn.prepare(&sql).map_err(|error| {
-            format!("Failed to prepare provider name query for {table}: {error}")
-        })?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-            })
-            .map_err(|error| format!("Failed to query provider names from {table}: {error}"))?;
-        for row in rows {
-            let (id, name) =
-                row.map_err(|error| format!("Failed to read provider name row: {error}"))?;
-            if let Some(name) = name
-                .map(|value| value.trim().to_string())
-                .filter(|v| !v.is_empty())
-            {
-                names.insert((app_type.to_string(), id), name);
-            }
+    let mut stmt = conn
+        .prepare("SELECT cli_key, id, json_extract(data, '$.name') FROM cli_provider")
+        .map_err(|error| format!("Failed to prepare provider name query: {error}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(|error| format!("Failed to query provider names: {error}"))?;
+    for row in rows {
+        let (cli_key, id, name) =
+            row.map_err(|error| format!("Failed to read provider name row: {error}"))?;
+        let Some(app_type) = app_type_for_provider_cli_key(&cli_key) else {
+            continue;
+        };
+        if let Some(name) = name
+            .map(|value| value.trim().to_string())
+            .filter(|v| !v.is_empty())
+        {
+            names.insert((app_type.to_string(), id), name);
         }
     }
     load_opencode_provider_names(conn, &mut names)?;
     Ok(names)
+}
+
+/// `cli_provider.cli_key` -> the `app_type` its proxy rows are written under.
+///
+/// `None` for a CLI that cannot serve gateway traffic; its providers are then
+/// simply not indexed, which is correct because no request row can name them.
+fn app_type_for_provider_cli_key(cli_key: &str) -> Option<&'static str> {
+    match cli_key {
+        "claude" => Some("claude"),
+        "claude_desktop" => Some("claude_desktop"),
+        "codex" => Some("codex"),
+        "gemini" => Some("gemini"),
+        "antigravity" => Some("antigravity"),
+        "grok" => Some("grok"),
+        "kimi" => Some("kimi"),
+        // Without this arm, ZCode request rows already in the database are
+        // silently dropped from the list and the statistics.
+        "zcode" => Some("zcode"),
+        // The WorkBuddy family files proxy rows under its takeover keys, which
+        // differ from its native-session keys; using the takeover spelling here
+        // keeps `provider_name` populated for gateway-served requests.
+        "workbuddy" => Some("workbuddy_desktop"),
+        "codebuddy" => Some("codebuddy_cli"),
+        _ => None,
+    }
 }
 
 fn load_opencode_provider_names(
@@ -3096,7 +3116,7 @@ mod tests {
     use crate::coding::proxy_gateway::types::GatewayCliKey;
     use crate::coding::proxy_gateway::types::{DataSourceBreakdownInput, GatewayRequestLogSummary};
     use crate::db::helpers::db_put;
-    use crate::db::schema::DbTable;
+    use crate::db::schema::{Cli, DbTable};
     use rusqlite::params;
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -3111,15 +3131,15 @@ mod tests {
 
     fn insert_provider_for_cli(db: &SqliteDbState, cli_key: GatewayCliKey, id: &str, name: &str) {
         let table = match cli_key {
-            GatewayCliKey::Claude => DbTable::ClaudeProvider,
-            GatewayCliKey::ClaudeDesktop => DbTable::ClaudeDesktopProvider,
-            GatewayCliKey::Codex => DbTable::CodexProvider,
-            GatewayCliKey::Grok => DbTable::GrokProvider,
-            GatewayCliKey::Kimi => DbTable::KimiProvider,
-            GatewayCliKey::Gemini => DbTable::GeminiCliProvider,
-            GatewayCliKey::Antigravity => DbTable::AntigravityProvider,
-            GatewayCliKey::Workbuddy => DbTable::WorkbuddyProvider,
-            GatewayCliKey::Codebuddy => DbTable::CodebuddyProvider,
+            GatewayCliKey::Claude => DbTable::CliProvider(Cli::Claude),
+            GatewayCliKey::ClaudeDesktop => DbTable::CliProvider(Cli::ClaudeDesktop),
+            GatewayCliKey::Codex => DbTable::CliProvider(Cli::Codex),
+            GatewayCliKey::Grok => DbTable::CliProvider(Cli::Grok),
+            GatewayCliKey::Kimi => DbTable::CliProvider(Cli::Kimi),
+            GatewayCliKey::Gemini => DbTable::CliProvider(Cli::Gemini),
+            GatewayCliKey::Antigravity => DbTable::CliProvider(Cli::Antigravity),
+            GatewayCliKey::Workbuddy => DbTable::CliProvider(Cli::Workbuddy),
+            GatewayCliKey::Codebuddy => DbTable::CliProvider(Cli::Codebuddy),
             GatewayCliKey::OpenCode => {
                 panic!("OpenCode provider insertion is not used by usage_stats unit tests")
             }

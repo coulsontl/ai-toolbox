@@ -1071,7 +1071,7 @@ mod tests {
         GatewayProxyMode, ProviderModelHealthKey, ProxyGatewayRequestLogListInput,
     };
     use crate::db::helpers::{db_create, db_put};
-    use crate::db::schema::DbTable;
+    use crate::db::schema::{Cli, DbTable};
     use crate::db::SqliteDbState;
     use futures_util::StreamExt;
     use std::net::TcpListener;
@@ -1266,7 +1266,7 @@ data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}
 
     fn insert_claude_provider(db: &SqliteDbState, data: Value) -> String {
         let record = db
-            .with_conn(|conn| db_create(conn, DbTable::ClaudeProvider, &data))
+            .with_conn(|conn| db_create(conn, DbTable::CliProvider(Cli::Claude), &data))
             .expect("insert provider");
         record
             .get("id")
@@ -2801,7 +2801,7 @@ data: {"type":"response.completed","response":{"id":"resp_stream","status":"comp
         db.with_conn(|conn| {
             db_create(
                 conn,
-                DbTable::CodexProvider,
+                DbTable::CliProvider(Cli::Codex),
                 &json!({
                     "name": name,
                     "category": "custom",
@@ -2841,7 +2841,7 @@ data: {"type":"response.completed","response":{"id":"resp_stream","status":"comp
         db.with_conn(|conn| {
             db_create(
                 conn,
-                DbTable::CodexProvider,
+                DbTable::CliProvider(Cli::Codex),
                 &json!({
                     "name": name,
                     "category": "custom",
@@ -3164,7 +3164,7 @@ data: {"type":"response.completed","response":{"id":"resp_stream","status":"comp
             db.with_conn(|conn| {
                 db_create(
                     conn,
-                    DbTable::CodexProvider,
+                    DbTable::CliProvider(Cli::Codex),
                     &json!({
                         "name": "Native Responses Upstream",
                         "category": "custom",

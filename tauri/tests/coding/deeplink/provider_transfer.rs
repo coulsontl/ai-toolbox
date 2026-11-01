@@ -5,7 +5,7 @@ use ai_toolbox_lib::coding::{
     deeplink, dsh, hermes, oh_my_pi, open_claw, open_code, pi, runtime_location,
 };
 use ai_toolbox_lib::db::helpers::{db_get, db_list, db_put};
-use ai_toolbox_lib::db::schema::DbTable;
+use ai_toolbox_lib::db::schema::{Cli, CliConfigKind, DbTable};
 use ai_toolbox_lib::db::SqliteDbState;
 use serde_json::{json, Value};
 use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
@@ -56,12 +56,12 @@ async fn database_targets_import_read_back_skip_and_copy_without_activating() {
     let _guard = TEST_LOCK.lock().await;
     let app = app();
     for (target, table) in [
-        ("claude", DbTable::ClaudeProvider),
-        ("claudedesktop", DbTable::ClaudeDesktopProvider),
-        ("codex", DbTable::CodexProvider),
-        ("grok", DbTable::GrokProvider),
-        ("kimi", DbTable::KimiProvider),
-        ("gemini", DbTable::GeminiCliProvider),
+        ("claude", DbTable::CliProvider(Cli::Claude)),
+        ("claudedesktop", DbTable::CliProvider(Cli::ClaudeDesktop)),
+        ("codex", DbTable::CliProvider(Cli::Codex)),
+        ("grok", DbTable::CliProvider(Cli::Grok)),
+        ("kimi", DbTable::CliProvider(Cli::Kimi)),
+        ("gemini", DbTable::CliProvider(Cli::Gemini)),
     ] {
         let imported = import(&app, request(target), deeplink::ImportConflictPolicy::Skip).await;
         assert_eq!(imported.status, "created", "{target}");
@@ -179,19 +179,19 @@ fn read_config(path: &Path) -> Value {
 async fn configure_native(app: &tauri::App<MockRuntime>, target: &str, root: &Path) -> PathBuf {
     let (table, field, config_name) = match target {
         "opencode" => (
-            DbTable::OpenCodeCommonConfig,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Common),
             "config_path",
             "opencode.json",
         ),
         "openclaw" => (
-            DbTable::OpenClawCommonConfig,
+            DbTable::CliConfig(Cli::OpenClaw, CliConfigKind::Common),
             "config_path",
             "openclaw.json",
         ),
-        "pi" => (DbTable::PiSettingsConfig, "root_dir", "models.json"),
-        "omp" => (DbTable::OhMyPiSettingsConfig, "root_dir", "models.yml"),
-        "hermes" => (DbTable::HermesSettingsConfig, "config_dir", "config.yaml"),
-        "dsh" => (DbTable::DshSettingsConfig, "config_dir", "settings.yaml"),
+        "pi" => (DbTable::CliConfig(Cli::Pi, CliConfigKind::Settings), "root_dir", "models.json"),
+        "omp" => (DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Settings), "root_dir", "models.yml"),
+        "hermes" => (DbTable::CliConfig(Cli::Hermes, CliConfigKind::Settings), "config_dir", "config.yaml"),
+        "dsh" => (DbTable::CliConfig(Cli::Dsh, CliConfigKind::Settings), "config_dir", "settings.yaml"),
         _ => unreachable!(),
     };
     let config_path = root.join(config_name);

@@ -32,7 +32,7 @@ use tauri::Emitter;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::db::helpers::{db_delete, db_get, db_list, db_max_i64, db_put, db_update_applied_status};
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 
 use super::adapter;
@@ -213,7 +213,7 @@ fn account_order() -> Result<OrderSpec, String> {
 fn list_stored_accounts(db: &SqliteDbState) -> Result<Vec<(String, ZcodeOfficialAccountContent)>, String> {
     let order = account_order()?;
     db.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::ZcodeOfficialAccount, Some(&order))?
+        Ok(db_list(conn, DbTable::CliOfficialAccount(Cli::Zcode), Some(&order))?
             .into_iter()
             .map(|value| {
                 let content = adapter::from_db_value_official_account(value.clone());
@@ -232,14 +232,14 @@ fn load_stored_account(
     db: &SqliteDbState,
     account_id: &str,
 ) -> Result<ZcodeOfficialAccountContent, String> {
-    db.with_conn(|conn| db_get(conn, DbTable::ZcodeOfficialAccount, account_id))?
+    db.with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Zcode), account_id))?
         .map(adapter::from_db_value_official_account)
         .ok_or_else(|| format!("Official account '{account_id}' not found"))
 }
 
 fn next_sort_index(db: &SqliteDbState) -> Result<i64, String> {
     let field = JsonFieldPath::new("sort_index")?;
-    db.with_conn(|conn| db_max_i64(conn, DbTable::ZcodeOfficialAccount, &field))
+    db.with_conn(|conn| db_max_i64(conn, DbTable::CliOfficialAccount(Cli::Zcode), &field))
         .map(|max| max.unwrap_or(-1) + 1)
 }
 
@@ -249,7 +249,7 @@ fn store_account(
     content: &ZcodeOfficialAccountContent,
 ) -> Result<(), String> {
     let payload = adapter::to_db_value_official_account(content);
-    db.with_conn(|conn| db_put(conn, DbTable::ZcodeOfficialAccount, account_id, &payload))
+    db.with_conn(|conn| db_put(conn, DbTable::CliOfficialAccount(Cli::Zcode), account_id, &payload))
 }
 
 /// Saves the live login, replacing any stored snapshot of the same login.
@@ -381,7 +381,7 @@ async fn apply_snapshot(
     db.with_conn_mut(|conn| {
         db_update_applied_status(
             conn,
-            DbTable::ZcodeOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Zcode),
             Some(account_id),
             &timestamp,
         )
@@ -520,7 +520,7 @@ pub async fn delete_zcode_official_account(
     if account_id == LOCAL_ACCOUNT_ID {
         return Err("The live login cannot be deleted".to_string());
     }
-    db.with_conn(|conn| db_delete(conn, DbTable::ZcodeOfficialAccount, &account_id))?;
+    db.with_conn(|conn| db_delete(conn, DbTable::CliOfficialAccount(Cli::Zcode), &account_id))?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -627,7 +627,7 @@ async fn apply_login(
     db.with_conn_mut(|conn| {
         db_update_applied_status(
             conn,
-            DbTable::ZcodeOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Zcode),
             Some(&account_id),
             &timestamp,
         )

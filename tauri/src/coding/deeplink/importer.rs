@@ -11,7 +11,7 @@ use crate::coding::{
     open_code, pi,
 };
 use crate::db::helpers::db_list;
-use crate::db::schema::DbTable;
+use crate::db::schema::{Cli, DbTable};
 use crate::db::SqliteDbState;
 
 use super::parser::{validate_url, DeepLinkImportRequest, SUPPORTED_APPS, SUPPORTED_RESOURCE};
@@ -457,12 +457,12 @@ async fn existing_providers(
     app: &str,
 ) -> Result<Vec<ExistingProvider>, String> {
     let table = match app {
-        "claude" => Some(DbTable::ClaudeProvider),
-        "claudedesktop" => Some(DbTable::ClaudeDesktopProvider),
-        "codex" => Some(DbTable::CodexProvider),
-        "grok" => Some(DbTable::GrokProvider),
-        "kimi" => Some(DbTable::KimiProvider),
-        "gemini" => Some(DbTable::GeminiCliProvider),
+        "claude" => Some(DbTable::CliProvider(Cli::Claude)),
+        "claudedesktop" => Some(DbTable::CliProvider(Cli::ClaudeDesktop)),
+        "codex" => Some(DbTable::CliProvider(Cli::Codex)),
+        "grok" => Some(DbTable::CliProvider(Cli::Grok)),
+        "kimi" => Some(DbTable::CliProvider(Cli::Kimi)),
+        "gemini" => Some(DbTable::CliProvider(Cli::Gemini)),
         _ => None,
     };
     if let Some(table) = table {

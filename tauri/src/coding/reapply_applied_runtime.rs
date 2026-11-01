@@ -18,7 +18,7 @@ use crate::coding::proxy_gateway::paths::ProxyGatewayPaths;
 use crate::coding::proxy_gateway::types::GatewayCliKey;
 use crate::coding::runtime_location;
 use crate::db::helpers::{db_list, db_query_by_bool};
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use crate::settings::backup::utils::REAPPLY_APPLIED_FLAG_FILENAME;
 
@@ -432,12 +432,12 @@ async fn reapply_codex<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult {
     let provider_id = resolve_record_id(
         &mut result,
         "provider",
-        first_applied_provider_id(&db, DbTable::CodexProvider),
+        first_applied_provider_id(&db, DbTable::CliProvider(Cli::Codex)),
     );
     let prompt_id = resolve_record_id(
         &mut result,
         "prompt",
-        first_applied_prompt_id(&db, DbTable::CodexPromptConfig),
+        first_applied_prompt_id(&db, DbTable::CliConfig(Cli::Codex, CliConfigKind::Prompt)),
     );
     if provider_id.is_none() && prompt_id.is_none() {
         return result;
@@ -492,12 +492,12 @@ async fn reapply_claude<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult {
     let provider_id = resolve_record_id(
         &mut result,
         "provider",
-        first_applied_provider_id(&db, DbTable::ClaudeProvider),
+        first_applied_provider_id(&db, DbTable::CliProvider(Cli::Claude)),
     );
     let prompt_id = resolve_record_id(
         &mut result,
         "prompt",
-        first_applied_prompt_id(&db, DbTable::ClaudePromptConfig),
+        first_applied_prompt_id(&db, DbTable::CliConfig(Cli::Claude, CliConfigKind::Prompt)),
     );
     if provider_id.is_none() && prompt_id.is_none() {
         return result;
@@ -552,12 +552,12 @@ async fn reapply_grok<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult {
     let provider_id = resolve_record_id(
         &mut result,
         "provider",
-        first_applied_provider_id(&db, DbTable::GrokProvider),
+        first_applied_provider_id(&db, DbTable::CliProvider(Cli::Grok)),
     );
     let prompt_id = resolve_record_id(
         &mut result,
         "prompt",
-        first_applied_prompt_id(&db, DbTable::GrokPromptConfig),
+        first_applied_prompt_id(&db, DbTable::CliConfig(Cli::Grok, CliConfigKind::Prompt)),
     );
     if provider_id.is_none() && prompt_id.is_none() {
         return result;
@@ -612,12 +612,12 @@ async fn reapply_kimi<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult {
     let provider_id = resolve_record_id(
         &mut result,
         "provider",
-        first_applied_provider_id(&db, DbTable::KimiProvider),
+        first_applied_provider_id(&db, DbTable::CliProvider(Cli::Kimi)),
     );
     let prompt_id = resolve_record_id(
         &mut result,
         "prompt",
-        first_applied_prompt_id(&db, DbTable::KimiPromptConfig),
+        first_applied_prompt_id(&db, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt)),
     );
     if provider_id.is_none() && prompt_id.is_none() {
         return result;
@@ -673,12 +673,12 @@ async fn reapply_gemini<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult {
     let provider_id = resolve_record_id(
         &mut result,
         "provider",
-        first_applied_provider_id(&db, DbTable::GeminiCliProvider),
+        first_applied_provider_id(&db, DbTable::CliProvider(Cli::Gemini)),
     );
     let prompt_id = resolve_record_id(
         &mut result,
         "prompt",
-        first_applied_prompt_id(&db, DbTable::GeminiCliPromptConfig),
+        first_applied_prompt_id(&db, DbTable::CliConfig(Cli::Gemini, CliConfigKind::Prompt)),
     );
     if provider_id.is_none() && prompt_id.is_none() {
         return result;
@@ -733,12 +733,12 @@ async fn reapply_antigravity<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult
     let provider_id = resolve_record_id(
         &mut result,
         "provider",
-        first_applied_provider_id(&db, DbTable::AntigravityProvider),
+        first_applied_provider_id(&db, DbTable::CliProvider(Cli::Antigravity)),
     );
     let prompt_id = resolve_record_id(
         &mut result,
         "prompt",
-        first_applied_prompt_id(&db, DbTable::AntigravityPromptConfig),
+        first_applied_prompt_id(&db, DbTable::CliConfig(Cli::Antigravity, CliConfigKind::Prompt)),
     );
     if provider_id.is_none() && prompt_id.is_none() {
         return result;
@@ -798,7 +798,7 @@ async fn reapply_zcode<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult {
     let prompt_id = resolve_record_id(
         &mut result,
         "prompt",
-        first_applied_prompt_id(&db, DbTable::ZcodePromptConfig),
+        first_applied_prompt_id(&db, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt)),
     );
 
     // ZCode has no single active provider: applying one means pointing
@@ -806,7 +806,7 @@ async fn reapply_zcode<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult {
     // registry file edited or replaced while the app was closed is restored.
     let selection = db
         .with_conn(|conn| {
-            crate::db::helpers::db_list(conn, DbTable::ZcodeProvider, None)
+            crate::db::helpers::db_list(conn, DbTable::CliProvider(Cli::Zcode), None)
         })
         .ok()
         .and_then(|providers| {
@@ -870,7 +870,7 @@ async fn reapply_opencode_prompt_only<R: Runtime>(app: &AppHandle<R>) -> Reapply
     let prompt_id = resolve_record_id(
         &mut result,
         "prompt",
-        first_applied_prompt_id(&db, DbTable::OpenCodePromptConfig),
+        first_applied_prompt_id(&db, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt)),
     );
     if prompt_id.is_none() {
         return result;
@@ -907,7 +907,7 @@ async fn reapply_pi<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult {
     let prompt_id = resolve_record_id(
         &mut result,
         "prompt",
-        first_applied_prompt_id(&db, DbTable::PiPromptConfig),
+        first_applied_prompt_id(&db, DbTable::CliConfig(Cli::Pi, CliConfigKind::Prompt)),
     );
     if prompt_id.is_none() {
         return result;
@@ -943,7 +943,7 @@ async fn reapply_omo_native<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult 
     let mut result = ReapplyCliResult::default();
 
     // 全局提示词：运行时文件是 `<agentDir>/AGENTS.md`，恢复后要按同一份预设重新写。
-    let prompt_record = first_applied_prompt_id(&db, DbTable::OmoNativePromptConfig);
+    let prompt_record = first_applied_prompt_id(&db, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Prompt));
     let prompt_id = resolve_record_id(&mut result, "prompt", prompt_record);
     if prompt_id.is_some() {
         match omo_native::get_omo_native_prompt_path_async(&db).await {
@@ -968,7 +968,7 @@ async fn reapply_omo_native<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult 
 
     // Agent/Category 方案：applied 标记在库里，但 `[native]` 块可能被备份跳过或整份缺失，
     // 恢复后要按同一份方案重新写入。恢复期间不 emit 事件。
-    let agents_record = first_applied_prompt_id(&db, DbTable::OmoNativeAgentsConfig);
+    let agents_record = first_applied_prompt_id(&db, DbTable::CliConfig(Cli::OmoNative, CliConfigKind::Agents));
     let agents_id = resolve_record_id(&mut result, "agents", agents_record);
     if agents_id.is_some() {
         match runtime_location::get_omo_native_runtime_location_async(&db).await {
@@ -1000,7 +1000,7 @@ async fn reapply_omp<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult {
     let prompt_id = resolve_record_id(
         &mut result,
         "prompt",
-        first_applied_prompt_id(&db, DbTable::OhMyPiPromptConfig),
+        first_applied_prompt_id(&db, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Prompt)),
     );
     if prompt_id.is_some() {
         match oh_my_pi::get_omp_prompt_path_async(&db).await {
@@ -1064,7 +1064,7 @@ async fn reapply_claude_desktop<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliRes
     let provider_id = resolve_record_id(
         &mut result,
         "provider",
-        first_applied_provider_id(&db, DbTable::ClaudeDesktopProvider),
+        first_applied_provider_id(&db, DbTable::CliProvider(Cli::ClaudeDesktop)),
     );
     if provider_id.is_none() {
         return result;
@@ -1093,7 +1093,7 @@ async fn reapply_hermes<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult {
     let prompt_id = resolve_record_id(
         &mut result,
         "prompt",
-        first_applied_prompt_id(&db, DbTable::HermesPromptConfig),
+        first_applied_prompt_id(&db, DbTable::CliConfig(Cli::Hermes, CliConfigKind::Prompt)),
     );
     if prompt_id.is_none() {
         return result;
@@ -1122,7 +1122,7 @@ async fn reapply_codebuddy<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult {
     let prompt_id = resolve_record_id(
         &mut result,
         "prompt",
-        first_applied_prompt_id(&db, DbTable::CodebuddyPromptConfig),
+        first_applied_prompt_id(&db, DbTable::CliConfig(Cli::Codebuddy, CliConfigKind::Prompt)),
     );
     if prompt_id.is_none() {
         return result;
@@ -1148,7 +1148,7 @@ async fn reapply_dsh<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliResult {
     let prompt_id = resolve_record_id(
         &mut result,
         "prompt",
-        first_applied_prompt_id(&db, DbTable::DshPromptConfig),
+        first_applied_prompt_id(&db, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt)),
     );
     if prompt_id.is_none() {
         return result;
@@ -1214,7 +1214,7 @@ async fn reapply_oh_my_openagent<R: Runtime>(app: &AppHandle<R>) -> ReapplyCliRe
     let config_id = resolve_record_id(
         &mut result,
         "config",
-        first_applied_oh_my_config_id(&db, DbTable::OhMyOpenAgentConfig),
+        first_applied_oh_my_config_id(&db, DbTable::CliConfig(Cli::OhMyOpenAgent, CliConfigKind::Agents)),
     );
     if config_id.is_none() {
         return result;
@@ -1251,7 +1251,7 @@ async fn reapply_oh_my_opencode_slim<R: Runtime>(app: &AppHandle<R>) -> ReapplyC
     let config_id = resolve_record_id(
         &mut result,
         "config",
-        first_applied_oh_my_config_id(&db, DbTable::OhMyOpenCodeSlimConfig),
+        first_applied_oh_my_config_id(&db, DbTable::CliConfig(Cli::OhMyOpenCodeSlim, CliConfigKind::Agents)),
     );
     if config_id.is_none() {
         return result;

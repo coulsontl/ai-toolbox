@@ -18,7 +18,7 @@ use crate::db::helpers::{
     db_delete, db_get, db_list, db_patch_fields, db_patch_where_bool, db_put, db_query_by_field,
     db_transaction, db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use crate::http_client;
 use tauri::Emitter;
@@ -498,7 +498,7 @@ fn persist_refreshed_snapshot(
     db.with_conn(|conn| {
         db_patch_fields(
             conn,
-            DbTable::AntigravityOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Antigravity),
             account_id,
             &[
                 ("auth_snapshot", json!(snapshot)),
@@ -519,7 +519,7 @@ pub async fn ensure_antigravity_provider_has_no_official_accounts(
     let accounts: Vec<Value> = db.with_conn(|conn| {
         db_query_by_field(
             conn,
-            DbTable::AntigravityOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Antigravity),
             &provider_id_path,
             &provider_id_value,
             None,
@@ -558,7 +558,7 @@ pub async fn list_antigravity_official_accounts(
     let records: Vec<Value> = db.with_conn(|conn| {
         db_query_by_field(
             conn,
-            DbTable::AntigravityOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Antigravity),
             &provider_id_path,
             &provider_id_value,
             Some(&order),
@@ -632,7 +632,7 @@ fn capture_local_default_snapshot(
     // replace the default's snapshot with B's credentials.
     db.with_conn_mut(|conn| {
         db_transaction(conn, |tx| {
-            let managed_is_applied = db_list(tx, DbTable::AntigravityOfficialAccount, None)?
+            let managed_is_applied = db_list(tx, DbTable::CliOfficialAccount(Cli::Antigravity), None)?
                 .into_iter()
                 .map(adapter::from_db_value_official_account)
                 .any(|account| account.id != LOCAL_OFFICIAL_ACCOUNT_ID && account.is_applied);
@@ -647,14 +647,14 @@ fn capture_local_default_snapshot(
             let now = Local::now().to_rfc3339();
             let previous = db_get(
                 tx,
-                DbTable::AntigravityOfficialAccount,
+                DbTable::CliOfficialAccount(Cli::Antigravity),
                 LOCAL_OFFICIAL_ACCOUNT_ID,
             )?;
             let record =
                 adapter::merge_local_default_snapshot(previous, provider_id, &snapshot, &now);
             db_put(
                 tx,
-                DbTable::AntigravityOfficialAccount,
+                DbTable::CliOfficialAccount(Cli::Antigravity),
                 LOCAL_OFFICIAL_ACCOUNT_ID,
                 &record,
             )?;
@@ -668,7 +668,7 @@ fn saved_local_default_snapshot(db: &SqliteDbState) -> Result<Option<String>, St
         .with_conn(|conn| {
             db_get(
                 conn,
-                DbTable::AntigravityOfficialAccount,
+                DbTable::CliOfficialAccount(Cli::Antigravity),
                 LOCAL_OFFICIAL_ACCOUNT_ID,
             )
         })?
@@ -781,10 +781,10 @@ pub async fn start_antigravity_official_account_oauth(
     };
 
     let db_val = adapter::to_db_value_official_account(&content);
-    db.with_conn(|conn| db_put(conn, DbTable::AntigravityOfficialAccount, &new_id, &db_val))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliOfficialAccount(Cli::Antigravity), &new_id, &db_val))?;
 
     let created_record = db
-        .with_conn(|conn| db_get(conn, DbTable::AntigravityOfficialAccount, &new_id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Antigravity), &new_id))?
         .ok_or_else(|| {
             "Failed to retrieve newly created Antigravity official account".to_string()
         })?;
@@ -886,7 +886,7 @@ pub async fn save_antigravity_official_local_account(
     persist_imported_account(db, &new_id, &account_content)?;
 
     let created_record = db
-        .with_conn(|conn| db_get(conn, DbTable::AntigravityOfficialAccount, &new_id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Antigravity), &new_id))?
         .ok_or_else(|| "Failed to retrieve newly imported Antigravity local account".to_string())?;
 
     Ok(adapter::from_db_value_official_account(created_record))
@@ -902,7 +902,7 @@ fn persist_imported_account(
             if content.is_applied {
                 db_patch_where_bool(
                     tx,
-                    DbTable::AntigravityOfficialAccount,
+                    DbTable::CliOfficialAccount(Cli::Antigravity),
                     &JsonFieldPath::new("is_applied")?,
                     true,
                     &[("is_applied", json!(false))],
@@ -910,7 +910,7 @@ fn persist_imported_account(
             }
             db_put(
                 tx,
-                DbTable::AntigravityOfficialAccount,
+                DbTable::CliOfficialAccount(Cli::Antigravity),
                 id,
                 &adapter::to_db_value_official_account(content),
             )
@@ -962,7 +962,7 @@ async fn apply_official_account_with_store(
         saved_local_default_snapshot(db)?
     } else {
         let record = db
-            .with_conn(|conn| db_get(conn, DbTable::AntigravityOfficialAccount, account_id))?
+            .with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Antigravity), account_id))?
             .ok_or_else(|| format!("Antigravity official account not found: {account_id}"))?;
 
         let account = adapter::from_db_value_official_account(record);
@@ -996,7 +996,7 @@ async fn apply_official_account_with_store(
         db.with_conn_mut(|conn| {
             db_update_applied_status(
                 conn,
-                DbTable::AntigravityOfficialAccount,
+                DbTable::CliOfficialAccount(Cli::Antigravity),
                 (account_id != LOCAL_OFFICIAL_ACCOUNT_ID).then_some(account_id),
                 &Local::now().to_rfc3339(),
             )
@@ -1010,7 +1010,7 @@ async fn apply_official_account_with_store(
         let provider_restore = db.with_conn_mut(|conn| {
             db_update_applied_status(
                 conn,
-                DbTable::AntigravityProvider,
+                DbTable::CliProvider(Cli::Antigravity),
                 previous_provider.as_deref(),
                 &Local::now().to_rfc3339(),
             )
@@ -1038,7 +1038,7 @@ pub async fn delete_antigravity_official_account(
         return Err("The Antigravity CLI default configuration cannot be deleted".to_string());
     }
     let record = db
-        .with_conn(|conn| db_get(conn, DbTable::AntigravityOfficialAccount, &account_id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Antigravity), &account_id))?
         .ok_or_else(|| format!("Antigravity official account not found: {account_id}"))?;
     let account = adapter::from_db_value_official_account(record);
     if account.provider_id != provider_id {
@@ -1049,7 +1049,7 @@ pub async fn delete_antigravity_official_account(
     if account.is_applied {
         return Err("The applied Antigravity official account cannot be deleted".to_string());
     }
-    db.with_conn(|conn| db_delete(conn, DbTable::AntigravityOfficialAccount, &account_id))?;
+    db.with_conn(|conn| db_delete(conn, DbTable::CliOfficialAccount(Cli::Antigravity), &account_id))?;
     Ok(())
 }
 
@@ -1058,7 +1058,7 @@ pub async fn refresh_applied_antigravity_accounts_if_needed<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<(), String> {
     let records: Vec<Value> =
-        db.with_conn(|conn| db_list(conn, DbTable::AntigravityOfficialAccount, None))?;
+        db.with_conn(|conn| db_list(conn, DbTable::CliOfficialAccount(Cli::Antigravity), None))?;
 
     for record in records {
         let id = adapter::from_db_value_official_account(record).id;
@@ -1069,7 +1069,7 @@ pub async fn refresh_applied_antigravity_accounts_if_needed<R: tauri::Runtime>(
         // started for A must never overwrite the live credential after B wins.
         let _operation = ACCOUNT_OPERATION_LOCK.lock().await;
         let Some(record) =
-            db.with_conn(|conn| db_get(conn, DbTable::AntigravityOfficialAccount, &id))?
+            db.with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Antigravity), &id))?
         else {
             continue;
         };
@@ -1140,7 +1140,7 @@ pub async fn refresh_antigravity_official_account_limits(
     }
 
     let record = db
-        .with_conn(|conn| db_get(conn, DbTable::AntigravityOfficialAccount, &account_id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Antigravity), &account_id))?
         .ok_or_else(|| format!("Antigravity official account not found: {account_id}"))?;
 
     let account = adapter::from_db_value_official_account(record);
@@ -1158,7 +1158,7 @@ pub async fn refresh_antigravity_official_account_limits(
     persist_quota_result(db, &account_id, quota_result)?;
 
     let updated_record = db
-        .with_conn(|conn| db_get(conn, DbTable::AntigravityOfficialAccount, &account_id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Antigravity), &account_id))?
         .ok_or_else(|| "Failed to retrieve refreshed account record".to_string())?;
 
     Ok(adapter::from_db_value_official_account(updated_record))
@@ -1175,7 +1175,7 @@ fn persist_quota_result(
             db.with_conn(|conn| {
                 db_patch_fields(
                     conn,
-                    DbTable::AntigravityOfficialAccount,
+                    DbTable::CliOfficialAccount(Cli::Antigravity),
                     account_id,
                     &[("last_error", json!(error))],
                 )
@@ -1188,7 +1188,7 @@ fn persist_quota_result(
     db.with_conn(|conn| {
         db_patch_fields(
             conn,
-            DbTable::AntigravityOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Antigravity),
             account_id,
             &[
                 (
@@ -1259,7 +1259,7 @@ pub async fn copy_antigravity_official_account_token(
         })?
     } else {
         let record = db
-            .with_conn(|conn| db_get(conn, DbTable::AntigravityOfficialAccount, &input.account_id))?
+            .with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Antigravity), &input.account_id))?
             .ok_or_else(|| format!("Account not found: {}", input.account_id))?;
         let account = adapter::from_db_value_official_account(record);
         if account.provider_id != input.provider_id {
@@ -1301,6 +1301,7 @@ pub async fn copy_antigravity_official_account_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::schema::CliConfigKind;
 
     #[derive(Default)]
     struct MemoryCredentials {
@@ -1340,13 +1341,13 @@ mod tests {
         db.with_conn(|conn| {
             db_put(
                 conn,
-                DbTable::AntigravityCommonConfig,
+                DbTable::CliConfig(Cli::Antigravity, CliConfigKind::Common),
                 "common",
                 &json!({"config": "{}", "root_dir": root.path().to_string_lossy()}),
             )?;
             db_put(
                 conn,
-                DbTable::AntigravityProvider,
+                DbTable::CliProvider(Cli::Antigravity),
                 "official",
                 &json!({
                     "category": "official", "is_applied": true, "settings_config":
@@ -1424,7 +1425,7 @@ mod tests {
         db.with_conn(|conn| {
             db_put(
                 conn,
-                DbTable::AntigravityOfficialAccount,
+                DbTable::CliOfficialAccount(Cli::Antigravity),
                 LOCAL_OFFICIAL_ACCOUNT_ID,
                 &json!({"auth_snapshot": "", "kind": "local", "future_metadata": {"keep": true}}),
             )
@@ -1445,7 +1446,7 @@ mod tests {
             .with_conn(|conn| {
                 db_get(
                     conn,
-                    DbTable::AntigravityOfficialAccount,
+                    DbTable::CliOfficialAccount(Cli::Antigravity),
                     LOCAL_OFFICIAL_ACCOUNT_ID,
                 )
             })
@@ -1504,13 +1505,13 @@ mod tests {
             db.with_conn(|conn| match legacy {
                 Some(value) => db_put(
                     conn,
-                    DbTable::AntigravityOfficialAccount,
+                    DbTable::CliOfficialAccount(Cli::Antigravity),
                     LOCAL_OFFICIAL_ACCOUNT_ID,
                     &value,
                 ),
                 None => db_delete(
                     conn,
-                    DbTable::AntigravityOfficialAccount,
+                    DbTable::CliOfficialAccount(Cli::Antigravity),
                     LOCAL_OFFICIAL_ACCOUNT_ID,
                 )
                 .map(|_| ()),
@@ -1536,7 +1537,7 @@ mod tests {
         db.with_conn(|conn| {
             db_put(
                 conn,
-                DbTable::AntigravityOfficialAccount,
+                DbTable::CliOfficialAccount(Cli::Antigravity),
                 LOCAL_OFFICIAL_ACCOUNT_ID,
                 &json!({"auth_snapshot": original}),
             )
@@ -1569,7 +1570,7 @@ mod tests {
             .store(false, std::sync::atomic::Ordering::SeqCst);
         // 触发器里比对的就是桥接态那个 id：用常量插值，改名时这里不会脱节。
         let trigger_sql = format!(
-            "CREATE TRIGGER reject_default_snapshot BEFORE INSERT ON antigravity_official_account \
+            "CREATE TRIGGER reject_default_snapshot BEFORE INSERT ON cli_official_account \
              WHEN NEW.id = '{LOCAL_OFFICIAL_ACCOUNT_ID}' \
              BEGIN SELECT RAISE(ABORT, 'snapshot save failure'); END;"
         );
@@ -1610,7 +1611,7 @@ mod tests {
             .await
             .unwrap();
         // Selection persistence can fail after writing the settings and credential.
-        db.with_conn(|conn| conn.execute_batch("CREATE TRIGGER reject_selection BEFORE UPDATE ON antigravity_official_account WHEN NEW.id = 'C' BEGIN SELECT RAISE(ABORT, 'selection save failure'); END;").map_err(|e| e.to_string())).unwrap();
+        db.with_conn(|conn| conn.execute_batch("CREATE TRIGGER reject_selection BEFORE UPDATE ON cli_official_account WHEN NEW.id = 'C' BEGIN SELECT RAISE(ABORT, 'selection save failure'); END;").map_err(|e| e.to_string())).unwrap();
         assert!(
             apply_official_account_with_store(&db, "official", "C", &credentials)
                 .await
@@ -1638,7 +1639,7 @@ mod tests {
 
     fn read_account(db: &SqliteDbState, id: &str) -> AntigravityOfficialAccount {
         adapter::from_db_value_official_account(
-            db.with_conn(|conn| db_get(conn, DbTable::AntigravityOfficialAccount, id))
+            db.with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Antigravity), id))
                 .unwrap()
                 .unwrap(),
         )
@@ -1731,7 +1732,7 @@ mod tests {
         assert!(read_account(&db, "second").is_applied);
         persist_imported_account(&db, "inactive", &account_content(false)).unwrap();
         assert!(read_account(&db, "second").is_applied);
-        db.with_conn(|conn| conn.execute_batch("CREATE TRIGGER reject_account BEFORE INSERT ON antigravity_official_account WHEN NEW.id = 'rejected' BEGIN SELECT RAISE(ABORT, 'test failure'); END;").map_err(|e| e.to_string())).unwrap();
+        db.with_conn(|conn| conn.execute_batch("CREATE TRIGGER reject_account BEFORE INSERT ON cli_official_account WHEN NEW.id = 'rejected' BEGIN SELECT RAISE(ABORT, 'test failure'); END;").map_err(|e| e.to_string())).unwrap();
         assert!(persist_imported_account(&db, "rejected", &account_content(true)).is_err());
         assert!(read_account(&db, "second").is_applied);
     }
@@ -1772,7 +1773,7 @@ mod tests {
             for (id, disabled) in [("official", false), ("other", false), ("disabled", true)] {
                 db_put(
                     conn,
-                    DbTable::AntigravityProvider,
+                    DbTable::CliProvider(Cli::Antigravity),
                     id,
                     &json!({"category": "official", "is_disabled": disabled}),
                 )?;

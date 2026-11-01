@@ -1,76 +1,232 @@
 use std::fmt;
 
+/// Every CLI that keeps preset records in the database.
+///
+/// **This enum is the only place a new CLI has to be registered.** Providers,
+/// official accounts and config presets live in three shared tables told apart
+/// by the `cli_key` column this enum spells. Before this, each CLI added four
+/// tables of its own plus a `migrate_vNN` step; now it is one line here and no
+/// schema change at all.
+///
+/// The strings deliberately match the `app_type` spellings the gateway and the
+/// usage tables already use (`gemini`, not `gemini_cli`), so a row's CLI can be
+/// matched against request logs without a translation table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum Cli {
+    Claude,
+    ClaudeDesktop,
+    Codex,
+    Grok,
+    Kimi,
+    Gemini,
+    Antigravity,
+    Zcode,
+    Workbuddy,
+    Codebuddy,
+    Hermes,
+    Dsh,
+    Pi,
+    OhMyPi,
+    OmoNative,
+    OpenCode,
+    OpenClaw,
+    OhMyOpenAgent,
+    OhMyOpenCodeSlim,
+}
+
+impl Cli {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::ClaudeDesktop => "claude_desktop",
+            Self::Codex => "codex",
+            Self::Grok => "grok",
+            Self::Kimi => "kimi",
+            Self::Gemini => "gemini",
+            Self::Antigravity => "antigravity",
+            Self::Zcode => "zcode",
+            Self::Workbuddy => "workbuddy",
+            Self::Codebuddy => "codebuddy",
+            Self::Hermes => "hermes",
+            Self::Dsh => "dsh",
+            Self::Pi => "pi",
+            Self::OhMyPi => "oh_my_pi",
+            Self::OmoNative => "omo_native",
+            Self::OpenCode => "opencode",
+            Self::OpenClaw => "openclaw",
+            Self::OhMyOpenAgent => "oh_my_openagent",
+            Self::OhMyOpenCodeSlim => "oh_my_opencode_slim",
+        }
+    }
+
+    pub const ALL: &'static [Cli] = &[
+        Self::Claude,
+        Self::ClaudeDesktop,
+        Self::Codex,
+        Self::Grok,
+        Self::Kimi,
+        Self::Gemini,
+        Self::Antigravity,
+        Self::Zcode,
+        Self::Workbuddy,
+        Self::Codebuddy,
+        Self::Hermes,
+        Self::Dsh,
+        Self::Pi,
+        Self::OhMyPi,
+        Self::OmoNative,
+        Self::OpenCode,
+        Self::OpenClaw,
+        Self::OhMyOpenAgent,
+        Self::OhMyOpenCodeSlim,
+    ];
+}
+
+/// Which of the CLI's config namespaces a `cli_config` row belongs to.
+///
+/// `common` / `prompt` / `settings` are the structured presets the pages edit;
+/// `agents` / `global` are whole user-authored JSON blobs with no fixed shape.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum CliConfigKind {
+    Common,
+    Prompt,
+    Settings,
+    Agents,
+    Global,
+}
+
+impl CliConfigKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Common => "common",
+            Self::Prompt => "prompt",
+            Self::Settings => "settings",
+            Self::Agents => "agents",
+            Self::Global => "global",
+        }
+    }
+}
+
+/// Which kind of record a `relay_entity` row holds.
+///
+/// The 2API tab's channel/model/plugin/check-in records are all low-frequency
+/// user configuration with identical JSONB columns, so they share one table.
+/// Quota snapshots and quota points are *not* in here: they are rewritten or
+/// appended on every poll and would put themselves in the same pages as a
+/// handful of channel rows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum RelayKind {
+    Channel,
+    Model,
+    Plugin,
+    PluginProvider,
+    PluginAccount,
+    AccessKey,
+    CheckinSchedule,
+    CheckinRecord,
+    ClaimRecord,
+}
+
+impl RelayKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Channel => "channel",
+            Self::Model => "model",
+            Self::Plugin => "plugin",
+            Self::PluginProvider => "plugin_provider",
+            Self::PluginAccount => "plugin_account",
+            Self::AccessKey => "access_key",
+            Self::CheckinSchedule => "checkin_schedule",
+            Self::CheckinRecord => "checkin_record",
+            Self::ClaimRecord => "claim_record",
+        }
+    }
+}
+
+/// The physical row scope a table reads and writes.
+///
+/// A consolidated table holds rows for many CLIs (or many relay kinds); the
+/// scope is what keeps one CLI from seeing another's. It is carried by the
+/// [`DbTable`] variant rather than passed alongside it so that **every** helper
+/// applies it — `db_update_applied_status` clears `is_applied` across the whole
+/// scope before setting the target, and a forgotten `cli_key` there would wipe
+/// every other CLI's applied flag without any error.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TableScope {
+    pub cli_key: Option<&'static str>,
+    pub kind: Option<&'static str>,
+}
+
+impl TableScope {
+    pub const NONE: Self = Self {
+        cli_key: None,
+        kind: None,
+    };
+
+    pub const fn cli(cli_key: &'static str) -> Self {
+        Self {
+            cli_key: Some(cli_key),
+            kind: None,
+        }
+    }
+
+    pub const fn cli_kind(cli_key: &'static str, kind: &'static str) -> Self {
+        Self {
+            cli_key: Some(cli_key),
+            kind: Some(kind),
+        }
+    }
+
+    pub const fn kind(kind: &'static str) -> Self {
+        Self {
+            cli_key: None,
+            kind: Some(kind),
+        }
+    }
+
+    /// `(column, value)` pairs the scope binds to, in binding order.
+    ///
+    /// Returned as an iterator rather than a slice because a slice would have to
+    /// borrow from a temporary — and copying the pair list into a `Vec` at every
+    /// SQL build site is noise for at most two entries.
+    pub fn bindings(&self) -> impl Iterator<Item = (&'static str, &'static str)> {
+        let cli = self.cli_key.map(|value| ("cli_key", value));
+        let kind = self.kind.map(|value| ("kind", value));
+        cli.into_iter().chain(kind)
+    }
+
+    /// Column names the scope binds to, in binding order.
+    pub fn columns(&self) -> impl Iterator<Item = &'static str> {
+        self.bindings().map(|(column, _)| column)
+    }
+
+    /// Values bound to [`Self::columns`], in the same order.
+    pub fn values(&self) -> impl Iterator<Item = &'static str> {
+        self.bindings().map(|(_, value)| value)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum DbTable {
     Settings,
     AppMigration,
-    ClaudeProvider,
-    ClaudeCommonConfig,
-    ClaudePromptConfig,
-    CodexProvider,
-    CodexCommonConfig,
-    CodexPromptConfig,
-    CodexOfficialAccount,
+
+    // ---- per-CLI tables, consolidated ----------------------------------------
+    //
+    // Three tables instead of fifty-five. `cli_key` is a real column, not a JSON
+    // field: every preset struct is `#[serde(default)]`, so a codex provider
+    // payload deserializes happily into a kimi provider — the scope has to be
+    // enforced by SQL, not by the shape of the data.
+    CliProvider(Cli),
+    CliOfficialAccount(Cli),
+    CliConfig(Cli, CliConfigKind),
+
     CodexPluginWorkspaceRoots,
-    GrokProvider,
-    GrokOfficialAccount,
-    GrokCommonConfig,
-    GrokPromptConfig,
-    KimiProvider,
-    KimiOfficialAccount,
-    KimiCommonConfig,
-    KimiPromptConfig,
-    GeminiCliProvider,
-    GeminiCliCommonConfig,
-    GeminiCliPromptConfig,
-    GeminiCliOfficialAccount,
-    AntigravityProvider,
-    AntigravityCommonConfig,
-    AntigravityPromptConfig,
-    AntigravityOfficialAccount,
-    ZcodeProvider,
-    ZcodeCommonConfig,
-    ZcodePromptConfig,
-    ZcodeOfficialAccount,
-    ClaudeDesktopProvider,
-    ClaudeDesktopPromptConfig,
-    /// WorkBuddy desktop: only the config-root override lives here. The channel
-    /// list is a view over `models.json`, and the four identity documents are
-    /// edited in place, so neither needs a table of its own.
-    WorkbuddySettingsConfig,
-    /// WorkBuddy desktop gateway provider records.
-    ///
-    /// The channel list the page shows is still a view over `models.json`;
-    /// these rows exist for the gateway only, which needs a stable provider id
-    /// and persistable settings (enable flag, sort order, failover config) that
-    /// a derived view cannot carry.
-    WorkbuddyProvider,
-    /// CodeBuddy Code CLI: settings + `CODEBUDDY.md` prompt presets.
-    CodebuddySettingsConfig,
-    CodebuddyPromptConfig,
-    /// CodeBuddy Code CLI gateway provider records (see `WorkbuddyProvider`).
-    CodebuddyProvider,
-    HermesSettingsConfig,
-    HermesPromptConfig,
-    DshSettingsConfig,
-    DshPromptConfig,
-    PiSettingsConfig,
-    PiPromptConfig,
-    OhMyPiSettingsConfig,
-    OhMyPiPromptConfig,
-    OhMyPiAgentsConfig,
-    OmoNativeSettingsConfig,
-    OmoNativeAgentsConfig,
-    OmoNativePromptConfig,
-    OpenCodeCommonConfig,
-    OpenCodePromptConfig,
+    // Favourites are user-curated lists keyed by provider/plugin id, not
+    // presets a page switches between — they fit none of the `cli_config`
+    // kinds, so they keep their own tables.
     OpenCodeFavoritePlugin,
     OpenCodeFavoriteProvider,
-    OpenClawCommonConfig,
-    OhMyOpenAgentConfig,
-    OhMyOpenAgentGlobalConfig,
-    OhMyOpenCodeSlimConfig,
-    OhMyOpenCodeSlimGlobalConfig,
     Skill,
     SkillGroup,
     SkillRepo,
@@ -91,79 +247,29 @@ pub enum DbTable {
     ImageChannel,
     ImageJob,
     ImageAsset,
-    /// 2API channels are deliberately independent of the per-CLI provider
-    /// tables: a 2API channel is a plain upstream (or a plugin-backed one)
-    /// that serves generic API clients, not a provider a local CLI is taken
-    /// over onto.
-    RelayChannel,
-    RelayModel,
-    RelayPlugin,
-    RelayPluginProvider,
-    RelayPluginAccount,
-    RelayAccessKey,
-    RelayCheckinSchedule,
-    RelayCheckinRecord,
+
+    // ---- relay ("2API") -----------------------------------------------------
+    RelayEntity(RelayKind),
+    /// Current balance/usage per account, rewritten on every poll.
+    RelayQuotaSnapshot,
+    /// One appended point per poll, for the trend chart.
+    RelayQuotaPoint,
 }
 
+/// Every physical JSONB table the app creates at startup.
+///
+/// Kept separate from [`DbTable`] because that enum is a *scoped reference* to a
+/// table, not a table: `CliProvider(Codex)` and `CliProvider(Kimi)` are both
+/// `cli_provider`, and creating a table per variant would be a no-op at best.
 pub const ALL_TABLES: &[DbTable] = &[
     DbTable::Settings,
     DbTable::AppMigration,
-    DbTable::ClaudeProvider,
-    DbTable::ClaudeCommonConfig,
-    DbTable::ClaudePromptConfig,
-    DbTable::CodexProvider,
-    DbTable::CodexCommonConfig,
-    DbTable::CodexPromptConfig,
-    DbTable::CodexOfficialAccount,
+    DbTable::CliProvider(Cli::Claude),
+    DbTable::CliOfficialAccount(Cli::Claude),
+    DbTable::CliConfig(Cli::Claude, CliConfigKind::Common),
     DbTable::CodexPluginWorkspaceRoots,
-    DbTable::GrokProvider,
-    DbTable::GrokOfficialAccount,
-    DbTable::GrokCommonConfig,
-    DbTable::GrokPromptConfig,
-    DbTable::KimiProvider,
-    DbTable::KimiOfficialAccount,
-    DbTable::KimiCommonConfig,
-    DbTable::KimiPromptConfig,
-    DbTable::GeminiCliProvider,
-    DbTable::GeminiCliCommonConfig,
-    DbTable::GeminiCliPromptConfig,
-    DbTable::GeminiCliOfficialAccount,
-    DbTable::AntigravityProvider,
-    DbTable::AntigravityCommonConfig,
-    DbTable::AntigravityPromptConfig,
-    DbTable::AntigravityOfficialAccount,
-    DbTable::ZcodeProvider,
-    DbTable::ZcodeCommonConfig,
-    DbTable::ZcodePromptConfig,
-    DbTable::ZcodeOfficialAccount,
-    DbTable::ClaudeDesktopProvider,
-    DbTable::ClaudeDesktopPromptConfig,
-    DbTable::WorkbuddySettingsConfig,
-    DbTable::WorkbuddyProvider,
-    DbTable::CodebuddySettingsConfig,
-    DbTable::CodebuddyPromptConfig,
-    DbTable::CodebuddyProvider,
-    DbTable::HermesSettingsConfig,
-    DbTable::HermesPromptConfig,
-    DbTable::DshSettingsConfig,
-    DbTable::DshPromptConfig,
-    DbTable::PiSettingsConfig,
-    DbTable::PiPromptConfig,
-    DbTable::OhMyPiSettingsConfig,
-    DbTable::OhMyPiPromptConfig,
-    DbTable::OhMyPiAgentsConfig,
-    DbTable::OmoNativeSettingsConfig,
-    DbTable::OmoNativeAgentsConfig,
-    DbTable::OmoNativePromptConfig,
-    DbTable::OpenCodeCommonConfig,
-    DbTable::OpenCodePromptConfig,
     DbTable::OpenCodeFavoritePlugin,
     DbTable::OpenCodeFavoriteProvider,
-    DbTable::OpenClawCommonConfig,
-    DbTable::OhMyOpenAgentConfig,
-    DbTable::OhMyOpenAgentGlobalConfig,
-    DbTable::OhMyOpenCodeSlimConfig,
-    DbTable::OhMyOpenCodeSlimGlobalConfig,
     DbTable::Skill,
     DbTable::SkillGroup,
     DbTable::SkillRepo,
@@ -184,77 +290,38 @@ pub const ALL_TABLES: &[DbTable] = &[
     DbTable::ImageChannel,
     DbTable::ImageJob,
     DbTable::ImageAsset,
-    DbTable::RelayChannel,
-    DbTable::RelayModel,
-    DbTable::RelayPlugin,
-    DbTable::RelayPluginProvider,
-    DbTable::RelayPluginAccount,
-    DbTable::RelayAccessKey,
-    DbTable::RelayCheckinSchedule,
-    DbTable::RelayCheckinRecord,
+    DbTable::RelayEntity(RelayKind::Channel),
+    DbTable::RelayQuotaSnapshot,
+    DbTable::RelayQuotaPoint,
 ];
 
+/// Physical table names in creation order, deduplicated.
+///
+/// Migrations and consistency tests need the table list without inventing a
+/// scope just to call [`DbTable::name`].
+pub fn all_table_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = Vec::new();
+    for table in ALL_TABLES {
+        let name = table.name();
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
 impl DbTable {
+    /// Physical table this variant reads and writes.
     pub fn name(self) -> &'static str {
         match self {
             DbTable::Settings => "settings",
             DbTable::AppMigration => "app_migration",
-            DbTable::ClaudeProvider => "claude_provider",
-            DbTable::ClaudeCommonConfig => "claude_common_config",
-            DbTable::ClaudePromptConfig => "claude_prompt_config",
-            DbTable::CodexProvider => "codex_provider",
-            DbTable::CodexCommonConfig => "codex_common_config",
-            DbTable::CodexPromptConfig => "codex_prompt_config",
-            DbTable::CodexOfficialAccount => "codex_official_account",
+            DbTable::CliProvider(_) => "cli_provider",
+            DbTable::CliOfficialAccount(_) => "cli_official_account",
+            DbTable::CliConfig(..) => "cli_config",
             DbTable::CodexPluginWorkspaceRoots => "codex_plugin_workspace_roots",
-            DbTable::GrokProvider => "grok_provider",
-            DbTable::GrokOfficialAccount => "grok_official_account",
-            DbTable::GrokCommonConfig => "grok_common_config",
-            DbTable::GrokPromptConfig => "grok_prompt_config",
-            DbTable::KimiProvider => "kimi_provider",
-            DbTable::KimiOfficialAccount => "kimi_official_account",
-            DbTable::KimiCommonConfig => "kimi_common_config",
-            DbTable::KimiPromptConfig => "kimi_prompt_config",
-            DbTable::GeminiCliProvider => "gemini_cli_provider",
-            DbTable::GeminiCliCommonConfig => "gemini_cli_common_config",
-            DbTable::GeminiCliPromptConfig => "gemini_cli_prompt_config",
-            DbTable::GeminiCliOfficialAccount => "gemini_cli_official_account",
-            DbTable::AntigravityProvider => "antigravity_provider",
-            DbTable::AntigravityCommonConfig => "antigravity_common_config",
-            DbTable::AntigravityPromptConfig => "antigravity_prompt_config",
-            DbTable::AntigravityOfficialAccount => "antigravity_official_account",
-            DbTable::ZcodeProvider => "zcode_provider",
-            DbTable::ZcodeCommonConfig => "zcode_common_config",
-            DbTable::ZcodePromptConfig => "zcode_prompt_config",
-            DbTable::ZcodeOfficialAccount => "zcode_official_account",
-            DbTable::ClaudeDesktopProvider => "claude_desktop_provider",
-            DbTable::ClaudeDesktopPromptConfig => "claude_desktop_prompt_config",
-            DbTable::WorkbuddySettingsConfig => "workbuddy_settings_config",
-            DbTable::WorkbuddyProvider => "workbuddy_provider",
-            DbTable::CodebuddySettingsConfig => "codebuddy_settings_config",
-            DbTable::CodebuddyPromptConfig => "codebuddy_prompt_config",
-            DbTable::CodebuddyProvider => "codebuddy_provider",
-            DbTable::HermesSettingsConfig => "hermes_settings_config",
-            DbTable::HermesPromptConfig => "hermes_prompt_config",
-            DbTable::DshSettingsConfig => "dsh_settings_config",
-            DbTable::DshPromptConfig => "dsh_prompt_config",
-            DbTable::PiSettingsConfig => "pi_settings_config",
-            DbTable::PiPromptConfig => "pi_prompt_config",
-            DbTable::OhMyPiSettingsConfig => "oh_my_pi_settings_config",
-            DbTable::OhMyPiPromptConfig => "oh_my_pi_prompt_config",
-            DbTable::OhMyPiAgentsConfig => "oh_my_pi_agents_config",
-            DbTable::OmoNativeSettingsConfig => "omo_native_settings_config",
-            DbTable::OmoNativeAgentsConfig => "omo_native_agents_config",
-            DbTable::OmoNativePromptConfig => "omo_native_prompt_config",
-            DbTable::OpenCodeCommonConfig => "opencode_common_config",
-            DbTable::OpenCodePromptConfig => "opencode_prompt_config",
             DbTable::OpenCodeFavoritePlugin => "opencode_favorite_plugin",
             DbTable::OpenCodeFavoriteProvider => "opencode_favorite_provider",
-            DbTable::OpenClawCommonConfig => "openclaw_common_config",
-            DbTable::OhMyOpenAgentConfig => "oh_my_openagent_config",
-            DbTable::OhMyOpenAgentGlobalConfig => "oh_my_openagent_global_config",
-            DbTable::OhMyOpenCodeSlimConfig => "oh_my_opencode_slim_config",
-            DbTable::OhMyOpenCodeSlimGlobalConfig => "oh_my_opencode_slim_global_config",
             DbTable::Skill => "skill",
             DbTable::SkillGroup => "skill_group",
             DbTable::SkillRepo => "skill_repo",
@@ -275,14 +342,20 @@ impl DbTable {
             DbTable::ImageChannel => "image_channel",
             DbTable::ImageJob => "image_job",
             DbTable::ImageAsset => "image_asset",
-            DbTable::RelayChannel => "relay_entity",
-            DbTable::RelayModel => "relay_entity",
-            DbTable::RelayPlugin => "relay_entity",
-            DbTable::RelayPluginProvider => "relay_entity",
-            DbTable::RelayPluginAccount => "relay_entity",
-            DbTable::RelayAccessKey => "relay_entity",
-            DbTable::RelayCheckinSchedule => "relay_entity",
-            DbTable::RelayCheckinRecord => "relay_entity",
+            DbTable::RelayEntity(_) => "relay_entity",
+            DbTable::RelayQuotaSnapshot => "relay_quota_snapshot",
+            DbTable::RelayQuotaPoint => "relay_quota_point",
+        }
+    }
+
+    /// Rows this variant may touch. [`TableScope::NONE`] means the whole table.
+    pub fn scope(self) -> TableScope {
+        match self {
+            DbTable::CliProvider(cli) => TableScope::cli(cli.as_str()),
+            DbTable::CliOfficialAccount(cli) => TableScope::cli(cli.as_str()),
+            DbTable::CliConfig(cli, kind) => TableScope::cli_kind(cli.as_str(), kind.as_str()),
+            DbTable::RelayEntity(kind) => TableScope::kind(kind.as_str()),
+            _ => TableScope::NONE,
         }
     }
 }
@@ -516,4 +589,81 @@ pub fn validate_identifier(identifier: &str) -> Result<(), String> {
 
 pub fn sql_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn every_physical_table_is_listed_once() {
+        let names = all_table_names();
+        assert_eq!(
+            names.len(),
+            31,
+            "the consolidated schema has 31 physical JSONB tables; a different \
+             count means ALL_TABLES and this expectation drifted apart"
+        );
+        let unique: HashSet<_> = names.iter().collect();
+        assert_eq!(
+            names.len(),
+            unique.len(),
+            "ALL_TABLES must name each physical table once"
+        );
+    }
+
+    #[test]
+    fn consolidated_tables_are_named_once_but_scoped_many_times() {
+        let provider_scopes: HashSet<_> = Cli::ALL
+            .iter()
+            .map(|cli| DbTable::CliProvider(*cli).scope().bindings().next().unwrap().1)
+            .collect();
+        assert_eq!(provider_scopes.len(), Cli::ALL.len());
+        assert!(provider_scopes.contains("codex") && provider_scopes.contains("oh_my_pi"));
+
+        // Two scopes, one table: the whole point of the consolidation.
+        assert_eq!(
+            DbTable::CliProvider(Cli::Codex).name(),
+            DbTable::CliProvider(Cli::Kimi).name()
+        );
+    }
+
+    #[test]
+    fn scope_columns_and_values_stay_aligned() {
+        let cases = [
+            DbTable::Settings,
+            DbTable::CliProvider(Cli::Grok),
+            DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt),
+            DbTable::RelayEntity(RelayKind::Channel),
+            DbTable::RelayQuotaSnapshot,
+        ];
+        for table in cases {
+            let bindings: Vec<(&str, &str)> = table.scope().bindings().collect();
+            let columns: Vec<&str> = table.scope().columns().collect();
+            assert_eq!(bindings.len(), columns.len(), "{table:?} scope arity");
+            assert!(bindings
+                .iter()
+                .zip(columns.iter())
+                .all(|((column, _), listed)| column == listed));
+        }
+        assert_eq!(DbTable::Settings.scope().bindings().count(), 0);
+        assert_eq!(
+            DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt).scope(),
+            TableScope::cli_kind("kimi", "prompt")
+        );
+    }
+
+    #[test]
+    fn the_three_cli_tables_cover_every_cli() {
+        for cli in Cli::ALL {
+            for table in [
+                DbTable::CliProvider(*cli),
+                DbTable::CliOfficialAccount(*cli),
+                DbTable::CliConfig(*cli, CliConfigKind::Common),
+            ] {
+                assert_eq!(table.scope().cli_key, Some(cli.as_str()));
+            }
+        }
+    }
 }

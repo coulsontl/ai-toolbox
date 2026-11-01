@@ -226,7 +226,6 @@ pub fn sanitize_restored_claude_database_for_current_os(
     #[cfg(not(target_os = "windows"))]
     {
         use crate::db::helpers::{db_get, db_list, db_put};
-        use crate::db::schema::DbTable;
 
         fn sanitize_string_field(
             record: &mut serde_json::Value,
@@ -256,13 +255,13 @@ pub fn sanitize_restored_claude_database_for_current_os(
 
         let sqlite_state = app_handle.state::<crate::db::SqliteDbState>();
         sqlite_state.with_conn(|conn| {
-            if let Some(mut common_config) = db_get(conn, DbTable::ClaudeCommonConfig, "common")? {
+            if let Some(mut common_config) = db_get(conn, DbTable::CliConfig(Cli::Claude, CliConfigKind::Common), "common")? {
                 if sanitize_string_field(&mut common_config, "config")? {
-                    db_put(conn, DbTable::ClaudeCommonConfig, "common", &common_config)?;
+                    db_put(conn, DbTable::CliConfig(Cli::Claude, CliConfigKind::Common), "common", &common_config)?;
                 }
             }
 
-            for mut provider in db_list(conn, DbTable::ClaudeProvider, None)? {
+            for mut provider in db_list(conn, DbTable::CliProvider(Cli::Claude), None)? {
                 let Some(provider_id) = provider
                     .get("id")
                     .and_then(serde_json::Value::as_str)
@@ -273,7 +272,7 @@ pub fn sanitize_restored_claude_database_for_current_os(
                 let mut changed = sanitize_string_field(&mut provider, "settings_config")?;
                 changed |= sanitize_string_field(&mut provider, "extra_settings_config")?;
                 if changed {
-                    db_put(conn, DbTable::ClaudeProvider, &provider_id, &provider)?;
+                    db_put(conn, DbTable::CliProvider(Cli::Claude), &provider_id, &provider)?;
                 }
             }
 
@@ -1771,7 +1770,7 @@ pub fn read_post_restore_resync_wsl_modules(resync_flag: &Path) -> Vec<String> {
 /// Used when the user opts out of restoring cross-machine custom roots.
 pub fn clear_restored_cli_custom_roots(db: &crate::db::SqliteDbState) -> Result<(), String> {
     use crate::db::helpers::{db_get, db_put};
-    use crate::db::schema::DbTable;
+    use crate::db::schema::{Cli, CliConfigKind, DbTable};
 
     const PATH_KEYS: &[&str] = &["root_dir", "config_path", "rootDir", "configPath"];
     // hermes/dsh store their custom config directory as `config_dir`.
@@ -1799,22 +1798,22 @@ pub fn clear_restored_cli_custom_roots(db: &crate::db::SqliteDbState) -> Result<
         };
 
     db.with_conn(|conn| {
-        clear_table(conn, DbTable::CodexCommonConfig, PATH_KEYS)?;
-        clear_table(conn, DbTable::ClaudeCommonConfig, PATH_KEYS)?;
-        clear_table(conn, DbTable::GrokCommonConfig, PATH_KEYS)?;
-        clear_table(conn, DbTable::GeminiCliCommonConfig, PATH_KEYS)?;
-        clear_table(conn, DbTable::AntigravityCommonConfig, PATH_KEYS)?;
-        clear_table(conn, DbTable::ZcodeCommonConfig, PATH_KEYS)?;
-        clear_table(conn, DbTable::KimiCommonConfig, PATH_KEYS)?;
-        clear_table(conn, DbTable::PiSettingsConfig, PATH_KEYS)?;
-        clear_table(conn, DbTable::OhMyPiSettingsConfig, PATH_KEYS)?;
-        clear_table(conn, DbTable::OpenCodeCommonConfig, PATH_KEYS)?;
-        clear_table(conn, DbTable::OpenClawCommonConfig, PATH_KEYS)?;
+        clear_table(conn, DbTable::CliConfig(Cli::Codex, CliConfigKind::Common), PATH_KEYS)?;
+        clear_table(conn, DbTable::CliConfig(Cli::Claude, CliConfigKind::Common), PATH_KEYS)?;
+        clear_table(conn, DbTable::CliConfig(Cli::Grok, CliConfigKind::Common), PATH_KEYS)?;
+        clear_table(conn, DbTable::CliConfig(Cli::Gemini, CliConfigKind::Common), PATH_KEYS)?;
+        clear_table(conn, DbTable::CliConfig(Cli::Antigravity, CliConfigKind::Common), PATH_KEYS)?;
+        clear_table(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common), PATH_KEYS)?;
+        clear_table(conn, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Common), PATH_KEYS)?;
+        clear_table(conn, DbTable::CliConfig(Cli::Pi, CliConfigKind::Settings), PATH_KEYS)?;
+        clear_table(conn, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Settings), PATH_KEYS)?;
+        clear_table(conn, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Common), PATH_KEYS)?;
+        clear_table(conn, DbTable::CliConfig(Cli::OpenClaw, CliConfigKind::Common), PATH_KEYS)?;
         // hermes/dsh resolve their config dir via DB `config_dir` (custom root)
         // before env/shell/platform defaults; clear it too so the restored
         // default-dir files are actually picked up after restore.
-        clear_table(conn, DbTable::HermesSettingsConfig, CONFIG_DIR_KEYS)?;
-        clear_table(conn, DbTable::DshSettingsConfig, CONFIG_DIR_KEYS)?;
+        clear_table(conn, DbTable::CliConfig(Cli::Hermes, CliConfigKind::Settings), CONFIG_DIR_KEYS)?;
+        clear_table(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Settings), CONFIG_DIR_KEYS)?;
         Ok(())
     })
 }
@@ -4313,7 +4312,7 @@ mod tests {
     #[cfg(unix)]
     use super::harden_restored_sensitive_file;
     use crate::db::helpers::{db_get, db_put};
-    use crate::db::schema::DbTable;
+    use crate::db::schema::{Cli, CliConfigKind, DbTable};
     use crate::db::SqliteDbState;
     use crate::settings::types::{BackupCustomEntry, BackupCustomEntryType, BackupFileFilterRule};
     use std::collections::HashSet;
@@ -4573,7 +4572,7 @@ mod tests {
         db.with_conn(|connection| {
             db_put(
                 connection,
-                DbTable::CodexCommonConfig,
+                DbTable::CliConfig(Cli::Codex, CliConfigKind::Common),
                 "common",
                 &serde_json::json!({
                     "id": "common",
@@ -4583,7 +4582,7 @@ mod tests {
             )?;
             db_put(
                 connection,
-                DbTable::OpenCodeCommonConfig,
+                DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Common),
                 "common",
                 &serde_json::json!({
                     "id": "common",
@@ -4592,7 +4591,7 @@ mod tests {
             )?;
             db_put(
                 connection,
-                DbTable::KimiCommonConfig,
+                DbTable::CliConfig(Cli::Kimi, CliConfigKind::Common),
                 "common",
                 &serde_json::json!({
                     "id": "common",
@@ -4608,11 +4607,11 @@ mod tests {
 
         db.with_conn(|connection| {
             let codex =
-                db_get(connection, DbTable::CodexCommonConfig, "common")?.expect("codex common");
-            let opencode = db_get(connection, DbTable::OpenCodeCommonConfig, "common")?
+                db_get(connection, DbTable::CliConfig(Cli::Codex, CliConfigKind::Common), "common")?.expect("codex common");
+            let opencode = db_get(connection, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Common), "common")?
                 .expect("opencode common");
             let kimi =
-                db_get(connection, DbTable::KimiCommonConfig, "common")?.expect("kimi common");
+                db_get(connection, DbTable::CliConfig(Cli::Kimi, CliConfigKind::Common), "common")?.expect("kimi common");
             assert!(codex
                 .get("root_dir")
                 .is_some_and(serde_json::Value::is_null));
@@ -5801,24 +5800,29 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
 
-        // Build a snapshot that mirrors an old database (schema v8, before Oh My
-        // Pi): initialize to the current schema, then drop every table introduced
-        // by v9..v12 and reset the schema version.
+        // Build a snapshot that mirrors a schema-v8 database, the state that
+        // surfaced this bug: it predates the Oh My Pi tables, so restoring it
+        // into a current build must rebuild whatever it is missing.
+        //
+        // v8 predates the v33 consolidation, so the missing tables are the
+        // *legacy* per-CLI ones. The migration chain folds them into
+        // `cli_config`, which is what makes this test still meaningful: it
+        // proves a snapshot from any era reaches a usable current schema, not
+        // that one particular table name comes back.
         let snapshot_path = temp_dir.path().join("old-v8.db");
         {
             let mut snapshot = Connection::open(&snapshot_path)
                 .map_err(|error| format!("open snapshot: {error}"))?;
             crate::db::sqlite_state::initialize_connection(&mut snapshot)?;
-            for table in [
-                "oh_my_pi_settings_config",
-                "oh_my_pi_prompt_config",
-                "claude_desktop_provider",
-                "hermes_settings_config",
-                "hermes_prompt_config",
-                "claude_desktop_prompt_config",
-                "dsh_settings_config",
-                "dsh_prompt_config",
-            ] {
+            // `initialize_connection` builds the *current* schema, so both the
+            // legacy per-CLI tables and the consolidated replacements exist as
+            // soon as it returns (the legacy ones because v1..v32 still create
+            // them on the way up). Drop both shapes, then step the version back
+            // to v8 so the restore path replays the whole chain.
+            for table in migrations::legacy_tables_for_test()
+                .into_iter()
+                .chain(["cli_provider", "cli_official_account", "cli_config"])
+            {
                 snapshot
                     .execute_batch(&format!("DROP TABLE IF EXISTS {table};"))
                     .map_err(|error| format!("drop {table}: {error}"))?;
@@ -5826,19 +5830,26 @@ mod tests {
             migrations::set_user_version(&snapshot, 8)?;
         }
 
-        // Sanity: the snapshot really lacks the OMP table.
+        // Sanity: the snapshot really lacks both shapes of the CLI tables.
         {
             let snapshot = Connection::open(&snapshot_path)
                 .map_err(|error| format!("reopen snapshot: {error}"))?;
             assert_eq!(migrations::get_user_version(&snapshot)?, 8);
-            let count: i64 = snapshot
-                .query_row(
-                    "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='oh_my_pi_settings_config'",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(|error| format!("query snapshot schema: {error}"))?;
-            assert_eq!(count, 0, "snapshot must lack the OMP table");
+            for table in [
+                "oh_my_pi_settings_config",
+                "cli_config",
+                "cli_provider",
+                "cli_official_account",
+            ] {
+                let count: i64 = snapshot
+                    .query_row(
+                        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                        [table],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| format!("query snapshot schema: {error}"))?;
+                assert_eq!(count, 0, "snapshot must lack {table}");
+            }
         }
 
         // The live database starts at the current schema; restoring the old
@@ -5854,20 +5865,36 @@ mod tests {
                 TARGET_SCHEMA_VERSION
             );
 
-            let count: i64 = connection
-                .query_row(
-                    "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='oh_my_pi_settings_config'",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(|error| format!("query restored schema: {error}"))?;
-            assert_eq!(
-                count, 1,
-                "oh_my_pi_settings_config must be recreated after restore"
-            );
+            // The consolidated tables must exist again; without them every
+            // post-restore CLI read hits a missing table.
+            for table in ["cli_config", "cli_provider", "cli_official_account"] {
+                let count: i64 = connection
+                    .query_row(
+                        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                        [table],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| format!("query restored schema: {error}"))?;
+                assert_eq!(count, 1, "{table} must be recreated after restore");
+            }
+            // And the merged tables must carry their scope columns, or the
+            // schema exists but nothing can be written to it.
+            for table in ["cli_config", "cli_provider", "cli_official_account"] {
+                let columns: Vec<String> = connection
+                    .prepare(&format!("PRAGMA table_info({table})"))
+                    .and_then(|mut stmt| {
+                        stmt.query_map([], |row| row.get::<_, String>(1))?
+                            .collect::<Result<_, _>>()
+                    })
+                    .map_err(|error| format!("inspect {table}: {error}"))?;
+                assert!(
+                    columns.iter().any(|column| column == "cli_key"),
+                    "{table} missing cli_key after restore: {columns:?}"
+                );
+            }
 
             // Reading the OMP settings record must not fail anymore.
-            db_get(connection, DbTable::OhMyPiSettingsConfig, "common")?;
+            db_get(connection, DbTable::CliConfig(Cli::OhMyPi, CliConfigKind::Settings), "common")?;
             Ok(())
         })?;
 

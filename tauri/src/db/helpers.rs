@@ -1,11 +1,80 @@
 use chrono::Local;
-use rusqlite::{Connection, OptionalExtension, ToSql};
+use rusqlite::{params_from_iter, Connection, OptionalExtension, ToSql};
 use serde_json::{Map, Number, Value};
 
-use super::schema::{sql_string_literal, DbTable, JsonFieldPath, OrderSpec, ValidatedTableName};
+use super::schema::{
+    sql_string_literal, DbTable, JsonFieldPath, OrderSpec, TableScope, ValidatedTableName,
+};
+
+/// `cli_key = ?1 AND kind = ?2` predicates for the scope's columns.
+fn scope_predicates(scope: &TableScope) -> Vec<String> {
+    scope
+        .columns()
+        .enumerate()
+        .map(|(index, column)| format!("{column} = ?{}", index + 1))
+        .collect()
+}
+
+fn where_clause(predicates: &[String]) -> String {
+    if predicates.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", predicates.join(" AND "))
+    }
+}
+
+/// Scope values in binding order.
+///
+/// These stay `&str` rather than `&dyn ToSql`: `ToSql` is implemented for `str`,
+/// not for `&str`, so there is no `&'static str as &dyn ToSql` coercion to hand
+/// to `query_row`. Callers bind them through [`params_from_iter`].
+fn scope_values(scope: &TableScope) -> Vec<&'static str> {
+    scope.values().collect()
+}
+
+fn scope_len(scope: &TableScope) -> usize {
+    scope.bindings().count()
+}
+
+/// Scope params followed by the caller's own params, in binding order.
+fn with_scope<'a>(
+    scope: &'a TableScope,
+    params: Vec<Box<dyn ToSql + 'a>>,
+) -> Vec<Box<dyn ToSql + 'a>> {
+    let mut all: Vec<Box<dyn ToSql + 'a>> = scope
+        .values()
+        .map(|value| Box::new(value) as Box<dyn ToSql>)
+        .collect();
+    all.extend(params);
+    all
+}
 
 pub fn db_get(conn: &Connection, table: DbTable, id: &str) -> Result<Option<Value>, String> {
-    db_get_from_table(conn, table.name(), id)
+    let table_name = table.name();
+    let scope = table.scope();
+    let mut predicates = scope_predicates(&scope);
+    predicates.push(format!("id = ?{}", predicates.len() + 1));
+    let sql = format!(
+        "SELECT id, json(data) AS data_json, created_at, updated_at FROM {table_name}{} LIMIT 1",
+        where_clause(&predicates)
+    );
+
+    let mut params = scope_values(&scope);
+    params.push(id);
+
+    let row = conn
+        .query_row(&sql, params_from_iter(params), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .optional()
+        .map_err(|error| format!("Failed to read record from {table_name}: {error}"))?;
+
+    row.map(row_tuple_to_value).transpose()
 }
 
 pub fn db_list(
@@ -14,15 +83,17 @@ pub fn db_list(
     order: Option<&OrderSpec>,
 ) -> Result<Vec<Value>, String> {
     let table_name = table.name();
+    let scope = table.scope();
     let sql = format!(
-        "SELECT id, json(data) AS data_json, created_at, updated_at FROM {table_name}{}",
+        "SELECT id, json(data) AS data_json, created_at, updated_at FROM {table_name}{}{}",
+        where_clause(&scope_predicates(&scope)),
         order.map(OrderSpec::to_sql).unwrap_or_default()
     );
-    query_rows(conn, &sql, &[])
+    query_rows(conn, &sql, params_from_iter(scope_values(&scope)))
 }
 
 pub fn db_put(conn: &Connection, table: DbTable, id: &str, data: &Value) -> Result<(), String> {
-    db_put_into_table(conn, table.name(), id, data)
+    write_scoped_row(conn, table, id, data)
 }
 
 pub fn db_create(conn: &Connection, table: DbTable, data: &Value) -> Result<Value, String> {
@@ -39,24 +110,44 @@ pub fn db_create(conn: &Connection, table: DbTable, data: &Value) -> Result<Valu
 
 pub fn db_delete(conn: &Connection, table: DbTable, id: &str) -> Result<bool, String> {
     let table_name = table.name();
+    let scope = table.scope();
+    let mut predicates = scope_predicates(&scope);
+    predicates.push(format!("id = ?{}", predicates.len() + 1));
+    let sql = format!("DELETE FROM {table_name}{}", where_clause(&predicates));
+
+    let mut params = scope_values(&scope);
+    params.push(id);
     let affected = conn
-        .execute(&format!("DELETE FROM {table_name} WHERE id = ?1"), [id])
+        .execute(&sql, params_from_iter(params))
         .map_err(|error| format!("Failed to delete from {table_name}: {error}"))?;
     Ok(affected > 0)
 }
 
+/// Delete every row in this table's scope.
+///
+/// For a consolidated table this is `DELETE ... WHERE cli_key = ?`, never a
+/// truncate: the scope is part of the table identity, so "delete all" of
+/// `CliProvider(Codex)` must leave Kimi's providers alone.
 pub fn db_delete_all(conn: &Connection, table: DbTable) -> Result<usize, String> {
     let table_name = table.name();
-    conn.execute(&format!("DELETE FROM {table_name}"), [])
+    let scope = table.scope();
+    let sql = format!(
+        "DELETE FROM {table_name}{}",
+        where_clause(&scope_predicates(&scope))
+    );
+    conn.execute(&sql, params_from_iter(scope_values(&scope)))
         .map_err(|error| format!("Failed to delete all records from {table_name}: {error}"))
 }
 
 pub fn db_count(conn: &Connection, table: DbTable) -> Result<i64, String> {
     let table_name = table.name();
-    conn.query_row(&format!("SELECT COUNT(*) FROM {table_name}"), [], |row| {
-        row.get(0)
-    })
-    .map_err(|error| format!("Failed to count records in {table_name}: {error}"))
+    let scope = table.scope();
+    let sql = format!(
+        "SELECT COUNT(*) FROM {table_name}{}",
+        where_clause(&scope_predicates(&scope))
+    );
+    conn.query_row(&sql, params_from_iter(scope_values(&scope)), |row| row.get(0))
+        .map_err(|error| format!("Failed to count records in {table_name}: {error}"))
 }
 
 pub fn db_query_by_field(
@@ -68,58 +159,59 @@ pub fn db_query_by_field(
     limit: Option<usize>,
 ) -> Result<Vec<Value>, String> {
     let table_name = table.name();
+    let scope = table.scope();
     let field_expr = format!(
         "json_extract(data, {})",
         sql_string_literal(&field_path.to_sql_path())
     );
-    let mut sql = format!(
-        "SELECT id, json(data) AS data_json, created_at, updated_at FROM {table_name} WHERE "
-    );
-
-    match expected {
-        Value::Null => {
-            sql.push_str(&format!("{field_expr} IS NULL"));
-            append_order_and_limit(&mut sql, order, limit);
-            query_rows(conn, &sql, &[])
-        }
+    // Scope params occupy ?1..?n, so the value predicate starts after them.
+    let value_slot = scope_len(&scope) + 1;
+    let mut params: Vec<Box<dyn ToSql>> = Vec::new();
+    let value_predicate = match expected {
+        Value::Null => format!("{field_expr} IS NULL"),
         Value::Bool(value) => {
-            let expected_integer = if *value { 1_i64 } else { 0_i64 };
-            sql.push_str(&format!("CAST({field_expr} AS INTEGER) = ?1"));
-            append_order_and_limit(&mut sql, order, limit);
-            query_rows(conn, &sql, &[&expected_integer])
+            params.push(Box::new(if *value { 1_i64 } else { 0_i64 }));
+            format!("CAST({field_expr} AS INTEGER) = ?{value_slot}")
         }
         Value::Number(number) => {
             if let Some(value) = number.as_i64() {
-                sql.push_str(&format!("CAST({field_expr} AS INTEGER) = ?1"));
-                append_order_and_limit(&mut sql, order, limit);
-                query_rows(conn, &sql, &[&value])
+                params.push(Box::new(value));
+                format!("CAST({field_expr} AS INTEGER) = ?{value_slot}")
             } else if let Some(value) = number.as_u64().and_then(|value| i64::try_from(value).ok())
             {
-                sql.push_str(&format!("CAST({field_expr} AS INTEGER) = ?1"));
-                append_order_and_limit(&mut sql, order, limit);
-                query_rows(conn, &sql, &[&value])
+                params.push(Box::new(value));
+                format!("CAST({field_expr} AS INTEGER) = ?{value_slot}")
             } else if let Some(value) = number.as_f64() {
-                sql.push_str(&format!("CAST({field_expr} AS REAL) = ?1"));
-                append_order_and_limit(&mut sql, order, limit);
-                query_rows(conn, &sql, &[&value])
+                params.push(Box::new(value));
+                format!("CAST({field_expr} AS REAL) = ?{value_slot}")
             } else {
-                Err("Unsupported JSON number value".to_string())
+                return Err("Unsupported JSON number value".to_string());
             }
         }
         Value::String(value) => {
-            sql.push_str(&format!("{field_expr} = ?1"));
-            append_order_and_limit(&mut sql, order, limit);
-            query_rows(conn, &sql, &[value])
+            params.push(Box::new(value.clone()));
+            format!("{field_expr} = ?{value_slot}")
         }
         Value::Array(_) | Value::Object(_) => {
             let expected_json = serde_json::to_string(expected).map_err(|error| {
                 format!("Failed to serialize JSON field comparison value: {error}")
             })?;
-            sql.push_str(&format!("json({field_expr}) = json(?1)"));
-            append_order_and_limit(&mut sql, order, limit);
-            query_rows(conn, &sql, &[&expected_json])
+            params.push(Box::new(expected_json));
+            format!("json({field_expr}) = json(?{value_slot})")
         }
-    }
+    };
+
+    let mut predicates = scope_predicates(&scope);
+    predicates.push(value_predicate);
+
+    let mut sql = format!(
+        "SELECT id, json(data) AS data_json, created_at, updated_at FROM {table_name}{}",
+        where_clause(&predicates)
+    );
+    append_order_and_limit(&mut sql, order, limit);
+
+    let bound = with_scope(&scope, params);
+    query_rows(conn, &sql, params_from_iter(bound))
 }
 
 pub fn db_query_by_bool(
@@ -146,9 +238,13 @@ pub fn db_max_i64(
     field_path: &JsonFieldPath,
 ) -> Result<Option<i64>, String> {
     let table_name = table.name();
+    let scope = table.scope();
     let path = sql_string_literal(&field_path.to_sql_path());
-    let sql = format!("SELECT MAX(CAST(json_extract(data, {path}) AS INTEGER)) FROM {table_name}");
-    conn.query_row(&sql, [], |row| row.get(0))
+    let sql = format!(
+        "SELECT MAX(CAST(json_extract(data, {path}) AS INTEGER)) FROM {table_name}{}",
+        where_clause(&scope_predicates(&scope))
+    );
+    conn.query_row(&sql, params_from_iter(scope_values(&scope)), |row| row.get(0))
         .map_err(|error| format!("Failed to read max value from {table_name}: {error}"))
 }
 
@@ -264,23 +360,7 @@ pub fn db_get_from_validated_table(
     table: &ValidatedTableName,
     id: &str,
 ) -> Result<Option<Value>, String> {
-    db_get_from_table(conn, table.as_str(), id)
-}
-
-pub fn db_put_into_validated_table(
-    conn: &Connection,
-    table: &ValidatedTableName,
-    id: &str,
-    data: &Value,
-) -> Result<(), String> {
-    db_put_into_table(conn, table.as_str(), id, data)
-}
-
-fn db_get_from_table(
-    conn: &Connection,
-    table_name: &str,
-    id: &str,
-) -> Result<Option<Value>, String> {
+    let table_name = table.as_str();
     let sql = format!(
         "SELECT id, json(data) AS data_json, created_at, updated_at FROM {table_name} WHERE id = ?1 LIMIT 1"
     );
@@ -300,21 +380,54 @@ fn db_get_from_table(
     row.map(row_tuple_to_value).transpose()
 }
 
-fn db_put_into_table(
+pub fn db_put_into_validated_table(
+    conn: &Connection,
+    table: &ValidatedTableName,
+    id: &str,
+    data: &Value,
+) -> Result<(), String> {
+    write_row(conn, table.as_str(), &TableScope::NONE, id, data)
+}
+
+fn write_scoped_row(
+    conn: &Connection,
+    table: DbTable,
+    id: &str,
+    data: &Value,
+) -> Result<(), String> {
+    write_row(conn, table.name(), &table.scope(), id, data)
+}
+
+/// Insert or replace one row, writing the scope columns alongside the payload.
+///
+/// The scope columns are part of the conflict update on purpose: if the same id
+/// is ever written under a different scope, the row has to follow the writer.
+/// Leaving them alone would make the write silently vanish from the writer's
+/// own scoped reads — a bug with no error and no trace.
+fn write_row(
     conn: &Connection,
     table_name: &str,
+    scope: &TableScope,
     id: &str,
     data: &Value,
 ) -> Result<(), String> {
     let now = now_string();
+    let mut predicates = scope_predicates(scope);
+    predicates.push(format!("id = ?{}", predicates.len() + 1));
+    let mut lookup_params = scope_values(scope);
+    lookup_params.push(id);
     let existing_created_at = conn
         .query_row(
-            &format!("SELECT created_at FROM {table_name} WHERE id = ?1 LIMIT 1"),
-            [id],
+            &format!(
+                "SELECT created_at FROM {table_name}{} LIMIT 1",
+                where_clause(&predicates)
+            ),
+            params_from_iter(lookup_params),
             |row| row.get::<_, String>(0),
         )
         .optional()
         .map_err(|error| format!("Failed to read existing timestamp from {table_name}: {error}"))?;
+
     let mut stored_data = data.clone();
     let stored_object = stored_data
         .as_object_mut()
@@ -339,18 +452,58 @@ fn db_put_into_table(
     let data_json = serde_json::to_string(&stored_data)
         .map_err(|error| format!("Failed to serialize JSON payload for {table_name}: {error}"))?;
 
-    conn.execute(
-        &format!(
-            "INSERT INTO {table_name} (id, data, created_at, updated_at)
-             VALUES (?1, jsonb(?2), ?3, ?4)
-	             ON CONFLICT(id) DO UPDATE SET
-	               data = excluded.data,
-	               created_at = excluded.created_at,
-	               updated_at = excluded.updated_at"
-        ),
-        (id, data_json, created_at, updated_at),
-    )
-    .map_err(|error| format!("Failed to write record into {table_name}: {error}"))?;
+    let scope_columns: Vec<&str> = scope.columns().collect();
+    let mut column_list: Vec<&str> = scope_columns.clone();
+    column_list.extend(["id", "data", "created_at", "updated_at"]);
+
+    let mut placeholders: Vec<String> = (1..=scope_columns.len())
+        .map(|index| format!("?{index}"))
+        .collect();
+    placeholders.extend([
+        format!("?{}", scope_columns.len() + 1),
+        format!("jsonb(?{})", scope_columns.len() + 2),
+        format!("?{}", scope_columns.len() + 3),
+        format!("?{}", scope_columns.len() + 4),
+    ]);
+
+    let mut assignments: Vec<String> = scope_columns
+        .iter()
+        .map(|column| format!("{column} = excluded.{column}"))
+        .collect();
+    assignments.extend([
+        "data = excluded.data".to_string(),
+        "created_at = excluded.created_at".to_string(),
+        "updated_at = excluded.updated_at".to_string(),
+    ]);
+
+    // The conflict target has to name the *actual* primary key: the consolidated
+    // tables key on `(cli_key, id)` / `(cli_key, kind, id)` / `(kind, id)`, so
+    // `ON CONFLICT(id)` would be rejected outright ("does not match any PRIMARY
+    // KEY or UNIQUE constraint") — an error with no hint that the fix is the
+    // column list.
+    let mut conflict_columns: Vec<&str> = scope_columns.clone();
+    conflict_columns.push("id");
+    let sql = format!(
+        "INSERT INTO {table_name} ({}) VALUES ({})
+         ON CONFLICT({}) DO UPDATE SET {}",
+        column_list.join(", "),
+        placeholders.join(", "),
+        conflict_columns.join(", "),
+        assignments.join(", ")
+    );
+
+    let mut params: Vec<Box<dyn ToSql>> = scope_values(scope)
+        .into_iter()
+        .map(|value| Box::new(value) as Box<dyn ToSql>)
+        .collect();
+
+    params.push(Box::new(id));
+    params.push(Box::new(data_json));
+    params.push(Box::new(created_at));
+    params.push(Box::new(updated_at));
+
+    conn.execute(&sql, params_from_iter(params))
+        .map_err(|error| format!("Failed to write record into {table_name}: {error}"))?;
 
     Ok(())
 }
@@ -370,7 +523,7 @@ fn json_timestamp_to_column_string(value: &Value) -> Option<String> {
     }
 }
 
-fn query_rows(conn: &Connection, sql: &str, params: &[&dyn ToSql]) -> Result<Vec<Value>, String> {
+fn query_rows<P: rusqlite::Params>(conn: &Connection, sql: &str, params: P) -> Result<Vec<Value>, String> {
     let mut statement = conn
         .prepare(sql)
         .map_err(|error| format!("Failed to prepare SQLite query: {error}; sql={sql}"))?;

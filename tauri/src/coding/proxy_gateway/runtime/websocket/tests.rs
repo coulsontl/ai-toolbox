@@ -3,7 +3,7 @@ use crate::coding::proxy_gateway::paths::ProxyGatewayPaths;
 use crate::coding::proxy_gateway::types::GatewayRequestLogFilters;
 use crate::coding::proxy_gateway::{request_log, usage_stats};
 use crate::db::helpers::{db_create, db_put};
-use crate::db::schema::DbTable;
+use crate::db::schema::{Cli, DbTable};
 use crate::db::SqliteDbState;
 use tokio::net::TcpListener;
 
@@ -47,38 +47,38 @@ fn test_context_for_cli(
     let (table, provider_settings) = match cli_key {
         GatewayCliKey::Claude | GatewayCliKey::ClaudeDesktop => (
             if cli_key == GatewayCliKey::Claude {
-                DbTable::ClaudeProvider
+                DbTable::CliProvider(Cli::Claude)
             } else {
-                DbTable::ClaudeDesktopProvider
+                DbTable::CliProvider(Cli::ClaudeDesktop)
             },
             json!({"env":{"ANTHROPIC_BASE_URL":upstream_url,"ANTHROPIC_API_KEY":"upstream-test-key","ANTHROPIC_AUTH_TOKEN":"upstream-test-key"}}),
         ),
         GatewayCliKey::Codex => (
-            DbTable::CodexProvider,
+            DbTable::CliProvider(Cli::Codex),
             json!({"auth":{"OPENAI_API_KEY":"upstream-test-key"}, "config":format!("model_provider = \"custom\"\nmodel = \"test-model\"\n[model_providers.custom]\nbase_url = \"{upstream_url}\"\nwire_api = \"responses\"\nsupports_websockets = true\n")}),
         ),
         GatewayCliKey::Grok => (
-            DbTable::GrokProvider,
+            DbTable::CliProvider(Cli::Grok),
             json!({"auth":{"API_KEY":"upstream-test-key"},"config":format!("[models]\ndefault = \"custom\"\n[model.custom]\nmodel = \"test-model\"\nbase_url = \"{upstream_url}\"\napi_backend = \"responses\"\n")}),
         ),
         GatewayCliKey::Kimi => (
-            DbTable::KimiProvider,
+            DbTable::CliProvider(Cli::Kimi),
             json!({"auth":{"API_KEY":"upstream-test-key"},"providerConfigs":{"custom":{"type":"openai","base_url":upstream_url}},"defaultModelKey":"test-model","modelCatalog":{"models":[{"key":"test-model","model":"test-model","provider":"custom"}]}}),
         ),
         GatewayCliKey::Gemini => (
-            DbTable::GeminiCliProvider,
+            DbTable::CliProvider(Cli::Gemini),
             json!({"env":{"GOOGLE_GEMINI_BASE_URL":upstream_url,"GEMINI_API_KEY":"upstream-test-key"}}),
         ),
         GatewayCliKey::Antigravity => (
-            DbTable::AntigravityProvider,
+            DbTable::CliProvider(Cli::Antigravity),
             json!({"env":{"GOOGLE_GEMINI_BASE_URL":upstream_url,"GEMINI_API_KEY":"upstream-test-key"}}),
         ),
         GatewayCliKey::Workbuddy => (
-            DbTable::WorkbuddyProvider,
+            DbTable::CliProvider(Cli::Workbuddy),
             json!({"baseUrl": upstream_url, "apiKey": "upstream-test-key"}),
         ),
         GatewayCliKey::Codebuddy => (
-            DbTable::CodebuddyProvider,
+            DbTable::CliProvider(Cli::Codebuddy),
             json!({"baseUrl": upstream_url, "apiKey": "upstream-test-key"}),
         ),
         GatewayCliKey::OpenCode => panic!("OpenCode has no gateway takeover route"),

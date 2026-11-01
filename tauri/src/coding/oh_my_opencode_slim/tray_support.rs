@@ -3,7 +3,7 @@
 //! Provides standardized API for tray menu integration.
 
 use crate::db::helpers::db_list;
-use crate::db::schema::DbTable;
+use crate::db::schema::{Cli, CliConfigKind, DbTable};
 use crate::db::SqliteDbState;
 use tauri::{AppHandle, Manager, Runtime};
 
@@ -39,7 +39,7 @@ pub async fn get_oh_my_opencode_slim_tray_data<R: Runtime>(
     let db = state.db();
 
     let mut items = db.with_conn(|conn| {
-        db_list(conn, DbTable::OhMyOpenCodeSlimConfig, None).map(|records| {
+        db_list(conn, DbTable::CliConfig(Cli::OhMyOpenCodeSlim, CliConfigKind::Agents), None).map(|records| {
             records
                 .into_iter()
                 .filter_map(|record| {

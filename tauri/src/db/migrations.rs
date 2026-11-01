@@ -1,9 +1,104 @@
 use rusqlite::Connection;
 
-use super::schema::{sql_string_literal, DbTable, JsonFieldPath, ALL_TABLES};
+use super::schema::{sql_string_literal, JsonFieldPath};
 
 pub const TARGET_SCHEMA_VERSION: i32 = 33;
 const FUTURE_SCHEMA_ERROR_PREFIX: &str = "AI_TOOLBOX_SQLITE_SCHEMA_TOO_NEW";
+
+// ---- the consolidation table ------------------------------------------------
+//
+// Every per-CLI table that v33 folds into one of the three shared tables, as
+// (old table, cli_key, kind). `kind` is only meaningful for `cli_config`; the
+// `cli_key` is what the new row's scope column is set to.
+//
+// This list is written out rather than derived so that the mapping is readable
+// and reviewable: guessing a cli_key from a table name (`gemini_cli_*` →
+// `gemini`, `oh_my_pi_*` → `oh_my_pi`) is exactly the kind of mistake that
+// silently files a CLI's presets under the wrong scope.
+const CLI_PROVIDER_TABLES: &[(&str, &str)] = &[
+    ("claude_provider", "claude"),
+    ("claude_desktop_provider", "claude_desktop"),
+    ("codex_provider", "codex"),
+    ("grok_provider", "grok"),
+    ("kimi_provider", "kimi"),
+    ("gemini_cli_provider", "gemini"),
+    ("antigravity_provider", "antigravity"),
+    ("zcode_provider", "zcode"),
+    ("workbuddy_provider", "workbuddy"),
+    ("codebuddy_provider", "codebuddy"),
+];
+
+const CLI_OFFICIAL_ACCOUNT_TABLES: &[(&str, &str)] = &[
+    ("codex_official_account", "codex"),
+    ("grok_official_account", "grok"),
+    ("kimi_official_account", "kimi"),
+    ("gemini_cli_official_account", "gemini"),
+    ("antigravity_official_account", "antigravity"),
+    ("zcode_official_account", "zcode"),
+];
+
+const CLI_CONFIG_TABLES: &[(&str, &str, &str)] = &[
+    // common
+    ("claude_common_config", "claude", "common"),
+    ("codex_common_config", "codex", "common"),
+    ("grok_common_config", "grok", "common"),
+    ("kimi_common_config", "kimi", "common"),
+    ("gemini_cli_common_config", "gemini", "common"),
+    ("antigravity_common_config", "antigravity", "common"),
+    ("zcode_common_config", "zcode", "common"),
+    ("opencode_common_config", "opencode", "common"),
+    ("openclaw_common_config", "openclaw", "common"),
+    // prompt
+    ("claude_prompt_config", "claude", "prompt"),
+    ("codex_prompt_config", "codex", "prompt"),
+    ("grok_prompt_config", "grok", "prompt"),
+    ("kimi_prompt_config", "kimi", "prompt"),
+    ("gemini_cli_prompt_config", "gemini", "prompt"),
+    ("antigravity_prompt_config", "antigravity", "prompt"),
+    ("zcode_prompt_config", "zcode", "prompt"),
+    ("claude_desktop_prompt_config", "claude_desktop", "prompt"),
+    ("codebuddy_prompt_config", "codebuddy", "prompt"),
+    ("hermes_prompt_config", "hermes", "prompt"),
+    ("dsh_prompt_config", "dsh", "prompt"),
+    ("pi_prompt_config", "pi", "prompt"),
+    ("oh_my_pi_prompt_config", "oh_my_pi", "prompt"),
+    ("omo_native_prompt_config", "omo_native", "prompt"),
+    ("opencode_prompt_config", "opencode", "prompt"),
+    // settings
+    ("workbuddy_settings_config", "workbuddy", "settings"),
+    ("codebuddy_settings_config", "codebuddy", "settings"),
+    ("hermes_settings_config", "hermes", "settings"),
+    ("dsh_settings_config", "dsh", "settings"),
+    ("pi_settings_config", "pi", "settings"),
+    ("oh_my_pi_settings_config", "oh_my_pi", "settings"),
+    ("omo_native_settings_config", "omo_native", "settings"),
+    // agents: whole user-authored profiles, several rows per CLI
+    ("oh_my_pi_agents_config", "oh_my_pi", "agents"),
+    ("omo_native_agents_config", "omo_native", "agents"),
+    ("oh_my_openagent_config", "oh_my_openagent", "agents"),
+    ("oh_my_opencode_slim_config", "oh_my_opencode_slim", "agents"),
+    // global: one singleton row per CLI, id `global`
+    ("oh_my_openagent_global_config", "oh_my_openagent", "global"),
+    ("oh_my_opencode_slim_global_config", "oh_my_opencode_slim", "global"),
+];
+
+/// The nine `api2api_*` tables that were split by entity before the rename.
+///
+/// They only ever existed on this branch and were never released, so v33 is
+/// free to fold them into `relay_entity` in the same step instead of carrying a
+/// separate legacy shape. `quota_*` is absent because those two tables were
+/// created by v33 itself, never by a released version.
+const RELAY_LEGACY_TABLES: &[(&str, &str)] = &[
+    ("api2api_channel", "channel"),
+    ("api2api_model", "model"),
+    ("api2api_plugin", "plugin"),
+    ("api2api_plugin_provider", "plugin_provider"),
+    ("api2api_plugin_account", "plugin_account"),
+    ("api2api_access_key", "access_key"),
+    ("api2api_checkin_schedule", "checkin_schedule"),
+    ("api2api_checkin_record", "checkin_record"),
+    ("relay_entity", "channel"),
+];
 
 pub fn run_all(conn: &mut Connection) -> Result<(), String> {
     let current_version = ensure_supported_user_version(conn)?;
@@ -111,6 +206,22 @@ pub fn run_all(conn: &mut Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// The per-CLI tables a v32 database still has, for tests that need to seed a
+/// pre-consolidation fixture.
+///
+/// Exposed rather than duplicated in the test because the list is the exact
+/// complement of [`CLI_PROVIDER_TABLES`] / [`CLI_OFFICIAL_ACCOUNT_TABLES`] /
+/// [`CLI_CONFIG_TABLES`]; a test that hard-coded its own copy would keep
+/// passing after a table was added to the fold and never migrated.
+pub fn legacy_tables_for_test() -> Vec<&'static str> {
+    CLI_PROVIDER_TABLES
+        .iter()
+        .map(|(table, _)| *table)
+        .chain(CLI_OFFICIAL_ACCOUNT_TABLES.iter().map(|(table, _)| *table))
+        .chain(CLI_CONFIG_TABLES.iter().map(|(table, _, _)| *table))
+        .collect()
+}
+
 pub fn future_schema_error(current_version: i32, supported_version: i32) -> String {
     format!(
         "{FUTURE_SCHEMA_ERROR_PREFIX}: SQLite schema version {current_version} is newer than supported version {supported_version}"
@@ -184,9 +295,65 @@ fn run_migration_step(
     }
 }
 
+/// The tables v1 created: the twelve per-CLI provider tables of the day plus
+/// every table that still exists under the same name.
+///
+/// **Frozen.** v1 runs only on databases that predate the v33 consolidation, so
+/// it must build the *legacy* shape (no `cli_key` / `kind` columns) and leave
+/// the folding to v33. Using `ALL_TABLES` here would create `cli_provider`
+/// without its scope column on a fresh database, and v33's `CREATE TABLE IF NOT
+/// EXISTS` would then skip the real definition — every later read and write
+/// would fail on the missing column.
 fn migrate_v1(conn: &Connection) -> Result<(), String> {
-    for table in ALL_TABLES {
-        create_jsonb_table(conn, *table)?;
+    for table in [
+        "settings",
+        "app_migration",
+        "claude_provider",
+        "claude_common_config",
+        "claude_prompt_config",
+        "codex_provider",
+        "codex_common_config",
+        "codex_prompt_config",
+        "codex_official_account",
+        "codex_plugin_workspace_roots",
+        "gemini_cli_provider",
+        "gemini_cli_common_config",
+        "gemini_cli_prompt_config",
+        "gemini_cli_official_account",
+        "antigravity_provider",
+        "antigravity_common_config",
+        "antigravity_prompt_config",
+        "antigravity_official_account",
+        "skill",
+        "skill_group",
+        "skill_repo",
+        "skill_preferences",
+        "skill_settings",
+        "custom_tool",
+        "mcp_server",
+        "mcp_preferences",
+        "favorite_mcp",
+        "wsl_sync_config",
+        "wsl_file_mapping",
+        "ssh_sync_config",
+        "ssh_connection",
+        "ssh_file_mapping",
+        "proxy_gateway_settings",
+        "gateway_session_usage_state",
+        "image_channel",
+        "image_job",
+        "image_asset",
+        "opencode_common_config",
+        "opencode_prompt_config",
+        "opencode_favorite_plugin",
+        "opencode_favorite_provider",
+        "openclaw_common_config",
+        "oh_my_openagent_config",
+        "oh_my_openagent_global_config",
+        "oh_my_opencode_slim_config",
+        "oh_my_opencode_slim_global_config",
+    ] {
+        create_jsonb_table(conn, table)?;
     }
 
     create_initial_indexes(conn)?;
@@ -222,18 +389,10 @@ fn migrate_v5(conn: &Connection) -> Result<(), String> {
 }
 
 fn migrate_v6(conn: &Connection) -> Result<(), String> {
-    create_jsonb_table(conn, DbTable::PiSettingsConfig)?;
-    create_jsonb_table(conn, DbTable::PiPromptConfig)?;
-    create_json_index(
-        conn,
-        DbTable::PiPromptConfig,
-        &JsonFieldPath::new("is_applied")?,
-    )?;
-    create_json_index(
-        conn,
-        DbTable::PiPromptConfig,
-        &JsonFieldPath::new("sort_index")?,
-    )
+    create_jsonb_table(conn, "pi_settings_config")?;
+    create_jsonb_table(conn, "pi_prompt_config")?;
+    create_json_index(conn, "pi_prompt_config", &JsonFieldPath::new("is_applied")?)?;
+    create_json_index(conn, "pi_prompt_config", &JsonFieldPath::new("sort_index")?)
 }
 
 fn migrate_v7(conn: &Connection) -> Result<(), String> {
@@ -242,100 +401,95 @@ fn migrate_v7(conn: &Connection) -> Result<(), String> {
     add_column_if_missing(conn, "proxy_request_logs", "path", "TEXT")
 }
 
+/// Grok tables.
+///
+/// **Frozen.** These steps run only on databases that predate the v33
+/// consolidation, so they must keep naming the per-CLI tables even though no
+/// `DbTable` variant points at them any more. Editing this list to the
+/// consolidated names would silently create empty `cli_config` rows on an old
+/// database and lose the real ones.
 fn migrate_v8(conn: &Connection) -> Result<(), String> {
     for table in [
-        DbTable::GrokProvider,
-        DbTable::GrokOfficialAccount,
-        DbTable::GrokCommonConfig,
-        DbTable::GrokPromptConfig,
+        "grok_provider",
+        "grok_official_account",
+        "grok_common_config",
+        "grok_prompt_config",
     ] {
         create_jsonb_table(conn, table)?;
     }
 
-    for table in [
-        DbTable::GrokProvider,
-        DbTable::GrokOfficialAccount,
-        DbTable::GrokPromptConfig,
-    ] {
+    for table in ["grok_provider", "grok_official_account", "grok_prompt_config"] {
         create_json_index(conn, table, &JsonFieldPath::new("is_applied")?)?;
         create_json_index(conn, table, &JsonFieldPath::new("sort_index")?)?;
     }
 
     create_json_index(
         conn,
-        DbTable::GrokOfficialAccount,
+        "grok_official_account",
         &JsonFieldPath::new("provider_id")?,
     )
 }
 
 fn migrate_v9(conn: &Connection) -> Result<(), String> {
-    create_jsonb_table(conn, DbTable::OhMyPiSettingsConfig)?;
-    create_jsonb_table(conn, DbTable::OhMyPiPromptConfig)?;
+    create_jsonb_table(conn, "oh_my_pi_settings_config")?;
+    create_jsonb_table(conn, "oh_my_pi_prompt_config")?;
     create_json_index(
         conn,
-        DbTable::OhMyPiPromptConfig,
+        "oh_my_pi_prompt_config",
         &JsonFieldPath::new("is_applied")?,
     )?;
     create_json_index(
         conn,
-        DbTable::OhMyPiPromptConfig,
+        "oh_my_pi_prompt_config",
         &JsonFieldPath::new("sort_index")?,
     )
 }
 
 fn migrate_v10(conn: &Connection) -> Result<(), String> {
-    create_jsonb_table(conn, DbTable::ClaudeDesktopProvider)?;
+    create_jsonb_table(conn, "claude_desktop_provider")?;
     create_json_index(
         conn,
-        DbTable::ClaudeDesktopProvider,
+        "claude_desktop_provider",
         &JsonFieldPath::new("is_applied")?,
     )?;
     create_json_index(
         conn,
-        DbTable::ClaudeDesktopProvider,
+        "claude_desktop_provider",
         &JsonFieldPath::new("sort_index")?,
     )?;
-    create_jsonb_table(conn, DbTable::HermesSettingsConfig)?;
-    create_jsonb_table(conn, DbTable::HermesPromptConfig)?;
+    create_jsonb_table(conn, "hermes_settings_config")?;
+    create_jsonb_table(conn, "hermes_prompt_config")?;
     create_json_index(
         conn,
-        DbTable::HermesPromptConfig,
+        "hermes_prompt_config",
         &JsonFieldPath::new("is_applied")?,
     )?;
     create_json_index(
         conn,
-        DbTable::HermesPromptConfig,
+        "hermes_prompt_config",
         &JsonFieldPath::new("sort_index")?,
     )
 }
 
 fn migrate_v11(conn: &Connection) -> Result<(), String> {
-    create_jsonb_table(conn, DbTable::ClaudeDesktopPromptConfig)?;
+    create_jsonb_table(conn, "claude_desktop_prompt_config")?;
     create_json_index(
         conn,
-        DbTable::ClaudeDesktopPromptConfig,
+        "claude_desktop_prompt_config",
         &JsonFieldPath::new("is_applied")?,
     )?;
     create_json_index(
         conn,
-        DbTable::ClaudeDesktopPromptConfig,
+        "claude_desktop_prompt_config",
         &JsonFieldPath::new("sort_index")?,
     )
 }
 
 fn migrate_v12(conn: &Connection) -> Result<(), String> {
-    create_jsonb_table(conn, DbTable::DshSettingsConfig)?;
-    create_jsonb_table(conn, DbTable::DshPromptConfig)?;
-    create_json_index(
-        conn,
-        DbTable::DshPromptConfig,
-        &JsonFieldPath::new("is_applied")?,
-    )?;
-    create_json_index(
-        conn,
-        DbTable::DshPromptConfig,
-        &JsonFieldPath::new("sort_index")?,
-    )
+    create_jsonb_table(conn, "dsh_settings_config")?;
+    create_jsonb_table(conn, "dsh_prompt_config")?;
+    create_json_index(conn, "dsh_prompt_config", &JsonFieldPath::new("is_applied")?)?;
+    create_json_index(conn, "dsh_prompt_config", &JsonFieldPath::new("sort_index")?)
 }
 
 fn migrate_v13(conn: &Connection) -> Result<(), String> {
@@ -381,23 +535,23 @@ fn migrate_v14(conn: &Connection) -> Result<(), String> {
 fn migrate_v15(conn: &Connection) -> Result<(), String> {
     // Managed MCP groups for the group management modal (mirrors skill_group);
     // membership stays on each server's user_group text.
-    create_jsonb_table(conn, DbTable::McpGroup)
+    create_jsonb_table(conn, "mcp_group")
 }
 
 fn migrate_v16(conn: &Connection) -> Result<(), String> {
     for table in [
-        DbTable::KimiProvider,
-        DbTable::KimiOfficialAccount,
-        DbTable::KimiCommonConfig,
-        DbTable::KimiPromptConfig,
+        "kimi_provider",
+        "kimi_official_account",
+        "kimi_common_config",
+        "kimi_prompt_config",
     ] {
         create_jsonb_table(conn, table)?;
     }
 
     for table in [
-        DbTable::KimiProvider,
-        DbTable::KimiOfficialAccount,
-        DbTable::KimiPromptConfig,
+        "kimi_provider",
+        "kimi_official_account",
+        "kimi_prompt_config",
     ] {
         create_json_index(conn, table, &JsonFieldPath::new("is_applied")?)?;
         create_json_index(conn, table, &JsonFieldPath::new("sort_index")?)?;
@@ -405,7 +559,7 @@ fn migrate_v16(conn: &Connection) -> Result<(), String> {
 
     create_json_index(
         conn,
-        DbTable::KimiOfficialAccount,
+        "kimi_official_account",
         &JsonFieldPath::new("provider_id")?,
     )
 }
@@ -416,7 +570,7 @@ fn migrate_v17(conn: &Connection) -> Result<(), String> {
 }
 
 fn migrate_v18(conn: &Connection) -> Result<(), String> {
-    create_jsonb_table(conn, DbTable::GatewaySessionUsageState)
+    create_jsonb_table(conn, "gateway_session_usage_state")
 }
 
 fn migrate_v19(conn: &Connection) -> Result<(), String> {
@@ -475,82 +629,79 @@ fn migrate_v21(conn: &Connection) -> Result<(), String> {
 }
 
 fn migrate_v22(conn: &Connection) -> Result<(), String> {
-    create_jsonb_table(conn, DbTable::OhMyPiAgentsConfig)?;
+    create_jsonb_table(conn, "oh_my_pi_agents_config")?;
     create_json_index(
         conn,
-        DbTable::OhMyPiAgentsConfig,
+        "oh_my_pi_agents_config",
         &JsonFieldPath::new("is_applied")?,
     )?;
     create_json_index(
         conn,
-        DbTable::OhMyPiAgentsConfig,
+        "oh_my_pi_agents_config",
         &JsonFieldPath::new("sort_index")?,
     )
 }
 
 fn migrate_v23(conn: &Connection) -> Result<(), String> {
     for table in [
-        DbTable::AntigravityProvider,
-        DbTable::AntigravityCommonConfig,
-        DbTable::AntigravityPromptConfig,
-        DbTable::AntigravityOfficialAccount,
+        "antigravity_provider",
+        "antigravity_common_config",
+        "antigravity_prompt_config",
+        "antigravity_official_account",
     ] {
         create_jsonb_table(conn, table)?;
     }
     for table in [
-        DbTable::AntigravityProvider,
-        DbTable::AntigravityPromptConfig,
-        DbTable::AntigravityOfficialAccount,
+        "antigravity_provider",
+        "antigravity_prompt_config",
+        "antigravity_official_account",
     ] {
         create_json_index(conn, table, &JsonFieldPath::new("is_applied")?)?;
         create_json_index(conn, table, &JsonFieldPath::new("sort_index")?)?;
     }
     create_json_index(
         conn,
-        DbTable::AntigravityOfficialAccount,
+        "antigravity_official_account",
         &JsonFieldPath::new("provider_id")?,
     )
 }
 
 fn migrate_v24(conn: &Connection) -> Result<(), String> {
-    for table in [
-        DbTable::OmoNativeSettingsConfig,
-        DbTable::OmoNativeAgentsConfig,
-    ] {
+    for table in ["omo_native_settings_config", "omo_native_agents_config"] {
         create_jsonb_table(conn, table)?;
     }
     create_json_index(
         conn,
-        DbTable::OmoNativeAgentsConfig,
+        "omo_native_agents_config",
         &JsonFieldPath::new("is_applied")?,
     )?;
     create_json_index(
         conn,
-        DbTable::OmoNativeAgentsConfig,
+        "omo_native_agents_config",
         &JsonFieldPath::new("sort_index")?,
     )
 }
 
 fn migrate_v25(conn: &Connection) -> Result<(), String> {
     for table in [
-        DbTable::ZcodeProvider,
-        DbTable::ZcodeCommonConfig,
-        DbTable::ZcodePromptConfig,
-        DbTable::ZcodeOfficialAccount,
+        "zcode_provider",
+        "zcode_common_config",
+        "zcode_prompt_config",
+        "zcode_official_account",
     ] {
         create_jsonb_table(conn, table)?;
     }
     for table in [
-        DbTable::ZcodeProvider,
-        DbTable::ZcodePromptConfig,
-        DbTable::ZcodeOfficialAccount,
+        "zcode_provider",
+        "zcode_prompt_config",
+        "zcode_official_account",
     ] {
         create_json_index(conn, table, &JsonFieldPath::new("is_applied")?)?;
         create_json_index(conn, table, &JsonFieldPath::new("sort_index")?)?;
     }
     create_json_index(
         conn,
-        DbTable::ZcodeOfficialAccount,
+        "zcode_official_account",
         &JsonFieldPath::new("provider_id")?,
     )
 }
@@ -560,15 +711,15 @@ fn migrate_v25(conn: &Connection) -> Result<(), String> {
 /// 与其余 CLI 的 prompt 表同构：v6（Pi）、v23（ZCode）等各建各的表，这里补上
 /// Native 这一份——Native 的页面在 2026-10-07 才加上全局提示词区块。
 fn migrate_v26(conn: &Connection) -> Result<(), String> {
-    create_jsonb_table(conn, DbTable::OmoNativePromptConfig)?;
+    create_jsonb_table(conn, "omo_native_prompt_config")?;
     create_json_index(
         conn,
-        DbTable::OmoNativePromptConfig,
+        "omo_native_prompt_config",
         &JsonFieldPath::new("is_applied")?,
     )?;
     create_json_index(
         conn,
-        DbTable::OmoNativePromptConfig,
+        "omo_native_prompt_config",
         &JsonFieldPath::new("sort_index")?,
     )
 }
@@ -715,167 +866,350 @@ fn migrate_v31(conn: &Connection) -> Result<(), String> {
 /// else here.
 fn migrate_v32(conn: &Connection) -> Result<(), String> {
     for table in [
-        DbTable::WorkbuddySettingsConfig,
-        DbTable::WorkbuddyProvider,
-        DbTable::CodebuddySettingsConfig,
-        DbTable::CodebuddyPromptConfig,
-        DbTable::CodebuddyProvider,
+        "workbuddy_settings_config",
+        "workbuddy_provider",
+        "codebuddy_settings_config",
+        "codebuddy_prompt_config",
+        "codebuddy_provider",
     ] {
         create_jsonb_table(conn, table)?;
     }
     create_json_index(
         conn,
-        DbTable::CodebuddyPromptConfig,
+        "codebuddy_prompt_config",
         &JsonFieldPath::new("is_applied")?,
     )?;
     create_json_index(
         conn,
-        DbTable::CodebuddyPromptConfig,
+        "codebuddy_prompt_config",
         &JsonFieldPath::new("sort_index")?,
     )?;
     // The gateway orders providers by `sort_index` then `updated_at`; without
     // this index every candidate load falls back to a full-table scan of a
     // JSONB blob.
-    for table in [DbTable::WorkbuddyProvider, DbTable::CodebuddyProvider] {
+    for table in ["workbuddy_provider", "codebuddy_provider"] {
         create_json_index(conn, table, &JsonFieldPath::new("sort_index")?)?;
         create_json_index(conn, table, &JsonFieldPath::new("is_disabled")?)?;
     }
     Ok(())
 }
 
-/// 2API: its own channel/model/plugin/check-in tables.
+/// Consolidate the per-CLI tables and create the relay tables.
 ///
-/// These are deliberately not `*_provider` tables — a 2API channel has no CLI
-/// and is not written into any runtime config file, so it shares nothing with
-/// the per-CLI provider schema.
+/// Fifty-five tables — one provider table per CLI, one official-account table,
+/// twenty-nine config tables — become three, told apart by real `cli_key` /
+/// `kind` columns. This step moves every row across and then drops the old
+/// tables in the same savepoint, so a failure leaves the database exactly as it
+/// was.
+///
+/// The primary keys differ per table on purpose:
+///
+/// - `cli_provider` / `cli_official_account` are keyed `(cli_key, id)`. Ids are
+///   UUIDs today and never repeat across CLIs, but the scope belongs in the key:
+///   a future deeplink import that reuses an id must not overwrite another
+///   CLI's provider.
+/// - `cli_config` is keyed `(cli_key, kind, id)`. Six CLIs' common configs all
+///   use the literal id `common` and two CLIs' globals use `global`, so `id`
+///   alone collides. Keeping the id verbatim (rather than synthesising
+///   `kimi:common`) keeps every store call site unchanged.
 fn migrate_v33(conn: &Connection) -> Result<(), String> {
-    for table in [
-        DbTable::RelayChannel,
-        DbTable::RelayModel,
-        DbTable::RelayPlugin,
-        DbTable::RelayPluginProvider,
-        DbTable::RelayPluginAccount,
-        DbTable::RelayAccessKey,
-        DbTable::RelayCheckinSchedule,
-        DbTable::RelayCheckinRecord,
-    ] {
-        create_jsonb_table(conn, table)?;
+    create_cli_provider_table(conn)?;
+    create_cli_official_account_table(conn)?;
+    create_cli_config_table(conn)?;
+
+    for (old_table, cli_key) in CLI_PROVIDER_TABLES {
+        copy_scoped_rows(conn, old_table, "cli_provider", &[("cli_key", cli_key)])?;
     }
-    // Channels and models are listed in `sort_index` order on every page load.
-    create_json_index(
-        conn,
-        DbTable::RelayChannel,
-        &JsonFieldPath::new("sort_index")?,
-    )?;
-    create_json_index(
-        conn,
-        DbTable::RelayModel,
-        &JsonFieldPath::new("sort_index")?,
-    )?;
-    // Models are read per channel, plugins per package, accounts per provider.
-    create_json_index(conn, DbTable::RelayModel, &JsonFieldPath::new("channel_id")?)?;
-    create_json_index(
-        conn,
-        DbTable::RelayPluginProvider,
-        &JsonFieldPath::new("plugin_id")?,
-    )?;
-    create_json_index(
-        conn,
-        DbTable::RelayPluginAccount,
-        &JsonFieldPath::new("plugin_provider_id")?,
-    )?;
-    // The check-in ledger is read newest-first.
-    create_json_index(
-        conn,
-        DbTable::RelayCheckinRecord,
-        &JsonFieldPath::new("ts")?,
-    )?;
+    for (old_table, cli_key) in CLI_OFFICIAL_ACCOUNT_TABLES {
+        copy_scoped_rows(
+            conn,
+            old_table,
+            "cli_official_account",
+            &[("cli_key", cli_key)],
+        )?;
+    }
+    for (old_table, cli_key, kind) in CLI_CONFIG_TABLES {
+        copy_scoped_rows(
+            conn,
+            old_table,
+            "cli_config",
+            &[("cli_key", cli_key), ("kind", kind)],
+        )?;
+    }
+
+    create_relay_tables(conn)?;
+    for (old_table, kind) in RELAY_LEGACY_TABLES {
+        copy_scoped_rows(conn, old_table, "relay_entity", &[("kind", kind)])?;
+    }
+
+    drop_consolidated_tables(conn)?;
+    create_consolidated_indexes(conn)?;
     Ok(())
 }
 
-fn create_jsonb_table(conn: &Connection, table: DbTable) -> Result<(), String> {
-    let table_name = table.name();
+fn create_cli_provider_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cli_provider (
+            id TEXT NOT NULL,
+            cli_key TEXT NOT NULL,
+            data BLOB NOT NULL CHECK (json_valid(data, 4)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (cli_key, id)
+        );",
+    )
+    .map_err(|error| format!("Failed to create cli_provider: {error}"))
+}
+
+fn create_cli_official_account_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cli_official_account (
+            id TEXT NOT NULL,
+            cli_key TEXT NOT NULL,
+            data BLOB NOT NULL CHECK (json_valid(data, 4)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (cli_key, id)
+        );",
+    )
+    .map_err(|error| format!("Failed to create cli_official_account: {error}"))
+}
+
+fn create_cli_config_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cli_config (
+            id TEXT NOT NULL,
+            cli_key TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            data BLOB NOT NULL CHECK (json_valid(data, 4)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (cli_key, kind, id)
+        );",
+    )
+    .map_err(|error| format!("Failed to create cli_config: {error}"))
+}
+
+fn create_relay_tables(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS relay_entity (
+            id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            data BLOB NOT NULL CHECK (json_valid(data, 4)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (kind, id)
+        );
+
+        CREATE TABLE IF NOT EXISTS relay_quota_snapshot (
+            id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            data BLOB NOT NULL CHECK (json_valid(data, 4)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (kind, id)
+        );
+
+        CREATE TABLE IF NOT EXISTS relay_quota_point (
+            id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            data BLOB NOT NULL CHECK (json_valid(data, 4)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (kind, id)
+        );",
+    )
+    .map_err(|error| format!("Failed to create relay tables: {error}"))
+}
+
+/// Copy every row of `old_table` into `target`, stamping the given scope columns.
+///
+/// A missing `old_table` is not an error: a database that was upgraded to v32 by
+/// a build predating one of these tables, or a fresh install that reached v33 in
+/// one go, simply has nothing to move. `INSERT OR IGNORE` guards the one case
+/// that could collide — a database this branch already ran an earlier v33 on.
+fn copy_scoped_rows(
+    conn: &Connection,
+    old_table: &str,
+    target: &str,
+    scope: &[(&str, &str)],
+) -> Result<(), String> {
+    if !table_exists(conn, old_table)? || old_table == target {
+        return Ok(());
+    }
+
+    // Target lists the scope *column names*; source lists their *values* as
+    // string literals, which is what stamps the cli_key onto every moved row.
+    let mut target_columns = String::from("id");
+    let mut source_columns = String::from("id");
+    for (column, value) in scope {
+        target_columns.push_str(&format!(", {column}"));
+        source_columns.push_str(&format!(", {}", sql_string_literal(value)));
+    }
+    target_columns.push_str(", data, created_at, updated_at");
+    source_columns.push_str(", data, created_at, updated_at");
+
     conn.execute_batch(&format!(
-        "CREATE TABLE IF NOT EXISTS {table_name} (
+        "INSERT OR IGNORE INTO {target} ({target_columns})
+         SELECT {source_columns} FROM {old_table};"
+    ))
+    .map_err(|error| format!("Failed to move {old_table} into {target}: {error}"))
+}
+
+fn drop_consolidated_tables(conn: &Connection) -> Result<(), String> {
+    for (table, _) in CLI_PROVIDER_TABLES {
+        drop_table_if_exists(conn, table)?;
+    }
+    for (table, _) in CLI_OFFICIAL_ACCOUNT_TABLES {
+        drop_table_if_exists(conn, table)?;
+    }
+    for (table, _, _) in CLI_CONFIG_TABLES {
+        drop_table_if_exists(conn, table)?;
+    }
+    for (table, _) in RELAY_LEGACY_TABLES {
+        // `relay_entity` is the destination the loop above just filled; dropping
+        // it would delete the rows that were just written.
+        if *table == "relay_entity" {
+            continue;
+        }
+        drop_table_if_exists(conn, table)?;
+    }
+    Ok(())
+}
+
+fn drop_table_if_exists(conn: &Connection, table: &str) -> Result<(), String> {
+    conn.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))
+        .map_err(|error| format!("Failed to drop legacy table {table}: {error}"))
+}
+
+fn create_consolidated_indexes(conn: &Connection) -> Result<(), String> {
+    // The three CLI tables are always read inside a scope, so every index leads
+    // with the scope column.
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_cli_provider_cli_key
+            ON cli_provider(cli_key);
+        CREATE INDEX IF NOT EXISTS idx_cli_provider_applied
+            ON cli_provider(cli_key, CAST(json_extract(data, '$.is_applied') AS INTEGER));
+        CREATE INDEX IF NOT EXISTS idx_cli_provider_sort
+            ON cli_provider(cli_key, CAST(json_extract(data, '$.sort_index') AS INTEGER));
+        CREATE INDEX IF NOT EXISTS idx_cli_provider_disabled
+            ON cli_provider(cli_key, CAST(json_extract(data, '$.is_disabled') AS INTEGER));
+
+        CREATE INDEX IF NOT EXISTS idx_cli_official_account_cli_key
+            ON cli_official_account(cli_key);
+        CREATE INDEX IF NOT EXISTS idx_cli_official_account_applied
+            ON cli_official_account(cli_key, CAST(json_extract(data, '$.is_applied') AS INTEGER));
+        CREATE INDEX IF NOT EXISTS idx_cli_official_account_sort
+            ON cli_official_account(cli_key, CAST(json_extract(data, '$.sort_index') AS INTEGER));
+        CREATE INDEX IF NOT EXISTS idx_cli_official_account_provider
+            ON cli_official_account(cli_key, json_extract(data, '$.provider_id'));
+
+        CREATE INDEX IF NOT EXISTS idx_cli_config_key_kind
+            ON cli_config(cli_key, kind);
+        CREATE INDEX IF NOT EXISTS idx_cli_config_applied
+            ON cli_config(cli_key, kind, CAST(json_extract(data, '$.is_applied') AS INTEGER));
+        CREATE INDEX IF NOT EXISTS idx_cli_config_sort
+            ON cli_config(cli_key, kind, CAST(json_extract(data, '$.sort_index') AS INTEGER));
+
+        CREATE INDEX IF NOT EXISTS idx_relay_entity_kind
+            ON relay_entity(kind);
+        CREATE INDEX IF NOT EXISTS idx_relay_entity_sort
+            ON relay_entity(kind, CAST(json_extract(data, '$.sort_index') AS INTEGER));
+        CREATE INDEX IF NOT EXISTS idx_relay_entity_channel
+            ON relay_entity(kind, json_extract(data, '$.channel_id'));
+        CREATE INDEX IF NOT EXISTS idx_relay_entity_plugin
+            ON relay_entity(kind, json_extract(data, '$.plugin_id'));
+        CREATE INDEX IF NOT EXISTS idx_relay_entity_plugin_provider
+            ON relay_entity(kind, json_extract(data, '$.plugin_provider_id'));
+        CREATE INDEX IF NOT EXISTS idx_relay_entity_ts
+            ON relay_entity(kind, CAST(json_extract(data, '$.ts') AS INTEGER));
+
+        CREATE INDEX IF NOT EXISTS idx_relay_quota_snapshot_kind
+            ON relay_quota_snapshot(kind);
+        CREATE INDEX IF NOT EXISTS idx_relay_quota_point_kind_at
+            ON relay_quota_point(kind, CAST(json_extract(data, '$.at') AS INTEGER));",
+    )
+    .map_err(|error| format!("Failed to create consolidated indexes: {error}"))
+}
+
+fn create_jsonb_table(conn: &Connection, table: &str) -> Result<(), String> {
+    conn.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS {table} (
             id TEXT PRIMARY KEY NOT NULL,
             data BLOB NOT NULL CHECK (json_valid(data, 4)),
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );"
     ))
-    .map_err(|error| format!("Failed to create SQLite table {table_name}: {error}"))
+    .map_err(|error| format!("Failed to create SQLite table {table}: {error}"))
 }
 
+/// Indexes v1 created, against the **legacy** table names.
+///
+/// Frozen for the same reason as [`migrate_v1`]: this runs before the v33
+/// consolidation, when the per-CLI tables still exist. The consolidated
+/// indexes are created by [`create_consolidated_indexes`] instead.
 fn create_initial_indexes(conn: &Connection) -> Result<(), String> {
     for table in [
-        DbTable::ClaudeProvider,
-        DbTable::CodexProvider,
-        DbTable::GeminiCliProvider,
-        DbTable::AntigravityProvider,
-        DbTable::ClaudePromptConfig,
-        DbTable::CodexPromptConfig,
-        DbTable::GeminiCliPromptConfig,
-        DbTable::AntigravityPromptConfig,
-        DbTable::PiPromptConfig,
-        DbTable::OpenCodePromptConfig,
-        DbTable::OhMyOpenAgentConfig,
-        DbTable::OhMyOpenCodeSlimConfig,
-        DbTable::CodexOfficialAccount,
-        DbTable::GeminiCliOfficialAccount,
-        DbTable::AntigravityOfficialAccount,
-        DbTable::OhMyPiAgentsConfig,
+        "claude_provider",
+        "codex_provider",
+        "gemini_cli_provider",
+        "antigravity_provider",
+        "claude_prompt_config",
+        "codex_prompt_config",
+        "gemini_cli_prompt_config",
+        "antigravity_prompt_config",
+        "codex_official_account",
+        "gemini_cli_official_account",
+        "antigravity_official_account",
     ] {
         create_json_index(conn, table, &JsonFieldPath::new("is_applied")?)?;
     }
 
     for table in [
-        DbTable::ClaudeProvider,
-        DbTable::CodexProvider,
-        DbTable::GeminiCliProvider,
-        DbTable::AntigravityProvider,
-        DbTable::ClaudePromptConfig,
-        DbTable::CodexPromptConfig,
-        DbTable::GeminiCliPromptConfig,
-        DbTable::AntigravityPromptConfig,
-        DbTable::PiPromptConfig,
-        DbTable::OpenCodePromptConfig,
-        DbTable::Skill,
-        DbTable::SkillGroup,
-        DbTable::McpServer,
-        DbTable::OhMyOpenAgentConfig,
-        DbTable::OhMyOpenCodeSlimConfig,
-        DbTable::CodexOfficialAccount,
-        DbTable::GeminiCliOfficialAccount,
-        DbTable::AntigravityOfficialAccount,
-        DbTable::OhMyPiAgentsConfig,
+        "claude_provider",
+        "codex_provider",
+        "gemini_cli_provider",
+        "antigravity_provider",
+        "claude_prompt_config",
+        "codex_prompt_config",
+        "gemini_cli_prompt_config",
+        "antigravity_prompt_config",
+        "skill",
+        "skill_group",
+        "mcp_server",
+        "opencode_common_config",
+        "codex_official_account",
+        "gemini_cli_official_account",
+        "antigravity_official_account",
     ] {
         create_json_index(conn, table, &JsonFieldPath::new("sort_index")?)?;
     }
 
-    for table in [DbTable::ImageChannel, DbTable::SshConnection] {
+    for table in ["image_channel", "ssh_connection"] {
         create_json_index(conn, table, &JsonFieldPath::new("sort_order")?)?;
     }
 
     for table in [
-        DbTable::OpenCodeFavoritePlugin,
-        DbTable::OpenCodeFavoriteProvider,
-        DbTable::FavoriteMcp,
-        DbTable::ImageJob,
-        DbTable::ImageAsset,
+        "opencode_favorite_plugin",
+        "opencode_favorite_provider",
+        "favorite_mcp",
+        "image_job",
+        "image_asset",
     ] {
         create_column_index(conn, table, "created_at")?;
     }
 
     for (table, field) in [
-        (DbTable::Skill, "name"),
-        (DbTable::McpServer, "name"),
-        (DbTable::FavoriteMcp, "name"),
-        (DbTable::OpenCodeFavoritePlugin, "plugin_name"),
-        (DbTable::OpenCodeFavoriteProvider, "provider_id"),
-        (DbTable::CodexOfficialAccount, "provider_id"),
-        (DbTable::GeminiCliOfficialAccount, "provider_id"),
-        (DbTable::AntigravityOfficialAccount, "provider_id"),
-        (DbTable::ImageAsset, "job_id"),
+        ("skill", "name"),
+        ("mcp_server", "name"),
+        ("favorite_mcp", "name"),
+        ("opencode_favorite_plugin", "plugin_name"),
+        ("opencode_favorite_provider", "provider_id"),
+        ("codex_official_account", "provider_id"),
+        ("gemini_cli_official_account", "provider_id"),
+        ("antigravity_official_account", "provider_id"),
+        ("image_asset", "job_id"),
     ] {
         create_json_index(conn, table, &JsonFieldPath::new(field)?)?;
     }
@@ -992,6 +1326,19 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool
     Ok(false)
 }
 
+fn table_exists(conn: &Connection, table: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
+        [table],
+        |_| Ok(()),
+    )
+    .map(|_| true)
+    .or_else(|error| match error {
+        rusqlite::Error::QueryReturnedNoRows => Ok(false),
+        other => Err(format!("Failed to inspect SQLite table {table}: {other}")),
+    })
+}
+
 fn create_model_pricing_table(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS model_pricing (
@@ -1006,8 +1353,7 @@ fn create_model_pricing_table(conn: &Connection) -> Result<(), String> {
     .map_err(|error| format!("Failed to create model pricing table: {error}"))
 }
 
-fn seed_model_pricing(conn: &Connection) -> Result<(), String> {
-    let pricing_data = [
+const MODEL_PRICING_SEED: &[(&str, &str, &str, &str, &str, &str)] = &[
         (
             "claude-opus-4-7",
             "Claude Opus 4.7",
@@ -1287,9 +1633,10 @@ fn seed_model_pricing(conn: &Connection) -> Result<(), String> {
             "0.028",
             "0",
         ),
-    ];
+];
 
-    for (model_id, display_name, input, output, cache_read, cache_creation) in pricing_data {
+fn seed_model_pricing(conn: &Connection) -> Result<(), String> {
+    for (model_id, display_name, input, output, cache_read, cache_creation) in MODEL_PRICING_SEED {
         conn.execute(
             "INSERT OR IGNORE INTO model_pricing (
                 model_id, display_name, input_cost_per_million, output_cost_per_million,
@@ -1309,12 +1656,7 @@ fn seed_model_pricing(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-fn create_json_index(
-    conn: &Connection,
-    table: DbTable,
-    field_path: &JsonFieldPath,
-) -> Result<(), String> {
-    let table_name = table.name();
+fn create_json_index(conn: &Connection, table_name: &str, field_path: &JsonFieldPath) -> Result<(), String> {
     let field_suffix = field_path.segments().join("_");
     let index_name = format!("idx_{table_name}_{field_suffix}");
     let json_path = sql_string_literal(&field_path.to_sql_path());
@@ -1325,8 +1667,7 @@ fn create_json_index(
     .map_err(|error| format!("Failed to create SQLite index {index_name}: {error}"))
 }
 
-fn create_column_index(conn: &Connection, table: DbTable, column: &str) -> Result<(), String> {
-    let table_name = table.name();
+fn create_column_index(conn: &Connection, table_name: &str, column: &str) -> Result<(), String> {
     let index_name = format!("idx_{table_name}_{column}");
     conn.execute_batch(&format!(
         "CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} ({column});"

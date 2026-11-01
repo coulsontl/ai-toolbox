@@ -15,7 +15,7 @@ use crate::db::helpers::{
     db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put, db_query_by_bool,
     db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use crate::http_client;
 use tauri::Emitter;
@@ -379,7 +379,7 @@ pub fn query_provider_by_id(
     provider_id: &str,
 ) -> Result<AntigravityProvider, String> {
     let value = db
-        .with_conn(|conn| db_get(conn, DbTable::AntigravityProvider, provider_id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Antigravity), provider_id))?
         .ok_or_else(|| format!("Antigravity provider not found: {provider_id}"))?;
     Ok(adapter::from_db_value_provider(value))
 }
@@ -387,7 +387,7 @@ pub fn query_provider_by_id(
 pub fn get_antigravity_common_config_from_db(
     db: &SqliteDbState,
 ) -> Result<AntigravityCommonConfig, String> {
-    let record = db.with_conn(|conn| db_get(conn, DbTable::AntigravityCommonConfig, "common"))?;
+    let record = db.with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Antigravity, CliConfigKind::Common), "common"))?;
     match record {
         Some(val) => Ok(adapter::from_db_value_common(val)),
         None => Ok(AntigravityCommonConfig {
@@ -550,7 +550,7 @@ pub(crate) fn put_antigravity_provider_to_sqlite(
     sqlite_state.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::AntigravityProvider,
+            DbTable::CliProvider(Cli::Antigravity),
             provider_id,
             &adapter::to_db_value_provider(content),
         )
@@ -562,7 +562,7 @@ pub(crate) fn list_antigravity_providers_from_sqlite(
 ) -> Result<Vec<AntigravityProvider>, String> {
     let order = antigravity_provider_order()?;
     sqlite_state.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::AntigravityProvider, Some(&order))?
+        Ok(db_list(conn, DbTable::CliProvider(Cli::Antigravity), Some(&order))?
             .into_iter()
             .map(adapter::from_db_value_provider)
             .collect())
@@ -687,7 +687,7 @@ pub async fn apply_config_internal_without_events(
     db.with_conn_mut(|conn| {
         db_update_applied_status(
             conn,
-            DbTable::AntigravityProvider,
+            DbTable::CliProvider(Cli::Antigravity),
             Some(provider_id),
             &now_str,
         )
@@ -748,14 +748,14 @@ pub async fn save_antigravity_common_config(
     };
 
     let db_val = adapter::to_db_value_common(&input.config, target_root.as_deref());
-    db.with_conn(|conn| db_put(conn, DbTable::AntigravityCommonConfig, "common", &db_val))?;
+    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Antigravity, CliConfigKind::Common), "common", &db_val))?;
     runtime_location::refresh_runtime_location_cache_for_module_async(db, "antigravity").await?;
 
     let applied_provider = db
         .with_conn(|conn| {
             db_query_by_bool(
                 conn,
-                DbTable::AntigravityProvider,
+                DbTable::CliProvider(Cli::Antigravity),
                 &JsonFieldPath::new("is_applied")?,
                 true,
                 None,
@@ -789,7 +789,7 @@ fn list_antigravity_prompts_from_sqlite(
     let order = antigravity_prompt_order()?;
     sqlite_state.with_conn(|conn| {
         Ok(
-            db_list(conn, DbTable::AntigravityPromptConfig, Some(&order))?
+            db_list(conn, DbTable::CliConfig(Cli::Antigravity, CliConfigKind::Prompt), Some(&order))?
                 .into_iter()
                 .map(adapter::from_db_value_prompt)
                 .collect(),
@@ -802,7 +802,7 @@ fn get_antigravity_prompt_from_sqlite(
     config_id: &str,
 ) -> Result<Option<AntigravityPromptConfig>, String> {
     sqlite_state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::AntigravityPromptConfig, config_id)?
+        Ok(db_get(conn, DbTable::CliConfig(Cli::Antigravity, CliConfigKind::Prompt), config_id)?
             .map(adapter::from_db_value_prompt))
     })
 }
@@ -815,7 +815,7 @@ fn put_antigravity_prompt_to_sqlite(
     sqlite_state.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::AntigravityPromptConfig,
+            DbTable::CliConfig(Cli::Antigravity, CliConfigKind::Prompt),
             config_id,
             &adapter::to_db_value_prompt(content),
         )
@@ -869,7 +869,7 @@ pub async fn create_antigravity_prompt_config(
     let next_sort_index = db.with_conn(|conn| {
         Ok(db_max_i64(
             conn,
-            DbTable::AntigravityPromptConfig,
+            DbTable::CliConfig(Cli::Antigravity, CliConfigKind::Prompt),
             &JsonFieldPath::new("sort_index")?,
         )?
         .map(|value| value as i32 + 1)
@@ -957,7 +957,7 @@ pub async fn delete_antigravity_prompt_config(
     id: String,
 ) -> Result<(), String> {
     let db = state.db();
-    db.with_conn(|conn| db_delete(conn, DbTable::AntigravityPromptConfig, &id))?;
+    db.with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::Antigravity, CliConfigKind::Prompt), &id))?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -988,7 +988,7 @@ async fn apply_prompt_config_internal_with_events<R: tauri::Runtime>(
 ) -> Result<(), String> {
     let db = state.db();
     let record = db
-        .with_conn(|conn| db_get(conn, DbTable::AntigravityPromptConfig, config_id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Antigravity, CliConfigKind::Prompt), config_id))?
         .ok_or_else(|| format!("Antigravity prompt config not found: {config_id}"))?;
     let config = adapter::from_db_value_prompt(record);
 
@@ -999,7 +999,7 @@ async fn apply_prompt_config_internal_with_events<R: tauri::Runtime>(
     db.with_conn_mut(|conn| {
         db_update_applied_status(
             conn,
-            DbTable::AntigravityPromptConfig,
+            DbTable::CliConfig(Cli::Antigravity, CliConfigKind::Prompt),
             Some(config_id),
             &now_str,
         )
@@ -1039,7 +1039,7 @@ pub async fn disable_antigravity_prompt_config(
 
     let now_str = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::AntigravityPromptConfig, None, &now_str)
+        db_update_applied_status(conn, DbTable::CliConfig(Cli::Antigravity, CliConfigKind::Prompt), None, &now_str)
     })?;
 
     let _ = app.emit("config-changed", "window");
@@ -1058,7 +1058,7 @@ pub async fn reorder_antigravity_prompt_configs(
         let _ = db.with_conn(|conn| {
             db_patch_fields(
                 conn,
-                DbTable::AntigravityPromptConfig,
+                DbTable::CliConfig(Cli::Antigravity, CliConfigKind::Prompt),
                 id,
                 &[("sort_index", Value::Number((index as i32).into()))],
             )

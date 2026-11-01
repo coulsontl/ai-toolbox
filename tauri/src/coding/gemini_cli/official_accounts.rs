@@ -22,7 +22,7 @@ use crate::db::helpers::{
     db_delete, db_get, db_list, db_patch_fields, db_put, db_query_by_field,
     db_update_applied_status,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
 use crate::db::SqliteDbState;
 use crate::http_client;
 use tauri::Emitter;
@@ -1004,7 +1004,7 @@ async fn list_persisted_official_accounts(
     db.with_conn(|conn| {
         Ok(db_query_by_field(
             conn,
-            DbTable::GeminiCliOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Gemini),
             &provider_id_path,
             &provider_id_value,
             Some(&order),
@@ -1020,7 +1020,7 @@ async fn load_official_account(
     db: &crate::db::SqliteDbState,
     account_id: &str,
 ) -> Result<GeminiCliOfficialAccount, String> {
-    db.with_conn(|conn| db_get(conn, DbTable::GeminiCliOfficialAccount, account_id))?
+    db.with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Gemini), account_id))?
         .map(adapter::from_db_value_official_account)
         .ok_or_else(|| format!("Gemini official account '{}' not found", account_id))
 }
@@ -1034,7 +1034,7 @@ async fn save_official_account(
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::GeminiCliOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Gemini),
             &account_id,
             &payload,
         )
@@ -1059,7 +1059,7 @@ async fn update_official_account_apply_status(
 ) -> Result<(), String> {
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::GeminiCliOfficialAccount, account_id, &now)
+        db_update_applied_status(conn, DbTable::CliOfficialAccount(Cli::Gemini), account_id, &now)
     })?;
     Ok(())
 }
@@ -1079,7 +1079,7 @@ async fn persist_account_content(
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::GeminiCliOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Gemini),
             &account.id,
             &payload,
         )
@@ -1096,7 +1096,7 @@ async fn persist_account_error(
     db.with_conn(|conn| {
         db_patch_fields(
             conn,
-            DbTable::GeminiCliOfficialAccount,
+            DbTable::CliOfficialAccount(Cli::Gemini),
             account_id,
             &[
                 ("last_error", Value::String(error_message.to_string())),
@@ -1358,7 +1358,7 @@ pub async fn delete_gemini_cli_official_account(
         return Err("The applied Gemini official account cannot be deleted".to_string());
     }
     db.with_conn(|conn| {
-        db_delete(conn, DbTable::GeminiCliOfficialAccount, &account_id).map(|_| ())
+        db_delete(conn, DbTable::CliOfficialAccount(Cli::Gemini), &account_id).map(|_| ())
     })?;
     let _ = app.emit("config-changed", "window");
     Ok(())
@@ -1373,7 +1373,7 @@ pub async fn refresh_applied_gemini_cli_accounts_if_needed(
     app: &tauri::AppHandle,
 ) -> Result<(), String> {
     let accounts = db.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::GeminiCliOfficialAccount, None)?
+        Ok(db_list(conn, DbTable::CliOfficialAccount(Cli::Gemini), None)?
             .into_iter()
             .map(adapter::from_db_value_official_account)
             // Skip virtual local runtime rows; refresh all persisted OAuth accounts.
