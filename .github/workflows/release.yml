@@ -97,6 +97,42 @@ jobs:
           # build wins.
           git push origin "refs/tags/beta-${BETA_VERSION}" --force
 
+      - name: Prune orphaned beta draft releases
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The rolling release is the only beta release that may exist. A
+          # failed round leaves it in draft, and while it sits there
+          # tauri-action can create a draft release of its own under an
+          # `untagged-<uuid>` tag instead of uploading to the rolling one.
+          # Nothing below ever touches that release: the asset purge targets
+          # the rolling release by id, and the tag prune above only removes
+          # git refs. So it survives every later round, holding whatever
+          # platforms happened to build that day.
+          #
+          # Two rounds left one behind (2026-10-25, 2026-10-31). Rather than
+          # rely on a diagnosis of tauri-action's internals, delete anything
+          # that is a beta-shaped draft but is not the rolling release. The
+          # rolling release is always tagged `beta`, so the tag name is the
+          # whole test. Run before the build so a prune can never race assets
+          # being uploaded by the round that is starting.
+          #
+          # Housekeeping must never fail the round: a delete that loses a race
+          # with a concurrent run has nothing left to clean and is not a
+          # build problem.
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.tag_name != "beta") | select(.draft) | select(.name | test("Beta"; "i")) | .id' \
+          | while read -r orphan; do
+              [ -n "$orphan" ] || continue
+              if gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$orphan"; then
+                echo "Pruned orphaned beta draft release $orphan"
+              else
+                echo "::warning::Could not prune orphaned beta draft release $orphan"
+              fi
+            done
+
       # The rolling beta release is created once with a minimal body; later
       # dispatches only refresh the title and the prerelease flag so a body
       # filled in by the release-notes skill survives rebuilds. The release
