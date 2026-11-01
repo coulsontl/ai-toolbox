@@ -2376,7 +2376,7 @@ fn load_provider_names(conn: &Connection) -> Result<ProviderNameMap, String> {
 ///
 /// `None` for a CLI that cannot serve gateway traffic; its providers are then
 /// simply not indexed, which is correct because no request row can name them.
-fn app_type_for_provider_cli_key(cli_key: &str) -> Option<&'static str> {
+pub(crate) fn app_type_for_provider_cli_key(cli_key: &str) -> Option<&'static str> {
     match cli_key {
         "claude" => Some("claude"),
         "claude_desktop" => Some("claude_desktop"),
@@ -3108,6 +3108,52 @@ pub fn request_log_location(
         .map(|value| value.flatten())
         .map_err(|error| format!("Failed to load gateway request detail location: {error}"))
     })
+}
+
+#[cfg(test)]
+mod provider_name_scope_tests {
+    use super::app_type_for_provider_cli_key;
+    use crate::coding::proxy_gateway::provider_switch::provider_table;
+    use crate::coding::proxy_gateway::types::GatewayCliKey;
+    use crate::db::schema::DbTable;
+
+    /// The two namespaces this mapping bridges must stay aligned for every CLI
+    /// the gateway can take over.
+    ///
+    /// `cli_provider.cli_key` is `Cli::as_str()` (`workbuddy`); the `app_type`
+    /// its proxy rows carry is `GatewayCliKey::as_str()` (`workbuddy_desktop`).
+    /// They differ for the WorkBuddy family, which is the whole reason the
+    /// mapping exists. Getting it wrong is silent: the provider's usage rows
+    /// lose their display name, and filtering by provider name drops them from
+    /// the statistics with no error.
+    #[test]
+    fn every_gateway_provider_table_maps_to_its_gateway_app_type() {
+        let mut checked = 0;
+        for cli_key in GatewayCliKey::supported_mvp() {
+            let Some(DbTable::CliProvider(cli)) = provider_table(cli_key) else {
+                continue;
+            };
+            assert_eq!(
+                app_type_for_provider_cli_key(cli.as_str()),
+                Some(cli_key.as_str()),
+                "provider rows for {cli_key:?} are stored under cli_key {:?} but tagged {:?};                  the two must resolve to each other or usage rows lose their name",
+                cli.as_str(),
+                cli_key.as_str()
+            );
+            checked += 1;
+        }
+        assert!(checked >= 8, "expected the gateway CLIs, checked {checked}");
+    }
+
+    /// A usage-only tool has no gateway provider table, so it must not resolve:
+    /// mapping it would mean inventing a provider name for rows that cannot
+    /// exist under that scope.
+    #[test]
+    fn usage_only_tools_are_not_mapped() {
+        for cli_key in ["pi", "oh_my_pi", "omo_native", "dsh", "hermes", "openclaw"] {
+            assert_eq!(app_type_for_provider_cli_key(cli_key), None);
+        }
+    }
 }
 
 #[cfg(test)]

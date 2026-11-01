@@ -147,7 +147,7 @@ fn provider_needs_gateway_proxy_for_switch(
     ))
 }
 
-fn provider_table(cli_key: GatewayCliKey) -> Option<DbTable> {
+pub(crate) fn provider_table(cli_key: GatewayCliKey) -> Option<DbTable> {
     match cli_key {
         GatewayCliKey::Claude => Some(DbTable::CliProvider(Cli::Claude)),
         GatewayCliKey::ClaudeDesktop => Some(DbTable::CliProvider(Cli::ClaudeDesktop)),

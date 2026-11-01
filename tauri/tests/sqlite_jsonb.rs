@@ -1928,3 +1928,101 @@ fn relay_kinds_do_not_see_each_other() {
         .unwrap()
         .is_empty());
 }
+
+// ---- schema parity: fresh install vs upgrade --------------------------------
+//
+// A fresh install runs `migrate_v1` (legacy per-CLI tables) and then `v33`
+// folds them; an existing install skips v1 and only runs v33. If the two paths
+// disagree — v1 building a shape that v33's `CREATE TABLE IF NOT EXISTS` then
+// skips, or v1 creating an index v33 never recreates — the divergence stays
+// invisible until a query hits a missing column on one of them. That is exactly
+// the class of bug the first draft of this migration had.
+
+/// Sorted `table(column:type:notnull)` plus sorted index DDL, so the comparison
+/// does not depend on creation order.
+fn schema_fingerprint(conn: &Connection) -> (Vec<String>, Vec<String>) {
+    let table_names: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    let mut tables: Vec<String> = table_names
+        .into_iter()
+        .map(|table| {
+            let columns: Vec<String> = conn
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap()
+                .query_map([], |row| {
+                    Ok(format!(
+                        "{}:{}:{}",
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(5)?
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            format!("{table}({})", columns.join(","))
+        })
+        .collect();
+    tables.sort();
+
+    let mut indexes: Vec<String> = conn
+        .prepare(
+            "SELECT sql FROM sqlite_master
+             WHERE type='index' AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%'",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    indexes.sort();
+
+    (tables, indexes)
+}
+
+#[test]
+fn a_fresh_database_matches_an_upgraded_one() {
+    let fresh = test_conn();
+    let fresh_fingerprint = schema_fingerprint(&fresh);
+
+    // Reproduce an installation that reached v32 without ever seeing the
+    // consolidation: legacy tables present, consolidated tables absent.
+    let upgraded = test_conn();
+    for table in migrations::legacy_tables_for_test() {
+        upgraded
+            .execute_batch(&format!(
+                "CREATE TABLE IF NOT EXISTS {table} (
+                     id TEXT PRIMARY KEY NOT NULL,
+                     data BLOB NOT NULL CHECK (json_valid(data, 4)),
+                     created_at TEXT NOT NULL,
+                     updated_at TEXT NOT NULL
+                 );"
+            ))
+            .unwrap();
+    }
+    for table in ["cli_provider", "cli_official_account", "cli_config"] {
+        upgraded
+            .execute_batch(&format!("DROP TABLE IF EXISTS {table};"))
+            .unwrap();
+    }
+    migrations::set_user_version(&upgraded, 32).unwrap();
+    let mut upgraded = upgraded;
+    migrations::run_all(&mut upgraded).unwrap();
+
+    let upgraded_fingerprint = schema_fingerprint(&upgraded);
+
+    assert_eq!(
+        fresh_fingerprint.0, upgraded_fingerprint.0,
+        "fresh and upgraded databases disagree on tables/columns"
+    );
+    assert_eq!(
+        fresh_fingerprint.1, upgraded_fingerprint.1,
+        "fresh and upgraded databases disagree on indexes"
+    );
+}

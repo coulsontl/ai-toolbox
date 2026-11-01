@@ -4632,6 +4632,101 @@ mod tests {
         .expect("verify cleared roots");
     }
 
+    /// The CLIs whose custom root used to live in a `*_settings_config` table
+    /// (or a different `kind`) must still be cleared — and only them.
+    ///
+    /// `clear_restored_cli_custom_roots` now walks `DbTable::CliConfig(cli, kind)`
+    /// scopes that all resolve to one physical table. A `Kind` typo would make
+    /// it read nothing and silently keep the old machine's absolute path, which
+    /// then fails at the next CLI launch with a path that does not exist here.
+    #[test]
+    fn clearing_restored_cli_roots_covers_the_former_settings_tables() {
+        let db = SqliteDbState::in_memory_for_test().expect("sqlite state");
+        // Cleared today. WorkBuddy / CodeBuddy also store `config_dir` in their
+        // settings record but were never in this list — see
+        // `clearing_restored_cli_roots_leaves_workbuddy_and_codebuddy_alone`
+        // for that documented gap.
+        let scoped = [
+            (Cli::Hermes, CliConfigKind::Settings, "config_dir"),
+            (Cli::Dsh, CliConfigKind::Settings, "config_dir"),
+            (Cli::Pi, CliConfigKind::Settings, "root_dir"),
+            (Cli::OhMyPi, CliConfigKind::Settings, "root_dir"),
+        ];
+        db.with_conn(|connection| {
+            for (cli, kind, key) in scoped {
+                db_put(
+                    connection,
+                    DbTable::CliConfig(cli, kind),
+                    "common",
+                    &serde_json::json!({ "id": "common", key: "/old/path", "other": "preserved" }),
+                )?;
+            }
+            Ok(())
+        })
+        .expect("seed settings configs");
+
+        clear_restored_cli_custom_roots(&db).expect("clear restored roots");
+
+        db.with_conn(|connection| {
+            for (cli, kind, key) in scoped {
+                let record = db_get(connection, DbTable::CliConfig(cli, kind), "common")?
+                    .unwrap_or_else(|| panic!("{cli:?} settings record vanished"));
+                assert!(
+                    record.get(key).is_some_and(serde_json::Value::is_null),
+                    "{cli:?} kept its restored custom root: {record}"
+                );
+                assert_eq!(
+                    record.get("other").and_then(|value| value.as_str()),
+                    Some("preserved"),
+                    "{cli:?} lost an unrelated field"
+                );
+            }
+            Ok(())
+        })
+        .expect("verify cleared settings roots");
+    }
+
+    /// Documents a gap that predates the table consolidation.
+    ///
+    /// WorkBuddy desktop and CodeBuddy Code keep a custom config root in the
+    /// same `settings` record as Hermes/Dsh, but `clear_restored_cli_custom_roots`
+    /// never included them — the list was written before those two CLIs had a
+    /// settings table. The consolidation did not introduce this and must not
+    /// silently change it, so the current behaviour is pinned here and the
+    /// report flags it as a follow-up.
+    #[test]
+    fn clearing_restored_cli_roots_leaves_workbuddy_and_codebuddy_alone() {
+        let db = SqliteDbState::in_memory_for_test().expect("sqlite state");
+        db.with_conn(|connection| {
+            for cli in [Cli::Workbuddy, Cli::Codebuddy] {
+                db_put(
+                    connection,
+                    DbTable::CliConfig(cli, CliConfigKind::Settings),
+                    "common",
+                    &serde_json::json!({ "id": "common", "config_dir": "/old/path" }),
+                )?;
+            }
+            Ok(())
+        })
+        .expect("seed workbuddy/codebuddy settings");
+
+        clear_restored_cli_custom_roots(&db).expect("clear restored roots");
+
+        db.with_conn(|connection| {
+            for cli in [Cli::Workbuddy, Cli::Codebuddy] {
+                let record = db_get(connection, DbTable::CliConfig(cli, CliConfigKind::Settings), "common")?
+                    .expect("settings record");
+                assert_eq!(
+                    record.get("config_dir").and_then(|value| value.as_str()),
+                    Some("/old/path"),
+                    "{cli:?} started being cleared; update the report and the clear list together"
+                );
+            }
+            Ok(())
+        })
+        .expect("verify documented gap");
+    }
+
     #[test]
     fn normalize_backup_storage_path_preserves_supported_prefixes() {
         assert_eq!(
