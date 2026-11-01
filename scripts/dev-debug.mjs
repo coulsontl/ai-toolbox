@@ -64,6 +64,22 @@ const child = spawn(process.execPath, [tauriCliEntry, 'dev', ...process.argv.sli
   },
 });
 
+// Cargo never deletes an old incremental session, so `target/debug/incremental`
+// grows by a session per distinct build shape until it dominates the checkout.
+// Trim it in a detached process: it has to run after cargo has created the
+// session this build will use (that one is newest and is kept), and it must not
+// be able to delay or end the dev session. Best effort by design -- a prune that
+// fails is a wasted cache trim, not a failed build.
+const pruner = spawn(process.execPath, [path.join(projectRoot, 'scripts', 'prune-cargo-incremental.mjs')], {
+  cwd: projectRoot,
+  stdio: 'inherit',
+  // Windows needs this once the parent goes away; elsewhere `detached` already
+  // starts a new process group.
+  detached: true,
+  windowsHide: true,
+});
+pruner.unref();
+
 // Ctrl+C reaches the whole console process group on Windows, so the tauri CLI
 // and the app usually stop on their own. What survives is Vite: it can outlive
 // its parent and keep port 5173, which makes the next run die on
