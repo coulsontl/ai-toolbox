@@ -226,7 +226,92 @@ plugin_account / access_key / checkin_schedule / checkin_record）全部实测�
 
 ---
 
-## 10. 最终状态
+## 10. 读写函数的行为前后一致性（差分测试）
+
+前面九节证明的是**数据**搬对了、**契约**没破。这一节回答的是另一个问题：
+**原来那些读写函数，改动之后行为是否一模一样？**
+
+做法不是读 diff（457 处改动，人工看不可靠），而是三重独立证据：
+
+### 10.1 全量规范化差分（覆盖全部 457 处改动）
+
+把新旧的每个 `DbTable` 引用都归一成同一个规范令牌（旧表名唯一确定
+「物理表 + 作用域」），然后按函数体逐字节比较：
+
+```
+参与比较的函数体        4289
+归一化后逐字节相同      4217  (98.3%)
+归后仍有差异              72
+```
+
+其余 72 项全部落在下列类别，逐类核对完毕：
+
+| 类别 | 数量 | 结论 |
+|---|---|---|
+| 新增函数（`copy_scoped_rows`、`create_cli_*_table`、`scope()` 等） | 23 | 新增，无「旧行为」可比 |
+| 历史迁移 `migrate_v1..v32` 的字面量改写 | 36 | 见 10.2，表名与顺序完全未变 |
+| relay 的 kind 作用域 | 15 | **唯一实质语义变化**，见 10.4 |
+| `name()` / 备份工具函数 | 3 | 按新结构重写，已由测试覆盖 |
+
+### 10.2 历史迁移必须冻结（token 级比对）
+
+规范化后 31/33 个历史迁移逐 token 相同。剩余两个：
+
+- `seed_model_pricing`：62 行种子数据被提成 `MODEL_PRICING_SEED` 常量，
+  **逐行比对完全相同**（62/62，顺序一致）。
+- `migrate_v1`：从 `ALL_TABLES`(86) 改为显式 46 张。**被移除的 40 张全部
+  仍由后续迁移创建，无孤儿表**；`relay_entity` 由 v33 自己
+  `CREATE TABLE IF NOT EXISTS` 创建，且发生在 relay 复制循环**之前**。
+
+### 10.3 前后行为差分（同一份源码，新旧各编一次）
+
+把 `c894557a~1` 拉成独立 worktree。探针程序**只有一份源码**
+（`include!` 共享主体 + 各侧一份表映射），在新旧两套代码上各编译一次，
+对**同一份真实库副本**执行完全相同的调用序列：
+
+```
+比较的 key 数            275
+完全相同                 260
+不同                      15   （全部是 relay，见 10.4）
+其中 CLI 表（provider / official_account / config）差异   0
+```
+
+覆盖范围：27 个作用域的列表（含真实行内容，键已排序）、写入→回读→计数、
+字面量 id（`common` / `global`）跨 CLI 共存、`db_patch_fields` 就地更新、
+删除后确实读不到、以及末尾的计数回归。
+
+### 10.4 relay：唯一的行为变化，且是修复
+
+旧代码（`c7dde069`）把 8 个 relay 变体全部映射到同一张 `relay_entity`，
+主键仍是 `(id)`。差分测试直接抓到了后果：
+
+```
+                    OLD                          NEW
+channel.own_row     "probe relay checkin_record"  "probe relay channel"
+model.own_row       "probe relay checkin_record"  "probe relay model"
+plugin.own_row      "probe relay checkin_record"  "probe relay plugin"
+…（8 个 kind 全部读到最后一个写入的 checkin_record 行）
+```
+
+也就是说，合并**之前**的代码里，写 8 类实体（同一 id）只有最后一类存活，
+其余 7 类被静默覆盖；读任何一类都会拿到另一类的 payload。本次把主键改为
+`(kind, id)` 后，8 类各自独立。
+
+这是**修正**而非回归，但有两点必须记住：
+
+1. 该缺陷只存在于 `c7dde069..c894557a~1` 之间，**从未发布**
+   （`origin/main` 上 `TARGET_SCHEMA_VERSION` 仍是 32，没有 relay 表）。
+2. **遗留风险**：如果在 `c7dde069` 上打开过应用，本地库会被标成
+   `user_version=33` 且 `relay_entity` 缺 `kind` 列。当前代码
+   `if current_version < 33` 会跳过 v33，`CREATE TABLE IF NOT EXISTS` 也
+   不会改表结构，于是 relay 读写持续报 `no such column: kind`。
+   本机库 `user_version` 为 32、无 `relay_entity`，**未受影响**。
+   若要在意这条路径，可加一条「v33 检测 `relay_entity` 缺 `kind` 列则重建」
+   的补丁迁移；本次未加，因为该分支从未分发。
+
+---
+
+## 11. 最终状态
 
 ```
 cargo test                    3457 passed, 0 failed, 14 ignored
@@ -234,4 +319,6 @@ cargo check --all-targets     0 error, 0 warning
 cargo test --test sqlite_jsonb 44 passed
 端到端检查                     172 + 6 + 6 + 1 = 185 项（examples/ 下可复现）
 内容逐字节核对                 51 行, 0 mismatch
+函数体规范化差分               4217 相同 / 4289
+前后行为差分                   275 key，CLI 表 0 差异，relay 15 项为修复
 ```
