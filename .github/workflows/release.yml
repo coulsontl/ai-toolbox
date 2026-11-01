@@ -147,8 +147,15 @@ jobs:
           BETA_VERSION: ${{ steps.get_version.outputs.version }}
         run: |
           set -euo pipefail
-          if gh release view beta --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/beta" --jq '.id')
+          # Look the release up in the list, never through `releases/tags/beta`:
+          # that endpoint answers 404 for a draft, which is exactly the state a
+          # failed round leaves the release in. `gh release view beta` succeeds
+          # there because it falls back to the list, so pairing the two made the
+          # check pass and the id lookup fail -- 2026-11-01, the round after the
+          # first failure died on `gh: Not Found (HTTP 404)`.
+          release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '[.[] | select(.tag_name == "beta")][0].id // empty')
+          if [ -n "$release_id" ]; then
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
               -f "name=AI Toolbox Beta ${BETA_VERSION}" -F prerelease=true -F draft=true >/dev/null
           else
