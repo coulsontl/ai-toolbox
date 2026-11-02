@@ -128,11 +128,20 @@ const RecoveryUpdateScreen: React.FC<{ errorMessage: string }> = ({ errorMessage
   const [scoopManaged, setScoopManaged] = React.useState(false);
   const [debManaged, setDebManaged] = React.useState(false);
   const [installError, setInstallError] = React.useState('');
+  // `forceBeta` is only ever true when the user pressed "Try beta" here. The
+  // `receive_beta_updates` preference lives in the database this screen cannot
+  // open (its schema is too new), so the user has to opt into the beta channel
+  // explicitly — and the same flag must drive the install, which re-selects
+  // the channel on the backend.
+  const [forceBeta, setForceBeta] = React.useState(false);
+  const [betaCheckFailed, setBetaCheckFailed] = React.useState(false);
 
-  const runCheck = React.useCallback(async () => {
+  const runCheck = React.useCallback(async (withBeta = false) => {
+    setForceBeta(withBeta);
+    setBetaCheckFailed(false);
     setPhase('checking');
     try {
-      const info = await checkForUpdates();
+      const info = await checkForUpdates({ forceBeta: withBeta });
       if (info.hasUpdate && info.signature && info.url) {
         setLatestVersion(info.latestVersion);
         setPhase('ready');
@@ -146,6 +155,10 @@ const RecoveryUpdateScreen: React.FC<{ errorMessage: string }> = ({ errorMessage
       }
     } catch (error) {
       console.error('Recovery update check failed:', error);
+      // A forced beta fetch fails loudly on purpose: falling back to "already
+      // up to date" would tell the user there is nothing left to try while the
+      // stable channel is known to be unable to open their data.
+      setBetaCheckFailed(withBeta);
       setPhase('checkFailed');
     }
   }, []);
@@ -154,7 +167,7 @@ const RecoveryUpdateScreen: React.FC<{ errorMessage: string }> = ({ errorMessage
   // explicitly click "Upgrade now" so we never download/replace the app
   // without consent.
   React.useEffect(() => {
-    runCheck();
+    void runCheck();
   }, [runCheck]);
 
   const startInstall = React.useCallback(async () => {
@@ -166,7 +179,7 @@ const RecoveryUpdateScreen: React.FC<{ errorMessage: string }> = ({ errorMessage
     setTotal(0);
     setPhase('downloading');
     try {
-      await installUpdate();
+      await installUpdate({ forceBeta });
       setModalOpen(false);
       Modal.success({
         title: i18n.t('settings.about.updateComplete'),
@@ -180,7 +193,10 @@ const RecoveryUpdateScreen: React.FC<{ errorMessage: string }> = ({ errorMessage
       setInstallError(formatUpdateFailureReason(error));
       setPhase('installFailed');
     }
-  }, []);
+    // `forceBeta` is a real dependency: it flips to true when the user presses
+    // "Try beta", and a stale `false` here would send the install back down the
+    // stable-only path that just reported there was nothing to install.
+  }, [forceBeta]);
 
   return (
     <div
@@ -232,7 +248,7 @@ const RecoveryUpdateScreen: React.FC<{ errorMessage: string }> = ({ errorMessage
 
       {phase === 'checkFailed' && (
         <Paragraph type="warning" style={{ textAlign: 'center', marginBottom: 0 }}>
-          {i18n.t('recovery.checkFailed')}
+          {betaCheckFailed ? i18n.t('recovery.betaUpdateFailed') : i18n.t('recovery.checkFailed')}
         </Paragraph>
       )}
 
@@ -254,7 +270,19 @@ const RecoveryUpdateScreen: React.FC<{ errorMessage: string }> = ({ errorMessage
           </Button>
         )}
         {phase === 'checkFailed' && (
-          <Button onClick={runCheck}>{i18n.t('recovery.retry')}</Button>
+          // Retry keeps whichever channel produced the failure: a failed beta
+          // check must not silently fall back to the stable-only check.
+          <Button onClick={() => void runCheck(forceBeta)}>{i18n.t('recovery.retry')}</Button>
+        )}
+        {/*
+          The stable channel having nothing newer is exactly the state where the
+          beta channel is the only way out: the schema is too new for the latest
+          stable, so the rolling beta is the one build that can open this data.
+          Hidden once the beta channel was tried and once the install is known
+          to be package-managed (Scoop / deb can only upgrade the stable build).
+        */}
+        {phase === 'noUpdate' && !forceBeta && !scoopManaged && !debManaged && (
+          <Button onClick={() => void runCheck(true)}>{i18n.t('recovery.tryBeta')}</Button>
         )}
         <Button onClick={() => openExternalUrl(LATEST_RELEASE_URL)}>
           {i18n.t('recovery.openDownloadPage')}

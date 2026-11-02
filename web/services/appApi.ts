@@ -57,10 +57,19 @@ export const getAppVersion = async (): Promise<string> => {
 };
 
 /**
- * Check for updates from GitHub releases (via Tauri backend)
+ * Check for updates from GitHub releases (via Tauri backend).
+ *
+ * `forceBeta` is only for the startup recovery screen: the `receive_beta_updates`
+ * preference lives in the unreadable database there, so the user opts into the
+ * beta channel explicitly. Unlike the normal path, a failed beta fetch is
+ * reported as an error rather than degrading to "already up to date".
  */
-export const checkForUpdates = async (): Promise<UpdateInfo> => {
-  const result = await invoke<UpdateCheckResult>('check_for_updates');
+export const checkForUpdates = async (options?: {
+  forceBeta?: boolean;
+}): Promise<UpdateInfo> => {
+  const result = await invoke<UpdateCheckResult>('check_for_updates', {
+    forceBeta: options?.forceBeta ?? false,
+  });
 
   return {
     hasUpdate: result.has_update,
@@ -77,10 +86,16 @@ export const checkForUpdates = async (): Promise<UpdateInfo> => {
 };
 
 /**
- * Install the update if available
+ * Install the update if available.
+ *
+ * `forceBeta` must match the value used for the check: the backend re-selects
+ * the channel at install time, so a beta check without a beta install would
+ * only rediscover the stable release and fail.
  */
-export const installUpdate = async (): Promise<boolean> => {
-  return await invoke('install_update');
+export const installUpdate = async (options?: {
+  forceBeta?: boolean;
+}): Promise<boolean> => {
+  return await invoke('install_update', { forceBeta: options?.forceBeta ?? false });
 };
 
 /**

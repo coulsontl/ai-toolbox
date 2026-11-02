@@ -6038,7 +6038,9 @@
     "checkFailed": "Update check failed. Please retry or open the download page.",
     "scoopUpdateHint": "New version {{version}} available. This app is installed via Scoop; run `scoop update ai-toolbox` and restart the app.",
     "debUpdateHint": "New version {{version}} is available. This app was installed from a .deb package and cannot self-update; reinstall the new .deb or switch to the AppImage build, then restart the app.",
-    "updateFailedReason": "Reason"
+    "updateFailedReason": "Reason",
+    "tryBeta": "Try beta",
+    "betaUpdateFailed": "Beta check failed. The stable build cannot open this database — the beta build is the only channel that can — so retry or install manually from the download page."
   },
   "providerModelRewrites": {
     "title": "Model rewrites",

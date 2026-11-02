@@ -113,9 +113,22 @@ struct UpdateCandidate {
 /// older beta and a fresh beta supersedes the stable again. A missing or
 /// unreachable beta release degrades to the stable candidate: the beta
 /// channel simply has nothing newer to offer yet.
-async fn select_update_candidate(app: &tauri::AppHandle) -> Result<UpdateCandidate, String> {
+///
+/// `force_beta` is the database-free escape hatch used by the startup
+/// recovery screen. The `receive_beta_updates` preference lives in the SQLite
+/// database, which is exactly what is unreadable there (a `user_version`
+/// newer than this build supports), so a recovery user would otherwise never
+/// be offered the one build that can open their data. The user opts in
+/// explicitly by pressing "Try beta", and that check must not be silent: a
+/// failed beta fetch returns an error instead of degrading to the stable
+/// candidate, because "already up to date" would be a lie with no in-app
+/// alternative left to try.
+async fn select_update_candidate(
+    app: &tauri::AppHandle,
+    force_beta: bool,
+) -> Result<UpdateCandidate, String> {
     let stable = fetch_latest_release(app, STABLE_LATEST_JSON_URL).await?;
-    if !beta_channel_enabled(app) {
+    if !force_beta && !beta_channel_enabled(app) {
         return Ok(UpdateCandidate {
             release: stable,
             beta_channel: false,
@@ -138,6 +151,7 @@ async fn select_update_candidate(app: &tauri::AppHandle) -> Result<UpdateCandida
                 })
             }
         }
+        Err(error) if force_beta => Err(error),
         Err(_) => Ok(UpdateCandidate {
             release: stable,
             beta_channel: false,
@@ -146,14 +160,17 @@ async fn select_update_candidate(app: &tauri::AppHandle) -> Result<UpdateCandida
 }
 
 #[tauri::command]
-pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateCheckResult, String> {
+pub async fn check_for_updates(
+    app: tauri::AppHandle,
+    force_beta: Option<bool>,
+) -> Result<UpdateCheckResult, String> {
     // Get current version from package info
     let current_version = app.package_info().version.to_string();
 
     // Detect current platform
     let current_platform = detect_current_platform();
 
-    let candidate = select_update_candidate(&app).await?;
+    let candidate = select_update_candidate(&app, force_beta.unwrap_or(false)).await?;
     let release = candidate.release;
     let is_beta_channel = candidate.beta_channel;
 
@@ -344,12 +361,15 @@ fn detect_current_platform() -> String {
 ///
 /// This is DB-free; proxy handling is the caller's responsibility (the
 /// `tauri-plugin-updater` reads `HTTP_PROXY` / `HTTPS_PROXY` env vars).
-async fn run_updater_download(app: &tauri::AppHandle) -> Result<bool, String> {
+async fn run_updater_download(
+    app: &tauri::AppHandle,
+    force_beta: bool,
+) -> Result<bool, String> {
     // Re-run the channel selection instead of caching the check result:
     // another channel may have published between check and install. The
     // plugin's own endpoint list is failover, not newest-wins, so exactly one
     // endpoint — the winning channel's — is configured here.
-    let candidate = select_update_candidate(app).await?;
+    let candidate = select_update_candidate(app, force_beta).await?;
     let updater = if candidate.beta_channel {
         let endpoint = BETA_LATEST_JSON_URL
             .parse()
@@ -476,7 +496,10 @@ async fn run_updater_download(app: &tauri::AppHandle) -> Result<bool, String> {
 /// vars are left untouched and the updater inherits system / environment
 /// proxy settings.
 #[tauri::command]
-pub async fn install_update(app: tauri::AppHandle) -> Result<bool, String> {
+pub async fn install_update(
+    app: tauri::AppHandle,
+    force_beta: Option<bool>,
+) -> Result<bool, String> {
     if is_scoop_install() {
         return Err(
             "Scoop-managed installations must be updated with scoop update ai-toolbox".to_string(),
@@ -520,7 +543,10 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<bool, String> {
     }
     // else: recovery mode — leave env vars as-is (system / env proxy).
 
-    let result = run_updater_download(&app).await;
+    // The flag has to survive the install path too: `run_updater_download`
+    // re-selects the channel, and without it a forced beta check would be
+    // followed by a stable-only install that fails with "No update available".
+    let result = run_updater_download(&app, force_beta.unwrap_or(false)).await;
 
     // Restore original environment variables
     if let old @ Some(_) = old_http_proxy {
