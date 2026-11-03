@@ -1017,9 +1017,9 @@ async fn apply_prompt_config_internal_with_events<R: tauri::Runtime>(
 pub async fn apply_antigravity_prompt_config(
     app: tauri::AppHandle,
     state: tauri::State<'_, SqliteDbState>,
-    id: String,
+    config_id: String,
 ) -> Result<(), String> {
-    apply_prompt_config_internal(state, &app, &id, false).await
+    apply_prompt_config_internal(state, &app, &config_id, false).await
 }
 
 #[tauri::command]
