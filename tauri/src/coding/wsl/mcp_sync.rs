@@ -17,13 +17,13 @@ use crate::coding::mcp::command_normalize;
 use crate::coding::mcp::mcp_store;
 use crate::coding::runtime_location;
 use crate::db::helpers::{db_get, db_list};
-use crate::db::schema::DbTable;
+use crate::db::schema::{DbTable, SyncEntityKind};
 use crate::SqliteDbState;
 
 /// Read WSL sync config directly from database (without tauri::State wrapper)
 async fn get_wsl_config(state: &SqliteDbState) -> Result<WSLSyncConfig, String> {
     let db = state.db();
-    let record = db.with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "config"))?;
+    let record = db.with_conn(|conn| db_get(conn, DbTable::SyncEntity(SyncEntityKind::WslConfig), "config"))?;
     Ok(record
         .map(|value| adapter::config_from_db_value(value, vec![]))
         .unwrap_or_default())
@@ -32,7 +32,7 @@ async fn get_wsl_config(state: &SqliteDbState) -> Result<WSLSyncConfig, String> 
 /// Get file mappings from database
 async fn get_file_mappings(state: &SqliteDbState) -> Result<Vec<FileMapping>, String> {
     let db = state.db();
-    let mut records = db.with_conn(|conn| db_list(conn, DbTable::WslFileMapping, None))?;
+    let mut records = db.with_conn(|conn| db_list(conn, DbTable::SyncEntity(SyncEntityKind::WslFileMapping), None))?;
     records.sort_by(|a, b| {
         let module_a = a.get("module").and_then(Value::as_str).unwrap_or_default();
         let module_b = b.get("module").and_then(Value::as_str).unwrap_or_default();

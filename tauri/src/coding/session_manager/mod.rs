@@ -42,7 +42,7 @@ use crate::coding::runtime_location::{
     get_pi_runtime_location_async, RuntimeLocationInfo, RuntimeLocationMode, WslLocationInfo,
 };
 use crate::db::helpers::db_get;
-use crate::db::schema::DbTable;
+use crate::db::schema::{DbTable, SyncEntityKind};
 use crate::db::SqliteDbState;
 
 pub use codex_scratch::{
@@ -3042,7 +3042,7 @@ async fn resolve_wsl_sync_session_context(
 
 fn enabled_wsl_distro(db: &crate::db::SqliteDbState) -> Option<String> {
     let config = db
-        .with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "config"))
+        .with_conn(|conn| db_get(conn, DbTable::SyncEntity(SyncEntityKind::WslConfig), "config"))
         .ok()??;
 
     if config.get("enabled").and_then(Value::as_bool) != Some(true) {

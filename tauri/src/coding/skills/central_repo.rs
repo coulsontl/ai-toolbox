@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 
 use crate::coding::tools::resolve_storage_path;
 use crate::db::helpers::{db_get, db_put};
-use crate::db::schema::DbTable;
+use crate::db::schema::{DbTable, SkillEntityKind};
 
 const CENTRAL_DIR_NAME: &str = "skills";
 const SKILL_SETTINGS_ID: &str = "skills";
@@ -23,7 +23,7 @@ fn load_authoritative_central_repo_path_sync(
     state: &crate::SqliteDbState,
 ) -> std::result::Result<Option<PathBuf>, String> {
     state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::SkillSettings, SKILL_SETTINGS_ID)?
+        Ok(db_get(conn, DbTable::SkillEntity(SkillEntityKind::Settings), SKILL_SETTINGS_ID)?
             .and_then(|record| central_repo_path_from_settings_record(&record)))
     })
 }
@@ -79,17 +79,17 @@ pub async fn save_central_repo_path(state: &crate::SqliteDbState, path: &Path) -
 pub async fn clear_central_repo_path(state: &crate::SqliteDbState) -> Result<()> {
     state
         .with_conn(|conn| {
-            let mut record = db_get(conn, DbTable::SkillSettings, SKILL_SETTINGS_ID)?
+            let mut record = db_get(conn, DbTable::SkillEntity(SkillEntityKind::Settings), SKILL_SETTINGS_ID)?
                 .unwrap_or_else(|| Value::Object(Map::new()));
             let record_object = record
                 .as_object_mut()
-                .ok_or_else(|| "skill_settings payload must be an object".to_string())?;
+                .ok_or_else(|| "skill_entity(kind=settings) payload must be an object".to_string())?;
             record_object.remove("central_repo_path");
             record_object.insert(
                 "updated_at".to_string(),
                 Value::Number(super::types::now_ms().into()),
             );
-            db_put(conn, DbTable::SkillSettings, SKILL_SETTINGS_ID, &record)
+            db_put(conn, DbTable::SkillEntity(SkillEntityKind::Settings), SKILL_SETTINGS_ID, &record)
         })
         .map_err(|e| anyhow::anyhow!("failed to clear central repo path from SQLite: {}", e))?;
     Ok(())
@@ -101,7 +101,7 @@ pub(crate) fn read_skill_settings_i64_from_sqlite(
 ) -> Option<i64> {
     state
         .with_conn(|conn| {
-            Ok(db_get(conn, DbTable::SkillSettings, SKILL_SETTINGS_ID)?
+            Ok(db_get(conn, DbTable::SkillEntity(SkillEntityKind::Settings), SKILL_SETTINGS_ID)?
                 .and_then(|record| record.get(key).and_then(Value::as_i64)))
         })
         .ok()
@@ -113,18 +113,18 @@ pub(crate) fn merge_skill_settings_sqlite(
     patch: Value,
 ) -> std::result::Result<(), String> {
     state.with_conn(|conn| {
-        let mut record = db_get(conn, DbTable::SkillSettings, SKILL_SETTINGS_ID)?
+        let mut record = db_get(conn, DbTable::SkillEntity(SkillEntityKind::Settings), SKILL_SETTINGS_ID)?
             .unwrap_or_else(|| Value::Object(Map::new()));
         let record_object = record
             .as_object_mut()
-            .ok_or_else(|| "skill_settings payload must be an object".to_string())?;
+            .ok_or_else(|| "skill_entity(kind=settings) payload must be an object".to_string())?;
         let patch_object = patch
             .as_object()
-            .ok_or_else(|| "skill_settings patch must be an object".to_string())?;
+            .ok_or_else(|| "skill_entity(kind=settings) patch must be an object".to_string())?;
         for (key, value) in patch_object {
             record_object.insert(key.clone(), value.clone());
         }
-        db_put(conn, DbTable::SkillSettings, SKILL_SETTINGS_ID, &record)
+        db_put(conn, DbTable::SkillEntity(SkillEntityKind::Settings), SKILL_SETTINGS_ID, &record)
     })
 }
 
@@ -614,7 +614,7 @@ mod tests {
             .with_conn(|conn| {
                 db_put(
                     conn,
-                    DbTable::SkillPreferences,
+                    DbTable::SkillEntity(SkillEntityKind::Preferences),
                     "default",
                     &json!({"central_repo_path": "/Users/ralph/.skills"}),
                 )
@@ -635,7 +635,7 @@ mod tests {
             .with_conn(|conn| {
                 db_put(
                     conn,
-                    DbTable::SkillSettings,
+                    DbTable::SkillEntity(SkillEntityKind::Settings),
                     SKILL_SETTINGS_ID,
                     &json!({"git_cache_cleanup_days": 7, "git_cache_ttl_secs": 120}),
                 )
@@ -648,7 +648,7 @@ mod tests {
             .expect("save central repo path");
 
         let record = state
-            .with_conn(|conn| db_get(conn, DbTable::SkillSettings, SKILL_SETTINGS_ID))
+            .with_conn(|conn| db_get(conn, DbTable::SkillEntity(SkillEntityKind::Settings), SKILL_SETTINGS_ID))
             .expect("query skill settings")
             .expect("skill settings record");
 

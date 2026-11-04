@@ -19,7 +19,7 @@ use crate::coding::pi::constants::{
 };
 use crate::coding::runtime_location;
 use crate::db::helpers::{db_delete, db_delete_all, db_get, db_list, db_patch_fields, db_put};
-use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec, SyncEntityKind};
 use crate::db::SqliteDbState;
 use chrono::Local;
 use std::path::Path;
@@ -56,7 +56,7 @@ fn ssh_mapping_order() -> Result<OrderSpec, String> {
 }
 
 fn load_ssh_config_record(state: &SqliteDbState) -> Result<Option<serde_json::Value>, String> {
-    state.with_conn(|conn| db_get(conn, DbTable::SshSyncConfig, "config"))
+    state.with_conn(|conn| db_get(conn, DbTable::SyncEntity(SyncEntityKind::SshConfig), "config"))
 }
 
 fn patch_ssh_config_record(
@@ -64,15 +64,15 @@ fn patch_ssh_config_record(
     fields: &[(&str, serde_json::Value)],
 ) -> Result<(), String> {
     state.with_conn(|conn| {
-        if db_get(conn, DbTable::SshSyncConfig, "config")?.is_none() {
+        if db_get(conn, DbTable::SyncEntity(SyncEntityKind::SshConfig), "config")?.is_none() {
             db_put(
                 conn,
-                DbTable::SshSyncConfig,
+                DbTable::SyncEntity(SyncEntityKind::SshConfig),
                 "config",
                 &adapter::config_to_db_value(&SSHSyncConfig::default()),
             )?;
         }
-        db_patch_fields(conn, DbTable::SshSyncConfig, "config", fields)?;
+        db_patch_fields(conn, DbTable::SyncEntity(SyncEntityKind::SshConfig), "config", fields)?;
         Ok(())
     })
 }
@@ -93,7 +93,7 @@ fn save_ssh_config_record(state: &SqliteDbState, config: &SSHSyncConfig) -> Resu
 fn load_ssh_connections(state: &SqliteDbState) -> Result<Vec<SSHConnection>, String> {
     let order = ssh_connection_order()?;
     state.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::SshConnection, Some(&order))?
+        Ok(db_list(conn, DbTable::SyncEntity(SyncEntityKind::SshConnection), Some(&order))?
             .into_iter()
             .map(adapter::connection_from_db_value)
             .collect())
@@ -103,7 +103,7 @@ fn load_ssh_connections(state: &SqliteDbState) -> Result<Vec<SSHConnection>, Str
 fn load_ssh_file_mappings(state: &SqliteDbState) -> Result<Vec<SSHFileMapping>, String> {
     let order = ssh_mapping_order()?;
     state.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::SshFileMapping, Some(&order))?
+        Ok(db_list(conn, DbTable::SyncEntity(SyncEntityKind::SshFileMapping), Some(&order))?
             .into_iter()
             .map(adapter::mapping_from_db_value)
             .collect())
@@ -226,7 +226,7 @@ pub async fn ssh_save_config(
         for mapping in config.file_mappings.iter() {
             let mapping_data = adapter::mapping_to_db_value(mapping);
             state.with_conn(|conn| {
-                db_put(conn, DbTable::SshFileMapping, &mapping.id, &mapping_data)
+                db_put(conn, DbTable::SyncEntity(SyncEntityKind::SshFileMapping), &mapping.id, &mapping_data)
             })?;
         }
     }
@@ -319,7 +319,7 @@ pub async fn ssh_create_connection(
     normalise_key_fields(&mut connection);
 
     let conn_data = adapter::connection_to_db_value(&connection);
-    state.with_conn(|conn| db_put(conn, DbTable::SshConnection, &connection.id, &conn_data))?;
+    state.with_conn(|conn| db_put(conn, DbTable::SyncEntity(SyncEntityKind::SshConnection), &connection.id, &conn_data))?;
 
     let _ = app.emit("ssh-config-changed", ());
     Ok(())
@@ -335,7 +335,7 @@ pub async fn ssh_update_connection(
     normalise_key_fields(&mut connection);
 
     let conn_data = adapter::connection_to_db_value(&connection);
-    state.with_conn(|conn| db_put(conn, DbTable::SshConnection, &connection.id, &conn_data))?;
+    state.with_conn(|conn| db_put(conn, DbTable::SyncEntity(SyncEntityKind::SshConnection), &connection.id, &conn_data))?;
 
     let _ = app.emit("ssh-config-changed", ());
     Ok(())
@@ -349,8 +349,8 @@ pub async fn ssh_delete_connection(
     id: String,
 ) -> Result<(), String> {
     state.with_conn(|conn| {
-        db_delete(conn, DbTable::SshConnection, &id)?;
-        if let Some(mut config_data) = db_get(conn, DbTable::SshSyncConfig, "config")? {
+        db_delete(conn, DbTable::SyncEntity(SyncEntityKind::SshConnection), &id)?;
+        if let Some(mut config_data) = db_get(conn, DbTable::SyncEntity(SyncEntityKind::SshConfig), "config")? {
             if config_data
                 .get("active_connection_id")
                 .and_then(|value| value.as_str())
@@ -362,7 +362,7 @@ pub async fn ssh_delete_connection(
                         serde_json::Value::String(String::new()),
                     );
                 }
-                db_put(conn, DbTable::SshSyncConfig, "config", &config_data)?;
+                db_put(conn, DbTable::SyncEntity(SyncEntityKind::SshConfig), "config", &config_data)?;
             }
         }
         Ok(())
@@ -382,7 +382,7 @@ pub async fn ssh_set_active_connection(
 ) -> Result<(), String> {
     {
         state.with_conn(|conn| {
-            let mut config_data = db_get(conn, DbTable::SshSyncConfig, "config")?
+            let mut config_data = db_get(conn, DbTable::SyncEntity(SyncEntityKind::SshConfig), "config")?
                 .unwrap_or_else(|| adapter::config_to_db_value(&SSHSyncConfig::default()));
             if let Some(payload) = config_data.as_object_mut() {
                 payload.insert(
@@ -390,7 +390,7 @@ pub async fn ssh_set_active_connection(
                     serde_json::Value::String(connection_id.clone()),
                 );
             }
-            db_put(conn, DbTable::SshSyncConfig, "config", &config_data)
+            db_put(conn, DbTable::SyncEntity(SyncEntityKind::SshConfig), "config", &config_data)
         })?;
     }
 
@@ -444,7 +444,7 @@ pub async fn ssh_add_file_mapping(
 ) -> Result<(), String> {
     validate_file_mapping_cleanup_paths(&mapping)?;
     let mapping_data = adapter::mapping_to_db_value(&mapping);
-    state.with_conn(|conn| db_put(conn, DbTable::SshFileMapping, &mapping.id, &mapping_data))?;
+    state.with_conn(|conn| db_put(conn, DbTable::SyncEntity(SyncEntityKind::SshFileMapping), &mapping.id, &mapping_data))?;
 
     let _ = app.emit("ssh-config-changed", ());
     Ok(())
@@ -459,7 +459,7 @@ pub async fn ssh_update_file_mapping(
 ) -> Result<(), String> {
     validate_file_mapping_cleanup_paths(&mapping)?;
     let mapping_data = adapter::mapping_to_db_value(&mapping);
-    state.with_conn(|conn| db_put(conn, DbTable::SshFileMapping, &mapping.id, &mapping_data))?;
+    state.with_conn(|conn| db_put(conn, DbTable::SyncEntity(SyncEntityKind::SshFileMapping), &mapping.id, &mapping_data))?;
 
     let _ = app.emit("ssh-config-changed", ());
     Ok(())
@@ -472,7 +472,7 @@ pub async fn ssh_delete_file_mapping(
     app: tauri::AppHandle,
     id: String,
 ) -> Result<(), String> {
-    state.with_conn(|conn| db_delete(conn, DbTable::SshFileMapping, &id).map(|_| ()))?;
+    state.with_conn(|conn| db_delete(conn, DbTable::SyncEntity(SyncEntityKind::SshFileMapping), &id).map(|_| ()))?;
 
     let _ = app.emit("ssh-config-changed", ());
     Ok(())
@@ -484,7 +484,7 @@ pub async fn ssh_reset_file_mappings(
     state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    state.with_conn(|conn| db_delete_all(conn, DbTable::SshFileMapping).map(|_| ()))?;
+    state.with_conn(|conn| db_delete_all(conn, DbTable::SyncEntity(SyncEntityKind::SshFileMapping)).map(|_| ()))?;
 
     let _ = app.emit("ssh-config-changed", ());
     Ok(())
@@ -1229,7 +1229,13 @@ async fn backfill_default_file_mappings(
 
     // Read stored version
     let stored_version: u64 = db
-        .with_conn(|conn| db_get(conn, DbTable::SshSyncConfig, "defaults_version"))
+        .with_conn(|conn| {
+            db_get(
+                conn,
+                DbTable::SyncEntity(SyncEntityKind::SshDefaultsVersion),
+                "defaults_version",
+            )
+        })
         .ok()
         .flatten()
         .and_then(|value| value.get("version").and_then(|value| value.as_u64()))
@@ -1322,7 +1328,7 @@ async fn backfill_default_file_mappings(
             if let Err(e) = db.with_conn(|conn| {
                 db_put(
                     conn,
-                    DbTable::SshFileMapping,
+                    DbTable::SyncEntity(SyncEntityKind::SshFileMapping),
                     &default_mapping.id,
                     &mapping_data,
                 )
@@ -1355,7 +1361,7 @@ async fn backfill_default_file_mappings(
                 mapping.remote_path = NEW_OMO_MAPPING_PATH.to_string();
                 let data = adapter::mapping_to_db_value(mapping);
                 if let Err(e) =
-                    db.with_conn(|conn| db_put(conn, DbTable::SshFileMapping, &mapping_id, &data))
+                    db.with_conn(|conn| db_put(conn, DbTable::SyncEntity(SyncEntityKind::SshFileMapping), &mapping_id, &data))
                 {
                     log::warn!("Failed to migrate SSH mapping '{}': {}", mapping_id, e);
                 } else {
@@ -1374,7 +1380,7 @@ async fn backfill_default_file_mappings(
     let _ = db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::SshSyncConfig,
+            DbTable::SyncEntity(SyncEntityKind::SshDefaultsVersion),
             "defaults_version",
             &version_data,
         )

@@ -9,8 +9,8 @@
 - 页面列表数据来自后端中心存储，不直接以任何单个工具配置文件为准。
 - 工具可安装状态、可同步目标和扫描结果分别来自 hooks 与后端命令，不由页面本地推断。
 - 排序的持久化以 server `sort_index` 为准，前端拖拽顺序只是即时 UI 表现。
-- `user_group/user_note` 是 AI Toolbox 内部的用户管理元数据，事实源是后端 `mcp_server` 记录，不是 MCP server 自身配置或工具运行时配置文件。
-- `tags` 与 Skills 同一套标签语义：归一化去重、确定性颜色 hash、`UNTAGGED_FILTER` 哨兵筛选。事实源是后端 `mcp_server.tags` 数组；详情面板是唯一编辑入口。
+- `user_group/user_note` 是 AI Toolbox 内部的用户管理元数据，事实源是后端 `mcp_entity(kind=server)` 记录，不是 MCP server 自身配置或工具运行时配置文件。
+- `tags` 与 Skills 同一套标签语义：归一化去重、确定性颜色 hash、`UNTAGGED_FILTER` 哨兵筛选。事实源是后端 `mcp_entity(kind=server)` 的 `tags` 数组；详情面板是唯一编辑入口。
 
 ## 核心设计决策（Why）
 
@@ -64,7 +64,7 @@ sequenceDiagram
 - 批量启用/禁用与单卡共用同一套 `management_enabled` 语义：批量入口的内部 id 集合必须在 handler 内部按方向选择（enabled 时用 `selectedDisabledServerIds`、disabled 时用 `selectedEnabledServerIds`），不要用整份选择集无脑 toggle；批量 enable 前先为每个受影响 server 聚合 restore 候选，onOk 里逐个 `batchSetManagementEnabled → restoreTools`，成功后 `refresh()` 并清空选择集。失败提示用 `mcp.batch.enableFailed/disableFailed`。
 - 启用/禁用菜单的每个 entry 必须独立判定 `disabled`（禁用入口看 `selectedDisabledServerIds`、重新启用入口看 `selectedEnabledServerIds`）；只选了一类 server 时，另一方向入口照常可用，绝不能因为「整批没有可禁用的项」把重新启用入口也一起禁掉。
 - 「视图与筛选」弹层首行是与 Skills 完全同款的「启用状态」分段筛选（`mcp.enabledFilter.*`），过滤链固定为 管理状态 → 标签 → 搜索；卡片三点菜单顺序与 SkillCard 对齐（编辑元数据 → 禁用服务器/启用 → 编辑配置 → 复制 JSON → 删除），`onSetManagementEnabled` 未接线时整体省略切换项，绝不渲染空 label 占位行；状态点语义统一以 `management_enabled` 为准（卡片与详情面板都是启用=绿色 success 点）。
-- 「数据管理」弹层区与 Skills 同款两项：「分组管理」（`McpGroupsModal`，后端 `mcp_group` 实体表 + `mcp_list/save/delete_group` 命令，字段与 SkillGroupRecord 一致；服务器成员关系仍按 `user_group` 文本匹配——后端保存时重命名会同步改组内服务器文本、删除会清空同名文本，前端 invoke 参数名是 `groupId` 不是 `id`）与「分组导入/导出」（`McpInventoryModal` + 后端 `mcp_{export,preview_group_inventory_import,apply_group_inventory_import}` 命令，JSON 形如 `{schema_version, groups:{组名:[服务器名]}}`，只动分组不动配置；store 的 `update_mcp_server_metadata` 对 None 是“清除”语义，保留 note/tags 必须显式回传）。
+- 「数据管理」弹层区与 Skills 同款两项：「分组管理」（`McpGroupsModal`，后端 `mcp_entity(kind=group)` 实体 + `mcp_list/save/delete_group` 命令，字段与 SkillGroupRecord 一致；服务器成员关系仍按 `user_group` 文本匹配——后端保存时重命名会同步改组内服务器文本、删除会清空同名文本，前端 invoke 参数名是 `groupId` 不是 `id`）与「分组导入/导出」（`McpInventoryModal` + 后端 `mcp_{export,preview_group_inventory_import,apply_group_inventory_import}` 命令，JSON 形如 `{schema_version, groups:{组名:[服务器名]}}`，只动分组不动配置；store 的 `update_mcp_server_metadata` 对 None 是“清除”语义，保留 note/tags 必须显式回传）。
 - 引用后置 `useCallback`/`useMemo` 的依赖数组会在渲染求值时触发 TDZ（TS2448「Cannot access before initialization」）：新增派生 memo 若依赖某个定义在它后面的 handler，必须把 memo 移到该 handler 定义之后，而不是从 deps 里删掉 handler——否则 memo 闭包永久捕获首渲染的陈旧状态。
 
 ## 跨模块依赖

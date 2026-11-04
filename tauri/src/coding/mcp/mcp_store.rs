@@ -12,7 +12,9 @@ use super::command_normalize;
 use super::types::{now_ms, FavoriteMcp, McpGroup, McpPreferences, McpServer, McpSyncDetail};
 use crate::coding::db_id::db_new_id;
 use crate::db::helpers::{db_delete, db_get, db_list, db_max_i64, db_put, db_query_by_field};
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{
+    DbTable, JsonFieldPath, McpEntityKind, OrderDirection, OrderField, OrderSpec,
+};
 use crate::SqliteDbState;
 
 // ==================== MCP Server CRUD ====================
@@ -24,7 +26,7 @@ pub async fn get_mcp_servers(state: &SqliteDbState) -> Result<Vec<McpServer>, St
             OrderField::json_integer("sort_index", OrderDirection::Asc)?,
             OrderField::id(OrderDirection::Asc),
         ]);
-        let records = db_list(conn, DbTable::McpServer, Some(&order))?;
+        let records = db_list(conn, DbTable::McpEntity(McpEntityKind::Server), Some(&order))?;
         Ok(records.into_iter().map(from_db_mcp_server).collect())
     })
 }
@@ -34,7 +36,7 @@ pub async fn get_mcp_server_by_id(
     state: &SqliteDbState,
     server_id: &str,
 ) -> Result<Option<McpServer>, String> {
-    state.with_conn(|conn| Ok(db_get(conn, DbTable::McpServer, server_id)?.map(from_db_mcp_server)))
+    state.with_conn(|conn| Ok(db_get(conn, DbTable::McpEntity(McpEntityKind::Server), server_id)?.map(from_db_mcp_server)))
 }
 
 /// Get MCP server by name
@@ -45,7 +47,7 @@ pub async fn get_mcp_server_by_name(
     state.with_conn(|conn| {
         let records = db_query_by_field(
             conn,
-            DbTable::McpServer,
+            DbTable::McpEntity(McpEntityKind::Server),
             &JsonFieldPath::new("name")?,
             &Value::String(name.to_string()),
             None,
@@ -78,13 +80,13 @@ pub async fn upsert_mcp_server(
         sqlite_server.server_config = normalized_config;
         if server.id.is_empty() {
             let max_index =
-                db_max_i64(conn, DbTable::McpServer, &JsonFieldPath::new("sort_index")?)?
+                db_max_i64(conn, DbTable::McpEntity(McpEntityKind::Server), &JsonFieldPath::new("sort_index")?)?
                     .unwrap_or(-1) as i32;
             sqlite_server.sort_index = max_index + 1;
         }
         db_put(
             conn,
-            DbTable::McpServer,
+            DbTable::McpEntity(McpEntityKind::Server),
             &id,
             &to_clean_mcp_server_payload(&sqlite_server),
         )
@@ -94,7 +96,7 @@ pub async fn upsert_mcp_server(
 
 /// Delete an MCP server
 pub async fn delete_mcp_server(state: &SqliteDbState, server_id: &str) -> Result<(), String> {
-    state.with_conn(|conn| db_delete(conn, DbTable::McpServer, server_id).map(|_| ()))
+    state.with_conn(|conn| db_delete(conn, DbTable::McpEntity(McpEntityKind::Server), server_id).map(|_| ()))
 }
 
 /// Update user-managed metadata for an MCP server without touching sync state.
@@ -121,14 +123,14 @@ pub async fn update_mcp_server_metadata(
 pub async fn reorder_mcp_servers(state: &SqliteDbState, ids: &[String]) -> Result<(), String> {
     state.with_conn(|conn| {
         for (index, id) in ids.iter().enumerate() {
-            if let Some(mut record) = db_get(conn, DbTable::McpServer, id)? {
+            if let Some(mut record) = db_get(conn, DbTable::McpEntity(McpEntityKind::Server), id)? {
                 if let Some(object) = record.as_object_mut() {
                     object.insert(
                         "sort_index".to_string(),
                         Value::Number(serde_json::Number::from(index as i64)),
                     );
                 }
-                db_put(conn, DbTable::McpServer, id, &record)?;
+                db_put(conn, DbTable::McpEntity(McpEntityKind::Server), id, &record)?;
             }
         }
         Ok(())
@@ -257,7 +259,7 @@ pub async fn set_server_enabled_tools(
 /// Get MCP preferences (singleton record)
 pub async fn get_mcp_preferences(state: &SqliteDbState) -> Result<McpPreferences, String> {
     state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::McpPreferences, "default")?
+        Ok(db_get(conn, DbTable::McpEntity(McpEntityKind::Preferences), "default")?
             .map(from_db_mcp_preferences)
             .unwrap_or_default())
     })
@@ -271,7 +273,7 @@ pub async fn save_mcp_preferences(
     state.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::McpPreferences,
+            DbTable::McpEntity(McpEntityKind::Preferences),
             "default",
             &to_mcp_preferences_payload(prefs),
         )
@@ -287,7 +289,7 @@ pub async fn get_favorite_mcps(state: &SqliteDbState) -> Result<Vec<FavoriteMcp>
             OrderField::json_integer("created_at", OrderDirection::Desc)?,
             OrderField::id(OrderDirection::Asc),
         ]);
-        let records = db_list(conn, DbTable::FavoriteMcp, Some(&order))?;
+        let records = db_list(conn, DbTable::McpEntity(McpEntityKind::Favorite), Some(&order))?;
         Ok(records.into_iter().map(from_db_favorite_mcp).collect())
     })
 }
@@ -300,7 +302,7 @@ pub async fn get_favorite_mcp_by_name(
     state.with_conn(|conn| {
         let records = db_query_by_field(
             conn,
-            DbTable::FavoriteMcp,
+            DbTable::McpEntity(McpEntityKind::Favorite),
             &JsonFieldPath::new("name")?,
             &Value::String(name.to_string()),
             None,
@@ -324,13 +326,13 @@ pub async fn upsert_favorite_mcp(
     if let Some(obj) = payload.as_object_mut() {
         obj.remove("id");
     }
-    state.with_conn(|conn| db_put(conn, DbTable::FavoriteMcp, &id, &payload))?;
+    state.with_conn(|conn| db_put(conn, DbTable::McpEntity(McpEntityKind::Favorite), &id, &payload))?;
     Ok(id)
 }
 
 /// Delete a favorite MCP
 pub async fn delete_favorite_mcp(state: &SqliteDbState, id: &str) -> Result<(), String> {
-    state.with_conn(|conn| db_delete(conn, DbTable::FavoriteMcp, id).map(|_| ()))
+    state.with_conn(|conn| db_delete(conn, DbTable::McpEntity(McpEntityKind::Favorite), id).map(|_| ()))
 }
 
 // ==================== Managed Groups ====================
@@ -342,7 +344,7 @@ pub async fn get_mcp_groups(state: &SqliteDbState) -> Result<Vec<McpGroup>, Stri
             OrderField::json_integer("sort_index", OrderDirection::Asc)?,
             OrderField::id(OrderDirection::Asc),
         ]);
-        let records = db_list(conn, DbTable::McpGroup, Some(&order))?;
+        let records = db_list(conn, DbTable::McpEntity(McpEntityKind::Group), Some(&order))?;
         Ok(records.into_iter().map(from_db_mcp_group).collect())
     })
 }
@@ -358,13 +360,13 @@ pub async fn upsert_mcp_group(state: &SqliteDbState, group: &McpGroup) -> Result
     if let Some(obj) = payload.as_object_mut() {
         obj.remove("id");
     }
-    state.with_conn(|conn| db_put(conn, DbTable::McpGroup, &id, &payload))?;
+    state.with_conn(|conn| db_put(conn, DbTable::McpEntity(McpEntityKind::Group), &id, &payload))?;
     Ok(id)
 }
 
 /// Delete a managed group by id
 pub async fn delete_mcp_group(state: &SqliteDbState, group_id: &str) -> Result<(), String> {
-    state.with_conn(|conn| db_delete(conn, DbTable::McpGroup, group_id).map(|_| ()))
+    state.with_conn(|conn| db_delete(conn, DbTable::McpEntity(McpEntityKind::Group), group_id).map(|_| ()))
 }
 
 #[cfg(test)]
@@ -442,6 +444,66 @@ mod tests {
             .expect("read favorites");
         assert_eq!(favorites.len(), 1);
         assert_eq!(favorites[0].name, "Favorite A");
+        assert_eq!(
+            get_mcp_server_by_name(&sqlite_state, "Server A")
+                .await
+                .expect("read server by name")
+                .expect("server by name")
+                .id,
+            server_id
+        );
+        assert_eq!(
+            get_favorite_mcp_by_name(&sqlite_state, "Favorite A")
+                .await
+                .expect("read favorite by name")
+                .expect("favorite by name")
+                .id,
+            favorite_id
+        );
+
+        // Groups are the fourth `mcp_entity` kind. A group must not appear in
+        // the server list (and vice versa), so exercise the full CRUD here.
+        let group = McpGroup {
+            id: String::new(),
+            name: "Group A".to_string(),
+            note: None,
+            sort_index: 0,
+            created_at: 7,
+            updated_at: 8,
+        };
+        let group_id = upsert_mcp_group(&sqlite_state, &group)
+            .await
+            .expect("save group");
+        let groups = get_mcp_groups(&sqlite_state).await.expect("read groups");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "Group A");
+        assert_eq!(
+            get_mcp_servers(&sqlite_state).await.expect("read servers").len(),
+            1,
+            "the group row must not leak into the server kind"
+        );
+        delete_mcp_group(&sqlite_state, &group_id)
+            .await
+            .expect("delete group");
+        assert!(get_mcp_groups(&sqlite_state)
+            .await
+            .expect("read groups after delete")
+            .is_empty());
+
+        delete_favorite_mcp(&sqlite_state, &favorite_id)
+            .await
+            .expect("delete favorite");
+        assert!(get_favorite_mcps(&sqlite_state)
+            .await
+            .expect("read favorites after delete")
+            .is_empty());
+        delete_mcp_server(&sqlite_state, &server_id)
+            .await
+            .expect("delete server");
+        assert!(get_mcp_server_by_id(&sqlite_state, &server_id)
+            .await
+            .expect("read server after delete")
+            .is_none());
     }
 
     #[tokio::test]

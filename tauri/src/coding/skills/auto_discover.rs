@@ -405,7 +405,7 @@ const FINGERPRINTS_KEY: &str = "auto_sync_fingerprints";
 
 fn load_fingerprints(state: &SqliteDbState) -> HashMap<String, SkillFingerprint> {
     let raw = state
-        .with_conn(|conn| crate::db::helpers::db_get(conn, crate::db::schema::DbTable::SkillSettings, "skills"))
+        .with_conn(|conn| crate::db::helpers::db_get(conn, crate::db::schema::DbTable::SkillEntity(crate::db::schema::SkillEntityKind::Settings), "skills"))
         .ok()
         .flatten();
     let Some(value) = raw

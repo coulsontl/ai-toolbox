@@ -22,7 +22,7 @@ use crate::coding::skills::remote_target::RemoteSkillTargetAction;
 use crate::coding::skills::skill_store;
 use crate::coding::tools::builtin::BUILTIN_TOOLS;
 use crate::db::helpers::db_get;
-use crate::db::schema::DbTable;
+use crate::db::schema::{DbTable, SyncEntityKind};
 use crate::SqliteDbState;
 
 const WSL_CENTRAL_DIR: &str = "~/.ai-toolbox/skills";
@@ -102,7 +102,7 @@ fn report_target_result(
 /// Read WSL sync config directly from database
 async fn get_wsl_config(state: &SqliteDbState) -> Result<WSLSyncConfig, String> {
     let db = state.db();
-    let record = db.with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "config"))?;
+    let record = db.with_conn(|conn| db_get(conn, DbTable::SyncEntity(SyncEntityKind::WslConfig), "config"))?;
     Ok(record
         .map(|value| adapter::config_from_db_value(value, vec![]))
         .unwrap_or_default())

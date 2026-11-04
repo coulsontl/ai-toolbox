@@ -9,7 +9,7 @@
 - 图片任务与资产的真实主数据以后端 Tauri 命令和 SQLite JSONB 记录为准，不以前端临时表单、预览 URL 或当前可见列表为准。
 - `references`、当前表单、工作台内部的运行时模型/渠道选择都只是 UI 临时状态；真正提交给模型的内容由后端 `image_create_job` 收口。
 - 本地图片文件的真实来源是 app data 下的图片资产目录；前端只消费后端返回的文件路径并转成可显示 URL。
-- 渠道配置的真实来源以后端 `image_channel` 表为准，不以前端当前草稿或工作台自动推导结果为准。
+- 渠道配置的真实来源以后端 `image_entity(kind=channel)` 为准，不以前端当前草稿或工作台自动推导结果为准。
 
 ## 核心设计决策（Why）
 
@@ -42,8 +42,8 @@ sequenceDiagram
 ## 易错点与历史坑（Gotchas）
 
 - 不要把 `Image` 当成第 5 个 coding runtime 模块去接 `visibleTabs -> WSL/SSH skipModules` 那套语义。它没有对应的 WSL/SSH runtime-location 逻辑。
-- 不要再把图片接口配置理解成单个 `settings` 对象；当前真实配置源已经是 `image_channel` 表，而不是旧的 `base_url/api_key/default_model` 单记录。
-- 图片模块从数据库读出的 `image_channel` / `image_job` / `image_asset` `id` 不能直接信任 `type::string(id)` 的原样值；前后端对外使用前必须先清洗成干净业务 id，否则编辑渠道、删除渠道、拖拽排序和按 `channel_id` 提交任务都会因为 record id 前缀而找不到记录。
+- 不要再把图片接口配置理解成单个 `settings` 对象；当前真实配置源已经是 `image_entity(kind=channel)`，而不是旧的 `base_url/api_key/default_model` 单记录。
+- 图片模块从数据库读出的 `image_entity`（channel / job / asset）`id` 不能直接信任 `type::string(id)` 的原样值；前后端对外使用前必须先清洗成干净业务 id，否则编辑渠道、删除渠道、拖拽排序和按 `channel_id` 提交任务都会因为 record id 前缀而找不到记录。
 - 参考图在前端可以先是 data URL，但提交和历史记录不能只停留在内存里；后端必须统一落资产文件，否则下载、历史和备份恢复都会分叉。
 - 参考图缩略图列表必须使用稳定尺寸的媒体框承载图片，操作按钮固定在媒体框内的稳定位置；不要让图片原始宽高比例决定卡片高度，否则多图混排会造成操作按钮上下错位。
 - `ImagePage` 运行在 KeepAlive 容器里，切页后通常不会卸载。异步生成完成后的提示、loading 收尾和结果回填要考虑页面可能已隐藏。

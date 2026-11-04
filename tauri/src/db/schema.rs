@@ -153,6 +153,116 @@ impl RelayKind {
     }
 }
 
+/// Which kind of record a `skill_entity` row holds.
+///
+/// The Skills feature owns several entity types (managed skills, groups, source
+/// repos, and two singleton records). They have different JSON shapes but the
+/// same lifecycle and query pattern, so they share one JSONB table. `kind` is a
+/// real column rather than a JSON field because every payload struct is
+/// `#[serde(default)]`; without the column a repo payload would deserialize
+/// happily as a skill.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum SkillEntityKind {
+    Skill,
+    Group,
+    Repo,
+    Preferences,
+    Settings,
+}
+
+impl SkillEntityKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Skill => "skill",
+            Self::Group => "group",
+            Self::Repo => "repo",
+            Self::Preferences => "preferences",
+            Self::Settings => "settings",
+        }
+    }
+}
+
+/// Which kind of record an `mcp_entity` row holds.
+///
+/// Servers, favourites, managed groups and the singleton preferences record were
+/// four separate tables before v35. They share the JSONB row shape and are all
+/// low-frequency user configuration, so they now share one scoped table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum McpEntityKind {
+    Server,
+    Preferences,
+    Favorite,
+    Group,
+}
+
+impl McpEntityKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Server => "server",
+            Self::Preferences => "preferences",
+            Self::Favorite => "favorite",
+            Self::Group => "group",
+        }
+    }
+}
+
+/// Which kind of record a `sync_entity` row holds.
+///
+/// WSL and SSH are the two remote-sync transports. Their config singletons,
+/// default-version markers, file mappings and SSH connections all live in one
+/// table, but each gets a distinct kind: the two file-mapping tables reuse the
+/// same ids (`opencode-main`, `claude-config`, …) and both config tables use
+/// the id `config`, so collapsing them into one kind would overwrite rows. The
+/// `defaults_version` rows get their own kinds for the same reason — they are a
+/// different record shape from the `config` row and must not appear in its list.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum SyncEntityKind {
+    WslConfig,
+    WslDefaultsVersion,
+    WslFileMapping,
+    SshConfig,
+    SshDefaultsVersion,
+    SshConnection,
+    SshFileMapping,
+}
+
+impl SyncEntityKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WslConfig => "wsl_config",
+            Self::WslDefaultsVersion => "wsl_defaults_version",
+            Self::WslFileMapping => "wsl_file_mapping",
+            Self::SshConfig => "ssh_config",
+            Self::SshDefaultsVersion => "ssh_defaults_version",
+            Self::SshConnection => "ssh_connection",
+            Self::SshFileMapping => "ssh_file_mapping",
+        }
+    }
+}
+
+/// Which kind of record an `image_entity` row holds.
+///
+/// Channels, generation jobs and image assets are all user-scoped rows in the
+/// Image Studio feature. Jobs and assets are history rather than high-frequency
+/// state: they are created only when the user starts a generation, so they do
+/// not need the separate-table treatment the relay quota tables use.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum ImageEntityKind {
+    Channel,
+    Job,
+    Asset,
+}
+
+impl ImageEntityKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Channel => "channel",
+            Self::Job => "job",
+            Self::Asset => "asset",
+        }
+    }
+}
+
 /// The physical row scope a table reads and writes.
 ///
 /// A consolidated table holds rows for many CLIs (or many relay kinds); the
@@ -233,26 +343,21 @@ pub enum DbTable {
     CliOfficialAccount(Cli),
     CliConfig(Cli, CliConfigKind),
 
-    Skill,
-    SkillGroup,
-    SkillRepo,
-    SkillPreferences,
-    SkillSettings,
+    // ---- feature-domain tables, consolidated ---------------------------------
+    //
+    // Four tables instead of seventeen. Each domain's entity types share the
+    // same JSONB columns and lifecycle; the `kind` column (carried by the
+    // variant) keeps them from reading each other's rows. `custom_tool` stays
+    // separate: it is a cross-domain tool registry shared by Skills and MCP,
+    // not an entity owned by either.
+    SkillEntity(SkillEntityKind),
+    McpEntity(McpEntityKind),
+    SyncEntity(SyncEntityKind),
+    ImageEntity(ImageEntityKind),
+
     CustomTool,
-    McpServer,
-    McpPreferences,
-    FavoriteMcp,
-    McpGroup,
-    WslSyncConfig,
-    WslFileMapping,
-    SshSyncConfig,
-    SshConnection,
-    SshFileMapping,
     ProxyGatewaySettings,
     GatewaySessionUsageState,
-    ImageChannel,
-    ImageJob,
-    ImageAsset,
 
     // ---- relay ("2API") -----------------------------------------------------
     RelayEntity(RelayKind),
@@ -272,26 +377,13 @@ pub const ALL_TABLES: &[DbTable] = &[
     DbTable::CliProvider(Cli::Claude),
     DbTable::CliOfficialAccount(Cli::Claude),
     DbTable::CliConfig(Cli::Claude, CliConfigKind::Common),
-    DbTable::Skill,
-    DbTable::SkillGroup,
-    DbTable::SkillRepo,
-    DbTable::SkillPreferences,
-    DbTable::SkillSettings,
+    DbTable::SkillEntity(SkillEntityKind::Skill),
     DbTable::CustomTool,
-    DbTable::McpServer,
-    DbTable::McpPreferences,
-    DbTable::FavoriteMcp,
-    DbTable::McpGroup,
-    DbTable::WslSyncConfig,
-    DbTable::WslFileMapping,
-    DbTable::SshSyncConfig,
-    DbTable::SshConnection,
-    DbTable::SshFileMapping,
+    DbTable::McpEntity(McpEntityKind::Server),
+    DbTable::SyncEntity(SyncEntityKind::WslConfig),
     DbTable::ProxyGatewaySettings,
     DbTable::GatewaySessionUsageState,
-    DbTable::ImageChannel,
-    DbTable::ImageJob,
-    DbTable::ImageAsset,
+    DbTable::ImageEntity(ImageEntityKind::Channel),
     DbTable::RelayEntity(RelayKind::Channel),
     DbTable::RelayQuotaSnapshot,
     DbTable::RelayQuotaPoint,
@@ -320,26 +412,13 @@ impl DbTable {
             DbTable::CliProvider(_) => "cli_provider",
             DbTable::CliOfficialAccount(_) => "cli_official_account",
             DbTable::CliConfig(..) => "cli_config",
-            DbTable::Skill => "skill",
-            DbTable::SkillGroup => "skill_group",
-            DbTable::SkillRepo => "skill_repo",
-            DbTable::SkillPreferences => "skill_preferences",
-            DbTable::SkillSettings => "skill_settings",
+            DbTable::SkillEntity(_) => "skill_entity",
+            DbTable::McpEntity(_) => "mcp_entity",
+            DbTable::SyncEntity(_) => "sync_entity",
+            DbTable::ImageEntity(_) => "image_entity",
             DbTable::CustomTool => "custom_tool",
-            DbTable::McpServer => "mcp_server",
-            DbTable::McpPreferences => "mcp_preferences",
-            DbTable::FavoriteMcp => "favorite_mcp",
-            DbTable::McpGroup => "mcp_group",
-            DbTable::WslSyncConfig => "wsl_sync_config",
-            DbTable::WslFileMapping => "wsl_file_mapping",
-            DbTable::SshSyncConfig => "ssh_sync_config",
-            DbTable::SshConnection => "ssh_connection",
-            DbTable::SshFileMapping => "ssh_file_mapping",
             DbTable::ProxyGatewaySettings => "proxy_gateway_settings",
             DbTable::GatewaySessionUsageState => "gateway_session_usage_state",
-            DbTable::ImageChannel => "image_channel",
-            DbTable::ImageJob => "image_job",
-            DbTable::ImageAsset => "image_asset",
             DbTable::RelayEntity(_) => "relay_entity",
             DbTable::RelayQuotaSnapshot => "relay_quota_snapshot",
             DbTable::RelayQuotaPoint => "relay_quota_point",
@@ -352,6 +431,10 @@ impl DbTable {
             DbTable::CliProvider(cli) => TableScope::cli(cli.as_str()),
             DbTable::CliOfficialAccount(cli) => TableScope::cli(cli.as_str()),
             DbTable::CliConfig(cli, kind) => TableScope::cli_kind(cli.as_str(), kind.as_str()),
+            DbTable::SkillEntity(kind) => TableScope::kind(kind.as_str()),
+            DbTable::McpEntity(kind) => TableScope::kind(kind.as_str()),
+            DbTable::SyncEntity(kind) => TableScope::kind(kind.as_str()),
+            DbTable::ImageEntity(kind) => TableScope::kind(kind.as_str()),
             DbTable::RelayEntity(kind) => TableScope::kind(kind.as_str()),
             _ => TableScope::NONE,
         }
@@ -599,8 +682,8 @@ mod tests {
         let names = all_table_names();
         assert_eq!(
             names.len(),
-            27,
-            "the consolidated schema has 27 physical JSONB tables; a different \
+            14,
+            "the consolidated schema has 14 physical JSONB tables; a different \
              count means ALL_TABLES and this expectation drifted apart"
         );
         let unique: HashSet<_> = names.iter().collect();
@@ -633,6 +716,10 @@ mod tests {
             DbTable::Settings,
             DbTable::CliProvider(Cli::Grok),
             DbTable::CliConfig(Cli::Kimi, CliConfigKind::Prompt),
+            DbTable::SkillEntity(SkillEntityKind::Group),
+            DbTable::McpEntity(McpEntityKind::Favorite),
+            DbTable::SyncEntity(SyncEntityKind::SshFileMapping),
+            DbTable::ImageEntity(ImageEntityKind::Job),
             DbTable::RelayEntity(RelayKind::Channel),
             DbTable::RelayQuotaSnapshot,
         ];
@@ -661,6 +748,61 @@ mod tests {
                 DbTable::CliConfig(*cli, CliConfigKind::Common),
             ] {
                 assert_eq!(table.scope().cli_key, Some(cli.as_str()));
+            }
+        }
+    }
+
+    #[test]
+    fn feature_entity_tables_are_named_once_but_scoped_many_times() {
+        let cases: [(&str, Vec<DbTable>); 4] = [
+            (
+                "skill_entity",
+                vec![
+                    DbTable::SkillEntity(SkillEntityKind::Skill),
+                    DbTable::SkillEntity(SkillEntityKind::Group),
+                    DbTable::SkillEntity(SkillEntityKind::Repo),
+                    DbTable::SkillEntity(SkillEntityKind::Preferences),
+                    DbTable::SkillEntity(SkillEntityKind::Settings),
+                ],
+            ),
+            (
+                "mcp_entity",
+                vec![
+                    DbTable::McpEntity(McpEntityKind::Server),
+                    DbTable::McpEntity(McpEntityKind::Preferences),
+                    DbTable::McpEntity(McpEntityKind::Favorite),
+                    DbTable::McpEntity(McpEntityKind::Group),
+                ],
+            ),
+            (
+                "sync_entity",
+                vec![
+                    DbTable::SyncEntity(SyncEntityKind::WslConfig),
+                    DbTable::SyncEntity(SyncEntityKind::WslDefaultsVersion),
+                    DbTable::SyncEntity(SyncEntityKind::WslFileMapping),
+                    DbTable::SyncEntity(SyncEntityKind::SshConfig),
+                    DbTable::SyncEntity(SyncEntityKind::SshDefaultsVersion),
+                    DbTable::SyncEntity(SyncEntityKind::SshConnection),
+                    DbTable::SyncEntity(SyncEntityKind::SshFileMapping),
+                ],
+            ),
+            (
+                "image_entity",
+                vec![
+                    DbTable::ImageEntity(ImageEntityKind::Channel),
+                    DbTable::ImageEntity(ImageEntityKind::Job),
+                    DbTable::ImageEntity(ImageEntityKind::Asset),
+                ],
+            ),
+        ];
+
+        for (expected_name, tables) in cases {
+            let mut kinds = HashSet::new();
+            for table in tables {
+                assert_eq!(table.name(), expected_name);
+                assert_eq!(table.scope().cli_key, None);
+                let kind = table.scope().kind.expect("feature tables are kind-scoped");
+                assert!(kinds.insert(kind), "duplicate kind {kind} in {expected_name}");
             }
         }
     }

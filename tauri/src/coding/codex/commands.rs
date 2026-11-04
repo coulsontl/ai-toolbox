@@ -35,7 +35,10 @@ use crate::db::helpers::{
     db_count, db_delete, db_delete_all, db_get, db_list, db_max_i64, db_patch_fields, db_put,
     db_query_by_bool, db_update_applied_status,
 };
-use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{
+    Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec,
+    SyncEntityKind,
+};
 use crate::db::SqliteDbState;
 use crate::http_client;
 use chrono::Local;
@@ -309,7 +312,7 @@ fn resolve_wsl_sync_codex_history_source(
     db: &crate::db::SqliteDbState,
 ) -> Option<CodexHistorySourceCandidate> {
     let config = db
-        .with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "config"))
+        .with_conn(|conn| db_get(conn, DbTable::SyncEntity(SyncEntityKind::WslConfig), "config"))
         .ok()??;
 
     if config.get("enabled").and_then(Value::as_bool) != Some(true) {

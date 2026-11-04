@@ -6,7 +6,7 @@
 
 ## Source of Truth
 
-- 图片工作台的主数据分两层：SQLite JSONB 里的 `image_channel` / `image_job` / `image_asset` 元数据，以及 app data 下 `image-studio/assets/` 的真实图片文件；两者缺一不可。不再双写旧库；旧 SurrealDB 仅用于启动时一次性导入，备份默认包含资产文件，但用户可通过备份设置关闭 `backup_image_assets_enabled` 来减少备份体积。
+- 图片工作台的主数据分两层：SQLite JSONB 里的 `image_entity`（`kind=channel` / `job` / `asset`）元数据，以及 app data 下 `image-studio/assets/` 的真实图片文件；两者缺一不可。不再双写旧库；旧 SurrealDB 仅用于启动时一次性导入，备份默认包含资产文件，但用户可通过备份设置关闭 `backup_image_assets_enabled` 来减少备份体积。
 - 前端表单、预览 data URL 和临时引用顺序都不是业务事实源；真正的任务记录由 `image_create_job` 写库后形成。
 - 下载、历史、备份恢复消费的是落盘后的图片资产文件，不是接口响应的临时 base64。
 
@@ -14,7 +14,7 @@
 
 - 图片资产不直接整份写进数据库，而是文件落盘 + 元数据写库。这样历史规模增长后更可控，也更容易接入当前仓库的备份恢复链路。
 - `Image` 不接入 `runtime_location`、WSL Direct、SSH 同步那套 4 个 coding 工具共享语义，因为它没有对应 CLI runtime 目录。
-- 渠道配置单独落 `image_channel` 表，模型嵌在渠道记录里；工作台运行时选择由前端聚合后传 `channel_id + model_id`，后端再做最终校验。
+- 渠道配置单独落 `image_entity(kind=channel)`，模型嵌在渠道记录里；工作台运行时选择由前端聚合后传 `channel_id + model_id`，后端再做最终校验。
 - 当前图片模块同时支持两条协议路径：
   - `openai_compatible`：走 `images/generations` / `images/edits`
   - `gemini`：走 Gemini Native `models/{model}:generateContent`
@@ -49,15 +49,15 @@ sequenceDiagram
 
 - 自定义应用数据目录时，资产文件与 `convertFileSrc` 访问白名单必须一起切换；`lib.rs` 在建窗前通过 `app_paths::configure_image_asset_scope` 只授权当前根下的 `image-studio/assets`。静态 `$APPDATA` scope 不会随应用自定义 resolver 变化，不能重新依赖它或把整个数据根（含数据库/bootstrap）都开放。
 
-- 不要再把图片接口配置保存成单个 `image_settings` 记录；当前真实配置源已经是 `image_channel` 表。
+- 不要再把图片接口配置保存成单个 `image_settings` 记录；当前真实配置源已经是 `image_entity(kind=channel)`。
 - SQLite helper 返回的图片记录 `id` 已经是干净业务 id；DTO 输出、更新查询、删除和排序都应继续使用这个 id，不要重新拼接旧 record-id 形式。
-- `image_asset` 批量读取必须能容忍缺失资产记录。历史任务可能引用已被手动删除或恢复缺失的文件/记录，缺失项不能让本来已经成功的图片任务 DTO 回填整体失败。
-- `image_asset` 的安全批量读取方式是：通过 SQLite helper 逐个读取干净业务 id，并在 Rust 侧按原始输入 `asset_ids` 顺序收集结果；缺失记录跳过。不要假设数据库返回顺序会自动等于输入顺序，也不要指望数据库在重复 id 场景下返回重复行。
+- `image_entity(kind=asset)` 批量读取必须能容忍缺失资产记录。历史任务可能引用已被手动删除或恢复缺失的文件/记录，缺失项不能让本来已经成功的图片任务 DTO 回填整体失败。
+- `image_entity(kind=asset)` 的安全批量读取方式是：通过 SQLite helper 逐个读取干净业务 id，并在 Rust 侧按原始输入 `asset_ids` 顺序收集结果；缺失记录跳过。不要假设数据库返回顺序会自动等于输入顺序，也不要指望数据库在重复 id 场景下返回重复行。
 - 不要把 `gpt-image-2-2k` / `4k` 这类外部代理 alias 当成通用协议写死到核心数据模型里；当前只对齐标准 `gpt-image-2`。
 - 参考图提交时不能把前端 data URL 原样落表；应先解 base64、写资产文件，再把资产 ID 关联到 job。
 - `image_create_job` 不能只信前端自动选择结果；必须根据 `channel_id + model_id + mode` 再校验一次渠道启用状态、模型启用状态和模式能力。
 - 同一个 `model_id` 允许存在于多个渠道，因此任务记录必须持久化 `channel_id`、`channel_name_snapshot`、`model_id`、`model_name_snapshot`，不要只存一个裸模型名。
-- “自动选择第一个渠道”的语义依赖 `image_channel.sort_order`；排序是业务事实，不能依赖查询返回顺序或 JSON 内部顺序。
+- “自动选择第一个渠道”的语义依赖 `image_entity(kind=channel)` 的 `sort_order`；排序是业务事实，不能依赖查询返回顺序或 JSON 内部顺序。
 - 返回给前端用于 `<img>` 展示的应该是文件路径，由前端再通过 `convertFileSrc` 转换；不要自造协议 URL。
 - 只把文件路径回给前端还不够。图片页一旦依赖 `convertFileSrc(file_path)` 展示 app data 下的本地资产，必须同步确认 `tauri.conf.json -> app.security.assetProtocol` 已开启，并且 scope 覆盖 `image-studio/assets/**`；否则后端任务、数据库记录和本地文件都成功了，webview 仍会因为拿不到 asset 协议资源而表现成“页面没有图片”。
 - 新增图片资产目录后，必须在同一任务里同步接入 backup / restore，否则会出现“历史任务还在、图片文件丢了”的分叉；唯一例外是用户显式关闭备份设置里的图片资产开关。
@@ -85,7 +85,7 @@ sequenceDiagram
 - 图片链路的阶段性成功日志默认应降到 `debug`，不要长期保留成文件级 `info` 噪音；常驻日志重点保留 `warn/error`，尤其自动重试、上游 `5xx`、JSON 解析失败、结果图二次拉取失败和 DTO 构建失败。
 - 当上游返回 `data[].url` 时，二次下载必须把非 `2xx` 视为失败；不能把错误页字节当作图片资产继续落盘，否则会制造“任务 done 但图片损坏”的假成功。
 - 图片任务一旦已经创建了 `running` 记录，后续任何输出资产落盘失败或最终状态更新失败，都必须走显式错误收口，把 job 落成 `error`；不要让异常直接冒泡后留下永远不结束的 `running` 脏记录。
-- 如果要把图片请求快照落库用于历史排查，只能保存脱敏后的 headers 和可读的 body 摘要。不要把真实 `Authorization`、multipart 边界或图片二进制直接写进 `image_job`。
+- 如果要把图片请求快照落库用于历史排查，只能保存脱敏后的 headers 和可读的 body 摘要。不要把真实 `Authorization`、multipart 边界或图片二进制直接写进 `image_entity(kind=job)`。
 - 某些图片网关在 Windows 客户端上会出现“服务端已生成成功，但压缩响应在 50-60 秒附近被远端直接断开”的兼容问题；症状通常是服务端使用记录正常、`curl` 可成功，但 `reqwest` / Windows Python 在 `send()` 阶段报 `error sending request for url` 或 `RemoteDisconnected`。当前图片模块对这类渠道统一发送 `Accept-Encoding: identity`，并且图片请求单独走禁用自动解压的 HTTP client；这两层 workaround 不要轻易删掉。
 
 ## 跨模块依赖

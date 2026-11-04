@@ -13,8 +13,9 @@ use ai_toolbox_lib::db::helpers::{
 };
 use ai_toolbox_lib::db::migrations::{self, TARGET_SCHEMA_VERSION};
 use ai_toolbox_lib::db::schema::{
-    validate_identifier, Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField,
-    OrderSpec, RelayKind, ALL_TABLES,
+    validate_identifier, Cli, CliConfigKind, DbTable, ImageEntityKind, JsonFieldPath,
+    McpEntityKind, OrderDirection, OrderField, OrderSpec, RelayKind, SkillEntityKind,
+    SyncEntityKind, ALL_TABLES,
 };
 use ai_toolbox_lib::db::sqlite_state::{
     initialize_connection, SqliteDbState, SQLITE_MIGRATION_BACKUP_DIR,
@@ -65,6 +66,15 @@ fn jsonb_probe_and_schema_migration_create_all_tables() {
         "idx_cli_config_key_kind",
         "idx_relay_entity_kind",
         "idx_relay_quota_point_kind_at",
+        "idx_skill_entity_name",
+        "idx_skill_entity_sort",
+        "idx_mcp_entity_name",
+        "idx_mcp_entity_sort",
+        "idx_mcp_entity_created_at",
+        "idx_sync_entity_module",
+        "idx_sync_entity_sort",
+        "idx_image_entity_sort",
+        "idx_image_entity_created_at",
     ] {
         let exists: i64 = conn
             .query_row(
@@ -83,6 +93,10 @@ fn jsonb_probe_and_schema_migration_create_all_tables() {
         ("idx_cli_official_account_provider", "cli_key"),
         ("idx_cli_config_applied", "cli_key"),
         ("idx_relay_entity_channel", "kind"),
+        ("idx_skill_entity_name", "kind"),
+        ("idx_mcp_entity_created_at", "kind"),
+        ("idx_sync_entity_module", "kind"),
+        ("idx_image_entity_created_at", "kind"),
     ] {
         let sql: String = conn
             .query_row(
@@ -813,7 +827,7 @@ fn put_derives_columns_from_numeric_json_timestamps_without_changing_json_type()
     let conn = test_conn();
     db_put(
         &conn,
-        DbTable::ImageAsset,
+        DbTable::ImageEntity(ImageEntityKind::Asset),
         "asset-1",
         &json!({
             "role": "output",
@@ -829,12 +843,12 @@ fn put_derives_columns_from_numeric_json_timestamps_without_changing_json_type()
     let (column_created_at, json_created_type): (String, String) = conn
         .query_row(
             "SELECT created_at, json_type(data, '$.created_at')
-             FROM image_asset WHERE id = 'asset-1'",
+             FROM image_entity WHERE kind = 'asset' AND id = 'asset-1'",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("read numeric timestamp");
-    let record = db_get(&conn, DbTable::ImageAsset, "asset-1")
+    let record = db_get(&conn, DbTable::ImageEntity(ImageEntityKind::Asset), "asset-1")
         .expect("get image asset")
         .expect("image asset record");
 
@@ -848,7 +862,7 @@ fn create_generates_clean_id_and_count_delete_work() {
     let conn = test_conn();
     let created = db_create(
         &conn,
-        DbTable::McpServer,
+        DbTable::McpEntity(McpEntityKind::Server),
         &json!({"name": "local-server", "sort_index": 0}),
     )
     .expect("create mcp server");
@@ -856,10 +870,10 @@ fn create_generates_clean_id_and_count_delete_work() {
     let id = created["id"].as_str().expect("id");
     assert_eq!(id.len(), 32);
     assert!(id.chars().all(|char| char.is_ascii_hexdigit()));
-    assert_eq!(db_count(&conn, DbTable::McpServer).expect("count"), 1);
+    assert_eq!(db_count(&conn, DbTable::McpEntity(McpEntityKind::Server)).expect("count"), 1);
 
-    assert!(db_delete(&conn, DbTable::McpServer, id).expect("delete"));
-    assert_eq!(db_count(&conn, DbTable::McpServer).expect("count"), 0);
+    assert!(db_delete(&conn, DbTable::McpEntity(McpEntityKind::Server), id).expect("delete"));
+    assert_eq!(db_count(&conn, DbTable::McpEntity(McpEntityKind::Server)).expect("count"), 0);
 }
 
 #[test]
@@ -1126,7 +1140,7 @@ fn transaction_rolls_back_on_error() {
     let result: Result<(), String> = db_transaction(&mut conn, |tx| {
         db_put(
             tx,
-            DbTable::Skill,
+            DbTable::SkillEntity(SkillEntityKind::Skill),
             "skill",
             &json!({"name": "rollback", "sort_index": 1}),
         )?;
@@ -1134,7 +1148,10 @@ fn transaction_rolls_back_on_error() {
     });
 
     assert!(result.is_err());
-    assert_eq!(db_count(&conn, DbTable::Skill).expect("count"), 0);
+    assert_eq!(
+        db_count(&conn, DbTable::SkillEntity(SkillEntityKind::Skill)).expect("count"),
+        0
+    );
 }
 
 #[test]
@@ -1150,16 +1167,32 @@ fn invalid_identifier_and_json_path_are_rejected() {
 #[test]
 fn delete_all_clears_only_target_table() {
     let conn = test_conn();
-    db_put(&conn, DbTable::SkillGroup, "group", &json!({"name": "G"})).expect("put group");
-    db_put(&conn, DbTable::Skill, "skill", &json!({"name": "S"})).expect("put skill");
+    db_put(
+        &conn,
+        DbTable::SkillEntity(SkillEntityKind::Group),
+        "group",
+        &json!({"name": "G"}),
+    )
+    .expect("put group");
+    db_put(
+        &conn,
+        DbTable::SkillEntity(SkillEntityKind::Skill),
+        "skill",
+        &json!({"name": "S"}),
+    )
+    .expect("put skill");
 
-    let deleted = db_delete_all(&conn, DbTable::SkillGroup).expect("delete all groups");
+    let deleted = db_delete_all(&conn, DbTable::SkillEntity(SkillEntityKind::Group))
+        .expect("delete all groups");
     assert_eq!(deleted, 1);
     assert_eq!(
-        db_count(&conn, DbTable::SkillGroup).expect("count groups"),
+        db_count(&conn, DbTable::SkillEntity(SkillEntityKind::Group)).expect("count groups"),
         0
     );
-    assert_eq!(db_count(&conn, DbTable::Skill).expect("count skills"), 1);
+    assert_eq!(
+        db_count(&conn, DbTable::SkillEntity(SkillEntityKind::Skill)).expect("count skills"),
+        1
+    );
 }
 
 #[test]
@@ -1766,6 +1799,335 @@ fn v34_folds_the_remaining_per_cli_tables_and_drops_the_dead_ledger() {
     );
 }
 
+/// v35 folds the remaining feature-domain tables into four `kind`-scoped
+/// tables. The interesting failure modes are not "table missing" but:
+///
+/// * the same literal id in two legacy tables (`default` in both Preferences
+///   tables, `opencode-main` in both file-mapping tables) being overwritten;
+/// * the `config` and `defaults_version` rows of one sync table being mixed
+///   into one kind, so a config read would see the version marker; and
+/// * rows being dropped instead of copied.
+#[test]
+fn v35_folds_feature_tables_into_kind_scoped_entities() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("already-v34.db");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        initialize_connection(&mut conn).unwrap();
+        for table in [
+            "skill",
+            "skill_group",
+            "skill_repo",
+            "skill_preferences",
+            "skill_settings",
+            "mcp_server",
+            "mcp_preferences",
+            "favorite_mcp",
+            "mcp_group",
+            "wsl_sync_config",
+            "wsl_file_mapping",
+            "ssh_sync_config",
+            "ssh_connection",
+            "ssh_file_mapping",
+            "image_channel",
+            "image_job",
+            "image_asset",
+        ] {
+            conn.execute_batch(&format!(
+                "CREATE TABLE IF NOT EXISTS {table} (
+                     id TEXT PRIMARY KEY NOT NULL,
+                     data BLOB NOT NULL CHECK (json_valid(data, 4)),
+                     created_at TEXT NOT NULL,
+                     updated_at TEXT NOT NULL
+                 );"
+            ))
+            .unwrap();
+        }
+        conn.execute_batch(
+            r#"INSERT INTO skill (id, data, created_at, updated_at)
+                 VALUES ('s1', jsonb('{"name":"Skill One","sort_index":1}'), 'ct', 'ut');
+               INSERT INTO skill_group (id, data, created_at, updated_at)
+                 VALUES ('g1', jsonb('{"name":"Group One","sort_index":0}'), 'ct', 'ut');
+               INSERT INTO skill_repo (id, data, created_at, updated_at)
+                 VALUES ('owner/repo', jsonb('{"owner":"owner","name":"repo"}'), 'ct', 'ut');
+               INSERT INTO skill_preferences (id, data, created_at, updated_at)
+                 VALUES ('default', jsonb('{"default_view_mode":"flat"}'), 'ct', 'ut');
+               INSERT INTO skill_settings (id, data, created_at, updated_at)
+                 VALUES ('skills', jsonb('{"git_cache_cleanup_days":30}'), 'ct', 'ut');
+
+               INSERT INTO mcp_server (id, data, created_at, updated_at)
+                 VALUES ('m1', jsonb('{"name":"MCP One","sort_index":1}'), 'ct', 'ut');
+               INSERT INTO mcp_preferences (id, data, created_at, updated_at)
+                 VALUES ('default', jsonb('{"show_in_tray":true}'), 'ct', 'ut');
+               INSERT INTO favorite_mcp (id, data, created_at, updated_at)
+                 VALUES ('f1', jsonb('{"name":"Favourite One"}'), 'ct', 'ut');
+               INSERT INTO mcp_group (id, data, created_at, updated_at)
+                 VALUES ('mg1', jsonb('{"name":"MCP Group"}'), 'ct', 'ut');
+
+               INSERT INTO wsl_sync_config (id, data, created_at, updated_at)
+                 VALUES ('config', jsonb('{"enabled":true,"distro":"Debian"}'), 'ct', 'ut');
+               INSERT INTO wsl_sync_config (id, data, created_at, updated_at)
+                 VALUES ('defaults_version', jsonb('{"version":23}'), 'ct', 'ut');
+               INSERT INTO wsl_file_mapping (id, data, created_at, updated_at)
+                 VALUES ('opencode-main', jsonb('{"name":"OpenCode","module":"opencode","windows_path":"C:/a","wsl_path":"/a"}'), 'ct', 'ut');
+               INSERT INTO wsl_file_mapping (id, data, created_at, updated_at)
+                 VALUES ('claude-config', jsonb('{"name":"Claude","module":"claude","windows_path":"C:/b","wsl_path":"/b"}'), 'ct', 'ut');
+
+               INSERT INTO ssh_sync_config (id, data, created_at, updated_at)
+                 VALUES ('config', jsonb('{"enabled":false,"active_connection_id":"ssh-1"}'), 'ct', 'ut');
+               INSERT INTO ssh_sync_config (id, data, created_at, updated_at)
+                 VALUES ('defaults_version', jsonb('{"version":22}'), 'ct', 'ut');
+               INSERT INTO ssh_connection (id, data, created_at, updated_at)
+                 VALUES ('ssh-1', jsonb('{"name":"Server","host":"example.com"}'), 'ct', 'ut');
+               INSERT INTO ssh_file_mapping (id, data, created_at, updated_at)
+                 VALUES ('opencode-main', jsonb('{"name":"OpenCode SSH","module":"opencode","local_path":"C:/c","remote_path":"/c"}'), 'ct', 'ut');
+               INSERT INTO ssh_file_mapping (id, data, created_at, updated_at)
+                 VALUES ('claude-config', jsonb('{"name":"Claude SSH","module":"claude","local_path":"C:/d","remote_path":"/d"}'), 'ct', 'ut');
+
+               INSERT INTO image_channel (id, data, created_at, updated_at)
+                 VALUES ('c1', jsonb('{"name":"Image Channel","sort_order":0}'), 'ct', 'ut');
+               INSERT INTO image_job (id, data, created_at, updated_at)
+                 VALUES ('j1', jsonb('{"mode":"text_to_image","channel_id":"c1","created_at":1}'), 'ct', 'ut');
+               INSERT INTO image_asset (id, data, created_at, updated_at)
+                 VALUES ('a1', jsonb('{"job_id":"j1","role":"output","file_name":"a.png"}'), 'ct', 'ut');"#,
+        )
+        .unwrap();
+        migrations::set_user_version(&conn, 34).unwrap();
+    }
+
+    let db = SqliteDbState::open(path.clone()).unwrap();
+    db.with_conn(|conn| {
+        assert_eq!(
+            migrations::get_user_version(conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
+
+        // Skill rows land in their own kinds, including the two singletons.
+        // The row timestamps are copied with the payload, not regenerated.
+        let skill = db_get(conn, DbTable::SkillEntity(SkillEntityKind::Skill), "s1")
+            .unwrap()
+            .expect("skill");
+        assert_eq!(skill["name"], "Skill One");
+        assert_eq!(skill["created_at"], "ct");
+        assert_eq!(skill["updated_at"], "ut");
+        assert_eq!(
+            db_get(conn, DbTable::SkillEntity(SkillEntityKind::Preferences), "default")
+                .unwrap()
+                .expect("skill preferences")["default_view_mode"],
+            "flat"
+        );
+        assert_eq!(
+            db_get(conn, DbTable::SkillEntity(SkillEntityKind::Settings), "skills")
+                .unwrap()
+                .expect("skill settings")["git_cache_cleanup_days"],
+            30
+        );
+
+        // The same literal id `default` must survive in both the Skill and MCP
+        // preferences kinds.
+        assert_eq!(
+            db_get(conn, DbTable::McpEntity(McpEntityKind::Preferences), "default")
+                .unwrap()
+                .expect("mcp preferences")["show_in_tray"],
+            true
+        );
+
+        // WSL and SSH file mappings share every id in real databases; the two
+        // kinds must keep their payloads apart.
+        assert_eq!(
+            db_get(
+                conn,
+                DbTable::SyncEntity(SyncEntityKind::WslFileMapping),
+                "opencode-main"
+            )
+            .unwrap()
+            .expect("wsl mapping")["windows_path"],
+            "C:/a"
+        );
+        assert_eq!(
+            db_get(
+                conn,
+                DbTable::SyncEntity(SyncEntityKind::SshFileMapping),
+                "opencode-main"
+            )
+            .unwrap()
+            .expect("ssh mapping")["local_path"],
+            "C:/c"
+        );
+
+        // The config and version rows must not be mixed into one kind.
+        let wsl_configs =
+            db_list(conn, DbTable::SyncEntity(SyncEntityKind::WslConfig), None).unwrap();
+        assert_eq!(wsl_configs.len(), 1);
+        assert_eq!(wsl_configs[0]["distro"], "Debian");
+        assert_eq!(
+            db_get(
+                conn,
+                DbTable::SyncEntity(SyncEntityKind::WslDefaultsVersion),
+                "defaults_version"
+            )
+            .unwrap()
+            .expect("wsl defaults version")["version"],
+            23
+        );
+        assert_eq!(
+            db_get(
+                conn,
+                DbTable::SyncEntity(SyncEntityKind::SshDefaultsVersion),
+                "defaults_version"
+            )
+            .unwrap()
+            .expect("ssh defaults version")["version"],
+            22
+        );
+
+        // Image rows keep their cross-references.
+        assert_eq!(
+            db_get(conn, DbTable::ImageEntity(ImageEntityKind::Job), "j1")
+                .unwrap()
+                .expect("image job")["channel_id"],
+            "c1"
+        );
+        assert_eq!(
+            db_get(conn, DbTable::ImageEntity(ImageEntityKind::Asset), "a1")
+                .unwrap()
+                .expect("image asset")["job_id"],
+            "j1"
+        );
+
+        // Row counts per kind are the complete mapping check: every one of the
+        // 17 legacy tables above contributed exactly these rows. A mapping that
+        // was dropped from the copy list would leave its kind at zero and its
+        // rows would be lost when the legacy table is dropped.
+        for (table, expected) in [
+            (DbTable::SkillEntity(SkillEntityKind::Skill), 1),
+            (DbTable::SkillEntity(SkillEntityKind::Group), 1),
+            (DbTable::SkillEntity(SkillEntityKind::Repo), 1),
+            (DbTable::SkillEntity(SkillEntityKind::Preferences), 1),
+            (DbTable::SkillEntity(SkillEntityKind::Settings), 1),
+            (DbTable::McpEntity(McpEntityKind::Server), 1),
+            (DbTable::McpEntity(McpEntityKind::Preferences), 1),
+            (DbTable::McpEntity(McpEntityKind::Favorite), 1),
+            (DbTable::McpEntity(McpEntityKind::Group), 1),
+            (DbTable::SyncEntity(SyncEntityKind::WslConfig), 1),
+            (DbTable::SyncEntity(SyncEntityKind::WslDefaultsVersion), 1),
+            (DbTable::SyncEntity(SyncEntityKind::WslFileMapping), 2),
+            (DbTable::SyncEntity(SyncEntityKind::SshConfig), 1),
+            (DbTable::SyncEntity(SyncEntityKind::SshDefaultsVersion), 1),
+            (DbTable::SyncEntity(SyncEntityKind::SshConnection), 1),
+            (DbTable::SyncEntity(SyncEntityKind::SshFileMapping), 2),
+            (DbTable::ImageEntity(ImageEntityKind::Channel), 1),
+            (DbTable::ImageEntity(ImageEntityKind::Job), 1),
+            (DbTable::ImageEntity(ImageEntityKind::Asset), 1),
+        ] {
+            assert_eq!(
+                db_count(conn, table).unwrap(),
+                expected,
+                "{table:?} did not receive its legacy rows"
+            );
+        }
+
+        for retired in [
+            "skill",
+            "skill_group",
+            "skill_repo",
+            "skill_preferences",
+            "skill_settings",
+            "mcp_server",
+            "mcp_preferences",
+            "favorite_mcp",
+            "mcp_group",
+            "wsl_sync_config",
+            "wsl_file_mapping",
+            "ssh_sync_config",
+            "ssh_connection",
+            "ssh_file_mapping",
+            "image_channel",
+            "image_job",
+            "image_asset",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [retired],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 0, "{retired} should have been dropped by v35");
+        }
+        Ok(())
+    })
+    .unwrap();
+    drop(db);
+
+    // Reopening is a no-op, not a duplicate-table error.
+    let mut conn = Connection::open(&path).unwrap();
+    migrations::run_all(&mut conn).unwrap();
+    assert_eq!(
+        migrations::get_user_version(&conn).unwrap(),
+        TARGET_SCHEMA_VERSION
+    );
+}
+
+/// A v35 failure after the copy has begun must roll the whole step back:
+/// the legacy table and its rows stay intact, and no half-built entity table
+/// survives. The failure is injected by occupying `skill_entity` with a view,
+/// so `CREATE TABLE IF NOT EXISTS` is a no-op and the COPY fails.
+#[test]
+fn v35_failure_rolls_back_without_losing_legacy_rows() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("forced-v35-failure.db");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        initialize_connection(&mut conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE skill_entity;
+             DROP TABLE mcp_entity;
+             DROP TABLE sync_entity;
+             DROP TABLE image_entity;
+             CREATE VIEW skill_entity AS SELECT 'stub' AS id;
+             CREATE TABLE skill (
+                 id TEXT PRIMARY KEY NOT NULL,
+                 data BLOB NOT NULL CHECK (json_valid(data, 4)),
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+             );
+             INSERT INTO skill (id, data, created_at, updated_at)
+                 VALUES ('s1', jsonb('{\"name\":\"Keep Me\"}'), 'ct', 'ut');",
+        )
+        .unwrap();
+        migrations::set_user_version(&conn, 34).unwrap();
+    }
+
+    let result = SqliteDbState::open(path.clone());
+    assert!(result.is_err(), "v35 must fail on the occupied table");
+
+    let conn = Connection::open(&path).unwrap();
+    assert_eq!(
+        migrations::get_user_version(&conn).unwrap(),
+        34,
+        "a failed v35 must not advance user_version"
+    );
+    let kept: String = conn
+        .query_row(
+            "SELECT json_extract(data, '$.name') FROM skill WHERE id = 's1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, "Keep Me", "the legacy row must survive the rollback");
+    for table in ["mcp_entity", "sync_entity", "image_entity"] {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 0, "{table} must not survive a failed v35");
+    }
+}
+
 // ---- second-round regression cases for the scope consolidation --------------
 //
 // These exist because of one specific failure mode: with fifty-five per-CLI
@@ -2114,7 +2476,18 @@ fn a_fresh_database_matches_an_upgraded_one() {
             ))
             .unwrap();
     }
-    for table in ["cli_provider", "cli_official_account", "cli_config"] {
+    for table in [
+        "cli_provider",
+        "cli_official_account",
+        "cli_config",
+        // v35's tables did not exist at v32 either; dropping them makes the
+        // upgrade path actually exercise `create_feature_entity_tables`
+        // instead of inheriting them from the fresh template.
+        "skill_entity",
+        "mcp_entity",
+        "sync_entity",
+        "image_entity",
+    ] {
         upgraded
             .execute_batch(&format!("DROP TABLE IF EXISTS {table};"))
             .unwrap();

@@ -322,3 +322,91 @@ cargo test --test sqlite_jsonb 44 passed
 函数体规范化差分               4217 相同 / 4289
 前后行为差分                   275 key，CLI 表 0 差异，relay 15 项为修复
 ```
+
+---
+
+## 12. v35 功能域表合并（2026-11-04）
+
+v35 把 17 张功能域表收成 4 张 `(kind, id)` 表（`skill_entity` / `mcp_entity` / `sync_entity` / `image_entity`），`TARGET_SCHEMA_VERSION` 34 → 35，JSONB 表 27 → 14。
+
+### 12.1 新增与更新的回归
+
+| 测试 | 锁死的问题 |
+|---|---|
+| `v35_folds_feature_tables_into_kind_scoped_entities` | 17 张旧表的行全部落位到正确 kind（逐个 kind 核对行数）；`default` 同时存在于 Skill / MCP preferences；WSL / SSH file mapping 的同名 id（`opencode-main`）互不覆盖；`config` 与 `defaults_version` 不被混进同一个 kind；旧表全部删除；重复 `run_all` 幂等 |
+| `delete_all_clears_only_target_table` | 既有用例，v35 起改用 `SkillEntity(Group/Skill)` 覆盖「只清目标 kind」 |
+| `jsonb_probe_and_schema_migration_create_all_tables` | 4 张新表与 9 个新索引存在，且索引首列是 `kind` |
+| `a_fresh_database_matches_an_upgraded_one` | 全新库（v1 → v35）与 v32 升级库（先删除 v33/v35 的表）的 schema 指纹完全一致 |
+| `groups_and_repos_round_trip_in_their_own_kinds` | Skill group / repo 走真实 store 完成增删查，且 group 行不会出现在 skill 列表里 |
+| `sqlite_mcp_store_round_trips_servers_preferences_and_favorites` | 在原 server / preferences / favorite 往返基础上补 group CRUD 与三种 kind 的删除路径 |
+| `channels_jobs_and_assets_round_trip_in_their_own_kinds` | Image channel / job / asset 走真实 store 完成增删查，且 job id 不会被解析成 channel |
+| `v35_failure_rolls_back_without_losing_legacy_rows` | 用同名 VIEW 让 COPY 阶段失败后，`user_version` 仍为 34、旧表行完好、半成品新表全部回滚 |
+
+### 12.2 测试结果
+
+```
+cargo test --lib --jobs 2            3146 passed, 0 failed, 14 ignored
+cargo test --test sqlite_jsonb       49 passed
+cargo test --test coding             249 passed
+cargo test --jobs 2（全量）          3459 passed, 0 failed
+cargo check --all-targets            0 error
+```
+
+### 12.3 真实库副本演练
+
+把本机真实库 `%APPDATA%/com.ai-toolbox/ai-toolbox.db`（`user_version=33`）复制到临时目录，用真实 `SqliteDbState::open` 连续跑 v34 + v35：
+
+| 项目 | 结果 |
+|---|---|
+| 迁移后 `user_version` | 35 |
+| `PRAGMA integrity_check` | ok |
+| 17 张旧表 | 全部删除，0 残留 |
+| 行数守恒 | 173 行 → 173 行 |
+| 逐行内容比对 | 17 张表 × `json(data)` + `created_at` + `updated_at` 全部 `mismatch=0` |
+| `skill_entity` | 18（skill 9 / group 0 / repo 7 / preferences 1 / settings 1） |
+| `mcp_entity` | 22（server 6 / preferences 1 / favorite 15 / group 0） |
+| `sync_entity` | 130（wsl_config 1 / wsl_defaults_version 1 / wsl_file_mapping 62 / ssh_config 1 / ssh_defaults_version 1 / ssh_connection 1 / ssh_file_mapping 63） |
+| `image_entity` | 3（channel 2 / job 0 / asset 1） |
+| WSL / SSH 同名 mapping | `opencode-main`、`claude-config` 在两个 kind 下各自保留，payload 不串 |
+| v34 顺带验证 | `opencode_favorite_plugin` 4 行、`opencode_favorite_provider` 78 行落进 `cli_config`；`app_migration` 删除 |
+| 最终物理表 | 17（14 张 JSONB + `model_pricing` / `proxy_request_logs` / `usage_daily_rollups`） |
+
+本机库在首次启动新版本时会从 v33 连续升到 v35。索引定义在 2026-11-04 的复核中从 15 个精简为 9 个（只保留与真实查询表达式一致的索引）；这只影响查询计划，上面的行/表核对结果不变，全新库与升级库的索引一致性由 `a_fresh_database_matches_an_upgraded_one` 覆盖。
+
+### 12.4 受影响功能点逐一核对
+
+| 域 | 功能点 | 落点 kind | 验证方式与证据 |
+|---|---|---|---|
+| Skills | 技能列表 / 按 id / 按名 / 新建排序 / 更新 / 删除 | `skill` | 自动：auto_discover 集成、`groups_and_repos_round_trip_in_their_own_kinds`、v35 逐 kind 行数 |
+| Skills | 分组列表 / 保存 / 删除 / 整表替换 | `group` | 自动：新增 store 测试、`delete_all_clears_only_target_table`、v35 行数 |
+| Skills | 仓库源列表 / 保存 / 删除 | `repo` | 自动：新增 store 测试、v35 行数 |
+| Skills | 偏好读写 / 设置兼容层 | `preferences` | 自动：skill_store / adapter / central_repo 测试 |
+| Skills | 设置单例（中央仓库、Git cache、自动发现指纹） | `settings` | 自动：central_repo 13 项 + auto_discover 集成 |
+| Skills | 自动发现与指纹回写 | `settings` | 自动：`tests/coding/skills/auto_discover.rs` |
+| Skills | Inventory apply / 分组重建 | `group` + `skill` | 自动：store 往返；静态审查 commands 层无裸表访问 |
+| Skills | 本机同步引擎 / 工具适配 / 托盘 | `skill` + 设置 | 自动：`sync_engine`、`tool_adapters`、`tray` 测试 |
+| MCP | Server 列表 / 按 id / 按名 / 排序 / 启停 / 删除 | `server` | 自动：store 往返 + management 测试（105 项 MCP 测试） |
+| MCP | Preferences 单例 | `preferences` | 自动：store 往返 |
+| MCP | 收藏列表 / 保存 / 删除 | `favorite` | 自动：store 往返（含删除） |
+| MCP | 分组列表 / 保存 / 删除 | `group` | 自动：本轮扩展的 store 往返 |
+| MCP | 工具配置同步 / 导入导出 / 扫描 | `server` 等 | 自动：`config_sync`（105 项）+ `--test coding` |
+| WSL | 配置读取 / patch / 保存 / 自动同步开关 | `wsl_config` | 自动：`saving_sync_preferences...`、`concurrent...`、`partial_runs...` |
+| WSL | `defaults_version` 读取 / 回填 / 写入 | `wsl_defaults_version` | 自动：v35 行数与内容；静态审查回填写入 kind |
+| WSL | 文件映射列表 / 新增 / 修改 / 删除 / 重置 / 批量保存 | `wsl_file_mapping` | 自动：v35 同名 id 隔离 + `wsl::mcp_sync` 测试 |
+| WSL | MCP / Skills 同步读取配置与映射 | `wsl_config` + `wsl_file_mapping` | 自动：mcp_sync 测试；静态审查 skills 链路 |
+| WSL | Session / Codex 历史源读取 WSL 配置 | `wsl_config` | 自动：session_manager / codex 测试；静态审查读取点 |
+| SSH | 配置读取 / patch / 保存 / 警告 | `ssh_config` | 自动：`concurrent...`、`saving_sync_preferences...` |
+| SSH | 连接列表 / 新建 / 更新 / 删除 / 切换 | `ssh_connection` + `ssh_config` | 自动：v35 行数；静态审查删除时清理 active connection |
+| SSH | 文件映射列表 / 新增 / 修改 / 删除 / 重置 | `ssh_file_mapping` | 自动：v35 同名 id 隔离 + 静态审查 |
+| SSH | `defaults_version` 读取 / 回填 / 写入 | `ssh_defaults_version` | 自动：v35 行数与内容；静态审查回填写入 kind |
+| SSH | MCP / Skills 同步读取配置与映射 | `ssh_config` + `ssh_file_mapping` | 自动：mcp_sync / 配置测试；静态审查 skills 链路 |
+| Image | 渠道列表 / 详情 / 保存 / 排序 / 删除 | `channel` | 自动：新增 store 测试 + 16 项 image 测试 |
+| Image | 任务创建 / 更新 / 列表 / 详情 / 删除 | `job` | 自动：新增 store 测试 + 任务生命周期测试 |
+| Image | 资产创建 / 详情 / 批量读取 / 删除 | `asset` | 自动：既有批量顺序测试 + 新增 store 测试 |
+| 跨模块 | 全新库 / v32、v33、v34 升级 / schema 指纹一致 | 四张新表 | 自动：`a_fresh_database_matches_an_upgraded_one`、v35 测试、真实库副本 |
+| 跨模块 | 迁移失败回滚 | 四张新表 | 自动：`v35_failure_rolls_back_without_losing_legacy_rows` |
+| 跨模块 | 备份 / 恢复 / 迁移前快照 | 整库 | 自动：112 项 backup 测试 + `sqlite_state_open_creates_pre_migration_backup...` |
+| 跨模块 | 托盘菜单 | 读取 store | 自动：tray 测试 |
+| 跨模块 | 前端页面 | 不直接访问 DB | 自动：前端无表名依赖；3 份 web AGENTS 已同步 |
+
+WSL / SSH 的命令层入口（`wsl_add_file_mapping`、`ssh_delete_connection` 等）需要 `AppHandle` 或真实远端，未做端到端自动化；它们的数据库写入点已在静态审查中逐个确认，且 v35 测试覆盖了对应 kind 的数据布局与隔离。

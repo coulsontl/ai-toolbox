@@ -16,13 +16,13 @@ use crate::coding::mcp::command_normalize;
 use crate::coding::mcp::mcp_store;
 use crate::coding::runtime_location;
 use crate::db::helpers::db_list;
-use crate::db::schema::DbTable;
+use crate::db::schema::{DbTable, SyncEntityKind};
 use crate::SqliteDbState;
 
 /// Get file mappings from database
 async fn get_file_mappings(state: &SqliteDbState) -> Result<Vec<SSHFileMapping>, String> {
     let db = state.db();
-    let mut records = db.with_conn(|conn| db_list(conn, DbTable::SshFileMapping, None))?;
+    let mut records = db.with_conn(|conn| db_list(conn, DbTable::SyncEntity(SyncEntityKind::SshFileMapping), None))?;
     records.sort_by(|a, b| {
         let module_a = a.get("module").and_then(Value::as_str).unwrap_or_default();
         let module_b = b.get("module").and_then(Value::as_str).unwrap_or_default();

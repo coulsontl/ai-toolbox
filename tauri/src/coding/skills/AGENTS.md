@@ -3,17 +3,17 @@
 ## 零、迁移期高优先级补充规则
 
 - Skills 的唯一源目录始终是中央仓库 `central_repo_path`。Claude/Codex/OpenCode/OpenClaw 或任何自定义工具当前运行时的 skills 目录都只是目标目录，不是同步源。
-- 中央仓库路径只有一个权威配置入口：`skill_settings:skills.central_repo_path`；缺失或为空时 fallback 到 `app_data_dir/skills`。`skill_preferences` 只保存 UI/工具偏好，绝不能读取、默认生成或写入 `central_repo_path`，避免 `~/.skills` 等脏偏好重新成为第二事实源。
+- 中央仓库路径只有一个权威配置入口：`skill_entity(kind=settings):skills.central_repo_path`；缺失或为空时 fallback 到 `app_data_dir/skills`。`skill_entity(kind=preferences)` 只保存 UI/工具偏好，绝不能读取、默认生成或写入 `central_repo_path`，避免 `~/.skills` 等脏偏好重新成为第二事实源。
 - `central_repo_path` 持久化必须优先使用可迁移路径：用户目录下保存为 `~/...`，配置目录/AppData 下保存为 `%APPDATA%/...`；读取时再解析到当前系统目录。不要把 `C:\Users\...`、`/Users/...`、`/home/...` 这类用户目录绝对路径作为新写入值，否则跨端备份恢复会指向旧机器用户路径。
 - 兼容旧 `central_repo_path` 绝对路径时不能把任意 `/home/<name>/...`、`/Users/<name>/...`、`C:\Users\<name>\...` 都改写到当前 HOME。真实存在的绝对路径要尊重原路径；只有明确的旧用户私有 Skills 路径（如 `.agents/skills`）才可按当前用户目录迁移解析。
-- `skill_settings` 和 `custom_tool` 必须直接读写 SQLite JSONB。新增或修改这两类入口时不能绕过共享 store 直接写 SurrealQL，否则会造成恢复、备份和旧库导入后的数据分叉。
+- `skill_entity(kind=settings)` 和 `custom_tool` 必须直接读写 SQLite JSONB。新增或修改这两类入口时不能绕过共享 store 直接写 SurrealQL，否则会造成恢复、备份和旧库导入后的数据分叉。
 - `skills_sync_to_tool` 的语义始终是“中央仓库 -> 工具运行时 skills 目录”。后端必须先用 `skill_id` 读取 DB 中的 skill 记录，再通过 `resolve_central_repo_path` / `resolve_skill_central_path` 解析真实 source 与 name；前端传入的 `sourcePath/name` 只能作为兼容参数，不能作为事实源。如果工具当前配置落在 WSL，该目标目录可能解析成 `\\\\wsl.localhost\\...` UNC 路径，但源目录仍不变。
 - `management_enabled=false` 是后端必须维护的同步 invariant，不只是前端展示状态。任何会写工具目录的入口（`skills_sync_to_tool`、tray toggle、全量 resync、Inventory apply）都必须先确认 Skill 已启用；禁用 Skill 的唯一恢复路径是先 enable，再走明确的工具恢复/同步流程。
 - 禁用、取消同步、Inventory apply 禁用或默认禁用本地缺失项时，数据库里的 disabled/unsynced desired state 是主状态；工具目标目录清理只能 best-effort 记录 warning，不能因为旧 target 删除失败而阻止 DB 收敛。相反，Inventory apply 如果要新增工具同步，必须在替换 group registry 或更新 skill metadata 前完成源目录、工具安装和目标路径 overlap 预检。
 - 任何会写工具目录的同步入口，在创建、覆盖或删除目标路径前，必须先校验中央仓库 source 是可解析目录（`metadata` 跟随 symlink 后仍是目录）。broken/self symlink 或非目录 source 必须返回错误，不能把 DB/UI 关联写成 ok 却留下 runtime target broken。
 - 同步入口还必须在创建、覆盖或删除目标路径前，按解析 symlink 后的真实路径拒绝 `source == target`、target 位于 source 内、或 source 位于 target 内。尤其要防止工具 skills 父目录本身被 symlink 到中央仓库时，`~/.tool/skills/{name}` 实际解析成 `central_repo/{name}`，这会把中央源删掉或写成 self symlink。
 - 中央仓库路径迁移复制也必须执行同等源/目标重叠校验。不要允许把新中央目录选到旧仓库或某个 Skill 目录内部后递归复制，否则会产生 `foo/foo/...` 这类无限嵌套或半成品目录。
-- `skills_get_managed_skills` 会对中央仓库 source 做只读诊断，并通过 DTO `source_health/source_error` 暴露给前端。缺失、非目录、broken/self symlink 只标记为 warning 让用户手动恢复或重装，不自动删除、恢复或重同步，也不写回 `skill` 表。
+- `skills_get_managed_skills` 会对中央仓库 source 做只读诊断，并通过 DTO `source_health/source_error` 暴露给前端。缺失、非目录、broken/self symlink 只标记为 warning 让用户手动恢复或重装，不自动删除、恢复或重同步，也不写回 `skill_entity(kind=skill)`。
 - WSL skills 同步和 SSH skills 同步都不是复用普通 file mappings；它们是独立链路，但源端仍然是中央仓库。
 - WSL/SSH 工具目标维护统一走 `remote_target`：强制复制策略与本机共用 `builtin_tool_forces_skill_copy`，其他工具仍用链接。复制副本的 `.ai-toolbox-skill-source` 标记记录远端中央源路径；只有匹配标记的副本或受管链接可更新/删除，用户真实目录和外部链接必须保留并警告。先准备同级临时副本再替换，复制失败保留旧目标；更新、取消同步、禁用及孤立清理必须走同一归属判断。
 - 对已经 `is_wsl_direct` 的内置工具，处理 WSL skills 同步时要优先判断“目标目录是否已直接在 WSL 内”，而不是只看当前 Windows 侧是否存在 UNC 显示路径。
@@ -63,7 +63,7 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
 
 当前持久化路径必须直接读写 SQLite JSONB。旧 SurrealDB 仅在启动迁移时作为导入源，业务代码不要新增 SurrealQL 或双写。
 
-### 3.1 skill 表（技能主表）
+### 3.1 skill_entity(kind=skill)（技能主表）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -80,7 +80,7 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
 | status | string | 状态：ok / error |
 | sort_index | i32 | 排序索引（拖拽排序用） |
 | user_group | string? | 旧版/兼容分组名称字段；新逻辑以 `group_id` 为准，写入时同步回填名称便于兼容读取 |
-| group_id | string? | 指向 `skill_group` 的稳定内部分组 ID；重命名 group 不迁移 skill，只更新 group 记录本身 |
+| group_id | string? | 指向 `skill_entity(kind=group)` 的稳定内部分组 ID；重命名 group 不迁移 skill，只更新 group 记录本身 |
 | user_note | string? | AI Toolbox 内部自定义备注，不写入 SKILL.md，不参与内容哈希 |
 | tags | array | 用户管理的 string 标签数组；AI Toolbox 内部元数据，adapter 缺省为空数组，不写入 SKILL.md、不参与内容哈希、不触发工具同步 |
 | management_enabled | bool | AI Toolbox 管理启用状态；不是 `status` 健康状态，false 表示 UX 禁用并从当前工具取消同步 |
@@ -98,7 +98,7 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
 | synced_at | i64? | 同步时间戳 |
 | error_message | string? | 错误信息 |
 
-### 3.2 skill_preferences 表（偏好设置，单例）
+### 3.2 skill_entity(kind=preferences)（偏好设置，单例）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -114,7 +114,7 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
 | show_skills_in_tray | bool | 是否在托盘菜单显示技能 |
 | updated_at | i64 | 更新时间戳 |
 
-### 3.3 skill_repo 表（Git 仓库源）
+### 3.3 skill_entity(kind=repo)（Git 仓库源）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -135,9 +135,9 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
 | relative_detect_dir | string | 检测目录相对路径（用于判断是否安装） |
 | created_at | i64 | 创建时间戳 |
 
-### 3.5 skill_group 表（Skill 手动分组）
+### 3.5 skill_entity(kind=group)（Skill 手动分组）
 
-`skill_group` 是 first-class 分组 registry，用于保存手动分组本身的元数据。它不是工具同步 Profile，也不改变中央仓库目录结构或任何工具目标路径。
+`skill_entity(kind=group)` 是 first-class 分组 registry，用于保存手动分组本身的元数据。它不是工具同步 Profile，也不改变中央仓库目录结构或任何工具目标路径。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -148,7 +148,7 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
 | created_at | i64 | 创建时间戳 |
 | updated_at | i64 | 更新时间戳 |
 
-旧数据迁移：读取列表或分组时会将非空 `skill.user_group` 自动迁移为 `skill_group` 记录，并把对应 skill 写入稳定 `group_id`。迁移后业务归属以 `group_id` 为准，`user_group` 只作为兼容展示/旧数据回填字段。
+旧数据迁移：读取列表或分组时会将非空 `skill.user_group` 自动迁移为 `skill_entity(kind=group)` 记录，并把对应 skill 写入稳定 `group_id`。迁移后业务归属以 `group_id` 为准，`user_group` 只作为兼容展示/旧数据回填字段。
 
 ## 四、详细流程说明
 
@@ -161,9 +161,9 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
 **处理流程：**
 
 1. **获取中央仓库路径**
-   - 读取 `skill_settings:skills.central_repo_path`
+   - 读取 `skill_entity(kind=settings):skills.central_repo_path`
    - 缺失或为空时 fallback 到应用数据目录/skills（如 Windows: `%APPDATA%/com.ai-toolbox/skills`）
-   - 不读取 `skill_preferences.central_repo_path`；该字段即使存在也只视为历史脏数据
+   - 不读取 `skill_entity(kind=preferences).central_repo_path`；该字段即使存在也只视为历史脏数据
 
 2. **获取已管理的目标路径**
    - 查询所有 skill 记录的 sync_details
@@ -246,7 +246,7 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
 7. **创建数据库记录**
    - 生成新的 UUID 作为 skill_id
    - 获取当前最大 sort_index + 1
-   - 写入 skill 表
+   - 写入 `skill_entity(kind=skill)`
 
 8. **返回 InstallResult**
    - skill_id: 新技能 ID
@@ -396,7 +396,7 @@ skills-git-cache/
 **处理流程：**
 
 1. **获取技能记录**
-   - 根据 skill_id 查询 skill 表
+   - 根据 skill_id 查询 `skill_entity(kind=skill)`
    - 获取 source_type、source_ref、central_path
 
 2. **验证中央仓库路径**
@@ -463,7 +463,7 @@ skills-git-cache/
 
 **定时自动更新（cron）：** 新模块 `auto_update.rs`，`auto_update::start(app)` 在 lib.rs setup 中与 `auth_refresh::start` 一同启动，用 `AtomicBool` 保证单进程只启动一次。
 
-- 配置存于 `skill_preferences`：`auto_update_enabled` / `auto_update_schedule`（5 字段 cron `分 时 日 月 周`，默认 `"0 3 * * *"`）。`auto_update::start` 每 tick 读 `skill_store::get_skill_preferences` 判断。
+- 配置存于 `skill_entity(kind=preferences)`：`auto_update_enabled` / `auto_update_schedule`（5 字段 cron `分 时 日 月 周`，默认 `"0 3 * * *"`）。`auto_update::start` 每 tick 读 `skill_store::get_skill_preferences` 判断。
 - **Source of Truth：** 统一以 cron 表达式作为唯一调度事实。前端"每天定点 HH:MM"只是把时间转成 `"mm hh * * *"` 的便捷入口，不是第二套存储；预览与执行共用 `cron_utils::parse_cron` / `next_n_occurrences`（`croner`，`find_next_occurrence(&Local::now(), false)` 本地时区计算）。
 - 调度：启动约 60s 后若 enabled 先跑一次 startup pass（`last_run = now`）；之后每 60s tick 一次，`cron.find_next_occurrence(&last_run, false) <= now` 时执行 `update_all_skills_internal` 并更新 `last_run = now`。
 - 复用同一个 `update_all_skills_internal`（定时调用传 `emit_progress=false`，不发进度事件）；**定时场景只 `log::debug`，静默失败，不弹 UI 打扰用户**。非法 schedule 仅 debug 跳过（保存命令已用 `parse_cron` 校验，属兜底）。配置变更在下一 tick（≤60s）生效，无需重启。
@@ -498,7 +498,7 @@ skills-git-cache/
 - `management_enabled=false` 的 Skill 不复活、不刷新、不分发。
 - 不自动删除记录、中央仓库内容或任何工具目录。
 
-**内容变化**：每轮对每个已发现 Skill 计算廉价指纹（最新 mtime + 条目数），与存于 `skill_settings.auto_sync_fingerprints` 的上次值比较；变化时调用 `update_managed_skill_internal` 走现有更新链路（哈希一致会跳过替换；只重拷 copy 型目标，symlink/junction 自动跟随）。
+**内容变化**：每轮对每个已发现 Skill 计算廉价指纹（最新 mtime + 条目数），与存于 `skill_entity(kind=settings).auto_sync_fingerprints` 的上次值比较；变化时调用 `update_managed_skill_internal` 走现有更新链路（哈希一致会跳过替换；只重拷 copy 型目标，symlink/junction 自动跟随）。
 
 **并发**：`PASS_RUNNING` 只由后台调度器持有，用于跳过重叠的 tick；用户触发的「立即扫描」直接跑（app 的单写者 DB 锁已串行化）。
 
@@ -521,7 +521,7 @@ skills-git-cache/
     - 未找到返回错误
 
 2. **获取 Skill 事实源**
-   - 只用 `skill_id` 查询 `skill` 表得到 `name/central_path/management_enabled`
+   - 只用 `skill_id` 查询 `skill_entity(kind=skill)` 得到 `name/central_path/management_enabled`
    - 用 `resolve_central_repo_path` + `resolve_skill_central_path` 得到真实中央仓库 source
    - 不信任前端 payload 里的 `sourcePath/name`；这些字段只为旧前端/旧调用方保持 API 兼容
 
@@ -556,7 +556,7 @@ skills-git-cache/
      - 跳过 .git 目录
 
 7. **记录同步结果**
-    - 更新 skill 表的 sync_details
+    - 更新 `skill_entity(kind=skill)` 的 sync_details
     - 添加工具到 enabled_tools 数组
     - 设置同步时间戳
 
@@ -629,14 +629,14 @@ Inventory JSON 是完整管理清单，用于重排 AI Toolbox 元数据，不�
 - `schema_version` 当前为 1；不兼容版本应返回明确错误。
 - group name 必须非空且唯一；重复名称会导致 skill 的 group 引用不可唯一解析，必须阻断 apply。
 - skill 匹配策略：`id` 优先；否则用 `name + source_ref/central_path` 兜底；`content_hash` 只用于内容变化提示，不能作为唯一匹配键。
-- apply 以 JSON groups 重建 `skill_group` registry，并在后端映射到新的内部 `group_id`。
+- apply 以 JSON groups 重建 `skill_entity(kind=group)` registry，并在后端映射到新的内部 `group_id`。
 - 本地存在但 JSON 未匹配到的 skill 不物理删除；完整清单语义下默认禁用，并在预览/确认中展示 `default_disable_count`。
 - apply 是 desired-state 语义：matched 且 `enabled=true` 的 skill 必须按 JSON 的 `enabled_tools` 对当前工具绑定做增删对齐；matched 且 `enabled=false` 的 skill 必须取消当前同步并记录历史工具；本地存在但 JSON 未匹配到的 skill 默认禁用时还必须清空 `group_id/user_group`，避免完整重建 group registry 后留下孤儿分组引用。
 - 整理 prompt 应引导 agent 使用文件读写工具读取导出的 JSON 文件并另存/写回可导入文件，不要求用户手动粘贴大段 JSON。
 
 ### 4.11 SKILL.md description 展示缓存
 
-`ManagedSkillDto.description` 来自中央仓库 `SKILL.md` frontmatter 的 `description` 字段，不持久化到 `skill` 表，也不进入 Inventory JSON。缓存 key 应至少包含 `central_path` 与 `content_hash`；如果后续新增更细粒度失效策略，可再引入 `SKILL.md` mtime，但不要把 description 写成 DB 事实源。
+`ManagedSkillDto.description` 来自中央仓库 `SKILL.md` frontmatter 的 `description` 字段，不持久化到 `skill_entity(kind=skill)`，也不进入 Inventory JSON。缓存 key 应至少包含 `central_path` 与 `content_hash`；如果后续新增更细粒度失效策略，可再引入 `SKILL.md` mtime，但不要把 description 写成 DB 事实源。
 
 ### 4.12 技能删除流程
 
@@ -659,7 +659,7 @@ Inventory JSON 是完整管理清单，用于重排 AI Toolbox 元数据，不�
    - 删除整个目录
 
 4. **删除数据库记录**
-   - 从 skill 表删除记录
+   - 从 `skill_entity(kind=skill)` 删除记录
 
 5. **返回结果**
    - 如果有删除失败的目标，返回警告信息
@@ -669,7 +669,7 @@ Inventory JSON 是完整管理清单，用于重排 AI Toolbox 元数据，不�
 
 `skills_get_skill_documents` 供前端 Skill 详情面板预览中央仓库 `SKILL.md` / `README.md`。
 
-- 只读命令：从 `skill` 表按 `skill_id` 定位记录，再用 `resolve_skill_central_path` 解析中央仓库路径读取文件；不写数据库、不改中央仓库、不触发同步。
+- 只读命令：从 `skill_entity(kind=skill)` 按 `skill_id` 定位记录，再用 `resolve_skill_central_path` 解析中央仓库路径读取文件；不写数据库、不改中央仓库、不触发同步。
 - 文件读取做截断保护（约 128KiB 内容上限，超大文件只标记 `truncated` 不上传全文），避免大文件拖垮 UI。
 - 不允许把该命令改写成写路径；详情面板属于展示层，编辑/禁用/同步仍走既有命令。
 
@@ -802,12 +802,12 @@ description: "可选的描述"
 ### 8.3 中央仓库
 
 - 默认路径：应用数据目录/skills（如 `%APPDATA%/com.ai-toolbox/skills`）
-- 可在设置中自定义；自定义值写入 SQLite `skill_settings` 的固定记录 `skills`， `skill_settings:skills`。写入必须通过 MERGE 语义保留同表的 Git cache 等其他字段
-- `skill_preferences` 不承载中央仓库路径，保存默认视图、首选工具、托盘显示、installed tools 缓存等偏好时不得传播或修复 `central_repo_path`
+- 可在设置中自定义；自定义值写入 SQLite `skill_entity(kind=settings)` 的固定记录 `skills`， `skill_entity(kind=settings):skills`。写入必须通过 MERGE 语义保留同表的 Git cache 等其他字段
+- `skill_entity(kind=preferences)` 不承载中央仓库路径，保存默认视图、首选工具、托盘显示、installed tools 缓存等偏好时不得传播或修复 `central_repo_path`
 - 存储技能的原始内容
 - 工具目录通过链接或复制引用
 - WSL/SSH 自动同步时，源目录仍然是中央仓库；不要把工具运行时目录误判成同步源
-- 用户备注、手动分组、标签（tags）、管理启用状态都属于 AI Toolbox 管理元数据，不属于中央仓库文件内容。分组事实源分拆为 `skill_group` + `skill.group_id`，`user_group` 仅为兼容名称；tags 与 user_note 同语义，都是纯元数据。更新、同步、WSL/SSH 后续链路不能因为这些元数据变化而改写 `SKILL.md` 或发起技能内容同步。
+- 用户备注、手动分组、标签（tags）、管理启用状态都属于 AI Toolbox 管理元数据，不属于中央仓库文件内容。分组事实源分拆为 `skill_entity(kind=group)` + `skill_entity(kind=skill).group_id`，`user_group` 仅为兼容名称；tags 与 user_note 同语义，都是纯元数据。更新、同步、WSL/SSH 后续链路不能因为这些元数据变化而改写 `SKILL.md` 或发起技能内容同步。
 
 ### 8.4 代理支持
 

@@ -5,7 +5,9 @@ use crate::coding::db_id::db_new_id;
 use crate::db::helpers::{
     db_delete, db_delete_all, db_get, db_list, db_max_i64, db_put, db_query_by_field,
 };
-use crate::db::schema::{DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{
+    DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec, SkillEntityKind,
+};
 use crate::db::SqliteDbState;
 
 use super::adapter::{
@@ -43,7 +45,7 @@ fn skill_repo_order() -> Result<OrderSpec, String> {
 fn sqlite_get_managed_skills(sqlite_state: &SqliteDbState) -> Result<Vec<Skill>, String> {
     let order = skill_order()?;
     sqlite_state.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::Skill, Some(&order))?
+        Ok(db_list(conn, DbTable::SkillEntity(SkillEntityKind::Skill), Some(&order))?
             .into_iter()
             .map(from_db_skill)
             .collect())
@@ -53,7 +55,7 @@ fn sqlite_get_managed_skills(sqlite_state: &SqliteDbState) -> Result<Vec<Skill>,
 fn sqlite_get_skill_groups(sqlite_state: &SqliteDbState) -> Result<Vec<SkillGroupRecord>, String> {
     let order = skill_group_order()?;
     sqlite_state.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::SkillGroup, Some(&order))?
+        Ok(db_list(conn, DbTable::SkillEntity(SkillEntityKind::Group), Some(&order))?
             .into_iter()
             .map(from_db_skill_group)
             .collect())
@@ -64,11 +66,11 @@ fn sqlite_get_skill_by_id(
     sqlite_state: &SqliteDbState,
     skill_id: &str,
 ) -> Result<Option<Skill>, String> {
-    sqlite_state.with_conn(|conn| Ok(db_get(conn, DbTable::Skill, skill_id)?.map(from_db_skill)))
+    sqlite_state.with_conn(|conn| Ok(db_get(conn, DbTable::SkillEntity(SkillEntityKind::Skill), skill_id)?.map(from_db_skill)))
 }
 
 fn sqlite_put_skill(sqlite_state: &SqliteDbState, id: &str, skill: &Skill) -> Result<(), String> {
-    sqlite_state.with_conn(|conn| db_put(conn, DbTable::Skill, id, &to_clean_skill_payload(skill)))
+    sqlite_state.with_conn(|conn| db_put(conn, DbTable::SkillEntity(SkillEntityKind::Skill), id, &to_clean_skill_payload(skill)))
 }
 
 fn sqlite_patch_skill(
@@ -92,7 +94,7 @@ fn sqlite_put_skill_group(
     sqlite_state.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::SkillGroup,
+            DbTable::SkillEntity(SkillEntityKind::Group),
             id,
             &to_skill_group_payload(group),
         )
@@ -105,7 +107,7 @@ fn sqlite_put_skill_repo(
     repo: &SkillRepo,
 ) -> Result<(), String> {
     sqlite_state
-        .with_conn(|conn| db_put(conn, DbTable::SkillRepo, id, &to_skill_repo_payload(repo)))
+        .with_conn(|conn| db_put(conn, DbTable::SkillEntity(SkillEntityKind::Repo), id, &to_skill_repo_payload(repo)))
 }
 
 fn sqlite_put_skill_preferences(
@@ -115,7 +117,7 @@ fn sqlite_put_skill_preferences(
     sqlite_state.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::SkillPreferences,
+            DbTable::SkillEntity(SkillEntityKind::Preferences),
             SKILL_PREFERENCES_ID,
             &to_skill_preferences_payload(prefs),
         )
@@ -161,7 +163,7 @@ pub async fn delete_skill_group(state: &SqliteDbState, group_id: &str) -> Result
         let skill_id = skill.id.clone();
         sqlite_put_skill(state, &skill_id, &skill)?;
     }
-    state.with_conn(|conn| db_delete(conn, DbTable::SkillGroup, group_id).map(|_| ()))?;
+    state.with_conn(|conn| db_delete(conn, DbTable::SkillEntity(SkillEntityKind::Group), group_id).map(|_| ()))?;
     Ok(())
 }
 
@@ -169,7 +171,7 @@ pub async fn replace_skill_groups(
     state: &SqliteDbState,
     groups: &[SkillGroupRecord],
 ) -> Result<Vec<SkillGroupRecord>, String> {
-    state.with_conn(|conn| db_delete_all(conn, DbTable::SkillGroup).map(|_| ()))?;
+    state.with_conn(|conn| db_delete_all(conn, DbTable::SkillEntity(SkillEntityKind::Group)).map(|_| ()))?;
     let mut saved = Vec::new();
     for group in groups {
         let id = save_skill_group(state, group).await?;
@@ -274,7 +276,7 @@ pub async fn get_skill_by_id(
 pub async fn upsert_skill(state: &SqliteDbState, skill: &Skill) -> Result<String, String> {
     let id = if skill.id.is_empty() {
         let max_index = state.with_conn(|conn| {
-            db_max_i64(conn, DbTable::Skill, &JsonFieldPath::new("sort_index")?)
+            db_max_i64(conn, DbTable::SkillEntity(SkillEntityKind::Skill), &JsonFieldPath::new("sort_index")?)
         })?;
         let mut new_skill = skill.clone();
         new_skill.sort_index = max_index.unwrap_or(-1) as i32 + 1;
@@ -294,7 +296,7 @@ pub async fn get_skill_by_name(state: &SqliteDbState, name: &str) -> Result<Opti
     state.with_conn(|conn| {
         Ok(db_query_by_field(
             conn,
-            DbTable::Skill,
+            DbTable::SkillEntity(SkillEntityKind::Skill),
             &JsonFieldPath::new("name")?,
             &name_value,
             Some(&skill_order()?),
@@ -308,7 +310,7 @@ pub async fn get_skill_by_name(state: &SqliteDbState, name: &str) -> Result<Opti
 
 /// Delete a skill
 pub async fn delete_skill(state: &SqliteDbState, skill_id: &str) -> Result<(), String> {
-    state.with_conn(|conn| db_delete(conn, DbTable::Skill, skill_id).map(|_| ()))?;
+    state.with_conn(|conn| db_delete(conn, DbTable::SkillEntity(SkillEntityKind::Skill), skill_id).map(|_| ()))?;
     Ok(())
 }
 
@@ -511,7 +513,7 @@ pub async fn delete_skill_target(
 pub async fn get_skill_repos(state: &SqliteDbState) -> Result<Vec<SkillRepo>, String> {
     let order = skill_repo_order()?;
     state.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::SkillRepo, Some(&order))?
+        Ok(db_list(conn, DbTable::SkillEntity(SkillEntityKind::Repo), Some(&order))?
             .into_iter()
             .map(from_db_skill_repo)
             .collect())
@@ -532,7 +534,7 @@ pub async fn delete_skill_repo(
     name: &str,
 ) -> Result<(), String> {
     let id = format!("{}/{}", owner, name);
-    state.with_conn(|conn| db_delete(conn, DbTable::SkillRepo, &id).map(|_| ()))?;
+    state.with_conn(|conn| db_delete(conn, DbTable::SkillEntity(SkillEntityKind::Repo), &id).map(|_| ()))?;
     Ok(())
 }
 
@@ -542,7 +544,7 @@ pub async fn delete_skill_repo(
 pub async fn get_skill_preferences(state: &SqliteDbState) -> Result<SkillPreferences, String> {
     state.with_conn(|conn| {
         Ok(
-            db_get(conn, DbTable::SkillPreferences, SKILL_PREFERENCES_ID)?
+            db_get(conn, DbTable::SkillEntity(SkillEntityKind::Preferences), SKILL_PREFERENCES_ID)?
                 .map(from_db_skill_preferences)
                 .unwrap_or_default(),
         )
@@ -739,7 +741,7 @@ mod tests {
 
     fn load_raw_preferences(state: &SqliteDbState) -> Value {
         state
-            .with_conn(|conn| db_get(conn, DbTable::SkillPreferences, SKILL_PREFERENCES_ID))
+            .with_conn(|conn| db_get(conn, DbTable::SkillEntity(SkillEntityKind::Preferences), SKILL_PREFERENCES_ID))
             .expect("query preferences")
             .expect("preferences record")
     }
@@ -768,7 +770,7 @@ mod tests {
             "default_view_mode": "flat"
         });
         state
-            .with_conn(|conn| db_put(conn, DbTable::SkillPreferences, SKILL_PREFERENCES_ID, &seed))
+            .with_conn(|conn| db_put(conn, DbTable::SkillEntity(SkillEntityKind::Preferences), SKILL_PREFERENCES_ID, &seed))
             .expect("seed legacy preferences path");
 
         set_setting(&state, "preferred_tools_v1", "[\"codex\"]")
@@ -857,5 +859,57 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(false)
         );
+    }
+
+    #[tokio::test]
+    async fn groups_and_repos_round_trip_in_their_own_kinds() {
+        let (_temp, state) = create_test_db();
+
+        let group = SkillGroupRecord {
+            id: String::new(),
+            name: "Group A".to_string(),
+            note: None,
+            sort_index: 0,
+            created_at: 1,
+            updated_at: 2,
+        };
+        let group_id = save_skill_group(&state, &group)
+            .await
+            .expect("save group");
+        let groups = get_skill_groups(&state).await.expect("list groups");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "Group A");
+        assert!(
+            get_managed_skills(&state).await.expect("list skills").is_empty(),
+            "a group row must not leak into the skill kind"
+        );
+
+        delete_skill_group(&state, &group_id)
+            .await
+            .expect("delete group");
+        assert!(get_skill_groups(&state)
+            .await
+            .expect("list groups after delete")
+            .is_empty());
+
+        let repo = SkillRepo {
+            id: String::new(),
+            owner: "owner".to_string(),
+            name: "repo".to_string(),
+            branch: "main".to_string(),
+            enabled: true,
+            created_at: 1,
+        };
+        save_skill_repo(&state, &repo).await.expect("save repo");
+        let repos = get_skill_repos(&state).await.expect("list repos");
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].id, "owner/repo");
+        delete_skill_repo(&state, "owner", "repo")
+            .await
+            .expect("delete repo");
+        assert!(get_skill_repos(&state)
+            .await
+            .expect("list repos after delete")
+            .is_empty());
     }
 }

@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::schema::{sql_string_literal, JsonFieldPath};
 
-pub const TARGET_SCHEMA_VERSION: i32 = 34;
+pub const TARGET_SCHEMA_VERSION: i32 = 35;
 const FUTURE_SCHEMA_ERROR_PREFIX: &str = "AI_TOOLBOX_SQLITE_SCHEMA_TOO_NEW";
 
 // ---- the consolidation table ------------------------------------------------
@@ -98,6 +98,50 @@ const RELAY_LEGACY_TABLES: &[(&str, &str)] = &[
     ("api2api_checkin_schedule", "checkin_schedule"),
     ("api2api_checkin_record", "checkin_record"),
     ("relay_entity", "channel"),
+];
+
+/// The legacy tables v35 folds into the four feature-domain entity tables.
+///
+/// `wsl_sync_config` and `ssh_sync_config` are absent because each holds two
+/// record shapes under different ids (`config` and `defaults_version`); they are
+/// copied by [`copy_sync_config_rows`] into two separate kinds instead.
+const FEATURE_ENTITY_TABLES: &[(&str, &str, &str)] = &[
+    ("skill", "skill_entity", "skill"),
+    ("skill_group", "skill_entity", "group"),
+    ("skill_repo", "skill_entity", "repo"),
+    ("skill_preferences", "skill_entity", "preferences"),
+    ("skill_settings", "skill_entity", "settings"),
+    ("mcp_server", "mcp_entity", "server"),
+    ("mcp_preferences", "mcp_entity", "preferences"),
+    ("favorite_mcp", "mcp_entity", "favorite"),
+    ("mcp_group", "mcp_entity", "group"),
+    ("wsl_file_mapping", "sync_entity", "wsl_file_mapping"),
+    ("ssh_connection", "sync_entity", "ssh_connection"),
+    ("ssh_file_mapping", "sync_entity", "ssh_file_mapping"),
+    ("image_channel", "image_entity", "channel"),
+    ("image_job", "image_entity", "job"),
+    ("image_asset", "image_entity", "asset"),
+];
+
+/// Every table v35 drops after its rows have been copied.
+const FEATURE_LEGACY_TABLES: &[&str] = &[
+    "skill",
+    "skill_group",
+    "skill_repo",
+    "skill_preferences",
+    "skill_settings",
+    "mcp_server",
+    "mcp_preferences",
+    "favorite_mcp",
+    "mcp_group",
+    "wsl_sync_config",
+    "wsl_file_mapping",
+    "ssh_sync_config",
+    "ssh_connection",
+    "ssh_file_mapping",
+    "image_channel",
+    "image_job",
+    "image_asset",
 ];
 
 pub fn run_all(conn: &mut Connection) -> Result<(), String> {
@@ -204,6 +248,9 @@ pub fn run_all(conn: &mut Connection) -> Result<(), String> {
     }
     if current_version < 34 {
         run_migration_step(conn, 34, migrate_v34)?;
+    }
+    if current_version < 35 {
+        run_migration_step(conn, 35, migrate_v35)?;
     }
 
     Ok(())
@@ -1176,6 +1223,105 @@ fn migrate_v34(conn: &Connection) -> Result<(), String> {
         drop_table_if_exists(conn, table)?;
     }
     Ok(())
+}
+
+/// Fold the remaining feature-domain tables into four `kind`-scoped tables.
+///
+/// v33/v34 removed the per-CLI duplication; the tables left behind were one
+/// physical table per feature entity. They share the same JSONB row shape and
+/// lifecycle, so v35 groups them by domain. `kind` is part of the primary key,
+/// not a JSON field: the payload structs are all `#[serde(default)]`, so only a
+/// SQL predicate can stop a repo row from being read as a skill.
+///
+/// Copies run before drops inside the same SAVEPOINT, so a failure leaves every
+/// legacy table and its rows exactly as it was.
+fn migrate_v35(conn: &Connection) -> Result<(), String> {
+    create_feature_entity_tables(conn)?;
+
+    for (old_table, target, kind) in FEATURE_ENTITY_TABLES {
+        copy_scoped_rows(conn, old_table, target, &[("kind", kind)])?;
+    }
+    copy_sync_config_rows(conn, "wsl_sync_config", "wsl_config", "wsl_defaults_version")?;
+    copy_sync_config_rows(conn, "ssh_sync_config", "ssh_config", "ssh_defaults_version")?;
+
+    for table in FEATURE_LEGACY_TABLES {
+        drop_table_if_exists(conn, table)?;
+    }
+    create_feature_entity_indexes(conn)
+}
+
+fn create_feature_entity_tables(conn: &Connection) -> Result<(), String> {
+    for table in ["skill_entity", "mcp_entity", "sync_entity", "image_entity"] {
+        conn.execute_batch(&format!(
+            "CREATE TABLE IF NOT EXISTS {table} (
+                id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                data BLOB NOT NULL CHECK (json_valid(data, 4)),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (kind, id)
+            );"
+        ))
+        .map_err(|error| format!("Failed to create {table}: {error}"))?;
+    }
+    Ok(())
+}
+
+/// Move the two record shapes out of a sync config table.
+///
+/// `config` and `defaults_version` are different payloads; keeping them in one
+/// kind would make `db_list` return the version marker as if it were a config
+/// row. Any unexpected extra ids are treated as config rows so nothing is lost.
+fn copy_sync_config_rows(
+    conn: &Connection,
+    old_table: &str,
+    config_kind: &str,
+    defaults_version_kind: &str,
+) -> Result<(), String> {
+    if !table_exists(conn, old_table)? {
+        return Ok(());
+    }
+    conn.execute_batch(&format!(
+        "INSERT OR IGNORE INTO sync_entity (id, kind, data, created_at, updated_at)
+         SELECT id, {}, data, created_at, updated_at
+         FROM {old_table} WHERE id <> 'defaults_version';
+         INSERT OR IGNORE INTO sync_entity (id, kind, data, created_at, updated_at)
+         SELECT id, {}, data, created_at, updated_at
+         FROM {old_table} WHERE id = 'defaults_version';",
+        sql_string_literal(config_kind),
+        sql_string_literal(defaults_version_kind),
+    ))
+    .map_err(|error| format!("Failed to move {old_table} into sync_entity: {error}"))
+}
+
+fn create_feature_entity_indexes(conn: &Connection) -> Result<(), String> {
+    // Every index leads with `kind`: the primary key is `(kind, id)`, so a
+    // plain `kind` index would duplicate its leading column. Each remaining
+    // index matches an actual ORDER BY / equality expression from the stores.
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_skill_entity_name
+            ON skill_entity(kind, json_extract(data, '$.name'));
+        CREATE INDEX IF NOT EXISTS idx_skill_entity_sort
+            ON skill_entity(kind, CAST(json_extract(data, '$.sort_index') AS INTEGER));
+
+        CREATE INDEX IF NOT EXISTS idx_mcp_entity_name
+            ON mcp_entity(kind, json_extract(data, '$.name'));
+        CREATE INDEX IF NOT EXISTS idx_mcp_entity_sort
+            ON mcp_entity(kind, CAST(json_extract(data, '$.sort_index') AS INTEGER));
+        CREATE INDEX IF NOT EXISTS idx_mcp_entity_created_at
+            ON mcp_entity(kind, CAST(json_extract(data, '$.created_at') AS INTEGER));
+
+        CREATE INDEX IF NOT EXISTS idx_sync_entity_module
+            ON sync_entity(kind, json_extract(data, '$.module'));
+        CREATE INDEX IF NOT EXISTS idx_sync_entity_sort
+            ON sync_entity(kind, CAST(json_extract(data, '$.sort_order') AS INTEGER));
+
+        CREATE INDEX IF NOT EXISTS idx_image_entity_sort
+            ON image_entity(kind, CAST(json_extract(data, '$.sort_order') AS INTEGER));
+        CREATE INDEX IF NOT EXISTS idx_image_entity_created_at
+            ON image_entity(kind, CAST(json_extract(data, '$.created_at') AS INTEGER));",
+    )
+    .map_err(|error| format!("Failed to create feature entity indexes: {error}"))
 }
 
 fn create_jsonb_table(conn: &Connection, table: &str) -> Result<(), String> {

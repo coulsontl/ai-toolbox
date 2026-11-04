@@ -1,7 +1,7 @@
 # 数据库表合并方案（Schema Consolidation）
 
-> 状态：**已落地**（分支 `feat/relay-schema-consolidation`）。
-> 最后更新：2026-11-01
+> 状态：**已落地**（v33/v34 在 `feat/relay-schema-consolidation`；v35 功能域合并已实现并通过测试）。
+> 最后更新：2026-11-04
 
 ## 一、问题
 
@@ -180,7 +180,7 @@ PRAGMA user_version = 32;
 
 注：
 - `opencode_favorite_plugin` / `opencode_favorite_provider` 在 v33 时保持独立——它们是用户收藏列表，当时没有对应的 `kind`。**v34 已新增 `favorite_plugin` / `favorite_provider` kind 并入 `cli_config`**，见第十二节。
-- `ssh_sync_config` / `wsl_sync_config` 与 CLI 无关，保持独立。
+- `ssh_sync_config` / `wsl_sync_config` 与 CLI 无关；v33 时保持独立，v35 已并入 `sync_entity`（见第十三节）。
 - `model_pricing` / `proxy_request_logs` / `usage_daily_rollups` 是列式表，从来不在 `DbTable` 内。
 
 ## 八、relay 功能字段（对应「模型列表 / 余额 / 领取 / 平台 / Token 续期 / LLM 请求 / 签到」）
@@ -259,3 +259,37 @@ v33 之后仍剩 3 张 CLI 独立表与 1 张死表，v34 一并处理：
 - `usage_stats::load_opencode_provider_names` 的原生 SQL 已同步改为带 `cli_key` / `kind` 谓词查 `cli_config`。
 - 迁移在单 SAVEPOINT 内「先搬后删」，失败整体回滚；新库走 v1 建旧表 → v34 搬空 → 删除，最终结构与升级库一致。
 - 完成后本机物理表 34 → 30（JSONB 表 31 → 27）。
+
+## 十三、v35 功能域表合并（2026-11-04）
+
+v33/v34 消掉了「每 CLI 一套」的重复；v35 处理剩下的「每个功能实体一张表」。这 17 张表共享同一 JSONB 行形状与生命周期，按功能域收成 4 张 `(kind, id)` 作用域表：
+
+| 域 | 旧表 | 新表 | 新 kind |
+|---|---|---|---|
+| Skill | `skill` / `skill_group` / `skill_repo` / `skill_preferences` / `skill_settings` | `skill_entity` | `skill` / `group` / `repo` / `preferences` / `settings` |
+| MCP | `mcp_server` / `mcp_preferences` / `favorite_mcp` / `mcp_group` | `mcp_entity` | `server` / `preferences` / `favorite` / `group` |
+| 远程同步 | `wsl_sync_config` / `wsl_file_mapping` / `ssh_sync_config` / `ssh_connection` / `ssh_file_mapping` | `sync_entity` | `wsl_config` / `wsl_defaults_version` / `wsl_file_mapping` / `ssh_config` / `ssh_defaults_version` / `ssh_connection` / `ssh_file_mapping` |
+| Image | `image_channel` / `image_job` / `image_asset` | `image_entity` | `channel` / `job` / `asset` |
+
+- 四张新表的结构与 `relay_entity` 完全同构：`(id, kind, data, created_at, updated_at)`，主键 `(kind, id)`。
+- `sync_entity` 的 WSL / SSH 必须使用不同 kind：本机真实库中两边的 file mapping 有 62 个同名 id，合并 kind 会静默覆盖；`config` 与 `defaults_version` 也拆成不同 kind，否则 `db_list` 会把版本行当配置读。
+- `custom_tool` 保持独立：它是 Skills 与 MCP 共用的跨域工具注册表，不属于任一域。
+- `settings` / `proxy_gateway_settings` 保持独立：合并只净减 1 张表，却会碰启动与备份路径，单独评估。
+- `gateway_session_usage_state`、`relay_quota_snapshot` / `relay_quota_point` 保持独立：高频状态 / 轮询表，和低频配置同表只会放大页竞争。
+- 索引只保留与真实查询表达式一致的 9 个（name / sort / created_at / module）；`kind` 单列索引由主键 `(kind, id)` 的自动索引覆盖，`created_at` 按 JSON 表达式建索引以匹配 store 的 `ORDER BY`。
+- 完成后 JSONB 表 27 → 14，物理表 30 → 17。
+
+## 十四、遗留：计价基准冗余（参考 cc-switch，未做）
+
+cc-switch 的 `model_pricing` 与本项目逐列相同（6 列），**没有可直接抄的冗余字段**；它真正的差异是在用量侧记录计价基准：
+
+- `proxy_request_logs.pricing_model`：写入时实际用于查价的模型 id（`pricing_model_source` 解析后的结果）。
+- `usage_daily_rollups.request_model` + `pricing_model`：进主键，保证明细被 retention 清理后仍能区分「上游回显模型 / 客户端请求模型 / 实际计价模型」。
+
+本项目现状：只有 `pricing_model_source`（配置值），没有 `pricing_model`（实际命中行）；rollup 主键是 `(date, app_type, provider_id, model, project_path)`，明细 prune 后无法还原计价维度。由于代理请求的成本在写入时已固化，这**不影响已有成本数字**，只影响历史审计与未来「缺价补价」能力。
+
+后续可选：
+
+- **最小方案**：v36 给 `proxy_request_logs` 加 `pricing_model TEXT`，让查价函数返回命中的定价行 id；rollup 不动。
+- **完整方案**：重建 `usage_daily_rollups`，加 `request_model` / `pricing_model` 进主键，历史行填 `''`；同步改 `rollup_and_prune`、rollup 读取查询与会话导入对账键（约 30 处 SQL）。
+- 不建议给 `model_pricing` 加 `provider` / `context_window` / `aliases`：这些是 models.dev 元数据，cc-switch 也没有放进价格表。

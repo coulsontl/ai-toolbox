@@ -23,7 +23,7 @@ use crate::coding::proxy_gateway::{
 use crate::coding::runtime_location;
 use crate::coding::zcode;
 use crate::db::helpers::{db_delete, db_delete_all, db_get, db_list, db_patch_fields, db_put};
-use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{DbTable, OrderDirection, OrderField, OrderSpec, SyncEntityKind};
 use crate::db::SqliteDbState;
 use chrono::Local;
 use std::path::Path;
@@ -76,7 +76,7 @@ fn wsl_mapping_order() -> Result<OrderSpec, String> {
 
 fn load_wsl_config(state: &SqliteDbState) -> Result<WSLSyncConfig, String> {
     state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::WslSyncConfig, "config")?
+        Ok(db_get(conn, DbTable::SyncEntity(SyncEntityKind::WslConfig), "config")?
             .map(|record| adapter::config_from_db_value(record, vec![]))
             .unwrap_or_default())
     })
@@ -89,15 +89,15 @@ fn patch_wsl_config_record(
     // Keep the complete read/modify/write under one connection lock. Settings,
     // file sync status, and Skills warnings can be updated independently.
     state.with_conn(|conn| {
-        if db_get(conn, DbTable::WslSyncConfig, "config")?.is_none() {
+        if db_get(conn, DbTable::SyncEntity(SyncEntityKind::WslConfig), "config")?.is_none() {
             db_put(
                 conn,
-                DbTable::WslSyncConfig,
+                DbTable::SyncEntity(SyncEntityKind::WslConfig),
                 "config",
                 &adapter::config_to_db_value(&WSLSyncConfig::default()),
             )?;
         }
-        db_patch_fields(conn, DbTable::WslSyncConfig, "config", fields)?;
+        db_patch_fields(conn, DbTable::SyncEntity(SyncEntityKind::WslConfig), "config", fields)?;
         Ok(())
     })
 }
@@ -115,7 +115,7 @@ fn save_wsl_config_record(state: &SqliteDbState, config: &WSLSyncConfig) -> Resu
 fn load_wsl_file_mappings(state: &SqliteDbState) -> Result<Vec<FileMapping>, String> {
     let order = wsl_mapping_order()?;
     state.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::WslFileMapping, Some(&order))?
+        Ok(db_list(conn, DbTable::SyncEntity(SyncEntityKind::WslFileMapping), Some(&order))?
             .into_iter()
             .map(adapter::mapping_from_db_value)
             .collect())
@@ -169,7 +169,7 @@ pub async fn wsl_save_config(
         for mapping in config.file_mappings.iter() {
             let mapping_data = adapter::mapping_to_db_value(mapping);
             state.with_conn(|conn| {
-                db_put(conn, DbTable::WslFileMapping, &mapping.id, &mapping_data)
+                db_put(conn, DbTable::SyncEntity(SyncEntityKind::WslFileMapping), &mapping.id, &mapping_data)
             })?;
         }
     }
@@ -219,7 +219,7 @@ pub async fn wsl_add_file_mapping(
 ) -> Result<(), String> {
     validate_file_mapping_cleanup_paths(&mapping)?;
     let mapping_data = adapter::mapping_to_db_value(&mapping);
-    state.with_conn(|conn| db_put(conn, DbTable::WslFileMapping, &mapping.id, &mapping_data))?;
+    state.with_conn(|conn| db_put(conn, DbTable::SyncEntity(SyncEntityKind::WslFileMapping), &mapping.id, &mapping_data))?;
 
     let _ = app.emit("wsl-config-changed", ());
 
@@ -235,7 +235,7 @@ pub async fn wsl_update_file_mapping(
 ) -> Result<(), String> {
     validate_file_mapping_cleanup_paths(&mapping)?;
     let mapping_data = adapter::mapping_to_db_value(&mapping);
-    state.with_conn(|conn| db_put(conn, DbTable::WslFileMapping, &mapping.id, &mapping_data))?;
+    state.with_conn(|conn| db_put(conn, DbTable::SyncEntity(SyncEntityKind::WslFileMapping), &mapping.id, &mapping_data))?;
 
     let _ = app.emit("wsl-config-changed", ());
 
@@ -249,7 +249,7 @@ pub async fn wsl_delete_file_mapping(
     app: tauri::AppHandle,
     id: String,
 ) -> Result<(), String> {
-    state.with_conn(|conn| db_delete(conn, DbTable::WslFileMapping, &id).map(|_| ()))?;
+    state.with_conn(|conn| db_delete(conn, DbTable::SyncEntity(SyncEntityKind::WslFileMapping), &id).map(|_| ()))?;
 
     let _ = app.emit("wsl-config-changed", ());
 
@@ -262,7 +262,7 @@ pub async fn wsl_reset_file_mappings(
     state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    state.with_conn(|conn| db_delete_all(conn, DbTable::WslFileMapping).map(|_| ()))?;
+    state.with_conn(|conn| db_delete_all(conn, DbTable::SyncEntity(SyncEntityKind::WslFileMapping)).map(|_| ()))?;
 
     let _ = app.emit("wsl-config-changed", ());
 
@@ -829,7 +829,7 @@ pub async fn wsl_sync(
 /// model/MCP/skills changes. Manual sync is intentionally not gated by this.
 pub async fn is_wsl_auto_sync_enabled(state: &SqliteDbState) -> bool {
     state
-        .with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "config"))
+        .with_conn(|conn| db_get(conn, DbTable::SyncEntity(SyncEntityKind::WslConfig), "config"))
         .ok()
         .flatten()
         .and_then(|record| record.get("enabled").and_then(|v| v.as_bool()))
@@ -1055,7 +1055,13 @@ async fn backfill_default_mappings(
 
     // Read stored version
     let stored_version: u64 = db
-        .with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "defaults_version"))
+        .with_conn(|conn| {
+            db_get(
+                conn,
+                DbTable::SyncEntity(SyncEntityKind::WslDefaultsVersion),
+                "defaults_version",
+            )
+        })
         .ok()
         .flatten()
         .and_then(|value| value.get("version").and_then(|value| value.as_u64()))
@@ -1148,7 +1154,7 @@ async fn backfill_default_mappings(
             if let Err(e) = db.with_conn(|conn| {
                 db_put(
                     conn,
-                    DbTable::WslFileMapping,
+                    DbTable::SyncEntity(SyncEntityKind::WslFileMapping),
                     &default_mapping.id,
                     &mapping_data,
                 )
@@ -1181,7 +1187,7 @@ async fn backfill_default_mappings(
                 mapping.wsl_path = NEW_OMO_MAPPING_PATH.to_string();
                 let data = adapter::mapping_to_db_value(mapping);
                 if let Err(e) =
-                    db.with_conn(|conn| db_put(conn, DbTable::WslFileMapping, &mapping_id, &data))
+                    db.with_conn(|conn| db_put(conn, DbTable::SyncEntity(SyncEntityKind::WslFileMapping), &mapping_id, &data))
                 {
                     log::warn!("Failed to migrate WSL mapping '{}': {}", mapping_id, e);
                 } else {
@@ -1202,7 +1208,7 @@ async fn backfill_default_mappings(
     // if a user had manually enabled it.
     if stored_version < 15 {
         if let Err(e) =
-            db.with_conn(|conn| db_delete(conn, DbTable::WslFileMapping, "claude-desktop-config"))
+            db.with_conn(|conn| db_delete(conn, DbTable::SyncEntity(SyncEntityKind::WslFileMapping), "claude-desktop-config"))
         {
             log::warn!("Failed to drop legacy claude-desktop-config mapping: {}", e);
         }
@@ -1213,7 +1219,7 @@ async fn backfill_default_mappings(
     let _ = db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::WslSyncConfig,
+            DbTable::SyncEntity(SyncEntityKind::WslDefaultsVersion),
             "defaults_version",
             &version_data,
         )
@@ -1880,7 +1886,7 @@ pub(super) async fn merge_sync_warnings(
     }
 
     let existing = state
-        .with_conn(|conn| db_get(conn, DbTable::WslSyncConfig, "config"))?
+        .with_conn(|conn| db_get(conn, DbTable::SyncEntity(SyncEntityKind::WslConfig), "config"))?
         .map(|record| adapter::config_from_db_value(record, vec![]))
         .map(|config| config.last_sync_warnings)
         .unwrap_or_default();

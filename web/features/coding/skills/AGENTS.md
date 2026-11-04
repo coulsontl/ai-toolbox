@@ -9,8 +9,8 @@
 - 技能主数据以后端 Skills 中央仓库和数据库记录为准，不以前端当前排序或分组结果为准。
 - grouped/flat 视图、搜索、批量选择都是纯 UI 衍生状态，不能反向当成业务事实。
 - 技能来源标签展示的是中心存储的 `source_type/source_ref` 语义，不是工具运行时目录扫描结果本身。
-- 手动分组事实源是后端 `skill_group` 表和 `skill.group_id`；`user_group` 只是旧数据/展示兼容字段，不要再把 group name 当业务身份。
-- `user_note`、`tags`、`management_enabled`、`disabled_previous_tools` 是 AI Toolbox 内部用户管理元数据，事实源是后端 `skill` 记录，不是 `SKILL.md` 或工具运行时目录。`tags` 是 string 数组，adapter 缺省为空数组，不参与内容哈希、不触发工具同步。
+- 手动分组事实源是后端 `skill_entity(kind=group)` 和 `skill_entity(kind=skill).group_id`；`user_group` 只是旧数据/展示兼容字段，不要再把 group name 当业务身份。
+- `user_note`、`tags`、`management_enabled`、`disabled_previous_tools` 是 AI Toolbox 内部用户管理元数据，事实源是后端 `skill_entity(kind=skill)` 记录，不是 `SKILL.md` 或工具运行时目录。`tags` 是 string 数组，adapter 缺省为空数组，不参与内容哈希、不触发工具同步。
 - Skill description 只来自后端对中央仓库 `SKILL.md` frontmatter 的缓存解析；前端不能把 description 写回 DB，也不能塞进 Inventory JSON。
 - `source_health/source_error` 是后端对中央仓库 source 的只读诊断；前端只能标黄提示用户手动恢复或重装，不能据此自动恢复、删除或触发重同步。
 
@@ -43,7 +43,7 @@ sequenceDiagram
 
 - 详情面板只应在浏览模式（非 selectionMode、非拖拽手柄）由卡片正文点击打开；选择模式下卡片点击应留给选择，不要既开详情又选卡。拖拽手柄通过 `data-skill-card-no-detail` 排除，避免拖拽时误开详情。
 - 不要把工具当前 skills 目录当成源目录。页面展示和操作都应默认以中央仓库为中心。
-- 不要把自定义分组和来源分组混为同一个业务概念；来源分组来自 `source_type/source_ref`，手动分组来自 `skill_group` + `group_id`，`user_group` 只用于兼容展示。
+- 不要把自定义分组和来源分组混为同一个业务概念；来源分组来自 `source_type/source_ref`，手动分组来自 `skill_entity(kind=group)` + `group_id`，`user_group` 只用于兼容展示。
 - grouped view 的展开状态、搜索过滤和选择集都是 UI 派生状态，刷新时只能做裁剪，不能把它们误当成业务配置保存。
 - `default_view_mode` 保存用户进入 Skills 页时的默认展示偏好；设置保存成功后也应立即应用到当前 Skills 页面视图，但不能保存或推导当前页面搜索、展开、筛选、选择集等运行时状态。
 - `group_mode` 保存分组视图的「分组方式」偏好：`auto` / `custom` / `source`。`auto`（默认）表示没有任何自定义分组时回退到来源分组，有自定义分组时用自定义分组；用户手动切换后写回该偏好。不要把它当成当前页面的展开状态或选择集。

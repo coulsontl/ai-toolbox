@@ -39,7 +39,7 @@
 ## 核心设计决策（Why）
 
 - 备份不是只备份数据库，还要把各工具外部配置文件、prompt、auth、skills 等一起打包，否则恢复后会出现“库里有记录、运行时文件缺失”的分叉。
-- Skills 文件备份/恢复必须以当前 `skill_settings:skills.central_repo_path` 解析出的中央仓库目录为准，而不是固定 `{app_data_dir}/skills`。恢复 SQLite 快照后再解析该路径；若目标目录不存在，恢复流程负责创建。
+- Skills 文件备份/恢复必须以当前 `skill_entity(kind=settings):skills.central_repo_path` 解析出的中央仓库目录为准，而不是固定 `{app_data_dir}/skills`。恢复 SQLite 快照后再解析该路径；若目标目录不存在，恢复流程负责创建。
 - 三渠道共用生成/恢复管线但保留各自薄包装命令：网络错误与本地文件错误分别处理，同时保证任何渠道的备份在任何渠道语义一致（同一 zip 结构、同一加密格式、同一恢复 flags/warnings）。加密只改变文件的存储表示，不改变备份内容语义。
 - 备份加密密码放系统凭据库而不是 SQLite：重启后的自动备份能读到密码，同时密码不进入备份包本身；跨设备恢复不迁移凭据，恢复加密备份时输入的密码默认只用于本次解密。
 - 自动备份作为后台调度器常驻运行，周期性读取设置并决定是否执行，而不是把调度状态散落到 UI 层。
@@ -72,11 +72,11 @@ sequenceDiagram
 - 仓库渠道的回归测试用 `repository.rs::mock_api_tests` 的 TcpListener mock（`start_mock` 按序应答并记录 `METHOD path`，query 剥离防 Token 入日志；`RepositoryClient::for_test` 跳过凭据校验指向本地监听）。私仓拦截、Trees 解析、truncated 清理跳过都有现成用例，改这块行为时先跑它们。
 - `save_backup_settings` 的事务边界：凭据库写入在最前（失败则整体不动）；SQLite 内 patch settings 字段 + 写 `backup_repository` 记录同事务；DB 失败时把旧密码写回凭据库。并发保存其它设置不受影响（只 patch 备份字段），但不要把这个入口改回全量 `save_settings`。
 - 备份/恢复的 JSON 错误载荷统一 `{type, message, suggestion}`（`credentials::backup_error`），`suggestion` 是 i18n key；前端解析 `type` 判断密码重试。错误 `message`/`detail` 不得包含密码或 Token。
-- 数据目录覆盖从固定默认位置的 `app_paths.json` 启动引导；备份包不包含/恢复该文件。DB、图片资产、默认 Skills 路径及恢复 flags 都使用本次运行已冻结的数据根目录，保存下次启动目录后仍写当前目录。本地/WebDAV/仓库恢复标记写失败必须上报，不能成功返回却不触发后续同步。独立自定义 Skills 仓库仍由 `skill_settings` 决定，不因应用目录变化被重置。
+- 数据目录覆盖从固定默认位置的 `app_paths.json` 启动引导；备份包不包含/恢复该文件。DB、图片资产、默认 Skills 路径及恢复 flags 都使用本次运行已冻结的数据根目录，保存下次启动目录后仍写当前目录。本地/WebDAV/仓库恢复标记写失败必须上报，不能成功返回却不触发后续同步。独立自定义 Skills 仓库仍由 `skill_entity(kind=settings)` 决定，不因应用目录变化被重置。
 
 - 不要把备份理解成“只有数据库”。`external-configs/` 下的 OpenCode/Claude/Codex/OpenClaw 配置、prompt、auth 等同样关键。
 - 不要把 SSH/WSL 映射当作自定义备份项来源。SSH/WSL 是同步规则；自定义备份项是备份恢复规则，两者状态语义不同。
-- 关闭 `backup_image_assets_enabled` 只跳过图片资产文件，不会跳过数据库里的 `image_job` / `image_asset` 元数据；恢复后历史记录可能存在但图片文件不可读，这是用户显式选择的体积取舍。
+- 关闭 `backup_image_assets_enabled` 只跳过图片资产文件，不会跳过数据库里的 `image_entity(kind=job/asset)` 元数据；恢复后历史记录可能存在但图片文件不可读，这是用户显式选择的体积取舍。
 - 关闭 `backup_cli_config_files_enabled` 只跳过 **optional** 五工具的 `external-configs/<tool>/` 磁盘文件，不会跳过 DB 中已有记录；UI 仍可能显示「已应用」。Codex、Claude、Grok、Gemini、Kimi CLI 的 applied provider/prompt 会重建。OpenCode/OpenClaw/Pi 文件仍从 zip 恢复；re-apply 里 OpenCode 仍会补 applied prompt 与已存储的 Oh My 配置，Pi 补 applied prompt，OpenClaw 不 re-apply；provider/model/main config **不从数据库猜写**。
 - `skip_cli_custom_roots=true` 时，SQLite restore 后要清空 common 中的 `root_dir/config_path`，且所有工具都不得读取备份里的 `root-dir.txt`。开关关闭但未勾选该选项时：always 三工具仍可读各自 `root-dir.txt`；optional 五工具不读。
 - re-apply 中 provider、prompt 和 Oh My config 是独立步骤：单步失败只记录 warning 并继续；Gateway takeover 只跳过被接管工具的 provider 投影，不能连 prompt 一起跳过。

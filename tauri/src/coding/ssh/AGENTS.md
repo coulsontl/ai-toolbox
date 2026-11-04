@@ -6,7 +6,7 @@
 
 ## Source of Truth
 
-- `ssh_sync_config`、`ssh_connection`、`ssh_file_mapping` 是 SSH 配置、连接和映射的主数据；当前主存储是 SQLite JSONB，不再双写旧库。
+- `sync_entity` 的 `kind=ssh_config` / `ssh_defaults_version` / `ssh_connection` / `ssh_file_mapping` 是 SSH 配置、连接和映射的主数据；当前主存储是 SQLite JSONB，不再双写旧库。
 - SSH 设置页里显示的本地路径会根据 `module_statuses` 改写成 WSL UNC 友好展示，但真正同步路径仍由后端在执行时动态解析。
 - 当前仓库里，SSH 不应按“自动同步模块”理解。公开产品语义仍是手动同步为主。
 
@@ -41,7 +41,7 @@ sequenceDiagram
 - 同步设置保存只 patch 用户字段，不能回写表单里的历史状态或清掉 `last_sync_warnings`；配置、普通状态和警告写入均在同一次 SQLite 连接锁内完成。全量同步须把 Skills 阶段已收集警告合入返回结果与完成事件，包含该阶段最终失败的情况；同步哈希写入失败、目标目录无法解析也必须进入警告链路，不能只留日志或静默跳过。
 - SSH 设置页不会像 WSL 设置页那样按 `is_wsl_direct` 禁用模块。它只是把左侧本地路径显示成完整 UNC，真正同步仍由后端解析。
 - 不要只看普通 file mappings 就判断 SSH 同步是否完整。MCP 和 Skills 都走独立链路，其中 Skills 的源目录仍是中央仓库，不是某个工具当前目录。
-- `ssh_sync_config.active_connection_id` 只是持久化配置，不等于进程内 `SshSession` 已恢复。冷启动后若要支持首次手动同步，必须先按已保存的 active connection 恢复 session，或在 `ssh_sync()` 里按当前 active connection 懒建连；不要把 `session.ensure_connected()` 当成会自动从数据库补回连接信息。
+- `sync_entity(kind=ssh_config).active_connection_id` 只是持久化配置，不等于进程内 `SshSession` 已恢复。冷启动后若要支持首次手动同步，必须先按已保存的 active connection 恢复 session，或在 `ssh_sync()` 里按当前 active connection 懒建连；不要把 `session.ensure_connected()` 当成会自动从数据库补回连接信息。
 - 排查 SSH “没同步”时，先分三层：
   连接是否有效；
   映射和动态路径是否正确；
@@ -53,7 +53,7 @@ sequenceDiagram
 - 对 JSON/TOML 单文件映射，`cleanup_paths` 是同步到 SSH 后只作用于远端目标副本的字段清理规则，不能反向改写本机源文件。Claude `claude-settings` 还会自动追加非 Windows 目标平台规则，移除 Windows-only env（`CLAUDE_CODE_USE_POWERSHELL_TOOL`、`CLAUDE_CODE_SHELL`）；`HTTP_PROXY` / `HTTPS_PROXY` / lowercase 代理 env 这类字段不应再做 SSH 全局开关，应由具体映射的 `cleanup_paths` 控制。
 - Claude 插件元数据补写属于 best-effort 后处理。即使 `known_marketplaces.json` / `installed_plugins.json` 读取、改写或写回失败，也不能把已经成功完成的主文件同步整体标成失败；最多记录 warning/error 供排查。
 - Skills SSH 工具目标与 WSL 共用 `skills::remote_target` 的归属校验和替换脚本：Cursor、Antigravity CLI 强制复制，其余工具用链接。只有中央仓库下的受管链接，或 `.ai-toolbox-skill-source` 标记匹配当前中央源的副本可更新/删除；无标记真实目录与外部链接保留并 warn。复制先准备临时副本再替换；取消同步、禁用、孤立清理也必须识别副本。远端中央目录本身是 app 私有，可按原语义清理。
-- Skills SSH 同步警告与 WSL 同构：保留/失败/跳过 emit `ssh-sync-warning` 并经 `commands::update_sync_warnings` 持久化到 `ssh_sync_config` 记录的 `last_sync_warnings`（随 `ssh_get_status` 返回）。该助手只能由 skills 链路调用；文案为稳定中文格式，前端经 `syncMessageTranslator` 的 `skills*` 模式翻译。
+- Skills SSH 同步警告与 WSL 同构：保留/失败/跳过 emit `ssh-sync-warning` 并经 `commands::update_sync_warnings` 持久化到 `sync_entity(kind=ssh_config)` 记录的 `last_sync_warnings`（随 `ssh_get_status` 返回）。该助手只能由 skills 链路调用；文案为稳定中文格式，前端经 `syncMessageTranslator` 的 `skills*` 模式翻译。
 - Skills SSH 目标解析需要与该工具的远端配置布局一致。OpenCode/Claude/Codex/Grok/Kimi/OpenClaw/Pi/Oh My Pi/Gemini CLI 在 WSL Direct 时沿用统一解析出的 Linux 路径，否则回退远端默认目录；Hermes 的文件映射固定写 `~/.hermes/*`，Skills 也继续写 `~/.hermes/skills`，不能仅因新增 Direct 状态就改到本机自定义 Linux 根目录。SSH 不因 WSL Direct 跳过上传。
 - 写入到 `known_marketplaces.json` / `installed_plugins.json` 的 `installLocation` / `installPath` **必须是远端真实绝对 Linux 路径**，不能保留 `~/.claude/...`。Claude CLI 2.1.126+ 不会展开 JSON 字段值里的 `~`，留 `~` 会被判定 corrupted。读写文件路径可继续走 `read_remote_file` / `write_remote_file` 的 `$HOME` 展开；但作为字段**值**落盘前，必须先用 `sync::get_remote_user_home(session)` 拿到远端真实 `$HOME`，再交给重写逻辑。这条规则也覆盖以后任何往工具配置里写"远端路径字段值"的同步场景。
 - Codex prompt 映射不要硬编码 active 文件名。同步 `codex-prompt` 时要镜像 `AGENTS.md` 与 `AGENTS.override.md` 两个已知文件：本机存在就同步到 SSH 同名目标，本机不存在就清理 SSH 同名目标，避免远端保留 stale override。
