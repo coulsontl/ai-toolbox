@@ -2405,7 +2405,8 @@ fn load_opencode_provider_names(
         .prepare(
             "SELECT json_extract(data, '$.provider_id'),
                     json_extract(data, '$.provider_config.name')
-             FROM opencode_favorite_provider",
+             FROM cli_config
+             WHERE cli_key = 'opencode' AND kind = 'favorite_provider'",
         )
         .map_err(|error| format!("Failed to prepare OpenCode provider name query: {error}"))?;
     let rows = stmt

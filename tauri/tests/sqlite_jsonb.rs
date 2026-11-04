@@ -1658,6 +1658,114 @@ fn v33_moves_every_legacy_row_into_the_shared_tables_with_its_scope() {
     .unwrap();
 }
 
+/// v34 folds the last three per-CLI tables into `cli_config` and drops the
+/// retired `app_migration` ledger.
+///
+/// The rows matter more than the table names: a v34 that drops the old tables
+/// without copying first would pass every "table gone" assertion while losing
+/// the user's OpenCode favourites and Codex workspace roots.
+#[test]
+fn v34_folds_the_remaining_per_cli_tables_and_drops_the_dead_ledger() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("already-v33.db");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        initialize_connection(&mut conn).unwrap();
+        // Put the database back to the v33 shape: the v1-built legacy tables
+        // and the dead ledger, all of which v34 is responsible for retiring.
+        for table in [
+            "codex_plugin_workspace_roots",
+            "opencode_favorite_plugin",
+            "opencode_favorite_provider",
+            "app_migration",
+        ] {
+            conn.execute_batch(&format!(
+                "CREATE TABLE IF NOT EXISTS {table} (
+                     id TEXT PRIMARY KEY NOT NULL,
+                     data BLOB NOT NULL CHECK (json_valid(data, 4)),
+                     created_at TEXT NOT NULL,
+                     updated_at TEXT NOT NULL
+                 );"
+            ))
+            .unwrap();
+        }
+        conn.execute_batch(
+            r#"INSERT INTO codex_plugin_workspace_roots (id, data, created_at, updated_at)
+                 VALUES ('settings', jsonb('{"workspace_roots":["C:/work"]}'), 't', 't');
+               INSERT INTO opencode_favorite_plugin (id, data, created_at, updated_at)
+                 VALUES ('oh-my-opencode', jsonb('{"plugin_name":"oh-my-opencode","created_at":"t"}'), 't', 't');
+               INSERT INTO opencode_favorite_provider (id, data, created_at, updated_at)
+                 VALUES ('p-openrouter', jsonb('{"provider_id":"openrouter","created_at":"t"}'), 't', 't');
+               INSERT INTO app_migration (id, data, created_at, updated_at)
+                 VALUES ('legacy', jsonb('{"migration_id":"legacy"}'), 't', 't');"#,
+        )
+        .unwrap();
+        migrations::set_user_version(&conn, 33).unwrap();
+    }
+
+    let db = SqliteDbState::open(path.clone()).unwrap();
+    db.with_conn(|conn| {
+        assert_eq!(
+            migrations::get_user_version(conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
+
+        let workspace = db_get(
+            conn,
+            DbTable::CliConfig(Cli::Codex, CliConfigKind::WorkspaceRoots),
+            "settings",
+        )
+        .unwrap()
+        .expect("codex workspace roots row");
+        assert_eq!(workspace["workspace_roots"][0], "C:/work");
+
+        let plugin = db_get(
+            conn,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::FavoritePlugin),
+            "oh-my-opencode",
+        )
+        .unwrap()
+        .expect("opencode favourite plugin row");
+        assert_eq!(plugin["plugin_name"], "oh-my-opencode");
+
+        let provider = db_get(
+            conn,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::FavoriteProvider),
+            "p-openrouter",
+        )
+        .unwrap()
+        .expect("opencode favourite provider row");
+        assert_eq!(provider["provider_id"], "openrouter");
+
+        for retired in [
+            "codex_plugin_workspace_roots",
+            "opencode_favorite_plugin",
+            "opencode_favorite_provider",
+            "app_migration",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [retired],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 0, "{retired} should have been dropped by v34");
+        }
+        Ok(())
+    })
+    .unwrap();
+    drop(db);
+
+    // Reopening is a no-op, not a duplicate-table error.
+    let mut conn = Connection::open(&path).unwrap();
+    migrations::run_all(&mut conn).unwrap();
+    assert_eq!(
+        migrations::get_user_version(&conn).unwrap(),
+        TARGET_SCHEMA_VERSION
+    );
+}
+
 // ---- second-round regression cases for the scope consolidation --------------
 //
 // These exist because of one specific failure mode: with fifty-five per-CLI

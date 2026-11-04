@@ -210,7 +210,7 @@ plugin_account / access_key / checkin_schedule / checkin_record）全部实测�
 | `migrate_v1` 用 `ALL_TABLES` 建新表，导致新库的 `cli_provider` 没有 `cli_key` 列，v33 的 `CREATE TABLE IF NOT EXISTS` 直接跳过 | **致命**：新装用户全部读写失败 | 已改为冻结的旧表名列表 `[!]` |
 | `create_initial_indexes` 引用已删除的变体 | 编译失败 | 改为旧表名字符串 `[!]` |
 | `ON CONFLICT(id)` 与复合主键不匹配 | **致命**：所有写入报错 | 改为按作用域列 + id 生成冲突目标 `[!]` |
-| `OpenCodeFavoritePlugin/Provider` 一度被误并入 `cli_config` | 会丢收藏数据 | 恢复为独立表（收藏列表映射不到任何 `kind`）`[!]` |
+| `OpenCodeFavoritePlugin/Provider` 一度被误并入 `cli_config` | 会丢收藏数据 | 恢复为独立表（收藏列表映射不到任何 `kind`）`[!]`。**v34 后续**：新增 `favorite_plugin` / `favorite_provider` kind 后重新并入 `cli_config` |
 | `usage_stats::load_provider_names` 仍用旧表名 | 请求日志与统计全空 | 改为查 `cli_provider` 一次并按 `cli_key` 映射 `[!]` |
 
 ---

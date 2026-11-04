@@ -10,7 +10,7 @@ use crate::coding::cli_resolver::apply_create_no_window;
 use crate::coding::runtime_location::{self, RuntimeLocationInfo, RuntimeLocationMode};
 use crate::coding::skills::git_fetcher::{self, GitProxyMode};
 use crate::db::helpers::{db_get, db_put};
-use crate::db::schema::DbTable;
+use crate::db::schema::{Cli, CliConfigKind, DbTable};
 use crate::http_client;
 
 const MARKETPLACE_RELATIVE_PATH: &str = ".agents/plugins/marketplace.json";
@@ -254,7 +254,7 @@ async fn get_stored_workspace_root_paths(
     db.with_conn(|conn| {
         Ok(db_get(
             conn,
-            DbTable::CodexPluginWorkspaceRoots,
+            DbTable::CliConfig(Cli::Codex, CliConfigKind::WorkspaceRoots),
             WORKSPACE_SETTINGS_ID,
         )?
         .map(from_db_value_workspace_root_paths)
@@ -270,7 +270,7 @@ async fn save_workspace_root_paths(
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::CodexPluginWorkspaceRoots,
+            DbTable::CliConfig(Cli::Codex, CliConfigKind::WorkspaceRoots),
             WORKSPACE_SETTINGS_ID,
             &payload,
         )

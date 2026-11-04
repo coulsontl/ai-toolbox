@@ -1695,7 +1695,7 @@ async fn init_default_favorite_plugins(db: &crate::db::SqliteDbState) -> Result<
         let existing = db.with_conn(|conn| {
             db_get(
                 conn,
-                DbTable::OpenCodeFavoritePlugin,
+                DbTable::CliConfig(Cli::OpenCode, CliConfigKind::FavoritePlugin),
                 &normalized_plugin_name,
             )
         })?;
@@ -1709,7 +1709,7 @@ async fn init_default_favorite_plugins(db: &crate::db::SqliteDbState) -> Result<
         db.with_conn(|conn| {
             db_put(
                 conn,
-                DbTable::OpenCodeFavoritePlugin,
+                DbTable::CliConfig(Cli::OpenCode, CliConfigKind::FavoritePlugin),
                 payload
                     .get("plugin_name")
                     .and_then(Value::as_str)
@@ -1738,12 +1738,24 @@ fn favorite_provider_order() -> OrderSpec {
 
 fn list_favorite_plugin_records(db: &crate::db::SqliteDbState) -> Result<Vec<Value>, String> {
     let order = favorite_plugin_order();
-    db.with_conn(|conn| db_list(conn, DbTable::OpenCodeFavoritePlugin, Some(&order)))
+    db.with_conn(|conn| {
+        db_list(
+            conn,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::FavoritePlugin),
+            Some(&order),
+        )
+    })
 }
 
 fn list_favorite_provider_records(db: &crate::db::SqliteDbState) -> Result<Vec<Value>, String> {
     let order = favorite_provider_order();
-    db.with_conn(|conn| db_list(conn, DbTable::OpenCodeFavoriteProvider, Some(&order)))
+    db.with_conn(|conn| {
+        db_list(
+            conn,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::FavoriteProvider),
+            Some(&order),
+        )
+    })
 }
 
 fn favorite_plugin_payload(plugin_name: &str, created_at: &str) -> Value {
@@ -1812,7 +1824,12 @@ pub async fn list_opencode_favorite_plugins(
 ) -> Result<Vec<OpenCodeFavoritePlugin>, String> {
     let db = state.db();
 
-    let is_empty = db.with_conn(|conn| db_count(conn, DbTable::OpenCodeFavoritePlugin))? == 0;
+    let is_empty = db.with_conn(|conn| {
+        db_count(
+            conn,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::FavoritePlugin),
+        )
+    })? == 0;
 
     // Initialize default plugins if empty
     if is_empty {
@@ -1846,7 +1863,7 @@ pub async fn add_opencode_favorite_plugin(
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::OpenCodeFavoritePlugin,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::FavoritePlugin),
             &normalized_plugin_name,
             &payload,
         )
@@ -1856,7 +1873,7 @@ pub async fn add_opencode_favorite_plugin(
         .with_conn(|conn| {
             db_get(
                 conn,
-                DbTable::OpenCodeFavoritePlugin,
+                DbTable::CliConfig(Cli::OpenCode, CliConfigKind::FavoritePlugin),
                 &normalized_plugin_name,
             )
         })?
@@ -1884,7 +1901,14 @@ pub async fn delete_opencode_favorite_plugin(
         let Some(id) = record.get("id").and_then(Value::as_str) else {
             continue;
         };
-        db.with_conn(|conn| db_delete(conn, DbTable::OpenCodeFavoritePlugin, id).map(|_| ()))?;
+        db.with_conn(|conn| {
+            db_delete(
+                conn,
+                DbTable::CliConfig(Cli::OpenCode, CliConfigKind::FavoritePlugin),
+                id,
+            )
+            .map(|_| ())
+        })?;
     }
 
     Ok(())
@@ -1985,7 +2009,7 @@ async fn sync_providers_from_config(
         db.with_conn(|conn| {
             db_put(
                 conn,
-                DbTable::OpenCodeFavoriteProvider,
+                DbTable::CliConfig(Cli::OpenCode, CliConfigKind::FavoriteProvider),
                 &record_id,
                 &payload,
             )
@@ -2049,7 +2073,7 @@ pub async fn upsert_opencode_favorite_provider(
     db.with_conn(|conn| {
         db_put(
             conn,
-            DbTable::OpenCodeFavoriteProvider,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::FavoriteProvider),
             &record_id,
             &payload,
         )
@@ -2057,7 +2081,13 @@ pub async fn upsert_opencode_favorite_provider(
 
     // Fetch and return the record
     let record = db
-        .with_conn(|conn| db_get(conn, DbTable::OpenCodeFavoriteProvider, &record_id))?
+        .with_conn(|conn| {
+            db_get(
+                conn,
+                DbTable::CliConfig(Cli::OpenCode, CliConfigKind::FavoriteProvider),
+                &record_id,
+            )
+        })?
         .ok_or_else(|| "Failed to find favorite provider after upsert".to_string())?;
     adapter::from_db_value_favorite_provider(record)
         .ok_or_else(|| "Failed to parse favorite provider".to_string())
@@ -2079,7 +2109,14 @@ pub async fn delete_opencode_favorite_provider(
         let Some(id) = record.get("id").and_then(Value::as_str) else {
             continue;
         };
-        db.with_conn(|conn| db_delete(conn, DbTable::OpenCodeFavoriteProvider, id).map(|_| ()))?;
+        db.with_conn(|conn| {
+            db_delete(
+                conn,
+                DbTable::CliConfig(Cli::OpenCode, CliConfigKind::FavoriteProvider),
+                id,
+            )
+            .map(|_| ())
+        })?;
     }
 
     Ok(())

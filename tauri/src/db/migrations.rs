@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::schema::{sql_string_literal, JsonFieldPath};
 
-pub const TARGET_SCHEMA_VERSION: i32 = 33;
+pub const TARGET_SCHEMA_VERSION: i32 = 34;
 const FUTURE_SCHEMA_ERROR_PREFIX: &str = "AI_TOOLBOX_SQLITE_SCHEMA_TOO_NEW";
 
 // ---- the consolidation table ------------------------------------------------
@@ -201,6 +201,9 @@ pub fn run_all(conn: &mut Connection) -> Result<(), String> {
     }
     if current_version < 33 {
         run_migration_step(conn, 33, migrate_v33)?;
+    }
+    if current_version < 34 {
+        run_migration_step(conn, 34, migrate_v34)?;
     }
 
     Ok(())
@@ -1130,6 +1133,49 @@ fn create_consolidated_indexes(conn: &Connection) -> Result<(), String> {
             ON relay_quota_point(kind, CAST(json_extract(data, '$.at') AS INTEGER));",
     )
     .map_err(|error| format!("Failed to create consolidated indexes: {error}"))
+}
+
+/// Fold the last per-CLI tables into `cli_config` and drop the dead migration
+/// ledger.
+///
+/// `codex_plugin_workspace_roots` and the two OpenCode favourite tables were the
+/// only CLI-owned tables left outside v33's consolidation. They hold user data
+/// keyed by CLI (favourite plugin/provider ids, one workspace-roots record), so
+/// they fit `cli_config`'s `(cli_key, kind, id)` key without any schema change.
+/// `app_migration` is the retired one-shot data-migration ledger from the
+/// SurrealDB era; nothing reads it any more.
+///
+/// Copies run before drops inside the same SAVEPOINT, so a failure leaves every
+/// legacy table and its rows exactly as it was.
+fn migrate_v34(conn: &Connection) -> Result<(), String> {
+    copy_scoped_rows(
+        conn,
+        "codex_plugin_workspace_roots",
+        "cli_config",
+        &[("cli_key", "codex"), ("kind", "workspace_roots")],
+    )?;
+    copy_scoped_rows(
+        conn,
+        "opencode_favorite_plugin",
+        "cli_config",
+        &[("cli_key", "opencode"), ("kind", "favorite_plugin")],
+    )?;
+    copy_scoped_rows(
+        conn,
+        "opencode_favorite_provider",
+        "cli_config",
+        &[("cli_key", "opencode"), ("kind", "favorite_provider")],
+    )?;
+
+    for table in [
+        "codex_plugin_workspace_roots",
+        "opencode_favorite_plugin",
+        "opencode_favorite_provider",
+        "app_migration",
+    ] {
+        drop_table_if_exists(conn, table)?;
+    }
+    Ok(())
 }
 
 fn create_jsonb_table(conn: &Connection, table: &str) -> Result<(), String> {

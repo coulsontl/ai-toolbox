@@ -24,7 +24,7 @@ use super::types::{
 };
 use super::usage_stats;
 use crate::db::helpers::db_list;
-use crate::db::schema::{Cli, DbTable, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{Cli, CliConfigKind, DbTable, OrderDirection, OrderField, OrderSpec};
 use crate::db::{model_pricing_seed, SqliteDbState};
 use chrono::Utc;
 use serde_json::Value;
@@ -1700,7 +1700,13 @@ async fn load_provider_name_map(
     }
     let order = OrderSpec::single(OrderField::id(OrderDirection::Asc));
     let records =
-        db.with_conn(|conn| db_list(conn, DbTable::OpenCodeFavoriteProvider, Some(&order)))?;
+        db.with_conn(|conn| {
+            db_list(
+                conn,
+                DbTable::CliConfig(Cli::OpenCode, CliConfigKind::FavoriteProvider),
+                Some(&order),
+            )
+        })?;
     for record in records {
         let Some(provider_id) = record.get("provider_id").and_then(Value::as_str) else {
             continue;

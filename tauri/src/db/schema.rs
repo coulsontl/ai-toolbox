@@ -85,7 +85,11 @@ impl Cli {
 /// Which of the CLI's config namespaces a `cli_config` row belongs to.
 ///
 /// `common` / `prompt` / `settings` are the structured presets the pages edit;
-/// `agents` / `global` are whole user-authored JSON blobs with no fixed shape.
+/// `agents` / `global` / the namespaces below are whole JSON blobs with no
+/// fixed shape. `favorite_plugin` / `favorite_provider` / `workspace_roots` used
+/// to live in per-CLI tables; they are user data keyed by CLI, not by preset
+/// kind, so they belong in this shared table with a `cli_key` scope like every
+/// other CLI-owned row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum CliConfigKind {
     Common,
@@ -93,6 +97,9 @@ pub enum CliConfigKind {
     Settings,
     Agents,
     Global,
+    FavoritePlugin,
+    FavoriteProvider,
+    WorkspaceRoots,
 }
 
 impl CliConfigKind {
@@ -103,6 +110,9 @@ impl CliConfigKind {
             Self::Settings => "settings",
             Self::Agents => "agents",
             Self::Global => "global",
+            Self::FavoritePlugin => "favorite_plugin",
+            Self::FavoriteProvider => "favorite_provider",
+            Self::WorkspaceRoots => "workspace_roots",
         }
     }
 }
@@ -209,7 +219,6 @@ impl TableScope {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum DbTable {
     Settings,
-    AppMigration,
 
     // ---- per-CLI tables, consolidated ----------------------------------------
     //
@@ -217,16 +226,13 @@ pub enum DbTable {
     // field: every preset struct is `#[serde(default)]`, so a codex provider
     // payload deserializes happily into a kimi provider — the scope has to be
     // enforced by SQL, not by the shape of the data.
+    //
+    // Every CLI-owned row lives here; the only way to add a new kind of CLI data
+    // is a new `CliConfigKind`, never a per-CLI table.
     CliProvider(Cli),
     CliOfficialAccount(Cli),
     CliConfig(Cli, CliConfigKind),
 
-    CodexPluginWorkspaceRoots,
-    // Favourites are user-curated lists keyed by provider/plugin id, not
-    // presets a page switches between — they fit none of the `cli_config`
-    // kinds, so they keep their own tables.
-    OpenCodeFavoritePlugin,
-    OpenCodeFavoriteProvider,
     Skill,
     SkillGroup,
     SkillRepo,
@@ -263,13 +269,9 @@ pub enum DbTable {
 /// `cli_provider`, and creating a table per variant would be a no-op at best.
 pub const ALL_TABLES: &[DbTable] = &[
     DbTable::Settings,
-    DbTable::AppMigration,
     DbTable::CliProvider(Cli::Claude),
     DbTable::CliOfficialAccount(Cli::Claude),
     DbTable::CliConfig(Cli::Claude, CliConfigKind::Common),
-    DbTable::CodexPluginWorkspaceRoots,
-    DbTable::OpenCodeFavoritePlugin,
-    DbTable::OpenCodeFavoriteProvider,
     DbTable::Skill,
     DbTable::SkillGroup,
     DbTable::SkillRepo,
@@ -315,13 +317,9 @@ impl DbTable {
     pub fn name(self) -> &'static str {
         match self {
             DbTable::Settings => "settings",
-            DbTable::AppMigration => "app_migration",
             DbTable::CliProvider(_) => "cli_provider",
             DbTable::CliOfficialAccount(_) => "cli_official_account",
             DbTable::CliConfig(..) => "cli_config",
-            DbTable::CodexPluginWorkspaceRoots => "codex_plugin_workspace_roots",
-            DbTable::OpenCodeFavoritePlugin => "opencode_favorite_plugin",
-            DbTable::OpenCodeFavoriteProvider => "opencode_favorite_provider",
             DbTable::Skill => "skill",
             DbTable::SkillGroup => "skill_group",
             DbTable::SkillRepo => "skill_repo",
@@ -601,8 +599,8 @@ mod tests {
         let names = all_table_names();
         assert_eq!(
             names.len(),
-            31,
-            "the consolidated schema has 31 physical JSONB tables; a different \
+            27,
+            "the consolidated schema has 27 physical JSONB tables; a different \
              count means ALL_TABLES and this expectation drifted apart"
         );
         let unique: HashSet<_> = names.iter().collect();

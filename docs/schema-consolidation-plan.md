@@ -179,7 +179,7 @@ PRAGMA user_version = 32;
 ```
 
 注：
-- `opencode_favorite_plugin` / `opencode_favorite_provider` 保持独立——它们是用户收藏列表，映射不到 `cli_config` 的任何 `kind`。
+- `opencode_favorite_plugin` / `opencode_favorite_provider` 在 v33 时保持独立——它们是用户收藏列表，当时没有对应的 `kind`。**v34 已新增 `favorite_plugin` / `favorite_provider` kind 并入 `cli_config`**，见第十二节。
 - `ssh_sync_config` / `wsl_sync_config` 与 CLI 无关，保持独立。
 - `model_pricing` / `proxy_request_logs` / `usage_daily_rollups` 是列式表，从来不在 `DbTable` 内。
 
@@ -242,3 +242,20 @@ PRAGMA user_version = 32;
 | `cargo test --test sqlite_jsonb` | 43 passed（其中 7 条为本次新增的作用域回归用例） |
 
 新增回归用例锁死的失败模式：`db_list` 串读、`db_get` 跨 CLI 命中、`db_delete`/`db_count` 越界、`db_update_applied_status` 清空别人的 applied、字面量 id `common`/`global` 互相覆盖、重写记录产生重复行或丢 `created_at`、`relay_entity` 的 kind 串读。
+
+## 十二、v34 收尾（2026-11-04）
+
+v33 之后仍剩 3 张 CLI 独立表与 1 张死表，v34 一并处理：
+
+| 旧表 | 行数（本机） | 新位置 |
+|---|---:|---|
+| `codex_plugin_workspace_roots` | 0 | `cli_config(cli_key='codex', kind='workspace_roots', id='settings')` |
+| `opencode_favorite_plugin` | 4 | `cli_config(cli_key='opencode', kind='favorite_plugin', id=<插件名>)` |
+| `opencode_favorite_provider` | 78 | `cli_config(cli_key='opencode', kind='favorite_provider', id=<provider_id>)` |
+| `app_migration` | 2 | 直接删除（SurrealDB 时代的一次性数据迁移台账，已无读写点） |
+
+- `CliConfigKind` 新增 `favorite_plugin` / `favorite_provider` / `workspace_roots` 三个 kind；不新增物理表、不新增索引。
+- v33 时曾以「收藏列表映射不到任何 kind」为由保持独立；v34 的判断是：`cli_config` 的 kind 本就是开放集合，新增 kind 即可容纳，独立表才是特例。
+- `usage_stats::load_opencode_provider_names` 的原生 SQL 已同步改为带 `cli_key` / `kind` 谓词查 `cli_config`。
+- 迁移在单 SAVEPOINT 内「先搬后删」，失败整体回滚；新库走 v1 建旧表 → v34 搬空 → 删除，最终结构与升级库一致。
+- 完成后本机物理表 34 → 30（JSONB 表 31 → 27）。
