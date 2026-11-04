@@ -46,6 +46,10 @@ export default defineConfig(() => ({
         "**/tauri/**",
         "**/AGENTS.md",
         "**/module-agents-template.md",
+        // Agent config/state directories are gitignored and some entries are
+        // junctions; chokidar fails to stat them on Windows and aborts dev.
+        "**/.claude/**",
+        "**/.agents/**",
       ],
     },
   },
