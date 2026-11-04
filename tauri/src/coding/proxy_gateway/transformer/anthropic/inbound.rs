@@ -222,11 +222,16 @@ fn anthropic_reasoning_effort(body: &Value) -> Option<&'static str> {
         .pointer("/output_config/effort")
         .and_then(Value::as_str)
     {
+        // Claude's five effort levels map positionally onto the OpenAI tiers
+        // (issue #452). The Claude Desktop UI labels `xhigh` as "Extra"; it
+        // used to fall through to `None`, while `max` used to be compressed to
+        // `xhigh`, so neither of the top two levels ever reached the model.
         return match effort {
             "low" => Some("low"),
             "medium" => Some("medium"),
             "high" => Some("high"),
-            "max" => Some("xhigh"),
+            "xhigh" | "extra_high" => Some("xhigh"),
+            "max" => Some("max"),
             _ => None,
         };
     }

@@ -99,6 +99,7 @@
 
 - 入口：`anthropic/inbound.rs::anthropic_request_to_llm`、`anthropic_response_to_llm`，stream source 为 `AnthropicMessages`。
 - Request 已承载 `model`、`max_tokens`、`temperature`、`top_p`、`stream`、`stop_sequences`、`tool_choice`、`thinking` / `output_config.effort` 到 `reasoning_effort`。
+- `output_config.effort` 的 Claude 五档 `low/medium/high/xhigh/max` 必须一一映射到 IR `reasoning_effort`（issue #452）：`xhigh` 是 Claude Desktop UI 的 “Extra”，不能落到未识别分支；`max` 不能再压缩成 `xhigh`，否则 GPT 的 `max` 档永远不可达。`extra_high` 别名同样映射 `xhigh`。无 `output_config.effort` 时，`thinking.type=adaptive` 仍映射 `xhigh`，`enabled + budget_tokens` 继续按 `shared/thinking_config.rs` 阈值映射。
 - 入站 request 必须设置 `request_type=chat` 与 `api_format=anthropic_messages`；`metadata.user_id` 要进入统一 `metadata["user_id"]`。
 - `system` 转 system message；string/array content 都支持。
 - Content 支持 text、base64 image、URL image；缺失 `media_type` 时按 AxonHub 使用 `application/octet-stream`，不默认 `image/png`。

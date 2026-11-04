@@ -1482,17 +1482,29 @@ fn anthropic_thinking_maps_to_openai_reasoning_effort() {
     assert_eq!(low["reasoning_effort"], "low");
     assert_eq!(low["max_completion_tokens"], 100);
 
-    let xhigh = convert_request_value(
-        ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiResponses),
-        json!({
-            "model": "gpt-5.1-codex-mini",
-            "max_tokens": 100,
-            "output_config": {"effort": "max"},
-            "messages": [{"role": "user", "content": "hi"}]
-        }),
-    )
-    .unwrap();
-    assert_eq!(xhigh["reasoning"]["effort"], "xhigh");
+    // Issue #452: Claude Desktop offers five effort levels and sends them as
+    // `output_config.effort`. All five must keep their name; the Claude UI's
+    // "Extra" is the `xhigh` wire value, and `max` must not collapse to `xhigh`.
+    for (effort, expected) in [
+        ("low", "low"),
+        ("medium", "medium"),
+        ("high", "high"),
+        ("xhigh", "xhigh"),
+        ("extra_high", "xhigh"),
+        ("max", "max"),
+    ] {
+        let converted = convert_request_value(
+            ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiResponses),
+            json!({
+                "model": "gpt-6-astra",
+                "max_tokens": 100,
+                "output_config": {"effort": effort},
+                "messages": [{"role": "user", "content": "hi"}]
+            }),
+        )
+        .unwrap();
+        assert_eq!(converted["reasoning"]["effort"], expected, "{effort}");
+    }
 }
 
 /// Converts a Codex Responses request carrying `effort` to Anthropic Messages.
