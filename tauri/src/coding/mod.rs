@@ -5,6 +5,7 @@ pub mod cc_switch;
 pub mod claude_code;
 pub mod claude_desktop;
 pub mod cli_extensions;
+pub mod cli_launch_terminal;
 pub mod cli_resolver;
 // CodeBuddy Code CLI: same engine as WorkBuddy desktop, different config root.
 pub mod codebuddy;

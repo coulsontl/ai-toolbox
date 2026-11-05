@@ -2430,6 +2430,7 @@ pub fn run() {
             coding::magic_context::run_magic_context_doctor,
             // Codex
             coding::codex::get_codex_config_dir_path,
+            coding::codex::launch_codex_provider_cli,
             coding::codex::get_codex_daemon_status,
             coding::codex::restart_codex_daemon,
             coding::codex::get_codex_root_path_info,

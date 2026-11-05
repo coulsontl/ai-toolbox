@@ -165,6 +165,47 @@ pub fn resolve_local_claude_program() -> LocalCliProgram {
     resolve_local_cli_program("claude", candidates)
 }
 
+pub fn resolve_local_codex_program() -> LocalCliProgram {
+    let mut candidates = Vec::new();
+
+    if let Some(home_dir) = dirs::home_dir() {
+        push_command_candidate(
+            &mut candidates,
+            home_dir.join(".local").join("bin"),
+            "codex",
+        );
+        push_command_candidate(&mut candidates, home_dir.join(".codex").join("bin"), "codex");
+    }
+
+    // The Codex desktop app bundles its own CLI, and the standalone installer
+    // keeps one under the user's local programs dir. Neither is on the GUI
+    // process PATH when the app is started from the dock / start menu.
+    #[cfg(target_os = "windows")]
+    if let Some(local_data_dir) = dirs::data_local_dir() {
+        push_command_candidate(
+            &mut candidates,
+            local_data_dir
+                .join("Programs")
+                .join("OpenAI")
+                .join("Codex")
+                .join("bin"),
+            "codex",
+        );
+        // Desktop bundles live in `OpenAI\Codex\bin\<build-hash>\codex.exe`.
+        append_versioned_command_candidates(
+            &mut candidates,
+            &local_data_dir.join("OpenAI").join("Codex").join("bin"),
+            "codex",
+        );
+    }
+
+    push_command_candidate(&mut candidates, "/opt/homebrew/bin", "codex");
+    push_command_candidate(&mut candidates, "/usr/local/bin", "codex");
+    append_node_global_candidates(&mut candidates, "codex");
+
+    resolve_local_cli_program("codex", candidates)
+}
+
 pub fn resolve_local_opencode_program() -> LocalCliProgram {
     let mut candidates = Vec::new();
 
@@ -233,6 +274,7 @@ pub fn resolve_local_cli_by_name(command_name: &str) -> Option<LocalCliProgram> 
 pub fn resolve_local_cli_by_command_name(command_name: &str) -> Option<LocalCliProgram> {
     let program = match command_name {
         "claude" => Some(resolve_local_claude_program()),
+        "codex" => Some(resolve_local_codex_program()),
         "opencode" => Some(resolve_local_opencode_program()),
         "grok" => Some(resolve_local_grok_program()),
         "kimi" => Some(resolve_local_kimi_program()),
@@ -778,6 +820,23 @@ fn push_command_candidate(
     {
         for extension in ["exe", "cmd", "bat", "com", "ps1"] {
             push_unique_candidate(candidates, base_path.with_extension(extension));
+        }
+    }
+}
+
+/// Append `<root>/<version-or-hash>/<command>` candidates. Desktop bundles keep
+/// one directory per build, so the CLI is one level below the known root.
+fn append_versioned_command_candidates(
+    candidates: &mut Vec<PathBuf>,
+    root: &Path,
+    command_name: &str,
+) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            push_command_candidate(candidates, entry.path(), command_name);
         }
     }
 }

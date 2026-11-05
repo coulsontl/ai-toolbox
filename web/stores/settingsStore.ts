@@ -132,7 +132,9 @@ interface SettingsState extends KeepAwakeSettingsState {
 
   // Claude Code options
   claudeCliLaunchFullAccess: boolean;
-  /** Windows terminal preference for the Claude CLI launch: 'cmd' | 'powershell' | 'wt'. */
+  /** Append `--dangerously-bypass-approvals-and-sandbox` to the Codex CLI launch. */
+  codexCliLaunchFullAccess: boolean;
+  /** Windows terminal preference for the Claude / Codex CLI launch: 'cmd' | 'powershell' | 'wt'. */
   preferredTerminal: string | null;
 
   // Manual CLI paths by command name (e.g. opencode, claude, grok, pi, omp, hermes, dsh, openclaw)
@@ -171,6 +173,7 @@ interface SettingsState extends KeepAwakeSettingsState {
   setCodexDaemonRestartMode: (mode: CodexDaemonRestartMode) => Promise<void>;
   setCodexUnifiedSessionHistoryEnabled: (enabled: boolean) => void;
   setClaudeCliLaunchFullAccess: (enabled: boolean) => Promise<void>;
+  setCodexCliLaunchFullAccess: (enabled: boolean) => Promise<void>;
   setPreferredTerminal: (terminal: string) => Promise<void>;
   setManualCliPath: (commandName: string, path: string) => Promise<string>;
 }
@@ -263,6 +266,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   codexDaemonRestartMode: 'prompt',
   codexUnifiedSessionHistoryEnabled: false,
   claudeCliLaunchFullAccess: false,
+  codexCliLaunchFullAccess: false,
   preferredTerminal: null,
   cliManualPaths: {},
 
@@ -309,6 +313,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         codexDaemonRestartMode: settings.codex_daemon_restart_mode ?? 'prompt',
         codexUnifiedSessionHistoryEnabled: settings.codex_unified_session_history_enabled ?? false,
         claudeCliLaunchFullAccess: settings.claude_cli_launch_full_access ?? false,
+        codexCliLaunchFullAccess: settings.codex_cli_launch_full_access ?? false,
         preferredTerminal: settings.preferred_terminal ?? null,
         cliManualPaths: settings.cli_manual_paths ?? {},
         isInitialized: true,
@@ -593,6 +598,17 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     const newSettings: AppSettings = {
       ...currentSettings,
       claude_cli_launch_full_access: enabled,
+    };
+    await saveSettings(newSettings);
+  },
+
+  setCodexCliLaunchFullAccess: async (enabled) => {
+    set({ codexCliLaunchFullAccess: enabled });
+
+    const currentSettings = await getSettings();
+    const newSettings: AppSettings = {
+      ...currentSettings,
+      codex_cli_launch_full_access: enabled,
     };
     await saveSettings(newSettings);
   },

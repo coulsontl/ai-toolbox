@@ -495,3 +495,22 @@ export const setCodexDaemonRestartMode = async (
     { input: { mode } },
   );
 };
+
+/**
+ * Launch Codex CLI with a temporary provider profile.
+ *
+ * Does not rewrite the applied `config.toml` / `auth.json` and does not change
+ * `is_applied`: the backend writes a throwaway profile under `CODEX_HOME`,
+ * runs `codex --profile ...` in a terminal and deletes it on exit.
+ */
+export const launchCodexProviderCli = async (
+  providerId: string,
+  options?: { fullAccess?: boolean; cwd?: string; terminal?: string | null },
+): Promise<void> => {
+  await invoke('launch_codex_provider_cli', {
+    providerId,
+    fullAccess: options?.fullAccess ?? false,
+    cwd: options?.cwd ?? null,
+    terminal: options?.terminal ?? null,
+  });
+};

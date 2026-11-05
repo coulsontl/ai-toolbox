@@ -1,0 +1,416 @@
+//! Launch Codex CLI with a temporary provider profile.
+//!
+//! Codex's `--profile <name>` layers `$CODEX_HOME/<name>.config.toml` on top of
+//! the user's base `config.toml`. We write a throwaway profile containing only
+//! this provider's settings, point `CODEX_HOME` at the current runtime root and
+//! delete the file when the CLI exits. The base `config.toml`, `auth.json` and
+//! `is_applied` are never touched.
+
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
+use std::process::Stdio;
+
+use serde_json::Value;
+
+use crate::coding::cli_launch_terminal::{
+    launch_local, launch_wsl, CliLaunchSpec,
+};
+use crate::coding::cli_resolver::resolve_local_codex_program;
+use crate::coding::runtime_location::{RuntimeLocationInfo, RuntimeLocationMode};
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// A provider-scoped profile ready to be written next to `config.toml`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexLaunchProfile {
+    pub profile_name: String,
+    pub toml: String,
+}
+
+fn sanitize_provider_id_for_filename(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn managed_api_key(settings_config: &Value) -> Option<&str> {
+    settings_config
+        .get("auth")
+        .and_then(|auth| auth.get("OPENAI_API_KEY"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+}
+
+/// Build the temp profile TOML for a provider.
+///
+/// Custom providers get a fresh provider id (`aitb-launch-*`) so the profile
+/// cannot inherit fields such as `env_key` / `requires_openai_auth` from the
+/// base config's same-named table. Official providers point at Codex's built-in
+/// `openai` provider and keep using the global `auth.json` login.
+pub fn build_launch_profile(
+    provider_id: &str,
+    category: &str,
+    settings_config: &str,
+) -> Result<CodexLaunchProfile, String> {
+    let parsed: Value = serde_json::from_str(settings_config)
+        .map_err(|error| format!("Failed to parse provider settings: {error}"))?;
+    let config_toml = parsed
+        .get("config")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+
+    // A per-launch suffix keeps two concurrent launches of the same provider
+    // from overwriting each other's profile (and deleting the other's file on
+    // exit).
+    let random_suffix = uuid::Uuid::new_v4().simple().to_string();
+    let profile_name = format!(
+        "aitb-launch-{}-{}",
+        sanitize_provider_id_for_filename(provider_id),
+        &random_suffix[..8]
+    );
+
+    let mut root: toml::Value = if config_toml.is_empty() {
+        toml::Value::Table(Default::default())
+    } else {
+        toml::from_str(config_toml)
+            .map_err(|error| format!("Failed to parse provider config: {error}"))?
+    };
+    let table = root
+        .as_table_mut()
+        .ok_or_else(|| "Provider config is not a TOML table".to_string())?;
+
+    if category == "official" {
+        table.insert(
+            "model_provider".to_string(),
+            toml::Value::String("openai".to_string()),
+        );
+        // The built-in provider is used; any provider tables in this config are
+        // irrelevant and must not shadow the base config's tables.
+        table.remove("model_providers");
+        return Ok(CodexLaunchProfile {
+            profile_name,
+            toml: toml::to_string(&root)
+                .map_err(|error| format!("Failed to serialize launch profile: {error}"))?,
+        });
+    }
+
+    let old_provider_id = table
+        .get("model_provider")
+        .and_then(toml::Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            table
+                .get("model_providers")
+                .and_then(toml::Value::as_table)
+                .and_then(|providers| providers.keys().next().cloned())
+        })
+        .ok_or_else(|| {
+            "This provider has no model provider configuration to launch with".to_string()
+        })?;
+
+    let mut providers = table
+        .remove("model_providers")
+        .and_then(|value| match value {
+            toml::Value::Table(providers) => Some(providers),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            "This provider has no model provider configuration to launch with".to_string()
+        })?;
+
+    let mut provider_table = providers.remove(&old_provider_id).ok_or_else(|| {
+        format!("Provider table '{old_provider_id}' is missing from this provider's config")
+    })?;
+
+    if let toml::Value::Table(provider_fields) = &mut provider_table {
+        // AI Toolbox supplies the credential (bearer token) below. Codex
+        // resolves `env_key` before the bearer token and fails hard when the
+        // variable is missing, so the launch profile must not carry it.
+        if let Some(api_key) = managed_api_key(&parsed) {
+            provider_fields.insert(
+                "experimental_bearer_token".to_string(),
+                toml::Value::String(api_key.to_string()),
+            );
+            provider_fields.remove("env_key");
+        }
+    }
+
+    let mut launch_providers = toml::map::Map::new();
+    launch_providers.insert(profile_name.clone(), provider_table);
+    table.insert(
+        "model_providers".to_string(),
+        toml::Value::Table(launch_providers),
+    );
+    table.insert(
+        "model_provider".to_string(),
+        toml::Value::String(profile_name.clone()),
+    );
+
+    Ok(CodexLaunchProfile {
+        profile_name,
+        toml: toml::to_string(&root)
+            .map_err(|error| format!("Failed to serialize launch profile: {error}"))?,
+    })
+}
+
+fn write_local_profile_file(path: &Path, content: &str) -> Result<(), String> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|error| format!("Failed to create launch profile: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("Failed to set launch profile permissions: {error}"))?;
+    }
+    file.write_all(content.as_bytes())
+        .map_err(|error| format!("Failed to write launch profile: {error}"))
+}
+
+#[cfg(target_os = "windows")]
+fn write_wsl_profile_file(distro: &str, linux_path: &str, content: &str) -> Result<(), String> {
+    let mut child = Command::new("wsl")
+        .args([
+            "-d",
+            distro,
+            "--exec",
+            "sh",
+            "-c",
+            "umask 077 && cat > \"$1\" && chmod 600 \"$1\"",
+            "sh",
+            linux_path,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|error| format!("Failed to create WSL launch profile: {error}"))?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to open WSL launch profile stdin".to_string())?;
+    if let Err(error) = stdin.write_all(content.as_bytes()) {
+        let _ = child.kill();
+        return Err(format!("Failed to write WSL launch profile: {error}"));
+    }
+    drop(stdin);
+
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("Failed to finish WSL launch profile write: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to write WSL launch profile: {stderr}"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn remove_wsl_file(distro: &str, linux_path: &str) {
+    let _ = Command::new("wsl")
+        .args(["-d", distro, "--exec", "rm", "-f", linux_path])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+}
+
+/// Convert the user-selected folder into a Linux path for the WSL shell.
+/// The folder picker returns a Windows path, but `cd` runs inside the distro.
+fn wsl_launch_cwd(cwd: Option<&Path>) -> Option<PathBuf> {
+    cwd.map(|path| {
+        let windows_path = path.to_string_lossy();
+        let linux_path = crate::coding::wsl::windows_to_wsl_path(&windows_path)
+            .unwrap_or_else(|_| {
+                crate::coding::runtime_location::parse_wsl_unc_path(&windows_path)
+                    .map(|info| info.linux_path)
+                    .unwrap_or_else(|| windows_path.to_string())
+            });
+        PathBuf::from(linux_path)
+    })
+}
+
+fn build_args(profile_name: &str, full_access: bool) -> Vec<String> {
+    let mut args = vec!["--profile".to_string(), profile_name.to_string()];
+    if full_access {
+        args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+    }
+    args
+}
+
+/// Launch a Codex session for one provider without touching the live config.
+pub fn launch_codex_provider_cli_session(
+    runtime_location: &RuntimeLocationInfo,
+    provider_id: &str,
+    category: &str,
+    settings_config: &str,
+    full_access: bool,
+    cwd: Option<&Path>,
+    preferred_terminal: Option<&str>,
+) -> Result<(), String> {
+    let profile = build_launch_profile(provider_id, category, settings_config)?;
+    let args = build_args(&profile.profile_name, full_access);
+    let banner = format!(
+        "Using temporary Codex profile '{}' (does not change applied config)",
+        profile.profile_name
+    );
+
+    match runtime_location.mode {
+        RuntimeLocationMode::LocalWindows => {
+            let root = &runtime_location.host_path;
+            let profile_path = root.join(format!("{}.config.toml", profile.profile_name));
+            write_local_profile_file(&profile_path, &profile.toml)?;
+
+            let program = resolve_local_codex_program().path.to_string_lossy().to_string();
+            let spec = CliLaunchSpec {
+                program,
+                args,
+                env: vec![("CODEX_HOME".to_string(), root.to_string_lossy().to_string())],
+                cwd: cwd.map(Path::to_path_buf),
+                cleanup_paths: vec![profile_path.clone()],
+                banner,
+                safe_id: sanitize_provider_id_for_filename(provider_id),
+                preferred_terminal: preferred_terminal.map(str::to_string),
+            };
+            let result = launch_local(&spec);
+            if result.is_err() {
+                // The launcher never ran, so nothing will delete the profile.
+                let _ = fs::remove_file(&profile_path);
+            }
+            result
+        }
+        RuntimeLocationMode::WslDirect => {
+            let wsl = runtime_location
+                .wsl
+                .as_ref()
+                .ok_or_else(|| "Missing WSL runtime metadata for Codex CLI launch".to_string())?;
+            let profile_path = format!(
+                "{}/{}.config.toml",
+                wsl.linux_path.trim_end_matches('/'),
+                profile.profile_name
+            );
+
+            #[cfg(target_os = "windows")]
+            write_wsl_profile_file(&wsl.distro, &profile_path, &profile.toml)?;
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = &profile_path;
+                return Err("WSL Direct Codex CLI launch is only supported on Windows".to_string());
+            }
+
+            let spec = CliLaunchSpec {
+                program: "codex".to_string(),
+                args,
+                env: vec![("CODEX_HOME".to_string(), wsl.linux_path.clone())],
+                cwd: wsl_launch_cwd(cwd),
+                cleanup_paths: vec![PathBuf::from(&profile_path)],
+                banner,
+                safe_id: sanitize_provider_id_for_filename(provider_id),
+                preferred_terminal: preferred_terminal.map(str::to_string),
+            };
+            let result = launch_wsl(&wsl.distro, &spec);
+            if result.is_err() {
+                // The inner script never ran, so it will not clean up either.
+                #[cfg(target_os = "windows")]
+                remove_wsl_file(&wsl.distro, &profile_path);
+            }
+            result
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_launch_profile, sanitize_provider_id_for_filename};
+
+    fn settings(config: &str, api_key: Option<&str>) -> String {
+        let auth = match api_key {
+            Some(key) => format!(r#""auth": {{"OPENAI_API_KEY": "{key}"}}"#),
+            None => r#""auth": {}"#.to_string(),
+        };
+        format!(
+            r#"{{"config": {}, {auth}}}"#,
+            serde_json::to_string(config).unwrap()
+        )
+    }
+
+    #[test]
+    fn custom_provider_gets_fresh_id_and_bearer_token() {
+        let config = r#"
+model = "gpt-5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "Relay"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+env_key = "OPENAI_API_KEY"
+"#;
+        let profile =
+            build_launch_profile("p1", "custom", &settings(config, Some("sk-test"))).unwrap();
+        assert!(profile.profile_name.starts_with("aitb-launch-p1-"));
+        let parsed: toml::Value = toml::from_str(&profile.toml).unwrap();
+        let table = parsed.as_table().unwrap();
+        assert_eq!(
+            table.get("model_provider").and_then(toml::Value::as_str),
+            Some(profile.profile_name.as_str())
+        );
+        assert_eq!(table.get("model").and_then(toml::Value::as_str), Some("gpt-5"));
+        let providers = table["model_providers"].as_table().unwrap();
+        assert_eq!(providers.len(), 1);
+        let provider = providers[&profile.profile_name].as_table().unwrap();
+        assert_eq!(
+            provider.get("experimental_bearer_token").and_then(toml::Value::as_str),
+            Some("sk-test")
+        );
+        assert!(provider.get("env_key").is_none());
+    }
+
+    #[test]
+    fn official_provider_targets_builtin_openai_provider() {
+        let config = "model = \"gpt-5.5\"\n";
+        let profile = build_launch_profile("official", "official", &settings(config, None)).unwrap();
+        let parsed: toml::Value = toml::from_str(&profile.toml).unwrap();
+        let table = parsed.as_table().unwrap();
+        assert_eq!(
+            table.get("model_provider").and_then(toml::Value::as_str),
+            Some("openai")
+        );
+        assert!(table.get("model_providers").is_none());
+    }
+
+    #[test]
+    fn custom_provider_without_table_is_rejected() {
+        let config = "model = \"gpt-5\"\n";
+        let error = build_launch_profile("p1", "custom", &settings(config, None)).unwrap_err();
+        assert!(error.contains("no model provider configuration"));
+    }
+
+    #[test]
+    fn provider_id_is_sanitized_for_file_names() {
+        assert_eq!(sanitize_provider_id_for_filename("a/b:c d"), "a_b_c_d");
+    }
+}

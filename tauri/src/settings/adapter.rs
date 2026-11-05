@@ -99,6 +99,7 @@ pub fn from_db_value(value: Value) -> AppSettings {
             false,
         ),
         claude_cli_launch_full_access: get_bool(&value, "claude_cli_launch_full_access", false),
+        codex_cli_launch_full_access: get_bool(&value, "codex_cli_launch_full_access", false),
         preferred_terminal: get_opt_str(&value, "preferred_terminal"),
         backup_file_filter_rules: get_backup_file_filter_rules(&value),
         cli_manual_paths: get_string_map(&value, "cli_manual_paths"),

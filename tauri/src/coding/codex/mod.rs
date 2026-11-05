@@ -1,4 +1,5 @@
 pub mod adapter;
+pub mod cli_launch;
 pub mod commands;
 pub(crate) mod constants;
 pub mod daemon_status;

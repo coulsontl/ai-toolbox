@@ -311,9 +311,11 @@ const CodexPage: React.FC = () => {
     codexPreserveOfficialAuthOnSwitch,
     codexDaemonRestartMode,
     codexUnifiedSessionHistoryEnabled,
+    codexCliLaunchFullAccess,
     setCodexPreserveOfficialAuthOnSwitch,
     setCodexDaemonRestartMode,
     setCodexUnifiedSessionHistoryEnabled,
+    setCodexCliLaunchFullAccess,
   } = useSettingsStore();
   const [loading, setLoading] = React.useState(false);
   const [configPath, setConfigPath] = React.useState<string>('');
@@ -529,6 +531,7 @@ const CodexPage: React.FC = () => {
   }, []);
   const [settingsModalOpen, setSettingsModalOpen] = React.useState(false);
   const [savingCodexAuthPreservation, setSavingCodexAuthPreservation] = React.useState(false);
+  const [savingCodexCliFullAccess, setSavingCodexCliFullAccess] = React.useState(false);
   const [savingCodexDaemonRestartMode, setSavingCodexDaemonRestartMode] = React.useState(false);
   const sidebarHidden = sidebarHiddenByPage.codex;
 
@@ -2344,6 +2347,24 @@ const CodexPage: React.FC = () => {
     }
   };
 
+  const handleCodexCliFullAccessChange = async (enabled: boolean) => {
+    setSavingCodexCliFullAccess(true);
+    try {
+      await setCodexCliLaunchFullAccess(enabled);
+      message.success(
+        enabled
+          ? t('codex.settings.cliLaunchFullAccessEnabled')
+          : t('codex.settings.cliLaunchFullAccessDisabled'),
+      );
+    } catch (error) {
+      console.error('Failed to update Codex CLI launch setting:', error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      message.error(errorMsg || t('common.error'));
+    } finally {
+      setSavingCodexCliFullAccess(false);
+    }
+  };
+
   const handleCodexDaemonRestartModeChange = async (
     mode: CodexDaemonRestartMode,
   ) => {
@@ -3072,6 +3093,15 @@ const CodexPage: React.FC = () => {
             loading={savingCodexAuthPreservation}
             onChange={(checked) => {
               void handleCodexAuthPreservationChange(checked);
+            }}
+          />
+          <SettingsToggleRow
+            title={t('codex.settings.cliLaunchFullAccess')}
+            hint={t('codex.settings.cliLaunchFullAccessHint')}
+            checked={codexCliLaunchFullAccess}
+            loading={savingCodexCliFullAccess}
+            onChange={(checked) => {
+              void handleCodexCliFullAccessChange(checked);
             }}
           />
           <SettingsToggleRow

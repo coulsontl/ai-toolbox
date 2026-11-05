@@ -3184,7 +3184,11 @@
       "officialAccountCreditsUnknown": "未知，请刷新额度",
       "officialAccountCreditsBalance": "{{balance}} 积分",
       "officialAccountCreditsBalanceUnavailable": "{{balance}} 积分（无可用积分）",
-      "officialAccountReauthRequired": "该账号需要重新授权：请点击上方「OAuth 登录」完成登录后再刷新额度"
+      "officialAccountReauthRequired": "该账号需要重新授权：请点击上方「OAuth 登录」完成登录后再刷新额度",
+      "launchCli": "CLI 启动",
+      "launchCliSuccess": "已打开 Codex CLI 终端",
+      "launchCliFailed": "打开 Codex CLI 失败：{{error}}",
+      "launchCliHint": "使用该供应商的临时 profile 打开 Codex CLI，不改写当前已应用配置。会先弹出文件夹选择窗口，选择工作目录后启动；取消则不启动。是否附加全权限由「更多选项」开关控制"
     },
     "import": {
       "title": "从 OpenCode 导入",
@@ -3461,7 +3465,11 @@
       "daemonRestartModeOff": "不提示也不重启",
       "daemonRestartModePromptSaved": "已改为：应用后提示你重启",
       "daemonRestartModeAutoSaved": "已改为：应用后自动重启，无需确认",
-      "daemonRestartModeOffSaved": "已改为：应用后不再提示，也不会自动重启"
+      "daemonRestartModeOffSaved": "已改为：应用后不再提示，也不会自动重启",
+      "cliLaunchFullAccess": "CLI 启动时跳过审批与沙箱",
+      "cliLaunchFullAccessHint": "开启后，供应商卡片的「CLI 启动」会附加 --dangerously-bypass-approvals-and-sandbox",
+      "cliLaunchFullAccessEnabled": "已开启 Codex CLI 全权限启动",
+      "cliLaunchFullAccessDisabled": "已关闭 Codex CLI 全权限启动"
     },
     "memories": {
       "title": "记忆管理",

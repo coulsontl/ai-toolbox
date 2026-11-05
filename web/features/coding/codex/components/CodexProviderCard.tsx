@@ -10,12 +10,14 @@ import {
 import {
   ApiOutlined,
   CheckOutlined,
+  CodeOutlined,
   CopyOutlined,
   DeleteOutlined,
   EditOutlined,
   LinkOutlined,
   SafetyOutlined,
 } from '@ant-design/icons';
+import { open as openDirectoryDialog } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { BarChart2, Share2 } from 'lucide-react';
@@ -32,6 +34,8 @@ import {
   type GatewayCliTakeoverStatus,
 } from '@/services';
 import { refreshTrayMenu } from '@/services/appApi';
+import { launchCodexProviderCli } from '@/services/codexApi';
+import { useSettingsStore } from '@/stores';
 import { extractCodexBaseUrl, extractCodexModel, extractCodexReasoningEffort } from '@/utils/codexConfigUtils';
 import AppliedTag from '@/components/common/AppliedTag';
 import { useCodexDaemonNotice } from '../hooks/useCodexDaemonNotice';
@@ -65,7 +69,10 @@ import type {
   ProviderCardModels,
   ProviderCardVariantProps,
 } from '@/features/coding/shared/providerCardVariants/types';
-import { renderProviderPrimaryAction } from '@/features/coding/shared/providerCardVariants/providerCardActions';
+import {
+  renderProviderLaunchAction,
+  renderProviderPrimaryAction,
+} from '@/features/coding/shared/providerCardVariants/providerCardActions';
 import ProviderModelSection from '@/features/coding/shared/providerCardVariants/ProviderModelSection';
 // Through the module's barrel, the way the sibling shared modules are consumed
 // (`shared/providerList`, `shared/officialAccounts`).
@@ -232,6 +239,9 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
   const [engagingGatewayProxy, setEngagingGatewayProxy] = React.useState(false);
   const [restoringDirect, setRestoringDirect] = React.useState(false);
   const [switchingGatewayProvider, setSwitchingGatewayProvider] = React.useState(false);
+  const [launchingCli, setLaunchingCli] = React.useState(false);
+  const codexCliLaunchFullAccess = useSettingsStore((state) => state.codexCliLaunchFullAccess);
+  const preferredTerminal = useSettingsStore((state) => state.preferredTerminal);
 
   // Parse settingsConfig JSON string
   const settingsConfig: CodexSettingsConfig = React.useMemo(() => {
@@ -423,6 +433,33 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
   const showGatewaySwitchAction = canSwitchGatewayProvider;
   const showGatewayLockedApply = gatewayProxyActive && !isApplied && !canSwitchGatewayProvider;
   const applyWithProxyDisabled = provider.isDisabled || !gatewayCanApplyProxy;
+
+  const handleLaunchCli = async () => {
+    if (provider.isDisabled || isLocalProvider) {
+      return;
+    }
+    // Pick the project folder to launch in; cancelling aborts the launch (KISS:
+    // no persistence of the last choice, same as the Claude card).
+    const selectedDir = await openDirectoryDialog({ directory: true, multiple: false });
+    if (!selectedDir) {
+      return;
+    }
+    const cwd = typeof selectedDir === 'string' ? selectedDir : selectedDir[0];
+    setLaunchingCli(true);
+    try {
+      await launchCodexProviderCli(provider.id, {
+        fullAccess: codexCliLaunchFullAccess,
+        cwd,
+        terminal: preferredTerminal,
+      });
+      message.success(t('codex.provider.launchCliSuccess'));
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      message.error(t('codex.provider.launchCliFailed', { error: errorMessage }));
+    } finally {
+      setLaunchingCli(false);
+    }
+  };
 
   const handleToggleDisabled = (checked: boolean) => {
     if (showRuntimeApplied && !checked) {
@@ -1079,17 +1116,48 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
     // The probe rides the meta line, except on the official card, whose meta
     // line is the account block's explanation — the two would read as one
     // sentence. It was disabled there anyway.
-    inlineActions: isOfficialProvider ? undefined : (
+    inlineActions: isLocalProvider ? undefined : (
       <>
+        {!isOfficialProvider && (
+          <>
+            <Text type="secondary" style={{ fontSize: 11 }}>|</Text>
+            <InlineConnectivityButton
+              onClick={() => onTest(provider)}
+              disabled={!canRunConnectivityTest}
+            />
+          </>
+        )}
         <Text type="secondary" style={{ fontSize: 11 }}>|</Text>
-        <InlineConnectivityButton
-          onClick={() => onTest(provider)}
-          disabled={!canRunConnectivityTest}
-        />
+        <Button
+          type="text"
+          size="small"
+          icon={<CodeOutlined />}
+          onClick={() => {
+            void handleLaunchCli();
+          }}
+          loading={launchingCli}
+          disabled={provider.isDisabled}
+          title={t('codex.provider.launchCliHint')}
+          style={{ fontSize: 12, padding: '0 4px', height: 'auto', flexShrink: 0 }}
+        >
+          {t('codex.provider.launchCli')}
+        </Button>
       </>
     ),
     footer: renderOfficialAccounts({ fold: true }) ?? undefined,
     modelSection: modelSectionProps,
+  };
+
+  /** Footer's left button, shared by the grid cell and the detail panel. */
+  const launchAction = {
+    label: t('codex.provider.launchCli'),
+    icon: <CodeOutlined />,
+    onClick: () => {
+      void handleLaunchCli();
+    },
+    loading: launchingCli,
+    disabled: provider.isDisabled || isLocalProvider,
+    tooltip: t('codex.provider.launchCliHint'),
   };
 
   /**
@@ -1207,13 +1275,13 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
           : (displayModelName
               ? [{ label: t('codex.model.primaryLabel'), value: displayModelName }]
               : undefined)}
-        // The cell states one fact and one action, so the action rides that
-        // line instead of a footer bar under it — a whole bar for a single
-        // button read as mostly empty (user-directed, 2026-10-12).
-        actionPlacement="subtitle"
         providerState={props.providerState}
         actions={props.actions}
         nameTags={nameTags}
+        // The cell now offers more than one action (launch + gateway + apply),
+        // so the shared footer bar is no longer mostly empty — the same shape
+        // Claude's cell uses.
+        launchAction={launchAction}
         // The list card renders 连通性测试 inline on its meta line; the grid
         // cell has room for the two primary actions only, so the diagnostic
         // moves into the menu rather than disappearing.
@@ -1233,6 +1301,7 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
         // offers" is a fact about the code, not a thing to re-check.
         primaryActions: (
           <>
+            {renderProviderLaunchAction(launchAction)}
             {gatewayActions}
             {renderProviderPrimaryAction(props.actions?.primaryAction)}
           </>

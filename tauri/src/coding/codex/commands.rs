@@ -906,6 +906,45 @@ fn get_codex_provider_from_sqlite(
     })
 }
 
+/// Launch Codex CLI with a temporary provider profile.
+///
+/// Side-channel launch, not an apply: writes a throwaway
+/// `$CODEX_HOME/aitb-launch-*.config.toml`, runs `codex --profile ...`, and
+/// deletes the file when the CLI exits. The live `config.toml` / `auth.json`
+/// and `is_applied` are never touched.
+#[tauri::command]
+pub async fn launch_codex_provider_cli(
+    state: tauri::State<'_, SqliteDbState>,
+    provider_id: String,
+    full_access: Option<bool>,
+    cwd: Option<String>,
+    terminal: Option<String>,
+) -> Result<(), String> {
+    let db = state.db();
+    let provider = get_codex_provider_from_sqlite(&db, &provider_id)?
+        .ok_or_else(|| format!("Provider not found: {provider_id}"))?;
+
+    if provider.is_disabled {
+        return Err(format!(
+            "Provider '{}' is disabled and cannot launch CLI",
+            provider.name
+        ));
+    }
+
+    let runtime_location = runtime_location::get_codex_runtime_location_async(&db).await?;
+    let resolved_cwd = crate::coding::cli_launch_terminal::resolve_launch_cwd(cwd)?;
+
+    super::cli_launch::launch_codex_provider_cli_session(
+        &runtime_location,
+        &provider.id,
+        &provider.category,
+        &provider.settings_config,
+        full_access.unwrap_or(false),
+        resolved_cwd.as_deref(),
+        terminal.as_deref(),
+    )
+}
+
 fn put_codex_provider_to_sqlite(
     sqlite_state: &SqliteDbState,
     provider_id: &str,

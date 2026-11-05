@@ -3187,7 +3187,11 @@
       "officialAccountCreditsUnknown": "Unknown; refresh usage",
       "officialAccountCreditsBalance": "{{balance}} credits",
       "officialAccountCreditsBalanceUnavailable": "{{balance}} credits (none available)",
-      "officialAccountReauthRequired": "This account needs to be authorized again. Use OAuth sign-in above, then refresh the limits."
+      "officialAccountReauthRequired": "This account needs to be authorized again. Use OAuth sign-in above, then refresh the limits.",
+      "launchCli": "Launch CLI",
+      "launchCliSuccess": "Codex CLI terminal opened",
+      "launchCliFailed": "Failed to open Codex CLI: {{error}}",
+      "launchCliHint": "Open Codex CLI with this provider's temporary profile without changing the applied config. A folder picker opens first; select a working directory to launch, or cancel to abort. Full access is controlled by the More Options switch"
     },
     "import": {
       "title": "Import from OpenCode",
@@ -3464,7 +3468,11 @@
       "daemonRestartModeOff": "Do nothing",
       "daemonRestartModePromptSaved": "Saved: you will be asked to restart after applying",
       "daemonRestartModeAutoSaved": "Saved: applying will restart automatically without asking",
-      "daemonRestartModeOffSaved": "Saved: applying will neither prompt nor restart"
+      "daemonRestartModeOffSaved": "Saved: applying will neither prompt nor restart",
+      "cliLaunchFullAccess": "Skip approvals and sandbox when launching the CLI",
+      "cliLaunchFullAccessHint": "When enabled, the provider card's Launch CLI appends --dangerously-bypass-approvals-and-sandbox",
+      "cliLaunchFullAccessEnabled": "Codex CLI full access enabled",
+      "cliLaunchFullAccessDisabled": "Codex CLI full access disabled"
     },
     "memories": {
       "title": "Memories",

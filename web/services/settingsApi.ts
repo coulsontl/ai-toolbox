@@ -171,7 +171,9 @@ export interface AppSettings {
   codex_daemon_restart_mode: CodexDaemonRestartMode;
   codex_unified_session_history_enabled: boolean;
   claude_cli_launch_full_access: boolean;
-  /** Windows terminal preference for the Claude CLI launch: `cmd` | `powershell` | `wt` | `gitbash`. */
+  /** Append `--dangerously-bypass-approvals-and-sandbox` to the Codex CLI launch. */
+  codex_cli_launch_full_access: boolean;
+  /** Windows terminal preference for the Claude / Codex CLI launch: `cmd` | `powershell` | `wt` | `gitbash`. */
   preferred_terminal: string | null;
   cli_manual_paths: Record<string, string>;
   /**
@@ -258,6 +260,7 @@ export const defaultSettings: AppSettings = {
   codex_daemon_restart_mode: 'prompt',
   codex_unified_session_history_enabled: false,
   claude_cli_launch_full_access: false,
+  codex_cli_launch_full_access: false,
   preferred_terminal: null,
   cli_manual_paths: {},
   provider_sort_modes: {},
