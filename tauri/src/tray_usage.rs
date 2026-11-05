@@ -65,17 +65,22 @@ pub fn usage_texts(language: &str) -> UsageTexts {
 
 /// Format a token count in millions (`>= 1B` switches to billions).
 ///
-/// Up to three decimals, trailing zeros trimmed: `0.35M`, `12.3M`, `1.235B`.
-/// Values below one unit keep at most three decimals, so a tiny day reads
-/// `0.001M` rather than rounding to a misleading `0M`.
+/// At least one unit shows up to two decimals, trailing zeros trimmed:
+/// `1M`, `12.34M`, `1.23B`. Values below one million keep up to three decimals,
+/// so a tiny day reads `0.001M` rather than rounding to a misleading `0M`.
 pub fn format_token_amount(tokens: u64) -> String {
     const MILLION: f64 = 1_000_000.0;
     const BILLION: f64 = 1_000_000_000.0;
 
     if tokens as f64 >= BILLION {
-        return format!("{}B", trim_decimal(tokens as f64 / BILLION));
+        return format!("{}B", trim_decimal(tokens as f64 / BILLION, 2));
     }
-    format!("{}M", trim_decimal(tokens as f64 / MILLION))
+    let millions = tokens as f64 / MILLION;
+    if millions >= 1.0 {
+        format!("{}M", trim_decimal(millions, 2))
+    } else {
+        format!("{}M", trim_decimal(millions, 3))
+    }
 }
 
 /// Format the cost for the parenthesised suffix. `None` means "omit the
@@ -136,8 +141,8 @@ pub fn format_usage_menu_text(
     format!("{label}{}{amount}", texts.separator)
 }
 
-fn trim_decimal(value: f64) -> String {
-    let formatted = format!("{value:.3}");
+fn trim_decimal(value: f64, decimals: usize) -> String {
+    let formatted = format!("{value:.decimals$}");
     let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
     if trimmed.is_empty() {
         "0".to_string()
@@ -173,9 +178,12 @@ mod tests {
         assert_eq!(format_token_amount(1_000), "0.001M");
         assert_eq!(format_token_amount(350_000), "0.35M");
         assert_eq!(format_token_amount(12_300_000), "12.3M");
+        assert_eq!(format_token_amount(57_260_000), "57.26M");
+        assert_eq!(format_token_amount(57_263_000), "57.26M");
         assert_eq!(format_token_amount(999_999_999), "1000M");
         assert_eq!(format_token_amount(1_000_000_000), "1B");
-        assert_eq!(format_token_amount(1_235_000_000), "1.235B");
+        assert_eq!(format_token_amount(1_234_000_000), "1.23B");
+        assert_eq!(format_token_amount(12_300_000_000), "12.3B");
     }
 
     #[test]
