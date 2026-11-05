@@ -8,8 +8,9 @@
 //!
 //! `chat_message` has one row per message, `token_info` is JSON with
 //! `prompt_tokens` / `completion_tokens` / `cached_tokens`, `model_info` carries
-//! the model, and `gmt_create` is a millisecond timestamp. The working directory
-//! is on the owning `chat_session.cwd`.
+//! the model, and `gmt_create` is a millisecond timestamp. The project path is
+//! on the owning session: older builds store it in `chat_session.cwd`, newer
+//! ones dropped that column and keep it in `chat_session.project_uri`.
 //!
 //! The two editions are separate tool keys, so an account signed into both is
 //! never double-counted. Neither is read when the database is absent.
@@ -40,13 +41,25 @@ fn table_names(source: &Connection) -> Result<HashSet<String>, String> {
     rows
 }
 
-fn read_records(tool: GatewayUsageTool, path: &Path) -> Result<Vec<SessionUsageRecord>, String> {
+struct ReadResult {
+    records: Vec<SessionUsageRecord>,
+    /// Whether `chat_message` has a timestamp column. Without one no row can
+    /// ever become datable, so dropping them must not keep the source pending
+    /// forever.
+    timestamps_present: bool,
+}
+
+fn read_records(tool: GatewayUsageTool, path: &Path) -> Result<ReadResult, String> {
     let source = super::hermes::open_read_only(path)?;
     let tables = table_names(&source)?;
     if !tables.contains("chat_message") {
-        return Ok(Vec::new());
+        return Ok(ReadResult {
+            records: Vec::new(),
+            timestamps_present: false,
+        });
     }
     let columns = super::hermes::columns(&source, "chat_message")?;
+    let timestamps_present = columns.contains("gmt_create");
     // `message_id`/`request_id` only exist on builds that record their own ids;
     // a trimmed or fixture database falls back to the rowid / NULL. The rowid
     // is an integer, so it is cast here rather than read as TEXT.
@@ -77,10 +90,32 @@ fn read_records(tool: GatewayUsageTool, path: &Path) -> Result<Vec<SessionUsageR
     } else {
         "NULL"
     };
-    let project = if tables.contains("chat_session") && columns.contains("session_id") {
-        "(SELECT s.cwd FROM chat_session s WHERE s.session_id = m.session_id)"
+    // The session table is optional, and its project column moved from `cwd`
+    // to `project_uri` on builds that dropped the old one. Every column of the
+    // subquery is probed first: SQLite resolves names at prepare time, so one
+    // missing column fails the whole scan instead of degrading one field.
+    let session_columns = super::hermes::columns(&source, "chat_session")?;
+    let project_columns = ["cwd", "project_uri"]
+        .into_iter()
+        .filter(|column| session_columns.contains(*column))
+        // Match the Rust-side `trim` filter: a whitespace-only `cwd` must fall
+        // through to `project_uri` instead of shadowing it.
+        .map(|column| format!("NULLIF(TRIM(s.{column}), '')"))
+        .collect::<Vec<_>>();
+    let project = if columns.contains("session_id")
+        && session_columns.contains("session_id")
+        && !project_columns.is_empty()
+    {
+        // `COALESCE` needs at least two arguments, so a single surfaced
+        // column is used as-is.
+        let expression = if project_columns.len() == 1 {
+            project_columns[0].clone()
+        } else {
+            format!("COALESCE({})", project_columns.join(", "))
+        };
+        format!("(SELECT {expression} FROM chat_session s WHERE s.session_id = m.session_id)")
     } else {
-        "NULL"
+        "NULL".to_string()
     };
     let sql = format!(
         "SELECT {id}, {session}, {request}, m.token_info, {model_info}, {created_at}, {project}
@@ -171,7 +206,10 @@ fn read_records(tool: GatewayUsageTool, path: &Path) -> Result<Vec<SessionUsageR
         record.project_path = project.filter(|path| !path.trim().is_empty());
         records.insert(identity, record);
     }
-    Ok(records.into_values().collect())
+    Ok(ReadResult {
+        records: records.into_values().collect(),
+        timestamps_present,
+    })
 }
 
 pub(super) fn sync_database(
@@ -199,7 +237,9 @@ pub(super) fn sync_database(
     {
         return Ok(Default::default());
     }
-    let mut records = read_records(tool, path)?;
+    let parsed = read_records(tool, path)?;
+    let timestamps_present = parsed.timestamps_present;
+    let mut records = parsed.records;
     let parsed_records = records.len();
     // Messages still streaming are imported once the database has been quiet
     // for the settle window; a row without a timestamp cannot be dated and is
@@ -208,8 +248,10 @@ pub(super) fn sync_database(
         record.created_at > 0 && record.created_at <= now - super::SESSION_SETTLE_SECONDS
     });
     // A deferred row must keep the source pending: otherwise the next sync sees
-    // an unchanged database, skips the read, and the row never lands.
-    let pending = records.len() != parsed_records;
+    // an unchanged database, skips the read, and the row never lands. A table
+    // with no timestamp column can never date its rows, so pending would keep
+    // re-reading the whole database on every sync with nothing to import.
+    let pending = timestamps_present && records.len() != parsed_records;
     let next_state = SourceState {
         cost_reconciliation_fingerprint: old_state.cost_reconciliation_fingerprint.clone(),
         cost_reconciliation_sources: old_state.cost_reconciliation_sources.clone(),
@@ -236,7 +278,7 @@ pub(super) fn cost_records(
     tool: GatewayUsageTool,
     path: &Path,
 ) -> Result<Vec<SessionUsageRecord>, String> {
-    read_records(tool, path)
+    Ok(read_records(tool, path)?.records)
 }
 
 /// The database each edition writes, under its own profile directory: the

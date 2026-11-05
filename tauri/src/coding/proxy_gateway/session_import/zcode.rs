@@ -33,10 +33,11 @@ use crate::coding::proxy_gateway::usage_parser::TokenUsage;
 
 /// Columns read from `model_usage`, in order. The project is a property of the
 /// session row, so it comes from a correlated subquery; the `session` table is
-/// optional (a trimmed or test database may not carry it), hence the fallback
-/// variant that selects a literal instead.
-fn usage_query(session_table_present: bool) -> String {
-    let project = if session_table_present {
+/// optional (a trimmed or test database may not carry it), and so is its
+/// `directory` column, hence the fallback variant that selects a literal
+/// instead.
+fn usage_query(session_project_available: bool) -> String {
+    let project = if session_project_available {
         "(SELECT s.directory FROM session s WHERE s.id = u.session_id)"
     } else {
         "NULL"
@@ -64,15 +65,14 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
     )
     .map_err(|error| format!("Failed to open ZCode database {}: {error}", path.display()))?;
 
-    let session_table_present = connection
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'",
-            [],
-            |_| Ok(()),
-        )
-        .is_ok();
+    // Probe both the join column and the project column: an older or trimmed
+    // database may carry the table without `directory`, and SQLite rejects the
+    // reference at prepare time instead of returning NULL.
+    let session_columns = super::hermes::columns(&connection, "session")?;
+    let session_project_available =
+        session_columns.contains("id") && session_columns.contains("directory");
     let mut statement = connection
-        .prepare(&usage_query(session_table_present))
+        .prepare(&usage_query(session_project_available))
         .map_err(|error| format!("Failed to prepare ZCode usage query: {error}"))?;
     let rows = statement
         .query_map([], |row| {

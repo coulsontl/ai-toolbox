@@ -3163,6 +3163,142 @@ fn qoder_ide_falls_back_to_the_integer_rowid_when_message_id_is_absent() {
     assert_eq!(summary.total_input_tokens, 300);
 }
 
+/// Newer builds dropped `chat_session.cwd` and keep the same value in
+/// `project_uri`. Referencing the missing column used to fail the whole query
+/// at prepare time, so no usage was imported at all.
+#[test]
+fn qoder_ide_reads_the_project_from_project_uri_when_cwd_is_absent() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("local.db");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE chat_session (session_id TEXT PRIMARY KEY, project_uri TEXT);
+             CREATE TABLE chat_message (
+                message_id TEXT PRIMARY KEY, session_id TEXT, request_id TEXT,
+                token_info TEXT, model_info TEXT, gmt_create INTEGER);
+             INSERT INTO chat_session VALUES ('ide-session', '/Users/mrj/aaic/aaic-workspace');
+             INSERT INTO chat_message VALUES (
+                'msg-1', 'ide-session', 'req-1',
+                '{\"prompt_tokens\":1000,\"completion_tokens\":120,\"cached_tokens\":400}',
+                '{\"model_key\":\"ide-model\"}', 1800000000000);",
+        )
+        .unwrap();
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    let result = run_sync(&db, GatewayUsageTool::QoderIde, &path);
+    assert_eq!(result.failed_files, 0);
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
+    assert_eq!(summary.total_requests, 1);
+    assert_eq!(summary.total_input_tokens, 600);
+    assert_eq!(
+        usage_stats::project_stats(&db, None, None, None, true).unwrap()[0].project_path,
+        "/Users/mrj/aaic/aaic-workspace"
+    );
+}
+
+/// Both columns can exist on a transitional build: a non-blank `cwd` wins, a
+/// whitespace-only one falls through to `project_uri`.
+#[test]
+fn qoder_ide_prefers_cwd_and_falls_back_when_it_is_blank() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("local.db");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE chat_session (
+                session_id TEXT PRIMARY KEY, cwd TEXT, project_uri TEXT);
+             CREATE TABLE chat_message (
+                message_id TEXT PRIMARY KEY, session_id TEXT, request_id TEXT,
+                token_info TEXT, model_info TEXT, gmt_create INTEGER);
+             INSERT INTO chat_session VALUES
+                ('ide-a', 'D:/work/ide-repo', '/ignored'),
+                ('ide-b', '   ', '/Users/mrj/aaic/aaic-workspace');
+             INSERT INTO chat_message VALUES
+                ('msg-a', 'ide-a', 'req-a',
+                 '{\"prompt_tokens\":100,\"completion_tokens\":10}', NULL, 1800000000000),
+                ('msg-b', 'ide-b', 'req-b',
+                 '{\"prompt_tokens\":200,\"completion_tokens\":20}', NULL, 1800000001000);",
+        )
+        .unwrap();
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    let result = run_sync(&db, GatewayUsageTool::QoderIde, &path);
+    assert_eq!(result.failed_files, 0);
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
+    assert_eq!(summary.total_requests, 2);
+    let mut projects = usage_stats::project_stats(&db, None, None, None, true)
+        .unwrap()
+        .into_iter()
+        .map(|project| project.project_path)
+        .collect::<Vec<_>>();
+    projects.sort();
+    assert_eq!(
+        projects,
+        vec![
+            "/Users/mrj/aaic/aaic-workspace".to_string(),
+            "D:/work/ide-repo".to_string()
+        ]
+    );
+}
+
+/// A session table without either project column degrades to a NULL project
+/// instead of failing the scan.
+#[test]
+fn qoder_ide_without_a_project_column_still_imports_usage() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("local.db");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE chat_session (session_id TEXT PRIMARY KEY);
+             CREATE TABLE chat_message (
+                message_id TEXT PRIMARY KEY, session_id TEXT, request_id TEXT,
+                token_info TEXT, model_info TEXT, gmt_create INTEGER);
+             INSERT INTO chat_session VALUES ('ide-session');
+             INSERT INTO chat_message VALUES (
+                'msg-1', 'ide-session', 'req-1',
+                '{\"prompt_tokens\":100,\"completion_tokens\":10}',
+                NULL, 1800000000000);",
+        )
+        .unwrap();
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    let result = run_sync(&db, GatewayUsageTool::QoderIde, &path);
+    assert_eq!(result.failed_files, 0);
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
+    assert_eq!(summary.total_requests, 1);
+    assert_eq!(
+        usage_stats::project_stats(&db, None, None, None, true).unwrap()[0].project_path,
+        ""
+    );
+}
+
+/// Without a timestamp column no row can ever be dated. The source must not
+/// stay pending forever and re-read the whole database on every sync.
+#[test]
+fn qoder_ide_without_timestamps_does_not_stay_pending() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("local.db");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE chat_message (
+                message_id TEXT PRIMARY KEY, session_id TEXT, request_id TEXT,
+                token_info TEXT, model_info TEXT);
+             INSERT INTO chat_message VALUES (
+                'msg-1', 'ide-session', 'req-1',
+                '{\"prompt_tokens\":100,\"completion_tokens\":10}', NULL);",
+        )
+        .unwrap();
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    let first = run_sync(&db, GatewayUsageTool::QoderIde, &path);
+    assert_eq!(first.scanned_files, 1);
+    assert_eq!(first.inserted_records, 0);
+    let second = run_sync(&db, GatewayUsageTool::QoderIde, &path);
+    assert_eq!(
+        second.scanned_files, 0,
+        "an undated database must not remain pending"
+    );
+}
+
 #[test]
 fn qoder_ide_without_the_chat_message_table_is_a_no_op() {
     let root = tempfile::tempdir().unwrap();
@@ -3334,6 +3470,64 @@ fn codex_authoritative_records_use_the_sending_event_as_start() {
     // The tool result at +5s is the start; task_started at +1s belongs to the
     // turn, not to this call.
     assert_eq!(rows.data[0].duration_ms, 4_250);
+}
+
+fn zcode_database(path: &Path, session_schema: &str, session_insert: &str) {
+    Connection::open(path)
+        .unwrap()
+        .execute_batch(&format!(
+            "CREATE TABLE model_usage (
+                id TEXT PRIMARY KEY, attempt_index INTEGER NOT NULL DEFAULT 0,
+                session_id TEXT NOT NULL, provider_id TEXT NOT NULL, model_id TEXT NOT NULL,
+                status TEXT NOT NULL, started_at INTEGER NOT NULL,
+                completed_at INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0, raw_usage_json TEXT
+            );
+            {session_schema}
+            INSERT INTO model_usage VALUES
+              ('u1', 0, 'sess_a', 'account:zai', 'GLM-5.3', 'completed', 1800000000000,
+               1800000001000, 100, 20, 0, 0, NULL);
+            {session_insert}"
+        ))
+        .unwrap();
+}
+
+/// ZCode's `session` table is optional, and an older or trimmed database may
+/// carry it without `directory`. Referencing that column used to fail the
+/// whole database at prepare time.
+#[test]
+fn zcode_without_the_session_directory_column_still_imports_usage() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("db.sqlite");
+    zcode_database(
+        &path,
+        "CREATE TABLE session (id TEXT PRIMARY KEY);",
+        "INSERT INTO session VALUES ('sess_a');",
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    let result = run_sync(&db, GatewayUsageTool::Zcode, &path);
+    assert_eq!(result.failed_files, 0);
+    let summary = usage_stats::usage_summary(&db, None, None, None, true).unwrap();
+    assert_eq!(summary.total_requests, 1);
+}
+
+#[test]
+fn zcode_reads_the_project_from_the_session_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("db.sqlite");
+    zcode_database(
+        &path,
+        "CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT);",
+        "INSERT INTO session VALUES ('sess_a', '/Users/mrj/aaic/aaic-workspace');",
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::Zcode, &path);
+    assert_eq!(
+        usage_stats::project_stats(&db, None, None, None, true).unwrap()[0].project_path,
+        "/Users/mrj/aaic/aaic-workspace"
+    );
 }
 
 /// Every native adapter stores the call's own elapsed time when its source

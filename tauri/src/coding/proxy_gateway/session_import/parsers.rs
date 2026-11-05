@@ -135,10 +135,12 @@ pub(super) fn revision(cli_key: GatewayUsageTool) -> u32 {
         | GatewayUsageTool::Devin
         | GatewayUsageTool::Cmdcode
         | GatewayUsageTool::Minimax
-        | GatewayUsageTool::QoderIde
-        | GatewayUsageTool::QoderIdeCn
         | GatewayUsageTool::QoderCli
         | GatewayUsageTool::QoderCliCn => 2,
+        // 3: read the project from `chat_session.project_uri` when the session
+        // table no longer has `cwd`, so an upgraded schema no longer fails the
+        // whole scan at prepare time.
+        GatewayUsageTool::QoderIde | GatewayUsageTool::QoderIdeCn => 3,
         _ => 2,
     }
 }

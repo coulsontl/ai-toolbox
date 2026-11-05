@@ -81,8 +81,13 @@ pub(super) fn columns(source: &Connection, table: &str) -> Result<HashSet<String
     let mut query = source
         .prepare(&format!("PRAGMA table_info({table})"))
         .map_err(|error| error.to_string())?;
+    // SQLite matches identifiers case-insensitively, so a schema that declared
+    // `Cwd` must still satisfy a `contains("cwd")` probe.
     let result = query
-        .query_map([], |row| row.get::<_, String>(1))
+        .query_map([], |row| {
+            row.get::<_, String>(1)
+                .map(|name| name.to_ascii_lowercase())
+        })
         .map_err(|error| error.to_string())?
         .collect::<Result<HashSet<_>, _>>()
         .map_err(|error| error.to_string());
@@ -418,4 +423,20 @@ pub(super) fn sync_database(
         result.merge(changes);
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn column_names_are_normalized_for_case_insensitive_probes() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE Probe (Id TEXT, Directory TEXT)")
+            .unwrap();
+        let columns = columns(&connection, "Probe").unwrap();
+        assert!(columns.contains("id"));
+        assert!(columns.contains("directory"));
+    }
 }
