@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::schema::{sql_string_literal, JsonFieldPath};
 
-pub const TARGET_SCHEMA_VERSION: i32 = 35;
+pub const TARGET_SCHEMA_VERSION: i32 = 36;
 const FUTURE_SCHEMA_ERROR_PREFIX: &str = "AI_TOOLBOX_SQLITE_SCHEMA_TOO_NEW";
 
 // ---- the consolidation table ------------------------------------------------
@@ -251,6 +251,9 @@ pub fn run_all(conn: &mut Connection) -> Result<(), String> {
     }
     if current_version < 35 {
         run_migration_step(conn, 35, migrate_v35)?;
+    }
+    if current_version < 36 {
+        run_migration_step(conn, 36, migrate_v36)?;
     }
 
     Ok(())
@@ -1322,6 +1325,122 @@ fn create_feature_entity_indexes(conn: &Connection) -> Result<(), String> {
             ON image_entity(kind, CAST(json_extract(data, '$.created_at') AS INTEGER));",
     )
     .map_err(|error| format!("Failed to create feature entity indexes: {error}"))
+}
+
+/// Reserve the pricing-basis columns (cc-switch layout) and the context-tier
+/// price shape (models.dev layout).
+///
+/// `proxy_request_logs.pricing_model` is the model id the price lookup actually
+/// hit; `pricing_tier` is the context threshold that applied (NULL until the
+/// lookup fills it; `''` in a rollup means the base tier). `usage_daily_rollups`
+/// carries the same dimensions in its primary key, so a pruned detail row can
+/// still be audited.
+///
+/// `model_pricing.context_tiers` stores price overrides above the base rate:
+/// `[{"over_tokens":200000,"input_cost_per_million":"10",...}]`, sorted by
+/// `over_tokens`; a tier applies when the prompt token count (input + cache
+/// read + cache creation, excluding output) is strictly above it. A missing
+/// price field inherits the base column. Nothing reads this column yet.
+///
+/// The session usage ledger is renamed here because its old `gateway_` prefix
+/// was the only one left outside the `usage_*` family. Frozen migrations keep
+/// creating the old name; this step renames it for both fresh and upgraded DBs.
+fn migrate_v36(conn: &Connection) -> Result<(), String> {
+    add_column_if_missing(conn, "proxy_request_logs", "pricing_model", "TEXT")?;
+    add_column_if_missing(conn, "proxy_request_logs", "pricing_tier", "TEXT")?;
+    add_column_if_missing(
+        conn,
+        "model_pricing",
+        "context_tiers",
+        "TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(context_tiers))",
+    )?;
+
+    // An earlier v36 attempt (or a restored newer snapshot) may already have
+    // the rebuild. Reading the source columns conditionally keeps a partially
+    // applied v36 from losing the dimensions it already recorded.
+    if !table_has_column(conn, "usage_daily_rollups", "pricing_tier")? {
+        let request_model_source = if table_has_column(
+            conn,
+            "usage_daily_rollups",
+            "request_model",
+        )? {
+            "request_model"
+        } else {
+            "''"
+        };
+        let pricing_model_source = if table_has_column(
+            conn,
+            "usage_daily_rollups",
+            "pricing_model",
+        )? {
+            "pricing_model"
+        } else {
+            "''"
+        };
+        conn.execute_batch(&format!(
+            "CREATE TABLE usage_daily_rollups_v36 (
+                date TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                request_model TEXT NOT NULL DEFAULT '',
+                pricing_model TEXT NOT NULL DEFAULT '',
+                pricing_tier TEXT NOT NULL DEFAULT '',
+                project_path TEXT NOT NULL DEFAULT '',
+                request_count INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cost_usd TEXT NOT NULL DEFAULT '0',
+                avg_latency_ms INTEGER NOT NULL DEFAULT 0,
+                latency_sample_count INTEGER,
+                extra_tokens INTEGER NOT NULL DEFAULT 0,
+                credits REAL NOT NULL DEFAULT 0,
+                PRIMARY KEY (date, app_type, provider_id, model, project_path, request_model, pricing_model, pricing_tier)
+            );
+
+            INSERT INTO usage_daily_rollups_v36 (
+                date, app_type, provider_id, model, request_model, pricing_model, pricing_tier,
+                project_path, request_count, success_count, input_tokens, output_tokens,
+                cache_read_tokens, cache_creation_tokens, total_cost_usd, avg_latency_ms,
+                latency_sample_count, extra_tokens, credits
+            )
+            SELECT date, app_type, provider_id, model, {request_model_source}, {pricing_model_source}, '',
+                   project_path, request_count, success_count, input_tokens, output_tokens,
+                   cache_read_tokens, cache_creation_tokens, total_cost_usd, avg_latency_ms,
+                   latency_sample_count, extra_tokens, credits
+            FROM usage_daily_rollups;
+
+            DROP TABLE usage_daily_rollups;
+            ALTER TABLE usage_daily_rollups_v36 RENAME TO usage_daily_rollups;
+
+            CREATE INDEX IF NOT EXISTS idx_usage_rollups_app_date
+                ON usage_daily_rollups(app_type, date);
+            CREATE INDEX IF NOT EXISTS idx_usage_rollups_provider
+                ON usage_daily_rollups(provider_id, app_type);
+            CREATE INDEX IF NOT EXISTS idx_usage_rollups_project
+                ON usage_daily_rollups(project_path);"
+        ))
+        .map_err(|error| {
+            format!("Failed to rebuild usage rollups with pricing dimensions: {error}")
+        })?;
+    }
+
+    // A migration-generated DB has exactly one of the two names. If both
+    // exist, the new name is already authoritative; there is nothing safe to
+    // merge, so leave the old table untouched rather than guess.
+    if table_exists(conn, "gateway_session_usage_state")?
+        && !table_exists(conn, "usage_session_state")?
+    {
+        conn.execute_batch(
+            "ALTER TABLE gateway_session_usage_state RENAME TO usage_session_state;",
+        )
+        .map_err(|error| format!("Failed to rename the session usage ledger: {error}"))?;
+    }
+
+    Ok(())
 }
 
 fn create_jsonb_table(conn: &Connection, table: &str) -> Result<(), String> {

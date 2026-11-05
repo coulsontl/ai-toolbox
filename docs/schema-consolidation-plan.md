@@ -1,7 +1,7 @@
 # 数据库表合并方案（Schema Consolidation）
 
-> 状态：**已落地**（v33/v34 在 `feat/relay-schema-consolidation`；v35 功能域合并已实现并通过测试）。
-> 最后更新：2026-11-04
+> 状态：**已落地**（v33/v34 在 `feat/relay-schema-consolidation`；v35 功能域合并、v36 计价基准与上下文分档字段预留已实现并通过测试）。
+> 最后更新：2026-11-05
 
 ## 一、问题
 
@@ -275,21 +275,27 @@ v33/v34 消掉了「每 CLI 一套」的重复；v35 处理剩下的「每个功
 - `sync_entity` 的 WSL / SSH 必须使用不同 kind：本机真实库中两边的 file mapping 有 62 个同名 id，合并 kind 会静默覆盖；`config` 与 `defaults_version` 也拆成不同 kind，否则 `db_list` 会把版本行当配置读。
 - `custom_tool` 保持独立：它是 Skills 与 MCP 共用的跨域工具注册表，不属于任一域。
 - `settings` / `proxy_gateway_settings` 保持独立：合并只净减 1 张表，却会碰启动与备份路径，单独评估。
-- `gateway_session_usage_state`、`relay_quota_snapshot` / `relay_quota_point` 保持独立：高频状态 / 轮询表，和低频配置同表只会放大页竞争。
+- `usage_session_state`（v36 由 `gateway_session_usage_state` 改名）、`relay_quota_snapshot` / `relay_quota_point` 保持独立：高频状态 / 轮询表，和低频配置同表只会放大页竞争。
 - 索引只保留与真实查询表达式一致的 9 个（name / sort / created_at / module）；`kind` 单列索引由主键 `(kind, id)` 的自动索引覆盖，`created_at` 按 JSON 表达式建索引以匹配 store 的 `ORDER BY`。
 - 完成后 JSONB 表 27 → 14，物理表 30 → 17。
 
-## 十四、遗留：计价基准冗余（参考 cc-switch，未做）
+## 十四、计价基准与上下文分档（参考 cc-switch / models.dev）
 
-cc-switch 的 `model_pricing` 与本项目逐列相同（6 列），**没有可直接抄的冗余字段**；它真正的差异是在用量侧记录计价基准：
+cc-switch 的 `model_pricing` 与本项目 v36 之前逐列相同（6 列），**没有可直接抄的冗余字段**；它真正的差异是在用量侧记录计价基准：
 
 - `proxy_request_logs.pricing_model`：写入时实际用于查价的模型 id（`pricing_model_source` 解析后的结果）。
 - `usage_daily_rollups.request_model` + `pricing_model`：进主键，保证明细被 retention 清理后仍能区分「上游回显模型 / 客户端请求模型 / 实际计价模型」。
 
-本项目现状：只有 `pricing_model_source`（配置值），没有 `pricing_model`（实际命中行）；rollup 主键是 `(date, app_type, provider_id, model, project_path)`，明细 prune 后无法还原计价维度。由于代理请求的成本在写入时已固化，这**不影响已有成本数字**，只影响历史审计与未来「缺价补价」能力。
+v36 之前：只有 `pricing_model_source`（配置值），没有 `pricing_model`（实际命中行）；rollup 主键是 `(date, app_type, provider_id, model, project_path)`，明细 prune 后无法还原计价维度。由于代理请求的成本在写入时已固化，这**不影响已有成本数字**，只影响历史审计与未来「缺价补价」能力。
 
-后续可选：
+**2026-11-05 已落地（v36，仅字段与结构预留）**：
 
-- **最小方案**：v36 给 `proxy_request_logs` 加 `pricing_model TEXT`，让查价函数返回命中的定价行 id；rollup 不动。
-- **完整方案**：重建 `usage_daily_rollups`，加 `request_model` / `pricing_model` 进主键，历史行填 `''`；同步改 `rollup_and_prune`、rollup 读取查询与会话导入对账键（约 30 处 SQL）。
-- 不建议给 `model_pricing` 加 `provider` / `context_window` / `aliases`：这些是 models.dev 元数据，cc-switch 也没有放进价格表。
+- `proxy_request_logs` 新增 `pricing_model TEXT`（可空，与 cc-switch 一致）与 `pricing_tier TEXT`（可空，实际命中档位的阈值，`''` / `NULL` 表示基础档）。
+- `usage_daily_rollups` 重建，新增 `request_model` / `pricing_model` / `pricing_tier`（均 `TEXT NOT NULL DEFAULT ''`），主键扩展为 `(date, app_type, provider_id, model, project_path, request_model, pricing_model, pricing_tier)`；历史行三列填 `''`。
+- `model_pricing` 新增 `context_tiers TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(context_tiers))`，仍是一模型一行；数组元素形如
+  `{"over_tokens":200000,"input_cost_per_million":"10","output_cost_per_million":"37.5","cache_read_cost_per_million":"1","cache_creation_cost_per_million":"12.5"}`，
+  只存高于基础价的档位，按 `over_tokens` 升序；`over_tokens` 采用“严格大于”语义（200000 表示 >200K 生效），缺省的价格字段继承基础列。该形状同时覆盖 models.dev 的 `cost.context_over_200k` 与 `cost.tiers[{tier:{type:"context",size}}]`，200K、1M 及更多阈值都能表达；接入时需把 models.dev 的 `input` / `output` / `cache_read` / `cache_write` 映射为本表的四个列名。档位判断使用 prompt token 数（`input` + `cache_read` + `cache_creation`，不含 `output`），与 models.dev 消费端的口径一致；个别上游按 `>=` 计费时再单独确认。
+- `gateway_session_usage_state` 改名为 `usage_session_state`：它是唯一使用 `gateway_` 前缀的表，同一用量领域的 `usage_daily_rollups` / `proxy_request_logs` 分别用 `usage_` / `proxy_`；名字也最长。v36 用 `ALTER TABLE ... RENAME TO` 保留全部行，冻结迁移仍创建旧名。
+- **没有接入查价功能**：查价函数不读 `context_tiers`，写入不填 `pricing_tier`；除账本表名外，rollup / 读取 / 会话导入对账 SQL 的逻辑保持原样，行为与 v35 一致。新列与 PK 维度的默认值让 `INSERT OR REPLACE` 仍按原逻辑命中同一行。
+- 后续要真正利用这些字段，仍需：让查价函数按请求的上下文 token 数选择档位，并返回命中的定价行 id + 档位；写入日志时填 `pricing_model` / `pricing_tier`；rollup 聚合按三个维度分组并把它们加入 `LEFT JOIN` 键；会话导入对账键同步扩展；把 models.dev 的 `context_over_200k` / `tiers` 转进 `model_pricing.json` 与远端同步。
+- 不建议给 `model_pricing` 加 `provider` / `context_window` / `aliases`：这些是 models.dev 元数据，cc-switch 也没有放进价格表；`context_tiers` 只承载价格阈值，不承载上下文窗口上限。

@@ -613,7 +613,7 @@ fn clear_imported_usage(db: &SqliteDbState, cli_keys: &[GatewayUsageTool]) -> Re
                 let mut statement = transaction
                     .prepare(
                         "SELECT s.id, json(s.data)
-                         FROM gateway_session_usage_state s
+                         FROM usage_session_state s
                          WHERE s.id LIKE ?1",
                     )
                     .map_err(|error| error.to_string())?;
@@ -642,13 +642,13 @@ fn clear_imported_usage(db: &SqliteDbState, cli_keys: &[GatewayUsageTool]) -> Re
             }
             transaction
                 .execute(
-                    "DELETE FROM gateway_session_usage_state WHERE id LIKE ?1",
+                    "DELETE FROM usage_session_state WHERE id LIKE ?1",
                     params![format!("{app_type}:%")],
                 )
                 .map_err(|error| error.to_string())?;
             let mut insert = transaction
                 .prepare(
-                    "INSERT OR REPLACE INTO gateway_session_usage_state (id, data, created_at, updated_at)
+                    "INSERT OR REPLACE INTO usage_session_state (id, data, created_at, updated_at)
                      VALUES (?1, jsonb(?2), ?3, ?3)",
                 )
                 .map_err(|error| error.to_string())?;
@@ -1282,7 +1282,7 @@ fn modified_nanos(metadata: &fs::Metadata) -> u64 {
 fn load_states(db: &SqliteDbState) -> Result<HashMap<String, SourceState>, String> {
     db.with_conn(|conn| {
         let mut statement = conn
-            .prepare("SELECT id, json(data) FROM gateway_session_usage_state")
+            .prepare("SELECT id, json(data) FROM usage_session_state")
             .map_err(|error| error.to_string())?;
         let rows = statement
             .query_map([], |row| {
@@ -1306,7 +1306,7 @@ fn save_state(conn: &Connection, source_id: &str, state: &SourceState) -> Result
     let json = serde_json::to_string(state).map_err(|error| error.to_string())?;
     let timestamp = Utc::now().to_rfc3339();
     conn.execute(
-        "INSERT INTO gateway_session_usage_state (id, data, created_at, updated_at)
+        "INSERT INTO usage_session_state (id, data, created_at, updated_at)
          VALUES (?1, jsonb(?2), ?3, ?3)
          ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
         params![source_id, json, timestamp],

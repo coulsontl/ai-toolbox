@@ -301,7 +301,7 @@ fn usage_and_sync_ledger_roll_back_together() {
     let db = SqliteDbState::in_memory_for_test().unwrap();
     db.with_conn(|conn| {
         conn.execute_batch(
-            "CREATE TRIGGER fail_session_state BEFORE INSERT ON gateway_session_usage_state
+            "CREATE TRIGGER fail_session_state BEFORE INSERT ON usage_session_state
          BEGIN SELECT RAISE(ABORT, 'simulated cursor failure'); END;",
         )
         .map_err(|error| error.to_string())

@@ -113,7 +113,7 @@ PR #7091（#7084 的解法，**截至 2026-10-07 仍未合并**）。
 - [x] 7.1 全量 Rust 测试：2771 项通过
 - [x] 7.2 新增回归：`codex_child_sees_every_page_of_a_paginated_parent`、`codex_paginated_pages_keep_distinct_request_ids`、`codex_single_file_rollout_keeps_its_legacy_request_id`、`codex_compressed_rollout_is_scanned`、`rebuild_reimports_session_usage_and_keeps_proxy_rows`
 - [x] 7.3 更新 `tauri/src/coding/proxy_gateway/AGENTS.md`（Codex rollout 身份与 lineage 约定 + 重建语义）
-- [x] 7.4 账本键**未**改动（见下方修正 2），无需更新 `gateway_session_usage_state` 说明
+- [x] 7.4 账本键**未**改动（见下方修正 2），无需更新 `gateway_session_usage_state`（现 `usage_session_state`）说明
 
 ---
 

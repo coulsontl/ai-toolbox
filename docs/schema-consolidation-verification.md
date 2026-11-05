@@ -346,11 +346,13 @@ v35 把 17 张功能域表收成 4 张 `(kind, id)` 表（`skill_entity` / `mcp_
 
 ```
 cargo test --lib --jobs 2            3146 passed, 0 failed, 14 ignored
-cargo test --test sqlite_jsonb       49 passed
+cargo test --test sqlite_jsonb       50 passed
 cargo test --test coding             249 passed
-cargo test --jobs 2（全量）          3459 passed, 0 failed
+cargo test --jobs 2（全量）          3460 passed, 0 failed
 cargo check --all-targets            0 error
 ```
+
+其中 `sqlite_jsonb` 的 50 项与全量的 3460 项包含 v36 新增的 1 条回归（见 §13）。
 
 ### 12.3 真实库副本演练
 
@@ -371,7 +373,7 @@ cargo check --all-targets            0 error
 | v34 顺带验证 | `opencode_favorite_plugin` 4 行、`opencode_favorite_provider` 78 行落进 `cli_config`；`app_migration` 删除 |
 | 最终物理表 | 17（14 张 JSONB + `model_pricing` / `proxy_request_logs` / `usage_daily_rollups`） |
 
-本机库在首次启动新版本时会从 v33 连续升到 v35。索引定义在 2026-11-04 的复核中从 15 个精简为 9 个（只保留与真实查询表达式一致的索引）；这只影响查询计划，上面的行/表核对结果不变，全新库与升级库的索引一致性由 `a_fresh_database_matches_an_upgraded_one` 覆盖。
+本机库在首次启动新版本时会从 v33 连续升到 v36（v35 功能域合并 + v36 计价基准/上下文分档字段预留与会话账本改名）。索引定义在 2026-11-04 的复核中从 15 个精简为 9 个（只保留与真实查询表达式一致的索引）；这只影响查询计划，上面的行/表核对结果不变，全新库与升级库的索引一致性由 `a_fresh_database_matches_an_upgraded_one` 覆盖。
 
 ### 12.4 受影响功能点逐一核对
 
@@ -410,3 +412,61 @@ cargo check --all-targets            0 error
 | 跨模块 | 前端页面 | 不直接访问 DB | 自动：前端无表名依赖；3 份 web AGENTS 已同步 |
 
 WSL / SSH 的命令层入口（`wsl_add_file_mapping`、`ssh_delete_connection` 等）需要 `AppHandle` 或真实远端，未做端到端自动化；它们的数据库写入点已在静态审查中逐个确认，且 v35 测试覆盖了对应 kind 的数据布局与隔离。
+
+---
+
+## 13. v36 计价基准、上下文分档预留与会话账本改名（2026-11-05）
+
+v36 只做字段与结构预留，不接查价功能。计价基准字段取自本机 cc-switch 实际 schema；上下文分档形状取自 models.dev 的 `cost.context_over_200k` / `cost.tiers`。
+
+| 表 | 新增字段 | 定义 |
+|---|---|---|
+| `proxy_request_logs` | `pricing_model` / `pricing_tier` | `TEXT`（均可空） |
+| `usage_daily_rollups` | `request_model` / `pricing_model` / `pricing_tier` | `TEXT NOT NULL DEFAULT ''`，追加进主键 |
+| `model_pricing` | `context_tiers` | `TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(context_tiers))` |
+
+- `usage_daily_rollups` 主键变为 `(date, app_type, provider_id, model, project_path, request_model, pricing_model, pricing_tier)`；`project_path` 保留在第五位，现有查询的索引前缀不变。
+- 历史 rollup 行三列填 `''`；`INSERT OR REPLACE` 省略新列时按默认值 `''` 命中原行，不拆分数据。不同 `pricing_tier` 会形成不同逻辑行，供明细被 retention 清理后继续审计。
+- `model_pricing.context_tiers` 仍是一模型一行，数组只存高于基础价的档位，例如 `[{"over_tokens":200000,"input_cost_per_million":"10",...},{"over_tokens":1000000,...}]`；按 `over_tokens` 升序，prompt token 数（input + cache_read + cache_creation，不含 output）严格大于阈值时生效，缺省的价格字段继承基础列。查价函数暂不读取它。
+- `gateway_session_usage_state` 改名为 `usage_session_state`：与 `usage_daily_rollups` 同前缀，长度从 27 降到 19。冻结迁移 `migrate_v1` / `migrate_v18` 仍创建旧名，v36 用 `ALTER TABLE ... RENAME TO` 改名，行与自动索引原样保留。
+- 除账本表名外，所有现有 SQL（rollup、读取、会话导入对账）的逻辑未改动；功能接入时再扩展。
+
+回归：`v36_reserves_pricing_basis_and_renames_session_ledger`，覆盖旧行保留、字段/主键形状、rollup 三个索引重建、可空性、`context_tiers` 默认值与 JSON CHECK、不同档位拆分 rollup、会话账本改名后行内容保留且旧表消失、省略新列的 `INSERT OR REPLACE` 仍替换同一逻辑行、重复 `run_all` 幂等。
+
+### 13.1 真实库副本演练
+
+把本机真实库 `%APPDATA%/com.ai-toolbox/ai-toolbox.db`（`user_version=33`）备份到临时目录，用真实 `SqliteDbState::open` 连续跑 v34 + v35 + v36：
+
+| 项目 | 结果 |
+|---|---|
+| 迁移后 `user_version` / `integrity_check` | 36 / ok |
+| 请求日志 | 12288 → 12288 |
+| rollup | 1002 → 1002，16 个既有列的内容摘要（含 SQLite 存储类型）完全一致 |
+| rollup 三个新维度非空行 | 0 |
+| `model_pricing` | 212 → 212，全部 `context_tiers = '[]'`；非法 JSON 被 CHECK 拒绝 |
+| 会话账本 | 10398 → 10398，旧表消失、`usage_session_state` 存在，4 列内容摘要完全一致 |
+| rollup 主键 | 5 列 → 8 列，前 5 列顺序不变 |
+| 旧功能域表残留 / 物理表总数 | 0 / 17 |
+| 省略新维度的 `INSERT OR REPLACE` | 仍只 1 行（不拆分） |
+| 指定 `pricing_tier='200000'` 的同逻辑行 | 拆成 2 行（档位确实是主键维度） |
+
+测试：`sqlite_jsonb` 50 passed；`usage_stats` 52、`session_import` 136（7 ignored）全部通过。
+
+本机库下次启动会从 v33 连续升到 v36（v34 CLI 收尾 + v35 功能域合并 + v36 计价/分档预留与账本改名）。
+
+### 13.2 v34 / v35 / v36 三版本差分（同一份真实库快照）
+
+把同一个 v33 真实库快照复制成三份，分别用 v34（`d3b61278`）、v35（`06bb0c9d`）和当前 v36 代码打开，调用同一组真实读取函数，输出去掉 `user_version` 行后逐字节比较：
+
+| 读取面 | 三版本共同输出 |
+|---|---|
+| `usage_summary`（日志 + rollup，含 session） | requests 158246 / cost 7693.683422 / total_tokens 24262483749 |
+| `get_model_pricing_list` | 212 行 / hash 14345810744972388228 |
+| rollup 16 个既有列 | 1002 行 / hash 15960894344666918712 |
+| 请求日志 10 个稳定列 | 12349 行 / hash 9335613383456077093 |
+| 会话账本（v34/v35 旧表名，v36 新表名） | 10398 行 / hash 132444709548476659 |
+| Skills / groups / repos | 9 / 0 / 7，preferences 可读 |
+| MCP servers / favorites / groups | 6 / 15 / 0，preferences 可读 |
+| Image channels / jobs | 2 / 0 |
+
+结果：`v34 vs v35` 和 `v35 vs v36` 的 diff 均为空（仅版本号不同）。这说明功能域合并、计价字段预留和账本改名没有改变这些读取路径在真实数据上的结果。探针是临时 example，未提交；写路径（store upsert、rollup、session import、backup/restore）由全量测试覆盖，WSL / SSH 的库内布局由 §12.3 的逐行核对和 `--test coding` 覆盖。

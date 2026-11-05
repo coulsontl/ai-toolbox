@@ -357,7 +357,7 @@ pub enum DbTable {
 
     CustomTool,
     ProxyGatewaySettings,
-    GatewaySessionUsageState,
+    UsageSessionState,
 
     // ---- relay ("2API") -----------------------------------------------------
     RelayEntity(RelayKind),
@@ -382,7 +382,7 @@ pub const ALL_TABLES: &[DbTable] = &[
     DbTable::McpEntity(McpEntityKind::Server),
     DbTable::SyncEntity(SyncEntityKind::WslConfig),
     DbTable::ProxyGatewaySettings,
-    DbTable::GatewaySessionUsageState,
+    DbTable::UsageSessionState,
     DbTable::ImageEntity(ImageEntityKind::Channel),
     DbTable::RelayEntity(RelayKind::Channel),
     DbTable::RelayQuotaSnapshot,
@@ -418,7 +418,7 @@ impl DbTable {
             DbTable::ImageEntity(_) => "image_entity",
             DbTable::CustomTool => "custom_tool",
             DbTable::ProxyGatewaySettings => "proxy_gateway_settings",
-            DbTable::GatewaySessionUsageState => "gateway_session_usage_state",
+            DbTable::UsageSessionState => "usage_session_state",
             DbTable::RelayEntity(_) => "relay_entity",
             DbTable::RelayQuotaSnapshot => "relay_quota_snapshot",
             DbTable::RelayQuotaPoint => "relay_quota_point",

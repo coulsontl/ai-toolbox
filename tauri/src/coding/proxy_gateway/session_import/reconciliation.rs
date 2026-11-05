@@ -56,7 +56,7 @@ pub(super) fn mark_archived(conn: &Connection, cutoff: i64) -> Result<(), String
     if ids.is_empty() {
         return Ok(());
     }
-    let mut query = conn.prepare("SELECT id, json(data) FROM gateway_session_usage_state WHERE id LIKE 'claude_desktop:%'").map_err(|error| error.to_string())?;
+    let mut query = conn.prepare("SELECT id, json(data) FROM usage_session_state WHERE id LIKE 'claude_desktop:%'").map_err(|error| error.to_string())?;
     let rows = query
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))

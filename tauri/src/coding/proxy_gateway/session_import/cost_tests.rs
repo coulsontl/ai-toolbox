@@ -185,7 +185,7 @@ fn dsh_cost_repair_and_audit_ledger_roll_back_together_and_retry() {
     let db = SqliteDbState::in_memory_for_test().unwrap();
     run_sync(&db, GatewayUsageTool::Dsh, root.path());
     cost_pricing(&db, "cost-test-model", "2", "4", "0.2");
-    db.with_conn(|conn| conn.execute_batch("CREATE TRIGGER reject_cost_audit BEFORE UPDATE ON gateway_session_usage_state BEGIN SELECT RAISE(ABORT,'blocked cost audit'); END;").map_err(|error| error.to_string())).unwrap();
+    db.with_conn(|conn| conn.execute_batch("CREATE TRIGGER reject_cost_audit BEFORE UPDATE ON usage_session_state BEGIN SELECT RAISE(ABORT,'blocked cost audit'); END;").map_err(|error| error.to_string())).unwrap();
     assert_eq!(
         run_sync(&db, GatewayUsageTool::Dsh, root.path()).failed_files,
         1

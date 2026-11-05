@@ -420,7 +420,7 @@ fn v29_migration_rebuilds_rollups_with_the_project_column() {
 fn session_usage_migrations_preserve_rollups_and_ledger_on_repeat() {
     let mut conn = test_conn();
     conn.execute_batch(
-        "DROP TABLE gateway_session_usage_state;
+        "DROP TABLE usage_session_state;
          ALTER TABLE usage_daily_rollups DROP COLUMN latency_sample_count;
          INSERT INTO usage_daily_rollups (date, app_type, provider_id, model, request_count, avg_latency_ms)
          VALUES ('2026-09-01', 'claude', 'provider-a', 'model-a', 4, 300),
@@ -453,7 +453,7 @@ fn session_usage_migrations_preserve_rollups_and_ledger_on_repeat() {
         ]
     );
     conn.execute(
-        "INSERT INTO gateway_session_usage_state (id, data, created_at, updated_at)
+        "INSERT INTO usage_session_state (id, data, created_at, updated_at)
          VALUES ('claude:session-a', jsonb(?1), '2026-09-08', '2026-09-08')",
         [r#"{"records":{"SESSION:message-a":{"fingerprint":"kept"}}}"#],
     )
@@ -461,7 +461,7 @@ fn session_usage_migrations_preserve_rollups_and_ledger_on_repeat() {
     migrations::set_user_version(&conn, 17).unwrap();
     migrations::run_all(&mut conn).unwrap();
     let fingerprint: String = conn.query_row(
-        "SELECT json_extract(data, '$.records.\"SESSION:message-a\".fingerprint') FROM gateway_session_usage_state",
+        "SELECT json_extract(data, '$.records.\"SESSION:message-a\".fingerprint') FROM usage_session_state",
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(fingerprint, "kept");
@@ -479,7 +479,7 @@ fn already_migrated_v18_without_latency_samples_is_repaired_with_backup() {
                  INSERT INTO usage_daily_rollups (date, app_type, provider_id, model, request_count, avg_latency_ms, total_cost_usd)
                  VALUES ('2026-09-01', 'claude', 'provider-a', 'model-a', 4, 300, '0.012345'),
                         ('2026-09-01', 'claude', 'session', 'model-a', 2, 0, '0.006789');
-                 INSERT INTO gateway_session_usage_state (id, data, created_at, updated_at)
+                 INSERT INTO usage_session_state (id, data, created_at, updated_at)
                  VALUES ('existing-session', jsonb('{}'), '2026-09-01', '2026-09-01');",
             ).map_err(|error| error.to_string())?;
             migrations::set_user_version(conn, 18)
@@ -500,7 +500,7 @@ fn already_migrated_v18_without_latency_samples_is_repaired_with_backup() {
         assert_eq!((proxy_samples, session_samples), (4, 0));
         let state_count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM gateway_session_usage_state",
+                "SELECT COUNT(*) FROM usage_session_state",
                 [],
                 |row| row.get(0),
             )
@@ -622,7 +622,7 @@ fn v20_usage_metadata_upgrade_preserves_logs_rollups_and_import_ledger() {
          VALUES ('old-session','session','claude','glm-5.2',0,1780000000,'session');
          INSERT INTO usage_daily_rollups (date,app_type,provider_id,model,request_count,input_tokens,total_cost_usd,latency_sample_count)
          VALUES ('2026-09-01','codex','provider','model',2,200,'0.012345',2);
-         INSERT INTO gateway_session_usage_state (id,data,created_at,updated_at)
+         INSERT INTO usage_session_state (id,data,created_at,updated_at)
          VALUES ('claude:old',jsonb('{"records":{"old-session":{"fingerprint":"kept"}}}'),'before','before');"#,
     ).unwrap();
     migrations::set_user_version(&conn, 19).unwrap();
@@ -642,7 +642,7 @@ fn v20_usage_metadata_upgrade_preserves_logs_rollups_and_import_ledger() {
         .unwrap(),
         "0.012345"
     );
-    assert_eq!(conn.query_row("SELECT json_extract(data,'$.records.old-session.fingerprint') FROM gateway_session_usage_state WHERE id='claude:old'", [], |row| row.get::<_, String>(0)).unwrap(), "kept");
+    assert_eq!(conn.query_row("SELECT json_extract(data,'$.records.old-session.fingerprint') FROM usage_session_state WHERE id='claude:old'", [], |row| row.get::<_, String>(0)).unwrap(), "kept");
     conn.execute("UPDATE proxy_request_logs SET usage_metadata=jsonb(?1),usage_request_count=3,extra_tokens=7", [r#"{"granularity":"turn","call_count":3,"incomplete":true}"#]).unwrap();
     assert_eq!(
         conn.query_row(
@@ -2126,6 +2126,278 @@ fn v35_failure_rolls_back_without_losing_legacy_rows() {
             .unwrap();
         assert_eq!(exists, 0, "{table} must not survive a failed v35");
     }
+}
+
+/// v36 reserves the pricing-basis and context-tier columns and renames the
+/// session usage ledger. It must preserve every existing row and keep callers
+/// that omit the new columns working.
+#[test]
+fn v36_reserves_pricing_basis_and_renames_session_ledger() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("already-v35.db");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        initialize_connection(&mut conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE usage_daily_rollups;
+             CREATE TABLE usage_daily_rollups (
+                 date TEXT NOT NULL,
+                 app_type TEXT NOT NULL,
+                 provider_id TEXT NOT NULL,
+                 model TEXT NOT NULL,
+                 project_path TEXT NOT NULL DEFAULT '',
+                 request_count INTEGER NOT NULL DEFAULT 0,
+                 success_count INTEGER NOT NULL DEFAULT 0,
+                 input_tokens INTEGER NOT NULL DEFAULT 0,
+                 output_tokens INTEGER NOT NULL DEFAULT 0,
+                 cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                 cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                 total_cost_usd TEXT NOT NULL DEFAULT '0',
+                 avg_latency_ms INTEGER NOT NULL DEFAULT 0,
+                 latency_sample_count INTEGER,
+                 extra_tokens INTEGER NOT NULL DEFAULT 0,
+                 credits REAL NOT NULL DEFAULT 0,
+                 PRIMARY KEY (date, app_type, provider_id, model, project_path)
+             );
+             CREATE INDEX idx_usage_rollups_app_date ON usage_daily_rollups(app_type, date);
+             CREATE INDEX idx_usage_rollups_provider ON usage_daily_rollups(provider_id, app_type);
+             CREATE INDEX idx_usage_rollups_project ON usage_daily_rollups(project_path);
+             INSERT INTO usage_daily_rollups
+                 (date, app_type, provider_id, model, project_path, request_count, success_count,
+                  input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                  total_cost_usd, avg_latency_ms, latency_sample_count, extra_tokens, credits)
+             VALUES
+                 ('2026-05-18', 'claude', 'provider-a', 'model-a', '/repo', 4, 3, 40, 12, 5, 2,
+                  '0.250000', 300, 4, 7, 1.5),
+                 ('2026-05-19', 'codex', 'provider-b', 'model-b', '', 2, 2, 20, 8, 0, 0,
+                  '0.100000', 200, NULL, 0, 0);
+             ALTER TABLE proxy_request_logs DROP COLUMN pricing_tier;
+             ALTER TABLE proxy_request_logs DROP COLUMN pricing_model;
+             ALTER TABLE model_pricing DROP COLUMN context_tiers;
+             ALTER TABLE usage_session_state RENAME TO gateway_session_usage_state;
+             INSERT INTO gateway_session_usage_state (id, data, created_at, updated_at)
+             VALUES ('claude:ledger', jsonb('{\"records\":{\"s\":{\"fingerprint\":\"kept\"}}}'),
+                     'before', 'before');
+             INSERT INTO proxy_request_logs
+                 (request_id, provider_id, app_type, model, request_model, created_at)
+             VALUES ('req-1', 'provider-a', 'claude', 'model-a', 'requested-model', 1);",
+        )
+        .unwrap();
+        migrations::set_user_version(&conn, 35).unwrap();
+    }
+
+    let db = SqliteDbState::open(path.clone()).unwrap();
+    db.with_conn(|conn| {
+        assert_eq!(
+            migrations::get_user_version(conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
+        assert_eq!(
+            DbTable::UsageSessionState.name(),
+            "usage_session_state",
+            "the schema enum must point at the renamed table"
+        );
+
+        // The log table gains nullable pricing-basis columns; old rows stay NULL.
+        let (pricing, pricing_tier): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT pricing_model, pricing_tier FROM proxy_request_logs
+                 WHERE request_id = 'req-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(pricing, None);
+        assert_eq!(pricing_tier, None);
+
+        // The context-tier shape is reserved on every pricing row. Existing
+        // rows get the empty array, and the CHECK rejects malformed JSON.
+        let pricing_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM model_pricing", [], |row| row.get(0))
+            .unwrap();
+        let empty_tiers: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM model_pricing WHERE context_tiers = '[]'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(pricing_rows > 0);
+        assert_eq!(empty_tiers, pricing_rows);
+        assert!(
+            conn.execute(
+                "INSERT INTO model_pricing (model_id, display_name, context_tiers)
+                 VALUES ('bad-context-tiers', 'Bad', 'not-json')",
+                [],
+            )
+            .is_err(),
+            "context_tiers must stay valid JSON"
+        );
+
+        // Existing rollup rows survive with empty reserved dimensions.
+        let rows: Vec<(String, String, String, String, i64, f64)> = conn
+            .prepare(
+                "SELECT model, request_model, pricing_model, pricing_tier, request_count, credits
+                 FROM usage_daily_rollups ORDER BY model",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0],
+            (
+                "model-a".to_string(),
+                String::new(),
+                String::new(),
+                String::new(),
+                4,
+                1.5
+            )
+        );
+        assert_eq!(rows[1].1, "");
+        assert_eq!(rows[1].2, "");
+        assert_eq!(rows[1].3, "");
+
+        // The dimensions are appended to the primary key so existing filters
+        // keep the same prefix.
+        let mut pk: Vec<(i64, String)> = conn
+            .prepare("PRAGMA table_info(usage_daily_rollups)")
+            .unwrap()
+            .query_map([], |row| Ok((row.get::<_, i64>(5)?, row.get::<_, String>(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        pk.retain(|(order, _)| *order > 0);
+        pk.sort();
+        assert_eq!(
+            pk.into_iter().map(|(_, name)| name).collect::<Vec<_>>(),
+            vec![
+                "date",
+                "app_type",
+                "provider_id",
+                "model",
+                "project_path",
+                "request_model",
+                "pricing_model",
+                "pricing_tier",
+            ]
+        );
+
+        // The rebuild drops the old table and must recreate every index.
+        let rollup_indexes: Vec<String> = conn
+            .prepare(
+                "SELECT name FROM sqlite_master
+                 WHERE type = 'index' AND tbl_name = 'usage_daily_rollups'
+                   AND name IN ('idx_usage_rollups_app_date',
+                                'idx_usage_rollups_provider',
+                                'idx_usage_rollups_project')
+                 ORDER BY name",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rollup_indexes,
+            vec![
+                "idx_usage_rollups_app_date",
+                "idx_usage_rollups_project",
+                "idx_usage_rollups_provider",
+            ]
+        );
+
+        // The renamed ledger kept its rows. The old name must be gone so a
+        // stale query cannot silently read an empty table.
+        let old_ledger: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'gateway_session_usage_state'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_ledger, 0);
+        let fingerprint: String = conn
+            .query_row(
+                "SELECT json_extract(data, '$.records.s.fingerprint')
+                 FROM usage_session_state WHERE id = 'claude:ledger'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(fingerprint, "kept");
+
+        // A caller that only knows the old columns still writes '' for the
+        // reserved dimensions and replaces, rather than splits, the row.
+        conn.execute(
+            "INSERT OR REPLACE INTO usage_daily_rollups
+                 (date, app_type, provider_id, model, project_path, request_count, success_count,
+                  input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                  total_cost_usd, avg_latency_ms, latency_sample_count, extra_tokens, credits)
+             VALUES ('2026-05-18', 'claude', 'provider-a', 'model-a', '/repo', 5, 4, 50, 15,
+                     6, 2, '0.300000', 320, 5, 8, 1.5)",
+            [],
+        )
+        .unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM usage_daily_rollups", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 2,
+            "the reserved dimensions must not split an existing logical row"
+        );
+        let request_count: i64 = conn
+            .query_row(
+                "SELECT request_count FROM usage_daily_rollups WHERE model = 'model-a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(request_count, 5);
+
+        // A different applied tier is a different logical rollup row; the
+        // dimension is only useful for audit if it actually splits the PK.
+        conn.execute(
+            "INSERT INTO usage_daily_rollups
+                 (date, app_type, provider_id, model, project_path, pricing_tier, request_count)
+             VALUES ('2026-05-18', 'claude', 'provider-a', 'model-a', '/repo', '200000', 1)",
+            [],
+        )
+        .unwrap();
+        let count_with_tier: i64 = conn
+            .query_row("SELECT COUNT(*) FROM usage_daily_rollups", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count_with_tier, 3);
+        conn.execute(
+            "DELETE FROM usage_daily_rollups WHERE pricing_tier = '200000'",
+            [],
+        )
+        .unwrap();
+        Ok(())
+    })
+    .unwrap();
+    drop(db);
+
+    // Reopening is a no-op.
+    let mut conn = Connection::open(&path).unwrap();
+    migrations::run_all(&mut conn).unwrap();
+    assert_eq!(
+        migrations::get_user_version(&conn).unwrap(),
+        TARGET_SCHEMA_VERSION
+    );
 }
 
 // ---- second-round regression cases for the scope consolidation --------------
