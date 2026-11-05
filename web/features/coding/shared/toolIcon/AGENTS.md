@@ -20,6 +20,7 @@
 
 - 不要改回 `<img src>` 资产 URL 渲染 tab 类 mark；运行环境实测不渲染，必须用内联 SVG 组件或 `?raw` 内联。
 - `currentColor` 类 mark 不要加 `.rawIconFixedColor`，否则暗色下双重反转不可见。
+- 内联 SVG 里的渐变/滤镜 id 必须按实例唯一（`React.useId()`），不能写死：`url(#id)` 解析到文档里第一个同 id 元素，KeepAlive 用 `display:none` 缓存的隐藏页面会成为这个"第一个"，导致所有可见图标画不出渐变（OMP 图标曾因此在 MCP 设置弹窗里消失）。
 - LobeHub mono 图标与 lucide 图标必须包在 `.iconHost` 宿主里，否则按钮/菜单不继承页面文字色，暗色下变黑。
 - 新增内置工具时按 AGENTS.md 中 ToolIcon 解析顺序补映射；不要复制 `web/assets/agent-icons/` 资产到 feature 目录。
 

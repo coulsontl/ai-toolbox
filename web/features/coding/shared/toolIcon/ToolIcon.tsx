@@ -67,19 +67,25 @@ const PiMark: ToolIconRenderer = ({ size = 16 }) => (
   </svg>
 );
 
-// omp.svg mark (Oh My Pi): fixed brand gradient.
-const OmpMark: ToolIconRenderer = ({ size = 16 }) => (
-  <svg width={size} height={size} viewBox="5.5 8.5 53 53" aria-hidden="true" style={{ flex: 'none', lineHeight: 1 }}>
-    <defs>
-      <linearGradient id="omp-mark-grad" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stopColor="#F84FCC" />
-        <stop offset=".5" stopColor="#9362F4" />
-        <stop offset="1" stopColor="#00DBE4" />
-      </linearGradient>
-    </defs>
-    <path fill="url(#omp-mark-grad)" d="M10 14h44v9H43v33h-9V23h-9v22h-9V23H10z" />
-  </svg>
-);
+// omp.svg mark (Oh My Pi): fixed brand gradient colors. The gradient id must
+// be unique per instance: url(#id) resolves to the first matching element in
+// the document, and KeepAlive keeps visited pages mounted under display:none —
+// a hidden OMP mark there would otherwise blank every visible OMP mark.
+const OmpMark: ToolIconRenderer = ({ size = 16 }) => {
+  const gradientId = `omp-mark-grad-${React.useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
+  return (
+    <svg width={size} height={size} viewBox="5.5 8.5 53 53" aria-hidden="true" style={{ flex: 'none', lineHeight: 1 }}>
+      <defs>
+        <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#F84FCC" />
+          <stop offset=".5" stopColor="#9362F4" />
+          <stop offset="1" stopColor="#00DBE4" />
+        </linearGradient>
+      </defs>
+      <path fill={`url(#${gradientId})`} d="M10 14h44v9H43v33h-9V23h-9v22h-9V23H10z" />
+    </svg>
+  );
+};
 
 const TOOL_ICON_RENDERERS: Record<string, ToolIconRenderer> = {
   grok: Grok,
