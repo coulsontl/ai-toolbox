@@ -15,6 +15,8 @@ use std::process::Command;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
+use std::process::Stdio;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -427,17 +429,24 @@ fn run_windows_start_command(args: &[&str], terminal_name: &str) -> Result<(), S
         full_args.push((*arg).to_string());
     }
 
-    let output = Command::new("cmd")
+    // `start` hands off to a long-lived terminal. Capturing stdio with
+    // `output()` would keep waiting for the inherited pipe handles until that
+    // terminal closes, so the launch command never returns and the UI stays in
+    // its loading state. Wait for `cmd` itself only; the terminal inherits no
+    // stdio handles from us.
+    let status = Command::new("cmd")
         .args(&full_args)
         .creation_flags(CREATE_NO_WINDOW)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
         .map_err(|e| format!("Failed to launch {terminal_name}: {e}"))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !status.success() {
         return Err(format!(
-            "{terminal_name} launch failed (exit {:?}): {stderr}",
-            output.status.code()
+            "{terminal_name} launch failed (exit {:?})",
+            status.code()
         ));
     }
     Ok(())
