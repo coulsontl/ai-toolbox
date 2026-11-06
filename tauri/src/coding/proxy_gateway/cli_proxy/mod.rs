@@ -1095,7 +1095,6 @@ async fn write_codex_aggregate_catalog_file(
         site_specs,
         naming,
         cross_site_failover,
-        codex_commands::CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW,
     )?;
     if !written {
         return Err(

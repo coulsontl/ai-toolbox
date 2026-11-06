@@ -179,6 +179,71 @@ fn build_preset_input_modalities_index() -> HashMap<String, Vec<String>> {
 }
 
 // ============================================================================
+// Context-window lookup
+// ============================================================================
+
+/// Model id -> declared `contextLimit` index built once from the bundled
+/// preset models.
+///
+/// Same read path as the display-name and input-modality indexes: compile-time
+/// bundled file only, so Codex catalog generation stays deterministic and works
+/// offline. Entries without a positive integer `contextLimit` stay unknown so
+/// callers keep their own fallback.
+static PRESET_CONTEXT_LIMITS: OnceLock<HashMap<String, u64>> = OnceLock::new();
+
+/// Declared context window the preset models assign to one model id.
+///
+/// Returns `None` for an unknown id or an entry without a positive
+/// `contextLimit`, so callers keep their own fallback (normally Codex's
+/// built-in 272k default).
+pub fn context_limit_for_model_id(model_id: &str) -> Option<u64> {
+    let model_id = model_id.trim();
+    if model_id.is_empty() {
+        return None;
+    }
+    PRESET_CONTEXT_LIMITS
+        .get_or_init(build_preset_context_limit_index)
+        .get(model_id)
+        .copied()
+}
+
+fn build_preset_context_limit_index() -> HashMap<String, u64> {
+    let mut index = HashMap::new();
+    let Ok(presets) = serde_json::from_str::<Value>(DEFAULT_PRESET_MODELS_JSON) else {
+        return index;
+    };
+    let Some(groups) = presets.as_object() else {
+        return index;
+    };
+    for models in groups.values() {
+        let Some(models) = models.as_array() else {
+            continue;
+        };
+        for model in models {
+            let Some(id) = model
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+            else {
+                continue;
+            };
+            let Some(context_limit) = model
+                .get("contextLimit")
+                .and_then(Value::as_u64)
+                .filter(|limit| *limit > 0)
+            else {
+                continue;
+            };
+            // First group wins if one id ever appears twice; the bundled file
+            // has no conflicting duplicates today.
+            index.entry(id.to_string()).or_insert(context_limit);
+        }
+    }
+    index
+}
+
+// ============================================================================
 // File-based cache read / write
 // ============================================================================
 
@@ -311,6 +376,7 @@ pub async fn fetch_remote_preset_models(
 
 #[cfg(test)]
 mod tests {
+    use super::context_limit_for_model_id;
     use super::display_name_for_model_id;
     use super::input_modalities_for_model_id;
     use super::DEFAULT_PRESET_MODELS_JSON;
@@ -400,6 +466,40 @@ mod tests {
                     declared,
                     "{id} modality lookup must mirror the bundled declaration"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn context_limit_lookup_covers_bundled_declarations_and_rejects_unknown_ones() {
+        // A known model keeps the window its preset declares; this is the value
+        // the Codex catalog generator uses before falling back to the neutral
+        // 272k default.
+        assert_eq!(
+            context_limit_for_model_id("deepseek-v4.1-flash"),
+            Some(1_000_000)
+        );
+        assert_eq!(context_limit_for_model_id("deepseek-chat"), Some(128_000));
+        // Ids are trimmed before lookup.
+        assert_eq!(context_limit_for_model_id(" gpt-5.6-sol "), Some(1_050_000));
+        // Unknown or blank ids stay unknown so callers keep their own fallback.
+        assert_eq!(context_limit_for_model_id("no-such-model"), None);
+        assert_eq!(context_limit_for_model_id("   "), None);
+
+        // Every bundled declaration with a positive `contextLimit` stays
+        // reachable through the index.
+        let presets: Value =
+            serde_json::from_str(DEFAULT_PRESET_MODELS_JSON).expect("bundled JSON should parse");
+        for models in presets.as_object().expect("preset groups").values() {
+            for model in models.as_array().expect("group is an array") {
+                let Some(id) = model.get("id").and_then(Value::as_str) else {
+                    continue;
+                };
+                let declared = model
+                    .get("contextLimit")
+                    .and_then(Value::as_u64)
+                    .filter(|limit| *limit > 0);
+                assert_eq!(context_limit_for_model_id(id), declared, "{id}");
             }
         }
     }

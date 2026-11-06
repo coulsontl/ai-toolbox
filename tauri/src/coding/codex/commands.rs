@@ -3231,9 +3231,10 @@ struct CodexCatalogModelSpec {
     /// Explicit user value only (falls back to `model` for the neutral
     /// template; official vendor catalog entries keep their own display name).
     display_name: Option<String>,
-    /// Explicit user value only (falls back to the config's top-level
-    /// `model_context_window` or the default for the neutral template; official
-    /// vendor catalog entries keep the vendor's declared window).
+    /// Explicit user value only. Unset rows fall back to the config's top-level
+    /// `model_context_window`, then the bundled preset models' `contextLimit`,
+    /// then Codex's neutral 272k default; official vendor catalog entries keep
+    /// the vendor's declared window.
     context_window: Option<u64>,
     auto_review_model_override: Option<String>,
     /// Per-row override for the generated catalog's `supported_reasoning_levels`.
@@ -3385,9 +3386,10 @@ fn parse_codex_positive_u64(value: Option<&Value>) -> Option<u64> {
 
 /// Codex 内置模型目录（codex-rs/models-manager/models.json）中每条 entry
 /// 统一使用 272000 作为上下文窗口。当 ai-toolbox 的 provider 设置中
-/// 既没有显式填写模型 contextWindow，也没有在 config.toml 设置顶层
-/// `model_context_window` 时，以此值兜底，避免用武断的 128k 把模型
-/// 上下文窗口压缩到比 Codex 默认更小。来源：codex-rs/models-manager/models.json。
+/// 既没有显式填写模型 contextWindow、也没有在 config.toml 设置顶层
+/// `model_context_window`、预设模型也查不到该 id 时，以此值兜底，避免用
+/// 武断的 128k 把模型上下文窗口压缩到比 Codex 默认更小。来源：
+/// codex-rs/models-manager/models.json。
 const CODEX_DEFAULT_CONTEXT_WINDOW: u64 = 272_000;
 
 fn extract_codex_top_level_u64(config_toml: &str, field: &str) -> Option<u64> {
@@ -3397,6 +3399,56 @@ fn extract_codex_top_level_u64(config_toml: &str, field: &str) -> Option<u64> {
         .and_then(|item| item.as_integer())
         .and_then(|value| u64::try_from(value).ok())
         .filter(|value| *value > 0)
+}
+
+/// Context window resolved for one generated catalog entry.
+struct CodexCatalogContextWindow {
+    window: u64,
+    /// Whether the value came from a real declaration: an explicit mapping row,
+    /// the managed config's top-level `model_context_window`, or the bundled
+    /// preset models. Only declared values are written as `max_context_window`.
+    ///
+    /// Codex clamps its own config-level `model_context_window` override to the
+    /// catalog entry's `max_context_window` (`models-manager/src/model_info.rs`,
+    /// `with_config_overrides`). Writing the neutral 272k fallback into the max
+    /// field therefore pins every unknown model to 272k forever — editing
+    /// `config.toml` appears to do nothing. Omitting the max for fallback
+    /// entries keeps that escape hatch usable while explicit values still cap
+    /// overrides at the declared window.
+    declared: bool,
+}
+
+/// Resolve the context window for one catalog entry.
+///
+/// Precedence: explicit mapping row (`contextWindow`) → the config's top-level
+/// `model_context_window` → the bundled preset models' `contextLimit` → Codex's
+/// built-in 272k default.
+fn resolve_codex_catalog_context_window(
+    spec: &CodexCatalogModelSpec,
+    configured_default: Option<u64>,
+) -> CodexCatalogContextWindow {
+    if let Some(window) = spec.context_window {
+        return CodexCatalogContextWindow {
+            window,
+            declared: true,
+        };
+    }
+    if let Some(window) = configured_default {
+        return CodexCatalogContextWindow {
+            window,
+            declared: true,
+        };
+    }
+    if let Some(window) = crate::coding::preset_models::context_limit_for_model_id(&spec.model) {
+        return CodexCatalogContextWindow {
+            window,
+            declared: true,
+        };
+    }
+    CodexCatalogContextWindow {
+        window: CODEX_DEFAULT_CONTEXT_WINDOW,
+        declared: false,
+    }
 }
 
 fn codex_catalog_model_specs(
@@ -3546,10 +3598,13 @@ fn codex_catalog_display_name(spec: &CodexCatalogModelSpec) -> String {
 fn codex_model_catalog_entry(
     spec: &CodexCatalogModelSpec,
     index: usize,
-    default_context_window: u64,
+    configured_default_context_window: Option<u64>,
 ) -> Value {
     let display_name = codex_catalog_display_name(spec);
-    let context_window = spec.context_window.unwrap_or(default_context_window);
+    let context_window =
+        resolve_codex_catalog_context_window(spec, configured_default_context_window);
+    let context_window_value = context_window.window;
+    let context_window_is_declared = context_window.declared;
     let mut entry = serde_json::json!({
         "slug": spec.model.as_str(),
         "display_name": display_name.as_str(),
@@ -3588,8 +3643,8 @@ fn codex_model_catalog_entry(
         },
         "supports_parallel_tool_calls": true,
         "supports_image_detail_original": true,
-        "context_window": context_window,
-        "max_context_window": context_window,
+        "context_window": context_window_value,
+        "max_context_window": context_window_value,
         "effective_context_window_percent": 95,
         "experimental_supported_tools": [],
         "input_modalities": ["text", "image"],
@@ -3605,6 +3660,12 @@ fn codex_model_catalog_entry(
     // per-row/preset declarations keep the neutral template's fail-open
     // text+image default.
     if let Some(entry_obj) = entry.as_object_mut() {
+        if !context_window_is_declared {
+            // No declared window (272k fallback): omit the max so Codex's own
+            // top-level `model_context_window` override is not clamped back
+            // down to 272k (models-manager::with_config_overrides).
+            entry_obj.remove("max_context_window");
+        }
         entry_obj.insert(
             "input_modalities".to_string(),
             serde_json::json!(codex_catalog_effective_input_modalities(spec, None)),
@@ -3628,12 +3689,14 @@ fn codex_model_catalog_entry(
 
 fn codex_model_catalog_from_specs(
     specs: &[CodexCatalogModelSpec],
-    default_context_window: u64,
+    configured_default_context_window: Option<u64>,
 ) -> Value {
     let models: Vec<Value> = specs
         .iter()
         .enumerate()
-        .map(|(index, spec)| codex_model_catalog_entry(spec, index, default_context_window))
+        .map(|(index, spec)| {
+            codex_model_catalog_entry(spec, index, configured_default_context_window)
+        })
         .collect();
 
     serde_json::json!({ "models": models })
@@ -3673,7 +3736,12 @@ struct AggregateCatalogEntry {
     /// they win Codex's first five `spawn_agent` model hints; every other entry
     /// follows in publication order.
     priority: u64,
+    /// Explicit per-row mapping value, passed through to the catalog entry.
     context_window: Option<u64>,
+    /// The site config's top-level `model_context_window`, used when the row
+    /// itself declares no window. Carried per entry because aggregate mode
+    /// publishes rows from several sites with different configs.
+    configured_context_window: Option<u64>,
     reasoning_levels: Option<Vec<String>>,
     default_reasoning_level: Option<String>,
     service_tiers: Option<Vec<String>>,
@@ -3691,10 +3759,7 @@ struct AggregateCatalogEntry {
 /// itself: Codex takes the five lowest-priority `visibility = "list"` entries
 /// as its `spawn_agent` model hints, and the promoted bare names have to win
 /// those slots over the per-site slugs.
-fn aggregate_catalog_from_entries(
-    entries: &[AggregateCatalogEntry],
-    default_context_window: u64,
-) -> Value {
+fn aggregate_catalog_from_entries(entries: &[AggregateCatalogEntry]) -> Value {
     let models: Vec<Value> = entries
         .iter()
         .enumerate()
@@ -3709,7 +3774,8 @@ fn aggregate_catalog_from_entries(
                 service_tiers: entry.service_tiers.clone(),
                 input_modalities: entry.input_modalities.clone(),
             };
-            let mut value = codex_model_catalog_entry(&spec, index, default_context_window);
+            let mut value =
+                codex_model_catalog_entry(&spec, index, entry.configured_context_window);
             if entry.hidden {
                 if let Some(object) = value.as_object_mut() {
                     object.insert(
@@ -3852,11 +3918,25 @@ fn codex_aggregate_catalog_entries_with_failover(
     // memory extraction all send bare names. They are published as hidden
     // entries so they never consume one of the five visible model hints.
     let mut bare_models: Vec<String> = Vec::new();
+    // First declared window per bare upstream model. Bare-name aliases mirror a
+    // site row, so they must carry the same context metadata instead of falling
+    // back to the neutral 272k (or a preset) on their own.
+    let mut bare_context_windows: BTreeMap<String, (Option<u64>, Option<u64>)> = BTreeMap::new();
 
     for (site_id, site_label, settings_config) in sites {
         if site_id.trim().is_empty() {
             continue;
         }
+
+        // The site's own `config.toml` default applies to every row it
+        // publishes without an explicit mapping value, exactly as it does when
+        // that provider is applied alone.
+        let site_config_toml = settings_config
+            .get("config")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let site_configured_context_window =
+            extract_codex_top_level_u64(site_config_toml, "model_context_window");
 
         // Reuse the single-provider spec builder so the aggregate list exposes
         // everything that site can actually serve — the mapping rows plus the
@@ -3873,6 +3953,10 @@ fn codex_aggregate_catalog_entries_with_failover(
 
             let model_display_name = codex_catalog_display_name(&spec);
 
+            bare_context_windows
+                .entry(spec.model.clone())
+                .or_insert((spec.context_window, site_configured_context_window));
+
             entries.push(AggregateCatalogEntry {
                 slug,
                 site_id: Some(site_id.clone()),
@@ -3882,6 +3966,7 @@ fn codex_aggregate_catalog_entries_with_failover(
                 priority: PROMOTED_BARE_MODEL_PRIORITY_BASE,
                 display_name: format!("{site_label} · {model_display_name}"),
                 context_window: spec.context_window,
+                configured_context_window: site_configured_context_window,
                 reasoning_levels: spec.reasoning_levels,
                 default_reasoning_level: spec.default_reasoning_level,
                 service_tiers: spec.service_tiers,
@@ -4042,13 +4127,18 @@ fn codex_aggregate_catalog_entries_with_failover(
             continue;
         }
 
+        let (context_window, configured_context_window) = bare_context_windows
+            .get(model)
+            .copied()
+            .unwrap_or((None, None));
         entries.push(AggregateCatalogEntry {
             slug: model.clone(),
             site_id: None,
             hidden: false,
             priority,
             display_name: model.clone(),
-            context_window: None,
+            context_window,
+            configured_context_window,
             reasoning_levels: None,
             default_reasoning_level: None,
             service_tiers: None,
@@ -4085,13 +4175,18 @@ fn codex_aggregate_catalog_entries_with_failover(
             }
             None => {}
         }
+        let (context_window, configured_context_window) = bare_context_windows
+            .get(&model)
+            .copied()
+            .unwrap_or((None, None));
         entries.push(AggregateCatalogEntry {
             slug: model.clone(),
             site_id: None,
             hidden: true,
             priority: HIDDEN_ALIAS_PRIORITY_BASE + hidden_offset,
             display_name: model,
-            context_window: None,
+            context_window,
+            configured_context_window,
             reasoning_levels: None,
             default_reasoning_level: None,
             service_tiers: None,
@@ -4163,21 +4258,17 @@ pub(crate) fn write_codex_aggregate_catalog(
     providers: &[(String, String, Value)],
     naming: &crate::coding::proxy_gateway::aggregate_naming::AggregateNamingConfig,
     cross_site_failover: bool,
-    default_context_window: u64,
 ) -> Result<bool, String> {
     let entries =
         codex_aggregate_catalog_entries_with_failover(providers, naming, cross_site_failover)?.0;
     if entries.is_empty() {
         return Ok(false);
     }
-    let catalog = aggregate_catalog_from_entries(&entries, default_context_window);
+    let catalog = aggregate_catalog_from_entries(&entries);
     let catalog_path = config_dir.join(AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME);
     write_codex_catalog_file_atomic(&catalog_path, &catalog)?;
     Ok(true)
 }
-
-/// Default context window used when an aggregate entry declares none.
-pub(crate) const CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW: u64 = CODEX_DEFAULT_CONTEXT_WINDOW;
 
 /// Point Codex at the AI Toolbox-managed catalog file.
 ///
@@ -4578,8 +4669,8 @@ fn prepare_codex_config_with_model_catalog(
         return set_codex_model_catalog_json_field(config_toml, false);
     }
 
-    let default_context_window = extract_codex_top_level_u64(config_toml, "model_context_window")
-        .unwrap_or(CODEX_DEFAULT_CONTEXT_WINDOW);
+    let configured_default_context_window =
+        extract_codex_top_level_u64(config_toml, "model_context_window");
     // DeepSeek publishes an OFFICIAL Codex models.json for its native
     // `/responses` gateway (freeform apply_patch, GPT-5 harness, 1m context,
     // low/high/max reasoning). Mirror it verbatim instead of the neutral
@@ -4587,7 +4678,9 @@ fn prepare_codex_config_with_model_catalog(
     // the tool while keeping the harness would be self-inconsistent.
     let catalog = codex_official_vendor_catalog_models(config_toml)
         .map(|vendor_models| codex_vendor_catalog_from_specs(&specs, &vendor_models))
-        .unwrap_or_else(|| codex_model_catalog_from_specs(&specs, default_context_window));
+        .unwrap_or_else(|| {
+            codex_model_catalog_from_specs(&specs, configured_default_context_window)
+        });
     let catalog_path = config_dir.join(AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME);
     write_codex_catalog_file_atomic(&catalog_path, &catalog)?;
 
@@ -5728,7 +5821,7 @@ mod tests {
         write_codex_aggregate_catalog, AggregateCatalogEntry, CodexCatalogModelSpec,
         CodexHistoryRuntimeSource, CodexHistorySourceCandidate, CodexHistorySourceMode,
         RemoteCodexModel, RequiresOpenaiAuthMode, AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME,
-        CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW, CODEX_BUILTIN_IMAGE_MODEL_ID,
+        CODEX_BUILTIN_IMAGE_MODEL_ID, CODEX_DEFAULT_CONTEXT_WINDOW,
         CODEX_REQUIRES_OPENAI_AUTH_MODE_KEY, HIDDEN_ALIAS_PRIORITY_BASE,
     };
     use crate::coding::codex::types::CodexProviderInput;
@@ -6713,11 +6806,14 @@ approval_policy = "never"
         )];
         let (entries, _) = codex_aggregate_catalog_entries(&sites, &aggregate_naming(".")).unwrap();
 
-        let catalog = aggregate_catalog_from_entries(&entries, 200000);
+        let catalog = aggregate_catalog_from_entries(&entries);
         let model = &catalog["models"][0];
 
         assert_eq!(model["slug"], "site1.m1");
-        assert_eq!(model["context_window"], 200000);
+        assert_eq!(model["context_window"], CODEX_DEFAULT_CONTEXT_WINDOW);
+        // Unknown id: the neutral fallback must not become a max cap, otherwise
+        // Codex's `model_context_window` override could never exceed 272k.
+        assert!(model.get("max_context_window").is_none());
         let levels: Vec<&str> = model["supported_reasoning_levels"]
             .as_array()
             .unwrap()
@@ -6740,7 +6836,6 @@ approval_policy = "never"
             &[],
             &aggregate_naming("."),
             true,
-            200000,
         )
         .unwrap();
 
@@ -6765,7 +6860,6 @@ approval_policy = "never"
             &sites,
             &aggregate_naming("."),
             true,
-            200000,
         )
         .unwrap();
 
@@ -6812,7 +6906,7 @@ approval_policy = "never"
         ];
 
         let (entries, _) = codex_aggregate_catalog_entries(&sites, &aggregate_naming(".")).unwrap();
-        let catalog = aggregate_catalog_from_entries(&entries, 200000);
+        let catalog = aggregate_catalog_from_entries(&entries);
         let models = catalog["models"].as_array().unwrap();
 
         // Visible table first, in site/model order.
@@ -6969,7 +7063,7 @@ approval_policy = "never"
         ];
 
         let (entries, _) = codex_aggregate_catalog_entries(&sites, &aggregate_naming(".")).unwrap();
-        let catalog = aggregate_catalog_from_entries(&entries, 200000);
+        let catalog = aggregate_catalog_from_entries(&entries);
         let models = catalog["models"].as_array().unwrap();
 
         // Every visible row of the declaring site points at that site's own
@@ -7031,7 +7125,7 @@ approval_policy = "never"
         ];
 
         let (entries, _) = codex_aggregate_catalog_entries(&sites, &aggregate_naming(".")).unwrap();
-        let catalog = aggregate_catalog_from_entries(&entries, 200000);
+        let catalog = aggregate_catalog_from_entries(&entries);
         let models = catalog["models"].as_array().unwrap();
 
         let site_a_main = models
@@ -7063,7 +7157,7 @@ approval_policy = "never"
         )];
 
         let (entries, _) = codex_aggregate_catalog_entries(&sites, &aggregate_naming(".")).unwrap();
-        let catalog = aggregate_catalog_from_entries(&entries, 200000);
+        let catalog = aggregate_catalog_from_entries(&entries);
         let models = catalog["models"].as_array().unwrap();
 
         assert!(models
@@ -7137,7 +7231,7 @@ approval_policy = "never"
         let naming = aggregate_naming_with_exposed(&["gpt-5.6-terra", "glm-5"]);
         let (entries, table) = codex_aggregate_catalog_entries(&sites, &naming).unwrap();
         let catalog =
-            aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
+            aggregate_catalog_from_entries(&entries);
         let models = catalog["models"].as_array().unwrap();
         let priority_of = |slug: &str| {
             models
@@ -7184,7 +7278,7 @@ approval_policy = "never"
         let naming = aggregate_naming_with_exposed(&["glm-5", "gpt-5.6-luna"]);
         let (entries, _) = codex_aggregate_catalog_entries(&sites, &naming).unwrap();
         let catalog =
-            aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
+            aggregate_catalog_from_entries(&entries);
         let models = catalog["models"].as_array().unwrap();
         let priority_of = |slug: &str| {
             models
@@ -7234,7 +7328,7 @@ approval_policy = "never"
         let naming = aggregate_naming_with_exposed(&["glm-5"]);
         let (entries, table) = codex_aggregate_catalog_entries(&sites, &naming).unwrap();
         let catalog =
-            aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
+            aggregate_catalog_from_entries(&entries);
         let models = catalog["models"].as_array().unwrap();
         let slugs: Vec<&str> = models
             .iter()
@@ -7291,7 +7385,7 @@ approval_policy = "never"
         let naming = aggregate_naming(".");
         let (entries, _) = codex_aggregate_catalog_entries(&sites, &naming).unwrap();
         let catalog =
-            aggregate_catalog_from_entries(&entries, CODEX_AGGREGATE_DEFAULT_CONTEXT_WINDOW);
+            aggregate_catalog_from_entries(&entries);
         let models = catalog["models"].as_array().unwrap();
         assert!(models
             .iter()
@@ -7738,21 +7832,160 @@ approval_policy = "never"
             Some("gpt-5.5")
         );
         assert!(catalog["models"][0].get("model_messages").is_some());
-        // kimi-k2 has no explicit context window; the entry falls back to
-        // CODEX_DEFAULT_CONTEXT_WINDOW (272_000), matching Codex's bundled
-        // models.json instead of the old hard-coded 128_000.
+        // kimi-k2 is unknown to the preset models, so the entry falls back to
+        // CODEX_DEFAULT_CONTEXT_WINDOW (272_000). The fallback must not be
+        // written as `max_context_window`: Codex clamps its own config-level
+        // `model_context_window` override to that max, which would pin the
+        // model to 272k even after the user sets a larger window.
         assert_eq!(
             catalog["models"][1]["context_window"].as_u64(),
             Some(272_000)
         );
-        assert_eq!(
-            catalog["models"][1]["max_context_window"].as_u64(),
-            Some(272_000)
-        );
+        assert!(catalog["models"][1].get("max_context_window").is_none());
         assert_eq!(
             catalog["models"][1]["auto_review_model_override"].as_str(),
             Some("gpt-5.5")
         );
+    }
+
+    #[test]
+    fn codex_model_catalog_uses_preset_context_limit_when_row_omits_it() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let settings = json!({
+            "modelCatalog": {
+                "models": [{ "model": "deepseek-v4.1-flash", "displayName": "DeepSeek V4.1 Flash" }]
+            }
+        });
+
+        prepare_codex_config_with_model_catalog(
+            temp_dir.path(),
+            Some(&settings),
+            "model_provider = \"custom\"",
+        )
+        .unwrap();
+        let catalog: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                temp_dir
+                    .path()
+                    .join(AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let entry = &catalog["models"][0];
+
+        // The bundled preset knows this id, so its declaration wins over the
+        // neutral 272k fallback and is a real value: it may be written as max.
+        assert_eq!(entry["context_window"].as_u64(), Some(1_000_000));
+        assert_eq!(entry["max_context_window"].as_u64(), Some(1_000_000));
+    }
+
+    #[test]
+    fn codex_model_catalog_configured_default_wins_over_preset_context_limit() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let settings = json!({
+            "modelCatalog": {
+                "models": [{ "model": "deepseek-v4.1-flash" }]
+            }
+        });
+
+        prepare_codex_config_with_model_catalog(
+            temp_dir.path(),
+            Some(&settings),
+            "model_provider = \"custom\"\nmodel_context_window = 200000",
+        )
+        .unwrap();
+        let catalog: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                temp_dir
+                    .path()
+                    .join(AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let entry = &catalog["models"][0];
+
+        // The user's config-level default outranks the preset's capability
+        // declaration, matching the documented precedence chain.
+        assert_eq!(entry["context_window"].as_u64(), Some(200_000));
+        assert_eq!(entry["max_context_window"].as_u64(), Some(200_000));
+    }
+
+    #[test]
+    fn codex_model_catalog_row_context_window_wins_over_configured_default() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let settings = json!({
+            "modelCatalog": {
+                "models": [{ "model": "deepseek-v4.1-flash", "contextWindow": 300000 }]
+            }
+        });
+
+        prepare_codex_config_with_model_catalog(
+            temp_dir.path(),
+            Some(&settings),
+            "model_provider = \"custom\"\nmodel_context_window = 200000",
+        )
+        .unwrap();
+        let catalog: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                temp_dir
+                    .path()
+                    .join(AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let entry = &catalog["models"][0];
+
+        assert_eq!(entry["context_window"].as_u64(), Some(300_000));
+        assert_eq!(entry["max_context_window"].as_u64(), Some(300_000));
+    }
+
+    #[test]
+    fn aggregate_catalog_uses_each_sites_configured_context_window() {
+        let sites = vec![
+            (
+                "site-a".to_string(),
+                "Site A".to_string(),
+                json!({
+                    "config": "model = \"m1\"\nmodel_context_window = 500000",
+                    "modelCatalog": { "models": [{ "model": "m1" }] }
+                }),
+            ),
+            (
+                "site-b".to_string(),
+                "Site B".to_string(),
+                json!({
+                    "config": "model = \"m2\"\nmodel_context_window = 700000",
+                    "modelCatalog": { "models": [{ "model": "m2" }] }
+                }),
+            ),
+        ];
+        let (entries, _) = codex_aggregate_catalog_entries(&sites, &aggregate_naming(".")).unwrap();
+        let catalog = aggregate_catalog_from_entries(&entries);
+        let models = catalog["models"].as_array().unwrap();
+
+        let by_slug = |slug: &str| {
+            models
+                .iter()
+                .find(|entry| entry["slug"].as_str() == Some(slug))
+                .unwrap_or_else(|| panic!("missing aggregate catalog entry {slug}"))
+        };
+
+        // Each site's own `model_context_window` applies to its rows instead of
+        // the retired global aggregate default.
+        assert_eq!(
+            by_slug("site-a.m1")["context_window"].as_u64(),
+            Some(500_000)
+        );
+        assert_eq!(
+            by_slug("site-b.m2")["context_window"].as_u64(),
+            Some(700_000)
+        );
+        // The bare-name alias mirrors the site row it stands for.
+        assert_eq!(by_slug("m1")["context_window"].as_u64(), Some(500_000));
+        assert_eq!(by_slug("m1")["visibility"].as_str(), Some("hide"));
     }
 
     const DEEPSEEK_NATIVE_CONFIG: &str = r#"model = "deepseek-v4-flash"
@@ -8339,13 +8572,19 @@ wire_api = "responses"
         let catalog: serde_json::Value = serde_json::from_str(&catalog_text).unwrap();
         let entry = &catalog["models"][0];
         // Substring host must NOT trigger the official DeepSeek mirror: the
-        // modality stays the preset's text-only and the neutral 272k window.
+        // modality stays the preset's text-only declaration. (The context
+        // window now comes from the preset fallback, so it is not evidence of
+        // the vendor mirror either way.)
         assert_eq!(entry.get("input_modalities"), Some(&json!(["text"])));
+        // An id neither the presets nor the vendor mirror knows keeps the
+        // neutral 272k fallback, and the fallback is not written as a max cap.
+        let unknown = &catalog["models"][1];
         assert_eq!(
-            entry.get("context_window").and_then(|v| v.as_u64()),
+            unknown.get("context_window").and_then(|v| v.as_u64()),
             Some(272_000),
-            "spoof host must not inherit the official 1m context window"
+            "spoof host must not inherit the official vendor context window"
         );
+        assert!(unknown.get("max_context_window").is_none());
     }
 
     #[test]
