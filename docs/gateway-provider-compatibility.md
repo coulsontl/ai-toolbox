@@ -694,6 +694,7 @@ xAI native Responses passthrough 不是用户开关控制，而是严格自动�
 注意：
 
 - 当前 profile 默认多为 Anthropic 或 Responses endpoint；Chat branch 只有实际 target 为 OpenAI Chat 时触发。
+- 火山提供两个 profile：`doubao`（按量付费，Codex `openai_responses` 走 `/api/v3`）和 `doubao_coding_plan`（Coding Plan，Codex `openai_responses` 走 `/api/coding/v3`）。Coding Plan 必须使用 `/api/coding/v3` 和带点的模型名（如 `deepseek-v4.1-flash`、`ark-code-latest`）；`/api/v3` 不消耗套餐额度，且使用配套的版本化模型名（如 `deepseek-v4-1-flash-261017`）。两者的 API Key 与计费链路不通用，混用会得到 `InvalidParameter` 等上游错误。
 
 测试：
 

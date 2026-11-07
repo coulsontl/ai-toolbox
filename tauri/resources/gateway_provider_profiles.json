@@ -694,6 +694,172 @@
       }
     },
     {
+      "id": "doubao_coding_plan",
+      "providerType": "doubao",
+      "label": "DouBao Coding Plan",
+      "category": "cn_official",
+      "aliases": ["doubao", "doubaoseed", "volces"],
+      "tools": {
+        "claude": {
+          "defaultEndpointId": "anthropic",
+          "endpoints": [
+            {
+              "id": "anthropic",
+              "label": "Anthropic",
+              "apiFormat": "anthropic",
+              "baseUrl": "https://ark.cn-beijing.volces.com/api/coding",
+              "models": {
+                "primary": "deepseek-v4.1-flash",
+                "haiku": "deepseek-v4.1-flash",
+                "sonnet": "deepseek-v4.1-flash",
+                "opus": "deepseek-v4.1-flash"
+              }
+            }
+          ]
+        },
+        "claude_desktop": {
+          "defaultEndpointId": "anthropic",
+          "endpoints": [
+            {
+              "id": "anthropic",
+              "label": "Anthropic",
+              "apiFormat": "anthropic",
+              "baseUrl": "https://ark.cn-beijing.volces.com/api/coding",
+              "models": {
+                "primary": "deepseek-v4.1-flash",
+                "haiku": "deepseek-v4.1-flash",
+                "sonnet": "deepseek-v4.1-flash",
+                "opus": "deepseek-v4.1-flash"
+              }
+            }
+          ]
+        },
+        "codex": {
+          "defaultEndpointId": "openai_responses",
+          "endpoints": [
+            {
+              "id": "openai_responses",
+              "label": "OpenAI Responses",
+              "apiFormat": "openai_responses",
+              "baseUrl": "https://ark.cn-beijing.volces.com/api/coding/v3",
+              "model": "deepseek-v4.1-flash",
+              "modelCatalog": {
+                "models": [
+                  {
+                    "model": "deepseek-v4.1-flash",
+                    "displayName": "DeepSeek V4.1 Flash",
+                    "contextWindow": 1000000
+                  },
+                  {
+                    "model": "deepseek-v4.1-flash-economy",
+                    "displayName": "DeepSeek V4.1 Flash Economy"
+                  },
+                  {
+                    "model": "deepseek-v4-flash",
+                    "displayName": "DeepSeek V4 Flash",
+                    "contextWindow": 1000000
+                  },
+                  {
+                    "model": "deepseek-v4-pro",
+                    "displayName": "DeepSeek V4 Pro",
+                    "contextWindow": 1000000
+                  },
+                  {
+                    "model": "glm-5.3",
+                    "displayName": "GLM-5.3",
+                    "contextWindow": 1000000
+                  },
+                  {
+                    "model": "glm-5.3-flash",
+                    "displayName": "GLM-5.3 Flash",
+                    "contextWindow": 1000000
+                  },
+                  {
+                    "model": "kimi-k3",
+                    "displayName": "Kimi K3",
+                    "contextWindow": 1048576
+                  },
+                  {
+                    "model": "kimi-k3.1-pro",
+                    "displayName": "Kimi K3.1 Pro"
+                  },
+                  {
+                    "model": "kimi-k2.8-preview",
+                    "displayName": "Kimi K2.8 Preview"
+                  },
+                  {
+                    "model": "doubao-seed-evolving",
+                    "displayName": "Doubao Seed Evolving"
+                  },
+                  {
+                    "model": "doubao-seed-2.1-pro",
+                    "displayName": "Doubao Seed 2.1 Pro"
+                  },
+                  {
+                    "model": "doubao-seed-2.1-lite",
+                    "displayName": "Doubao Seed 2.1 Lite"
+                  },
+                  {
+                    "model": "doubao-seed-2.0-mini",
+                    "displayName": "Doubao Seed 2.0 Mini"
+                  },
+                  {
+                    "model": "ark-code-latest",
+                    "displayName": "Ark Code Latest"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "anthropic_messages",
+              "label": "Anthropic",
+              "apiFormat": "anthropic_messages",
+              "baseUrl": "https://ark.cn-beijing.volces.com/api/coding"
+            }
+          ]
+        },
+        "gemini": {
+          "defaultEndpointId": "openai_responses",
+          "endpoints": [
+            {
+              "id": "openai_responses",
+              "label": "OpenAI Responses",
+              "apiFormat": "openai_responses",
+              "baseUrl": "https://ark.cn-beijing.volces.com/api/coding/v3",
+              "model": "deepseek-v4.1-flash"
+            },
+            {
+              "id": "anthropic_messages",
+              "label": "Anthropic",
+              "apiFormat": "anthropic_messages",
+              "baseUrl": "https://ark.cn-beijing.volces.com/api/coding"
+            }
+          ]
+        },
+        "grok": {
+          "defaultEndpointId": "openai_responses",
+          "endpoints": [
+            {
+              "id": "openai_responses",
+              "label": "OpenAI Responses",
+              "apiFormat": "openai_responses",
+              "baseUrl": "https://ark.cn-beijing.volces.com/api/coding/v3",
+              "model": "deepseek-v4.1-flash"
+            },
+            {
+              "id": "anthropic_messages",
+              "label": "Anthropic",
+              "apiFormat": "anthropic_messages",
+              "baseUrl": "https://ark.cn-beijing.volces.com/api/coding"
+            }
+          ]
+        }
+      },
+      "compat": {
+        "openaiChat": ["doubao_metadata"]
+      }
+    },
+    {
       "id": "bailian",
       "providerType": "bailian",
       "label": "Bailian",

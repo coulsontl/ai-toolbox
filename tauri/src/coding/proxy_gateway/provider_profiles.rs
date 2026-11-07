@@ -574,6 +574,53 @@ mod tests {
     }
 
     #[test]
+    fn bundled_doubao_coding_plan_targets_the_coding_endpoints() {
+        let bundled = get_bundled_gateway_provider_profiles().unwrap();
+        let profiles = bundled["profiles"].as_array().unwrap();
+
+        let coding_plan = profiles
+            .iter()
+            .find(|profile| profile["id"].as_str() == Some("doubao_coding_plan"))
+            .expect("bundled DouBao Coding Plan profile");
+        let codex_endpoints = coding_plan["tools"]["codex"]["endpoints"]
+            .as_array()
+            .unwrap();
+        let responses = codex_endpoints
+            .iter()
+            .find(|endpoint| endpoint["id"].as_str() == Some("openai_responses"))
+            .unwrap();
+        assert_eq!(
+            responses["baseUrl"].as_str(),
+            Some("https://ark.cn-beijing.volces.com/api/coding/v3")
+        );
+        assert_eq!(responses["model"].as_str(), Some("deepseek-v4.1-flash"));
+        let model_slugs: Vec<&str> = responses["modelCatalog"]["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|model| model["model"].as_str())
+            .collect();
+        assert!(model_slugs.contains(&"deepseek-v4.1-flash"));
+        assert!(model_slugs.contains(&"ark-code-latest"));
+
+        // The pay-as-you-go profile must keep the standard Ark endpoint.
+        let pay_as_you_go = profiles
+            .iter()
+            .find(|profile| profile["id"].as_str() == Some("doubao"))
+            .unwrap();
+        let standard = pay_as_you_go["tools"]["codex"]["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|endpoint| endpoint["id"].as_str() == Some("openai_responses"))
+            .unwrap();
+        assert_eq!(
+            standard["baseUrl"].as_str(),
+            Some("https://ark.cn-beijing.volces.com/api/v3")
+        );
+    }
+
+    #[test]
     fn empty_profiles_are_rejected() {
         assert!(!is_valid_gateway_provider_profiles(&json!({
             "schemaVersion": 1,
