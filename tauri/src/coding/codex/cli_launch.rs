@@ -32,6 +32,10 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 pub struct CodexLaunchProfile {
     pub profile_name: String,
     pub toml: String,
+    /// Launch-scoped model catalog, written next to the profile and named by
+    /// the profile's `model_catalog_json` pointer. Without it Codex inherits
+    /// the applied provider's catalog, so `/model` lists the wrong models.
+    pub catalog_json: Option<String>,
 }
 
 fn sanitize_provider_id_for_filename(value: &str) -> String {
@@ -107,6 +111,7 @@ pub fn build_launch_profile(
             profile_name,
             toml: toml::to_string(&root)
                 .map_err(|error| format!("Failed to serialize launch profile: {error}"))?,
+            catalog_json: None,
         });
     }
 
@@ -162,10 +167,26 @@ pub fn build_launch_profile(
         toml::Value::String(profile_name.clone()),
     );
 
+    // Publish the launched provider's own models to Codex. The profile is an
+    // overlay on the base config, so without this pointer `/model` would show
+    // the applied provider's catalog instead of the models this provider
+    // serves. The catalog file is cleaned up with the profile.
+    let catalog_json = super::commands::build_codex_launch_catalog(&parsed, config_toml)
+        .map(|catalog| {
+            table.insert(
+                "model_catalog_json".to_string(),
+                toml::Value::String(format!("{profile_name}.catalog.json")),
+            );
+            serde_json::to_string_pretty(&catalog)
+                .map_err(|error| format!("Failed to serialize launch model catalog: {error}"))
+        })
+        .transpose()?;
+
     Ok(CodexLaunchProfile {
         profile_name,
         toml: toml::to_string(&root)
             .map_err(|error| format!("Failed to serialize launch profile: {error}"))?,
+        catalog_json,
     })
 }
 
@@ -284,21 +305,41 @@ pub fn launch_codex_provider_cli_session(
             let profile_path = root.join(format!("{}.config.toml", profile.profile_name));
             write_local_profile_file(&profile_path, &profile.toml)?;
 
+            let catalog_path = match profile.catalog_json.as_deref() {
+                Some(catalog_json) => {
+                    let path = root.join(format!("{}.catalog.json", profile.profile_name));
+                    if let Err(error) = write_local_profile_file(&path, catalog_json) {
+                        let _ = fs::remove_file(&profile_path);
+                        return Err(error);
+                    }
+                    Some(path)
+                }
+                None => None,
+            };
+
+            let mut cleanup_paths = vec![profile_path.clone()];
+            if let Some(path) = &catalog_path {
+                cleanup_paths.push(path.clone());
+            }
+
             let program = resolve_local_codex_program().path.to_string_lossy().to_string();
             let spec = CliLaunchSpec {
                 program,
                 args,
                 env: vec![("CODEX_HOME".to_string(), root.to_string_lossy().to_string())],
                 cwd: cwd.map(Path::to_path_buf),
-                cleanup_paths: vec![profile_path.clone()],
+                cleanup_paths,
                 banner,
                 safe_id: sanitize_provider_id_for_filename(provider_id),
                 preferred_terminal: preferred_terminal.map(str::to_string),
             };
             let result = launch_local(&spec);
             if result.is_err() {
-                // The launcher never ran, so nothing will delete the profile.
+                // The launcher never ran, so nothing will delete the files.
                 let _ = fs::remove_file(&profile_path);
+                if let Some(path) = &catalog_path {
+                    let _ = fs::remove_file(path);
+                }
             }
             result
         }
@@ -321,12 +362,36 @@ pub fn launch_codex_provider_cli_session(
                 return Err("WSL Direct Codex CLI launch is only supported on Windows".to_string());
             }
 
+            #[cfg(target_os = "windows")]
+            let catalog_path = match profile.catalog_json.as_deref() {
+                Some(catalog_json) => {
+                    let path = format!(
+                        "{}/{}.catalog.json",
+                        wsl.linux_path.trim_end_matches('/'),
+                        profile.profile_name
+                    );
+                    if let Err(error) = write_wsl_profile_file(&wsl.distro, &path, catalog_json) {
+                        remove_wsl_file(&wsl.distro, &profile_path);
+                        return Err(error);
+                    }
+                    Some(path)
+                }
+                None => None,
+            };
+            #[cfg(not(target_os = "windows"))]
+            let catalog_path: Option<String> = None;
+
+            let mut cleanup_paths = vec![PathBuf::from(&profile_path)];
+            if let Some(path) = &catalog_path {
+                cleanup_paths.push(PathBuf::from(path));
+            }
+
             let spec = CliLaunchSpec {
                 program: "codex".to_string(),
                 args,
                 env: vec![("CODEX_HOME".to_string(), wsl.linux_path.clone())],
                 cwd: wsl_launch_cwd(cwd),
-                cleanup_paths: vec![PathBuf::from(&profile_path)],
+                cleanup_paths,
                 banner,
                 safe_id: sanitize_provider_id_for_filename(provider_id),
                 preferred_terminal: preferred_terminal.map(str::to_string),
@@ -335,7 +400,12 @@ pub fn launch_codex_provider_cli_session(
             if result.is_err() {
                 // The inner script never ran, so it will not clean up either.
                 #[cfg(target_os = "windows")]
-                remove_wsl_file(&wsl.distro, &profile_path);
+                {
+                    remove_wsl_file(&wsl.distro, &profile_path);
+                    if let Some(path) = &catalog_path {
+                        remove_wsl_file(&wsl.distro, path);
+                    }
+                }
             }
             result
         }
@@ -355,6 +425,15 @@ mod tests {
             r#"{{"config": {}, {auth}}}"#,
             serde_json::to_string(config).unwrap()
         )
+    }
+
+    fn settings_with_catalog(config: &str, models: serde_json::Value) -> String {
+        serde_json::json!({
+            "config": config,
+            "auth": {},
+            "modelCatalog": { "models": models }
+        })
+        .to_string()
     }
 
     #[test]
@@ -387,6 +466,81 @@ env_key = "OPENAI_API_KEY"
             Some("sk-test")
         );
         assert!(provider.get("env_key").is_none());
+    }
+
+    #[test]
+    fn custom_provider_launch_carries_its_own_model_catalog() {
+        let config = r#"
+model = "deepseek-v4.1-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "Relay"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+"#;
+        let settings = settings_with_catalog(
+            config,
+            serde_json::json!([
+                { "model": "deepseek-v4.1-flash", "displayName": "DeepSeek V4.1 Flash" },
+                { "model": "glm-5.3", "displayName": "GLM-5.3" }
+            ]),
+        );
+        let profile = build_launch_profile("p1", "custom", &settings).unwrap();
+        let parsed: toml::Value = toml::from_str(&profile.toml).unwrap();
+        let pointer = parsed
+            .as_table()
+            .unwrap()
+            .get("model_catalog_json")
+            .and_then(toml::Value::as_str);
+        let expected_pointer = format!("{}.catalog.json", profile.profile_name);
+        assert_eq!(pointer, Some(expected_pointer.as_str()));
+
+        let catalog: serde_json::Value =
+            serde_json::from_str(profile.catalog_json.as_deref().unwrap()).unwrap();
+        let slugs: Vec<&str> = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|model| model["slug"].as_str())
+            .collect();
+        assert_eq!(slugs, vec!["deepseek-v4.1-flash", "glm-5.3"]);
+    }
+
+    #[test]
+    fn custom_provider_launch_seeds_session_model_without_mapping() {
+        let config = r#"
+model = "gpt-5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "Relay"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+"#;
+        let profile = build_launch_profile("p1", "custom", &settings(config, None)).unwrap();
+        let catalog: serde_json::Value =
+            serde_json::from_str(profile.catalog_json.as_deref().unwrap()).unwrap();
+        let slugs: Vec<&str> = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|model| model["slug"].as_str())
+            .collect();
+        assert_eq!(slugs, vec!["gpt-5"]);
+    }
+
+    #[test]
+    fn official_provider_does_not_write_a_launch_catalog() {
+        let config = "model = \"gpt-5.5\"\n";
+        let profile = build_launch_profile("official", "official", &settings(config, None)).unwrap();
+        assert!(profile.catalog_json.is_none());
+        let parsed: toml::Value = toml::from_str(&profile.toml).unwrap();
+        assert!(parsed
+            .as_table()
+            .unwrap()
+            .get("model_catalog_json")
+            .is_none());
     }
 
     #[test]

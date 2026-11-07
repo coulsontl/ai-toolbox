@@ -4669,22 +4669,66 @@ fn prepare_codex_config_with_model_catalog(
         return set_codex_model_catalog_json_field(config_toml, false);
     }
 
-    let configured_default_context_window =
-        extract_codex_top_level_u64(config_toml, "model_context_window");
-    // DeepSeek publishes an OFFICIAL Codex models.json for its native
-    // `/responses` gateway (freeform apply_patch, GPT-5 harness, 1m context,
-    // low/high/max reasoning). Mirror it verbatim instead of the neutral
-    // template: the harness tells the model to use apply_patch, so stripping
-    // the tool while keeping the harness would be self-inconsistent.
-    let catalog = codex_official_vendor_catalog_models(config_toml)
-        .map(|vendor_models| codex_vendor_catalog_from_specs(&specs, &vendor_models))
-        .unwrap_or_else(|| {
-            codex_model_catalog_from_specs(&specs, configured_default_context_window)
-        });
+    let catalog = codex_catalog_for_specs(&specs, config_toml);
     let catalog_path = config_dir.join(AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME);
     write_codex_catalog_file_atomic(&catalog_path, &catalog)?;
 
     set_codex_model_catalog_json_field(config_toml, true)
+}
+
+/// Build the catalog JSON for one provider's model specs.
+///
+/// DeepSeek publishes an OFFICIAL Codex models.json for its native
+/// `/responses` gateway (freeform apply_patch, GPT-5 harness, 1m context,
+/// low/high/max reasoning). Mirror it verbatim instead of the neutral
+/// template: the harness tells the model to use apply_patch, so stripping the
+/// tool while keeping the harness would be self-inconsistent.
+fn codex_catalog_for_specs(specs: &[CodexCatalogModelSpec], config_toml: &str) -> Value {
+    let configured_default_context_window =
+        extract_codex_top_level_u64(config_toml, "model_context_window");
+    codex_official_vendor_catalog_models(config_toml)
+        .map(|vendor_models| codex_vendor_catalog_from_specs(specs, &vendor_models))
+        .unwrap_or_else(|| {
+            codex_model_catalog_from_specs(specs, configured_default_context_window)
+        })
+}
+
+/// Build a model catalog for a temporary CLI-launch profile.
+///
+/// The launch profile is layered on top of the base `config.toml`, so without
+/// its own `model_catalog_json` Codex inherits the *applied* provider's catalog
+/// (or the built-in official one). That makes `/model` list the wrong models
+/// and hides the models the launched provider actually serves.
+///
+/// The provider's mapping rows seed the catalog. The profile's own `model` is
+/// always included so Codex can resolve the session model's metadata even when
+/// the mapping is empty or does not mention it.
+pub(crate) fn build_codex_launch_catalog(
+    provider_settings_config: &Value,
+    config_toml: &str,
+) -> Option<Value> {
+    let mut specs = codex_catalog_model_specs(provider_settings_config, config_toml);
+
+    if let Some(default_model) = extract_codex_top_level_model(config_toml) {
+        if !specs.iter().any(|spec| spec.model == default_model) {
+            specs.push(CodexCatalogModelSpec {
+                model: default_model,
+                display_name: None,
+                context_window: None,
+                auto_review_model_override: None,
+                reasoning_levels: None,
+                default_reasoning_level: None,
+                service_tiers: None,
+                input_modalities: None,
+            });
+        }
+    }
+
+    if specs.is_empty() {
+        return None;
+    }
+
+    Some(codex_catalog_for_specs(&specs, config_toml))
 }
 
 /// Write a Codex model catalog atomically.
@@ -5804,7 +5848,8 @@ pub async fn read_codex_settings(
 mod tests {
     use super::{
         aggregate_catalog_from_entries, aggregate_site_model_specs, append_toml_configs,
-        build_written_codex_config_toml, capture_codex_pre_aggregate_catalog,
+        build_codex_launch_catalog, build_written_codex_config_toml,
+        capture_codex_pre_aggregate_catalog,
         codex_aggregate_catalog_entries, codex_aggregate_catalog_entries_with_failover,
         codex_aggregate_slug_table, codex_catalog_display_name,
         codex_catalog_effective_input_modalities, codex_catalog_model_specs,
@@ -6148,6 +6193,75 @@ approval_policy = "never"
             specs[3].auto_review_model_override.as_deref(),
             Some("gpt-5.5")
         );
+    }
+
+    #[test]
+    fn launch_catalog_publishes_provider_mapping() {
+        let settings = json!({
+            "modelCatalog": {
+                "models": [
+                    {
+                        "model": "deepseek-v4.1-flash",
+                        "displayName": "DeepSeek V4.1 Flash",
+                        "contextWindow": 1000000
+                    },
+                    {
+                        "model": "glm-5.3",
+                        "displayName": "GLM-5.3"
+                    }
+                ]
+            }
+        });
+
+        let catalog =
+            build_codex_launch_catalog(&settings, "model = \"deepseek-v4.1-flash\"\n").unwrap();
+        let models = catalog["models"].as_array().unwrap();
+
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0]["slug"].as_str(), Some("deepseek-v4.1-flash"));
+        assert_eq!(models[0]["context_window"].as_u64(), Some(1_000_000));
+        assert_eq!(models[1]["slug"].as_str(), Some("glm-5.3"));
+    }
+
+    #[test]
+    fn launch_catalog_seeds_session_model_when_mapping_is_empty() {
+        let catalog = build_codex_launch_catalog(
+            &json!({}),
+            "model = \"deepseek-v4-1-flash-261017\"\n",
+        )
+        .unwrap();
+        let models = catalog["models"].as_array().unwrap();
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(
+            models[0]["slug"].as_str(),
+            Some("deepseek-v4-1-flash-261017")
+        );
+    }
+
+    #[test]
+    fn launch_catalog_appends_session_model_missing_from_mapping() {
+        let settings = json!({
+            "modelCatalog": {
+                "models": [{ "model": "glm-5.3" }]
+            }
+        });
+
+        let catalog =
+            build_codex_launch_catalog(&settings, "model = \"deepseek-v4.1-flash\"\n").unwrap();
+        let slugs: Vec<&str> = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|model| model["slug"].as_str())
+            .collect();
+
+        assert_eq!(slugs, vec!["glm-5.3", "deepseek-v4.1-flash"]);
+    }
+
+    #[test]
+    fn launch_catalog_requires_at_least_one_model() {
+        assert!(build_codex_launch_catalog(&json!({}), "").is_none());
     }
 
     #[test]

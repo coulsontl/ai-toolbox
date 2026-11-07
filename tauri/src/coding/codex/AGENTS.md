@@ -59,7 +59,7 @@ sequenceDiagram
 - **供应商卡片的 CLI 启动**（`launch_codex_provider_cli`）是旁路启动，不是 apply：在 `<codex_root>` 下写一个只含该 provider 的 `aitb-launch-*.config.toml`，用 `codex --profile <name>` 打开终端，退出后删除 profile；不改 `config.toml`、`auth.json` 和 `is_applied`。启动必须注入当前 runtime root 对应的 `CODEX_HOME`，否则自定义 root / WSL Direct 会回落到默认 `~/.codex`。
 - 临时 profile 必须使用**新的 provider id**（`aitb-launch-*`），不能复用 provider 配置里的 `custom`：profile 是叠加层，同名表会与 base 的 `[model_providers.custom]` 合并，继承 base 的 `env_key` / `requires_openai_auth`。第三方凭据只写 profile 内的 `experimental_bearer_token`，绝不改全局 `auth.json`（否则会影响同一时刻其它 Codex 会话）；有托管 key 时必须删除 `env_key`（Codex 先查环境变量并短路 auth.json）。
 - 官方 provider 的临时 profile 只写 `model_provider = "openai"`，凭据继续来自全局 `auth.json`；profile 无法隔离官方 OAuth 登录态，两个项目用两个官方账号只能靠不同 `CODEX_HOME`。
-- 临时 profile 不生成 `model_catalog_json`，会继承 base 的目录指针；临时供应商的模型可能不在目录里，Codex 会打印 fallback metadata 警告，不影响请求路由。
+- 第三方 provider 的临时 profile 会生成**启动专属模型目录**：`build_codex_launch_catalog` 用该 provider 的 `settingsConfig.modelCatalog.models` 生成目录，并始终补上 profile 的 `model`（映射为空时也能解析会话模型）；目录写成 `<profile_name>.catalog.json`，profile 里写 `model_catalog_json` 指向它，退出时随 profile 一起删除。不这样做时 profile 会继承 base 的目录指针，`/model` 会列出**已应用**供应商的模型（官方 base 时就是官方列表），无法切到临时供应商的模型。官方 provider 仍不写目录，沿用 base（官方订阅依赖内置目录）。
 - 终端启动复用 `coding/cli_launch_terminal.rs`（Windows cmd/PowerShell/Windows Terminal/Git Bash、macOS、Linux、WSL，行为对齐 Claude 的既有实现）；Windows `.cmd` / `.bat` shim 必须用 `call`，Git Bash 走 mintty。终端偏好来自 `AppSettings.preferred_terminal`，首选终端失败回退 `cmd`。
 - 全权限开关是 `AppSettings.codex_cli_launch_full_access`（默认关闭），开启后附加 `--dangerously-bypass-approvals-and-sandbox`。
 - WSL 自动同步是事件驱动，不是“数据库写成功就等于已经同步到 WSL”。
