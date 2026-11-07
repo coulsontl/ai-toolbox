@@ -324,6 +324,10 @@ export interface GatewayRequestLogItem {
   trace_id: string;
   data_source: string;
   cli_key: GatewayUsageTool;
+  /** Codex auxiliary task this request serves; absent on ordinary turns. */
+  aux_task?: GatewayAuxTaskKind | null;
+  /** `explicit` / `main` / `auto_kept` / `auto_fallback` / `none`. */
+  aux_route_source?: GatewayAuxRouteSource | null;
   route_name?: string | null;
   method?: string | null;
   path?: string | null;
@@ -429,6 +433,34 @@ export interface GatewayModelStats {
   pricing?: ModelPricing | null;
 }
 
+/** Compact Codex auxiliary-task kind persisted with a gateway request. */
+export type GatewayAuxTaskKind =
+  | 'other'
+  | 'title'
+  | 'description'
+  | 'summary'
+  | 'prediction'
+  | 'memory'
+  | 'auto_review';
+
+/** How the auxiliary model was chosen for the final upstream attempt. */
+export type GatewayAuxRouteSource =
+  | 'explicit'
+  | 'main'
+  | 'auto_kept'
+  | 'auto_fallback'
+  | 'none';
+
+/** Detail-only auxiliary-routing context; absent on ordinary turns. */
+export interface GatewayAuxiliaryMetadata {
+  configured_mode?: 'auto' | 'main' | 'model' | null;
+  raw_kind?: string | null;
+  target_protocol?: string | null;
+  shaped: boolean;
+  route_applied: boolean;
+  route_error?: string | null;
+}
+
 export interface GatewayRequestLogSummary {
   transport?: 'http' | 'websocket';
   request_kind?: 'request' | 'websocket_handshake' | 'websocket_warmup';
@@ -439,6 +471,10 @@ export interface GatewayRequestLogSummary {
   started_at: string;
   ended_at: string;
   cli_key: GatewayUsageTool | null;
+  /** Codex auxiliary task this request serves; absent on ordinary turns. */
+  aux_task?: GatewayAuxTaskKind | null;
+  /** `explicit` / `main` / `auto_kept` / `auto_fallback` / `none`. */
+  aux_route_source?: GatewayAuxRouteSource | null;
   route_name: string;
   method: string;
   path: string;
@@ -504,6 +540,7 @@ export interface GatewayRequestRewrite {
 
 export interface GatewayRequestLogDetail extends GatewayRequestLogSummary {
   privacy?: GatewayPrivacyDetail | null;
+  auxiliary?: GatewayAuxiliaryMetadata | null;
   native_tools?: GatewayNativeToolRecord[];
   rewrites?: GatewayRequestRewrite[];
   websocket?: {

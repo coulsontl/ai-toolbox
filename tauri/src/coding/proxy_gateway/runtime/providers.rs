@@ -68,6 +68,15 @@ pub(crate) struct UpstreamModelMapping {
     /// `settingsConfig.autoReviewModelOverride`. Used on failover guardian
     /// requests so each candidate channel owns its own review model.
     pub(crate) auto_review_model: Option<String>,
+    /// Per-task auxiliary routes from `settingsConfig.auxiliaryModels`.
+    /// Missing keys mean "automatic" and are intentionally absent, not stored
+    /// as an `auto` value.
+    pub(crate) auxiliary_models:
+        std::collections::BTreeMap<String, super::compat::codex_aux_task::CodexAuxiliaryModelRoute>,
+    /// Models named by the provider's native `[memories]` block. A request that
+    /// already asks for one of them is treated as user-configured and is not
+    /// auto-fallback-rewritten.
+    pub(crate) native_memory_models: Vec<String>,
     pub(crate) haiku_model: Option<String>,
     pub(crate) sonnet_model: Option<String>,
     pub(crate) opus_model: Option<String>,
@@ -690,6 +699,8 @@ fn provider_from_record(
                                 .and_then(codex_auto_review_model_from_catalog)
                         },
                     ),
+                    auxiliary_models: codex_auxiliary_models_from_settings(&settings),
+                    native_memory_models: codex_native_memory_models_from_config(config_toml),
                     ..UpstreamModelMapping::default()
                 },
                 meta,
@@ -2115,6 +2126,75 @@ fn codex_auto_review_model_from_catalog(catalog: &Value) -> Option<String> {
         }
     }
     None
+}
+
+/// Parse the provider's per-task auxiliary routes. Unknown tasks and malformed
+/// entries are ignored: the field is user intent, and a typo must not break the
+/// whole provider channel.
+fn codex_auxiliary_models_from_settings(
+    settings: &Value,
+) -> std::collections::BTreeMap<String, super::compat::codex_aux_task::CodexAuxiliaryModelRoute> {
+    use super::compat::codex_aux_task::CodexAuxiliaryModelRoute;
+
+    const TASKS: [&str; 5] = ["title", "description", "summary", "prediction", "memory"];
+    let Some(object) = settings
+        .get("auxiliaryModels")
+        .or_else(|| settings.get("auxiliary_models"))
+        .and_then(Value::as_object)
+    else {
+        return std::collections::BTreeMap::new();
+    };
+
+    let mut routes = std::collections::BTreeMap::new();
+    for task in TASKS {
+        let Some(raw) = object.get(task) else {
+            continue;
+        };
+        match raw.get("mode").and_then(Value::as_str) {
+            Some("main") => {
+                routes.insert(task.to_string(), CodexAuxiliaryModelRoute::Main);
+            }
+            Some("model") => {
+                let Some(model) = raw
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    continue;
+                };
+                routes.insert(
+                    task.to_string(),
+                    CodexAuxiliaryModelRoute::Model {
+                        model: model.to_string(),
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+    routes
+}
+
+/// Read the native `[memories]` model names from the provider TOML. These are
+/// user-configured and must not be auto-fallback-rewritten by the gateway.
+fn codex_native_memory_models_from_config(config_toml: &str) -> Vec<String> {
+    let Ok(value) = config_toml.parse::<toml::Value>() else {
+        return Vec::new();
+    };
+    let Some(memories) = value.get("memories").and_then(toml::Value::as_table) else {
+        return Vec::new();
+    };
+    let mut models = ["extract_model", "consolidation_model"]
+        .iter()
+        .filter_map(|key| memories.get(*key).and_then(toml::Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    models.sort();
+    models.dedup();
+    models
 }
 
 #[cfg(test)]
@@ -3553,5 +3633,50 @@ base_url = "https://api.anthropic.com"
 
         assert_eq!(result.target_protocol, AiProtocol::GeminiNative);
         assert_eq!(result.auth_strategy, ProviderAuthStrategy::GoogleApiKey);
+    }
+
+    #[test]
+    fn codex_auxiliary_routes_parse_valid_entries_and_ignore_malformed_ones() {
+        use crate::coding::proxy_gateway::runtime::compat::codex_aux_task::CodexAuxiliaryModelRoute;
+
+        let settings = serde_json::json!({
+            "auxiliaryModels": {
+                "title": { "mode": "model", "model": "  gpt-5-mini  " },
+                "summary": { "mode": "main" },
+                "description": { "mode": "model", "model": "   " },
+                "prediction": { "mode": "auto" },
+                "memory": "main",
+                "unknown": { "mode": "main" }
+            }
+        });
+
+        let routes = codex_auxiliary_models_from_settings(&settings);
+
+        assert_eq!(routes.len(), 2);
+        assert_eq!(
+            routes.get("title"),
+            Some(&CodexAuxiliaryModelRoute::Model {
+                model: "gpt-5-mini".to_string()
+            })
+        );
+        assert_eq!(
+            routes.get("summary"),
+            Some(&CodexAuxiliaryModelRoute::Main)
+        );
+        assert!(!routes.contains_key("description"));
+        assert!(!routes.contains_key("prediction"));
+        assert!(!routes.contains_key("memory"));
+        assert!(!routes.contains_key("unknown"));
+    }
+
+    #[test]
+    fn native_memory_models_are_trimmed_deduped_and_ignore_bad_toml() {
+        let models = codex_native_memory_models_from_config(
+            "[memories]\nextract_model = \" gpt-5-mini \"\nconsolidation_model = \"gpt-5-mini\"\n",
+        );
+        assert_eq!(models, vec!["gpt-5-mini".to_string()]);
+
+        assert!(codex_native_memory_models_from_config("not toml").is_empty());
+        assert!(codex_native_memory_models_from_config("model = \"x\"\n").is_empty());
     }
 }

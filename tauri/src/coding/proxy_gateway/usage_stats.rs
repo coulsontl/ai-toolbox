@@ -1,6 +1,6 @@
 use super::request_log;
 use super::types::{
-    normalize_pricing_model_source, GatewayModelStats, GatewayNativeToolRecord,
+    normalize_pricing_model_source, CodexAuxTaskKind, GatewayModelStats, GatewayNativeToolRecord,
     GatewayPaginatedRequestLogs, GatewayProviderStats, GatewayRequestLogDetail,
     GatewayRequestLogFilters, GatewayRequestLogItem, GatewayRequestLogSummary,
     GatewayStreamOutcome, GatewayUsageSummary, GatewayUsageSummaryByCli, GatewayUsageTool,
@@ -405,7 +405,8 @@ pub fn record_request_summary(
                 cost_multiplier, pricing_model_source, created_at, data_source, detail_file,
                 detail_offset, route_name, method, path, upstream_status_code,
                 stream_outcome, error_category, attempt_count, total_attempt_count, reasoning_effort, transport, request_kind, usage_request_count,
-                service_tier, service_tier_multiplier, compaction_mode, native_tools_used
+                service_tier, service_tier_multiplier, compaction_mode, native_tools_used,
+                aux_task, aux_route_source
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5,
                 ?6, ?7, ?8, ?9,
@@ -414,7 +415,7 @@ pub fn record_request_summary(
                 ?18, ?19, ?20, ?21, ?22,
                 ?23, ?24, ?25, 'proxy', ?26, ?27, ?28, ?29, ?30, ?31,
                 ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42,
-                ?43
+                ?43, ?44, ?45
             )"
         );
         let affected_rows = conn
@@ -464,6 +465,8 @@ pub fn record_request_summary(
                     summary.service_tier_multiplier,
                     summary.compaction_mode,
                     native_tools_used,
+                    summary.aux_task.map(|task| task.as_str()),
+                    summary.aux_route_source,
                 ],
             )
             .map_err(|error| format!("Failed to record proxy gateway request summary: {error}"))?;
@@ -740,7 +743,7 @@ pub fn request_logs(
                     status_code, error_message, created_at, is_streaming,
                     route_name, method, path, stream_outcome, reasoning_effort,
                     COALESCE(data_source, 'proxy'), json(usage_metadata), extra_tokens, transport, request_kind,
-                    service_tier, compaction_mode, native_tools_used
+                    service_tier, compaction_mode, native_tools_used, aux_task, aux_route_source
              FROM proxy_request_logs l
              {where_clause}
              ORDER BY created_at DESC
@@ -763,6 +766,10 @@ pub fn request_logs(
                 Ok(Some(GatewayRequestLogItem {
                     transport: super::types::GatewayRequestTransport::from_str(&row.get::<_, String>(25)?),
                     request_kind: super::types::GatewayRequestKind::from_str(&row.get::<_, String>(26)?),
+                    aux_task: row
+                        .get::<_, Option<String>>(30)?
+                        .map(|value| CodexAuxTaskKind::from_str(&value)),
+                    aux_route_source: row.get(31)?,
                     native_tools_used: parse_native_tools_used(row.get(29)?),
                     stream_outcome: row.get::<_, Option<String>>(20)?.as_deref().and_then(GatewayStreamOutcome::from_str),
                     usage_metadata: row.get::<_, Option<String>>(23)?.and_then(|value| serde_json::from_str(&value).ok()),
@@ -2940,7 +2947,8 @@ pub fn request_log_detail_from_summary(
                     route_name, method, path, upstream_status_code,
                     stream_outcome, error_category, attempt_count, total_attempt_count, reasoning_effort,
                     COALESCE(data_source, 'proxy'), json(usage_metadata), extra_tokens, transport, request_kind,
-                    service_tier, service_tier_multiplier, compaction_mode, native_tools_used
+                    service_tier, service_tier_multiplier, compaction_mode, native_tools_used,
+                    aux_task, aux_route_source
              FROM proxy_request_logs
              WHERE request_id = ?1",
             [trace_id],
@@ -2973,6 +2981,7 @@ pub fn request_log_detail_from_summary(
                 Ok(GatewayRequestLogDetail {
                     privacy: None,
                     websocket: None,
+                    auxiliary: None,
                     // The compact column only carries "observed to run", so the
                     // fallback detail can still say a tool ran. `declared` /
                     // `forwarded` were never collected there and stay false.
@@ -2989,6 +2998,10 @@ pub fn request_log_detail_from_summary(
                     summary: GatewayRequestLogSummary {
                         transport: super::types::GatewayRequestTransport::from_str(&row.get::<_, String>(34)?),
                         request_kind: super::types::GatewayRequestKind::from_str(&row.get::<_, String>(35)?),
+                        aux_task: row
+                            .get::<_, Option<String>>(40)?
+                            .map(|value| CodexAuxTaskKind::from_str(&value)),
+                        aux_route_source: row.get(41)?,
                         usage_metadata: row.get::<_, Option<String>>(32)?.and_then(|value| serde_json::from_str(&value).ok()),
                         data_source: Some(row.get(31)?),
                         trace_id: row.get(0)?,
@@ -3309,11 +3322,14 @@ mod tests {
         GatewayRequestLogDetail {
             privacy: None,
             websocket: None,
+            auxiliary: None,
             native_tools: Vec::new(),
             rewrites: Vec::new(),
             summary: GatewayRequestLogSummary {
                 transport: Default::default(),
                 request_kind: Default::default(),
+                aux_task: None,
+                aux_route_source: None,
                 usage_metadata: None,
                 data_source: None,
                 trace_id: trace_id.to_string(),

@@ -11,6 +11,8 @@ import {
   removeCodexModel,
 } from '@/utils/codexConfigUtils';
 import type {
+  CodexAuxiliaryModelRoute,
+  CodexAuxiliaryTask,
   CodexCatalogModel,
   CodexProviderCategory,
   CodexRequiresOpenaiAuthModeSelection,
@@ -24,6 +26,7 @@ import {
 } from '../utils/codexCatalogModels';
 import {
   buildCodexSettingsConfig,
+  normalizeCodexAuxiliaryModels,
   normalizeCodexRequiresOpenaiAuthMode,
   resolveCodexAutoReviewModelOverride,
 } from '../utils/codexSettingsConfig';
@@ -41,9 +44,15 @@ export interface CodexSettingsConfigSnapshot {
   model?: string;
   config?: string;
   catalogModels?: CodexCatalogModel[];
+  auxiliaryModels?: CodexSettingsConfig['auxiliaryModels'];
   autoReviewModelOverride?: string;
   requiresOpenaiAuthMode?: CodexRequiresOpenaiAuthModeSelection;
 }
+
+/** Per-task routes currently edited in the provider form; `{}` means all auto. */
+export type CodexAuxiliaryModelsState = Partial<
+  Record<CodexAuxiliaryTask, CodexAuxiliaryModelRoute>
+>;
 
 // 新建配置的默认 config.toml 模板
 // `requires_openai_auth` is deliberately absent (issue #394): the backend
@@ -122,6 +131,7 @@ function parseInitialCodexState(initialData?: { settingsConfig?: string }) {
       model: defaultModel,
       config: DEFAULT_CONFIG_TOML,
       catalogModels: [] as CodexCatalogModel[],
+      auxiliaryModels: {} as CodexAuxiliaryModelsState,
       autoReviewModelOverride: '',
       requiresOpenaiAuthMode: DEFAULT_REQUIRES_OPENAI_AUTH_MODE,
     };
@@ -150,6 +160,8 @@ function parseInitialCodexState(initialData?: { settingsConfig?: string }) {
       model,
       config: configStr,
       catalogModels: category === 'custom' ? parseCodexCatalogModels(config) : [],
+      auxiliaryModels:
+        category === 'custom' ? (normalizeCodexAuxiliaryModels(config.auxiliaryModels) ?? {}) : {},
       autoReviewModelOverride:
         category === 'custom' ? (resolveCodexAutoReviewModelOverride(config) || '') : '',
       requiresOpenaiAuthMode,
@@ -163,6 +175,7 @@ function parseInitialCodexState(initialData?: { settingsConfig?: string }) {
       model: '',
       config: '',
       catalogModels: [] as CodexCatalogModel[],
+      auxiliaryModels: {} as CodexAuxiliaryModelsState,
       autoReviewModelOverride: '',
       requiresOpenaiAuthMode: DEFAULT_REQUIRES_OPENAI_AUTH_MODE,
     };
@@ -182,6 +195,9 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps = 
   const [codexConfig, setCodexConfigState] = useState(parsedInitial.config);
   const [codexAuth, setCodexAuthState] = useState<Record<string, unknown>>(parsedInitial.auth);
   const [codexCatalogModels, setCodexCatalogModels] = useState<CodexCatalogModel[]>(parsedInitial.catalogModels);
+  const [codexAuxiliaryModels, setCodexAuxiliaryModels] = useState<CodexAuxiliaryModelsState>(
+    parsedInitial.auxiliaryModels,
+  );
   const [codexAutoReviewModelOverride, setCodexAutoReviewModelOverride] = useState(
     parsedInitial.autoReviewModelOverride,
   );
@@ -374,6 +390,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps = 
     setCodexBaseUrlState(baseUrl);
     setCodexModelState(model);
     setCodexCatalogModels([]);
+    setCodexAuxiliaryModels({});
     setCodexAutoReviewModelOverride('');
     setCodexRequiresOpenaiAuthMode(DEFAULT_REQUIRES_OPENAI_AUTH_MODE);
     setProviderCategoryState(
@@ -409,6 +426,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps = 
     setCodexModelState(nextState.model);
     setCodexConfigState(nextState.config);
     setCodexCatalogModels(nextState.catalogModels);
+    setCodexAuxiliaryModels(nextState.auxiliaryModels);
     setCodexAutoReviewModelOverride(nextState.autoReviewModelOverride);
     setCodexRequiresOpenaiAuthMode(nextState.requiresOpenaiAuthMode);
     setProviderCategoryState(nextState.category);
@@ -427,6 +445,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps = 
       });
       userSetBaseUrlRef.current = false;
       setCodexCatalogModels([]);
+      setCodexAuxiliaryModels({});
       setCodexAutoReviewModelOverride('');
       setCodexRequiresOpenaiAuthMode(DEFAULT_REQUIRES_OPENAI_AUTH_MODE);
       setCodexConfigState((prev) => normalizeCodexConfigForOfficialMode(prev));
@@ -453,6 +472,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps = 
       model: finalModel,
       config: snapshot.config ?? codexConfig,
       catalogModels: snapshot.catalogModels ?? codexCatalogModels,
+      auxiliaryModels: snapshot.auxiliaryModels ?? codexAuxiliaryModels,
       autoReviewModelOverride:
         snapshot.autoReviewModelOverride ?? codexAutoReviewModelOverride,
       requiresOpenaiAuthMode:
@@ -463,6 +483,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps = 
     codexApiKey,
     codexAuth,
     codexAutoReviewModelOverride,
+    codexAuxiliaryModels,
     codexRequiresOpenaiAuthMode,
     codexBaseUrl,
     codexCatalogModels,
@@ -479,6 +500,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps = 
     codexModel,
     codexConfig,
     codexCatalogModels,
+    codexAuxiliaryModels,
     codexAutoReviewModelOverride,
     codexRequiresOpenaiAuthMode,
     providerCategory,
@@ -498,6 +520,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps = 
     // 工具方法
     setCodexConfig,
     setCodexCatalogModels,
+    setCodexAuxiliaryModels,
     setCodexAutoReviewModelOverride,
     setCodexRequiresOpenaiAuthMode,
     resetCodexConfig,

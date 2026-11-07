@@ -5,15 +5,17 @@ import {
   EyeInvisibleOutlined,
   EyeOutlined,
 } from '@ant-design/icons';
+import { Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '@/stores';
-import type { CodexApiFormat, CodexCatalogModel, CodexProvider, CodexProviderFormValues, CodexRequiresOpenaiAuthModeSelection, CodexSettingsConfig, GatewayProviderMeta } from '@/types/codex';
+import type { CodexAuxiliaryModelRoute, CodexAuxiliaryTask, CodexApiFormat, CodexCatalogModel, CodexProvider, CodexProviderFormValues, CodexRequiresOpenaiAuthModeSelection, CodexSettingsConfig, GatewayProviderMeta } from '@/types/codex';
 import { fetchCodexOfficialModels } from '@/services/codexApi';
 import { readCurrentOpenCodeProviders } from '@/services/opencodeApi';
 import type { FetchedModel, FetchModelsResponse } from '@/components/common/FetchModelsModal/types';
 import ImeSafeAutoComplete from '@/components/common/ImeSafeAutoComplete';
 import ImeSafeInput from '@/components/common/ImeSafeInput';
+import ProviderConfigCollapse from '@/features/coding/shared/providerConfig/ProviderConfigCollapse';
 import ProviderFormSections from '@/features/coding/shared/providerConfig/ProviderFormSections';
 import { useGatewaySupportedCliKeys } from '@/features/coding/shared/gateway/useGatewaySupportedCliKeys';
 import {
@@ -57,8 +59,13 @@ import {
 import TomlEditor from '@/components/common/TomlEditor';
 import { getDefaultModelsApiType } from '@/components/common/FetchModelsModal/request';
 import { parse as parseToml } from 'smol-toml';
-import { useCodexConfigState } from '../hooks/useCodexConfigState';
+import { useCodexConfigState, type CodexAuxiliaryModelsState } from '../hooks/useCodexConfigState';
 import { normalizeCodexRequiresOpenaiAuthMode } from '../utils/codexSettingsConfig';
+import {
+  patchCodexMemoriesModels,
+  readCodexMemoriesModels,
+  type CodexMemoriesUnsupportedShape,
+} from '../utils/codexMemoriesModels';
 import { codexApiFormatNeedsGatewayProxy } from '../utils/codexGatewayProxyNeed';
 import {
   codexReasoningPassthroughApplies,
@@ -81,6 +88,41 @@ const REQUIRES_OPENAI_AUTH_MODE_OPTIONS: ReadonlyArray<{
   { value: 'keep', labelKey: 'codex.provider.requiresOpenaiAuthKeep' },
   { value: 'strip', labelKey: 'codex.provider.requiresOpenaiAuthStrip' },
 ];
+
+/** 渠道级辅助任务；缺键表示“自动”，表单里以 `auto` 呈现。 */
+const AUXILIARY_TASK_ROWS: ReadonlyArray<{
+  task: CodexAuxiliaryTask;
+  labelKey: string;
+}> = [
+  { task: 'title', labelKey: 'codex.provider.auxiliaryTaskTitle' },
+  { task: 'description', labelKey: 'codex.provider.auxiliaryTaskDescription' },
+  { task: 'summary', labelKey: 'codex.provider.auxiliaryTaskSummary' },
+  { task: 'prediction', labelKey: 'codex.provider.auxiliaryTaskPrediction' },
+  { task: 'memory', labelKey: 'codex.provider.auxiliaryTaskMemory' },
+];
+
+type AuxiliaryModeSelection = 'auto' | 'main' | 'model';
+
+const MEMORIES_UNSUPPORTED_MESSAGE_KEYS: Record<CodexMemoriesUnsupportedShape, string> = {
+  inline_table: 'codex.provider.nativeMemoriesUnsupportedInline',
+  dotted_keys: 'codex.provider.nativeMemoriesUnsupportedDotted',
+  invalid_toml: 'codex.provider.nativeMemoriesUnsupportedInvalid',
+  multiline_value: 'codex.provider.nativeMemoriesUnsupportedMultiline',
+};
+
+/**
+ * Shared matcher for every model-id AutoComplete. Options render as
+ * `display name (model-id)`, so matching only `value` would hide rows whose
+ * display name is what the user typed.
+ */
+const filterModelOption = (
+  inputValue: string,
+  option?: { label?: React.ReactNode; value?: unknown },
+): boolean => {
+  const needle = inputValue.toLowerCase();
+  return String(option?.label ?? '').toLowerCase().includes(needle)
+    || String(option?.value ?? '').toLowerCase().includes(needle);
+};
 
 const CODEX_OFFICIAL_FALLBACK_MODELS: FetchedModel[] = [
   { id: 'gpt-5.2', name: 'GPT 5.2' },
@@ -290,6 +332,7 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
 
   const labelCol = { span: language === 'zh-CN' ? 4 : 6 };
   const wrapperCol = { span: 20 };
+  const sectionWrapperCol = { span: 24 };
   const notesCollapseResetKey = `${open ? 'open' : 'closed'}:${mode}:${provider?.id ?? 'new'}:${isCopy ? 'copy' : 'normal'}`;
 
   // OpenCode import related state
@@ -343,6 +386,7 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
     codexModel,
     codexConfig,
     codexCatalogModels,
+    codexAuxiliaryModels,
     codexAutoReviewModelOverride,
     providerCategory,
     handleApiKeyChange,
@@ -351,6 +395,7 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
     handleConfigChange,
     handleProviderCategoryChange,
     setCodexCatalogModels,
+    setCodexAuxiliaryModels,
     resetFromSettingsConfig,
     getFinalSettingsConfig,
   } = useCodexConfigState({
@@ -361,6 +406,84 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
   const isOfficialMode = activeProviderCategory === 'official';
   const watchOptions = React.useMemo(() => ({ form, preserve: true }), [form]);
   const selectedApiFormat = Form.useWatch('apiFormat', watchOptions) as CodexApiFormat | undefined;
+  const watchedDefaultModel = Form.useWatch('model', watchOptions) as string | undefined;
+  const defaultModel = (watchedDefaultModel || codexModel || '').trim();
+
+  const memoriesModels = React.useMemo(
+    () => readCodexMemoriesModels(codexConfig),
+    [codexConfig],
+  );
+  const [auxiliaryExpanded, setAuxiliaryExpanded] = React.useState(false);
+  React.useEffect(() => {
+    if (Object.keys(codexAuxiliaryModels).length > 0) {
+      setAuxiliaryExpanded(true);
+    }
+  }, [codexAuxiliaryModels]);
+
+  const [memoriesDraft, setMemoriesDraft] = React.useState({
+    extractModel: '',
+    consolidationModel: '',
+  });
+  React.useEffect(() => {
+    setMemoriesDraft({
+      extractModel: memoriesModels.extractModel ?? '',
+      consolidationModel: memoriesModels.consolidationModel ?? '',
+    });
+  }, [memoriesModels.extractModel, memoriesModels.consolidationModel]);
+
+  const handleMemoriesModelChange = React.useCallback(
+    (key: 'extractModel' | 'consolidationModel', value: string) => {
+      const nextDraft = { ...memoriesDraft, [key]: value };
+      setMemoriesDraft(nextDraft);
+      const currentConfig =
+        (form.getFieldValue('configToml') as string | undefined) ?? codexConfig;
+      const result = patchCodexMemoriesModels(currentConfig, nextDraft);
+      if (!result.changed) {
+        return;
+      }
+      form.setFieldValue('configToml', result.nextToml);
+      handleConfigChange(result.nextToml);
+    },
+    [codexConfig, form, handleConfigChange, memoriesDraft],
+  );
+
+  const updateAuxiliaryRoute = React.useCallback(
+    (task: CodexAuxiliaryTask, route: CodexAuxiliaryModelRoute | null) => {
+      setCodexAuxiliaryModels((previous) => {
+        const next: CodexAuxiliaryModelsState = { ...previous };
+        if (route) {
+          next[task] = route;
+        } else {
+          delete next[task];
+        }
+        return next;
+      });
+    },
+    [setCodexAuxiliaryModels],
+  );
+
+  const handleAuxiliaryModeChange = React.useCallback(
+    (task: CodexAuxiliaryTask, mode: AuxiliaryModeSelection) => {
+      if (mode === 'auto') {
+        updateAuxiliaryRoute(task, null);
+        return;
+      }
+      if (mode === 'main') {
+        updateAuxiliaryRoute(task, { mode: 'main' });
+        return;
+      }
+      // 指定模型：从其他模式切入时以当前默认模型为起点，避免空值。
+      updateAuxiliaryRoute(task, { mode: 'model', model: defaultModel });
+    },
+    [defaultModel, updateAuxiliaryRoute],
+  );
+
+  const handleAuxiliaryModelChange = React.useCallback(
+    (task: CodexAuxiliaryTask, model: string) => {
+      updateAuxiliaryRoute(task, { mode: 'model', model });
+    },
+    [updateAuxiliaryRoute],
+  );
   const modelsSdkType = selectedApiFormat === 'anthropic_messages'
     ? '@ai-sdk/anthropic'
     : selectedApiFormat === 'gemini_native' ? '@ai-sdk/google' : '@ai-sdk/openai';
@@ -752,11 +875,34 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
     model?: string;
     configToml?: string;
   }) => {
+    const selectedCategory = mode === 'import'
+      ? 'custom'
+      : (activeProviderCategory === 'official' ? 'official' : 'custom');
+
+    if (selectedCategory === 'custom') {
+      // Same source as the mode selector's "Follow main model (x)" label and
+      // `buildCodexSettingsConfig`: the submitted model field wins, and only a
+      // stale/absent form snapshot falls back to the TOML text.
+      const resolvedDefaultModel = (
+        submittedValues.model || extractCodexModel(submittedValues.configToml) || ''
+      ).trim();
+      for (const route of Object.values(codexAuxiliaryModels)) {
+        if (!route) {
+          continue;
+        }
+        if (route.mode === 'main' && !resolvedDefaultModel) {
+          message.error(t('codex.provider.auxiliaryMainModelRequired'));
+          return;
+        }
+        if (route.mode === 'model' && !route.model.trim()) {
+          message.error(t('codex.provider.auxiliaryModelRequired'));
+          return;
+        }
+      }
+    }
+
     setLoading(true);
     try {
-      const selectedCategory = mode === 'import'
-        ? 'custom'
-        : (activeProviderCategory === 'official' ? 'official' : 'custom');
       const settingsConfig = getFinalSettingsConfig({
         category: selectedCategory,
         apiKey: submittedValues.apiKey || '',
@@ -1189,10 +1335,7 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
                 options={modelOptions}
                 placeholder={t('codex.provider.modelNamePlaceholder')}
                 style={{ width: '100%' }}
-                filterOption={(inputValue, option) =>
-                  (option?.label?.toString().toLowerCase().includes(inputValue.toLowerCase()) ||
-                  option?.value?.toString().toLowerCase().includes(inputValue.toLowerCase())) ?? false
-                }
+                filterOption={filterModelOption}
               />
             </Form.Item>
           </div>
@@ -1275,6 +1418,8 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
           placeholder={t('codex.provider.configTomlPlaceholder')}
         />
       </Form.Item>
+
+      {renderAuxiliaryModels()}
 
       <ProviderFormSections
         editable={!isOfficialMode}
@@ -1412,6 +1557,125 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
       </Form>
     </div>
   );
+
+  const renderAuxiliaryModels = () => {
+    if (isOfficialMode) {
+      return null;
+    }
+
+    const unsupportedShape = memoriesModels.unsupportedShape;
+    const memoriesDisabled = !!unsupportedShape;
+
+    return (
+      <Form.Item wrapperCol={sectionWrapperCol}>
+        <ProviderConfigCollapse
+          title={t('codex.provider.auxiliarySectionTitle')}
+          expanded={auxiliaryExpanded}
+          onExpandedChange={setAuxiliaryExpanded}
+          icon={<Sparkles />}
+        >
+          <div className={styles.auxiliaryBody}>
+            <p className={styles.auxiliaryDescription}>
+              {t('codex.provider.auxiliarySectionHelp')}
+            </p>
+            {AUXILIARY_TASK_ROWS.map(({ task, labelKey }) => {
+              const route = codexAuxiliaryModels[task];
+              const mode: AuxiliaryModeSelection = route?.mode ?? 'auto';
+              return (
+                <div key={task} className={styles.auxiliaryTaskRow}>
+                  <span className={styles.auxiliaryTaskLabel}>{t(labelKey)}</span>
+                  <Select<AuxiliaryModeSelection>
+                    className={styles.auxiliaryModeSelect}
+                    value={mode}
+                    options={[
+                      {
+                        value: 'auto',
+                        label: t('codex.provider.auxiliaryModeAuto'),
+                      },
+                      {
+                        value: 'main',
+                        label: defaultModel
+                          ? t('codex.provider.auxiliaryModeMainWithModel', {
+                              model: defaultModel,
+                            })
+                          : t('codex.provider.auxiliaryModeMainNoDefault'),
+                        disabled: !defaultModel,
+                      },
+                      {
+                        value: 'model',
+                        label: t('codex.provider.auxiliaryModeModel'),
+                      },
+                    ]}
+                    onChange={(nextMode) => handleAuxiliaryModeChange(task, nextMode)}
+                  />
+                  {mode === 'model' && (
+                    <ImeSafeAutoComplete
+                      className={styles.auxiliaryModelInput}
+                      options={modelOptions}
+                      value={route?.mode === 'model' ? route.model : ''}
+                      placeholder={t('codex.provider.auxiliaryModelPlaceholder')}
+                      filterOption={filterModelOption}
+                      style={{ width: '100%' }}
+                      onChange={(value) => handleAuxiliaryModelChange(task, value ?? '')}
+                    />
+                  )}
+                </div>
+              );
+            })}
+            <p className={styles.auxiliaryDescription}>
+              {t('codex.provider.auxiliaryBehaviorHelp')}
+            </p>
+
+            <div className={styles.auxiliaryDivider} />
+
+            <p className={styles.auxiliarySubtitle}>
+              {t('codex.provider.nativeMemoriesTitle')}
+            </p>
+            <p className={styles.auxiliaryDescription}>
+              {t('codex.provider.nativeMemoriesHelp')}
+            </p>
+            {unsupportedShape && (
+              <Alert
+                type="warning"
+                showIcon
+                message={t(MEMORIES_UNSUPPORTED_MESSAGE_KEYS[unsupportedShape])}
+              />
+            )}
+            <div className={styles.nativeMemoriesRow}>
+              <span className={styles.nativeMemoriesLabel}>
+                {t('codex.provider.nativeMemoriesExtractModel')}
+              </span>
+              <ImeSafeAutoComplete
+                className={styles.nativeMemoriesInput}
+                options={modelOptions}
+                value={memoriesDraft.extractModel}
+                disabled={memoriesDisabled}
+                placeholder={t('codex.provider.nativeMemoriesDefaultPlaceholder')}
+                filterOption={filterModelOption}
+                style={{ width: '100%' }}
+                onChange={(value) => handleMemoriesModelChange('extractModel', value ?? '')}
+              />
+            </div>
+            <div className={styles.nativeMemoriesRow}>
+              <span className={styles.nativeMemoriesLabel}>
+                {t('codex.provider.nativeMemoriesConsolidationModel')}
+              </span>
+              <ImeSafeAutoComplete
+                className={styles.nativeMemoriesInput}
+                options={modelOptions}
+                value={memoriesDraft.consolidationModel}
+                disabled={memoriesDisabled}
+                placeholder={t('codex.provider.nativeMemoriesDefaultPlaceholder')}
+                filterOption={filterModelOption}
+                style={{ width: '100%' }}
+                onChange={(value) => handleMemoriesModelChange('consolidationModel', value ?? '')}
+              />
+            </div>
+          </div>
+        </ProviderConfigCollapse>
+      </Form.Item>
+    );
+  };
 
   return (
     <Modal

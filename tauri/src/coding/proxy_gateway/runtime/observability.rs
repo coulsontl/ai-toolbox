@@ -5,10 +5,11 @@ use crate::coding::proxy_gateway::paths::ProxyGatewayPaths;
 use crate::coding::proxy_gateway::request_log;
 use crate::coding::proxy_gateway::transformer::AiProtocol;
 use crate::coding::proxy_gateway::types::{
-    normalize_service_tier, service_tier_cost_multiplier, GatewayCliKey, GatewayRequestLogDetail,
-    GatewayRequestLogSummary, GatewayStreamOutcome, GatewayUsageRecordedEvent,
-    ProxyGatewaySettings,
+    normalize_service_tier, service_tier_cost_multiplier, GatewayAuxiliaryMetadata, GatewayCliKey,
+    GatewayRequestLogDetail, GatewayRequestLogSummary, GatewayRequestTransport, GatewayStreamOutcome,
+    GatewayUsageRecordedEvent, ProxyGatewaySettings,
 };
+use super::compat::codex_aux_task::classify_codex_aux_task;
 use crate::coding::proxy_gateway::usage_parser::stable_usage_request_id;
 use crate::coding::proxy_gateway::usage_stats::{self, RecordRequestSummaryOutcome};
 use chrono::{DateTime, Utc};
@@ -160,6 +161,32 @@ pub(super) fn record_gateway_observability_with_transport(
     let cache_creation_tokens = usage.cache_creation_tokens;
     let total_tokens = usage.total_tokens();
     let settings = context.settings_snapshot();
+    // WebSocket turns are classified for visibility only: `response.create`
+    // frames are not rewritten yet, so the record must say the route was not
+    // applied instead of implying the auxiliary model took effect.
+    let websocket_aux = (transport == GatewayRequestTransport::Websocket
+        && response.cli_key == Some(GatewayCliKey::Codex))
+        .then(|| classify_codex_aux_task(request))
+        .flatten();
+    let aux_task = response
+        .aux_task
+        .or_else(|| websocket_aux.as_ref().map(|task| task.kind()));
+    let aux_route_source = response
+        .aux_route_source
+        .clone()
+        .or_else(|| websocket_aux.as_ref().map(|_| "none".to_string()));
+    let auxiliary = response.auxiliary.clone().or_else(|| {
+        websocket_aux.as_ref().map(|task| GatewayAuxiliaryMetadata {
+            configured_mode: None,
+            raw_kind: Some(task.raw_kind()),
+            target_protocol: response
+                .target_protocol
+                .map(|protocol| protocol.as_str().to_string()),
+            shaped: false,
+            route_applied: false,
+            route_error: None,
+        })
+    });
     let fallback_trace_id = process_local_trace_id(request);
     let upstream_response_body_snapshot = response.upstream_response_body_snapshot();
     // Prefer upstream envelope id for stable usage keys (cc-switch c9ac6efd).
@@ -208,6 +235,7 @@ pub(super) fn record_gateway_observability_with_transport(
         let mut detail = GatewayRequestLogDetail {
             privacy: response.privacy.as_ref().map(|privacy| privacy.detail()),
             websocket,
+            auxiliary: auxiliary.clone(),
             // Detail-only observation markers: they stay in the JSONL record and
             // are deliberately absent from the compact SQLite summary.
             native_tools: response.observations.native_tools.clone(),
@@ -215,6 +243,8 @@ pub(super) fn record_gateway_observability_with_transport(
             summary: GatewayRequestLogSummary {
                 transport,
                 request_kind,
+                aux_task,
+                aux_route_source: aux_route_source.clone(),
                 usage_metadata: None,
                 trace_id,
                 data_source: None,
@@ -751,6 +781,89 @@ mod tests {
         response.upstream_request_body = Some(br#"{"service_tier":"fast"}"#.to_vec());
         response.target_protocol = None;
         assert_eq!(final_upstream_service_tier(&response), None);
+    }
+
+    #[test]
+    fn websocket_auxiliary_turns_are_visible_but_marked_not_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ProxyGatewayPaths::new(dir.path());
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let settings = ProxyGatewaySettings {
+            request_log_enabled: true,
+            store_request_body: true,
+            store_response_body: true,
+            ..Default::default()
+        };
+        let context = GatewayRuntimeContext::new(settings, Some(db.clone()), Some(paths));
+        let started_at = Utc::now();
+
+        let mut request = request_with_id(77);
+        request.method = "WS".to_string();
+        request.path = "/openai/v1/responses".to_string();
+        request.body = serde_json::to_vec(&json!({
+            "type": "response.create",
+            "client_metadata": {
+                "x-codex-turn-metadata": json!({"thread_source": "thread_title"}).to_string()
+            }
+        }))
+        .unwrap();
+        let mut response = response_with_upstream_body(json!({"ok": true}));
+        response.cli_key = Some(GatewayCliKey::Codex);
+        response.provider_id = Some("provider-ws".to_string());
+        response.target_protocol = Some(AiProtocol::OpenAiResponses);
+
+        record_gateway_observability_with_transport(
+            &request,
+            &response,
+            &context,
+            started_at,
+            started_at + chrono::Duration::milliseconds(50),
+            GatewayRequestTransport::Websocket,
+            crate::coding::proxy_gateway::types::GatewayRequestKind::Request,
+            None,
+        );
+
+        let logs = usage_stats::request_logs(
+            &db,
+            &GatewayRequestLogFilters::default(),
+            0,
+            10,
+            true,
+        )
+        .unwrap();
+        let item = logs
+            .data
+            .iter()
+            .find(|item| item.provider_id == "provider-ws")
+            .expect("websocket turn was recorded");
+        assert_eq!(
+            item.aux_task,
+            Some(crate::coding::proxy_gateway::types::CodexAuxTaskKind::Title)
+        );
+        assert_eq!(item.aux_route_source.as_deref(), Some("none"));
+
+        // The DB-only fallback (used when the JSONL detail is missing) reads the
+        // same two columns through a different SELECT; make sure its indices
+        // stay aligned with the list query above.
+        let fallback = usage_stats::request_log_detail_from_summary(&db, &item.trace_id)
+            .unwrap()
+            .expect("summary fallback");
+        assert_eq!(
+            fallback.summary.aux_task,
+            Some(crate::coding::proxy_gateway::types::CodexAuxTaskKind::Title)
+        );
+        assert_eq!(fallback.summary.aux_route_source.as_deref(), Some("none"));
+
+        let detail = request_log::get_request_log_detail(
+            context.paths.as_ref().unwrap(),
+            &item.trace_id,
+        )
+        .unwrap()
+        .expect("JSONL detail");
+        let auxiliary = detail.auxiliary.expect("auxiliary detail");
+        assert_eq!(auxiliary.raw_kind.as_deref(), Some("thread_title"));
+        assert!(!auxiliary.route_applied);
+        assert_eq!(auxiliary.configured_mode, None);
     }
 
     /// The upstream's own confirmation wins, and an echo that carries no premium

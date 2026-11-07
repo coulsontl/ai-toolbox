@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::schema::{sql_string_literal, JsonFieldPath};
 
-pub const TARGET_SCHEMA_VERSION: i32 = 36;
+pub const TARGET_SCHEMA_VERSION: i32 = 37;
 const FUTURE_SCHEMA_ERROR_PREFIX: &str = "AI_TOOLBOX_SQLITE_SCHEMA_TOO_NEW";
 
 // ---- the consolidation table ------------------------------------------------
@@ -254,6 +254,9 @@ pub fn run_all(conn: &mut Connection) -> Result<(), String> {
     }
     if current_version < 36 {
         run_migration_step(conn, 36, migrate_v36)?;
+    }
+    if current_version < 37 {
+        run_migration_step(conn, 37, migrate_v37)?;
     }
 
     Ok(())
@@ -1946,6 +1949,15 @@ const MODEL_PRICING_SEED: &[(&str, &str, &str, &str, &str, &str)] = &[
         ),
 ];
 
+/// Codex auxiliary-task observability: task kind and how the model was chosen.
+/// Both are compact list fields; the raw marker and shaping outcome stay in the
+/// JSONL detail. Old rows stay NULL and read as ordinary requests.
+fn migrate_v37(conn: &Connection) -> Result<(), String> {
+    add_column_if_missing(conn, "proxy_request_logs", "aux_task", "TEXT")?;
+    add_column_if_missing(conn, "proxy_request_logs", "aux_route_source", "TEXT")?;
+    Ok(())
+}
+
 fn seed_model_pricing(conn: &Connection) -> Result<(), String> {
     for (model_id, display_name, input, output, cache_read, cache_creation) in MODEL_PRICING_SEED {
         conn.execute(
@@ -1984,4 +1996,22 @@ fn create_column_index(conn: &Connection, table_name: &str, column: &str) -> Res
         "CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} ({column});"
     ))
     .map_err(|error| format!("Failed to create SQLite index {index_name}: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrate_v37_adds_auxiliary_columns_idempotently() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        conn.execute_batch("CREATE TABLE proxy_request_logs (id INTEGER PRIMARY KEY);")
+            .expect("create proxy_request_logs");
+
+        migrate_v37(&conn).expect("first migration");
+        migrate_v37(&conn).expect("second migration");
+
+        assert!(table_has_column(&conn, "proxy_request_logs", "aux_task").unwrap());
+        assert!(table_has_column(&conn, "proxy_request_logs", "aux_route_source").unwrap());
+    }
 }

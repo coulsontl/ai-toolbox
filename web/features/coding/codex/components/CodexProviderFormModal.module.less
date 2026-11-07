@@ -28,3 +28,79 @@
   width: 240px;
   max-width: 100%;
 }
+
+.auxiliaryBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.auxiliaryDescription {
+  margin: 0;
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.auxiliarySubtitle {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.auxiliaryDivider {
+  height: 1px;
+  margin: 2px 0;
+  background: var(--color-border);
+}
+
+.auxiliaryTaskRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.auxiliaryTaskLabel {
+  flex: 0 0 128px;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.auxiliaryModeSelect {
+  flex: 0 0 230px;
+  max-width: 100%;
+}
+
+.auxiliaryModelInput {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.nativeMemoriesRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.nativeMemoriesLabel {
+  flex: 0 0 128px;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.nativeMemoriesInput {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .auxiliaryTaskLabel,
+  .nativeMemoriesLabel {
+    flex-basis: 100%;
+  }
+}

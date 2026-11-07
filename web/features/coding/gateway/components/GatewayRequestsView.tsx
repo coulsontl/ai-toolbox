@@ -30,6 +30,7 @@ import {
   listProxyGatewayRequestLogs,
   type GatewaySessionRebuildProgress,
   type GatewayUsageTool,
+  type GatewayAuxTaskKind,
   GATEWAY_USAGE_TOOLS,
   type GatewayRequestLogDetail,
   type GatewayRequestLogFilters,
@@ -76,6 +77,17 @@ const REQUEST_DETAIL_TABS: RequestDetailTabKey[] = ['record', 'body', 'headers',
 const COLLAPSED_LINE_LIMIT = 10;
 const COLLAPSED_CHARACTER_LIMIT = 8_000;
 const PAGE_SIZE = 20;
+
+const AUX_TASK_LABEL_KEYS: Record<GatewayAuxTaskKind, string> = {
+  title: 'gateway.page.requests.auxTask.title',
+  description: 'gateway.page.requests.auxTask.description',
+  summary: 'gateway.page.requests.auxTask.summary',
+  prediction: 'gateway.page.requests.auxTask.prediction',
+  memory: 'gateway.page.requests.auxTask.memory',
+  auto_review: 'gateway.page.requests.auxTask.auto_review',
+  other: 'gateway.page.requests.auxTask.other',
+};
+
 const EXPORT_NOTICE_DURATION_MS = 3000;
 /** A rebuild is minutes long; one second keeps the phase label responsive. */
 const REBUILD_POLL_INTERVAL_MS = 1000;
@@ -768,6 +780,53 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
             : detail.data_source === 'session'
               ? t('gateway.page.statistics.modelUnavailable')
               : t('gateway.page.requests.notApplicable')}</strong>
+          {detail.aux_task && (() => {
+            const auxiliary = detail.auxiliary;
+            const routeParts = [
+              detail.aux_route_source
+                ? t(`gateway.page.requests.auxTask.route.${detail.aux_route_source}`)
+                : null,
+              auxiliary?.configured_mode
+                ? t(`gateway.page.requests.auxTask.mode.${auxiliary.configured_mode}`)
+                : null,
+              detail.upstream_model_id
+                ? t('gateway.page.requests.auxTask.modelValue', { model: detail.upstream_model_id })
+                : null,
+              auxiliary?.target_protocol
+                ? t('gateway.page.requests.auxTask.protocolValue', {
+                    protocol: auxiliary.target_protocol,
+                  })
+                : null,
+              auxiliary
+                ? (auxiliary.shaped
+                    ? t('gateway.page.requests.auxTask.shaped')
+                    : t('gateway.page.requests.auxTask.notShaped'))
+                : null,
+            ].filter((part): part is string => Boolean(part));
+            return (
+              <>
+                <span>{t('gateway.page.requests.fields.purpose')}</span>
+                <strong title={auxiliary?.raw_kind ?? undefined}>
+                  {t(AUX_TASK_LABEL_KEYS[detail.aux_task])}
+                  {detail.aux_task === 'other' && auxiliary?.raw_kind
+                    ? ` (${auxiliary.raw_kind})`
+                    : ''}
+                </strong>
+                {routeParts.length > 0 && (
+                  <>
+                    <span>{t('gateway.page.requests.fields.auxRoute')}</span>
+                    <strong>{routeParts.join(' · ')}</strong>
+                  </>
+                )}
+                {auxiliary?.route_error && (
+                  <>
+                    <span>{t('gateway.page.requests.fields.auxRouteError')}</span>
+                    <strong className={styles.detailNote}>{auxiliary.route_error}</strong>
+                  </>
+                )}
+              </>
+            );
+          })()}
           <span>{t('gateway.page.requests.fields.status')}</span>
           <strong title={detail.data_source === 'session' ? t('gateway.page.requests.localSessionHint') : undefined}>
             {detail.data_source === 'session' ? '-' : websocketStatusKey
@@ -1022,6 +1081,11 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
                   {compactionLabelKey ? (
                     <span className={styles.modelBadge} title={t('gateway.page.requests.compaction.hint')}>
                       {t(compactionLabelKey)}
+                    </span>
+                  ) : null}
+                  {record.aux_task ? (
+                    <span className={styles.modelBadge} title={t('gateway.page.requests.auxTask.hint')}>
+                      {t(AUX_TASK_LABEL_KEYS[record.aux_task])}
                     </span>
                   ) : null}
                   {transportBadgeKey ? (

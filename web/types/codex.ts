@@ -99,6 +99,22 @@ export interface CodexModelCatalog {
   models: CodexCatalogModel[];
 }
 
+/** Auxiliary tasks with a per-provider route. */
+export type CodexAuxiliaryTask =
+  | 'title'
+  | 'description'
+  | 'summary'
+  | 'prediction'
+  | 'memory';
+
+/**
+ * Three-state auxiliary route. `auto` is represented by the key being absent,
+ * never by a stored `{ mode: 'auto' }` object.
+ */
+export type CodexAuxiliaryModelRoute =
+  | { mode: 'main' }
+  | { mode: 'model'; model: string };
+
 /**
  * Codex Provider settings configuration
  * Contains auth.json and config.toml content
@@ -107,6 +123,12 @@ export interface CodexSettingsConfig {
   auth?: CodexAuthConfig;
   config?: string; // TOML format string
   modelCatalog?: CodexModelCatalog;
+  /**
+   * Per-task auxiliary model routes. A missing task key means `auto`: keep the
+   * model Codex requested when the channel serves it, otherwise fall back to
+   * the provider's default model.
+   */
+  auxiliaryModels?: Partial<Record<CodexAuxiliaryTask, CodexAuxiliaryModelRoute>>;
   /**
    * Provider-level Codex auto-review model. When set, every generated
    * model_catalog entry gets auto_review_model_override so guardian review

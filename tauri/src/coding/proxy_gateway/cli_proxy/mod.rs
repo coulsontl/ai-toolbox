@@ -4303,6 +4303,8 @@ mod tests {
                 fable_model: None,
                 reasoning_model: None,
                 rewrite_rules: Vec::new(),
+                auxiliary_models: std::collections::BTreeMap::new(),
+                native_memory_models: Vec::new(),
             },
         }
     }

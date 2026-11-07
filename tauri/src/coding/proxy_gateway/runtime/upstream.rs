@@ -34,6 +34,8 @@ use super::routes::{build_target_url, match_gateway_route, split_request_target,
 use super::side_stores::{
     record_gemini_sse_stream, record_responses_sse_stream, GeminiShadowSessionKey,
 };
+use super::compat::codex_aux_response::{build_aux_sse, shape_aux_response};
+use super::compat::codex_aux_task::{classify_codex_aux_task, CodexAuxTask};
 use super::GatewayRuntimeContext;
 use super::{cache_injector, thinking_budget};
 use crate::coding::proxy_gateway::model_health::{self, GatewayFailureKind};
@@ -46,9 +48,9 @@ use crate::coding::proxy_gateway::transformer::{
     ConversionContext, ConversionRoute, InstructionPlacement,
 };
 use crate::coding::proxy_gateway::types::{
-    normalize_service_tier, service_tier_wire_value, CodexChatReasoningMeta, GatewayCliKey,
-    GatewayFailoverEvent, GatewayProviderAttempt, GatewayProxyMode, GatewayStreamOutcome,
-    ProviderGatewayMeta, ProviderModelHealthKey,
+    normalize_service_tier, service_tier_wire_value, CodexChatReasoningMeta,
+    GatewayAuxiliaryMetadata, GatewayCliKey, GatewayFailoverEvent, GatewayProviderAttempt,
+    GatewayProxyMode, GatewayStreamOutcome, ProviderGatewayMeta, ProviderModelHealthKey,
 };
 use crate::coding::proxy_gateway::usage_parser::{
     flattened_flush_boundary, for_each_flattened_sse_field, from_response_body_with_provider_type,
@@ -946,6 +948,31 @@ pub(super) async fn route_request_with_options(
         };
     let mut response =
         forward_to_upstream(request, db, context, &route, options, privacy.as_ref()).await;
+    if let Some(task) = (route.cli_key == GatewayCliKey::Codex)
+        .then(|| crate::coding::proxy_gateway::runtime::compat::codex_aux_task::classify_codex_aux_task(request))
+        .flatten()
+    {
+        if response.aux_task.is_none() {
+            response.aux_task = Some(task.kind());
+        }
+        if response.aux_route_source.is_none() {
+            response.aux_route_source = Some("none".to_string());
+        }
+        if response.auxiliary.is_none() {
+            response.auxiliary = Some(GatewayAuxiliaryMetadata {
+                // The provider was never reached, so the configured mode is not
+                // knowable here; the detail still records the wire task.
+                configured_mode: None,
+                raw_kind: Some(task.raw_kind()),
+                target_protocol: response
+                    .target_protocol
+                    .map(|protocol| protocol.as_str().to_string()),
+                shaped: false,
+                route_applied: response.provider_id.is_some(),
+                route_error: None,
+            });
+        }
+    }
     if let Some(privacy) = privacy {
         privacy.set_usage_provider(response.provider_type.clone());
         if let Some(stream) = response.body_stream.take() {
@@ -1032,6 +1059,9 @@ async fn forward_to_upstream(
 ) -> DebugHttpResponse {
     let requested_model =
         extract_requested_model(request, route).unwrap_or_else(|| "unknown".to_string());
+    let aux_task = (route.cli_key == GatewayCliKey::Codex)
+        .then(|| crate::coding::proxy_gateway::runtime::compat::codex_aux_task::classify_codex_aux_task(request))
+        .flatten();
     let mut provider_candidates = match context.load_candidate_providers(db, route.cli_key).await {
         Ok(provider_candidates) if !provider_candidates.providers.is_empty() => provider_candidates,
         Ok(_) => {
@@ -1226,27 +1256,93 @@ async fn forward_to_upstream(
         && providers
             .iter()
             .any(|provider| !provider.meta.declared_models.is_empty());
+    let candidate_count = providers.len();
+    let mut skipped_by_aux_config: Vec<(String, String, Option<String>)> = Vec::new();
 
     'providers: for provider in providers {
         // Aggregate mode never runs the per-CLI default/family mapping: the
         // prefix (or the published slug) already names the exact upstream
         // model. A bare model name, though, is a user-typed model id exactly
         // like in the other modes, so its per-channel rewrite rules still apply.
-        let upstream_model_id = match aggregate_upstream_model.as_deref() {
-            Some(model) => resolve_aggregate_upstream_model(
-                model,
-                aggregate_model_is_explicit,
+        //
+        // Auxiliary resolution judges the model this request resolves to on the
+        // candidate, never the raw requested name: an aggregate slug never
+        // appears in a site's `declared_models`, so judging the slug would
+        // make every automatic-mode auxiliary turn fall back to the site
+        // default (or forward the slug itself when the site has no catalog).
+        let aux_requested_model = aggregate_upstream_model
+            .as_deref()
+            .unwrap_or(requested_model.as_str());
+        let aux_resolution = match aux_task.as_ref() {
+            Some(task) => match resolve_codex_aux_model(
+                aux_requested_model,
                 &provider,
+                task,
                 allow_provider_model_mapping,
-            ),
-            None => resolve_upstream_model_id(
-                request,
-                &requested_model,
-                &provider,
-                apply_failover_model_mapping,
-                allow_provider_model_mapping,
-            ),
+            ) {
+                Ok(resolution) => resolution,
+                Err(error) => {
+                    // A per-candidate config error must not poison another
+                    // candidate that can serve this auxiliary call.
+                    if candidate_count > 1 {
+                        skipped_by_aux_config.push((
+                            provider.name.clone(),
+                            error,
+                            aux_configured_mode(task, &provider),
+                        ));
+                        continue;
+                    }
+                    let mut response = json_response(
+                        400,
+                        "Bad Request",
+                        json!({
+                            "error": error,
+                            "message": format!(
+                                "Codex auxiliary task '{}' (requested model '{}') cannot use provider '{}': {error}",
+                                task.raw_kind(),
+                                requested_model,
+                                provider.name,
+                            ),
+                        }),
+                        route.route_name,
+                        None,
+                        "auxiliary model route is incomplete for the selected provider",
+                    );
+                    response.cli_key = Some(route.cli_key);
+                    response.requested_model = Some(requested_model.clone());
+                    response.aux_task = Some(task.kind());
+                    response.aux_route_source = Some("none".to_string());
+                    response.auxiliary = Some(aux_error_metadata(task, &provider, error));
+                    return response;
+                }
+            },
+            None => None,
         };
+        let aux_route_source = aux_resolution
+            .as_ref()
+            .map(|resolution| resolution.source.to_string());
+        let upstream_model_id = match aux_resolution {
+            Some(resolution) => resolution.model,
+            None => match aggregate_upstream_model.as_deref() {
+                Some(model) => resolve_aggregate_upstream_model(
+                    model,
+                    aggregate_model_is_explicit,
+                    &provider,
+                    allow_provider_model_mapping,
+                ),
+                None => resolve_upstream_model_id(
+                    request,
+                    &requested_model,
+                    &provider,
+                    apply_failover_model_mapping,
+                    allow_provider_model_mapping,
+                ),
+            },
+        };
+        // Both configured routes name an exact upstream model; only automatic
+        // mode is subject to the catalog filter.
+        let aux_model_is_configured =
+            matches!(aux_route_source.as_deref(), Some("explicit" | "main"));
         let health_key = ProviderModelHealthKey {
             cli_key: route.cli_key,
             provider_id: provider.id.clone(),
@@ -1266,7 +1362,8 @@ async fn forward_to_upstream(
         // Same shape as the cooldown skip above — no attempt counted, no health
         // penalty — and the single-provider shortcut applies for the same
         // reason: with one candidate there is nothing to fail over to.
-        if !is_single_provider
+        if !aux_model_is_configured
+            && !is_single_provider
             && is_undeclared_model_skip(
                 settings.skip_undeclared_models,
                 any_candidate_declares_models,
@@ -1327,6 +1424,8 @@ async fn forward_to_upstream(
                         Some(provider.meta.pricing_model_source.clone());
                     response.requested_model = Some(requested_model.clone());
                     response.upstream_model_id = Some(upstream_model_id.clone());
+                    response.aux_task = aux_task.as_ref().map(|task| task.kind());
+                    response.aux_route_source = aux_route_source.clone();
                     response.attempt_count = attempt_count;
                     response.provider_attempt_count = provider_retry_count.saturating_add(1);
                     response.failover = attempted_provider_count > 1;
@@ -1489,6 +1588,11 @@ async fn forward_to_upstream(
                         Some(provider.meta.pricing_model_source.clone());
                     response.requested_model = Some(requested_model.clone());
                     response.upstream_model_id = Some(upstream_model_id.clone());
+                    response.aux_task = aux_task.as_ref().map(|task| task.kind());
+                    response.aux_route_source = aux_route_source.clone();
+                    response.auxiliary = aux_task
+                        .as_ref()
+                        .map(|task| aux_metadata(task, &provider, false));
                     response.upstream_request_body = error.upstream_request_body;
                     response.target_protocol = Some(provider.target_protocol);
                     response.upstream_response_body = error.upstream_response_body;
@@ -1518,6 +1622,44 @@ async fn forward_to_upstream(
 
     save_health_registry_if_needed(context, health_changed);
     if let Some(mut response) = last_failure_response {
+        response.provider_attempts = provider_attempts;
+        return response;
+    }
+
+    if let Some((provider_name, error, configured_mode)) = skipped_by_aux_config.first() {
+        let task_label = aux_task
+            .as_ref()
+            .map(CodexAuxTask::raw_kind)
+            .unwrap_or_else(|| "unknown".to_string());
+        let mut response = json_response(
+            400,
+            "Bad Request",
+            json!({
+                "error": error,
+                "message": format!(
+                    "Codex auxiliary task '{task_label}' (requested model '{requested_model}') cannot use provider '{provider_name}': {error}",
+                ),
+            }),
+            route.route_name,
+            None,
+            "every candidate failed to resolve the auxiliary model",
+        );
+        response.cli_key = Some(route.cli_key);
+        response.requested_model = Some(requested_model);
+        if let Some(task) = aux_task.as_ref() {
+            response.aux_task = Some(task.kind());
+            response.auxiliary = Some(GatewayAuxiliaryMetadata {
+                configured_mode: configured_mode.clone(),
+                raw_kind: Some(task.raw_kind()),
+                target_protocol: None,
+                shaped: false,
+                // No upstream attempt was made, so the route was never applied.
+                route_applied: false,
+                route_error: Some(error.clone()),
+            });
+        }
+        response.aux_route_source = Some("none".to_string());
+        response.error_category = Some("aux_task_model_missing".to_string());
         response.provider_attempts = provider_attempts;
         return response;
     }
@@ -1569,6 +1711,31 @@ async fn forward_to_upstream(
     response
 }
 
+fn force_aux_non_streaming_body(body: Vec<u8>) -> Vec<u8> {
+    let Ok(mut value) = serde_json::from_slice::<Value>(&body) else {
+        return body;
+    };
+    let Some(object) = value.as_object_mut() else {
+        return body;
+    };
+    object.insert("stream".to_string(), Value::Bool(false));
+    object.remove("stream_options");
+    serde_json::to_vec(&value).unwrap_or(body)
+}
+
+fn force_aux_non_streaming_headers(headers: &mut UpstreamHeaders) {
+    headers
+        .map
+        .insert(ACCEPT, HeaderValue::from_static("application/json"));
+    headers
+        .preserved
+        .retain(|header| !header.name.eq_ignore_ascii_case("accept"));
+    headers.preserved.push(PreservedHeader {
+        name: ACCEPT.as_str().to_string(),
+        value: HeaderValue::from_static("application/json"),
+    });
+}
+
 async fn send_upstream_request(
     context: &GatewayRuntimeContext,
     request: &DebugHttpRequest,
@@ -1587,6 +1754,12 @@ async fn send_upstream_request(
     upstream_response_snapshot_limit: Option<usize>,
     privacy: Option<&PrivacyRequest>,
 ) -> Result<DebugHttpResponse, GatewayForwardError> {
+    let aux_task = (route.cli_key == GatewayCliKey::Codex)
+        .then(|| classify_codex_aux_task(request))
+        .flatten();
+    let aux_shaping = aux_task
+        .as_ref()
+        .is_some_and(CodexAuxTask::is_shaped);
     let compact_compat = CodexResponsesCompactCompat::new(route, provider);
     let remote_compaction = RemoteCompactionCompat::resolve(
         route,
@@ -1629,6 +1802,9 @@ async fn send_upstream_request(
         remote_compaction,
     )?;
     let mut upstream_body = prepared_upstream_body.body;
+    if aux_shaping {
+        upstream_body = force_aux_non_streaming_body(upstream_body);
+    }
     let conversion_context = prepared_upstream_body.conversion_context;
     let lossy_warnings = prepared_upstream_body.lossy_warnings;
     let pipeline = prepared_upstream_body.pipeline;
@@ -1651,7 +1827,8 @@ async fn send_upstream_request(
             })?;
     }
     let upstream_body_snapshot = upstream_body.clone();
-    let target_streaming = request_declares_streaming(request) || route_declares_streaming(route);
+    let target_streaming =
+        !aux_shaping && (request_declares_streaming(request) || route_declares_streaming(route));
     // Streaming must not use a total Client::timeout that covers the whole SSE body.
     let client = if target_streaming {
         http_client::client_streaming_no_compression(db).await
@@ -1666,7 +1843,7 @@ async fn send_upstream_request(
         provider.api_key = copilot_token;
         provider.auth_strategy = ProviderAuthStrategy::Bearer;
     }
-    let headers =
+    let mut headers =
         build_upstream_headers(request, provider, Some(&upstream_body)).map_err(|message| {
             GatewayForwardError {
                 message,
@@ -1676,6 +1853,9 @@ async fn send_upstream_request(
                 upstream_response_body_bytes: 0,
             }
         })?;
+    if aux_shaping {
+        force_aux_non_streaming_headers(&mut headers);
+    }
     let forwarded_path = upstream_forwarded_path(
         route,
         provider,
@@ -2402,6 +2582,10 @@ async fn build_gateway_response(
     mut observations: super::observations::RequestObservations,
 ) -> Result<DebugHttpResponse, GatewayForwardError> {
     let status = response.status();
+    let aux_task = (provider.cli_key == GatewayCliKey::Codex)
+        .then(|| classify_codex_aux_task(request))
+        .flatten();
+    let aux_shaped_task = aux_task.as_ref().filter(|task| task.is_shaped());
     let mut response_headers = filtered_response_headers(response.headers());
     append_lossy_warning_header(&mut response_headers, &lossy_warnings);
     // Client-facing protocol of this route, used to render a protocol-dialect
@@ -2409,10 +2593,11 @@ async fn build_gateway_response(
     let source_protocol = source_protocol_from_route(route);
     let provider_kind =
         ProviderBodyCompat::from_provider_meta(Some(&provider.meta), provider.target_protocol);
-    let should_stream = should_stream_response(request, route, response.headers(), status.as_u16())
-        || ((200..400).contains(&status.as_u16())
-            && provider_kind == Some(ProviderBodyCompat::Ollama)
-            && response_is_ndjson(response.headers()));
+    let should_stream = aux_shaped_task.is_none()
+        && (should_stream_response(request, route, response.headers(), status.as_u16())
+            || ((200..400).contains(&status.as_u16())
+                && provider_kind == Some(ProviderBodyCompat::Ollama)
+                && response_is_ndjson(response.headers())));
     let response_conversion_route = conversion_route.map(ConversionRoute::reverse);
     // Align with cc-switch / design: restore only on HTTP 2xx, not 3xx.
     let should_restore_xai_namespaces =
@@ -2428,6 +2613,14 @@ async fn build_gateway_response(
     .or_else(|| {
         compaction_sse_aggregation_kind(
             remote_compaction,
+            provider,
+            response.headers(),
+            status.as_u16(),
+        )
+    })
+    .or_else(|| {
+        aux_sse_aggregation_kind(
+            aux_shaped_task,
             provider,
             response.headers(),
             status.as_u16(),
@@ -2497,6 +2690,24 @@ async fn build_gateway_response(
                     })?;
             }
         }
+        let mut aux_shaped = false;
+        if let Some(task) = aux_shaped_task {
+            let outcome = shape_aux_response(
+                task,
+                &request.body,
+                &body,
+                &upstream_response_body,
+            )
+            .map_err(|message| GatewayForwardError {
+                message,
+                kind: GatewayFailureKind::EmptyResponse,
+                upstream_request_body: Some(upstream_body_snapshot.clone()),
+                upstream_response_body: Some(upstream_response_body.clone()),
+                upstream_response_body_bytes,
+            })?;
+            body = outcome.body;
+            aux_shaped = outcome.shaped;
+        }
         if should_restore_xai_namespaces {
             body = restore_xai_namespace_json_body(&body, &xai_namespace_restore_map);
         }
@@ -2537,13 +2748,23 @@ async fn build_gateway_response(
         // Aggregation decided how the *upstream* answer is read, not how the
         // client-facing reply is rendered: a compaction turn whose client asked
         // for a stream still leaves as the SSE lifecycle it waits on.
-        let (body, body_stream, is_streaming) = render_compaction_sse_if_streaming(
-            request,
-            body,
-            remote_compaction,
-            status.as_u16(),
-            &mut response_headers,
-        );
+        let (body, body_stream, is_streaming) = if aux_shaped_task.is_some() {
+            render_aux_sse_if_streaming(
+                request,
+                body,
+                &upstream_response_body,
+                status.as_u16(),
+                &mut response_headers,
+            )?
+        } else {
+            render_compaction_sse_if_streaming(
+                request,
+                body,
+                remote_compaction,
+                status.as_u16(),
+                &mut response_headers,
+            )
+        };
         let response_body_bytes = if is_streaming { 0 } else { body.len() as u64 };
 
         return Ok(DebugHttpResponse {
@@ -2563,6 +2784,11 @@ async fn build_gateway_response(
             provider_name: Some(provider.name.clone()),
             requested_model: None,
             upstream_model_id: None,
+            aux_task: aux_task.as_ref().map(|task| task.kind()),
+            aux_route_source: None,
+            auxiliary: aux_task
+                .as_ref()
+                .map(|task| aux_metadata(task, provider, aux_shaped)),
             served_service_tier: served_tier,
             compaction_mode,
             fast_cost_multiplier: provider.meta.fast_cost_multiplier.clone(),
@@ -2668,6 +2894,11 @@ async fn build_gateway_response(
             provider_name: Some(provider.name.clone()),
             requested_model: None,
             upstream_model_id: None,
+            aux_task: aux_task.as_ref().map(|task| task.kind()),
+            aux_route_source: None,
+            auxiliary: aux_task
+                .as_ref()
+                .map(|task| aux_metadata(task, provider, false)),
             served_service_tier: None,
             compaction_mode: None,
             fast_cost_multiplier: provider.meta.fast_cost_multiplier.clone(),
@@ -2820,6 +3051,26 @@ async fn build_gateway_response(
         }
         set_response_content_type(&mut response_headers, "application/json");
     }
+    let mut aux_shaped = false;
+    if let Some(task) = aux_shaped_task {
+        if served {
+            let outcome = shape_aux_response(
+                task,
+                &request.body,
+                &body,
+                &upstream_response_body,
+            )
+            .map_err(|message| GatewayForwardError {
+                message,
+                kind: GatewayFailureKind::EmptyResponse,
+                upstream_request_body: Some(upstream_body_snapshot.clone()),
+                upstream_response_body: Some(upstream_response_body.clone()),
+                upstream_response_body_bytes,
+            })?;
+            body = outcome.body;
+            aux_shaped = outcome.shaped;
+        }
+    }
     if should_restore_xai_namespaces {
         body = restore_xai_namespace_json_body(&body, &xai_namespace_restore_map);
     }
@@ -2863,13 +3114,26 @@ async fn build_gateway_response(
     // Render the finished item as the SSE stream the client is waiting for —
     // only when it actually asked for one, so a non-streaming caller still gets
     // the JSON item instead of a `text/event-stream` body it cannot parse.
-    let (body, body_stream, is_streaming) = render_compaction_sse_if_streaming(
-        request,
-        body,
-        remote_compaction,
-        status.as_u16(),
-        &mut response_headers,
-    );
+    let aux_upstream_body = stored_upstream_response_body
+        .clone()
+        .unwrap_or_else(|| body.clone());
+    let (body, body_stream, is_streaming) = if aux_shaped_task.is_some() {
+        render_aux_sse_if_streaming(
+            request,
+            body,
+            &aux_upstream_body,
+            status.as_u16(),
+            &mut response_headers,
+        )?
+    } else {
+        render_compaction_sse_if_streaming(
+            request,
+            body,
+            remote_compaction,
+            status.as_u16(),
+            &mut response_headers,
+        )
+    };
     let response_body_bytes = if is_streaming { 0 } else { body.len() as u64 };
 
     let gateway_response = DebugHttpResponse {
@@ -2889,6 +3153,11 @@ async fn build_gateway_response(
         provider_name: Some(provider.name.clone()),
         requested_model: None,
         upstream_model_id: None,
+        aux_task: aux_task.as_ref().map(|task| task.kind()),
+        aux_route_source: None,
+        auxiliary: aux_task
+            .as_ref()
+            .map(|task| aux_metadata(task, provider, aux_shaped)),
         served_service_tier: served_tier,
         compaction_mode,
         fast_cost_multiplier: provider.meta.fast_cost_multiplier.clone(),
@@ -3049,6 +3318,19 @@ pub(super) fn request_is_local_compaction(request: &DebugHttpRequest) -> bool {
 /// recording it as a refusal would poison the provider until a restart.
 fn should_read_pass_through_compaction_reply(status_code: u16) -> bool {
     (200..300).contains(&status_code) || matches!(status_code, 400 | 422)
+}
+
+fn aux_sse_aggregation_kind(
+    task: Option<&CodexAuxTask>,
+    provider: &UpstreamProvider,
+    headers: &HeaderMap,
+    status_code: u16,
+) -> Option<SseAggregateKind> {
+    let task = task?;
+    if !task.is_shaped() || !(200..400).contains(&status_code) || !response_is_sse(headers) {
+        return None;
+    }
+    Some(SseAggregateKind::from_protocol(provider.target_protocol))
 }
 
 fn compaction_sse_aggregation_kind(
@@ -5068,6 +5350,9 @@ fn buffered_gateway_response(
         pricing_model_source: Some(provider.meta.pricing_model_source.clone()),
         requested_model: None,
         upstream_model_id: None,
+        aux_task: None,
+        aux_route_source: None,
+        auxiliary: None,
         served_service_tier: served_tier,
         compaction_mode,
         fast_cost_multiplier: provider.meta.fast_cost_multiplier.clone(),
@@ -5171,6 +5456,12 @@ fn streaming_first_chunk_failure_response(
     failure_response.provider_attempt_count = provider_attempt_count;
     failure_response.failover = failover;
     failure_response.observations = response.observations;
+    // A failed request is exactly where a user wants to see which auxiliary
+    // task it was and which route was chosen; carry the markers over like the
+    // empty-success builder below does.
+    failure_response.aux_task = response.aux_task;
+    failure_response.aux_route_source = response.aux_route_source;
+    failure_response.auxiliary = response.auxiliary;
     failure_response
 }
 
@@ -5218,6 +5509,9 @@ fn empty_success_failure_response(
     // The request-side markers were already collected before the failure, and a
     // failed request is exactly where a user wants to see what was rewritten.
     failure_response.observations = response.observations;
+    failure_response.aux_task = response.aux_task;
+    failure_response.aux_route_source = response.aux_route_source;
+    failure_response.auxiliary = response.auxiliary;
     failure_response
 }
 
@@ -5395,6 +5689,29 @@ fn should_attempt_responses_encrypted_content_rectifier(
 ///
 /// Only a 2xx body was rewritten into an item, so only a 2xx body can be
 /// rendered: an error envelope is passed through for the client to read.
+fn render_aux_sse_if_streaming(
+    request: &DebugHttpRequest,
+    body: Vec<u8>,
+    upstream_body: &[u8],
+    status_code: u16,
+    response_headers: &mut Vec<(String, String)>,
+) -> Result<(Vec<u8>, Option<DebugBodyStream>, bool), GatewayForwardError> {
+    if !(200..400).contains(&status_code) || !request_declares_streaming(request) {
+        return Ok((body, None, false));
+    }
+    let stream = build_aux_sse(&body, upstream_body).map_err(|message| GatewayForwardError {
+        message,
+        kind: GatewayFailureKind::EmptyResponse,
+        upstream_request_body: None,
+        upstream_response_body: Some(upstream_body.to_vec()),
+        upstream_response_body_bytes: upstream_body.len() as u64,
+    })?;
+    set_response_content_type(response_headers, "text/event-stream");
+    let bytes = stream.into_bytes();
+    let stream = futures_util::stream::once(async move { Ok(bytes) });
+    Ok((Vec::new(), Some(Box::pin(stream) as DebugBodyStream), true))
+}
+
 fn render_compaction_sse_if_streaming(
     request: &DebugHttpRequest,
     body: Vec<u8>,
@@ -6274,6 +6591,146 @@ fn is_codex_auto_review_request(request: &DebugHttpRequest) -> bool {
         .is_some_and(|value| {
             value.eq_ignore_ascii_case("guardian") || value.eq_ignore_ascii_case("auto_review")
         })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AuxModelResolution {
+    model: String,
+    /// `explicit` / `main` / `auto_kept` / `auto_fallback`.
+    source: &'static str,
+}
+
+/// Resolve a Codex auxiliary request's model inside one candidate provider.
+///
+/// This intentionally runs before [`resolve_upstream_model_id`]: an explicit or
+/// `main` route is an exact upstream model and must not be replaced by the
+/// provider's family/default mapping. Automatic mode keeps the requested model
+/// when the channel declares it, and only falls back to `default_model` when it
+/// does not.
+fn resolve_codex_aux_model(
+    requested_model: &str,
+    provider: &UpstreamProvider,
+    task: &crate::coding::proxy_gateway::runtime::compat::codex_aux_task::CodexAuxTask,
+    allow_provider_model_mapping: bool,
+) -> Result<Option<AuxModelResolution>, String> {
+    use crate::coding::proxy_gateway::runtime::compat::codex_aux_task::CodexAuxiliaryModelRoute;
+
+    if !allow_provider_model_mapping {
+        return Ok(None);
+    }
+    let Some(route_key) = task.route_key() else {
+        return Ok(None);
+    };
+    let normalized_requested = strip_one_m_context_marker(requested_model).trim();
+    if let Some(route) = provider.model_mapping.auxiliary_models.get(route_key) {
+        let model = match route {
+            CodexAuxiliaryModelRoute::Main => provider
+                .model_mapping
+                .default_model
+                .clone()
+                .ok_or_else(|| "aux_task_main_model_missing".to_string())?,
+            CodexAuxiliaryModelRoute::Model { model } => model.clone(),
+        };
+        return Ok(Some(AuxModelResolution {
+            model: resolve_aux_model_rewrite(provider, &model, allow_provider_model_mapping),
+            source: if route.configured_mode() == "main" {
+                "main"
+            } else {
+                "explicit"
+            },
+        }));
+    }
+
+    if *task == crate::coding::proxy_gateway::runtime::compat::codex_aux_task::CodexAuxTask::Memory
+        && provider
+            .model_mapping
+            .native_memory_models
+            .iter()
+            .any(|model| model == normalized_requested)
+    {
+        return Ok(Some(AuxModelResolution {
+            model: resolve_aux_model_rewrite(
+                provider,
+                normalized_requested,
+                allow_provider_model_mapping,
+            ),
+            source: "auto_kept",
+        }));
+    }
+
+    if !provider.meta.declared_models.is_empty()
+        && !provider
+            .meta
+            .declared_models
+            .iter()
+            .any(|model| model == normalized_requested)
+    {
+        if let Some(default_model) = provider.model_mapping.default_model.as_deref() {
+            return Ok(Some(AuxModelResolution {
+                model: resolve_aux_model_rewrite(
+                    provider,
+                    default_model,
+                    allow_provider_model_mapping,
+                ),
+                source: "auto_fallback",
+            }));
+        }
+    }
+
+    Ok(Some(AuxModelResolution {
+        model: resolve_aux_model_rewrite(provider, normalized_requested, allow_provider_model_mapping),
+        source: "auto_kept",
+    }))
+}
+
+fn resolve_aux_model_rewrite(
+    provider: &UpstreamProvider,
+    model: &str,
+    allow_provider_model_mapping: bool,
+) -> String {
+    resolve_model_rewrite_rule(provider, model, allow_provider_model_mapping)
+        .unwrap_or_else(|| strip_one_m_context_marker(model).to_string())
+}
+
+fn aux_configured_mode(task: &CodexAuxTask, provider: &UpstreamProvider) -> Option<String> {
+    task.route_key()
+        .and_then(|key| provider.model_mapping.auxiliary_models.get(key))
+        .map(|route| route.configured_mode().to_string())
+        .or_else(|| task.route_key().map(|_| "auto".to_string()))
+}
+
+fn aux_metadata(
+    task: &CodexAuxTask,
+    provider: &UpstreamProvider,
+    shaped: bool,
+) -> GatewayAuxiliaryMetadata {
+    GatewayAuxiliaryMetadata {
+        configured_mode: aux_configured_mode(task, provider),
+        raw_kind: Some(task.raw_kind()),
+        target_protocol: Some(provider.target_protocol.as_str().to_string()),
+        shaped,
+        // Auto-review has its own provider-level override; review/compact and
+        // unknown markers are observed but have no route to apply.
+        route_applied: task.route_key().is_some() || matches!(task, CodexAuxTask::AutoReview),
+        route_error: None,
+    }
+}
+
+fn aux_error_metadata(
+    task: &crate::coding::proxy_gateway::runtime::compat::codex_aux_task::CodexAuxTask,
+    provider: &UpstreamProvider,
+    error: String,
+) -> GatewayAuxiliaryMetadata {
+    let configured_mode = aux_configured_mode(task, provider);
+    GatewayAuxiliaryMetadata {
+        configured_mode,
+        raw_kind: Some(task.raw_kind()),
+        target_protocol: Some(provider.target_protocol.as_str().to_string()),
+        shaped: false,
+        // The model could not be resolved, so nothing was rewritten.
+        route_applied: false,
+        route_error: Some(error),
+    }
 }
 
 fn resolve_upstream_model_id(
@@ -15190,6 +15647,9 @@ data: {data}\r\n\r\n"
             pricing_model_source: None,
             requested_model: None,
             upstream_model_id: None,
+            aux_task: None,
+            aux_route_source: None,
+            auxiliary: None,
             served_service_tier: None,
             compaction_mode: None,
             fast_cost_multiplier: None,
@@ -17671,6 +18131,9 @@ data: {data}\r\n\r\n"
             pricing_model_source: None,
             requested_model: None,
             upstream_model_id: None,
+            aux_task: None,
+            aux_route_source: None,
+            auxiliary: None,
             served_service_tier: None,
             compaction_mode: None,
             fast_cost_multiplier: None,
@@ -18038,6 +18501,9 @@ data: {data}\r\n\r\n"
             pricing_model_source: None,
             requested_model: None,
             upstream_model_id: None,
+            aux_task: None,
+            aux_route_source: None,
+            auxiliary: None,
             served_service_tier: None,
             compaction_mode: None,
             fast_cost_multiplier: None,
@@ -21163,5 +21629,167 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
             GatewayFailureKind::EmptyResponse,
             &conservative
         ));
+    }
+
+    fn aux_provider() -> UpstreamProvider {
+        let mut provider = provider_for_cli(GatewayCliKey::Codex);
+        provider.model_mapping.default_model = Some("main-model".to_string());
+        provider
+    }
+
+    #[test]
+    fn auxiliary_explicit_and_main_routes_win_over_request_model() {
+        use crate::coding::proxy_gateway::runtime::compat::codex_aux_task::CodexAuxiliaryModelRoute;
+
+        let mut provider = aux_provider();
+        provider
+            .model_mapping
+            .auxiliary_models
+            .insert(
+                "title".to_string(),
+                CodexAuxiliaryModelRoute::Model {
+                    model: "cheap-model".to_string(),
+                },
+            );
+        let resolved = resolve_codex_aux_model("gpt-6-luna", &provider, &CodexAuxTask::Title, true)
+            .unwrap()
+            .expect("resolved route");
+        assert_eq!(resolved.model, "cheap-model");
+        assert_eq!(resolved.source, "explicit");
+
+        provider.model_mapping.auxiliary_models.insert(
+            "summary".to_string(),
+            CodexAuxiliaryModelRoute::Main,
+        );
+        let resolved = resolve_codex_aux_model("gpt-6-luna", &provider, &CodexAuxTask::Summary, true)
+            .unwrap()
+            .expect("resolved route");
+        assert_eq!(resolved.model, "main-model");
+        assert_eq!(resolved.source, "main");
+    }
+
+    #[test]
+    fn auxiliary_main_without_default_model_is_an_error() {
+        use crate::coding::proxy_gateway::runtime::compat::codex_aux_task::CodexAuxiliaryModelRoute;
+
+        let mut provider = aux_provider();
+        provider.model_mapping.default_model = None;
+        provider.model_mapping.auxiliary_models.insert(
+            "title".to_string(),
+            CodexAuxiliaryModelRoute::Main,
+        );
+
+        let error = resolve_codex_aux_model("gpt-6-luna", &provider, &CodexAuxTask::Title, true)
+            .unwrap_err();
+        assert_eq!(error, "aux_task_main_model_missing");
+    }
+
+    #[test]
+    fn auxiliary_auto_keeps_declared_and_falls_back_only_for_undeclared_models() {
+        let mut provider = aux_provider();
+        provider.meta.declared_models = vec!["declared-model".to_string()];
+
+        let kept = resolve_codex_aux_model("declared-model", &provider, &CodexAuxTask::Title, true)
+            .unwrap()
+            .expect("resolved route");
+        assert_eq!(kept.model, "declared-model");
+        assert_eq!(kept.source, "auto_kept");
+
+        let fallback = resolve_codex_aux_model("unknown-model", &provider, &CodexAuxTask::Title, true)
+            .unwrap()
+            .expect("resolved route");
+        assert_eq!(fallback.model, "main-model");
+        assert_eq!(fallback.source, "auto_fallback");
+
+        // A provider without a catalog cannot prove anything, so it keeps the
+        // requested model instead of guessing.
+        provider.meta.declared_models.clear();
+        let kept = resolve_codex_aux_model("unknown-model", &provider, &CodexAuxTask::Title, true)
+            .unwrap()
+            .expect("resolved route");
+        assert_eq!(kept.model, "unknown-model");
+        assert_eq!(kept.source, "auto_kept");
+    }
+
+    #[test]
+    fn aggregate_mode_judges_aux_auto_mode_on_the_resolved_upstream_model() {
+        // Regression: `forward_to_upstream` must hand the aggregate-resolved
+        // bare model (not the raw `<site>.<model>` slug) to the auxiliary
+        // resolver. A slug never appears in `declared_models`, so judging the
+        // slug made every automatic-mode auxiliary turn fall back to the site
+        // default — silently turning auto into "follow main model".
+        let mut provider = aux_provider();
+        provider.meta.declared_models = vec!["gpt-6-luna".to_string()];
+
+        // What forward_to_upstream now passes: the aggregate route already
+        // stripped the slug into the bare upstream model.
+        let resolved = resolve_codex_aux_model("gpt-6-luna", &provider, &CodexAuxTask::Title, true)
+            .unwrap()
+            .expect("resolved route");
+        assert_eq!(resolved.model, "gpt-6-luna");
+        assert_eq!(resolved.source, "auto_kept");
+
+        // The old behaviour, kept here to document what must NOT happen: the
+        // raw slug is undeclared on every site, so it fell back to main-model.
+        let legacy = resolve_codex_aux_model("siteA.gpt-6-luna", &provider, &CodexAuxTask::Title, true)
+            .unwrap()
+            .expect("resolved route");
+        assert_eq!(legacy.source, "auto_fallback");
+    }
+
+    #[test]
+    fn auxiliary_native_memory_models_are_not_rewritten() {
+        let mut provider = aux_provider();
+        provider.meta.declared_models = vec!["main-model".to_string()];
+        provider.model_mapping.native_memory_models = vec!["gpt-6-luna".to_string()];
+
+        let resolved = resolve_codex_aux_model("gpt-6-luna", &provider, &CodexAuxTask::Memory, true)
+            .unwrap()
+            .expect("resolved route");
+        assert_eq!(resolved.model, "gpt-6-luna");
+        assert_eq!(resolved.source, "auto_kept");
+    }
+
+    #[test]
+    fn auxiliary_routes_apply_provider_model_rewrites() {
+        use crate::coding::proxy_gateway::runtime::compat::codex_aux_task::CodexAuxiliaryModelRoute;
+
+        let mut provider = aux_provider();
+        provider.model_mapping.rewrite_rules = vec![ModelRewriteRule {
+            from: "cheap-model".to_string(),
+            to: "upstream-cheap".to_string(),
+        }];
+        provider.model_mapping.auxiliary_models.insert(
+            "title".to_string(),
+            CodexAuxiliaryModelRoute::Model {
+                model: "cheap-model".to_string(),
+            },
+        );
+        let resolved = resolve_codex_aux_model("gpt-6-luna", &provider, &CodexAuxTask::Title, true)
+            .unwrap()
+            .expect("resolved route");
+        assert_eq!(resolved.model, "upstream-cheap");
+
+        // Automatic mode keeps the requested model, but the provider's wire
+        // rewrite still applies exactly as it does on an ordinary turn.
+        let resolved = resolve_codex_aux_model("cheap-model", &provider, &CodexAuxTask::Summary, true)
+            .unwrap()
+            .expect("resolved route");
+        assert_eq!(resolved.model, "upstream-cheap");
+        assert_eq!(resolved.source, "auto_kept");
+    }
+
+    #[test]
+    fn auxiliary_resolution_is_skipped_for_non_routable_tasks_and_connectivity_tests() {
+        let provider = aux_provider();
+        assert_eq!(
+            resolve_codex_aux_model("gpt-6-luna", &provider, &CodexAuxTask::AutoReview, true)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            resolve_codex_aux_model("gpt-6-luna", &provider, &CodexAuxTask::Title, false).unwrap(),
+            None
+        );
     }
 }

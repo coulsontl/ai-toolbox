@@ -3,7 +3,8 @@ use super::content_encoding::{
 };
 use crate::coding::proxy_gateway::transformer::AiProtocol;
 use crate::coding::proxy_gateway::types::{
-    GatewayCliKey, GatewayProviderAttempt, GatewayStreamOutcome, ProxyGatewaySettings,
+    CodexAuxTaskKind, GatewayAuxiliaryMetadata, GatewayCliKey, GatewayProviderAttempt,
+    GatewayStreamOutcome, ProxyGatewaySettings,
 };
 use crate::coding::proxy_gateway::usage_parser::{SseTerminalKind, SseUsageCollector, TokenUsage};
 use futures_util::{Stream, StreamExt};
@@ -269,6 +270,12 @@ pub(super) struct DebugHttpResponse {
     pub(super) ultrafast_cost_multiplier: Option<String>,
     pub(super) requested_model: Option<String>,
     pub(super) upstream_model_id: Option<String>,
+    /// Codex auxiliary-task classification, when the request was one.
+    pub(super) aux_task: Option<CodexAuxTaskKind>,
+    /// `explicit` / `main` / `auto_kept` / `auto_fallback` / `none`.
+    pub(super) aux_route_source: Option<String>,
+    /// Detail-only auxiliary metadata (raw kind, target protocol, shaping).
+    pub(super) auxiliary: Option<GatewayAuxiliaryMetadata>,
     /// Canonical service tier (`fast` / `ultrafast`) the upstream confirmed in
     /// its own response envelope. `None` when the upstream never confirmed a
     /// premium tier, so billing falls back to the requested tier.
@@ -481,6 +488,9 @@ pub(super) fn json_response(
         pricing_model_source: None,
         requested_model: None,
         upstream_model_id: None,
+        aux_task: None,
+        aux_route_source: None,
+        auxiliary: None,
         served_service_tier: None,
         compaction_mode: None,
         fast_cost_multiplier: None,
@@ -530,6 +540,9 @@ pub(super) fn empty_response(
         pricing_model_source: None,
         requested_model: None,
         upstream_model_id: None,
+        aux_task: None,
+        aux_route_source: None,
+        auxiliary: None,
         served_service_tier: None,
         compaction_mode: None,
         fast_cost_multiplier: None,
@@ -1143,6 +1156,9 @@ mod tests {
             pricing_model_source: None,
             requested_model: None,
             upstream_model_id: None,
+            aux_task: None,
+            aux_route_source: None,
+            auxiliary: None,
             served_service_tier: None,
             compaction_mode: None,
             fast_cost_multiplier: None,

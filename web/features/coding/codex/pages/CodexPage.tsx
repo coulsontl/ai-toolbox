@@ -1299,6 +1299,7 @@ const CodexPage: React.FC = () => {
       reasoningEffort: options?.defaultReasoningEffort,
       config: settings.config || '',
       catalogModels: models,
+      auxiliaryModels: settings.auxiliaryModels,
       autoReviewModelOverride,
       requiresOpenaiAuthMode,
       auth: settings.auth ?? {},

@@ -1164,6 +1164,14 @@ pub struct GatewayRequestLogItem {
     pub transport: GatewayRequestTransport,
     #[serde(default)]
     pub request_kind: GatewayRequestKind,
+    /// Codex auxiliary-task classification (`title`, `memory`, …). `None` on
+    /// ordinary turns and on rows written before the column existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aux_task: Option<CodexAuxTaskKind>,
+    /// How the auxiliary model was chosen: `explicit` / `main` / `auto_kept` /
+    /// `auto_fallback` / `none`. `None` on ordinary turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aux_route_source: Option<String>,
     /// Canonical kinds of native/hosted tools the upstream actually invoked
     /// (`web_search`, `mcp`, …). Empty means "nothing observed": legacy rows,
     /// imported session usage and locally rejected requests were never
@@ -1321,6 +1329,15 @@ pub struct GatewayRequestLogSummary {
     pub transport: GatewayRequestTransport,
     #[serde(default)]
     pub request_kind: GatewayRequestKind,
+    /// Codex auxiliary-task classification (`title`, `memory`, …). Compact
+    /// enough for the request list; the raw `thread_source` stays in the
+    /// JSONL detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aux_task: Option<CodexAuxTaskKind>,
+    /// How the auxiliary model was chosen: `explicit` / `main` / `auto_kept` /
+    /// `auto_fallback` / `none`. `None` on ordinary turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aux_route_source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_metadata: Option<SessionUsageMetadata>,
     pub trace_id: String,
@@ -1510,6 +1527,10 @@ pub struct GatewayRequestLogDetail {
     pub privacy: Option<super::privacy::PrivacyDetail>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub websocket: Option<GatewayWebSocketMetadata>,
+    /// Codex auxiliary-task detail (raw kind, configured mode, target protocol,
+    /// shaping/route outcome). Detail-only; never part of the SQLite summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auxiliary: Option<GatewayAuxiliaryMetadata>,
     /// Native/hosted tools this request declared, forwarded, or used. Detail
     /// only (JSONL), never part of the SQLite summary.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1529,6 +1550,78 @@ pub struct GatewayRequestLogDetail {
     pub response_body: Option<String>,
     #[serde(default)]
     pub provider_attempts: Vec<GatewayProviderAttempt>,
+}
+
+/// Detail-only description of one Codex auxiliary call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct GatewayAuxiliaryMetadata {
+    /// What the provider config said for this task: `auto`, `main` or `model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configured_mode: Option<String>,
+    /// Wire marker that identified the task (`thread_title`, `guardian`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_kind: Option<String>,
+    /// Protocol of the final upstream attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_protocol: Option<String>,
+    /// Whether the gateway rewrote the response into the task's schema shape.
+    #[serde(default)]
+    pub shaped: bool,
+    /// False when no auxiliary route was applied: WebSocket frames are
+    /// classified but not rewritten, resolution can fail, and review/compact
+    /// markers have no route at all.
+    #[serde(default = "default_true")]
+    pub route_applied: bool,
+    /// Explicit route error, e.g. `aux_task_main_model_missing`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_error: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Compact Codex auxiliary-task kind persisted in SQLite and shown in the
+/// request list. Unknown wire markers collapse to `other`; the raw value lives
+/// in [`GatewayAuxiliaryMetadata::raw_kind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexAuxTaskKind {
+    #[default]
+    Other,
+    Title,
+    Description,
+    Summary,
+    Prediction,
+    Memory,
+    AutoReview,
+}
+
+impl CodexAuxTaskKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Other => "other",
+            Self::Title => "title",
+            Self::Description => "description",
+            Self::Summary => "summary",
+            Self::Prediction => "prediction",
+            Self::Memory => "memory",
+            Self::AutoReview => "auto_review",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Self {
+        match value {
+            "title" => Self::Title,
+            "description" => Self::Description,
+            "summary" => Self::Summary,
+            "prediction" => Self::Prediction,
+            "memory" => Self::Memory,
+            "auto_review" => Self::AutoReview,
+            _ => Self::Other,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

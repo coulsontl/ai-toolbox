@@ -2670,6 +2670,12 @@ fn extract_provider_settings_for_storage(
         provider_settings["autoReviewModelOverride"] =
             serde_json::Value::String(auto_review_model_override);
     }
+    // Per-task auxiliary routes are user intent, not derived data. Preserve the
+    // object verbatim so catalog saves, imports and provider copies cannot drop
+    // it; the gateway validates individual entries when it loads the provider.
+    if let Some(auxiliary_models) = normalize_codex_auxiliary_models_for_storage(settings_object) {
+        provider_settings["auxiliaryModels"] = auxiliary_models;
+    }
     if let Some(requires_openai_auth_mode) =
         resolve_codex_requires_openai_auth_mode(settings_object).as_storage_str()
     {
@@ -2686,6 +2692,15 @@ fn normalize_codex_optional_string(value: Option<&Value>) -> Option<String> {
         .map(str::trim)
         .filter(|item| !item.is_empty())
         .map(str::to_string)
+}
+
+fn normalize_codex_auxiliary_models_for_storage(
+    settings_object: &serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Value> {
+    settings_object
+        .get("auxiliaryModels")
+        .filter(|value| value.is_object())
+        .cloned()
 }
 
 fn resolve_codex_auto_review_model_override(
@@ -10195,6 +10210,53 @@ approval_policy = "never"
             provider_settings[CODEX_REQUIRES_OPENAI_AUTH_MODE_KEY].as_str(),
             Some("keep")
         );
+    }
+
+    #[test]
+    fn extract_provider_settings_for_storage_preserves_auxiliary_models() {
+        let auxiliary_models = json!({
+            "title": { "mode": "model", "model": "gpt-5-mini" },
+            "memory": { "mode": "main" }
+        });
+        let settings = json!({
+            "auth": {},
+            "config": "model_provider = \"custom\"\n",
+            "auxiliaryModels": auxiliary_models,
+        });
+
+        let provider_settings = extract_provider_settings_for_storage(&settings, None).unwrap();
+
+        assert_eq!(provider_settings["auxiliaryModels"], auxiliary_models);
+    }
+
+    #[test]
+    fn extract_provider_settings_for_storage_preserves_native_memories() {
+        let settings = json!({
+            "auth": {},
+            "config": "model = \"main\"\n\n[memories]\nextract_model = \"mini\"\n",
+        });
+
+        let provider_settings = extract_provider_settings_for_storage(&settings, None).unwrap();
+        let config = provider_settings["config"].as_str().expect("config string");
+        let document: toml_edit::DocumentMut = config.parse().expect("parse stored config");
+
+        assert_eq!(
+            document["memories"]["extract_model"].as_str(),
+            Some("mini")
+        );
+    }
+
+    #[test]
+    fn extract_provider_settings_for_storage_ignores_non_object_auxiliary_models() {
+        let settings = json!({
+            "auth": {},
+            "config": "model_provider = \"custom\"\n",
+            "auxiliaryModels": ["title"],
+        });
+
+        let provider_settings = extract_provider_settings_for_storage(&settings, None).unwrap();
+
+        assert!(provider_settings.get("auxiliaryModels").is_none());
     }
 
     #[test]

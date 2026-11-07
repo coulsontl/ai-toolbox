@@ -910,6 +910,7 @@ fn build_request_log_detail_export(detail: &GatewayRequestLogDetail) -> Value {
         "websocket": websocket_value,
         "privacy": detail.privacy,
         // Detail-only markers: absent from the SQLite summary on purpose.
+        "auxiliary": detail.auxiliary,
         "observations": {
             "native_tools": detail.native_tools,
             "rewrites": detail.rewrites,
@@ -1276,11 +1277,14 @@ mod tests {
         let detail = GatewayRequestLogDetail {
             privacy: None,
             websocket: None,
+            auxiliary: None,
             native_tools: Vec::new(),
             rewrites: Vec::new(),
             summary: GatewayRequestLogSummary {
                 transport: Default::default(),
                 request_kind: Default::default(),
+                aux_task: None,
+                aux_route_source: None,
                 usage_metadata: None,
                 data_source: None,
                 trace_id: "trace-redact-display".to_string(),
@@ -1370,6 +1374,30 @@ mod tests {
         assert_eq!(exported["websocket"]["stream_id"], "lane-export");
         assert_eq!(exported["websocket"]["handshake_status"], 101);
         assert!(!exported.to_string().contains("key=secret"));
+    }
+
+    #[test]
+    fn auxiliary_detail_is_included_in_the_export() {
+        let mut detail = request_detail_fixture();
+        detail.summary.aux_task =
+            Some(crate::coding::proxy_gateway::types::CodexAuxTaskKind::Title);
+        detail.summary.aux_route_source = Some("explicit".to_string());
+        detail.auxiliary = Some(crate::coding::proxy_gateway::types::GatewayAuxiliaryMetadata {
+            configured_mode: Some("model".to_string()),
+            raw_kind: Some("thread_title".to_string()),
+            target_protocol: Some("openai_chat".to_string()),
+            shaped: true,
+            route_applied: true,
+            route_error: None,
+        });
+
+        let exported = build_request_log_detail_export(&detail);
+
+        assert_eq!(exported["summary"]["aux_task"], "title");
+        assert_eq!(exported["summary"]["aux_route_source"], "explicit");
+        assert_eq!(exported["auxiliary"]["raw_kind"], "thread_title");
+        assert_eq!(exported["auxiliary"]["configured_mode"], "model");
+        assert_eq!(exported["auxiliary"]["shaped"], true);
     }
 
     #[test]

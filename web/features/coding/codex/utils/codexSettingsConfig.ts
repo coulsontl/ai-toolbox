@@ -1,4 +1,6 @@
 import type {
+  CodexAuxiliaryModelRoute,
+  CodexAuxiliaryTask,
   CodexCatalogModel,
   CodexProviderCategory,
   CodexRequiresOpenaiAuthMode,
@@ -25,6 +27,8 @@ export interface BuildCodexSettingsConfigInput {
   /** Explicit default reasoning level for the main model; omitted means keep. */
   reasoningEffort?: string;
   catalogModels: CodexCatalogModel[];
+  /** Per-task auxiliary routes; a missing task key means automatic. */
+  auxiliaryModels?: CodexSettingsConfig['auxiliaryModels'];
   autoReviewModelOverride?: string;
   /** Explicit `requires_openai_auth` override; `auto` means keep deriving it. */
   requiresOpenaiAuthMode?: CodexRequiresOpenaiAuthModeSelection;
@@ -99,6 +103,46 @@ export function parseCodexSettingsConfig(rawConfig: string | undefined): CodexSe
   }
 }
 
+const AUXILIARY_TASKS: CodexAuxiliaryTask[] = [
+  'title',
+  'description',
+  'summary',
+  'prediction',
+  'memory',
+];
+
+/**
+ * Normalize the stored per-task routes. `auto` is the absence of a key, so an
+ * explicit `auto` object, an empty model or an unknown mode all disappear.
+ */
+export function normalizeCodexAuxiliaryModels(
+  value: unknown,
+): Partial<Record<CodexAuxiliaryTask, CodexAuxiliaryModelRoute>> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const source = value as Record<string, unknown>;
+  const result: Partial<Record<CodexAuxiliaryTask, CodexAuxiliaryModelRoute>> = {};
+  for (const task of AUXILIARY_TASKS) {
+    const route = source[task];
+    if (!route || typeof route !== 'object' || Array.isArray(route)) {
+      continue;
+    }
+    const mode = (route as { mode?: unknown }).mode;
+    if (mode === 'main') {
+      result[task] = { mode: 'main' };
+      continue;
+    }
+    if (mode === 'model') {
+      const model = (route as { model?: unknown }).model;
+      if (typeof model === 'string' && model.trim()) {
+        result[task] = { mode: 'model', model: model.trim() };
+      }
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
 export function buildCodexSettingsConfig({
   category,
   apiKey,
@@ -107,6 +151,7 @@ export function buildCodexSettingsConfig({
   config,
   reasoningEffort,
   catalogModels,
+  auxiliaryModels,
   autoReviewModelOverride,
   requiresOpenaiAuthMode,
   auth,
@@ -114,6 +159,7 @@ export function buildCodexSettingsConfig({
   let finalConfig = config;
   const normalizedApiKey = apiKey.trim();
   const normalizedCatalogModels = normalizeCodexCatalogModels(catalogModels);
+  const normalizedAuxiliaryModels = normalizeCodexAuxiliaryModels(auxiliaryModels);
   const normalizedAutoReviewModelOverride = normalizeCodexAutoReviewModelOverride(
     autoReviewModelOverride,
   );
@@ -152,6 +198,9 @@ export function buildCodexSettingsConfig({
     settingsConfig.modelCatalog = {
       models: normalizedCatalogModels,
     };
+  }
+  if (category === 'custom' && normalizedAuxiliaryModels) {
+    settingsConfig.auxiliaryModels = normalizedAuxiliaryModels;
   }
   if (category === 'custom' && normalizedAutoReviewModelOverride) {
     settingsConfig.autoReviewModelOverride = normalizedAutoReviewModelOverride;

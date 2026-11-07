@@ -615,6 +615,8 @@ mod tests {
         let summary = GatewayRequestLogSummary {
             transport: Default::default(),
             request_kind: Default::default(),
+            aux_task: Some(crate::coding::proxy_gateway::types::CodexAuxTaskKind::Title),
+            aux_route_source: Some("explicit".to_string()),
             usage_metadata: None,
             data_source: None,
             trace_id: "trace-1".to_string(),
@@ -661,6 +663,14 @@ mod tests {
         let record = new_request_log_record(GatewayRequestLogDetail {
             privacy: None,
             websocket: None,
+            auxiliary: Some(crate::coding::proxy_gateway::types::GatewayAuxiliaryMetadata {
+                configured_mode: Some("model".to_string()),
+                raw_kind: Some("thread_title".to_string()),
+                target_protocol: Some("openai_chat".to_string()),
+                shaped: true,
+                route_applied: true,
+                route_error: None,
+            }),
             native_tools: Vec::new(),
             rewrites: Vec::new(),
             summary,
@@ -685,6 +695,11 @@ mod tests {
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].trace_id, "trace-1");
         assert_eq!(summaries[0].reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            summaries[0].aux_task,
+            Some(crate::coding::proxy_gateway::types::CodexAuxTaskKind::Title)
+        );
+        assert_eq!(summaries[0].aux_route_source.as_deref(), Some("explicit"));
 
         let detail = get_request_log_detail(&paths, "trace-1").unwrap().unwrap();
         assert_eq!(
@@ -696,6 +711,17 @@ mod tests {
             Some(r#"{"upstream":true}"#)
         );
         assert_eq!(detail.response_body.as_deref(), Some(r#"{"ok":true}"#));
+        assert_eq!(
+            detail.auxiliary.as_ref().map(|auxiliary| auxiliary.shaped),
+            Some(true)
+        );
+        assert_eq!(
+            detail
+                .auxiliary
+                .as_ref()
+                .and_then(|auxiliary| auxiliary.raw_kind.as_deref()),
+            Some("thread_title")
+        );
 
         let detail = get_request_log_detail_at(
             &paths,
