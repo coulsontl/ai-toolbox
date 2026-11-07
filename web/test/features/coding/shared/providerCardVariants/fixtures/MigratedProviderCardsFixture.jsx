@@ -602,7 +602,7 @@ const dshProvider = {
   warnings: [],
 };
 
-/** A catalog-backed route: bundled models, not removable, no explicit catalog. */
+/** A catalog-backed route with no user-layer record: nothing to delete. */
 const dshBuiltinProvider = {
   providerKey: 'deepseek-official',
   displayName: 'DeepSeek Official',
@@ -610,6 +610,27 @@ const dshBuiltinProvider = {
   modelIds: [],
   modelSource: 'builtin',
   builtinModels: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }],
+  isBuiltin: true,
+  isDefault: false,
+  warnings: [],
+};
+
+/** A catalog route the user configured: the user layer owns the entry. */
+const dshCatalogOwnedProvider = {
+  providerKey: 'deepseek',
+  displayName: 'DeepSeek',
+  apiKeyEnv: 'DEEPSEEK_API_KEY',
+  credentialExists: true,
+  apiKey: 'sk-dsh-catalog',
+  api: 'openai-completions',
+  provider: {
+    api: 'openai-completions',
+    baseURL: 'https://day666.ggff.net/v1',
+    apiKeyEnv: 'DEEPSEEK_API_KEY',
+    models: [{ id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' }],
+  },
+  modelIds: ['deepseek-v4.1-flash'],
+  modelSource: 'explicit',
   isBuiltin: true,
   isDefault: false,
   warnings: [],
@@ -1003,11 +1024,16 @@ createRoot(document.getElementById('root')).render(
             viewMode="card"
           />
         </div>
-        {/* A catalog-backed route is still editable (that is how a user pins an
-            explicit `models` list over the bundled catalog); only delete and
-            the grip are withheld, so the page passes those as `undefined`. */}
+        {/* A catalog-backed route with no user-layer record has nothing to
+            delete; the grip follows the same ownership rule. */}
         <div data-fixture="dsh-builtin-list">
           <DshProviderCard {...dshProps} provider={dshBuiltinProvider} onDelete={undefined} viewMode="list" />
+        </div>
+        {/* A catalog route the user configured: the route id is still in the
+            adapter catalog, but the `providers.<route>` entry belongs to the
+            user layer, so delete and the grip are both available. */}
+        <div data-fixture="dsh-catalog-owned-list">
+          <DshProviderCard {...dshProps} provider={dshCatalogOwnedProvider} viewMode="list" />
         </div>
       </div>
     </MemoryRouter>

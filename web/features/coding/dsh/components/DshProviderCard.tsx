@@ -78,9 +78,12 @@ interface DshProviderCardProps {
  * shape.
  *
  * A built-in / catalog-backed route (`isBuiltin`, or `modelSource === 'builtin'`)
- * serves the adapter's bundled models and is not removable: it carries the
- * `内置 · 适配器默认模型` tag where the old card put it, and gets no delete
- * action at all rather than a dead button.
+ * takes its display name and protocol from the adapter, but that says nothing
+ * about who owns its configuration. A route with a user-layer
+ * `llm-pi-ai.providers.<route>` entry (or a stored credential) is removable and
+ * draggable like any other; only a route with no user-layer record at all gets
+ * no delete action and no grip, because there is nothing to delete or reorder.
+ * The default pointer still blocks deletion; the page passes that reason.
  */
 const DshProviderCard: React.FC<DshProviderCardProps> = ({
   provider,
@@ -125,6 +128,14 @@ const DshProviderCard: React.FC<DshProviderCardProps> = ({
   // editor modal and the page's save path — a card that keeps its own copy is
   // how "copy this route" once produced a route with no name or protocol.
   const isBuiltInChannel = isCatalogOwnedRoute(provider, false);
+  // Ownership is decided by the user layer, not by the catalog: `provider.provider`
+  // is the `llm-pi-ai.providers.<route>` entry, which is also what gives a route
+  // a stored position to drag. A bundled catalog route has no such row until the
+  // user pins one, so it cannot be reordered.
+  const hasProviderEntry = provider.provider !== undefined;
+  const canReorderModels = !modelSelectionMode
+    && hasProviderEntry
+    && provider.modelSource !== 'builtin';
 
   const modelRows = React.useMemo<ModelDisplayData[]>(
     () => getDshModelRecords(provider).map((entry) => ({
@@ -140,11 +151,11 @@ const DshProviderCard: React.FC<DshProviderCardProps> = ({
 
   const modelSection: ProviderCardModels = {
     models: modelRows,
-    // Only a route with its own config row has a stored position; a bundled
-    // catalog has no `models` list to rewrite, so dragging it would write rows
-    // into a file that never held them.
-    modelsDraggable: !modelSelectionMode && !isBuiltInChannel,
-    onReorderModels: isBuiltInChannel ? undefined : onReorderModels,
+    // A catalog whose `models` list was inherited from the adapter has no rows
+    // in the file to rewrite, so dragging it would materialize the whole catalog.
+    // A route that pinned its own list (even a catalog route) has a real order.
+    modelsDraggable: canReorderModels,
+    onReorderModels: canReorderModels ? onReorderModels : undefined,
     onSetPrimaryModel,
     modelSelectionMode,
     selectedModelIds,
@@ -191,7 +202,7 @@ const DshProviderCard: React.FC<DshProviderCardProps> = ({
       baseUrl,
     },
     providerState: {
-      draggable: !isBuiltInChannel && !selectable && !dragDisabled,
+      draggable: hasProviderEntry && !selectable && !dragDisabled,
       sortableId: provider.providerKey,
       connectivityStatus,
       selectable,
@@ -201,9 +212,9 @@ const DshProviderCard: React.FC<DshProviderCardProps> = ({
     },
     actions: {
       // A catalog-backed route is still editable: that is how a user pins an
-      // explicit `models` list on top of the bundled catalog. Only *deletion*
-      // is withheld (the page passes no handler), because the route is part of
-      // the installed adapter rather than a user-created entry.
+      // explicit `models` list on top of the bundled catalog. The page decides
+      // whether it also has user-layer data to delete; this layer only forwards
+      // the handler and the default-pointer reason.
       onEdit,
       onCopy,
       onShare,
@@ -284,14 +295,15 @@ const DshProviderCard: React.FC<DshProviderCardProps> = ({
         value: api,
         emptyText: t('common.provider.notConfigured'),
       },
-      // Only a custom route owns a credential ref; a catalog route's auth is
-      // resolved inside the adapter.
-      ...(isBuiltInChannel ? [] : [{
+      // A catalog route can also carry a user credential (a ref or a dsh
+      // sign-in record); only a catalog route with neither hides the field,
+      // because its auth is resolved inside the adapter.
+      ...((!isBuiltInChannel || provider.apiKeyEnv || provider.credentialExists) ? [{
         key: 'credential',
         label: t('dsh.provider.providerApiKey', { defaultValue: 'API Key' }),
         value: provider.credentialExists ? MASKED_CREDENTIAL : '',
         emptyText: t('common.provider.notConfigured'),
-      }]),
+      }] : []),
     ],
   }, {
     key: 'catalog',

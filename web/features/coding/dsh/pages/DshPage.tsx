@@ -123,6 +123,7 @@ import {
   buildDshProviderDeletionPlan,
   canDeleteDshProvider,
   credentialRefFromProviderKey,
+  hasDshProviderOwnedData,
 } from '../utils/providerDeletion';
 import {
   asRecord,
@@ -1338,40 +1339,69 @@ const DshPage: React.FC = () => {
     skipConfirm = false,
   ) => {
     const performDelete = async () => {
+      // Re-check eligibility at execution time: the default pointer or the
+      // user-layer record may have changed while the confirmation was open.
+      if (provider.isDefault) {
+        message.warning(t('dsh.provider.deleteDisabledDefault', { defaultValue: '该渠道已设为默认，不可删除' }));
+        return;
+      }
+      if (!hasDshProviderOwnedData(provider)) {
+        return;
+      }
+      // The same plan the batch path uses: an `apiKeyEnv` can be shared by
+      // several routes, so only the last route that references it removes the
+      // ref. Deleting it from this route alone would silently break the others.
+      const deletionPlan = buildDshProviderDeletionPlan(
+        runtimeConfig?.providers ?? [],
+        [provider.providerKey],
+      );
+      const target = deletionPlan[0];
+      if (!target) {
+        return;
+      }
+      const deleteCredential = target.deleteCredential;
+      if (scope === 'credential' && !deleteCredential) {
+        message.info(t('dsh.provider.credentialSharedKept', {
+          defaultValue: '该 API Key 被其他渠道共享，已保留。',
+        }));
+        return;
+      }
+
       setSaving(true);
       try {
         let nextConfig: DshRuntimeConfig;
-        const credentialRef = provider.apiKeyEnv || credentialRefFromProviderKey(provider.providerKey);
         // Back up the provider into the favorite-provider history before deletion so it can be
         // re-imported later from "导入我使用过的供应商". Only persist what's being deleted.
         try {
-          const credentialForFavorite =
-            provider.credentialExists && provider.apiKey
-              ? { refName: credentialRef, value: provider.apiKey }
-              : undefined;
           if ((scope === 'provider' || scope === 'both') && provider.provider) {
             await upsertFavoriteProvider(
               buildFavoriteProviderStorageKey('dsh', provider.providerKey),
-              buildDshFavoriteProviderConfig(provider.providerKey, provider.provider, credentialForFavorite),
+              buildDshFavoriteProviderConfig(provider.providerKey, provider.provider, target.credential),
             );
           }
         } catch (error) {
           console.error('Failed to preserve DSH favorite provider before deletion:', error);
         }
         if (scope === 'credential') {
-          nextConfig = await deleteDshCredential(credentialRef);
+          nextConfig = await deleteDshCredential(target.credentialRef);
         } else if (scope === 'provider') {
           nextConfig = await deleteDshRuntimeProvider(provider.providerKey);
         } else {
-          if (provider.credentialExists) {
-            nextConfig = await deleteDshCredential(credentialRef);
+          if (deleteCredential) {
+            nextConfig = await deleteDshCredential(target.credentialRef);
           }
           nextConfig = await deleteDshRuntimeProvider(provider.providerKey);
         }
         setRuntimeConfig(nextConfig);
         setOtherSettings(nextConfig.otherSettings || {});
         await refreshTrayMenu();
-        message.success(t('common.success'));
+        if (scope !== 'provider' && provider.credentialExists && !deleteCredential) {
+          message.info(t('dsh.provider.credentialSharedKept', {
+            defaultValue: '该 API Key 被其他渠道共享，已保留。',
+          }));
+        } else {
+          message.success(t('common.success'));
+        }
       } catch (error) {
         console.error('Failed to delete dsh provider:', error);
         message.error(t('common.error'));
@@ -1400,7 +1430,7 @@ const DshPage: React.FC = () => {
 
   const handleDeleteSupplier = (provider: DshRuntimeProviderView) => {
     const hasCredential = provider.credentialExists;
-    const hasProviderConfig = !!provider.provider;
+    const hasProviderConfig = provider.provider !== undefined;
     if (hasCredential && hasProviderConfig) {
       setDeleteScopeProvider(provider);
       return;
@@ -1437,7 +1467,7 @@ const DshPage: React.FC = () => {
           if (target.deleteCredential) {
             nextConfig = await deleteDshCredential(target.credentialRef);
           }
-          if (target.provider.provider) {
+          if (target.provider.provider !== undefined) {
             nextConfig = await deleteDshRuntimeProvider(target.provider.providerKey);
           }
           clearBatchDeleteState(target.provider.providerKey);
@@ -1463,8 +1493,7 @@ const DshPage: React.FC = () => {
   const batchBlockReason = React.useCallback(
     (provider: DshRuntimeProviderView): ProviderSelectionBlockReason | undefined => {
       if (provider.isDefault) return 'default';
-      if (provider.isBuiltin || provider.modelSource === 'builtin') return 'readOnly';
-      if (!provider.credentialExists && !provider.provider) return 'noRecord';
+      if (!hasDshProviderOwnedData(provider)) return 'noRecord';
       return undefined;
     },
     [],
@@ -1721,19 +1750,17 @@ const DshPage: React.FC = () => {
    * the list and the grid, so the two cannot offer different actions.
    */
   const renderProviderCard = (provider: DshRuntimeProviderView) => {
-    const hasCredential = provider.credentialExists;
-    const hasProviderConfig = !!provider.provider;
+    const hasProviderConfig = provider.provider !== undefined;
     const providerConfig = providerRawConfig(provider);
     const isBatchDeleteMode = batchDeleteProviderId === provider.providerKey;
     const selectedModelIds = selectedModelIdsByProvider[provider.providerKey] ?? [];
     const providerBaseUrl = getStringField(providerConfig, 'baseURL');
     const hasModelIds = getDshModelRecords(provider).length > 0;
-    // Official llm-pi-ai behavior: a catalog-backed/built-in channel is not
-    // removable and owns no route-level protocol or display-name (those come
-    // from the catalog). The predicate is shared with the editor modal and the
-    // card — see `isCatalogOwnedRoute`.
-    const isBuiltInChannel = isCatalogOwnedRoute(provider, false);
-    const canDeleteProvider = !isBuiltInChannel && (hasCredential || hasProviderConfig);
+    // Removability is about the user layer, not about the route id being in the
+    // adapter catalog: a catalog route with a `providers.<route>` entry (or a
+    // stored credential) is user configuration and can be deleted. The default
+    // pointer is a separate rule, applied below through `deleteDisabledReason`.
+    const canDeleteProvider = hasDshProviderOwnedData(provider);
 
     return (
       <DshProviderCard

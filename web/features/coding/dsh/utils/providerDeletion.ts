@@ -6,11 +6,23 @@ export function credentialRefFromProviderKey(providerKey: string): string {
   return normalized.endsWith('_API_KEY') ? normalized : `${normalized}_API_KEY`;
 }
 
+/**
+ * Whether the user layer carries anything for this route.
+ *
+ * A route id that happens to be in the adapter catalog is not a fact about
+ * ownership: a catalog route with an `llm-pi-ai.providers.<route>` entry (or a
+ * stored credential) is user configuration and can be removed. Only a route
+ * with no user-layer record at all has nothing to delete.
+ */
+export function hasDshProviderOwnedData(provider: DshRuntimeProviderView): boolean {
+  // `provider.provider` is `undefined` when the route only exists as the
+  // `agent-default-model` pointer. A stored key can carry a null value (a
+  // hand-edited YAML entry), and that still counts as a user-layer record.
+  return provider.credentialExists || provider.provider !== undefined;
+}
+
 export function canDeleteDshProvider(provider: DshRuntimeProviderView): boolean {
-  return !provider.isDefault
-    && !provider.isBuiltin
-    && provider.modelSource !== 'builtin'
-    && (provider.credentialExists || Boolean(provider.provider));
+  return !provider.isDefault && hasDshProviderOwnedData(provider);
 }
 
 export function buildDshProviderDeletionPlan(

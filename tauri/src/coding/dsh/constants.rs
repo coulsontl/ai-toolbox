@@ -54,10 +54,11 @@ pub const DSH_CREDENTIAL_RECORD_SCOPE: &str = DSH_LLM_PI_AI_SECTION;
 /// catalog entries that list no models. `typesafe` is excluded because its
 /// catalog holds only a non-chat model, so the adapter does not offer it.
 ///
-/// The list drives display names and the built-in tag only. A built-in route is
-/// not removable: upstream hides the remove action for a catalog provider the
-/// user layer does not own. The authoritative provider fact source remains the
-/// `llm-pi-ai.providers.<route>` configuration.
+/// The list drives display names and the built-in tag only. Removability is not
+/// decided by catalog membership: upstream shows remove for a route whose
+/// profile exists in the user layer, which here is an
+/// `llm-pi-ai.providers.<route>` entry (or a stored credential). The
+/// authoritative provider fact source remains that configuration.
 pub const DSH_BUILTIN_PROVIDERS: [(&str, &str); 41] = [
     ("amazon-bedrock", "Amazon Bedrock"),
     ("ant-ling", "Ant Ling"),

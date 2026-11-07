@@ -17,14 +17,35 @@ const makeProvider = (providerKey: string, overrides: Partial<DshRuntimeProvider
   ...overrides,
 });
 
-test('deletion excludes defaults, built-in channels, and entries without owned data', () => {
+test('deletion excludes defaults and entries without owned data', () => {
   assert.equal(canDeleteDshProvider(makeProvider('custom')), true);
+  // A catalog route is not automatically undeletable: what matters is whether
+  // the user layer carries a provider entry or a credential for it.
+  assert.equal(canDeleteDshProvider(makeProvider('catalog', {
+    isBuiltin: true, modelSource: 'builtin' as const,
+  })), true);
   for (const overrides of [
-    { isDefault: true }, { isBuiltin: true }, { modelSource: 'builtin' as const },
+    { isDefault: true },
     { provider: undefined, credentialExists: false },
   ]) {
     assert.equal(canDeleteDshProvider(makeProvider('protected', overrides)), false);
   }
+});
+
+test('a catalog route with no user-layer record has nothing to delete', () => {
+  assert.equal(canDeleteDshProvider(makeProvider('deepseek', {
+    isBuiltin: true,
+    modelSource: 'builtin' as const,
+    provider: undefined,
+    credentialExists: false,
+  })), false);
+});
+
+test('a catalog-backed route with user data joins batch deletion', () => {
+  const plan = buildDshProviderDeletionPlan([
+    makeProvider('catalog', { isBuiltin: true, modelSource: 'builtin' as const }),
+  ], ['catalog']);
+  assert.deepEqual(plan.map((target) => target.provider.providerKey), ['catalog']);
 });
 
 test('shared credentials survive backup-delete-reimport for either selected provider', async () => {

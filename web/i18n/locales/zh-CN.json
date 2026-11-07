@@ -5577,9 +5577,10 @@
         "both": "全部"
       },
       "deleteScopeModalTitle": "删除供应商",
-      "deleteScopeModalContent": "该供应商同时包含供应商配置与 API 凭证，删除后将一并清除且无法恢复。确定删除供应商 {{providerKey}} 吗？",
+      "deleteScopeModalContent": "该供应商同时包含供应商配置与 API 凭证。删除后供应商配置会移除；由本应用保存的 API Key 引用会一并删除，dsh 登录产生的凭据由 dsh 管理，不会被删除。确定删除供应商 {{providerKey}} 吗？",
       "confirmDelete": "确认删除",
-      "builtinHint": "内置供应商"
+      "builtinHint": "内置供应商",
+      "credentialSharedKept": "该 API Key 被其他渠道共享，已保留。"
     },
     "model": {
       "modelSourceBuiltin": "内置 · 适配器默认模型",

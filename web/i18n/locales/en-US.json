@@ -5580,9 +5580,10 @@
         "both": "both"
       },
       "deleteScopeModalTitle": "Delete Provider",
-      "deleteScopeModalContent": "This provider has both provider config and API credentials. Deleting will remove both and cannot be undone. Delete provider {{providerKey}}?",
+      "deleteScopeModalContent": "This provider has both a provider config and an API credential. Deleting removes the provider config; API-key refs saved by this app are removed too, while credentials created by dsh sign-in are managed by dsh and will be kept. Delete provider {{providerKey}}?",
       "confirmDelete": "Confirm Delete",
-      "builtinHint": "Built-in provider"
+      "builtinHint": "Built-in provider",
+      "credentialSharedKept": "This API key is shared with another provider and was kept."
     },
     "model": {
       "modelSourceBuiltin": "Built-in · adapter default models",

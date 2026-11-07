@@ -28,7 +28,7 @@
 
 - provider 写入时只 upsert `llm-pi-ai.providers.<route>` 的 exact route；`models` 保持数组（`[{ id, contextWindow?, maxTokens? }]`）。
 - 模型条目的合法字段由上游 `packages/llm/llm-pi-ai/src/config.ts` 的 `modelFields` 决定：`id`（必填）、`name`、`contextWindow`、`maxTokens`、`input`（`text`/`image`）、`reasoningEfforts`、`compat`。`input` 与 `compat` 是上游 schema 字段，前端白名单必须包含；`reasoning` / `cost` 不是上游字段，仅因 schemastery 对未知键透传而保留为展示层数据。
-- `DSH_BUILTIN_PROVIDERS` 必须与已安装 pi-ai 的 `catalogProviderIds()` 对齐（`llm-pi-ai/src/catalog.ts` 的 `servesChat`：至少有 chat 模型，或 catalog 完全不列模型）。`@earendil-works/pi-ai@1.1.0` 下共 41 条，`typesafe` 因为只有非 chat 模型而被排除。名单只负责显示名与“内置不可删除”标记，不决定配置是否存在。
+- `DSH_BUILTIN_PROVIDERS` 必须与已安装 pi-ai 的 `catalogProviderIds()` 对齐（`llm-pi-ai/src/catalog.ts` 的 `servesChat`：至少有 chat 模型，或 catalog 完全不列模型）。`@earendil-works/pi-ai@1.1.0` 下共 41 条，`typesafe` 因为只有非 chat 模型而被排除。名单只负责显示名与「内置」标记，不决定配置是否存在，**也不决定可删除性**：是否可删由用户层的 `llm-pi-ai.providers.<route>` 或凭据是否存在决定（上游 `removable` 语义是「用户层有记录、base 层没有」）。
 - 默认模型 `agent-default-model` 采用字符串字段「空串=删除键」语义（同 pi/hermes）；`provider` 与 `model` 任一为空时整节删除（profile 层即删除该 patch row）。
 - Other Settings 编辑器隐藏并保留托管键：`llm-pi-ai`、`agent-default-model`。**profile 层上该编辑器整体冻结**（`read_dsh_runtime_config` 返回 `otherSettings: {}`，`save_dsh_other_settings` 直接拒绝）：patch 里是 dsh 全部插件的行，自由 JSON 编辑会破坏无关插件，这些配置归 dsh 自己的设置页所有。
 - 凭据读写集中在 `commands.rs` 的 `CredentialsDocument`：写入**统一输出版本化布局**（盖 `version: 1` 戳、只改 `refs:` 节点、整体重写保留 `records:` 与键序）；读到旧扁平文档时按 dsh 官方迁移规则把既有条目原样收编进 `refs:` 再改写（等价于 dsh 的 boot migration，避免覆盖丢密钥）。`records:` 归 dsh 登录流所有，本模块永不写入或删除。
@@ -48,7 +48,7 @@
 - provider 视图的凭据回填顺序镜像 pi-ai 运行时解析顺序：先查 `records["llm-pi-ai/<route>"]`（api-key 记录取 `key` 字段回填；grant 或 env-only 记录仅标记已配置、不显示值），无记录才回查 `apiKeyEnv` 指向的 ref。因此经 dsh 官方 UI 登录的渠道在卡片上也能正确显示「已配置」。
 - `delete_dsh_credential` 对不存在的 ref 是幂等 no-op（不再报错）：有效凭据可能在 records 里，清空 key 的 UI 流程必须能成功返回。
 - 删除 provider 只删 `llm-pi-ai.providers.<route>`/空容器，不回滚 `agent-default-model` 默认选择；本地生效配置只在用户显式切换/应用时改写。
-- 前端批量删除应先排除默认/内置渠道，并从删除前的完整 runtime view 构建计划和收藏凭据快照。一个 `apiKeyEnv` 可被多个渠道共享：仍有未删除渠道引用时保留 ref，全部删除时只删一次；各被删渠道的收藏都要保留原密钥，不能用删除上一渠道后返回的 `credentialExists` 决定下一份备份。回归见 `web/test/features/coding/dsh/utils/providerDeletion.test.ts`。
+- 前端单删和批量删除都应基于 `buildDshProviderDeletionPlan`，排除默认渠道与没有任何用户层记录的渠道，并从删除前的完整 runtime view 构建计划和收藏凭据快照。一个 `apiKeyEnv` 可被多个渠道共享：仍有未删除渠道引用时保留 ref，全部删除时只删一次；各被删渠道的收藏都要保留原密钥，不能用删除上一渠道后返回的 `credentialExists` 决定下一份备份。回归见 `web/test/features/coding/dsh/utils/providerDeletion.test.ts`。
 - 删除 prompt 预设只删 SQLite 记录，不改写/清空当前运行时 `AGENTS.md`。
 - legacy `settings.yaml` 允许未知 top-level 与 provider 未知字段；读写必须 preserve unknown fields。profile 层同理：patch 的其它行、未知字段一律原样保留。
 - 保存 Other Settings 时不要把托管键（`llm-pi-ai`、`agent-default-model`）带回文件；profile 层根本不允许保存（见上）。

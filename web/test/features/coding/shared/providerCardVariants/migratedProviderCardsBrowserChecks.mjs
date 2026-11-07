@@ -802,6 +802,25 @@ export async function verifyMigratedProviderCards({ send, evaluate, baseUrl, art
     dshBuiltin.text.includes('添加模型'),
   );
 
+  // The catalog tag describes where the name/protocol come from, not who owns
+  // the configuration. A catalog route with a user-layer `providers.<route>`
+  // entry keeps the delete action and the drag grip.
+  const dshCatalogOwned = await evaluate(`
+    (() => {
+      const root = document.querySelector('[data-fixture="dsh-catalog-owned-list"]');
+      const iconOnlyDelete = [...root.querySelectorAll('button')]
+        .some(node => node.querySelector('.anticon-delete') && !node.textContent.trim());
+      return {
+        grip: Boolean(root.querySelector('[data-provider-card-handle]')),
+        del: iconOnlyDelete,
+      };
+    })()
+  `);
+  check(
+    'a catalog-backed dsh route with user config keeps delete and grip',
+    dshCatalogOwned.del && dshCatalogOwned.grip,
+  );
+
   // The grid cell only carries "more"; edit / copy / share / delete live in the
   // detail sidebar. A card that forgets `detail.secondaryActions` silently loses
   // every one of them in card mode while the list layout still shows them.
