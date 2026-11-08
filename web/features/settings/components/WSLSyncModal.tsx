@@ -6,7 +6,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Modal, Form, Switch, Select, Button, List, Space, Typography, Alert, Spin, Tag, Modal as AntdModal, Tabs, Tooltip, Progress } from 'antd';
-import { CheckCircleOutlined, CloseCircleOutlined, CloseOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ClearOutlined, CodeOutlined, FolderOpenOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, CloseCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ClearOutlined, CodeOutlined, FolderOpenOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useWSLSync } from '@/features/settings/hooks/useWSLSync';
 import { useSettingsStore } from '@/stores';
@@ -100,7 +100,6 @@ export const WSLSyncModal: React.FC<WSLSyncModalProps> = ({ open, onClose }) => 
     loading,
     syncing,
     loadError,
-    syncWarning,
     syncProgress,
     moduleStatuses,
     loadConfig,
@@ -109,7 +108,6 @@ export const WSLSyncModal: React.FC<WSLSyncModalProps> = ({ open, onClose }) => 
     sync,
     detect,
     checkDistro,
-    dismissSyncWarning,
   } = useWSLSync();
   const { visibleTabs } = useSettingsStore();
 
@@ -731,44 +729,32 @@ export const WSLSyncModal: React.FC<WSLSyncModalProps> = ({ open, onClose }) => 
                 />
               )}
               {status?.lastSyncWarnings && status.lastSyncWarnings.length > 0 && (
-                <Alert
-                  type="warning"
-                  showIcon
-                  title={t('settings.wsl.lastSyncWarnings')}
-                  description={
-                    <ul
-                      style={{
-                        margin: 0,
-                        paddingLeft: 18,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 4,
-                      }}
-                    >
-                      {status.lastSyncWarnings.map((warning) => (
-                        <li
-                          key={warning}
-                          style={{ fontSize: 12, lineHeight: 1.5, wordBreak: 'break-all' }}
-                        >
-                          {translateSyncMessage(warning, 'wsl', t)}
-                        </li>
-                      ))}
-                    </ul>
-                  }
-                  style={{ marginTop: 12 }}
-                />
-              )}
-              {syncWarning && (
-                <Alert
-                  type="warning"
-                  message={translateSyncMessage(syncWarning, 'wsl', t)}
-                  showIcon
-                  // antd 6 moved the handler into `closable`; the top-level
-                  // `onClose` is deprecated (and the object form needs
-                  // `closeIcon`, or the × is not rendered at all).
-                  closable={{ closeIcon: <CloseOutlined />, onClose: dismissSyncWarning }}
-                  style={{ marginTop: 12 }}
-                />
+                <div
+                  style={{
+                    marginTop: 12,
+                    fontSize: 12,
+                    color: 'var(--color-text-tertiary)',
+                    borderLeft: '2px solid var(--color-border)',
+                    paddingLeft: 8,
+                  }}
+                >
+                  <div style={{ marginBottom: 2 }}>{t('settings.wsl.lastSyncWarnings')}</div>
+                  <ul
+                    style={{
+                      margin: 0,
+                      paddingLeft: 16,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 2,
+                    }}
+                  >
+                    {status.lastSyncWarnings.map((warning) => (
+                      <li key={warning} style={{ lineHeight: 1.5, wordBreak: 'break-all' }}>
+                        {translateSyncMessage(warning, 'wsl', t)}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
             </div>
           </Form>

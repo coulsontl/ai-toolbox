@@ -64,6 +64,7 @@ export interface SSHSyncConfig {
   lastSyncStatus: string; // "success" | "error" | "never"
   lastSyncError?: string;
   lastSyncWarnings?: string[];
+  claudeRootPermissionFix: boolean;
   moduleStatuses: WslDirectModuleStatus[];
 }
 
@@ -76,6 +77,8 @@ export interface SSHConnectionResult {
   serverInfo?: string;
   /** `posix` | `windows_cmd` | `windows_powershell` | `unknown` */
   shellKind?: string;
+  /** Only probed for POSIX remotes. null/undefined means unknown. */
+  isRoot?: boolean | null;
 }
 
 /**

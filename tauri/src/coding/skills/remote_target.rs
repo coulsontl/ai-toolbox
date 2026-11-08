@@ -17,8 +17,7 @@ impl RemoteSkillTargetAction {
     }
 }
 
-const MANAGE_TARGET_SCRIPT: &str = r#"
-set -eu
+const MANAGE_TARGET_BODY: &str = r#"
 skill_source=$1
 skill_target=$2
 central_root=$3
@@ -116,25 +115,109 @@ fn remote_path_argument(path: &str) -> String {
     }
 }
 
+fn action_name(action: RemoteSkillTargetAction) -> &'static str {
+    match action {
+        RemoteSkillTargetAction::Link => "link",
+        RemoteSkillTargetAction::Copy => "copy",
+        RemoteSkillTargetAction::Remove => "remove",
+    }
+}
+
 pub fn build_remote_skill_target_command(
     source: &str,
     target: &str,
     central_root: &str,
     action: RemoteSkillTargetAction,
 ) -> String {
-    let action = match action {
-        RemoteSkillTargetAction::Link => "link",
-        RemoteSkillTargetAction::Copy => "copy",
-        RemoteSkillTargetAction::Remove => "remove",
-    };
+    let script = format!("set -eu\n{}", MANAGE_TARGET_BODY);
     format!(
         "sh -c {} ai-toolbox-skills {} {} {} {}",
-        quote_shell(MANAGE_TARGET_SCRIPT),
+        quote_shell(&script),
         remote_path_argument(source),
         remote_path_argument(target),
         remote_path_argument(central_root),
-        action,
+        action_name(action),
     )
+}
+
+/// One target operation in a batched remote call.
+pub struct SkillTargetOperation {
+    pub source: String,
+    pub target: String,
+    pub central_root: String,
+    pub action: RemoteSkillTargetAction,
+}
+
+/// Build one `sh -c` command that runs several target operations in a single
+/// SSH round trip. Each operation runs in its own command substitution so an
+/// `exit`/error in one cannot abort the rest.
+pub fn build_remote_skill_target_batch_command(operations: &[SkillTargetOperation]) -> String {
+    let mut script = String::from("set -u\nmanage_target() {\nset -eu\n");
+    script.push_str(MANAGE_TARGET_BODY);
+    script.push_str(
+        "\n}\nrun_one() {\n  index=$1\n  shift\n  output=$(manage_target \"$@\" 2>&1) && status=0 || status=$?\n  if [ \"$status\" -eq 0 ]; then\n    printf '%s\\t%s\\n' \"$index\" \"$output\"\n  else\n    printf '%s\\terror\\t%s\\n' \"$index\" \"$(printf '%s' \"$output\" | tr '\\n' ' ')\"\n  fi\n}\n",
+    );
+
+    for (index, operation) in operations.iter().enumerate() {
+        script.push_str(&format!(
+            "run_one {} {} {} {} {}\n",
+            index,
+            remote_path_argument(&operation.source),
+            remote_path_argument(&operation.target),
+            remote_path_argument(&operation.central_root),
+            action_name(operation.action),
+        ));
+    }
+
+    format!("sh -c {} ai-toolbox-skills-batch", quote_shell(&script))
+}
+
+/// Parse the `index<TAB>status` lines emitted by the batch script.
+pub fn parse_remote_skill_target_batch_result(
+    output: &str,
+    expected_count: usize,
+) -> Result<Vec<Result<bool, String>>, String> {
+    let mut results: Vec<Option<Result<bool, String>>> =
+        (0..expected_count).map(|_| None).collect();
+
+    for line in output.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let mut parts = line.splitn(3, '\t');
+        let index_text = parts
+            .next()
+            .ok_or_else(|| format!("Missing skill target batch index: {line}"))?;
+        let index: usize = index_text
+            .parse()
+            .map_err(|_| format!("Invalid skill target batch index: {line}"))?;
+        if index >= expected_count {
+            return Err(format!("Skill target batch index out of range: {line}"));
+        }
+        if results[index].is_some() {
+            return Err(format!("Duplicate skill target batch result: {line}"));
+        }
+
+        let status = parts
+            .next()
+            .ok_or_else(|| format!("Missing skill target batch status: {line}"))?;
+        let result = match status {
+            "updated" | "unchanged" => Ok(true),
+            "foreign" => Ok(false),
+            "error" => Err(parts.next().unwrap_or("").to_string()),
+            _ => return Err(format!("Unexpected skill target batch status: {line}")),
+        };
+        results[index] = Some(result);
+    }
+
+    results
+        .into_iter()
+        .enumerate()
+        .map(|(index, result)| {
+            result.ok_or_else(|| format!("Missing skill target batch result for operation {index}"))
+        })
+        .collect()
 }
 
 /// False means a user-owned target was preserved, not a successful sync.
@@ -279,5 +362,113 @@ mod tests {
         )
         .is_err());
         assert!(source.join("SKILL.md").exists());
+    }
+
+    #[test]
+    fn parses_batched_target_results_in_operation_order() {
+        let results =
+            parse_remote_skill_target_batch_result("0\tunchanged\n2\tforeign\n1\terror\tboom\n", 3)
+                .unwrap();
+
+        assert_eq!(results, vec![Ok(true), Err("boom".to_string()), Ok(false)]);
+    }
+
+    #[test]
+    fn rejects_incomplete_or_duplicate_batch_results() {
+        assert!(parse_remote_skill_target_batch_result("0\tunchanged\n", 2).is_err());
+        assert!(parse_remote_skill_target_batch_result("0\tunchanged\n0\tupdated\n", 2).is_err());
+        assert!(parse_remote_skill_target_batch_result("0\tunknown\n", 1).is_err());
+    }
+
+    #[cfg(unix)]
+    fn run_batch(operations: &[SkillTargetOperation]) -> Vec<Result<bool, String>> {
+        let command = build_remote_skill_target_batch_command(operations);
+        let output = std::process::Command::new("sh")
+            .args(["-c", &command])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "batch failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        parse_remote_skill_target_batch_result(
+            &String::from_utf8_lossy(&output.stdout),
+            operations.len(),
+        )
+        .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn batched_operations_report_each_result_and_isolate_failures() {
+        let directory = tempfile::tempdir().unwrap();
+        let central = directory.path().join("central");
+        let source_a = central.join("skill-a");
+        let source_b = central.join("skill-b");
+        std::fs::create_dir_all(&source_a).unwrap();
+        std::fs::create_dir_all(&source_b).unwrap();
+        std::fs::write(source_a.join("SKILL.md"), "a").unwrap();
+        std::fs::write(source_b.join("SKILL.md"), "b").unwrap();
+
+        let target_a = directory.path().join("tool-a/skill-a");
+        let target_b = directory.path().join("tool-b/skill-b");
+        let foreign_target = directory.path().join("tool-c/skill-a");
+        std::fs::create_dir_all(&foreign_target).unwrap();
+        std::fs::write(foreign_target.join("SKILL.md"), "user").unwrap();
+        let missing_target = directory.path().join("tool-d/skill-a");
+
+        let operations = vec![
+            SkillTargetOperation {
+                source: source_a.to_string_lossy().to_string(),
+                target: target_a.to_string_lossy().to_string(),
+                central_root: central.to_string_lossy().to_string(),
+                action: RemoteSkillTargetAction::Link,
+            },
+            SkillTargetOperation {
+                source: source_b.to_string_lossy().to_string(),
+                target: target_b.to_string_lossy().to_string(),
+                central_root: central.to_string_lossy().to_string(),
+                action: RemoteSkillTargetAction::Copy,
+            },
+            SkillTargetOperation {
+                source: source_a.to_string_lossy().to_string(),
+                target: foreign_target.to_string_lossy().to_string(),
+                central_root: central.to_string_lossy().to_string(),
+                action: RemoteSkillTargetAction::Link,
+            },
+            SkillTargetOperation {
+                source: central.join("missing-source").to_string_lossy().to_string(),
+                target: directory
+                    .path()
+                    .join("tool-e/skill-a")
+                    .to_string_lossy()
+                    .to_string(),
+                central_root: central.to_string_lossy().to_string(),
+                action: RemoteSkillTargetAction::Link,
+            },
+            SkillTargetOperation {
+                source: source_a.to_string_lossy().to_string(),
+                target: missing_target.to_string_lossy().to_string(),
+                central_root: central.to_string_lossy().to_string(),
+                action: RemoteSkillTargetAction::Remove,
+            },
+        ];
+
+        let results = run_batch(&operations);
+
+        assert_eq!(results[0], Ok(true));
+        assert_eq!(results[1], Ok(true));
+        assert_eq!(results[2], Ok(false));
+        assert!(results[3].is_err(), "missing source should fail");
+        assert_eq!(results[4], Ok(true));
+
+        assert_eq!(std::fs::read_link(&target_a).unwrap(), source_a);
+        assert!(target_b.join("SKILL.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(foreign_target.join("SKILL.md")).unwrap(),
+            "user"
+        );
+        assert!(!missing_target.exists());
     }
 }

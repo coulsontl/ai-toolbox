@@ -1,9 +1,11 @@
 use super::super::db_id;
 use super::types::{
-    default_directory_excludes_for_mapping, matches_default_directory_excludes,
-    normalize_directory_excludes, SSHConnection, SSHFileMapping, SSHSyncConfig,
+    default_directory_excludes_for_mapping, effective_directory_excludes_for_mapping,
+    matches_default_directory_excludes, normalize_directory_excludes, SSHConnection,
+    SSHFileMapping, SSHSyncConfig,
 };
 use crate::coding::config_cleanup;
+use crate::coding::skills::sync_warnings::merge_foreign_path_warnings;
 use chrono::Local;
 use serde_json::{json, Value};
 
@@ -49,17 +51,29 @@ pub fn config_from_db_value(
             .or_else(|| value.get("lastSyncError"))
             .and_then(|v| v.as_str())
             .map(String::from),
-        last_sync_warnings: value
-            .get("last_sync_warnings")
-            .or_else(|| value.get("lastSyncWarnings"))
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default(),
+        last_sync_warnings: {
+            let mut warnings = value
+                .get("last_sync_warnings")
+                .or_else(|| value.get("lastSyncWarnings"))
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            // Old records can contain one foreign-path warning per skill;
+            // normalize them on read so the settings page is concise even
+            // before the next sync rewrites the persisted list.
+            merge_foreign_path_warnings(&mut warnings);
+            warnings
+        },
+        claude_root_permission_fix: value
+            .get("claude_root_permission_fix")
+            .or_else(|| value.get("claudeRootPermissionFix"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         module_statuses: vec![],
     }
 }
@@ -72,6 +86,7 @@ pub fn config_to_db_value(config: &SSHSyncConfig) -> Value {
         "last_sync_time": config.last_sync_time,
         "last_sync_status": config.last_sync_status,
         "last_sync_error": config.last_sync_error,
+        "claude_root_permission_fix": config.claude_root_permission_fix,
     })
 }
 
@@ -192,7 +207,7 @@ fn directory_excludes_from_db_value(
         return default_excludes;
     }
 
-    normalized_excludes
+    effective_directory_excludes_for_mapping(mapping_id, &normalized_excludes)
 }
 
 fn cleanup_paths_from_db_value(
@@ -308,7 +323,10 @@ pub fn mapping_to_db_value(mapping: &SSHFileMapping) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{config_from_db_value, mapping_from_db_value, mapping_to_db_value};
+    use super::{
+        config_from_db_value, config_to_db_value, mapping_from_db_value, mapping_to_db_value,
+    };
+    use crate::coding::ssh::types::SSHSyncConfig;
     use serde_json::json;
 
     #[test]
@@ -344,6 +362,65 @@ mod tests {
     }
 
     #[test]
+    fn ssh_config_merges_legacy_per_skill_foreign_path_warnings_on_read() {
+        let config = config_from_db_value(
+            json!({
+                "enabled": true,
+                "last_sync_warnings": [
+                    "技能 'alpha' 在工具 'ZCode' 的路径 '~/.zcode/skills/alpha' 不是 AI Toolbox 管理的同步目标，已保留原样",
+                    "技能 'beta' 在工具 'ZCode' 的路径 '~/.zcode/skills/beta' 不是 AI Toolbox 管理的同步目标，已保留原样",
+                ],
+            }),
+            vec![],
+            vec![],
+        );
+
+        assert_eq!(config.last_sync_warnings.len(), 1);
+        assert_eq!(
+            config.last_sync_warnings[0],
+            "工具 'ZCode' 下有 2 个技能路径不是 AI Toolbox 管理的同步目标，已保留原样：'alpha'、'beta'"
+        );
+    }
+
+    #[test]
+    fn ssh_config_claude_root_permission_fix_defaults_to_disabled() {
+        let config = config_from_db_value(
+            json!({
+                "enabled": true,
+                "active_connection_id": "conn-1",
+            }),
+            vec![],
+            vec![],
+        );
+
+        assert!(!config.claude_root_permission_fix);
+    }
+
+    #[test]
+    fn ssh_config_reads_claude_root_permission_fix_from_both_casing_styles() {
+        for key in ["claude_root_permission_fix", "claudeRootPermissionFix"] {
+            let config = config_from_db_value(json!({ key: true }), vec![], vec![]);
+            assert!(
+                config.claude_root_permission_fix,
+                "key {key} should be read"
+            );
+        }
+    }
+
+    #[test]
+    fn ssh_config_to_db_value_persists_claude_root_permission_fix() {
+        let config = SSHSyncConfig {
+            claude_root_permission_fix: true,
+            ..SSHSyncConfig::default()
+        };
+
+        assert_eq!(
+            config_to_db_value(&config)["claude_root_permission_fix"],
+            json!(true)
+        );
+    }
+
+    #[test]
     fn directory_mapping_without_saved_excludes_uses_generic_defaults() {
         let mapping = mapping_from_db_value(json!({
             "id": "ssh_file_mapping:custom-dir",
@@ -358,6 +435,24 @@ mod tests {
 
         assert!(mapping.directory_excludes.contains(&"cache".to_string()));
         assert!(mapping.directory_excludes.contains(&".venv".to_string()));
+    }
+
+    #[test]
+    fn codex_plugins_without_saved_excludes_gets_appserver_exclude() {
+        let mapping = mapping_from_db_value(json!({
+            "id": "ssh_file_mapping:codex-plugins",
+            "name": "Codex 插件目录",
+            "module": "codex",
+            "local_path": "~/.codex/plugins",
+            "remote_path": "~/.codex/plugins",
+            "enabled": true,
+            "is_pattern": false,
+            "is_directory": true,
+        }));
+
+        assert!(mapping
+            .directory_excludes
+            .contains(&".plugin-appserver".to_string()));
     }
 
     #[test]

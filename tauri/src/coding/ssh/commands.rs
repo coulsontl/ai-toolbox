@@ -86,6 +86,10 @@ fn save_ssh_config_record(state: &SqliteDbState, config: &SSHSyncConfig) -> Resu
                 "active_connection_id",
                 serde_json::json!(config.active_connection_id),
             ),
+            (
+                "claude_root_permission_fix",
+                serde_json::json!(config.claude_root_permission_fix),
+            ),
         ],
     )
 }
@@ -205,16 +209,6 @@ pub async fn ssh_save_config(
     app: tauri::AppHandle,
     config: SSHSyncConfig,
 ) -> Result<(), String> {
-    // Check if being enabled
-    let was_enabled = {
-        let db = state.db();
-        load_ssh_config_record(db)?
-            .and_then(|record| record.get("enabled").and_then(|value| value.as_bool()))
-            .unwrap_or(false)
-    };
-
-    let is_being_enabled = !was_enabled && config.enabled;
-
     for mapping in config.file_mappings.iter() {
         validate_file_mapping_cleanup_paths(mapping)?;
     }
@@ -259,41 +253,23 @@ pub async fn ssh_save_config(
     // Emit event to refresh UI
     let _ = app.emit("ssh-config-changed", ());
 
-    // If SSH sync was just enabled, trigger a full sync
-    if is_being_enabled && !config.active_connection_id.is_empty() {
-        log::info!("SSH sync enabled, triggering full sync...");
+    Ok(())
+}
 
-        if session.try_acquire_sync_lock() {
-            // A failed connect must be reported as such: `do_full_sync` probes
-            // the shell next, and a probe without a session answers `Unknown`,
-            // which the user reads as "the remote shell is not POSIX" when the
-            // real problem was the connection.
-            let result = match session.ensure_connected().await {
-                Ok(()) => Some(do_full_sync(&state, &app, &session, &config, None, None).await),
-                Err(error) => {
-                    log::warn!("SSH full sync skipped, connect failed: {error}");
-                    None
-                }
-            };
-            session.release_sync_lock();
-
-            let result = result.unwrap_or_else(|| SyncResult {
-                success: false,
-                synced_files: Vec::new(),
-                skipped_files: Vec::new(),
-                errors: vec!["SSH 连接失败，同步未启动".to_string()],
-                warnings: Vec::new(),
-            });
-
-            if !result.errors.is_empty() {
-                log::warn!("SSH full sync errors: {:?}", result.errors);
-            }
-
-            update_sync_status(state.inner(), &result).await?;
-            let _ = app.emit("ssh-sync-completed", result);
-        }
-    }
-
+/// Patch the Claude root permission fix preference without saving the whole
+/// SSH sync config. A full save would also rewrite the current file mappings
+/// and may reconnect the session just to toggle a preference.
+#[tauri::command]
+pub async fn ssh_set_claude_root_permission_fix(
+    state: tauri::State<'_, SqliteDbState>,
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    patch_ssh_config_record(
+        &state,
+        &[("claude_root_permission_fix", serde_json::json!(enabled))],
+    )?;
+    let _ = app.emit("ssh-config-changed", ());
     Ok(())
 }
 
@@ -522,6 +498,28 @@ pub async fn do_full_sync(
         };
     }
 
+    let claude_root_permission_fix = if config.claude_root_permission_fix {
+        match session.exec_command("id -u").await {
+            Ok(output) => {
+                let is_root = output.trim().parse::<u32>().ok() == Some(0);
+                log::info!(
+                    "SSH remote root check for Claude permission fix: is_root={}",
+                    is_root
+                );
+                is_root
+            }
+            Err(error) => {
+                log::warn!(
+                    "SSH remote root check failed, skipping Claude permission fix: {}",
+                    error
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+
     let total_mapping_count = config.file_mappings.len();
     let enabled_mapping_count = config.file_mappings.iter().filter(|m| m.enabled).count();
     let disabled_mapping_count = total_mapping_count.saturating_sub(enabled_mapping_count);
@@ -560,8 +558,15 @@ pub async fn do_full_sync(
     );
 
     // Sync file file_mappings with progress
-    let mut result =
-        sync_file_mappings_with_progress(&file_mappings, session, module, skip_modules, app).await;
+    let mut result = sync_file_mappings_with_progress(
+        &file_mappings,
+        session,
+        module,
+        skip_modules,
+        app,
+        claude_root_permission_fix,
+    )
+    .await;
     log::info!(
         "SSH full sync file stage completed: synced_files={}, skipped_files={}, errors={}",
         result.synced_files.len(),
@@ -711,6 +716,7 @@ async fn sync_file_mappings_with_progress(
     module_filter: Option<&str>,
     skip_modules: Option<&[String]>,
     app: &tauri::AppHandle,
+    claude_root_permission_fix: bool,
 ) -> SyncResult {
     let mut synced_files = vec![];
     let mut skipped_files = vec![];
@@ -806,10 +812,20 @@ async fn sync_file_mappings_with_progress(
         match sync::sync_file_mapping_with_progress(mapping, session, Some(&report_current_file))
             .await
         {
-            Ok(mut files) => {
+            Ok(None) => {
+                skipped_files.push(mapping.name.clone());
+                continue;
+            }
+            Ok(Some(mut files)) => {
                 if !files.is_empty() {
-                    match cleanup_synced_file_on_ssh(mapping, session).await {
-                        Ok(Some(cleaned_file)) => files.push(cleaned_file),
+                    match post_process_synced_file_on_ssh(
+                        mapping,
+                        session,
+                        claude_root_permission_fix,
+                    )
+                    .await
+                    {
+                        Ok(Some(processed_file)) => files.push(processed_file),
                         Ok(None) => {}
                         Err(error) => errors.push(format!("{}: {}", mapping.name, error)),
                     }
@@ -877,9 +893,26 @@ async fn sync_file_mappings_with_progress(
     }
 }
 
-async fn cleanup_synced_file_on_ssh(
+fn is_claude_settings_json_mapping(mapping: &SSHFileMapping) -> bool {
+    if mapping.module != "claude" || mapping.is_directory || mapping.is_pattern {
+        return false;
+    }
+
+    let file_name = mapping
+        .remote_path
+        .trim()
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("");
+
+    matches!(file_name, "settings.json" | "settings.local.json")
+}
+
+async fn post_process_synced_file_on_ssh(
     mapping: &SSHFileMapping,
     session: &SshSession,
+    claude_root_permission_fix: bool,
 ) -> Result<Option<String>, String> {
     let mut cleanup_paths = Vec::new();
     if mapping.id == "claude-settings" {
@@ -898,24 +931,52 @@ async fn cleanup_synced_file_on_ssh(
         &mapping.local_path,
         &cleanup_paths,
     )?;
-    if cleanup_paths.is_empty() {
+
+    let needs_permission_fix =
+        claude_root_permission_fix && is_claude_settings_json_mapping(mapping);
+    if cleanup_paths.is_empty() && !needs_permission_fix {
         return Ok(None);
     }
 
-    let format = config_cleanup::cleanup_file_format_for_mapping_paths(
-        &mapping.remote_path,
-        &mapping.local_path,
-    )
-    .ok_or_else(|| "字段清理路径仅支持 JSON/TOML 单文件映射".to_string())?;
     let content = sync::read_remote_file(session, &mapping.remote_path).await?;
-    let Some(cleaned_content) =
-        config_cleanup::apply_cleanup_paths_to_content(&content, format, &cleanup_paths)?
-    else {
-        return Ok(None);
-    };
+    let mut updated_content = content;
+    let mut applied_actions = Vec::new();
 
-    sync::write_remote_file(session, &mapping.remote_path, &cleaned_content).await?;
-    Ok(Some(format!("Field cleanup: {}", mapping.remote_path)))
+    if !cleanup_paths.is_empty() {
+        let format = config_cleanup::cleanup_file_format_for_mapping_paths(
+            &mapping.remote_path,
+            &mapping.local_path,
+        )
+        .ok_or_else(|| "字段清理路径仅支持 JSON/TOML 单文件映射".to_string())?;
+        if let Some(cleaned_content) = config_cleanup::apply_cleanup_paths_to_content(
+            &updated_content,
+            format,
+            &cleanup_paths,
+        )? {
+            updated_content = cleaned_content;
+            applied_actions.push("Field cleanup");
+        }
+    }
+
+    if needs_permission_fix {
+        if let Some(fixed_content) =
+            config_cleanup::sanitize_claude_settings_content_for_root_user(&updated_content)?
+        {
+            updated_content = fixed_content;
+            applied_actions.push("Root permission fix");
+        }
+    }
+
+    if applied_actions.is_empty() {
+        return Ok(None);
+    }
+
+    sync::write_remote_file(session, &mapping.remote_path, &updated_content).await?;
+    Ok(Some(format!(
+        "{}: {}",
+        applied_actions.join(" + "),
+        mapping.remote_path
+    )))
 }
 
 async fn reconcile_codex_prompt_files_on_ssh(
@@ -2189,7 +2250,9 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: true,
-            directory_excludes: super::types::default_directory_excludes(),
+            directory_excludes: super::types::default_directory_excludes_for_mapping(
+                super::types::CODEX_PLUGINS_MAPPING_ID,
+            ),
             cleanup_paths: vec![],
         },
         // Grok
@@ -2998,6 +3061,7 @@ mod tests {
             .unwrap();
         let synced_record = super::load_ssh_config_record(&state).unwrap().unwrap();
         stale_config.active_connection_id = "connection-2".to_string();
+        stale_config.claude_root_permission_fix = true;
         super::save_ssh_config_record(&state, &stale_config).unwrap();
 
         let reloaded = super::adapter::config_from_db_value(
@@ -3006,6 +3070,7 @@ mod tests {
             vec![],
         );
         assert_eq!(reloaded.active_connection_id, "connection-2");
+        assert!(reloaded.claude_root_permission_fix);
         assert_eq!(reloaded.last_sync_warnings, warnings);
         assert_eq!(
             reloaded.last_sync_time.as_deref(),
@@ -3022,6 +3087,101 @@ mod tests {
         assert_eq!(cleared["last_sync_warnings"], serde_json::json!([]));
         assert_eq!(cleared["last_sync_status"], "error");
         assert_eq!(cleared["active_connection_id"], "connection-2");
+        assert_eq!(cleared["claude_root_permission_fix"], true);
+    }
+
+    #[test]
+    fn patching_claude_root_permission_fix_preserves_other_config_fields() {
+        let state = crate::db::SqliteDbState::in_memory_for_test().unwrap();
+        super::patch_ssh_config_record(
+            &state,
+            &[
+                ("enabled", serde_json::json!(true)),
+                ("active_connection_id", serde_json::json!("connection-1")),
+            ],
+        )
+        .unwrap();
+
+        super::patch_ssh_config_record(
+            &state,
+            &[("claude_root_permission_fix", serde_json::json!(true))],
+        )
+        .unwrap();
+
+        let record = super::load_ssh_config_record(&state).unwrap().unwrap();
+        assert_eq!(record["enabled"], true);
+        assert_eq!(record["active_connection_id"], "connection-1");
+        assert_eq!(record["claude_root_permission_fix"], true);
+    }
+
+    fn build_mapping(
+        module: &str,
+        remote_path: &str,
+        is_directory: bool,
+        is_pattern: bool,
+    ) -> crate::coding::ssh::types::SSHFileMapping {
+        crate::coding::ssh::types::SSHFileMapping {
+            id: "custom".to_string(),
+            name: "Custom".to_string(),
+            module: module.to_string(),
+            local_path: remote_path.to_string(),
+            remote_path: remote_path.to_string(),
+            enabled: true,
+            is_pattern,
+            is_directory,
+            directory_excludes: vec![],
+            cleanup_paths: vec![],
+        }
+    }
+
+    #[test]
+    fn claude_settings_mapping_matches_settings_and_local_settings_json() {
+        assert!(super::is_claude_settings_json_mapping(&build_mapping(
+            "claude",
+            "~/.claude/settings.json",
+            false,
+            false,
+        )));
+        assert!(super::is_claude_settings_json_mapping(&build_mapping(
+            "claude",
+            "~/.claude/settings.local.json",
+            false,
+            false,
+        )));
+        assert!(super::is_claude_settings_json_mapping(&build_mapping(
+            "claude",
+            "/srv/project/.claude/settings.json",
+            false,
+            false,
+        )));
+    }
+
+    #[test]
+    fn claude_settings_mapping_rejects_other_files_and_modes() {
+        assert!(!super::is_claude_settings_json_mapping(&build_mapping(
+            "claude",
+            "~/.claude/config.json",
+            false,
+            false,
+        )));
+        assert!(!super::is_claude_settings_json_mapping(&build_mapping(
+            "codex",
+            "~/.claude/settings.json",
+            false,
+            false,
+        )));
+        assert!(!super::is_claude_settings_json_mapping(&build_mapping(
+            "claude",
+            "~/.claude/settings.json",
+            true,
+            false,
+        )));
+        assert!(!super::is_claude_settings_json_mapping(&build_mapping(
+            "claude",
+            "~/.claude/*.json",
+            false,
+            true,
+        )));
     }
 
     use super::{
@@ -3093,13 +3253,16 @@ mod tests {
     }
 
     #[test]
-    fn codex_plugins_default_mapping_still_uses_generic_directory_excludes() {
+    fn codex_plugins_default_mapping_excludes_windows_only_appserver() {
         let mapping = default_file_mappings()
             .into_iter()
             .find(|mapping| mapping.id == "codex-plugins")
             .expect("codex-plugins default mapping exists");
 
         assert!(mapping.directory_excludes.contains(&"cache".to_string()));
+        assert!(mapping
+            .directory_excludes
+            .contains(&".plugin-appserver".to_string()));
     }
 
     #[test]

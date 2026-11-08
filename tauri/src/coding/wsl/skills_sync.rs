@@ -4,6 +4,7 @@
 
 use std::collections::HashSet;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use log::info;
 use tauri::{AppHandle, Emitter};
@@ -11,15 +12,16 @@ use tokio::sync::Mutex;
 
 use super::adapter;
 use super::sync::{
-    list_wsl_dir, manage_wsl_skill_target, read_wsl_file_raw, remove_wsl_path, sync_directory,
-    write_wsl_file,
+    list_wsl_dir, manage_wsl_skill_target, manage_wsl_skill_targets_batch, read_wsl_file_raw,
+    remove_wsl_path, sync_directory, write_wsl_file,
 };
 use super::types::{SyncProgress, WSLSyncConfig};
 use crate::coding::runtime_location;
 use crate::coding::skills::central_repo::{resolve_central_repo_path, resolve_skill_central_path};
 use crate::coding::skills::content_hash::hash_dir;
-use crate::coding::skills::remote_target::RemoteSkillTargetAction;
+use crate::coding::skills::remote_target::{RemoteSkillTargetAction, SkillTargetOperation};
 use crate::coding::skills::skill_store;
+use crate::coding::skills::sync_warnings::merge_foreign_path_warnings;
 use crate::coding::tools::builtin::BUILTIN_TOOLS;
 use crate::db::helpers::db_get;
 use crate::db::schema::{DbTable, SyncEntityKind};
@@ -27,6 +29,79 @@ use crate::SqliteDbState;
 
 const WSL_CENTRAL_DIR: &str = "~/.ai-toolbox/skills";
 static SKILLS_WSL_SYNC_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+struct PendingSkillTarget {
+    tool_key: String,
+    target: String,
+    action: RemoteSkillTargetAction,
+}
+
+/// Run all target operations for one skill in a single `wsl.exe` invocation.
+/// Returns true when at least one operation failed.
+fn run_pending_targets(
+    distro: &str,
+    source: &str,
+    skill_name: &str,
+    pending_targets: &[PendingSkillTarget],
+    warnings: &mut Vec<String>,
+    app: &AppHandle,
+) -> bool {
+    if pending_targets.is_empty() {
+        return false;
+    }
+
+    let operations: Vec<SkillTargetOperation> = pending_targets
+        .iter()
+        .map(|pending| SkillTargetOperation {
+            source: source.to_string(),
+            target: pending.target.clone(),
+            central_root: WSL_CENTRAL_DIR.to_string(),
+            action: pending.action,
+        })
+        .collect();
+
+    let mut failed = false;
+    match manage_wsl_skill_targets_batch(distro, &operations) {
+        Ok(results) => {
+            for (pending, result) in pending_targets.iter().zip(results) {
+                failed |= result.is_err();
+                report_target_result(
+                    warnings,
+                    app,
+                    skill_name,
+                    &pending.tool_key,
+                    &pending.target,
+                    result,
+                );
+            }
+        }
+        Err(error) => {
+            log::warn!(
+                "Skills WSL sync: batched target maintenance failed, falling back to individual calls: {}",
+                error
+            );
+            for pending in pending_targets {
+                let result = manage_wsl_skill_target(
+                    distro,
+                    source,
+                    &pending.target,
+                    WSL_CENTRAL_DIR,
+                    pending.action,
+                );
+                failed |= result.is_err();
+                report_target_result(
+                    warnings,
+                    app,
+                    skill_name,
+                    &pending.tool_key,
+                    &pending.target,
+                    result,
+                );
+            }
+        }
+    }
+    failed
+}
 
 /// Record a user-facing non-fatal notice: append to the run's warning list and
 /// emit `wsl-sync-warning` so the manual-sync modal shows it live.
@@ -200,6 +275,16 @@ pub(super) async fn sync_skills_to_wsl_with_warnings(
     app: AppHandle,
     warnings: &mut Vec<String>,
 ) -> Result<(), String> {
+    let outcome = sync_skills_to_wsl_inner(state, app, warnings).await;
+    merge_foreign_path_warnings(warnings);
+    outcome
+}
+
+async fn sync_skills_to_wsl_inner(
+    state: &SqliteDbState,
+    app: AppHandle,
+    warnings: &mut Vec<String>,
+) -> Result<(), String> {
     let _skills_guard = SKILLS_WSL_SYNC_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
@@ -269,31 +354,43 @@ pub(super) async fn sync_skills_to_wsl_with_warnings(
     // 2. Collect Windows skill names
     let windows_skill_names: HashSet<String> = skills.iter().map(|s| s.name.clone()).collect();
 
+    let mut total_target_operations = 0usize;
+    let mut total_target_time = Duration::ZERO;
+    let mut total_hash_time = Duration::ZERO;
+
     // 3. Delete skills in WSL that no longer exist in Windows.
     // Only app-managed targets are removed; unmarked directories and foreign
     // symlinks at the same name are left untouched.
     for wsl_skill in &existing_wsl_skills {
         if !windows_skill_names.contains(wsl_skill) {
-            let mut target_cleanup_failed = false;
+            let mut pending_targets = Vec::new();
             // Remove symlinks from all tool directories first
             for tool_key in get_all_skill_tool_keys() {
                 if skipped_tool_keys.contains(tool_key) {
                     continue;
                 }
                 if let Some(wsl_skills_dir) = get_wsl_tool_skills_dir_with_db(&db, tool_key).await {
-                    let link_path = format!("{}/{}", wsl_skills_dir, wsl_skill);
-                    let source = format!("{}/{}", WSL_CENTRAL_DIR, wsl_skill);
-                    let result = manage_wsl_skill_target(
-                        &distro,
-                        &source,
-                        &link_path,
-                        WSL_CENTRAL_DIR,
-                        RemoteSkillTargetAction::Remove,
-                    );
-                    target_cleanup_failed |= result.is_err();
-                    report_target_result(warnings, &app, wsl_skill, tool_key, &link_path, result);
+                    pending_targets.push(PendingSkillTarget {
+                        tool_key: tool_key.to_string(),
+                        target: format!("{}/{}", wsl_skills_dir, wsl_skill),
+                        action: RemoteSkillTargetAction::Remove,
+                    });
                 }
             }
+
+            total_target_operations += pending_targets.len();
+            let target_started = Instant::now();
+            let source = format!("{}/{}", WSL_CENTRAL_DIR, wsl_skill);
+            let target_cleanup_failed = run_pending_targets(
+                &distro,
+                &source,
+                wsl_skill,
+                &pending_targets,
+                warnings,
+                &app,
+            );
+            total_target_time += target_started.elapsed();
+
             // Keep the central entry discoverable so failed target cleanup is retried.
             if target_cleanup_failed {
                 continue;
@@ -356,6 +453,7 @@ pub(super) async fn sync_skills_to_wsl_with_warnings(
             continue;
         }
         if skill.source_type == "central" {
+            let hash_started = Instant::now();
             match hash_dir(&source) {
                 Ok(content_hash) => {
                     if skill.content_hash.as_deref() != Some(content_hash.as_str()) {
@@ -383,6 +481,7 @@ pub(super) async fn sync_skills_to_wsl_with_warnings(
                     );
                 }
             }
+            total_hash_time += hash_started.elapsed();
         }
 
         let wsl_target = format!("{}/{}", WSL_CENTRAL_DIR, skill.name);
@@ -434,21 +533,20 @@ pub(super) async fn sync_skills_to_wsl_with_warnings(
             }
         }
 
+        // Collect target work first, then run it in one batched wsl.exe call.
+        let mut pending_targets = Vec::new();
+
         // Maintain owned copies or links for each enabled tool
         for tool_key in &skill.enabled_tools {
             if skipped_tool_keys.contains(tool_key) {
                 continue;
             }
             if let Some(wsl_skills_dir) = get_wsl_tool_skills_dir_with_db(&db, tool_key).await {
-                let link_path = format!("{}/{}", wsl_skills_dir, skill.name);
-                let result = manage_wsl_skill_target(
-                    &distro,
-                    &wsl_target,
-                    &link_path,
-                    WSL_CENTRAL_DIR,
-                    RemoteSkillTargetAction::sync_for_tool(tool_key),
-                );
-                report_target_result(warnings, &app, &skill.name, tool_key, &link_path, result);
+                pending_targets.push(PendingSkillTarget {
+                    tool_key: tool_key.clone(),
+                    target: format!("{}/{}", wsl_skills_dir, skill.name),
+                    action: RemoteSkillTargetAction::sync_for_tool(tool_key),
+                });
             } else {
                 log::warn!(
                     "Skills WSL sync: could not resolve WSL skills dir for skill '{}' tool '{}'",
@@ -473,25 +571,35 @@ pub(super) async fn sync_skills_to_wsl_with_warnings(
             }
             if !enabled_set.contains(tool_key) {
                 if let Some(wsl_skills_dir) = get_wsl_tool_skills_dir_with_db(&db, tool_key).await {
-                    let link_path = format!("{}/{}", wsl_skills_dir, skill.name);
-                    let source = format!("{}/{}", WSL_CENTRAL_DIR, &skill.name);
-                    let result = manage_wsl_skill_target(
-                        &distro,
-                        &source,
-                        &link_path,
-                        WSL_CENTRAL_DIR,
-                        RemoteSkillTargetAction::Remove,
-                    );
-                    report_target_result(warnings, &app, &skill.name, tool_key, &link_path, result);
+                    pending_targets.push(PendingSkillTarget {
+                        tool_key: tool_key.to_string(),
+                        target: format!("{}/{}", wsl_skills_dir, skill.name),
+                        action: RemoteSkillTargetAction::Remove,
+                    });
                 }
             }
         }
+
+        total_target_operations += pending_targets.len();
+        let target_started = Instant::now();
+        run_pending_targets(
+            &distro,
+            &wsl_target,
+            &skill.name,
+            &pending_targets,
+            warnings,
+            &app,
+        );
+        total_target_time += target_started.elapsed();
     }
 
     info!(
-        "Skills WSL sync completed: {} skills updated, {} total",
+        "Skills WSL sync completed: {} skills updated, {} total, target_operations={}, hash_ms={}, target_ms={}",
         synced_count,
-        skills.len()
+        skills.len(),
+        total_target_operations,
+        total_hash_time.as_millis(),
+        total_target_time.as_millis()
     );
 
     Ok(())

@@ -25,6 +25,22 @@ test('copied skill targets use the same warning translations as legacy links', (
   }
 });
 
+test('merged skills foreign path warning is translated with tool, count, and skills', () => {
+  assert.equal(
+    translateSyncMessage(
+      "工具 'ZCode' 下有 2 个技能路径不是 AI Toolbox 管理的同步目标，已保留原样：'docx'、'newapi'",
+      'ssh',
+      stubT,
+    ),
+    'settings.syncMessages.skillsForeignPathKeptMany?' +
+      JSON.stringify({
+        tool: 'ZCode',
+        count: 2,
+        skills: "'docx'、'newapi'",
+      }),
+  );
+});
+
 test('skills foreign path warning is translated with skill, tool, and path', () => {
   assert.equal(
     translateSyncMessage(

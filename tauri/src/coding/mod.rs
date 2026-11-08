@@ -51,6 +51,7 @@ pub mod runtime_location;
 pub mod session_manager;
 pub mod skills;
 pub mod ssh;
+pub mod sync_hash;
 pub mod tools;
 pub(crate) mod url_utils;
 // WorkBuddy desktop and CodeBuddy Code share one engine: their custom-model

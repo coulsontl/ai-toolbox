@@ -1247,6 +1247,7 @@
       "openCodeCodexConfigSyncPartialFailed": "OpenCode/Codex 配置同步部分失败：{{detail}}",
       "openCodeCodexMcpSyncSkipped": "OpenCode/Codex MCP 同步已跳过：{{detail}}",
       "skillsForeignPathKept": "技能 '{{skill}}' 在工具 '{{tool}}' 的路径 '{{path}}' 不是 AI Toolbox 管理的同步目标，已保留原样",
+      "skillsForeignPathKeptMany": "工具 '{{tool}}' 下有 {{count}} 个技能路径不是 AI Toolbox 管理的同步目标，已保留原样：{{skills}}",
       "skillsLinkMaintenanceFailed": "技能 '{{skill}}' 在工具 '{{tool}}' 的同步目标维护失败：{{detail}}",
       "skillsSourceMissingSkipped": "技能 '{{skill}}' 的源目录不存在，已跳过同步：{{detail}}",
       "skillsRemoteDirCleanupFailed": "技能 '{{skill}}' 的远端目录清理失败：{{detail}}",
@@ -1386,7 +1387,7 @@
     "ssh": {
       "title": "SSH 配置同步设置",
       "enableSync": "启用 SSH 连接",
-      "enableSyncHint": "修改下方各模块映射的配置文件内容后不会自动触发同步，需手动点击「立即同步」按钮触发",
+      "enableSyncHint": "启用后只建立连接，不会自动同步；修改映射配置后也需手动点击「立即同步」。",
       "activeConnection": "活跃连接",
       "selectConnection": "请选择连接",
       "newConnection": "新建连接",
@@ -1467,7 +1468,13 @@
         "windowsPowerShell": "Windows PowerShell",
         "unknown": "未知"
       },
-      "remoteShellUnsupported": "远端 Shell 为 {{shell}}，当前版本仅支持 Linux/macOS 远端，同步已阻止。"
+      "remoteShellUnsupported": "远端 Shell 为 {{shell}}，当前版本仅支持 Linux/macOS 远端，同步已阻止。",
+      "remoteUser": "远端用户",
+      "remoteUserRoot": "root",
+      "remoteUserNonRoot": "非 root",
+      "remoteUserUnknown": "未知",
+      "claudeRootPermissionFix": "root 远端 Claude 权限修正",
+      "claudeRootPermissionFixHint": "远端为 root 时，将 Claude settings 的 bypassPermissions 改为 auto，并移除两个危险权限字段；不改本机文件。"
     },
     "webdav": {
       "url": "服务器地址",

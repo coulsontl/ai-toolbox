@@ -1,6 +1,9 @@
 use super::super::db_id;
-use super::types::{normalize_directory_excludes, FileMapping, WSLSyncConfig};
+use super::types::{
+    effective_directory_excludes, normalize_directory_excludes, FileMapping, WSLSyncConfig,
+};
 use crate::coding::config_cleanup;
+use crate::coding::skills::sync_warnings::merge_foreign_path_warnings;
 use chrono::Local;
 use serde_json::{json, Value};
 
@@ -40,17 +43,24 @@ pub fn config_from_db_value(value: Value, file_mappings: Vec<FileMapping>) -> WS
             .or_else(|| value.get("lastSyncError"))
             .and_then(|v| v.as_str())
             .map(String::from),
-        last_sync_warnings: value
-            .get("last_sync_warnings")
-            .or_else(|| value.get("lastSyncWarnings"))
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default(),
+        last_sync_warnings: {
+            let mut warnings = value
+                .get("last_sync_warnings")
+                .or_else(|| value.get("lastSyncWarnings"))
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            // Old records can contain one foreign-path warning per skill;
+            // normalize them on read so the settings page is concise even
+            // before the next sync rewrites the persisted list.
+            merge_foreign_path_warnings(&mut warnings);
+            warnings
+        },
         module_statuses: vec![],
     }
 }
@@ -92,7 +102,11 @@ fn cleanup_paths_from_db_value(
     .unwrap_or_default()
 }
 
-fn directory_excludes_from_db_value(value: &Value, is_directory: bool) -> Vec<String> {
+fn directory_excludes_from_db_value(
+    value: &Value,
+    mapping_id: &str,
+    is_directory: bool,
+) -> Vec<String> {
     if !is_directory {
         return vec![];
     }
@@ -101,14 +115,14 @@ fn directory_excludes_from_db_value(value: &Value, is_directory: bool) -> Vec<St
         .get("directory_excludes")
         .or_else(|| value.get("directoryExcludes"));
     let Some(items) = raw_excludes.and_then(|v| v.as_array()) else {
-        return vec![];
+        return effective_directory_excludes(mapping_id, &[]);
     };
 
     let excludes = items
         .iter()
         .filter_map(|item| item.as_str().map(String::from))
         .collect::<Vec<_>>();
-    normalize_directory_excludes(&excludes)
+    effective_directory_excludes(mapping_id, &excludes)
 }
 
 /// Convert database Value to FileMapping
@@ -137,7 +151,7 @@ pub fn mapping_from_db_value(value: Value) -> FileMapping {
         .or_else(|| value.get("isDirectory"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let directory_excludes = directory_excludes_from_db_value(&value, is_directory);
+    let directory_excludes = directory_excludes_from_db_value(&value, &id, is_directory);
     let cleanup_paths =
         cleanup_paths_from_db_value(&value, is_directory, is_pattern, &wsl_path, &windows_path);
 
@@ -229,6 +243,26 @@ mod tests {
     }
 
     #[test]
+    fn config_merges_legacy_per_skill_foreign_path_warnings_on_read() {
+        let config = config_from_db_value(
+            json!({
+                "enabled": true,
+                "last_sync_warnings": [
+                    "技能 'alpha' 在工具 'ZCode' 的路径 '~/.zcode/skills/alpha' 不是 AI Toolbox 管理的同步目标，已保留原样",
+                    "技能 'beta' 在工具 'ZCode' 的路径 '~/.zcode/skills/beta' 不是 AI Toolbox 管理的同步目标，已保留原样",
+                ],
+            }),
+            vec![],
+        );
+
+        assert_eq!(config.last_sync_warnings.len(), 1);
+        assert_eq!(
+            config.last_sync_warnings[0],
+            "工具 'ZCode' 下有 2 个技能路径不是 AI Toolbox 管理的同步目标，已保留原样：'alpha'、'beta'"
+        );
+    }
+
+    #[test]
     fn json_or_toml_file_mapping_persists_cleanup_paths() {
         let mapping = mapping_from_db_value(json!({
             "id": "wsl_file_mapping:claude-settings",
@@ -292,6 +326,24 @@ mod tests {
             mapping_to_db_value(&mapping)["directory_excludes"],
             json!(["cache", ".venv"])
         );
+    }
+
+    #[test]
+    fn codex_plugins_mapping_gets_appserver_exclude() {
+        let mapping = mapping_from_db_value(json!({
+            "id": "wsl_file_mapping:codex-plugins",
+            "name": "Codex 插件目录",
+            "module": "codex",
+            "windows_path": "~/.codex/plugins",
+            "wsl_path": "~/.codex/plugins",
+            "enabled": true,
+            "is_pattern": false,
+            "is_directory": true,
+        }));
+
+        assert!(mapping
+            .directory_excludes
+            .contains(&".plugin-appserver".to_string()));
     }
 
     #[test]

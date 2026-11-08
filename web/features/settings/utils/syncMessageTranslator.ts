@@ -307,6 +307,15 @@ const translateClaudeJsonWarning = (
 const translateSkillsWarning = (value: string, mode: SyncMode, t: TFunction): string | null => {
 	const patterns: Array<[RegExp, (...args: string[]) => string]> = [
 		[
+			/^工具 '(.+)' 下有 (\d+) 个技能路径不是 AI Toolbox 管理的同步目标，已保留原样：(.+)$/s,
+			(tool, count, skills) =>
+				t("settings.syncMessages.skillsForeignPathKeptMany", {
+					tool,
+					count: Number(count),
+					skills,
+				}),
+		],
+		[
 			/^技能 '(.+)' 在工具 '(.+)' 的路径 '(.+)' 不是 AI Toolbox 管理的(?:链接|同步目标)，已保留原样$/s,
 			(skill, tool, path) =>
 				t("settings.syncMessages.skillsForeignPathKept", { skill, tool, path }),

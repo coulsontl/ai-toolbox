@@ -29,6 +29,14 @@ export const sshSaveConfig = async (config: SSHSyncConfig): Promise<void> => {
 };
 
 /**
+ * Patch the Claude root permission fix preference without saving the whole
+ * SSH sync config.
+ */
+export const sshSetClaudeRootPermissionFix = async (enabled: boolean): Promise<void> => {
+  await invoke('ssh_set_claude_root_permission_fix', { enabled });
+};
+
+/**
  * List all SSH connection presets
  */
 export const sshListConnections = async (): Promise<SSHConnection[]> => {

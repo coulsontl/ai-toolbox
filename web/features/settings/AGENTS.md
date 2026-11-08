@@ -10,7 +10,7 @@
 - WSL/SSH 设置页中的 `moduleStatuses` 来自后端统一计算，不是前端基于路径字符串自己推导。
 - WSL 与 SSH 虽然都会消费 `moduleStatuses`，但 skip 规则不同：WSL 会基于 `isWslDirect` 构造 `skipModules`，SSH 只会按可见模块构造 `skipModules`，不会因为 `isWslDirect` 禁用模块。
 - 同步结果、进度和警告都来自事件：`wsl-config-changed`、`wsl-sync-completed`、`wsl-sync-progress`、`ssh-config-changed`、`ssh-sync-completed`、`ssh-sync-progress`。
-- Skills 同步警告有两条展示路径：`wsl-sync-warning` / `ssh-sync-warning` 事件在同步过程中实时展示在弹窗（`syncWarning`，可关闭）；同步结束后持久化的 `status.lastSyncWarnings` 在 WSL/SSH 弹窗内常驻展示（warning Alert 列表）。警告文案经 `syncMessageTranslator` 的正则模式翻译，新增后端警告格式时必须同步补翻译模式和 i18n key。
+- Skills 同步警告只保留同步结束后持久化的 `status.lastSyncWarnings`，在 WSL/SSH 弹窗内以灰色小字常驻展示；后端仍会发 `wsl-sync-warning` / `ssh-sync-warning` 事件，但设置页不再用黄色实时 `Alert` 展示。同一工具下多个“技能路径未托管”的警告会在后端合并成一句（`skillsForeignPathKeptMany`），前端翻译模式必须支持该格式。警告文案经 `syncMessageTranslator` 的正则模式翻译，新增后端警告格式时必须同步补翻译模式和 i18n key。
 - WSL 的持久化警告不只来自 Skills：后端已把文件/MCP/Onboarding 的非致命问题也并入同一次 `lastSyncWarnings` 快照，因此 WSL 侧该字段的标题是「上次同步警告」（`settings.wsl.lastSyncWarnings`），SSH 侧仍只承载 Skills 警告。不要把 WSL 文案改回「上次 Skills 同步警告」。
 - Claude Onboarding 同步失败属于 warning 而非 error（issue #449）：后端把它 push 进 `warnings`，前端经 `Onboarding sync: …` 前缀进入 `onboardingSyncFailed`，再由 `onboardingSyncParseFailed` / `onboardingSyncNotObject` 拆出 distro、目标路径和“原文件未修改”。文案必须保留“其余同步结果不受影响”的语义，不能写成整轮同步失败。
 - 同一段 claude.json 诊断有两条到达路径：onboarding 同步用 `Onboarding sync: ` 包装，MCP 同步用 `Claude Code: ` 包装后又套进旧的 `WSL ~/.claude.json 同步已跳过：…` 句子。`translateClaudeJsonWarning` 必须同时接受这两种前缀（并且整体解析先于通用的 `"; "` 拆串），否则中文界面会嵌进一整段英文。`Claude plugins metadata rewrite` 属于 best-effort，走 warning 通道而不是 error，否则同一次同步会同时显示成功图标和红色错误横幅。
@@ -55,13 +55,16 @@ sequenceDiagram
 - WSL 设置页里 `isWslDirect` 模块需要禁用相关映射编辑和手动同步入口；SSH 设置页不要照抄这套禁用逻辑。
 - dsh/Hermes 也消费同一 `moduleStatuses`，不能因工具自行解析配置目录而漏掉 Direct 状态。保存/清除目录会发出 `wsl-config-changed` 刷新设置页；后端在同步开始时仍会重读 Direct 集合，首次启用不能依赖 UI 快照。
 - SSH 设置页可以显示 WSL UNC 本地路径，但这只是展示优化，不代表 SSH 模块也具备 WSL 那套自动同步语义。
+- SSH「测试连接」结果现在带 `isRoot`（仅 POSIX 远端探测；null/undefined 表示未知），Claude Code Tab 内的 root 权限修正开关存 `SSHSyncConfig.claudeRootPermissionFix`（SQLite），不要用 localStorage；保存走 `ssh_set_claude_root_permission_fix` 单字段 patch，不要用全量 `sshSaveConfig`（会重写映射并可能触发重连）。该开关默认关闭；它只影响同步后远端 Claude settings 副本的 `permissions.defaultMode`/危险字段，不影响本机文件。
 - SSH 连接测试结果带 `shellKind`；非 `posix` 时弹窗必须显示明确的不支持警告。前端提示只是辅助，后端 `do_full_sync` 写入前的 Shell 预检才是最终防线。
+- 启用 SSH 开关只建立连接，不再自动触发全量同步；用户必须手动点击「立即同步」。不要在 `ssh_save_config` 里加回启用即同步逻辑（切换 active connection 仍会同步一次）。
+- SSH/WSL 弹窗里持久化的 `lastSyncWarnings` 使用灰色小字 + 左侧细竖线（与 `autoSyncHint` 一致），不要改回大块黄色 `Alert`；同步过程中的黄色实时 `syncWarning` Alert 已移除，不要重新加回。
 - `skipModules` 在两个页面里的来源不同。WSL 的 `skipModules` 包含 WSL Direct 模块，SSH 的 `skipModules` 只反映当前不可见模块；不要把一边的 hook 逻辑复制到另一边。
 - `visibleTabs` 现在可能包含 `gateway`、`image` 和 `miniBrowser`。它们只控制顶栏 `网关` / `Image` / `浏览器` 入口是否显示，不是可同步 runtime 模块；WSL/SSH 的 `skipModules`、模块状态和 mappings 仍只围绕 coding runtime（OpenCode / Claude Code / Codex / Grok CLI / OpenClaw / Gemini CLI）+ WSL/SSH 自身语义，不要把 `gateway`、`image` 或 `miniBrowser` 塞进去。
 - “模块显示”右侧那一行（`GeneralSettingsPage.tsx::OTHER_TABS`）的 chips 顺序要和顶栏工具条顺序一致，新增入口在这里追加即可，`handleOtherTabToggle` 只做 append/remove，不参与左侧编码工具的 `reorderMode`。`miniBrowser` 是**可选开通**项：它只控制 `MainLayout` 里的内置浏览器入口，没有自己的路由，也**不能**加进后端默认 `visible_tabs`（`tauri/src/settings/types.rs`）或 `adapter.rs` 的历史默认基线——历史默认只用于“整份匹配就全量替换”，一旦写进基线，用户显式关掉的浏览器入口会在下次读取时被加回来。默认不显示由「两边默认值都不含该 key」保证，边界回归见 `web/test/components/layout/MainLayout/index.test.ts`。
 - 同步文案翻译要走 `syncMessageTranslator`，不要在组件里硬编码后端错误文本。
 - Skills 目标既可能是链接，也可能是带归属标记的复制目录；警告统一称“同步目标”，翻译解析仍兼容已持久化的旧“链接”警告。
-- Skills 警告需要先按完整文案解析，再处理通用的 `; ` 错误拼接；技能名/路径本身允许分号和引号，命令诊断可能包含换行，不能先拆分或使用不匹配换行的表达式。`lastSyncWarnings` 表示最近一次 Skills 同步，普通文件/MCP 同步不清空它；开始新的手动同步或 Skills 阶段时清理旧实时警告，状态读回已有同条常驻警告时移除重复实时提示。
+- Skills 警告需要先按完整文案解析，再处理通用的 `; ` 错误拼接；技能名/路径本身允许分号和引号，命令诊断可能包含换行，不能先拆分或使用不匹配换行的表达式。`lastSyncWarnings` 表示最近一次 Skills 同步，普通文件/MCP 同步不清空它；实时警告 Alert 移除后，旧的实时警告清理逻辑可以保留但不再有可见影响。
 - 设置项如果同时有数据库偏好和系统副作用（例如开机自启），用户偏好必须先落库，系统调用失败不能阻止偏好保存。一个用户动作需要联动多个字段时，应构造一次 settings payload 保存，避免多个异步全量保存互相覆盖。
 - 防休眠开关的完整“读取偏好 → 保存 → 应用系统状态”流程必须串行执行。`save_settings` 保存后会等待托盘刷新，而合并刷新可能让后发请求先返回；不能只依靠后端系统调用互斥来保证最后一次操作生效。操作期间显示 loading/disabled，失败后解除忙碌状态并允许重试。
 - 防休眠开关显示持久化偏好；系统应用失败时保留已保存的偏好，单独显示可访问的行内错误，不能让 rejected Promise 静默消失，也不能把尚未保存的值显示成已保存。启动恢复失败必须记录后端日志；系统资源的线程归属遵守根文档的 Async Runtime Safety 规则。

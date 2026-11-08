@@ -1,4 +1,9 @@
-use super::types::{normalize_directory_excludes, FileMapping, SyncResult, WSLDetectResult};
+use super::types::{
+    effective_directory_excludes, normalize_directory_excludes, FileMapping, SyncResult,
+    WSLDetectResult,
+};
+use crate::coding::sync_hash;
+use log::{info, warn};
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
@@ -39,6 +44,27 @@ pub fn manage_wsl_skill_target(
         return Err(decode_wsl_output(&output.stderr).trim().to_string());
     }
     parse_remote_skill_target_result(&decode_wsl_output(&output.stdout))
+}
+
+/// Run several skill target operations in one `wsl.exe` call. The remote
+/// script prints one `index<TAB>result` line per operation; a single failure
+/// does not abort the remaining operations.
+pub fn manage_wsl_skill_targets_batch(
+    distro: &str,
+    operations: &[crate::coding::skills::remote_target::SkillTargetOperation],
+) -> Result<Vec<Result<bool, String>>, String> {
+    use crate::coding::skills::remote_target::{
+        build_remote_skill_target_batch_command, parse_remote_skill_target_batch_result,
+    };
+    let command = build_remote_skill_target_batch_command(operations);
+    let output = create_wsl_command()
+        .args(["-d", distro, "--exec", "sh", "-c", &command])
+        .output()
+        .map_err(|error| format!("Failed to maintain WSL skill targets: {error}"))?;
+    if !output.status.success() {
+        return Err(decode_wsl_output(&output.stderr).trim().to_string());
+    }
+    parse_remote_skill_target_batch_result(&decode_wsl_output(&output.stdout), operations.len())
 }
 
 /// Check if bytes look like UTF-16 LE encoding.
@@ -306,30 +332,30 @@ pub fn windows_to_wsl_path(windows_path: &str) -> Result<String, String> {
     Ok(wsl_path)
 }
 
-/// Sync a single file mapping to WSL
-pub fn sync_file_mapping(mapping: &FileMapping, distro: &str) -> Result<Vec<String>, String> {
+/// Sync a single file mapping to WSL. `None` means the directory content is
+/// unchanged and was skipped.
+pub fn sync_file_mapping(
+    mapping: &FileMapping,
+    distro: &str,
+) -> Result<Option<Vec<String>>, String> {
     let windows_path = expand_env_vars(&mapping.windows_path)?;
 
     if mapping.is_directory {
         // Directory mode: copy entire directory
         if !Path::new(&windows_path).exists() {
-            return Ok(vec![]);
+            return Ok(Some(vec![]));
         }
-        sync_directory_with_excludes(
-            &windows_path,
-            &mapping.wsl_path,
-            distro,
-            &mapping.directory_excludes,
-        )
+        let excludes = effective_directory_excludes(&mapping.id, &mapping.directory_excludes);
+        sync_directory_if_changed_with_excludes(&windows_path, &mapping.wsl_path, distro, &excludes)
     } else if mapping.is_pattern {
         // Pattern mode: handle wildcards
-        sync_pattern_files(&windows_path, &mapping.wsl_path, distro)
+        sync_pattern_files(&windows_path, &mapping.wsl_path, distro).map(Some)
     } else {
         // Single file mode
         if !Path::new(&windows_path).exists() {
-            return Ok(vec![]);
+            return Ok(Some(vec![]));
         }
-        sync_single_file(&windows_path, &mapping.wsl_path, distro)
+        sync_single_file(&windows_path, &mapping.wsl_path, distro).map(Some)
     }
 }
 
@@ -434,6 +460,7 @@ fn build_directory_copy_command(wsl_source_path: &str, wsl_target_path: &str) ->
         "set -e; \
          source=\"{}\"; \
          target=\"{}\"; \
+         if [ ! -e \"$source\" ]; then printf 'notfound\\n'; exit 0; fi; \
          parent=$(dirname \"$target\"); \
          mkdir -p \"$parent\"; \
          tmp=$(mktemp -d \"$parent/.ai-toolbox-sync.XXXXXX\"); \
@@ -459,6 +486,7 @@ fn build_directory_copy_command_with_excludes(
         "set -e; set -o pipefail; \
          source=\"{}\"; \
          target=\"{}\"; \
+         if [ ! -e \"$source\" ]; then printf 'notfound\\n'; exit 0; fi; \
          parent=$(dirname \"$target\"); \
          mkdir -p \"$parent\"; \
          tmp=$(mktemp -d \"$parent/.ai-toolbox-sync.XXXXXX\"); \
@@ -495,30 +523,6 @@ pub fn sync_directory_with_excludes(
     // Expand ~ in WSL path
     let wsl_target_path = normalize_directory_target_path(&wsl_path.replace("~", "$HOME"));
 
-    // First, check if source path exists in WSL
-    let check_command = format!(
-        "if [ -e \"{}\" ]; then echo exists; else echo notfound; fi",
-        wsl_source_path
-    );
-    let check_output = create_wsl_command()
-        .args(["-d", distro, "--exec", "bash", "-c", &check_command])
-        .output()
-        .map_err(|e| format!("Failed to check WSL source path: {}", e))?;
-
-    let check_result = decode_wsl_output(&check_output.stdout).trim().to_string();
-    if check_result == "notfound" {
-        let source_path_expanded = std::path::Path::new(windows_path);
-        if source_path_expanded.exists() {
-            return Err(format!(
-                "WSL directory sync failed: Windows path '{}' does not exist or is not accessible from WSL. \
-                 Converted WSL path: '{}'. Please check if WSL can access Windows drives.",
-                windows_path, wsl_source_path
-            ));
-        } else {
-            return Ok(vec![]); // Source doesn't exist, skip sync
-        }
-    }
-
     let excludes = normalize_directory_excludes(directory_excludes);
 
     // Copy into a temporary directory first, then replace the target only after
@@ -543,6 +547,17 @@ pub fn sync_directory_with_excludes(
         .map_err(|e| format!("Failed to execute WSL directory command: {}", e))?;
 
     if output.status.success() {
+        let stdout = decode_wsl_output(&output.stdout);
+        if stdout.trim() == "notfound" {
+            if Path::new(windows_path).exists() {
+                return Err(format!(
+                    "WSL directory sync failed: Windows path '{}' does not exist or is not accessible from WSL. \
+                     Converted WSL path: '{}'. Please check if WSL can access Windows drives.",
+                    windows_path, wsl_source_path
+                ));
+            }
+            return Ok(vec![]); // Source doesn't exist, skip sync
+        }
         Ok(vec![format!("{} -> {}", windows_path, wsl_path)])
     } else {
         let stderr = decode_wsl_output(&output.stderr).trim().to_string();
@@ -568,6 +583,61 @@ pub fn sync_directory_with_excludes(
             ))
         }
     }
+}
+
+/// Copy a directory only when its metadata hash differs from the marker stored
+/// in the target. WSL uses `tar` for the actual transfer, so this skip is the
+/// main equivalent of the SSH incremental upload optimization.
+pub fn sync_directory_if_changed_with_excludes(
+    windows_path: &str,
+    wsl_path: &str,
+    distro: &str,
+    directory_excludes: &[String],
+) -> Result<Option<Vec<String>>, String> {
+    let expanded = expand_env_vars(windows_path)?;
+    if !Path::new(&expanded).exists() {
+        return Ok(Some(vec![]));
+    }
+
+    let excludes = normalize_directory_excludes(directory_excludes);
+    let seed = sync_hash::hash_seed(wsl_path, &excludes);
+    let local_hash = match sync_hash::hash_directory(Path::new(&expanded), &excludes, false, &seed)
+    {
+        Ok(hash) => hash,
+        Err(error) => {
+            warn!(
+                "WSL directory hash failed, falling back to full copy: windows_path={}, wsl_path={}, error={}",
+                windows_path, wsl_path, error
+            );
+            return sync_directory_with_excludes(windows_path, wsl_path, distro, &excludes)
+                .map(Some);
+        }
+    };
+
+    let marker = sync_hash::marker_path(wsl_path);
+    let remote_hash = read_wsl_file_raw(distro, &marker).unwrap_or_default();
+    if remote_hash.trim() == local_hash {
+        info!(
+            "WSL directory sync skipped unchanged: windows_path={}, wsl_path={}",
+            windows_path, wsl_path
+        );
+        return Ok(None);
+    }
+
+    let files = sync_directory_with_excludes(windows_path, wsl_path, distro, &excludes)?;
+    // An empty result means the source disappeared between hashing and copying;
+    // do not write a marker for content that was never copied.
+    if files.is_empty() {
+        return Ok(Some(files));
+    }
+    if let Err(error) = write_wsl_file(distro, &marker, &local_hash) {
+        warn!(
+            "WSL directory sync hash marker write failed, next sync will re-copy: wsl_path={}, error={}",
+            wsl_path, error
+        );
+    }
+
+    Ok(Some(files))
 }
 
 #[cfg(test)]
@@ -638,6 +708,7 @@ mod tests {
             "$HOME/.codex/plugins",
         );
 
+        assert!(command.contains("printf 'notfound\\n'"));
         assert!(command.contains("mktemp -d \"$parent/.ai-toolbox-sync.XXXXXX\""));
         assert!(command.contains("cp -R -P \"$source\"/. \"$tmp\"/"));
         assert!(!command.contains("-L"));
@@ -655,6 +726,7 @@ mod tests {
             "$HOME/.config/opencode/agents",
         );
 
+        assert!(command.contains("printf 'notfound\\n'"));
         assert!(command.contains("excl_args+=(--exclude=\"$excl\")"));
         assert!(command
             .contains("tar -C \"$source\" \"${excl_args[@]}\" -cf - . | tar -C \"$tmp\" -xf -"));
@@ -760,10 +832,13 @@ pub fn sync_mappings(
 
     for mapping in filtered_mappings {
         match sync_file_mapping(mapping, distro) {
-            Ok(files) if files.is_empty() => {
+            Ok(None) => {
                 skipped_files.push(mapping.name.clone());
             }
-            Ok(files) => {
+            Ok(Some(files)) if files.is_empty() => {
+                skipped_files.push(mapping.name.clone());
+            }
+            Ok(Some(files)) => {
                 synced_files.extend(files);
             }
             Err(e) => {

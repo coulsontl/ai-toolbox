@@ -6,7 +6,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { Modal, Switch, Select, Button, List, Space, Typography, Alert, Spin, Tag, Modal as AntdModal, Tabs, Tooltip, Progress, theme } from 'antd';
-import { CheckCircleOutlined, CloseCircleOutlined, CloseOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ClearOutlined, ApiOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, CloseCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ClearOutlined, ApiOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useSSHSync } from '@/features/settings/hooks/useSSHSync';
 import {
@@ -22,6 +22,7 @@ import {
   sshUpdateConnection,
   sshDeleteConnection,
   sshSetActiveConnection,
+  sshSetClaudeRootPermissionFix,
 } from '@/services/sshSyncApi';
 import { useSettingsStore } from '@/stores';
 import { DEFAULT_SSH_DIRECTORY_EXCLUDES } from '@/types/sshsync';
@@ -125,7 +126,7 @@ interface SSHSyncModalProps {
 export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => {
   const { t } = useTranslation();
   const { token } = theme.useToken();
-  const { config, status, loading, syncing, syncWarning, syncProgress, saveConfig, sync, dismissSyncWarning } = useSSHSync();
+  const { config, status, loading, syncing, syncProgress, saveConfig, sync } = useSSHSync();
   const { visibleTabs } = useSettingsStore();
 
   // Filter module keys by visibleTabs
@@ -133,6 +134,8 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
 
   const [enabled, setEnabled] = useState(false);
   const [activeConnectionId, setActiveConnectionId] = useState('');
+  const [claudeRootPermissionFix, setClaudeRootPermissionFix] = useState(false);
+  const [claudeRootPermissionFixSaving, setClaudeRootPermissionFixSaving] = useState(false);
   const [connectionModalOpen, setConnectionModalOpen] = useState(false);
   const [editingConnection, setEditingConnection] = useState<SSHConnection | null>(null);
   const [editingMapping, setEditingMapping] = useState<SSHFileMapping | null>(null);
@@ -300,6 +303,7 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
     if (config) {
       setEnabled(config.enabled);
       setActiveConnectionId(config.activeConnectionId);
+      setClaudeRootPermissionFix(config.claudeRootPermissionFix ?? false);
     }
   }, [config]);
 
@@ -311,9 +315,26 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
       await saveConfig({
         ...config,
         enabled: checked,
+        // Keep the latest local value; the config snapshot may not have been
+        // reloaded yet after the single-field permission-fix patch.
+        claudeRootPermissionFix,
       });
     } catch (error) {
       console.error('Failed to save enabled state:', error);
+    }
+  };
+
+  const handleClaudeRootPermissionFixChange = async (checked: boolean) => {
+    const previousValue = claudeRootPermissionFix;
+    setClaudeRootPermissionFix(checked);
+    setClaudeRootPermissionFixSaving(true);
+    try {
+      await sshSetClaudeRootPermissionFix(checked);
+    } catch (error) {
+      setClaudeRootPermissionFix(previousValue);
+      console.error('Failed to save Claude root permission fix:', error);
+    } finally {
+      setClaudeRootPermissionFixSaving(false);
     }
   };
 
@@ -516,6 +537,23 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
 
     return (
       <>
+        {moduleFilter === 'claude' && (
+          <>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <Text>{t('settings.ssh.claudeRootPermissionFix')}</Text>
+              <Switch
+                aria-label={t('settings.ssh.claudeRootPermissionFix')}
+                checked={claudeRootPermissionFix}
+                onChange={handleClaudeRootPermissionFixChange}
+                loading={claudeRootPermissionFixSaving}
+                disabled={!enabled}
+              />
+            </div>
+            <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 12 }}>
+              {t('settings.ssh.claudeRootPermissionFixHint')}
+            </Text>
+          </>
+        )}
         <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Text type="secondary">
             {moduleFilter === 'all' ? t('settings.ssh.allMappings') : MODULE_NAMES[moduleFilter]} - {filteredMappings.length} {t('settings.ssh.mappings')}
@@ -722,6 +760,24 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
                     ? <Tag color="success">{t('settings.ssh.connected')}</Tag>
                     : <Tag color="error">{t('settings.ssh.connectionFailed')}</Tag>
                 )}
+                {testResult?.connected && (
+                  <Tag
+                    color={
+                      testResult.isRoot === true
+                        ? 'warning'
+                        : testResult.isRoot === false
+                          ? 'success'
+                          : 'default'
+                    }
+                  >
+                    {t('settings.ssh.remoteUser')}:{' '}
+                    {testResult.isRoot === true
+                      ? t('settings.ssh.remoteUserRoot')
+                      : testResult.isRoot === false
+                        ? t('settings.ssh.remoteUserNonRoot')
+                        : t('settings.ssh.remoteUserUnknown')}
+                  </Tag>
+                )}
               </Space>
               {testResult?.serverInfo && (
                 <div style={{ marginTop: 4 }}>
@@ -850,43 +906,32 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
               />
             )}
             {status?.lastSyncWarnings && status.lastSyncWarnings.length > 0 && (
-              <Alert
-                type="warning"
-                showIcon
-                title={t('settings.ssh.lastSyncWarnings')}
-                description={
-                  <ul
-                    style={{
-                      margin: 0,
-                      paddingLeft: 18,
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: 4,
-                    }}
-                  >
-                    {status.lastSyncWarnings.map((warning) => (
-                      <li
-                        key={warning}
-                        style={{ fontSize: 12, lineHeight: 1.5, wordBreak: 'break-all' }}
-                      >
-                        {translateSyncMessage(warning, 'ssh', t)}
-                      </li>
-                    ))}
-                  </ul>
-                }
-                style={{ marginTop: 12 }}
-              />
-            )}
-            {syncWarning && (
-              <Alert
-                type="warning"
-                title={translateSyncMessage(syncWarning, 'ssh', t)}
-                showIcon
-                // antd 6: an object-form `closable` without `closeIcon` is not
-                // treated as closable, so the × never rendered here.
-                closable={{ closeIcon: <CloseOutlined />, onClose: dismissSyncWarning }}
-                style={{ marginTop: 12 }}
-              />
+              <div
+                style={{
+                  marginTop: 12,
+                  fontSize: 12,
+                  color: 'var(--color-text-tertiary)',
+                  borderLeft: '2px solid var(--color-border)',
+                  paddingLeft: 8,
+                }}
+              >
+                <div style={{ marginBottom: 2 }}>{t('settings.ssh.lastSyncWarnings')}</div>
+                <ul
+                  style={{
+                    margin: 0,
+                    paddingLeft: 16,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 2,
+                  }}
+                >
+                  {status.lastSyncWarnings.map((warning) => (
+                    <li key={warning} style={{ lineHeight: 1.5, wordBreak: 'break-all' }}>
+                      {translateSyncMessage(warning, 'ssh', t)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
           </div>
         </Spin>

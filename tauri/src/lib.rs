@@ -2891,6 +2891,7 @@ pub fn run() {
             coding::ssh::ssh_test_connection,
             coding::ssh::ssh_get_config,
             coding::ssh::ssh_save_config,
+            coding::ssh::ssh_set_claude_root_permission_fix,
             coding::ssh::ssh_list_connections,
             coding::ssh::ssh_create_connection,
             coding::ssh::ssh_update_connection,

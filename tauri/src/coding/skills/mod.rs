@@ -17,6 +17,7 @@ pub mod path_executor;
 pub mod remote_target;
 pub mod skill_store;
 pub mod sync_engine;
+pub mod sync_warnings;
 pub mod tool_adapters;
 pub mod tray_support;
 pub mod types;

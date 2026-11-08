@@ -11,7 +11,7 @@ use std::time::Duration;
 use log::{info, warn};
 use russh::keys::ssh_key;
 use russh::{client, ChannelMsg, Disconnect};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 use super::key_file;
@@ -181,6 +181,9 @@ pub struct SshSession {
     status: SessionStatus,
     /// 是否正在进行同步操作（防止并发）
     syncing: AtomicBool,
+    /// 复用的 SFTP 会话。建立 subsystem 需要额外往返；一次同步里有几十个
+    /// 文件和目录映射，复用同一个会话可以省掉重复握手。
+    sftp: Mutex<Option<Arc<russh_sftp::client::SftpSession>>>,
 }
 
 /// 全局 SSH 会话状态，注册到 Tauri State
@@ -194,6 +197,7 @@ impl SshSession {
             handle: None,
             status: SessionStatus::Disconnected,
             syncing: AtomicBool::new(false),
+            sftp: Mutex::new(None),
         }
     }
 
@@ -286,6 +290,7 @@ impl SshSession {
 
     /// 断开连接
     pub async fn disconnect(&mut self) {
+        *self.sftp.lock().await = None;
         if let Some(handle) = self.handle.take() {
             let _ = handle.disconnect(Disconnect::ByApplication, "", "").await;
             if let Some(conn) = &self.conn {
@@ -408,10 +413,39 @@ impl SshSession {
             .map_err(|e| format!("初始化 SFTP 会话失败: {}", e))
     }
 
+    /// Return the shared SFTP session, creating it on first use.
+    ///
+    /// The session is invalidated by [`Self::disconnect`], so a reconnect never
+    /// keeps using a subsystem bound to the old SSH connection.
+    pub(crate) async fn shared_sftp_session(
+        &self,
+    ) -> Result<Arc<russh_sftp::client::SftpSession>, String> {
+        let cached = { self.sftp.lock().await.as_ref().cloned() };
+        if let Some(session) = cached {
+            return Ok(session);
+        }
+        let session = Arc::new(self.create_sftp_session().await?);
+        *self.sftp.lock().await = Some(session.clone());
+        Ok(session)
+    }
+
+    /// Drop the cached SFTP session after an I/O failure. The SSH connection
+    /// itself may still be alive while the SFTP subsystem is unusable; without
+    /// this, every following sync would keep reusing the broken session.
+    pub(crate) async fn invalidate_sftp_session(&self) {
+        *self.sftp.lock().await = None;
+    }
+
     /// 通过 SFTP 上传单个文件
     pub async fn upload_file(&self, local_path: &str, remote_path: &str) -> Result<(), String> {
-        let sftp = self.create_sftp_session().await?;
-        upload_file_via_sftp(&sftp, local_path, remote_path).await
+        let sftp = self.shared_sftp_session().await?;
+        match upload_file_via_sftp(&sftp, local_path, remote_path).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.invalidate_sftp_session().await;
+                Err(error)
+            }
+        }
     }
 
     /// 通过 SFTP 递归上传目录
@@ -439,25 +473,35 @@ impl SshSession {
         excluded_names: &[String],
         current_file_reporter: Option<&(dyn Fn(String) + Send + Sync)>,
     ) -> Result<(), String> {
-        let sftp = self.create_sftp_session().await?;
+        let sftp = self.shared_sftp_session().await?;
 
         // 将 ~ 展开为绝对路径
         let abs_remote_path = resolve_remote_path(&sftp, remote_path).await?;
         let excluded_names: HashSet<String> = excluded_names.iter().cloned().collect();
         let mut stats = DirectoryUploadStats::default();
         let local_root = std::path::Path::new(local_path);
+        let mut files = Vec::new();
 
-        // 递归上传
-        upload_dir_recursive(
+        // 第一遍只遍历本地目录并创建远端目录；第二遍并发上传文件。
+        if let Err(error) = collect_directory_uploads(
             &sftp,
             local_root,
             local_root,
             &abs_remote_path,
             &excluded_names,
             &mut stats,
-            current_file_reporter,
+            &mut files,
         )
-        .await?;
+        .await
+        {
+            self.invalidate_sftp_session().await;
+            return Err(error);
+        }
+
+        if let Err(error) = upload_collected_files(&sftp, &files, current_file_reporter).await {
+            self.invalidate_sftp_session().await;
+            return Err(error);
+        }
 
         if stats.skipped_excluded_dirs > 0 {
             info!(
@@ -492,6 +536,7 @@ impl SshSession {
 pub struct RemoteConnectionProbe {
     pub shell_kind: RemoteShellKind,
     pub server_info: Option<String>,
+    pub is_root: Option<bool>,
 }
 
 /// 创建一个独立的临时 SSH 连接并探测远端 Shell。
@@ -513,12 +558,32 @@ pub async fn probe_connection(conn: &SSHConnection) -> Result<RemoteConnectionPr
     authenticate(&mut session, conn).await?;
 
     let (shell_kind, server_info) = probe_remote_shell(&session).await;
+    let is_root = if shell_kind.is_posix() {
+        probe_remote_is_root(&session).await
+    } else {
+        None
+    };
     let _ = session.disconnect(Disconnect::ByApplication, "", "").await;
 
     Ok(RemoteConnectionProbe {
         shell_kind,
         server_info,
+        is_root,
     })
+}
+
+/// Parse `id -u` output. Only a pure numeric uid is accepted; anything else is
+/// treated as unknown so a broken probe never marks a remote as root.
+fn parse_remote_uid(output: &str) -> Option<u32> {
+    output.trim().parse::<u32>().ok()
+}
+
+async fn probe_remote_is_root(handle: &client::Handle<SshHandler>) -> Option<bool> {
+    let output = exec_capture(handle, "id -u").await.ok()?;
+    if !output.succeeded() {
+        return None;
+    }
+    parse_remote_uid(&output.stdout).map(|uid| uid == 0)
 }
 
 /// Run one command and capture stdout/stderr/exit status.
@@ -655,17 +720,38 @@ pub async fn upload_file_via_sftp(
     local_path: &str,
     remote_path: &str,
 ) -> Result<(), String> {
-    // 读取本地文件
-    let data = tokio::fs::read(local_path)
+    upload_file_via_sftp_with_parent(sftp, std::path::Path::new(local_path), remote_path, true)
         .await
-        .map_err(|e| format!("读取本地文件失败 {}: {}", local_path, e))?;
+}
+
+/// 目录批量上传专用：父目录已经由遍历阶段创建，不再逐文件 `mkdir -p`。
+async fn upload_file_via_sftp_without_parent(
+    sftp: &russh_sftp::client::SftpSession,
+    local_path: &std::path::Path,
+    remote_path: &str,
+) -> Result<(), String> {
+    upload_file_via_sftp_with_parent(sftp, local_path, remote_path, false).await
+}
+
+async fn upload_file_via_sftp_with_parent(
+    sftp: &russh_sftp::client::SftpSession,
+    local_path: &std::path::Path,
+    remote_path: &str,
+    ensure_parent: bool,
+) -> Result<(), String> {
+    // 流式读写，避免把几百 MB 的插件二进制整体读进内存。
+    let mut local_file = tokio::fs::File::open(local_path)
+        .await
+        .map_err(|e| format!("读取本地文件失败 {}: {}", local_path.display(), e))?;
 
     // 将 ~ 展开为绝对路径（SFTP 不支持 ~ 语法）
     let abs_remote_path = resolve_remote_path(sftp, remote_path).await?;
 
-    // 确保远程父目录存在
-    if let Some(parent) = parent_path(&abs_remote_path) {
-        sftp_mkdir_p(sftp, &parent).await;
+    // 确保远程父目录存在（单文件/模式上传需要，目录批量上传不需要）
+    if ensure_parent {
+        if let Some(parent) = parent_path(&abs_remote_path) {
+            sftp_mkdir_p(sftp, &parent).await;
+        }
     }
 
     // 打开远程文件写入
@@ -679,10 +765,23 @@ pub async fn upload_file_via_sftp(
         .await
         .map_err(|e| format!("打开远程文件失败 {}: {}", abs_remote_path, e))?;
 
-    remote_file
-        .write_all(&data)
-        .await
-        .map_err(|e| format!("写入远程文件失败: {}", e))?;
+    // 256 KiB 与 SFTP 单次写入上限接近，避免 tokio::io::copy 默认小缓冲
+    // 把大文件拆成过多次往返。
+    const UPLOAD_BUFFER_SIZE: usize = 256 * 1024;
+    let mut buffer = vec![0u8; UPLOAD_BUFFER_SIZE];
+    loop {
+        let read = local_file
+            .read(&mut buffer)
+            .await
+            .map_err(|e| format!("读取本地文件失败 {}: {}", local_path.display(), e))?;
+        if read == 0 {
+            break;
+        }
+        remote_file
+            .write_all(&buffer[..read])
+            .await
+            .map_err(|e| format!("写入远程文件失败 {}: {}", abs_remote_path, e))?;
+    }
 
     remote_file
         .flush()
@@ -716,16 +815,24 @@ fn relative_upload_path(base_dir: &std::path::Path, file_path: &std::path::Path)
         .replace('\\', "/")
 }
 
-/// 递归上传目录内容到远程
-/// 使用 tokio::fs::metadata 跟随符号链接，等同于 cp -rL 行为
-async fn upload_dir_recursive(
+const DIRECTORY_UPLOAD_CONCURRENCY: usize = 8;
+
+struct UploadEntry {
+    local_path: std::path::PathBuf,
+    remote_path: String,
+    relative_path: String,
+}
+
+/// 第一遍遍历本地目录：创建远端目录并把要上传的文件收集起来。
+/// 使用 tokio::fs::metadata 跟随符号链接，等同于 cp -rL 行为。
+async fn collect_directory_uploads(
     sftp: &russh_sftp::client::SftpSession,
     base_dir: &std::path::Path,
     local_dir: &std::path::Path,
     remote_dir: &str,
     excluded_names: &HashSet<String>,
     stats: &mut DirectoryUploadStats,
-    current_file_reporter: Option<&(dyn Fn(String) + Send + Sync)>,
+    files: &mut Vec<UploadEntry>,
 ) -> Result<(), String> {
     // 创建远程目录（忽略已存在的错误）
     let _ = sftp.create_dir(remote_dir).await;
@@ -740,7 +847,6 @@ async fn upload_dir_recursive(
         .map_err(|e| format!("读取目录项失败: {}", e))?
     {
         let path = entry.path();
-        // 使用 metadata（而非 symlink_metadata）跟随符号链接，获取最终目标的类型
         let metadata = tokio::fs::metadata(&path)
             .await
             .map_err(|e| format!("获取文件元数据失败 {}: {}", path.display(), e))?;
@@ -761,52 +867,48 @@ async fn upload_dir_recursive(
                 continue;
             }
 
-            Box::pin(upload_dir_recursive(
+            Box::pin(collect_directory_uploads(
                 sftp,
                 base_dir,
                 &path,
                 &remote_child,
                 excluded_names,
                 stats,
-                current_file_reporter,
+                files,
             ))
             .await?;
         } else if metadata.is_file() {
-            if let Some(reporter) = current_file_reporter {
-                reporter(relative_upload_path(base_dir, &path));
-            }
-
-            let data = tokio::fs::read(&path)
-                .await
-                .map_err(|e| format!("读取文件失败 {}: {}", path.display(), e))?;
-
-            let mut remote_file = sftp
-                .open_with_flags(
-                    &remote_child,
-                    russh_sftp::protocol::OpenFlags::CREATE
-                        | russh_sftp::protocol::OpenFlags::TRUNCATE
-                        | russh_sftp::protocol::OpenFlags::WRITE,
-                )
-                .await
-                .map_err(|e| format!("打开远程文件失败 {}: {}", remote_child, e))?;
-
-            remote_file
-                .write_all(&data)
-                .await
-                .map_err(|e| format!("写入远程文件失败 {}: {}", remote_child, e))?;
-
-            remote_file
-                .flush()
-                .await
-                .map_err(|e| format!("刷新远程文件失败: {}", e))?;
-
-            remote_file
-                .shutdown()
-                .await
-                .map_err(|e| format!("关闭远程文件失败: {}", e))?;
+            files.push(UploadEntry {
+                relative_path: relative_upload_path(base_dir, &path),
+                local_path: path,
+                remote_path: remote_child,
+            });
         }
     }
 
+    Ok(())
+}
+
+/// 第二遍并发上传文件。目录已经由第一遍创建好，这里不再为每个文件执行
+/// `mkdir -p`；大量小文件时这能省掉每文件数次的额外 SFTP 往返。
+async fn upload_collected_files(
+    sftp: &Arc<russh_sftp::client::SftpSession>,
+    files: &[UploadEntry],
+    current_file_reporter: Option<&(dyn Fn(String) + Send + Sync)>,
+) -> Result<(), String> {
+    for chunk in files.chunks(DIRECTORY_UPLOAD_CONCURRENCY) {
+        let uploads = chunk.iter().map(|file| {
+            let sftp = sftp.clone();
+            async move {
+                if let Some(reporter) = current_file_reporter {
+                    reporter(file.relative_path.clone());
+                }
+                upload_file_via_sftp_without_parent(&sftp, &file.local_path, &file.remote_path)
+                    .await
+            }
+        });
+        futures_util::future::try_join_all(uploads).await?;
+    }
     Ok(())
 }
 
@@ -863,7 +965,7 @@ impl Drop for SshSession {
 mod tests {
     use super::{
         decode_remote_text, is_excluded_dir_name, looks_like_powershell_version,
-        relative_upload_path,
+        parse_remote_uid, relative_upload_path,
     };
     use std::collections::HashSet;
     use std::path::Path;
@@ -910,6 +1012,15 @@ mod tests {
         assert!(is_excluded_dir_name(".venv", &excluded));
         assert!(!is_excluded_dir_name("plugin-cache", &excluded));
         assert!(!is_excluded_dir_name("cache/nested", &excluded));
+    }
+
+    #[test]
+    fn parses_remote_uid_only_from_numeric_output() {
+        assert_eq!(parse_remote_uid("0\n"), Some(0));
+        assert_eq!(parse_remote_uid("1000\n"), Some(1000));
+        assert_eq!(parse_remote_uid(""), None);
+        assert_eq!(parse_remote_uid("uid=0(root) gid=0(root)"), None);
+        assert_eq!(parse_remote_uid("root"), None);
     }
 
     #[test]

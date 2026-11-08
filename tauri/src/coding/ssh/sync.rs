@@ -1,7 +1,9 @@
 use super::session::{self, upload_file_via_sftp, SshSession};
 use super::types::{
-    normalize_directory_excludes, SSHConnection, SSHConnectionResult, SSHFileMapping, SyncResult,
+    effective_directory_excludes_for_mapping, normalize_directory_excludes, SSHConnection,
+    SSHConnectionResult, SSHFileMapping, SyncResult,
 };
+use crate::coding::sync_hash;
 use std::path::{Path, PathBuf};
 
 type CurrentFileReporter<'a> = &'a (dyn Fn(String) + Send + Sync);
@@ -87,12 +89,14 @@ pub async fn test_connection(conn: &SSHConnection) -> SSHConnectionResult {
             error: None,
             server_info: probe.server_info,
             shell_kind: Some(probe.shell_kind.as_str().to_string()),
+            is_root: probe.is_root,
         },
         Err(e) => SSHConnectionResult {
             connected: false,
             error: Some(e),
             server_info: None,
             shell_kind: None,
+            is_root: None,
         },
     }
 }
@@ -206,14 +210,20 @@ pub async fn sync_directory_with_progress(
     session.exec_command(&mkdir_cmd).await?;
 
     // SFTP 递归上传到临时目录（upload_dir 内部会展开 ~ 和 $HOME）
-    session
+    if let Err(error) = session
         .upload_dir_with_excludes_and_progress(
             &expanded,
             &tmp_remote_path,
             &directory_excludes,
             current_file_reporter,
         )
-        .await?;
+        .await
+    {
+        let _ = session
+            .exec_command(&format!("rm -rf \"{}\"", tmp_remote_target))
+            .await;
+        return Err(error);
+    }
 
     // 原子替换：rm 旧目录 + mv 临时目录到目标
     let swap_cmd = format!(
@@ -236,6 +246,101 @@ pub async fn sync_directory_with_progress(
     );
 
     Ok(vec![format!("{} -> {}", local_path, remote_path)])
+}
+
+/// 上传目录前先比较本地目录哈希；未变化时直接跳过。
+///
+/// 哈希写入目标目录内的 `.ai-toolbox-synced-hash`。写入失败只记日志，下次
+/// 同步会重新上传；这不影响本次已完成的同步结果。
+pub async fn sync_directory_if_changed_with_progress(
+    local_path: &str,
+    remote_path: &str,
+    session: &SshSession,
+    directory_excludes: &[String],
+    current_file_reporter: Option<CurrentFileReporter<'_>>,
+) -> Result<Option<Vec<String>>, String> {
+    let expanded = expand_local_path(local_path)?;
+    if !Path::new(&expanded).exists() {
+        log::warn!(
+            "SSH directory sync skipped because local path does not exist: local_path={}, expanded_local_path={}, remote_path={}",
+            local_path,
+            expanded,
+            remote_path
+        );
+        return Ok(Some(vec![]));
+    }
+
+    let excludes = normalize_directory_excludes(directory_excludes);
+    let seed = sync_hash::hash_seed(remote_path, &excludes);
+    let hash_path = Path::new(&expanded).to_path_buf();
+    let hash_excludes = excludes.clone();
+    let hash_seed = seed.clone();
+    let hash_result = match tokio::task::spawn_blocking(move || {
+        sync_hash::hash_directory(&hash_path, &hash_excludes, true, &hash_seed)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => Err(format!("目录哈希任务失败: {}", error)),
+    };
+    let local_hash = match hash_result {
+        Ok(hash) => hash,
+        Err(error) => {
+            log::warn!(
+                "SSH directory hash failed, falling back to full upload: local_path={}, remote_path={}, error={}",
+                local_path,
+                remote_path,
+                error
+            );
+            return sync_directory_with_progress(
+                local_path,
+                remote_path,
+                session,
+                &excludes,
+                current_file_reporter,
+            )
+            .await
+            .map(Some);
+        }
+    };
+
+    let marker = sync_hash::marker_path(remote_path);
+    let remote_hash = read_remote_file_raw(session, &marker)
+        .await
+        .unwrap_or_default();
+    if remote_hash.trim() == local_hash {
+        log::info!(
+            "SSH directory sync skipped unchanged: local_path={}, remote_path={}",
+            local_path,
+            remote_path
+        );
+        return Ok(None);
+    }
+
+    let files = sync_directory_with_progress(
+        local_path,
+        remote_path,
+        session,
+        &excludes,
+        current_file_reporter,
+    )
+    .await?;
+
+    // An empty result means the source disappeared between hashing and
+    // uploading; do not write a marker for content that was never uploaded.
+    if files.is_empty() {
+        return Ok(Some(files));
+    }
+
+    if let Err(error) = write_remote_file(session, &marker, &local_hash).await {
+        log::warn!(
+            "SSH directory sync hash marker write failed, next sync will re-upload: remote_path={}, error={}",
+            remote_path,
+            error
+        );
+    }
+
+    Ok(Some(files))
 }
 
 /// 同步符合 glob 模式的文件到远程
@@ -275,12 +380,12 @@ pub async fn sync_pattern_files_with_progress(
     let mkdir_cmd = format!("mkdir -p \"{}\"", remote_target);
     session.exec_command(&mkdir_cmd).await?;
 
-    // 复用同一个 SFTP session 上传所有文件
-    let sftp = session.create_sftp_session().await?;
-
+    // 复用同一个 SFTP session 上传所有文件。每轮重新取一次缓存：某个文件
+    // 失败后缓存会被清掉，下一轮会自动重建，而不是继续用坏掉的 session。
     let mut synced = vec![];
     let mut failed_upload_count = 0usize;
     for file_path in &matches {
+        let sftp = session.shared_sftp_session().await?;
         let file_str = file_path.to_string_lossy().to_string();
         let file_name = file_path
             .file_name()
@@ -305,6 +410,7 @@ pub async fn sync_pattern_files_with_progress(
             Err(e) => {
                 failed_upload_count += 1;
                 log::warn!("SFTP 模式文件失败 {}: {}", file_str, e);
+                session.invalidate_sftp_session().await;
             }
         }
     }
@@ -329,11 +435,11 @@ pub async fn sync_pattern_files_with_progress(
     Ok(synced)
 }
 
-/// 同步单个文件映射
+/// 同步单个文件映射。`None` 表示目录内容未变化，按跳过处理。
 pub async fn sync_file_mapping(
     mapping: &SSHFileMapping,
     session: &SshSession,
-) -> Result<Vec<String>, String> {
+) -> Result<Option<Vec<String>>, String> {
     sync_file_mapping_with_progress(mapping, session, None).await
 }
 
@@ -341,7 +447,7 @@ pub async fn sync_file_mapping_with_progress(
     mapping: &SSHFileMapping,
     session: &SshSession,
     current_file_reporter: Option<CurrentFileReporter<'_>>,
-) -> Result<Vec<String>, String> {
+) -> Result<Option<Vec<String>>, String> {
     let kind = mapping_kind(mapping);
     log::trace!(
         "SSH sync mapping start: id={}, name={}, module={}, kind={}, local_path={}, remote_path={}",
@@ -354,11 +460,13 @@ pub async fn sync_file_mapping_with_progress(
     );
 
     let result = if mapping.is_directory {
-        sync_directory_with_progress(
+        let excludes =
+            effective_directory_excludes_for_mapping(&mapping.id, &mapping.directory_excludes);
+        sync_directory_if_changed_with_progress(
             &mapping.local_path,
             &mapping.remote_path,
             session,
-            &mapping.directory_excludes,
+            &excludes,
             current_file_reporter,
         )
         .await
@@ -370,6 +478,7 @@ pub async fn sync_file_mapping_with_progress(
             current_file_reporter,
         )
         .await
+        .map(Some)
     } else {
         sync_single_file_with_progress(
             &mapping.local_path,
@@ -378,10 +487,21 @@ pub async fn sync_file_mapping_with_progress(
             current_file_reporter,
         )
         .await
+        .map(Some)
     };
 
     match &result {
-        Ok(files) if files.is_empty() => {
+        Ok(None) => {
+            log::debug!(
+                "SSH sync mapping skipped unchanged: id={}, name={}, module={}, kind={}, remote_path={}",
+                mapping.id,
+                mapping.name,
+                mapping.module,
+                kind,
+                mapping.remote_path
+            );
+        }
+        Ok(Some(files)) if files.is_empty() => {
             log::warn!(
                 "SSH sync mapping finished without uploaded files: id={}, name={}, module={}, kind={}, local_path={}, remote_path={}",
                 mapping.id,
@@ -392,7 +512,7 @@ pub async fn sync_file_mapping_with_progress(
                 mapping.remote_path
             );
         }
-        Ok(files) => {
+        Ok(Some(files)) => {
             log::trace!(
                 "SSH sync mapping finished successfully: id={}, name={}, module={}, kind={}, uploaded_files={}, remote_path={}",
                 mapping.id,
@@ -444,10 +564,13 @@ pub async fn sync_mappings(
 
     for mapping in filtered_mappings {
         match sync_file_mapping(mapping, session).await {
-            Ok(files) if files.is_empty() => {
+            Ok(None) => {
                 skipped_files.push(mapping.name.clone());
             }
-            Ok(files) => {
+            Ok(Some(files)) if files.is_empty() => {
+                skipped_files.push(mapping.name.clone());
+            }
+            Ok(Some(files)) => {
                 synced_files.extend(files);
             }
             Err(e) => {

@@ -3,7 +3,9 @@
 //! Full sync of managed skills to remote server's central repo with owned copies or symlinks in tool directories.
 
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
+use futures_util::future::join_all;
 use log::info;
 use tauri::{AppHandle, Emitter};
 
@@ -17,12 +19,27 @@ use super::types::{default_directory_excludes, SyncProgress};
 use crate::coding::runtime_location;
 use crate::coding::skills::central_repo::{resolve_central_repo_path, resolve_skill_central_path};
 use crate::coding::skills::content_hash::hash_dir;
-use crate::coding::skills::remote_target::RemoteSkillTargetAction;
+use crate::coding::skills::remote_target::{
+    build_remote_skill_target_batch_command, parse_remote_skill_target_batch_result,
+    RemoteSkillTargetAction, SkillTargetOperation,
+};
 use crate::coding::skills::skill_store;
+use crate::coding::skills::sync_warnings::merge_foreign_path_warnings;
 use crate::coding::tools::builtin::BUILTIN_TOOLS;
 use crate::SqliteDbState;
 
 const SSH_CENTRAL_DIR: &str = "~/.ai-toolbox/skills";
+
+/// Target maintenance is one remote shell call per skill/tool pair. Most of the
+/// work is an idempotent "already correct" check, so run a few in flight at
+/// once instead of paying one network round trip after another.
+const SKILL_TARGET_CONCURRENCY: usize = 8;
+
+struct PendingSkillTarget {
+    tool_key: String,
+    target: String,
+    action: RemoteSkillTargetAction,
+}
 
 /// Record a user-facing non-fatal notice: append to the run's warning list and
 /// emit `ssh-sync-warning` so the manual-sync modal shows it live.
@@ -283,6 +300,9 @@ pub(super) async fn sync_skills_to_ssh_with_warnings(
 
     // 4. Sync/update each skill
     let mut synced_count = 0;
+    let mut total_target_operations = 0usize;
+    let mut total_hash_time = Duration::ZERO;
+    let mut total_target_time = Duration::ZERO;
     let mut all_errors: Vec<String> = vec![];
     for (idx, skill) in skills.iter().enumerate() {
         let mut skill = skill.clone();
@@ -322,6 +342,7 @@ pub(super) async fn sync_skills_to_ssh_with_warnings(
             continue;
         }
         if skill.source_type == "central" {
+            let hash_started = Instant::now();
             match hash_dir(&source) {
                 Ok(content_hash) => {
                     if skill.content_hash.as_deref() != Some(content_hash.as_str()) {
@@ -349,6 +370,7 @@ pub(super) async fn sync_skills_to_ssh_with_warnings(
                     );
                 }
             }
+            total_hash_time += hash_started.elapsed();
         }
 
         let remote_target = format!("{}/{}", SSH_CENTRAL_DIR, skill.name);
@@ -438,21 +460,21 @@ pub(super) async fn sync_skills_to_ssh_with_warnings(
             );
         }
 
+        // Collect target work first, then run it in small concurrent batches.
+        // Every operation targets a distinct tool directory + skill name, so
+        // concurrent idempotent checks/updates cannot race each other.
+        let mut pending_targets: Vec<PendingSkillTarget> = Vec::new();
+
         // Maintain owned copies or links for each enabled tool. Only app-managed targets are
         // created or replaced; unmarked directories and foreign symlinks stay untouched.
         for tool_key in &skill.enabled_tools {
             if let Some(remote_skills_dir) = get_remote_tool_skills_dir_with_db(&db, tool_key).await
             {
-                let link_path = format!("{}/{}", remote_skills_dir, skill.name);
-                let result = manage_remote_skill_target(
-                    session,
-                    &remote_target,
-                    &link_path,
-                    SSH_CENTRAL_DIR,
-                    RemoteSkillTargetAction::sync_for_tool(tool_key),
-                )
-                .await;
-                report_target_result(warnings, &app, &skill.name, tool_key, &link_path, result);
+                pending_targets.push(PendingSkillTarget {
+                    tool_key: tool_key.clone(),
+                    target: format!("{}/{}", remote_skills_dir, skill.name),
+                    action: RemoteSkillTargetAction::sync_for_tool(tool_key),
+                });
             } else {
                 warn_link_maintenance_failed(
                     warnings,
@@ -471,29 +493,92 @@ pub(super) async fn sync_skills_to_ssh_with_warnings(
                 if let Some(remote_skills_dir) =
                     get_remote_tool_skills_dir_with_db(&db, tool_key).await
                 {
-                    let link_path = format!("{}/{}", remote_skills_dir, skill.name);
-                    let source = format!("{}/{}", SSH_CENTRAL_DIR, &skill.name);
-                    let result = manage_remote_skill_target(
-                        session,
-                        &source,
-                        &link_path,
-                        SSH_CENTRAL_DIR,
-                        RemoteSkillTargetAction::Remove,
-                    )
-                    .await;
-                    report_target_result(warnings, &app, &skill.name, tool_key, &link_path, result);
+                    pending_targets.push(PendingSkillTarget {
+                        tool_key: tool_key.to_string(),
+                        target: format!("{}/{}", remote_skills_dir, skill.name),
+                        action: RemoteSkillTargetAction::Remove,
+                    });
                 }
             }
         }
+
+        total_target_operations += pending_targets.len();
+        let target_started = Instant::now();
+        if !pending_targets.is_empty() {
+            let operations: Vec<SkillTargetOperation> = pending_targets
+                .iter()
+                .map(|pending| SkillTargetOperation {
+                    source: remote_target.clone(),
+                    target: pending.target.clone(),
+                    central_root: SSH_CENTRAL_DIR.to_string(),
+                    action: pending.action,
+                })
+                .collect();
+            let command = build_remote_skill_target_batch_command(&operations);
+
+            match session.exec_command(&command).await {
+                Ok(output) => {
+                    match parse_remote_skill_target_batch_result(&output, pending_targets.len()) {
+                        Ok(results) => {
+                            for (pending, result) in pending_targets.iter().zip(results) {
+                                report_target_result(
+                                    warnings,
+                                    &app,
+                                    &skill.name,
+                                    &pending.tool_key,
+                                    &pending.target,
+                                    result,
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            log::warn!(
+                            "Skills SSH sync: failed to parse batched target results, falling back to individual calls: {}",
+                            error
+                        );
+                            run_target_operations_individually(
+                                session,
+                                &remote_target,
+                                &skill.name,
+                                &pending_targets,
+                                warnings,
+                                &app,
+                            )
+                            .await;
+                        }
+                    }
+                }
+                Err(error) => {
+                    log::warn!(
+                        "Skills SSH sync: batched target maintenance failed, falling back to individual calls: {}",
+                        error
+                    );
+                    run_target_operations_individually(
+                        session,
+                        &remote_target,
+                        &skill.name,
+                        &pending_targets,
+                        warnings,
+                        &app,
+                    )
+                    .await;
+                }
+            }
+        }
+        total_target_time += target_started.elapsed();
     }
 
     info!(
-        "Skills SSH sync completed: updated_skills={}, total_skills={}, errors={}",
+        "Skills SSH sync completed: updated_skills={}, total_skills={}, errors={}, target_operations={}, hash_ms={}, target_ms={}",
         synced_count,
         skills.len(),
-        all_errors.len()
+        all_errors.len(),
+        total_target_operations,
+        total_hash_time.as_millis(),
+        total_target_time.as_millis()
     );
 
+    merge_foreign_path_warnings(warnings);
     let _ = super::commands::update_sync_warnings(state, warnings).await;
 
     if !all_errors.is_empty() {
@@ -503,6 +588,41 @@ pub(super) async fn sync_skills_to_ssh_with_warnings(
     let _ = app.emit("ssh-skills-sync-completed", ());
 
     Ok(())
+}
+
+async fn run_target_operations_individually(
+    session: &SshSession,
+    source: &str,
+    skill_name: &str,
+    pending_targets: &[PendingSkillTarget],
+    warnings: &mut Vec<String>,
+    app: &AppHandle,
+) {
+    for chunk in pending_targets.chunks(SKILL_TARGET_CONCURRENCY) {
+        let results = join_all(chunk.iter().map(|pending| async move {
+            let result = manage_remote_skill_target(
+                session,
+                source,
+                &pending.target,
+                SSH_CENTRAL_DIR,
+                pending.action,
+            )
+            .await;
+            (pending, result)
+        }))
+        .await;
+
+        for (pending, result) in results {
+            report_target_result(
+                warnings,
+                app,
+                skill_name,
+                &pending.tool_key,
+                &pending.target,
+                result,
+            );
+        }
+    }
 }
 
 #[cfg(test)]

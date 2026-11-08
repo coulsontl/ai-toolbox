@@ -1247,6 +1247,7 @@
       "openCodeCodexConfigSyncPartialFailed": "OpenCode/Codex config sync partially failed: {{detail}}",
       "openCodeCodexMcpSyncSkipped": "OpenCode/Codex MCP sync skipped: {{detail}}",
       "skillsForeignPathKept": "Path '{{path}}' of skill '{{skill}}' on tool '{{tool}}' is not managed by AI Toolbox; it was left untouched",
+      "skillsForeignPathKeptMany": "On tool '{{tool}}', {{count}} skill paths are not managed by AI Toolbox and were left untouched: {{skills}}",
       "skillsLinkMaintenanceFailed": "Failed to maintain the sync target of skill '{{skill}}' on tool '{{tool}}': {{detail}}",
       "skillsSourceMissingSkipped": "Source directory of skill '{{skill}}' does not exist; sync skipped: {{detail}}",
       "skillsRemoteDirCleanupFailed": "Failed to clean up the remote directory of skill '{{skill}}': {{detail}}",
@@ -1386,7 +1387,7 @@
     "ssh": {
       "title": "SSH Config Sync Settings",
       "enableSync": "Enable SSH Sync",
-      "enableSyncHint": "Changes to the mapped config files in the module tabs below won't auto-trigger sync. Click \"Sync Now\" to sync manually.",
+      "enableSyncHint": "Enabling only connects; it does not sync automatically. Mapping changes also require \"Sync Now\".",
       "activeConnection": "Active Connection",
       "selectConnection": "Select a connection",
       "newConnection": "New Connection",
@@ -1467,7 +1468,13 @@
         "windowsPowerShell": "Windows PowerShell",
         "unknown": "Unknown"
       },
-      "remoteShellUnsupported": "Remote shell is {{shell}}. This version only supports Linux/macOS remotes, so sync is blocked."
+      "remoteShellUnsupported": "Remote shell is {{shell}}. This version only supports Linux/macOS remotes, so sync is blocked.",
+      "remoteUser": "Remote user",
+      "remoteUserRoot": "root",
+      "remoteUserNonRoot": "non-root",
+      "remoteUserUnknown": "unknown",
+      "claudeRootPermissionFix": "Fix Claude permissions on root remotes",
+      "claudeRootPermissionFixHint": "When the remote user is root, change Claude settings from bypassPermissions to auto and remove the two dangerous permission fields; local files are untouched."
     },
     "webdav": {
       "url": "Server URL",

@@ -121,6 +121,65 @@ pub fn sanitize_claude_settings_content_for_non_windows_target(
     apply_cleanup_paths_to_content(raw_settings, CleanupFileFormat::Json, &cleanup_paths)
 }
 
+/// Downgrade Claude's bypass permission mode for root remotes, where Claude
+/// Code refuses to start in `bypassPermissions` mode. Returns `None` when the
+/// settings do not currently use `bypassPermissions`, so custom modes such as
+/// `acceptEdits` or `plan` are left untouched.
+pub fn sanitize_claude_settings_for_root_user(
+    settings_value: &JsonValue,
+) -> Result<Option<JsonValue>, String> {
+    let uses_bypass_permissions = settings_value
+        .get("permissions")
+        .and_then(|permissions| permissions.as_object())
+        .and_then(|permissions| permissions.get("defaultMode"))
+        .and_then(|default_mode| default_mode.as_str())
+        == Some("bypassPermissions");
+
+    if !uses_bypass_permissions {
+        return Ok(None);
+    }
+
+    let mut sanitized = settings_value.clone();
+    let sanitized_object = sanitized
+        .as_object_mut()
+        .ok_or_else(|| "Claude settings must be a JSON object".to_string())?;
+
+    if let Some(permissions) = sanitized_object
+        .get_mut("permissions")
+        .and_then(|permissions| permissions.as_object_mut())
+    {
+        permissions.insert(
+            "defaultMode".to_string(),
+            JsonValue::String("auto".to_string()),
+        );
+        permissions.remove("dangerouslySkipPermissions");
+        permissions.remove("skipDangerousModePermissionPrompt");
+    }
+
+    sanitized_object.remove("dangerouslySkipPermissions");
+    sanitized_object.remove("skipDangerousModePermissionPrompt");
+
+    Ok(Some(sanitized))
+}
+
+pub fn sanitize_claude_settings_content_for_root_user(
+    raw_settings: &str,
+) -> Result<Option<String>, String> {
+    if raw_settings.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let settings_value: JsonValue = serde_json::from_str(raw_settings)
+        .map_err(|error| format!("Failed to parse Claude settings for root fix: {error}"))?;
+    let Some(sanitized_value) = sanitize_claude_settings_for_root_user(&settings_value)? else {
+        return Ok(None);
+    };
+
+    let serialized = serde_json::to_string_pretty(&sanitized_value)
+        .map_err(|error| format!("Failed to serialize Claude settings after root fix: {error}"))?;
+    Ok(Some(format!("{serialized}\n")))
+}
+
 pub fn apply_cleanup_paths_to_json_value(
     settings_value: &JsonValue,
     cleanup_paths: &[String],
@@ -344,7 +403,8 @@ fn toml_item_is_empty_container(item: &Item) -> bool {
 mod tests {
     use super::{
         apply_cleanup_paths_to_content, cleanup_file_format_for_path,
-        sanitize_claude_settings_content_for_non_windows_target, CleanupFileFormat,
+        sanitize_claude_settings_content_for_non_windows_target,
+        sanitize_claude_settings_content_for_root_user, CleanupFileFormat,
     };
     use serde_json::json;
 
@@ -466,5 +526,103 @@ KEEP = "yes"
             Some(&json!("http://127.0.0.1:7890"))
         );
         assert_eq!(output_json.pointer("/env/CUSTOM_ENV"), Some(&json!("keep")));
+    }
+
+    #[test]
+    fn claude_root_fix_downgrades_bypass_permissions_and_removes_dangerous_fields() {
+        let input = json!({
+            "permissions": {
+                "defaultMode": "bypassPermissions",
+                "dangerouslySkipPermissions": true,
+                "skipDangerousModePermissionPrompt": true,
+                "allow": ["Bash(npm run lint)"]
+            },
+            "skipDangerousModePermissionPrompt": true,
+            "dangerouslySkipPermissions": true,
+            "model": "claude-sonnet-5",
+            "enabledPlugins": { "demo@marketplace": true },
+            "hooks": { "PreToolUse": [] },
+            "extraKnownMarketplaces": { "demo": { "source": "github" } }
+        })
+        .to_string();
+
+        let output = sanitize_claude_settings_content_for_root_user(&input)
+            .expect("root fix should succeed")
+            .expect("content should change");
+        let output_json: serde_json::Value =
+            serde_json::from_str(&output).expect("output should be valid JSON");
+
+        assert_eq!(
+            output_json.pointer("/permissions/defaultMode"),
+            Some(&json!("auto"))
+        );
+        assert!(output_json
+            .pointer("/permissions/dangerouslySkipPermissions")
+            .is_none());
+        assert!(output_json
+            .pointer("/permissions/skipDangerousModePermissionPrompt")
+            .is_none());
+        assert!(output_json.pointer("/dangerouslySkipPermissions").is_none());
+        assert!(output_json
+            .pointer("/skipDangerousModePermissionPrompt")
+            .is_none());
+        assert_eq!(
+            output_json.pointer("/permissions/allow"),
+            Some(&json!(["Bash(npm run lint)"]))
+        );
+        assert_eq!(
+            output_json.pointer("/model"),
+            Some(&json!("claude-sonnet-5"))
+        );
+        assert_eq!(
+            output_json.pointer("/enabledPlugins/demo@marketplace"),
+            Some(&json!(true))
+        );
+        assert_eq!(output_json.pointer("/hooks/PreToolUse"), Some(&json!([])));
+        assert_eq!(
+            output_json.pointer("/extraKnownMarketplaces/demo/source"),
+            Some(&json!("github"))
+        );
+    }
+
+    #[test]
+    fn claude_root_fix_leaves_non_bypass_modes_untouched() {
+        for mode in ["auto", "acceptEdits", "plan", "default"] {
+            let input = json!({
+                "permissions": {
+                    "defaultMode": mode,
+                    "dangerouslySkipPermissions": true,
+                    "skipDangerousModePermissionPrompt": true
+                },
+                "skipDangerousModePermissionPrompt": true
+            })
+            .to_string();
+
+            let output = sanitize_claude_settings_content_for_root_user(&input)
+                .expect("root fix should succeed");
+            assert!(output.is_none(), "mode {mode} should not be rewritten");
+        }
+    }
+
+    #[test]
+    fn claude_root_fix_ignores_missing_or_invalid_permissions() {
+        for input in [
+            json!({ "model": "claude-sonnet-5" }),
+            json!({ "permissions": null }),
+            json!({ "permissions": [] }),
+            json!({ "permissions": { "defaultMode": 1 } }),
+        ] {
+            let output = sanitize_claude_settings_content_for_root_user(&input.to_string())
+                .expect("root fix should succeed");
+            assert!(output.is_none(), "input should not be rewritten: {input}");
+        }
+    }
+
+    #[test]
+    fn claude_root_fix_handles_empty_and_invalid_content() {
+        assert!(sanitize_claude_settings_content_for_root_user("  \n")
+            .expect("empty content should succeed")
+            .is_none());
+        assert!(sanitize_claude_settings_content_for_root_user(r#"{ "permissions": }"#).is_err());
     }
 }

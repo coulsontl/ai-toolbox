@@ -2,6 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::coding::runtime_location::WslDirectModuleStatus;
 
+pub const CODEX_PLUGINS_MAPPING_ID: &str = "codex-plugins";
+/// Windows-only Codex plugin server binaries; WSL is Linux, so they are useless.
+pub const CODEX_PLUGIN_APPSERVER_DIR: &str = ".plugin-appserver";
+
 // ============================================================================
 // File Mapping Types
 // ============================================================================
@@ -46,6 +50,21 @@ pub fn normalize_directory_excludes(excludes: &[String]) -> Vec<String> {
     }
 
     normalized
+}
+
+/// Excludes actually used for a mapping. Old saved WSL mappings have an empty
+/// exclude list, so the codex Windows-only appserver directory is enforced
+/// here instead of relying on a database migration.
+pub fn effective_directory_excludes(mapping_id: &str, excludes: &[String]) -> Vec<String> {
+    let mut effective = normalize_directory_excludes(excludes);
+    if mapping_id == CODEX_PLUGINS_MAPPING_ID
+        && !effective
+            .iter()
+            .any(|name| name == CODEX_PLUGIN_APPSERVER_DIR)
+    {
+        effective.push(CODEX_PLUGIN_APPSERVER_DIR.to_string());
+    }
+    effective
 }
 
 // ============================================================================
@@ -165,4 +184,25 @@ pub struct SyncProgress {
     /// Current file being uploaded within the current item, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_file: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        effective_directory_excludes, CODEX_PLUGINS_MAPPING_ID, CODEX_PLUGIN_APPSERVER_DIR,
+    };
+
+    #[test]
+    fn codex_plugins_excludes_windows_only_appserver() {
+        let excludes = effective_directory_excludes(CODEX_PLUGINS_MAPPING_ID, &[]);
+
+        assert_eq!(excludes, vec![CODEX_PLUGIN_APPSERVER_DIR.to_string()]);
+    }
+
+    #[test]
+    fn other_mappings_keep_their_excludes_unchanged() {
+        let excludes = effective_directory_excludes("claude-settings", &["cache".to_string()]);
+
+        assert_eq!(excludes, vec!["cache".to_string()]);
+    }
 }

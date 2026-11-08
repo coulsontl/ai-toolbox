@@ -16,6 +16,10 @@ pub const DEFAULT_DIRECTORY_EXCLUDES: &[&str] = &[
 ];
 
 pub const CLAUDE_PLUGINS_MAPPING_ID: &str = "claude-plugins";
+pub const CODEX_PLUGINS_MAPPING_ID: &str = "codex-plugins";
+/// Windows-only Codex plugin server binaries. The SSH/WSL targets are POSIX
+/// systems, so uploading this directory only wastes hundreds of megabytes.
+pub const CODEX_PLUGIN_APPSERVER_DIR: &str = ".plugin-appserver";
 
 pub fn default_directory_excludes() -> Vec<String> {
     DEFAULT_DIRECTORY_EXCLUDES
@@ -28,6 +32,27 @@ pub fn default_directory_excludes_for_mapping(mapping_id: &str) -> Vec<String> {
     let mut excludes = default_directory_excludes();
     if mapping_id == CLAUDE_PLUGINS_MAPPING_ID {
         excludes.retain(|name| name != "cache");
+    }
+    if mapping_id == CODEX_PLUGINS_MAPPING_ID {
+        excludes.push(CODEX_PLUGIN_APPSERVER_DIR.to_string());
+    }
+    excludes
+}
+
+/// Excludes actually used for a mapping. Existing saved mappings may not have
+/// the newer codex default, so enforce it here as well without rewriting the
+/// user's stored exclude list.
+pub fn effective_directory_excludes_for_mapping(
+    mapping_id: &str,
+    configured_excludes: &[String],
+) -> Vec<String> {
+    let mut excludes = normalize_directory_excludes(configured_excludes);
+    if mapping_id == CODEX_PLUGINS_MAPPING_ID
+        && !excludes
+            .iter()
+            .any(|name| name == CODEX_PLUGIN_APPSERVER_DIR)
+    {
+        excludes.push(CODEX_PLUGIN_APPSERVER_DIR.to_string());
     }
     excludes
 }
@@ -120,6 +145,10 @@ pub struct SSHSyncConfig {
     /// Warnings from the most recent Skills sync run (kept foreign paths, etc.)
     #[serde(default)]
     pub last_sync_warnings: Vec<String>,
+    /// When the remote login user is root, rewrite Claude's bypass permission
+    /// mode in the uploaded settings copy to `auto`.
+    #[serde(default)]
+    pub claude_root_permission_fix: bool,
     #[serde(default)]
     pub module_statuses: Vec<WslDirectModuleStatus>,
 }
@@ -137,6 +166,7 @@ impl Default for SSHSyncConfig {
             last_sync_status: "never".to_string(),
             last_sync_error: None,
             last_sync_warnings: vec![],
+            claude_root_permission_fix: false,
             module_statuses: vec![],
         }
     }
@@ -146,8 +176,9 @@ impl Default for SSHSyncConfig {
 mod tests {
     use super::{
         default_directory_excludes, default_directory_excludes_for_mapping,
-        matches_default_directory_excludes, normalize_directory_excludes,
-        CLAUDE_PLUGINS_MAPPING_ID,
+        effective_directory_excludes_for_mapping, matches_default_directory_excludes,
+        normalize_directory_excludes, CLAUDE_PLUGINS_MAPPING_ID, CODEX_PLUGINS_MAPPING_ID,
+        CODEX_PLUGIN_APPSERVER_DIR,
     };
 
     #[test]
@@ -185,6 +216,31 @@ mod tests {
     }
 
     #[test]
+    fn codex_plugins_default_excludes_skip_windows_only_appserver() {
+        let excludes = default_directory_excludes_for_mapping(CODEX_PLUGINS_MAPPING_ID);
+
+        assert!(excludes.contains(&"cache".to_string()));
+        assert!(excludes.contains(&CODEX_PLUGIN_APPSERVER_DIR.to_string()));
+    }
+
+    #[test]
+    fn effective_excludes_add_appserver_without_losing_custom_entries() {
+        let configured = vec!["cache".to_string(), "my-cache".to_string()];
+
+        let excludes =
+            effective_directory_excludes_for_mapping(CODEX_PLUGINS_MAPPING_ID, &configured);
+
+        assert_eq!(
+            excludes,
+            vec![
+                "cache".to_string(),
+                "my-cache".to_string(),
+                CODEX_PLUGIN_APPSERVER_DIR.to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn detects_normalized_default_directory_excludes() {
         let input = vec![
             ".git".to_string(),
@@ -216,6 +272,9 @@ pub struct SSHConnectionResult {
     /// `windows_powershell`, or `unknown`.
     #[serde(default)]
     pub shell_kind: Option<String>,
+    /// Whether the remote login user is root. Only probed for POSIX remotes.
+    #[serde(default)]
+    pub is_root: Option<bool>,
 }
 
 /// SSH status result

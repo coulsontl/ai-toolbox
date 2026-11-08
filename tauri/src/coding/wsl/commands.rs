@@ -1,6 +1,6 @@
 use super::types::{
     FileMapping, SyncProgress, SyncResult, WSLDetectResult, WSLErrorResult, WSLStatusResult,
-    WSLSyncConfig,
+    WSLSyncConfig, CODEX_PLUGIN_APPSERVER_DIR,
 };
 use super::{adapter, sync};
 use crate::coding::claude_code::plugin_metadata_sync;
@@ -579,7 +579,11 @@ fn sync_mappings_with_progress(
         );
 
         match sync::sync_file_mapping(mapping, distro) {
-            Ok(mut files) => {
+            Ok(None) => {
+                skipped_files.push(mapping.name.clone());
+                continue;
+            }
+            Ok(Some(mut files)) => {
                 if !files.is_empty() {
                     match rewrite_gateway_managed_wsl_copy(
                         mapping,
@@ -2084,7 +2088,7 @@ pub fn default_file_mappings() -> Vec<FileMapping> {
             enabled: true,
             is_pattern: false,
             is_directory: true,
-            directory_excludes: vec![],
+            directory_excludes: vec![CODEX_PLUGIN_APPSERVER_DIR.to_string()],
             cleanup_paths: vec![],
         },
         // Grok
