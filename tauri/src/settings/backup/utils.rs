@@ -9,6 +9,7 @@ use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
+use crate::coding::host_local_config::{self, HostLocalSpec, PlatformClass};
 use crate::coding::open_code::shell_env;
 use crate::coding::skills::central_repo::{resolve_central_repo_path_sync, skill_storage_dir_name};
 use crate::coding::{
@@ -190,33 +191,154 @@ fn sanitize_claude_settings_string_for_current_os(content: &str) -> Result<Optio
     crate::coding::config_cleanup::sanitize_claude_settings_content_for_non_windows_target(content)
 }
 
+#[cfg(not(target_os = "windows"))]
+fn sanitize_restored_claude_settings(
+    content: String,
+    relative_path: &str,
+) -> Result<String, String> {
+    if relative_path == "settings.json" {
+        Ok(sanitize_claude_settings_string_for_current_os(&content)?.unwrap_or(content))
+    } else {
+        Ok(content)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn sanitize_restored_claude_settings(
+    content: String,
+    _relative_path: &str,
+) -> Result<String, String> {
+    Ok(content)
+}
+
+/// The restore target is Unix when it lives inside WSL via a UNC path, even
+/// though the app itself runs on Windows.
+fn restore_target_platform(outpath: &Path) -> PlatformClass {
+    if runtime_location::parse_wsl_unc_path(&outpath.to_string_lossy()).is_some() {
+        PlatformClass::Unix
+    } else {
+        PlatformClass::current()
+    }
+}
+
+fn merge_backup_host_local_content(
+    source_content: &str,
+    spec: &HostLocalSpec,
+    outpath: &Path,
+    backup_platform: Option<PlatformClass>,
+) -> Result<Option<String>, String> {
+    let target_platform = restore_target_platform(outpath);
+    let target_content = match std::fs::read_to_string(outpath) {
+        Ok(content) => Some(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            // Includes non-UTF-8 files and permission errors. The target
+            // cannot be parsed/preserved, so leave it untouched instead of
+            // aborting a restore that may already have replaced the database.
+            log::warn!(
+                "Skipped restoring {} because the existing target cannot be read: {}",
+                outpath.display(),
+                error
+            );
+            return Ok(None);
+        }
+    };
+
+    let target_values = match target_content.as_deref() {
+        Some(content) => {
+            match host_local_config::extract_target_values(content, spec, target_platform) {
+                Ok(values) => values,
+                Err(error) => {
+                    // The target cannot be parsed, so its host-local fields
+                    // cannot be preserved. Leave it untouched rather than
+                    // overwrite it with a cross-machine copy.
+                    log::warn!(
+                        "Skipped restoring {} because the existing target cannot be parsed: {}",
+                        outpath.display(),
+                        error
+                    );
+                    return Ok(None);
+                }
+            }
+        }
+        None => vec![None; spec.fields.len()],
+    };
+
+    // A v1 backup has no platform marker. On a Unix target the sanitizer drops
+    // Windows-only values, so keeping portable legacy values is safe there; on
+    // Windows we cannot sanitize POSIX-only values and stay conservative.
+    let fill_missing = backup_platform
+        .map_or(target_platform == PlatformClass::Unix, |platform| {
+            platform == target_platform
+        });
+    let merged = host_local_config::apply_values(
+        source_content,
+        spec,
+        &target_values,
+        fill_missing,
+        target_platform,
+    )?;
+    Ok(Some(merged.unwrap_or_else(|| source_content.to_string())))
+}
+
+/// Restore one `external-configs/<tool>/...` entry while preserving the
+/// target's host-local fields.
+///
+/// Returns `Ok(false)` when the entry has no host-local spec and the caller
+/// should fall back to a plain file copy.
+pub fn restore_external_config_with_host_local_fields<R: Read>(
+    tool: &str,
+    relative_path: &str,
+    source: &mut R,
+    outpath: &Path,
+    backup_platform: Option<PlatformClass>,
+) -> Result<bool, String> {
+    let Some(spec) = host_local_config::spec_for_backup_entry(tool, relative_path) else {
+        return Ok(false);
+    };
+
+    let mut source_content = String::new();
+    source
+        .read_to_string(&mut source_content)
+        .map_err(|error| format!("Failed to read backup config {tool}/{relative_path}: {error}"))?;
+
+    let Some(restored_content) =
+        merge_backup_host_local_content(&source_content, spec, outpath, backup_platform)?
+    else {
+        return Ok(true);
+    };
+
+    std::fs::write(outpath, restored_content)
+        .map_err(|error| format!("Failed to restore config {tool}/{relative_path}: {error}"))?;
+    Ok(true)
+}
+
 pub fn restore_claude_external_config_file<R: Read>(
     source: &mut R,
     outpath: &Path,
     relative_path: &str,
+    backup_platform: Option<PlatformClass>,
 ) -> Result<(), String> {
-    #[cfg(not(target_os = "windows"))]
-    {
-        if relative_path == "settings.json" {
-            let mut content = String::new();
-            source
-                .read_to_string(&mut content)
-                .map_err(|error| format!("Failed to read Claude settings file: {error}"))?;
-            let restored_content =
-                sanitize_claude_settings_string_for_current_os(&content)?.unwrap_or(content);
-            std::fs::write(outpath, restored_content)
-                .map_err(|error| format!("Failed to restore Claude settings file: {error}"))?;
-            return Ok(());
-        }
-    }
+    let Some(spec) = host_local_config::spec_for_backup_entry("claude", relative_path) else {
+        let mut outfile =
+            File::create(outpath).map_err(|e| format!("Failed to create file: {}", e))?;
+        std::io::copy(source, &mut outfile).map_err(|e| format!("Failed to extract file: {}", e))?;
+        return Ok(());
+    };
 
-    #[cfg(target_os = "windows")]
-    {
-        let _ = relative_path;
-    }
+    let mut source_content = String::new();
+    source
+        .read_to_string(&mut source_content)
+        .map_err(|error| format!("Failed to read Claude settings file: {error}"))?;
+    let Some(restored_content) =
+        merge_backup_host_local_content(&source_content, spec, outpath, backup_platform)?
+    else {
+        return Ok(());
+    };
+    let restored_content = sanitize_restored_claude_settings(restored_content, relative_path)?;
 
-    let mut outfile = File::create(outpath).map_err(|e| format!("Failed to create file: {}", e))?;
-    std::io::copy(source, &mut outfile).map_err(|e| format!("Failed to extract file: {}", e))?;
+    std::fs::write(outpath, restored_content)
+        .map_err(|error| format!("Failed to restore Claude settings file: {error}"))?;
     Ok(())
 }
 
@@ -1576,6 +1698,11 @@ pub const RESYNC_REQUIRED_FLAG_FILENAME: &str = ".resync_required";
 pub struct BackupMeta {
     pub version: u32,
     pub cli_config_files_included: bool,
+    /// Platform that produced the archive. Missing in v1 backups; restore then
+    /// keeps the target's host-local fields and does not import the archived
+    /// ones.
+    #[serde(default)]
+    pub platform: Option<PlatformClass>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1587,8 +1714,9 @@ struct PostRestoreResyncFlag {
 
 pub fn build_backup_meta(cli_config_files_included: bool) -> BackupMeta {
     BackupMeta {
-        version: 1,
+        version: 2,
         cli_config_files_included,
+        platform: Some(PlatformClass::current()),
     }
 }
 
@@ -4296,6 +4424,7 @@ mod tests {
         add_external_config_directory_contents_to_zip, add_external_config_file_to_zip,
         add_legacy_database_snapshot_to_zip, add_text_to_zip, backup_filter_option_path,
         build_backup_meta, build_db_manifest, clear_restored_cli_custom_roots,
+        restore_external_config_with_host_local_fields, restore_target_platform, PlatformClass,
         external_config_tool_from_zip_entry, get_antigravity_prompt_backup_zip_path,
         get_codex_prompt_backup_zip_path, get_existing_codex_prompt_paths,
         get_gemini_cli_prompt_backup_zip_path, is_always_backup_cli_tool,
@@ -4399,10 +4528,238 @@ mod tests {
         let included_meta = build_backup_meta(true);
         let excluded_meta = build_backup_meta(false);
 
-        assert_eq!(included_meta.version, 1);
+        assert_eq!(included_meta.version, 2);
         assert!(included_meta.cli_config_files_included);
-        assert_eq!(excluded_meta.version, 1);
+        assert_eq!(included_meta.platform, Some(PlatformClass::current()));
+        assert_eq!(excluded_meta.version, 2);
         assert!(!excluded_meta.cli_config_files_included);
+        assert_eq!(excluded_meta.platform, Some(PlatformClass::current()));
+    }
+
+    #[test]
+    fn restore_preserves_target_hooks_from_a_different_platform_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let outpath = directory.path().join("settings.json");
+        std::fs::write(
+            &outpath,
+            r#"{"hooks":{"Stop":[{"hooks":[{"command":"/target/hook.sh"}]}]}}"#,
+        )
+        .unwrap();
+
+        let other_platform = match PlatformClass::current() {
+            PlatformClass::Windows => PlatformClass::Unix,
+            PlatformClass::Unix => PlatformClass::Windows,
+        };
+        let backup = r#"{"hooks":{"Stop":[{"hooks":[{"command":"C:/backup/hook.exe"}]}]}}"#;
+        let mut source = Cursor::new(backup.as_bytes());
+
+        assert!(restore_external_config_with_host_local_fields(
+            "claude",
+            "settings.json",
+            &mut source,
+            &outpath,
+            Some(other_platform),
+        )
+        .unwrap());
+
+        let restored = std::fs::read_to_string(&outpath).unwrap();
+        assert!(restored.contains("/target/hook.sh"));
+        assert!(!restored.contains("backup/hook.exe"));
+    }
+
+    #[test]
+    fn restore_target_platform_detects_wsl_unc_paths() {
+        assert_eq!(
+            restore_target_platform(Path::new(
+                r"\\wsl.localhost\Debian\home\u\.claude\settings.json"
+            )),
+            PlatformClass::Unix
+        );
+        assert_eq!(
+            restore_target_platform(Path::new("/tmp/settings.json")),
+            PlatformClass::current()
+        );
+    }
+
+    #[test]
+    fn restore_leaves_a_non_utf8_target_untouched() {
+        let directory = tempfile::tempdir().unwrap();
+        let outpath = directory.path().join("settings.json");
+        let original = vec![0xFF_u8, 0xFE, 0x00];
+        std::fs::write(&outpath, &original).unwrap();
+
+        let backup = r#"{"hooks":{"Stop":[]}}"#;
+        let mut source = Cursor::new(backup.as_bytes());
+
+        assert!(restore_external_config_with_host_local_fields(
+            "claude",
+            "settings.json",
+            &mut source,
+            &outpath,
+            Some(PlatformClass::current()),
+        )
+        .unwrap());
+
+        assert_eq!(std::fs::read(&outpath).unwrap(), original);
+    }
+
+    #[test]
+    fn restore_fills_missing_target_hooks_from_a_same_platform_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let outpath = directory.path().join("settings.json");
+        std::fs::write(&outpath, "{}").unwrap();
+
+        let backup = r#"{"hooks":{"Stop":[{"hooks":[{"command":"/backup/hook.sh"}]}]}}"#;
+        let mut source = Cursor::new(backup.as_bytes());
+
+        assert!(restore_external_config_with_host_local_fields(
+            "claude",
+            "settings.json",
+            &mut source,
+            &outpath,
+            Some(PlatformClass::current()),
+        )
+        .unwrap());
+
+        let restored = std::fs::read_to_string(&outpath).unwrap();
+        assert!(restored.contains("/backup/hook.sh"));
+    }
+
+    #[test]
+    fn restore_handles_legacy_backups_without_a_platform_marker() {
+        let directory = tempfile::tempdir().unwrap();
+        let outpath = directory.path().join("settings.json");
+        std::fs::write(&outpath, "{}").unwrap();
+
+        let backup = r#"{"hooks":{"Stop":[{"hooks":[{"command":"/legacy/hook.sh"}]}]}}"#;
+        let mut source = Cursor::new(backup.as_bytes());
+
+        assert!(restore_external_config_with_host_local_fields(
+            "claude",
+            "settings.json",
+            &mut source,
+            &outpath,
+            None,
+        )
+        .unwrap());
+
+        let restored = std::fs::read_to_string(&outpath).unwrap();
+        if PlatformClass::current() == PlatformClass::Unix {
+            assert!(restored.contains("/legacy/hook.sh"));
+        } else {
+            assert!(!restored.contains("hooks"));
+        }
+    }
+
+    #[test]
+    fn restore_drops_cross_platform_hooks_when_target_has_none() {
+        let directory = tempfile::tempdir().unwrap();
+        let outpath = directory.path().join("settings.json");
+        std::fs::write(&outpath, "{}").unwrap();
+
+        let other_platform = match PlatformClass::current() {
+            PlatformClass::Windows => PlatformClass::Unix,
+            PlatformClass::Unix => PlatformClass::Windows,
+        };
+        let backup = r#"{"hooks":{"Stop":[{"hooks":[{"command":"C:/backup/hook.exe"}]}]}}"#;
+        let mut source = Cursor::new(backup.as_bytes());
+
+        assert!(restore_external_config_with_host_local_fields(
+            "claude",
+            "settings.json",
+            &mut source,
+            &outpath,
+            Some(other_platform),
+        )
+        .unwrap());
+
+        let restored = std::fs::read_to_string(&outpath).unwrap();
+        assert!(!restored.contains("hooks"));
+    }
+
+    #[test]
+    fn restore_leaves_an_unparseable_target_untouched() {
+        let directory = tempfile::tempdir().unwrap();
+        let outpath = directory.path().join("settings.json");
+        std::fs::write(&outpath, "{not json").unwrap();
+
+        let backup = r#"{"hooks":{"Stop":[]}}"#;
+        let mut source = Cursor::new(backup.as_bytes());
+
+        assert!(restore_external_config_with_host_local_fields(
+            "claude",
+            "settings.json",
+            &mut source,
+            &outpath,
+            Some(PlatformClass::current()),
+        )
+        .unwrap());
+
+        assert_eq!(std::fs::read_to_string(&outpath).unwrap(), "{not json");
+    }
+
+    #[test]
+    fn restore_preserves_codex_notify_and_projects() {
+        let directory = tempfile::tempdir().unwrap();
+        let outpath = directory.path().join("config.toml");
+        std::fs::write(
+            &outpath,
+            "notify = [\"/target/notify\"]\n[projects.\"/target/project\"]\ntrust_level = \"trusted\"\n[hooks.state]\n\"/target/hooks.json:stop:0:0\" = true\n",
+        )
+        .unwrap();
+
+        let backup = "notify = [\"C:\\\\backup\\\\notify.exe\"]\n[projects.\"C:\\\\backup\\\\project\"]\ntrust_level = \"trusted\"\n[hooks.state]\n\"C:\\\\backup\\\\hooks.json:stop:0:0\" = true\n";
+        let mut source = Cursor::new(backup.as_bytes());
+        let other_platform = match PlatformClass::current() {
+            PlatformClass::Windows => PlatformClass::Unix,
+            PlatformClass::Unix => PlatformClass::Windows,
+        };
+
+        assert!(restore_external_config_with_host_local_fields(
+            "codex",
+            "config.toml",
+            &mut source,
+            &outpath,
+            Some(other_platform),
+        )
+        .unwrap());
+
+        let restored = std::fs::read_to_string(&outpath).unwrap();
+        assert!(restored.contains("/target/notify"));
+        assert!(restored.contains("/target/project"));
+        assert!(restored.contains("/target/hooks.json:stop:0:0"));
+        assert!(!restored.contains("backup"));
+    }
+
+    #[test]
+    fn restore_preserves_codex_hooks_json_from_a_directory_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let outpath = directory.path().join("hooks.json");
+        std::fs::write(
+            &outpath,
+            r#"{"hooks":{"Stop":[{"hooks":[{"command":"/target/hook.sh"}]}]}}"#,
+        )
+        .unwrap();
+
+        let backup = r#"{"hooks":{"Stop":[{"hooks":[{"command":"C:/backup/hook.exe"}]}]}}"#;
+        let mut source = Cursor::new(backup.as_bytes());
+        let other_platform = match PlatformClass::current() {
+            PlatformClass::Windows => PlatformClass::Unix,
+            PlatformClass::Unix => PlatformClass::Windows,
+        };
+
+        assert!(restore_external_config_with_host_local_fields(
+            "codex",
+            "hooks.json",
+            &mut source,
+            &outpath,
+            Some(other_platform),
+        )
+        .unwrap());
+
+        let restored = std::fs::read_to_string(&outpath).unwrap();
+        assert!(restored.contains("/target/hook.sh"));
+        assert!(!restored.contains("backup/hook.exe"));
     }
 
     #[test]

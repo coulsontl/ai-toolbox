@@ -10,8 +10,8 @@ use std::collections::HashSet;
 use tauri::{AppHandle, Emitter};
 
 use super::adapter;
-use super::commands::resolve_dynamic_paths_with_db;
-use super::sync::{read_wsl_file, sync_mappings, windows_to_wsl_path, write_wsl_file};
+use super::commands::{resolve_dynamic_paths_with_db, sync_file_mapping_preserving_host_local};
+use super::sync::{read_wsl_file, windows_to_wsl_path, write_wsl_file};
 use super::types::{FileMapping, SyncProgress, WSLSyncConfig};
 use crate::coding::mcp::command_normalize;
 use crate::coding::mcp::mcp_store;
@@ -168,9 +168,20 @@ pub(super) async fn run_mcp_sync_pass(
 
             if !mcp_mappings.is_empty() {
                 let resolved = resolve_dynamic_paths_with_db(&state.db(), mcp_mappings).await;
-                let result = sync_mappings(&resolved, distro, None);
-                if !result.errors.is_empty() {
-                    let msg = result.errors.join("; ");
+                // Use the host-local-aware wrapper: the plain sync path would
+                // upload the whole config file again and drop target-owned
+                // notify/hooks/projects/statusLine fields.
+                let mut synced_files = Vec::new();
+                let mut errors = Vec::new();
+                for mapping in &resolved {
+                    match sync_file_mapping_preserving_host_local(mapping, distro) {
+                        Ok(Some(files)) => synced_files.extend(files),
+                        Ok(None) => {}
+                        Err(error) => errors.push(format!("{}: {}", mapping.name, error)),
+                    }
+                }
+                if !errors.is_empty() {
+                    let msg = errors.join("; ");
                     log::warn!("MCP file mapping sync errors: {}", msg);
                     all_errors.push(format!("OpenCode/Codex/Grok/Gemini CLI/Kimi/Pi: {}", msg));
                     let _ = app.emit(
@@ -184,8 +195,7 @@ pub(super) async fn run_mcp_sync_pass(
 
                 // Post-process: strip cmd /c from synced MCP config files (WSL is Linux, doesn't need it)
                 // Only process files that actually contain MCP server configurations
-                let synced_paths: std::collections::HashSet<String> = result
-                    .synced_files
+                let synced_paths: std::collections::HashSet<String> = synced_files
                     .iter()
                     .filter_map(|s| s.split(" -> ").nth(1).map(|p| p.to_string()))
                     .collect();

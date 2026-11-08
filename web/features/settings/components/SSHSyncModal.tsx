@@ -5,7 +5,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { Modal, Switch, Select, Button, List, Space, Typography, Alert, Spin, Tag, Modal as AntdModal, Tabs, Tooltip, Progress, theme } from 'antd';
+import { Modal, Switch, Select, Button, List, Space, Typography, Alert, Spin, Tag, Modal as AntdModal, Tabs, Tooltip, Progress, Divider, theme } from 'antd';
 import { CheckCircleOutlined, CloseCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ClearOutlined, ApiOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useSSHSync } from '@/features/settings/hooks/useSSHSync';
@@ -552,7 +552,18 @@ export const SSHSyncModal: React.FC<SSHSyncModalProps> = ({ open, onClose }) => 
             <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 12 }}>
               {t('settings.ssh.claudeRootPermissionFixHint')}
             </Text>
+            <Divider style={{ margin: '2px 0 12px' }} />
           </>
+        )}
+        {['all', 'claude', 'codex', 'zcode', 'geminicli', 'codebuddy'].includes(moduleFilter) && (
+          <div style={{ marginBottom: 12 }}>
+            <Text style={{ display: 'block', marginBottom: 4 }}>
+              {t('settings.ssh.hostLocalFieldsTitle')}
+            </Text>
+            <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+              {t('settings.ssh.hostLocalFieldsHint')}
+            </Text>
+          </div>
         )}
         <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Text type="secondary">

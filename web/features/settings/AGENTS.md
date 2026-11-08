@@ -39,6 +39,7 @@ sequenceDiagram
 
 ## 易错点与历史坑（Gotchas）
 
+- SSH/WSL 设置页和恢复确认弹窗中的 host-local 提示是行为契约的一部分：`settings.ssh.hostLocalFieldsHint`、`settings.wsl.hostLocalFieldsHint`、`settings.backupSettings.hostLocalFieldsRestoreHint` 必须与后端 `host_local_config.rs` 的字段清单一致。改字段范围时同步更新这三条文案和英文翻译，避免用户以为 hooks（含 Codex）/statusLine/Codex notify/projects 会随同步或跨平台恢复复制。SSH/WSL 提示必须注明只对单文件映射生效：目录/pattern 映射不参与 host-local 合并。
 - Linux 渲染偏好走独立的启动配置命令，不进入全量 `AppSettings`。界面必须区分已保存模式和当前进程模式：保存后保留“下次启动生效”和重启入口，失败不切换已保存选项；环境变量覆盖时禁用选择并说明原因，性能模式启动失败后的兼容回退也要显示。组件只在 Linux 挂载，不增加其它平台的启动读取。
 
 - 备份设置三渠道（local/webdav/repository）保存走统一入口 `saveBackupSettingsUnified` → 后端 `save_backup_settings`（只 patch 备份字段 + 同事务更新 `settings:backup_repository`）。不要改回两次全量 `save_settings` 或把仓库 Token 放进 AppSettings payload；保存失败要展示后端错误、保留草稿并禁用重复提交。

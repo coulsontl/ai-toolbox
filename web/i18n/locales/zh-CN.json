@@ -1123,6 +1123,7 @@
       "confirmRestoreDesc": "恢复备份将覆盖当前所有数据,确定要继续吗?",
       "confirmRestoreCurrentHost": "将恢复当前主机“{{hostLabel}}”的备份，并覆盖当前应用数据。确定要继续吗？",
       "confirmRestoreOtherHost": "你正在恢复其他主机“{{hostLabel}}”的备份，这会覆盖当前设备的设置与数据。确定要继续吗？",
+      "hostLocalFieldsRestoreHint": "恢复时会保留当前机器已有的 hooks（含 Codex）、statusLine、Codex notify/projects；跨平台备份不会导入这些字段。",
       "selectBackupFile": "选择备份文件",
       "noBackupsFound": "未找到备份文件",
       "listBackupsFailed": "获取备份列表失败",
@@ -1323,6 +1324,8 @@
       "allMappings": "全部",
       "mappings": "个映射",
       "noMappings": "暂无映射记录",
+      "hostLocalFieldsTitle": "本机命令字段保护（始终启用）",
+      "hostLocalFieldsHint": "hooks（含 Codex）、statusLine、Codex notify/projects 按 WSL 目标保留，不随同步覆盖。仅对单文件映射生效。",
       "addMapping": "新增映射",
       "editMapping": "编辑映射",
       "mappingName": "显示名称",
@@ -1474,7 +1477,9 @@
       "remoteUserNonRoot": "非 root",
       "remoteUserUnknown": "未知",
       "claudeRootPermissionFix": "root 远端 Claude 权限修正",
-      "claudeRootPermissionFixHint": "远端为 root 时，将 Claude settings 的 bypassPermissions 改为 auto，并移除两个危险权限字段；不改本机文件。"
+      "claudeRootPermissionFixHint": "远端为 root 时，将 Claude settings 的 bypassPermissions 改为 auto，并移除两个危险权限字段；不改本机文件。",
+      "hostLocalFieldsTitle": "本机命令字段保护（始终启用）",
+      "hostLocalFieldsHint": "hooks（含 Codex）、statusLine、Codex notify/projects 按远端保留，不随同步覆盖。仅对单文件映射生效。"
     },
     "webdav": {
       "url": "服务器地址",

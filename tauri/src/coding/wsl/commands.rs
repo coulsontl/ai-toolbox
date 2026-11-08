@@ -10,6 +10,9 @@ use crate::coding::dsh::constants::{
     DSH_CREDENTIALS_FILE, DSH_MCP_FILE, DSH_PROMPT_FILE, DSH_SETTINGS_FILE,
 };
 use crate::coding::dsh::profile_patch;
+use crate::coding::host_local_config::{
+    self, HostLocalSpec, HostLocalValue, PlatformClass,
+};
 use crate::coding::oh_my_pi::constants::{
     OMP_CONFIG_FILE, OMP_MCP_FILE, OMP_MODELS_FILE, OMP_PROMPT_FILE,
 };
@@ -578,6 +581,21 @@ fn sync_mappings_with_progress(
             },
         );
 
+        let host_local_values = match prepare_host_local_values_in_wsl(mapping, distro) {
+            Ok(values) => values,
+            Err(error) => {
+                log::warn!(
+                    "WSL sync mapping skipped to protect host-local fields: id={}, name={}, wsl_path={}, error={}",
+                    mapping.id,
+                    mapping.name,
+                    mapping.wsl_path,
+                    error
+                );
+                errors.push(format!("{}: {}", mapping.name, error));
+                continue;
+            }
+        };
+
         match sync::sync_file_mapping(mapping, distro) {
             Ok(None) => {
                 skipped_files.push(mapping.name.clone());
@@ -595,7 +613,7 @@ fn sync_mappings_with_progress(
                         Err(error) => errors.push(format!("{}: {}", mapping.name, error)),
                     }
 
-                    match cleanup_synced_file_in_wsl(mapping, distro) {
+                    match post_process_synced_file_in_wsl(mapping, distro, host_local_values.as_ref()) {
                         Ok(Some(cleaned_file)) => files.push(cleaned_file),
                         Ok(None) => {}
                         Err(error) => errors.push(format!("{}: {}", mapping.name, error)),
@@ -667,9 +685,49 @@ fn rewrite_gateway_managed_wsl_copy(
     )))
 }
 
-fn cleanup_synced_file_in_wsl(
+struct WslHostLocalPreservation {
+    spec: &'static HostLocalSpec,
+    target_values: Vec<Option<HostLocalValue>>,
+}
+
+/// Read the WSL target before the upload so its host-local fields survive the
+/// whole-file overwrite. A target that exists but cannot be parsed aborts this
+/// mapping instead of being partially merged.
+fn prepare_host_local_values_in_wsl(
     mapping: &FileMapping,
     distro: &str,
+) -> Result<Option<WslHostLocalPreservation>, String> {
+    let Some(spec) = host_local_config::spec_for_sync_mapping(
+        &mapping.module,
+        &mapping.id,
+        mapping.is_directory,
+        mapping.is_pattern,
+        &mapping.windows_path,
+        &mapping.wsl_path,
+    ) else {
+        return Ok(None);
+    };
+
+    let target_content = sync::read_wsl_file(distro, &mapping.wsl_path)?;
+    let target_values =
+        host_local_config::extract_target_values(&target_content, spec, PlatformClass::Unix)
+            .map_err(|error| {
+                format!(
+                    "WSL 文件 {} 无法解析（{}），已跳过同步以保护其中的本机字段",
+                    mapping.wsl_path, error
+                )
+            })?;
+
+    Ok(Some(WslHostLocalPreservation {
+        spec,
+        target_values,
+    }))
+}
+
+fn post_process_synced_file_in_wsl(
+    mapping: &FileMapping,
+    distro: &str,
+    host_local_values: Option<&WslHostLocalPreservation>,
 ) -> Result<Option<String>, String> {
     let mut cleanup_paths = Vec::new();
     if mapping.id == "claude-settings" {
@@ -688,24 +746,83 @@ fn cleanup_synced_file_in_wsl(
         &mapping.windows_path,
         &cleanup_paths,
     )?;
-    if cleanup_paths.is_empty() {
+    if cleanup_paths.is_empty() && host_local_values.is_none() {
         return Ok(None);
     }
 
-    let format = config_cleanup::cleanup_file_format_for_mapping_paths(
-        &mapping.wsl_path,
-        &mapping.windows_path,
-    )
-    .ok_or_else(|| "字段清理路径仅支持 JSON/TOML 单文件映射".to_string())?;
-    let content = sync::read_wsl_file(distro, &mapping.wsl_path)?;
-    let Some(cleaned_content) =
-        config_cleanup::apply_cleanup_paths_to_content(&content, format, &cleanup_paths)?
-    else {
-        return Ok(None);
+    let format = if let Some(preservation) = host_local_values {
+        match preservation.spec.format {
+            host_local_config::ConfigFormat::Json => config_cleanup::CleanupFileFormat::Json,
+            host_local_config::ConfigFormat::Toml => config_cleanup::CleanupFileFormat::Toml,
+        }
+    } else {
+        config_cleanup::cleanup_file_format_for_mapping_paths(
+            &mapping.wsl_path,
+            &mapping.windows_path,
+        )
+        .ok_or_else(|| "字段清理路径仅支持 JSON/TOML 单文件映射".to_string())?
     };
 
-    sync::write_wsl_file(distro, &mapping.wsl_path, &cleaned_content)?;
-    Ok(Some(format!("Field cleanup: {}", mapping.wsl_path)))
+    let content = sync::read_wsl_file(distro, &mapping.wsl_path)?;
+    let mut updated_content = content;
+    let mut applied_actions = Vec::new();
+
+    if let Some(preservation) = host_local_values {
+        let fill_missing = PlatformClass::current() == PlatformClass::Unix;
+        if let Some(merged_content) = host_local_config::apply_values(
+            &updated_content,
+            preservation.spec,
+            &preservation.target_values,
+            fill_missing,
+            PlatformClass::Unix,
+        )? {
+            updated_content = merged_content;
+            applied_actions.push("Host-local fields");
+        }
+    }
+
+    if !cleanup_paths.is_empty() {
+        if let Some(cleaned_content) = config_cleanup::apply_cleanup_paths_to_content(
+            &updated_content,
+            format,
+            &cleanup_paths,
+        )? {
+            updated_content = cleaned_content;
+            applied_actions.push("Field cleanup");
+        }
+    }
+
+    if applied_actions.is_empty() {
+        return Ok(None);
+    }
+
+    sync::write_wsl_file(distro, &mapping.wsl_path, &updated_content)?;
+    Ok(Some(format!(
+        "{}: {}",
+        applied_actions.join(" + "),
+        mapping.wsl_path
+    )))
+}
+
+/// Sync one mapping and then re-apply the target's host-local fields.
+///
+/// The MCP sync stage must use this instead of a plain whole-file sync: the
+/// latter uploads the config file again and would discard the merge done by
+/// the file stage (and by an earlier MCP-only sync).
+pub(super) fn sync_file_mapping_preserving_host_local(
+    mapping: &FileMapping,
+    distro: &str,
+) -> Result<Option<Vec<String>>, String> {
+    let host_local_values = prepare_host_local_values_in_wsl(mapping, distro)?;
+    let Some(mut synced_files) = sync::sync_file_mapping(mapping, distro)? else {
+        return Ok(None);
+    };
+    if let Some(marker) =
+        post_process_synced_file_in_wsl(mapping, distro, host_local_values.as_ref())?
+    {
+        synced_files.push(marker);
+    }
+    Ok(Some(synced_files))
 }
 
 fn reconcile_codex_prompt_files_in_wsl(

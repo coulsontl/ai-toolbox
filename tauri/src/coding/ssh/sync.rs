@@ -1,7 +1,7 @@
 use super::session::{self, upload_file_via_sftp, SshSession};
 use super::types::{
     effective_directory_excludes_for_mapping, normalize_directory_excludes, SSHConnection,
-    SSHConnectionResult, SSHFileMapping, SyncResult,
+    SSHConnectionResult, SSHFileMapping,
 };
 use crate::coding::sync_hash;
 use std::path::{Path, PathBuf};
@@ -538,62 +538,6 @@ pub async fn sync_file_mapping_with_progress(
     }
 
     result
-}
-
-/// 同步所有启用的文件映射
-pub async fn sync_mappings(
-    mappings: &[SSHFileMapping],
-    session: &SshSession,
-    module_filter: Option<&str>,
-) -> SyncResult {
-    let mut synced_files = vec![];
-    let mut skipped_files = vec![];
-    let mut errors = vec![];
-
-    let filtered_mappings: Vec<_> = mappings
-        .iter()
-        .filter(|m| m.enabled)
-        .filter(|m| module_filter.is_none() || Some(m.module.as_str()) == module_filter)
-        .collect();
-    log::info!(
-        "SSH sync_mappings start: total_mappings={}, selected_mappings={}, module_filter={:?}",
-        mappings.len(),
-        filtered_mappings.len(),
-        module_filter
-    );
-
-    for mapping in filtered_mappings {
-        match sync_file_mapping(mapping, session).await {
-            Ok(None) => {
-                skipped_files.push(mapping.name.clone());
-            }
-            Ok(Some(files)) if files.is_empty() => {
-                skipped_files.push(mapping.name.clone());
-            }
-            Ok(Some(files)) => {
-                synced_files.extend(files);
-            }
-            Err(e) => {
-                errors.push(format!("{}: {}", mapping.name, e));
-            }
-        }
-    }
-
-    log::info!(
-        "SSH sync_mappings completed: success={}, synced_files={}, skipped_files={}, errors={}, module_filter={:?}",
-        errors.is_empty(),
-        synced_files.len(),
-        skipped_files.len(),
-        errors.len(),
-        module_filter
-    );
-    SyncResult {
-        success: errors.is_empty(),
-        synced_files,
-        skipped_files,
-        errors,
-        warnings: vec![],
-    }
 }
 
 // ============================================================================

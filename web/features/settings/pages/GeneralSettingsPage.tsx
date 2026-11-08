@@ -113,6 +113,9 @@ const buildRestoreConfirmContent = (
 ) => (
   <div>
     <div style={{ marginBottom: 12 }}>{description}</div>
+    <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 12 }}>
+      {t('settings.backupSettings.hostLocalFieldsRestoreHint')}
+    </Text>
     <Checkbox
       defaultChecked={false}
       onChange={(event) => {

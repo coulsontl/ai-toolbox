@@ -65,6 +65,7 @@ sequenceDiagram
 
 ## 易错点与历史坑（Gotchas）
 
+- `BackupMeta` v2 增加 `platform`（`windows`/`unix`），v1 备份该字段为 `None`。备份仍保存完整源文件，跨平台差异在恢复侧处理：`restore_external_config_with_host_local_fields` 先从目标现有文件提取 hooks/statusLine/Codex notify/projects/hooks（含自定义根目录备份里的 `~/.codex/hooks.json`），清洗目标平台不兼容项，再用备份内容覆盖并写回目标值（目标显式空值也算目标值）。备份平台与目标平台一致时才允许在目标缺字段时补入备份值；跨平台备份不导入这些字段。目标平台按 `outpath` 判断：WSL UNC 路径（`\\wsl.localhost\...` / `\\wsl$\...`）固定为 Unix，即使应用运行在 Windows。v1 备份没有平台标记，Unix 目标会按清洗后的可移植值补缺，Windows 目标保持保守、不导入。目标文件存在但无法读取（含非 UTF-8）或无法解析时保持原文件不动并记日志，不能为了方便直接覆盖；读取错误也不能中止整个恢复。Claude `settings.json` 的 Windows-only env 清理仍在此合并之后执行；Codex provider/common 改写不得删除 `notify`/`hooks`/`projects`。
 - 加密备份恢复/生成必须经过共享入口（`prepare_backup_bytes` / `generate.rs`）。任何渠道出现“缺密码、错密码、截断、篡改”都必须在**任何恢复写入之前**报错；`CryptoError::AuthFailed` 映射为 `passwordWrong`，`PasswordRequired` 映射为 `passwordRequired`，前端据此在同一次恢复选择中弹出密码框重试，取消与错误都不能修改数据库/外部配置。
 - 恢复的密码优先级：显式传入的一次性密码 > 本机凭据库；**凭据库读取失败也按 `passwordRequired` 处理**（用户可能知道密码，不能剥夺手动输入机会），但生成加密备份时凭据库不可用仍整体失败，绝不降级明文。改密码只影响今后备份，旧备份仍用创建时密码；关闭加密不重写旧备份，也不清理已存密码。
 - 文件名解析的所有定长切片必须走 `str::get`（非字符边界返回 None），不能 `&body[..15]` / `split_at` 直切——多字节主机标签（如中文 legacy 前缀）会直接 panic，且调度器不会捕获该 panic。

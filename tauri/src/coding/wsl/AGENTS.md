@@ -36,6 +36,7 @@ sequenceDiagram
 
 ## 易错点与历史坑（Gotchas）
 
+- WSL 同步的 host-local 字段处理与 SSH 同构：`prepare_host_local_values_in_wsl` 在覆盖前读取 `mapping.wsl_path`，解析失败则跳过该 mapping；`post_process_synced_file_in_wsl` 在一次读取中先合并 hooks/statusLine/Codex notify/projects/hooks 与 `~/.codex/hooks.json`，再执行 `cleanup_paths`，最多写回一次。WSL 目标固定按 Unix 平台清洗 Windows-only 命令/路径；Windows 本机 → WSL 时 `fill_missing=false`，目标没有的本机命令字段不会从 Windows 侧导入。目录/pattern 映射不参与。**MCP 同步阶段**会再次整文件上传 `codex-config`/`geminicli-settings`/`zcode-cli-config`，必须调用 `sync_file_mapping_preserving_host_local`，不能绕过它直接整文件上传，否则文件阶段刚合并的目标字段会被覆盖。
 - 不要把 WSL 自动同步理解成“保存数据库就自动发生”。真正触发点是事件监听器。
 - 同步设置保存只 patch 用户字段；配置、普通状态和警告写入都在同一次 SQLite 连接锁内完成，避免旧表单或其它链路清掉诊断。全量同步必须把 Skills 阶段警告合入返回结果与完成事件，失败时也保留已经收集的警告；WSL 孤立中央目录清理失败同样属于非致命警告。
 - **`last_sync_status` / `last_sync_warnings` 由“拥有整轮同步”的入口写，子步骤不得自己写**（issue #449）。`run_mcp_sync_pass` / `sync_skills_to_wsl_with_warnings` 是纯执行 pass：只返回错误和警告，不写状态、不写 warnings、不发 `wsl-sync-completed`。否则嵌在全量同步里的子步骤会先写一次状态和完成事件，随后被外层的合并结果覆盖，用户看到哪一份取决于时序。

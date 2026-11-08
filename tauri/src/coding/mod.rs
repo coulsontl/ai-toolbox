@@ -18,6 +18,7 @@ pub mod dsh;
 pub mod gemini_cli;
 pub mod grok;
 pub mod hermes;
+pub mod host_local_config;
 pub mod image;
 pub mod kimi;
 // Shared identity of the "local file bridge" record every CLI shows when no

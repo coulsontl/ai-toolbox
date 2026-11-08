@@ -26,11 +26,13 @@ use super::utils::{
     record_restored_external_config_wsl_module, resolve_external_config_restore_output_path,
     resolve_restore_dir_override, resolve_skills_restore_output_path,
     restore_claude_external_config_file, restore_custom_backup_entries,
-    restore_sqlite_database_snapshot_from_zip, sanitize_restored_claude_database_for_current_os,
+    restore_external_config_with_host_local_fields, restore_sqlite_database_snapshot_from_zip,
+    sanitize_restored_claude_database_for_current_os,
     should_filter_external_config_entry, should_reapply_applied_runtime,
     should_skip_external_config_on_restore, should_use_root_override_for_tool,
     write_post_restore_flags, RestoreResult,
 };
+use crate::coding::host_local_config::PlatformClass;
 use crate::db::SqliteDbState;
 use crate::settings::store;
 use crate::settings::types::default_backup_file_filter_rules;
@@ -269,6 +271,7 @@ fn restore_workbuddy_family_entry<R: Read>(
     file: &mut R,
     restored_wsl_modules: &mut Vec<String>,
     tool: &str,
+    backup_platform: Option<PlatformClass>,
 ) -> Result<(), String> {
     if !restore_dir.exists() {
         fs::create_dir_all(restore_dir)
@@ -301,8 +304,17 @@ fn restore_workbuddy_family_entry<R: Read>(
         }
     }
     record_restored_external_config_wsl_module(restored_wsl_modules, tool);
-    let mut outfile = File::create(&outpath).map_err(|e| format!("Failed to create file: {e}"))?;
-    std::io::copy(file, &mut outfile).map_err(|e| format!("Failed to extract file: {e}"))?;
+    if !restore_external_config_with_host_local_fields(
+        tool,
+        relative_path,
+        file,
+        &outpath,
+        backup_platform,
+    )? {
+        let mut outfile =
+            File::create(&outpath).map_err(|e| format!("Failed to create file: {e}"))?;
+        std::io::copy(file, &mut outfile).map_err(|e| format!("Failed to extract file: {e}"))?;
+    }
     Ok(())
 }
 
@@ -338,6 +350,7 @@ pub(crate) fn restore_from_archive<R: Read + Seek>(
     // OpenCode / OpenClaw / Pi remain always-restored when present in the zip.
     let skipped_optional_cli_runtime = !include_cli_config_files;
     let backup_meta = read_backup_meta_from_archive(archive);
+    let backup_platform = backup_meta.as_ref().and_then(|meta| meta.platform);
 
     let restored_sqlite = restore_sqlite_database_snapshot_from_zip(archive, app_handle)?;
     if restored_sqlite {
@@ -737,7 +750,12 @@ pub(crate) fn restore_from_archive<R: Read + Seek>(
                         })?;
                     }
                 }
-                restore_claude_external_config_file(&mut file, &outpath, relative_path)?;
+                restore_claude_external_config_file(
+                    &mut file,
+                    &outpath,
+                    relative_path,
+                    backup_platform,
+                )?;
             } else if file_name.starts_with("external-configs/openclaw/") {
                 let relative_path = &file_name[26..];
                 if relative_path.is_empty()
@@ -788,12 +806,22 @@ pub(crate) fn restore_from_archive<R: Read + Seek>(
 
                 let outpath = codex_restore_dir.join(relative_path);
 
-                // Just copy the file - MCP cmd /c normalization will be handled
-                // by mcp_sync_all during startup resync (triggered by .resync_required flag)
-                let mut outfile =
-                    File::create(&outpath).map_err(|e| format!("Failed to create file: {}", e))?;
-                std::io::copy(&mut file, &mut outfile)
-                    .map_err(|e| format!("Failed to extract file: {}", e))?;
+                // Codex notify/projects/hooks are machine-local. Keep the
+                // target's values when restoring config.toml; other entries are
+                // copied. MCP cmd /c normalization is handled by mcp_sync_all
+                // during startup resync (triggered by .resync_required flag).
+                if !restore_external_config_with_host_local_fields(
+                    "codex",
+                    relative_path,
+                    &mut file,
+                    &outpath,
+                    backup_platform,
+                )? {
+                    let mut outfile = File::create(&outpath)
+                        .map_err(|e| format!("Failed to create file: {}", e))?;
+                    std::io::copy(&mut file, &mut outfile)
+                        .map_err(|e| format!("Failed to extract file: {}", e))?;
+                }
                 if relative_path == "auth.json" {
                     harden_restored_sensitive_file(&outpath)?;
                 }
@@ -889,10 +917,18 @@ pub(crate) fn restore_from_archive<R: Read + Seek>(
                         })?;
                     }
                 }
-                let mut outfile =
-                    File::create(&outpath).map_err(|e| format!("Failed to create file: {}", e))?;
-                std::io::copy(&mut file, &mut outfile)
-                    .map_err(|e| format!("Failed to extract file: {}", e))?;
+                if !restore_external_config_with_host_local_fields(
+                    "geminicli",
+                    relative_path,
+                    &mut file,
+                    &outpath,
+                    backup_platform,
+                )? {
+                    let mut outfile = File::create(&outpath)
+                        .map_err(|e| format!("Failed to create file: {}", e))?;
+                    std::io::copy(&mut file, &mut outfile)
+                        .map_err(|e| format!("Failed to extract file: {}", e))?;
+                }
             } else if file_name.starts_with("external-configs/antigravity/") {
                 let relative_path = &file_name["external-configs/antigravity/".len()..];
                 if relative_path.is_empty()
@@ -980,10 +1016,18 @@ pub(crate) fn restore_from_archive<R: Read + Seek>(
                     }
                 }
                 record_restored_external_config_wsl_module(&mut restored_wsl_modules, "zcode");
-                let mut outfile =
-                    File::create(&outpath).map_err(|e| format!("Failed to create file: {}", e))?;
-                std::io::copy(&mut file, &mut outfile)
-                    .map_err(|e| format!("Failed to extract file: {}", e))?;
+                if !restore_external_config_with_host_local_fields(
+                    "zcode",
+                    relative_path,
+                    &mut file,
+                    &outpath,
+                    backup_platform,
+                )? {
+                    let mut outfile = File::create(&outpath)
+                        .map_err(|e| format!("Failed to create file: {}", e))?;
+                    std::io::copy(&mut file, &mut outfile)
+                        .map_err(|e| format!("Failed to extract file: {}", e))?;
+                }
             } else if file_name.starts_with("external-configs/pi/") {
                 let relative_path = &file_name["external-configs/pi/".len()..];
                 if relative_path.is_empty()
@@ -1151,6 +1195,7 @@ pub(crate) fn restore_from_archive<R: Read + Seek>(
                     &mut file,
                     &mut restored_wsl_modules,
                     "workbuddy",
+                    backup_platform,
                 )?;
             } else if file_name.starts_with("external-configs/codebuddy/") {
                 let relative_path = &file_name["external-configs/codebuddy/".len()..];
@@ -1169,6 +1214,7 @@ pub(crate) fn restore_from_archive<R: Read + Seek>(
                     &mut file,
                     &mut restored_wsl_modules,
                     "codebuddy",
+                    backup_platform,
                 )?;
             } else if file_name.starts_with("external-configs/omo_native/") {
                 let relative_path = &file_name["external-configs/omo_native/".len()..];

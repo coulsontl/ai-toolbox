@@ -51,7 +51,11 @@ use tauri::{Emitter, Runtime};
 /// in it is a separate, explicitly requested operation
 /// (`coding::codex::scratch_workspace`). A provider or common-config rewrite must
 /// never drop or re-project it.
-const PROTECTED_TOP_LEVEL_TOML_KEYS: [&str; 3] = ["mcp_servers", "plugins", "projects"];
+///
+/// `notify` launches a machine-local program and `hooks` holds hook definitions
+/// plus per-machine hook state, so the same rule applies to both.
+const PROTECTED_TOP_LEVEL_TOML_KEYS: [&str; 5] =
+    ["mcp_servers", "plugins", "projects", "notify", "hooks"];
 const PROTECTED_FEATURE_TOML_KEYS: [&str; 1] = ["plugins"];
 const CODEX_NO_LOCAL_PROVIDER_CONFIG_ERROR: &str = "No config files found";
 const CODEX_MODEL_CATALOG_URLS: [&str; 2] = [
@@ -10032,6 +10036,13 @@ model_reasoning_effort = "high"
         let config_toml = r#"
 model_provider = "custom"
 approval_policy = "never"
+notify = ["C:/tools/notify.exe"]
+
+[projects."C:\\Users\\me\\project"]
+trust_level = "trusted"
+
+[hooks.state]
+"C:\\Users\\me\\.codex\\hooks.json:stop:0:0" = true
 
 [model_providers.custom]
 name = "OpenAI"
@@ -10057,6 +10068,9 @@ test_generation = true
 
 [plugins.demo]
 enabled = false
+
+[hooks.state]
+"C:\\Users\\me\\.codex\\hooks.json:stop:0:0" = false
 "#;
 
         let stripped = strip_codex_common_config_from_toml(config_toml, common_toml)
@@ -10073,6 +10087,21 @@ enabled = false
         assert_eq!(doc["features"]["runtime_owned"].as_bool(), Some(true));
         assert_eq!(doc["plugins"]["demo"]["enabled"].as_bool(), Some(true));
         assert_eq!(doc["mcp_servers"]["local"]["command"].as_str(), Some("uvx"));
+        assert_eq!(
+            doc["notify"]
+                .as_array()
+                .and_then(|items| items.get(0))
+                .and_then(|item| item.as_str()),
+            Some("C:/tools/notify.exe")
+        );
+        assert_eq!(
+            doc["projects"][r"C:\Users\me\project"]["trust_level"].as_str(),
+            Some("trusted")
+        );
+        assert_eq!(
+            doc["hooks"]["state"][r"C:\Users\me\.codex\hooks.json:stop:0:0"].as_bool(),
+            Some(true)
+        );
         assert!(doc.get("approval_policy").is_none());
     }
 

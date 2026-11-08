@@ -8,9 +8,9 @@ use log::info;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 
-use super::commands::resolve_dynamic_paths_with_db;
+use super::commands::{resolve_dynamic_paths_with_db, sync_file_mapping_preserving_host_local};
 use super::session::SshSession;
-use super::sync::{read_remote_file, sync_mappings, write_remote_file};
+use super::sync::{read_remote_file, write_remote_file};
 use super::types::{SSHFileMapping, SyncProgress};
 use crate::coding::mcp::command_normalize;
 use crate::coding::mcp::mcp_store;
@@ -133,15 +133,30 @@ pub async fn sync_mcp_to_ssh(
                         mapping.remote_path
                     );
                 }
-                let result = sync_mappings(&resolved, session, None).await;
+                // Use the host-local-aware wrapper: the plain sync path would
+                // upload the whole config file again and drop target-owned
+                // notify/hooks/projects/statusLine fields.
+                let mut synced_files = Vec::new();
+                let mut skipped_files = Vec::new();
+                let mut errors = Vec::new();
+                for mapping in &resolved {
+                    match sync_file_mapping_preserving_host_local(mapping, session).await {
+                        Ok(None) => skipped_files.push(mapping.name.clone()),
+                        Ok(Some(files)) if files.is_empty() => {
+                            skipped_files.push(mapping.name.clone())
+                        }
+                        Ok(Some(files)) => synced_files.extend(files),
+                        Err(error) => errors.push(format!("{}: {}", mapping.name, error)),
+                    }
+                }
                 info!(
                     "MCP SSH sync file mapping result: synced_files={}, skipped_files={}, errors={}",
-                    result.synced_files.len(),
-                    result.skipped_files.len(),
-                    result.errors.len()
+                    synced_files.len(),
+                    skipped_files.len(),
+                    errors.len()
                 );
-                if !result.errors.is_empty() {
-                    let msg = result.errors.join("; ");
+                if !errors.is_empty() {
+                    let msg = errors.join("; ");
                     log::warn!("MCP file mapping sync errors: {}", msg);
                     all_errors.push(format!("OpenCode/Codex/Gemini CLI: {}", msg));
                     let _ = app.emit(
@@ -151,8 +166,7 @@ pub async fn sync_mcp_to_ssh(
                 }
 
                 // Post-process: strip cmd /c from synced MCP config files
-                let synced_paths: std::collections::HashSet<String> = result
-                    .synced_files
+                let synced_paths: std::collections::HashSet<String> = synced_files
                     .iter()
                     .filter_map(|s| s.split(" -> ").nth(1).map(|p| p.to_string()))
                     .collect();

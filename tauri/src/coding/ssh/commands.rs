@@ -11,6 +11,9 @@ use crate::coding::dsh::constants::{
     DSH_CREDENTIALS_FILE, DSH_MCP_FILE, DSH_PROMPT_FILE, DSH_SETTINGS_FILE,
 };
 use crate::coding::dsh::profile_patch;
+use crate::coding::host_local_config::{
+    self, HostLocalSpec, HostLocalValue, PlatformClass,
+};
 use crate::coding::oh_my_pi::constants::{
     OMP_CONFIG_FILE, OMP_MCP_FILE, OMP_MODELS_FILE, OMP_PROMPT_FILE,
 };
@@ -809,6 +812,21 @@ async fn sync_file_mappings_with_progress(
             );
         };
 
+        let host_local_values = match prepare_host_local_values_on_ssh(mapping, session).await {
+            Ok(values) => values,
+            Err(error) => {
+                log::warn!(
+                    "SSH sync mapping skipped to protect host-local fields: id={}, name={}, remote_path={}, error={}",
+                    mapping.id,
+                    mapping.name,
+                    mapping.remote_path,
+                    error
+                );
+                errors.push(format!("{}: {}", mapping.name, error));
+                continue;
+            }
+        };
+
         match sync::sync_file_mapping_with_progress(mapping, session, Some(&report_current_file))
             .await
         {
@@ -822,6 +840,7 @@ async fn sync_file_mappings_with_progress(
                         mapping,
                         session,
                         claude_root_permission_fix,
+                        host_local_values.as_ref(),
                     )
                     .await
                     {
@@ -909,10 +928,50 @@ fn is_claude_settings_json_mapping(mapping: &SSHFileMapping) -> bool {
     matches!(file_name, "settings.json" | "settings.local.json")
 }
 
+struct SshHostLocalPreservation {
+    spec: &'static HostLocalSpec,
+    target_values: Vec<Option<HostLocalValue>>,
+}
+
+/// Read the target file before uploading so its host-local fields survive the
+/// whole-file overwrite. A target file that exists but cannot be parsed aborts
+/// this mapping: downloading a partial merge would be worse than skipping it.
+async fn prepare_host_local_values_on_ssh(
+    mapping: &SSHFileMapping,
+    session: &SshSession,
+) -> Result<Option<SshHostLocalPreservation>, String> {
+    let Some(spec) = host_local_config::spec_for_sync_mapping(
+        &mapping.module,
+        &mapping.id,
+        mapping.is_directory,
+        mapping.is_pattern,
+        &mapping.local_path,
+        &mapping.remote_path,
+    ) else {
+        return Ok(None);
+    };
+
+    let target_content = sync::read_remote_file(session, &mapping.remote_path).await?;
+    let target_values =
+        host_local_config::extract_target_values(&target_content, spec, PlatformClass::Unix)
+            .map_err(|error| {
+                format!(
+                    "远端文件 {} 无法解析（{}），已跳过同步以保护其中的本机字段",
+                    mapping.remote_path, error
+                )
+            })?;
+
+    Ok(Some(SshHostLocalPreservation {
+        spec,
+        target_values,
+    }))
+}
+
 async fn post_process_synced_file_on_ssh(
     mapping: &SSHFileMapping,
     session: &SshSession,
     claude_root_permission_fix: bool,
+    host_local_values: Option<&SshHostLocalPreservation>,
 ) -> Result<Option<String>, String> {
     let mut cleanup_paths = Vec::new();
     if mapping.id == "claude-settings" {
@@ -934,7 +993,7 @@ async fn post_process_synced_file_on_ssh(
 
     let needs_permission_fix =
         claude_root_permission_fix && is_claude_settings_json_mapping(mapping);
-    if cleanup_paths.is_empty() && !needs_permission_fix {
+    if cleanup_paths.is_empty() && !needs_permission_fix && host_local_values.is_none() {
         return Ok(None);
     }
 
@@ -942,12 +1001,32 @@ async fn post_process_synced_file_on_ssh(
     let mut updated_content = content;
     let mut applied_actions = Vec::new();
 
+    if let Some(preservation) = host_local_values {
+        let fill_missing = PlatformClass::current() == PlatformClass::Unix;
+        if let Some(merged_content) = host_local_config::apply_values(
+            &updated_content,
+            preservation.spec,
+            &preservation.target_values,
+            fill_missing,
+            PlatformClass::Unix,
+        )? {
+            updated_content = merged_content;
+            applied_actions.push("Host-local fields");
+        }
+    }
+
     if !cleanup_paths.is_empty() {
-        let format = config_cleanup::cleanup_file_format_for_mapping_paths(
-            &mapping.remote_path,
-            &mapping.local_path,
-        )
-        .ok_or_else(|| "字段清理路径仅支持 JSON/TOML 单文件映射".to_string())?;
+        let format = match host_local_values {
+            Some(preservation) => match preservation.spec.format {
+                host_local_config::ConfigFormat::Json => config_cleanup::CleanupFileFormat::Json,
+                host_local_config::ConfigFormat::Toml => config_cleanup::CleanupFileFormat::Toml,
+            },
+            None => config_cleanup::cleanup_file_format_for_mapping_paths(
+                &mapping.remote_path,
+                &mapping.local_path,
+            )
+            .ok_or_else(|| "字段清理路径仅支持 JSON/TOML 单文件映射".to_string())?,
+        };
         if let Some(cleaned_content) = config_cleanup::apply_cleanup_paths_to_content(
             &updated_content,
             format,
@@ -977,6 +1056,27 @@ async fn post_process_synced_file_on_ssh(
         applied_actions.join(" + "),
         mapping.remote_path
     )))
+}
+
+/// Sync one mapping and then re-apply the target's host-local fields.
+///
+/// The MCP sync stage must use this instead of a plain whole-file sync: the
+/// latter uploads the config file again and would discard the merge done by
+/// the file stage (and by an earlier MCP-only sync).
+pub(super) async fn sync_file_mapping_preserving_host_local(
+    mapping: &SSHFileMapping,
+    session: &SshSession,
+) -> Result<Option<Vec<String>>, String> {
+    let host_local_values = prepare_host_local_values_on_ssh(mapping, session).await?;
+    let Some(mut synced_files) = sync::sync_file_mapping(mapping, session).await? else {
+        return Ok(None);
+    };
+    if let Some(marker) =
+        post_process_synced_file_on_ssh(mapping, session, false, host_local_values.as_ref()).await?
+    {
+        synced_files.push(marker);
+    }
+    Ok(Some(synced_files))
 }
 
 async fn reconcile_codex_prompt_files_on_ssh(

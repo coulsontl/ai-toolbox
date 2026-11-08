@@ -1123,6 +1123,7 @@
       "confirmRestoreDesc": "Restoring backup will overwrite all current data. Are you sure you want to continue?",
       "confirmRestoreCurrentHost": "This will restore the backup for the current host \"{{hostLabel}}\" and overwrite the current app data. Do you want to continue?",
       "confirmRestoreOtherHost": "You are restoring a backup from another host \"{{hostLabel}}\". This will overwrite the current device's settings and data. Do you want to continue?",
+      "hostLocalFieldsRestoreHint": "Restore keeps this machine's existing hooks (including Codex), statusLine, and Codex notify/projects; cross-platform backups do not import them.",
       "selectBackupFile": "Select Backup File",
       "noBackupsFound": "No backup files found",
       "listBackupsFailed": "Failed to list backup files",
@@ -1323,6 +1324,8 @@
       "allMappings": "All",
       "mappings": "mappings",
       "noMappings": "No mappings found",
+      "hostLocalFieldsTitle": "Host-local command fields (always on)",
+      "hostLocalFieldsHint": "hooks (including Codex), statusLine, and Codex notify/projects stay on the WSL target and are not overwritten by sync. Single-file mappings only.",
       "addMapping": "Add Mapping",
       "editMapping": "Edit Mapping",
       "mappingName": "Display Name",
@@ -1474,7 +1477,9 @@
       "remoteUserNonRoot": "non-root",
       "remoteUserUnknown": "unknown",
       "claudeRootPermissionFix": "Fix Claude permissions on root remotes",
-      "claudeRootPermissionFixHint": "When the remote user is root, change Claude settings from bypassPermissions to auto and remove the two dangerous permission fields; local files are untouched."
+      "claudeRootPermissionFixHint": "When the remote user is root, change Claude settings from bypassPermissions to auto and remove the two dangerous permission fields; local files are untouched.",
+      "hostLocalFieldsTitle": "Host-local command fields (always on)",
+      "hostLocalFieldsHint": "hooks (including Codex), statusLine, and Codex notify/projects stay on the remote and are not overwritten by sync. Single-file mappings only."
     },
     "webdav": {
       "url": "Server URL",

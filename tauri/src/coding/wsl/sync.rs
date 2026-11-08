@@ -1,6 +1,5 @@
 use super::types::{
-    effective_directory_excludes, normalize_directory_excludes, FileMapping, SyncResult,
-    WSLDetectResult,
+    effective_directory_excludes, normalize_directory_excludes, FileMapping, WSLDetectResult,
 };
 use crate::coding::sync_hash;
 use log::{info, warn};
@@ -811,48 +810,6 @@ pub fn sync_pattern_files(
                 stdout, windows_pattern, wsl_target_dir, exit_code
             ))
         }
-    }
-}
-
-/// Sync all enabled file mappings for a module (or all modules if module is None)
-pub fn sync_mappings(
-    mappings: &[FileMapping],
-    distro: &str,
-    module_filter: Option<&str>,
-) -> SyncResult {
-    let mut synced_files = vec![];
-    let mut skipped_files = vec![];
-    let mut errors = vec![];
-
-    let filtered_mappings: Vec<_> = mappings
-        .iter()
-        .filter(|m| m.enabled)
-        .filter(|m| module_filter.is_none() || Some(m.module.as_str()) == module_filter)
-        .collect();
-
-    for mapping in filtered_mappings {
-        match sync_file_mapping(mapping, distro) {
-            Ok(None) => {
-                skipped_files.push(mapping.name.clone());
-            }
-            Ok(Some(files)) if files.is_empty() => {
-                skipped_files.push(mapping.name.clone());
-            }
-            Ok(Some(files)) => {
-                synced_files.extend(files);
-            }
-            Err(e) => {
-                errors.push(format!("{}: {}", mapping.name, e));
-            }
-        }
-    }
-
-    SyncResult {
-        success: errors.is_empty(),
-        synced_files,
-        skipped_files,
-        errors,
-        warnings: vec![],
     }
 }
 

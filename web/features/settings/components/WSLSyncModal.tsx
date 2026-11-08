@@ -417,6 +417,16 @@ export const WSLSyncModal: React.FC<WSLSyncModalProps> = ({ open, onClose }) => 
 
     return (
       <>
+        {['all', 'claude', 'codex', 'zcode', 'geminicli', 'codebuddy'].includes(moduleFilter) && (
+          <div style={{ marginBottom: 12 }}>
+            <Text style={{ display: 'block', marginBottom: 4 }}>
+              {t('settings.wsl.hostLocalFieldsTitle')}
+            </Text>
+            <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+              {t('settings.wsl.hostLocalFieldsHint')}
+            </Text>
+          </div>
+        )}
         <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Text type="secondary">
             {moduleFilter === 'all' ? t('settings.wsl.allMappings') : MODULE_NAMES[moduleFilter]} - {filteredMappings.length} {t('settings.wsl.mappings')}
