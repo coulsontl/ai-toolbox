@@ -638,6 +638,7 @@
               "id": "openai_responses",
               "label": "OpenAI Responses",
               "apiFormat": "openai_responses",
+              "codexResponsesToolProfile": "safe",
               "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
               "configProviderId": "doubaoseed",
               "model": "doubao-seed-2-1-pro"
@@ -741,6 +742,7 @@
               "id": "openai_responses",
               "label": "OpenAI Responses",
               "apiFormat": "openai_responses",
+              "codexResponsesToolProfile": "safe",
               "baseUrl": "https://ark.cn-beijing.volces.com/api/coding/v3",
               "model": "deepseek-v4.1-flash",
               "modelCatalog": {

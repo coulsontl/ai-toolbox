@@ -3232,6 +3232,8 @@
       "apiFormatNeedsGatewayHint": "{{cli}} natively speaks only the OpenAI Responses protocol. With any other protocol, this provider must go through the local gateway proxy, which converts the protocol.",
       "reasoningPassthrough": "Forward reasoning effort",
       "reasoningPassthroughHelp": "When on, the gateway forwards the reasoning effort to this upstream as the top-level reasoning_effort field; when off, it is not sent. Turn it off if the upstream rejects this field.",
+      "responsesToolSafe": "Third-party Responses tool compatibility",
+      "responsesToolSafeHelp": "When on, Codex does not send its private custom apply_patch, tool_search, or multi-agent namespace tools. Enable it for third-party Responses gateways such as Volcengine Ark; disable it for OpenAI or relays that fully implement Codex's tool contract.",
       "formName": "Name",
       "providerProfileOfficial": "Official channel",
       "loginMethodTitle": "Choose sign-in method",

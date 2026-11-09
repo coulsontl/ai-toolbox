@@ -186,7 +186,7 @@ pub fn get_gateway_provider_profiles_cache_path() -> Option<PathBuf> {
     get_cache_file_path()
 }
 
-fn get_bundled_gateway_provider_profiles() -> Option<Value> {
+pub(crate) fn get_bundled_gateway_provider_profiles() -> Option<Value> {
     let data: Value = serde_json::from_str(DEFAULT_GATEWAY_PROVIDER_PROFILES_JSON).ok()?;
     if is_valid_gateway_provider_profiles(&data) {
         Some(data)
@@ -384,6 +384,44 @@ pub(crate) fn is_valid_gateway_provider_profiles(data: &Value) -> bool {
     true
 }
 
+/// Find one tool endpoint in the provider profile catalog.
+///
+/// Shared by the gateway runtime (which resolves `meta.gatewayProfile` into
+/// effective provider fields) and by ordinary Coding commands that need a
+/// preset's declared capability without running the gateway.
+pub(crate) fn find_gateway_profile_endpoint<'a>(
+    catalog: &'a Value,
+    tool: &str,
+    profile_id: &str,
+    endpoint_id: &str,
+) -> Option<(&'a Value, &'a Value)> {
+    let profile = catalog
+        .get("profiles")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|profile| {
+            profile
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_some_and(|id| id == profile_id)
+        })?;
+    let endpoint = profile
+        .get("tools")
+        .and_then(|tools| tools.get(tool))
+        .and_then(|tool_profile| tool_profile.get("endpoints"))
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|endpoint| {
+            endpoint
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_some_and(|id| id == endpoint_id)
+        })?;
+    Some((profile, endpoint))
+}
+
 fn validate_gateway_provider_profile_compatibility(
     previous: &Value,
     next: &Value,
@@ -464,10 +502,72 @@ fn validate_gateway_provider_profile_compatibility(
     Ok(())
 }
 
+/// Fill endpoint fields the bundled catalog declares but an older cached or
+/// remote catalog does not carry yet.
+///
+/// A remote catalog can update a preset without an app release, but new fields
+/// shipped with the app (for example a preset's `codexResponsesToolProfile`)
+/// must still reach users whose cache predates them. Explicit values in the
+/// catalog always win, so remote can override a bundled default.
+fn merge_bundled_endpoint_defaults(catalog: &mut Value, bundled: &Value) {
+    let Some(bundled_profiles) = bundled["profiles"].as_array() else {
+        return;
+    };
+    for bundled_profile in bundled_profiles {
+        let profile_id = bundled_profile["id"].as_str().unwrap_or_default();
+        let Some(catalog_profile) = catalog["profiles"]
+            .as_array_mut()
+            .and_then(|profiles| {
+                profiles
+                    .iter_mut()
+                    .find(|profile| profile["id"].as_str() == Some(profile_id))
+            })
+        else {
+            continue;
+        };
+        let Some(bundled_tools) = bundled_profile["tools"].as_object() else {
+            continue;
+        };
+        let Some(catalog_tools) = catalog_profile["tools"].as_object_mut() else {
+            continue;
+        };
+        for (tool_key, bundled_tool) in bundled_tools {
+            let Some(catalog_tool) = catalog_tools.get_mut(tool_key) else {
+                continue;
+            };
+            let (Some(bundled_endpoints), Some(catalog_endpoints)) = (
+                bundled_tool["endpoints"].as_array(),
+                catalog_tool["endpoints"].as_array_mut(),
+            ) else {
+                continue;
+            };
+            for bundled_endpoint in bundled_endpoints {
+                let endpoint_id = bundled_endpoint["id"].as_str().unwrap_or_default();
+                let Some(catalog_endpoint) = catalog_endpoints
+                    .iter_mut()
+                    .find(|endpoint| endpoint["id"].as_str() == Some(endpoint_id))
+                else {
+                    continue;
+                };
+                let (Some(catalog_object), Some(bundled_object)) =
+                    (catalog_endpoint.as_object_mut(), bundled_endpoint.as_object())
+                else {
+                    continue;
+                };
+                for (key, value) in bundled_object {
+                    if !catalog_object.contains_key(key) {
+                        catalog_object.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[tauri::command]
 pub fn load_cached_gateway_provider_profiles() -> Result<Option<Value>, String> {
     let bundled = get_bundled_gateway_provider_profiles();
-    if let Some(data) = read_cache_file() {
+    if let Some(mut data) = read_cache_file() {
         if is_valid_gateway_provider_profiles(&data) {
             let is_compatible = bundled.as_ref().is_none_or(|previous| {
                 validate_gateway_provider_profile_compatibility(previous, &data)
@@ -479,6 +579,9 @@ pub fn load_cached_gateway_provider_profiles() -> Result<Option<Value>, String> 
                     .is_ok()
             });
             if is_compatible {
+                if let Some(bundled) = bundled.as_ref() {
+                    merge_bundled_endpoint_defaults(&mut data, bundled);
+                }
                 return Ok(Some(data));
             }
         }
@@ -510,7 +613,7 @@ pub async fn fetch_remote_gateway_provider_profiles(
         ));
     }
 
-    let json: Value = response
+    let mut json: Value = response
         .json()
         .await
         .map_err(|error| format!("Failed to parse remote provider profiles JSON: {error}"))?;
@@ -523,6 +626,13 @@ pub async fn fetch_remote_gateway_provider_profiles(
         validate_gateway_provider_profile_compatibility(&previous, &json).map_err(|error| {
             format!("Remote provider profiles catalog is incompatible: {error}")
         })?;
+    }
+
+    // A remote catalog written before this app version may not carry fields
+    // the bundled baseline already declares; keep remote values authoritative
+    // but fill the gaps so the UI and runtime agree.
+    if let Some(bundled) = get_bundled_gateway_provider_profiles() {
+        merge_bundled_endpoint_defaults(&mut json, &bundled);
     }
 
     set_active_gateway_provider_profiles(json.clone());
@@ -594,6 +704,10 @@ mod tests {
             Some("https://ark.cn-beijing.volces.com/api/coding/v3")
         );
         assert_eq!(responses["model"].as_str(), Some("deepseek-v4.1-flash"));
+        assert_eq!(
+            responses["codexResponsesToolProfile"].as_str(),
+            Some("safe")
+        );
         let model_slugs: Vec<&str> = responses["modelCatalog"]["models"]
             .as_array()
             .unwrap()
@@ -617,6 +731,80 @@ mod tests {
         assert_eq!(
             standard["baseUrl"].as_str(),
             Some("https://ark.cn-beijing.volces.com/api/v3")
+        );
+        assert_eq!(standard["codexResponsesToolProfile"].as_str(), Some("safe"));
+    }
+
+    #[test]
+    fn bundled_endpoint_defaults_fill_older_catalogs_without_overriding_explicit_values() {
+        let bundled = get_bundled_gateway_provider_profiles().expect("bundled catalog");
+        let mut cached = bundled.clone();
+
+        // Simulate a cache written before the field existed.
+        for profile in cached["profiles"].as_array_mut().unwrap() {
+            let Some(tools) = profile.get_mut("tools").and_then(Value::as_object_mut) else {
+                continue;
+            };
+            for tool in tools.values_mut() {
+                let Some(endpoints) = tool.get_mut("endpoints").and_then(Value::as_array_mut)
+                else {
+                    continue;
+                };
+                for endpoint in endpoints {
+                    if let Some(object) = endpoint.as_object_mut() {
+                        object.remove("codexResponsesToolProfile");
+                    }
+                }
+            }
+        }
+
+        merge_bundled_endpoint_defaults(&mut cached, &bundled);
+        let responses = cached["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|profile| profile["id"] == "doubao")
+            .unwrap()["tools"]["codex"]["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|endpoint| endpoint["id"] == "openai_responses")
+            .unwrap();
+        assert_eq!(
+            responses["codexResponsesToolProfile"].as_str(),
+            Some("safe")
+        );
+
+        // An explicit value from the catalog always wins.
+        {
+            let explicit = cached["profiles"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|profile| profile["id"] == "doubao")
+                .unwrap()["tools"]["codex"]["endpoints"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|endpoint| endpoint["id"] == "openai_responses")
+                .unwrap();
+            explicit["codexResponsesToolProfile"] = json!("full");
+        }
+        merge_bundled_endpoint_defaults(&mut cached, &bundled);
+        let explicit = cached["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|profile| profile["id"] == "doubao")
+            .unwrap()["tools"]["codex"]["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|endpoint| endpoint["id"] == "openai_responses")
+            .unwrap();
+        assert_eq!(
+            explicit["codexResponsesToolProfile"].as_str(),
+            Some("full")
         );
     }
 

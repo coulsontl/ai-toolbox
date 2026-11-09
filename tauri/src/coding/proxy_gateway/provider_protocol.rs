@@ -1,7 +1,31 @@
+use super::provider_profiles;
 use super::transformer::AiProtocol;
 use super::types::GatewayCliKey;
 use serde_json::Value;
 use toml_edit::{DocumentMut, Item};
+
+/// Tool key used by `GatewayProviderProfileReference.tool`, when the CLI has a
+/// verified built-in endpoint catalog.
+pub(crate) fn gateway_profile_tool_for_cli(cli_key: GatewayCliKey) -> Option<&'static str> {
+    match cli_key {
+        GatewayCliKey::Claude => Some("claude"),
+        GatewayCliKey::ClaudeDesktop => Some("claude_desktop"),
+        GatewayCliKey::Codex => Some("codex"),
+        GatewayCliKey::Grok => Some("grok"),
+        // Kimi has no verified built-in endpoint catalog yet
+        // (`SUPPORTED_PROFILE_TOOLS` and `gateway_provider_profiles.json`
+        // both exclude it), so a stored `gatewayProfile` reference must not
+        // resolve. Add it here together with the catalog once endpoints are
+        // verified.
+        GatewayCliKey::Kimi => None,
+        GatewayCliKey::Gemini => Some("gemini"),
+        GatewayCliKey::Antigravity => Some("antigravity"),
+        // No verified built-in endpoint catalog for either product, so a stored
+        // `gatewayProfile` reference must not resolve (same reasoning as Kimi).
+        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => None,
+        GatewayCliKey::OpenCode => None,
+    }
+}
 
 pub(crate) fn native_cli_protocol(cli_key: GatewayCliKey) -> Option<AiProtocol> {
     match cli_key {
@@ -65,7 +89,7 @@ fn provider_target_protocol(
 ) -> AiProtocol {
     let settings = serde_json::from_str::<Value>(settings_config).unwrap_or(Value::Null);
     match cli_key {
-        GatewayCliKey::Claude => protocol_from_meta_or_settings(meta, &settings)
+        GatewayCliKey::Claude => protocol_from_meta_or_settings(cli_key, meta, &settings)
             .or_else(|| {
                 settings
                     .get("openrouter_compat_mode")
@@ -74,7 +98,7 @@ fn provider_target_protocol(
                     .map(|_| AiProtocol::OpenAiChat)
             })
             .unwrap_or(AiProtocol::AnthropicMessages),
-        GatewayCliKey::Codex => protocol_from_meta_or_settings(meta, &settings)
+        GatewayCliKey::Codex => protocol_from_meta_or_settings(cli_key, meta, &settings)
             .or_else(|| {
                 settings
                     .get("config")
@@ -93,7 +117,7 @@ fn provider_target_protocol(
                     AiProtocol::OpenAiResponses
                 }
             }),
-        GatewayCliKey::Grok => protocol_from_meta_or_settings(meta, &settings)
+        GatewayCliKey::Grok => protocol_from_meta_or_settings(cli_key, meta, &settings)
             .or_else(|| {
                 settings
                     .get("config")
@@ -103,16 +127,20 @@ fn provider_target_protocol(
             })
             .unwrap_or(AiProtocol::OpenAiChat),
         GatewayCliKey::Kimi => {
-            protocol_from_meta_or_settings(meta, &settings).unwrap_or(AiProtocol::OpenAiChat)
+            protocol_from_meta_or_settings(cli_key, meta, &settings)
+                .unwrap_or(AiProtocol::OpenAiChat)
         }
         GatewayCliKey::ClaudeDesktop => {
-            protocol_from_meta_or_settings(meta, &settings).unwrap_or(AiProtocol::AnthropicMessages)
+            protocol_from_meta_or_settings(cli_key, meta, &settings)
+                .unwrap_or(AiProtocol::AnthropicMessages)
         }
         GatewayCliKey::Gemini | GatewayCliKey::Antigravity => {
-            protocol_from_meta_or_settings(meta, &settings).unwrap_or(AiProtocol::GeminiNative)
+            protocol_from_meta_or_settings(cli_key, meta, &settings)
+                .unwrap_or(AiProtocol::GeminiNative)
         }
         GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => {
-            protocol_from_meta_or_settings(meta, &settings).unwrap_or(AiProtocol::OpenAiChat)
+            protocol_from_meta_or_settings(cli_key, meta, &settings)
+                .unwrap_or(AiProtocol::OpenAiChat)
         }
         GatewayCliKey::OpenCode => AiProtocol::OpenAiResponses,
     }
@@ -139,11 +167,58 @@ pub(crate) fn grok_api_backend_from_config(config_toml: &str) -> Option<String> 
         })
 }
 
-fn protocol_from_meta_or_settings(meta: Option<&Value>, settings: &Value) -> Option<AiProtocol> {
-    meta.and_then(|value| json_string_compat(value, "api_format", "apiFormat"))
-        .or_else(|| json_value_string(settings, "api_format"))
-        .or_else(|| json_value_string(settings, "apiFormat"))
-        .and_then(|value| AiProtocol::from_api_format(&value))
+fn protocol_from_meta_or_settings(
+    cli_key: GatewayCliKey,
+    meta: Option<&Value>,
+    settings: &Value,
+) -> Option<AiProtocol> {
+    // A built-in preset reference wins: the provider form deletes
+    // `meta.apiFormat` when the user picks a preset endpoint, and the stored
+    // TOML can still carry the previous endpoint's `wire_api`. Without this
+    // the backend would disagree with the frontend about a preset that speaks
+    // a different protocol (for example Doubao's `anthropic_messages` Codex
+    // endpoint).
+    // Map each candidate individually: an unrecognized preset value must fall
+    // through to the next source, matching `firstGatewayApiFormat` on the
+    // frontend instead of turning into `None` for the whole chain.
+    let to_protocol = |value: String| AiProtocol::from_api_format(&value);
+    gateway_profile_api_format_from_meta(cli_key, meta)
+        .and_then(to_protocol)
+        .or_else(|| {
+            meta.and_then(|value| json_string_compat(value, "api_format", "apiFormat"))
+                .and_then(to_protocol)
+        })
+        .or_else(|| json_value_string(settings, "api_format").and_then(to_protocol))
+        .or_else(|| json_value_string(settings, "apiFormat").and_then(to_protocol))
+}
+
+/// `apiFormat` declared by the preset endpoint a provider references through
+/// `meta.gatewayProfile`.
+fn gateway_profile_api_format_from_meta(
+    cli_key: GatewayCliKey,
+    meta: Option<&Value>,
+) -> Option<String> {
+    let meta = meta?;
+    let tool = gateway_profile_tool_for_cli(cli_key)?;
+    let reference = meta
+        .get("gateway_profile")
+        .or_else(|| meta.get("gatewayProfile"))?;
+    let profile_id = json_string_compat(reference, "profile_id", "profileId")?;
+    let endpoint_id = json_string_compat(reference, "endpoint_id", "endpointId")?;
+    if let Some(reference_tool) = reference.get("tool").and_then(Value::as_str) {
+        let reference_tool = reference_tool.trim();
+        if !reference_tool.is_empty() && !reference_tool.eq_ignore_ascii_case(tool) {
+            return None;
+        }
+    }
+    let catalog = provider_profiles::load_gateway_provider_profiles_for_runtime()?;
+    let (_profile, endpoint) = provider_profiles::find_gateway_profile_endpoint(
+        &catalog,
+        tool,
+        &profile_id,
+        &endpoint_id,
+    )?;
+    json_value_string(endpoint, "apiFormat")
 }
 
 pub(crate) fn codex_wire_api_from_config(config_toml: &str) -> Option<String> {
@@ -330,6 +405,49 @@ mod tests {
             "custom",
             Some(&json!({ "apiFormat": "openai_responses" })),
             "{}",
+        ));
+    }
+
+    #[test]
+    fn codex_preset_anthropic_endpoint_needs_gateway_proxy() {
+        // The form deletes `meta.apiFormat` for preset endpoints and the
+        // template TOML keeps `wire_api = "responses"`, so the preset
+        // reference must decide the protocol on its own.
+        let settings = json!({
+            "config": "model_provider = \"custom\"\n[model_providers.custom]\nwire_api = \"responses\""
+        })
+        .to_string();
+        assert!(provider_needs_gateway_proxy(
+            GatewayCliKey::Codex,
+            "custom",
+            Some(&json!({
+                "gatewayProfile": {
+                    "tool": "codex",
+                    "profileId": "doubao",
+                    "endpointId": "anthropic_messages"
+                }
+            })),
+            &settings,
+        ));
+    }
+
+    #[test]
+    fn codex_preset_responses_endpoint_overrides_stale_wire_api() {
+        let settings = json!({
+            "config": "model_provider = \"custom\"\n[model_providers.custom]\nwire_api = \"chat\""
+        })
+        .to_string();
+        assert!(!provider_needs_gateway_proxy(
+            GatewayCliKey::Codex,
+            "custom",
+            Some(&json!({
+                "gatewayProfile": {
+                    "tool": "codex",
+                    "profileId": "doubao",
+                    "endpointId": "openai_responses"
+                }
+            })),
+            &settings,
         ));
     }
 

@@ -53,6 +53,12 @@ export interface GatewayProviderEndpointProfile {
     }>;
   };
   codexChatReasoning?: Record<string, unknown>;
+  /**
+   * Preset default for a directly-connected native Responses provider. `safe`
+   * tells Codex not to emit private tool types the upstream rejects; `full`
+   * keeps the complete template. Undeclared means `full`.
+   */
+  codexResponsesToolProfile?: 'safe' | 'full';
 }
 
 export interface GatewayProviderToolProfile {

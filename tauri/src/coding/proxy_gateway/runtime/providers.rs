@@ -11,7 +11,10 @@ use crate::coding::proxy_gateway::{
     },
     cli_proxy::manifest::CliProxyManifest,
     paths::ProxyGatewayPaths,
-    provider_profiles::load_gateway_provider_profiles_for_runtime,
+    provider_profiles::{
+        find_gateway_profile_endpoint, load_gateway_provider_profiles_for_runtime,
+    },
+    provider_protocol::gateway_profile_tool_for_cli,
     transformer::AiProtocol,
 };
 use crate::coding::{antigravity, claude_code, claude_desktop, codex, gemini_cli, grok, kimi};
@@ -1349,27 +1352,6 @@ fn kimi_selected_provider_entry(settings: &Value) -> Option<(&Value, Option<Stri
         .map(|config| (config, None))
 }
 
-fn gateway_profile_tool_for_cli(cli_key: GatewayCliKey) -> Option<&'static str> {
-    match cli_key {
-        GatewayCliKey::Claude => Some("claude"),
-        GatewayCliKey::ClaudeDesktop => Some("claude_desktop"),
-        GatewayCliKey::Codex => Some("codex"),
-        GatewayCliKey::Grok => Some("grok"),
-        // Kimi has no verified built-in endpoint catalog yet
-        // (`SUPPORTED_PROFILE_TOOLS` and `gateway_provider_profiles.json`
-        // both exclude it), so a stored `gatewayProfile` reference must not
-        // resolve. Add it here together with the catalog once endpoints are
-        // verified.
-        GatewayCliKey::Kimi => None,
-        GatewayCliKey::Gemini => Some("gemini"),
-        GatewayCliKey::Antigravity => Some("antigravity"),
-        // No verified built-in endpoint catalog for either product, so a stored
-        // `gatewayProfile` reference must not resolve (same reasoning as Kimi).
-        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => None,
-        GatewayCliKey::OpenCode => None,
-    }
-}
-
 #[derive(Debug, Clone, Default)]
 struct GrokSelectedModel {
     model_id: Option<String>,
@@ -1455,39 +1437,6 @@ fn gateway_profile_reference_matches_tool(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .is_none_or(|tool| tool.eq_ignore_ascii_case(expected_tool))
-}
-
-fn find_gateway_profile_endpoint<'a>(
-    catalog: &'a Value,
-    tool: &str,
-    profile_id: &str,
-    endpoint_id: &str,
-) -> Option<(&'a Value, &'a Value)> {
-    let profile = catalog
-        .get("profiles")
-        .and_then(Value::as_array)?
-        .iter()
-        .find(|profile| {
-            profile
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .is_some_and(|id| id == profile_id)
-        })?;
-    let endpoint = profile
-        .get("tools")
-        .and_then(|tools| tools.get(tool))
-        .and_then(|tool_profile| tool_profile.get("endpoints"))
-        .and_then(Value::as_array)?
-        .iter()
-        .find(|endpoint| {
-            endpoint
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .is_some_and(|id| id == endpoint_id)
-        })?;
-    Some((profile, endpoint))
 }
 
 fn codex_chat_reasoning_from_profile_value(value: &Value) -> Option<CodexChatReasoningMeta> {

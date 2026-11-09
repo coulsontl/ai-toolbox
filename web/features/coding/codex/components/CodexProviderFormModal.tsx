@@ -67,11 +67,19 @@ import {
   type CodexMemoriesUnsupportedShape,
 } from '../utils/codexMemoriesModels';
 import { codexApiFormatNeedsGatewayProxy } from '../utils/codexGatewayProxyNeed';
+import { CODEX_LOCAL_PROVIDER_ID } from '../utils/localProvider';
 import {
   codexReasoningPassthroughApplies,
   readCodexPreserveReasoningEffort,
   withCodexPreserveReasoningEffort,
 } from '../utils/codexReasoningPassthrough';
+import {
+  codexResponsesToolProfileApplies,
+  codexResponsesToolProfileOverride,
+  defaultCodexResponsesToolProfile,
+  resolveCodexResponsesToolProfile,
+  withCodexResponsesToolProfile,
+} from '../utils/codexResponsesToolProfile';
 import styles from './CodexProviderFormModal.module.less';
 
 const { Text } = Typography;
@@ -500,6 +508,12 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
 
   const selectedProviderProfileId = Form.useWatch('providerProfileId', watchOptions) as string | undefined;
   const selectedIsCustomProviderProfile = (selectedProviderProfileId || CUSTOM_PROVIDER_PROFILE_ID) === CUSTOM_PROVIDER_PROFILE_ID;
+  // The switch only applies to a direct native Responses connection; the
+  // gateway path flattens the private tool types itself, and the local
+  // provider always keeps the full template.
+  const isLocalProvider = provider?.id === CODEX_LOCAL_PROVIDER_ID;
+  const showCodexResponsesToolSwitch =
+    !isLocalProvider && codexResponsesToolProfileApplies(isOfficialMode, selectedApiFormat);
   // A protocol selector only means something when the gateway can take this
   // CLI over; otherwise the upstream format is fixed by the channel and the
   // dropdown is a no-op. `undefined` while the support list loads.
@@ -617,6 +631,8 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
         requiresOpenaiAuthMode:
           normalizeCodexRequiresOpenaiAuthMode(settingsConfig.requiresOpenaiAuthMode) ?? 'auto',
         preserveReasoningEffort: readCodexPreserveReasoningEffort(provider.meta),
+        codexResponsesToolSafe:
+          resolveCodexResponsesToolProfile(provider.meta, providerEndpoint) === 'safe',
       });
       setCurrentBaseUrl(baseUrl || providerEndpoint?.baseUrl || '');
     } else {
@@ -635,6 +651,7 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
         notes: '',
         requiresOpenaiAuthMode: 'auto',
         preserveReasoningEffort: true,
+        codexResponsesToolSafe: false,
         sourceProvider: undefined,
       });
     }
@@ -691,6 +708,28 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
     open,
     provider,
   ]);
+
+  // The profile catalog can arrive from the remote refresh while this form is
+  // open. Until the user touches the switch, follow the refreshed preset
+  // default; otherwise a stale "full" shown at open time would be saved as an
+  // explicit override and pin the provider against the preset's new default.
+  React.useEffect(() => {
+    if (!open || !formInitializedRef.current) {
+      return;
+    }
+    if (form.isFieldTouched('codexResponsesToolSafe')) {
+      return;
+    }
+    const endpoint = findGatewayProviderEndpoint(
+      form.getFieldValue('providerProfileId'),
+      'codex',
+      form.getFieldValue('providerEndpointId'),
+    );
+    form.setFieldsValue({
+      codexResponsesToolSafe:
+        resolveCodexResponsesToolProfile(provider?.meta, endpoint) === 'safe',
+    });
+  }, [form, gatewayProviderProfilesVersion, open, provider]);
 
   // 同步 Hook 的 codexConfig 到 Form 的 configToml 字段
   // 当用户在 baseUrl 或 model 输入框输入时，需要实时更新 TOML 编辑器
@@ -792,6 +831,7 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
         providerEndpointId: undefined,
         apiFormat: DEFAULT_CODEX_API_FORMAT,
         requiresOpenaiAuthMode: 'auto',
+        codexResponsesToolSafe: false,
       });
       return;
     }
@@ -808,6 +848,7 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
         providerProfileId,
         providerEndpointId: undefined,
         apiFormat: form.getFieldValue('apiFormat') || DEFAULT_CODEX_API_FORMAT,
+        codexResponsesToolSafe: false,
       });
       return;
     }
@@ -827,6 +868,7 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
       apiFormat: normalizeCodexApiFormat(endpoint.apiFormat),
       baseUrl: endpoint.baseUrl,
       model: nextModel,
+      codexResponsesToolSafe: defaultCodexResponsesToolProfile(endpoint) === 'safe',
     });
     handleBaseUrlChange(endpoint.baseUrl);
     setCurrentBaseUrl(endpoint.baseUrl);
@@ -928,6 +970,14 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
       const gatewayProfile = selectedEndpoint
         ? toGatewayProviderProfileReference('codex', submittedValues.providerProfileId || '', selectedEndpoint.id)
         : undefined;
+      const codexResponsesToolProfile =
+        !isLocalProvider &&
+        codexResponsesToolProfileApplies(selectedCategory === 'official', selectedApiFormat)
+          ? codexResponsesToolProfileOverride(
+              submittedValues.codexResponsesToolSafe,
+              selectedEndpoint,
+            )
+          : undefined;
       const formValues: CodexProviderFormValues = {
         name: submittedValues.name,
         category: selectedCategory,
@@ -942,38 +992,41 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
         // model and mappings, including user edits, imports and cleared rows.
         settingsConfig,
         apiFormat: selectedApiFormat,
-        meta: mergeServiceTierOverridesIntoMeta(
-          withCodexPreserveReasoningEffort(
-            mergeModelRewritesIntoMeta(
-              mergeCustomHeadersIntoMeta(
-                mergeBillingConfigIntoMeta(
-                  mergeGatewayMetaIntoProviderMeta(
-                    provider?.meta,
-                    gatewayProfile,
-                    gatewayProfile ? undefined : selectedApiFormat,
+        meta: withCodexResponsesToolProfile(
+          mergeServiceTierOverridesIntoMeta(
+            withCodexPreserveReasoningEffort(
+              mergeModelRewritesIntoMeta(
+                mergeCustomHeadersIntoMeta(
+                  mergeBillingConfigIntoMeta(
+                    mergeGatewayMetaIntoProviderMeta(
+                      provider?.meta,
+                      gatewayProfile,
+                      gatewayProfile ? undefined : selectedApiFormat,
+                    ),
+                    selectedCategory === 'official'
+                      ? { enabled: false, pricingModelSource: 'inherit' }
+                      : billingConfig,
                   ),
                   selectedCategory === 'official'
-                    ? { enabled: false, pricingModelSource: 'inherit' }
-                    : billingConfig,
+                    ? { enabled: false, headers: [] }
+                    : customHeaders,
                 ),
                 selectedCategory === 'official'
-                  ? { enabled: false, headers: [] }
-                  : customHeaders,
+                  ? { enabled: false, rewrites: [] }
+                  : modelRewrites,
               ),
-              selectedCategory === 'official'
-                ? { enabled: false, rewrites: [] }
-                : modelRewrites,
+              submittedValues.preserveReasoningEffort !== false,
+              codexReasoningPassthroughApplies({
+                isOfficial: selectedCategory === 'official',
+                isCustomProvider: selectedCategory !== 'official' && !selectedEndpoint,
+                apiFormat: selectedApiFormat,
+              }),
             ),
-            submittedValues.preserveReasoningEffort !== false,
-            codexReasoningPassthroughApplies({
-              isOfficial: selectedCategory === 'official',
-              isCustomProvider: selectedCategory !== 'official' && !selectedEndpoint,
-              apiFormat: selectedApiFormat,
-            }),
+            selectedCategory === 'official'
+              ? { enabled: false, overrides: [] }
+              : modelServiceTiers,
           ),
-          selectedCategory === 'official'
-            ? { enabled: false, overrides: [] }
-            : modelServiceTiers,
+          codexResponsesToolProfile,
         ),
         notes: submittedValues.notes,
         sourceProviderId: mode === 'import' ? selectedProvider?.id : undefined,
@@ -1321,6 +1374,21 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
                 the value mid-composition on macOS (issue #409). */}
             <ImeSafeInput placeholder="https://your-api-endpoint.com/v1" />
           </Form.Item>
+
+          {showCodexResponsesToolSwitch && (
+            <Form.Item
+              name="codexResponsesToolSafe"
+              label={t('codex.provider.responsesToolSafe')}
+              valuePropName="checked"
+              extra={
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {t('codex.provider.responsesToolSafeHelp')}
+                </Text>
+              }
+            >
+              <Switch />
+            </Form.Item>
+          )}
         </>
       )}
 

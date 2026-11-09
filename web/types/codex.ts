@@ -62,6 +62,14 @@ export interface GatewayProviderMeta {
   /** Provider-level per-model service (speed) tier overrides applied by the
    * gateway (issue #414). Only OpenAI Chat / Responses targets honour them. */
   modelServiceTiers?: ModelServiceTierEntry[];
+  /**
+   * Explicit tool-compatibility override for a directly-connected native
+   * Responses provider. `safe` omits Codex-private tool types (`custom`
+   * apply_patch, `tool_search`, `namespace` multi-agent) that third-party
+   * Responses gateways reject; `full` keeps them. Absent follows the selected
+   * preset endpoint's `codexResponsesToolProfile`, then defaults to `full`.
+   */
+  codexResponsesToolProfile?: 'safe' | 'full';
 }
 
 export interface CodexAuthConfig extends Record<string, unknown> {
@@ -445,6 +453,10 @@ export interface CodexProviderFormValues {
   /** Form-only toggle: forward the client's reasoning effort to a custom
    * `openai_chat` upstream (persisted as `meta.preserveReasoningEffort`). */
   preserveReasoningEffort?: boolean;
+  /** Form-only toggle for a directly-connected native Responses provider:
+   * persisted as `meta.codexResponsesToolProfile` only when it differs from
+   * the selected preset endpoint's default. */
+  codexResponsesToolSafe?: boolean;
   notes?: string;
   sourceProviderId?: string;
 }

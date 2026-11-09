@@ -3229,6 +3229,8 @@
       "apiFormatNeedsGatewayHint": "{{cli}} 原生只支持 OpenAI Responses 协议；选择其他协议时，此渠道必须通过本地网关代理（由网关转换协议）才能使用。",
       "reasoningPassthrough": "透传推理强度",
       "reasoningPassthroughHelp": "开启后，网关会把推理强度以顶层 reasoning_effort 字段转发给该上游；关闭则不发送。若上游不认识该字段并报错，请关闭。",
+      "responsesToolSafe": "兼容第三方 Responses 工具集",
+      "responsesToolSafeHelp": "开启后不发送 Codex 私有的 custom 工具（apply_patch）、tool_search 和多代理 namespace 工具。火山方舟等第三方 Responses 渠道需要开启；OpenAI 官方或完全兼容 Codex 工具协议的中继可关闭。",
       "formName": "名称",
       "providerProfileOfficial": "官方渠道",
       "loginMethodTitle": "选择登录方式",

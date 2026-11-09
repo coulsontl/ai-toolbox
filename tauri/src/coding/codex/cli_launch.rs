@@ -24,6 +24,8 @@ use crate::coding::cli_launch_terminal::{
 use crate::coding::cli_resolver::resolve_local_codex_program;
 use crate::coding::runtime_location::{RuntimeLocationInfo, RuntimeLocationMode};
 
+use super::commands::CodexCatalogToolProfile;
+
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -66,10 +68,12 @@ fn managed_api_key(settings_config: &Value) -> Option<&str> {
 /// cannot inherit fields such as `env_key` / `requires_openai_auth` from the
 /// base config's same-named table. Official providers point at Codex's built-in
 /// `openai` provider and keep using the global `auth.json` login.
-pub fn build_launch_profile(
+pub(crate) fn build_launch_profile(
     provider_id: &str,
+    provider_name: &str,
     category: &str,
     settings_config: &str,
+    catalog_tool_profile: CodexCatalogToolProfile,
 ) -> Result<CodexLaunchProfile, String> {
     let parsed: Value = serde_json::from_str(settings_config)
         .map_err(|error| format!("Failed to parse provider settings: {error}"))?;
@@ -144,6 +148,24 @@ pub fn build_launch_profile(
     })?;
 
     if let toml::Value::Table(provider_fields) = &mut provider_table {
+        // Codex decides `ModelProviderInfo::is_openai()` by exact name match.
+        // Leaving the template's `name = "OpenAI"` makes a third-party provider
+        // take the official OpenAI path (internal metadata passthrough and
+        // other fields the upstream may reject). Use the provider's display
+        // name, falling back when it would still collide with the built-in one.
+        let trimmed_name = provider_name.trim();
+        let provider_display_name = if trimmed_name.is_empty()
+            || trimmed_name.eq_ignore_ascii_case("OpenAI")
+        {
+            "AI Toolbox"
+        } else {
+            trimmed_name
+        };
+        provider_fields.insert(
+            "name".to_string(),
+            toml::Value::String(provider_display_name.to_string()),
+        );
+
         // AI Toolbox supplies the credential (bearer token) below. Codex
         // resolves `env_key` before the bearer token and fails hard when the
         // variable is missing, so the launch profile must not carry it.
@@ -171,7 +193,8 @@ pub fn build_launch_profile(
     // overlay on the base config, so without this pointer `/model` would show
     // the applied provider's catalog instead of the models this provider
     // serves. The catalog file is cleaned up with the profile.
-    let catalog_json = super::commands::build_codex_launch_catalog(&parsed, config_toml)
+    let catalog_json =
+        super::commands::build_codex_launch_catalog(&parsed, config_toml, catalog_tool_profile)
         .map(|catalog| {
             table.insert(
                 "model_catalog_json".to_string(),
@@ -283,16 +306,24 @@ fn build_args(profile_name: &str, full_access: bool) -> Vec<String> {
 }
 
 /// Launch a Codex session for one provider without touching the live config.
-pub fn launch_codex_provider_cli_session(
+pub(crate) fn launch_codex_provider_cli_session(
     runtime_location: &RuntimeLocationInfo,
     provider_id: &str,
+    provider_name: &str,
     category: &str,
     settings_config: &str,
+    catalog_tool_profile: CodexCatalogToolProfile,
     full_access: bool,
     cwd: Option<&Path>,
     preferred_terminal: Option<&str>,
 ) -> Result<(), String> {
-    let profile = build_launch_profile(provider_id, category, settings_config)?;
+    let profile = build_launch_profile(
+        provider_id,
+        provider_name,
+        category,
+        settings_config,
+        catalog_tool_profile,
+    )?;
     let args = build_args(&profile.profile_name, full_access);
     let banner = format!(
         "Using temporary Codex profile '{}' (does not change applied config)",
@@ -414,7 +445,7 @@ pub fn launch_codex_provider_cli_session(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_launch_profile, sanitize_provider_id_for_filename};
+    use super::{build_launch_profile, sanitize_provider_id_for_filename, CodexCatalogToolProfile};
 
     fn settings(config: &str, api_key: Option<&str>) -> String {
         let auth = match api_key {
@@ -448,8 +479,14 @@ base_url = "https://relay.example/v1"
 wire_api = "responses"
 env_key = "OPENAI_API_KEY"
 "#;
-        let profile =
-            build_launch_profile("p1", "custom", &settings(config, Some("sk-test"))).unwrap();
+        let profile = build_launch_profile(
+            "p1",
+            "Relay",
+            "custom",
+            &settings(config, Some("sk-test")),
+            CodexCatalogToolProfile::Full,
+        )
+        .unwrap();
         assert!(profile.profile_name.starts_with("aitb-launch-p1-"));
         let parsed: toml::Value = toml::from_str(&profile.toml).unwrap();
         let table = parsed.as_table().unwrap();
@@ -486,7 +523,14 @@ wire_api = "responses"
                 { "model": "glm-5.3", "displayName": "GLM-5.3" }
             ]),
         );
-        let profile = build_launch_profile("p1", "custom", &settings).unwrap();
+        let profile = build_launch_profile(
+            "p1",
+            "Relay",
+            "custom",
+            &settings,
+            CodexCatalogToolProfile::Full,
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&profile.toml).unwrap();
         let pointer = parsed
             .as_table()
@@ -518,7 +562,14 @@ name = "Relay"
 base_url = "https://relay.example/v1"
 wire_api = "responses"
 "#;
-        let profile = build_launch_profile("p1", "custom", &settings(config, None)).unwrap();
+        let profile = build_launch_profile(
+            "p1",
+            "Relay",
+            "custom",
+            &settings(config, None),
+            CodexCatalogToolProfile::Full,
+        )
+        .unwrap();
         let catalog: serde_json::Value =
             serde_json::from_str(profile.catalog_json.as_deref().unwrap()).unwrap();
         let slugs: Vec<&str> = catalog["models"]
@@ -533,7 +584,14 @@ wire_api = "responses"
     #[test]
     fn official_provider_does_not_write_a_launch_catalog() {
         let config = "model = \"gpt-5.5\"\n";
-        let profile = build_launch_profile("official", "official", &settings(config, None)).unwrap();
+        let profile = build_launch_profile(
+            "official",
+            "OpenAI",
+            "official",
+            &settings(config, None),
+            CodexCatalogToolProfile::Full,
+        )
+        .unwrap();
         assert!(profile.catalog_json.is_none());
         let parsed: toml::Value = toml::from_str(&profile.toml).unwrap();
         assert!(parsed
@@ -546,7 +604,14 @@ wire_api = "responses"
     #[test]
     fn official_provider_targets_builtin_openai_provider() {
         let config = "model = \"gpt-5.5\"\n";
-        let profile = build_launch_profile("official", "official", &settings(config, None)).unwrap();
+        let profile = build_launch_profile(
+            "official",
+            "OpenAI",
+            "official",
+            &settings(config, None),
+            CodexCatalogToolProfile::Full,
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&profile.toml).unwrap();
         let table = parsed.as_table().unwrap();
         assert_eq!(
@@ -559,8 +624,125 @@ wire_api = "responses"
     #[test]
     fn custom_provider_without_table_is_rejected() {
         let config = "model = \"gpt-5\"\n";
-        let error = build_launch_profile("p1", "custom", &settings(config, None)).unwrap_err();
+        let error = build_launch_profile(
+            "p1",
+            "Relay",
+            "custom",
+            &settings(config, None),
+            CodexCatalogToolProfile::Full,
+        )
+        .unwrap_err();
         assert!(error.contains("no model provider configuration"));
+    }
+
+    #[test]
+    fn custom_provider_uses_display_name_instead_of_openai_placeholder() {
+        let config = r#"
+model = "gpt-5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "OpenAI"
+base_url = "https://ark.cn-beijing.volces.com/api/v3"
+wire_api = "responses"
+"#;
+        let profile = build_launch_profile(
+            "p1",
+            "Volcengine Ark",
+            "custom",
+            &settings(config, None),
+            CodexCatalogToolProfile::Full,
+        )
+        .unwrap();
+        let parsed: toml::Value = toml::from_str(&profile.toml).unwrap();
+        let provider = parsed["model_providers"][&profile.profile_name]
+            .as_table()
+            .unwrap();
+        assert_eq!(
+            provider.get("name").and_then(toml::Value::as_str),
+            Some("Volcengine Ark")
+        );
+    }
+
+    #[test]
+    fn openai_display_name_falls_back_to_ai_toolbox() {
+        let config = r#"
+model = "gpt-5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+"#;
+        let profile = build_launch_profile(
+            "p1",
+            "openai",
+            "custom",
+            &settings(config, None),
+            CodexCatalogToolProfile::Full,
+        )
+        .unwrap();
+        let parsed: toml::Value = toml::from_str(&profile.toml).unwrap();
+        let provider = parsed["model_providers"][&profile.profile_name]
+            .as_table()
+            .unwrap();
+        assert_eq!(
+            provider.get("name").and_then(toml::Value::as_str),
+            Some("AI Toolbox")
+        );
+    }
+
+    #[test]
+    fn native_safe_launch_catalog_omits_private_tool_types() {
+        let config = r#"
+model = "doubao-seed-2-1-pro"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "OpenAI"
+base_url = "https://ark.cn-beijing.volces.com/api/v3"
+wire_api = "responses"
+"#;
+        let settings = settings_with_catalog(
+            config,
+            serde_json::json!([
+                { "model": "doubao-seed-2-1-pro", "displayName": "Doubao Seed 2.1 Pro" }
+            ]),
+        );
+        let profile = build_launch_profile(
+            "p1",
+            "Doubao",
+            "custom",
+            &settings,
+            CodexCatalogToolProfile::NativeSafe,
+        )
+        .unwrap();
+        let catalog: serde_json::Value =
+            serde_json::from_str(profile.catalog_json.as_deref().unwrap()).unwrap();
+        let model = &catalog["models"][0];
+        assert!(model.get("apply_patch_tool_type").is_none());
+        assert!(model.get("web_search_tool_type").is_none());
+        assert_eq!(model["supports_search_tool"], serde_json::json!(false));
+        assert_eq!(model["multi_agent_version"], serde_json::json!("disabled"));
+        assert_eq!(model["shell_type"], serde_json::json!("unified_exec"));
+        assert_eq!(model["support_verbosity"], serde_json::json!(false));
+        assert_eq!(
+            model["supports_parallel_tool_calls"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            model["supports_image_detail_original"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            model["supports_reasoning_summaries"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            model["default_reasoning_summary"],
+            serde_json::json!("none")
+        );
     }
 
     #[test]

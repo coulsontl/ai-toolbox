@@ -27,7 +27,8 @@ use crate::coding::db_id::db_new_id;
 use crate::coding::prompt_file::{read_prompt_content_file, write_prompt_content_file};
 use crate::coding::proxy_gateway::aggregate_naming::AggregateSlugEntry;
 use crate::coding::proxy_gateway::{
-    cli_proxy, paths::ProxyGatewayPaths, provider_protocol, provider_switch, types::GatewayCliKey,
+    cli_proxy, paths::ProxyGatewayPaths, provider_profiles, provider_protocol, provider_switch,
+    types::GatewayCliKey,
 };
 use crate::coding::runtime_location;
 use crate::coding::skills::commands::resync_all_skills_if_tool_path_changed;
@@ -935,14 +936,31 @@ pub async fn launch_codex_provider_cli(
         ));
     }
 
+    // A launch is a direct connection: there is no local transformer in the
+    // loop, so a provider that needs the gateway cannot be launched this way.
+    if provider_protocol::provider_needs_gateway_proxy(
+        GatewayCliKey::Codex,
+        &provider.category,
+        provider.meta.as_ref(),
+        &provider.settings_config,
+    ) {
+        return Err(
+            "该渠道协议不是 Codex 原生 Responses，暂不支持直接启动 CLI；请开启网关代理后使用"
+                .to_string(),
+        );
+    }
+
     let runtime_location = runtime_location::get_codex_runtime_location_async(&db).await?;
     let resolved_cwd = crate::coding::cli_launch_terminal::resolve_launch_cwd(cwd)?;
+    let catalog_tool_profile = codex_catalog_tool_profile_for_provider(&provider);
 
     super::cli_launch::launch_codex_provider_cli_session(
         &runtime_location,
         &provider.id,
+        &provider.name,
         &provider.category,
         &provider.settings_config,
+        catalog_tool_profile,
         full_access.unwrap_or(false),
         resolved_cwd.as_deref(),
         terminal.as_deref(),
@@ -3614,10 +3632,28 @@ fn codex_catalog_display_name(spec: &CodexCatalogModelSpec) -> String {
         .unwrap_or_else(|| spec.model.clone())
 }
 
+/// Which tool surface a generated catalog may advertise.
+///
+/// `Full` keeps the neutral template: Codex may emit its private tool types
+/// (`custom` freeform apply_patch, `tool_search`, `namespace` multi-agent).
+/// That is safe behind AI Toolbox's local gateway, which flattens them, and on
+/// upstreams that implement the complete Codex Responses contract.
+///
+/// `NativeSafe` is for a provider Codex talks to directly when the upstream
+/// validates `tools[].type` against a closed enum (Volcengine Ark, MiMo, …).
+/// The catalog must not make Codex emit the private types, so only `function`
+/// plus the widely supported `web_search` tool remain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CodexCatalogToolProfile {
+    Full,
+    NativeSafe,
+}
+
 fn codex_model_catalog_entry(
     spec: &CodexCatalogModelSpec,
     index: usize,
     configured_default_context_window: Option<u64>,
+    tool_profile: CodexCatalogToolProfile,
 ) -> Value {
     let display_name = codex_catalog_display_name(spec);
     let context_window =
@@ -3701,6 +3737,34 @@ fn codex_model_catalog_entry(
             .map(codex_service_tiers_value)
             .unwrap_or_else(|| serde_json::json!([]));
         entry_obj.insert("service_tiers".to_string(), service_tiers);
+
+        if tool_profile == CodexCatalogToolProfile::NativeSafe {
+            // Codex decides which private tool types to send from these fields:
+            //   * `apply_patch_tool_type` -> a `custom` freeform tool
+            //   * `supports_search_tool`  -> a `tool_search` tool
+            //   * `multi_agent_version`   -> `namespace` tool wrappers
+            // None of those exist in a third-party Responses gateway's ToolType
+            // enum, and the request is rejected before the model runs. Drop
+            // them and keep only `function` plus the widely supported
+            // `web_search` tool (enabled by the user's config, not the catalog).
+            entry_obj.remove("apply_patch_tool_type");
+            entry_obj.remove("web_search_tool_type");
+            entry_obj.remove("default_verbosity");
+            entry_obj.insert("supports_search_tool".to_string(), serde_json::json!(false));
+            entry_obj.insert(
+                "multi_agent_version".to_string(),
+                serde_json::Value::String("disabled".to_string()),
+            );
+            entry_obj.insert("support_verbosity".to_string(), serde_json::json!(false));
+            entry_obj.insert(
+                "supports_parallel_tool_calls".to_string(),
+                serde_json::json!(false),
+            );
+            entry_obj.insert(
+                "supports_image_detail_original".to_string(),
+                serde_json::json!(false),
+            );
+        }
     }
 
     entry
@@ -3709,12 +3773,13 @@ fn codex_model_catalog_entry(
 fn codex_model_catalog_from_specs(
     specs: &[CodexCatalogModelSpec],
     configured_default_context_window: Option<u64>,
+    tool_profile: CodexCatalogToolProfile,
 ) -> Value {
     let models: Vec<Value> = specs
         .iter()
         .enumerate()
         .map(|(index, spec)| {
-            codex_model_catalog_entry(spec, index, configured_default_context_window)
+            codex_model_catalog_entry(spec, index, configured_default_context_window, tool_profile)
         })
         .collect();
 
@@ -3793,8 +3858,12 @@ fn aggregate_catalog_from_entries(entries: &[AggregateCatalogEntry]) -> Value {
                 service_tiers: entry.service_tiers.clone(),
                 input_modalities: entry.input_modalities.clone(),
             };
-            let mut value =
-                codex_model_catalog_entry(&spec, index, entry.configured_context_window);
+            let mut value = codex_model_catalog_entry(
+                &spec,
+                index,
+                entry.configured_context_window,
+                CodexCatalogToolProfile::Full,
+            );
             if entry.hidden {
                 if let Some(object) = value.as_object_mut() {
                     object.insert(
@@ -4675,10 +4744,27 @@ fn set_codex_model_catalog_json_field(
     Ok(document.to_string())
 }
 
+/// Test convenience: the existing catalog tests all describe the neutral
+/// gateway template, so they keep calling the three-argument form.
+#[cfg(test)]
 fn prepare_codex_config_with_model_catalog(
     config_dir: &Path,
     provider_settings_config: Option<&Value>,
     config_toml: &str,
+) -> Result<String, String> {
+    prepare_codex_config_with_model_catalog_for_profile(
+        config_dir,
+        provider_settings_config,
+        config_toml,
+        CodexCatalogToolProfile::Full,
+    )
+}
+
+fn prepare_codex_config_with_model_catalog_for_profile(
+    config_dir: &Path,
+    provider_settings_config: Option<&Value>,
+    config_toml: &str,
+    tool_profile: CodexCatalogToolProfile,
 ) -> Result<String, String> {
     let specs = provider_settings_config
         .map(|settings| codex_catalog_model_specs(settings, config_toml))
@@ -4688,11 +4774,109 @@ fn prepare_codex_config_with_model_catalog(
         return set_codex_model_catalog_json_field(config_toml, false);
     }
 
-    let catalog = codex_catalog_for_specs(&specs, config_toml);
+    let catalog = codex_catalog_for_specs(&specs, config_toml, tool_profile);
     let catalog_path = config_dir.join(AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME);
     write_codex_catalog_file_atomic(&catalog_path, &catalog)?;
 
     set_codex_model_catalog_json_field(config_toml, true)
+}
+
+fn codex_tool_profile_from_value(value: &str) -> Option<CodexCatalogToolProfile> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "safe" | "native_safe" | "native-safe" => Some(CodexCatalogToolProfile::NativeSafe),
+        "full" | "native" => Some(CodexCatalogToolProfile::Full),
+        _ => None,
+    }
+}
+
+/// User override stored on the provider: `meta.codexResponsesToolProfile`.
+fn codex_tool_profile_override(meta: Option<&Value>) -> Option<CodexCatalogToolProfile> {
+    let meta = meta?;
+    ["codexResponsesToolProfile", "codex_responses_tool_profile"]
+        .iter()
+        .find_map(|key| meta.get(*key).and_then(Value::as_str))
+        .and_then(codex_tool_profile_from_value)
+}
+
+/// Preset default declared by the selected built-in endpoint.
+///
+/// Resolution goes through `meta.gatewayProfile` (the stable preset reference),
+/// never through the Base URL: the form lets users edit a preset endpoint's URL
+/// while keeping its API format, so URL matching would misclassify custom
+/// deployments. A preset can declare `codexResponsesToolProfile` on its Codex
+/// endpoint; anything undeclared keeps the full template.
+fn codex_tool_profile_from_preset_value(
+    meta: Option<&Value>,
+    catalog: &Value,
+) -> Option<CodexCatalogToolProfile> {
+    let meta = meta?;
+    let reference = meta
+        .get("gatewayProfile")
+        .or_else(|| meta.get("gateway_profile"))?;
+    let profile_id = ["profileId", "profile_id"]
+        .iter()
+        .find_map(|key| reference.get(*key).and_then(Value::as_str))?
+        .trim();
+    let endpoint_id = ["endpointId", "endpoint_id"]
+        .iter()
+        .find_map(|key| reference.get(*key).and_then(Value::as_str))?
+        .trim();
+    if profile_id.is_empty() || endpoint_id.is_empty() {
+        return None;
+    }
+    if let Some(tool) = reference.get("tool").and_then(Value::as_str) {
+        if !tool.eq_ignore_ascii_case("codex") {
+            return None;
+        }
+    }
+    let (_profile, endpoint) = provider_profiles::find_gateway_profile_endpoint(
+        catalog, "codex", profile_id, endpoint_id,
+    )?;
+    ["codexResponsesToolProfile", "codex_responses_tool_profile"]
+        .iter()
+        .find_map(|key| endpoint.get(*key).and_then(Value::as_str))
+        .and_then(codex_tool_profile_from_value)
+}
+
+fn codex_tool_profile_from_preset(meta: Option<&Value>) -> Option<CodexCatalogToolProfile> {
+    meta?;
+    // The runtime catalog may be an older remote cache written before this
+    // preset field existed. The bundled catalog is the shipped baseline, so a
+    // missing declaration falls through to it; an explicit value in the cache
+    // (including `full`) still wins.
+    provider_profiles::load_gateway_provider_profiles_for_runtime()
+        .and_then(|catalog| codex_tool_profile_from_preset_value(meta, &catalog))
+        .or_else(|| {
+            provider_profiles::get_bundled_gateway_provider_profiles()
+                .and_then(|catalog| codex_tool_profile_from_preset_value(meta, &catalog))
+        })
+}
+
+/// Catalog tool profile for one provider.
+///
+/// Resolution order:
+/// 1. Official/local providers keep the full template.
+/// 2. Providers that need the gateway keep it too: the transformer flattens
+///    the private tool types before they reach the upstream.
+/// 3. A direct native Responses provider uses the user's explicit override.
+/// 4. Otherwise it uses the selected preset's declared default.
+/// 5. A custom provider with no declaration keeps the full template.
+fn codex_catalog_tool_profile_for_provider(provider: &CodexProvider) -> CodexCatalogToolProfile {
+    if provider.category.eq_ignore_ascii_case("official") || provider.id == CODEX_LOCAL_PROVIDER_ID
+    {
+        return CodexCatalogToolProfile::Full;
+    }
+    if provider_protocol::provider_needs_gateway_proxy(
+        GatewayCliKey::Codex,
+        &provider.category,
+        provider.meta.as_ref(),
+        &provider.settings_config,
+    ) {
+        return CodexCatalogToolProfile::Full;
+    }
+    codex_tool_profile_override(provider.meta.as_ref())
+        .or_else(|| codex_tool_profile_from_preset(provider.meta.as_ref()))
+        .unwrap_or(CodexCatalogToolProfile::Full)
 }
 
 /// Build the catalog JSON for one provider's model specs.
@@ -4702,13 +4886,28 @@ fn prepare_codex_config_with_model_catalog(
 /// low/high/max reasoning). Mirror it verbatim instead of the neutral
 /// template: the harness tells the model to use apply_patch, so stripping the
 /// tool while keeping the harness would be self-inconsistent.
-fn codex_catalog_for_specs(specs: &[CodexCatalogModelSpec], config_toml: &str) -> Value {
+fn codex_catalog_for_specs(
+    specs: &[CodexCatalogModelSpec],
+    config_toml: &str,
+    tool_profile: CodexCatalogToolProfile,
+) -> Value {
     let configured_default_context_window =
         extract_codex_top_level_u64(config_toml, "model_context_window");
+    // An explicit compatibility override wins over a vendor mirror: the user
+    // asked to strip private tool types, so the vendor catalog's freeform
+    // apply_patch / tool_search entries must not be reintroduced. The normal
+    // (Full) path keeps the vendor catalog verbatim.
+    if tool_profile == CodexCatalogToolProfile::NativeSafe {
+        return codex_model_catalog_from_specs(
+            specs,
+            configured_default_context_window,
+            CodexCatalogToolProfile::NativeSafe,
+        );
+    }
     codex_official_vendor_catalog_models(config_toml)
         .map(|vendor_models| codex_vendor_catalog_from_specs(specs, &vendor_models))
         .unwrap_or_else(|| {
-            codex_model_catalog_from_specs(specs, configured_default_context_window)
+            codex_model_catalog_from_specs(specs, configured_default_context_window, tool_profile)
         })
 }
 
@@ -4725,6 +4924,7 @@ fn codex_catalog_for_specs(specs: &[CodexCatalogModelSpec], config_toml: &str) -
 pub(crate) fn build_codex_launch_catalog(
     provider_settings_config: &Value,
     config_toml: &str,
+    tool_profile: CodexCatalogToolProfile,
 ) -> Option<Value> {
     let mut specs = codex_catalog_model_specs(provider_settings_config, config_toml);
 
@@ -4747,7 +4947,10 @@ pub(crate) fn build_codex_launch_catalog(
         return None;
     }
 
-    Some(codex_catalog_for_specs(&specs, config_toml))
+    // The launch command rejects providers that need the gateway, so this is
+    // always a direct connection; the caller decides whether the upstream
+    // tolerates Codex's private tool types.
+    Some(codex_catalog_for_specs(&specs, config_toml, tool_profile))
 }
 
 /// Write a Codex model catalog atomically.
@@ -5206,6 +5409,7 @@ async fn apply_config_to_file_with_previous_managed_config(
         previous_managed_config_toml.as_deref(),
         &final_config,
         Some(&provider_config),
+        codex_catalog_tool_profile_for_provider(&provider),
         preserve_official_auth,
         // Same predicate the projection used to strip `env_key` from
         // `final_config`; the live file still needs its own clear for a line
@@ -5247,6 +5451,7 @@ async fn write_codex_config_files(
     previous_managed_config_toml: Option<&str>,
     next_managed_config_toml: &str,
     model_catalog_settings: Option<&serde_json::Value>,
+    catalog_tool_profile: CodexCatalogToolProfile,
     preserve_official_auth: bool,
     manages_provider_credential: bool,
 ) -> Result<(), String> {
@@ -5296,10 +5501,11 @@ async fn write_codex_config_files(
     let has_model_catalog = model_catalog_settings
         .map(|settings| !codex_catalog_model_specs(settings, next_managed_config_toml).is_empty())
         .unwrap_or(false);
-    let next_managed_config_toml = prepare_codex_config_with_model_catalog(
+    let next_managed_config_toml = prepare_codex_config_with_model_catalog_for_profile(
         &config_dir,
         model_catalog_settings,
         next_managed_config_toml,
+        catalog_tool_profile,
     )?;
     let mut final_content = build_written_codex_config_toml(
         &existing_config_toml,
@@ -5872,23 +6078,27 @@ mod tests {
         codex_aggregate_catalog_entries, codex_aggregate_catalog_entries_with_failover,
         codex_aggregate_slug_table, codex_catalog_display_name,
         codex_catalog_effective_input_modalities, codex_catalog_model_specs,
+        codex_catalog_tool_profile_for_provider, codex_model_catalog_entry,
+        codex_tool_profile_from_preset_value,
         ensure_codex_model_catalog_pointer, extract_codex_common_config_from_settings_toml,
         extract_provider_settings_for_storage, fill_template_fields_from_static,
         heal_dangling_codex_model_provider, infer_codex_provider_category_from_settings,
         merge_codex_auth_json, merge_remote_codex_official_models, normalize_codex_model_tier,
         normalize_codex_requires_openai_auth_mode, prepare_codex_config_with_model_catalog,
+        prepare_codex_config_with_model_catalog_for_profile,
         project_codex_auth_to_runtime_config, project_codex_auth_to_runtime_config_with_mode,
         read_codex_aggregate_selection, read_codex_catalog_preview, remove_codex_aggregate_catalog,
         resolve_codex_requires_openai_auth_mode, resolve_local_provider_meta,
         restore_codex_pre_aggregate_catalog, sanitize_codex_catalog_input_modalities,
         static_codex_official_models, strip_codex_common_config_from_toml,
         write_codex_aggregate_catalog, AggregateCatalogEntry, CodexCatalogModelSpec,
-        CodexHistoryRuntimeSource, CodexHistorySourceCandidate, CodexHistorySourceMode,
+        CodexCatalogToolProfile, CodexHistoryRuntimeSource, CodexHistorySourceCandidate,
+        CodexHistorySourceMode,
         RemoteCodexModel, RequiresOpenaiAuthMode, AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME,
         CODEX_BUILTIN_IMAGE_MODEL_ID, CODEX_DEFAULT_CONTEXT_WINDOW,
         CODEX_REQUIRES_OPENAI_AUTH_MODE_KEY, HIDDEN_ALIAS_PRIORITY_BASE,
     };
-    use crate::coding::codex::types::CodexProviderInput;
+    use crate::coding::codex::types::{CodexProvider, CodexProviderInput};
     use crate::coding::codex::unified_history;
     use crate::coding::proxy_gateway::aggregate_naming::{
         AggregateNamingConfig, AggregateNamingMode,
@@ -6232,8 +6442,12 @@ approval_policy = "never"
             }
         });
 
-        let catalog =
-            build_codex_launch_catalog(&settings, "model = \"deepseek-v4.1-flash\"\n").unwrap();
+        let catalog = build_codex_launch_catalog(
+            &settings,
+            "model = \"deepseek-v4.1-flash\"\n",
+            CodexCatalogToolProfile::Full,
+        )
+        .unwrap();
         let models = catalog["models"].as_array().unwrap();
 
         assert_eq!(models.len(), 2);
@@ -6247,6 +6461,7 @@ approval_policy = "never"
         let catalog = build_codex_launch_catalog(
             &json!({}),
             "model = \"deepseek-v4-1-flash-261017\"\n",
+            CodexCatalogToolProfile::Full,
         )
         .unwrap();
         let models = catalog["models"].as_array().unwrap();
@@ -6266,8 +6481,12 @@ approval_policy = "never"
             }
         });
 
-        let catalog =
-            build_codex_launch_catalog(&settings, "model = \"deepseek-v4.1-flash\"\n").unwrap();
+        let catalog = build_codex_launch_catalog(
+            &settings,
+            "model = \"deepseek-v4.1-flash\"\n",
+            CodexCatalogToolProfile::Full,
+        )
+        .unwrap();
         let slugs: Vec<&str> = catalog["models"]
             .as_array()
             .unwrap()
@@ -6280,7 +6499,193 @@ approval_policy = "never"
 
     #[test]
     fn launch_catalog_requires_at_least_one_model() {
-        assert!(build_codex_launch_catalog(&json!({}), "").is_none());
+        assert!(build_codex_launch_catalog(
+            &json!({}),
+            "",
+            CodexCatalogToolProfile::NativeSafe
+        )
+        .is_none());
+    }
+
+    const ARK_RESPONSES_CONFIG: &str = r#"
+model = "doubao-seed-2-1-pro"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "OpenAI"
+base_url = "https://ark.cn-beijing.volces.com/api/v3"
+wire_api = "responses"
+"#;
+
+    fn settings_config_with_toml(config_toml: &str) -> String {
+        json!({ "config": config_toml }).to_string()
+    }
+
+    fn catalog_spec(model: &str) -> CodexCatalogModelSpec {
+        CodexCatalogModelSpec {
+            model: model.to_string(),
+            display_name: None,
+            context_window: None,
+            auto_review_model_override: None,
+            reasoning_levels: None,
+            default_reasoning_level: None,
+            service_tiers: None,
+            input_modalities: None,
+        }
+    }
+
+    fn codex_provider_for_catalog_profile(
+        category: &str,
+        settings_config: &str,
+        meta: Option<Value>,
+    ) -> CodexProvider {
+        CodexProvider {
+            id: "test-provider".to_string(),
+            name: "Test Provider".to_string(),
+            category: category.to_string(),
+            settings_config: settings_config.to_string(),
+            source_provider_id: None,
+            website_url: None,
+            notes: None,
+            icon: None,
+            icon_color: None,
+            sort_index: None,
+            meta,
+            is_applied: false,
+            is_disabled: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn native_safe_catalog_entry_omits_private_tool_types() {
+        let spec = catalog_spec("doubao-seed-2-1-pro");
+
+        let full = codex_model_catalog_entry(&spec, 0, None, CodexCatalogToolProfile::Full);
+        assert_eq!(full["apply_patch_tool_type"], json!("freeform"));
+        assert_eq!(full["supports_search_tool"], json!(true));
+
+        let safe = codex_model_catalog_entry(&spec, 0, None, CodexCatalogToolProfile::NativeSafe);
+        assert!(safe.get("apply_patch_tool_type").is_none());
+        assert!(safe.get("web_search_tool_type").is_none());
+        assert!(safe.get("default_verbosity").is_none());
+        assert_eq!(safe["supports_search_tool"], json!(false));
+        assert_eq!(safe["multi_agent_version"], json!("disabled"));
+        assert_eq!(safe["shell_type"], json!("unified_exec"));
+        assert_eq!(safe["support_verbosity"], json!(false));
+        assert_eq!(safe["supports_parallel_tool_calls"], json!(false));
+        assert_eq!(safe["supports_image_detail_original"], json!(false));
+        assert_eq!(safe["supports_reasoning_summaries"], json!(true));
+        assert_eq!(safe["default_reasoning_summary"], json!("none"));
+    }
+
+    #[test]
+    fn catalog_tool_profile_respects_provider_override() {
+        let ark_settings = settings_config_with_toml(ARK_RESPONSES_CONFIG);
+        let safe_provider = codex_provider_for_catalog_profile(
+            "custom",
+            &ark_settings,
+            Some(json!({ "codexResponsesToolProfile": "safe" })),
+        );
+        assert_eq!(
+            codex_catalog_tool_profile_for_provider(&safe_provider),
+            CodexCatalogToolProfile::NativeSafe
+        );
+
+        let full_provider = codex_provider_for_catalog_profile(
+            "custom",
+            &ark_settings,
+            Some(json!({ "codexResponsesToolProfile": "full" })),
+        );
+        assert_eq!(
+            codex_catalog_tool_profile_for_provider(&full_provider),
+            CodexCatalogToolProfile::Full
+        );
+    }
+
+    #[test]
+    fn catalog_tool_profile_keeps_full_for_gateway_and_official_providers() {
+        let gateway_config = r#"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+wire_api = "chat"
+"#;
+        let gateway_provider = codex_provider_for_catalog_profile(
+            "custom",
+            &settings_config_with_toml(gateway_config),
+            Some(json!({ "codexResponsesToolProfile": "safe" })),
+        );
+        assert_eq!(
+            codex_catalog_tool_profile_for_provider(&gateway_provider),
+            CodexCatalogToolProfile::Full
+        );
+
+        let official_provider = codex_provider_for_catalog_profile(
+            "official",
+            &settings_config_with_toml(ARK_RESPONSES_CONFIG),
+            Some(json!({ "codexResponsesToolProfile": "safe" })),
+        );
+        assert_eq!(
+            codex_catalog_tool_profile_for_provider(&official_provider),
+            CodexCatalogToolProfile::Full
+        );
+    }
+
+    #[test]
+    fn catalog_tool_profile_defaults_to_full_without_declaration() {
+        let provider = codex_provider_for_catalog_profile(
+            "custom",
+            &settings_config_with_toml(ARK_RESPONSES_CONFIG),
+            None,
+        );
+        assert_eq!(
+            codex_catalog_tool_profile_for_provider(&provider),
+            CodexCatalogToolProfile::Full
+        );
+    }
+
+    #[test]
+    fn catalog_tool_profile_reads_preset_endpoint_default() {
+        let catalog = json!({
+            "profiles": [{
+                "id": "doubao",
+                "tools": {
+                    "codex": {
+                        "endpoints": [
+                            { "id": "openai_responses", "codexResponsesToolProfile": "safe" },
+                            { "id": "anthropic" }
+                        ]
+                    }
+                }
+            }]
+        });
+        let safe_meta = json!({
+            "gatewayProfile": {
+                "tool": "codex",
+                "profileId": "doubao",
+                "endpointId": "openai_responses"
+            }
+        });
+        assert_eq!(
+            codex_tool_profile_from_preset_value(Some(&safe_meta), &catalog),
+            Some(CodexCatalogToolProfile::NativeSafe)
+        );
+
+        let undeclared_meta = json!({
+            "gatewayProfile": {
+                "tool": "codex",
+                "profileId": "doubao",
+                "endpointId": "anthropic"
+            }
+        });
+        assert_eq!(
+            codex_tool_profile_from_preset_value(Some(&undeclared_meta), &catalog),
+            None
+        );
     }
 
     #[test]
@@ -8129,6 +8534,36 @@ name = "deepseek"
 base_url = "https://api.deepseek.com"
 wire_api = "responses"
 "#;
+
+    #[test]
+    fn native_safe_override_replaces_the_deepseek_vendor_catalog() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let settings = json!({
+            "modelCatalog": {
+                "models": [{ "model": "deepseek-flash" }]
+            }
+        });
+
+        prepare_codex_config_with_model_catalog_for_profile(
+            temp_dir.path(),
+            Some(&settings),
+            DEEPSEEK_NATIVE_CONFIG,
+            CodexCatalogToolProfile::NativeSafe,
+        )
+        .expect("safe catalog generation should not error");
+
+        let catalog_path = temp_dir
+            .path()
+            .join(AI_TOOLBOX_CODEX_MODEL_CATALOG_FILENAME);
+        let catalog: Value = serde_json::from_str(
+            &std::fs::read_to_string(&catalog_path).expect("catalog file"),
+        )
+        .expect("catalog json");
+        let model = &catalog["models"][0];
+        assert!(model.get("apply_patch_tool_type").is_none());
+        assert_eq!(model["supports_search_tool"], json!(false));
+        assert_eq!(model["multi_agent_version"], json!("disabled"));
+    }
 
     #[test]
     fn deepseek_host_native_catalog_mirrors_official_entries() {
