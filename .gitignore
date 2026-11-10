@@ -32,6 +32,7 @@ nul
 .workflow
 .pi
 .playwright-mcp
+paseo.json
 
 # Agent state is per machine and never committed. `.claude/` holds the local
 # permission allowlist and skill links; `.agents/` is what Codex scans.
