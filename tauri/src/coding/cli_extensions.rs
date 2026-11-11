@@ -17,7 +17,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
@@ -839,38 +839,161 @@ fn normalize_exact_pattern(pattern: &str) -> String {
     without_dot.replace('\\', "/")
 }
 
-/// 本地扩展的强制包含 / 排除模式（相对运行时根）。
-fn local_extension_pattern(
-    spec: &CliExtensionSpec,
-    source: &str,
-    kind: CliExtensionKind,
-) -> String {
-    match kind {
-        CliExtensionKind::LocalDirectory => {
-            format!("{}/{source}/index.ts", spec.extensions_dir)
+/// 目录扩展实际加载的入口文件，镜像上游 `resolveExtensionEntries`。
+///
+/// 优先级：`package.json` 的 `pi.extensions` 里**真实存在**的条目 →
+/// `index.ts` → `index.js`。返回 `None` 表示这个目录不是扩展目录。
+fn directory_extension_entries(directory: &Path) -> Option<Vec<PathBuf>> {
+    if let Some(manifest_entries) = read_manifest_extension_entries(directory) {
+        let existing_entries: Vec<PathBuf> = manifest_entries
+            .iter()
+            .map(|entry| directory.join(entry))
+            .filter(|entry_path| entry_path.exists())
+            .collect();
+        if !existing_entries.is_empty() {
+            return Some(existing_entries);
         }
-        _ => format!("{}/{source}", spec.extensions_dir),
     }
+    ["index.ts", "index.js"]
+        .iter()
+        .map(|file_name| directory.join(file_name))
+        .find(|entry_path| entry_path.exists())
+        .map(|entry_path| vec![entry_path])
 }
 
-/// 上游 `resolveExtensionEntries` 优先用目录 `package.json` 里的 `pi.extensions`
-/// 列表而不是 `index.ts`，所以针对 `index.ts` 写的排除模式根本匹配不到实际加载的文件。
-fn directory_has_manifest_extensions(directory: &Path) -> bool {
-    let Ok(raw) = fs::read_to_string(directory.join("package.json")) else {
+/// 读 `<directory>/package.json` 里可用的 `pi.extensions` 入口。
+///
+/// 镜像上游 `readPiManifest` + `resolveExtensionEntries` 的有效性判断：数组必须
+/// 非空，且**每一项都是字符串**；空数组、混合类型或没有 manifest 都返回 `None`
+/// （上游同样不会把它们当作扩展入口）。
+fn read_manifest_extension_entries(directory: &Path) -> Option<Vec<String>> {
+    let raw = fs::read_to_string(directory.join("package.json")).ok()?;
+    // 上游 `readPiManifest` 先 stripBom 再 JSON.parse；Serde 不接受 BOM，
+    // 不剥掉会把带 BOM 的 manifest 误判成不存在。
+    let raw = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
+    let parsed: Value = serde_json::from_str(raw).ok()?;
+    let entries = parsed.get("pi")?.get("extensions")?.as_array()?;
+    if entries.is_empty() || !entries.iter().all(Value::is_string) {
+        return None;
+    }
+    Some(entries.iter().filter_map(Value::as_str).map(str::to_string).collect())
+}
+
+/// 把路径归一成「相对运行时根、`/` 分隔」的精确模式，折叠中间的 `.` / `..`
+/// （指向根外时保留前导 `..`）。绝对路径或空路径无法相对运行时根表达，返回 `None`。
+fn normalize_relative_pattern(path: &Path) -> Option<String> {
+    let mut segments: Vec<String> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match segments.last().map(String::as_str) {
+                None | Some("..") => segments.push("..".to_string()),
+                Some(_) => {
+                    segments.pop();
+                }
+            },
+            Component::Normal(segment) => segments.push(segment.to_string_lossy().into_owned()),
+            Component::Prefix(_) | Component::RootDir => return None,
+        }
+    }
+    (!segments.is_empty()).then(|| segments.join("/"))
+}
+
+/// 本地扩展在顶层 `extensions` 数组里对应的精确模式。
+///
+/// 文件扩展只有一条；目录扩展按上游实际加载的每个入口各写一条——manifest
+/// 有多入口时，只写 `index.ts` 排除不掉其余文件。`None` 表示入口无法相对
+/// 运行时根表达（或目录里没有入口），这种行不能给开关。
+fn local_extension_patterns(
+    spec: &CliExtensionSpec,
+    extensions_path: &Path,
+    source: &str,
+    kind: CliExtensionKind,
+) -> Option<Vec<String>> {
+    if kind != CliExtensionKind::LocalDirectory {
+        return Some(vec![format!("{}/{source}", spec.extensions_dir)]);
+    }
+    let root = extensions_path.parent()?;
+    let mut patterns = Vec::new();
+    for entry_path in directory_extension_entries(&extensions_path.join(source))? {
+        let relative_path = entry_path.strip_prefix(root).ok()?;
+        let pattern = normalize_relative_pattern(relative_path)?;
+        if !patterns.contains(&pattern) {
+            patterns.push(pattern);
+        }
+    }
+    (!patterns.is_empty()).then_some(patterns)
+}
+
+/// 与上游 `isLocalPath` 一致：排除已知的非本地 source 前缀。
+fn is_local_package_source(source: &str) -> bool {
+    let trimmed = source.trim();
+    !["npm:", "git:", "github:", "http:", "https:", "ssh:", "builtin:"]
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+}
+
+/// 比较本地包 source 用的归一化文本。
+fn normalize_local_package_source(source: &str) -> String {
+    normalize_exact_pattern(source.trim())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// 找出 `packages` 里指向这个本地扩展的条目 source。
+///
+/// CLI 安装本地路径包时会把路径归一成相对运行时根的文本（如 `extensions/foo`），
+/// 所以按归一化后的文本比较。WSL Direct 下 CLI 用的是 Linux 路径、扫描拿到的是
+/// UNC 路径，绝对路径无法直接比较。
+fn matching_local_package_source<'a>(
+    spec: &CliExtensionSpec,
+    packages: Option<&'a Vec<Value>>,
+    extension_source: &str,
+) -> Option<&'a str> {
+    let target = normalize_local_package_source(&format!(
+        "{}/{extension_source}",
+        spec.extensions_dir
+    ));
+    packages?.iter().filter_map(package_entry_source).find(|source| {
+        is_local_package_source(source) && normalize_local_package_source(source) == target
+    })
+}
+
+/// manifest 里带 `!` / `+` / `-` 前缀的条目是覆盖模式，不是入口文件。
+fn is_manifest_override_pattern(entry: &str) -> bool {
+    entry.starts_with(['!', '+', '-'])
+}
+
+/// 目录入口是否由 `packages` 条目控制。
+///
+/// 只有 manifest 里**真实存在**的入口会被包收集器先加入资源表，随后
+/// auto-discovery 的同路径条目被忽略（first-wins），所以这种目录必须通过
+/// 包条目的四类过滤器开关。`index.ts` / `index.js` 回退入口不会被包收集器
+/// 枚举（它只看 manifest 或 `<dir>/extensions` 约定目录），仍由顶层
+/// `extensions` 过滤器控制。
+fn package_controls_directory_entries(directory: &Path) -> bool {
+    let Some(entries) = read_manifest_extension_entries(directory) else {
         return false;
     };
-    let Ok(parsed) = serde_json::from_str::<Value>(&raw) else {
-        return false;
-    };
-    parsed
-        .get("pi")
-        .and_then(|pi| pi.get("extensions"))
-        .and_then(Value::as_array)
-        .is_some_and(|entries| {
-            entries
-                .iter()
-                .any(|entry| entry.as_str().is_some_and(|entry| !entry.trim().is_empty()))
-        })
+    entries
+        .iter()
+        .any(|entry| !is_manifest_override_pattern(entry) && directory.join(entry).exists())
+}
+
+/// 本地包是否还会在目录入口之外加载扩展文件（`<dir>/extensions/` 约定目录，
+/// 或尚未展开、可能命中入口的 glob manifest 条目）。这种行同时受包过滤器和
+/// 顶层过滤器影响，没有单一可靠的开关。
+fn package_loads_extra_extension_files(directory: &Path) -> bool {
+    match read_manifest_extension_entries(directory) {
+        Some(entries) => entries.iter().any(|entry| {
+            !is_manifest_override_pattern(entry)
+                && !directory.join(entry).exists()
+                && entry
+                    .chars()
+                    .any(|character| matches!(character, '*' | '?'))
+        }),
+        None => directory.join("extensions").is_dir(),
+    }
 }
 
 /// 一个包条目在两种情况下什么都不加载：
@@ -966,8 +1089,16 @@ pub fn package_source_is_active(spec: &CliExtensionSpec, settings: &Value, sourc
     }
 }
 
-/// 镜像上游 `isEnabledByOverrides`：先 `!` 排除，再 `+` 强制包含，最后 `-` 强制排除。
-fn is_local_extension_enabled(top_level_entries: Option<&Value>, pattern: &str) -> bool {
+/// 多入口目录扩展：任意一个入口仍启用，整行就启用。
+fn is_local_extension_enabled(top_level_entries: Option<&Value>, patterns: &[String]) -> bool {
+    patterns
+        .iter()
+        .any(|pattern| is_local_extension_pattern_enabled(top_level_entries, pattern))
+}
+
+/// 单个入口是否启用，镜像上游 `isEnabledByOverrides`：
+/// 先 `!` 排除，再 `+` 强制包含，最后 `-` 强制排除。
+fn is_local_extension_pattern_enabled(top_level_entries: Option<&Value>, pattern: &str) -> bool {
     let Some(entries) = top_level_entries.and_then(Value::as_array) else {
         return true;
     };
@@ -1069,6 +1200,7 @@ fn glob_match_segment(pattern: &str, value: &str) -> bool {
 fn apply_extension_enabled_state(
     spec: &CliExtensionSpec,
     settings: &Value,
+    extensions_path: &Path,
     extensions: &mut [CliExtensionSummary],
 ) {
     let packages = settings.get("packages").and_then(Value::as_array);
@@ -1078,20 +1210,68 @@ fn apply_extension_enabled_state(
         if extension.scope == CliExtensionScope::Project {
             continue;
         }
-        extension.enabled = match extension.kind {
-            CliExtensionKind::Package => effective_package_entry(packages, &extension.source)
-                .is_none_or(|entry| !is_disabled_package_entry(spec, entry)),
-            CliExtensionKind::LocalFile | CliExtensionKind::LocalDirectory => {
-                is_local_extension_enabled(
-                    extensions_entries,
-                    &local_extension_pattern(spec, &extension.source, extension.kind),
-                )
-            }
-        };
-        // 开关掌控不了的包条目（`autoload: false` 增量）没有可写错的状态。
         if extension.kind == CliExtensionKind::Package {
-            extension.switch_supported = effective_package_entry(packages, &extension.source)
-                .is_none_or(package_entry_supports_switch);
+            let effective_entry = effective_package_entry(packages, &extension.source);
+            extension.enabled =
+                effective_entry.is_none_or(|entry| !is_disabled_package_entry(spec, entry));
+            // 开关掌控不了的包条目（`autoload: false` 增量）没有可写错的状态。
+            extension.switch_supported =
+                effective_entry.is_none_or(package_entry_supports_switch);
+            continue;
+        }
+
+        // package-origin 先于 auto-discovery 入表：同一路径既是本地路径包又是自动
+        // 发现扩展时，包条目决定是否加载，顶层 `extensions` 过滤器对它无效。
+        if let Some(package_source) =
+            matching_local_package_source(spec, packages, &extension.source)
+        {
+            if extension.kind == CliExtensionKind::LocalFile {
+                // 上游 `resolveLocalExtensionSource` 对文件固定 `enabled: true`，
+                // 包过滤器和顶层过滤器都改不动它——不要给一个静默无效的开关。
+                extension.enabled = true;
+                extension.switch_supported = false;
+                continue;
+            }
+
+            let directory = extensions_path.join(&extension.source);
+            if package_controls_directory_entries(&directory) {
+                let effective_entry = effective_package_entry(packages, package_source);
+                extension.enabled =
+                    effective_entry.is_none_or(|entry| !is_disabled_package_entry(spec, entry));
+                extension.switch_supported =
+                    effective_entry.is_none_or(package_entry_supports_switch);
+                continue;
+            }
+
+            // 入口来自 `index.ts` / `index.js` 回退：包收集器不枚举它们，
+            // auto-discovery 才是实际加载源，仍按顶层过滤器读写。
+            let patterns =
+                local_extension_patterns(spec, extensions_path, &extension.source, extension.kind);
+            let auto_enabled = patterns
+                .as_deref()
+                .is_none_or(|patterns| is_local_extension_enabled(extensions_entries, patterns));
+            if package_loads_extra_extension_files(&directory) {
+                // 包还会加载入口之外的文件：只切顶层过滤器会让包里的文件继续加载，
+                // 只写包过滤器又管不到回退入口，不能给一个半吊子开关。
+                let package_disabled = effective_package_entry(packages, package_source)
+                    .is_some_and(|entry| is_disabled_package_entry(spec, entry));
+                extension.enabled = auto_enabled || !package_disabled;
+                extension.switch_supported = false;
+            } else {
+                extension.enabled = auto_enabled;
+                extension.switch_supported = patterns.is_some();
+            }
+            continue;
+        }
+
+        let patterns =
+            local_extension_patterns(spec, extensions_path, &extension.source, extension.kind);
+        extension.enabled = patterns
+            .as_deref()
+            .is_none_or(|patterns| is_local_extension_enabled(extensions_entries, patterns));
+        // 入口无法逐条写入顶层过滤器时（manifest 指向扩展目录外等），不给开关。
+        if extension.kind == CliExtensionKind::LocalDirectory {
+            extension.switch_supported = patterns.is_some();
         }
     }
 }
@@ -1180,11 +1360,44 @@ fn set_package_extension_enabled(
 fn set_local_extension_enabled(
     spec: &CliExtensionSpec,
     settings_object: &mut Map<String, Value>,
+    extensions_path: &Path,
     source: &str,
     kind: CliExtensionKind,
     enabled: bool,
 ) -> Result<(), String> {
-    let pattern = local_extension_pattern(spec, source, kind);
+    // 同一路径是本地路径包时，顶层 `extensions` 过滤器对它无效：
+    // 目录走包条目的四类过滤器，文件则根本关不掉。
+    let package_source = settings_object
+        .get("packages")
+        .and_then(Value::as_array)
+        .and_then(|packages| matching_local_package_source(spec, Some(packages), source))
+        .map(str::to_string);
+    if let Some(package_source) = package_source {
+        if kind == CliExtensionKind::LocalFile {
+            return Err(format!(
+                "Local extension '{source}' is installed as a package; {} always loads it, so it cannot be disabled from settings.json",
+                spec.cli_name
+            ));
+        }
+        let directory = extensions_path.join(source);
+        if package_controls_directory_entries(&directory) {
+            return set_package_extension_enabled(spec, settings_object, &package_source, enabled);
+        }
+        if package_loads_extra_extension_files(&directory) {
+            return Err(format!(
+                "Local extension '{source}' is also loaded through package '{package_source}' with extra extension files; one switch cannot control both origins"
+            ));
+        }
+        // 包条目不含实际入口文件：auto-discovery 的入口归顶层过滤器管，
+        // 继续走下面的常规路径。
+    }
+
+    let patterns =
+        local_extension_patterns(spec, extensions_path, source, kind).ok_or_else(|| {
+            format!(
+                "Cannot determine which files local extension '{source}' loads, so it cannot be toggled from settings.json"
+            )
+        })?;
     // 非数组值（手改出来的）不是这个命令该重写的：直接拒绝，
     // 而不是静默替换或删掉用户放的东西。
     let mut entries = match settings_object.get(spec.extensions_dir) {
@@ -1199,32 +1412,45 @@ fn set_local_extension_enabled(
     // 用户手写的 `!glob`（手工排除）保持不动——它可能还盖着别的扩展；启用时
     // 用引擎自己的 `+` 强制包含去赢它（读侧 `isEnabledByOverrides` 的顺序就是
     // `!` → `+` → `-`），而不是删掉用户的行。
-    let excluded_by_user_glob = entries.iter().any(|entry| {
-        entry.as_str().is_some_and(|value| {
-            let (prefix, payload) = split_pattern_prefix(value);
-            prefix == Some('!') && glob_matches(payload, &pattern)
+    let blocked_patterns: Vec<String> = patterns
+        .iter()
+        .filter(|pattern| {
+            entries.iter().any(|entry| {
+                entry.as_str().is_some_and(|value| {
+                    let (prefix, payload) = split_pattern_prefix(value);
+                    prefix == Some('!') && glob_matches(payload, pattern)
+                })
+            })
         })
-    });
+        .cloned()
+        .collect();
     entries.retain(|entry| {
         let Some(value) = entry.as_str() else {
             return true;
         };
         let (prefix, payload) = split_pattern_prefix(value);
-        let exact_match = normalize_exact_pattern(payload) == pattern;
+        let normalized_payload = normalize_exact_pattern(payload);
+        let exact_match = patterns.contains(&normalized_payload);
+        let blocked = blocked_patterns.contains(&normalized_payload);
         match prefix {
             // `-pattern` 是这个开关自己写的标记，重开时先摘掉。
             Some('-') => !exact_match,
             // 启用且确有 `!` glob 挡着时，`+pattern` 覆盖行由开关重写（先摘旧
             // 副本保证幂等）。禁用时用户的 `+` 原样保留——`-` 本来就赢它。
-            Some('+') => !(enabled && excluded_by_user_glob && exact_match),
+            Some('+') => !(enabled && blocked && exact_match),
             _ => true,
         }
     });
     if !enabled {
-        entries.push(Value::String(format!("-{pattern}")));
-    } else if excluded_by_user_glob {
-        // 不补 `+` 的话，读侧仍被用户的 `!` 判成禁用——开关看起来点了没反应。
-        entries.push(Value::String(format!("+{pattern}")));
+        // 每个入口都要排除，整行才真的不加载。
+        for pattern in &patterns {
+            entries.push(Value::String(format!("-{pattern}")));
+        }
+    } else {
+        for pattern in &blocked_patterns {
+            // 不补 `+` 的话，读侧仍被用户的 `!` 判成禁用——开关看起来点了没反应。
+            entries.push(Value::String(format!("+{pattern}")));
+        }
     }
     if entries.is_empty() {
         settings_object.remove(spec.extensions_dir);
@@ -1274,18 +1500,22 @@ fn scan_local_extensions(
         let file_type = entry
             .file_type()
             .map_err(|error| format!("Failed to inspect extension {}: {error}", path.display()))?;
-        let (source, kind) = if file_type.is_file() && file_name.ends_with(".ts") {
+        // 与上游自动发现一致：顶层接受 `.ts` / `.js` 文件；目录入口
+        // 由 `resolveExtensionEntries` 决定（manifest / index.ts / index.js）。
+        let (source, kind) = if file_type.is_file()
+            && (file_name.ends_with(".ts") || file_name.ends_with(".js"))
+        {
             (file_name.to_string(), CliExtensionKind::LocalFile)
-        } else if file_type.is_dir() && path.join("index.ts").is_file() {
+        } else if file_type.is_dir() && directory_extension_entries(&path).is_some() {
             (file_name.to_string(), CliExtensionKind::LocalDirectory)
         } else {
             continue;
         };
 
-        // 清单驱动的目录会加载 `index.ts` 以外的文件，`-extensions/<dir>/index.ts`
-        // 排除不掉它。这种行不给开关，而不是给一个静默无效的开关。
-        let switch_supported =
-            kind != CliExtensionKind::LocalDirectory || !directory_has_manifest_extensions(&path);
+        // manifest 多入口 / 入口跑到运行时根外时，单条 `-` 模式排不干净；
+        // 这种行不给开关，而不是给一个静默无效的开关。
+        let switch_supported = kind != CliExtensionKind::LocalDirectory
+            || local_extension_patterns(spec, extensions_path, &source, kind).is_some();
 
         result.push(CliExtensionSummary {
             id: format!("local:{source}"),
@@ -1649,7 +1879,7 @@ pub async fn list_cli_extensions(
     // 尽力而为：坏掉 / 读不了的 settings.json 不能让整个列表失败
     // （安装 / 卸载 / 更新是唯一能恢复的手段）。
     if let Ok(settings) = read_settings_object(settings_path) {
-        apply_extension_enabled_state(spec, &settings, &mut extensions);
+        apply_extension_enabled_state(spec, &settings, &extensions_path, &mut extensions);
     }
     let cli_path = cli_display_path(spec, program, runtime_location);
     let cli_version = probe_cli_version(spec, program, runtime_location).await;
@@ -1775,9 +2005,9 @@ pub async fn update_cli_extensions(
 
 /// 通过写 `settings.json` 过滤器启用 / 停用一个已装扩展。
 ///
-/// 只支持全局作用域：包条目在 `packages` 里，本地 `.ts` / 目录扩展通过顶层
-/// `extensions` 数组强制排除。项目级条目直接拒绝——它们不在这个命令编辑的
-/// 运行时根 settings 里。
+/// 只支持全局作用域：包条目在 `packages` 里，本地 `.ts` / `.js` / 目录扩展
+/// 通过顶层 `extensions` 数组强制排除。项目级条目直接拒绝——它们不在这个命令
+/// 编辑的运行时根 settings 里。
 pub async fn set_cli_extension_enabled(
     spec: &CliExtensionSpec,
     app: &tauri::AppHandle,
@@ -1800,7 +2030,24 @@ pub async fn set_cli_extension_enabled(
             set_package_extension_enabled(spec, settings_object, source, input.enabled)?
         }
         CliExtensionKind::LocalFile | CliExtensionKind::LocalDirectory => {
-            set_local_extension_enabled(spec, settings_object, source, input.kind, input.enabled)?
+            // settings.json 位于运行时根，extensions 目录与它同级。
+            let extensions_path = settings_path
+                .parent()
+                .ok_or_else(|| {
+                    format!(
+                        "settings path {} has no parent directory",
+                        settings_path.display()
+                    )
+                })?
+                .join(spec.extensions_dir);
+            set_local_extension_enabled(
+                spec,
+                settings_object,
+                &extensions_path,
+                source,
+                input.kind,
+                input.enabled,
+            )?
         }
     }
 
@@ -2043,7 +2290,12 @@ User packages:
             package_summary("npm:@samfp/pi-memory"),
             package_summary("npm:@narumitw/pi-lsp"),
         ];
-        apply_extension_enabled_state(&TEST_SPEC, &settings, &mut extensions);
+        apply_extension_enabled_state(
+            &TEST_SPEC,
+            &settings,
+            Path::new("extensions"),
+            &mut extensions,
+        );
 
         let enabled: Vec<bool> = extensions.iter().map(|item| item.enabled).collect();
         // 普通字符串；每种类型都空；手写的逐文件过滤器（其它资源仍在加载，所以这行是启用）；
@@ -2061,7 +2313,12 @@ User packages:
         .expect("parse settings");
 
         let mut extensions = vec![package_summary("npm:pi-mcp-adapter")];
-        apply_extension_enabled_state(&TEST_SPEC, &settings, &mut extensions);
+        apply_extension_enabled_state(
+            &TEST_SPEC,
+            &settings,
+            Path::new("extensions"),
+            &mut extensions,
+        );
 
         assert!(extensions[0].enabled);
     }
@@ -2077,7 +2334,12 @@ User packages:
         .expect("parse settings");
 
         let mut extensions = vec![package_summary("npm:pi-mcp-adapter")];
-        apply_extension_enabled_state(&TEST_SPEC, &settings, &mut extensions);
+        apply_extension_enabled_state(
+            &TEST_SPEC,
+            &settings,
+            Path::new("extensions"),
+            &mut extensions,
+        );
 
         assert!(extensions[0].enabled, "有 `+` 强制包含时不算禁用");
     }
@@ -2091,13 +2353,26 @@ User packages:
         .expect("parse settings");
 
         let mut extensions = vec![package_summary("npm:pi-mcp-adapter")];
-        apply_extension_enabled_state(&TEST_SPEC, &settings, &mut extensions);
+        apply_extension_enabled_state(
+            &TEST_SPEC,
+            &settings,
+            Path::new("extensions"),
+            &mut extensions,
+        );
 
         assert!(!extensions[0].enabled);
     }
 
     #[test]
     fn marks_force_excluded_local_extensions_as_disabled() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let extensions_path = temp_dir.path().join("extensions");
+        fs::create_dir_all(extensions_path.join("bar")).expect("create bar");
+        fs::write(
+            extensions_path.join("bar").join("index.ts"),
+            "export default {};",
+        )
+        .expect("write index.ts");
         let settings: Value = serde_json::from_str(
             r#"{ "extensions": ["-extensions/foo.ts", "-extensions/bar/index.ts"] }"#,
         )
@@ -2108,7 +2383,7 @@ User packages:
             local_extension_summary("bar", CliExtensionKind::LocalDirectory),
             local_extension_summary("baz.ts", CliExtensionKind::LocalFile),
         ];
-        apply_extension_enabled_state(&TEST_SPEC, &settings, &mut extensions);
+        apply_extension_enabled_state(&TEST_SPEC, &settings, &extensions_path, &mut extensions);
 
         let enabled: Vec<bool> = extensions.iter().map(|item| item.enabled).collect();
         assert_eq!(enabled, vec![false, false, true]);
@@ -2127,7 +2402,12 @@ User packages:
             local_extension_summary("drop.ts", CliExtensionKind::LocalFile),
             local_extension_summary("other.ts", CliExtensionKind::LocalFile),
         ];
-        apply_extension_enabled_state(&TEST_SPEC, &settings, &mut extensions);
+        apply_extension_enabled_state(
+            &TEST_SPEC,
+            &settings,
+            Path::new("extensions"),
+            &mut extensions,
+        );
 
         let enabled: Vec<bool> = extensions.iter().map(|item| item.enabled).collect();
         assert_eq!(enabled, vec![true, false, false]);
@@ -2245,7 +2525,12 @@ User packages:
         )
         .expect("disable");
         let mut extensions = vec![package_summary("npm:pi-slopchop")];
-        apply_extension_enabled_state(&TEST_SPEC, &settings, &mut extensions);
+        apply_extension_enabled_state(
+            &TEST_SPEC,
+            &settings,
+            Path::new("extensions"),
+            &mut extensions,
+        );
         assert!(!extensions[0].enabled, "四类清空后必须被读作已禁用");
 
         set_package_extension_enabled(
@@ -2255,7 +2540,12 @@ User packages:
             true,
         )
         .expect("enable");
-        apply_extension_enabled_state(&TEST_SPEC, &settings, &mut extensions);
+        apply_extension_enabled_state(
+            &TEST_SPEC,
+            &settings,
+            Path::new("extensions"),
+            &mut extensions,
+        );
         assert!(extensions[0].enabled);
 
         // 往返之后用户的过滤器逐字还原，旁路键不残留。
@@ -2317,7 +2607,12 @@ User packages:
         )
         .expect("disable");
         let mut extensions = vec![package_summary("npm:pi-web-access")];
-        apply_extension_enabled_state(&TEST_SPEC, &settings, &mut extensions);
+        apply_extension_enabled_state(
+            &TEST_SPEC,
+            &settings,
+            Path::new("extensions"),
+            &mut extensions,
+        );
         assert!(!extensions[0].enabled);
 
         set_package_extension_enabled(
@@ -2328,7 +2623,12 @@ User packages:
         )
         .expect("enable");
         let mut extensions = vec![package_summary("npm:pi-web-access")];
-        apply_extension_enabled_state(&TEST_SPEC, &settings, &mut extensions);
+        apply_extension_enabled_state(
+            &TEST_SPEC,
+            &settings,
+            Path::new("extensions"),
+            &mut extensions,
+        );
         assert!(extensions[0].enabled);
     }
 
@@ -2340,31 +2640,358 @@ User packages:
         .expect("parse settings");
 
         let mut extensions = vec![package_summary("npm:pi-web-access")];
-        apply_extension_enabled_state(&TEST_SPEC, &settings, &mut extensions);
+        apply_extension_enabled_state(
+            &TEST_SPEC,
+            &settings,
+            Path::new("extensions"),
+            &mut extensions,
+        );
 
         assert!(!extensions[0].switch_supported);
     }
 
     #[test]
-    fn detects_manifest_driven_directory_extensions() {
-        let temp_dir =
-            std::env::temp_dir().join(format!("ai-toolbox-ext-manifest-{}", std::process::id()));
-        let with_manifest = temp_dir.join("with-manifest");
-        let without_manifest = temp_dir.join("without-manifest");
-        fs::create_dir_all(&with_manifest).expect("create with-manifest");
-        fs::create_dir_all(&without_manifest).expect("create without-manifest");
+    fn resolves_directory_entry_files_like_pi() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let manifest_dir = temp_dir.path().join("with-manifest");
+        let index_ts_dir = temp_dir.path().join("index-ts");
+        let index_js_dir = temp_dir.path().join("index-js");
+        let missing_manifest_entries_dir = temp_dir.path().join("missing-manifest-entries");
+        fs::create_dir_all(manifest_dir.join("src")).expect("create manifest src");
+        fs::create_dir_all(&index_ts_dir).expect("create index-ts");
+        fs::create_dir_all(&index_js_dir).expect("create index-js");
+        fs::create_dir_all(&missing_manifest_entries_dir)
+            .expect("create missing-manifest-entries");
+        fs::write(manifest_dir.join("src/a.ts"), "").expect("write a.ts");
+        fs::write(manifest_dir.join("src/b.js"), "").expect("write b.js");
         fs::write(
-            with_manifest.join("package.json"),
-            r#"{ "pi": { "extensions": ["src/index.ts"] } }"#,
+            manifest_dir.join("package.json"),
+            r#"{ "pi": { "extensions": ["src/a.ts", "src/missing.ts", "src/b.js"] } }"#,
         )
         .expect("write package.json");
-        fs::write(without_manifest.join("package.json"), r#"{ "name": "x" }"#)
-            .expect("write package.json");
+        // 两个入口都存在时，上游优先 `index.ts`。
+        fs::write(index_ts_dir.join("index.ts"), "").expect("write index.ts");
+        fs::write(index_ts_dir.join("index.js"), "").expect("write index.js");
+        fs::write(index_js_dir.join("index.js"), "").expect("write index.js");
+        fs::write(
+            missing_manifest_entries_dir.join("package.json"),
+            r#"{ "pi": { "extensions": ["src/nope.ts"] } }"#,
+        )
+        .expect("write package.json");
+        let bom_manifest_dir = temp_dir.path().join("bom-manifest");
+        fs::create_dir_all(bom_manifest_dir.join("src")).expect("create bom-manifest src");
+        fs::write(bom_manifest_dir.join("src/main.ts"), "").expect("write bom entry");
+        fs::write(
+            bom_manifest_dir.join("package.json"),
+            "\u{feff}{ \"pi\": { \"extensions\": [\"src/main.ts\"] } }",
+        )
+        .expect("write BOM package.json");
 
-        assert!(directory_has_manifest_extensions(&with_manifest));
-        assert!(!directory_has_manifest_extensions(&without_manifest));
+        assert_eq!(
+            directory_extension_entries(&manifest_dir).expect("manifest entries"),
+            vec![
+                manifest_dir.join("src/a.ts"),
+                manifest_dir.join("src/b.js")
+            ],
+            "manifest 里不存在的入口要被过滤掉"
+        );
+        assert_eq!(
+            directory_extension_entries(&index_ts_dir).expect("index.ts entries"),
+            vec![index_ts_dir.join("index.ts")]
+        );
+        assert_eq!(
+            directory_extension_entries(&index_js_dir).expect("index.js entries"),
+            vec![index_js_dir.join("index.js")]
+        );
+        assert_eq!(
+            directory_extension_entries(&bom_manifest_dir).expect("BOM manifest entries"),
+            vec![bom_manifest_dir.join("src/main.ts")],
+            "带 UTF-8 BOM 的 manifest 必须仍被识别"
+        );
+        assert!(
+            directory_extension_entries(&missing_manifest_entries_dir).is_none(),
+            "manifest 入口全不存在且没有 index 时不是扩展目录"
+        );
+        assert!(directory_extension_entries(&temp_dir.path().join("missing")).is_none());
+    }
 
-        let _ = fs::remove_dir_all(&temp_dir);
+    #[test]
+    fn toggling_a_manifest_directory_writes_every_entry() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let extensions_path = temp_dir.path().join("extensions");
+        let directory = extensions_path.join("multi");
+        fs::create_dir_all(directory.join("src")).expect("create src");
+        fs::write(directory.join("src/a.ts"), "").expect("write a.ts");
+        fs::write(directory.join("src/b.js"), "").expect("write b.js");
+        fs::write(
+            directory.join("package.json"),
+            r#"{ "pi": { "extensions": ["src/a.ts", "src/b.js"] } }"#,
+        )
+        .expect("write package.json");
+
+        let mut settings: Value = serde_json::json!({});
+        set_local_extension_enabled(
+            &TEST_SPEC,
+            settings.as_object_mut().expect("object"),
+            &extensions_path,
+            "multi",
+            CliExtensionKind::LocalDirectory,
+            false,
+        )
+        .expect("disable");
+        // 只排除 `index.ts` 的旧写法对 manifest 目录无效：每个入口都要写一条。
+        assert_eq!(
+            settings["extensions"],
+            serde_json::json!([
+                "-extensions/multi/src/a.ts",
+                "-extensions/multi/src/b.js"
+            ])
+        );
+
+        let mut extensions = vec![local_extension_summary(
+            "multi",
+            CliExtensionKind::LocalDirectory,
+        )];
+        apply_extension_enabled_state(&TEST_SPEC, &settings, &extensions_path, &mut extensions);
+        assert!(!extensions[0].enabled);
+        assert!(extensions[0].switch_supported);
+
+        // 只排除一个入口时另一个仍在加载，整行必须读作启用。
+        settings["extensions"] = serde_json::json!(["-extensions/multi/src/a.ts"]);
+        apply_extension_enabled_state(&TEST_SPEC, &settings, &extensions_path, &mut extensions);
+        assert!(extensions[0].enabled);
+
+        set_local_extension_enabled(
+            &TEST_SPEC,
+            settings.as_object_mut().expect("object"),
+            &extensions_path,
+            "multi",
+            CliExtensionKind::LocalDirectory,
+            true,
+        )
+        .expect("enable");
+        assert!(settings.get("extensions").is_none(), "重开时清掉全部排除");
+    }
+
+    #[test]
+    fn directory_entries_outside_the_runtime_root_get_no_switch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let outside_temp_dir = tempfile::tempdir().expect("outside temp dir");
+        let extensions_path = temp_dir.path().join("extensions");
+        let directory = extensions_path.join("escaping");
+        let outside_entry = outside_temp_dir.path().join("outside.ts");
+        fs::create_dir_all(&directory).expect("create directory");
+        fs::write(&outside_entry, "").expect("write outside.ts");
+        fs::write(
+            directory.join("package.json"),
+            serde_json::to_string(&serde_json::json!({
+                "pi": { "extensions": [outside_entry.to_string_lossy()] }
+            }))
+            .expect("serialize package.json"),
+        )
+        .expect("write package.json");
+
+        let settings: Value = serde_json::json!({});
+        let mut extensions = vec![local_extension_summary(
+            "escaping",
+            CliExtensionKind::LocalDirectory,
+        )];
+        apply_extension_enabled_state(&TEST_SPEC, &settings, &extensions_path, &mut extensions);
+        assert!(
+            !extensions[0].switch_supported,
+            "入口无法写成相对运行时根的模式时不能给开关"
+        );
+
+        let mut settings = settings;
+        let result = set_local_extension_enabled(
+            &TEST_SPEC,
+            settings.as_object_mut().expect("object"),
+            &extensions_path,
+            "escaping",
+            CliExtensionKind::LocalDirectory,
+            false,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_local_package_directory_is_toggled_through_its_package_entry() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let extensions_path = temp_dir.path().join("extensions");
+        let directory = extensions_path.join("background-tasks");
+        fs::create_dir_all(directory.join("src")).expect("create directory");
+        fs::write(directory.join("src/main.ts"), "export default {};").expect("write main.ts");
+        fs::write(
+            directory.join("package.json"),
+            r#"{ "pi": { "extensions": ["src/main.ts"] } }"#,
+        )
+        .expect("write package.json");
+        let mut settings: Value = serde_json::json!({
+            "packages": ["extensions/background-tasks"]
+        });
+
+        let mut extensions = vec![local_extension_summary(
+            "background-tasks",
+            CliExtensionKind::LocalDirectory,
+        )];
+        apply_extension_enabled_state(&TEST_SPEC, &settings, &extensions_path, &mut extensions);
+        assert!(extensions[0].enabled);
+        assert!(extensions[0].switch_supported);
+
+        set_local_extension_enabled(
+            &TEST_SPEC,
+            settings.as_object_mut().expect("object"),
+            &extensions_path,
+            "background-tasks",
+            CliExtensionKind::LocalDirectory,
+            false,
+        )
+        .expect("disable");
+
+        // package-origin 条目决定加载：写四类空数组，而不是顶层 `-pattern`。
+        assert!(settings.get("extensions").is_none());
+        for key in TEST_SPEC.resource_type_keys {
+            assert_eq!(
+                settings["packages"][0][key],
+                Value::Array(Vec::new()),
+                "{key} 必须是空数组"
+            );
+        }
+        apply_extension_enabled_state(&TEST_SPEC, &settings, &extensions_path, &mut extensions);
+        assert!(!extensions[0].enabled);
+
+        set_local_extension_enabled(
+            &TEST_SPEC,
+            settings.as_object_mut().expect("object"),
+            &extensions_path,
+            "background-tasks",
+            CliExtensionKind::LocalDirectory,
+            true,
+        )
+        .expect("enable");
+        assert_eq!(
+            settings["packages"][0],
+            Value::String("extensions/background-tasks".to_string())
+        );
+    }
+
+    #[test]
+    fn a_local_package_directory_with_only_an_index_uses_top_level_filters() {
+        // 没有 manifest 的目录不会被包收集器枚举（`collectManifestFiles` 只看
+        // manifest 或 `<dir>/extensions`），实际入口来自 auto-discovery，所以
+        // 包条目的 `[]` 关不掉它，只有顶层 `-pattern` 有效。
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let extensions_path = temp_dir.path().join("extensions");
+        let directory = extensions_path.join("simple");
+        fs::create_dir_all(&directory).expect("create directory");
+        fs::write(directory.join("index.ts"), "export default {};").expect("write index.ts");
+        let mut settings: Value = serde_json::json!({
+            "packages": ["extensions/simple"]
+        });
+
+        let mut extensions =
+            vec![local_extension_summary("simple", CliExtensionKind::LocalDirectory)];
+        apply_extension_enabled_state(&TEST_SPEC, &settings, &extensions_path, &mut extensions);
+        assert!(extensions[0].enabled);
+        assert!(extensions[0].switch_supported);
+
+        set_local_extension_enabled(
+            &TEST_SPEC,
+            settings.as_object_mut().expect("object"),
+            &extensions_path,
+            "simple",
+            CliExtensionKind::LocalDirectory,
+            false,
+        )
+        .expect("disable");
+
+        assert_eq!(
+            settings["extensions"],
+            serde_json::json!(["-extensions/simple/index.ts"])
+        );
+        assert_eq!(
+            settings["packages"][0],
+            Value::String("extensions/simple".to_string()),
+            "包条目不应被改动"
+        );
+        apply_extension_enabled_state(&TEST_SPEC, &settings, &extensions_path, &mut extensions);
+        assert!(!extensions[0].enabled);
+    }
+
+    #[test]
+    fn a_local_package_directory_that_loads_extra_files_has_no_switch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let extensions_path = temp_dir.path().join("extensions");
+        let directory = extensions_path.join("mixed");
+        fs::create_dir_all(directory.join("extensions")).expect("create extensions dir");
+        fs::write(directory.join("index.ts"), "export default {};").expect("write index.ts");
+        fs::write(
+            directory.join("extensions/extra.ts"),
+            "export default {};",
+        )
+        .expect("write extra.ts");
+        let mut settings: Value = serde_json::json!({
+            "packages": ["extensions/mixed"]
+        });
+
+        let mut extensions =
+            vec![local_extension_summary("mixed", CliExtensionKind::LocalDirectory)];
+        apply_extension_enabled_state(&TEST_SPEC, &settings, &extensions_path, &mut extensions);
+        assert!(
+            !extensions[0].switch_supported,
+            "包和顶层过滤器各管一部分入口时不能给半吊子开关"
+        );
+
+        let result = set_local_extension_enabled(
+            &TEST_SPEC,
+            settings.as_object_mut().expect("object"),
+            &extensions_path,
+            "mixed",
+            CliExtensionKind::LocalDirectory,
+            false,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_local_package_file_always_loads_and_offers_no_switch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let extensions_path = temp_dir.path().join("extensions");
+        fs::create_dir_all(&extensions_path).expect("create extensions");
+        fs::write(extensions_path.join("foo.ts"), "").expect("write foo.ts");
+        let mut settings: Value = serde_json::json!({
+            "packages": [{
+                "source": "extensions/foo.ts",
+                "extensions": [],
+                "skills": [],
+                "prompts": [],
+                "themes": []
+            }]
+        });
+
+        let mut extensions = vec![local_extension_summary("foo.ts", CliExtensionKind::LocalFile)];
+        apply_extension_enabled_state(&TEST_SPEC, &settings, &extensions_path, &mut extensions);
+        assert!(extensions[0].enabled, "pi 对文件型本地包固定加载");
+        assert!(!extensions[0].switch_supported);
+
+        let result = set_local_extension_enabled(
+            &TEST_SPEC,
+            settings.as_object_mut().expect("object"),
+            &extensions_path,
+            "foo.ts",
+            CliExtensionKind::LocalFile,
+            false,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn local_package_sources_match_with_windows_separators() {
+        let packages = vec![Value::String(r".\extensions\background-tasks\".to_string())];
+        assert_eq!(
+            matching_local_package_source(&TEST_SPEC, Some(&packages), "background-tasks"),
+            Some(r".\extensions\background-tasks\")
+        );
     }
 
     #[test]
@@ -2391,7 +3018,12 @@ User packages:
         .expect("parse settings");
 
         let mut extensions = vec![package_summary("npm:dup")];
-        apply_extension_enabled_state(&TEST_SPEC, &settings, &mut extensions);
+        apply_extension_enabled_state(
+            &TEST_SPEC,
+            &settings,
+            Path::new("extensions"),
+            &mut extensions,
+        );
 
         assert!(extensions[0].enabled, "第一个条目是纯字符串，应读作启用");
     }
@@ -2429,6 +3061,7 @@ User packages:
         let result = set_local_extension_enabled(
             &TEST_SPEC,
             object,
+            Path::new("extensions"),
             "foo.ts",
             CliExtensionKind::LocalFile,
             false,
@@ -2448,6 +3081,7 @@ User packages:
         set_local_extension_enabled(
             &TEST_SPEC,
             object,
+            Path::new("extensions"),
             "foo.ts",
             CliExtensionKind::LocalFile,
             false,
@@ -2472,6 +3106,7 @@ User packages:
         set_local_extension_enabled(
             &TEST_SPEC,
             object,
+            Path::new("extensions"),
             "foo.ts",
             CliExtensionKind::LocalFile,
             true,
@@ -2485,13 +3120,14 @@ User packages:
         assert!(entries.contains(&Value::String("+extensions/foo.ts".to_string())));
         assert!(is_local_extension_enabled(
             object.get("extensions"),
-            "extensions/foo.ts",
+            &["extensions/foo.ts".to_string()],
         ));
 
         // 幂等：再点一次启用不能堆出第二条 `+`。
         set_local_extension_enabled(
             &TEST_SPEC,
             object,
+            Path::new("extensions"),
             "foo.ts",
             CliExtensionKind::LocalFile,
             true,
@@ -2551,6 +3187,7 @@ User packages:
         set_local_extension_enabled(
             &TEST_SPEC,
             object,
+            Path::new("extensions"),
             "foo.ts",
             CliExtensionKind::LocalFile,
             false,
@@ -2564,6 +3201,7 @@ User packages:
         set_local_extension_enabled(
             &TEST_SPEC,
             object,
+            Path::new("extensions"),
             "foo.ts",
             CliExtensionKind::LocalFile,
             true,
@@ -2622,26 +3260,65 @@ User packages:
 
     #[test]
     fn scans_local_file_and_directory_extensions() {
-        let temp_dir =
-            std::env::temp_dir().join(format!("ai-toolbox-ext-scan-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&temp_dir);
-        fs::create_dir_all(temp_dir.join("dir-ext")).expect("create dir-ext");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let extensions_path = temp_dir.path().join("extensions");
+        fs::create_dir_all(extensions_path.join("dir-ext")).expect("create dir-ext");
+        fs::create_dir_all(extensions_path.join("dir-js")).expect("create dir-js");
+        fs::create_dir_all(extensions_path.join("manifest-only/src")).expect("create manifest-only");
+        fs::create_dir_all(extensions_path.join("not-an-extension")).expect("create plain dir");
+        fs::create_dir_all(extensions_path.join("broken-manifest"))
+            .expect("create broken-manifest");
         fs::write(
-            temp_dir.join("dir-ext").join("index.ts"),
+            extensions_path.join("dir-ext").join("index.ts"),
             "export default {};",
         )
         .expect("write index.ts");
-        fs::write(temp_dir.join("file-ext.ts"), "export default {};").expect("write file-ext");
-        fs::write(temp_dir.join("ignored.d.ts"), "declare const x: number;")
-            .expect("write ignored");
-        fs::create_dir_all(temp_dir.join("not-an-extension")).expect("create plain dir");
+        fs::write(
+            extensions_path.join("dir-js").join("index.js"),
+            "export default {};",
+        )
+        .expect("write index.js");
+        fs::write(extensions_path.join("file-ext.ts"), "export default {};")
+            .expect("write file-ext.ts");
+        fs::write(extensions_path.join("file-ext.js"), "export default {};")
+            .expect("write file-ext.js");
+        fs::write(
+            extensions_path.join("ignored.d.ts"),
+            "declare const x: number;",
+        )
+        .expect("write ignored");
+        fs::write(
+            extensions_path.join("manifest-only/package.json"),
+            r#"{ "pi": { "extensions": ["src/main.js"] } }"#,
+        )
+        .expect("write manifest package.json");
+        fs::write(extensions_path.join("manifest-only/src/main.js"), "")
+            .expect("write manifest entry");
+        fs::write(
+            extensions_path.join("broken-manifest/package.json"),
+            r#"{ "pi": { "extensions": ["src/missing.ts"] } }"#,
+        )
+        .expect("write broken package.json");
 
-        let extensions = scan_local_extensions(&TEST_SPEC, &temp_dir).expect("scan");
+        let extensions = scan_local_extensions(&TEST_SPEC, &extensions_path).expect("scan");
 
         let sources: Vec<&str> = extensions.iter().map(|item| item.source.as_str()).collect();
-        assert_eq!(sources, vec!["dir-ext", "file-ext.ts"]);
-
-        let _ = fs::remove_dir_all(&temp_dir);
+        assert_eq!(
+            sources,
+            vec![
+                "dir-ext",
+                "dir-js",
+                "file-ext.js",
+                "file-ext.ts",
+                "manifest-only"
+            ]
+        );
+        assert!(extensions.iter().all(|item| item.switch_supported));
+        let manifest_only = extensions
+            .iter()
+            .find(|item| item.source == "manifest-only")
+            .expect("manifest row");
+        assert_eq!(manifest_only.kind, CliExtensionKind::LocalDirectory);
     }
 
     #[test]
