@@ -54,6 +54,7 @@
 
 - 聚合 HTTP 路由的 failover 开关同时约束裸模型的初始站点选择：关闭时先尊重持久化 slug 表/站点前缀；未显式指定站点的裸名只在当前已启用候选中、且仅一个已选站点按实际转发模型声明它时才路由到该站点。零匹配沿用本地 404，多匹配返回 `409 gateway_aggregate_model_ambiguous` 并要求站点限定 slug；不允许用未选站点或跨站重试消歧。开启时保留原有目标站点优先及同模型候选故障转移。
 - 聚合目录在 failover 关闭时不得发布无法唯一解析的裸名；若子代理暴露选择点中了此类歧义裸名，接管失败并要求改用可寻址的站点模型，而不是静默过滤用户选择。精确命中已发布 slug 表且 slug 与上游模型同名（例如 `model_only` 的首个 slug）仍是站点绑定的显式路由，不算未绑定裸名。failover 开启时目录发布行为保持原样。
+- Codex 辅助任务分类是白名单：只有已知的辅助 `thread_source` / `x-openai-subagent` 值才产生 `aux_task`。`thread_source = user/subagent` 与 `x-openai-subagent: collab_spawn` 都是普通回合，不得归为 `Other` 后显示“辅助”（issue #460）；未知标记一律视为普通请求，不做猜测。详见 `docs/codex-auxiliary-model-routing-design.md`。
 
 ## 核心设计决策（Why）
 

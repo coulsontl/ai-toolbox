@@ -12,8 +12,8 @@ use crate::coding::proxy_gateway::types::CodexAuxTaskKind;
 
 use super::super::http_io::DebugHttpRequest;
 
-/// One auxiliary task Codex can emit. `Other` keeps the raw marker for the
-/// detail dialog but never participates in routing.
+/// One auxiliary task Codex can emit. Classification is a whitelist: only
+/// markers known to denote a real auxiliary/background call produce a task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CodexAuxTask {
     Title,
@@ -24,7 +24,6 @@ pub(crate) enum CodexAuxTask {
     AutoReview,
     Review,
     Compact,
-    Other(String),
 }
 
 impl CodexAuxTask {
@@ -36,7 +35,7 @@ impl CodexAuxTask {
             Self::Prediction => CodexAuxTaskKind::Prediction,
             Self::Memory => CodexAuxTaskKind::Memory,
             Self::AutoReview => CodexAuxTaskKind::AutoReview,
-            Self::Review | Self::Compact | Self::Other(_) => CodexAuxTaskKind::Other,
+            Self::Review | Self::Compact => CodexAuxTaskKind::Other,
         }
     }
 
@@ -62,8 +61,7 @@ impl CodexAuxTask {
         )
     }
 
-    /// Stable wire-level label for the detail dialog. Unknown markers are
-    /// clipped so a hostile/custom header cannot bloat the JSONL detail.
+    /// Stable wire-level label for the detail dialog.
     pub(crate) fn raw_kind(&self) -> String {
         match self {
             Self::Title => "thread_title".to_string(),
@@ -74,7 +72,6 @@ impl CodexAuxTask {
             Self::AutoReview => "auto_review".to_string(),
             Self::Review => "review".to_string(),
             Self::Compact => "compact".to_string(),
-            Self::Other(raw) => raw.chars().take(40).collect(),
         }
     }
 }
@@ -123,13 +120,16 @@ pub(crate) fn classify_codex_aux_parts(
 
     if let Some(subagent) = subagent {
         let normalized = subagent.to_ascii_lowercase();
-        return Some(match normalized.as_str() {
-            "guardian" | "guardian_review" | "auto_review" => CodexAuxTask::AutoReview,
-            "review" => CodexAuxTask::Review,
-            "compact" | "compaction" => CodexAuxTask::Compact,
-            "memory_consolidation" => CodexAuxTask::Memory,
-            _ => CodexAuxTask::Other(subagent.to_string()),
-        });
+        return match normalized.as_str() {
+            "guardian" | "guardian_review" | "auto_review" => Some(CodexAuxTask::AutoReview),
+            "review" => Some(CodexAuxTask::Review),
+            "compact" | "compaction" => Some(CodexAuxTask::Compact),
+            "memory_consolidation" => Some(CodexAuxTask::Memory),
+            // `collab_spawn` is a user-visible spawned agent turn, not a hidden
+            // auxiliary call. Unknown labels are not evidence either: never
+            // guess, or ordinary traffic gets an "auxiliary" badge (issue #460).
+            _ => None,
+        };
     }
 
     if memgen.is_some() {
@@ -143,17 +143,20 @@ pub(crate) fn classify_codex_aux_parts(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     if let Some(thread_source) = thread_source {
-        return Some(match thread_source {
+        match thread_source {
             "thread_title" | "thread_title_reconsideration" | "title_generation" => {
-                CodexAuxTask::Title
+                return Some(CodexAuxTask::Title);
             }
-            "thread_description" => CodexAuxTask::Description,
-            "thread_summary" => CodexAuxTask::Summary,
-            "composer_predictions" => CodexAuxTask::Prediction,
-            "guardian_review" => CodexAuxTask::AutoReview,
-            "memory_consolidation" => CodexAuxTask::Memory,
-            other => CodexAuxTask::Other(other.to_string()),
-        });
+            "thread_description" => return Some(CodexAuxTask::Description),
+            "thread_summary" => return Some(CodexAuxTask::Summary),
+            "composer_predictions" => return Some(CodexAuxTask::Prediction),
+            "guardian_review" => return Some(CodexAuxTask::AutoReview),
+            "memory_consolidation" => return Some(CodexAuxTask::Memory),
+            // `user`, `subagent`, client feature labels and unknown values all
+            // describe ordinary turns. Fall through so the request-kind
+            // fallback below still sees a memory request.
+            _ => {}
+        }
     }
 
     if metadata
@@ -206,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn subagent_markers_win_and_unknown_markers_are_kept() {
+    fn subagent_markers_map_known_tasks_and_spawns_stay_ordinary() {
         assert_eq!(
             classify_codex_aux_parts(&headers(&[("x-openai-subagent", "guardian")]), b""),
             Some(CodexAuxTask::AutoReview)
@@ -219,9 +222,23 @@ mod tests {
             classify_codex_aux_parts(&headers(&[("x-openai-subagent", "compact")]), b""),
             Some(CodexAuxTask::Compact)
         );
+        // `collab_spawn` is a spawned agent, not a hidden auxiliary call; an
+        // unknown label must not be guessed either (issue #460).
+        for marker in ["collab_spawn", "future_subagent"] {
+            assert_eq!(
+                classify_codex_aux_parts(&headers(&[("x-openai-subagent", marker)]), b""),
+                None,
+                "marker {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn subagent_header_wins_over_body_thread_source() {
+        let body = body_with_metadata(serde_json::json!({ "thread_source": "thread_title" }));
         assert_eq!(
-            classify_codex_aux_parts(&headers(&[("x-openai-subagent", "collab_spawn")]), b""),
-            Some(CodexAuxTask::Other("collab_spawn".to_string()))
+            classify_codex_aux_parts(&headers(&[("x-openai-subagent", "review")]), &body),
+            Some(CodexAuxTask::Review)
         );
     }
 
@@ -268,6 +285,23 @@ mod tests {
     }
 
     #[test]
+    fn turn_metadata_header_is_supported() {
+        let title = serde_json::json!({ "thread_source": "thread_title" }).to_string();
+        assert_eq!(
+            classify_codex_aux_parts(&headers(&[("x-codex-turn-metadata", title.as_str())]), b""),
+            Some(CodexAuxTask::Title)
+        );
+        let ordinary = serde_json::json!({ "thread_source": "user" }).to_string();
+        assert_eq!(
+            classify_codex_aux_parts(
+                &headers(&[("x-codex-turn-metadata", ordinary.as_str())]),
+                b""
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn body_metadata_accepts_an_object_too() {
         let body = serde_json::to_vec(&serde_json::json!({
             "client_metadata": {
@@ -282,13 +316,37 @@ mod tests {
     }
 
     #[test]
-    fn unknown_thread_source_is_other_and_broken_json_is_ignored() {
-        let body = body_with_metadata(serde_json::json!({ "thread_source": "future_kind" }));
+    fn ordinary_thread_sources_and_broken_json_are_ignored() {
+        // Codex emits `user` for ordinary app turns and `subagent` for spawned
+        // agents; client feature labels are equally ordinary. None of them may
+        // produce the "auxiliary" badge (issue #460).
+        for source in [
+            "user",
+            "subagent",
+            "automation",
+            "voice_chat",
+            "future_kind",
+        ] {
+            let body = body_with_metadata(serde_json::json!({ "thread_source": source }));
+            assert_eq!(
+                classify_codex_aux_parts(&[], &body),
+                None,
+                "source {source}"
+            );
+        }
+        assert_eq!(classify_codex_aux_parts(&[], b"not json"), None);
+    }
+
+    #[test]
+    fn unknown_thread_source_still_falls_back_to_request_kind_memory() {
+        let body = body_with_metadata(serde_json::json!({
+            "thread_source": "future_kind",
+            "request_kind": "memory"
+        }));
         assert_eq!(
             classify_codex_aux_parts(&[], &body),
-            Some(CodexAuxTask::Other("future_kind".to_string()))
+            Some(CodexAuxTask::Memory)
         );
-        assert_eq!(classify_codex_aux_parts(&[], b"not json"), None);
     }
 
     #[test]
@@ -301,9 +359,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_raw_kinds_are_clipped_for_logs() {
-        let long = "x".repeat(100);
-        let task = CodexAuxTask::Other(long);
-        assert_eq!(task.raw_kind().len(), 40);
+    fn review_and_compact_keep_stable_raw_kinds() {
+        assert_eq!(CodexAuxTask::Review.raw_kind(), "review");
+        assert_eq!(CodexAuxTask::Compact.raw_kind(), "compact");
     }
 }

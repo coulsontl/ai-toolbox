@@ -55,20 +55,29 @@ Codex 通过以下信息标记辅助调用：
 | 位置 | 值 | 含义 |
 |---|---|---|
 | `x-openai-subagent` header | `guardian` / `auto_review` | 自动审批 |
-| `x-openai-subagent` header | `review` / `compact` / `memory_consolidation` / `collab_spawn` / ... | 其他隐藏调用 |
+| `x-openai-subagent` header | `review` / `compact` / `memory_consolidation` | 其他隐藏调用 |
+| `x-openai-subagent` header | `collab_spawn` | 用户可见的子代理回合，**不是**辅助调用 |
 | `x-openai-memgen-request` header | `true` | 记忆请求 |
-| `x-codex-turn-metadata` header/body | `thread_source` | 隐藏线程来源 |
+| `x-codex-turn-metadata` header/body | `thread_source` | 线程来源 |
 | 同上 | `request_kind` | `turn` / `memory` / `compaction` 等 |
 
-`thread_source` 的已知值：
+`thread_source` 中**表示辅助调用**的值（分类白名单）：
 
 - `thread_title`
 - `thread_title_reconsideration`
+- `title_generation`
 - `thread_description`
 - `thread_summary`
 - `composer_predictions`
 - `guardian_review`
 - `memory_consolidation`
+
+其余值是普通来源，不参与辅助分类，例如：
+
+- `user`：Codex App 的普通用户会话
+- `subagent`：子代理会话
+- `automation` / `voice_chat` / `realtime_voice` 等客户端 Feature 标签
+- 未识别的值
 
 `x-codex-turn-metadata` 是 header 投影；规范传输是 Responses body 的 `client_metadata["x-codex-turn-metadata"]`（值可能是 JSON 字符串或对象）。网关必须同时支持两处。
 
@@ -174,7 +183,7 @@ memory                # memory_consolidation / memgen
 auto_review           # guardian / auto_review / guardian_review（只观测；模型走 autoReviewModelOverride）
 ```
 
-其他隐藏调用（`review`、`compact`、`collab_spawn` 等）只做观测分类，不进入首期路由表；保留 `other` 分类用于详情展示。
+其他隐藏调用（`review`、`compact`）只做观测分类，不进入首期路由表；保留 `other` 分类用于详情展示。`collab_spawn` 是用户可见的子代理回合，不参与辅助分类。
 
 ### 4.4 生效范围（重要）
 
@@ -291,11 +300,10 @@ pub(crate) enum CodexAuxTask {
     AutoReview,
     Review,
     Compact,
-    Other(String),
 }
 
 impl CodexAuxTask {
-    /// 只有可路由的任务有持久化键；AutoReview/Review/Compact/Other 返回 None。
+    /// 只有可路由的任务有持久化键；AutoReview/Review/Compact 返回 None。
     pub(crate) fn route_key(&self) -> Option<&'static str> {
         match self {
             Self::Title => Some("title"),
@@ -319,12 +327,17 @@ pub(crate) fn classify_codex_aux_task(request: &DebugHttpRequest) -> Option<Code
 4. body `client_metadata["x-codex-turn-metadata"]`（字符串或对象）；
 5. 都取不到 → `None`（视为普通回合）。
 
-未知的 `thread_source` / `subagent` 值保留为 `Other(raw)`，详情里显示“辅助（未知：<raw>）”，不参与路由。
+分类采用**白名单**：只有上面列出的已知辅助值才产生任务类型。
+
+- `x-openai-subagent: collab_spawn` 是用户可见的子代理回合 → `None`；
+- `thread_source` 为 `user` / `subagent` / 客户端 Feature 标签 / 未识别值 → 不分类；如果同一请求的 `request_kind == "memory"`，仍按兜底归为 `Memory`；
+- 未识别的 `x-openai-subagent` 标签 → `None`，不猜测。
+
+> 2026-11-11 修正（issue #460）：旧实现把所有未识别的 `thread_source` / `x-openai-subagent` 都归为 `Other` 并在列表显示“辅助”，导致 Codex App 的普通会话（`thread_source = user`）和子代理（`subagent` / `collab_spawn`）被误标。现在只有白名单信号才打标。
 
 安全边界：
 
 - 只对 `GatewayCliKey::Codex` 路由分类；
-- raw 值截断到 40 字符，避免日志膨胀；
 - 解析失败按 `None` 处理，不影响主回合。
 
 ### 6.2 候选与模型解析
