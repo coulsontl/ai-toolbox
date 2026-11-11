@@ -16,6 +16,7 @@
 
 - **分组而不是建模成 provider 记录**：`models.json` 里一条模型就是一个 endpoint + 一个 key，产品没有 provider 概念。若我们自己引入 provider 表，用户在 WorkBuddy 里直接加一条模型就会被我们的记录覆盖。分组视图保证「产品写的任何条目都立即出现在页面上」。
 - **`upsert_model` 用深合并而不是替换**：产品会往条目上写自己的键（`credits`、`tags`、`reasoning`、`iconUrl`），整体替换会把它们丢掉。
+- **思考强度写在嵌套的 `reasoning` 对象里，且只由 `supportsReasoning` 决定其存在**：开启时写 `{canDisableThinking, defaultEffort, supportedEfforts}`，关闭时写 `reasoning: null`。`merge_object` 把 `Value::Null` 解释为「删除该键」——这是清空上一版 `supportedEfforts` 的唯一方式，直接把对象覆盖成空对象会留下一个产品仍会读取的空壳。WorkBuddy 选择器只认 `minimal` / `low` / `medium` / `high` / `xhigh` / `max`；预设里的 `none` / `off` 表示「可关闭思考」，对应 `canDisableThinking` 的默认值，不能写进 `supportedEfforts`。
 - **改名必须走 `upsert_model_renaming(entry, previous_id)`，不能「先 `remove_model` 再 `upsert`」**：后者仍能把模型改名，但会丢掉该条目上产品写的全部键，并把它挪到列表末尾——两件都不报错。`upsert_model_renaming` 用旧 id 定位后原地合并再改 id，并清掉可能重复的同 id 行。回归：`workbuddy::commands::tests::renaming_a_model_keeps_its_position_and_product_owned_keys`（把实现改回旧语义会从 2 行变 3 行）。
 - **原子写（临时文件 + 改名）**：桌面版以 1 秒防抖监听这个文件，半写状态会被它读成解析错误。
 - **容错解析**：产品自己的加载器在失败前会先剥 BOM、去 `//` 与 `/* */` 注释、去尾逗号（`parseJsonWithRepair`）。我们镜像同一套容错，否则一个产品自己能读的文件会让我们的整页报错。

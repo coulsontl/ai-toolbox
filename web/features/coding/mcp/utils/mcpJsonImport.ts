@@ -1,5 +1,10 @@
 import type { HttpConfig, StdioConfig } from '../types';
 import { isJsonObject } from '../../../../utils/json.ts';
+import {
+  extraServerConfigFields,
+  optionalPositiveInteger,
+  optionalPositiveNumber,
+} from './mcpServerConfigFields.ts';
 
 export interface ParsedMcpJsonServer {
   name: string;
@@ -34,23 +39,17 @@ export function detectMcpServerType(config: Record<string, unknown>): 'stdio' | 
   return 'stdio';
 }
 
-function optionalPositiveNumber(value: unknown): number | undefined {
-  if (value === null || value === undefined || value === '') {
-    return undefined;
-  }
-  const numeric = Number(value);
-  return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined;
-}
-
 function optionalTimeoutFields(config: Record<string, unknown>): {
   startup_timeout_sec?: number;
   tool_timeout_sec?: number;
+  connectTimeoutMs?: number;
+  requestTimeoutMs?: number;
 } {
-  const startupTimeoutSec = optionalPositiveNumber(config.startup_timeout_sec);
-  const toolTimeoutSec = optionalPositiveNumber(config.tool_timeout_sec);
   return {
-    startup_timeout_sec: startupTimeoutSec,
-    tool_timeout_sec: toolTimeoutSec,
+    startup_timeout_sec: optionalPositiveNumber(config.startup_timeout_sec),
+    tool_timeout_sec: optionalPositiveNumber(config.tool_timeout_sec),
+    connectTimeoutMs: optionalPositiveInteger(config.connectTimeoutMs),
+    requestTimeoutMs: optionalPositiveInteger(config.requestTimeoutMs),
   };
 }
 
@@ -77,6 +76,7 @@ export function parseMcpServerConfig(config: Record<string, unknown>): StdioConf
         : undefined;
 
     return {
+      ...extraServerConfigFields(config),
       command,
       args,
       env: env && Object.keys(env).length > 0 ? env : undefined,
@@ -89,6 +89,7 @@ export function parseMcpServerConfig(config: Record<string, unknown>): StdioConf
     : config.url;
 
   return {
+    ...extraServerConfigFields(config),
     url: String(remoteUrl || ''),
     headers: isJsonObject(config.headers) ? config.headers as Record<string, string> : undefined,
     ...timeoutFields,

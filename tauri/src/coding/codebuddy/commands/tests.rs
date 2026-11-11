@@ -63,6 +63,9 @@ fn renaming_a_model_keeps_its_position_and_product_owned_keys() {
         supports_reasoning: false,
         only_reasoning: false,
         use_custom_protocol: false,
+        can_disable_thinking: true,
+        default_effort: None,
+        supported_efforts: Vec::new(),
     };
     document.upsert_model_renaming(
         models_json::build_model_entry(&input.as_entry_input()),

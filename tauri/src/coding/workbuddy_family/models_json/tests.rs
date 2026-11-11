@@ -162,6 +162,7 @@ fn to_chat_completions_url_normalizes_like_the_product() {
 
 #[test]
 fn build_model_entry_writes_the_fields_the_products_validate() {
+    let supported_efforts = vec!["low".to_string(), "high".to_string()];
     let built = build_model_entry(&ModelEntryInput {
         id: "a",
         name: Some("  Alpha  "),
@@ -176,6 +177,9 @@ fn build_model_entry_writes_the_fields_the_products_validate() {
         supports_reasoning: true,
         only_reasoning: false,
         use_custom_protocol: false,
+        can_disable_thinking: false,
+        default_effort: Some("high"),
+        supported_efforts: Some(&supported_efforts),
     });
     assert_eq!(built["id"], json!("a"));
     assert_eq!(built["name"], json!("Alpha"));
@@ -188,6 +192,161 @@ fn build_model_entry_writes_the_fields_the_products_validate() {
     // value and a `true` on disk could never be cleared from the UI.
     assert_eq!(built["onlyReasoning"], json!(false));
     assert_eq!(built["useCustomProtocol"], json!(false));
+    assert_eq!(
+        built["reasoning"],
+        json!({
+            "canDisableThinking": false,
+            "defaultEffort": "high",
+            "supportedEfforts": ["low", "high"],
+        })
+    );
+}
+
+/// Turning `supportsReasoning` off must clear the three fields this form owns,
+/// but not product-owned keys on the same object.
+#[test]
+fn turning_reasoning_off_clears_only_the_fields_this_patch_owns() {
+    let mut document = ModelsDocument::parse(
+        r#"[{"id":"a","url":"https://x/v1/chat/completions","supportsReasoning":true,
+            "reasoning":{"supportedEfforts":["low","high"],"defaultEffort":"high","summary":"auto"}}]"#,
+        false,
+    )
+    .expect("parse");
+
+    document.upsert_model(build_model_entry(&ModelEntryInput {
+        id: "a",
+        name: None,
+        vendor: None,
+        base_url: "https://x/v1",
+        api_key: None,
+        max_input_tokens: None,
+        max_output_tokens: None,
+        temperature: None,
+        supports_tool_call: true,
+        supports_images: false,
+        supports_reasoning: false,
+        only_reasoning: false,
+        use_custom_protocol: false,
+        can_disable_thinking: true,
+        default_effort: None,
+        supported_efforts: None,
+    }));
+
+    assert_eq!(document.models[0]["supportsReasoning"], json!(false));
+    assert_eq!(
+        document.models[0]["reasoning"],
+        json!({"summary": "auto"}),
+        "only the fields this patch owns are removed; product keys stay"
+    );
+}
+
+/// A brand-new entry must not receive the `null` merge directives: those mean
+/// "delete this key" and only make sense against an existing entry. Without
+/// pruning, a new model would carry `reasoning.supportedEfforts: null` on disk.
+#[test]
+fn a_new_entry_does_not_store_null_merge_directives() {
+    let minimal_input = |supports_reasoning: bool| ModelEntryInput {
+        id: "fresh",
+        name: None,
+        vendor: None,
+        base_url: "https://x/v1",
+        api_key: None,
+        max_input_tokens: None,
+        max_output_tokens: None,
+        temperature: None,
+        supports_tool_call: true,
+        supports_images: false,
+        supports_reasoning,
+        only_reasoning: false,
+        use_custom_protocol: false,
+        can_disable_thinking: true,
+        default_effort: None,
+        supported_efforts: None,
+    };
+
+    let mut with_reasoning = ModelsDocument::parse("[]", false).expect("parse");
+    with_reasoning.upsert_model(build_model_entry(&minimal_input(true)));
+    assert!(
+        with_reasoning.models[0].get("reasoning").is_none(),
+        "an all-default reasoning patch must not write null fields or an empty object"
+    );
+
+    let mut without_reasoning = ModelsDocument::parse("[]", false).expect("parse");
+    without_reasoning.upsert_model(build_model_entry(&minimal_input(false)));
+    assert!(
+        without_reasoning.models[0].get("reasoning").is_none(),
+        "a disabled reasoning switch must not write `reasoning` into a new entry"
+    );
+}
+
+/// Clearing the effort list removes those keys but keeps product-owned keys
+/// inside the same object (`summary` here).
+/// A default effort outside the supported list is contradictory; drop it
+/// instead of writing an entry WorkBuddy cannot honor.
+#[test]
+fn a_default_effort_outside_the_supported_list_is_not_written() {
+    let supported_efforts = vec!["low".to_string()];
+    let mut document = ModelsDocument::parse("[]", false).expect("parse");
+    document.upsert_model(build_model_entry(&ModelEntryInput {
+        id: "a",
+        name: None,
+        vendor: None,
+        base_url: "https://x/v1",
+        api_key: None,
+        max_input_tokens: None,
+        max_output_tokens: None,
+        temperature: None,
+        supports_tool_call: true,
+        supports_images: false,
+        supports_reasoning: true,
+        only_reasoning: false,
+        use_custom_protocol: false,
+        can_disable_thinking: true,
+        default_effort: Some("max"),
+        supported_efforts: Some(&supported_efforts),
+    }));
+
+    assert_eq!(
+        document.models[0]["reasoning"],
+        json!({"supportedEfforts": ["low"]}),
+        "the unsupported default must be omitted, leaving the effort menu intact"
+    );
+}
+
+#[test]
+fn clearing_efforts_removes_only_the_keys_this_patch_owns() {
+    let mut document = ModelsDocument::parse(
+        r#"[{"id":"a","url":"https://x/v1/chat/completions","supportsReasoning":true,
+            "reasoning":{"supportedEfforts":["low","high"],"defaultEffort":"high",
+            "canDisableThinking":false,"summary":"auto"}}]"#,
+        false,
+    )
+    .expect("parse");
+
+    document.upsert_model(build_model_entry(&ModelEntryInput {
+        id: "a",
+        name: None,
+        vendor: None,
+        base_url: "https://x/v1",
+        api_key: None,
+        max_input_tokens: None,
+        max_output_tokens: None,
+        temperature: None,
+        supports_tool_call: true,
+        supports_images: false,
+        supports_reasoning: true,
+        only_reasoning: false,
+        use_custom_protocol: false,
+        can_disable_thinking: true,
+        default_effort: None,
+        supported_efforts: None,
+    }));
+
+    assert_eq!(
+        document.models[0]["reasoning"],
+        json!({"summary": "auto"}),
+        "cleared efforts/default/disable flags must not drop a product-owned key"
+    );
 }
 
 /// The other half of the rule above: an edit must be able to flip `true` back
@@ -210,6 +369,9 @@ fn a_second_edit_can_clear_a_previously_enabled_flag() {
             supports_reasoning: false,
             only_reasoning,
             use_custom_protocol,
+            can_disable_thinking: true,
+            default_effort: None,
+            supported_efforts: None,
         })
     };
 

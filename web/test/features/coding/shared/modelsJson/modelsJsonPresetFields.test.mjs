@@ -28,14 +28,20 @@ test('the preset mapping writes no field models.json does not have', async () =>
     text.indexOf('/**', text.indexOf('export const presetToModelsJsonFields')),
   );
 
-  // The preset carries cost / options / variants; models.json has none of them,
-  // and writing them would produce keys the products never read.
-  for (const absent of ['cost', 'options', 'variants', 'modalities:']) {
+  // The preset carries cost / options; models.json has none of them, and
+  // writing them would produce keys the products never read. `variants` is
+  // *read* (its effort keys feed `supportedEfforts`) but must never be written
+  // as an output field of the same name.
+  for (const absent of ['cost', 'options', 'modalities:']) {
     assert.ok(
       !new RegExp(`\\b${absent}\\b`).test(body),
       `presetToModelsJsonFields must not write \`${absent}\``,
     );
   }
+  assert.ok(
+    !/\bvariants\s*:/.test(body),
+    'presetToModelsJsonFields must not write a `variants` field',
+  );
 });
 
 test('temperature is not copied: the preset means a boolean, the file stores a number', async () => {
@@ -78,6 +84,24 @@ test('the capability flags stay absent when the preset does not state them', asy
   assert.match(body, /preset\.reasoning === undefined \? \{\}/);
 });
 
+test('preset variant keys become supportedEfforts, restricted to picker levels', async () => {
+  const text = await source();
+
+  // WorkBuddy only renders an effort menu when the entry carries
+  // `reasoning.supportedEfforts`. Its picker knows these six levels (the same
+  // order as its `validateEffort` list); `none` and `off` in a preset mean
+  // "thinking can be disabled" (the `canDisableThinking` default) rather than
+  // an effort, so neither may leak into the list.
+  assert.match(
+    text,
+    /MODELS_JSON_REASONING_EFFORTS = \[[\s\S]*'minimal',[\s\S]*'low',[\s\S]*'medium',[\s\S]*'high',[\s\S]*'xhigh',[\s\S]*'max',/,
+  );
+  assert.match(text, /const variants = preset\.variants;/);
+  assert.match(text, /if \(!variants \|\| typeof variants !== 'object'\)/);
+  assert.match(text, /MODELS_JSON_REASONING_EFFORTS\.filter\(\(effort\) => effort in variants\)/);
+  assert.match(text, /supportedEfforts\.length > 0 \? \{ supportedEfforts \} : \{\}/);
+});
+
 test('the fetched-model builder falls back to the caller defaults, not to false', async () => {
   const text = await source();
   const start = text.indexOf('export const buildFetchedModelsJsonModel');
@@ -85,10 +109,10 @@ test('the fetched-model builder falls back to the caller defaults, not to false'
   assert.ok(start > 0, 'buildFetchedModelsJsonModel must exist');
   const body = text.slice(start);
 
-  assert.match(body, /matchedPreset\?\.tool_call \?\? existing\.supportsToolCall/);
-  assert.match(body, /matchedPreset\?\.reasoning \?\? existing\.supportsReasoning/);
+  assert.match(body, /presetFields\.supportsToolCall \?\? existing\.supportsToolCall/);
+  assert.match(body, /presetFields\.supportsReasoning \?\? existing\.supportsReasoning/);
   // An id and a name must always be written — the entry cannot exist without
   // them, so there is no "inherit" for these two.
   assert.match(body, /id: fetched\.id/);
-  assert.match(body, /name: matchedPreset\?\.name \|\| fetched\.name \|\| fetched\.id/);
+  assert.match(body, /name: presetFields\.name \|\| fetched\.name \|\| fetched\.id/);
 });

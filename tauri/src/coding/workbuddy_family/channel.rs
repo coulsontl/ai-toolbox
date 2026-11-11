@@ -31,6 +31,12 @@ pub struct ModelView {
     pub supports_reasoning: bool,
     pub only_reasoning: bool,
     pub use_custom_protocol: bool,
+    /// WorkBuddy's `reasoning.canDisableThinking`; absent means true.
+    pub can_disable_thinking: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
+    /// WorkBuddy's effort menu. Empty = only the thinking toggle is shown.
+    pub supported_efforts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,8 +136,29 @@ fn model_view(entry: &Value) -> Option<ModelView> {
         supports_reasoning: bool_field(entry, "supportsReasoning", false),
         only_reasoning: bool_field(entry, "onlyReasoning", false),
         use_custom_protocol: bool_field(entry, "useCustomProtocol", false),
+        can_disable_thinking: reasoning_field(entry, "canDisableThinking")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        default_effort: reasoning_field(entry, "defaultEffort")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        supported_efforts: reasoning_field(entry, "supportedEfforts")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
         id,
     })
+}
+
+/// One key inside an entry's `reasoning` object, if the entry has one.
+fn reasoning_field<'a>(entry: &'a Value, key: &str) -> Option<&'a Value> {
+    entry.get("reasoning")?.get(key)
 }
 
 fn bool_field(entry: &Value, key: &str, default: bool) -> bool {
@@ -193,6 +220,29 @@ mod tests {
         assert!(model.supports_tool_call, "the products default tool calling to on");
         assert!(!model.supports_images);
         assert!(!model.supports_reasoning);
+        assert!(model.can_disable_thinking, "absent canDisableThinking means true");
+        assert_eq!(model.default_effort, None);
+        assert!(model.supported_efforts.is_empty());
         assert_eq!(model.name, "a", "a missing name falls back to the id");
+    }
+
+    #[test]
+    fn model_rows_surface_the_nested_reasoning_config() {
+        let channels = build_channel_views(&[json!({
+            "id": "a",
+            "url": "https://x/v1",
+            "apiKey": "k",
+            "supportsReasoning": true,
+            "reasoning": {
+                "canDisableThinking": false,
+                "defaultEffort": "high",
+                "supportedEfforts": ["low", "high"],
+                "summary": "auto"
+            }
+        })]);
+        let model = &channels[0].models[0];
+        assert!(!model.can_disable_thinking);
+        assert_eq!(model.default_effort.as_deref(), Some("high"));
+        assert_eq!(model.supported_efforts, vec!["low", "high"]);
     }
 }

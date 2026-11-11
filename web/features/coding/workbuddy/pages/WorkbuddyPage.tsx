@@ -36,6 +36,7 @@ import ModelsJsonProviderSection from '@/features/coding/shared/modelsJson/Model
 import {
   MODELS_JSON_PRESET_NPM,
   buildFetchedModelsJsonModel,
+  buildProviderFirstModelFields,
 } from '@/features/coding/shared/modelsJson/modelsJsonPresetFields';
 import { findPresetModelById } from '@/constants/presetModels';
 import FetchModelsModal from '@/components/common/FetchModelsModal';
@@ -172,6 +173,9 @@ const WorkbuddyPage: React.FC = () => {
       supportsToolCall: model?.supportsToolCall ?? true,
       supportsImages: model?.supportsImages ?? false,
       supportsReasoning: model?.supportsReasoning ?? false,
+      canDisableThinking: model?.canDisableThinking ?? true,
+      defaultEffort: model?.defaultEffort,
+      supportedEfforts: model?.supportedEfforts ?? [],
       onlyReasoning: model?.onlyReasoning ?? false,
       useCustomProtocol: model?.useCustomProtocol ?? false,
     });
@@ -204,6 +208,9 @@ const WorkbuddyPage: React.FC = () => {
             supportsToolCall: model.supportsToolCall,
             supportsImages: model.supportsImages,
             supportsReasoning: model.supportsReasoning,
+            canDisableThinking: model.canDisableThinking,
+            defaultEffort: model.defaultEffort,
+            supportedEfforts: model.supportedEfforts,
             onlyReasoning: model.onlyReasoning,
             useCustomProtocol: model.useCustomProtocol,
           });
@@ -212,15 +219,18 @@ const WorkbuddyPage: React.FC = () => {
           setRuntime(next);
         }
       } else {
+        // The provider form only asks for an id, so fill everything else from
+        // the preset catalogue: WorkBuddy's picker shows `${name}:${id}` for
+        // custom entries, and without a name the user sees the bare id twice.
+        const modelId = values.modelId.trim();
+        const existingModel = runtime?.providers
+          .flatMap((provider) => provider.models)
+          .find((model) => model.id === modelId);
         setRuntime(await saveWorkbuddyModel({
-          id: values.modelId.trim(),
-          name: values.modelName?.trim() || values.modelId.trim(),
+          ...buildProviderFirstModelFields(modelId, values.modelName, existingModel),
           vendor: values.vendor?.trim() || undefined,
           baseUrl: values.baseUrl.trim(),
           apiKey: values.apiKey?.trim() || undefined,
-          supportsToolCall: true,
-          supportsImages: false,
-          supportsReasoning: false,
           onlyReasoning: false,
           useCustomProtocol: false,
         }));
@@ -453,7 +463,13 @@ const WorkbuddyPage: React.FC = () => {
         const fields = buildFetchedModelsJsonModel(
           model,
           findPresetModelById(model.id, MODELS_JSON_PRESET_NPM),
-          { supportsToolCall: true, supportsImages: false, supportsReasoning: false },
+          {
+            supportsToolCall: true,
+            supportsImages: false,
+            supportsReasoning: false,
+            canDisableThinking: true,
+            supportedEfforts: [],
+          },
         );
         next = await saveWorkbuddyModel({
           id: fields.id,
@@ -466,6 +482,9 @@ const WorkbuddyPage: React.FC = () => {
           supportsToolCall: fields.supportsToolCall,
           supportsImages: fields.supportsImages,
           supportsReasoning: fields.supportsReasoning,
+          canDisableThinking: fields.canDisableThinking,
+          defaultEffort: fields.defaultEffort,
+          supportedEfforts: fields.supportedEfforts,
           onlyReasoning: false,
           useCustomProtocol: false,
         });

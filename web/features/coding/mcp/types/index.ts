@@ -29,6 +29,12 @@ export interface StdioConfig {
   startup_timeout_sec?: number;
   /** Codex / Grok: per-tool call timeout in seconds */
   tool_timeout_sec?: number;
+  /** OmO: connect + initialize handshake timeout in milliseconds */
+  connectTimeoutMs?: number;
+  /** OmO: per-request / tool-call timeout in milliseconds */
+  requestTimeoutMs?: number;
+  /** Tool-specific keys preserved from an imported config (OmO's `lifecycle`, ...). */
+  [key: string]: unknown;
 }
 
 export interface HttpConfig {
@@ -38,6 +44,12 @@ export interface HttpConfig {
   startup_timeout_sec?: number;
   /** Codex / Grok: per-tool call timeout in seconds */
   tool_timeout_sec?: number;
+  /** OmO: connect + initialize handshake timeout in milliseconds */
+  connectTimeoutMs?: number;
+  /** OmO: per-request / tool-call timeout in milliseconds */
+  requestTimeoutMs?: number;
+  /** Tool-specific keys preserved from an imported config (OmO's `lifecycle`, ...). */
+  [key: string]: unknown;
 }
 
 export interface McpSyncDetail {

@@ -35,7 +35,14 @@ async function collectTestFiles(directoryPath) {
       continue;
     }
 
-    if (entry.name.endsWith('.test.ts') || entry.name.endsWith('.spec.ts')) {
+    // The modelsJson source-contract tests predate the TypeScript runner and
+    // are plain .test.mjs files; include them so `pnpm test` actually enforces
+    // the regressions AGENTS.md points at.
+    if (
+      entry.name.endsWith('.test.ts')
+      || entry.name.endsWith('.spec.ts')
+      || entry.name.endsWith('.test.mjs')
+    ) {
       collectedFiles.push(entryPath);
     }
   }

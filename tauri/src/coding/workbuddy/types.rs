@@ -55,6 +55,15 @@ pub struct WorkbuddyModelInput {
     pub only_reasoning: bool,
     #[serde(default)]
     pub use_custom_protocol: bool,
+    /// WorkBuddy's `reasoning.canDisableThinking`; absent defaults to true.
+    #[serde(default = "default_true")]
+    pub can_disable_thinking: bool,
+    /// WorkBuddy's `reasoning.defaultEffort`; empty means "request layer default".
+    #[serde(default)]
+    pub default_effort: Option<String>,
+    /// WorkBuddy's `reasoning.supportedEfforts`; empty means no effort menu.
+    #[serde(default)]
+    pub supported_efforts: Vec<String>,
 }
 
 fn default_true() -> bool {

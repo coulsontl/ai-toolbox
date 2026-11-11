@@ -4546,7 +4546,7 @@
     "description": "Description",
     "descriptionPlaceholder": "Optional server description",
     "timeouts": "Timeouts",
-    "timeoutsHint": "Configure per tool; leave empty for each tool's defaults. OpenCode uses millisecond timeout; Codex / Grok use startup_timeout_sec / tool_timeout_sec in seconds.",
+    "timeoutsHint": "Configure per tool; leave empty for each tool's defaults. OpenCode uses millisecond timeout; Codex / Grok use startup_timeout_sec / tool_timeout_sec in seconds; OmO uses connectTimeoutMs / requestTimeoutMs in milliseconds.",
     "timeoutOpenCodeLabel": "OpenCode connection timeout (ms)",
     "startupTimeoutLabel": "Codex / Grok startup timeout (sec)",
     "toolTimeoutLabel": "Codex / Grok tool call timeout (sec)",
@@ -4741,7 +4741,9 @@
     "followCcSwitchMarks": "Follow CC Switch marks",
     "followCcSwitchMarksHintOn": "Servers from CC Switch sync to the agents marked there (unmarked ones sync to no tool); the selection below applies to other sources only.",
     "followCcSwitchMarksHintOff": "Servers from CC Switch sync to the tools selected below.",
-    "copyJson": "Copy JSON"
+    "copyJson": "Copy JSON",
+    "omoConnectTimeoutLabel": "OmO connect handshake timeout (ms, default 15000)",
+    "omoRequestTimeoutLabel": "OmO request timeout (ms, default 30000)"
   },
   "pi": {
     "rootPathSource": {
@@ -6297,7 +6299,23 @@
       "useCustomProtocol": "Custom protocol",
       "useCustomProtocolHint": "With \"Custom protocol\" on, the endpoint skips URL normalization and is written exactly as typed.",
       "baseUrlChannelHint": "This entry belongs to an existing channel; changing the endpoint moves it out of that channel.",
-      "capabilities": "Capabilities"
+      "capabilities": "Capabilities",
+      "reasoningGroup": "Reasoning effort",
+      "reasoningGroupHint": "WorkBuddy reads the reasoning object to show effort levels; with none selected it only shows the thinking toggle.",
+      "supportedEfforts": "Supported efforts",
+      "supportedEffortsPlaceholder": "Select efforts",
+      "defaultEffort": "Default effort",
+      "defaultEffortPlaceholder": "Leave empty for the request-layer default",
+      "canDisableThinking": "Allow disabling thinking",
+      "canDisableThinkingHint": "Let the user turn thinking off",
+      "effort": {
+        "minimal": "Minimal",
+        "low": "Low",
+        "medium": "Medium",
+        "high": "High",
+        "xhigh": "X-High",
+        "max": "Max"
+      }
     },
     "noModels": "No custom models yet.",
     "provider": {

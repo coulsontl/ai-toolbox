@@ -171,7 +171,11 @@ impl ModelsDocument {
                 // appear twice; the edited one wins and the stray is dropped.
                 self.drop_duplicate_ids(&id, index);
             }
-            None => self.models.push(entry),
+            None => {
+                if let Some(cleaned) = without_null_keys(&entry) {
+                    self.models.push(cleaned);
+                }
+            }
         }
     }
 
@@ -325,6 +329,48 @@ pub fn build_model_entry(input: &ModelEntryInput<'_>) -> Value {
         "useCustomProtocol".to_string(),
         Value::Bool(input.use_custom_protocol),
     );
+    // WorkBuddy stores the effort menu in a nested `reasoning` object. Without
+    // it the selector only offers a thinking on/off toggle, no effort levels.
+    // The patch carries only the three keys this form owns; `null` means
+    // "remove that key" (see `merge_object`), which preserves product-owned
+    // keys such as `summary` or `effort` on the same object.
+    let supported_efforts = if input.supports_reasoning {
+        input
+            .supported_efforts
+            .filter(|efforts| !efforts.is_empty())
+    } else {
+        None
+    };
+    // A default outside the supported list is meaningless: WorkBuddy clamps or
+    // ignores it. Drop it here as well so a stale form value cannot produce a
+    // contradictory entry.
+    let default_effort = if input.supports_reasoning {
+        non_empty(input.default_effort).filter(|effort| {
+            supported_efforts.is_some_and(|supported| supported.iter().any(|item| item == effort))
+        })
+    } else {
+        None
+    };
+    let mut reasoning = Map::new();
+    reasoning.insert(
+        "canDisableThinking".to_string(),
+        if input.supports_reasoning && !input.can_disable_thinking {
+            Value::Bool(false)
+        } else {
+            // WorkBuddy treats an absent key as `true`; remove it so an entry
+            // that previously said `false` can be flipped back.
+            Value::Null
+        },
+    );
+    reasoning.insert(
+        "defaultEffort".to_string(),
+        default_effort.map_or(Value::Null, |effort| json!(effort)),
+    );
+    reasoning.insert(
+        "supportedEfforts".to_string(),
+        supported_efforts.map_or(Value::Null, |efforts| json!(efforts)),
+    );
+    map.insert("reasoning".to_string(), Value::Object(reasoning));
     Value::Object(map)
 }
 
@@ -344,6 +390,12 @@ pub struct ModelEntryInput<'a> {
     pub supports_reasoning: bool,
     pub only_reasoning: bool,
     pub use_custom_protocol: bool,
+    /// WorkBuddy's `reasoning.canDisableThinking`; `true` removes the key.
+    pub can_disable_thinking: bool,
+    /// WorkBuddy's `reasoning.defaultEffort`; empty clears the key.
+    pub default_effort: Option<&'a str>,
+    /// WorkBuddy's `reasoning.supportedEfforts`; empty clears the key.
+    pub supported_efforts: Option<&'a [String]>,
 }
 
 fn non_empty(value: Option<&str>) -> Option<&str> {
@@ -351,16 +403,26 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
 }
 
 /// Deep-merges `patch` into `target` for objects; other kinds replace outright.
+///
+/// A `null` patch value removes the key. `models.json` has no other way to
+/// express "clear this field": without it a nested `reasoning.supportedEfforts`
+/// written by a previous edit would survive a save that meant to clear it.
 fn merge_object(target: &mut Value, patch: &Value) {
     match (target, patch) {
         (Value::Object(target_map), Value::Object(patch_map)) => {
             for (key, value) in patch_map {
+                if value.is_null() {
+                    target_map.remove(key);
+                    continue;
+                }
                 match target_map.get_mut(key) {
                     Some(existing) if existing.is_object() && value.is_object() => {
                         merge_object(existing, value);
                     }
                     _ => {
-                        target_map.insert(key.clone(), value.clone());
+                        if let Some(cleaned) = without_null_keys(value) {
+                            target_map.insert(key.clone(), cleaned);
+                        }
                     }
                 }
             }
@@ -368,6 +430,28 @@ fn merge_object(target: &mut Value, patch: &Value) {
         (target, patch) => {
             *target = patch.clone();
         }
+    }
+}
+
+/// Drops `null` entries before a patch object is inserted into a target that
+/// has no such key yet (a brand-new model, or a product-owned object we are not
+/// merging into). Nulls are merge instructions — "remove this key" — not data,
+/// so writing them into a fresh entry would leave `reasoning.supportedEfforts:
+/// null` on disk. An object that becomes empty is dropped as well, so a
+/// defaulted `reasoning` patch does not leave `reasoning: {}` behind.
+fn without_null_keys(value: &Value) -> Option<Value> {
+    match value {
+        Value::Object(map) => {
+            let cleaned: Map<String, Value> = map
+                .iter()
+                .filter(|(_, value)| !value.is_null())
+                .filter_map(|(key, value)| {
+                    without_null_keys(value).map(|value| (key.clone(), value))
+                })
+                .collect();
+            (!cleaned.is_empty()).then_some(Value::Object(cleaned))
+        }
+        other => Some(other.clone()),
     }
 }
 

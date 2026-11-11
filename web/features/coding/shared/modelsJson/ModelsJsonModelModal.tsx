@@ -5,6 +5,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Select,
   Tag,
   Typography,
   type FormInstance,
@@ -21,7 +22,11 @@ import type {
   WorkbuddyFamilyModelInput,
   WorkbuddyFamilyProviderView,
 } from '@/types/workbuddyFamily';
-import { MODELS_JSON_PRESET_NPM, presetToModelsJsonFields } from './modelsJsonPresetFields';
+import {
+  MODELS_JSON_PRESET_NPM,
+  MODELS_JSON_REASONING_EFFORTS,
+  presetToModelsJsonFields,
+} from './modelsJsonPresetFields';
 
 import {
   MODEL_FORM_CHECKBOX_STYLES,
@@ -76,6 +81,34 @@ const ModelsJsonModelModal: React.FC<Props> = ({
   const { t } = useTranslation();
   const [saving, setSaving] = React.useState(false);
   const [presetsExpanded, setPresetsExpanded] = React.useState(false);
+  // `preserve: true` reads the whole form store, including fields that are not
+  // mounted yet. The page fills the form before opening the modal, and without
+  // it the watch can stay `undefined` when `setFieldsValue()` notifies before
+  // the `Form.Item`s register — the supported list then looks empty and the
+  // default effort is displayed as a blank select.
+  const supportsReasoning = Form.useWatch('supportsReasoning', { form, preserve: true });
+  const watchedSupportedEfforts = Form.useWatch('supportedEfforts', { form, preserve: true });
+  const supportedEfforts = React.useMemo(
+    () => (Array.isArray(watchedSupportedEfforts) ? watchedSupportedEfforts as string[] : []),
+    [watchedSupportedEfforts],
+  );
+  const reasoningEffortOptions = React.useMemo(
+    () =>
+      MODELS_JSON_REASONING_EFFORTS.map((effort) => ({
+        value: effort,
+        label: t(`workbuddy.model.effort.${effort}`),
+      })),
+    [t],
+  );
+  // A default outside the supported list cannot be honored. Keep the dropdown
+  // scoped to the selected levels; the list's onChange (and preset selection)
+  // clears a stale value. No effect here: `useWatch` lags one render on open,
+  // and an effect would clear a valid default before it is displayed.
+  const defaultEffortOptions = React.useMemo(
+    () =>
+      reasoningEffortOptions.filter((option) => supportedEfforts.includes(option.value)),
+    [reasoningEffortOptions, supportedEfforts],
+  );
   const presetModelsVersion = React.useSyncExternalStore(
     subscribePresetModels,
     getPresetModelsVersion,
@@ -114,9 +147,16 @@ const ModelsJsonModelModal: React.FC<Props> = ({
 
   /** Fills the form from a preset; the id is left alone while editing. */
   const handlePresetSelect = (preset: PresetModel) => {
+    const presetFields = presetToModelsJsonFields(preset);
+    const nextSupportedEfforts = presetFields.supportedEfforts;
+    const currentDefaultEffort = form.getFieldValue('defaultEffort');
+    const defaultEffortIsStale = Array.isArray(nextSupportedEfforts)
+      && currentDefaultEffort
+      && !nextSupportedEfforts.includes(currentDefaultEffort);
     form.setFieldsValue({
       ...(editing ? {} : { id: preset.id }),
-      ...presetToModelsJsonFields(preset),
+      ...presetFields,
+      ...(defaultEffortIsStale ? { defaultEffort: undefined } : {}),
     });
   };
 
@@ -320,6 +360,70 @@ const ModelsJsonModelModal: React.FC<Props> = ({
             {t('workbuddy.model.useCustomProtocolHint')}
           </Text>
         </Form.Item>
+
+        {/* WorkBuddy only shows an effort menu when the entry carries
+            `reasoning.supportedEfforts`; `supportsReasoning` alone yields the
+            on/off thinking toggle. The section is hidden while the switch is
+            off, and the backend clears `reasoning` on save in that state. */}
+        {supportsReasoning && (
+          <Form.Item
+            label={(
+              <span style={MODEL_FORM_GROUP_LABEL_STYLE}>
+                {t('workbuddy.model.reasoningGroup')}
+              </span>
+            )}
+            extra={t('workbuddy.model.reasoningGroupHint')}
+          >
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
+                gap: 12,
+              }}
+            >
+              <Form.Item
+                name="supportedEfforts"
+                label={t('workbuddy.model.supportedEfforts')}
+                style={{ gridColumn: '1 / -1', marginBottom: 0 }}
+              >
+                <Select
+                  mode="multiple"
+                  allowClear
+                  options={reasoningEffortOptions}
+                  placeholder={t('workbuddy.model.supportedEffortsPlaceholder')}
+                  onChange={(nextEfforts: string[]) => {
+                    const currentDefaultEffort = form.getFieldValue('defaultEffort');
+                    if (currentDefaultEffort && !nextEfforts.includes(currentDefaultEffort)) {
+                      form.setFieldValue('defaultEffort', undefined);
+                    }
+                  }}
+                />
+              </Form.Item>
+              <Form.Item
+                name="defaultEffort"
+                label={t('workbuddy.model.defaultEffort')}
+                style={{ marginBottom: 0 }}
+              >
+                <Select
+                  allowClear
+                  disabled={defaultEffortOptions.length === 0}
+                  options={defaultEffortOptions}
+                  placeholder={t('workbuddy.model.defaultEffortPlaceholder')}
+                />
+              </Form.Item>
+              <Form.Item
+                name="canDisableThinking"
+                valuePropName="checked"
+                label={t('workbuddy.model.canDisableThinking')}
+                style={{ marginBottom: 0 }}
+              >
+                <Checkbox styles={MODEL_FORM_CHECKBOX_STYLES}>
+                  {t('workbuddy.model.canDisableThinkingHint')}
+                </Checkbox>
+              </Form.Item>
+            </div>
+          </Form.Item>
+        )}
       </Form>
     </Modal>
   );

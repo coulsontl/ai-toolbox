@@ -99,6 +99,53 @@ test('parseMcpServersFromJsonValue treats command-keyed maps as named servers', 
   assert.equal(urlServerConfig.url, 'https://example.com/mcp');
 });
 
+test('parseMcpServersFromJsonValue keeps OmO millisecond timeouts and unknown fields', () => {
+  const servers = parseMcpServersFromJsonValue({
+    mcpServers: {
+      slow: {
+        type: 'stdio',
+        command: 'uvx',
+        args: ['slow-mcp@latest'],
+        connectTimeoutMs: 45000,
+        requestTimeoutMs: 120000,
+        idleTimeoutMin: 10,
+        startupTimeoutMs: 250,
+        lifecycle: 'lazy',
+        enabled: true,
+      },
+    },
+  });
+
+  assert.equal(servers.length, 1);
+  const config = servers[0].server_config as unknown as Record<string, unknown>;
+  assert.equal(config.connectTimeoutMs, 45000);
+  assert.equal(config.requestTimeoutMs, 120000);
+  // Fields the form does not model still round-trip through the store.
+  assert.equal(config.idleTimeoutMin, 10);
+  assert.equal(config.startupTimeoutMs, 250);
+  assert.equal(config.lifecycle, 'lazy');
+  assert.equal(config.enabled, true);
+});
+
+test('parseMcpServersFromJsonValue drops invalid OmO timeouts', () => {
+  const servers = parseMcpServersFromJsonValue({
+    mcpServers: {
+      broken: {
+        type: 'stdio',
+        command: 'npx',
+        connectTimeoutMs: 0,
+        requestTimeoutMs: 15000.5,
+      },
+    },
+  });
+
+  assert.equal(servers.length, 1);
+  const config = servers[0].server_config as Record<string, unknown>;
+  assert.equal('connectTimeoutMs' in config, true);
+  assert.equal(config.connectTimeoutMs, undefined);
+  assert.equal(config.requestTimeoutMs, undefined);
+});
+
 test('parseMcpServersFromJsonValue preserves Codex/Grok second-based timeouts', () => {
   const servers = parseMcpServersFromJsonValue({
     mcpServers: {

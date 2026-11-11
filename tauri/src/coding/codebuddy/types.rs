@@ -55,6 +55,15 @@ pub struct CodebuddyModelInput {
     pub only_reasoning: bool,
     #[serde(default)]
     pub use_custom_protocol: bool,
+    /// WorkBuddy's `reasoning.canDisableThinking`; absent defaults to true.
+    #[serde(default = "default_true")]
+    pub can_disable_thinking: bool,
+    /// WorkBuddy's `reasoning.defaultEffort`; empty means "request layer default".
+    #[serde(default)]
+    pub default_effort: Option<String>,
+    /// WorkBuddy's `reasoning.supportedEfforts`; empty means no effort menu.
+    #[serde(default)]
+    pub supported_efforts: Vec<String>,
 }
 
 impl CodebuddyModelInput {
@@ -74,6 +83,9 @@ impl CodebuddyModelInput {
             supports_reasoning: self.supports_reasoning,
             only_reasoning: self.only_reasoning,
             use_custom_protocol: self.use_custom_protocol,
+            can_disable_thinking: self.can_disable_thinking,
+            default_effort: self.default_effort.as_deref(),
+            supported_efforts: Some(&self.supported_efforts),
         }
     }
 }

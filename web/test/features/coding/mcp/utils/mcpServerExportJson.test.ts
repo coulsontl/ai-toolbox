@@ -85,6 +85,29 @@ test('buildMcpServerExportJson round-trips http servers with headers', () => {
   assert.equal(config.tool_timeout_sec, 300);
 });
 
+test('buildMcpServerExportJson keeps OmO timeouts and unknown per-server fields', () => {
+  const payload = buildMcpServerExportJson(makeServer({
+    server_config: {
+      command: 'uvx',
+      args: ['slow-mcp@latest'],
+      connectTimeoutMs: 45000,
+      requestTimeoutMs: 120000,
+      lifecycle: 'lazy',
+    },
+  })) as { mcpServers: Record<string, Record<string, unknown>> };
+
+  const entry = payload.mcpServers.context7;
+  assert.equal(entry.connectTimeoutMs, 45000);
+  assert.equal(entry.requestTimeoutMs, 120000);
+  assert.equal(entry.lifecycle, 'lazy');
+
+  const parsed = parseMcpServersFromJsonValue(payload);
+  const roundTripped = parsed[0].server_config as Record<string, unknown>;
+  assert.equal(roundTripped.connectTimeoutMs, 45000);
+  assert.equal(roundTripped.requestTimeoutMs, 120000);
+  assert.equal(roundTripped.lifecycle, 'lazy');
+});
+
 test('buildMcpServerExportJson omits empty optional sections', () => {
   const payload = buildMcpServerExportJson(makeServer({
     server_config: { command: 'npx', args: [] },

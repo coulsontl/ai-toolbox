@@ -1,4 +1,5 @@
 import type { HttpConfig, McpServer, StdioConfig } from '../types';
+import { preservedServerConfigFields } from './mcpServerConfigFields.ts';
 
 /**
  * Convert one managed server into the standard `mcpServers` entry shape that
@@ -12,9 +13,15 @@ import type { HttpConfig, McpServer, StdioConfig } from '../types';
 function buildServerConfigEntry(server: McpServer): Record<string, unknown> {
   const config = server.server_config as StdioConfig | HttpConfig;
 
+  // Tool-specific keys (OmO's `connectTimeoutMs` / `requestTimeoutMs`, or an
+  // imported `lifecycle`) are not modelled by the form, but an export must
+  // carry them through so a paste-back preserves the original entry.
+  const extraFields = preservedServerConfigFields(config, ['name', 'id']);
+
   if (server.server_type === 'stdio') {
     const stdioConfig = config as StdioConfig;
     const entry: Record<string, unknown> = {
+      ...extraFields,
       type: 'stdio',
       command: stdioConfig.command,
       args: stdioConfig.args ?? [],
@@ -33,6 +40,7 @@ function buildServerConfigEntry(server: McpServer): Record<string, unknown> {
 
   const httpConfig = config as HttpConfig;
   const entry: Record<string, unknown> = {
+    ...extraFields,
     type: server.server_type,
     url: httpConfig.url,
   };

@@ -22,6 +22,12 @@ export interface WorkbuddyFamilyModelView {
   supportsReasoning: boolean;
   onlyReasoning: boolean;
   useCustomProtocol: boolean;
+  /** WorkBuddy's `reasoning.canDisableThinking`; absent means true. */
+  canDisableThinking: boolean;
+  /** WorkBuddy's `reasoning.defaultEffort`; absent means request-layer default. */
+  defaultEffort?: string;
+  /** WorkBuddy's effort menu; empty = only the thinking toggle is shown. */
+  supportedEfforts: string[];
 }
 
 /** A group of model entries sharing one endpoint and API key. */
@@ -52,4 +58,7 @@ export interface WorkbuddyFamilyModelInput {
   supportsReasoning?: boolean;
   onlyReasoning?: boolean;
   useCustomProtocol?: boolean;
+  canDisableThinking?: boolean;
+  defaultEffort?: string | null;
+  supportedEfforts?: string[];
 }

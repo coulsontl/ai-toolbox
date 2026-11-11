@@ -897,6 +897,75 @@ fn extract_remote_url_with_format_config<'a>(
     None
 }
 
+/// Fields the central MCP model owns, or that spell the same fact differently
+/// in another tool's schema. Everything else on an OmO entry is passed through
+/// verbatim so a scan → edit → sync round trip does not drop `lifecycle`,
+/// `idleTimeoutMin`, `includeTools`, and the rest of OmO's server options.
+/// `enabled` is excluded too: the sync target list decides whether the entry is
+/// written at all, and a stale `false` imported from Kimi must not disable the
+/// server in OmO.
+const OMO_NON_PASSTHROUGH_FIELDS: [&str; 18] = [
+    "name",
+    "id",
+    "type",
+    "command",
+    "args",
+    "env",
+    "environment",
+    "url",
+    "httpUrl",
+    "serverUrl",
+    "headers",
+    "http_headers",
+    "transport",
+    "startup_timeout_sec",
+    "tool_timeout_sec",
+    "bearer_token_env_var",
+    "bearerTokenEnvVar",
+    "enabled",
+];
+
+/// Writes an OmO server entry: the standard fields are already in `result`;
+/// this adds the tool-specific ones. The two millisecond timeouts are the only
+/// values the UI owns, so they are validated (positive integers) and omitted
+/// otherwise, letting the engine apply its defaults (`connectTimeoutMs` 15000,
+/// `requestTimeoutMs` 30000).
+fn apply_omo_server_fields(result: &mut Value, server_config: &Value) {
+    let Some(result_object) = result.as_object_mut() else {
+        return;
+    };
+    let Some(config_object) = server_config.as_object() else {
+        return;
+    };
+
+    for (key, value) in config_object {
+        if value.is_null()
+            || OMO_NON_PASSTHROUGH_FIELDS.contains(&key.as_str())
+            || key == "connectTimeoutMs"
+            || key == "requestTimeoutMs"
+        {
+            continue;
+        }
+        // `cwd` is a host-local path. WSL/SSH post-processing rewrites only
+        // `command`, so a Windows path would point the remote OmO at a
+        // directory that does not exist there.
+        if key == "cwd" {
+            continue;
+        }
+        result_object.insert(key.clone(), value.clone());
+    }
+
+    for field in ["connectTimeoutMs", "requestTimeoutMs"] {
+        if let Some(millis) = server_config
+            .get(field)
+            .and_then(Value::as_u64)
+            .filter(|millis| *millis > 0)
+        {
+            result_object.insert(field.to_string(), Value::from(millis));
+        }
+    }
+}
+
 /// Build stdio server configuration
 fn build_stdio_config(
     server: &McpServer,
@@ -947,6 +1016,12 @@ fn build_stdio_config(
         } else {
             result.remove("env");
         }
+
+        // A server can be enabled for both OmO and OpenClaw. These keys are
+        // OmO-only; OpenClaw's full-config passthrough would otherwise copy
+        // them into openclaw.json.
+        result.remove("connectTimeoutMs");
+        result.remove("requestTimeoutMs");
 
         return Ok(Value::Object(result));
     }
@@ -1038,7 +1113,11 @@ fn build_stdio_config(
             }
         }
 
-        let result = command_normalize::wrap_cmd_c_for_target(&result, should_wrap_cmd);
+        let mut result = command_normalize::wrap_cmd_c_for_target(&result, should_wrap_cmd);
+
+        if tool_key == "omo_native" {
+            apply_omo_server_fields(&mut result, &server.server_config);
+        }
 
         Ok(result)
     }
@@ -1089,6 +1168,10 @@ fn build_http_config(
         } else {
             result.remove("headers");
         }
+
+        // OmO-only keys must not ride along into OpenClaw's config.
+        result.remove("connectTimeoutMs");
+        result.remove("requestTimeoutMs");
 
         return Ok(Value::Object(result));
     }
@@ -1150,6 +1233,10 @@ fn build_http_config(
             {
                 result["headers"] = headers_val;
             }
+        }
+
+        if tool_key == "omo_native" {
+            apply_omo_server_fields(&mut result, &server.server_config);
         }
 
         Ok(result)
@@ -2328,6 +2415,58 @@ X-Test = "yes"
         // Kimi has no url -> sse inference; the discriminator is required.
         assert_eq!(sse_config["transport"], "sse");
         assert_eq!(sse_config["url"], "https://example.com/mcp");
+    }
+
+    #[test]
+    fn omo_json_config_passes_millisecond_timeouts_through() {
+        let mut stdio = build_npx_stdio_server();
+        stdio.server_config["connectTimeoutMs"] = json!(45_000);
+        stdio.server_config["requestTimeoutMs"] = json!(120_000);
+        stdio.server_config["lifecycle"] = json!("lazy");
+        stdio.server_config["idleTimeoutMin"] = json!(10);
+        stdio.server_config["startup_timeout_sec"] = json!(30);
+
+        let stdio_config = build_json_server_config(&stdio, None, true, "omo_native", false)
+            .expect("build OmO stdio MCP");
+
+        assert_eq!(stdio_config["connectTimeoutMs"], 45_000);
+        assert_eq!(stdio_config["requestTimeoutMs"], 120_000);
+        // OmO-specific fields the form does not model survive a re-sync.
+        assert_eq!(stdio_config["lifecycle"], "lazy");
+        assert_eq!(stdio_config["idleTimeoutMin"], 10);
+        // Another tool's spelling of the same concept must not leak in.
+        assert!(stdio_config.get("startup_timeout_sec").is_none());
+
+        let mut http = build_http_server();
+        http.server_config["connectTimeoutMs"] = json!(20_000);
+        http.server_config["requestTimeoutMs"] = json!(0);
+
+        let http_config = build_json_server_config(&http, None, true, "omo_native", false)
+            .expect("build OmO HTTP MCP");
+
+        assert_eq!(http_config["connectTimeoutMs"], 20_000);
+        assert!(http_config.get("requestTimeoutMs").is_none());
+    }
+
+    #[test]
+    fn omo_timeouts_stay_out_of_other_tools_files() {
+        let mut server = build_npx_stdio_server();
+        server.server_config["connectTimeoutMs"] = json!(45_000);
+        server.server_config["requestTimeoutMs"] = json!(120_000);
+
+        let config = build_json_server_config(&server, None, true, "claude_code", false)
+            .expect("build Claude Code MCP");
+
+        assert!(config.get("connectTimeoutMs").is_none());
+        assert!(config.get("requestTimeoutMs").is_none());
+
+        // OpenClaw clones the whole stored config; its branch must still strip
+        // the two OmO-only keys.
+        let openclaw = build_json_server_config(&server, None, true, "openclaw", false)
+            .expect("build OpenClaw MCP");
+
+        assert!(openclaw.get("connectTimeoutMs").is_none());
+        assert!(openclaw.get("requestTimeoutMs").is_none());
     }
 
     #[test]

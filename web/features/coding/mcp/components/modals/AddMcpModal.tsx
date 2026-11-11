@@ -23,6 +23,11 @@ import { CSS } from '@dnd-kit/utilities';
 import * as mcpApi from '../../services/mcpApi';
 import type { CreateMcpServerInput, UpdateMcpServerInput, McpTool, McpServer, StdioConfig, HttpConfig } from '../../types';
 import { MCP_SERVER_NAME_PATTERN } from '../../utils/mcpServerName';
+import {
+  optionalPositiveInteger,
+  optionalPositiveNumber,
+  preservedServerConfigFields,
+} from '../../utils/mcpServerConfigFields';
 import styles from './AddMcpModal.module.less';
 
 function reorderFormListFields(
@@ -142,6 +147,10 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
   const [favorites, setFavorites] = React.useState<mcpApi.FavoriteMcp[]>([]);
   const [favoritesExpanded, setFavoritesExpanded] = useState(false);
   const [preferredTools, setPreferredTools] = useState<string[] | null>(null);
+  // When a favorite pre-fills a brand-new server, its unmodelled keys (OmO's
+  // lifecycle, idleTimeoutMin, ...) must survive the save; the form only owns
+  // the fields it renders.
+  const [favoriteConfigBase, setFavoriteConfigBase] = useState<StdioConfig | HttpConfig | undefined>(undefined);
 
   const isEditMode = !!editingServer;
   // dsh is the only tool with a constraint on the server name, and it is the
@@ -220,6 +229,8 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
           timeout: editingServer.timeout,
           startup_timeout_sec: stdioConfig.startup_timeout_sec,
           tool_timeout_sec: stdioConfig.tool_timeout_sec,
+          connectTimeoutMs: stdioConfig.connectTimeoutMs,
+          requestTimeoutMs: stdioConfig.requestTimeoutMs,
         });
       } else {
         const httpConfig = config as HttpConfig;
@@ -245,6 +256,8 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
           timeout: editingServer.timeout,
           startup_timeout_sec: httpConfig.startup_timeout_sec,
           tool_timeout_sec: httpConfig.tool_timeout_sec,
+          connectTimeoutMs: httpConfig.connectTimeoutMs,
+          requestTimeoutMs: httpConfig.requestTimeoutMs,
         });
       }
     } else {
@@ -277,6 +290,7 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
   // Handle selecting a favorite MCP
   const handleSelectFavorite = (fav: mcpApi.FavoriteMcp) => {
     setServerType(fav.server_type);
+    setFavoriteConfigBase(fav.server_config as unknown as StdioConfig | HttpConfig);
     if (fav.server_type === 'stdio') {
       const config = fav.server_config as unknown as StdioConfig;
       const envList = config.env
@@ -291,6 +305,8 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
         description: fav.description,
         startup_timeout_sec: config.startup_timeout_sec,
         tool_timeout_sec: config.tool_timeout_sec,
+        connectTimeoutMs: config.connectTimeoutMs,
+        requestTimeoutMs: config.requestTimeoutMs,
       });
     } else {
       const config = fav.server_config as unknown as HttpConfig;
@@ -307,6 +323,8 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
         description: fav.description,
         startup_timeout_sec: config.startup_timeout_sec,
         tool_timeout_sec: config.tool_timeout_sec,
+        connectTimeoutMs: config.connectTimeoutMs,
+        requestTimeoutMs: config.requestTimeoutMs,
       });
     }
     setFavoritesExpanded(false);
@@ -332,15 +350,13 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
 
       setLoading(true);
 
-      const optionalTimeoutSec = (value: unknown): number | undefined => {
-        if (value === null || value === undefined || value === '') {
-          return undefined;
-        }
-        const numeric = Number(value);
-        return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined;
-      };
-      const startupTimeoutSec = optionalTimeoutSec(values.startup_timeout_sec);
-      const toolTimeoutSec = optionalTimeoutSec(values.tool_timeout_sec);
+      const startupTimeoutSec = optionalPositiveNumber(values.startup_timeout_sec);
+      const toolTimeoutSec = optionalPositiveNumber(values.tool_timeout_sec);
+      // The OmO fields are always shown, so the form always owns them. They are
+      // only written into OmO's mcp.json by the sync layer; keeping them in the
+      // central config is harmless for servers not synced to OmO.
+      const connectTimeoutMs = optionalPositiveInteger(values.connectTimeoutMs);
+      const requestTimeoutMs = optionalPositiveInteger(values.requestTimeoutMs);
 
       let serverConfig: StdioConfig | HttpConfig;
       if (serverType === 'stdio') {
@@ -385,12 +401,39 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
         };
       }
 
+      if (connectTimeoutMs !== undefined) {
+        serverConfig.connectTimeoutMs = connectTimeoutMs;
+      }
+      if (requestTimeoutMs !== undefined) {
+        serverConfig.requestTimeoutMs = requestTimeoutMs;
+      }
+
+      const buildMergedServerConfig = (
+        baseConfig: StdioConfig | HttpConfig | undefined,
+      ): StdioConfig | HttpConfig => ({
+        ...preservedServerConfigFields(baseConfig, [
+          'connectTimeoutMs',
+          'requestTimeoutMs',
+        ]),
+        ...serverConfig,
+      });
+
       const doSubmit = async (overwrite: boolean, existingId?: string) => {
+        // Preserve unmodelled keys from whatever record this save is based on:
+        // the edited server, a favorite used as a template, or the server being
+        // overwritten after a duplicate-name confirmation.
+        const baseConfig = overwrite && existingId
+          ? servers.find((server) => server.id === existingId)?.server_config
+          : isEditMode
+            ? editingServer?.server_config
+            : favoriteConfigBase;
+        const mergedServerConfig = buildMergedServerConfig(baseConfig);
+
         if (overwrite && existingId && onUpdate) {
           await onUpdate(existingId, {
             name: values.name,
             server_type: serverType,
-            server_config: serverConfig,
+            server_config: mergedServerConfig,
             enabled_tools: selectedTools,
             description: values.description,
             timeout: values.timeout ?? null,
@@ -403,7 +446,7 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
           await onUpdate(editingServer.id, {
             name: values.name,
             server_type: serverType,
-            server_config: serverConfig,
+            server_config: mergedServerConfig,
             enabled_tools: selectedTools,
             description: values.description,
             timeout: values.timeout ?? null,
@@ -412,7 +455,7 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
           await onSubmit({
             name: values.name,
             server_type: serverType,
-            server_config: serverConfig,
+            server_config: mergedServerConfig,
             enabled_tools: selectedTools,
             description: values.description,
             tags: values.tags?.filter((t: string) => t) || [],
@@ -423,12 +466,13 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
         await mcpApi.upsertMcpFavorite({
           name: values.name,
           server_type: serverType,
-          server_config: serverConfig as unknown as Record<string, unknown>,
+          server_config: mergedServerConfig as unknown as Record<string, unknown>,
           description: values.description,
           tags: values.tags?.filter((t: string) => t) || [],
         });
         form.resetFields();
         setSelectedTools([]);
+        setFavoriteConfigBase(undefined);
         onClose();
       };
 
@@ -466,6 +510,7 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
   const handleCancel = () => {
     form.resetFields();
     setSelectedTools([]);
+    setFavoriteConfigBase(undefined);
     onClose();
   };
 
@@ -478,15 +523,10 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
       return null;
     }
 
-    const optionalTimeoutSec = (value: unknown): number | undefined => {
-      if (value === null || value === undefined || value === '') {
-        return undefined;
-      }
-      const numeric = Number(value);
-      return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined;
-    };
-    const startupTimeoutSec = optionalTimeoutSec(values.startup_timeout_sec);
-    const toolTimeoutSec = optionalTimeoutSec(values.tool_timeout_sec);
+    const startupTimeoutSec = optionalPositiveNumber(values.startup_timeout_sec);
+    const toolTimeoutSec = optionalPositiveNumber(values.tool_timeout_sec);
+    const connectTimeoutMs = optionalPositiveInteger(values.connectTimeoutMs);
+    const requestTimeoutMs = optionalPositiveInteger(values.requestTimeoutMs);
 
     let serverConfig: Record<string, unknown>;
     if (serverType === 'stdio') {
@@ -533,8 +573,22 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
     if (toolTimeoutSec !== undefined) {
       serverConfig.tool_timeout_sec = toolTimeoutSec;
     }
+    if (connectTimeoutMs !== undefined) {
+      serverConfig.connectTimeoutMs = connectTimeoutMs;
+    }
+    if (requestTimeoutMs !== undefined) {
+      serverConfig.requestTimeoutMs = requestTimeoutMs;
+    }
 
-    return { [name]: serverConfig };
+    return {
+      [name]: {
+        ...preservedServerConfigFields(
+          isEditMode ? editingServer?.server_config : favoriteConfigBase,
+          ['connectTimeoutMs', 'requestTimeoutMs'],
+        ),
+        ...serverConfig,
+      },
+    };
   };
 
   const handleExportJson = async () => {
@@ -809,6 +863,34 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
               </Form.Item>
               <span style={{ fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>
                 {t('mcp.toolTimeoutLabel')}
+              </span>
+            </Space>
+            <Space align="center" wrap>
+              <Form.Item name="connectTimeoutMs" noStyle>
+                <InputNumber
+                  min={1}
+                  precision={0}
+                  placeholder="15000"
+                  style={{ width: 160 }}
+                  addonAfter="ms"
+                />
+              </Form.Item>
+              <span style={{ fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>
+                {t('mcp.omoConnectTimeoutLabel')}
+              </span>
+            </Space>
+            <Space align="center" wrap>
+              <Form.Item name="requestTimeoutMs" noStyle>
+                <InputNumber
+                  min={1}
+                  precision={0}
+                  placeholder="30000"
+                  style={{ width: 160 }}
+                  addonAfter="ms"
+                />
+              </Form.Item>
+              <span style={{ fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>
+                {t('mcp.omoRequestTimeoutLabel')}
               </span>
             </Space>
           </Space>

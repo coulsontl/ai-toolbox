@@ -4543,7 +4543,7 @@
     "description": "描述",
     "descriptionPlaceholder": "可选的服务器描述",
     "timeouts": "超时设置",
-    "timeoutsHint": "按工具分别配置；留空使用各工具默认值。OpenCode 使用毫秒 timeout；Codex / Grok 使用秒级 startup_timeout_sec / tool_timeout_sec。",
+    "timeoutsHint": "按工具分别配置；留空使用各工具默认值。OpenCode 使用毫秒 timeout；Codex / Grok 使用秒级 startup_timeout_sec / tool_timeout_sec；OmO 使用毫秒 connectTimeoutMs / requestTimeoutMs。",
     "timeoutOpenCodeLabel": "OpenCode 连接超时（ms）",
     "startupTimeoutLabel": "Codex / Grok 启动超时（秒）",
     "toolTimeoutLabel": "Codex / Grok 工具调用超时（秒）",
@@ -4738,7 +4738,9 @@
     "followCcSwitchMarks": "遵循 CC Switch 标记",
     "followCcSwitchMarksHintOn": "CC Switch 来源的 server 将按其标记的 agent 同步（未标记的不会同步到任何工具）；下方勾选仅作用于其他来源。",
     "followCcSwitchMarksHintOff": "CC Switch 来源的 server 将按下方勾选同步。",
-    "copyJson": "复制 JSON"
+    "copyJson": "复制 JSON",
+    "omoConnectTimeoutLabel": "OmO 连接握手超时（ms，默认 15000）",
+    "omoRequestTimeoutLabel": "OmO 请求超时（ms，默认 30000）"
   },
   "pi": {
     "rootPathSource": {
@@ -6294,7 +6296,23 @@
       "useCustomProtocol": "自定义协议",
       "useCustomProtocolHint": "「自定义协议」开启后跳过 URL 规范化，端点按填写内容原样写入。",
       "baseUrlChannelHint": "该条目属于已有渠道；修改端点会把它移出原渠道。",
-      "capabilities": "能力开关"
+      "capabilities": "能力开关",
+      "reasoningGroup": "思考强度",
+      "reasoningGroupHint": "WorkBuddy 读取 reasoning 对象来展示强度档位；不选档位时只显示思考开关。",
+      "supportedEfforts": "支持的思考强度",
+      "supportedEffortsPlaceholder": "选择可用档位",
+      "defaultEffort": "默认思考强度",
+      "defaultEffortPlaceholder": "留空使用请求层默认值",
+      "canDisableThinking": "允许关闭思考",
+      "canDisableThinkingHint": "允许用户关闭思考模式",
+      "effort": {
+        "minimal": "极低",
+        "low": "低",
+        "medium": "中",
+        "high": "高",
+        "xhigh": "超高",
+        "max": "极致"
+      }
     },
     "noModels": "还没有自定义模型。",
     "provider": {

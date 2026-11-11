@@ -205,6 +205,9 @@ pub async fn save_workbuddy_model(
         supports_reasoning: input.supports_reasoning,
         only_reasoning: input.only_reasoning,
         use_custom_protocol: input.use_custom_protocol,
+        can_disable_thinking: input.can_disable_thinking,
+        default_effort: input.default_effort.as_deref(),
+        supported_efforts: Some(&input.supported_efforts),
     });
     document.upsert_model_renaming(entry, input.previous_id.as_deref());
     document.save(&root)?;
@@ -308,6 +311,9 @@ mod tests {
             supports_reasoning: false,
             only_reasoning: false,
             use_custom_protocol: false,
+            can_disable_thinking: true,
+            default_effort: None,
+            supported_efforts: None,
         }));
         document.save(dir.path()).expect("save");
 
@@ -369,6 +375,9 @@ mod tests {
             supports_reasoning: false,
             only_reasoning: false,
             use_custom_protocol: false,
+            can_disable_thinking: true,
+            default_effort: None,
+            supported_efforts: None,
         });
         document.upsert_model_renaming(entry, Some("first"));
         document.save(dir.path()).expect("save");
