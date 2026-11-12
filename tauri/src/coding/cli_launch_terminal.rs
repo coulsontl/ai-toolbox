@@ -247,6 +247,8 @@ fn random_temp_suffix() -> String {
 // Windows
 // ---------------------------------------------------------------------------
 
+/// Escape text that is inserted into a batch file **outside** double quotes.
+/// Carets are needed for the command separators and redirection operators.
 #[cfg(target_os = "windows")]
 fn escape_windows_batch_value(value: &str) -> String {
     value
@@ -260,13 +262,92 @@ fn escape_windows_batch_value(value: &str) -> String {
         .replace(')', "^)")
 }
 
-#[cfg(target_os = "windows")]
+/// Escape a value that is inserted **inside** double quotes, e.g.
+/// `pushd "<path>"`, `set "KEY=<value>"` or `del "<path>"`.
+///
+/// `%` still expands inside quotes, so it must be doubled. The other batch
+/// metacharacters are literal inside quotes; caret-escaping them would put a
+/// literal `^` into the path and break folders such as `新建文件夹 (2)` or
+/// `A&B`.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn escape_windows_batch_quoted_value(value: &str) -> String {
+    value.replace('%', "%%")
+}
+
+/// First lines of every generated Windows batch launcher.
+///
+/// Batch files are written as UTF-8 (`fs::write`), but `cmd.exe` decodes them
+/// with the system ANSI code page (CP936/GBK on Chinese Windows), so every
+/// non-ASCII path inside the script — working directory, temp settings, npm
+/// shims — would be mojibake'd. This line is pure ASCII and switches the parser
+/// to UTF-8 before the first non-ASCII line is read.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn windows_batch_preamble() -> &'static str {
+    "@chcp 65001>nul\r\n@echo off\r\n"
+}
+
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_BATCH_LAUNCH_FAILED_LABEL: &str = "ai_toolbox_launch_failed";
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_BATCH_CLEANUP_LABEL: &str = "ai_toolbox_cleanup";
+
+/// Build a Windows launcher batch file.
+///
+/// `setup_lines` runs before the directory change (env vars, config dir);
+/// `launch_lines` is the banner plus the CLI invocation. When non-empty they
+/// must end with CRLF. `cleanup_lines` removes the temp files and must end each
+/// entry with CRLF.
+///
+/// With a working directory, a failed `pushd` jumps to the failure label —
+/// instead of running the CLI in whatever directory `cmd` inherited (often
+/// `C:\Windows\System32` when the app was started from the Start Menu) — then
+/// falls through to the same cleanup block, so temp settings do not leak.
+/// `pushd` also maps UNC shares to a temporary drive, which `cd /d` refuses.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn build_windows_batch_script(
+    setup_lines: &str,
+    cwd: Option<&Path>,
+    launch_lines: &str,
+    cleanup_lines: &str,
+) -> String {
+    let cleanup_and_exit = format!("{cleanup_lines}del \"%~f0\" >nul 2>&1\r\n");
+    let Some(path) = cwd else {
+        return format!(
+            "{preamble}{setup_lines}{launch_lines}{cleanup_and_exit}",
+            preamble = windows_batch_preamble(),
+        );
+    };
+
+    format!(
+        "{preamble}\
+{setup_lines}\
+pushd \"{path}\"\r\n\
+if errorlevel 1 goto :{failed_label}\r\n\
+{launch_lines}\
+goto :{cleanup_label}\r\n\
+:{failed_label}\r\n\
+echo [AI Toolbox] Failed to open the selected working directory.\r\n\
+echo The CLI was not started. Please pick another folder.\r\n\
+pause\r\n\
+:{cleanup_label}\r\n\
+{cleanup_and_exit}",
+        preamble = windows_batch_preamble(),
+        path = escape_windows_batch_quoted_value(&path.to_string_lossy()),
+        failed_label = WINDOWS_BATCH_LAUNCH_FAILED_LABEL,
+        cleanup_label = WINDOWS_BATCH_CLEANUP_LABEL,
+    )
+}
+
+#[cfg(any(target_os = "windows", test))]
 fn quote_for_batch(value: &str) -> String {
+    // `%` expands even inside quotes, so double it before deciding whether the
+    // argument needs quoting.
+    let value = value.replace('%', "%%");
     if value.is_empty() {
         return "\"\"".to_string();
     }
     if !value.contains([' ', '\t', '"', '&', '|', '<', '>', '^', '%']) {
-        return value.to_string();
+        return value;
     }
     format!("\"{}\"", value.replace('"', "\"\""))
 }
@@ -277,14 +358,14 @@ fn is_windows_batch_script_path(value: &str) -> bool {
     normalized.ends_with(".cmd") || normalized.ends_with(".bat")
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn batch_set_lines(env: &[(String, String)]) -> String {
     env.iter()
         .map(|(key, value)| {
             format!(
                 "set \"{}={}\"",
                 key,
-                escape_windows_batch_value(value)
+                escape_windows_batch_quoted_value(value)
             )
         })
         .collect::<Vec<_>>()
@@ -307,42 +388,32 @@ fn launch_local_windows(spec: &CliLaunchSpec) -> Result<(), String> {
     let pid = std::process::id();
     let bat_file = temp_dir.join(format!("ai_toolbox_cli_{}_{pid}.bat", spec.safe_id));
 
-    let env_lines = batch_set_lines(&spec.env);
-    let cd_line = spec
-        .cwd
-        .as_ref()
-        .map(|path| {
-            format!(
-                "cd /d \"{}\"\r\n",
-                escape_windows_batch_value(&path.to_string_lossy())
-            )
-        })
-        .unwrap_or_default();
+    let setup_lines = if spec.env.is_empty() {
+        String::new()
+    } else {
+        format!("{}\r\n", batch_set_lines(&spec.env))
+    };
     let delete_lines = spec
         .cleanup_paths
         .iter()
         .map(|path| {
             format!(
                 "del \"{}\" >nul 2>&1\r\n",
-                escape_windows_batch_value(&path.to_string_lossy())
+                escape_windows_batch_quoted_value(&path.to_string_lossy())
             )
         })
         .collect::<String>();
     let command_line = batch_command_line(&spec.program, &spec.args);
-
-    let content = format!(
-        "@echo off\r\n\
-{env_lines}\r\n\
-{cd_line}\
-echo {banner}\r\n\
-{command_line}\r\n\
-{delete_lines}\
-del \"%~f0\" >nul 2>&1\r\n",
-        env_lines = env_lines,
-        cd_line = cd_line,
+    let launch_lines = format!(
+        "echo {banner}\r\n{command_line}\r\n",
         banner = escape_windows_batch_value(&spec.banner),
-        command_line = command_line,
-        delete_lines = delete_lines,
+    );
+
+    let content = build_windows_batch_script(
+        &setup_lines,
+        spec.cwd.as_deref(),
+        &launch_lines,
+        &delete_lines,
     );
 
     fs::write(&bat_file, content).map_err(|e| format!("Failed to write batch launcher: {e}"))?;
@@ -619,9 +690,10 @@ fn launch_wsl_windows(distro: &str, spec: &CliLaunchSpec) -> Result<(), String> 
     let temp_dir = std::env::temp_dir();
     let bat_file = temp_dir.join(format!("ai_toolbox_cli_wsl_{}_{pid}.bat", spec.safe_id));
     let content = format!(
-        "@echo off\r\n\
+        "{preamble}\
 wsl -d {distro} --exec bash {script}\r\n\
 del \"%~f0\" >nul 2>&1\r\n",
+        preamble = windows_batch_preamble(),
         distro = distro,
         script = linux_script,
     );
@@ -764,8 +836,9 @@ fn launch_local_linux(spec: &CliLaunchSpec) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_windows_batch_script_path, resolve_bash_program, shell_single_quote,
-        windows_path_to_msys_path,
+        batch_set_lines, build_windows_batch_script, escape_windows_batch_quoted_value,
+        is_windows_batch_script_path, quote_for_batch, resolve_bash_program, shell_single_quote,
+        windows_batch_preamble, windows_path_to_msys_path,
     };
     use std::path::Path;
 
@@ -798,5 +871,86 @@ mod tests {
         // Without a sibling the shim path is still converted to POSIX form.
         let resolved = resolve_bash_program("C:\\missing\\codex.cmd");
         assert_eq!(resolved, "/c/missing/codex.cmd");
+    }
+
+    #[test]
+    fn windows_batch_preamble_switches_to_utf8_before_anything_else() {
+        // cmd decodes the script with the system ANSI code page, so the switch
+        // must be the first (ASCII) line, before `@echo off` and any path.
+        assert_eq!(windows_batch_preamble(), "@chcp 65001>nul\r\n@echo off\r\n");
+    }
+
+    #[test]
+    fn windows_batch_without_cwd_cleans_up_linearly() {
+        let script = build_windows_batch_script(
+            "set \"CODEX_HOME=D:\\x\"\r\n",
+            None,
+            "echo banner\r\ncodex --profile p\r\n",
+            "del \"C:\\Temp\\a.json\" >nul 2>&1\r\n",
+        );
+
+        assert!(script.starts_with("@chcp 65001>nul\r\n@echo off\r\n"));
+        assert!(!script.contains("pushd"));
+        assert!(!script.contains("goto :"));
+        assert!(script.contains("codex --profile p\r\n"));
+        assert_eq!(script.matches("del \"C:\\Temp\\a.json\"").count(), 1);
+        assert!(script.ends_with("del \"%~f0\" >nul 2>&1\r\n"));
+    }
+
+    #[test]
+    fn quoted_batch_values_only_double_percent() {
+        // `(`, `&`, `^` are literal inside quotes; caret-escaping them would
+        // put a caret in the path. `%` still expands, so it is doubled.
+        assert_eq!(
+            escape_windows_batch_quoted_value(r"D:\新建文件夹 (2)\A&B^C%D"),
+            r"D:\新建文件夹 (2)\A&B^C%%D"
+        );
+        assert_eq!(
+            batch_set_lines(&[(
+                "CODEX_HOME".to_string(),
+                r"C:\Users\A&B (x)\100%".to_string()
+            )]),
+            "set \"CODEX_HOME=C:\\Users\\A&B (x)\\100%%\""
+        );
+    }
+
+    #[test]
+    fn batch_arguments_double_percent_before_quoting() {
+        assert_eq!(quote_for_batch("100%"), "\"100%%\"");
+        assert_eq!(
+            quote_for_batch(r"C:\Users\A&B (x)\100%"),
+            "\"C:\\Users\\A&B (x)\\100%%\""
+        );
+        assert_eq!(quote_for_batch("codex"), "codex");
+    }
+
+    #[test]
+    fn windows_batch_stops_before_the_cli_when_the_folder_cannot_be_opened() {
+        let script = build_windows_batch_script(
+            "set \"CODEX_HOME=D:\\x\"\r\n",
+            Some(Path::new(r"D:\项目 (2)&测试^目录%")),
+            "echo banner\r\ncodex --profile p\r\n",
+            "del \"C:\\Temp\\a.json\" >nul 2>&1\r\n",
+        );
+
+        assert!(script.starts_with("@chcp 65001>nul\r\n@echo off\r\n"));
+        assert!(script.contains("pushd \"D:\\项目 (2)&测试^目录%%\"\r\n"));
+        assert!(script.contains("if errorlevel 1 goto :ai_toolbox_launch_failed\r\n"));
+
+        // The CLI sits between the pushd guard and the jump over the failure
+        // block, so a failed pushd never reaches it.
+        let cli = script.find("codex --profile p").unwrap();
+        let jump_cleanup = script.find("goto :ai_toolbox_cleanup").unwrap();
+        let failed_label = script.find("\r\n:ai_toolbox_launch_failed\r\n").unwrap();
+        assert!(cli < jump_cleanup);
+        assert!(jump_cleanup < failed_label);
+
+        // Both paths fall through to one cleanup block: no temp settings leak
+        // and the launcher deletes itself on failure too.
+        assert_eq!(script.matches("del \"C:\\Temp\\a.json\"").count(), 1);
+        let cleanup_label = script.find("\r\n:ai_toolbox_cleanup\r\n").unwrap();
+        assert!(failed_label < cleanup_label);
+        assert!(cleanup_label < script.find("del \"C:\\Temp\\a.json\"").unwrap());
+        assert!(script.ends_with("del \"%~f0\" >nul 2>&1\r\n"));
     }
 }

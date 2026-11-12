@@ -18,6 +18,11 @@ use crate::coding::cli_resolver::resolve_local_claude_program;
 use crate::coding::runtime_location::{RuntimeLocationInfo, RuntimeLocationMode};
 
 #[cfg(target_os = "windows")]
+use crate::coding::cli_launch_terminal::{
+    build_windows_batch_script, escape_windows_batch_quoted_value, windows_batch_preamble,
+};
+
+#[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
 #[cfg(target_os = "windows")]
@@ -201,19 +206,6 @@ read -r _
     )
 }
 
-#[cfg(target_os = "windows")]
-fn escape_windows_batch_value(value: &str) -> String {
-    value
-        .replace('^', "^^")
-        .replace('%', "%%")
-        .replace('&', "^&")
-        .replace('|', "^|")
-        .replace('<', "^<")
-        .replace('>', "^>")
-        .replace('(', "^(")
-        .replace(')', "^)")
-}
-
 fn build_claude_cli_args(settings_path: Option<&str>, full_access: bool) -> Vec<String> {
     let mut args = Vec::new();
     if let Some(path) = settings_path {
@@ -228,11 +220,14 @@ fn build_claude_cli_args(settings_path: Option<&str>, full_access: bool) -> Vec<
 
 #[cfg(target_os = "windows")]
 fn quote_for_batch(value: &str) -> String {
+    // `%` expands even inside quotes, so double it before deciding whether the
+    // argument needs quoting.
+    let value = value.replace('%', "%%");
     if value.is_empty() {
         return "\"\"".to_string();
     }
     if !value.contains([' ', '\t', '"', '&', '|', '<', '>', '^', '%']) {
-        return value.to_string();
+        return value;
     }
     format!("\"{}\"", value.replace('"', "\"\""))
 }
@@ -344,7 +339,7 @@ fn is_windows_batch_script_path(value: &str) -> bool {
 fn windows_set_claude_config_dir_line(claude_config_dir: &str) -> String {
     format!(
         "set \"CLAUDE_CONFIG_DIR={}\"",
-        escape_windows_batch_value(claude_config_dir)
+        escape_windows_batch_quoted_value(claude_config_dir)
     )
 }
 
@@ -633,9 +628,10 @@ fn launch_wsl_session(
         .map_err(|e| format!("Failed to write WSL launch script: {e}"))?;
 
         let content = format!(
-            "@echo off\r\n\
+            "{preamble}\
 wsl -d {distro} --exec bash {script}\r\n\
 del \"%~f0\" >nul 2>&1\r\n",
+            preamble = windows_batch_preamble(),
             distro = distro,
             script = linux_script,
         );
@@ -678,41 +674,27 @@ fn launch_windows_terminal(
     let claude_line =
         format_claude_batch_invocation_line(claude_program, settings_path, full_access);
     let config_dir_line = windows_set_claude_config_dir_line(claude_config_dir);
-    let cd_line = cwd
-        .map(|path| {
-            format!(
-                "cd /d \"{}\"\r\n",
-                escape_windows_batch_value(&path.to_string_lossy())
-            )
-        })
-        .unwrap_or_default();
     let settings_display = settings_path
-        .map(|path| escape_windows_batch_value(path))
+        .map(escape_windows_batch_quoted_value)
         .unwrap_or_else(|| "(none)".to_string());
     let delete_settings = settings_file
         .map(|path| {
             format!(
                 "del \"{}\" >nul 2>&1\r\n",
-                escape_windows_batch_value(&path.to_string_lossy())
+                escape_windows_batch_quoted_value(&path.to_string_lossy())
             )
         })
         .unwrap_or_default();
 
-    let content = format!(
-        "@echo off\r\n\
-{config_dir_line}\r\n\
-{cd_line}\
-echo Using temporary Claude provider settings (does not change applied config)\r\n\
-echo {settings_display}\r\n\
-{claude_line}\r\n\
-{delete_settings}\
-del \"%~f0\" >nul 2>&1\r\n",
+    let setup_lines = format!("{config_dir_line}\r\n");
+    let launch_lines = format!(
+        "echo Using temporary Claude provider settings (does not change applied config)\r\n\
+echo \"{settings_display}\"\r\n\
+{claude_line}\r\n",
         settings_display = settings_display,
         claude_line = claude_line,
-        config_dir_line = config_dir_line,
-        cd_line = cd_line,
-        delete_settings = delete_settings,
     );
+    let content = build_windows_batch_script(&setup_lines, cwd, &launch_lines, &delete_settings);
 
     fs::write(&bat_file, content).map_err(|e| format!("Failed to write batch launcher: {e}"))?;
     let preferred = normalize_preferred_terminal(preferred_terminal);
