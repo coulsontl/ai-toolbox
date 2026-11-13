@@ -19,6 +19,32 @@ pub(crate) struct AuxShapingOutcome {
     pub shaped: bool,
 }
 
+/// A shaping failure with a stable code the WebSocket transport can put in a
+/// `response.failed` event. HTTP keeps using the message only.
+#[derive(Debug)]
+pub(crate) enum AuxShapingError {
+    /// The upstream answered successfully but produced no usable text.
+    Empty(String),
+    /// The upstream answered with a shape this Gateway cannot turn into the
+    /// task's assistant message.
+    Unexpected(String),
+}
+
+impl AuxShapingError {
+    pub(crate) fn code(&self) -> &'static str {
+        match self {
+            Self::Empty(_) => "aux_task_empty_response",
+            Self::Unexpected(_) => "aux_task_unexpected_response",
+        }
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        match self {
+            Self::Empty(message) | Self::Unexpected(message) => message,
+        }
+    }
+}
+
 /// Wrap the model's answer into the task's expected JSON object.
 ///
 /// Returns the original bytes when the answer already has the expected shape,
@@ -28,9 +54,12 @@ pub(crate) fn shape_aux_response(
     request_body: &[u8],
     converted_body: &[u8],
     upstream_body: &[u8],
-) -> Result<AuxShapingOutcome, String> {
-    let converted: Value = serde_json::from_slice(converted_body)
-        .map_err(|error| format!("Failed to parse auxiliary response: {error}"))?;
+) -> Result<AuxShapingOutcome, AuxShapingError> {
+    let converted: Value = serde_json::from_slice(converted_body).map_err(|error| {
+        AuxShapingError::Unexpected(format!(
+            "Failed to parse auxiliary response: {error}"
+        ))
+    })?;
     let text = extract_response_text(&converted).unwrap_or_default();
 
     let shaped_text = match task {
@@ -47,7 +76,9 @@ pub(crate) fn shape_aux_response(
     };
 
     if shaped_text.is_empty() {
-        return Err("Auxiliary task returned no output text".to_string());
+        return Err(AuxShapingError::Empty(
+            "Auxiliary task returned no output text".to_string(),
+        ));
     }
     if text.trim() == shaped_text {
         return Ok(AuxShapingOutcome {
@@ -57,28 +88,73 @@ pub(crate) fn shape_aux_response(
     }
 
     let envelope = build_aux_envelope(&converted, upstream_body, &shaped_text);
-    let body = serde_json::to_vec(&envelope)
-        .map_err(|error| format!("Failed to serialize auxiliary response: {error}"))?;
+    let body = serde_json::to_vec(&envelope).map_err(|error| {
+        AuxShapingError::Unexpected(format!(
+            "Failed to serialize auxiliary response: {error}"
+        ))
+    })?;
     Ok(AuxShapingOutcome { body, shaped: true })
 }
 
 /// Serialize the shaped body as the Responses SSE lifecycle Codex consumes.
-pub(crate) fn build_aux_sse(body: &[u8], upstream_body: &[u8]) -> Result<String, String> {
-    let mut response: Value = serde_json::from_slice(body)
-        .map_err(|error| format!("Failed to parse auxiliary response for SSE: {error}"))?;
-    ensure_response_envelope(&mut response, upstream_body);
-    let Some(item) = response
-        .get("output")
-        .and_then(Value::as_array)
-        .and_then(|output| output.iter().find(|item| is_message_item(item)))
-        .cloned()
-    else {
-        return Err("Auxiliary task returned no assistant message".to_string());
-    };
-    let text = item_text(&item).unwrap_or_default();
-    if text.is_empty() {
-        return Err("Auxiliary task returned an empty assistant message".to_string());
+pub(crate) fn build_aux_sse(
+    body: &[u8],
+    upstream_body: &[u8],
+) -> Result<String, AuxShapingError> {
+    let events = aux_response_events(body, upstream_body)?;
+    let mut stream = String::new();
+    for (name, payload) in events {
+        stream.push_str("event: ");
+        stream.push_str(name);
+        stream.push_str("\ndata: ");
+        stream.push_str(&payload.to_string());
+        stream.push_str("\n\n");
     }
+    Ok(stream)
+}
+
+/// Serialize the same lifecycle as bare Responses WebSocket text frames.
+pub(crate) fn build_aux_frames(
+    body: &[u8],
+    upstream_body: &[u8],
+) -> Result<Vec<String>, AuxShapingError> {
+    Ok(aux_response_events(body, upstream_body)?
+        .into_iter()
+        .map(|(_, payload)| payload.to_string())
+        .collect())
+}
+
+/// The event lifecycle Codex consumes, shared by HTTP/SSE and WebSocket.
+fn aux_response_events(
+    body: &[u8],
+    upstream_body: &[u8],
+) -> Result<Vec<(&'static str, Value)>, AuxShapingError> {
+    let mut response: Value = serde_json::from_slice(body).map_err(|error| {
+        AuxShapingError::Unexpected(format!(
+            "Failed to parse auxiliary response for the event lifecycle: {error}"
+        ))
+    })?;
+    ensure_response_envelope(&mut response, upstream_body);
+    let Some(output) = response.get("output").and_then(Value::as_array) else {
+        return Err(AuxShapingError::Unexpected(
+            "Auxiliary task returned no assistant message".to_string(),
+        ));
+    };
+    let messages: Vec<&Value> = output.iter().filter(|item| is_message_item(item)).collect();
+    if messages.is_empty() {
+        return Err(AuxShapingError::Unexpected(
+            "Auxiliary task returned no assistant message".to_string(),
+        ));
+    }
+    let Some((item, text)) = messages.iter().find_map(|item| {
+        item_text(item)
+            .filter(|text| !text.is_empty())
+            .map(|text| ((**item).clone(), text))
+    }) else {
+        return Err(AuxShapingError::Empty(
+            "Auxiliary task returned an empty assistant message".to_string(),
+        ));
+    };
 
     let mut opened = response.clone();
     opened["status"] = Value::String("in_progress".to_string());
@@ -139,15 +215,7 @@ pub(crate) fn build_aux_sse(body: &[u8], upstream_body: &[u8]) -> Result<String,
         ),
     ];
 
-    let mut stream = String::new();
-    for (name, payload) in events {
-        stream.push_str("event: ");
-        stream.push_str(name);
-        stream.push_str("\ndata: ");
-        stream.push_str(&payload.to_string());
-        stream.push_str("\n\n");
-    }
-    Ok(stream)
+    Ok(events)
 }
 
 fn shape_title(text: &str, request_body: &[u8]) -> String {
@@ -648,10 +716,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_title_fails() {
+    fn empty_title_fails_with_a_stable_code() {
         let error = shape_aux_response(&CodexAuxTask::Title, b"", &responses_body("   "), b"")
             .expect_err("empty title must fail");
-        assert!(error.contains("no output text"));
+        assert_eq!(error.code(), "aux_task_empty_response");
+        assert!(error.message().contains("no output text"));
     }
 
     #[test]
@@ -665,5 +734,38 @@ mod tests {
         // The shaped JSON is itself a string payload, so it is JSON-escaped in
         // each SSE `data:` line.
         assert!(stream.contains(r#"{\"title\":\"hello\"}"#));
+    }
+
+    #[test]
+    fn websocket_frames_are_bare_json_with_the_same_lifecycle() {
+        let body = responses_body(r#"{"title":"hello"}"#);
+        let frames = build_aux_frames(&body, b"").expect("frames");
+        let types: Vec<String> = frames
+            .iter()
+            .map(|frame| {
+                let value: Value = serde_json::from_str(frame).expect("bare JSON frame");
+                value["type"]
+                    .as_str()
+                    .expect("frame type")
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            types,
+            vec![
+                "response.created",
+                "response.in_progress",
+                "response.output_item.added",
+                "response.output_text.delta",
+                "response.output_text.done",
+                "response.output_item.done",
+                "response.completed",
+            ]
+        );
+        assert!(frames.iter().all(|frame| !frame.contains("event:")));
+        assert!(frames
+            .last()
+            .expect("terminal")
+            .contains(r#"{\"title\":\"hello\"}"#));
     }
 }

@@ -2,7 +2,7 @@ use super::*;
 use crate::coding::proxy_gateway::paths::ProxyGatewayPaths;
 use crate::coding::proxy_gateway::types::GatewayRequestLogFilters;
 use crate::coding::proxy_gateway::{request_log, usage_stats};
-use crate::db::helpers::{db_create, db_put};
+use crate::db::helpers::{db_create, db_get, db_put};
 use crate::db::schema::{Cli, DbTable};
 use crate::db::SqliteDbState;
 use tokio::net::TcpListener;
@@ -1616,4 +1616,1463 @@ async fn responses_websocket_records_each_turn_and_reuses_connection() {
     )
     .unwrap();
     assert_eq!(failed.total, 0);
+}
+
+fn install_codex_aux_model(
+    context: &GatewayRuntimeContext,
+    provider_id: &str,
+    task: &str,
+    model: &str,
+) {
+    let db = context.db.as_ref().expect("test database");
+    db.with_conn(|conn| {
+        let mut provider = db_get(conn, DbTable::CliProvider(Cli::Codex), provider_id)?
+            .expect("test provider");
+        let mut settings: Value = serde_json::from_str(
+            provider["settings_config"]
+                .as_str()
+                .expect("settings_config is a JSON string"),
+        )
+        .map_err(|error| error.to_string())?;
+        settings["auxiliaryModels"] = json!({
+            task: { "mode": "model", "model": model }
+        });
+        provider["settings_config"] = Value::String(settings.to_string());
+        db_put(
+            conn,
+            DbTable::CliProvider(Cli::Codex),
+            provider_id,
+            &provider,
+        )
+    })
+    .expect("install auxiliary model");
+    super::super::providers::clear_gateway_provider_selection_cache();
+}
+
+fn install_codex_aux_main_model(
+    context: &GatewayRuntimeContext,
+    provider_id: &str,
+    task: &str,
+) {
+    let db = context.db.as_ref().expect("test database");
+    db.with_conn(|conn| {
+        let mut provider = db_get(conn, DbTable::CliProvider(Cli::Codex), provider_id)?
+            .expect("test provider");
+        let mut settings: Value = serde_json::from_str(
+            provider["settings_config"]
+                .as_str()
+                .expect("settings_config is a JSON string"),
+        )
+        .map_err(|error| error.to_string())?;
+        settings["auxiliaryModels"] = json!({
+            task: { "mode": "main" }
+        });
+        provider["settings_config"] = Value::String(settings.to_string());
+        db_put(
+            conn,
+            DbTable::CliProvider(Cli::Codex),
+            provider_id,
+            &provider,
+        )
+    })
+    .expect("install auxiliary main route");
+    super::super::providers::clear_gateway_provider_selection_cache();
+}
+
+fn remove_codex_default_model(context: &GatewayRuntimeContext, provider_id: &str) {
+    let db = context.db.as_ref().expect("test database");
+    db.with_conn(|conn| {
+        let mut provider = db_get(conn, DbTable::CliProvider(Cli::Codex), provider_id)?
+            .expect("test provider");
+        let mut settings: Value = serde_json::from_str(
+            provider["settings_config"]
+                .as_str()
+                .expect("settings_config is a JSON string"),
+        )
+        .map_err(|error| error.to_string())?;
+        let config = settings["config"]
+            .as_str()
+            .expect("Codex config string")
+            .replace("model = \"test-model\"\n", "");
+        settings["config"] = Value::String(config);
+        provider["settings_config"] = Value::String(settings.to_string());
+        db_put(
+            conn,
+            DbTable::CliProvider(Cli::Codex),
+            provider_id,
+            &provider,
+        )
+    })
+    .expect("remove default model");
+    super::super::providers::clear_gateway_provider_selection_cache();
+}
+
+async fn receive_http_request(socket: &mut tokio::net::TcpStream) -> (String, Vec<u8>) {
+    use tokio::io::AsyncReadExt;
+
+    let mut raw = Vec::new();
+    let header_end = loop {
+        let mut chunk = [0_u8; 2048];
+        let read = socket.read(&mut chunk).await.expect("read HTTP request");
+        assert!(read > 0, "HTTP request ended before headers");
+        raw.extend_from_slice(&chunk[..read]);
+        if let Some(position) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position + 4;
+        }
+    };
+    let headers = String::from_utf8_lossy(&raw[..header_end]).to_string();
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    while raw.len() < header_end + content_length {
+        let mut chunk = [0_u8; 2048];
+        let read = socket.read(&mut chunk).await.expect("read HTTP body");
+        assert!(read > 0, "HTTP request ended before the declared body");
+        raw.extend_from_slice(&chunk[..read]);
+    }
+    (
+        headers,
+        raw[header_end..header_end + content_length].to_vec(),
+    )
+}
+
+async fn write_http_json(socket: &mut tokio::net::TcpStream, value: &Value) {
+    use tokio::io::AsyncWriteExt;
+
+    let body = serde_json::to_vec(value).expect("serialize HTTP response");
+    let header = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        body.len()
+    );
+    socket
+        .write_all(header.as_bytes())
+        .await
+        .expect("write HTTP headers");
+    socket
+        .write_all(&body)
+        .await
+        .expect("write HTTP body");
+    socket.shutdown().await.expect("close HTTP response");
+}
+
+#[tokio::test]
+async fn websocket_title_auxiliary_turn_uses_http_and_shapes_the_frames() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, provider_id) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    install_codex_aux_model(&context, &provider_id, "title", "title-model");
+
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut websocket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        let selected = tokio::select! {
+            message = websocket.next() => (None, message),
+            accepted = listener.accept() => (Some(accepted.unwrap().0), None),
+        };
+        assert!(
+            selected.1.is_none(),
+            "a route-key auxiliary turn must not use the pinned WebSocket: {:?}",
+            selected.1
+        );
+        let mut http = selected.0.expect("the auxiliary HTTP connection");
+
+        let (headers, body) = receive_http_request(&mut http).await;
+        assert!(
+            headers.starts_with("POST /v1/responses"),
+            "unexpected auxiliary path: {headers}"
+        );
+        let request: Value = serde_json::from_slice(&body).expect("auxiliary JSON body");
+        assert_eq!(request["model"], "title-model");
+        assert_eq!(request["stream"], false);
+        assert!(request.get("type").is_none(), "WS type leaked into HTTP");
+        assert!(request.get("stream_id").is_none(), "WS stream_id leaked into HTTP");
+        let turn_metadata: Value = serde_json::from_str(
+            request["client_metadata"]["x-codex-turn-metadata"]
+                .as_str()
+                .expect("turn metadata string"),
+        )
+        .expect("turn metadata JSON");
+        assert_eq!(turn_metadata, json!({"thread_source": "thread_title"}));
+
+        write_http_json(
+            &mut http,
+            &json!({
+                "id": "resp_title",
+                "object": "response",
+                "status": "completed",
+                "model": "title-model",
+                "output": [{
+                    "id": "msg_title",
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": "My generated title" }]
+                }],
+                "usage": { "input_tokens": 3, "output_tokens": 2, "total_tokens": 5 }
+            }),
+        )
+        .await;
+
+        // Keep the pinned socket alive until the client closes so the relay can
+        // finish the turn without an upstream disconnect.
+        let _ = websocket.next().await;
+    });
+
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    send_json(
+        &mut client,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "stream": true,
+            "stream_id": "title-lane",
+            "input": "hello",
+            "client_metadata": {
+                "x-codex-turn-metadata": json!({"thread_source": "thread_title"}).to_string()
+            }
+        }),
+    )
+    .await;
+
+    let mut frames = Vec::new();
+    loop {
+        let frame = receive_json(&mut client).await;
+        let terminal = frame["type"] == "response.completed";
+        frames.push(frame);
+        if terminal {
+            break;
+        }
+    }
+    let _ = client.close(None).await;
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    let delta = frames
+        .iter()
+        .find(|frame| frame["type"] == "response.output_text.delta")
+        .and_then(|frame| frame["delta"].as_str())
+        .expect("shaped delta frame");
+    assert_eq!(delta, r#"{"title":"My generated title"}"#);
+    let completed = frames.last().expect("completed frame");
+    assert_eq!(completed["response"]["model"], "title-model");
+    assert_eq!(
+        completed["response"]["output"][0]["content"][0]["text"],
+        r#"{"title":"My generated title"}"#
+    );
+    assert_eq!(completed["response"]["usage"]["input_tokens"], 3);
+    assert_eq!(completed["response"]["usage"]["output_tokens"], 2);
+
+    let detail = recorded_details(&context).pop().expect("request detail");
+    assert_eq!(
+        detail.summary.aux_task,
+        Some(crate::coding::proxy_gateway::types::CodexAuxTaskKind::Title)
+    );
+    assert_eq!(detail.summary.aux_route_source.as_deref(), Some("explicit"));
+    assert_eq!(detail.summary.upstream_model_id.as_deref(), Some("title-model"));
+    assert_eq!(detail.summary.total_tokens, Some(5));
+    let auxiliary = detail.auxiliary.expect("auxiliary detail");
+    assert!(auxiliary.route_applied);
+    assert!(auxiliary.shaped);
+}
+
+#[tokio::test]
+async fn websocket_auxiliary_http_failure_synthesizes_a_failed_frame() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, provider_id) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    install_codex_aux_model(&context, &provider_id, "title", "title-model");
+
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut websocket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        let selected = tokio::select! {
+            message = websocket.next() => (None, message),
+            accepted = listener.accept() => (Some(accepted.unwrap().0), None),
+        };
+        assert!(selected.1.is_none());
+        let mut http = selected.0.expect("auxiliary HTTP connection");
+        let _ = receive_http_request(&mut http).await;
+        use tokio::io::AsyncWriteExt;
+        let body = br#"{"error":{"message":"title model is unavailable"}}"#;
+        let header = format!(
+            "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+        http.write_all(header.as_bytes()).await.unwrap();
+        http.write_all(body).await.unwrap();
+        http.shutdown().await.unwrap();
+        let _ = websocket.next().await;
+    });
+
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    send_json(
+        &mut client,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "stream": true,
+            "stream_id": "title-lane",
+            "input": "hello",
+            "client_metadata": {
+                "x-codex-turn-metadata": json!({"thread_source": "thread_title"}).to_string()
+            }
+        }),
+    )
+    .await;
+
+    let created = receive_json(&mut client).await;
+    assert_eq!(created["type"], "response.created");
+    let response_id = created["response"]["id"]
+        .as_str()
+        .expect("synthetic auxiliary response id")
+        .to_string();
+    assert!(response_id.starts_with("resp_aux_ws_"));
+
+    let failure = receive_json(&mut client).await;
+    assert_eq!(failure["type"], "response.failed");
+    assert_eq!(failure["response"]["id"], response_id);
+    assert_eq!(failure["response"]["status"], "failed");
+    assert_eq!(
+        failure["response"]["error"]["code"],
+        "aux_task_model_not_found"
+    );
+    assert!(
+        failure["response"]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("title model is unavailable")
+    );
+    let _ = client.close(None).await;
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    let detail = recorded_details(&context).pop().expect("request detail");
+    assert_eq!(detail.summary.aux_route_source.as_deref(), Some("explicit"));
+    assert_eq!(
+        detail.summary.stream_outcome,
+        Some(GatewayStreamOutcome::Failed)
+    );
+    let auxiliary = detail.auxiliary.expect("auxiliary detail");
+    assert!(auxiliary.route_applied);
+    assert!(!auxiliary.shaped);
+}
+
+#[test]
+fn auxiliary_http_request_drops_connection_level_aux_headers() {
+    let request = DebugHttpRequest {
+        id: 1,
+        method: "WS".to_string(),
+        path: "/openai/v1/responses".to_string(),
+        headers: vec![
+            ("authorization".to_string(), "Bearer client-key".to_string()),
+            ("x-openai-subagent".to_string(), "guardian".to_string()),
+            ("x-openai-memgen-request".to_string(), "true".to_string()),
+            (
+                "openai-beta".to_string(),
+                "responses_websockets=2026-02-06".to_string(),
+            ),
+            ("sec-websocket-key".to_string(), "dGhlIHNhbXBsZSBub25jZQ==".to_string()),
+        ],
+        body: b"{}".to_vec(),
+    };
+    let http_request = build_websocket_aux_http_request(
+        &request,
+        &json!({
+            "type": "response.create",
+            "model": "test-model",
+            "stream_id": "title-lane",
+            "stream": true
+        }),
+        "title-model",
+    )
+    .expect("build auxiliary HTTP request");
+
+    assert_eq!(http_request.method, "POST");
+    assert!(http_request
+        .headers
+        .iter()
+        .any(|(name, value)| name == "authorization" && value == "Bearer client-key"));
+    assert!(http_request
+        .headers
+        .iter()
+        .any(|(name, value)| name == "content-type" && value == "application/json"));
+    for dropped in [
+        "x-openai-subagent",
+        "x-openai-memgen-request",
+        "openai-beta",
+        "sec-websocket-key",
+    ] {
+        assert!(
+            http_request
+                .headers
+                .iter()
+                .all(|(name, _)| !name.eq_ignore_ascii_case(dropped)),
+            "{dropped} must not describe the synthesized HTTP request"
+        );
+    }
+}
+
+#[tokio::test]
+async fn websocket_auxiliary_http_protocol_error_is_not_shaped() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, provider_id) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    install_codex_aux_model(&context, &provider_id, "title", "title-model");
+
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut websocket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        let selected = tokio::select! {
+            message = websocket.next() => (None, message),
+            accepted = listener.accept() => (Some(accepted.unwrap().0), None),
+        };
+        assert!(selected.1.is_none());
+        let mut http = selected.0.expect("auxiliary HTTP connection");
+        let _ = receive_http_request(&mut http).await;
+        write_http_json(
+            &mut http,
+            &json!({
+                "type": "response.failed",
+                "response": {
+                    "id": "resp_refused",
+                    "status": "failed",
+                    "error": {
+                        "code": "server_error",
+                        "message": "title upstream refused"
+                    }
+                }
+            }),
+        )
+        .await;
+        let _ = websocket.next().await;
+    });
+
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    send_json(
+        &mut client,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "stream": true,
+            "stream_id": "title-lane",
+            "input": "hello",
+            "client_metadata": {
+                "x-codex-turn-metadata": json!({"thread_source": "thread_title"}).to_string()
+            }
+        }),
+    )
+    .await;
+
+    let created = receive_json(&mut client).await;
+    assert_eq!(created["type"], "response.created");
+    let failure = receive_json(&mut client).await;
+    assert_eq!(failure["type"], "response.failed");
+    assert_eq!(failure["response"]["id"], created["response"]["id"]);
+    assert_eq!(
+        failure["response"]["error"]["code"],
+        "aux_task_upstream_bad_request"
+    );
+    assert!(
+        failure["response"]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("title upstream refused")
+    );
+
+    let _ = client.close(None).await;
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    let detail = recorded_details(&context).pop().expect("request detail");
+    assert_eq!(
+        detail.summary.stream_outcome,
+        Some(GatewayStreamOutcome::Failed)
+    );
+    let auxiliary = detail.auxiliary.expect("auxiliary detail");
+    assert!(auxiliary.route_applied);
+    assert!(!auxiliary.shaped);
+}
+
+#[tokio::test]
+async fn websocket_auxiliary_cancel_drops_the_late_http_result() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, provider_id) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    install_codex_aux_model(&context, &provider_id, "title", "title-model");
+
+    let (request_seen_tx, request_seen_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut websocket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        let selected = tokio::select! {
+            message = websocket.next() => (None, message),
+            accepted = listener.accept() => (Some(accepted.unwrap().0), None),
+        };
+        assert!(selected.1.is_none());
+        let mut http = selected.0.expect("auxiliary HTTP connection");
+        let _ = receive_http_request(&mut http).await;
+        request_seen_tx.send(()).expect("signal HTTP request");
+        release_rx.await.expect("wait for the late HTTP reply");
+        write_http_json(
+            &mut http,
+            &json!({
+                "id": "resp_late",
+                "object": "response",
+                "status": "completed",
+                "model": "title-model",
+                "output": [{
+                    "id": "msg_late",
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": "late title" }]
+                }]
+            }),
+        )
+        .await;
+        let _ = websocket.next().await;
+    });
+
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    send_json(
+        &mut client,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "stream": true,
+            "stream_id": "title-lane",
+            "input": "hello",
+            "client_metadata": {
+                "x-codex-turn-metadata": json!({"thread_source": "thread_title"}).to_string()
+            }
+        }),
+    )
+    .await;
+    request_seen_rx.await.expect("auxiliary request reached HTTP");
+
+    send_json(
+        &mut client,
+        json!({"type": "response.cancel", "stream_id": "title-lane"}),
+    )
+    .await;
+    // Let the relay pop the lane before the HTTP task completes, so the test
+    // exercises the "late result must be dropped" path rather than a race.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    release_tx.send(()).expect("release the HTTP reply");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), client.next())
+            .await
+            .is_err(),
+        "a cancelled auxiliary turn must not deliver the late HTTP response"
+    );
+
+    let _ = client.close(None).await;
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    let detail = recorded_details(&context).pop().expect("request detail");
+    assert_eq!(detail.summary.aux_route_source.as_deref(), Some("explicit"));
+    assert_eq!(
+        detail.summary.stream_outcome,
+        Some(GatewayStreamOutcome::Canceled)
+    );
+    assert_eq!(
+        detail.summary.error_category.as_deref(),
+        Some("client_cancelled")
+    );
+}
+
+#[tokio::test]
+async fn websocket_auxiliary_http_completions_may_arrive_out_of_order() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, provider_id) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    install_codex_aux_model(&context, &provider_id, "title", "title-model");
+
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut websocket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        let mut http_connections = Vec::new();
+        while http_connections.len() < 2 {
+            tokio::select! {
+                message = websocket.next() => {
+                    panic!("auxiliary turns must not use the pinned WebSocket: {message:?}");
+                }
+                accepted = listener.accept() => {
+                    let (mut socket, _) = accepted.unwrap();
+                    let _ = receive_http_request(&mut socket).await;
+                    http_connections.push(socket);
+                }
+            }
+        }
+
+        // Complete the second turn before the first. Codex sends frames
+        // without `stream_id`, so both turns share the empty lane unless the
+        // relay assigns each in-flight auxiliary request its own queue.
+        let mut second = http_connections.pop().expect("second HTTP request");
+        let mut first = http_connections.pop().expect("first HTTP request");
+        write_http_json(
+            &mut second,
+            &json!({
+                "id": "resp_second",
+                "object": "response",
+                "status": "completed",
+                "model": "title-model",
+                "output": [{
+                    "id": "msg_second",
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": "second title" }]
+                }],
+                "usage": { "input_tokens": 3, "output_tokens": 2, "total_tokens": 5 }
+            }),
+        )
+        .await;
+        write_http_json(
+            &mut first,
+            &json!({
+                "id": "resp_first",
+                "object": "response",
+                "status": "completed",
+                "model": "title-model",
+                "output": [{
+                    "id": "msg_first",
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": "first title" }]
+                }],
+                "usage": { "input_tokens": 3, "output_tokens": 2, "total_tokens": 5 }
+            }),
+        )
+        .await;
+        let _ = websocket.next().await;
+    });
+
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    for input in ["first", "second"] {
+        send_json(
+            &mut client,
+            json!({
+                "type": "response.create",
+                "model": "test-model",
+                "stream": true,
+                "input": input,
+                "client_metadata": {
+                    "x-codex-turn-metadata": json!({"thread_source": "thread_title"}).to_string()
+                }
+            }),
+        )
+        .await;
+    }
+
+    let mut deltas = Vec::new();
+    let mut completed = 0;
+    while completed < 2 {
+        let frame = receive_json(&mut client).await;
+        match frame["type"].as_str() {
+            Some("response.output_text.delta") => deltas.push(
+                frame["delta"]
+                    .as_str()
+                    .expect("delta text")
+                    .to_string(),
+            ),
+            Some("response.completed") => completed += 1,
+            Some("response.failed") => panic!("auxiliary turn failed: {frame}"),
+            _ => {}
+        }
+    }
+    deltas.sort();
+    assert_eq!(
+        deltas,
+        vec![
+            r#"{"title":"first title"}"#.to_string(),
+            r#"{"title":"second title"}"#.to_string(),
+        ]
+    );
+
+    let _ = client.close(None).await;
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+}
+
+#[tokio::test]
+async fn websocket_memory_auxiliary_turn_rewrites_without_shaping() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, provider_id) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    install_codex_aux_model(&context, &provider_id, "memory", "memory-model");
+
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut websocket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        let selected = tokio::select! {
+            message = websocket.next() => (None, message),
+            accepted = listener.accept() => (Some(accepted.unwrap().0), None),
+        };
+        assert!(
+            selected.1.is_none(),
+            "a memory turn must not use the pinned WebSocket"
+        );
+        let mut http = selected.0.expect("memory HTTP connection");
+        let (_, body) = receive_http_request(&mut http).await;
+        let request: Value = serde_json::from_slice(&body).expect("memory JSON body");
+        assert_eq!(request["model"], "memory-model");
+        assert_eq!(request["stream"], false);
+        write_http_json(
+            &mut http,
+            &json!({
+                "id": "resp_memory",
+                "object": "response",
+                "status": "completed",
+                "model": "memory-model",
+                "output": [{
+                    "id": "msg_memory",
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": "remember this" }]
+                }],
+                "usage": { "input_tokens": 4, "output_tokens": 2, "total_tokens": 6 }
+            }),
+        )
+        .await;
+        let _ = websocket.next().await;
+    });
+
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    send_json(
+        &mut client,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "stream": true,
+            "stream_id": "memory-lane",
+            "input": "consolidate",
+            "client_metadata": {
+                "x-codex-turn-metadata": json!({"thread_source": "memory_consolidation"}).to_string()
+            }
+        }),
+    )
+    .await;
+
+    let mut frames = Vec::new();
+    loop {
+        let frame = receive_json(&mut client).await;
+        let terminal = frame["type"] == "response.completed";
+        frames.push(frame);
+        if terminal {
+            break;
+        }
+    }
+    let _ = client.close(None).await;
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    let delta = frames
+        .iter()
+        .find(|frame| frame["type"] == "response.output_text.delta")
+        .and_then(|frame| frame["delta"].as_str())
+        .expect("memory delta frame");
+    assert_eq!(delta, "remember this");
+    let completed = frames.last().expect("completed frame");
+    assert_eq!(completed["response"]["model"], "memory-model");
+    assert_eq!(
+        completed["response"]["output"][0]["content"][0]["text"],
+        "remember this"
+    );
+
+    let detail = recorded_details(&context).pop().expect("request detail");
+    assert_eq!(
+        detail.summary.aux_task,
+        Some(crate::coding::proxy_gateway::types::CodexAuxTaskKind::Memory)
+    );
+    assert_eq!(detail.summary.aux_route_source.as_deref(), Some("explicit"));
+    let auxiliary = detail.auxiliary.expect("auxiliary detail");
+    assert!(auxiliary.route_applied);
+    assert!(!auxiliary.shaped);
+}
+
+#[tokio::test]
+async fn websocket_auxiliary_main_route_missing_fails_before_upstream() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, provider_id) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    remove_codex_default_model(&context, &provider_id);
+    install_codex_aux_main_model(&context, &provider_id, "title");
+
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut websocket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        if let Ok(Some(Ok(Message::Text(text)))) =
+            timeout(Duration::from_millis(500), websocket.next()).await
+        {
+            panic!(
+                "the missing main route must be rejected before any upstream frame: {text}"
+            );
+        }
+        let _ = websocket.next().await;
+    });
+
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    send_json(
+        &mut client,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "stream": true,
+            "stream_id": "title-lane",
+            "input": "hello",
+            "client_metadata": {
+                "x-codex-turn-metadata": json!({"thread_source": "thread_title"}).to_string()
+            }
+        }),
+    )
+    .await;
+
+    let error = receive_json(&mut client).await;
+    assert_eq!(error["type"], "error");
+    assert_eq!(error["status"], 400);
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("aux_task_main_model_missing")
+    );
+    let _ = client.close(None).await;
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    let detail = recorded_details(&context).pop().expect("request detail");
+    assert_eq!(
+        detail.summary.aux_task,
+        Some(crate::coding::proxy_gateway::types::CodexAuxTaskKind::Title)
+    );
+    assert_eq!(detail.summary.aux_route_source.as_deref(), Some("none"));
+    let auxiliary = detail.auxiliary.expect("auxiliary detail");
+    assert!(!auxiliary.route_applied);
+    assert_eq!(
+        auxiliary.route_error.as_deref(),
+        Some("aux_task_main_model_missing")
+    );
+}
+
+#[tokio::test]
+async fn websocket_already_shaped_auxiliary_reply_is_not_marked_shaped() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, provider_id) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    install_codex_aux_model(&context, &provider_id, "title", "title-model");
+
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut websocket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        let selected = tokio::select! {
+            message = websocket.next() => (None, message),
+            accepted = listener.accept() => (Some(accepted.unwrap().0), None),
+        };
+        assert!(selected.1.is_none());
+        let mut http = selected.0.expect("auxiliary HTTP connection");
+        let _ = receive_http_request(&mut http).await;
+        write_http_json(
+            &mut http,
+            &json!({
+                "id": "resp_title",
+                "object": "response",
+                "status": "completed",
+                "model": "title-model",
+                "output": [{
+                    "id": "msg_title",
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "{\"title\":\"already shaped\"}"
+                    }]
+                }],
+                "usage": { "input_tokens": 3, "output_tokens": 2, "total_tokens": 5 }
+            }),
+        )
+        .await;
+        let _ = websocket.next().await;
+    });
+
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    send_json(
+        &mut client,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "stream": true,
+            "stream_id": "title-lane",
+            "input": "hello",
+            "client_metadata": {
+                "x-codex-turn-metadata": json!({"thread_source": "thread_title"}).to_string()
+            }
+        }),
+    )
+    .await;
+
+    let mut frames = Vec::new();
+    loop {
+        let frame = receive_json(&mut client).await;
+        let terminal = frame["type"] == "response.completed";
+        frames.push(frame);
+        if terminal {
+            break;
+        }
+    }
+    let _ = client.close(None).await;
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    let delta = frames
+        .iter()
+        .find(|frame| frame["type"] == "response.output_text.delta")
+        .and_then(|frame| frame["delta"].as_str())
+        .expect("delta frame");
+    assert_eq!(delta, r#"{"title":"already shaped"}"#);
+    let detail = recorded_details(&context).pop().expect("request detail");
+    let auxiliary = detail.auxiliary.expect("auxiliary detail");
+    assert!(auxiliary.route_applied);
+    assert!(!auxiliary.shaped);
+}
+
+#[tokio::test]
+async fn websocket_auxiliary_http_restores_privacy_tokens() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let (_directory, context, provider_id) = test_context(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        "openai_responses",
+        true,
+    );
+    privacy_tests::enable_privacy(&context);
+    install_codex_aux_model(&context, &provider_id, "memory", "memory-model");
+
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut websocket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        let selected = tokio::select! {
+            message = websocket.next() => (None, message),
+            accepted = listener.accept() => (Some(accepted.unwrap().0), None),
+        };
+        assert!(selected.1.is_none());
+        let mut http = selected.0.expect("auxiliary HTTP connection");
+        let (_, body) = receive_http_request(&mut http).await;
+        let placeholder = privacy_tests::token(&body);
+        write_http_json(
+            &mut http,
+            &json!({
+                "id": "resp_memory",
+                "object": "response",
+                "status": "completed",
+                "model": "memory-model",
+                "output": [{
+                    "id": "msg_memory",
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": placeholder }]
+                }],
+                "usage": { "input_tokens": 4, "output_tokens": 2, "total_tokens": 6 }
+            }),
+        )
+        .await;
+        let _ = websocket.next().await;
+    });
+
+    let (mut client, gateway) = gateway_connection(context.clone()).await;
+    send_json(
+        &mut client,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "stream": true,
+            "stream_id": "memory-lane",
+            "input": privacy_tests::SECRET,
+            "client_metadata": {
+                "x-codex-turn-metadata": json!({"thread_source": "memory_consolidation"}).to_string()
+            }
+        }),
+    )
+    .await;
+
+    let mut frames = Vec::new();
+    loop {
+        let frame = receive_json(&mut client).await;
+        let terminal = frame["type"] == "response.completed";
+        frames.push(frame);
+        if terminal {
+            break;
+        }
+    }
+    let _ = client.close(None).await;
+    gateway.await.unwrap();
+    upstream.await.unwrap();
+
+    let delta = frames
+        .iter()
+        .find(|frame| frame["type"] == "response.output_text.delta")
+        .and_then(|frame| frame["delta"].as_str())
+        .expect("memory delta frame");
+    assert_eq!(delta, privacy_tests::SECRET);
+    let completed = frames.last().expect("completed frame");
+    assert_eq!(
+        completed["response"]["output"][0]["content"][0]["text"],
+        privacy_tests::SECRET
+    );
+
+    let detail = recorded_details(&context).pop().expect("request detail");
+    assert!(detail.summary.success);
+    assert_eq!(detail.privacy.as_ref().unwrap().matched_values, 1);
+    assert!(
+        !serde_json::to_string(&detail).unwrap().contains("secret"),
+        "auxiliary privacy detail leaked the original text"
+    );
+}
+
+fn real_codex_mock_lifecycle(model: &str, text: &str) -> Vec<Value> {
+    let item = json!({
+        "id": "msg_real_e2e",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [{ "type": "output_text", "text": text, "annotations": [] }]
+    });
+    let completed = json!({
+        "id": "resp_real_e2e",
+        "object": "response",
+        "status": "completed",
+        "model": model,
+        "output": [item],
+        "usage": { "input_tokens": 3, "output_tokens": 2, "total_tokens": 5 }
+    });
+    let mut opened = completed.clone();
+    opened["status"] = json!("in_progress");
+    opened["output"] = json!([]);
+    let mut in_progress = item.clone();
+    in_progress["status"] = json!("in_progress");
+    vec![
+        json!({ "type": "response.created", "response": opened }),
+        json!({ "type": "response.in_progress", "response": opened }),
+        json!({ "type": "response.output_item.added", "output_index": 0, "item": in_progress }),
+        json!({ "type": "response.output_text.delta", "delta": text, "item_id": "msg_real_e2e", "output_index": 0, "content_index": 0 }),
+        json!({ "type": "response.output_text.done", "text": text, "item_id": "msg_real_e2e", "output_index": 0, "content_index": 0 }),
+        json!({ "type": "response.output_item.done", "output_index": 0, "item": item }),
+        json!({ "type": "response.completed", "response": completed }),
+    ]
+}
+
+/// End-to-end check with the real Codex CLI: a title turn must leave the
+/// pinned WebSocket and go through the auxiliary HTTP channel, then reach the
+/// client as synthesized bare JSON frames.
+///
+/// Run with:
+/// `cargo test --lib real_codex_title_turn_uses_the_auxiliary_http_channel -- --ignored --nocapture`
+#[tokio::test]
+#[ignore = "requires the real codex CLI on PATH"]
+async fn real_codex_title_turn_uses_the_auxiliary_http_channel() {
+    use std::process::Stdio;
+
+    let upstream_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    let (_directory, context, provider_id) = test_context(
+        &format!("http://{upstream_address}/v1"),
+        "openai_responses",
+        true,
+    );
+    install_codex_aux_model(&context, &provider_id, "title", "title-model");
+
+    let (events_tx, mut events_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(&'static str, Value)>();
+    let upstream = tokio::spawn(async move {
+        loop {
+            let Ok((socket, _)) = upstream_listener.accept().await else {
+                break;
+            };
+            let events_tx = events_tx.clone();
+            tokio::spawn(async move {
+                let mut peek = [0_u8; 4];
+                let peeked = socket.peek(&mut peek).await.unwrap_or(0);
+                if &peek[..peeked] == b"GET " {
+                    let Ok(mut websocket) = tokio_tungstenite::accept_async(socket).await else {
+                        return;
+                    };
+                    while let Some(Ok(message)) = websocket.next().await {
+                        let Message::Text(text) = message else {
+                            continue;
+                        };
+                        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+                            continue;
+                        };
+                        let is_create = value["type"] == "response.create";
+                        let _ = events_tx.send(("ws", value.clone()));
+                        if is_create {
+                            let model = value["model"].as_str().unwrap_or("test-model");
+                            for event in real_codex_mock_lifecycle(model, "warmup") {
+                                if websocket
+                                    .send(Message::Text(event.to_string().into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let mut socket = socket;
+                    let (_, body) = receive_http_request(&mut socket).await;
+                    let value = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+                    let _ = events_tx.send(("http", value));
+                    write_http_json(
+                        &mut socket,
+                        &json!({
+                            "id": "resp_real_title",
+                            "object": "response",
+                            "status": "completed",
+                            "model": "title-model",
+                            "output": [{
+                                "id": "msg_real_title",
+                                "type": "message",
+                                "status": "completed",
+                                "role": "assistant",
+                                "content": [{ "type": "output_text", "text": "Real Title" }]
+                            }],
+                            "usage": { "input_tokens": 10, "output_tokens": 2, "total_tokens": 12 }
+                        }),
+                    )
+                    .await;
+                }
+            });
+        }
+    });
+
+    let gateway_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let gateway_address = gateway_listener.local_addr().unwrap();
+    let gateway_context = context.clone();
+    let gateway = tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = gateway_listener.accept().await else {
+                break;
+            };
+            let context = gateway_context.clone();
+            tokio::spawn(async move {
+                let _ = super::super::handle_connection(&mut socket, &context).await;
+            });
+        }
+    });
+
+    let codex_home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            "model_provider = \"e2e\"\n\
+             model = \"test-model\"\n\
+             [model_providers.e2e]\n\
+             name = \"e2e\"\n\
+             base_url = \"http://{gateway_address}/openai/v1\"\n\
+             wire_api = \"responses\"\n\
+             supports_websockets = true\n\
+             env_key = \"CODEX_E2E_API_KEY\"\n"
+        ),
+    )
+    .unwrap();
+    let workdir = tempfile::tempdir().unwrap();
+    let codex_binary =
+        std::env::var("CODEX_BIN").unwrap_or_else(|_| "codex".to_string());
+    let mut command = tokio::process::Command::new(codex_binary);
+    command
+        .args([
+            "exec",
+            "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--thread-source",
+            "thread_title",
+            "say hi",
+        ])
+        .current_dir(workdir.path())
+        .env("CODEX_HOME", codex_home.path())
+        .env("CODEX_E2E_API_KEY", "e2e-test-key")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let output = timeout(Duration::from_secs(90), command.output())
+        .await
+        .expect("real codex exec timed out")
+        .expect("run real codex");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        output.status.success(),
+        "real codex failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    let mut websocket_creates = Vec::new();
+    let mut http_requests = Vec::new();
+    while let Ok((kind, value)) = events_rx.try_recv() {
+        match kind {
+            "ws" if value["type"] == "response.create" => websocket_creates.push(value),
+            "http" => http_requests.push(value),
+            _ => {}
+        }
+    }
+
+    assert!(
+        stdout.contains("Real Title"),
+        "the shaped auxiliary title never reached real Codex\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert_eq!(
+        http_requests.len(),
+        1,
+        "the title turn must be sent over the auxiliary HTTP channel exactly once: {http_requests:?}"
+    );
+    assert_eq!(http_requests[0]["model"], "title-model");
+    assert_eq!(http_requests[0]["stream"], false);
+    assert!(
+        http_requests[0].get("type").is_none(),
+        "WS control fields leaked into the auxiliary HTTP body"
+    );
+    let turn_metadata: Value = serde_json::from_str(
+        http_requests[0]["client_metadata"]["x-codex-turn-metadata"]
+            .as_str()
+            .expect("real Codex sends turn metadata"),
+    )
+    .expect("turn metadata JSON");
+    assert_eq!(turn_metadata["thread_source"], "thread_title");
+    assert_eq!(turn_metadata["request_kind"], "turn");
+    for create in &websocket_creates {
+        assert_eq!(
+            create["generate"], false,
+            "the title turn leaked onto the pinned WebSocket: {create}"
+        );
+    }
+
+    let detail = timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(detail) = recorded_details(&context)
+                .into_iter()
+                .find(|detail| {
+                    detail.summary.aux_task
+                        == Some(crate::coding::proxy_gateway::types::CodexAuxTaskKind::Title)
+                        && detail.summary.aux_route_source.as_deref() == Some("explicit")
+                })
+            {
+                return detail;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the real title turn must produce a request record");
+    assert_eq!(detail.summary.aux_route_source.as_deref(), Some("explicit"));
+    assert_eq!(
+        detail.summary.upstream_model_id.as_deref(),
+        Some("title-model")
+    );
+    let auxiliary = detail.auxiliary.expect("auxiliary detail");
+    assert!(auxiliary.route_applied);
+    assert!(auxiliary.shaped);
+
+    gateway.abort();
+    upstream.abort();
+}
+
+/// The synthesized `response.failed` must terminate a real Codex turn even
+/// though the auxiliary HTTP request never sent a `response.created` frame and
+/// the frame carries no response id yet.
+///
+/// Run with:
+/// `cargo test --lib real_codex_auxiliary_http_failure_terminates -- --ignored --nocapture`
+#[tokio::test]
+#[ignore = "requires the real codex CLI on PATH"]
+async fn real_codex_auxiliary_http_failure_terminates() {
+    use std::process::Stdio;
+
+    let upstream_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    let (_directory, context, provider_id) = test_context(
+        &format!("http://{upstream_address}/v1"),
+        "openai_responses",
+        true,
+    );
+    install_codex_aux_model(&context, &provider_id, "title", "title-model");
+
+    let upstream = tokio::spawn(async move {
+        loop {
+            let Ok((socket, _)) = upstream_listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let mut peek = [0_u8; 4];
+                let peeked = socket.peek(&mut peek).await.unwrap_or(0);
+                if &peek[..peeked] == b"GET " {
+                    let Ok(mut websocket) = tokio_tungstenite::accept_async(socket).await else {
+                        return;
+                    };
+                    while let Some(Ok(message)) = websocket.next().await {
+                        let Message::Text(text) = message else {
+                            continue;
+                        };
+                        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+                            continue;
+                        };
+                        if value["type"] == "response.create" {
+                            let model = value["model"].as_str().unwrap_or("test-model");
+                            for event in real_codex_mock_lifecycle(model, "warmup") {
+                                if websocket
+                                    .send(Message::Text(event.to_string().into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let mut socket = socket;
+                    let _ = receive_http_request(&mut socket).await;
+                    use tokio::io::AsyncWriteExt;
+                    let body = br#"{"error":{"message":"title model is unavailable"}}"#;
+                    let header = format!(
+                        "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = socket.write_all(header.as_bytes()).await;
+                    let _ = socket.write_all(body).await;
+                    let _ = socket.shutdown().await;
+                }
+            });
+        }
+    });
+
+    let gateway_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let gateway_address = gateway_listener.local_addr().unwrap();
+    let gateway_context = context.clone();
+    let gateway = tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = gateway_listener.accept().await else {
+                break;
+            };
+            let context = gateway_context.clone();
+            tokio::spawn(async move {
+                let _ = super::super::handle_connection(&mut socket, &context).await;
+            });
+        }
+    });
+
+    let codex_home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            "model_provider = \"e2e\"\n\
+             model = \"test-model\"\n\
+             [model_providers.e2e]\n\
+             name = \"e2e\"\n\
+             base_url = \"http://{gateway_address}/openai/v1\"\n\
+             wire_api = \"responses\"\n\
+             supports_websockets = true\n\
+             env_key = \"CODEX_E2E_API_KEY\"\n"
+        ),
+    )
+    .unwrap();
+    let workdir = tempfile::tempdir().unwrap();
+    let codex_binary =
+        std::env::var("CODEX_BIN").unwrap_or_else(|_| "codex".to_string());
+    let mut command = tokio::process::Command::new(codex_binary);
+    command
+        .args([
+            "exec",
+            "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--thread-source",
+            "thread_title",
+            "say hi",
+        ])
+        .current_dir(workdir.path())
+        .env("CODEX_HOME", codex_home.path())
+        .env("CODEX_E2E_API_KEY", "e2e-test-key")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let output = timeout(Duration::from_secs(45), command.output())
+        .await
+        .expect("real Codex hung after the synthesized response.failed")
+        .expect("run real codex");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        !output.status.success(),
+        "real Codex must fail the forced title turn\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("title model is unavailable"),
+        "real Codex did not surface the auxiliary failure\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    let detail = timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(detail) = recorded_details(&context)
+                .into_iter()
+                .find(|detail| {
+                    detail.summary.aux_task
+                        == Some(crate::coding::proxy_gateway::types::CodexAuxTaskKind::Title)
+                        && detail.summary.stream_outcome
+                            == Some(GatewayStreamOutcome::Failed)
+                })
+            {
+                return detail;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "the failed auxiliary turn must be recorded\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        )
+    });
+    assert_eq!(
+        detail.summary.error_category.as_deref(),
+        Some("aux_task_model_not_found")
+    );
+
+    gateway.abort();
+    upstream.abort();
 }

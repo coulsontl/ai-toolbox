@@ -481,6 +481,7 @@ async fn failed_terminal_write_keeps_usage_but_is_not_a_success() {
                 upstream_socket,
                 &handshake,
                 provider,
+                match_gateway_route("/openai/v1/responses").expect("codex route"),
                 &context,
                 "failure-connection".into(),
                 "ws://unused.invalid/v1/responses".into(),

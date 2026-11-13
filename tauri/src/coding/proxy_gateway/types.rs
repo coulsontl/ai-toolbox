@@ -1568,9 +1568,10 @@ pub struct GatewayAuxiliaryMetadata {
     /// Whether the gateway rewrote the response into the task's schema shape.
     #[serde(default)]
     pub shaped: bool,
-    /// False when no auxiliary route was applied: WebSocket frames are
-    /// classified but not rewritten, resolution can fail, and review/compact
-    /// markers have no route at all.
+    /// False when no auxiliary route was applied: resolution can fail, and
+    /// review/compact markers have no route at all. Route-key WebSocket turns
+    /// carry the real value from the relay now that they use the auxiliary
+    /// HTTP channel.
     #[serde(default = "default_true")]
     pub route_applied: bool,
     /// Explicit route error, e.g. `aux_task_main_model_missing`.

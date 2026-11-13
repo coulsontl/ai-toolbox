@@ -161,9 +161,9 @@ pub(super) fn record_gateway_observability_with_transport(
     let cache_creation_tokens = usage.cache_creation_tokens;
     let total_tokens = usage.total_tokens();
     let settings = context.settings_snapshot();
-    // WebSocket turns are classified for visibility only: `response.create`
-    // frames are not rewritten yet, so the record must say the route was not
-    // applied instead of implying the auxiliary model took effect.
+    // Route-key WebSocket auxiliary turns now carry their own metadata from the
+    // relay. This fallback only classifies early failures and non-routed tasks
+    // (auto-review/review/compact), where no auxiliary model was applied.
     let websocket_aux = (transport == GatewayRequestTransport::Websocket
         && response.cli_key == Some(GatewayCliKey::Codex))
         .then(|| classify_codex_aux_task(request))

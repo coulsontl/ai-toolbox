@@ -2425,6 +2425,307 @@ async fn send_upstream_request(
     .await
 }
 
+/// Result of one WebSocket auxiliary turn sent through the HTTP Responses
+/// path. The relay turns `body` into bare JSON WebSocket frames; keeping the
+/// HTTP request off the pinned WebSocket avoids New API's per-connection model
+/// lock when the auxiliary model differs from the main turn.
+pub(super) struct WebSocketAuxHttpOutcome {
+    pub(super) success: bool,
+    pub(super) status_code: u16,
+    pub(super) headers: Vec<(String, String)>,
+    pub(super) body: Vec<u8>,
+    pub(super) token_usage: TokenUsage,
+    pub(super) upstream_request_body: Option<Vec<u8>>,
+    pub(super) upstream_response_body: Option<Vec<u8>>,
+    pub(super) upstream_response_body_bytes: u64,
+    pub(super) upstream_url: Option<String>,
+    pub(super) served_service_tier: Option<String>,
+    pub(super) observations: super::observations::RequestObservations,
+    pub(super) auxiliary_shaped: bool,
+    pub(super) error_category: Option<String>,
+    pub(super) error_message: Option<String>,
+    pub(super) failure_kind: Option<GatewayFailureKind>,
+}
+
+fn websocket_aux_failure(
+    status_code: u16,
+    error_category: impl Into<String>,
+    error_message: impl Into<String>,
+    failure_kind: GatewayFailureKind,
+    upstream_request_body: Option<Vec<u8>>,
+    upstream_response_body: Option<Vec<u8>>,
+    upstream_response_body_bytes: u64,
+) -> WebSocketAuxHttpOutcome {
+    WebSocketAuxHttpOutcome {
+        success: false,
+        status_code,
+        headers: Vec::new(),
+        body: Vec::new(),
+        token_usage: TokenUsage::default(),
+        upstream_request_body,
+        upstream_response_body,
+        upstream_response_body_bytes,
+        upstream_url: None,
+        served_service_tier: None,
+        observations: super::observations::RequestObservations::default(),
+        auxiliary_shaped: false,
+        error_category: Some(error_category.into()),
+        error_message: Some(error_message.into()),
+        failure_kind: Some(failure_kind),
+    }
+}
+
+/// Preserve everything the request detail already knows about the upstream
+/// attempt while still turning the failed HTTP response into a synthesized
+/// WebSocket `response.failed`.
+fn websocket_aux_failure_from_response(
+    response: &mut DebugHttpResponse,
+    error_category: impl Into<String>,
+    error_message: impl Into<String>,
+    failure_kind: GatewayFailureKind,
+) -> WebSocketAuxHttpOutcome {
+    let mut outcome = websocket_aux_failure(
+        response.status_code,
+        error_category,
+        error_message,
+        failure_kind,
+        response.upstream_request_body.take(),
+        response.upstream_response_body.take(),
+        response.upstream_response_body_bytes,
+    );
+    outcome.headers = std::mem::take(&mut response.headers);
+    outcome.token_usage = std::mem::take(&mut response.token_usage);
+    outcome.upstream_url = response.upstream_url.take();
+    outcome.served_service_tier = response.served_service_tier.take();
+    outcome.observations = std::mem::take(&mut response.observations);
+    outcome
+}
+
+fn websocket_aux_error_category(kind: GatewayFailureKind) -> String {
+    match kind {
+        GatewayFailureKind::EmptyResponse => "aux_task_empty_response".to_string(),
+        GatewayFailureKind::GatewayParse => "aux_task_unexpected_response".to_string(),
+        _ => format!("aux_task_{}", model_health::classify_failure(kind).category),
+    }
+}
+
+/// `send_upstream_request` folds both shaping variants into `EmptyResponse` so
+/// HTTP retry/failover semantics stay unchanged. The WebSocket error frame has
+/// a stable code per variant, and these two messages are the only empty-text
+/// failures `shape_aux_response` produces.
+fn websocket_aux_shaping_category(message: &str) -> &'static str {
+    if message.contains("no output text") || message.contains("empty assistant message") {
+        "aux_task_empty_response"
+    } else {
+        "aux_task_unexpected_response"
+    }
+}
+
+fn upstream_error_message(body: &[u8]) -> Option<String> {
+    let value = serde_json::from_slice::<Value>(body).ok()?;
+    value
+        .pointer("/error/message")
+        .or_else(|| value.pointer("/response/error/message"))
+        .or_else(|| value.get("message"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_string)
+}
+
+/// Send one auxiliary `response.create` over the HTTP Responses path.
+///
+/// This deliberately does not touch the relay's pinned WebSocket: the
+/// auxiliary model commonly differs from the main model, and a New API-family
+/// relay would reject that switch with a model-lock error and force a
+/// reconnect. HTTP also lets us reuse the existing non-streaming aggregation
+/// and `shape_aux_response` pipeline; the relay only has to synthesize frames.
+pub(super) async fn run_websocket_aux_http(
+    context: &GatewayRuntimeContext,
+    provider: &UpstreamProvider,
+    route: &GatewayRoute,
+    request: &DebugHttpRequest,
+    requested_model: &str,
+    upstream_model_id: &str,
+    privacy: Option<&PrivacyRequest>,
+) -> WebSocketAuxHttpOutcome {
+    let Some(db) = context.db.as_ref() else {
+        return websocket_aux_failure(
+            503,
+            "aux_task_upstream_error",
+            "Gateway database is unavailable",
+            GatewayFailureKind::Connection,
+            None,
+            None,
+            0,
+        );
+    };
+    let settings = context.settings_snapshot();
+    let app_config = settings.effective_app_config(route.cli_key);
+    let upstream_response_snapshot_limit = settings
+        .store_response_body
+        .then(|| settings.log_max_body_size_kb.saturating_mul(1024) as usize);
+    let mut provider = provider.clone();
+    if let Some(privacy) = privacy {
+        privacy.set_usage_provider(provider.meta.provider_type.clone());
+    }
+
+    let result = send_upstream_request(
+        context,
+        request,
+        db,
+        route,
+        &mut provider,
+        requested_model,
+        upstream_model_id,
+        settings.thinking_rectifier_enabled,
+        settings.responses_encrypted_content_rectifier_enabled,
+        settings.thinking_budget_rectifier_enabled,
+        settings.cache_injection_enabled,
+        settings.codex_compaction_native_passthrough_enabled,
+        app_config.non_streaming_timeout_secs,
+        app_config.streaming_idle_timeout_secs,
+        upstream_response_snapshot_limit,
+        privacy,
+    )
+    .await;
+
+    let mut response = match result {
+        Ok(response) => response,
+        Err(error) => {
+            let mut kind = error.kind;
+            let mut message = error.message;
+            // A shaped task parses and shapes before `run_websocket_aux_http`
+            // sees the response. A 2xx protocol-error envelope therefore
+            // arrives here as "no output text"; prefer the upstream's own
+            // error so the synthesized `response.failed` remains actionable.
+            if error
+                .upstream_response_body
+                .as_deref()
+                .is_some_and(gateway_body_reports_error)
+            {
+                kind = GatewayFailureKind::UpstreamBadRequest;
+                message = error
+                    .upstream_response_body
+                    .as_deref()
+                    .and_then(upstream_error_message)
+                    .unwrap_or(message);
+            }
+            let category = if kind == GatewayFailureKind::EmptyResponse {
+                websocket_aux_shaping_category(&message).to_string()
+            } else {
+                websocket_aux_error_category(kind)
+            };
+            return websocket_aux_failure(
+                0,
+                category,
+                message,
+                kind,
+                error.upstream_request_body,
+                error.upstream_response_body,
+                error.upstream_response_body_bytes,
+            );
+        }
+    };
+
+    if let Some(privacy) = privacy {
+        privacy.set_usage_provider(response.provider_type.clone());
+    }
+    if response.body_stream.is_some() {
+        return websocket_aux_failure_from_response(
+            &mut response,
+            "aux_task_unexpected_response",
+            "Auxiliary HTTP response unexpectedly streamed",
+            GatewayFailureKind::GatewayParse,
+        );
+    }
+    // The pinned single-provider path does not run the batch path's 2xx
+    // protocol-error / empty-body classification. Shaped tasks fail earlier
+    // inside `send_upstream_request` (handled in the Err arm above); detect the
+    // same envelopes here for tasks such as memory that return unshaped JSON.
+    if let Some(kind) = classify_success_protocol_error(&response) {
+        let message = upstream_error_message(&response.body)
+            .unwrap_or_else(|| "Auxiliary upstream returned a protocol error".to_string());
+        return websocket_aux_failure_from_response(
+            &mut response,
+            websocket_aux_error_category(kind),
+            message,
+            kind,
+        );
+    }
+    if let Some(kind) = classify_empty_success_response(&response) {
+        return websocket_aux_failure_from_response(
+            &mut response,
+            websocket_aux_error_category(kind),
+            "Auxiliary upstream returned an empty response",
+            kind,
+        );
+    }
+    if !(200..400).contains(&response.status_code) {
+        let status_code = response.status_code;
+        let kind = classify_status_failure(status_code)
+            .unwrap_or(GatewayFailureKind::Upstream5xx);
+        let message = upstream_error_message(&response.body)
+            .unwrap_or_else(|| format!("Auxiliary upstream returned HTTP {status_code}"));
+        return websocket_aux_failure_from_response(
+            &mut response,
+            websocket_aux_error_category(kind),
+            message,
+            kind,
+        );
+    }
+
+    let status_code = response.status_code;
+    let mut body = std::mem::take(&mut response.body);
+    let value = match serde_json::from_slice::<Value>(&body) {
+        Ok(value) => value,
+        Err(error) => {
+            return websocket_aux_failure_from_response(
+                &mut response,
+                "aux_task_unexpected_response",
+                format!("Auxiliary HTTP response was not JSON: {error}"),
+                GatewayFailureKind::GatewayParse,
+            );
+        }
+    };
+    if let Some(privacy) = privacy {
+        privacy.remember_response(&value);
+        match privacy.restore(&body) {
+            Ok(restored) => body = restored,
+            Err(error) => {
+                privacy.fail();
+                return websocket_aux_failure_from_response(
+                    &mut response,
+                    "privacy_restore_failed",
+                    error,
+                    GatewayFailureKind::GatewayParse,
+                );
+            }
+        }
+    }
+
+    WebSocketAuxHttpOutcome {
+        success: true,
+        status_code,
+        headers: std::mem::take(&mut response.headers),
+        body,
+        token_usage: std::mem::take(&mut response.token_usage),
+        upstream_request_body: response.upstream_request_body.take(),
+        upstream_response_body: response.upstream_response_body.take(),
+        upstream_response_body_bytes: response.upstream_response_body_bytes,
+        upstream_url: response.upstream_url.take(),
+        served_service_tier: response.served_service_tier.take(),
+        observations: std::mem::take(&mut response.observations),
+        auxiliary_shaped: response
+            .auxiliary
+            .as_ref()
+            .is_some_and(|auxiliary| auxiliary.shaped),
+        error_category: None,
+        error_message: None,
+        failure_kind: None,
+    }
+}
+
 async fn send_request_once(
     client: &reqwest::Client,
     method: reqwest::Method,
@@ -2698,8 +2999,8 @@ async fn build_gateway_response(
                 &body,
                 &upstream_response_body,
             )
-            .map_err(|message| GatewayForwardError {
-                message,
+            .map_err(|error| GatewayForwardError {
+                message: error.message().to_string(),
                 kind: GatewayFailureKind::EmptyResponse,
                 upstream_request_body: Some(upstream_body_snapshot.clone()),
                 upstream_response_body: Some(upstream_response_body.clone()),
@@ -3060,8 +3361,8 @@ async fn build_gateway_response(
                 &body,
                 &upstream_response_body,
             )
-            .map_err(|message| GatewayForwardError {
-                message,
+            .map_err(|error| GatewayForwardError {
+                message: error.message().to_string(),
                 kind: GatewayFailureKind::EmptyResponse,
                 upstream_request_body: Some(upstream_body_snapshot.clone()),
                 upstream_response_body: Some(upstream_response_body.clone()),
@@ -5699,13 +6000,14 @@ fn render_aux_sse_if_streaming(
     if !(200..400).contains(&status_code) || !request_declares_streaming(request) {
         return Ok((body, None, false));
     }
-    let stream = build_aux_sse(&body, upstream_body).map_err(|message| GatewayForwardError {
-        message,
-        kind: GatewayFailureKind::EmptyResponse,
-        upstream_request_body: None,
-        upstream_response_body: Some(upstream_body.to_vec()),
-        upstream_response_body_bytes: upstream_body.len() as u64,
-    })?;
+    let stream =
+        build_aux_sse(&body, upstream_body).map_err(|error| GatewayForwardError {
+            message: error.message().to_string(),
+            kind: GatewayFailureKind::EmptyResponse,
+            upstream_request_body: None,
+            upstream_response_body: Some(upstream_body.to_vec()),
+            upstream_response_body_bytes: upstream_body.len() as u64,
+        })?;
     set_response_content_type(response_headers, "text/event-stream");
     let bytes = stream.into_bytes();
     let stream = futures_util::stream::once(async move { Ok(bytes) });
@@ -6594,10 +6896,10 @@ fn is_codex_auto_review_request(request: &DebugHttpRequest) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct AuxModelResolution {
-    model: String,
+pub(super) struct AuxModelResolution {
+    pub(super) model: String,
     /// `explicit` / `main` / `auto_kept` / `auto_fallback`.
-    source: &'static str,
+    pub(super) source: &'static str,
 }
 
 /// Resolve a Codex auxiliary request's model inside one candidate provider.
@@ -6607,7 +6909,7 @@ struct AuxModelResolution {
 /// provider's family/default mapping. Automatic mode keeps the requested model
 /// when the channel declares it, and only falls back to `default_model` when it
 /// does not.
-fn resolve_codex_aux_model(
+pub(super) fn resolve_codex_aux_model(
     requested_model: &str,
     provider: &UpstreamProvider,
     task: &crate::coding::proxy_gateway::runtime::compat::codex_aux_task::CodexAuxTask,
@@ -6699,7 +7001,7 @@ fn aux_configured_mode(task: &CodexAuxTask, provider: &UpstreamProvider) -> Opti
         .or_else(|| task.route_key().map(|_| "auto".to_string()))
 }
 
-fn aux_metadata(
+pub(super) fn aux_metadata(
     task: &CodexAuxTask,
     provider: &UpstreamProvider,
     shaped: bool,
@@ -6716,7 +7018,7 @@ fn aux_metadata(
     }
 }
 
-fn aux_error_metadata(
+pub(super) fn aux_error_metadata(
     task: &crate::coding::proxy_gateway::runtime::compat::codex_aux_task::CodexAuxTask,
     provider: &UpstreamProvider,
     error: String,

@@ -393,12 +393,21 @@ resolve_aux_model(task, requested_model, provider) -> Result<Option<String>, Aux
 
 ### 6.5 WebSocket
 
-Codex 的 Responses WebSocket（`codex_websocket_enabled`）也可能承载辅助调用。设计上分两步：
+Codex 的 Responses WebSocket（`codex_websocket_enabled`）也会承载辅助调用。当前实现：
 
-- 首期（HTTP）：分类和路由只覆盖 HTTP；如果检测到 `transport = websocket` 且存在匹配的渠道辅助配置，请求按原样转发，但在详情里标记 `aux_route_applied = false`，并记录一条明确的 note（不静默）。
-- 后续：在 WS 的 `response.create` 帧上复用同一分类器（`client_metadata` 在帧 body 里），同步实现模型改写。WS 不需要合成 SSE，响应整形直接写合成 JSON 帧，反而比 HTTP 简单。
+- 在 `response.create` 帧上复用同一分类器（`client_metadata["x-codex-turn-metadata"]` 在帧 body 里）和 `resolve_codex_aux_model`；
+- 对有 `route_key` 的任务（title / description / summary / prediction / memory），上游请求改走现有 **HTTP 非流式辅助通道**：
+  - 从原始 `response.create` 去掉 `type` / `stream_id` / `event_id` / `generate` / `background` / `stream_options`；
+  - 设置 `stream: false` 和解析出的辅助模型；
+  - 复用 HTTP 侧的 SSE 聚合、`shape_aux_response`、usage、pipeline 与隐私还原。
+- relay 再把 HTTP 返回的 JSON 合成为裸 JSON WebSocket 帧（与 `build_aux_sse` 共用同一套事件生命周期）；
+- 真实 Codex 的 `response.create` 通常不带 `stream_id`；每个无 `stream_id` 的辅助 HTTP 轮次使用内部唯一 lane（`aux-http-<request_id>`），避免 HTTP 完成乱序时被当成过期结果丢弃，也避免后续主回合的上游事件关联到辅助轮次；
+- HTTP 失败必须合成 `response.created`（`in_progress`）+ `response.failed`，两者共享 `resp_aux_ws_<request_id>`：真实 Codex 会把没有创建事件的裸 `response.failed` 当成流断开并触发重连；整形失败 code 使用 `aux_task_empty_response` / `aux_task_unexpected_response`，上游错误保留原始 body；
+- HTTP 2xx 但 body 是协议错误信封（`response.failed` / 顶层 `error`）时不得送入整形，必须识别信封并按上游错误返回 `response.failed`（`aux_task_upstream_bad_request`），保留上游 `error.message`；
+- `auto_review` / `review` / `compact` 没有 `route_key`，继续走 WS 直通，只做观测分类；
+- 主回合仍走原来的 pinned WebSocket，不因辅助调用切换模型。
 
-如果希望首期就覆盖 WS，可把 WS 路由并入同一阶段；否则必须在 UI/文档里写明“辅助模型目前只对 HTTP 生效”。
+**为什么辅助轮次不走同一条上游 WebSocket**：New API 系中转会把 Responses WebSocket 锁定到首个成功模型。辅助模型通常与主模型不同，同 socket 改写会被上游以 model-lock 拒绝，网关必须断开连接让 Codex 重连；如果辅助调用与主回合并发，还会影响同一连接上的其他 lane。改走一次性 HTTP 辅助请求可以彻底避开这个约束，并直接复用 HTTP 侧已经验证过的整形链路。
 
 ## 7. 响应整形
 
@@ -427,6 +436,7 @@ Codex 的 Responses WebSocket（`codex_websocket_enabled`）也可能承载辅�
 5. 生成 Responses 响应：
    - 客户端非流式：返回 JSON，`output` 里一条 message，`usage` 用上游 usage；
    - 客户端流式（Codex 常态）：合成 `response.created` → `response.output_item.added` → `response.output_item.done` → `response.completed`，并带 usage；
+   - WebSocket 客户端：HTTP 辅助通道先返回完整 JSON，relay 再用同一套生命周期合成裸 JSON 文本帧（`build_aux_frames`）；
 6. 原样保留上游错误；2xx 但整形失败（空文本、无法解析）返回明确 502 `aux_task_empty_response` / `aux_task_unexpected_response`，并在详情里保存原始上游 body；
 7. `upstream_response_body` 保留真实上游 body，`response_body` 保存整形后的 body，便于排障；
 8. token/cost 使用上游 usage，不能因为整形丢失计费。
@@ -631,7 +641,7 @@ ALTER TABLE proxy_request_logs ADD COLUMN aux_route_source TEXT;
 | 预测返回纯文本 | `{"suggestion":null}`，记录一条失败原因；绝不把文本塞进 composer |
 | 辅助请求失败 | 只影响该请求；不改变主回合、不改变审批结果 |
 | 连通性测试 | 完全跳过辅助模型解析（`provider_override_id` 非空） |
-| WebSocket 且配置了渠道辅助模型（首期） | 按原样转发，详情标记 `route_applied=false` 并记录 note；不静默声称已应用 |
+| WebSocket 且配置了渠道辅助模型 | 有 `route_key` 的任务走 HTTP 辅助通道并改写模型；详情记录 `route_applied=true` 与实际 `shaped`；辅助请求失败只结束该轮 |
 | provider 未配置辅助模型 | 自动回退；不报错 |
 
 ## 11. 测试矩阵
@@ -706,7 +716,7 @@ ALTER TABLE proxy_request_logs ADD COLUMN aux_route_source TEXT;
 3. **原生记忆**：`[memories]` 结构化字段 + 定向 TOML 补丁（含已有区块、缺键、无表、非法形态的处理）；原始 TOML 编辑器双向同步。
 4. **运行时路由**：single / failover / aggregate 按当前候选渠道应用辅助模型；自动回退；`main` 强制 `default_model`；缺少 `default_model` 时明确报错；连通性测试跳过；主回合不受影响。
 5. **响应整形**：title/description/summary/prediction 的纯文本包装与合成 Responses 响应；Anthropic 目标解禁；整形失败明确报错。
-6. **WebSocket**：在 `response.create` 帧上复用分类与模型改写；如果实现成本超预期，必须显式标记未应用并记录 note，不能静默。
+6. **WebSocket**：在 `response.create` 帧上复用分类与模型改写；有 `route_key` 的任务通过 HTTP 辅助通道发送并合成裸 JSON 帧；`auto_review` / `review` / `compact` 保持 WS 直通。
 7. **验证**：`cargo test`、`pnpm test`、`pnpm exec tsc --noEmit`、`pnpm i18n:check`；涉及 UI/样式时按 `DESIGN.md` 检查亮色、暗色、窄窗口和长文本。
 
 不包含（后续单独做）：`off`（本地回答空结果）、记忆 extract/consolidation 分离路由、把 auto-review 迁入 `auxiliaryModels`、`review_model`。
@@ -716,7 +726,7 @@ ALTER TABLE proxy_request_logs ADD COLUMN aux_route_source TEXT;
 1. **无法跨渠道路由（已确认接受）**：这是按渠道定义的直接结果。如果用户希望标题走另一个渠道，只能把那个渠道设为主渠道/候选渠道。
 2. **记忆提取/整理不可区分（已确认单路由）**：线上标记相同。只提供一条 `memory` 路由；若要分开，必须用请求 model 与 provider 原生 `[memories]` 模型匹配，存在误判风险。
 3. **响应整形的工作量**：是完整方案中最大的一块；Anthropic 目标必须整形或明确报错，不能静默失败。
-4. **WebSocket**：Codex 开启 WS 后辅助调用可能不走 HTTP；必须显式标记未应用或同期实现，不能假装生效。
+4. **WebSocket**：有 `route_key` 的辅助轮次改走一次性 HTTP 上游请求，避免 New API 的模型锁定与主/辅并发的重连风暴；`auto_review` / `review` / `compact` 仍走 pinned WS，若它们的模型与主模型不同，沿用既有 model-lock 重连逻辑。
 5. **模型有效性**：Codex 不校验 `memories.extract_model` / `auxiliaryModels` 是否存在。网关只能在请求时按 provider 目录判断；最终 404/400 要给出可操作的错误文案。
 6. **官方订阅**：`category=official` 的 Codex provider 不参与网关候选，不能作为辅助路由目标；UI 要排除并说明原因。
 7. **`review_model`**：本期不做，但错误矩阵和任务枚举预留 `review` 分类，避免后续改表。

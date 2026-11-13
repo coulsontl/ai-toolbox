@@ -2,6 +2,8 @@
 //! Aggregate mode uses HTTP/SSE because its model is only known after the
 //! downstream WebSocket handshake.
 
+use super::compat::codex_aux_response::build_aux_frames;
+use super::compat::codex_aux_task::classify_codex_aux_parts;
 use super::compat::codex_remote_compaction::{
     self as codex_remote_compaction, CompactionStreamSummary, CompactionSummaryError,
     RemoteCompactionCompat, COMPACTION_MODE_FALLBACK, COMPACTION_MODE_LOCAL,
@@ -36,6 +38,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::{
     handshake::{client::generate_key, derive_accept_key, server},
@@ -567,6 +570,7 @@ pub(super) async fn handle_upgrade(
                         upstream_socket,
                         &request,
                         provider,
+                        route,
                         context,
                         connection_id,
                         upstream_url,
@@ -723,6 +727,16 @@ struct PendingTurn {
     /// which case the upstream's own stream is consumed and replaced by a
     /// synthesized `compaction` item.
     compaction: Option<CompactionTurn>,
+    /// Route-key auxiliary turns run as a one-shot HTTP request instead of
+    /// sharing the pinned upstream WebSocket, so they must not be judged by the
+    /// WebSocket first-byte/idle timers. The HTTP request has its own timeout.
+    aux_http_in_flight: bool,
+}
+
+struct AuxHttpCompletion {
+    request_id: u64,
+    lane: String,
+    outcome: upstream::WebSocketAuxHttpOutcome,
 }
 
 /// A compaction turn in flight, and how far the relay has got with it.
@@ -965,6 +979,198 @@ impl PendingTurn {
     }
 }
 
+fn new_websocket_response(
+    provider: &UpstreamProvider,
+    response_headers: &[(String, String)],
+    upstream_url: &str,
+    requested_model: Option<String>,
+) -> DebugHttpResponse {
+    let mut response = empty_response(0, "", "openai-compatible", "");
+    response.cli_key = Some(GatewayCliKey::Codex);
+    response.provider_id = Some(provider.id.clone());
+    response.provider_name = Some(provider.name.clone());
+    response.provider_type = provider.meta.provider_type.clone();
+    response.cost_multiplier = Some(provider.meta.cost_multiplier.clone());
+    response.pricing_model_source = Some(provider.meta.pricing_model_source.clone());
+    response.fast_cost_multiplier = provider.meta.fast_cost_multiplier.clone();
+    response.ultrafast_cost_multiplier = provider.meta.ultrafast_cost_multiplier.clone();
+    response.requested_model = requested_model;
+    response.target_protocol = Some(AiProtocol::OpenAiResponses);
+    response.source_protocol = Some(AiProtocol::OpenAiResponses);
+    response.upstream_url = Some(upstream_url.to_string());
+    response.headers = response_headers.to_vec();
+    response.is_streaming = true;
+    response.attempt_count = 1;
+    response.provider_attempt_count = 1;
+    response
+}
+
+fn is_websocket_connection_header(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "x-openai-subagent" | "x-openai-memgen-request" | "openai-beta"
+    )
+}
+
+fn is_websocket_hop_header(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "connection"
+            | "upgrade"
+            | "host"
+            | "content-length"
+            | "transfer-encoding"
+            | "te"
+            | "trailer"
+            | "proxy-connection"
+            | "keep-alive"
+            | "accept"
+            | "sec-websocket-key"
+            | "sec-websocket-version"
+            | "sec-websocket-extensions"
+            | "sec-websocket-protocol"
+            | "sec-websocket-accept"
+    )
+}
+
+/// Turn one downstream `response.create` into the one-shot HTTP body the
+/// auxiliary channel sends upstream. WebSocket control fields are removed and
+/// the request is forced non-streaming; the auxiliary pipeline shapes the JSON
+/// before the relay turns it back into WebSocket frames.
+fn build_websocket_aux_http_request(
+    request: &DebugHttpRequest,
+    value: &Value,
+    aux_model: &str,
+) -> Result<DebugHttpRequest, String> {
+    let mut body = value.clone();
+    let object = body
+        .as_object_mut()
+        .ok_or_else(|| "response.create must be a JSON object".to_string())?;
+    for key in [
+        "type",
+        "stream_id",
+        "event_id",
+        "generate",
+        "background",
+        "stream_options",
+    ] {
+        object.remove(key);
+    }
+    object.insert("stream".to_string(), Value::Bool(false));
+    object.insert("model".to_string(), Value::String(aux_model.to_string()));
+    let body = serde_json::to_vec(&body).map_err(|error| error.to_string())?;
+    let mut headers: Vec<(String, String)> = request
+        .headers
+        .iter()
+        .filter(|(name, _)| {
+            // The handshake's subagent markers describe the whole pinned
+            // connection, not this frame. Keeping them would let the HTTP
+            // pipeline classify a body-declared title turn as an auto-review
+            // and skip auxiliary shaping. `openai-beta` advertises the
+            // WebSocket protocol version and has no meaning on an HTTP POST.
+            !is_websocket_hop_header(name) && !is_websocket_connection_header(name)
+        })
+        .cloned()
+        .collect();
+    headers.push(("accept".to_string(), "application/json".to_string()));
+    // WebSocket handshakes do not carry a content type. The synthesized
+    // request is a JSON POST, so upstreams that validate it must see one.
+    headers.retain(|(name, _)| !name.eq_ignore_ascii_case("content-type"));
+    headers.push(("content-type".to_string(), "application/json".to_string()));
+    Ok(DebugHttpRequest {
+        id: request.id,
+        method: "POST".to_string(),
+        path: request.path.clone(),
+        headers,
+        body,
+    })
+}
+
+async fn reject_websocket_turn<S: AsyncRead + AsyncWrite + Unpin>(
+    downstream: &mut WebSocketStream<S>,
+    context: &GatewayRuntimeContext,
+    mut turn: PendingTurn,
+    error: String,
+) -> Result<(), ()> {
+    turn.response.upstream_url = None;
+    // No upstream request was sent, so a previously resolved auxiliary route
+    // must not be reported as applied.
+    if let Some(auxiliary) = turn.response.auxiliary.as_mut() {
+        auxiliary.route_applied = false;
+    }
+    if turn.response.aux_task.is_some() {
+        turn.response.aux_route_source = Some("none".to_string());
+    }
+    let mut payload = json!({"type":"error","status":400,"error":{"type":"invalid_request_error","code":"invalid_request","message":error}});
+    if let Some(stream_id) = &turn.metadata.stream_id {
+        payload["stream_id"] = json!(stream_id);
+    }
+    let bytes = serde_json::to_vec(&payload).map_err(|_| ())?;
+    let sent = send_message(downstream, Message::Text(payload.to_string().into())).await;
+    if sent.is_ok() {
+        turn.record_delivered_event(&bytes, &context.settings_snapshot());
+        turn.metadata.error_status = Some(400);
+        turn.finish(
+            context,
+            GatewayStreamOutcome::Failed,
+            Some("request_schema"),
+            &error,
+            true,
+        );
+        Ok(())
+    } else {
+        turn.finish(
+            context,
+            GatewayStreamOutcome::Canceled,
+            Some("client_disconnected"),
+            "Could not deliver request validation error to client",
+            false,
+        );
+        Err(())
+    }
+}
+
+fn websocket_aux_created_frame(turn: &PendingTurn) -> String {
+    json!({
+        "type": "response.created",
+        "response": {
+            "id": turn.metadata.response_id,
+            "object": "response",
+            "created_at": Utc::now().timestamp(),
+            "status": "in_progress",
+            "model": turn.response.upstream_model_id,
+            "output": [],
+        },
+    })
+    .to_string()
+}
+
+fn websocket_aux_failure_frame(turn: &PendingTurn, code: &str, message: &str) -> String {
+    json!({
+        "type": "response.failed",
+        "stream_id": turn.metadata.stream_id,
+        "response": {
+            "id": turn.metadata.response_id,
+            "status": "failed",
+            "error": {
+                "code": code,
+                "message": message,
+            },
+        },
+    })
+    .to_string()
+}
+
+/// A response failure needs the same opening event as the success lifecycle.
+/// Real Codex otherwise treats the bare `response.failed` as a disconnected
+/// stream and reconnects instead of finishing the turn.
+fn websocket_aux_failure_frames(turn: &PendingTurn, code: &str, message: &str) -> Vec<String> {
+    vec![
+        websocket_aux_created_frame(turn),
+        websocket_aux_failure_frame(turn, code, message),
+    ]
+}
+
 #[derive(Default)]
 struct PendingTurns {
     lanes: HashMap<String, VecDeque<PendingTurn>>,
@@ -1067,7 +1273,13 @@ impl PendingTurns {
         message: &str,
     ) {
         for (_, turns) in self.lanes.drain() {
-            for turn in turns {
+            for mut turn in turns {
+                if turn.aux_http_in_flight {
+                    // This turn's upstream is a separate HTTP request whose
+                    // outcome was never observed. The WebSocket connection's
+                    // exit reason must not mark the auxiliary model unhealthy.
+                    turn.failure_kind = Some(GatewayFailureKind::ClientCancelled);
+                }
                 turn.finish(context, outcome, Some(category), message, false);
             }
         }
@@ -1257,6 +1469,7 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
     mut upstream_socket: WebSocketStream<U>,
     handshake: &DebugHttpRequest,
     provider: UpstreamProvider,
+    route: GatewayRoute,
     context: &GatewayRuntimeContext,
     connection_id: String,
     upstream_url: String,
@@ -1265,6 +1478,8 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
     handshake_attempts: Vec<GatewayProviderAttempt>,
 ) -> io::Result<()> {
     let mut pending = PendingTurns::default();
+    let (aux_completion_tx, mut aux_completion_rx) =
+        mpsc::unbounded_channel::<AuxHttpCompletion>();
     let mut shutdown = context.websocket_shutdown.subscribe();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(20));
     heartbeat.tick().await;
@@ -1299,6 +1514,7 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                     .lanes
                     .values()
                     .filter_map(|queue| queue.front())
+                    .filter(|turn| !turn.aux_http_in_flight)
                     .find(|turn| {
                         let seconds = if turn.received_event {
                             app.streaming_idle_timeout_secs
@@ -1364,6 +1580,150 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                     );
                 }
             }
+            Some(completion) = aux_completion_rx.recv() => {
+                last_data = Instant::now();
+                let matches_front = pending
+                    .lanes
+                    .get(&completion.lane)
+                    .and_then(|queue| queue.front())
+                    .is_some_and(|turn| turn.request.id == completion.request_id);
+                if !matches_front {
+                    continue;
+                }
+                let mut turn = pending
+                    .pop(&completion.lane)
+                    .expect("the front turn was just checked");
+                let upstream::WebSocketAuxHttpOutcome {
+                    success,
+                    status_code,
+                    headers,
+                    body,
+                    token_usage,
+                    upstream_request_body,
+                    upstream_response_body,
+                    upstream_response_body_bytes,
+                    upstream_url,
+                    served_service_tier,
+                    observations,
+                    auxiliary_shaped,
+                    error_category,
+                    error_message,
+                    failure_kind,
+                } = completion.outcome;
+
+                let upstream_for_frames = upstream_response_body.clone();
+                turn.response.token_usage = token_usage;
+                turn.response.upstream_request_body = upstream_request_body;
+                turn.response.upstream_response_body = upstream_response_body;
+                turn.response.upstream_response_body_bytes = upstream_response_body_bytes;
+                if !success && status_code != 0 {
+                    // The relay turns a real upstream HTTP failure into a
+                    // synthesized `response.failed`; keep the original status
+                    // visible in the detail.
+                    turn.response.upstream_status_code = Some(status_code);
+                }
+                if let Some(upstream_url) = upstream_url {
+                    turn.response.upstream_url = Some(upstream_url);
+                }
+                if !headers.is_empty() {
+                    turn.response.headers = headers;
+                }
+                turn.response.served_service_tier = served_service_tier;
+                turn.response.observations = observations;
+                if let Some(auxiliary) = turn.response.auxiliary.as_mut() {
+                    auxiliary.shaped = auxiliary_shaped;
+                }
+
+                let mut final_outcome = GatewayStreamOutcome::Completed;
+                let mut failure_code = error_category;
+                let mut failure_message = error_message;
+                let frames = if success {
+                    match build_aux_frames(
+                        &body,
+                        upstream_for_frames.as_deref().unwrap_or_default(),
+                    ) {
+                        Ok(frames) => {
+                            if let Ok(value) = serde_json::from_slice::<Value>(&body) {
+                                turn.metadata.response_id = value
+                                    .get("id")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string)
+                                    .or(turn.metadata.response_id);
+                            }
+                            frames
+                        }
+                        Err(error) => {
+                            final_outcome = GatewayStreamOutcome::Failed;
+                            turn.failure_kind = Some(GatewayFailureKind::EmptyResponse);
+                            failure_code = Some(error.code().to_string());
+                            failure_message = Some(error.message().to_string());
+                            websocket_aux_failure_frames(
+                                &turn,
+                                error.code(),
+                                error.message(),
+                            )
+                        }
+                    }
+                } else {
+                    final_outcome = GatewayStreamOutcome::Failed;
+                    turn.failure_kind = failure_kind;
+                    let code = failure_code
+                        .as_deref()
+                        .unwrap_or("aux_task_upstream_error");
+                    let message = failure_message
+                        .as_deref()
+                        .unwrap_or("Auxiliary request failed");
+                    websocket_aux_failure_frames(&turn, code, message)
+                };
+
+                if final_outcome.is_success() {
+                    turn.response.error_category = None;
+                    turn.response.note.clear();
+                } else {
+                    turn.response.error_category = failure_code.clone();
+                    turn.response.note = failure_message.clone().unwrap_or_default();
+                }
+
+                let settings = context.settings_snapshot();
+                let mut sent = Ok(());
+                for frame in frames {
+                    sent = send_message(
+                        &mut downstream,
+                        Message::Text(frame.clone().into()),
+                    )
+                    .await;
+                    if sent.is_err() {
+                        break;
+                    }
+                    last_downstream_frame = Instant::now();
+                    turn.record_delivered_event(frame.as_bytes(), &settings);
+                }
+                if sent.is_err() {
+                    turn.finish(
+                        context,
+                        GatewayStreamOutcome::Canceled,
+                        Some("client_disconnected"),
+                        "Could not deliver WebSocket response to client",
+                        false,
+                    );
+                    break (
+                        GatewayStreamOutcome::Canceled,
+                        "client_disconnected",
+                        "Could not deliver WebSocket response to client",
+                    );
+                }
+                if final_outcome.is_success() {
+                    turn.finish(context, final_outcome, None, "", true);
+                } else {
+                    turn.finish(
+                        context,
+                        final_outcome,
+                        failure_code.as_deref(),
+                        failure_message.as_deref().unwrap_or("Auxiliary request failed"),
+                        true,
+                    );
+                }
+            }
             message = downstream.next() => {
                 // The setting may change while an idle connection awaits a frame.
                 if pending.lanes.is_empty() && !context.settings_snapshot().codex_websocket_enabled {
@@ -1378,6 +1738,35 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                             .as_ref()
                             .and_then(|value| value.get("type"))
                             .and_then(Value::as_str);
+                        // A route-key auxiliary turn has no upstream WebSocket
+                        // request to cancel: end it locally and drop the late
+                        // HTTP result instead of forwarding a cancel the pinned
+                        // socket never issued.
+                        if event_type == Some("response.cancel") {
+                            let cancel_lane = value
+                                .as_ref()
+                                .and_then(|value| value.get("stream_id"))
+                                .and_then(Value::as_str);
+                            if let Some(lane) = cancel_lane {
+                                let is_aux_http = pending
+                                    .lanes
+                                    .get(lane)
+                                    .and_then(|queue| queue.front())
+                                    .is_some_and(|turn| turn.aux_http_in_flight);
+                                if is_aux_http {
+                                    if let Some(turn) = pending.pop(lane) {
+                                        turn.finish(
+                                            context,
+                                            GatewayStreamOutcome::Canceled,
+                                            Some("client_cancelled"),
+                                            "Client cancelled the auxiliary request",
+                                            true,
+                                        );
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
                         if event_type != Some("response.create") {
                             if context.privacy.enabled() && !value.as_ref().is_some_and(|value| {
                                 event_type == Some("response.cancel") && value.as_object().is_some_and(|object| object.keys().all(|key| matches!(key.as_str(), "type" | "response_id" | "stream_id" | "event_id")))
@@ -1431,6 +1820,228 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                                 ),
                             &value,
                         );
+                        let requested_model = value
+                            .get("model")
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                        let aux_task = (!warmup)
+                            .then(|| classify_codex_aux_parts(&[], &request.body))
+                            .flatten();
+                        let aux_routable = aux_task.as_ref().is_some_and(|task| {
+                            task.route_key().is_some()
+                                && requested_model
+                                    .as_deref()
+                                    .is_some_and(|model| !model.trim().is_empty())
+                        });
+                        let aux_http_turn =
+                            aux_routable && !remote_compaction.is_compaction_turn();
+                        let stream_id = value
+                            .get("stream_id")
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                        // Auxiliary HTTP requests run concurrently, so their
+                        // completions can arrive out of order. Real Codex omits
+                        // `stream_id`; sharing the empty lane would make the
+                        // first completion for a later request look stale and
+                        // drop it, leaving that turn pending forever. Give each
+                        // lane-less auxiliary turn its own internal queue.
+                        let lane = match (&stream_id, aux_http_turn) {
+                            (Some(stream_id), _) => stream_id.clone(),
+                            (None, true) => format!("aux-http-{}", request.id),
+                            (None, false) => String::new(),
+                        };
+                        let metadata = GatewayWebSocketMetadata {
+                            connection_id: connection_id.clone(),
+                            stream_id,
+                            previous_response_id: value
+                                .get("previous_response_id")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
+                            event_type: Some("response.create".to_string()),
+                            handshake_status: 101,
+                            upstream_handshake_status: Some(101),
+                            handshake_attempts: handshake_attempts.clone(),
+                            ..Default::default()
+                        };
+                        let mut response = new_websocket_response(
+                            &provider,
+                            &response_headers,
+                            &upstream_url,
+                            requested_model.clone(),
+                        );
+                        response.privacy = privacy
+                            .as_ref()
+                            .ok()
+                            .and_then(|privacy| privacy.clone());
+                        if let Some(privacy) = &response.privacy {
+                            privacy.set_usage_provider(response.provider_type.clone());
+                        }
+
+                        // Route-key auxiliary turns leave through the HTTP
+                        // auxiliary channel. Sharing the pinned WebSocket would
+                        // switch its model, which New API-family relays reject
+                        // and which would force every title/prediction call to
+                        // reconnect the whole connection.
+                        if aux_http_turn {
+                            let task = aux_task
+                                .as_ref()
+                                .expect("aux_http_turn requires a task");
+                            let resolution = upstream::resolve_codex_aux_model(
+                                requested_model.as_deref().unwrap_or(""),
+                                &provider,
+                                task,
+                                true,
+                            );
+                            let (aux_resolution, aux_error) = match resolution {
+                                Ok(resolution) => (resolution, None),
+                                Err(error) => (None, Some(error)),
+                            };
+                            response.aux_task = Some(task.kind());
+                            response.aux_route_source = Some(
+                                aux_resolution
+                                    .as_ref()
+                                    .map(|resolution| resolution.source)
+                                    .unwrap_or("none")
+                                    .to_string(),
+                            );
+                            response.auxiliary = Some(match &aux_error {
+                                Some(error) => upstream::aux_error_metadata(
+                                    task,
+                                    &provider,
+                                    error.clone(),
+                                ),
+                                None => upstream::aux_metadata(task, &provider, false),
+                            });
+                            let setup_error = match &privacy {
+                                Err(error) => Some(error.clone()),
+                                Ok(_) => aux_error.clone(),
+                            };
+                            let mut turn = PendingTurn {
+                                request,
+                                response,
+                                metadata,
+                                kind: GatewayRequestKind::Request,
+                                started_at,
+                                started,
+                                last_event: started,
+                                received_event: false,
+                                failure_kind: None,
+                                restore_map: HashMap::new(),
+                                privacy_restorer: None,
+                                compaction: None,
+                                aux_http_in_flight: true,
+                            };
+                            // Failures have no upstream response body to take an
+                            // id from. Give the turn one now so the synthetic
+                            // `response.created` / `response.failed` pair is
+                            // attributable by real Codex.
+                            turn.metadata.response_id =
+                                Some(format!("resp_aux_ws_{}", turn.request.id));
+                            if let Some(error) = setup_error {
+                                if reject_websocket_turn(
+                                    &mut downstream,
+                                    context,
+                                    turn,
+                                    error,
+                                )
+                                .await
+                                .is_err()
+                                {
+                                    break (
+                                        GatewayStreamOutcome::Canceled,
+                                        "client_disconnected",
+                                        "Client disconnected",
+                                    );
+                                }
+                                continue;
+                            }
+                            let aux_model = aux_resolution
+                                .as_ref()
+                                .expect("resolution is present when setup succeeded")
+                                .model
+                                .clone();
+                            turn.response.upstream_model_id = Some(aux_model.clone());
+                            let http_request = match build_websocket_aux_http_request(
+                                &turn.request,
+                                &value,
+                                &aux_model,
+                            ) {
+                                Ok(request) => request,
+                                Err(error) => {
+                                    if reject_websocket_turn(
+                                        &mut downstream,
+                                        context,
+                                        turn,
+                                        error,
+                                    )
+                                    .await
+                                    .is_err()
+                                    {
+                                        break (
+                                            GatewayStreamOutcome::Canceled,
+                                            "client_disconnected",
+                                            "Client disconnected",
+                                        );
+                                    }
+                                    continue;
+                                }
+                            };
+                            if pending.full(
+                                turn.request
+                                    .body
+                                    .len()
+                                    .saturating_add(http_request.body.len()),
+                            ) {
+                                if reject_websocket_turn(
+                                    &mut downstream,
+                                    context,
+                                    turn,
+                                    "Too many pending WebSocket requests".to_string(),
+                                )
+                                .await
+                                .is_err()
+                                {
+                                    break (
+                                        GatewayStreamOutcome::Canceled,
+                                        "client_disconnected",
+                                        "Client disconnected",
+                                    );
+                                }
+                                continue;
+                            }
+                            let request_id = http_request.id;
+                            let task_context = (*context).clone();
+                            let task_provider = provider.clone();
+                            let task_route = route.clone();
+                            let task_requested_model =
+                                requested_model.clone().unwrap_or_default();
+                            let task_privacy = privacy.ok().flatten();
+                            let completion_tx = aux_completion_tx.clone();
+                            pending.push(lane.clone(), turn);
+                            tokio::spawn(async move {
+                                let outcome = upstream::run_websocket_aux_http(
+                                    &task_context,
+                                    &task_provider,
+                                    &task_route,
+                                    &http_request,
+                                    &task_requested_model,
+                                    &aux_model,
+                                    task_privacy.as_ref(),
+                                )
+                                .await;
+                                let _ = completion_tx.send(AuxHttpCompletion {
+                                    request_id,
+                                    lane,
+                                    outcome,
+                                });
+                            });
+                            continue;
+                        }
+
+                        let privacy_restorer = response
+                            .privacy
+                            .clone()
+                            .map(crate::coding::proxy_gateway::privacy::stream::EventRestorer::new);
                         let prepared = privacy.as_ref().map_err(Clone::clone).and_then(|privacy| {
                             upstream::prepare_websocket_request(&request, &provider, context, apply_mapping, remote_compaction)
                                 .and_then(|prepared| {
@@ -1440,51 +2051,10 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                                     Ok((body, prepared.upstream_model, prepared.xai_namespace_restore_map, prepared.observations))
                                 })
                         });
-                        let mut response = empty_response(0, "", "openai-compatible", "");
-                        response.cli_key = Some(GatewayCliKey::Codex);
-                        response.provider_id = Some(provider.id.clone());
-                        response.provider_name = Some(provider.name.clone());
-                        response.provider_type = provider.meta.provider_type.clone();
-                        response.cost_multiplier = Some(provider.meta.cost_multiplier.clone());
-                        response.pricing_model_source = Some(provider.meta.pricing_model_source.clone());
-                        response.fast_cost_multiplier = provider.meta.fast_cost_multiplier.clone();
-                        response.ultrafast_cost_multiplier =
-                            provider.meta.ultrafast_cost_multiplier.clone();
-                        response.requested_model = value
-                            .get("model")
-                            .and_then(Value::as_str)
-                            .map(str::to_string);
-                        response.target_protocol = Some(AiProtocol::OpenAiResponses);
-                        response.source_protocol = Some(AiProtocol::OpenAiResponses);
-                        response.upstream_url = Some(upstream_url.clone());
-                        response.headers = response_headers.clone();
-                        response.is_streaming = true;
-                        response.attempt_count = 1;
-                        response.provider_attempt_count = 1;
-                        response.privacy = privacy.ok().flatten();
-                        if let Some(privacy) = &response.privacy { privacy.set_usage_provider(response.provider_type.clone()); }
-                        let privacy_restorer = response.privacy.clone().map(crate::coding::proxy_gateway::privacy::stream::EventRestorer::new);
-                        let stream_id = value
-                            .get("stream_id")
-                            .and_then(Value::as_str)
-                            .map(str::to_string);
-                        let lane = stream_id.clone().unwrap_or_default();
                         let mut turn = PendingTurn {
                             request,
                             response,
-                            metadata: GatewayWebSocketMetadata {
-                                connection_id: connection_id.clone(),
-                                stream_id,
-                                previous_response_id: value
-                                    .get("previous_response_id")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_string),
-                                event_type: Some("response.create".to_string()),
-                                handshake_status: 101,
-                                upstream_handshake_status: Some(101),
-                                handshake_attempts: handshake_attempts.clone(),
-                                ..Default::default()
-                            },
+                            metadata,
                             kind: if warmup {
                                 GatewayRequestKind::WebsocketWarmup
                             } else {
@@ -1504,6 +2074,7 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                             } else {
                                 None
                             },
+                            aux_http_in_flight: false,
                         };
                         let prepared = prepared.and_then(|(body, model, map, observations)| {
                             if pending.full(turn.request.body.len().saturating_add(body.len())) {
@@ -1543,33 +2114,10 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                                 pending.push(lane, turn);
                             }
                             Err(error) => {
-                                turn.response.upstream_url = None;
-                                let mut payload = json!({"type":"error","status":400,"error":{"type":"invalid_request_error","code":"invalid_request","message":error}});
-                                if let Some(stream_id) = &turn.metadata.stream_id {
-                                    payload["stream_id"] = json!(stream_id);
-                                }
-                                let bytes = serde_json::to_vec(&payload).map_err(io_error)?;
-                                let sent =
-                                    send_message(&mut downstream, Message::Text(payload.to_string().into()))
-                                        .await;
-                                if sent.is_ok() {
-                                    turn.record_delivered_event(&bytes, &context.settings_snapshot());
-                                    turn.metadata.error_status = Some(400);
-                                    turn.finish(
-                                        context,
-                                        GatewayStreamOutcome::Failed,
-                                        Some("request_schema"),
-                                        &error,
-                                        true,
-                                    );
-                                } else {
-                                    turn.finish(
-                                        context,
-                                        GatewayStreamOutcome::Canceled,
-                                        Some("client_disconnected"),
-                                        "Could not deliver request validation error to client",
-                                        false,
-                                    );
+                                if reject_websocket_turn(&mut downstream, context, turn, error)
+                                    .await
+                                    .is_err()
+                                {
                                     break (
                                         GatewayStreamOutcome::Canceled,
                                         "client_disconnected",
