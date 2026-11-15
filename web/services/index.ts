@@ -6,6 +6,7 @@
  */
 
 export * from './settingsApi';
+export * from './paseoApi';
 export * from './proxyGatewayApi';
 export * from './backupApi';
 export * from './opencodeApi';

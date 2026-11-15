@@ -1669,6 +1669,14 @@
     "suggestedFix": "Suggested fix",
     "refresh": "Refresh",
     "moreOptions": "More Options",
+    "paseoSync": {
+      "title": "Sync Model List to Paseo",
+      "hint": "When applying a channel, write its model list into Paseo's config file; WSL/SSH sync also updates the target's config.",
+      "warningNoAppliedProvider": "The switch was saved, but no channel is currently applied.",
+      "warningNoModels": "The switch was saved, but the applied channel has no models to sync.",
+      "warningConfigMissing": "The switch was saved, but ~/.paseo/config.json was not found.",
+      "warningFailed": "The switch was saved, but the immediate Paseo sync failed. Check the logs."
+    },
     "showSidebar": "Show Left Sidebar",
     "allApiHub": {
       "importFromAllApiHub": "Import from All API Hub",

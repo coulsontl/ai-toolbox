@@ -37,6 +37,7 @@ sequenceDiagram
 - 供应商卡片「CLI 启动」放在模型测试按钮后面，样式与模型测试一致；调用 `launchClaudeProviderCli` 用临时配置开终端，不改当前已应用状态。是否每次附加 `--dangerously-skip-permissions` 由顶部「更多选项」弹窗里的 Full Access 开关控制，偏好存应用 `AppSettings.claude_cli_launch_full_access`（SQLite），经 `settingsStore` 读写，不要用 localStorage。
 - 「更多选项」里的「首选终端」是共享 `SettingsSelectRow`（仅 Windows 显示，用 `platform() === 'windows'` 判断），存全局 `AppSettings.preferred_terminal`（`cmd`/`powershell`/`wt`/`gitbash`），经 `settingsStore.setPreferredTerminal` 持久化。「CLI 启动」时从 settingsStore 读出并作为 `terminal` 参数传给 `launchClaudeProviderCli`；「所选终端不可用回退系统默认」的语义在后端处理（含 Git Bash 未安装时回退 cmd），前端不要自行探测终端可用性。
 - Claude「更多选项」走共享 `SidebarSettingsModal` + `SettingsToggleRow`：Modal 内扁平分割列表（行间细线），不套圆角 elevated 卡片。左侧 `标题 + 独立一行 10px 辅助说明`，右侧仅 Switch。其他 CLI（Codex/OpenCode/Grok/Gemini/Pi/OpenClaw）共用同一组件。
+- 「同步模型列表到 Paseo」开关同样在更多选项里，默认关闭，状态存 `AppSettings.sync_claude_models_to_paseo`。切换必须调用 `setSyncClaudeModelsToPaseo`（后端 `set_claude_paseo_model_sync_enabled`），由后端持久化并在开启时立即同步当前已应用渠道到本机 Paseo；不要前端自己拼 `saveSettings` 后再发一次同步。后端返回的 `syncWarning` 是稳定代码，用 `shared/paseoSyncWarning.ts` 映射到 `common.paseoSync.warning*` 文案。
 - 不要把根目录编辑降级成“只改路径展示”；保存后真正会影响整个运行时文件派生。
 - `sourceProviderId` 冲突必须先处理，不要新导入时直接无提示覆盖已有 provider。
 - Optional 字段允许清空时，前端表单不要比后端存储模型更严格，否则会形成“能读不能存”的回归。

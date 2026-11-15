@@ -52,6 +52,7 @@ This document provides essential information for AI coding agents working on thi
 | `tauri/src/coding/mcp/` | MCP Server 后端存储、工具配置同步、导入导出与 WSL 联动 |
 | `tauri/src/coding/open_code/` | OpenCode 后端配置文件、provider、prompt、tray 与 WSL 同步约束 |
 | `tauri/src/coding/open_claw/` | OpenClaw 后端配置文件与 WSL 同步约束 |
+| `tauri/src/coding/paseo/` | Paseo 模型列表同步：`agents.providers.claude.models` / `agents.providers.codex.models` 的构建、原子 patch、本机/WSL/SSH 写入与 daemon reload |
 | `tauri/src/coding/oh_my_openagent/` | Oh My OpenAgent 后端配置、临时本地态、应用链路与 OpenCode WSL 联动 |
 | `tauri/src/coding/oh_my_opencode_slim/` | Oh My OpenCode Slim 后端配置、临时本地态、应用链路与 OpenCode WSL 联动 |
 | `tauri/src/coding/oh_my_pi/` | Oh My Pi 运行时根目录、models.yml provider、config.yml 设置、subagent 集中配置方案(agents/*.md)、Codex 原生订阅(agent.db 账号/切换/额度)与本地 MCP/Skills 路径边界 |

@@ -661,6 +661,28 @@ pub async fn write_remote_file(
         .await
 }
 
+/// Write a small config file through a same-directory temporary file so a
+/// concurrent reader (for example a daemon reload) never sees a partial JSON
+/// document. Used for Paseo's `config.json`, which Paseo writes as 0600.
+pub async fn write_remote_file_atomic(
+    session: &SshSession,
+    path: &str,
+    content: &str,
+) -> Result<(), String> {
+    let remote_path = path.replace("~", "$HOME");
+    let command = format!(
+        "set -e; dir=\"$(dirname \"{path}\")\"; mkdir -p \"$dir\"; \
+         tmp=\"$(mktemp \"$dir/.ai-toolbox-paseo.XXXXXX\")\"; \
+         trap 'rm -f \"$tmp\"' 0; cat > \"$tmp\"; chmod 600 \"$tmp\"; \
+         mv -f \"$tmp\" \"{path}\"; trap - 0",
+        path = remote_path
+    );
+
+    session
+        .exec_command_with_stdin(&command, content.as_bytes())
+        .await
+}
+
 /// 删除远程文件或目录
 pub async fn remove_remote_path(session: &SshSession, path: &str) -> Result<(), String> {
     // 安全检查：禁止删除空路径或根路径

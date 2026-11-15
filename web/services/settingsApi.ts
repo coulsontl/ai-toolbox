@@ -173,6 +173,10 @@ export interface AppSettings {
   claude_cli_launch_full_access: boolean;
   /** Append `--dangerously-bypass-approvals-and-sandbox` to the Codex CLI launch. */
   codex_cli_launch_full_access: boolean;
+  /** Mirror the applied Claude provider's model list into Paseo's config.json. */
+  sync_claude_models_to_paseo: boolean;
+  /** Mirror the applied Codex provider's model list into Paseo's config.json. */
+  sync_codex_models_to_paseo: boolean;
   /** Windows terminal preference for the Claude / Codex CLI launch: `cmd` | `powershell` | `wt` | `gitbash`. */
   preferred_terminal: string | null;
   cli_manual_paths: Record<string, string>;
@@ -261,6 +265,8 @@ export const defaultSettings: AppSettings = {
   codex_unified_session_history_enabled: false,
   claude_cli_launch_full_access: false,
   codex_cli_launch_full_access: false,
+  sync_claude_models_to_paseo: false,
+  sync_codex_models_to_paseo: false,
   preferred_terminal: null,
   cli_manual_paths: {},
   provider_sort_modes: {},

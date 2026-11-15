@@ -38,6 +38,8 @@ pub mod omo_native;
 pub mod omp_config_value;
 pub mod open_claw;
 pub mod open_code;
+// Mirror applied Claude Code / Codex model lists into Paseo's config.json.
+pub mod paseo;
 pub mod pi;
 // Resolver for Pi-style config values (env interpolation / !command) used by the
 // common model-discovery and connectivity commands.

@@ -294,6 +294,12 @@ pub struct AppSettings {
     /// Append --dangerously-bypass-approvals-and-sandbox when launching the Codex
     /// provider CLI (default: false)
     pub codex_cli_launch_full_access: bool,
+    /// Mirror the applied Claude Code provider's model list into Paseo's
+    /// `agents.providers.claude.models` on every apply (default: false)
+    pub sync_claude_models_to_paseo: bool,
+    /// Mirror the applied Codex provider's model list into Paseo's
+    /// `agents.providers.codex.models` on every apply (default: false)
+    pub sync_codex_models_to_paseo: bool,
     /// Preferred terminal app used when launching a provider CLI (Claude Code /
     /// Codex) on Windows. `None` or an unknown value falls back to `cmd`
     /// (system default). Known values: `cmd`, `powershell`, `wt` (Windows
@@ -399,6 +405,8 @@ impl Default for AppSettings {
             codex_unified_session_history_enabled: false,
             claude_cli_launch_full_access: false,
             codex_cli_launch_full_access: false,
+            sync_claude_models_to_paseo: false,
+            sync_codex_models_to_paseo: false,
             preferred_terminal: None,
             backup_file_filter_rules: default_backup_file_filter_rules(),
             cli_manual_paths: HashMap::new(),

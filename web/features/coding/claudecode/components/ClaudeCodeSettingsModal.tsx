@@ -15,6 +15,7 @@ import {
   clearClaudeOnboardingSkip,
 } from '@/services/claudeCodeApi';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { paseoSyncWarningKey } from '@/features/coding/shared/paseoSyncWarning';
 
 interface ClaudeCodeSettingsModalProps {
   open: boolean;
@@ -37,11 +38,16 @@ export const ClaudeCodeSettingsModal: React.FC<ClaudeCodeSettingsModalProps> = (
   );
   const preferredTerminal = useSettingsStore((state) => state.preferredTerminal);
   const setPreferredTerminal = useSettingsStore((state) => state.setPreferredTerminal);
+  const syncClaudeModelsToPaseo = useSettingsStore((state) => state.syncClaudeModelsToPaseo);
+  const setSyncClaudeModelsToPaseo = useSettingsStore(
+    (state) => state.setSyncClaudeModelsToPaseo,
+  );
   const [vscodeEnabled, setVscodeEnabled] = React.useState(false);
   const [skipOnboarding, setSkipOnboarding] = React.useState(false);
   const [vscodeLoading, setVscodeLoading] = React.useState(false);
   const [onboardingLoading, setOnboardingLoading] = React.useState(false);
   const [cliLaunchFullAccessLoading, setCliLaunchFullAccessLoading] = React.useState(false);
+  const [paseoSyncLoading, setPaseoSyncLoading] = React.useState(false);
 
   React.useEffect(() => {
     if (open) {
@@ -109,6 +115,23 @@ export const ClaudeCodeSettingsModal: React.FC<ClaudeCodeSettingsModalProps> = (
     }
   };
 
+  const handlePaseoSyncToggle = async (checked: boolean) => {
+    setPaseoSyncLoading(true);
+    try {
+      const result = await setSyncClaudeModelsToPaseo(checked);
+      if (result.syncWarning) {
+        message.warning(t(paseoSyncWarningKey(result.syncWarning)));
+      } else {
+        message.success(t('common.success'));
+      }
+    } catch (error) {
+      console.error('Failed to update Claude Paseo model sync setting:', error);
+      message.error(t('common.error'));
+    } finally {
+      setPaseoSyncLoading(false);
+    }
+  };
+
   const handlePreferredTerminalChange = async (terminal: string) => {
     try {
       await setPreferredTerminal(terminal);
@@ -149,6 +172,13 @@ export const ClaudeCodeSettingsModal: React.FC<ClaudeCodeSettingsModalProps> = (
         checked={claudeCliLaunchFullAccess}
         loading={cliLaunchFullAccessLoading}
         onChange={handleCliLaunchFullAccessToggle}
+      />
+      <SettingsToggleRow
+        title={t('common.paseoSync.title')}
+        hint={t('common.paseoSync.hint')}
+        checked={syncClaudeModelsToPaseo}
+        loading={paseoSyncLoading}
+        onChange={handlePaseoSyncToggle}
       />
       {isWindows && (
         <SettingsSelectRow

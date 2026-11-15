@@ -645,6 +645,40 @@ pub async fn do_full_sync(
         );
     }
 
+    // Mirror the applied model lists into the remote Paseo config. This is a
+    // side copy like the Claude plugin metadata rewrite: a failure must not
+    // fail the file/MCP/Skills sync.
+    if config.enabled {
+        if module.is_none() || module == Some("claude") {
+            if let Err(error) = sync_paseo_models_to_ssh(
+                db,
+                session,
+                crate::coding::paseo::PaseoProvider::Claude,
+            )
+            .await
+            {
+                log::warn!("Paseo Claude model sync to SSH failed: {}", error);
+                result
+                    .warnings
+                    .push(format!("Paseo Claude model sync: {}", error));
+            }
+        }
+        if module.is_none() || module == Some("codex") {
+            if let Err(error) = sync_paseo_models_to_ssh(
+                db,
+                session,
+                crate::coding::paseo::PaseoProvider::Codex,
+            )
+            .await
+            {
+                log::warn!("Paseo Codex model sync to SSH failed: {}", error);
+                result
+                    .warnings
+                    .push(format!("Paseo Codex model sync: {}", error));
+            }
+        }
+    }
+
     log::info!(
         "SSH full sync completed: success={}, synced_files={}, skipped_files={}, errors={}",
         result.success,
@@ -653,6 +687,60 @@ pub async fn do_full_sync(
         result.errors.len()
     );
     result
+}
+
+async fn sync_paseo_models_to_ssh(
+    db: &SqliteDbState,
+    session: &SshSession,
+    provider: crate::coding::paseo::PaseoProvider,
+) -> Result<(), String> {
+    let settings = crate::settings::store::load_settings_from_sqlite_state(db)?;
+    let enabled = match provider {
+        crate::coding::paseo::PaseoProvider::Claude => settings.sync_claude_models_to_paseo,
+        crate::coding::paseo::PaseoProvider::Codex => settings.sync_codex_models_to_paseo,
+    };
+    if !enabled {
+        return Ok(());
+    }
+
+    let settings_config = match provider {
+        crate::coding::paseo::PaseoProvider::Claude => {
+            crate::coding::claude_code::list_claude_providers_from_sqlite(db)?
+                .into_iter()
+                .find(|provider| provider.is_applied)
+                .map(|provider| provider.settings_config)
+        }
+        crate::coding::paseo::PaseoProvider::Codex => {
+            crate::coding::codex::list_codex_providers_from_sqlite(db)?
+                .into_iter()
+                .find(|provider| provider.is_applied)
+                .map(|provider| provider.settings_config)
+        }
+    };
+    let Some(settings_config) = settings_config else {
+        return Ok(());
+    };
+
+    let models = crate::coding::paseo::build_models_for_provider(provider, &settings_config)?;
+    if models.is_empty() {
+        return Ok(());
+    }
+
+    let config_path = "~/.paseo/config.json";
+    let existing = sync::read_remote_file(session, config_path).await?;
+    if existing.trim().is_empty() {
+        return Ok(());
+    }
+    let updated = crate::coding::paseo::patch_paseo_config_text(&existing, provider, &models)?;
+    sync::write_remote_file_atomic(session, config_path, &updated).await?;
+
+    if let Err(error) = session
+        .exec_command("bash -lc 'paseo daemon reload --json'")
+        .await
+    {
+        log::warn!("Paseo daemon reload failed after SSH model sync: {}", error);
+    }
+    Ok(())
 }
 
 async fn rewrite_claude_plugin_metadata_on_remote(

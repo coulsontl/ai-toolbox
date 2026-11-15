@@ -117,6 +117,7 @@ import ImportProviderModal from '@/components/common/ImportProviderModal';
 import { GlobalPromptSettings } from '@/features/coding/shared/prompt';
 import RootDirectoryModal from '@/features/coding/shared/RootDirectoryModal';
 import useRootDirectoryConfig from '@/features/coding/shared/useRootDirectoryConfig';
+import { paseoSyncWarningKey } from '@/features/coding/shared/paseoSyncWarning';
 import {
   areGatewayProviderProfilesInitialized,
   GatewayAggregateButton,
@@ -312,10 +313,12 @@ const CodexPage: React.FC = () => {
     codexDaemonRestartMode,
     codexUnifiedSessionHistoryEnabled,
     codexCliLaunchFullAccess,
+    syncCodexModelsToPaseo,
     setCodexPreserveOfficialAuthOnSwitch,
     setCodexDaemonRestartMode,
     setCodexUnifiedSessionHistoryEnabled,
     setCodexCliLaunchFullAccess,
+    setSyncCodexModelsToPaseo,
   } = useSettingsStore();
   const [loading, setLoading] = React.useState(false);
   const [configPath, setConfigPath] = React.useState<string>('');
@@ -532,6 +535,7 @@ const CodexPage: React.FC = () => {
   const [settingsModalOpen, setSettingsModalOpen] = React.useState(false);
   const [savingCodexAuthPreservation, setSavingCodexAuthPreservation] = React.useState(false);
   const [savingCodexCliFullAccess, setSavingCodexCliFullAccess] = React.useState(false);
+  const [savingPaseoSync, setSavingPaseoSync] = React.useState(false);
   const [savingCodexDaemonRestartMode, setSavingCodexDaemonRestartMode] = React.useState(false);
   const sidebarHidden = sidebarHiddenByPage.codex;
 
@@ -2366,6 +2370,24 @@ const CodexPage: React.FC = () => {
     }
   };
 
+  const handlePaseoSyncChange = async (enabled: boolean) => {
+    setSavingPaseoSync(true);
+    try {
+      const result = await setSyncCodexModelsToPaseo(enabled);
+      if (result.syncWarning) {
+        message.warning(t(paseoSyncWarningKey(result.syncWarning)));
+      } else {
+        message.success(t('common.success'));
+      }
+    } catch (error) {
+      console.error('Failed to update Codex Paseo model sync setting:', error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      message.error(errorMsg || t('common.error'));
+    } finally {
+      setSavingPaseoSync(false);
+    }
+  };
+
   const handleCodexDaemonRestartModeChange = async (
     mode: CodexDaemonRestartMode,
   ) => {
@@ -3103,6 +3125,15 @@ const CodexPage: React.FC = () => {
             loading={savingCodexCliFullAccess}
             onChange={(checked) => {
               void handleCodexCliFullAccessChange(checked);
+            }}
+          />
+          <SettingsToggleRow
+            title={t('common.paseoSync.title')}
+            hint={t('common.paseoSync.hint')}
+            checked={syncCodexModelsToPaseo}
+            loading={savingPaseoSync}
+            onChange={(checked) => {
+              void handlePaseoSyncChange(checked);
             }}
           />
           <SettingsToggleRow

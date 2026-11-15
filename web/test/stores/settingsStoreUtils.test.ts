@@ -84,6 +84,8 @@ function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     codex_unified_session_history_enabled: false,
     claude_cli_launch_full_access: false,
     codex_cli_launch_full_access: false,
+    sync_claude_models_to_paseo: false,
+    sync_codex_models_to_paseo: false,
     preferred_terminal: null,
     cli_manual_paths: {},
     provider_sort_modes: {},

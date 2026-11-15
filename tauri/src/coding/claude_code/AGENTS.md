@@ -37,6 +37,7 @@
 
 - 对 Claude Code 这类根目录模块，路径来源和运行时文件派生必须一致收敛，否则前端看的是一个目录、实际写到另一个目录，很容易状态分叉。
 - `apply_config_internal` 统一负责写文件、更新 `is_applied`、发 `config-changed` 和 `wsl-sync-request-claude`。
+- `apply_config_internal_with_events` 写盘后会 best-effort 调用 `coding::paseo::sync_local_models`（仅 `AppSettings.sync_claude_models_to_paseo` 开启时）。Paseo 写失败只能记日志，不能回滚渠道 apply；模型列表规则见 `tauri/src/coding/paseo/AGENTS.md`。
 - 自定义 provider 的 `extra_settings_config` 是 provider 私有的 `settings.json` 额外字段层。`extra_settings_merge_strategy` 是 provider 级行为开关，缺失时默认 `provider_overrides_common`，三种语义分别是：渠道配置覆盖通用配置、通用配置覆盖渠道配置、通用配置与渠道配置递归合并（数组元素去重，标量冲突渠道优先）。
 - 配置应用顺序仍然是：磁盘/runtime 未知字段 → 按策略合并 common config 与 extra settings → provider 表单派生字段；前两种策略的数组整体替换，第三种策略才合并同路径数组元素。
 - plugin/MCP 运行时文件要保留 CLI 自己拥有的字段，不能按 AI Toolbox 的部分结构反序列化后整文件重写。

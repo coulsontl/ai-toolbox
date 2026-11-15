@@ -14,7 +14,10 @@ import {
   type BackupFileFilterRule,
   type SidebarPageKey,
   type SidebarHiddenByPage,
+  type PaseoModelSyncToggleResult,
   normalizeSidebarHiddenByPage,
+  setClaudePaseoModelSyncEnabled,
+  setCodexPaseoModelSyncEnabled,
 } from '@/services';
 import {
   saveBackupSettings,
@@ -134,6 +137,10 @@ interface SettingsState extends KeepAwakeSettingsState {
   claudeCliLaunchFullAccess: boolean;
   /** Append `--dangerously-bypass-approvals-and-sandbox` to the Codex CLI launch. */
   codexCliLaunchFullAccess: boolean;
+  /** Mirror the applied Claude provider's model list into Paseo's config.json. */
+  syncClaudeModelsToPaseo: boolean;
+  /** Mirror the applied Codex provider's model list into Paseo's config.json. */
+  syncCodexModelsToPaseo: boolean;
   /** Windows terminal preference for the Claude / Codex CLI launch: 'cmd' | 'powershell' | 'wt'. */
   preferredTerminal: string | null;
 
@@ -174,6 +181,10 @@ interface SettingsState extends KeepAwakeSettingsState {
   setCodexUnifiedSessionHistoryEnabled: (enabled: boolean) => void;
   setClaudeCliLaunchFullAccess: (enabled: boolean) => Promise<void>;
   setCodexCliLaunchFullAccess: (enabled: boolean) => Promise<void>;
+  /** Persist the switch and sync the applied provider into local Paseo when enabled. */
+  setSyncClaudeModelsToPaseo: (enabled: boolean) => Promise<PaseoModelSyncToggleResult>;
+  /** Persist the switch and sync the applied provider into local Paseo when enabled. */
+  setSyncCodexModelsToPaseo: (enabled: boolean) => Promise<PaseoModelSyncToggleResult>;
   setPreferredTerminal: (terminal: string) => Promise<void>;
   setManualCliPath: (commandName: string, path: string) => Promise<string>;
 }
@@ -267,6 +278,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   codexUnifiedSessionHistoryEnabled: false,
   claudeCliLaunchFullAccess: false,
   codexCliLaunchFullAccess: false,
+  syncClaudeModelsToPaseo: false,
+  syncCodexModelsToPaseo: false,
   preferredTerminal: null,
   cliManualPaths: {},
 
@@ -314,6 +327,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         codexUnifiedSessionHistoryEnabled: settings.codex_unified_session_history_enabled ?? false,
         claudeCliLaunchFullAccess: settings.claude_cli_launch_full_access ?? false,
         codexCliLaunchFullAccess: settings.codex_cli_launch_full_access ?? false,
+        syncClaudeModelsToPaseo: settings.sync_claude_models_to_paseo ?? false,
+        syncCodexModelsToPaseo: settings.sync_codex_models_to_paseo ?? false,
         preferredTerminal: settings.preferred_terminal ?? null,
         cliManualPaths: settings.cli_manual_paths ?? {},
         isInitialized: true,
@@ -611,6 +626,20 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       codex_cli_launch_full_access: enabled,
     };
     await saveSettings(newSettings);
+  },
+
+  setSyncClaudeModelsToPaseo: async (enabled) => {
+    // The backend persists first, then attempts the immediate local sync. A
+    // sync warning does not undo the switch; the next apply retries.
+    const result = await setClaudePaseoModelSyncEnabled(enabled);
+    set({ syncClaudeModelsToPaseo: result.enabled });
+    return result;
+  },
+
+  setSyncCodexModelsToPaseo: async (enabled) => {
+    const result = await setCodexPaseoModelSyncEnabled(enabled);
+    set({ syncCodexModelsToPaseo: result.enabled });
+    return result;
   },
 
   setPreferredTerminal: async (terminal) => {

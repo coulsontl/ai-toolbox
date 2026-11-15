@@ -490,7 +490,7 @@ fn claude_prompt_order() -> Result<OrderSpec, String> {
     ]))
 }
 
-fn list_claude_providers_from_sqlite(
+pub(crate) fn list_claude_providers_from_sqlite(
     sqlite_state: &SqliteDbState,
 ) -> Result<Vec<ClaudeCodeProvider>, String> {
     let order = claude_provider_order()?;
@@ -502,7 +502,7 @@ fn list_claude_providers_from_sqlite(
     })
 }
 
-fn get_claude_provider_from_sqlite(
+pub(crate) fn get_claude_provider_from_sqlite(
     sqlite_state: &SqliteDbState,
     provider_id: &str,
 ) -> Result<Option<ClaudeCodeProvider>, String> {
@@ -1202,6 +1202,10 @@ async fn apply_config_internal_with_events<R: tauri::Runtime>(
     // 应用配置到文件
     apply_config_to_file(db, provider_id).await?;
 
+    // Best-effort mirror into Paseo. A failure here must never fail the
+    // provider apply itself; the setting only controls the side copy.
+    sync_paseo_models_after_apply(db, provider_id).await;
+
     // Update provider's is_applied status
     let now = Local::now().to_rfc3339();
 
@@ -1248,6 +1252,117 @@ async fn apply_config_internal_with_events<R: tauri::Runtime>(
     record_provider_last_used_best_effort(db, "claudecode", provider_id);
 
     Ok(())
+}
+
+/// Mirror the applied provider's Claude model list into Paseo when the user
+/// enabled the setting. Best-effort: the provider apply already succeeded.
+async fn sync_paseo_models_after_apply(db: &crate::db::SqliteDbState, provider_id: &str) {
+    let settings = match crate::settings::store::load_settings_from_sqlite_state(db) {
+        Ok(settings) => settings,
+        Err(error) => {
+            log::warn!("Failed to read settings for Paseo model sync: {error}");
+            return;
+        }
+    };
+    if !settings.sync_claude_models_to_paseo {
+        return;
+    }
+
+    let provider = match get_claude_provider_from_sqlite(db, provider_id) {
+        Ok(Some(provider)) => provider,
+        Ok(None) => return,
+        Err(error) => {
+            log::warn!("Failed to load Claude provider for Paseo model sync: {error}");
+            return;
+        }
+    };
+
+    match crate::coding::paseo::sync_local_models(
+        crate::coding::paseo::PaseoProvider::Claude,
+        &provider.settings_config,
+    )
+    .await
+    {
+        Ok(crate::coding::paseo::PaseoLocalSyncOutcome::Synced) => {
+            log::info!("Synced Claude model list to Paseo");
+        }
+        Ok(outcome) => {
+            log::debug!("Paseo Claude model sync skipped: {outcome:?}");
+        }
+        Err(error) => {
+            log::warn!("Paseo Claude model sync failed: {error}");
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudePaseoModelSyncToggleInput {
+    pub enabled: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudePaseoModelSyncToggleResult {
+    pub enabled: bool,
+    /// Stable warning code when the setting was saved but the immediate local
+    /// sync could not run. `None` means the sync succeeded or was not needed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_warning: Option<String>,
+}
+
+/// Persist the "sync Claude models to Paseo" switch and, when switching on,
+/// immediately mirror the currently applied provider into the local Paseo
+/// config. WSL/SSH copies follow on their next sync.
+#[tauri::command]
+pub async fn set_claude_paseo_model_sync_enabled(
+    state: tauri::State<'_, SqliteDbState>,
+    input: ClaudePaseoModelSyncToggleInput,
+) -> Result<ClaudePaseoModelSyncToggleResult, String> {
+    let db = state.db();
+    let mut settings = crate::settings::store::load_settings_from_sqlite_state(&db)?;
+    if settings.sync_claude_models_to_paseo != input.enabled {
+        settings.sync_claude_models_to_paseo = input.enabled;
+        crate::settings::store::save_settings_to_sqlite_state(&db, &settings)?;
+    }
+
+    let mut sync_warning = None;
+    if input.enabled {
+        match list_claude_providers_from_sqlite(&db) {
+            Ok(providers) => match providers.into_iter().find(|provider| provider.is_applied) {
+                Some(provider) => {
+                    match crate::coding::paseo::sync_local_models(
+                        crate::coding::paseo::PaseoProvider::Claude,
+                        &provider.settings_config,
+                    )
+                    .await
+                    {
+                        Ok(crate::coding::paseo::PaseoLocalSyncOutcome::Synced) => {}
+                        Ok(crate::coding::paseo::PaseoLocalSyncOutcome::ConfigMissing) => {
+                            sync_warning = Some("paseo_config_missing".to_string());
+                        }
+                        Ok(crate::coding::paseo::PaseoLocalSyncOutcome::NoModels) => {
+                            sync_warning = Some("no_models".to_string());
+                        }
+                        Err(error) => {
+                            log::warn!("Immediate Paseo Claude model sync failed: {error}");
+                            sync_warning = Some("sync_failed".to_string());
+                        }
+                    }
+                }
+                None => sync_warning = Some("no_applied_provider".to_string()),
+            },
+            Err(error) => {
+                log::warn!("Failed to list Claude providers for Paseo sync: {error}");
+                sync_warning = Some("sync_failed".to_string());
+            }
+        }
+    }
+
+    Ok(ClaudePaseoModelSyncToggleResult {
+        enabled: input.enabled,
+        sync_warning,
+    })
 }
 
 /// Best-effort "recently used" marker for provider list sorting. Failures must

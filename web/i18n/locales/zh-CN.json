@@ -1669,6 +1669,14 @@
     "suggestedFix": "建议修复为",
     "refresh": "刷新",
     "moreOptions": "更多选项",
+    "paseoSync": {
+      "title": "同步模型列表到 Paseo",
+      "hint": "应用渠道配置时，把当前渠道的模型列表写入 Paseo 的配置文件；WSL/SSH 同步时也会更新目标端配置。",
+      "warningNoAppliedProvider": "开关已保存，但当前没有已应用的渠道，未同步。",
+      "warningNoModels": "开关已保存，但当前渠道没有可同步的模型。",
+      "warningConfigMissing": "开关已保存，但未找到 Paseo 配置文件（~/.paseo/config.json）。",
+      "warningFailed": "开关已保存，但立即同步到 Paseo 失败，请查看日志。"
+    },
     "showSidebar": "显示左侧导航",
     "allApiHub": {
       "importFromAllApiHub": "从 All API Hub 导入",

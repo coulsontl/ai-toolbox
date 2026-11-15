@@ -24,6 +24,39 @@ fn create_wsl_command() -> Command {
     cmd
 }
 
+/// Ask the WSL Paseo daemon to reload `config.json` after AI Toolbox rewrites
+/// the provider model list. The daemon itself does not watch the file.
+#[cfg(target_os = "windows")]
+pub fn reload_paseo_daemon(distro: &str) -> Result<(), String> {
+    let output = create_wsl_command()
+        .args([
+            "-d",
+            distro,
+            "--exec",
+            "bash",
+            "-lc",
+            "paseo daemon reload --json",
+        ])
+        .output()
+        .map_err(|error| format!("Failed to run the Paseo daemon reload in WSL: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = decode_wsl_output(&output.stderr);
+    let stdout = decode_wsl_output(&output.stdout);
+    let detail = if !stderr.trim().is_empty() {
+        stderr.trim()
+    } else {
+        stdout.trim()
+    };
+    Err(format!("Paseo daemon reload failed in WSL: {detail}"))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn reload_paseo_daemon(_distro: &str) -> Result<(), String> {
+    Err("WSL is only available on Windows".to_string())
+}
+
 pub fn manage_wsl_skill_target(
     distro: &str,
     source: &str,
