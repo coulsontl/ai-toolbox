@@ -498,6 +498,7 @@ export const ImportMcpModal: React.FC<ImportMcpModalProps> = ({
                             label: (
                               <Checkbox
                                 checked={selectedTools.includes(tool.key)}
+                                onChange={() => handleToolToggle(tool.key)}
                                 onClick={(e) => e.stopPropagation()}
                               >
                                 {tool.display_name}

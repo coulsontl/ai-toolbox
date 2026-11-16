@@ -360,6 +360,7 @@ export const ImportJsonModal: React.FC<ImportJsonModalProps> = ({
                   label: (
                     <Checkbox
                       checked={selectedTools.includes(tool.key)}
+                      onChange={() => handleToggleTool(tool.key)}
                       onClick={(e) => e.stopPropagation()}
                     >
                       {tool.display_name}

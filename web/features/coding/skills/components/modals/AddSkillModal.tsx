@@ -738,6 +738,7 @@ export const AddSkillModal: React.FC<AddSkillModalProps> = ({
                       label: (
                         <Checkbox
                           checked={selectedTools.includes(tool.id)}
+                          onChange={() => handleToolToggle(tool.id)}
                           onClick={(e) => e.stopPropagation()}
                         >
                           {tool.label}
