@@ -3,7 +3,38 @@
 use serde_json::{json, Map, Value};
 
 use super::parser::DeepLinkImportRequest;
-use super::portable::{model_catalog, static_headers, uses_bearer_auth};
+use super::portable::{model_catalog, static_headers, uses_bearer_auth, CLAUDE_TIER_ROLES};
+
+/// Claude Code role → (model env field, display-name env field). Subagent has
+/// no display-name variable: Claude Code never reads one for that slot.
+const CLAUDE_ROLE_MODEL_ENV_FIELDS: [(&str, &str, Option<&str>); 6] = [
+    (
+        "haiku",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        Some("ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME"),
+    ),
+    (
+        "sonnet",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        Some("ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"),
+    ),
+    (
+        "opus",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        Some("ANTHROPIC_DEFAULT_OPUS_MODEL_NAME"),
+    ),
+    (
+        "fable",
+        "ANTHROPIC_DEFAULT_FABLE_MODEL",
+        Some("ANTHROPIC_DEFAULT_FABLE_MODEL_NAME"),
+    ),
+    ("subagent", "CLAUDE_CODE_SUBAGENT_MODEL", None),
+    (
+        "custom",
+        "ANTHROPIC_CUSTOM_MODEL_OPTION",
+        Some("ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"),
+    ),
+];
 
 /// `{"env": {ANTHROPIC_AUTH_TOKEN?, ANTHROPIC_BASE_URL?, ANTHROPIC_MODEL?}}`.
 /// If `config` is provided, it overrides the built `settings_config` verbatim.
@@ -51,12 +82,35 @@ pub(super) fn build_claude_settings(
                 } else {
                     None
                 };
-                for role in ["haiku", "sonnet", "opus", "fable"] {
-                    if let Some(model) = request.connection.model_roles.get(role).or(fallback) {
-                        env.insert(
-                            format!("ANTHROPIC_DEFAULT_{}_MODEL", role.to_uppercase()),
-                            json!(model),
-                        );
+                for (role, model_field, name_field) in CLAUDE_ROLE_MODEL_ENV_FIELDS {
+                    // Claude Desktop has no subagent/custom bindings; only
+                    // Claude Code reads those env variables.
+                    if request.app != "claude" && !CLAUDE_TIER_ROLES.contains(&role) {
+                        continue;
+                    }
+                    // Only tier roles inherit the provider-wide default model.
+                    let fallback_model = if CLAUDE_TIER_ROLES.contains(&role) {
+                        fallback
+                    } else {
+                        None
+                    };
+                    let Some(model) = request.connection.model_roles.get(role).or(fallback_model)
+                    else {
+                        continue;
+                    };
+                    env.insert(model_field.to_string(), json!(model));
+                    if let Some(name_field) = name_field {
+                        let name = request
+                            .connection
+                            .models
+                            .iter()
+                            .find(|entry| &entry.id == model)
+                            .and_then(|entry| entry.name.as_deref())
+                            .map(str::trim)
+                            .filter(|name| !name.is_empty());
+                        if let Some(name) = name {
+                            env.insert(name_field.to_string(), json!(name));
+                        }
                     }
                 }
             }
@@ -186,11 +240,12 @@ pub(super) fn build_desktop_routes(request: &DeepLinkImportRequest) -> Value {
         };
         let mut route =
             json!({ "model": model.id, "labelOverride": model.name.as_ref().unwrap_or(&model.id) });
-        let role = request
-            .connection
-            .model_roles
+        // Desktop only understands tier aliases; subagent/custom stay plain
+        // routes so the desktop config never receives an alias it rejects.
+        let role = CLAUDE_TIER_ROLES
             .iter()
-            .find_map(|(role, id)| (id == &model.id).then_some(role.as_str()))
+            .find(|role| request.connection.model_roles.get(**role) == Some(&model.id))
+            .copied()
             .or_else(|| (request.model.as_ref() == Some(&model.id)).then_some("sonnet"));
         if let Some(role) = role {
             route["tierAlias"] = json!(role);
@@ -478,6 +533,83 @@ mod tests {
         let v: Value = serde_json::from_str(&settings).unwrap();
         assert_eq!(v["env"]["X"], "1");
         assert!(v["env"].get("ANTHROPIC_AUTH_TOKEN").is_none());
+    }
+
+    #[test]
+    fn claude_role_names_and_env_only_bindings_are_written() {
+        let mut request = req_for("claude");
+        request.connection.models = serde_json::from_value(json!([
+            { "id": "sonnet-upstream", "name": "GLM-5.3-Flash" },
+            { "id": "sub-upstream" },
+            { "id": "custom-upstream", "name": "DeepSeek V4 Pro" }
+        ]))
+        .unwrap();
+        request.connection.model_roles = serde_json::from_value(json!({
+            "sonnet": "sonnet-upstream",
+            "subagent": "sub-upstream",
+            "custom": "custom-upstream"
+        }))
+        .unwrap();
+        let (settings, _) = build_claude_settings(&request).unwrap();
+        let v: Value = serde_json::from_str(&settings).unwrap();
+        assert_eq!(
+            v["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"],
+            "sonnet-upstream"
+        );
+        assert_eq!(
+            v["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"],
+            "GLM-5.3-Flash"
+        );
+        assert_eq!(v["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "sub-upstream");
+        assert!(v["env"].get("CLAUDE_CODE_SUBAGENT_MODEL_NAME").is_none());
+        assert_eq!(v["env"]["ANTHROPIC_CUSTOM_MODEL_OPTION"], "custom-upstream");
+        assert_eq!(
+            v["env"]["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"],
+            "DeepSeek V4 Pro"
+        );
+        // The default model must not leak into the env-only bindings.
+        assert!(v["env"].get("ANTHROPIC_DEFAULT_OPUS_MODEL").is_none());
+        assert!(v["env"].get("ANTHROPIC_DEFAULT_FABLE_MODEL").is_none());
+        assert!(v["env"].get("ANTHROPIC_DEFAULT_HAIKU_MODEL").is_none());
+    }
+
+    #[test]
+    fn desktop_imports_skip_claude_code_env_only_bindings() {
+        let mut request = req_for("claudedesktop");
+        request.connection.models = serde_json::from_value(json!([
+            { "id": "sub-upstream" },
+            { "id": "custom-upstream" }
+        ]))
+        .unwrap();
+        request.connection.model_roles = serde_json::from_value(json!({
+            "subagent": "sub-upstream",
+            "custom": "custom-upstream"
+        }))
+        .unwrap();
+        let (settings, _) = build_claude_settings(&request).unwrap();
+        let v: Value = serde_json::from_str(&settings).unwrap();
+        assert!(v["env"].get("CLAUDE_CODE_SUBAGENT_MODEL").is_none());
+        assert!(v["env"].get("ANTHROPIC_CUSTOM_MODEL_OPTION").is_none());
+    }
+
+    #[test]
+    fn desktop_routes_never_alias_subagent_or_custom_roles() {
+        let mut request = req_for("claudedesktop");
+        request.model = None;
+        request.connection.models = serde_json::from_value(json!([
+            { "id": "sub-upstream" },
+            { "id": "custom-upstream" }
+        ]))
+        .unwrap();
+        request.connection.model_roles = serde_json::from_value(json!({
+            "subagent": "sub-upstream",
+            "custom": "custom-upstream"
+        }))
+        .unwrap();
+        let routes = build_desktop_routes(&request);
+        for route in routes.as_object().unwrap().values() {
+            assert!(route.get("tierAlias").is_none(), "{route}");
+        }
     }
 
     #[test]

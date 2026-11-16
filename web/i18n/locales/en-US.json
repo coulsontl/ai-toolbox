@@ -1739,6 +1739,7 @@
       "importSkipped": "“{{name}}” already exists. Import skipped.",
       "credentialUnavailable": "This credential uses sign-in, OAuth, or a local reference and cannot be transferred directly. Enter a separate API key to share.",
       "requiresGateway": "This configuration needs Gateway. Enable the target tool’s gateway proxy after importing.",
+      "ignoredRoles": "These model roles are not recognized by this version and were ignored: {{roles}}",
       "runtimeImportHint": "Import writes to the target tool’s configuration and keeps its current default model.",
       "savedImportHint": "The provider is saved without activating it. Select it on the target tool’s page to use it.",
       "genericProfileHint": "The target uses standard protocol settings. Source-specific channel compatibility settings are not transferred.",

@@ -28,6 +28,7 @@
 - URLSearchParams 与 Rust query_pairs 都按 form 编码处理加号。homepage 只输出 http(s)，避免生成成功而接收端拒绝。
 - 被 node:test 直接加载的纯函数保持相对导入，当前 loader 不解析 @/ 别名。
 - 同工具的完整无损克隆仍由原「复制」动作承担，分享只保留跨工具连接语义。
+- Claude 源要抽取 6 个 role，不只四个 tier：subagent 取自 `CLAUDE_CODE_SUBAGENT_MODEL`，custom 取自 `ANTHROPIC_CUSTOM_MODEL_OPTION` 且名称取 `ANTHROPIC_CUSTOM_MODEL_OPTION_NAME`。漏掉这两个，导入侧支持了也拿不到值。
 
 ## 最小验证
 

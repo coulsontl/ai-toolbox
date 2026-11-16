@@ -154,6 +154,57 @@ async fn database_targets_import_read_back_skip_and_copy_without_activating() {
     }
 }
 
+#[tokio::test]
+async fn claude_code_import_keeps_role_display_names_and_env_only_bindings() {
+    let _guard = TEST_LOCK.lock().await;
+    let app = app();
+    let mut request = request("claude");
+    request.connection.source_app = Some("claude".to_string());
+    request.connection.api_format = Some("anthropic_messages".to_string());
+    request.connection.api_key_field = Some("x-api-key".to_string());
+    request.base_url = Some("https://relay.test".to_string());
+    request.model = Some("default-model".to_string());
+    request.connection.models = serde_json::from_value(json!([
+        { "id": "sonnet-upstream", "name": "GLM-5.3-Flash" },
+        { "id": "sub-upstream" },
+        { "id": "custom-upstream", "name": "DeepSeek V4 Pro" },
+        { "id": "default-model" }
+    ]))
+    .unwrap();
+    request.connection.model_roles = serde_json::from_value(json!({
+        "sonnet": "sonnet-upstream",
+        "subagent": "sub-upstream",
+        "custom": "custom-upstream"
+    }))
+    .unwrap();
+    let imported = import(&app, request, deeplink::ImportConflictPolicy::Skip).await;
+    assert_eq!(imported.status, "created");
+    assert!(imported.ignored_roles.is_empty());
+    let saved = row(&app, DbTable::CliProvider(Cli::Claude), &imported.id);
+    let settings: Value = serde_json::from_str(saved["settings_config"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"],
+        "sonnet-upstream"
+    );
+    assert_eq!(
+        settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"],
+        "GLM-5.3-Flash"
+    );
+    assert_eq!(
+        settings["env"]["CLAUDE_CODE_SUBAGENT_MODEL"],
+        "sub-upstream"
+    );
+    assert_eq!(
+        settings["env"]["ANTHROPIC_CUSTOM_MODEL_OPTION"],
+        "custom-upstream"
+    );
+    assert_eq!(
+        settings["env"]["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"],
+        "DeepSeek V4 Pro"
+    );
+    assert_eq!(settings["env"]["ANTHROPIC_MODEL"], "default-model");
+}
+
 fn write_json(path: &Path, value: &Value) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, serde_json::to_string_pretty(value).unwrap()).unwrap();

@@ -1739,6 +1739,7 @@
       "importSkipped": "“{{name}}”已存在，已跳过导入。",
       "credentialUnavailable": "此凭据来自官方登录、OAuth 或本地引用，不能直接迁移。请填写独立的 API Key 后再分享。",
       "requiresGateway": "此配置需要通过 Gateway 使用。导入后请开启目标工具的网关代理。",
+      "ignoredRoles": "以下模型角色无法被当前版本识别，已忽略：{{roles}}",
       "runtimeImportHint": "导入会写入目标工具的配置文件，保留原有默认模型。",
       "savedImportHint": "导入后保存为未应用的供应商，可在目标工具页面选择使用。",
       "genericProfileHint": "目标工具将使用通用协议配置，不会迁移原工具的渠道专有兼容设置。",

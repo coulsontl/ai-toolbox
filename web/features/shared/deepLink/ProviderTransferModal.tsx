@@ -170,6 +170,7 @@ const ProviderTransferModal: React.FC<Props> = ({ request, mode, credentialUnava
           {missingCredential && <Alert type="warning" showIcon title={t('common.deepLink.credentialUnavailable')} />}
           {missingFormat && <Alert type="info" showIcon title={t('common.deepLink.selectApiFormat')} />}
           {preview?.requiresGateway && <Alert type="info" showIcon title={t('common.deepLink.requiresGateway')} />}
+          {preview && preview.ignoredRoles.length > 0 && <Alert type="warning" showIcon title={t('common.deepLink.ignoredRoles', { roles: preview.ignoredRoles.join(', ') })} />}
           {preview?.baseUrl && preview.baseUrl !== draft.baseUrl && <p className={styles.hint}>{t('common.deepLink.adaptedBaseUrl', { url: preview.baseUrl })}</p>}
           {preview && <p className={styles.hint}>{t(preview.writesRuntimeFiles ? 'common.deepLink.runtimeImportHint' : 'common.deepLink.savedImportHint')}</p>}
           {draft.gatewayProfile && preview && !preview.profilePreserved && <p className={styles.hint}>{t('common.deepLink.genericProfileHint')}</p>}

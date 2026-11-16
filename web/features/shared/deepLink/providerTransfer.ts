@@ -174,6 +174,18 @@ export function extractProviderShareFields(sourceApp: ProviderShareApp, provider
         models.push(modelEntry(stripMarker(id), { name: routeValue.labelOverride ?? env[`ANTHROPIC_DEFAULT_${role.toUpperCase()}_MODEL_NAME`] }));
       }
     }
+    // Subagent and custom are env-only bindings: no legacy top-level field and
+    // no Desktop tier alias. Subagent has no display-name variable either.
+    const subagentId = readString(env.CLAUDE_CODE_SUBAGENT_MODEL);
+    if (subagentId) {
+      roles.subagent = stripMarker(subagentId);
+      models.push(modelEntry(stripMarker(subagentId), {}));
+    }
+    const customId = readString(env.ANTHROPIC_CUSTOM_MODEL_OPTION);
+    if (customId) {
+      roles.custom = stripMarker(customId);
+      models.push(modelEntry(stripMarker(customId), { name: readString(env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME) }));
+    }
     fields.modelRoles = roles;
     fields.model ??= models[0]?.id;
   } else if (sourceApp === 'codex') {

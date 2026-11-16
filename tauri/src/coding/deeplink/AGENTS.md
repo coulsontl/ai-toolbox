@@ -22,6 +22,8 @@
 - OpenCode AI SDK 与原生 Anthropic/Google SDK 的版本语义不同。保留 sourceApp，只适配已知终端版本路径；不能盲目删代理前缀、查询参数或 OpenAI /v1。
 - 认证方式属于连接信息，Anthropic API key 与 Bearer 不能互换。OpenCode 不能同时写 apiKey 和 authToken。OAuth access/refresh token 不能冒充共享 API Key。
 - 默认模型与列表独立。OpenCode alias 转真实模型 ID，ID 内的斜杠保持原样；Codex 不能把目录第一项当默认模型。
+- Claude Code 的显示名称是独立 env 变量，不是模型 ID 的别名：四个 tier 写 `ANTHROPIC_DEFAULT_<ROLE>_MODEL_NAME`，custom 写 `ANTHROPIC_CUSTOM_MODEL_OPTION_NAME`，subagent 没有名称变量。导入必须把 `models[].name` 写进这些变量，否则目标回退显示模型 ID。Desktop 目标不写 subagent/custom 绑定。
+- Claude Code 的 role 全集是 sonnet/opus/fable/haiku/subagent/custom；Desktop 只认前四个 tier。未知 role 不报错：过滤掉并通过 preview/result 的 `ignored_roles` 告诉用户，避免新版本链接让旧客户端整体导入失败。
 - 模型能力按目标 schema 写入：OpenCode limit 只接受完整 context/output 对，不能伪造缺失值；modalities 需要 input/output 两侧。Pi/OMP/OpenClaw/DSH 的 input 只写 text/image，不能把 models.dev 的 audio/video 枚举原样塞入运行时配置。
 - Desktop 可见安全 ID 与上游模型可不同；生成 claudeDesktopModelRoutes，原生 Claude 模型不改名，其他模型明确依赖 Gateway。
 - 文件读取失败或已有结构非法时终止，不能按空配置处理。DSH 配置和新凭据 ref 必须整体成功或恢复原字节，保留登录 records。

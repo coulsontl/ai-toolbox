@@ -66,7 +66,7 @@ aitoolbox://v1/import?resource=provider&sourceApp=opencode&app=codex&name=Relay&
 | apiKey / baseUrl | 凭据和 http(s) 地址；新分享需要可解析的 Base URL |
 | model | 默认模型的真实上游 ID |
 | models | JSON 数组：id、name、contextWindow、maxTokens、reasoning、input |
-| modelRoles | JSON 对象：Claude 的 sonnet、opus、fable、haiku 到模型 ID 的映射 |
+| modelRoles | JSON 对象：Claude 的 sonnet、opus、fable、haiku、subagent、custom 到模型 ID 的映射；当前版本不认识的 role 会被忽略并在预览中提示 |
 | headers | JSON 数组：静态 set 或网关支持的 delete/rename/copy 操作 |
 | gatewayProfile | JSON 对象：tool、profileId、endpointId |
 | providerType / apiKeyField | 明确保存的兼容信息及认证方式，不复制 profile 派生快照 |
@@ -88,6 +88,8 @@ OpenCode 的 AI SDK Anthropic/Google Base URL 包含版本路径，原生 Anthro
 Claude 的 ANTHROPIC_API_KEY 和 ANTHROPIC_AUTH_TOKEN 分别表示 API-key 与 Bearer 认证；OpenCode Anthropic 分别写 options.apiKey 和 options.authToken，不能同时写两者。
 
 OpenCode 本地模型 alias 通过模型 id 转成真实上游 ID；provider_id/model_id 只在第一个斜杠处分割。Codex 目录第一项不是用户的默认模型。Claude 的 [1M] 后缀不会附着到其他工具的模型 ID。
+
+Claude Code 的显示名称是独立环境变量，不是模型 ID 的别名：四个 tier 角色写 `ANTHROPIC_DEFAULT_<ROLE>_MODEL_NAME`，`custom` 写 `ANTHROPIC_CUSTOM_MODEL_OPTION_NAME`，`subagent` 没有名称变量。导入时必须把 `models[].name` 一并写入这些变量，否则目标工具会回退显示模型 ID。Claude Desktop 没有 subagent/custom 绑定，导入 Desktop 时只写四个 tier。
 
 Desktop 对 Claude 原生模型保留安全 ID；其他模型用 Claude 可接受的路由 ID 映射到上游，放在 meta.claudeDesktopModelRoutes 并要求 Gateway。
 

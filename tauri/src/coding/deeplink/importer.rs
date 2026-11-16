@@ -18,6 +18,7 @@ use super::parser::{validate_url, DeepLinkImportRequest, SUPPORTED_APPS, SUPPORT
 use super::portable::{
     adapt_base_url, canonical_api_format, catalog_profile, is_database_app, native_format,
     profile_endpoint, remap_profile, static_headers, supports_native_auth, SharedModel,
+    CLAUDE_MODEL_ROLES,
 };
 use super::provider::{
     build_catalog_settings, build_claude_settings, build_codex_settings, build_desktop_routes,
@@ -42,6 +43,9 @@ pub struct DeepLinkImportPreview {
     pub requires_gateway: bool,
     pub writes_runtime_files: bool,
     pub profile_preserved: bool,
+    /// Roles this build does not understand. They are dropped instead of
+    /// failing the import, so the caller can tell the user what was lost.
+    pub ignored_roles: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -54,6 +58,7 @@ pub struct DeepLinkImportResult {
     pub name: String,
     pub status: String,
     pub requires_gateway: bool,
+    pub ignored_roles: Vec<String>,
 }
 
 pub(super) fn prepare_import(
@@ -189,6 +194,19 @@ pub(super) fn prepare_import(
             );
         }
     }
+    // Unknown roles belong to a newer share format than this build knows. Drop
+    // them instead of rejecting the whole link, and report them in the preview.
+    let ignored_roles: Vec<String> = request
+        .connection
+        .model_roles
+        .keys()
+        .filter(|role| !CLAUDE_MODEL_ROLES.contains(&role.as_str()))
+        .cloned()
+        .collect();
+    request
+        .connection
+        .model_roles
+        .retain(|role, _| CLAUDE_MODEL_ROLES.contains(&role.as_str()));
     for model in request.connection.model_roles.values_mut() {
         *model = super::portable::strip_context_marker(model);
         if model.is_empty() {
@@ -216,14 +234,6 @@ pub(super) fn prepare_import(
     ) && request.connection.models.is_empty()
     {
         return Err("Add at least one model before importing into this tool".to_string());
-    }
-    if request
-        .connection
-        .model_roles
-        .keys()
-        .any(|role| !matches!(role.as_str(), "haiku" | "sonnet" | "opus" | "fable"))
-    {
-        return Err("Unsupported model role".to_string());
     }
     for header in &request.connection.headers {
         let names = match header.op.as_str() {
@@ -370,6 +380,7 @@ pub(super) fn prepare_import(
                     .is_some_and(|url| url.ends_with("##"))),
         writes_runtime_files: !database_app,
         profile_preserved: target_profile.is_some(),
+        ignored_roles,
     };
     Ok((request, database_app.then_some(meta), preview))
 }
@@ -433,6 +444,7 @@ fn prepare_legacy_import(
         base_url,
         writes_runtime_files: false,
         profile_preserved: false,
+        ignored_roles: Vec::new(),
     };
     Ok((request, None, preview))
 }
@@ -634,6 +646,7 @@ pub(super) async fn build_and_create_provider<R: Runtime>(
                 name: provider.name.clone(),
                 status: "skipped".to_string(),
                 requires_gateway: preview.requires_gateway,
+                ignored_roles: preview.ignored_roles.clone(),
             });
         }
         let original_name = request.name.clone();
@@ -817,6 +830,7 @@ pub(super) async fn build_and_create_provider<R: Runtime>(
         name: request.name,
         status: "created".to_string(),
         requires_gateway: preview.requires_gateway,
+        ignored_roles: preview.ignored_roles.clone(),
     })
 }
 
@@ -1023,6 +1037,23 @@ mod tests {
             .any(|model| model.id == "role-model"));
         assert_ne!(native_provider_key("渠道一"), native_provider_key("渠道二"));
         assert_eq!(native_provider_key("渠道一"), native_provider_key("渠道一"));
+    }
+
+    #[test]
+    fn unknown_model_roles_are_ignored_and_reported() {
+        let mut input = request("claude");
+        input
+            .connection
+            .model_roles
+            .insert("sonnet".to_string(), "sonnet-upstream".to_string());
+        input
+            .connection
+            .model_roles
+            .insert("mythos".to_string(), "mythos-upstream".to_string());
+        let (prepared, _, preview) = prepare_import(&input, &Value::Null).unwrap();
+        assert_eq!(preview.ignored_roles, vec!["mythos".to_string()]);
+        assert!(prepared.connection.model_roles.contains_key("sonnet"));
+        assert!(!prepared.connection.model_roles.contains_key("mythos"));
     }
 
     #[test]

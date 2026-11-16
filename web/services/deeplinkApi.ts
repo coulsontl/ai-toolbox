@@ -53,6 +53,8 @@ export interface DeepLinkImportResult {
   name: string;
   status: 'created' | 'skipped';
   requiresGateway: boolean;
+  /** Roles this build does not understand; dropped instead of failing. */
+  ignoredRoles: string[];
 }
 
 export interface DeepLinkImportPreview {
@@ -61,6 +63,8 @@ export interface DeepLinkImportPreview {
   requiresGateway: boolean;
   writesRuntimeFiles: boolean;
   profilePreserved: boolean;
+  /** Roles this build does not understand; dropped instead of failing. */
+  ignoredRoles: string[];
 }
 
 export const previewDeepLinkImport = (request: DeepLinkImportRequest) =>

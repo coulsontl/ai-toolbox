@@ -172,6 +172,14 @@ pub(crate) fn remap_profile(
     })
 }
 
+/// Model roles Claude Code understands. The four tier roles are also shared
+/// with Claude Desktop; `subagent` and `custom` are Claude Code env-only
+/// bindings with no Desktop tier meaning.
+pub(crate) const CLAUDE_MODEL_ROLES: [&str; 6] =
+    ["haiku", "sonnet", "opus", "fable", "subagent", "custom"];
+
+pub(crate) const CLAUDE_TIER_ROLES: [&str; 4] = ["haiku", "sonnet", "opus", "fable"];
+
 pub(crate) fn strip_context_marker(model: &str) -> String {
     let model = model.trim();
     if model.to_lowercase().ends_with("[1m]") {

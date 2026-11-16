@@ -64,6 +64,18 @@ test('Claude roles, authentication and all mapped Desktop models survive sharing
   assert.equal(desktop.modelRoles?.sonnet, 'gpt/two');
 });
 
+test('Claude subagent and custom bindings survive sharing', () => {
+  const fields = extractProviderShareFields('claude', source({ env: {
+    ANTHROPIC_API_KEY: 'api-key',
+    CLAUDE_CODE_SUBAGENT_MODEL: 'sub-v1[1M]',
+    ANTHROPIC_CUSTOM_MODEL_OPTION: 'custom-v1',
+    ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: 'Custom V1',
+  } }));
+  assert.deepEqual(fields.modelRoles, { subagent: 'sub-v1', custom: 'custom-v1' });
+  assert.equal(fields.models?.find((model) => model.id === 'custom-v1')?.name, 'Custom V1');
+  assert.equal(fields.models?.find((model) => model.id === 'sub-v1')?.name, undefined);
+});
+
 test('Codex catalog order does not invent a default and chat.model wins when present', () => {
   const settings = {
     config: 'model_provider="custom"\n[model_providers.custom]\nbase_url="https://relay.test/v1"\nwire_api="responses"',
