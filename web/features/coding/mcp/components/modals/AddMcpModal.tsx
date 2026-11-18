@@ -921,13 +921,15 @@ export const AddMcpModal: React.FC<AddMcpModalProps> = ({
                 items: hiddenTools.map((tool) => ({
                   key: tool.key,
                   label: (
-                    <Checkbox
-                      checked={selectedTools.includes(tool.key)}
-                      onChange={() => handleToolToggle(tool.key)}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {tool.display_name}
-                    </Checkbox>
+                    <span onClick={(e) => e.stopPropagation()}>
+                      <Checkbox
+                        checked={selectedTools.includes(tool.key)}
+                        onChange={() => handleToolToggle(tool.key)}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {tool.display_name}
+                      </Checkbox>
+                    </span>
                   ),
                   onClick: () => handleToolToggle(tool.key),
                 })),

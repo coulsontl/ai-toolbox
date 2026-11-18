@@ -736,13 +736,15 @@ export const AddSkillModal: React.FC<AddSkillModalProps> = ({
                     items: hiddenTools.map((tool) => ({
                       key: tool.id,
                       label: (
-                        <Checkbox
-                          checked={selectedTools.includes(tool.id)}
-                          onChange={() => handleToolToggle(tool.id)}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {tool.label}
-                        </Checkbox>
+                        <span onClick={(e) => e.stopPropagation()}>
+                          <Checkbox
+                            checked={selectedTools.includes(tool.id)}
+                            onChange={() => handleToolToggle(tool.id)}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {tool.label}
+                          </Checkbox>
+                        </span>
                       ),
                       onClick: () => handleToolToggle(tool.id),
                     })),

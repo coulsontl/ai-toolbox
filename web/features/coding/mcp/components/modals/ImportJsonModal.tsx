@@ -358,13 +358,15 @@ export const ImportJsonModal: React.FC<ImportJsonModalProps> = ({
                 items: hiddenTools.map((tool) => ({
                   key: tool.key,
                   label: (
-                    <Checkbox
-                      checked={selectedTools.includes(tool.key)}
-                      onChange={() => handleToggleTool(tool.key)}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {tool.display_name}
-                    </Checkbox>
+                    <span onClick={(e) => e.stopPropagation()}>
+                      <Checkbox
+                        checked={selectedTools.includes(tool.key)}
+                        onChange={() => handleToggleTool(tool.key)}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {tool.display_name}
+                      </Checkbox>
+                    </span>
                   ),
                   onClick: () => handleToggleTool(tool.key),
                 })),
