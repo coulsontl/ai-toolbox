@@ -334,8 +334,12 @@ pub async fn refresh_tray_menu<R: Runtime>(app: AppHandle<R>) -> Result<(), Stri
     refresh_tray_menus(&app).await
 }
 
-/// Create system tray icon and menu
-pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::error::Error>> {
+/// Create system tray icon and menu.
+///
+/// Non-generic on purpose: the window-state plugin's save API is only
+/// implemented for the concrete Wry runtime, and this is where entering
+/// lightweight mode from the tray must persist the window first.
+pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let texts = tauri::async_runtime::block_on(async {
         crate::settings::commands::get_settings(app.state())
             .await
@@ -384,8 +388,18 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::er
                     if let Err(e) = crate::lightweight::exit_lightweight_mode(app) {
                         eprintln!("Failed to exit lightweight mode: {}", e);
                     }
-                } else if let Err(e) = crate::lightweight::enter_lightweight_mode(app) {
-                    eprintln!("Failed to enter lightweight mode: {}", e);
+                } else {
+                    // Persist while the window is alive: the plugin cannot read
+                    // it after entering lightweight mode destroys it.
+                    use tauri_plugin_window_state::AppHandleExt;
+                    if let Err(error) = app.save_window_state(crate::WINDOW_STATE_FLAGS) {
+                        eprintln!(
+                            "Failed to persist window state before lightweight mode: {error}"
+                        );
+                    }
+                    if let Err(e) = crate::lightweight::enter_lightweight_mode(app) {
+                        eprintln!("Failed to enter lightweight mode: {}", e);
+                    }
                 }
             } else if event_id == TRAY_QUIT_MENU_ID {
                 request_app_exit(app);

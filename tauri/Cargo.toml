@@ -21,6 +21,7 @@ tauri-plugin-opener = "2.5.3"
 tauri-plugin-os = "2"
 tauri-plugin-shell = "2.3.4"
 tauri-plugin-updater = "2.9.0"
+tauri-plugin-window-state = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-deep-link = "2"
 

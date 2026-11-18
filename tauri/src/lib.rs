@@ -45,6 +45,25 @@ pub(crate) static APP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 const DEFAULT_APP_WINDOW_TITLE: &str = "AI Toolbox";
 const APP_WINDOW_TITLE_ENV: &str = "AI_TOOLBOX_WINDOW_TITLE";
 
+const DEFAULT_WINDOW_WIDTH: f64 = 1200.0;
+const DEFAULT_WINDOW_HEIGHT: f64 = 800.0;
+/// Conservative allowance for the native title bar and window border in logical
+/// pixels. `work_area` describes the decorated window, while `inner_size`
+/// excludes them.
+const WINDOW_CHROME_WIDTH: f64 = 16.0;
+const WINDOW_CHROME_HEIGHT: f64 = 48.0;
+
+/// Persisted window-state flags.
+///
+/// `VISIBLE` is deliberately excluded: the plugin's restore path calls
+/// `show()`/`set_focus()` whenever that flag is enabled, which would bypass the
+/// `start_minimized` / `start_lightweight` startup paths and the deferred
+/// `show()` after database initialization.
+pub(crate) const WINDOW_STATE_FLAGS: tauri_plugin_window_state::StateFlags =
+    tauri_plugin_window_state::StateFlags::POSITION
+        .union(tauri_plugin_window_state::StateFlags::SIZE)
+        .union(tauri_plugin_window_state::StateFlags::MAXIMIZED);
+
 fn configured_window_title(value: Option<&str>) -> String {
     value
         .map(str::trim)
@@ -77,6 +96,44 @@ mod app_identity_tests {
     }
 }
 
+#[cfg(test)]
+mod window_geometry_tests {
+    use super::*;
+
+    #[test]
+    fn default_window_size_is_clamped_to_the_work_area() {
+        assert_eq!(default_window_size(None), (1200.0, 800.0));
+        assert_eq!(default_window_size(Some((1920.0, 1040.0))), (1200.0, 800.0));
+        // The work area must also host the title bar and border, so a 1100×700
+        // work area yields a smaller inner size instead of an overflowing outer
+        // size.
+        assert_eq!(default_window_size(Some((1100.0, 700.0))), (1084.0, 652.0));
+    }
+
+    #[test]
+    fn first_window_is_centered_inside_the_work_area() {
+        assert_eq!(
+            centered_in_work_area((0.0, 0.0), (1920.0, 1040.0), (1200.0, 800.0)),
+            (360.0, 120.0)
+        );
+        // A secondary monitor's work area keeps its own origin.
+        assert_eq!(
+            centered_in_work_area((1920.0, 0.0), (1920.0, 1040.0), (1200.0, 800.0)),
+            (2280.0, 120.0)
+        );
+    }
+
+    #[test]
+    fn window_state_never_restores_visibility() {
+        use tauri_plugin_window_state::StateFlags;
+
+        assert!(WINDOW_STATE_FLAGS.contains(StateFlags::POSITION));
+        assert!(WINDOW_STATE_FLAGS.contains(StateFlags::SIZE));
+        assert!(WINDOW_STATE_FLAGS.contains(StateFlags::MAXIMIZED));
+        assert!(!WINDOW_STATE_FLAGS.contains(StateFlags::VISIBLE));
+    }
+}
+
 /// The app's own window.
 ///
 /// Deliberately `Window` and not `WebviewWindow`: once the mini browser is
@@ -90,18 +147,75 @@ pub(crate) fn main_window<R: tauri::Runtime>(
     app.get_window("main")
 }
 
+/// Default first-launch window size, reduced when the primary monitor's work
+/// area (which excludes the taskbar) is smaller than the default. Logical units,
+/// matching `inner_size`. The work area is reserved for the decorated window,
+/// so the chrome allowance is subtracted before slicing the inner size; the
+/// persisted-state path bypasses this and restores the exact saved size.
+fn default_window_size(work_area_size: Option<(f64, f64)>) -> (f64, f64) {
+    match work_area_size {
+        Some((available_width, available_height)) => (
+            DEFAULT_WINDOW_WIDTH.min((available_width - WINDOW_CHROME_WIDTH).max(0.0)),
+            DEFAULT_WINDOW_HEIGHT.min((available_height - WINDOW_CHROME_HEIGHT).max(0.0)),
+        ),
+        None => (DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
+    }
+}
+
+/// Center the window inside the work area instead of the full monitor rect, so
+/// the taskbar cannot cover its bottom edge on first launch.
+fn centered_in_work_area(
+    work_area_origin: (f64, f64),
+    work_area_size: (f64, f64),
+    window_size: (f64, f64),
+) -> (f64, f64) {
+    (
+        work_area_origin.0 + (work_area_size.0 - window_size.0) / 2.0,
+        work_area_origin.1 + (work_area_size.1 - window_size.1) / 2.0,
+    )
+}
+
+/// Primary monitor work area in logical units as `(origin, size)`.
+///
+/// Returns `None` when no monitor information is available; callers then fall
+/// back to Tauri's own `center()`.
+fn primary_monitor_work_area<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Option<((f64, f64), (f64, f64))> {
+    let monitor = app.primary_monitor().ok().flatten()?;
+    let scale_factor = monitor.scale_factor();
+    let scale_factor = if scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    let work_area = monitor.work_area();
+    Some((
+        (
+            work_area.position.x as f64 / scale_factor,
+            work_area.position.y as f64 / scale_factor,
+        ),
+        (
+            work_area.size.width as f64 / scale_factor,
+            work_area.size.height as f64 / scale_factor,
+        ),
+    ))
+}
+
 /// Create the main window. Shared by startup and lightweight-mode rebuild so
 /// both paths produce the same window. `geometry` (logical units) restores the
-/// pre-destroy window placement; `None` centers a default-sized window.
+/// pre-destroy window placement; `None` centers a default-sized window inside
+/// the primary monitor's work area.
 pub(crate) fn build_main_window<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     geometry: Option<lightweight::WindowGeometry>,
 ) -> tauri::Result<tauri::WebviewWindow<R>> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
 
+    let work_area = primary_monitor_work_area(app);
     let (width, height) = geometry
         .map(|g| (g.width, g.height))
-        .unwrap_or((1200.0, 800.0));
+        .unwrap_or_else(|| default_window_size(work_area.map(|(_, size)| size)));
 
     let mut builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
         .title(app_window_title())
@@ -122,7 +236,13 @@ pub(crate) fn build_main_window<R: tauri::Runtime>(
 
     builder = match geometry {
         Some(g) => builder.position(g.x, g.y).maximized(g.maximized),
-        None => builder.center(),
+        None => match work_area {
+            Some((origin, size)) => {
+                let (x, y) = centered_in_work_area(origin, size, (width, height));
+                builder.position(x, y)
+            }
+            None => builder.center(),
+        },
     };
 
     #[cfg(target_os = "macos")]
@@ -1030,6 +1150,11 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(WINDOW_STATE_FLAGS)
+                .build(),
+        )
         .setup(move |app| {
             info!("开始执行 setup()...");
             let app_handle = app.handle().clone();
@@ -2083,6 +2208,16 @@ pub fn run() {
                     .unwrap_or((true, false));
 
                 if minimize_to_tray {
+                    // Tauri dispatches this app-level handler before window-level
+                    // listeners, and the lightweight path destroys the window right
+                    // here. The plugin's own CloseRequested listener would then read
+                    // an already-destroyed window and lose the final size and
+                    // maximized flag. Persist while the window is still alive.
+                    use tauri_plugin_window_state::AppHandleExt;
+                    if let Err(error) = app_handle.save_window_state(WINDOW_STATE_FLAGS) {
+                        warn!("Failed to persist window state on close: {error}");
+                    }
+
                     if lightweight_on_close {
                         // Destroy the window entirely to release WebView memory.
                         if let Err(e) = lightweight::enter_lightweight_mode(&app_handle) {
