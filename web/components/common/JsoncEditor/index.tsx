@@ -11,6 +11,11 @@ export interface JsoncEditorProps {
   value: string;
   onChange?: (value: string, isValid: boolean, parsed: unknown | null) => void;
   onBlur?: (value: string, isValid: boolean, parsed: unknown | null) => void;
+  /**
+   * 编辑器聚焦状态变化。外部刷新时，父组件需要知道 Monaco 是否正在编辑
+   * ——聚焦期间 Monaco 不会应用外部 value，父组件的基线也不能跟着变。
+   */
+  onFocusChange?: (focused: boolean) => void;
   readOnly?: boolean;
   height?: number | string;
   minHeight?: number;
@@ -41,6 +46,7 @@ const JsoncEditor: React.FC<JsoncEditorProps> = ({
   value,
   onChange,
   onBlur,
+  onFocusChange,
   readOnly = false,
   height = 320,
   minHeight = 180,
@@ -67,6 +73,8 @@ const JsoncEditor: React.FC<JsoncEditorProps> = ({
   // through a ref instead (same rule as `JsonEditor`, issue #406).
   const onBlurRef = useRef(onBlur);
   onBlurRef.current = onBlur;
+  const onFocusChangeRef = useRef(onFocusChange);
+  onFocusChangeRef.current = onFocusChange;
 
   const validateAndSetMarkers = useCallback((content: string) => {
     const editorModel = editorRef.current?.getModel();
@@ -102,12 +110,14 @@ const JsoncEditor: React.FC<JsoncEditorProps> = ({
       isUserEditingRef.current = true;
       setIsUserEditing(true);
       editorInstance.updateOptions({ renderLineHighlight: 'line' });
+      onFocusChangeRef.current?.(true);
     });
 
     editorInstance.onDidBlurEditorText(() => {
       isUserEditingRef.current = false;
       setIsUserEditing(false);
       editorInstance.updateOptions({ renderLineHighlight: 'none' });
+      onFocusChangeRef.current?.(false);
       const currentContent = editorInstance.getValue();
       const result = validateAndSetMarkers(currentContent);
       onBlurRef.current?.(currentContent, result.isValid, result.parsed);

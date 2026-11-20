@@ -60,7 +60,8 @@
 - ⚠️ **`apiKey` 的 config value 语法是 Pi 那一套，不是 OMP 那一套**。`fetch_provider_models` / 连通性测试的 `configValueMode` 必须传 **`omo`**（不是 `omp`）：omo 的 `apiKey` 支持 `$ENV_VAR` / `${ENV_VAR}` 插值、`!command`、`$$` / `$!` 转义（实测确认），而 OMP 的模式只认「`!command` 或整值精确匹配环境变量名」、**不插值**——传 `omp` 会把 `$MY_KEY` 当字面量发出去。`ConfigValueMode::Omo` 复用 Pi 的解析器，只有 `!command` 的主机跟随 omo 的运行时位置。
 - **「获取模型」必须带上密钥**：卡片要把 `fetchModelsProvider.apiKey` 传给 `FetchModelsModal`。不传的话请求不带 `Authorization`，直接 401（2026-10-07 用户报的）。
 - **`omo --list-models` 与 `omo auth check` 都走 `run_omo_command`**（20 秒超时，`OMO_PROBE_TIMEOUT`）。它们 spawn 外部进程，不要在请求路径上做无超时的调用。
-- **`save_omo_native_other_config` 只补丁 `omo.jsonc` 的顶层共享键**：走 `omo_jsonc_patch::patch_top_level_block`，`[native]` / `[opencode]` 两个块与控制键（`_migrations` / `$schema`）一律不碰，传入对象里**缺失的键会被删除**。前端「其他配置」区块失焦保存的就是它。
+- **`save_omo_native_other_config` 只补丁 `omo.jsonc` 的顶层共享键**：走 `omo_jsonc_patch::patch_top_level_block`，`[native]` / `[opencode]` 两个块与控制键（`_migrations` / `$schema`）一律不碰，传入对象里**缺失的键会被删除**。前端「其他配置」区块的 `omo.jsonc` 页签失焦保存的就是它。
+- **`save_omo_native_other_settings` 只改 `settings.json` 的非受管键**：`defaultProvider` / `defaultModel` / `defaultThinkingLevel` 归「模型设置」，`packages` / `extensions` 归「扩展」；这 5 个键在 `otherSettings` 读取时被剔除，`set` / `remove` 里即使出现也不生效。保存前用 `read_settings_object_for_write`（json5，解析失败直接报错）读盘，再按前端提交的 `set` / `remove` 在盘上最新内容打补丁——**不要**换成宽松的 `read_settings_object`，否则坏文件会被当成空对象清空；也**不要**改成整份切片覆盖，页面打开期间引擎写入的 `tipsHistory` 等键会被内存快照回退。`set` / `remove` 里只有受管键时直接返回、不重写文件。写入按 strict JSON 重新序列化，**不保证保留注释**（引擎自己保存 `settings.json` 时也是 `JSON.stringify`）。前端「其他配置」区块的 `settings.json` 页签用它（`lookAt` 等引擎高级键走这里）。
 - **provider 的展示顺序 = `providers` 对象的「键序」**（`serde_json` 开了 `preserve_order`）。`reorder_omo_native_providers` 按给定 key 重建该对象；`list_omo_native_providers` **不得**再对自定义 provider 排序——一旦按 key 排，拖拽结果下次读取就被抹掉。纯内建（`models.json` 里没有条目的）只参与计数，不参与这个顺序。
 - **`auth.json` 的值是「config value」语义**：`$NAME` / `${NAME}` 插值、`!cmd` 执行 shell、`$$` / `$!` 是字面量转义。写用户密钥必须走 `providers::escape_literal_config_value`，否则含 `$` 的 key 会被引擎当变量展开。注意转义只能做一次（幂等性不成立）。
 - **密钥一律归 `auth.json`（`{type:"api_key", key}`），`models.json` 里不留 `apiKey`**（2026-10-07 定）。引擎两处都认且**优先 `auth.json`**（实测：两处都有值时 `omo auth print-api-key` 返回 `auth.json` 的那个），但只有 `auth.json` 是 0600 权限；`models.json` 是 644，还会随 WSL/SSH 同步与备份跑到别处。`save_omo_native_provider` 会**顺手把 `models.json` 里的旧式 `apiKey` 移走**（显式传入的 key 优先，没有就用移出来的那个）——留着就是第二份真相，用户改了 key 之后旧的还在。
@@ -95,6 +96,7 @@
 - 内建渠道：`list_omo_native_builtin_providers` 只返回**已配置凭据**的渠道（本机实测 1 个：`anthropic`，来自 `ANTHROPIC_AUTH_TOKEN`）；返回值里每个都 `ready: true`，且都**不在** `models.json` 的自定义条目里。设了凭据但没有模型目录的渠道（如原生 `cursor`）也会返回，`models` 为空数组。
 - 内建渠道：把 `auth.json` 临时改名后重跑，`anthropic` 仍应出现（环境变量判定）——这条验证的是「凭据来源不限于 auth.json」。
 - 其他配置：`save_omo_native_other_config` 写入一个顶层键后，`[native]` / `[opencode]` 块、控制键与注释逐字未变；传入对象里缺失的键被删除。
+- 其他设置：给 `settings.json` 加 `lookAt` 后保存，`defaultProvider` / `defaultModel` / `defaultThinkingLevel` / `packages` / `extensions` 的值未变，`lookAt` 出现在 `otherSettings` 里并可回读；`set` / `remove` 里只有受管键时不重写文件。
 - 拖拽排序：`reorder_omo_native_providers` 之后立刻 `list_omo_native_providers`，顺序与传入的 key 顺序一致（**不被字母序覆盖**）。
 - 密钥迁移：给一个 `models.json` 里带旧式 `apiKey` 的 provider 保存一次（弹窗里不填 key），该 `apiKey` 应被移到 `auth.json`，`models.json` 里不再有它，而 `api` / `baseUrl` / `models` / `name` 逐字保留；`omo auth print-api-key --provider <p>` 仍返回同一个值。
 - 密钥回填：`list_omo_native_providers` 返回的 `apiKey` 与 `omo auth print-api-key --provider <p>` **逐字相同**（引擎优先 `auth.json`，界面回填的必须是同一个值）。

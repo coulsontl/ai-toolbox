@@ -2937,6 +2937,7 @@ pub fn run() {
             coding::omo_native::reorder_omo_native_providers,
             coding::omo_native::delete_omo_native_provider,
             coding::omo_native::save_omo_native_other_config,
+            coding::omo_native::save_omo_native_other_settings,
             coding::omo_native::list_omo_native_builtin_providers,
             coding::omo_native::save_omo_native_auth_config,
             coding::omo_native::list_omo_native_mcp_servers,

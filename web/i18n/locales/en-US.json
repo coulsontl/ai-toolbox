@@ -6253,6 +6253,8 @@
     "otherConfig": {
       "title": "Other Configuration",
       "hint": "Edit the shared keys of omo.jsonc that belong to no harness block",
+      "settingsHint": "Edit the settings.json keys not managed by other sections on this page (e.g. the lookAt vision model chain)",
+      "objectRequired": "The editor content must be a JSON object (or empty to clear the current configuration)",
       "autoSaveHint": "Click outside the editor to save automatically"
     },
     "official": {

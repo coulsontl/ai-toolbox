@@ -17,8 +17,9 @@ use super::providers;
 use super::types::{
     OmoNativeAgentsConfig, OmoNativeAgentsConfigContent, OmoNativeAgentsConfigInput,
     OmoNativeBuiltinModel, OmoNativeBuiltinProvider, OmoNativeCliInfo,
-    OmoNativeDefaultSelection, OmoNativeModelSettingsInput, OmoNativePathInfo,
-    OmoNativeRuntimeConfig, OmoNativeSettingsConfig, OmoNativeSettingsConfigInput,
+    OmoNativeDefaultSelection, OmoNativeModelSettingsInput, OmoNativeOtherSettingsInput,
+    OmoNativePathInfo, OmoNativeRuntimeConfig, OmoNativeSettingsConfig,
+    OmoNativeSettingsConfigInput,
 };
 use crate::coding::db_id::db_new_id;
 use crate::coding::omo_jsonc_patch::{self, patch_top_level_block, remove_top_level_key};
@@ -29,6 +30,19 @@ use crate::db::SqliteDbState;
 
 /// 顶层控制键：不属于任何 harness，读取时永不折叠进生效视图。
 const OMO_NATIVE_CONTROL_KEYS: [&str; 4] = ["$schema", "_migrations", "legacy_migrations", "profiles"];
+
+/// `settings.json` 中由本页其他区块管理的键：
+/// - `defaultProvider` / `defaultModel` / `defaultThinkingLevel` → 「模型设置」
+/// - `packages` / `extensions` → 「扩展」区块的启停过滤器
+///
+/// 「其他配置」→ settings.json 页签只编辑其余键；这些键既不显示，也不允许覆盖。
+const OMO_NATIVE_OTHER_SETTINGS_PROTECTED_KEYS: [&str; 5] = [
+    "defaultProvider",
+    "defaultModel",
+    "defaultThinkingLevel",
+    "packages",
+    "extensions",
+];
 
 // ============================================================================
 // 路径与文件读写
@@ -129,6 +143,72 @@ fn read_settings_object(path: &Path) -> Value {
         .and_then(|content| json5::from_str::<Value>(&content).ok())
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}))
+}
+
+/// 保存前读 `<agentDir>/settings.json`：不存在返回空对象，存在但解析失败直接报错。
+///
+/// 不能复用 `read_settings_object`——它把坏文件当成 `{}`，后续保存会把用户的
+/// 设置清空。这里要的是「读不懂就别写」。
+fn read_settings_object_for_write(path: &Path) -> Result<Value, String> {
+    if !path.exists() {
+        return Ok(json!({}));
+    }
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+    if content.trim().is_empty() {
+        return Ok(json!({}));
+    }
+    match json5::from_str::<Value>(&content) {
+        Ok(value) if value.is_object() => Ok(value),
+        Ok(_) => Err(format!("{} must contain a JSON object", path.display())),
+        Err(error) => Err(format!("Failed to parse {}: {error}", path.display())),
+    }
+}
+
+fn is_omo_native_other_settings_protected_key(key: &str) -> bool {
+    OMO_NATIVE_OTHER_SETTINGS_PROTECTED_KEYS.contains(&key)
+}
+
+/// `set` / `remove` 里是否至少有一个真正可编辑的键。只有受管键时不必重写文件。
+fn has_effective_other_settings_change(input: &OmoNativeOtherSettingsInput) -> bool {
+    input
+        .set
+        .keys()
+        .any(|key| !is_omo_native_other_settings_protected_key(key))
+        || input
+            .remove
+            .iter()
+            .any(|key| !is_omo_native_other_settings_protected_key(key))
+}
+
+/// `settings.json` 里不由本页其他区块管理的键（「其他配置」→ settings.json 页签）。
+fn build_omo_native_other_settings(settings: &Value) -> Value {
+    let mut other = settings.as_object().cloned().unwrap_or_default();
+    for key in other.keys().cloned().collect::<Vec<_>>() {
+        if is_omo_native_other_settings_protected_key(&key) {
+            other.remove(&key);
+        }
+    }
+    Value::Object(other)
+}
+
+/// 用前端提交的 `set` / `remove` 在盘上最新内容上打补丁。
+///
+/// 受保护键只保留盘上值；`set` / `remove` 里即使带了也会被忽略。
+fn apply_omo_native_other_settings(
+    settings_object: &mut Map<String, Value>,
+    input: &OmoNativeOtherSettingsInput,
+) {
+    for key in &input.remove {
+        if !is_omo_native_other_settings_protected_key(key) {
+            settings_object.remove(key);
+        }
+    }
+    for (key, value) in &input.set {
+        if !is_omo_native_other_settings_protected_key(key) {
+            settings_object.insert(key.clone(), value.clone());
+        }
+    }
 }
 
 /// 折叠 Native 生效视图：共享 base 键 → `[senpi]`（legacy 拼写）→ `[native]`，后者胜。
@@ -278,13 +358,15 @@ pub async fn read_omo_native_runtime_config(
 
     let settings_path =
         agent_dir.join(providers::resolve_omo_native_settings_file_name(&agent_dir));
-    let model_settings = default_selection_from_settings(&read_settings_object(&settings_path));
+    let settings = read_settings_object(&settings_path);
+    let model_settings = default_selection_from_settings(&settings);
 
     Ok(OmoNativeRuntimeConfig {
         effective,
         native_block,
         shared_base,
         model_settings,
+        other_settings: build_omo_native_other_settings(&settings),
         config_path: config_path.to_string_lossy().to_string(),
         config_content: raw_config,
         parsed,
@@ -335,7 +417,7 @@ async fn save_omo_native_model_settings_internal(
 ) -> Result<(), String> {
     let dir = providers::agent_dir_for(db).await?;
     let settings_path = dir.join(providers::resolve_omo_native_settings_file_name(&dir));
-    let mut settings = read_settings_object(&settings_path);
+    let mut settings = read_settings_object_for_write(&settings_path)?;
     let settings_object = settings
         .as_object_mut()
         .ok_or_else(|| "settings.json is not a JSON object".to_string())?;
@@ -423,6 +505,45 @@ pub async fn save_omo_native_other_config(
     #[cfg(target_os = "windows")]
     let _ = app.emit("wsl-sync-request-omo-native", ());
     Ok(())
+}
+
+/// 保存「其他配置」→ `settings.json` 页签。
+///
+/// 只编辑不属于其他区块的键：`defaultProvider` / `defaultModel` /
+/// `defaultThinkingLevel` 归「模型设置」，`packages` / `extensions` 归「扩展」。
+///
+/// **按改动打补丁**：前端只提交 `set`（新增/修改）与 `remove`（删除），后端在盘上
+/// 最新内容上应用。页面打开期间引擎写入的其他键（`tipsHistory` 等）不受影响。
+///
+/// ⚠️ 写入会把整份文件按 strict JSON 重新序列化：`settings.json(c)` 是引擎自己的
+/// 状态文件，引擎保存时也是 `JSON.stringify`，所以**不保证保留注释**。前端用
+/// `JsoncEditor` 是为了读取带注释的文件时不误报语法错误，不是承诺注释持久化。
+#[tauri::command]
+pub async fn save_omo_native_other_settings(
+    state: tauri::State<'_, SqliteDbState>,
+    app: tauri::AppHandle,
+    input: OmoNativeOtherSettingsInput,
+) -> Result<OmoNativeRuntimeConfig, String> {
+    if !has_effective_other_settings_change(&input) {
+        // 没有可编辑键的实际改动：不重写文件（也避免无意义的格式归一化）。
+        return read_omo_native_runtime_config(state).await;
+    }
+
+    let db = state.db();
+    let dir = providers::agent_dir_for(&db).await?;
+    let settings_path = dir.join(providers::resolve_omo_native_settings_file_name(&dir));
+    let mut settings = read_settings_object_for_write(&settings_path)?;
+    let settings_object = settings
+        .as_object_mut()
+        .ok_or_else(|| "settings.json is not a JSON object".to_string())?;
+
+    apply_omo_native_other_settings(settings_object, &input);
+    providers::write_json_object(&settings_path, &settings, true)?;
+
+    let _ = app.emit("config-changed", "omo_native");
+    #[cfg(target_os = "windows")]
+    let _ = app.emit("wsl-sync-request-omo-native", ());
+    read_omo_native_runtime_config(state).await
 }
 
 /// 保存整份 `<agentDir>/auth.json`。
@@ -1414,5 +1535,117 @@ mod tests {
         assert_eq!(other["telemetry"]["enabled"], json!(false));
         assert!(other.get("agents").is_none());
         assert!(other.get("not_a_native_key").is_none());
+    }
+
+    #[test]
+    fn other_settings_noop_detects_protected_only_changes() {
+        let empty = OmoNativeOtherSettingsInput {
+            set: Map::new(),
+            remove: Vec::new(),
+        };
+        assert!(!has_effective_other_settings_change(&empty));
+
+        let protected_only = OmoNativeOtherSettingsInput {
+            set: json!({ "defaultModel": "should-not-save" })
+                .as_object()
+                .cloned()
+                .expect("set object"),
+            remove: vec!["packages".to_string()],
+        };
+        assert!(!has_effective_other_settings_change(&protected_only));
+
+        let editable = OmoNativeOtherSettingsInput {
+            set: json!({ "lookAt": { "models": ["example-vision-model"] } })
+                .as_object()
+                .cloned()
+                .expect("set object"),
+            remove: Vec::new(),
+        };
+        assert!(has_effective_other_settings_change(&editable));
+    }
+
+    #[test]
+    fn read_settings_object_for_write_rejects_invalid_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let settings_path = dir.path().join("settings.json");
+        fs::write(&settings_path, "{ broken").expect("write invalid settings");
+
+        // 读不懂就别写：坏文件不能被当成空对象清空。
+        assert!(read_settings_object_for_write(&settings_path).is_err());
+        assert_eq!(
+            read_settings_object_for_write(&dir.path().join("missing.json")).unwrap(),
+            json!({})
+        );
+    }
+
+    #[test]
+    fn other_settings_hides_keys_owned_by_other_sections() {
+        let settings = json!({
+            "defaultProvider": "example-provider",
+            "defaultModel": "example-model",
+            "defaultThinkingLevel": "high",
+            "packages": ["npm:example-package"],
+            "extensions": ["-extensions/example.ts"],
+            "theme": "dark",
+            "lookAt": { "models": ["example-vision-model"] }
+        });
+
+        // 模型设置与扩展区块拥有的键不出现在「其他设置」编辑器里。
+        assert_eq!(
+            build_omo_native_other_settings(&settings),
+            json!({
+                "theme": "dark",
+                "lookAt": { "models": ["example-vision-model"] }
+            })
+        );
+    }
+
+    #[test]
+    fn other_settings_patch_keeps_owned_keys_and_unsubmitted_disk_keys() {
+        let mut settings = json!({
+            "defaultProvider": "example-provider",
+            "defaultModel": "example-model",
+            "defaultThinkingLevel": "high",
+            "packages": ["npm:example-package"],
+            "extensions": ["-extensions/example.ts"],
+            "theme": "dark",
+            "lookAt": { "models": ["example-vision-model"] },
+            "tipsHistory": { "tip": 1 },
+            // 模拟页面打开期间引擎新写的键：前端快照里没有，保存时不能丢。
+            "engineAddedWhilePageOpen": true
+        });
+        let input = OmoNativeOtherSettingsInput {
+            set: json!({
+                "theme": "light",
+                // 受保护键即使出现在提交对象里也不得覆盖盘上值。
+                "defaultModel": "should-not-win",
+                "packages": ["npm:should-not-win"],
+                "lookAt": { "enabled": false, "models": ["another-vision-model"] }
+            })
+            .as_object()
+            .cloned()
+            .expect("set object"),
+            remove: vec![
+                "tipsHistory".to_string(),
+                // 受保护键也不能通过 remove 删除。
+                "defaultProvider".to_string(),
+            ],
+        };
+
+        apply_omo_native_other_settings(settings.as_object_mut().expect("settings object"), &input);
+
+        assert_eq!(
+            settings,
+            json!({
+                "defaultProvider": "example-provider",
+                "defaultModel": "example-model",
+                "defaultThinkingLevel": "high",
+                "packages": ["npm:example-package"],
+                "extensions": ["-extensions/example.ts"],
+                "theme": "light",
+                "lookAt": { "enabled": false, "models": ["another-vision-model"] },
+                "engineAddedWhilePageOpen": true
+            })
+        );
     }
 }

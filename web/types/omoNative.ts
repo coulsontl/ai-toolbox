@@ -88,6 +88,19 @@ export interface OmoNativeModelSettingsInput {
   defaultThinkingLevel?: string;
 }
 
+/**
+ * `save_omo_native_other_settings` 的入参：只提交用户实际改动的键。
+ *
+ * 页面打开期间引擎仍会写 `settings.json`（`tipsHistory` 等）；整份覆盖
+ * 「其他设置」切片会把这些新写入回退，所以后端按 `set` / `remove` 打补丁。
+ */
+export interface OmoNativeOtherSettingsInput {
+  /** 新增或修改的键。 */
+  set: Record<string, unknown>;
+  /** 要删除的键。 */
+  remove: string[];
+}
+
 /** `read_omo_native_runtime_config` 的返回。 */
 export interface OmoNativeRuntimeConfig {
   /** 折叠后的 Native 生效视图（共享 base 键被 `[native]` 块覆盖）。 */
@@ -98,6 +111,8 @@ export interface OmoNativeRuntimeConfig {
   sharedBase: Record<string, unknown>;
   /** `settings.json` 的默认模型选择。 */
   modelSettings: OmoNativeDefaultSelection;
+  /** `settings.json` 中不由本页其他区块管理的键（「其他配置」→ settings.json 页签）。 */
+  otherSettings: Record<string, unknown>;
   configPath: string;
   /** `omo.jsonc` 整份原文（含 `[opencode]` / `[native]` 块、控制键与注释）。 */
   configContent?: string;

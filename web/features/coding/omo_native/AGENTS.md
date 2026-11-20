@@ -21,7 +21,7 @@
 | 引擎内建渠道 | `OmoNativeBuiltinProvidersSection`（共享 `OfficialProviderCard`）+ 标题栏 `auth.json` 入口 | `omo --list-models` + `omo auth check --json`，**只读**；**只列已配置凭据的**。`auth.json` 入口打开 `OmoNativeAuthConfigModal`（**应用内可编辑**，不跳资源管理器） |
 | 扩展 | `OmoNativeExtensionsSection`（共享 `CliExtensionsSection`，`i18nPrefix="omoNative"`） | `settings.json` 的 packages / extensions 过滤器 + `omo list` |
 | 全局提示词 | 共享 `GlobalPromptSettings` | `<agentDir>/AGENTS.md` |
-| 其他配置 | `OmoNativeOtherConfigSection` | `omo.jsonc` 顶层共享键（原地补丁） |
+| 其他配置 | `OmoNativeOtherConfigSection`（两个 Tab） | `omo.jsonc` 顶层共享键（原地补丁）/ `settings.json` 非受管键（按 `set` / `remove` 打补丁，保护 5 个受管键） |
 | 会话管理 | 共享 `SessionManagerPanel` | `<agentDir>/sessions/` |
 
 早先这里还挂着四个 Native 专属区块，已按统一形态移除：
@@ -105,7 +105,10 @@
 - **「引擎内建渠道」区块只列已配置凭据的渠道，数据全部来自引擎自身**：`OmoNativeBuiltinProvidersSection` 用共享 `OfficialProviderCard`（`i18nPrefix="omoNative"`），筛选语义对齐 OpenCode 的「官方 Auth 认证渠道」——未配置的渠道在本模块里没有可做的事，列出来只是噪音。候选与就绪判定**全在后端**（`omo --list-models` ∪ `auth.json` 的键 → 过滤到内建 → 逐个 `omo auth check`），前端只拿结果。判断「是不是内建」的事实源是后端 `constants.rs` 的 `OMO_NATIVE_BUILTIN_PROVIDERS`（48 条，三条回归测试守护：有序无重复 / OAuth 是子集 / kebab-case）。⚠️ **不要照抄这份名单到前端**，也不要只凭 `--list-models` 判断——它不列「目录按账号发现」的 provider（如原生 `cursor`）。
 - **⚠️ 凭据检查是页面加载时跑一次的后端调用，约 8 秒**（引擎只能逐个查，后端做 12 路并发）。所以：① 不要把它放进依赖频繁变化的重渲染路径；② 区块内要有 loading 态（`providers === null` 时转圈），不能因为慢就显示成空列表——「还没查完」和「一个都没有」在界面上必须是两种样子；③ 折叠标题上的数量只在查完后才显示，不要先写个 0。
 - **标题栏的 `auth.json` 入口在应用内打开编辑弹窗**（`OmoNativeAuthConfigModal`），**不要**照抄 OpenCode 的 `revealItemInDir` 跳资源管理器：本应用是配置管理器，密钥要能看能改。弹窗保存走 `saveOmoNativeAuthConfig`（**整份覆盖**），保存后**同时**重读页面配置与重查内建渠道列表——列表是按凭据筛的，不重查就会显示过期的就绪状态。`content` 每次打开都从磁盘原文重读，不要缓存上一次的副本（别处改过的内容会被静默覆盖）。
-- **「其他配置」区块只写 `omo.jsonc` 的顶层共享键**：`OmoNativeOtherConfigSection`（`Collapse` + `JsonEditor` + 失焦保存，形态对齐 OpenCode / Pi / OMP）调后端 `save_omo_native_other_config`，后者按顶层键做**原地补丁**——`[native]` / `[opencode]` 两个块、控制键与全部注释原样保留。不要改成前端拼整份 JSON 落盘。
+- **「其他配置」区块有两个 Tab**：`omo.jsonc` 与 `settings.json`（`OmoNativeOtherConfigSection`，`Collapse` + `JsoncEditor` + 失焦保存，形态对齐 OpenCode / Pi / OMP）。
+  - `omo.jsonc` 页签调 `save_omo_native_other_config`，按顶层键做**原地补丁**——`[native]` / `[opencode]` 两个块、控制键与全部注释原样保留；不要改成前端拼整份 JSON 落盘。
+  - `settings.json` 页签调 `save_omo_native_other_settings`，前端只提交相对基线改动的 `set` / `remove`，后端在盘上最新内容打补丁——页面打开期间引擎写入的 `tipsHistory` 等键不会被回退。保存命令返回整份新配置，直接 `setRuntimeConfig`，不要再调一次 `onSaved()` 全量读取。`defaultProvider` / `defaultModel` / `defaultThinkingLevel` / `packages` / `extensions` 由其他区块管理，读取时剔除、写入时保留。`lookAt` 这类引擎高级键走这里，**不要**塞进 `omo.jsonc`——上游顶层 schema 不认它。
+  - 编辑器失焦时：内容为空按 `{}` 保存（清空）；非空但解析结果不是对象（`[]` / `null` / 数字 / 字符串）必须报错并跳过保存，**不能**强转 `{}`——那会被当成「删除所有键」。聚焦期间外部刷新不前进基线（Monaco 不会应用外部值），否则下一次失焦会把引擎写入的键误判成用户删除。
 
 ## 易错点与历史坑（Gotchas）
 
@@ -148,7 +151,7 @@
 - 排序：切到「自定义」并清空搜索后，卡片左侧出现拖拽把手；拖完重载页面顺序不变（顺序落在 `models.json` 的键序上）。
 - 引擎内建渠道：区块内先转圈约 8 秒（后端在跑逐个凭据检查，区块默认展开，加载在页面挂载时就开始），然后只列出已配置凭据的渠道；未配置的一个都不出现。列表不含 `models.json` 里的自定义 provider。本机实测只有 `anthropic`（来自环境变量）。
 - 全局提示词：能读到 `~/.omo/agent/AGENTS.md`（存在时显示为 `default` 桥接态）；apply 后文件内容变化。
-- 其他配置：改一个共享键并失焦 → 保存成功；`omo.jsonc` 的 `[native]` / `[opencode]` 块与注释逐字未变。
+- 其他配置：`omo.jsonc` 页签改一个共享键并失焦 → 保存成功；`omo.jsonc` 的 `[native]` / `[opencode]` 块与注释逐字未变。`settings.json` 页签加 `lookAt` 并失焦 → 保存成功；`defaultProvider` / `defaultModel` / `defaultThinkingLevel` / `packages` / `extensions` 未被改写，`lookAt` 能从 `otherSettings` 回读。
 - 预览配置：`omo.jsonc → [native]` 标签正确；文件里没有 `[native]` 块时显示解释文案而不是 `{}`。
 - apply 一个方案后：`~/.omo/omo.jsonc` 的 `[opencode]` 块与全部注释逐字未变，只新增/修改了 `[native]` 块。
 - 反向验证：在 opencode tab 改 OMO 配置 → `[native]` 块不受影响。

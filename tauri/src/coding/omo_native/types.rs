@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// 运行时根目录信息（`~/.omo/agent` 或自定义），source 为
 /// `custom` / `env` / `default`，与 `oh_my_pi` 的 `OmpPathInfo` 语义一致。
@@ -189,6 +189,22 @@ pub struct OmoNativeModelSettingsInput {
     pub default_thinking_level: Option<String>,
 }
 
+/// `save_omo_native_other_settings` 的入参：只提交用户实际改动的键。
+///
+/// 页面打开期间引擎仍会写 `settings.json`（`tipsHistory` 等）；如果整份覆盖
+/// 「其他设置」切片，页面内存副本会把引擎的新写入回退。所以前端只发
+/// `set`（新增/修改）与 `remove`（删除），后端在盘上最新内容上打补丁。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OmoNativeOtherSettingsInput {
+    /// 新增或修改的键。
+    #[serde(default)]
+    pub set: Map<String, Value>,
+    /// 要删除的键。
+    #[serde(default)]
+    pub remove: Vec<String>,
+}
+
 /// `read_omo_native_runtime_config` 的返回：当前生效视图 + 各文件原文。
 ///
 /// `effective` 是**折叠后的 Native 生效视图**（共享 base 键被 `[native]` 块覆盖后的结果），
@@ -205,6 +221,12 @@ pub struct OmoNativeRuntimeConfig {
     pub shared_base: Value,
     /// `settings.json` 的 `defaultProvider` / `defaultModel` / `defaultThinkingLevel`。
     pub model_settings: OmoNativeDefaultSelection,
+    /// `settings.json` 里不由本页其他区块管理的键（「其他配置」→ settings.json 页签）。
+    ///
+    /// `defaultProvider` / `defaultModel` / `defaultThinkingLevel` 归「模型设置」，
+    /// `packages` / `extensions` 归「扩展」区块；这些键不在这里出现，也不会被
+    /// `save_omo_native_other_settings` 覆盖。
+    pub other_settings: Value,
     /// 统一配置文件路径。
     pub config_path: String,
     /// `omo.jsonc` **整份原文**（含 `[opencode]` / `[native]` 块、控制键与注释）。

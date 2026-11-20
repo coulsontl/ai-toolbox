@@ -13,6 +13,7 @@ import type {
   OmoNativeMcpServer,
   OmoNativeModelProfile,
   OmoNativeModelSettingsInput,
+  OmoNativeOtherSettingsInput,
   OmoNativePathInfo,
   OmoNativeProvider,
   OmoNativeProviderInput,
@@ -142,6 +143,21 @@ export const reorderOmoNativeProviders = async (keys: string[]): Promise<void> =
  */
 export const saveOmoNativeOtherConfig = async (config: Record<string, unknown>): Promise<void> => {
   await invoke('save_omo_native_other_config', { config });
+};
+
+/**
+ * 保存「其他配置」→ `settings.json` 页签：`settings.json` 里不属于其他区块的键。
+ *
+ * 只提交用户实际改动的 `set` / `remove`，后端在盘上最新内容上打补丁。
+ * `defaultProvider` / `defaultModel` / `defaultThinkingLevel` 归「模型设置」，
+ * `packages` / `extensions` 归「扩展」区块；后端会原样保留这些键。
+ */
+export const saveOmoNativeOtherSettings = async (
+  input: OmoNativeOtherSettingsInput,
+): Promise<OmoNativeRuntimeConfig> => {
+  return await invoke<OmoNativeRuntimeConfig>('save_omo_native_other_settings', {
+    input,
+  });
 };
 
 /**

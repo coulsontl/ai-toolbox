@@ -6250,6 +6250,8 @@
     "otherConfig": {
       "title": "其他配置",
       "hint": "此处可编辑 omo.jsonc 中不属于任何 harness 块的共享键",
+      "settingsHint": "此处可编辑 settings.json 中不由本页其他区块管理的键（如 lookAt 视觉模型链）",
+      "objectRequired": "编辑器内容必须是 JSON 对象（留空可清空当前配置）",
       "autoSaveHint": "点击输入框以外的区域即可自动保存"
     },
     "official": {

@@ -286,7 +286,9 @@ const OmoNativePage: React.FC = () => {
 
         <OmoNativeOtherConfigSection
           sharedBase={runtimeConfig?.sharedBase ?? {}}
+          otherSettings={runtimeConfig?.otherSettings ?? {}}
           onSaved={loadConfig}
+          onSettingsSaved={setRuntimeConfig}
         />
 
         <div
