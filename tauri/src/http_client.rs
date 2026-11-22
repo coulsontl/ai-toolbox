@@ -115,6 +115,22 @@ pub async fn client_with_timeout_no_compression(
     build_client(proxy_mode, &proxy_url, Some(timeout_secs), true)
 }
 
+/// Send chargeable generation requests once, even on retryable HTTP/2 errors
+/// or redirects that would replay the POST.
+pub async fn client_for_single_image_request(
+    db_state: &SqliteDbState,
+    timeout_secs: u64,
+) -> Result<Client, String> {
+    let (proxy_mode, proxy_url) = get_proxy_from_settings(db_state).await?;
+    build_client_for_transport(
+        proxy_mode,
+        &proxy_url,
+        Some(timeout_secs),
+        true,
+        Transport::SingleRequest,
+    )
+}
+
 /// Streaming-oriented HTTP client: no overall request timeout so long-lived SSE
 /// bodies are not cut off after a fixed wall-clock budget. Connect timeout still
 /// applies; first-byte and per-chunk idle timeouts are enforced by callers.
@@ -127,7 +143,7 @@ pub async fn client_streaming_no_compression(db_state: &SqliteDbState) -> Result
 /// total request timeout that could cut off the upgraded connection.
 pub async fn client_websocket_handshake(db_state: &SqliteDbState) -> Result<Client, String> {
     let (proxy_mode, proxy_url) = get_proxy_from_settings(db_state).await?;
-    build_client_for_transport(proxy_mode, &proxy_url, None, true, true)
+    build_client_for_transport(proxy_mode, &proxy_url, None, true, Transport::WebSocket)
 }
 
 /// Build an HTTP client with explicit proxy URL.
@@ -158,8 +174,14 @@ fn build_client(
         proxy_url,
         timeout_secs,
         disable_content_decoding,
-        false,
+        Transport::Default,
     )
+}
+
+enum Transport {
+    Default,
+    WebSocket,
+    SingleRequest,
 }
 
 fn build_client_for_transport(
@@ -167,16 +189,20 @@ fn build_client_for_transport(
     proxy_url: &str,
     timeout_secs: Option<u64>,
     disable_content_decoding: bool,
-    websocket_upgrade: bool,
+    transport: Transport,
 ) -> Result<Client, String> {
     let mut builder = Client::builder()
         .use_rustls_tls()
         .http1_title_case_headers();
-    if websocket_upgrade {
-        builder = builder
+    builder = match transport {
+        Transport::Default => builder,
+        Transport::WebSocket => builder
             .http1_only()
-            .redirect(reqwest::redirect::Policy::none());
-    }
+            .redirect(reqwest::redirect::Policy::none()),
+        Transport::SingleRequest => builder
+            .retry(reqwest::retry::never())
+            .redirect(reqwest::redirect::Policy::none()),
+    };
     if let Some(timeout_secs) = timeout_secs {
         builder = builder.timeout(Duration::from_secs(timeout_secs));
     } else {
