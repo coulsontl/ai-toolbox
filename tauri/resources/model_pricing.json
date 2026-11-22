@@ -104,6 +104,22 @@
     "cache_creation_cost_per_million": "3.75"
   },
   {
+    "model_id": "gpt-6.2-astra",
+    "display_name": "GPT-6.2 Astra",
+    "input_cost_per_million": "8",
+    "output_cost_per_million": "40",
+    "cache_read_cost_per_million": "0.40",
+    "cache_creation_cost_per_million": "10"
+  },
+  {
+    "model_id": "gpt-6.2-sol",
+    "display_name": "GPT-6.2 Sol",
+    "input_cost_per_million": "2",
+    "output_cost_per_million": "10",
+    "cache_read_cost_per_million": "0.10",
+    "cache_creation_cost_per_million": "2.50"
+  },
+  {
     "model_id": "gpt-6-astra",
     "display_name": "GPT-6 Astra",
     "input_cost_per_million": "10",
@@ -118,6 +134,14 @@
     "output_cost_per_million": "10",
     "cache_read_cost_per_million": "0.10",
     "cache_creation_cost_per_million": "2.5"
+  },
+  {
+    "model_id": "gpt-6.1-terra",
+    "display_name": "GPT-6.1 Terra",
+    "input_cost_per_million": "1",
+    "output_cost_per_million": "5",
+    "cache_read_cost_per_million": "0.05",
+    "cache_creation_cost_per_million": "1.25"
   },
   {
     "model_id": "gpt-6-sol",
@@ -640,6 +664,14 @@
     "cache_creation_cost_per_million": "2.50"
   },
   {
+    "model_id": "claude-fable-5-2",
+    "display_name": "Claude Fable 5.2",
+    "input_cost_per_million": "8",
+    "output_cost_per_million": "40",
+    "cache_read_cost_per_million": "0.20",
+    "cache_creation_cost_per_million": "10"
+  },
+  {
     "model_id": "claude-fable-5-1",
     "display_name": "Claude Fable 5.1",
     "input_cost_per_million": "10",
@@ -781,6 +813,30 @@
     "input_cost_per_million": "1.50",
     "output_cost_per_million": "7.50",
     "cache_read_cost_per_million": "0.15",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "gemini-4-carbon",
+    "display_name": "Gemini 4 Carbon",
+    "input_cost_per_million": "4",
+    "output_cost_per_million": "20",
+    "cache_read_cost_per_million": "0.20",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "gemini-4-neon",
+    "display_name": "Gemini 4 Neon",
+    "input_cost_per_million": "3",
+    "output_cost_per_million": "15",
+    "cache_read_cost_per_million": "0.15",
+    "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "gemini-4-hydrogen",
+    "display_name": "Gemini 4 Hydrogen",
+    "input_cost_per_million": "1.50",
+    "output_cost_per_million": "7.50",
+    "cache_read_cost_per_million": "0.075",
     "cache_creation_cost_per_million": "0"
   },
   {
@@ -984,6 +1040,14 @@
     "cache_creation_cost_per_million": "0"
   },
   {
+    "model_id": "kimi-k3.1-pro",
+    "display_name": "Kimi K3.1 Pro",
+    "input_cost_per_million": "2",
+    "output_cost_per_million": "10",
+    "cache_read_cost_per_million": "0.20",
+    "cache_creation_cost_per_million": "2"
+  },
+  {
     "model_id": "kimi-k3",
     "display_name": "Kimi K3",
     "input_cost_per_million": "3.00",
@@ -1182,6 +1246,14 @@
     "output_cost_per_million": "0.87",
     "cache_read_cost_per_million": "0.0036",
     "cache_creation_cost_per_million": "0"
+  },
+  {
+    "model_id": "qwen4-max",
+    "display_name": "Qwen4 Max",
+    "input_cost_per_million": "1.50",
+    "output_cost_per_million": "4.50",
+    "cache_read_cost_per_million": "0.075",
+    "cache_creation_cost_per_million": "1.875"
   },
   {
     "model_id": "qwen3.8-max",

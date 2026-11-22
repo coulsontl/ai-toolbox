@@ -653,9 +653,9 @@ mod tests {
 
     #[test]
     fn openai_presets_define_gpt_5_6_family_with_max_reasoning() {
-        // gpt-6-astra still leads the bundled OpenAI preset list. GPT-6.1 Sol
-        // sits directly in front of the id it supersedes, and GPT-6 Sol and Luna
-        // follow it with the same capability set.
+        // The OpenAI preset list opens with the newest Astra / Sol pair, then
+        // the previous Astra, then the 6.1 generation. GPT-6 Sol and Luna
+        // follow with the same capability set.
         const GPT_5_6_FAMILY_MODEL_IDS: [&str; 6] = [
             "gpt-6-astra",
             "gpt-6-sol",
@@ -664,7 +664,13 @@ mod tests {
             "gpt-5.6-terra",
             "gpt-5.6-luna",
         ];
-        const LEADING_MODEL_IDS: [&str; 3] = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol"];
+        const LEADING_MODEL_IDS: [&str; 5] = [
+            "gpt-6.2-astra",
+            "gpt-6.2-sol",
+            "gpt-6-astra",
+            "gpt-6.1-sol",
+            "gpt-6.1-terra",
+        ];
         const GPT_5_6_REASONING_LEVELS: [&str; 6] =
             ["none", "low", "medium", "high", "xhigh", "max"];
 
@@ -750,11 +756,10 @@ mod tests {
 
     #[test]
     fn openai_presets_place_gpt_6_1_sol_before_gpt_6_sol_without_none_reasoning() {
-        // GPT-6.1 Sol supersedes GPT-6 Sol, so the user-visible preset order
-        // keeps it directly in front of the older id. Its API reasoning effort
-        // set excludes `none` and `minimal`, unlike the GPT-6 Sol / 5.6 family.
-        const GPT_6_1_SOL_REASONING_LEVELS: [&str; 5] =
-            ["low", "medium", "high", "xhigh", "max"];
+        // The GPT-6.1 generation sits in front of the GPT-6 Sol id it
+        // supersedes. Its API reasoning effort set excludes `none` and
+        // `minimal`, unlike the GPT-6 Sol / 5.6 family.
+        const GPT_6_1_SOL_REASONING_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
         let models = bundled_openai_models();
         let model_list = models
@@ -768,11 +773,18 @@ mod tests {
             .iter()
             .position(|model_id| *model_id == "gpt-6-sol")
             .expect("gpt-6-sol preset should exist");
+        let sol_61_index = model_ids
+            .iter()
+            .position(|model_id| *model_id == "gpt-6.1-sol")
+            .expect("gpt-6.1-sol preset should exist");
+        let terra_61_index = model_ids
+            .iter()
+            .position(|model_id| *model_id == "gpt-6.1-terra")
+            .expect("gpt-6.1-terra preset should exist");
         assert!(sol_index > 0, "gpt-6-sol should not lead the OpenAI group");
-        assert_eq!(
-            model_ids[sol_index - 1],
-            "gpt-6.1-sol",
-            "gpt-6.1-sol must sit immediately before the id it supersedes"
+        assert!(
+            sol_61_index < terra_61_index && terra_61_index < sol_index,
+            "the GPT-6.1 generation must sit in front of the id it supersedes"
         );
 
         let preset = model_list

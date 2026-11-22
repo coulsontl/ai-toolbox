@@ -287,6 +287,26 @@
       "attachment": false
     },
     {
+      "id": "qwen4-max",
+      "name": "Qwen4 Max",
+      "contextLimit": 1000000,
+      "outputLimit": 131072,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": true,
+      "attachment": false
+    },
+    {
       "id": "qwen3.8-max",
       "name": "Qwen3.8 Max",
       "contextLimit": 1000000,
@@ -439,6 +459,36 @@
       "tool_call": true,
       "temperature": true,
       "attachment": false
+    },
+    {
+      "id": "kimi-k3.1-pro",
+      "name": "Kimi K3.1 Pro",
+      "contextLimit": 1048576,
+      "outputLimit": 1048576,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "attachment": true,
+      "variants": {
+        "low": {
+          "reasoningEffort": "low"
+        },
+        "high": {
+          "reasoningEffort": "high"
+        },
+        "max": {
+          "reasoningEffort": "max"
+        }
+      }
     },
     {
       "id": "kimi-k3",
@@ -905,6 +955,144 @@
     }
   ],
   "@ai-sdk/google": [
+    {
+      "id": "gemini-4-carbon",
+      "name": "Gemini 4 Carbon",
+      "contextLimit": 1048576,
+      "outputLimit": 1048576,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf",
+          "video",
+          "audio"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": true,
+      "attachment": true,
+      "variants": {
+        "low": {
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingLevel": "low"
+          }
+        },
+        "medium": {
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingLevel": "medium"
+          }
+        },
+        "high": {
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingLevel": "high"
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-4-neon",
+      "name": "Gemini 4 Neon",
+      "contextLimit": 1048576,
+      "outputLimit": 1048576,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf",
+          "video",
+          "audio"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": true,
+      "attachment": true,
+      "variants": {
+        "low": {
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingLevel": "low"
+          }
+        },
+        "medium": {
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingLevel": "medium"
+          }
+        },
+        "high": {
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingLevel": "high"
+          }
+        },
+        "xhigh": {
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingLevel": "xhigh"
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-4-hydrogen",
+      "name": "Gemini 4 Hydrogen",
+      "contextLimit": 1048576,
+      "outputLimit": 1048576,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf",
+          "video",
+          "audio"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": true,
+      "attachment": true,
+      "variants": {
+        "low": {
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingLevel": "low"
+          }
+        },
+        "medium": {
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingLevel": "medium"
+          }
+        },
+        "high": {
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingLevel": "high"
+          }
+        },
+        "xhigh": {
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingLevel": "xhigh"
+          }
+        }
+      }
+    },
     {
       "id": "gemini-4-argon",
       "name": "Gemini 4 Argon",
@@ -1452,6 +1640,104 @@
   ],
   "@ai-sdk/openai": [
     {
+      "id": "gpt-6.2-astra",
+      "name": "GPT-6.2 Astra",
+      "contextLimit": 1050000,
+      "outputLimit": 128000,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": false,
+      "attachment": true,
+      "options": {
+        "store": false
+      },
+      "variants": {
+        "low": {
+          "reasoningEffort": "low",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "medium": {
+          "reasoningEffort": "medium",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "high": {
+          "reasoningEffort": "high",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "xhigh": {
+          "reasoningEffort": "xhigh",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "max": {
+          "reasoningEffort": "max",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        }
+      }
+    },
+    {
+      "id": "gpt-6.2-sol",
+      "name": "GPT-6.2 Sol",
+      "contextLimit": 1050000,
+      "outputLimit": 128000,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": false,
+      "attachment": true,
+      "options": {
+        "store": false
+      },
+      "variants": {
+        "low": {
+          "reasoningEffort": "low",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "medium": {
+          "reasoningEffort": "medium",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "high": {
+          "reasoningEffort": "high",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "xhigh": {
+          "reasoningEffort": "xhigh",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "max": {
+          "reasoningEffort": "max",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        }
+      }
+    },
+    {
       "id": "gpt-6-astra",
       "name": "GPT-6 Astra",
       "contextLimit": 1050000,
@@ -1527,6 +1813,60 @@
         "store": false
       },
       "variants": {
+        "low": {
+          "reasoningEffort": "low",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "medium": {
+          "reasoningEffort": "medium",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "high": {
+          "reasoningEffort": "high",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "xhigh": {
+          "reasoningEffort": "xhigh",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
+        "max": {
+          "reasoningEffort": "max",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        }
+      }
+    },
+    {
+      "id": "gpt-6.1-terra",
+      "name": "GPT-6.1 Terra",
+      "contextLimit": 1050000,
+      "outputLimit": 128000,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": false,
+      "attachment": true,
+      "options": {
+        "store": false
+      },
+      "variants": {
+        "none": {
+          "reasoningEffort": "none",
+          "reasoningSummary": "auto",
+          "textVerbosity": "medium"
+        },
         "low": {
           "reasoningEffort": "low",
           "reasoningSummary": "auto",
@@ -2690,6 +3030,63 @@
     }
   ],
   "@ai-sdk/anthropic": [
+    {
+      "id": "claude-fable-5-2",
+      "name": "Claude Fable 5.2",
+      "contextLimit": 1000000,
+      "outputLimit": 128000,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": true,
+      "tool_call": true,
+      "temperature": false,
+      "attachment": true,
+      "variants": {
+        "high": {
+          "thinking": {
+            "display": "summarized",
+            "type": "adaptive"
+          },
+          "effort": "high"
+        },
+        "low": {
+          "thinking": {
+            "display": "summarized",
+            "type": "adaptive"
+          },
+          "effort": "low"
+        },
+        "max": {
+          "thinking": {
+            "display": "summarized",
+            "type": "adaptive"
+          },
+          "effort": "max"
+        },
+        "medium": {
+          "thinking": {
+            "display": "summarized",
+            "type": "adaptive"
+          },
+          "effort": "medium"
+        },
+        "xhigh": {
+          "thinking": {
+            "display": "summarized",
+            "type": "adaptive"
+          },
+          "effort": "xhigh"
+        }
+      }
+    },
     {
       "id": "claude-fable-5-1",
       "name": "Claude Fable 5.1",
