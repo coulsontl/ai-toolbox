@@ -42,8 +42,8 @@ sequenceDiagram
 - Hermes/dsh 的文件路径与统一 WSL Direct 状态复用各自同一个配置目录解析器；新增路径分支时必须保持两者一致，不能出现 Tools 写入 UNC、同步状态却仍显示本机的分叉。
 - Hermes Skills 路径必须走 `resolve_special_skills_path`（复用 config.yaml 同一平台根目录），不能直接用静态 `~/.hermes/skills`——Windows 上 hermes 根目录是 `%LOCALAPPDATA%\hermes`，而 `~/.hermes/skills` 会误解析到 `%USERPROFILE%\.hermes`。
 - Shared Agents 工具指向 `~/.agents/skills`（agentskills.io 公共目录），与 central_repo 默认路径重叠。`skills::commands::sync_skill_to_tool_record` 有 canonicalize 守卫：当 source 和 target 解析到同一物理路径时跳过同步（返回 mode="skip"），避免 `ensure_source_target_not_overlapping` bail。
-- 内置工具的 Skills 强制复制（不支持 symlink 的工具，当前为 Cursor、Antigravity CLI）统一由 `builtin::builtin_tool_forces_skill_copy` 判定；新增此类工具时只扩展该 helper，禁止回到各同步入口散落 `tool_key == "..."` 匹配。
-- Antigravity CLI 的 Skills 与 MCP 不共享根目录：Skills 使用 `~/.gemini/antigravity-cli/skills`，用户级 MCP 使用官方共享路径 `~/.gemini/config/mcp_config.json`。不能从 CLI 的检测目录机械派生 MCP 路径；旧 `antigravity` 条目继续保留 IDE 旧路径。
+- 内置工具的 Skills 强制复制（不支持 symlink 的工具，当前为 Cursor、Antigravity CLI、Antigravity Global）统一由 `builtin::builtin_tool_forces_skill_copy` 判定；新增此类工具时只扩展该 helper，禁止回到各同步入口散落 `tool_key == "..."` 匹配。
+- Antigravity 的 Skills 目标分三层：`antigravity`（App/IDE 专属 `~/.gemini/antigravity/skills`，显示名 Antigravity App；CLI 不读，官方 IDE 文档称其 legacy 但仍支持）、`antigravity_cli`（CLI 专属 `~/.gemini/antigravity-cli/skills`，跟随自定义 root）、`antigravity_global`（App/IDE/CLI 共享的 `~/.gemini/config/skills`，不跟随自定义 root）。MCP 只由 `antigravity_cli` 指向共享的 `~/.gemini/config/mcp_config.json`，`antigravity_global` 不配置 MCP，避免双写。
 
 ## 跨模块依赖
 

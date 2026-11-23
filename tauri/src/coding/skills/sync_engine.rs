@@ -118,8 +118,8 @@ pub fn sync_dir_copy_with_overwrite(
 }
 
 /// Sync directory for a specific tool with overwrite option
-/// Tools listed in builtin_tool_forces_skill_copy (Cursor, Antigravity CLI)
-/// don't support symlinks, so force copy for them
+/// Tools listed in builtin_tool_forces_skill_copy (Cursor, Antigravity CLI,
+/// Antigravity Global) don't support symlinks, so force copy for them.
 /// Custom tools can also opt-in to force copy via the force_copy parameter
 pub fn sync_dir_for_tool_with_overwrite(
     tool_key: &str,
@@ -128,8 +128,8 @@ pub fn sync_dir_for_tool_with_overwrite(
     overwrite: bool,
     force_copy: bool,
 ) -> Result<SyncOutcome> {
-    // Cursor and Antigravity CLI currently don't support symlinks/junctions
-    // Custom tools can also force copy mode
+    // Cursor, Antigravity CLI, and Antigravity Global currently don't support
+    // symlinks/junctions. Custom tools can also force copy mode.
     if crate::coding::tools::builtin_tool_forces_skill_copy(tool_key) || force_copy {
         return sync_dir_copy_with_overwrite(source, target, overwrite);
     }

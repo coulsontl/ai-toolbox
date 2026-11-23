@@ -541,7 +541,7 @@ skills-git-cache/
 
 6. **选择同步模式并执行**
 
-   **强制复制工具（Cursor / Antigravity CLI）：**
+   **强制复制工具（Cursor / Antigravity CLI / Antigravity Global）：**
    - 强制使用 copy 模式
    - 调用 sync_dir_copy_with_overwrite
 
@@ -687,8 +687,9 @@ Inventory JSON 是完整管理清单，用于重排 AI Toolbox 元数据，不�
 | claude_code | Claude Code | ~/.claude/skills | ~/.claude |
 | codex | Codex | ~/.codex/skills | ~/.codex |
 | opencode | OpenCode | ~/.config/opencode/skills | ~/.config/opencode |
-| antigravity | Antigravity | ~/.gemini/antigravity/skills | ~/.gemini/antigravity |
+| antigravity | Antigravity App | ~/.gemini/antigravity/skills | ~/.gemini/antigravity |
 | antigravity_cli | Antigravity CLI | ~/.gemini/antigravity-cli/skills | ~/.gemini/antigravity-cli |
+| antigravity_global | Antigravity Global | ~/.gemini/config/skills | ~/.gemini/config |
 | amp | Amp | ~/.config/agents/skills | ~/.config/agents |
 | kilo_code | Kilo Code | ~/.kilocode/skills | ~/.kilocode |
 | roo_code | Roo Code | ~/.roo/skills | ~/.roo |
@@ -719,7 +720,7 @@ Inventory JSON 是完整管理清单，用于重排 AI Toolbox 元数据，不�
 
 同步模式选择逻辑：
 
-1. 如果工具 key 命中 `tools::builtin_tool_forces_skill_copy`（当前为 Cursor、Antigravity CLI）→ 强制使用 copy（这类工具的 skills 目录不支持符号链接/接合点；该判定集中在 `tauri/src/coding/tools/builtin.rs`，三处消费点为 `sync_engine::sync_dir_for_tool_with_overwrite`、`commands::preflight_inventory_tool_sync`、`installer` 更新后重同步，不要在各入口散落 key 匹配）
+1. 如果工具 key 命中 `tools::builtin_tool_forces_skill_copy`（当前为 Cursor、Antigravity CLI、Antigravity Global）→ 强制使用 copy（这类工具的 skills 目录不支持符号链接/接合点；该判定集中在 `tauri/src/coding/tools/builtin.rs`，三处消费点为 `sync_engine::sync_dir_for_tool_with_overwrite`、`commands::preflight_inventory_tool_sync`、`installer` 更新后重同步，不要在各入口散落 key 匹配）
 2. 尝试 symlink（Unix 或 Windows 管理员权限）
 3. Windows 回退到 junction（目录接合点，无需管理员）
 4. 最终回退到 copy（完整复制目录）
@@ -794,9 +795,9 @@ description: "可选的描述"
 - 运行时转换为系统原生分隔符
 - Windows 路径比较不区分大小写
 
-### 8.2 不支持符号链接的工具限制（Cursor / Antigravity CLI）
+### 8.2 不支持符号链接的工具限制（Cursor / Antigravity CLI / Antigravity Global）
 
-- Cursor、Antigravity CLI 不支持符号链接和接合点，统一由 `builtin_tool_forces_skill_copy` 强制复制模式
+- Cursor、Antigravity CLI、Antigravity Global 不支持符号链接和接合点，统一由 `builtin_tool_forces_skill_copy` 强制复制模式
 - 始终使用复制模式；更新技能后需要重新同步（copy 目标不会自动更新，更新链路已按 mode/tool 自动重拷）
 
 ### 8.3 中央仓库

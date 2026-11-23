@@ -93,11 +93,13 @@ pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
         mcp_config_format: Some("jsonc"),
         mcp_field: Some("mcp"),
     },
-    // Antigravity (legacy IDE-era layout) - supports both Skills and MCP.
-    // Kept for users still on ~/.gemini/antigravity; new installs use antigravity_cli.
+    // Antigravity App layout - supports both Skills and MCP.
+    // ~/.gemini/antigravity/skills is read by the Antigravity App and IDE,
+    // not by the CLI. Official IDE docs call it a legacy path but still
+    // support it; the shared cross-surface target is antigravity_global.
     BuiltinTool {
         key: "antigravity",
-        display_name: "Antigravity",
+        display_name: "Antigravity App",
         relative_skills_dir: Some("~/.gemini/antigravity/skills"),
         relative_detect_dir: Some("~/.gemini/antigravity"),
         mcp_config_path: Some("~/.gemini/antigravity/mcp_config.json"),
@@ -114,6 +116,19 @@ pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
         mcp_config_path: Some("~/.gemini/config/mcp_config.json"),
         mcp_config_format: Some("json"),
         mcp_field: Some("mcpServers"),
+    },
+    // Antigravity shared global skills: read by the Antigravity App, IDE, and
+    // CLI. This is the cross-surface global target and is independent of the
+    // CLI's custom root / ANTIGRAVITY_CLI_HOME. MCP stays on antigravity_cli:
+    // both would otherwise write ~/.gemini/config/mcp_config.json.
+    BuiltinTool {
+        key: "antigravity_global",
+        display_name: "Antigravity Global",
+        relative_skills_dir: Some("~/.gemini/config/skills"),
+        relative_detect_dir: Some("~/.gemini/config"),
+        mcp_config_path: None,
+        mcp_config_format: None,
+        mcp_field: None,
     },
     // Amp - supports both Skills and MCP
     // MCP path uses VSCode plugin config path (%APPDATA%/Code/User/mcp.json)
@@ -456,5 +471,45 @@ pub fn builtin_tool_by_key(key: &str) -> Option<&'static BuiltinTool> {
 /// skills sync must always copy for them. All sync entry points must consult
 /// this helper instead of matching individual keys inline.
 pub fn builtin_tool_forces_skill_copy(key: &str) -> bool {
-    key.eq_ignore_ascii_case("cursor") || key.eq_ignore_ascii_case("antigravity_cli")
+    key.eq_ignore_ascii_case("cursor")
+        || key.eq_ignore_ascii_case("antigravity_cli")
+        || key.eq_ignore_ascii_case("antigravity_global")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn antigravity_global_targets_shared_config_skills() {
+        let tool = builtin_tool_by_key("antigravity_global").expect("antigravity_global");
+
+        assert_eq!(tool.display_name, "Antigravity Global");
+        assert_eq!(tool.relative_skills_dir, Some("~/.gemini/config/skills"));
+        assert_eq!(tool.relative_detect_dir, Some("~/.gemini/config"));
+        assert!(tool.mcp_config_path.is_none());
+        assert!(builtin_tool_forces_skill_copy("antigravity_global"));
+    }
+
+    #[test]
+    fn antigravity_global_does_not_take_over_shared_mcp_config() {
+        let cli = builtin_tool_by_key("antigravity_cli").expect("antigravity_cli");
+
+        assert_eq!(
+            cli.mcp_config_path,
+            Some("~/.gemini/config/mcp_config.json")
+        );
+        assert!(builtin_tool_forces_skill_copy("antigravity_cli"));
+    }
+
+    #[test]
+    fn antigravity_app_is_named_distinctly() {
+        let app = builtin_tool_by_key("antigravity").expect("antigravity");
+
+        assert_eq!(app.display_name, "Antigravity App");
+        assert_eq!(
+            app.relative_skills_dir,
+            Some("~/.gemini/antigravity/skills")
+        );
+    }
 }

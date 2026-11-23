@@ -98,6 +98,7 @@ const TOOL_ICON_RENDERERS: Record<string, ToolIconRenderer> = {
   cursor: Cursor,
   antigravity: Antigravity.Color,
   antigravity_cli: Antigravity.Color,
+  antigravity_global: Antigravity.Color,
   // ZCode ships no LobeHub mark of its own; it is Zhipu's coding CLI, so the
   // Zhipu brand mark is the closest truthful match.
   zcode: Zhipu.Color,

@@ -60,7 +60,7 @@ sequenceDiagram
 - dsh/Hermes 的自定义目录也允许 UNC；两者必须出现在 `module_statuses` 中，并在保存/清除目录后刷新缓存和通知设置页。issue #331 的失败链路是“UNC 文件存在 → 漏掉 Direct 跳过 → 转成 //wsl.localhost/... → Linux cp cannot stat”，不是文件缺失或发行版特例。
 - WSL Direct 判断不要从页面上的 `source=custom` 反推。`custom`、`env`、`shell`、`default` 与是否 WSL Direct 是两个独立维度。
 - 对 Skills，WSL 自动同步的源目录仍然是中央仓库 `central_repo_path`，不是工具当前运行时 skills 目录。当前运行时目录只决定目标写到哪里。
-- Skills 工具目标由 `skills::remote_target` 统一维护链接/复制/清理。Cursor、Antigravity CLI 在 WSL 中同样强制复制；受管副本须带匹配中央源路径的 `.ai-toolbox-skill-source` 标记，不能把无标记真实目录当成可覆盖副本。旧受管链接可转成副本；先复制成功再替换，取消同步与孤立清理同样识别副本。
+- Skills 工具目标由 `skills::remote_target` 统一维护链接/复制/清理。Cursor、Antigravity CLI、Antigravity Global 在 WSL 中同样强制复制；受管副本须带匹配中央源路径的 `.ai-toolbox-skill-source` 标记，不能把无标记真实目录当成可覆盖副本。旧受管链接可转成副本；先复制成功再替换，取消同步与孤立清理同样识别副本。
 - 对内置工具，如果当前运行时路径是 Windows 本机路径而不是 WSL UNC，WSL 侧目标仍应回退到各自默认 Linux 目录；不要误判成“没有 WSL 目标”。
 - Claude Code 本机自定义根目录不会把普通 WSL 同步目标改成远端自定义目录。Windows 本机源可以来自自定义根，也可以来自 `CLAUDE_CODE_PLUGIN_CACHE_DIR` 覆盖的 plugin cache，但 WSL 目标仍应是默认 `~/.claude/*`、`~/.claude/plugins`、`~/.claude/skills` 和 `~/.claude.json`；只有 Claude 当前运行时本身是 WSL Direct 自定义根目录时，目标才跟随该 Linux 根目录。
 - 对 Claude `claude-plugins` 目录，同步不只是拷贝目录内容。同步后还要把 `known_marketplaces.json` / `installed_plugins.json` 里的 `installLocation` / `installPath` 从 Windows plugins 根目录映射到目标 WSL plugins 根目录，否则远端插件元数据仍会指向 `C:\...`。
