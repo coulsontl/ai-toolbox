@@ -116,3 +116,12 @@ export interface ConfigPathInfo {
   path: string;
   source: 'custom' | 'env' | 'shell' | 'default';
 }
+
+export interface AntigravityLocalRuleFile {
+  relativePath: string;
+  fullPath: string;
+  kind: 'config_gemini' | 'config_agents' | 'shared_gemini' | 'home_agents' | 'rules_dir' | string;
+  sizeBytes: number;
+  content: string;
+  isManagedTarget: boolean;
+}

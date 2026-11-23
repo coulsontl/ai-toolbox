@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -115,8 +115,9 @@ pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
     })?;
 
     let mut result = Vec::new();
+    let mut pending_tool_calls: VecDeque<(String, String)> = VecDeque::new();
     for record in parse_transcript_records(&content) {
-        let Some(message) = message_from_record(&record) else {
+        let Some(message) = message_from_record(&record, &mut pending_tool_calls) else {
             continue;
         };
         result.push(message);
@@ -169,12 +170,14 @@ fn build_session_meta(
     uuid: &str,
     history: &HashMap<String, HistoryEntry>,
 ) -> Option<SessionMeta> {
-    let transcript_path = pick_transcript(cli_root, uuid);
+    // Skip empty/uninitialized conversation databases (e.g. 393KB blank DBs
+    // created before any user turn) that have no readable transcript mirror;
+    // otherwise they show up as bare UUIDs and fail when opening details.
+    let transcript_path = pick_transcript(cli_root, uuid)?;
     let history_entry = history.get(uuid);
 
-    let first_user_message = transcript_path
-        .as_deref()
-        .and_then(|path| std::fs::read_to_string(path).ok())
+    let first_user_message = std::fs::read_to_string(&transcript_path)
+        .ok()
         .and_then(|content| extract_first_user_text(&content));
 
     let title = history_entry
@@ -196,23 +199,12 @@ fn build_session_meta(
     let history_ts = history_entry
         .and_then(|entry| entry.timestamp.as_ref())
         .and_then(parse_timestamp_to_ms);
-    let file_ts = transcript_path
-        .as_deref()
-        .and_then(file_modified_ms)
+    let file_ts = file_modified_ms(&transcript_path)
         .or_else(|| file_modified_ms(&cli_root.join("conversations").join(format!("{uuid}.db"))));
     let created_at = history_ts.or(file_ts);
     let last_active_at = file_ts.or(history_ts);
 
-    let source_path = transcript_path
-        .as_deref()
-        .map(|path| path.to_string_lossy().to_string())
-        .unwrap_or_else(|| {
-            cli_root
-                .join("conversations")
-                .join(format!("{uuid}.db"))
-                .to_string_lossy()
-                .to_string()
-        });
+    let source_path = transcript_path.to_string_lossy().to_string();
 
     Some(SessionMeta {
         provider_id: PROVIDER_ID.to_string(),
@@ -415,33 +407,72 @@ fn parse_transcript_records(content: &str) -> Vec<Value> {
     records
 }
 
-fn message_from_record(record: &Value) -> Option<SessionMessage> {
+fn message_from_record(
+    record: &Value,
+    pending_tool_calls: &mut VecDeque<(String, String)>,
+) -> Option<SessionMessage> {
     let source = record.get("source").and_then(Value::as_str)?;
     let role = match source {
-        "USER_EXPLICIT" => "user",
+        "USER_EXPLICIT" => {
+            pending_tool_calls.clear();
+            "user"
+        }
         "MODEL" => "assistant",
         _ => return None,
     };
 
     let record_type = record.get("type").and_then(Value::as_str).unwrap_or("");
-    let blocks = blocks_from_record(record, role);
+    let ts = record.get("created_at").and_then(parse_timestamp_to_ms);
+    let step_index = record.get("step_index").and_then(Value::as_i64);
+
+    // Antigravity CLI records tool execution outputs as subsequent
+    // `source=MODEL, type=GENERIC` entries immediately following a
+    // `PLANNER_RESPONSE` with `tool_calls`. Pair them in order so the shared
+    // detail view merges each output into its tool card instead of leaving
+    // calls stuck in `pending` and scattering raw tool output bubbles.
+    if role == "assistant" && record_type == "GENERIC" {
+        if let Some((tool_id, tool_name)) = pending_tool_calls.pop_front() {
+            let output_text = record
+                .get("content")
+                .map(strip_machine_metadata)
+                .unwrap_or_default();
+            let is_error = record
+                .get("status")
+                .and_then(Value::as_str)
+                .map(|status| matches!(status.to_ascii_uppercase().as_str(), "ERROR" | "FAILED"))
+                .filter(|flag| *flag);
+            let blocks = vec![tool_result_block(
+                Some(tool_id),
+                Some(tool_name),
+                Some(Value::String(output_text)),
+                is_error,
+            )];
+            let mut message = message_from_blocks("assistant", ts, blocks);
+            message.id = step_index.map(|index| format!("{PROVIDER_ID}-step-{index}"));
+            message.message_type = Some(record_type.to_string());
+            return Some(message);
+        }
+    }
+
+    let blocks = blocks_from_record(record, role, step_index, pending_tool_calls);
     if blocks.is_empty() {
         return None;
     }
 
-    let ts = record.get("created_at").and_then(parse_timestamp_to_ms);
     let mut message = message_from_blocks(role, ts, blocks);
-    message.id = record
-        .get("step_index")
-        .and_then(Value::as_i64)
-        .map(|index| format!("{PROVIDER_ID}-step-{index}"));
+    message.id = step_index.map(|index| format!("{PROVIDER_ID}-step-{index}"));
     if !record_type.is_empty() {
         message.message_type = Some(record_type.to_string());
     }
     Some(message)
 }
 
-fn blocks_from_record(record: &Value, role: &str) -> Vec<SessionMessageBlock> {
+fn blocks_from_record(
+    record: &Value,
+    role: &str,
+    step_index: Option<i64>,
+    pending_tool_calls: &mut VecDeque<(String, String)>,
+) -> Vec<SessionMessageBlock> {
     let mut blocks = Vec::new();
 
     if let Some(thinking) = record
@@ -454,7 +485,11 @@ fn blocks_from_record(record: &Value, role: &str) -> Vec<SessionMessageBlock> {
     }
 
     if role == "assistant" {
-        blocks.extend(tool_blocks_from_record(record));
+        blocks.extend(tool_blocks_from_record(
+            record,
+            step_index,
+            pending_tool_calls,
+        ));
     }
 
     let content = record.get("content").map(strip_machine_metadata);
@@ -475,10 +510,18 @@ fn blocks_from_record(record: &Value, role: &str) -> Vec<SessionMessageBlock> {
     blocks
 }
 
-fn tool_blocks_from_record(record: &Value) -> Vec<SessionMessageBlock> {
+fn tool_blocks_from_record(
+    record: &Value,
+    step_index: Option<i64>,
+    pending_tool_calls: &mut VecDeque<(String, String)>,
+) -> Vec<SessionMessageBlock> {
     let Some(calls) = record.get("tool_calls").and_then(Value::as_array) else {
         return Vec::new();
     };
+    if !calls.is_empty() {
+        // Start a fresh pairing window for this planner turn.
+        pending_tool_calls.clear();
+    }
     let mut blocks = Vec::new();
     for (index, call) in calls.iter().enumerate() {
         let name = call
@@ -492,7 +535,10 @@ fn tool_blocks_from_record(record: &Value) -> Vec<SessionMessageBlock> {
             .or_else(|| call.get("callId"))
             .and_then(Value::as_str)
             .map(str::to_string)
-            .unwrap_or_else(|| format!("{PROVIDER_ID}-tool-{index}"));
+            .unwrap_or_else(|| match step_index {
+                Some(step) => format!("{PROVIDER_ID}-step-{step}-tool-{index}"),
+                None => format!("{PROVIDER_ID}-tool-{index}"),
+            });
         let input = call
             .get("input")
             .or_else(|| call.get("args"))
@@ -515,8 +561,10 @@ fn tool_blocks_from_record(record: &Value) -> Vec<SessionMessageBlock> {
                     Some(Value::String(text)),
                     None,
                 ));
+                continue;
             }
         }
+        pending_tool_calls.push_back((tool_id, name.to_string()));
     }
     blocks
 }
@@ -775,5 +823,65 @@ not-json-garbage-line
         assert!(!cli_root.join("brain").join(TEST_UUID).exists());
         // Deleting again stays idempotent.
         delete_session(Path::new(&sessions[0].source_path)).expect("re-delete");
+    }
+
+    #[test]
+    fn scan_skips_blank_conversation_db_without_transcript() {
+        let test_dir = TestDir::new("blank-db");
+        let cli_root = test_dir.cli_root();
+        write_session_tree(&cli_root);
+
+        // Blank 393KB conversation db created without any brain transcript.
+        fs::write(
+            cli_root
+                .join("conversations")
+                .join("3925aab9-93f9-40d4-83b7-683df02808f2.db"),
+            b"blank-db",
+        )
+        .expect("write blank db");
+
+        let sessions = scan_sessions(&cli_root);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, TEST_UUID);
+    }
+
+    #[test]
+    fn load_messages_pairs_generic_tool_outputs_with_planner_tool_calls() {
+        let test_dir = TestDir::new("generic-pair");
+        let cli_root = test_dir.cli_root();
+        let conversations_dir = cli_root.join("conversations");
+        let logs_dir = cli_root
+            .join("brain")
+            .join(TEST_UUID)
+            .join(".system_generated")
+            .join("logs");
+        fs::create_dir_all(&conversations_dir).unwrap();
+        fs::create_dir_all(&logs_dir).unwrap();
+        fs::write(conversations_dir.join(format!("{TEST_UUID}.db")), b"db").unwrap();
+
+        let transcript = concat!(
+            "{\"step_index\":1,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"status\":\"DONE\",\"tool_calls\":[{\"name\":\"read_file\",\"args\":{\"Path\":\"a.rs\"}},{\"name\":\"edit_file\",\"args\":{\"Path\":\"a.rs\",\"Target\":\"old\",\"Replacement\":\"new\"}}]}\n",
+            "{\"step_index\":2,\"source\":\"MODEL\",\"type\":\"GENERIC\",\"status\":\"DONE\",\"content\":\"file contents of a.rs\"}\n",
+            "{\"step_index\":3,\"source\":\"MODEL\",\"type\":\"GENERIC\",\"status\":\"DONE\",\"content\":\"Made 1 replacement\"}\n",
+            "{\"step_index\":4,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"status\":\"DONE\",\"tool_calls\":[{\"name\":\"read_file\",\"args\":{\"Path\":\"b.rs\"}}]}\n",
+            "{\"step_index\":5,\"source\":\"MODEL\",\"type\":\"GENERIC\",\"status\":\"ERROR\",\"content\":\"file not found\"}\n",
+        );
+        let transcript_path = logs_dir.join("transcript_full.jsonl");
+        fs::write(&transcript_path, transcript).unwrap();
+
+        let messages = load_messages(&transcript_path).expect("load messages");
+        assert_eq!(messages.len(), 5);
+        assert_eq!(messages[0].blocks[0].tool_id.as_deref(), Some("antigravity-step-1-tool-0"));
+        assert_eq!(messages[0].blocks[1].tool_id.as_deref(), Some("antigravity-step-1-tool-1"));
+        assert_eq!(messages[1].blocks[0].kind, "tool_result");
+        assert_eq!(messages[1].blocks[0].tool_id.as_deref(), Some("antigravity-step-1-tool-0"));
+        assert_eq!(messages[1].blocks[0].tool_name.as_deref(), Some("read_file"));
+        assert_eq!(messages[2].blocks[0].kind, "tool_result");
+        assert_eq!(messages[2].blocks[0].tool_id.as_deref(), Some("antigravity-step-1-tool-1"));
+        assert_eq!(messages[2].blocks[0].tool_name.as_deref(), Some("edit_file"));
+        // Next turn gets distinct step-scoped tool_id and propagates ERROR status.
+        assert_eq!(messages[3].blocks[0].tool_id.as_deref(), Some("antigravity-step-4-tool-0"));
+        assert_eq!(messages[4].blocks[0].tool_id.as_deref(), Some("antigravity-step-4-tool-0"));
+        assert_eq!(messages[4].blocks[0].is_error, Some(true));
     }
 }

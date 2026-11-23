@@ -145,7 +145,7 @@ const ToolBody: React.FC<ToolBodyProps> = ({ normalizedToolName, block, query, o
     case 'bash':
       return <BashBody input={input} query={query} onCopyText={onCopyText} />;
     case 'read':
-      return <ReadBody input={input} />;
+      return <ReadBody input={input} query={query} />;
     case 'write':
       return <WriteBody input={input} query={query} />;
     case 'edit':
@@ -180,11 +180,11 @@ const BashBody: React.FC<{
   query: string;
   onCopyText: (text: string, successText: string) => void | Promise<void>;
 }> = ({ input, query, onCopyText }) => {
-  const commandText = stringField(input, ['command', 'cmd']) || safeJson(input);
+  const commandText = stringField(input, ['command', 'cmd', 'commandLine', 'command_line']) || safeJson(input);
 
   return (
     <div className={styles.toolBodyStack}>
-      <OptionalText value={stringField(input, ['description'])} className={styles.toolDescription} />
+      <OptionalText value={stringField(input, ['description', 'toolSummary', 'summary'])} className={styles.toolDescription} />
       <CodePanel
         title="Command"
         value={commandText}
@@ -195,37 +195,70 @@ const BashBody: React.FC<{
         onCopyText={onCopyText}
       />
       <MetaChips values={[
-        chipValue('timeout', input.timeout ?? input.timeout_ms),
-        chipValue('background', input.run_in_background ?? input.runInBackground),
+        chipValue('timeout', anyField(input, ['timeout', 'timeout_ms', 'waitMsBeforeAsync'])),
+        chipValue('background', anyField(input, ['run_in_background', 'runInBackground', 'isDaemon'])),
       ]}
       />
     </div>
   );
 };
 
-const ReadBody: React.FC<{ input: Record<string, unknown> }> = ({ input }) => (
-  <div className={styles.toolBodyStack}>
-    <PathRow value={stringField(input, ['file_path', 'filePath', 'path'])} />
-    <MetaChips values={[
-      chipValue('offset', input.offset),
-      chipValue('limit', input.limit),
-    ]}
-    />
-  </div>
-);
+const ReadBody: React.FC<{ input: Record<string, unknown>; query: string }> = ({ input, query }) => {
+  const path = stringField(input, ['file_path', 'filePath', 'path']);
+  const chips = [
+    chipValue('offset', anyField(input, ['offset'])),
+    chipValue('limit', anyField(input, ['limit'])),
+    chipValue('start line', anyField(input, ['startLine', 'start_line'])),
+    chipValue('end line', anyField(input, ['endLine', 'end_line'])),
+    chipValue('byteOffset', anyField(input, ['byteOffset', 'byte_offset'])),
+  ].filter(Boolean);
 
-const WriteBody: React.FC<{ input: Record<string, unknown>; query: string }> = ({ input, query }) => (
-  <div className={styles.toolBodyStack}>
-    <PathRow value={stringField(input, ['file_path', 'filePath', 'path'])} />
-    {stringField(input, ['content']) ? <CodePanel title="Content" value={stringField(input, ['content'])} query={query} /> : null}
-  </div>
-);
+  if (!path && chips.length === 0 && Object.keys(input).length > 0) {
+    return <JsonBody value={input} query={query} />;
+  }
+
+  return (
+    <div className={styles.toolBodyStack}>
+      <PathRow value={path} />
+      <MetaChips values={chips} />
+    </div>
+  );
+};
+
+const WriteBody: React.FC<{ input: Record<string, unknown>; query: string }> = ({ input, query }) => {
+  const path = stringField(input, ['file_path', 'filePath', 'path']);
+  const content = stringField(input, ['content']);
+  const chips = [
+    chipValue('overwrite', anyField(input, ['overwrite'])),
+    chipValue('append', anyField(input, ['append'])),
+  ].filter(Boolean);
+
+  if (!path && !content && Object.keys(input).length > 0) {
+    return <JsonBody value={input} query={query} />;
+  }
+
+  return (
+    <div className={styles.toolBodyStack}>
+      <PathRow value={path} />
+      {content ? <CodePanel title="Content" value={content} query={query} /> : null}
+      <MetaChips values={chips} />
+    </div>
+  );
+};
 
 const EditBody: React.FC<{ input: Record<string, unknown>; query: string }> = ({ input, query }) => {
   const edits = Array.isArray(input.edits) ? input.edits : [];
+  const path = stringField(input, ['file_path', 'filePath', 'path']);
+  const before = stringField(input, ['old_string', 'oldString', 'target', 'targetContent', 'target_content']);
+  const after = stringField(input, ['new_string', 'newString', 'replacement', 'replacementContent', 'replacement_content']);
+
+  if (!path && edits.length === 0 && !before && !after && Object.keys(input).length > 0) {
+    return <JsonBody value={input} query={query} />;
+  }
+
   return (
     <div className={styles.toolBodyStack}>
-      <PathRow value={stringField(input, ['file_path', 'filePath', 'path'])} />
+      <PathRow value={path} />
       {edits.length > 0 ? (
         <div className={styles.editList}>
           {edits.map((edit, index) => (
@@ -234,11 +267,11 @@ const EditBody: React.FC<{ input: Record<string, unknown>; query: string }> = ({
         </div>
       ) : (
         <div className={styles.diffGrid}>
-          <CodePanel title="Before" value={stringField(input, ['old_string', 'oldString'])} query={query} />
-          <CodePanel title="After" value={stringField(input, ['new_string', 'newString'])} query={query} />
+          <CodePanel title="Before" value={before} query={query} />
+          <CodePanel title="After" value={after} query={query} />
         </div>
       )}
-      <MetaChips values={[chipValue('replace all', input.replace_all ?? input.replaceAll)]} />
+      <MetaChips values={[chipValue('replace all', anyField(input, ['replace_all', 'replaceAll']))]} />
     </div>
   );
 };
@@ -335,11 +368,11 @@ const PlanBody: React.FC<{ input: Record<string, unknown> }> = ({ input }) => {
 
 const TaskBody: React.FC<{ input: Record<string, unknown>; query: string }> = ({ input, query }) => (
   <div className={styles.toolBodyStack}>
-    <OptionalText value={stringField(input, ['description'])} className={styles.toolDescription} />
+    <OptionalText value={stringField(input, ['description', 'role'])} className={styles.toolDescription} />
     <MetaChips values={[
-      chipValue('subagent', input.subagent_type ?? input.subagentType),
-      chipValue('model', input.model),
-      chipValue('background', input.run_in_background ?? input.runInBackground),
+      chipValue('subagent', anyField(input, ['subagent_type', 'subagentType', 'typeName'])),
+      chipValue('model', anyField(input, ['model'])),
+      chipValue('background', anyField(input, ['run_in_background', 'runInBackground'])),
     ]}
     />
     {stringField(input, ['prompt']) ? <CodePanel title="Prompt" value={stringField(input, ['prompt'])} query={query} /> : null}
@@ -459,14 +492,24 @@ function toRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function stringField(record: Record<string, unknown>, keys: string[]): string {
+function anyField(record: Record<string, unknown>, keys: string[]): unknown {
   for (const key of keys) {
-    const value = record[key];
-    if (typeof value === 'string') {
-      return value;
+    if (record[key] !== undefined) {
+      return record[key];
     }
   }
-  return '';
+  const lowerKeys = new Set(keys.map((key) => key.toLowerCase()));
+  for (const [entryKey, entryValue] of Object.entries(record)) {
+    if (lowerKeys.has(entryKey.toLowerCase()) && entryValue !== undefined) {
+      return entryValue;
+    }
+  }
+  return undefined;
+}
+
+function stringField(record: Record<string, unknown>, keys: string[]): string {
+  const value = anyField(record, keys);
+  return typeof value === 'string' ? value : '';
 }
 
 function toolPayloadToCopyText(value: unknown, useEmptyObjectFallback: boolean): string {

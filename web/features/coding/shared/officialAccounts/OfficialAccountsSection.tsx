@@ -263,37 +263,70 @@ const OfficialAccountsSection: React.FC<OfficialAccountsSectionProps> = ({
                 <div
                   style={{
                     display: 'flex',
-                    alignItems: 'center',
-                    flexWrap: 'wrap',
-                    gap: 8,
+                    flexDirection: 'column',
+                    gap: 2,
                     minWidth: 0,
                     flex: 1,
                   }}
                 >
-                  <Text
-                    strong={account.isApplied}
-                    style={{ fontSize: 12 }}
-                    ellipsis={{ tooltip: account.label }}
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      gap: 6,
+                      minWidth: 0,
+                    }}
                   >
-                    {account.label}
-                  </Text>
-                  {account.kindTag && <Tag style={{ margin: 0, fontSize: 10 }}>{account.kindTag}</Tag>}
+                    <Text
+                      strong={account.isApplied}
+                      style={{ fontSize: 12 }}
+                      ellipsis={{ tooltip: account.label }}
+                    >
+                      {account.label}
+                    </Text>
+                    {account.kindTag && <Tag style={{ margin: 0, fontSize: 10 }}>{account.kindTag}</Tag>}
+                    {account.planTag && (
+                      <Tag
+                        color={account.planTag.color}
+                        style={{ margin: 0, fontSize: 10 }}
+                      >
+                        {account.planTag.label}
+                      </Tag>
+                    )}
+                    {account.isApplied && (
+                      <AppliedTag style={{ fontSize: 10 }}>
+                        {t('common.officialAccount.default')}
+                      </AppliedTag>
+                    )}
+                  </div>
                   {account.lastError ? (
                     <Text type="danger" style={{ fontSize: 11 }}>
                       {account.lastError}
                     </Text>
-                  ) : (
-                    (account.metaLines ?? []).map((line) => (
-                      <Text key={line} type="secondary" style={{ fontSize: 11 }}>
-                        {line}
-                      </Text>
-                    ))
-                  )}
-                  {account.isApplied && (
-                    <AppliedTag style={{ fontSize: 10 }}>
-                      {t('common.officialAccount.default')}
-                    </AppliedTag>
-                  )}
+                  ) : (account.metaLines?.length ?? 0) > 0 ? (
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                        gap: 6,
+                      }}
+                    >
+                      {(account.metaLines ?? []).map((line, index) => (
+                        <React.Fragment key={line}>
+                          {index > 0 && (
+                            <Text type="secondary" style={{ fontSize: 11, opacity: 0.45 }}>
+                              |
+                            </Text>
+                          )}
+                          <Text type="secondary" style={{ fontSize: 11 }}>
+                            {line}
+                          </Text>
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
 
                 <Space size={4} wrap>

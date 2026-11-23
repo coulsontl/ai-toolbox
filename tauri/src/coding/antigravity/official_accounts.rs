@@ -39,7 +39,15 @@ const DEFAULT_ANTIGRAVITY_OAUTH_CLIENT_SECRET_PARTS: &[&str] =
 const ANTIGRAVITY_OAUTH_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const ANTIGRAVITY_OAUTH_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const ANTIGRAVITY_USER_INFO_URL: &str = "https://www.googleapis.com/oauth2/v1/userinfo?alt=json";
-const ANTIGRAVITY_CODE_ASSIST_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal";
+const ANTIGRAVITY_CLOUD_CODE_DAILY_URL: &str = "https://daily-cloudcode-pa.googleapis.com";
+const ANTIGRAVITY_CLOUD_CODE_URL_OVERRIDE_ENV: &str = "ANTIGRAVITY_CLOUD_CODE_URL_OVERRIDE";
+const LOAD_CODE_ASSIST_PATH: &str = "v1internal:loadCodeAssist";
+const RETRIEVE_USER_QUOTA_SUMMARY_PATH: &str = "v1internal:retrieveUserQuotaSummary";
+const FETCH_AVAILABLE_MODELS_PATH: &str = "v1internal:fetchAvailableModels";
+const CLOUD_CODE_IDE_VERSION: &str = "2.25.0";
+const CLOUD_CODE_CL: &str = "1003475615";
+const GOOGLE_API_NODEJS_CLIENT_VERSION: &str = "10.3.0";
+const X_GOOG_API_CLIENT_NODE_VERSION: &str = "22.21.1";
 const LOCAL_PROVIDER_ID: &str = crate::coding::local_bridge::LOCAL_CONFIG_ID;
 const LOCAL_OFFICIAL_ACCOUNT_ID: &str = crate::coding::local_bridge::LOCAL_CONFIG_ID;
 const AUTH_REFRESH_LEAD_SECONDS: i64 = 5 * 60;
@@ -79,6 +87,9 @@ struct OAuthRefreshRequest<'a> {
 struct AntigravityQuotaSnapshot {
     project_id: Option<String>,
     plan_type: Option<String>,
+    limit_short_label: Option<String>,
+    limit_5h_text: Option<String>,
+    limit_5h_reset_at: Option<i64>,
     limit_weekly_text: Option<String>,
     limit_weekly_reset_at: Option<i64>,
 }
@@ -304,30 +315,458 @@ async fn fetch_user_profile(
     Ok((email, name))
 }
 
+fn cloud_code_os_name() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "windows",
+        "linux" => "linux",
+        _ => "windows",
+    }
+}
+
+fn cloud_code_arch_name() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        _ => "amd64",
+    }
+}
+
+fn cloud_code_platform_name() -> &'static str {
+    match (cloud_code_os_name(), cloud_code_arch_name()) {
+        ("darwin", "amd64") => "DARWIN_AMD64",
+        ("darwin", "arm64") => "DARWIN_ARM64",
+        ("linux", "amd64") => "LINUX_AMD64",
+        ("linux", "arm64") => "LINUX_ARM64",
+        ("windows", "amd64") => "WINDOWS_AMD64",
+        _ => "PLATFORM_UNSPECIFIED",
+    }
+}
+
+fn cloud_code_base_url() -> String {
+    read_env_var(ANTIGRAVITY_CLOUD_CODE_URL_OVERRIDE_ENV)
+        .unwrap_or_else(|| ANTIGRAVITY_CLOUD_CODE_DAILY_URL.to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn build_load_code_assist_user_agent() -> String {
+    format!(
+        "antigravity/{} {}/{} google-api-nodejs-client/{}",
+        CLOUD_CODE_IDE_VERSION,
+        cloud_code_os_name(),
+        cloud_code_arch_name(),
+        GOOGLE_API_NODEJS_CLIENT_VERSION,
+    )
+}
+
+fn build_cloud_code_user_agent() -> String {
+    format!(
+        "antigravity/{} (aidev_client; os_type={}; arch={}; cl={})",
+        CLOUD_CODE_IDE_VERSION,
+        cloud_code_os_name(),
+        cloud_code_arch_name(),
+        CLOUD_CODE_CL,
+    )
+}
+
+fn valid_cloud_code_project_id(project_id: Option<&str>) -> Option<&str> {
+    project_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "aicode-consumers")
+}
+
+fn build_load_code_assist_payload(project_id: Option<&str>) -> Value {
+    let mut metadata = serde_json::Map::new();
+    metadata.insert("ideName".to_string(), json!("antigravity"));
+    metadata.insert("ideType".to_string(), json!("ANTIGRAVITY"));
+    metadata.insert("ideVersion".to_string(), json!(CLOUD_CODE_IDE_VERSION));
+    metadata.insert("platform".to_string(), json!(cloud_code_platform_name()));
+    metadata.insert("updateChannel".to_string(), json!("stable"));
+    metadata.insert("pluginType".to_string(), json!("GEMINI"));
+    if let Some(project) = valid_cloud_code_project_id(project_id) {
+        metadata.insert("duetProject".to_string(), json!(project));
+    }
+
+    let mut payload = json!({
+        "metadata": Value::Object(metadata),
+        "mode": "FULL_ELIGIBILITY_CHECK"
+    });
+    if let Some(project) = valid_cloud_code_project_id(project_id) {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("cloudaicompanionProject".to_string(), json!(project));
+        }
+    }
+    payload
+}
+
+fn extract_cloud_code_project_id(value: &Value) -> Option<String> {
+    if let Some(text) = value.as_str().and_then(|s| valid_cloud_code_project_id(Some(s))) {
+        return Some(text.to_string());
+    }
+    value
+        .get("id")
+        .and_then(Value::as_str)
+        .and_then(|s| valid_cloud_code_project_id(Some(s)))
+        .map(str::to_string)
+}
+
+fn normalize_plan_tier(tier_id: &str) -> String {
+    let trimmed = tier_id.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("ultra") {
+        "ULTRA".to_string()
+    } else if lower.contains("pro") {
+        "PRO".to_string()
+    } else if lower.contains("free") || lower.contains("standard") {
+        "FREE".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn parse_load_code_assist_response(value: &Value) -> (Option<String>, Option<String>) {
+    let project_id = value
+        .get("cloudaicompanionProject")
+        .and_then(extract_cloud_code_project_id);
+    let tier_id = value
+        .pointer("/paidTier/id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            value
+                .pointer("/currentTier/id")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+        })
+        .map(normalize_plan_tier);
+    (project_id, tier_id)
+}
+
+fn parse_google_api_error_message(status: reqwest::StatusCode, text: &str) -> String {
+    if let Ok(val) = serde_json::from_str::<Value>(text) {
+        if let Some(msg) = val.pointer("/error/message").and_then(Value::as_str) {
+            let trimmed = msg.trim();
+            if !trimmed.is_empty() {
+                return format!("HTTP {status}: {trimmed}");
+            }
+        }
+    }
+    format!("HTTP {status}")
+}
+
+fn parse_rfc3339_timestamp(value: Option<&str>) -> Option<i64> {
+    value
+        .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw.trim()).ok())
+        .map(|dt| dt.timestamp())
+}
+
+fn format_bucket_label(bucket_id: &str, display_name: Option<&str>) -> String {
+    let lower = bucket_id.trim().to_ascii_lowercase();
+    if lower.starts_with("gemini") {
+        if lower.contains("argon") {
+            return "Argon".to_string();
+        }
+        if lower.contains("carbon") {
+            return "Carbon".to_string();
+        }
+        return "Gemini".to_string();
+    }
+    if lower.starts_with("3p") || lower.starts_with("claude") {
+        return "Claude".to_string();
+    }
+    if let Some(name) = display_name.map(str::trim).filter(|s| !s.is_empty()) {
+        return name.to_string();
+    }
+    bucket_id.trim().to_string()
+}
+
+fn compose_short_label(
+    limit_5h_text: Option<&str>,
+    limit_weekly_text: Option<&str>,
+) -> Option<String> {
+    match (limit_5h_text, limit_weekly_text) {
+        (Some(h5), Some(wk)) => Some(format!("5h: {h5} | Weekly: {wk}")),
+        (Some(h5), None) => Some(format!("5h: {h5}")),
+        (None, Some(wk)) => Some(format!("Weekly: {wk}")),
+        (None, None) => None,
+    }
+}
+
+fn parse_quota_summary_response(
+    value: &Value,
+    project_id: Option<String>,
+    plan_type: Option<String>,
+) -> Result<AntigravityQuotaSnapshot, String> {
+    let groups = value
+        .get("groups")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Antigravity quota summary is missing groups".to_string())?;
+
+    let mut labels_5h: Vec<String> = Vec::new();
+    let mut reset_5h: Option<i64> = None;
+    let mut labels_weekly: Vec<String> = Vec::new();
+    let mut reset_weekly: Option<i64> = None;
+
+    for group in groups {
+        let Some(buckets) = group.get("buckets").and_then(Value::as_array) else {
+            continue;
+        };
+        for bucket in buckets {
+            let Some(bucket_id) = bucket
+                .get("bucketId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            let Some(fraction) = bucket.get("remainingFraction").and_then(Value::as_f64) else {
+                continue;
+            };
+            let percent = (fraction.clamp(0.0, 1.0) * 100.0).round() as i32;
+            let display_name = bucket.get("displayName").and_then(Value::as_str);
+            let label = format!("{} {}%", format_bucket_label(bucket_id, display_name), percent);
+            let reset_ts = parse_rfc3339_timestamp(bucket.get("resetTime").and_then(Value::as_str));
+
+            let lower = bucket_id.to_ascii_lowercase();
+            if lower.ends_with("5h") || lower.contains(":5h") || lower.contains("-5h") {
+                labels_5h.push(label);
+                if let Some(ts) = reset_ts {
+                    reset_5h = Some(reset_5h.map_or(ts, |prev| prev.min(ts)));
+                }
+            } else {
+                labels_weekly.push(label);
+                if let Some(ts) = reset_ts {
+                    reset_weekly = Some(reset_weekly.map_or(ts, |prev| prev.min(ts)));
+                }
+            }
+        }
+    }
+
+    if labels_5h.is_empty() && labels_weekly.is_empty() {
+        return Err("Antigravity quota summary returned no buckets".to_string());
+    }
+
+    let limit_5h_text = (!labels_5h.is_empty()).then(|| labels_5h.join(" · "));
+    let limit_weekly_text = (!labels_weekly.is_empty()).then(|| labels_weekly.join(" · "));
+    let limit_short_label =
+        compose_short_label(limit_5h_text.as_deref(), limit_weekly_text.as_deref());
+
+    Ok(AntigravityQuotaSnapshot {
+        project_id,
+        plan_type,
+        limit_short_label,
+        limit_5h_text,
+        limit_5h_reset_at: reset_5h,
+        limit_weekly_text,
+        limit_weekly_reset_at: reset_weekly,
+    })
+}
+
+fn parse_available_models_quota(
+    value: &Value,
+    project_id: Option<String>,
+    plan_type: Option<String>,
+) -> Result<AntigravityQuotaSnapshot, String> {
+    let models = value
+        .get("models")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "Antigravity fetchAvailableModels response is missing models".to_string())?;
+
+    let mut gemini_min: Option<i32> = None;
+    let mut claude_min: Option<i32> = None;
+    let mut other_labels: Vec<String> = Vec::new();
+    let mut earliest_reset: Option<i64> = None;
+
+    for (name, info) in models {
+        let Some(quota_info) = info.get("quotaInfo").and_then(Value::as_object) else {
+            continue;
+        };
+        let Some(fraction) = quota_info.get("remainingFraction").and_then(Value::as_f64) else {
+            continue;
+        };
+        let percent = (fraction.clamp(0.0, 1.0) * 100.0).round() as i32;
+        if let Some(ts) = parse_rfc3339_timestamp(quota_info.get("resetTime").and_then(Value::as_str)) {
+            earliest_reset = Some(earliest_reset.map_or(ts, |prev| prev.min(ts)));
+        }
+
+        let lower = name.to_ascii_lowercase();
+        if lower.contains("gemini") || lower.contains("argon") || lower.contains("carbon") {
+            gemini_min = Some(gemini_min.map_or(percent, |prev| prev.min(percent)));
+        } else if lower.contains("claude") {
+            claude_min = Some(claude_min.map_or(percent, |prev| prev.min(percent)));
+        } else if lower.contains("gpt") {
+            let display = info
+                .get("displayName")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(name);
+            other_labels.push(format!("{display} {percent}%"));
+        }
+    }
+
+    let mut labels = Vec::new();
+    if let Some(pct) = gemini_min {
+        labels.push(format!("Gemini {pct}%"));
+    }
+    if let Some(pct) = claude_min {
+        labels.push(format!("Claude {pct}%"));
+    }
+    labels.extend(other_labels);
+
+    if labels.is_empty() {
+        return Err("Antigravity fetchAvailableModels returned no model quota".to_string());
+    }
+
+    let limit_weekly_text = Some(labels.join(" · "));
+    let limit_short_label = compose_short_label(None, limit_weekly_text.as_deref());
+
+    Ok(AntigravityQuotaSnapshot {
+        project_id,
+        plan_type,
+        limit_short_label,
+        limit_5h_text: None,
+        limit_5h_reset_at: None,
+        limit_weekly_text,
+        limit_weekly_reset_at: earliest_reset,
+    })
+}
+
+async fn fetch_code_assist_metadata(
+    client: &reqwest::Client,
+    base_url: &str,
+    access_token: &str,
+    preferred_project_id: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let url = format!("{base_url}/{LOAD_CODE_ASSIST_PATH}");
+    let ua = build_load_code_assist_user_agent();
+    let x_goog_api_client = format!("gl-node/{X_GOOG_API_CLIENT_NODE_VERSION}");
+    let payload = build_load_code_assist_payload(preferred_project_id);
+
+    let Ok(response) = client
+        .post(&url)
+        .bearer_auth(access_token)
+        .header(reqwest::header::USER_AGENT, &ua)
+        .header("x-goog-api-client", &x_goog_api_client)
+        .header(reqwest::header::ACCEPT, "*/*")
+        .json(&payload)
+        .send()
+        .await
+    else {
+        return (
+            valid_cloud_code_project_id(preferred_project_id).map(str::to_string),
+            None,
+        );
+    };
+
+    if !response.status().is_success() {
+        return (
+            valid_cloud_code_project_id(preferred_project_id).map(str::to_string),
+            None,
+        );
+    }
+
+    let Ok(value) = response.json::<Value>().await else {
+        return (
+            valid_cloud_code_project_id(preferred_project_id).map(str::to_string),
+            None,
+        );
+    };
+
+    let (resolved_project, plan_type) = parse_load_code_assist_response(&value);
+    let effective_project = resolved_project
+        .or_else(|| valid_cloud_code_project_id(preferred_project_id).map(str::to_string));
+    (effective_project, plan_type)
+}
+
 async fn retrieve_user_quota(
     db: &SqliteDbState,
     access_token: &str,
+    preferred_project_id: Option<&str>,
 ) -> Result<AntigravityQuotaSnapshot, String> {
     let client = http_client::client_with_timeout(db, 30).await?;
-    let url = format!("{ANTIGRAVITY_CODE_ASSIST_URL}:retrieveUserQuota");
-    let response = client
-        .post(&url)
+    let base_url = cloud_code_base_url();
+    let (project_id, plan_type) =
+        fetch_code_assist_metadata(&client, &base_url, access_token, preferred_project_id).await;
+
+    let payload = project_id
+        .as_deref()
+        .map(|id| json!({ "project": id }))
+        .unwrap_or_else(|| json!({}));
+    let ua = build_cloud_code_user_agent();
+
+    // Primary: v1internal:retrieveUserQuotaSummary (5h & Weekly buckets).
+    let summary_url = format!("{base_url}/{RETRIEVE_USER_QUOTA_SUMMARY_PATH}");
+    let mut summary_error: Option<String> = None;
+    match client
+        .post(&summary_url)
         .bearer_auth(access_token)
-        .json(&json!({}))
+        .header(reqwest::header::USER_AGENT, &ua)
+        .json(&payload)
         .send()
         .await
-        .map_err(|error| format!("Failed to retrieve Antigravity quota: {error}"))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!(
-            "Failed to retrieve Antigravity quota (HTTP {status})"
-        ));
+    {
+        Ok(response) => {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            if status.is_success() {
+                if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                    if let Ok(snapshot) =
+                        parse_quota_summary_response(&value, project_id.clone(), plan_type.clone())
+                    {
+                        return Ok(snapshot);
+                    }
+                    if let Ok(mut snapshot) = parse_quota_snapshot(&value) {
+                        if snapshot.project_id.is_none() {
+                            snapshot.project_id = project_id.clone();
+                        }
+                        if snapshot.plan_type.is_none() {
+                            snapshot.plan_type = plan_type.clone();
+                        }
+                        return Ok(snapshot);
+                    }
+                }
+            } else {
+                summary_error = Some(parse_google_api_error_message(status, &text));
+            }
+        }
+        Err(error) => {
+            summary_error = Some(format!("retrieveUserQuotaSummary request failed: {error}"));
+        }
     }
-    let value = response
-        .json::<Value>()
+
+    // Fallback: v1internal:fetchAvailableModels (per-model quotaInfo).
+    let models_url = format!("{base_url}/{FETCH_AVAILABLE_MODELS_PATH}");
+    let response = client
+        .post(&models_url)
+        .bearer_auth(access_token)
+        .header(reqwest::header::USER_AGENT, &ua)
+        .json(&payload)
+        .send()
         .await
-        .map_err(|error| format!("Failed to parse Antigravity quota: {error}"))?;
-    parse_quota_snapshot(&value)
+        .map_err(|error| {
+            summary_error.clone().unwrap_or_else(|| {
+                format!("Failed to fetch Antigravity available models: {error}")
+            })
+        })?;
+
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|error| format!("Failed to read Antigravity models response: {error}"))?;
+    if !status.is_success() {
+        let models_error = parse_google_api_error_message(status, &text);
+        return Err(summary_error
+            .map(|err| format!("Failed to retrieve Antigravity quota ({err}; models: {models_error})"))
+            .unwrap_or_else(|| format!("Failed to retrieve Antigravity quota ({models_error})")));
+    }
+
+    let value = serde_json::from_str::<Value>(&text)
+        .map_err(|error| format!("Failed to parse Antigravity models JSON: {error}"))?;
+    parse_available_models_quota(&value, project_id, plan_type)
 }
 
 fn parse_quota_snapshot(value: &Value) -> Result<AntigravityQuotaSnapshot, String> {
@@ -357,6 +796,7 @@ fn parse_quota_snapshot(value: &Value) -> Result<AntigravityQuotaSnapshot, Strin
         if !buckets.is_empty() && labels.is_empty() {
             return Err("Antigravity quota response has no remaining fractions".to_string());
         }
+        let limit_weekly_text = (!labels.is_empty()).then(|| labels.join(" · "));
         return Ok(AntigravityQuotaSnapshot {
             project_id: value
                 .get("projectId")
@@ -366,7 +806,10 @@ fn parse_quota_snapshot(value: &Value) -> Result<AntigravityQuotaSnapshot, Strin
                 .get("planType")
                 .and_then(Value::as_str)
                 .map(str::to_string),
-            limit_weekly_text: (!labels.is_empty()).then(|| labels.join(" · ")),
+            limit_short_label: limit_weekly_text.clone(),
+            limit_5h_text: None,
+            limit_5h_reset_at: None,
+            limit_weekly_text,
             limit_weekly_reset_at: reset_at,
         });
     }
@@ -405,6 +848,9 @@ fn parse_quota_snapshot(value: &Value) -> Result<AntigravityQuotaSnapshot, Strin
     Ok(AntigravityQuotaSnapshot {
         project_id,
         plan_type,
+        limit_short_label: limit_weekly_text.clone(),
+        limit_5h_text: None,
+        limit_5h_reset_at: None,
         limit_weekly_text,
         limit_weekly_reset_at,
     })
@@ -542,13 +988,21 @@ pub async fn list_antigravity_official_accounts(
     provider_id: String,
 ) -> Result<Vec<AntigravityOfficialAccount>, String> {
     let db = state.db();
-    ensure_persisted_provider_id(&provider_id)?;
-    let provider = query_provider_by_id(db, &provider_id)?;
+    list_official_accounts_with_store(db, &provider_id, &OsCredentialStore)
+}
+
+fn list_official_accounts_with_store(
+    db: &SqliteDbState,
+    provider_id: &str,
+    credentials: &impl CredentialStore,
+) -> Result<Vec<AntigravityOfficialAccount>, String> {
+    ensure_persisted_provider_id(provider_id)?;
+    let provider = query_provider_by_id(db, provider_id)?;
     if provider.category != "official" {
         return Err("Only official Antigravity providers can list official accounts".to_string());
     }
 
-    let provider_id_value = Value::String(provider_id.clone());
+    let provider_id_value = Value::String(provider_id.to_string());
     let provider_id_path = JsonFieldPath::new("provider_id")?;
     let order = OrderSpec::new(vec![
         OrderField::json_integer("sort_index", OrderDirection::Asc)?,
@@ -566,47 +1020,153 @@ pub async fn list_antigravity_official_accounts(
         )
     })?;
 
+    // Exclude legacy persisted `__local__` snapshot rows from the visible list.
     let mut accounts: Vec<AntigravityOfficialAccount> = records
         .into_iter()
         .map(adapter::from_db_value_official_account)
+        .filter(|account| account.id != LOCAL_OFFICIAL_ACCOUNT_ID)
         .collect();
 
-    // Keep the device's current Antigravity CLI configuration as a stable
-    // default entry, even when the local CLI has never completed OAuth.
-    let local_is_applied = provider.is_applied
-        && !accounts
-            .iter()
-            .any(|account| account.id != LOCAL_OFFICIAL_ACCOUNT_ID && account.is_applied);
-    if let Some(local_account) = accounts
-        .iter_mut()
-        .find(|account| account.id == LOCAL_OFFICIAL_ACCOUNT_ID)
-    {
-        local_account.is_virtual = true;
-        local_account.is_applied = local_is_applied;
-    } else {
-        accounts.push(build_virtual_local_account(&provider_id, local_is_applied));
+    // Only surface a virtual local row when the OS credential store holds an
+    // active `agy` login that is not yet saved as a managed account.
+    if let Ok(Some(raw_snapshot)) = credentials.read() {
+        if let Ok(parsed) = serde_json::from_str::<Value>(&raw_snapshot) {
+            if should_show_virtual_local_account(&accounts, &parsed) {
+                let local_is_applied = provider.is_applied
+                    && !accounts.iter().any(|account| account.is_applied);
+                accounts.push(build_virtual_local_account(
+                    provider_id,
+                    &raw_snapshot,
+                    &parsed,
+                    local_is_applied,
+                ));
+            }
+        }
     }
 
     Ok(accounts)
 }
 
-fn build_virtual_local_account(provider_id: &str, is_applied: bool) -> AntigravityOfficialAccount {
+fn extract_email_from_id_token(id_token: &str) -> Option<String> {
+    let payload_b64 = id_token.split('.').nth(1)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(payload_b64))
+        .ok()?;
+    let payload = serde_json::from_slice::<Value>(&decoded).ok()?;
+    payload
+        .get("email")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn auth_email(snapshot: &Value) -> Option<String> {
+    snapshot
+        .get("email")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| auth_string(snapshot, "id_token").and_then(extract_email_from_id_token))
+}
+
+fn auth_has_runtime_login(snapshot: &Value) -> bool {
+    auth_string(snapshot, "access_token").is_some()
+        || auth_string(snapshot, "refresh_token").is_some()
+}
+
+fn official_account_identity_matches_auth(
+    account: &AntigravityOfficialAccount,
+    local_auth: &Value,
+) -> bool {
+    let account_parsed = account
+        .auth_snapshot
+        .as_deref()
+        .and_then(|snapshot| serde_json::from_str::<Value>(snapshot).ok());
+
+    if let (Some(local_refresh), Some(account_refresh)) = (
+        auth_string(local_auth, "refresh_token"),
+        account_parsed
+            .as_ref()
+            .and_then(|parsed| auth_string(parsed, "refresh_token")),
+    ) {
+        if local_refresh == account_refresh {
+            return true;
+        }
+    }
+
+    if let (Some(local_email), Some(account_email)) = (
+        auth_email(local_auth).map(|value| value.to_ascii_lowercase()),
+        account
+            .email
+            .as_deref()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty()),
+    ) {
+        if local_email == account_email {
+            return true;
+        }
+    }
+
+    if let (Some(local_access), Some(account_access)) = (
+        auth_string(local_auth, "access_token"),
+        account_parsed
+            .as_ref()
+            .and_then(|parsed| auth_string(parsed, "access_token")),
+    ) {
+        if local_access == account_access {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn should_show_virtual_local_account(
+    persisted_accounts: &[AntigravityOfficialAccount],
+    local_auth: &Value,
+) -> bool {
+    auth_has_runtime_login(local_auth)
+        && !persisted_accounts
+            .iter()
+            .any(|account| official_account_identity_matches_auth(account, local_auth))
+}
+
+fn build_virtual_local_account(
+    provider_id: &str,
+    raw_snapshot: &str,
+    parsed: &Value,
+    is_applied: bool,
+) -> AntigravityOfficialAccount {
     let now = Local::now().to_rfc3339();
+    let email = auth_email(parsed);
     AntigravityOfficialAccount {
         id: LOCAL_OFFICIAL_ACCOUNT_ID.to_string(),
         provider_id: provider_id.to_string(),
-        name: "Antigravity CLI 默认配置".to_string(),
+        name: email
+            .clone()
+            .unwrap_or_else(|| LOCAL_OFFICIAL_ACCOUNT_ID.to_string()),
         kind: "local".to_string(),
-        email: None,
-        auth_snapshot: None,
-        auth_mode: None,
+        email,
+        auth_snapshot: Some(raw_snapshot.to_string()),
+        auth_mode: Some("oauth-personal".to_string()),
         account_id: None,
         project_id: None,
         plan_type: None,
         last_refresh: None,
-        token_expires_at: None,
-        access_token_preview: None,
-        refresh_token_preview: None,
+        token_expires_at: adapter::token_expires_at_from_snapshot(raw_snapshot),
+        access_token_preview: adapter::token_preview_from_snapshot(
+            raw_snapshot,
+            "/token/access_token",
+        )
+        .or_else(|| adapter::token_preview_from_snapshot(raw_snapshot, "/access_token")),
+        refresh_token_preview: adapter::token_preview_from_snapshot(
+            raw_snapshot,
+            "/token/refresh_token",
+        )
+        .or_else(|| adapter::token_preview_from_snapshot(raw_snapshot, "/refresh_token")),
         limit_short_label: None,
         limit_5h_text: None,
         limit_weekly_text: None,
@@ -698,6 +1258,67 @@ fn saved_local_default_snapshot(db: &SqliteDbState) -> Result<Option<String>, St
     }
 }
 
+fn list_persisted_managed_accounts(
+    db: &SqliteDbState,
+    provider_id: &str,
+) -> Result<Vec<AntigravityOfficialAccount>, String> {
+    let provider_id_value = Value::String(provider_id.to_string());
+    let provider_id_path = JsonFieldPath::new("provider_id")?;
+    let order = OrderSpec::new(vec![
+        OrderField::json_integer("sort_index", OrderDirection::Asc)?,
+        OrderField::json_text("created_at", OrderDirection::Asc)?,
+    ]);
+    let records: Vec<Value> = db.with_conn(|conn| {
+        db_query_by_field(
+            conn,
+            DbTable::CliOfficialAccount(Cli::Antigravity),
+            &provider_id_path,
+            &provider_id_value,
+            Some(&order),
+            None,
+        )
+    })?;
+    Ok(records
+        .into_iter()
+        .map(adapter::from_db_value_official_account)
+        .filter(|account| account.id != LOCAL_OFFICIAL_ACCOUNT_ID)
+        .collect())
+}
+
+fn find_matching_persisted_account(
+    db: &SqliteDbState,
+    provider_id: &str,
+    email: Option<&str>,
+    auth_value: &Value,
+) -> Result<Option<AntigravityOfficialAccount>, String> {
+    let accounts = list_persisted_managed_accounts(db, provider_id)?;
+    let normalized_email = email
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
+    Ok(accounts.into_iter().find(|account| {
+        if official_account_identity_matches_auth(account, auth_value) {
+            return true;
+        }
+        match (
+            normalized_email.as_deref(),
+            account
+                .email
+                .as_deref()
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| !value.is_empty()),
+        ) {
+            (Some(target), Some(existing)) => target == existing,
+            _ => false,
+        }
+    }))
+}
+
+fn sync_cli_fallback_file_if_present(db: &SqliteDbState, snapshot: Option<&str>) {
+    if let Ok(root_dir) = super::commands::get_antigravity_root_dir_from_db(db) {
+        credential_store::sync_existing_cli_fallback_file(&root_dir, snapshot);
+    }
+}
+
 #[tauri::command]
 pub async fn start_antigravity_official_account_oauth(
     state: tauri::State<'_, SqliteDbState>,
@@ -741,10 +1362,12 @@ pub async fn start_antigravity_official_account_oauth(
     let token_resp =
         exchange_code_for_token(db, &code, &redirect_uri, &code_verifier, &client).await?;
     let auth_snapshot = merge_refreshed_snapshot(&json!({"auth_method": "consumer"}), &token_resp)?;
+    let parsed_auth = serde_json::from_str::<Value>(&auth_snapshot).unwrap_or_else(|_| json!({}));
     let (email, name) = fetch_user_profile(db, &token_resp.access_token)
         .await
         .unwrap_or((None, None));
-    let quota_result = retrieve_user_quota(db, &token_resp.access_token).await;
+    let email = email.or_else(|| auth_email(&parsed_auth));
+    let quota_result = retrieve_user_quota(db, &token_resp.access_token, None).await;
     let quota_error = quota_result.as_ref().err().cloned();
     let quota = quota_result.unwrap_or_default();
 
@@ -753,38 +1376,82 @@ pub async fn start_antigravity_official_account_oauth(
         .or(name)
         .unwrap_or_else(|| "Google Official Account".to_string());
 
+    let _operation = ACCOUNT_OPERATION_LOCK.lock().await;
     let now_str = Local::now().to_rfc3339();
-    let new_id = db_new_id();
+    let existing = find_matching_persisted_account(db, &provider_id, email.as_deref(), &parsed_auth)?;
+    let target_id = existing
+        .as_ref()
+        .map(|account| account.id.clone())
+        .unwrap_or_else(db_new_id);
+    let is_applied = existing.as_ref().is_some_and(|account| account.is_applied);
+    let created_at = existing
+        .as_ref()
+        .map(|account| account.created_at.clone())
+        .unwrap_or_else(|| now_str.clone());
+    let sort_index = existing
+        .as_ref()
+        .and_then(|account| account.sort_index)
+        .or(Some(0));
 
     let content = AntigravityOfficialAccountContent {
         provider_id: provider_id.clone(),
         name: display_name,
         kind: "oauth".to_string(),
-        email,
-        auth_snapshot,
+        email: email.or_else(|| existing.as_ref().and_then(|a| a.email.clone())),
+        auth_snapshot: auth_snapshot.clone(),
         auth_mode: Some("oauth-personal".to_string()),
         account_id: None,
-        project_id: quota.project_id,
-        plan_type: quota.plan_type,
+        project_id: quota
+            .project_id
+            .or_else(|| existing.as_ref().and_then(|a| a.project_id.clone())),
+        plan_type: quota
+            .plan_type
+            .or_else(|| existing.as_ref().and_then(|a| a.plan_type.clone())),
         last_refresh: Some(now_str.clone()),
-        limit_short_label: quota.limit_weekly_text.clone(),
-        limit_5h_text: None,
-        limit_weekly_text: quota.limit_weekly_text,
-        limit_5h_reset_at: None,
-        limit_weekly_reset_at: quota.limit_weekly_reset_at,
-        last_limits_fetched_at: quota_error.is_none().then(|| now_str.clone()),
+        limit_short_label: quota
+            .limit_short_label
+            .or_else(|| existing.as_ref().and_then(|a| a.limit_short_label.clone())),
+        limit_5h_text: quota
+            .limit_5h_text
+            .or_else(|| existing.as_ref().and_then(|a| a.limit_5h_text.clone())),
+        limit_weekly_text: quota
+            .limit_weekly_text
+            .or_else(|| existing.as_ref().and_then(|a| a.limit_weekly_text.clone())),
+        limit_5h_reset_at: quota
+            .limit_5h_reset_at
+            .or_else(|| existing.as_ref().and_then(|a| a.limit_5h_reset_at)),
+        limit_weekly_reset_at: quota
+            .limit_weekly_reset_at
+            .or_else(|| existing.as_ref().and_then(|a| a.limit_weekly_reset_at)),
+        last_limits_fetched_at: if quota_error.is_none() {
+            Some(now_str.clone())
+        } else {
+            existing.as_ref().and_then(|a| a.last_limits_fetched_at.clone())
+        },
         last_error: quota_error,
-        sort_index: Some(0),
-        is_applied: false,
-        created_at: now_str.clone(),
+        sort_index,
+        is_applied,
+        created_at,
         updated_at: now_str,
     };
 
     let db_val = adapter::to_db_value_official_account(&content);
-    db.with_conn(|conn| db_put(conn, DbTable::CliOfficialAccount(Cli::Antigravity), &new_id, &db_val))?;
+    db.with_conn(|conn| {
+        db_put(
+            conn,
+            DbTable::CliOfficialAccount(Cli::Antigravity),
+            &target_id,
+            &db_val,
+        )
+    })?;
+
+    if is_applied && provider.is_applied {
+        let _ = credential_store::write_credential_text(&auth_snapshot);
+        sync_cli_fallback_file_if_present(db, Some(&auth_snapshot));
+    }
 
     let created_record = db
-        .with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Antigravity), &new_id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Antigravity), &target_id))?
         .ok_or_else(|| {
             "Failed to retrieve newly created Antigravity official account".to_string()
         })?;
@@ -827,6 +1494,10 @@ pub async fn save_antigravity_official_local_account(
         .unwrap_or_default();
 
     let refreshed_snapshot = ensure_fresh_auth_snapshot(db, &content).await?;
+    if refreshed_snapshot != content {
+        credential_store::write_credential_text(&refreshed_snapshot)?;
+        sync_cli_fallback_file_if_present(db, Some(&refreshed_snapshot));
+    }
     let refreshed_parsed = serde_json::from_str::<Value>(&refreshed_snapshot)
         .map_err(|error| format!("Failed to parse refreshed Antigravity credentials: {error}"))?;
     let access_token = refreshed_parsed
@@ -842,9 +1513,14 @@ pub async fn save_antigravity_official_local_account(
     } else {
         (None, None)
     };
+    let email = email.or_else(|| auth_email(&refreshed_parsed));
+
+    let existing =
+        find_matching_persisted_account(db, &provider_id, email.as_deref(), &refreshed_parsed)?;
+    let preferred_project_id = existing.as_ref().and_then(|a| a.project_id.as_deref());
 
     let quota_result = if !access_token.is_empty() {
-        retrieve_user_quota(db, access_token).await
+        retrieve_user_quota(db, access_token, preferred_project_id).await
     } else {
         Err("No valid access token available for limits check".to_string())
     };
@@ -854,39 +1530,69 @@ pub async fn save_antigravity_official_local_account(
     let display_name = email
         .clone()
         .or(name)
+        .or_else(|| existing.as_ref().map(|a| a.name.clone()))
         .unwrap_or_else(|| "Local OAuth Account".to_string());
 
     let now_str = Local::now().to_rfc3339();
-    let new_id = db_new_id();
+    let target_id = existing
+        .as_ref()
+        .map(|account| account.id.clone())
+        .unwrap_or_else(db_new_id);
+    let created_at = existing
+        .as_ref()
+        .map(|account| account.created_at.clone())
+        .unwrap_or_else(|| now_str.clone());
+    let sort_index = existing
+        .as_ref()
+        .and_then(|account| account.sort_index)
+        .or(Some(0));
 
     let account_content = AntigravityOfficialAccountContent {
         provider_id: provider_id.clone(),
         name: display_name,
         kind: "oauth".to_string(),
-        email,
+        email: email.or_else(|| existing.as_ref().and_then(|a| a.email.clone())),
         auth_snapshot: refreshed_snapshot,
         auth_mode: Some("oauth-personal".to_string()),
         account_id: None,
-        project_id: quota.project_id,
-        plan_type: quota.plan_type,
+        project_id: quota
+            .project_id
+            .or_else(|| existing.as_ref().and_then(|a| a.project_id.clone())),
+        plan_type: quota
+            .plan_type
+            .or_else(|| existing.as_ref().and_then(|a| a.plan_type.clone())),
         last_refresh: Some(now_str.clone()),
-        limit_short_label: quota.limit_weekly_text.clone(),
-        limit_5h_text: None,
-        limit_weekly_text: quota.limit_weekly_text,
-        limit_5h_reset_at: None,
-        limit_weekly_reset_at: quota.limit_weekly_reset_at,
-        last_limits_fetched_at: quota_error.is_none().then(|| now_str.clone()),
+        limit_short_label: quota
+            .limit_short_label
+            .or_else(|| existing.as_ref().and_then(|a| a.limit_short_label.clone())),
+        limit_5h_text: quota
+            .limit_5h_text
+            .or_else(|| existing.as_ref().and_then(|a| a.limit_5h_text.clone())),
+        limit_weekly_text: quota
+            .limit_weekly_text
+            .or_else(|| existing.as_ref().and_then(|a| a.limit_weekly_text.clone())),
+        limit_5h_reset_at: quota
+            .limit_5h_reset_at
+            .or_else(|| existing.as_ref().and_then(|a| a.limit_5h_reset_at)),
+        limit_weekly_reset_at: quota
+            .limit_weekly_reset_at
+            .or_else(|| existing.as_ref().and_then(|a| a.limit_weekly_reset_at)),
+        last_limits_fetched_at: if quota_error.is_none() {
+            Some(now_str.clone())
+        } else {
+            existing.as_ref().and_then(|a| a.last_limits_fetched_at.clone())
+        },
         last_error: quota_error,
-        sort_index: Some(0),
+        sort_index,
         is_applied: provider.is_applied,
-        created_at: now_str.clone(),
-        updated_at: now_str.clone(),
+        created_at,
+        updated_at: now_str,
     };
 
-    persist_imported_account(db, &new_id, &account_content)?;
+    persist_imported_account(db, &target_id, &account_content)?;
 
     let created_record = db
-        .with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Antigravity), &new_id))?
+        .with_conn(|conn| db_get(conn, DbTable::CliOfficialAccount(Cli::Antigravity), &target_id))?
         .ok_or_else(|| "Failed to retrieve newly imported Antigravity local account".to_string())?;
 
     Ok(adapter::from_db_value_official_account(created_record))
@@ -991,6 +1697,7 @@ async fn apply_official_account_with_store(
         .find(|provider| provider.is_applied)
         .map(|provider| provider.id);
     credentials.replace(target_snapshot.as_deref())?;
+    sync_cli_fallback_file_if_present(db, target_snapshot.as_deref());
     let result = async {
         apply_config_internal_without_events(db, provider_id).await?;
         db.with_conn_mut(|conn| {
@@ -1007,6 +1714,7 @@ async fn apply_official_account_with_store(
         // Do not leave the live credential owned by the wrong applied row when
         // writing settings or committing the selection fails.
         let credential_restore = credentials.replace(previous_credential.as_deref());
+        sync_cli_fallback_file_if_present(db, previous_credential.as_deref());
         let provider_restore = db.with_conn_mut(|conn| {
             db_update_applied_status(
                 conn,
@@ -1116,6 +1824,7 @@ async fn refresh_stored_account(
     }
     if account.is_applied && provider_applied {
         credential_store::write_credential_text(&refreshed)?;
+        sync_cli_fallback_file_if_present(db, Some(&refreshed));
     }
     Ok(refreshed)
 }
@@ -1136,7 +1845,44 @@ pub async fn refresh_antigravity_official_account_limits(
         );
     }
     if account_id == LOCAL_OFFICIAL_ACCOUNT_ID {
-        return Err("The Antigravity CLI default configuration has no managed quota".to_string());
+        let raw = credential_store::read_credential_text()?
+            .ok_or_else(|| "No Antigravity CLI login found in the OS credential store".to_string())?;
+        let refreshed_snapshot = ensure_fresh_auth_snapshot(db, &raw).await?;
+        if refreshed_snapshot != raw {
+            credential_store::write_credential_text(&refreshed_snapshot)?;
+            sync_cli_fallback_file_if_present(db, Some(&refreshed_snapshot));
+        }
+        let parsed = serde_json::from_str::<Value>(&refreshed_snapshot)
+            .map_err(|error| format!("Failed to parse Antigravity CLI credential: {error}"))?;
+        let access_token = auth_string(&parsed, "access_token")
+            .ok_or_else(|| "No valid access token available for limits check".to_string())?;
+        let quota = retrieve_user_quota(db, access_token, None).await?;
+        let persisted = list_persisted_managed_accounts(db, &provider_id)?;
+        let local_is_applied =
+            provider.is_applied && !persisted.iter().any(|account| account.is_applied);
+        let mut virtual_account = build_virtual_local_account(
+            &provider_id,
+            &refreshed_snapshot,
+            &parsed,
+            local_is_applied,
+        );
+        if virtual_account.email.is_none() {
+            // Only hit the userinfo endpoint when the id_token carries no email.
+            virtual_account.email = fetch_user_profile(db, access_token)
+                .await
+                .ok()
+                .and_then(|(email, _)| email);
+        }
+        let now_str = Local::now().to_rfc3339();
+        virtual_account.project_id = quota.project_id;
+        virtual_account.plan_type = quota.plan_type;
+        virtual_account.limit_short_label = quota.limit_short_label;
+        virtual_account.limit_5h_text = quota.limit_5h_text;
+        virtual_account.limit_5h_reset_at = quota.limit_5h_reset_at;
+        virtual_account.limit_weekly_text = quota.limit_weekly_text;
+        virtual_account.limit_weekly_reset_at = quota.limit_weekly_reset_at;
+        virtual_account.last_limits_fetched_at = Some(now_str);
+        return Ok(virtual_account);
     }
 
     let record = db
@@ -1154,7 +1900,7 @@ pub async fn refresh_antigravity_official_account_limits(
         .map_err(|error| format!("Failed to parse account snapshot: {error}"))?;
     let access_token = auth_string(&parsed, "access_token")
         .ok_or_else(|| "No valid access token available for limits check".to_string())?;
-    let quota_result = retrieve_user_quota(db, access_token).await;
+    let quota_result = retrieve_user_quota(db, access_token, account.project_id.as_deref()).await;
     persist_quota_result(db, &account_id, quota_result)?;
 
     let updated_record = db
@@ -1184,47 +1930,61 @@ fn persist_quota_result(
         }
     };
     let now_str = Local::now().to_rfc3339();
+    let mut fields: Vec<(&str, Value)> = vec![
+        (
+            "limit_short_label",
+            quota
+                .limit_short_label
+                .or_else(|| quota.limit_weekly_text.clone())
+                .map(Value::String)
+                .unwrap_or(Value::Null),
+        ),
+        (
+            "limit_5h_text",
+            quota
+                .limit_5h_text
+                .map(Value::String)
+                .unwrap_or(Value::Null),
+        ),
+        (
+            "limit_5h_reset_at",
+            quota
+                .limit_5h_reset_at
+                .map(|v| Value::Number(v.into()))
+                .unwrap_or(Value::Null),
+        ),
+        (
+            "limit_weekly_text",
+            quota
+                .limit_weekly_text
+                .map(Value::String)
+                .unwrap_or(Value::Null),
+        ),
+        (
+            "limit_weekly_reset_at",
+            quota
+                .limit_weekly_reset_at
+                .map(|v| Value::Number(v.into()))
+                .unwrap_or(Value::Null),
+        ),
+        ("last_limits_fetched_at", Value::String(now_str.clone())),
+        ("last_error", Value::Null),
+        ("updated_at", Value::String(now_str)),
+    ];
+    // Preserve previously resolved project_id / plan_type when loadCodeAssist transiently omits them.
+    if let Some(project_id) = quota.project_id {
+        fields.push(("project_id", Value::String(project_id)));
+    }
+    if let Some(plan_type) = quota.plan_type {
+        fields.push(("plan_type", Value::String(plan_type)));
+    }
 
     db.with_conn(|conn| {
         db_patch_fields(
             conn,
             DbTable::CliOfficialAccount(Cli::Antigravity),
             account_id,
-            &[
-                (
-                    "project_id",
-                    quota.project_id.map(Value::String).unwrap_or(Value::Null),
-                ),
-                (
-                    "plan_type",
-                    quota.plan_type.map(Value::String).unwrap_or(Value::Null),
-                ),
-                (
-                    "limit_short_label",
-                    quota
-                        .limit_weekly_text
-                        .clone()
-                        .map(Value::String)
-                        .unwrap_or(Value::Null),
-                ),
-                (
-                    "limit_weekly_text",
-                    quota
-                        .limit_weekly_text
-                        .map(Value::String)
-                        .unwrap_or(Value::Null),
-                ),
-                (
-                    "limit_weekly_reset_at",
-                    quota
-                        .limit_weekly_reset_at
-                        .map(|v| Value::Number(v.into()))
-                        .unwrap_or(Value::Null),
-                ),
-                ("last_limits_fetched_at", Value::String(now_str.clone())),
-                ("last_error", Value::Null),
-                ("updated_at", Value::String(now_str)),
-            ],
+            &fields,
         )
     })?;
 
@@ -1787,7 +2547,6 @@ mod tests {
         for (provider, account, expected) in [
             ("other", "account", "does not belong"),
             ("disabled", "account", "Only enabled"),
-            ("official", LOCAL_OFFICIAL_ACCOUNT_ID, "no managed quota"),
         ] {
             let error = refresh_antigravity_official_account_limits(
                 app.state(),
@@ -1836,5 +2595,187 @@ mod tests {
         assert!(url.contains("auth%2Faicode"));
         assert!(url.contains("auth%2Fcclog"));
         assert!(url.contains("auth%2Fexperimentsandconfigs"));
+    }
+
+    fn jwt_with_email(email: &str) -> String {
+        let header = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"alg":"RS256","typ":"JWT"}"#);
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(json!({"email": email}).to_string());
+        format!("{header}.{payload}.sig")
+    }
+
+    #[tokio::test]
+    async fn list_accounts_only_shows_virtual_local_row_for_unmanaged_os_login() {
+        let _env = crate::coding::test_env::lock();
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        db.with_conn(|conn| {
+            db_put(
+                conn,
+                DbTable::CliProvider(Cli::Antigravity),
+                "official",
+                &json!({"category": "official", "is_applied": true}),
+            )?;
+            // Legacy persisted `__local__` row should not leak into the list.
+            db_put(
+                conn,
+                DbTable::CliOfficialAccount(Cli::Antigravity),
+                LOCAL_OFFICIAL_ACCOUNT_ID,
+                &json!({"provider_id": "official", "kind": "local", "auth_snapshot": ""}),
+            )
+        })
+        .unwrap();
+
+        let credentials = MemoryCredentials::default();
+        // 1. No OS login -> empty list (no permanent placeholder row).
+        let accounts = list_official_accounts_with_store(&db, "official", &credentials).unwrap();
+        assert!(accounts.is_empty());
+
+        // 2. Unmanaged OS login -> single virtual local row with email decoded from id_token.
+        let local_login = json!({
+            "auth_method": "consumer",
+            "token": {
+                "access_token": "local-access-token-123456",
+                "refresh_token": "local-refresh-token-123456",
+                "id_token": jwt_with_email("alice@example.com"),
+                "expiry": "2099-01-01T00:00:00Z"
+            }
+        })
+        .to_string();
+        credentials.replace(Some(&local_login)).unwrap();
+        let accounts = list_official_accounts_with_store(&db, "official", &credentials).unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].id, LOCAL_OFFICIAL_ACCOUNT_ID);
+        assert!(accounts[0].is_virtual);
+        assert!(accounts[0].is_applied);
+        assert_eq!(accounts[0].email.as_deref(), Some("alice@example.com"));
+        assert!(accounts[0].access_token_preview.is_some());
+
+        // 3. Once saved as a managed account, the virtual row disappears.
+        let mut managed = account_content(true);
+        managed.email = Some("alice@example.com".to_string());
+        managed.auth_snapshot = local_login;
+        persist_imported_account(&db, "saved-1", &managed).unwrap();
+        let accounts = list_official_accounts_with_store(&db, "official", &credentials).unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].id, "saved-1");
+        assert!(!accounts[0].is_virtual);
+    }
+
+    #[test]
+    fn load_code_assist_extracts_project_and_normalized_tier() {
+        let (project, tier) = parse_load_code_assist_response(&json!({
+            "cloudaicompanionProject": {"id": "proj-123"},
+            "paidTier": {"id": "g1-pro-tier"},
+            "currentTier": {"id": "free-tier"}
+        }));
+        assert_eq!(project.as_deref(), Some("proj-123"));
+        assert_eq!(tier.as_deref(), Some("PRO"));
+
+        let (project, tier) = parse_load_code_assist_response(&json!({
+            "cloudaicompanionProject": "aicode-consumers",
+            "currentTier": {"id": "free-tier"}
+        }));
+        assert!(project.is_none());
+        assert_eq!(tier.as_deref(), Some("FREE"));
+    }
+
+    #[test]
+    fn quota_summary_parses_5h_and_weekly_buckets_and_persists() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        persist_imported_account(&db, "account", &account_content(false)).unwrap();
+        let snapshot = parse_quota_summary_response(
+            &json!({
+                "groups": [{
+                    "buckets": [
+                        {"bucketId": "gemini-5h", "remainingFraction": 0.85, "resetTime": "2026-11-23T15:00:00Z"},
+                        {"bucketId": "3p-5h", "remainingFraction": 1.0, "resetTime": "2026-11-23T16:00:00Z"},
+                        {"bucketId": "gemini-weekly", "remainingFraction": 0.92, "resetTime": "2026-11-30T00:00:00Z"},
+                        {"bucketId": "3p-weekly", "remainingFraction": 0.78, "resetTime": "2026-11-29T00:00:00Z"}
+                    ]
+                }]
+            }),
+            Some("proj-123".to_string()),
+            Some("PRO".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.limit_5h_text.as_deref(), Some("Gemini 85% · Claude 100%"));
+        assert_eq!(snapshot.limit_weekly_text.as_deref(), Some("Gemini 92% · Claude 78%"));
+        assert_eq!(
+            snapshot.limit_short_label.as_deref(),
+            Some("5h: Gemini 85% · Claude 100% | Weekly: Gemini 92% · Claude 78%")
+        );
+        assert!(snapshot.limit_5h_reset_at.is_some());
+        assert!(snapshot.limit_weekly_reset_at.is_some());
+
+        persist_quota_result(&db, "account", Ok(snapshot)).unwrap();
+        let account = read_account(&db, "account");
+        assert_eq!(account.project_id.as_deref(), Some("proj-123"));
+        assert_eq!(account.plan_type.as_deref(), Some("PRO"));
+        assert_eq!(account.limit_5h_text.as_deref(), Some("Gemini 85% · Claude 100%"));
+        assert_eq!(account.limit_weekly_text.as_deref(), Some("Gemini 92% · Claude 78%"));
+        assert!(account.limit_5h_reset_at.is_some());
+        assert!(account.limit_weekly_reset_at.is_some());
+    }
+
+    #[test]
+    fn fetch_available_models_fallback_summarizes_model_families() {
+        let snapshot = parse_available_models_quota(
+            &json!({
+                "models": {
+                    "gemini-4-argon-high": {"quotaInfo": {"remainingFraction": 0.6, "resetTime": "2026-11-25T00:00:00Z"}},
+                    "gemini-3.8-flash-low": {"quotaInfo": {"remainingFraction": 0.9, "resetTime": "2026-11-26T00:00:00Z"}},
+                    "claude-sonnet-5-5-high": {"quotaInfo": {"remainingFraction": 0.4, "resetTime": "2026-11-24T12:00:00Z"}}
+                }
+            }),
+            Some("proj-1".to_string()),
+            Some("ULTRA".to_string()),
+        )
+        .unwrap();
+        assert_eq!(snapshot.limit_weekly_text.as_deref(), Some("Gemini 60% · Claude 40%"));
+        assert_eq!(snapshot.plan_type.as_deref(), Some("ULTRA"));
+        assert!(snapshot.limit_weekly_reset_at.is_some());
+    }
+
+    #[test]
+    fn persist_quota_result_preserves_existing_project_and_plan_when_omitted() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let mut content = account_content(false);
+        content.project_id = Some("existing-proj".to_string());
+        content.plan_type = Some("PRO".to_string());
+        persist_imported_account(&db, "account", &content).unwrap();
+
+        let partial = AntigravityQuotaSnapshot {
+            project_id: None,
+            plan_type: None,
+            limit_short_label: Some("5h: Gemini 90%".to_string()),
+            limit_5h_text: Some("Gemini 90%".to_string()),
+            limit_5h_reset_at: Some(1_800_000_000),
+            limit_weekly_text: None,
+            limit_weekly_reset_at: None,
+        };
+        persist_quota_result(&db, "account", Ok(partial)).unwrap();
+        let account = read_account(&db, "account");
+        assert_eq!(account.project_id.as_deref(), Some("existing-proj"));
+        assert_eq!(account.plan_type.as_deref(), Some("PRO"));
+        assert_eq!(account.limit_5h_text.as_deref(), Some("Gemini 90%"));
+    }
+
+    #[test]
+    fn matching_persisted_account_deduplicates_by_email_case_insensitively() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let mut content = account_content(true);
+        content.email = Some("Alice@Example.com".to_string());
+        persist_imported_account(&db, "existing-1", &content).unwrap();
+
+        let matched = find_matching_persisted_account(
+            &db,
+            "official",
+            Some("alice@example.com"),
+            &json!({}),
+        )
+        .unwrap();
+        assert_eq!(matched.map(|a| a.id).as_deref(), Some("existing-1"));
     }
 }

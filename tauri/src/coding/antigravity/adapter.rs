@@ -61,7 +61,7 @@ fn mask_token_preview(value: &str) -> Option<String> {
     Some(format!("{head}...{tail}"))
 }
 
-fn token_preview_from_snapshot(snapshot: &str, pointer: &str) -> Option<String> {
+pub(super) fn token_preview_from_snapshot(snapshot: &str, pointer: &str) -> Option<String> {
     let parsed = serde_json::from_str::<Value>(snapshot).ok()?;
     parsed
         .pointer(pointer)
@@ -69,7 +69,7 @@ fn token_preview_from_snapshot(snapshot: &str, pointer: &str) -> Option<String> 
         .and_then(mask_token_preview)
 }
 
-fn token_expires_at_from_snapshot(snapshot: &str) -> Option<i64> {
+pub(super) fn token_expires_at_from_snapshot(snapshot: &str) -> Option<i64> {
     let parsed = serde_json::from_str::<Value>(snapshot).ok()?;
     parsed
         .pointer("/token/expiry")
@@ -228,6 +228,7 @@ pub fn from_db_value_prompt(value: Value) -> AntigravityPromptConfig {
         id: db_extract_id(&value),
         name: get_str_compat(&value, "name", "name", "Unnamed Prompt"),
         content: get_str_compat(&value, "content", "content", ""),
+        target_file: get_opt_str_compat(&value, "target_file", "targetFile"),
         is_applied: get_bool_compat(&value, "is_applied", "isApplied", false),
         sort_index: get_i64_compat(&value, "sort_index", "sortIndex"),
         created_at: get_opt_str_compat(&value, "created_at", "createdAt"),

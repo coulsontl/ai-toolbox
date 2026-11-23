@@ -1,14 +1,20 @@
 import React from 'react';
-import { Alert, Button, Form, Input, Modal } from 'antd';
+import { Alert, Button, Form, Input, Modal, Select, Typography } from 'antd';
 import { useTranslation } from 'react-i18next';
 import { LOCAL_CONFIG_ID } from '../localConfig';
 import MarkdownEditor from '@/components/common/MarkdownEditor';
-import type { GlobalPromptConfig } from '@/types/globalPrompt';
+import type {
+  GlobalPromptConfig,
+  GlobalPromptTargetFileOption,
+} from '@/types/globalPrompt';
 import styles from './GlobalPromptSettings.module.less';
+
+const { Text } = Typography;
 
 export interface GlobalPromptConfigFormValues {
   name: string;
   content: string;
+  targetFile?: string;
 }
 
 interface GlobalPromptConfigModalProps {
@@ -19,6 +25,12 @@ interface GlobalPromptConfigModalProps {
    *  content placeholder and the local-file hint. */
   promptFileName: string;
   initialValues?: Partial<GlobalPromptConfig>;
+  /**
+   * Optional list of selectable target files. Only rendered when provided so
+   * single-file CLIs keep their existing modal layout untouched.
+   */
+  targetFileOptions?: GlobalPromptTargetFileOption[];
+  defaultTargetFile?: string;
   /**
    * Shows the name but refuses to change it.
    *
@@ -37,6 +49,8 @@ const GlobalPromptConfigModal: React.FC<GlobalPromptConfigModalProps> = ({
   toolName,
   promptFileName,
   initialValues,
+  targetFileOptions,
+  defaultTargetFile,
   nameReadOnly = false,
   onCancel,
   onSuccess,
@@ -44,17 +58,33 @@ const GlobalPromptConfigModal: React.FC<GlobalPromptConfigModalProps> = ({
   const { t } = useTranslation();
   const [form] = Form.useForm<GlobalPromptConfigFormValues>();
   const [saving, setSaving] = React.useState(false);
+  const hasTargetFileOptions = Boolean(targetFileOptions && targetFileOptions.length > 0);
+  const selectedTargetFile = Form.useWatch('targetFile', form);
+
+  const effectiveTargetFile = hasTargetFileOptions
+    ? (selectedTargetFile || initialValues?.targetFile || defaultTargetFile || targetFileOptions![0].value)
+    : promptFileName;
+
+  const selectedTargetOption = React.useMemo(
+    () => targetFileOptions?.find((option) => option.value === effectiveTargetFile),
+    [effectiveTargetFile, targetFileOptions],
+  );
 
   React.useEffect(() => {
     if (!open) {
       return;
     }
 
-    form.setFieldsValue({
+    const nextValues: GlobalPromptConfigFormValues = {
       name: initialValues?.name || '',
       content: initialValues?.content || '',
-    });
-  }, [form, initialValues, open]);
+    };
+    if (hasTargetFileOptions) {
+      nextValues.targetFile =
+        initialValues?.targetFile || defaultTargetFile || targetFileOptions![0].value;
+    }
+    form.setFieldsValue(nextValues);
+  }, [defaultTargetFile, form, hasTargetFileOptions, initialValues, open, targetFileOptions]);
 
   const handleSubmit = async () => {
     try {
@@ -94,8 +124,8 @@ const GlobalPromptConfigModal: React.FC<GlobalPromptConfigModalProps> = ({
         <Form
           form={form}
           layout="horizontal"
-          labelCol={{ span: 2 }}
-          wrapperCol={{ span: 22 }}
+          labelCol={{ span: hasTargetFileOptions ? 3 : 2 }}
+          wrapperCol={{ span: hasTargetFileOptions ? 21 : 22 }}
         >
           <Form.Item
             label={t('common.prompt.name')}
@@ -110,6 +140,27 @@ const GlobalPromptConfigModal: React.FC<GlobalPromptConfigModalProps> = ({
               placeholder={t('common.prompt.namePlaceholder', { tool: toolName })}
             />
           </Form.Item>
+          {hasTargetFileOptions && (
+            <Form.Item
+              label={t('common.prompt.targetFile')}
+              name="targetFile"
+              rules={[{ required: true }]}
+              extra={
+                selectedTargetOption?.hint ? (
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {selectedTargetOption.hint}
+                  </Text>
+                ) : undefined
+              }
+            >
+              <Select
+                options={targetFileOptions!.map((option) => ({
+                  value: option.value,
+                  label: option.label,
+                }))}
+              />
+            </Form.Item>
+          )}
           <Form.Item
             label={t('common.prompt.content')}
             name="content"
@@ -120,7 +171,7 @@ const GlobalPromptConfigModal: React.FC<GlobalPromptConfigModalProps> = ({
               minHeight={220}
               maxHeight={520}
               resizable
-              placeholder={t('common.prompt.contentPlaceholder', { file: promptFileName })}
+              placeholder={t('common.prompt.contentPlaceholder', { file: effectiveTargetFile })}
             />
           </Form.Item>
         </Form>

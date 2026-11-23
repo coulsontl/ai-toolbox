@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Card, Dropdown, Space, Typography, theme } from 'antd';
+import { Button, Card, Dropdown, Space, Tag, Typography, theme } from 'antd';
 import {
   CheckOutlined,
   DeleteOutlined,
@@ -26,6 +26,8 @@ interface GlobalPromptConfigCardProps {
   config: GlobalPromptConfig;
   /** Name of the runtime prompt file, interpolated into the local-file hint. */
   promptFileName?: string;
+  /** Optional target file tag shown next to the name for multi-target CLIs. */
+  targetFileLabel?: string;
   /** Extra note beside the name (the local-file hint, "not created yet"). */
   hint?: React.ReactNode;
   /**
@@ -51,6 +53,7 @@ interface GlobalPromptConfigCardProps {
 const GlobalPromptConfigCard: React.FC<GlobalPromptConfigCardProps> = ({
   config,
   promptFileName,
+  targetFileLabel,
   hint,
   onEdit,
   onDelete,
@@ -148,6 +151,9 @@ const GlobalPromptConfigCard: React.FC<GlobalPromptConfigCardProps> = ({
             <div className={styles.cardHeader}>
               <div className={styles.cardTitleRow}>
                 <Text strong className={styles.cardName}>{config.name}</Text>
+                {targetFileLabel && (
+                  <Tag className={styles.targetFileTag}>{targetFileLabel}</Tag>
+                )}
                 {isLocalConfig && (
                   <Text type="secondary" className={styles.cardHint}>
                     ({t('common.prompt.localConfigHint', { file: promptFileName })})

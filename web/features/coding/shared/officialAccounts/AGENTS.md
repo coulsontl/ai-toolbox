@@ -54,9 +54,9 @@
 | zcode | `standalone`（列表里是自己的卡片，壳用 `CardShell`；卡片布局里是**一个普通格子 + 该格子自己的详情侧栏**，侧栏那份不折叠） | 列表：区块自己画（`headingTitle`）；卡片布局：格子的标题行（`namePrefix` + `OfficialAccountCount`），侧栏用面板标题 | 区块画在标题行下方（`OfficialAccountHint`） | 有，默认展开 |
 | geminicli | `embedded`（官方供应商卡片内；卡片布局下这块内容在**该格子的详情侧栏**，那一处不折叠） | 卡片名称行（`namePrefix` + `OfficialAccountCount`） | 卡片第二行（`metaEntries`，`OfficialAccountHint`） | 有，默认收起（迁移前即如此） |
 | grok | 同上 | 同上 | 同上 | 有，默认收起（迁移前即如此） |
-| antigravity | **仍手写**（`PENDING_MIGRATION`，1 个） | — | — | — |
+| antigravity | `standalone`（独立账号 Collapse 分区内，不套外层 `<Card>`） | 外层 Collapse 标题（不传 `headingTitle`） | 区块内 `hint`（`OfficialAccountHint`） | 有，默认展开 |
 
-> antigravity 是 2026-10-09 修守卫时才发现的：原守卫匹配的是 `anticon-swap` / `anticon-check`（渲染后的 DOM class），源码里永远不命中，所以它从未被扫出（见 13.1 模式七十三）。geminicli / grok 已于 2026-10-20 按同一份映射规则接入。
+> 全仓 `PENDING_MIGRATION` 已清零（antigravity 于 2026-11-23 迁完）。geminicli / grok 已于 2026-10-20 按同一份映射规则接入。
 
 ### 行内的 CLI 专属动作：`renderExtraActions`
 

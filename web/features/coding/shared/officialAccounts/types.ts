@@ -33,7 +33,12 @@ export interface OfficialAccountRowView {
   label: string;
   /** Short kind tag, e.g. the caller's wording for "local" or "OAuth". */
   kindTag?: string;
-  /** Secondary lines shown after the tag, in order (plan, quotas, resets). */
+  /** Optional subscription tier tag rendered beside the account name (e.g. PRO / ULTRA / FREE). */
+  planTag?: {
+    label: string;
+    color?: string;
+  };
+  /** Secondary lines shown below the account name, separated by `|` (quotas, resets, etc.). */
   metaLines?: string[];
   /**
    * The account the CLI is currently using. Drives the bold name and the

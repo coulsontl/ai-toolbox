@@ -28,7 +28,14 @@
 //!   `auth_method`) and must preserve `refresh_token`/`id_token` verbatim.
 //! * `token.expiry` must stay RFC3339 (`+08:00` offset and `Z` are both fine).
 
+use base64::Engine;
+use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::Path;
+
+const GO_KEYRING_BASE64_PREFIX: &str = "go-keyring-base64:";
+const WINDOWS_CREDENTIAL_MAX_BLOB_BYTES: usize = 5 * 512;
+const CLI_FALLBACK_TOKEN_FILE: &str = "antigravity-oauth-token";
 
 /// Injectable boundary for account-switch round trips without touching real logins.
 pub(super) trait CredentialStore: Send + Sync {
@@ -67,14 +74,95 @@ pub fn read_credential_blob() -> Result<Option<Vec<u8>>, String> {
     })
 }
 
+/// Decode `go-keyring-base64:` payloads (written by Go's keyring on macOS) and
+/// trim surrounding whitespace.
+fn normalize_credential_secret(secret: &str) -> Result<String, String> {
+    let trimmed = secret.trim();
+    if let Some(encoded) = trimmed.strip_prefix(GO_KEYRING_BASE64_PREFIX) {
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded.trim())
+            .map_err(|error| format!("Antigravity credential base64 decode failed: {error}"))?;
+        let text = String::from_utf8(decoded)
+            .map_err(|error| format!("Antigravity decoded credential is not valid UTF-8: {error}"))?;
+        return Ok(text.trim().to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Windows Credential Manager enforces a 2560-byte (5 * 512) blob limit.
+/// When a full OAuth snapshot (often carrying a large JWT `id_token`) exceeds
+/// that limit, strip non-essential fields while preserving everything `agy`
+/// needs to authenticate and refresh (`token.{access_token,refresh_token,token_type,expiry}`
+/// + `auth_method`).
+#[cfg(any(target_os = "windows", test))]
+fn fit_windows_credential_payload(contents: &str) -> Result<String, String> {
+    if contents.len() <= WINDOWS_CREDENTIAL_MAX_BLOB_BYTES {
+        return Ok(contents.to_string());
+    }
+    let parsed = serde_json::from_str::<Value>(contents)
+        .map_err(|error| format!("Antigravity credential exceeds Windows limit and is not JSON: {error}"))?;
+    let mut token = serde_json::Map::new();
+    for field in ["access_token", "refresh_token", "token_type", "expiry"] {
+        if let Some(val) = parsed
+            .get("token")
+            .and_then(|t| t.get(field))
+            .or_else(|| parsed.get(field))
+            .and_then(Value::as_str)
+            .filter(|v| !v.trim().is_empty())
+        {
+            token.insert(field.to_string(), json!(val));
+        }
+    }
+    let auth_method = parsed
+        .get("auth_method")
+        .and_then(Value::as_str)
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or("consumer");
+    let compact = json!({
+        "token": Value::Object(token),
+        "auth_method": auth_method,
+    })
+    .to_string();
+    if compact.len() > WINDOWS_CREDENTIAL_MAX_BLOB_BYTES {
+        return Err(format!(
+            "Antigravity credential payload ({} bytes) exceeds Windows Credential Manager limit ({} bytes)",
+            compact.len(),
+            WINDOWS_CREDENTIAL_MAX_BLOB_BYTES
+        ));
+    }
+    Ok(compact)
+}
+
+/// Sync `<runtime_root>/antigravity-oauth-token` only if it already exists, so
+/// an old CLI fallback file cannot resurrect a previous account.
+pub fn sync_existing_cli_fallback_file(root_dir: &Path, snapshot: Option<&str>) {
+    let fallback_path = root_dir.join(CLI_FALLBACK_TOKEN_FILE);
+    if !fallback_path.is_file() {
+        return;
+    }
+    match snapshot {
+        Some(content) => {
+            let _ = std::fs::write(&fallback_path, content);
+        }
+        None => {
+            let _ = std::fs::remove_file(&fallback_path);
+        }
+    }
+}
+
 /// Read the credential blob and decode it as UTF-8 text.
 pub fn read_credential_text() -> Result<Option<String>, String> {
     let Some(bytes) = read_credential_blob()? else {
         return Ok(None);
     };
-    String::from_utf8(bytes)
-        .map(Some)
-        .map_err(|error| format!("Antigravity credential is not valid UTF-8: {error}"))
+    let text = String::from_utf8(bytes)
+        .map_err(|error| format!("Antigravity credential is not valid UTF-8: {error}"))?;
+    let normalized = normalize_credential_secret(&text)?;
+    if normalized.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(normalized))
+    }
 }
 
 /// Overwrite the credential blob with raw UTF-8 bytes.
@@ -82,7 +170,17 @@ pub fn read_credential_text() -> Result<Option<String>, String> {
 /// Never use the credential store's password API here: it encodes UTF-16LE and
 /// `agy` would then fail to parse its own credential.
 pub fn write_credential_text(contents: &str) -> Result<(), String> {
-    write_credential_blob(contents.as_bytes())
+    #[cfg(target_os = "windows")]
+    let prepared = fit_windows_credential_payload(contents)?;
+    #[cfg(target_os = "macos")]
+    let prepared = format!(
+        "{GO_KEYRING_BASE64_PREFIX}{}",
+        base64::engine::general_purpose::STANDARD.encode(contents.as_bytes())
+    );
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let prepared = contents.to_string();
+
+    write_credential_blob(prepared.as_bytes())
 }
 
 /// Overwrite the credential blob with arbitrary bytes.
@@ -205,5 +303,41 @@ mod tests {
         assert_eq!(ANTIGRAVITY_CREDENTIAL_SERVICE, "gemini");
         assert_eq!(ANTIGRAVITY_CREDENTIAL_ACCOUNT, "antigravity");
         assert!(!ANTIGRAVITY_CREDENTIAL_TARGET.contains('.'));
+    }
+
+    #[test]
+    fn normalize_decodes_go_keyring_base64_and_keeps_plain_json() {
+        let raw = r#"{"auth_method":"consumer","token":{"access_token":"abc"}}"#;
+        assert_eq!(normalize_credential_secret(raw).unwrap(), raw);
+        let encoded = format!(
+            "{GO_KEYRING_BASE64_PREFIX}{}",
+            base64::engine::general_purpose::STANDARD.encode(raw.as_bytes())
+        );
+        assert_eq!(normalize_credential_secret(&encoded).unwrap(), raw);
+    }
+
+    #[test]
+    fn windows_payload_compacts_oversized_id_token() {
+        let huge_id_token = "x".repeat(3000);
+        let payload = json!({
+            "auth_method": "consumer",
+            "extra_field": "drop-me",
+            "token": {
+                "access_token": "acc-123",
+                "refresh_token": "ref-456",
+                "token_type": "Bearer",
+                "expiry": "2099-01-01T00:00:00Z",
+                "id_token": huge_id_token
+            }
+        })
+        .to_string();
+        assert!(payload.len() > WINDOWS_CREDENTIAL_MAX_BLOB_BYTES);
+        let compacted = fit_windows_credential_payload(&payload).unwrap();
+        assert!(compacted.len() <= WINDOWS_CREDENTIAL_MAX_BLOB_BYTES);
+        let parsed: Value = serde_json::from_str(&compacted).unwrap();
+        assert_eq!(parsed["auth_method"], "consumer");
+        assert_eq!(parsed["token"]["access_token"], "acc-123");
+        assert_eq!(parsed["token"]["refresh_token"], "ref-456");
+        assert!(parsed["token"].get("id_token").is_none());
     }
 }

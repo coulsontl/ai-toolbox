@@ -20,6 +20,7 @@ import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
 import type {
   GlobalPromptConfig,
   GlobalPromptConfigInput,
+  GlobalPromptTargetFileOption,
 } from '@/types/globalPrompt';
 import type { GlobalPromptApi } from '@/services/globalPromptApi';
 import GlobalPromptConfigCard from './GlobalPromptConfigCard';
@@ -50,6 +51,13 @@ interface GlobalPromptSettingsProps {
    * content placeholder.
    */
   promptFileName: string;
+  /** Optional extra note rendered inside the top hint block. */
+  extraHint?: React.ReactNode;
+  /** Optional content rendered below the prompt list (e.g. read-only local files). */
+  footer?: React.ReactNode;
+  /** Optional selectable target files for CLIs that support writing to multiple rule files. */
+  targetFileOptions?: GlobalPromptTargetFileOption[];
+  defaultTargetFile?: string;
 }
 
 const GlobalPromptSettings: React.FC<GlobalPromptSettingsProps> = ({
@@ -60,6 +68,10 @@ const GlobalPromptSettings: React.FC<GlobalPromptSettingsProps> = ({
   defaultExpanded = false,
   toolName,
   promptFileName,
+  extraHint,
+  footer,
+  targetFileOptions,
+  defaultTargetFile,
 }) => {
   const { t } = useTranslation();
   const [loading, setLoading] = React.useState(false);
@@ -161,6 +173,7 @@ const GlobalPromptSettings: React.FC<GlobalPromptSettingsProps> = ({
       id: editingConfig?.id !== LOCAL_CONFIG_ID ? editingConfig?.id : undefined,
       name: values.name,
       content: values.content,
+      ...(values.targetFile !== undefined ? { targetFile: values.targetFile } : {}),
     };
 
     try {
@@ -214,13 +227,25 @@ const GlobalPromptSettings: React.FC<GlobalPromptSettingsProps> = ({
     }
   };
 
+  const hasTargetFileOptions = Boolean(targetFileOptions && targetFileOptions.length > 0);
+
+  // `__local__` mirrors the local prompt file only; do not present it as a managed applied preset.
+  const appliedConfig = configs.find(
+    (config) => config.isApplied && config.id !== LOCAL_CONFIG_ID
+  );
+  // Multi-target CLIs warn about the file the applied preset actually writes.
+  const warningFileName = hasTargetFileOptions
+    ? (appliedConfig?.targetFile || defaultTargetFile || promptFileName)
+    : promptFileName;
+
   const content = (
     <Spin spinning={loading}>
       <div className={styles.hintBlock}>
         <div>{t('common.prompt.sectionHint', { tool: toolName })}</div>
         <div>
-          {t('common.prompt.sectionWarning', { file: promptFileName })}
+          {t('common.prompt.sectionWarning', { file: warningFileName })}
         </div>
+        {extraHint && <div className={styles.extraHint}>{extraHint}</div>}
       </div>
 
       {configs.length === 0 ? (
@@ -239,6 +264,11 @@ const GlobalPromptSettings: React.FC<GlobalPromptSettingsProps> = ({
                   key={config.id}
                   config={config}
                   promptFileName={promptFileName}
+                  targetFileLabel={
+                    hasTargetFileOptions
+                      ? (config.targetFile || defaultTargetFile || promptFileName)
+                      : undefined
+                  }
                   onEdit={handleEditConfig}
                   onDelete={handleDeleteConfig}
                   onApply={handleApplyConfig}
@@ -249,12 +279,8 @@ const GlobalPromptSettings: React.FC<GlobalPromptSettingsProps> = ({
           </SortableContext>
         </DndContext>
       )}
+      {footer}
     </Spin>
-  );
-
-  // `__local__` mirrors the local prompt file only; do not present it as a managed applied preset.
-  const appliedConfig = configs.find(
-    (config) => config.isApplied && config.id !== LOCAL_CONFIG_ID
   );
 
   return (
@@ -302,6 +328,8 @@ const GlobalPromptSettings: React.FC<GlobalPromptSettingsProps> = ({
         toolName={toolName}
         promptFileName={promptFileName}
         initialValues={editingConfig || undefined}
+        targetFileOptions={targetFileOptions}
+        defaultTargetFile={defaultTargetFile}
         onCancel={() => {
           setConfigModalOpen(false);
           setEditingConfig(null);

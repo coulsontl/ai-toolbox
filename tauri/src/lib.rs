@@ -2806,6 +2806,7 @@ pub fn run() {
             coding::antigravity::apply_antigravity_prompt_config,
             coding::antigravity::reorder_antigravity_prompt_configs,
             coding::antigravity::save_antigravity_local_prompt_config,
+            coding::antigravity::list_antigravity_local_rule_files,
             coding::antigravity::list_antigravity_official_accounts,
             coding::antigravity::start_antigravity_official_account_oauth,
             coding::antigravity::save_antigravity_official_local_account,

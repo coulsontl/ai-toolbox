@@ -57,6 +57,11 @@ const OFFICIAL_PROVIDER_REMOVED_ENV_KEYS: [&str; 13] = [
 const ANTIGRAVITY_OFFICIAL_AUTH_TYPE: &str = "oauth-personal";
 pub const ANTIGRAVITY_CLI_HOME_ENV_KEY: &str = "ANTIGRAVITY_CLI_HOME";
 pub const DEFAULT_ANTIGRAVITY_PROMPT_FILE: &str = "GEMINI.md";
+pub const ANTIGRAVITY_PROMPT_TARGET_CONFIG_GEMINI: &str = "~/.gemini/config/GEMINI.md";
+pub const ANTIGRAVITY_PROMPT_TARGET_CONFIG_AGENTS: &str = "~/.gemini/config/AGENTS.md";
+pub const ANTIGRAVITY_PROMPT_TARGET_HOME_GEMINI: &str = "~/.gemini/GEMINI.md";
+pub const ANTIGRAVITY_PROMPT_TARGET_HOME_AGENTS: &str = "~/.gemini/AGENTS.md";
+pub const DEFAULT_ANTIGRAVITY_PROMPT_TARGET_FILE: &str = ANTIGRAVITY_PROMPT_TARGET_CONFIG_GEMINI;
 #[allow(dead_code)]
 const ANTIGRAVITY_NO_LOCAL_PROVIDER_CONFIG_ERROR: &str =
     "No Antigravity local provider config found";
@@ -206,10 +211,11 @@ pub fn get_antigravity_global_rules_dir() -> Result<PathBuf, String> {
     Ok(home.join(".gemini").join("config"))
 }
 
-/// Global rules file AI Toolbox manages for `agy`.
+/// Default global rules file AI Toolbox manages for `agy`.
 ///
-/// `agy` discovers `GEMINI.md`, `AGENTS.md`, `rules/AGENTS.md` and
-/// `.agents/rules/*.md`; `GEMINI.md` is the documented standalone default.
+/// `agy` layers `~/.gemini/{GEMINI,AGENTS}.md`, `~/.gemini/config/{GEMINI,AGENTS}.md`
+/// and `~/.gemini/config/rules/*.md`; presets may pick another single-file
+/// target via `target_file`, this is only the default one.
 pub fn get_antigravity_prompt_path() -> Result<PathBuf, String> {
     Ok(get_antigravity_global_rules_dir()?.join(DEFAULT_ANTIGRAVITY_PROMPT_FILE))
 }
@@ -822,13 +828,137 @@ fn put_antigravity_prompt_to_sqlite(
     })
 }
 
+fn normalize_antigravity_prompt_target_file(
+    target_file: Option<&str>,
+) -> Result<String, String> {
+    let trimmed = target_file.map(str::trim).unwrap_or("");
+    if trimmed.is_empty() {
+        return Ok(DEFAULT_ANTIGRAVITY_PROMPT_TARGET_FILE.to_string());
+    }
+    match trimmed {
+        ANTIGRAVITY_PROMPT_TARGET_CONFIG_GEMINI
+        | ANTIGRAVITY_PROMPT_TARGET_CONFIG_AGENTS
+        | ANTIGRAVITY_PROMPT_TARGET_HOME_GEMINI
+        | ANTIGRAVITY_PROMPT_TARGET_HOME_AGENTS => Ok(trimmed.to_string()),
+        other => Err(format!(
+            "Unsupported Antigravity prompt target file: {other}"
+        )),
+    }
+}
+
+fn resolve_antigravity_prompt_target_path_in_gemini_home(
+    gemini_home: &Path,
+    target_file: Option<&str>,
+) -> Result<PathBuf, String> {
+    let normalized = normalize_antigravity_prompt_target_file(target_file)?;
+    let path = match normalized.as_str() {
+        ANTIGRAVITY_PROMPT_TARGET_CONFIG_GEMINI => gemini_home.join("config").join("GEMINI.md"),
+        ANTIGRAVITY_PROMPT_TARGET_CONFIG_AGENTS => gemini_home.join("config").join("AGENTS.md"),
+        ANTIGRAVITY_PROMPT_TARGET_HOME_GEMINI => gemini_home.join("GEMINI.md"),
+        ANTIGRAVITY_PROMPT_TARGET_HOME_AGENTS => gemini_home.join("AGENTS.md"),
+        _ => unreachable!("target file validated above"),
+    };
+    Ok(path)
+}
+
+async fn resolve_antigravity_prompt_target_path_async(
+    db: &crate::db::SqliteDbState,
+    target_file: Option<&str>,
+) -> Result<PathBuf, String> {
+    let gemini_home = runtime_location::get_antigravity_gemini_home_dir_async(db).await?;
+    resolve_antigravity_prompt_target_path_in_gemini_home(&gemini_home, target_file)
+}
+
+fn scan_antigravity_local_rule_files(
+    gemini_home: &Path,
+    managed_target: Option<&str>,
+) -> Vec<AntigravityLocalRuleFile> {
+    let mut results = Vec::new();
+    let fixed_entries = [
+        (
+            ANTIGRAVITY_PROMPT_TARGET_CONFIG_GEMINI,
+            gemini_home.join("config").join("GEMINI.md"),
+            "config_gemini",
+        ),
+        (
+            ANTIGRAVITY_PROMPT_TARGET_CONFIG_AGENTS,
+            gemini_home.join("config").join("AGENTS.md"),
+            "config_agents",
+        ),
+        (
+            ANTIGRAVITY_PROMPT_TARGET_HOME_GEMINI,
+            gemini_home.join("GEMINI.md"),
+            "shared_gemini",
+        ),
+        (
+            ANTIGRAVITY_PROMPT_TARGET_HOME_AGENTS,
+            gemini_home.join("AGENTS.md"),
+            "home_agents",
+        ),
+    ];
+
+    for (relative_path, full_path, kind) in fixed_entries {
+        if let Ok(Some(content)) = read_prompt_content_file(&full_path, "Antigravity") {
+            let size_bytes = fs::metadata(&full_path)
+                .map(|meta| meta.len())
+                .unwrap_or(content.len() as u64);
+            results.push(AntigravityLocalRuleFile {
+                relative_path: relative_path.to_string(),
+                full_path: full_path.to_string_lossy().to_string(),
+                kind: kind.to_string(),
+                size_bytes,
+                content,
+                is_managed_target: managed_target == Some(relative_path),
+            });
+        }
+    }
+
+    let rules_dir = gemini_home.join("config").join("rules");
+    if let Ok(entries) = fs::read_dir(&rules_dir) {
+        let mut rule_paths: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file()
+                    && path
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| ext.eq_ignore_ascii_case("md"))
+                        .unwrap_or(false)
+            })
+            .collect();
+        rule_paths.sort();
+
+        for full_path in rule_paths {
+            let Some(file_name) = full_path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if let Ok(Some(content)) = read_prompt_content_file(&full_path, "Antigravity") {
+                let size_bytes = fs::metadata(&full_path)
+                    .map(|meta| meta.len())
+                    .unwrap_or(content.len() as u64);
+                results.push(AntigravityLocalRuleFile {
+                    relative_path: format!("~/.gemini/config/rules/{file_name}"),
+                    full_path: full_path.to_string_lossy().to_string(),
+                    kind: "rules_dir".to_string(),
+                    size_bytes,
+                    content,
+                    is_managed_target: false,
+                });
+            }
+        }
+    }
+
+    results
+}
+
 async fn get_local_prompt_config(
     db: Option<&crate::db::SqliteDbState>,
 ) -> Result<Option<AntigravityPromptConfig>, String> {
-    // The global rules file lives in `~/.gemini/config`, independent of the
-    // runtime root directory, so both branches resolve the same path.
-    let _ = db;
-    let prompt_path = get_antigravity_prompt_path()?;
+    let prompt_path = match db {
+        Some(db) => get_antigravity_prompt_path_from_db_async(db).await?,
+        None => get_antigravity_prompt_path()?,
+    };
     let Some(prompt_content) = read_prompt_content_file(&prompt_path, "Antigravity")? else {
         return Ok(None);
     };
@@ -837,11 +967,37 @@ async fn get_local_prompt_config(
         id: crate::coding::local_bridge::LOCAL_CONFIG_ID.to_string(),
         name: "default".to_string(),
         content: prompt_content,
+        target_file: Some(DEFAULT_ANTIGRAVITY_PROMPT_TARGET_FILE.to_string()),
         is_applied: true,
         sort_index: None,
         created_at: Some(now.clone()),
         updated_at: Some(now),
     }))
+}
+
+#[tauri::command]
+pub async fn list_antigravity_local_rule_files(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<Vec<AntigravityLocalRuleFile>, String> {
+    let db = state.db();
+    let prompts = list_antigravity_prompts_from_sqlite(db)?;
+    // With no DB presets the default file is already shown as the `__local__`
+    // card, so treat it as managed to avoid listing it twice.
+    let managed_target = if prompts.is_empty() {
+        Some(DEFAULT_ANTIGRAVITY_PROMPT_TARGET_FILE.to_string())
+    } else {
+        prompts
+            .iter()
+            .find(|prompt| prompt.is_applied)
+            .and_then(|prompt| {
+                normalize_antigravity_prompt_target_file(prompt.target_file.as_deref()).ok()
+            })
+    };
+    let gemini_home = runtime_location::get_antigravity_gemini_home_dir_async(db).await?;
+    Ok(scan_antigravity_local_rule_files(
+        &gemini_home,
+        managed_target.as_deref(),
+    ))
 }
 
 #[tauri::command]
@@ -865,6 +1021,7 @@ pub async fn create_antigravity_prompt_config(
     input: AntigravityPromptConfigInput,
 ) -> Result<AntigravityPromptConfig, String> {
     let db = state.db();
+    let target_file = normalize_antigravity_prompt_target_file(input.target_file.as_deref())?;
     let now = Local::now().to_rfc3339();
     let next_sort_index = db.with_conn(|conn| {
         Ok(db_max_i64(
@@ -879,6 +1036,7 @@ pub async fn create_antigravity_prompt_config(
     let content = AntigravityPromptConfigContent {
         name: input.name,
         content: input.content,
+        target_file: Some(target_file),
         is_applied: false,
         sort_index: Some(next_sort_index),
         created_at: now.clone(),
@@ -892,6 +1050,7 @@ pub async fn create_antigravity_prompt_config(
         id: prompt_id,
         name: content.name,
         content: content.content,
+        target_file: content.target_file,
         is_applied: content.is_applied,
         sort_index: content.sort_index,
         created_at: Some(content.created_at),
@@ -913,6 +1072,12 @@ pub async fn update_antigravity_prompt_config(
     let now = Local::now().to_rfc3339();
     let existing_prompt = get_antigravity_prompt_from_sqlite(db, &config_id)?
         .ok_or_else(|| format!("Prompt config '{}' not found", config_id))?;
+    let previous_target =
+        normalize_antigravity_prompt_target_file(existing_prompt.target_file.as_deref())?;
+    let next_target = match input.target_file.as_deref() {
+        Some(value) => normalize_antigravity_prompt_target_file(Some(value))?,
+        None => previous_target.clone(),
+    };
     let (created_at, is_applied, sort_index) = {
         let prompt = existing_prompt;
         (
@@ -925,6 +1090,7 @@ pub async fn update_antigravity_prompt_config(
     let content = AntigravityPromptConfigContent {
         name: input.name,
         content: input.content.clone(),
+        target_file: Some(next_target.clone()),
         is_applied,
         sort_index,
         created_at,
@@ -933,8 +1099,15 @@ pub async fn update_antigravity_prompt_config(
     put_antigravity_prompt_to_sqlite(db, &config_id, &content)?;
 
     if is_applied {
-        let prompt_path = get_antigravity_prompt_path_from_db_async(db).await?;
+        // Write the new target first so a failure never leaves both files empty.
+        let prompt_path =
+            resolve_antigravity_prompt_target_path_async(db, Some(&next_target)).await?;
         write_prompt_content_file(&prompt_path, Some(input.content.as_str()), "Antigravity")?;
+        if previous_target != next_target {
+            let old_path =
+                resolve_antigravity_prompt_target_path_async(db, Some(&previous_target)).await?;
+            write_prompt_content_file(&old_path, None, "Antigravity")?;
+        }
         let _ = app.emit("wsl-sync-request-antigravity", ());
     }
 
@@ -943,6 +1116,7 @@ pub async fn update_antigravity_prompt_config(
         id: config_id,
         name: content.name,
         content: content.content,
+        target_file: content.target_file,
         is_applied,
         sort_index,
         created_at: Some(content.created_at),
@@ -987,13 +1161,34 @@ async fn apply_prompt_config_internal_with_events<R: tauri::Runtime>(
     emit_events: bool,
 ) -> Result<(), String> {
     let db = state.db();
+    let existing_prompts = list_antigravity_prompts_from_sqlite(db)?;
     let record = db
         .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Antigravity, CliConfigKind::Prompt), config_id))?
         .ok_or_else(|| format!("Antigravity prompt config not found: {config_id}"))?;
     let config = adapter::from_db_value_prompt(record);
+    let next_target = normalize_antigravity_prompt_target_file(config.target_file.as_deref())?;
 
-    let prompt_path = get_antigravity_prompt_path_from_db_async(db).await?;
+    let prompt_path =
+        resolve_antigravity_prompt_target_path_async(db, Some(&next_target)).await?;
     write_prompt_content_file(&prompt_path, Some(&config.content), "Antigravity")?;
+
+    // Clear the previously applied preset's file when it targets a different
+    // file, otherwise `agy` keeps layering the old preset alongside the new one.
+    // Done after the new write so a failure never leaves both files empty.
+    for prompt in existing_prompts
+        .iter()
+        .filter(|item| item.is_applied && item.id != config_id)
+    {
+        if let Ok(prev_target) =
+            normalize_antigravity_prompt_target_file(prompt.target_file.as_deref())
+        {
+            if prev_target != next_target {
+                let prev_path =
+                    resolve_antigravity_prompt_target_path_async(db, Some(&prev_target)).await?;
+                write_prompt_content_file(&prev_path, None, "Antigravity")?;
+            }
+        }
+    }
 
     let now_str = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
@@ -1029,12 +1224,14 @@ pub async fn disable_antigravity_prompt_config(
     config_id: String,
 ) -> Result<(), String> {
     let db = state.db();
-    get_antigravity_prompt_from_sqlite(db, &config_id)?
+    let existing = get_antigravity_prompt_from_sqlite(db, &config_id)?
         .ok_or_else(|| format!("Prompt config '{}' not found", config_id))?;
 
     // 与其它模块保持一致：「禁用」是唯一显式清除生效提示词的语义，保留 DB 记录
-    // 内容不动，只把全部 is_applied 置 false 并清空运行时规则文件。
-    let prompt_path = get_antigravity_prompt_path_from_db_async(db).await?;
+    // 内容不动，只把全部 is_applied 置 false 并清空对应的运行时规则文件。
+    let target_file = normalize_antigravity_prompt_target_file(existing.target_file.as_deref())?;
+    let prompt_path =
+        resolve_antigravity_prompt_target_path_async(db, Some(&target_file)).await?;
     write_prompt_content_file(&prompt_path, None, "Antigravity")?;
 
     let now_str = Local::now().to_rfc3339();
@@ -1083,17 +1280,19 @@ pub async fn save_antigravity_local_prompt_config(
     } else {
         input.content
     };
-    let created = create_antigravity_prompt_config(
+    let mut created = create_antigravity_prompt_config(
         state.clone(),
         app.clone(),
         AntigravityPromptConfigInput {
             id: None,
             name: input.name,
             content: prompt_content,
+            target_file: input.target_file,
         },
     )
     .await?;
     apply_prompt_config_internal(state.clone(), &app, &created.id, false).await?;
+    created.is_applied = true;
     Ok(created)
 }
 
@@ -1132,5 +1331,60 @@ mod tests {
             Some(&json!(ANTIGRAVITY_OFFICIAL_AUTH_TYPE))
         );
         assert!(parsed.pointer("/env/GEMINI_API_KEY").is_none());
+    }
+
+    #[test]
+    fn test_normalize_antigravity_prompt_target_file() {
+        assert_eq!(
+            normalize_antigravity_prompt_target_file(None).unwrap(),
+            ANTIGRAVITY_PROMPT_TARGET_CONFIG_GEMINI
+        );
+        assert_eq!(
+            normalize_antigravity_prompt_target_file(Some("")).unwrap(),
+            ANTIGRAVITY_PROMPT_TARGET_CONFIG_GEMINI
+        );
+        assert_eq!(
+            normalize_antigravity_prompt_target_file(Some("~/.gemini/config/AGENTS.md")).unwrap(),
+            ANTIGRAVITY_PROMPT_TARGET_CONFIG_AGENTS
+        );
+        assert_eq!(
+            normalize_antigravity_prompt_target_file(Some("~/.gemini/GEMINI.md")).unwrap(),
+            ANTIGRAVITY_PROMPT_TARGET_HOME_GEMINI
+        );
+        assert_eq!(
+            normalize_antigravity_prompt_target_file(Some("~/.gemini/AGENTS.md")).unwrap(),
+            ANTIGRAVITY_PROMPT_TARGET_HOME_AGENTS
+        );
+        assert!(normalize_antigravity_prompt_target_file(Some("~/.gemini/other.md")).is_err());
+    }
+
+    #[test]
+    fn test_scan_antigravity_local_rule_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let gemini_home = temp.path();
+        fs::create_dir_all(gemini_home.join("config").join("rules")).unwrap();
+        fs::write(gemini_home.join("config").join("GEMINI.md"), "# Config Gemini").unwrap();
+        fs::write(gemini_home.join("GEMINI.md"), "# Shared Gemini").unwrap();
+        fs::write(gemini_home.join("config").join("rules").join("01-style.md"), "# Style").unwrap();
+        fs::write(gemini_home.join("config").join("rules").join("ignore.txt"), "not md").unwrap();
+        fs::write(gemini_home.join("AGENTS.md"), "   \n  ").unwrap();
+
+        let files = scan_antigravity_local_rule_files(
+            gemini_home,
+            Some(ANTIGRAVITY_PROMPT_TARGET_CONFIG_GEMINI),
+        );
+        let rels: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
+        assert_eq!(
+            rels,
+            vec![
+                "~/.gemini/config/GEMINI.md",
+                "~/.gemini/GEMINI.md",
+                "~/.gemini/config/rules/01-style.md",
+            ]
+        );
+        assert!(files[0].is_managed_target);
+        assert!(!files[1].is_managed_target);
+        assert_eq!(files[1].kind, "shared_gemini");
+        assert_eq!(files[2].kind, "rules_dir");
     }
 }

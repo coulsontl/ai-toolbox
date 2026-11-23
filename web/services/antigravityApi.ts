@@ -3,6 +3,7 @@ import type {
   ConfigPathInfo,
   AntigravityCommonConfig,
   AntigravityCommonConfigInput,
+  AntigravityLocalRuleFile,
   AntigravityOfficialAccount,
   AntigravityOfficialModelsResponse,
   AntigravityProvider,
@@ -108,4 +109,8 @@ export const saveAntigravityCommonConfig = async (
 
 export const fetchAntigravityOfficialModels = async (): Promise<AntigravityOfficialModelsResponse> => {
   return await invoke<AntigravityOfficialModelsResponse>('fetch_antigravity_official_models');
+};
+
+export const listAntigravityLocalRuleFiles = async (): Promise<AntigravityLocalRuleFile[]> => {
+  return await invoke<AntigravityLocalRuleFile[]>('list_antigravity_local_rule_files');
 };

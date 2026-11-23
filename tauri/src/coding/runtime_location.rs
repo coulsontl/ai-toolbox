@@ -1896,6 +1896,27 @@ fn get_antigravity_cli_skills_path_from_location(location: &RuntimeLocationInfo)
     }
 }
 
+/// Antigravity's shared global skills dir: `$HOME/.gemini/config/skills`.
+///
+/// Unlike [`get_antigravity_cli_skills_path_from_location`], this path is not
+/// derived from the CLI custom root: the App, IDE, and CLI all read the shared
+/// config dir under the user's home, including in WSL Direct mode.
+fn get_antigravity_global_skills_path_from_location(
+    location: &RuntimeLocationInfo,
+) -> Option<PathBuf> {
+    if let Some(wsl) = &location.wsl {
+        Some(build_windows_unc_path(
+            &wsl.distro,
+            &expand_home_from_user_root(
+                wsl.linux_user_root.as_deref(),
+                "~/.gemini/config/skills",
+            ),
+        ))
+    } else {
+        crate::coding::tools::path_utils::resolve_storage_path("~/.gemini/config/skills")
+    }
+}
+
 /// Global rules file managed by AI Toolbox for `agy`.
 ///
 /// This is NOT derived from the runtime root directory: `agy` reads global
@@ -1921,6 +1942,32 @@ fn antigravity_prompt_path_for_location(location: &RuntimeLocationInfo) -> PathB
     }
     antigravity::get_antigravity_prompt_path()
         .unwrap_or_else(|_| PathBuf::from(antigravity::DEFAULT_ANTIGRAVITY_PROMPT_FILE))
+}
+
+/// `$HOME/.gemini` as seen by `agy` (all global rule targets live under it).
+///
+/// Same WSL Direct rule as the prompt path: resolve from `linux_user_root`,
+/// never from the module runtime root.
+fn antigravity_gemini_home_dir_for_location(location: &RuntimeLocationInfo) -> PathBuf {
+    if location.mode == RuntimeLocationMode::WslDirect {
+        if let Some(wsl) = location.wsl.as_ref() {
+            let linux_path = expand_home_from_user_root(wsl.linux_user_root.as_deref(), "~/.gemini");
+            if !linux_path.starts_with('~') {
+                return build_windows_unc_path(&wsl.distro, &linux_path);
+            }
+        }
+    }
+    dirs::home_dir()
+        .map(|home| home.join(".gemini"))
+        .unwrap_or_else(|| PathBuf::from(".gemini"))
+}
+
+pub async fn get_antigravity_gemini_home_dir_async(
+    db: &crate::db::SqliteDbState,
+) -> Result<PathBuf, String> {
+    Ok(antigravity_gemini_home_dir_for_location(
+        &get_antigravity_runtime_location_async(db).await?,
+    ))
 }
 
 pub fn get_antigravity_prompt_path_sync(db: &crate::db::SqliteDbState) -> Result<PathBuf, String> {
@@ -2127,6 +2174,9 @@ pub fn get_tool_skills_path_sync(db: &crate::db::SqliteDbState, tool_key: &str) 
         "antigravity_cli" => get_antigravity_runtime_location_sync(db)
             .ok()
             .map(|location| get_antigravity_cli_skills_path_from_location(&location)),
+        "antigravity_global" => get_antigravity_runtime_location_sync(db)
+            .ok()
+            .and_then(|location| get_antigravity_global_skills_path_from_location(&location)),
         "hermes" => Some(
             get_cached_or_fallback_runtime_location("hermes")
                 .host_path
@@ -2295,6 +2345,10 @@ pub async fn get_tool_skills_path_async(
             .await
             .ok()
             .map(|location| get_antigravity_cli_skills_path_from_location(&location)),
+        "antigravity_global" => get_antigravity_runtime_location_async(db)
+            .await
+            .ok()
+            .and_then(|location| get_antigravity_global_skills_path_from_location(&location)),
         "hermes" => get_cached_or_refresh_runtime_location_async(db, "hermes")
             .await
             .ok()

@@ -363,6 +363,8 @@ pub struct AntigravityPromptConfigInput {
     pub id: Option<String>,
     pub name: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -371,6 +373,8 @@ pub struct AntigravityPromptConfig {
     pub id: String,
     pub name: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_file: Option<String>,
     pub is_applied: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_index: Option<i32>,
@@ -384,9 +388,22 @@ pub struct AntigravityPromptConfig {
 pub struct AntigravityPromptConfigContent {
     pub name: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_file: Option<String>,
     pub is_applied: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_index: Option<i32>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AntigravityLocalRuleFile {
+    pub relative_path: String,
+    pub full_path: String,
+    pub kind: String,
+    pub size_bytes: u64,
+    pub content: String,
+    pub is_managed_target: bool,
 }

@@ -105,7 +105,7 @@ export function getNormalizedToolName(toolName: string | undefined): string {
   if (['task', 'subagent_task', 'task_create', 'task_update', 'task_output'].includes(normalized)) {
     return 'task';
   }
-  if (['agent', 'subagent', 'delegate', 'create_agent'].includes(normalized)) {
+  if (['agent', 'subagent', 'delegate', 'create_agent', 'invoke_subagent'].includes(normalized)) {
     return 'agent';
   }
 

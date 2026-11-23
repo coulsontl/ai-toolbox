@@ -130,7 +130,7 @@ pub(super) fn normalize_tool_name(raw_tool_name: &str) -> String {
 
     if matches!(
         normalized.as_str(),
-        "agent" | "subagent" | "delegate" | "create_agent"
+        "agent" | "subagent" | "delegate" | "create_agent" | "invoke_subagent"
     ) {
         return "agent".to_string();
     }

@@ -47,7 +47,7 @@ const SHARED_SECTION_IMPORT = 'shared/officialAccounts';
  * never appear in source. The rule now keys on the shared import instead.
  */
 const PENDING_MIGRATION = new Set([
-  'antigravity/components/AntigravityProviderCard.tsx',
+  // Empty: every official-account module now renders `shared/officialAccounts`.
 ]);
 
 /** The shared implementation itself; it is not a consumer. */

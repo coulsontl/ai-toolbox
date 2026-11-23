@@ -45,20 +45,26 @@ import {
   getAntigravityCommonConfig,
   getAntigravityConfigPath,
   getAntigravityRootPathInfo,
+  listAntigravityLocalRuleFiles,
   listAntigravityOfficialAccounts,
   getAntigravityOfficialProvider,
   readAntigravitySettings,
   refreshAntigravityOfficialAccountLimits,
   saveAntigravityCommonConfig,
+  saveAntigravityOfficialLocalAccount,
   startAntigravityOfficialAccountOauth,
 } from '@/services/antigravityApi';
+import type { OfficialAccountPendingAction } from '@/features/coding/shared/officialAccounts';
 import { antigravityPromptApi } from '@/services/antigravityPromptApi';
 import type {
   ConfigPathInfo,
+  AntigravityLocalRuleFile,
   AntigravityOfficialAccount,
   AntigravityProvider,
   AntigravitySettings,
 } from '@/types/antigravity';
+import type { GlobalPromptTargetFileOption } from '@/types/globalPrompt';
+import AntigravityLocalRuleFiles from '../components/AntigravityLocalRuleFiles';
 import AntigravityProviderCard from '../components/AntigravityProviderCard';
 import {
   shouldLoadAntigravityOfficialAccounts,
@@ -132,9 +138,7 @@ const AntigravityPage: React.FC = () => {
   const [officialAccountsByProviderId, setOfficialAccountsByProviderId] = React.useState<
     Record<string, AntigravityOfficialAccount[]>
   >({});
-  const [appliedProviderId, setAppliedProviderId] = React.useState('');
-  const [applyingOfficialAccountId, setApplyingOfficialAccountId] = React.useState<string | null>(null);
-  const [refreshingOfficialAccountId, setRefreshingOfficialAccountId] = React.useState<string | null>(null);
+  const [pendingAction, setPendingAction] = React.useState<OfficialAccountPendingAction | null>(null);
   const [oauthPending, setOauthPending] = React.useState(false);
   const oauthPendingRef = React.useRef(false);
   const [officialAccountDetails, setOfficialAccountDetails] = React.useState<{
@@ -143,6 +147,7 @@ const AntigravityPage: React.FC = () => {
   } | null>(null);
   const [previewModalOpen, setPreviewModalOpen] = React.useState(false);
   const [previewData, setPreviewData] = React.useState<AntigravitySettings | null>(null);
+  const [localRuleFiles, setLocalRuleFiles] = React.useState<AntigravityLocalRuleFile[]>([]);
   const [promptExpandNonce, setPromptExpandNonce] = React.useState(0);
   const [sessionManagerExpandNonce, setSessionManagerExpandNonce] = React.useState(0);
   const [settingsModalOpen, setSettingsModalOpen] = React.useState(false);
@@ -154,22 +159,44 @@ const AntigravityPage: React.FC = () => {
     { id: 'antigravity-session-manager', title: t('sessionManager.title', { defaultValue: '会话管理' }), order: 3 },
   ], [t]);
 
+  const promptTargetFileOptions = React.useMemo<GlobalPromptTargetFileOption[]>(() => [
+    {
+      value: '~/.gemini/config/GEMINI.md',
+      label: t('antigravity.promptRules.optionConfigGemini'),
+      hint: t('antigravity.promptRules.optionConfigGeminiHint'),
+    },
+    {
+      value: '~/.gemini/config/AGENTS.md',
+      label: '~/.gemini/config/AGENTS.md',
+    },
+    {
+      value: '~/.gemini/GEMINI.md',
+      label: t('antigravity.promptRules.optionHomeGemini'),
+      hint: t('antigravity.promptRules.optionHomeGeminiHint'),
+    },
+    {
+      value: '~/.gemini/AGENTS.md',
+      label: '~/.gemini/AGENTS.md',
+    },
+  ], [t]);
+
   const loadConfig = React.useCallback(async (silent = false) => {
     setLoading(true);
     try {
-      const [path, nextRootPathInfo, nextOfficialProvider] = await Promise.all([
+      const [path, nextRootPathInfo, nextOfficialProvider, nextLocalRuleFiles] = await Promise.all([
         getAntigravityConfigPath(),
         getAntigravityRootPathInfo(),
         getAntigravityOfficialProvider(),
+        listAntigravityLocalRuleFiles().catch(() => [] as AntigravityLocalRuleFile[]),
       ]);
       setConfigPath(path);
       setRootPathInfo(nextRootPathInfo);
       setOfficialProvider(nextOfficialProvider);
+      setLocalRuleFiles(nextLocalRuleFiles);
       const accounts = shouldLoadAntigravityOfficialAccounts(nextOfficialProvider)
         ? await listAntigravityOfficialAccounts(nextOfficialProvider.id)
         : [];
       setOfficialAccountsByProviderId({ [nextOfficialProvider.id]: accounts });
-      setAppliedProviderId(nextOfficialProvider.isApplied ? nextOfficialProvider.id : '');
     } catch (error) {
       if (!silent) {
         console.error('Failed to load Antigravity config:', error);
@@ -243,11 +270,30 @@ const AntigravityPage: React.FC = () => {
     }
   };
 
+  const handleSaveLocalOfficialAccount = async (provider: AntigravityProvider) => {
+    const virtualAccount = (officialAccountsByProviderId[provider.id] || []).find(
+      (account) => account.isVirtual,
+    );
+    setPendingAction(virtualAccount ? { accountId: virtualAccount.id, action: 'save' } : null);
+    try {
+      await saveAntigravityOfficialLocalAccount(provider.id);
+      message.success(t('antigravity.officialAccounts.saveLocalSuccess', { defaultValue: '已保存当前本地登录' }));
+      await loadConfig();
+      await refreshTrayMenu();
+    } catch (error) {
+      console.error('Failed to save local official account:', error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      message.error(errorMsg || t('common.error'));
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
   const handleApplyOfficialAccount = async (
     provider: AntigravityProvider,
     account: AntigravityOfficialAccount,
   ) => {
-    setApplyingOfficialAccountId(account.id);
+    setPendingAction({ accountId: account.id, action: 'apply' });
     try {
       await applyAntigravityOfficialAccount(provider.id, account.id);
       message.success(t('common.success'));
@@ -258,7 +304,7 @@ const AntigravityPage: React.FC = () => {
       const errorMsg = error instanceof Error ? error.message : String(error);
       message.error(errorMsg || t('common.error'));
     } finally {
-      setApplyingOfficialAccountId(null);
+      setPendingAction(null);
     }
   };
 
@@ -266,6 +312,10 @@ const AntigravityPage: React.FC = () => {
     provider: AntigravityProvider,
     account: AntigravityOfficialAccount,
   ) => {
+    if (account.isApplied) {
+      message.warning(t('antigravity.provider.appliedCannotDelete', { defaultValue: '已生效账号不能删除' }));
+      return;
+    }
     Modal.confirm({
       title: t('antigravity.provider.officialAccountDeleteConfirm', {
         name: account.email || account.projectId || account.name,
@@ -275,6 +325,7 @@ const AntigravityPage: React.FC = () => {
       okType: 'danger',
       cancelText: t('common.cancel'),
       onOk: async () => {
+        setPendingAction({ accountId: account.id, action: 'delete' });
         try {
           await deleteAntigravityOfficialAccount(provider.id, account.id);
           message.success(t('common.success'));
@@ -282,7 +333,10 @@ const AntigravityPage: React.FC = () => {
           await refreshTrayMenu();
         } catch (error) {
           console.error('Failed to delete official account:', error);
-          message.error(t('common.error'));
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          message.error(errorMsg || t('common.error'));
+        } finally {
+          setPendingAction(null);
         }
       },
     });
@@ -292,17 +346,26 @@ const AntigravityPage: React.FC = () => {
     provider: AntigravityProvider,
     account: AntigravityOfficialAccount,
   ) => {
-    setRefreshingOfficialAccountId(account.id);
+    setPendingAction({ accountId: account.id, action: 'refresh' });
     try {
-      await refreshAntigravityOfficialAccountLimits(provider.id, account.id);
+      const refreshed = await refreshAntigravityOfficialAccountLimits(provider.id, account.id);
       message.success(t('antigravity.officialAccounts.refreshSuccess', { defaultValue: '配额信息已刷新' }));
-      await loadConfig();
+      if (account.isVirtual) {
+        setOfficialAccountsByProviderId((previous) => ({
+          ...previous,
+          [provider.id]: (previous[provider.id] || []).map((item) =>
+            item.id === account.id ? refreshed : item,
+          ),
+        }));
+      } else {
+        await loadConfig();
+      }
     } catch (error) {
       console.error('Failed to refresh official account limits:', error);
       const errorMsg = error instanceof Error ? error.message : String(error);
       message.error(errorMsg || t('common.error'));
     } finally {
-      setRefreshingOfficialAccountId(null);
+      setPendingAction(null);
     }
   };
 
@@ -479,15 +542,14 @@ const AntigravityPage: React.FC = () => {
                 <Spin spinning={loading}>
                   <AntigravityProviderCard
                     provider={officialProvider}
-                    isApplied={officialProvider.id === appliedProviderId}
                     officialAccounts={officialAccountsByProviderId[officialProvider.id] || []}
                     onOfficialAccountLogin={handleStartOfficialAccountOauth}
+                    onOfficialAccountSaveLocal={handleSaveLocalOfficialAccount}
                     onOfficialAccountApply={handleApplyOfficialAccount}
                     onOfficialAccountDelete={handleDeleteOfficialAccount}
                     onOfficialAccountRefresh={handleRefreshOfficialAccount}
                     onOfficialAccountViewDetails={handleViewOfficialAccountDetails}
-                    savingOfficialAccountId={applyingOfficialAccountId}
-                    refreshingOfficialAccountId={refreshingOfficialAccountId}
+                    pendingAction={pendingAction}
                     oauthPending={oauthPending}
                   />
                 </Spin>
@@ -511,6 +573,14 @@ const AntigravityPage: React.FC = () => {
             collapseKey="antigravity-prompt"
             defaultExpanded={promptExpandNonce > 0}
             onUpdated={loadConfig}
+            targetFileOptions={promptTargetFileOptions}
+            defaultTargetFile="~/.gemini/config/GEMINI.md"
+            extraHint={
+              <div>
+                {t('antigravity.promptRules.layeringHint')}
+              </div>
+            }
+            footer={<AntigravityLocalRuleFiles files={localRuleFiles} />}
           />
         </div>
 
@@ -548,8 +618,9 @@ const AntigravityPage: React.FC = () => {
             <Descriptions column={1} size="small" bordered>
               <Descriptions.Item label={t('antigravity.provider.officialAccountLabel', { defaultValue: '账号' })}>
                 {officialAccountDetails.account.email
-                  || officialAccountDetails.account.projectId
-                  || officialAccountDetails.account.name}
+                  || (officialAccountDetails.account.isVirtual
+                    ? t('antigravity.provider.officialAccountLocal')
+                    : officialAccountDetails.account.projectId || officialAccountDetails.account.name)}
               </Descriptions.Item>
               <Descriptions.Item label={t('antigravity.provider.officialAccountProjectId', { defaultValue: 'Project ID' })}>
                 {officialAccountDetails.account.projectId || ACCOUNT_DETAILS_EMPTY_VALUE}
@@ -557,15 +628,28 @@ const AntigravityPage: React.FC = () => {
               <Descriptions.Item label={t('antigravity.provider.officialAccountPlanType', { defaultValue: '订阅类型' })}>
                 {officialAccountDetails.account.planType || ACCOUNT_DETAILS_EMPTY_VALUE}
               </Descriptions.Item>
-              <Descriptions.Item label={t('antigravity.provider.officialAccountWeeklyLimit', { defaultValue: '额度' })}>
+              <Descriptions.Item label={t('antigravity.provider.officialAccount5hLimit', { defaultValue: '5h 额度' })}>
+                {officialAccountDetails.account.limit5hText || ACCOUNT_DETAILS_EMPTY_VALUE}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('antigravity.provider.officialAccount5hResetAt', { defaultValue: '5h 重置时间' })}>
+                {formatUnixTimestamp(officialAccountDetails.account.limit5hResetAt)}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('antigravity.provider.officialAccountWeeklyLimit', { defaultValue: '周额度' })}>
                 {officialAccountDetails.account.limitWeeklyText || ACCOUNT_DETAILS_EMPTY_VALUE}
               </Descriptions.Item>
-              <Descriptions.Item label={t('antigravity.provider.officialAccountWeeklyResetAt', { defaultValue: '重置时间' })}>
+              <Descriptions.Item label={t('antigravity.provider.officialAccountWeeklyResetAt', { defaultValue: '周重置时间' })}>
                 {formatUnixTimestamp(officialAccountDetails.account.limitWeeklyResetAt)}
               </Descriptions.Item>
               <Descriptions.Item label={t('antigravity.provider.officialAccountLastLimitRefreshAt', { defaultValue: '额度刷新时间' })}>
                 {formatDateTime(officialAccountDetails.account.lastLimitsFetchedAt)}
               </Descriptions.Item>
+              {officialAccountDetails.account.lastError && (
+                <Descriptions.Item label={t('antigravity.provider.officialAccountLastError', { defaultValue: '最近错误' })}>
+                  <Text type="danger" style={{ fontSize: 12 }}>
+                    {officialAccountDetails.account.lastError}
+                  </Text>
+                </Descriptions.Item>
+              )}
               <Descriptions.Item label={t('antigravity.provider.officialAccountTokenExpiresAt', { defaultValue: 'Token 过期时间' })}>
                 {formatUnixTimestamp(officialAccountDetails.account.tokenExpiresAt)}
               </Descriptions.Item>
