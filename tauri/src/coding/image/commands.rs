@@ -59,6 +59,7 @@ struct ImageJobProgressPayload {
 struct ImageJobProgressContext<'a> {
     app: Option<&'a AppHandle>,
     job_id: &'a str,
+    max_attempts: usize,
     provider_kind: &'a str,
     mode: &'a str,
     channel_name: &'a str,
@@ -190,6 +191,22 @@ impl ImageProviderAdapter {
             }
             Self::Gemini => build_gemini_request_body(input, false),
             Self::OpenAiResponses => Ok(build_responses_request_body_snapshot(input, false)),
+        }
+    }
+
+    fn generation_limits(
+        self,
+        channel: &ImageChannelDto,
+        input: &CreateImageJobInput,
+    ) -> (u64, usize) {
+        let timeout = resolve_channel_timeout_seconds(channel);
+        if self == Self::OpenAiCompatible
+            && input.mode == ImageJobMode::TextToImage.as_str()
+            && is_minimax_h3_image(&input.model_id)
+        {
+            (timeout.max(600), 1)
+        } else {
+            (timeout, IMAGE_REQUEST_MAX_ATTEMPTS)
         }
     }
 
@@ -526,9 +543,9 @@ fn emit_image_job_progress(
         job_id: context.job_id.to_string(),
         stage,
         attempt,
-        max_attempts: IMAGE_REQUEST_MAX_ATTEMPTS,
+        max_attempts: context.max_attempts,
         retry_count: attempt.saturating_sub(1),
-        max_retries: IMAGE_REQUEST_MAX_RETRIES,
+        max_retries: context.max_attempts - 1,
         delay_ms,
         timeout_seconds: context.timeout_seconds,
         provider_kind: context.provider_kind.to_string(),
@@ -953,6 +970,13 @@ fn build_responses_request_body_snapshot(
     )
 }
 
+fn is_minimax_h3_image(model_id: &str) -> bool {
+    matches!(
+        model_id.trim(),
+        "MiniMax-H3-Image" | "MiniMax-H3-Image-Highspeed"
+    )
+}
+
 fn build_text_to_image_request_body(
     input: &CreateImageJobInput,
     output_format: &str,
@@ -961,18 +985,20 @@ fn build_text_to_image_request_body(
         "model": input.model_id,
         "prompt": input.prompt,
         "size": input.params.size,
-        "quality": input.params.quality,
         "output_format": output_format,
     });
 
-    if let Some(moderation) = input
-        .params
-        .moderation
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-    {
-        request_body["moderation"] = json!(moderation);
+    if !is_minimax_h3_image(&input.model_id) {
+        request_body["quality"] = json!(input.params.quality);
+        if let Some(moderation) = input
+            .params
+            .moderation
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            request_body["moderation"] = json!(moderation);
+        }
     }
 
     if let Some(output_compression) = input.params.output_compression {
@@ -1293,8 +1319,10 @@ async fn execute_generation_request(
     input: &CreateImageJobInput,
     request_url: &str,
 ) -> Result<Vec<GeneratedImageResult>, String> {
-    let timeout_seconds = resolve_channel_timeout_seconds(channel);
+    let adapter = ImageProviderAdapter::from_kind(&channel.provider_kind)?;
+    let (timeout_seconds, max_attempts) = adapter.generation_limits(channel, input);
     let progress_context = ImageJobProgressContext {
+        max_attempts,
         app,
         job_id,
         provider_kind: &channel.provider_kind,
@@ -1304,7 +1332,7 @@ async fn execute_generation_request(
         timeout_seconds,
     };
 
-    ImageProviderAdapter::from_kind(&channel.provider_kind)?
+    adapter
         .execute_generation_request(state, channel, input, request_url, &progress_context)
         .await
 }
@@ -1317,7 +1345,11 @@ async fn execute_openai_compatible_generation_request(
     progress_context: &ImageJobProgressContext<'_>,
 ) -> Result<Vec<GeneratedImageResult>, String> {
     let timeout_seconds = progress_context.timeout_seconds;
-    let client = http_client::client_with_timeout_no_compression(state, timeout_seconds).await?;
+    let client = if progress_context.max_attempts == 1 {
+        http_client::client_for_single_image_request(state, timeout_seconds).await?
+    } else {
+        http_client::client_with_timeout_no_compression(state, timeout_seconds).await?
+    };
     let authorization = format!("Bearer {}", channel.api_key.trim());
     let output_format = input.params.output_format.trim().to_lowercase();
     let mime_type = mime_from_output_format(&output_format).to_string();
@@ -1506,7 +1538,7 @@ async fn execute_openai_compatible_generation_request(
     }
 
     let request_body = build_text_to_image_request_body(input, &output_format);
-    for attempt in 1..=IMAGE_REQUEST_MAX_ATTEMPTS {
+    for attempt in 1..=progress_context.max_attempts {
         let request_started_at = Instant::now();
         emit_image_job_progress(
             &progress_context,
@@ -1527,7 +1559,7 @@ async fn execute_openai_compatible_generation_request(
             output_format,
             input.references.len(),
             attempt,
-            IMAGE_REQUEST_MAX_ATTEMPTS
+            progress_context.max_attempts
         );
 
         let response = match client
@@ -1541,7 +1573,7 @@ async fn execute_openai_compatible_generation_request(
         {
             Ok(response) => response,
             Err(error)
-                if attempt < IMAGE_REQUEST_MAX_ATTEMPTS
+                if attempt < progress_context.max_attempts
                     && should_retry_image_request_error(&error) =>
             {
                 let delay_ms = image_request_retry_delay_ms(attempt);
@@ -1561,7 +1593,7 @@ async fn execute_openai_compatible_generation_request(
                     input.model_id,
                     request_url,
                     attempt,
-                    IMAGE_REQUEST_MAX_ATTEMPTS,
+                    progress_context.max_attempts,
                     delay_ms,
                     format_reqwest_error(&error)
                 );
@@ -1593,10 +1625,10 @@ async fn execute_openai_compatible_generation_request(
             response.status(),
             summarize_response_headers(response.headers()),
             attempt,
-            IMAGE_REQUEST_MAX_ATTEMPTS
+            progress_context.max_attempts
         );
 
-        if attempt < IMAGE_REQUEST_MAX_ATTEMPTS
+        if attempt < progress_context.max_attempts
             && should_retry_image_response_status(response.status())
         {
             let retry_status = response.status();
@@ -1621,7 +1653,7 @@ async fn execute_openai_compatible_generation_request(
                 input.model_id,
                 request_url,
                 attempt,
-                IMAGE_REQUEST_MAX_ATTEMPTS,
+                progress_context.max_attempts,
                 delay_ms,
                 retry_status,
                 retry_body
@@ -1748,6 +1780,7 @@ async fn parse_image_response(
         .ok_or_else(|| "Image API returned no data array".to_string())?;
 
     let mut results = Vec::new();
+    let mut item_errors = Vec::new();
     for item in data {
         if let Some(base64_data) = item.get("b64_json").and_then(|value| value.as_str()) {
             results.push((
@@ -1843,9 +1876,26 @@ async fn parse_image_response(
                 return Err(message);
             }
             results.push((bytes.to_vec(), fallback_mime_type.to_string()));
+            continue;
+        }
+        if let Some(message) = item
+            .pointer("/error/message")
+            .and_then(|value| value.as_str())
+        {
+            item_errors.push(message);
         }
     }
 
+    if !item_errors.is_empty() {
+        let message = format!(
+            "Image API reported failed outputs: {}",
+            item_errors.join("; ")
+        );
+        if results.is_empty() {
+            return Err(message);
+        }
+        warn!("{}", message);
+    }
     if results.is_empty() {
         let message = format!(
             "Image API returned no usable image payload: mode={} channel={} url={}",
@@ -4252,6 +4302,128 @@ mod tests {
             payload["output"][0]["result"],
             serde_json::Value::String("aGVsbG8=".to_string())
         );
+    }
+
+    #[test]
+    fn h3_uses_the_regional_generation_route_and_supported_parameters() {
+        for (base_url, model) in [
+            ("https://api.minimax.io", "MiniMax-H3-Image"),
+            ("https://api.minimax.cn/v1", "MiniMax-H3-Image-Highspeed"),
+        ] {
+            let mut channel = sample_channel(base_url, "fixture", model, None, None);
+            let mut input = sample_text_to_image_input(model);
+            let adapter = ImageProviderAdapter::OpenAiCompatible;
+            assert_eq!(adapter.generation_limits(&channel, &input), (600, 1));
+            channel.timeout_seconds = Some(900);
+            assert_eq!(adapter.generation_limits(&channel, &input), (900, 1));
+            input.params.output_format = "webp".into();
+            let snapshot = build_request_snapshot(&channel, &input).unwrap();
+            assert_eq!(
+                snapshot.request_url,
+                format!("{}/v1/images/generations", base_url.trim_end_matches("/v1"))
+            );
+            let body: serde_json::Value =
+                serde_json::from_str(&snapshot.request_body_json).unwrap();
+            assert_eq!(
+                body,
+                json!({"model":model,"prompt":input.prompt,"size":"auto","output_format":"webp","output_compression":80})
+            );
+        }
+        let ordinary = sample_text_to_image_input("custom-model");
+        let body = build_text_to_image_request_body(&ordinary, "png");
+        assert_eq!(body["quality"], "auto");
+        assert_eq!(body["moderation"], "low");
+    }
+
+    #[tokio::test]
+    async fn h3_generation_reads_outputs_and_returns_the_first_http_error() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+
+        let db = create_test_db_state().await;
+        let model = "MiniMax-H3-Image-Highspeed";
+        for status in ["200 OK", "500 Internal Server Error"] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let image_url = format!("{base}/result.png");
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(&socket);
+                let mut headers = Vec::new();
+                loop {
+                    let mut line = String::new();
+                    assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    headers.push(line.trim_end().to_owned());
+                }
+                assert_eq!(headers[0], "POST /v1/images/generations HTTP/1.1");
+                assert!(headers
+                    .iter()
+                    .any(|line| line.eq_ignore_ascii_case("Authorization: Bearer fixture")));
+                let length: usize = headers
+                    .iter()
+                    .find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                let mut bytes = vec![0; length];
+                reader.read_exact(&mut bytes).unwrap();
+                let request: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(request["model"], model);
+                assert!(request.get("quality").is_none() && request.get("moderation").is_none());
+                let body = if status.starts_with("200") {
+                    json!({"data":[{"error":{"code":"1027","message":"output rejected"}},{"url":image_url}],"output_format":"png"})
+                } else {
+                    json!({"error":{"message":"internal error (1000)","http_code":"500"}})
+                }.to_string();
+                write!(
+                    socket,
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+                drop(socket);
+                if status.starts_with("200") {
+                    let (mut image_socket, _) = listener.accept().unwrap();
+                    let mut line = String::new();
+                    BufReader::new(&image_socket).read_line(&mut line).unwrap();
+                    assert!(line.starts_with("GET /result.png "));
+                    image_socket
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nPNG",
+                        )
+                        .unwrap();
+                }
+            });
+            let channel = sample_channel(&base, "fixture", model, None, None);
+            let input = sample_text_to_image_input(model);
+            let snapshot = build_request_snapshot(&channel, &input).unwrap();
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                execute_generation_request(
+                    None,
+                    &db.state,
+                    "h3-test",
+                    &channel,
+                    &input,
+                    &snapshot.request_url,
+                ),
+            )
+            .await
+            .expect("local image request should finish without retrying");
+            if status.starts_with("200") {
+                let images = result.unwrap();
+                assert_eq!(images.len(), 1);
+                assert_eq!(images[0].bytes, b"PNG");
+            } else {
+                assert!(result.err().unwrap().contains("internal error (1000)"));
+            }
+            server.join().unwrap();
+        }
     }
 
     #[tokio::test]

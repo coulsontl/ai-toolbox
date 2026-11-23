@@ -88,6 +88,8 @@ sequenceDiagram
 - 如果要把图片请求快照落库用于历史排查，只能保存脱敏后的 headers 和可读的 body 摘要。不要把真实 `Authorization`、multipart 边界或图片二进制直接写进 `image_entity(kind=job)`。
 - 某些图片网关在 Windows 客户端上会出现“服务端已生成成功，但压缩响应在 50-60 秒附近被远端直接断开”的兼容问题；症状通常是服务端使用记录正常、`curl` 可成功，但 `reqwest` / Windows Python 在 `send()` 阶段报 `error sending request for url` 或 `RemoteDisconnected`。当前图片模块对这类渠道统一发送 `Accept-Encoding: identity`，并且图片请求单独走禁用自动解压的 HTTP client；这两层 workaround 不要轻易删掉。
 
+- MiniMax H3 text-to-image jobs use a compatible channel with the regional base URL (`https://api.minimax.io` or `https://api.minimax.cn`) and either `MiniMax-H3-Image` or `MiniMax-H3-Image-Highspeed`. Generation can finish and incur charges after a disconnect. Keep the timeout at least 600 seconds and disable both application and HTTP-level retries.
+
 ## 跨模块依赖
 
 - 依赖全局 `http_client` 读取代理设置并构建 HTTP client。
