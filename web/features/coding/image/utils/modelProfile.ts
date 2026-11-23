@@ -7,7 +7,7 @@ import type { ImageParameterVisibility } from './providerProfile';
 
 export type { ImageParameterVisibility } from './providerProfile';
 
-export type ImageModelProfile = 'default' | 'gemini_banana';
+export type ImageModelProfile = 'default' | 'gemini_banana' | 'minimax_h3';
 
 export interface ImageHistoryJobParams {
   size?: string;
@@ -27,24 +27,43 @@ const GEMINI_BANANA_PARAMETER_VISIBILITY: ImageParameterVisibility = {
 
 const GEMINI_BANANA_MODEL_MARKERS = ['nano-banana'];
 
+const MINIMAX_H3_PARAMETER_VISIBILITY: ImageParameterVisibility = {
+  size: true,
+  quality: false,
+  outputFormat: true,
+  moderation: false,
+  outputCompression: true,
+};
+
+const MINIMAX_H3_MODEL_MARKERS = ['minimax-h3-image'];
+
 const normalizeModelValue = (value?: string | null): string =>
   value?.trim().toLowerCase() ?? '';
 
-const isGeminiBananaValue = (value?: string | null): boolean => {
+const matchesModelMarkers = (value: string | null | undefined, markers: string[]): boolean => {
   const normalizedValue = normalizeModelValue(value);
   if (!normalizedValue) {
     return false;
   }
 
-  return GEMINI_BANANA_MODEL_MARKERS.some((marker) => normalizedValue.includes(marker));
+  return markers.some((marker) => normalizedValue.includes(marker));
 };
 
 export const resolveImageModelProfile = (
   modelId: string,
   modelName?: string | null
 ): ImageModelProfile => {
-  if (isGeminiBananaValue(modelId) || isGeminiBananaValue(modelName)) {
+  if (
+    matchesModelMarkers(modelId, GEMINI_BANANA_MODEL_MARKERS) ||
+    matchesModelMarkers(modelName, GEMINI_BANANA_MODEL_MARKERS)
+  ) {
     return 'gemini_banana';
+  }
+  if (
+    matchesModelMarkers(modelId, MINIMAX_H3_MODEL_MARKERS) ||
+    matchesModelMarkers(modelName, MINIMAX_H3_MODEL_MARKERS)
+  ) {
+    return 'minimax_h3';
   }
 
   return 'default';
@@ -56,11 +75,19 @@ export const getImageParameterVisibility = (
   modelName?: string | null
 ): ImageParameterVisibility => {
   const providerProfile = getImageProviderProfile(providerKind);
+  if (!providerProfile.usesModelProfileVisibility) {
+    return providerProfile.parameterVisibility ?? DEFAULT_IMAGE_PARAMETER_VISIBILITY;
+  }
 
-  return providerProfile.usesModelProfileVisibility &&
-    resolveImageModelProfile(modelId, modelName) === 'gemini_banana'
-    ? GEMINI_BANANA_PARAMETER_VISIBILITY
-    : providerProfile.parameterVisibility ?? DEFAULT_IMAGE_PARAMETER_VISIBILITY;
+  const modelProfile = resolveImageModelProfile(modelId, modelName);
+  if (modelProfile === 'gemini_banana') {
+    return GEMINI_BANANA_PARAMETER_VISIBILITY;
+  }
+  if (modelProfile === 'minimax_h3') {
+    return MINIMAX_H3_PARAMETER_VISIBILITY;
+  }
+
+  return providerProfile.parameterVisibility ?? DEFAULT_IMAGE_PARAMETER_VISIBILITY;
 };
 
 export const parseHistoryJobParams = (

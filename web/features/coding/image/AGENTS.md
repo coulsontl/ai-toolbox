@@ -56,6 +56,7 @@ sequenceDiagram
 - 当前工作台和尺寸弹窗的字段布局约定为“左标签、右控件”的高密度横向结构；除非窄屏响应式回落，不要再把参数项改回“标题在上、输入在下”的堆叠样式。
 - 对工作台参数行这类紧凑字段，标签列不要写死过宽的固定宽度；优先让标题宽度自适应内容，控件尽量贴着标题开始，减少无意义留白。
 - 对 `nano-banana` / `nano-banana-pro` 这类 Gemini Banana 模型，要明确区分“模型兼容层”和“渠道协议层”。历史上只做过 OpenAI-compatible 网关下的 Banana 模型识别与参数隐藏；只有渠道 `provider_kind=gemini` 时，才代表真正走 Gemini Native 协议。
+- `MiniMax-H3-Image` / `MiniMax-H3-Image-Highspeed` 使用 `minimax_h3` 模型档位：保留 `size` / `output_format` / `output_compression`，隐藏 `quality` 与 `moderation`（H3 不接受这两个字段）。后端请求体和请求快照也会省略它们，历史参数摘要必须使用同一档位过滤，不能把隐藏参数重新展示出来。
 - 当渠道 `provider_kind=gemini` 时，前端参数区和历史参数摘要必须按 Gemini Native 语义收敛；不要继续暴露 `quality`、`output_format`、`moderation`、`output_compression`、`generation_path`、`edit_path` 这类 OpenAI-compatible 特有字段，避免把错误协议字段重新带回 UI。
 - 当渠道 `provider_kind=openai_responses` 时，要把它视为独立协议，不要偷复用“OpenAI Compatible 渠道路径可配置”这套心智。它固定走 `/v1/responses`，因此前端渠道弹窗同样不应再暴露 `generation_path` / `edit_path`。
 - 当渠道 `provider_kind=openai_responses` 时，前端参数区和提交参数都不要暴露/发送 `moderation`；Responses 返回的实际参数和 `revised_prompt` 只在请求详情里作为响应元数据展示，不进入历史参数摘要。

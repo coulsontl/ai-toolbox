@@ -20,6 +20,29 @@ test('resolveImageModelProfile detects nano-banana model ids and names', () => {
   assert.equal(resolveImageModelProfile('gpt-image-1'), 'default');
 });
 
+test('resolveImageModelProfile detects MiniMax H3 model ids and names', () => {
+  assert.equal(resolveImageModelProfile('MiniMax-H3-Image'), 'minimax_h3');
+  assert.equal(resolveImageModelProfile('minimax-h3-image-highspeed'), 'minimax_h3');
+  assert.equal(
+    resolveImageModelProfile('custom-image-model', 'MiniMax-H3-Image-Highspeed'),
+    'minimax_h3'
+  );
+  assert.equal(resolveImageModelProfile('gpt-image-1'), 'default');
+});
+
+test('getImageParameterVisibility hides unsupported quality and moderation for MiniMax H3', () => {
+  assert.deepEqual(
+    getImageParameterVisibility('openai_compatible', 'MiniMax-H3-Image-Highspeed'),
+    {
+      size: true,
+      quality: false,
+      outputFormat: true,
+      moderation: false,
+      outputCompression: true,
+    }
+  );
+});
+
 test('getImageParameterVisibility hides openai-specific fields for banana models', () => {
   assert.deepEqual(getImageParameterVisibility('openai_compatible', 'google/nano-banana'), {
     size: true,
@@ -84,6 +107,25 @@ test('filterHistoryJobParamsByModel removes hidden fields for banana model histo
   assert.deepEqual(
     filterHistoryJobParamsByModel(params, 'openai_compatible', 'gpt-image-1'),
     params
+  );
+});
+
+test('filterHistoryJobParamsByModel removes hidden fields for MiniMax H3 history', () => {
+  const params = {
+    size: '1024x1024',
+    quality: 'high',
+    output_format: 'webp',
+    output_compression: 80,
+    moderation: 'auto',
+  };
+
+  assert.deepEqual(
+    filterHistoryJobParamsByModel(params, 'openai_compatible', 'MiniMax-H3-Image'),
+    {
+      size: '1024x1024',
+      output_format: 'webp',
+      output_compression: 80,
+    }
   );
 });
 
