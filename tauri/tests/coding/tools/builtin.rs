@@ -35,9 +35,10 @@ fn antigravity_legacy_entry_keeps_old_prefix() {
 }
 
 #[test]
-fn forced_skill_copy_covers_cursor_and_antigravity_cli_only() {
+fn forced_skill_copy_covers_cursor_and_antigravity_cli_surfaces_only() {
     assert!(builtin_tool_forces_skill_copy("cursor"));
     assert!(builtin_tool_forces_skill_copy("antigravity_cli"));
+    assert!(builtin_tool_forces_skill_copy("antigravity_global"));
     assert!(!builtin_tool_forces_skill_copy("antigravity"));
     assert!(!builtin_tool_forces_skill_copy("claude_code"));
 
@@ -47,7 +48,7 @@ fn forced_skill_copy_covers_cursor_and_antigravity_cli_only() {
         .map(|tool| tool.key)
         .filter(|key| builtin_tool_forces_skill_copy(key))
         .collect();
-    assert_eq!(forced, vec!["cursor", "antigravity_cli"]);
+    assert_eq!(forced, vec!["cursor", "antigravity_cli", "antigravity_global"]);
 }
 
 #[test]
