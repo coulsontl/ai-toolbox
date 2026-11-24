@@ -2754,8 +2754,10 @@ fn list_subagent_sessions(
         ToolSessionContext::WorkbuddyFamily { .. } => {
             workbuddy_family::list_subagent_sessions(Path::new(source_path))
         }
+        ToolSessionContext::Antigravity { .. } => {
+            antigravity::list_subagent_sessions(Path::new(source_path))
+        }
         ToolSessionContext::Codex { .. }
-        | ToolSessionContext::Antigravity { .. }
         | ToolSessionContext::OpenClaw { .. }
         | ToolSessionContext::OpenCode { .. }
         | ToolSessionContext::Pi { .. }
