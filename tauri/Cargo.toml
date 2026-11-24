@@ -1,6 +1,6 @@
 [package]
 name = "ai-toolbox"
-version = "1.2.3"
+version = "1.2.4"
 description = "AI Toolbox - Personal AI Tools Collection"
 authors = ["you"]
 license = "AGPL-3.0-or-later"
