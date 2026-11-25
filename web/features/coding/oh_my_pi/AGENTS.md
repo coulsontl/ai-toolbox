@@ -73,7 +73,7 @@ sequenceDiagram
 ## 易错点与历史坑（Gotchas）
 
 - **侧栏折叠键必须是 `oh_my_pi`，不是 `pi`**（已修复，勿改回）。本页曾读 `sidebarHiddenByPage.pi` 却写 `setSidebarHidden('oh_my_pi', …)`，导致「更多选项」里的侧栏开关**静默无效**——它翻转的是一个本页不显示的槽位，而 Pi 页（`PiPage.tsx` 读 `pi`）的开关状态被本页读去显示。`SIDEBAR_PAGE_KEYS` 里 `pi` 与 `oh_my_pi` 是两个独立键，每个 CLI 只碰自己那个。
-- 侧栏菜单项 id 必须与 DOM 上 `data-pi-sidebar-section="true"` 元素的 `id` 完全一致（滚动靠 `document.getElementById`）。本页的分区 id 沿用 `pi-*` 前缀（`pi-model-settings` / `pi-providers` / `pi-agents` / `pi-extensions` / `pi-global-prompt` / `pi-other-configuration` / `pi-session-manager`），改名要同时改 `sidebarSections` 与 JSX。
+- **侧栏定位只查当前页面内容容器。** Pi 与 OMP 共用多个 `pi-*` 区块 ID，KeepAlive 切页后仍保留隐藏 DOM；`SectionSidebarLayout` 的点击滚动和可见区监听必须使用同一个局部查询。全局 `document.getElementById` 会在先打开 Pi、再打开 OMP 时找到隐藏的 Pi 区块，而 OMP 独有的 `pi-agents` 仍能跳转，看起来像侧栏只响应第一次点击。
 - 页头显示的是**配置目录**（`rootPathInfo.path`）而非配置文件路径（`config.yml` / `models.yml` 从它派生）。共享 `CodingPageHeader` 用 `configPathKind="directory"` 表达这个差异（标签取 `common.configDir`），**不要改成自由文案 prop**。
 - **页面外壳与卡片全部走共享组件**（2026-10-22 迁移）：页头 `CodingPageHeader`、供应商区 `ProviderListSection`、卡片 `OpenCodeStyleCard`（薄映射层 `components/OmpProviderCard.tsx`）、卡片视图 `ProviderCompactCard` + `ProviderModelSection`、编辑弹窗 `components/OmpProviderFormModal.tsx`（横向布局，因此被 `verify-form-modal-layout` 覆盖）。弹窗里那些「协议切换时自动填端点、用户改过就不再覆盖」的判定抽在 `utils/ompProviderForm.ts` 的纯函数里，由 `web/test/.../ompProviderForm.test.ts` 直接断言——**不要再把它写回页面内联 handler**，那样测试只能靠抓源码。OMP 的 Codex 订阅卡片（`OmpSubscriptionCard`）同样是共享卡片，但它是 OAuth 渠道，编辑/复制/分享与拖拽都关掉。**卡片视图必须自己传 `detail.secondaryActions`**：格子只带「更多」菜单，编辑 / 复制 / 分享 / 删除只在详情侧栏里；订阅渠道没有那几个 handler，按钮因此自然不渲染（与列表卡一致）。
 - **供应商拖拽是「把手 + 行为 + 存取」三件套**：视图顺序来自 `models.yml` 的 providers 键序（`openai-codex` 固定排第一，因为它是 OAuth 渠道而不是 YAML 里的一行），拖动调后端 `reorder_omp_providers`。`build_provider_views` 必须跟随该键序出视图，**不要用 `BTreeSet` 重建**——读取端按字母序重建会让拖拽静默失效；写盘按序列化文本比较变化。
@@ -125,4 +125,5 @@ sequenceDiagram
 - 改诊断逻辑时跑 `node --test web/test/features/coding/oh_my_pi/utils/ompDiagnostics.test.ts`；改模型映射时跑 `ompFetchedModels.test.ts`；改 subagent 工具函数时跑 `ompAgentsUtils.test.ts`。
 - 未配置 `models.yml` 的 `openai-codex` 只以订阅卡片出现；在 `models.yml` 里加该 provider 后，卡片与供应商卡片同时出现且后者带「models.yml 覆盖配置」。
 - 打开页面后连续保存模型/供应商多次，`models.db` 的修改时间不变；点订阅卡片的刷新按钮后才变化（证明 `omp models` 只在显式刷新时执行）。
+- 侧栏回归：先打开 Pi，再切到 Oh My Pi；依次点击 Subagents、模型设置、供应商列表、会话管理、模型设置，确认目标区块实际滚进视口，而不只是菜单高亮变化。
 - 任何写操作后托盘菜单同步（`refreshTrayMenu()` 不可省）。
