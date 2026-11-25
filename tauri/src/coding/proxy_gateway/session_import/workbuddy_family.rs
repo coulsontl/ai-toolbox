@@ -33,6 +33,21 @@ fn count(value: &Value, keys: &[&str]) -> Option<u64> {
     })
 }
 
+/// Reads a non-negative floating-point number (such as fractional Credits),
+/// tolerating numeric strings.
+fn float_count(value: &Value, keys: &[&str]) -> Option<f64> {
+    keys.iter().find_map(|key| {
+        let value = value.get(*key)?;
+        if value.is_boolean() {
+            return None;
+        }
+        value
+            .as_f64()
+            .or_else(|| value.as_str().and_then(|value| value.parse::<f64>().ok()))
+            .filter(|value| value.is_finite() && *value >= 0.0)
+    })
+}
+
 fn detail_count(value: &Value, keys: &[&str]) -> u64 {
     match value {
         Value::Object(_) => count(value, keys).unwrap_or(0),
@@ -56,6 +71,7 @@ pub(super) struct UsageRecord {
     pub session: String,
     pub identity: String,
     pub reported_cost: Option<String>,
+    pub credits: Option<f64>,
 }
 
 /// Reads `message.usage`, `providerData.usage` and `providerData.rawUsage` from
@@ -86,9 +102,7 @@ pub(super) fn usage_record(
 
     let credits = sources
         .iter()
-        .filter_map(|source| {
-            count(source, &["credit", "credits"]).map(|value| value as f64)
-        })
+        .filter_map(|source| float_count(source, &["credit", "credits"]))
         .fold(0.0f64, f64::max);
 
     let selected = sources.iter().find(|source| {
@@ -189,11 +203,20 @@ pub(super) fn usage_record(
     let created_at = timestamp(item)
         .or_else(|| message.and_then(timestamp))
         .unwrap_or(fallback);
+    // Prefer canonical `providerData.model` (e.g. `deepseek-v4.1-flash`) over
+    // UI display names like `DeepSeek V4.1 Flash` (`requestModelName`) so model
+    // pricing lookup and cross-edition grouping stay consistent.
     let model = provider
         .and_then(|provider| {
-            ["requestModelName", "requestModelId", "model"]
+            ["model", "requestModelName", "requestModelId"]
                 .iter()
-                .find_map(|key| provider.get(*key).and_then(Value::as_str))
+                .find_map(|key| {
+                    provider
+                        .get(*key)
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                })
         })
         .or_else(|| message.and_then(|message| message.get("model")).and_then(Value::as_str))
         .or_else(|| item.get("model").and_then(Value::as_str))
@@ -222,6 +245,7 @@ pub(super) fn usage_record(
                 .or_else(|| selected.get("costUsd"))
                 .or_else(|| selected.get("cost_usd")),
         ),
+        credits: (credits > 0.0).then_some(credits),
     })
 }
 
@@ -264,7 +288,8 @@ pub(super) fn parse(tool: GatewayUsageTool, path: &Path, fallback: i64) -> Resul
         let session = session_of(&item, &session_fallback);
         if item.get("type").and_then(Value::as_str) == Some("function_call_result")
             || (item.get("type").and_then(Value::as_str) == Some("message")
-                && item.pointer("/message/role").and_then(Value::as_str) == Some("user"))
+                && (item.get("role").and_then(Value::as_str) == Some("user")
+                    || item.pointer("/message/role").and_then(Value::as_str) == Some("user")))
         {
             if let Some(at) = timestamp_millis(&item) {
                 trigger_ms = Some(at);
@@ -293,6 +318,7 @@ pub(super) fn parse(tool: GatewayUsageTool, path: &Path, fallback: i64) -> Resul
             usage.created_at,
         );
         record.duration_ms = duration_ms;
+        record.credits = usage.credits;
         record.metadata.granularity = SessionUsageGranularity::Request;
         record.metadata.call_count = Some(1);
         // The item that carries the usage often omits `cwd`; the session

@@ -24,8 +24,114 @@ use super::parsers::{
 };
 use super::{GatewayUsageTool, SessionUsageGranularity, SessionUsageRecord, TokenUsage};
 use serde_json::Value;
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+
+const MODEL_SELECTOR_PREFIX: &str = "modelSelector.item.";
+
+/// Routing tiers that describe a Qoder selection mode rather than a concrete
+/// underlying model; keep these verbatim if they ever appear as a model key.
+fn is_qoder_strategy_key(key: &str) -> bool {
+    matches!(
+        key,
+        "auto"
+            | "fast"
+            | "lite"
+            | "efficient"
+            | "performance"
+            | "ultimate"
+            | "experts-auto"
+            | "experts-ultimate"
+            | "quest-auto"
+            | "quest-ultimate"
+    )
+}
+
+/// Known Qoder internal model keys observed in Qoder's `dynamic-texts.json`,
+/// kept as a static fallback when the dynamic text cache is absent (e.g.
+/// isolated backups, older Qoder IDE databases, or fresh installs).
+fn static_model_label(key: &str) -> Option<&'static str> {
+    match key {
+        "cmodel" => Some("Cantus"),
+        "dfmodel" => Some("DeepSeek-Flash"),
+        "dmodel" => Some("DeepSeek-V4-Pro"),
+        "gfmodel" => Some("GLM-5.3-Flash"),
+        "gm51model" => Some("GLM-5.2"),
+        "gmodel" => Some("GLM-5.3"),
+        "kmodel" => Some("Kimi-K2.8-Preview"),
+        "kmodel_latest" => Some("Kimi-K3"),
+        "mmodel" => Some("MiniMax-M3"),
+        "q35model" => Some("Qwen3.5-Plus"),
+        "q35model_preview" => Some("Qwen3.7-Max-DogFooding"),
+        "qfmodel" => Some("Qwen3.8-Flash"),
+        "qmodel" => Some("Qwen3.7-Plus"),
+        "qmodel_38max" => Some("Qwen3.8-Max"),
+        "qmodel_latest" => Some("Qwen3.7-Max"),
+        "qmodel_preview" => Some("Qwen3.8-Max-Preview"),
+        "smodel" => Some("Sonus"),
+        _ => None,
+    }
+}
+
+/// Reads Qoder's cached `<config_dir>/.auth/dynamic-texts.json` to map opaque
+/// internal keys (`qfmodel`, `dfmodel`, `kmodel_latest`, ...) to Qoder's own
+/// model display names (`Qwen3.8-Flash`, `DeepSeek-Flash`, `Kimi-K3`, ...).
+pub(super) fn load_dynamic_model_labels(config_dir: &Path) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let path = config_dir.join(".auth").join("dynamic-texts.json");
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return map;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return map;
+    };
+    let Some(texts) = value.get("texts").and_then(Value::as_object) else {
+        return map;
+    };
+    for (full_key, label) in texts {
+        let Some(model_key) = full_key.strip_prefix(MODEL_SELECTOR_PREFIX) else {
+            continue;
+        };
+        if model_key.is_empty()
+            || model_key.contains('.')
+            || is_qoder_strategy_key(&model_key.to_ascii_lowercase())
+        {
+            continue;
+        }
+        if let Some(label) = label.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            map.insert(model_key.to_ascii_lowercase(), label.to_string());
+        }
+    }
+    map
+}
+
+fn config_dir_for_transcript(path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .find(|ancestor| ancestor.file_name().is_some_and(|name| name == "projects"))
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+}
+
+pub(super) fn resolve_model_name(
+    raw: &str,
+    dynamic_labels: Option<&HashMap<String, String>>,
+) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "unknown".to_string();
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    if is_qoder_strategy_key(&lowered) {
+        return trimmed.to_string();
+    }
+    if let Some(label) = dynamic_labels.and_then(|map| map.get(&lowered)) {
+        return label.clone();
+    }
+    if let Some(label) = static_model_label(&lowered) {
+        return label.to_string();
+    }
+    trimmed.to_string()
+}
 
 fn cache_creation(usage: &Value) -> u64 {
     if let Some(value) = usage.get("cache_creation_input_tokens") {
@@ -86,6 +192,9 @@ pub(super) fn parse(
         .into_owned();
     let mut configured_model: Option<String> = None;
     let mut items = Vec::new();
+    let dynamic_labels = config_dir_for_transcript(path)
+        .map(|dir| load_dynamic_model_labels(&dir))
+        .unwrap_or_default();
     // The user turn that sent the current reply; Qoder's usage rows carry no
     // timing of their own, so this pair brackets the call end to end.
     let mut trigger_ms: Option<i64> = None;
@@ -93,21 +202,14 @@ pub(super) fn parse(
     // must not fail the whole read.
     let pending = read_jsonl_lenient(path, |line, value| {
         match value.get("type").and_then(Value::as_str) {
-            // The session header names the model the CLI was configured with;
-            // per-call rows usually repeat it, but not always.
+            // Keep `runtime-config` in chronological order so mid-session model
+            // switches only affect subsequent rows that omit `message.model`.
             Some("runtime-config") => {
-                if let Some(model) = value.get("model").and_then(Value::as_str) {
-                    configured_model = Some(model.to_string());
-                }
+                items.push((line, value));
             }
             Some("user") | Some("assistant") => {
                 if let Some(id) = value.get("sessionId").and_then(Value::as_str) {
                     session_fallback = id.to_string();
-                }
-                if value.get("type").and_then(Value::as_str) == Some("user") {
-                    if let Some(at) = timestamp_millis(&value) {
-                        trigger_ms = Some(at);
-                    }
                 }
                 items.push((line, value));
             }
@@ -118,6 +220,18 @@ pub(super) fn parse(
     let mut records = BTreeMap::<String, SessionUsageRecord>::new();
     let mut session_project: Option<String> = None;
     for (line, item) in items {
+        if item.get("type").and_then(Value::as_str) == Some("runtime-config") {
+            if let Some(model) = item.get("model").and_then(Value::as_str) {
+                configured_model = Some(model.to_string());
+            }
+            continue;
+        }
+        if item.get("type").and_then(Value::as_str) == Some("user") {
+            if let Some(at) = timestamp_millis(&item) {
+                trigger_ms = Some(at);
+            }
+            continue;
+        }
         if item.get("type").and_then(Value::as_str) != Some("assistant") {
             continue;
         }
@@ -139,8 +253,10 @@ pub(super) fn parse(
         let identity = string(&item, &["/message/usage/request_id", "/message/id"])
             .map(|id| format!("request:{id}"))
             .unwrap_or_else(|| format!("line:{line}"));
-        let model = string(&item, &["/message/model"])
-            .or_else(|| configured_model.clone())
+        let raw_model = string(&item, &["/message/model"]).or_else(|| configured_model.clone());
+        let model = raw_model
+            .as_deref()
+            .map(|value| resolve_model_name(value, Some(&dynamic_labels)))
             .unwrap_or_else(|| "unknown".to_string());
         let mut record = native_record(
             tool,

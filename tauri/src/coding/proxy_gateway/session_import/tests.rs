@@ -1499,6 +1499,7 @@ fn exact_envelope_match_finds_bare_and_scoped_proxy_ids() {
         project_path: None,
         credits: None,
         duration_ms: None,
+        first_token_ms: None,
     };
     let find = |cli_key, envelope| {
         db.with_conn(|conn| {
@@ -3657,6 +3658,647 @@ fn native_sources_record_their_own_durations() {
     )
     .unwrap();
     assert_eq!(rows.data[0].duration_ms, 7_500);
+}
+
+#[test]
+fn session_importers_persist_first_token_ms_where_supported() {
+    // Claude: opening thinking block with `thinkingDurationMs` gives TTFT.
+    let root = tempfile::tempdir().unwrap();
+    let prompt = json!({"type":"user","sessionId":"claude-ttft","timestamp":rfc3339_millis(THEN * 1000),
+        "message":{"role":"user","content":"think"}});
+    let thinking_chunk = json!({
+        "type": "assistant",
+        "sessionId": "claude-ttft",
+        "apiBlockIndex": 0,
+        "thinkingDurationMs": 1_800,
+        "timestamp": rfc3339_millis(THEN * 1000 + 3_000),
+        "message": {
+            "id": "msg_ttft",
+            "role": "assistant",
+            "model": "claude-opus-4-6",
+            "content": [{"type": "thinking", "thinking": "..."}],
+            "usage": {"input_tokens": 500, "output_tokens": 120}
+        }
+    });
+    let final_chunk = json!({
+        "type": "assistant",
+        "sessionId": "claude-ttft",
+        "apiBlockIndex": 1,
+        "timestamp": rfc3339_millis(THEN * 1000 + 6_500),
+        "message": {
+            "id": "msg_ttft",
+            "role": "assistant",
+            "model": "claude-opus-4-6",
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "done"}],
+            "usage": {"input_tokens": 500, "output_tokens": 360}
+        }
+    });
+    write_jsonl(&root.path().join("claude.jsonl"), &[prompt, thinking_chunk, final_chunk]);
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayCliKey::Claude, root.path());
+    let rows = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 1);
+    assert_eq!(rows.data[0].duration_ms, 6_500);
+    assert_eq!(rows.data[0].first_token_ms, Some(1_200));
+
+    // Codex: `item_completed` with `started_at_ms` gives TTFT.
+    let root = tempfile::tempdir().unwrap();
+    let sessions = root.path().join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    write_jsonl(
+        &sessions.join(format!("rollout-{PARENT}.jsonl")),
+        &[
+            json!({"type":"session_meta","timestamp":rfc3339(THEN),"payload":{"id":PARENT}}),
+            json!({"type":"event_msg","timestamp":rfc3339_millis(THEN * 1000 + 1_000),
+                "payload":{"type":"task_started"}}),
+            json!({"type":"event_msg","timestamp":rfc3339_millis(THEN * 1000 + 4_500),
+                "payload":{"type":"item_completed","started_at_ms":THEN * 1000 + 2_300,
+                    "item":{"type":"Reasoning"}}}),
+            json!({"type":"token_usage_record","timestamp":rfc3339_millis(THEN * 1000 + 7_200),
+                "payload":{"response_id":"gen_ttft","usage":{
+                    "input_tokens":500,"cached_input_tokens":0,
+                    "output_tokens":320,"reasoning_output_tokens":0}}}),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayCliKey::Codex, &sessions);
+    let rows = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 1);
+    assert_eq!(rows.data[0].duration_ms, 6_200);
+    assert_eq!(rows.data[0].first_token_ms, Some(1_300));
+
+    // DSH: earliest chunk in `data.stream` gives TTFT.
+    let root = tempfile::tempdir().unwrap();
+    let dsh_session = root.path().join("sessions/dsh-ttft");
+    fs::create_dir_all(&dsh_session).unwrap();
+    write_jsonl(
+        &dsh_session.join("session.jsonl"),
+        &[
+            json!({"type":"session","id":"dsh-ttft","version":2}),
+            json!({"type":"turn/start","time":THEN * 1000,"data":{"turn":1,"step":1}}),
+            json!({"type":"assistant/message","surfaceOp":"append","time":THEN * 1000 + 5_000,
+                "data":{
+                    "turn":1,"step":1,
+                    "message":{"id":"m1","source":{"model":"deepseek-r1"}},
+                    "stream":[{"time0":THEN * 1000 + 1_400},{"time":THEN * 1000 + 2_100}],
+                    "usage":{"inputTokens":400,"outputTokens":280,"cacheReadTokens":0,"cacheWriteTokens":0}
+                }}),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::Dsh, root.path());
+    let rows = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 1);
+    assert_eq!(rows.data[0].duration_ms, 5_000);
+    assert_eq!(rows.data[0].first_token_ms, Some(1_400));
+
+    // Pi: native `duration` + `ttft` fields on assistant message.
+    let root = tempfile::tempdir().unwrap();
+    let pi_sessions = root.path().join("sessions/project-a");
+    fs::create_dir_all(&pi_sessions).unwrap();
+    write_jsonl(
+        &pi_sessions.join("pi-ttft.jsonl"),
+        &[
+            json!({"type":"session","id":"pi-ttft","timestamp":rfc3339(THEN)}),
+            json!({"type":"message","id":"entry-1","timestamp":rfc3339(THEN + 4),
+                "message":{"role":"assistant","model":"gpt-5","duration":4_000,"ttft":950,
+                    "usage":{"input":300,"output":250,"cacheRead":0,"cacheWrite":0}}}),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::Pi, root.path());
+    let rows = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 1);
+    assert_eq!(rows.data[0].duration_ms, 4_000);
+    assert_eq!(rows.data[0].first_token_ms, Some(950));
+
+    // MiniMax Code: `request_duration_ms` and `decode_duration_ms` in message rows.
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("runtime-state.sqlite");
+    let native = Connection::open(&db_path).unwrap();
+    native
+        .execute_batch(&format!(
+            "CREATE TABLE local_runtime_token_usage (
+                id INTEGER PRIMARY KEY, session_id TEXT, turn_id TEXT, model TEXT,
+                ts INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+                reasoning_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER, raw TEXT
+             );
+             CREATE TABLE local_runtime_message_rows (
+                session_id TEXT, turn_id TEXT, role TEXT, created_at_ms INTEGER, data_json TEXT
+             );
+             INSERT INTO local_runtime_token_usage VALUES
+               (1, 'mm-1', 't-1', 'MiniMax-M2', {THEN}, 300, 260, 0, 0, 0, NULL);
+             INSERT INTO local_runtime_message_rows VALUES
+               ('mm-1', 't-1', 'assistant', {}, '{{\"usage\":{{\"input_tokens\":300,\"output_tokens\":260,\"request_duration_ms\":5200,\"decode_duration_ms\":3700}}}}');",
+            THEN * 1000 + 5_200
+        ))
+        .unwrap();
+    drop(native);
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::Minimax, &db_path);
+    let rows = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 1);
+    assert_eq!(rows.data[0].duration_ms, 5_200);
+    assert_eq!(rows.data[0].first_token_ms, Some(1_500));
+}
+
+#[test]
+fn session_timing_fixes_cover_real_world_cli_transcript_shapes() {
+    // 1. Claude: `parentUuid` chain skips `attachment` rows, and an opening
+    // `1/1` placeholder thinking block still contributes its `thinkingDurationMs`.
+    let root = tempfile::tempdir().unwrap();
+    write_jsonl(
+        &root.path().join("claude-chain.jsonl"),
+        &[
+            json!({"type":"user","uuid":"u-1","timestamp":rfc3339_millis(THEN * 1000),
+                "sessionId":"claude-chain","message":{"role":"user","content":"go"}}),
+            json!({"type":"attachment","uuid":"att-1","parentUuid":"u-1",
+                "timestamp":rfc3339_millis(THEN * 1000 + 2_500)}),
+            json!({"type":"assistant","uuid":"a-0","parentUuid":"att-1",
+                "timestamp":rfc3339_millis(THEN * 1000 + 3_000),"apiBlockIndex":0,
+                "thinkingDurationMs":800,"sessionId":"claude-chain",
+                "message":{"id":"msg-chain","model":"claude-sonnet-4-6",
+                    "content":[{"type":"thinking","thinking":"..."}],
+                    "stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1}}}),
+            json!({"type":"assistant","uuid":"a-1","parentUuid":"a-0",
+                "timestamp":rfc3339_millis(THEN * 1000 + 5_500),"apiBlockIndex":1,
+                "sessionId":"claude-chain",
+                "message":{"id":"msg-chain","model":"claude-sonnet-4-6",
+                    "content":[{"type":"text","text":"quoted \"role\":\"user\" inside body"}],
+                    "stop_reason":"end_turn",
+                    "usage":{"input_tokens":500,"output_tokens":320}}}),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayCliKey::Claude, root.path());
+    let rows =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 1);
+    assert_eq!(rows.data[0].duration_ms, 5_500);
+    assert_eq!(rows.data[0].first_token_ms, Some(2_200));
+
+    // 2. Codex: `response_item` user message supersedes `task_started`, and a
+    // mirrored `token_count` after tool outputs preserves the next call's start.
+    let root = tempfile::tempdir().unwrap();
+    let sessions = root.path().join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    write_jsonl(
+        &sessions.join(format!("rollout-{PARENT}.jsonl")),
+        &[
+            json!({"type":"session_meta","timestamp":rfc3339_millis(THEN * 1000),"payload":{"id":PARENT}}),
+            json!({"type":"event_msg","timestamp":rfc3339_millis(THEN * 1000 + 100),"payload":{"type":"task_started"}}),
+            json!({"type":"response_item","timestamp":rfc3339_millis(THEN * 1000 + 600),
+                "payload":{"type":"message","role":"user"}}),
+            json!({"type":"event_msg","timestamp":rfc3339_millis(THEN * 1000 + 3_500),
+                "payload":{"type":"item_completed","started_at_ms":THEN * 1000 + 2_200,
+                    "item":{"type":"Reasoning"}}}),
+            json!({"type":"response_item","timestamp":rfc3339_millis(THEN * 1000 + 3_505),
+                "payload":{"type":"reasoning"}}),
+            json!({"type":"token_usage_record","timestamp":rfc3339_millis(THEN * 1000 + 6_800),
+                "payload":{"response_id":"resp-1","usage":{
+                    "input_tokens":400,"cached_input_tokens":0,"output_tokens":260}}}),
+            json!({"type":"response_item","timestamp":rfc3339_millis(THEN * 1000 + 7_800),
+                "payload":{"type":"function_call_output"}}),
+            json!({"type":"event_msg","timestamp":rfc3339_millis(THEN * 1000 + 7_801),
+                "payload":{"type":"token_count","info":{"last_token_usage":{
+                    "input_tokens":400,"cached_input_tokens":0,"output_tokens":260}}}}),
+            json!({"type":"event_msg","timestamp":rfc3339_millis(THEN * 1000 + 10_000),
+                "payload":{"type":"item_completed","started_at_ms":THEN * 1000 + 9_200,
+                    "item":{"type":"Reasoning"}}}),
+            json!({"type":"token_usage_record","timestamp":rfc3339_millis(THEN * 1000 + 12_700),
+                "payload":{"response_id":"resp-2","usage":{
+                    "input_tokens":500,"cached_input_tokens":0,"output_tokens":300}}}),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayCliKey::Codex, &sessions);
+    let rows =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 2);
+    let first = rows
+        .data
+        .iter()
+        .find(|row| row.trace_id.ends_with(":resp-1"))
+        .unwrap();
+    let second = rows
+        .data
+        .iter()
+        .find(|row| row.trace_id.ends_with(":resp-2"))
+        .unwrap();
+    assert_eq!(first.duration_ms, 6_200);
+    assert_eq!(first.first_token_ms, Some(1_600));
+    assert_eq!(second.duration_ms, 4_899);
+    assert_eq!(second.first_token_ms, Some(1_399));
+
+    // 3. DSH: `step/start` brackets each step independently within a multi-step turn.
+    let root = tempfile::tempdir().unwrap();
+    let session_dir = root.path().join("session-multi-step");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_jsonl(
+        &session_dir.join("session.jsonl"),
+        &[
+            json!({"type":"session","id":"dsh-multi","version":3}),
+            json!({"type":"step/start","time":THEN * 1000,"data":{"turn":1,"step":1}}),
+            json!({"type":"assistant/message","time":THEN * 1000 + 3_000,"surfaceOp":"append",
+                "data":{"turn":1,"step":1,"message":{"id":"m1","source":{"model":"deepseek-v4.1-flash"}},
+                    "stream":[{"type":"text","time":THEN * 1000 + 900}],
+                    "usage":{"inputTokens":200,"outputTokens":220,"cacheReadTokens":0,"cacheWriteTokens":0}}}),
+            json!({"type":"step/start","time":THEN * 1000 + 5_000,"data":{"turn":1,"step":2}}),
+            json!({"type":"assistant/message","time":THEN * 1000 + 9_500,"surfaceOp":"append",
+                "data":{"turn":1,"step":2,"message":{"id":"m2","source":{"model":"deepseek-v4.1-flash"}},
+                    "stream":[{"type":"text","time0":THEN * 1000 + 6_250}],
+                    "usage":{"inputTokens":300,"outputTokens":260,"cacheReadTokens":0,"cacheWriteTokens":0}}}),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::Dsh, root.path());
+    let rows =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 2);
+    let m1 = rows.data.iter().find(|r| r.trace_id.ends_with(":m1")).unwrap();
+    let m2 = rows.data.iter().find(|r| r.trace_id.ends_with(":m2")).unwrap();
+    assert_eq!((m1.duration_ms, m1.first_token_ms), (3_000, Some(900)));
+    assert_eq!((m2.duration_ms, m2.first_token_ms), (4_500, Some(1_250)));
+
+    // 4. OMP/Pi: floating-point `duration` and `ttft` milliseconds round cleanly.
+    let root = tempfile::tempdir().unwrap();
+    write_jsonl(
+        &root.path().join("omp-float.jsonl"),
+        &[
+            json!({"type":"session","id":"omp-float","timestamp":rfc3339(THEN)}),
+            json!({"type":"message","id":"e-float","timestamp":rfc3339(THEN + 7),
+                "message":{"role":"assistant","model":"deepseek-v4.1-flash",
+                    "duration":6744.172099999996,"ttft":6192.651100000003,
+                    "usage":{"input":282,"output":220,"cacheRead":0,"cacheWrite":0}}}),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::OhMyPi, root.path());
+    let rows =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 1);
+    assert_eq!(rows.data[0].duration_ms, 6_744);
+    assert_eq!(rows.data[0].first_token_ms, Some(6_193));
+
+    // 5. Grok: reads positive `ctx.ttft_ms` and ignores `0` sentinel.
+    let root = tempfile::tempdir().unwrap();
+    let logs = root.path().join("logs");
+    fs::create_dir_all(&logs).unwrap();
+    write_jsonl(
+        &logs.join("unified.jsonl"),
+        &[
+            json!({"ts":THEN,"sid":"g-1","msg":"shell.turn.inference_done",
+                "ctx":{"loop_index":1,"attempts":1,"prompt_tokens":1000,"cached_prompt_tokens":0,
+                    "completion_tokens":300,"model_elapsed_ms":5466,"ttft_ms":999}}),
+            json!({"ts":THEN + 10,"sid":"g-1","msg":"shell.turn.inference_done",
+                "ctx":{"loop_index":2,"attempts":1,"prompt_tokens":1200,"cached_prompt_tokens":0,
+                    "completion_tokens":250,"model_elapsed_ms":4910,"ttft_ms":0}}),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::Grok, root.path());
+    let rows =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 2);
+    let first = rows.data.iter().find(|r| r.duration_ms == 5_466).unwrap();
+    let second = rows.data.iter().find(|r| r.duration_ms == 4_910).unwrap();
+    assert_eq!(first.first_token_ms, Some(999));
+    assert_eq!(second.first_token_ms, None);
+
+    // 6. OpenCode JSON file preserves `usage_row_duration` instead of clearing it.
+    let root = tempfile::tempdir().unwrap();
+    let msg_dir = root.path().join("storage/message/ses_1");
+    fs::create_dir_all(&msg_dir).unwrap();
+    fs::write(
+        msg_dir.join("msg_1.json"),
+        serde_json::to_string(&json!({
+            "id":"msg_1","sessionID":"ses_1","role":"assistant","modelID":"grok-4.7",
+            "time":{"created":THEN * 1000,"completed":THEN * 1000 + 8_420},
+            "tokens":{"input":500,"output":240,"reasoning":20,"cache":{"read":0,"write":0}}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::OpenCode, root.path());
+    let rows =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 1);
+    assert_eq!(rows.data[0].duration_ms, 8_420);
+
+    // 7. WorkBuddy/CodeBuddy: top-level `role: "user"` times the opening turn.
+    let root = tempfile::tempdir().unwrap();
+    write_jsonl(
+        &root.path().join("cb.jsonl"),
+        &[
+            json!({"type":"message","role":"user","timestamp":THEN * 1000,"sessionId":"cb-1"}),
+            json!({"type":"function_call","timestamp":THEN * 1000 + 3_037,"sessionId":"cb-1",
+                "providerData":{"messageId":"cb-msg-1","requestModelName":"deepseek-v4.1-flash",
+                    "usage":{"input_tokens":500,"output_tokens":220}}}),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::Codebuddy, root.path());
+    let rows =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 1);
+    assert_eq!(rows.data[0].duration_ms, 3_037);
+
+    // 8. Qoder CLI: multi-turn session times every earlier turn instead of only the final one.
+    let root = tempfile::tempdir().unwrap();
+    write_jsonl(
+        &root.path().join("qoder.jsonl"),
+        &[
+            json!({"type":"user","sessionId":"q-1","timestamp":rfc3339_millis(THEN * 1000)}),
+            json!({"type":"assistant","sessionId":"q-1","timestamp":rfc3339_millis(THEN * 1000 + 4_500),
+                "message":{"model":"qfmodel","usage":{"request_id":"req-1","input_tokens":100,"output_tokens":50}}}),
+            json!({"type":"user","sessionId":"q-1","timestamp":rfc3339_millis(THEN * 1000 + 20_000)}),
+            json!({"type":"assistant","sessionId":"q-1","timestamp":rfc3339_millis(THEN * 1000 + 26_200),
+                "message":{"model":"qfmodel","usage":{"request_id":"req-2","input_tokens":100,"output_tokens":60}}}),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::QoderCli, root.path());
+    let rows =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 2);
+    let r1 = rows.data.iter().find(|r| r.trace_id.ends_with(":request:req-1")).unwrap();
+    let r2 = rows.data.iter().find(|r| r.trace_id.ends_with(":request:req-2")).unwrap();
+    assert_eq!(r1.duration_ms, 4_500);
+    assert_eq!(r2.duration_ms, 6_200);
+
+    // 9. Kimi Code: `step.begin` / `llm.request` / `step.end` supplies native TTFT + stream duration.
+    let root = tempfile::tempdir().unwrap();
+    let wire_dir = root.path().join("sessions/kimi-timed/agents/main");
+    fs::create_dir_all(&wire_dir).unwrap();
+    write_jsonl(
+        &wire_dir.join("wire.jsonl"),
+        &[
+            json!({"type":"context.append_loop_event","time":THEN * 1000,"agentId":"main",
+                "event":{"type":"step.begin","uuid":"step-1","turnId":"t1","step":1}}),
+            json!({"type":"llm.request","time":THEN * 1000 + 10,"agentId":"main",
+                "kind":"loop","turnStep":"t1.1","model":"kimi-k2"}),
+            json!({"type":"usage.record","agentId":"main","model":"kimi-k2",
+                "messageId":"kimi-msg-1","time":THEN * 1000 + 2_500,
+                "usage":{"inputOther":400,"output":260,"inputCacheRead":0,"inputCacheCreation":0}}),
+            json!({"type":"context.append_loop_event","time":THEN * 1000 + 5_000,"agentId":"main",
+                "event":{"type":"step.end","uuid":"step-1","messageId":"kimi-msg-1",
+                    "llmFirstTokenLatencyMs":420,"llmStreamDurationMs":1_880}}),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::Kimi, root.path());
+    let rows =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 1);
+    assert_eq!(rows.data[0].duration_ms, 2_300);
+    assert_eq!(rows.data[0].first_token_ms, Some(420));
+
+    // 10. OpenClaw: decompresses `transcript_events.event_zstd` when `event_json`
+    // is NULL and computes Pi-compatible `duration_ms` from `message.timestamp` -> `entry.timestamp`.
+    let root = tempfile::tempdir().unwrap();
+    let agent_dir = root.path().join("main/agent");
+    fs::create_dir_all(&agent_dir).unwrap();
+    let claw_db = Connection::open(agent_dir.join("openclaw-agent.sqlite")).unwrap();
+    claw_db
+        .execute_batch(
+            "CREATE TABLE transcript_events(session_id TEXT, seq INTEGER, event_json TEXT, event_zstd BLOB, created_at INTEGER);",
+        )
+        .unwrap();
+    let claw_event = json!({
+        "type":"message","id":"oc-msg-1","timestamp":rfc3339_millis(THEN * 1000 + 6_320),
+        "message":{"role":"assistant","provider":"axonhub-oai","model":"deepseek-v4.1-flash",
+            "responseId":"resp-oc-1","timestamp":THEN * 1000,
+            "usage":{"input":16348,"output":707,"cacheRead":0,"cacheWrite":0,"totalTokens":17055}}
+    });
+    let claw_zstd = zstd::stream::encode_all(claw_event.to_string().as_bytes(), 0).unwrap();
+    claw_db
+        .execute(
+            "INSERT INTO transcript_events VALUES ('verify-oc', 7, NULL, ?1, ?2)",
+            params![claw_zstd, THEN * 1000 + 6_320],
+        )
+        .unwrap();
+    drop(claw_db);
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::OpenClaw, root.path());
+    let rows =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 1);
+    assert_eq!(rows.data[0].output_tokens, 707);
+    assert_eq!(rows.data[0].duration_ms, 6_320);
+
+    // 11. MiMoCode: OpenCode-shaped SQLite rows import tokens and `duration_ms`.
+    let root = tempfile::tempdir().unwrap();
+    let mimo_path = root.path().join("mimocode.db");
+    let mimo_db = Connection::open(&mimo_path).unwrap();
+    mimo_db
+        .execute_batch(
+            "CREATE TABLE session(id TEXT PRIMARY KEY, time_updated INTEGER, directory TEXT);
+             CREATE TABLE message(id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);",
+        )
+        .unwrap();
+    let mimo_msg = json!({
+        "role":"assistant","modelID":"mimo-v2",
+        "time":{"created":THEN * 1000,"completed":THEN * 1000 + 4_150},
+        "tokens":{"input":400,"output":260,"reasoning":0,"cache":{"read":0,"write":0}}
+    });
+    mimo_db
+        .execute(
+            "INSERT INTO session VALUES ('mimo-s1', ?1, '/repo')",
+            params![THEN * 1000 + 4_150],
+        )
+        .unwrap();
+    mimo_db
+        .execute(
+            "INSERT INTO message VALUES ('mimo-m1', 'mimo-s1', ?1, ?2, ?3)",
+            params![THEN * 1000, THEN * 1000 + 4_150, mimo_msg.to_string()],
+        )
+        .unwrap();
+    drop(mimo_db);
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::Mimocode, &mimo_path);
+    let rows =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 1);
+    assert_eq!(rows.data[0].duration_ms, 4_150);
+
+    // 12. KimiCli (Python wire.jsonl): brackets `StepBegin` -> `StatusUpdate`.
+    let root = tempfile::tempdir().unwrap();
+    let kcli_dir = root.path().join("kcli-sess");
+    fs::create_dir_all(&kcli_dir).unwrap();
+    write_jsonl(
+        &kcli_dir.join("wire.jsonl"),
+        &[
+            json!({"timestamp":THEN as f64,"message":{"type":"StepBegin","payload":{}}}),
+            json!({"timestamp":(THEN as f64) + 3.45,"message":{"type":"StatusUpdate",
+                "payload":{"message_id":"kcli-1","model":"kimi-k2",
+                    "token_usage":{"input_other":300,"output":220,"input_cache_read":0,"input_cache_creation":0}}}}),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::KimiCli, root.path());
+    let rows =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 1);
+    assert_eq!(rows.data[0].duration_ms, 3_450);
+
+    // 13. Command Code: brackets `user` -> `assistant`.
+    let root = tempfile::tempdir().unwrap();
+    write_jsonl(
+        &root.path().join("cmd-sess.jsonl"),
+        &[
+            json!({"type":"session","id":"cmd-s1","model":"claude-sonnet-4-6"}),
+            json!({"role":"user","timestamp":rfc3339_millis(THEN * 1000)}),
+            json!({"role":"assistant","id":"cmd-a1","timestamp":rfc3339_millis(THEN * 1000 + 2_750),
+                "usage":{"inputTokens":400,"outputTokens":240,"cacheReadTokens":0,"cacheWriteTokens":0}}),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::Cmdcode, root.path());
+    let rows =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 1);
+    assert_eq!(rows.data[0].duration_ms, 2_750);
+}
+
+#[test]
+fn qoder_resolves_internal_model_keys_and_tracks_runtime_config_in_order() {
+    let root = tempfile::tempdir().unwrap();
+    let auth_dir = root.path().join(".auth");
+    let proj_dir = root.path().join("projects").join("demo");
+    fs::create_dir_all(&auth_dir).unwrap();
+    fs::create_dir_all(&proj_dir).unwrap();
+    // Dynamic catalog overrides/extends static table; strategy tiers stay raw.
+    fs::write(
+        auth_dir.join("dynamic-texts.json"),
+        json!({
+            "version": 1,
+            "texts": {
+                "modelSelector.item.qfmodel": "Qwen3.8-Flash",
+                "modelSelector.item.newmodel": "Custom-New-Model",
+                "modelSelector.item.auto": "Auto"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    write_jsonl(
+        &proj_dir.join("sess.jsonl"),
+        &[
+            json!({"type":"runtime-config","sessionId":"s1","model":"kmodel_latest"}),
+            json!({"type":"user","sessionId":"s1","timestamp":rfc3339_millis(THEN * 1000)}),
+            // Missing `message.model` must inherit `kmodel_latest` (Kimi-K3),
+            // NOT the later `dfmodel` runtime-config!
+            json!({"type":"assistant","sessionId":"s1","timestamp":rfc3339_millis(THEN * 1000 + 2_000),
+                "message":{"id":"m1","usage":{"request_id":"r1","input_tokens":0,"output_tokens":0,"credits":0.2}}}),
+            json!({"type":"runtime-config","sessionId":"s1","model":"dfmodel"}),
+            json!({"type":"user","sessionId":"s1","timestamp":rfc3339_millis(THEN * 1000 + 5_000)}),
+            json!({"type":"assistant","sessionId":"s1","timestamp":rfc3339_millis(THEN * 1000 + 8_000),
+                "message":{"id":"m2","model":"newmodel","usage":{"request_id":"r2","input_tokens":0,"output_tokens":0,"credits":0.3}}}),
+            json!({"type":"assistant","sessionId":"s1","timestamp":rfc3339_millis(THEN * 1000 + 9_000),
+                "message":{"id":"m3","usage":{"request_id":"r3","input_tokens":0,"output_tokens":0,"credits":0.4}}}),
+            json!({"type":"assistant","sessionId":"s1","timestamp":rfc3339_millis(THEN * 1000 + 10_000),
+                "message":{"id":"m4","model":"auto","usage":{"request_id":"r4","input_tokens":0,"output_tokens":0,"credits":0.1}}}),
+        ],
+    );
+
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::QoderCli, &root.path().join("projects"));
+    let logs = usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    let by_id: std::collections::HashMap<_, _> = logs
+        .data
+        .iter()
+        .map(|row| (row.trace_id.as_str(), row.upstream_model_id.as_str()))
+        .collect();
+    assert_eq!(by_id.get("SESSION:qodercli:s1:request:r1"), Some(&"Kimi-K3"));
+    assert_eq!(by_id.get("SESSION:qodercli:s1:request:r2"), Some(&"Custom-New-Model"));
+    assert_eq!(by_id.get("SESSION:qodercli:s1:request:r3"), Some(&"DeepSeek-Flash"));
+    assert_eq!(by_id.get("SESSION:qodercli:s1:request:r4"), Some(&"auto"));
+
+    // Qoder IDE also resolves opaque `model_key` via static fallback.
+    let ide_dir = tempfile::tempdir().unwrap();
+    let ide_db = ide_dir.path().join("local.db");
+    let native = Connection::open(&ide_db).unwrap();
+    native
+        .execute_batch(
+            "CREATE TABLE chat_message (
+                message_id TEXT, session_id TEXT, request_id TEXT,
+                token_info TEXT, model_info TEXT, gmt_create INTEGER
+             );",
+        )
+        .unwrap();
+    native
+        .execute(
+            "INSERT INTO chat_message VALUES ('m1','s1','req-ide',?1,?2,?3)",
+            params![
+                r#"{"prompt_tokens":100,"completion_tokens":50,"cached_tokens":20}"#,
+                r#"{"model_key":"qfmodel"}"#,
+                THEN * 1000
+            ],
+        )
+        .unwrap();
+    drop(native);
+    let db2 = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db2, GatewayUsageTool::QoderIde, &ide_db);
+    let ide_logs =
+        usage_stats::request_logs(&db2, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(ide_logs.data.len(), 1);
+    assert_eq!(ide_logs.data[0].upstream_model_id, "Qwen3.8-Flash");
+}
+
+#[test]
+fn workbuddy_prefers_canonical_model_id_and_preserves_fractional_credits() {
+    let root = tempfile::tempdir().unwrap();
+    let project = root.path().join("projects/demo");
+    fs::create_dir_all(&project).unwrap();
+    write_jsonl(
+        &project.join("wb-real.jsonl"),
+        &[
+            json!({"type":"message","role":"user","timestamp":THEN * 1000,"sessionId":"wb-1","cwd":"D:/work"}),
+            // Both `model` (canonical ID) and `requestModelName` (display name) present,
+            // plus fractional `credit: 0.56`.
+            json!({"type":"function_call","timestamp":THEN * 1000 + 3_200,"sessionId":"wb-1","cwd":"D:/work",
+                "providerData":{
+                    "messageId":"msg-1",
+                    "model":"deepseek-v4.1-flash",
+                    "requestModelId":"custom-local:deepseek-v4.1-flash",
+                    "requestModelName":"DeepSeek V4.1 Flash",
+                    "rawUsage":{"prompt_tokens":1000,"completion_tokens":300,"total_tokens":1300,"credit":0.56}
+                }}),
+            // Credit-only row with fractional credit < 1.0 (must not truncate to 0 and drop).
+            json!({"type":"function_call_result","timestamp":THEN * 1000 + 4_000,"sessionId":"wb-1"}),
+            json!({"type":"message","role":"assistant","timestamp":THEN * 1000 + 6_500,"sessionId":"wb-1",
+                "providerData":{
+                    "messageId":"msg-2",
+                    "model":"deepseek-v4.1-flash",
+                    "rawUsage":{"input_tokens":0,"output_tokens":0,"credit":0.42}
+                }}),
+        ],
+    );
+    let db = SqliteDbState::in_memory_for_test().unwrap();
+    run_sync(&db, GatewayUsageTool::Workbuddy, root.path());
+    let rows =
+        usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
+    assert_eq!(rows.data.len(), 2);
+    assert!(rows
+        .data
+        .iter()
+        .all(|row| row.upstream_model_id == "deepseek-v4.1-flash"));
+    let credits: Vec<Option<f64>> = db
+        .with_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT credits FROM proxy_request_logs ORDER BY request_id")
+                .map_err(|e| e.to_string())?;
+            let vals = stmt
+                .query_map([], |row| row.get::<_, Option<f64>>(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            Ok(vals)
+        })
+        .unwrap();
+    assert_eq!(credits, vec![Some(0.56), Some(0.42)]);
 }
 
 fn rfc3339(seconds: i64) -> String {

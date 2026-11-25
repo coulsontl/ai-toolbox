@@ -165,6 +165,7 @@ fn session_difference_record(
         credits: None,
         // A session aggregate describes no single call, so it has no duration.
         duration_ms: None,
+        first_token_ms: None,
     })
 }
 

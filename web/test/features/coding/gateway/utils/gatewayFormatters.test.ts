@@ -27,6 +27,7 @@ import {
   requestExportPrefix,
   requestLineText,
   sessionDurationText,
+  sessionFirstTokenText,
   resolveGatewayRequestRange,
   resolveGatewayUsageRange,
   serviceTierLabel,
@@ -185,13 +186,15 @@ test('TPS formats output speed with units and subtracts TTFT only for streaming 
   assert.equal(formatTps({ ...record, is_streaming: false }), '21.8 tok/s');
   assert.equal(formatTps({ ...record, first_token_ms: null }), '21.8 tok/s');
   assert.equal(formatTps({ ...record, first_token_ms: 0 }), '21.8 tok/s');
-  assert.equal(formatTps({ ...record, output_tokens: 66, duration_ms: 2600 }), '30 tok/s');
+  assert.equal(formatTps({ ...record, output_tokens: 120, duration_ms: 4_400 }), '30 tok/s');
   for (const invalid of [
     { duration_ms: 0 },
     { duration_ms: Number.NaN },
     { first_token_ms: 13_600 },
     { first_token_ms: 15_000 },
     { first_token_ms: -1 },
+    { first_token_ms: 13_550 },
+    { output_tokens: 99 },
     { output_tokens: 0 },
     { output_tokens: null },
   ]) {
@@ -200,7 +203,7 @@ test('TPS formats output speed with units and subtracts TTFT only for streaming 
   assert.equal(formatTps({ ...record, method: 'GET', path: '/openai/v1/models' }), null);
 });
 
-test('session rows rate end-to-end because they have no first-token mark', () => {
+test('session rows rate end-to-end without ≈ prefix and ignore first-token latency', () => {
   const session = {
     method: '',
     path: '',
@@ -211,21 +214,32 @@ test('session rows rate end-to-end because they have no first-token mark', () =>
     is_streaming: false,
     data_source: 'session',
   };
-  // The whole duration counts: 297 / 13.6s, and a stray first-token mark on a
-  // session row is ignored rather than subtracted.
+  // The whole duration counts (297 / 13.6s), and a first-token mark on a
+  // session row is intentionally not subtracted (prevents inflated speed on
+  // thinking models like Antigravity).
   assert.equal(formatTps(session), '21.8 tok/s');
-  assert.equal(formatTps({ ...session, first_token_ms: 400 }), '21.8 tok/s');
+  assert.equal(formatTps({ ...session, first_token_ms: 13_400 }), '21.8 tok/s');
+  assert.equal(formatTps({ ...session, output_tokens: 199 }), null);
+  assert.equal(formatTps({ ...session, duration_ms: 999 }), null);
   assert.equal(formatTps({ ...session, duration_ms: 0 }), null);
   assert.equal(formatTps({ ...session, output_tokens: 0 }), null);
 });
 
-test('session duration shows an estimate and keeps missing values as a dash', () => {
+test('session duration and first-token helpers format directly and keep missing values as a dash', () => {
   assert.equal(sessionDurationText(13_600), '13.6s');
   assert.equal(sessionDurationText(400), '400ms');
   assert.equal(sessionDurationText(0), '-');
   assert.equal(sessionDurationText(null), '-');
   assert.equal(sessionDurationText(undefined), '-');
   assert.equal(sessionDurationText(Number.NaN), '-');
+
+  assert.equal(sessionFirstTokenText(2_799), '2.8s');
+  assert.equal(sessionFirstTokenText(450), '450ms');
+  assert.equal(sessionFirstTokenText(0), '0ms');
+  assert.equal(sessionFirstTokenText(-1), '-');
+  assert.equal(sessionFirstTokenText(null), '-');
+  assert.equal(sessionFirstTokenText(undefined), '-');
+  assert.equal(sessionFirstTokenText(Number.NaN), '-');
 });
 
 test('effort display uses explicit metadata and cache rate distinguishes zero from no data', () => {

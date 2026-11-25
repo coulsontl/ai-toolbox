@@ -62,6 +62,7 @@ import {
   resolveGatewayRequestRange,
   sanitizeGatewayFileNamePart,
   sessionDurationText,
+  sessionFirstTokenText,
   shouldShowBodyComparison,
   stringifyDetailValue,
   type GatewayRequestRangeSelection,
@@ -870,8 +871,16 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
               )}
             </>
           )}
-          <span title={t('gateway.page.requests.durationHint')}>{t('gateway.page.requests.fields.firstToken')}</span>
-          <strong>{detail.first_token_ms != null ? formatDuration(detail.first_token_ms) : '-'}</strong>
+          <span title={detail.data_source === 'session'
+            ? t('gateway.page.requests.sessionDurationHint')
+            : t('gateway.page.requests.durationHint')}>
+            {t('gateway.page.requests.fields.firstToken')}
+          </span>
+          <strong title={detail.data_source === 'session' ? t('gateway.page.requests.sessionDurationHint') : undefined}>
+            {detail.data_source === 'session'
+              ? sessionFirstTokenText(detail.first_token_ms)
+              : detail.first_token_ms != null ? formatDuration(detail.first_token_ms) : '-'}
+          </strong>
           <span>{t('gateway.page.requests.fields.duration')}</span>
           <strong title={detail.data_source === 'session' ? t('gateway.page.requests.sessionDurationHint') : undefined}>
             {detail.data_source === 'session'
@@ -1148,13 +1157,21 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
     {
       title: <span title={t('gateway.page.requests.durationHint')}>{t('gateway.page.requests.columns.duration')}</span>,
       dataIndex: 'duration_ms',
-      width: 140,
+      width: 148,
       align: 'right',
       render: (value: number, record) => {
         if (record.data_source === 'session') {
-          // Local records have no HTTP first-token mark; the single line is
-          // the duration the parser estimated from the transcript's events.
-          return sessionDurationText(value);
+          const firstToken = sessionFirstTokenText(record.first_token_ms);
+          const totalDuration = sessionDurationText(value);
+          if (firstToken === '-' && totalDuration === '-') {
+            return <span title={t('gateway.page.requests.sessionDurationHint')}>-</span>;
+          }
+          return (
+            <div className={styles.tokenCell} title={t('gateway.page.requests.sessionDurationHint')}>
+              <small>{t('gateway.page.requests.durationFirstCell', { value: firstToken })}</small>
+              <span>{t('gateway.page.requests.durationTotalCell', { value: totalDuration })}</span>
+            </div>
+          );
         }
         return (
           <div className={styles.tokenCell}>
@@ -1169,7 +1186,7 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
     {
       title: <span title={t('gateway.page.requests.tpsHint')}>{t('gateway.page.requests.columns.tps')}</span>,
       dataIndex: 'tps',
-      width: 90,
+      width: 100,
       align: 'right',
       render: (_, record) => {
         const value = formatTps(record) ?? '-';

@@ -9,7 +9,10 @@
 //! CLI's own `costUsd`. The same message can be copied into more than one
 //! file, so the identity is a hash over its id/timestamp and the usage.
 
-use super::parsers::{native_record, number, read_jsonl, string, timestamp, ParsedSession};
+use super::parsers::{
+    native_record, number, read_jsonl, session_duration_ms, string, timestamp, timestamp_millis,
+    ParsedSession,
+};
 use super::{GatewayUsageTool, SessionUsageGranularity, SessionUsageRecord, TokenUsage};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -45,6 +48,7 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
     let mut project_path: Option<String> = None;
     let mut seen_events = HashSet::<String>::new();
     let mut records = BTreeMap::<String, SessionUsageRecord>::new();
+    let mut trigger_ms: Option<i64> = None;
     let pending = read_jsonl(path, |index, value| {
         match value.get("type").and_then(Value::as_str) {
             Some("session") => {
@@ -72,6 +76,15 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
             .and_then(|message| message.get("role"))
             .or_else(|| value.get("role"))
             .and_then(Value::as_str);
+        if role == Some("user")
+            || value.get("type").and_then(Value::as_str) == Some("user")
+        {
+            if let Some(at) = timestamp_millis(&value).or_else(|| nested.and_then(timestamp_millis))
+            {
+                trigger_ms = Some(at);
+            }
+            return;
+        }
         if role != Some("assistant") {
             return;
         }
@@ -123,6 +136,13 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
             },
             created_at,
         );
+        record.duration_ms = match (
+            trigger_ms.take(),
+            timestamp_millis(&value).or_else(|| nested.and_then(timestamp_millis)),
+        ) {
+            (Some(start), Some(end)) => session_duration_ms(start, end),
+            _ => None,
+        };
         record.metadata.granularity = SessionUsageGranularity::Request;
         record.metadata.call_count = Some(1);
         record.project_path = project_path.clone();

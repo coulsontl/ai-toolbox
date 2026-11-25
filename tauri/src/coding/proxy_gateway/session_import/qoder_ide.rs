@@ -142,6 +142,20 @@ fn read_records(tool: GatewayUsageTool, path: &Path) -> Result<ReadResult, Strin
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
 
+    let dynamic_labels = {
+        let (env_key, default_dir) = if tool == GatewayUsageTool::QoderIdeCn {
+            ("QODERCN_CONFIG_DIR", ".qoder-cn")
+        } else {
+            ("QODER_CONFIG_DIR", ".qoder")
+        };
+        std::env::var_os(env_key)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|home| home.join(default_dir)))
+            .map(|dir| super::qoder_cli::load_dynamic_model_labels(&dir))
+            .unwrap_or_default()
+    };
+
     // One request can be written over several message rows. The reference
     // collector sums all of them and counts the distinct request id as one
     // call, so the buckets are added here too — overwriting would drop every
@@ -165,7 +179,7 @@ fn read_records(tool: GatewayUsageTool, path: &Path) -> Result<ReadResult, Strin
                 info.get("model_key")
                     .or_else(|| info.get("model"))
                     .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
+                    .map(|raw| super::qoder_cli::resolve_model_name(raw, Some(&dynamic_labels)))
             });
         let session_id = session.unwrap_or_else(|| id.clone());
         let identity = request

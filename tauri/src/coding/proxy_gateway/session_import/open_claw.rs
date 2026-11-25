@@ -188,6 +188,10 @@ pub(super) fn parse_entry(
             string(message, &["/provider"]).unwrap_or_default()
         );
     }
+    record.duration_ms = super::pi::request_duration_ms(entry, message);
+    record.first_token_ms = record
+        .duration_ms
+        .and_then(|duration| super::pi::request_first_token_ms(message, duration));
     record.metadata.native_provider = string(message, &["/provider"]);
     record.metadata.reported_total_tokens = raw
         .get("totalTokens")
@@ -214,6 +218,7 @@ fn persist_snapshot(
     now: i64,
 ) -> Result<GatewaySessionUsageImportResult, String> {
     let mut state = states.get(source_id).cloned().unwrap_or_default();
+    state.parser_revision = super::parsers::revision(GatewayUsageTool::OpenClaw);
     state.pending = false;
     adopt_known_records(&mut state, &mut records, states);
     let (state, changes) = persist_records(db, source_id, state, records, claims, now)?;
@@ -256,21 +261,41 @@ fn read_database(
 ) -> Result<Vec<(String, Vec<SessionUsageRecord>)>, String> {
     let source = open_read_only(path)?;
     let mut snapshots = Vec::new();
-    let mut query = source.prepare("SELECT session_id, seq, event_json, created_at FROM transcript_events ORDER BY session_id, seq").map_err(|error| error.to_string())?;
+    let event_columns = columns(&source, "transcript_events")?;
+    let event_zstd_expr = if event_columns.contains("event_zstd") {
+        "event_zstd"
+    } else {
+        "NULL"
+    };
+    let mut query = source
+        .prepare(&format!(
+            "SELECT session_id, seq, event_json, {event_zstd_expr}, created_at
+             FROM transcript_events ORDER BY session_id, seq"
+        ))
+        .map_err(|error| error.to_string())?;
     let rows = query
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, i64>(1)?.max(0) as u64,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<Vec<u8>>>(3)?,
+                row.get::<_, i64>(4)?,
             ))
         })
         .map_err(|error| error.to_string())?;
     let mut sessions = BTreeMap::<String, BTreeMap<String, SessionUsageRecord>>::new();
     for row in rows {
-        let (session, seq, json, time) = row.map_err(|error| error.to_string())?;
-        let event = serde_json::from_str::<Value>(&json).map_err(|error| error.to_string())?;
+        let (session, seq, json_text, zstd_blob, time) = row.map_err(|error| error.to_string())?;
+        let event: Value = if let Some(json) = json_text.filter(|text| !text.is_empty()) {
+            serde_json::from_str(&json).map_err(|error| error.to_string())?
+        } else if let Some(blob) = zstd_blob.filter(|bytes| !bytes.is_empty()) {
+            let decoded = zstd::stream::decode_all(Cursor::new(blob))
+                .map_err(|error| format!("Failed to decompress OpenClaw event_zstd: {error}"))?;
+            serde_json::from_slice(&decoded).map_err(|error| error.to_string())?
+        } else {
+            continue;
+        };
         if let Some(record) = parse_entry(&session, seq as usize, &event, time / 1000) {
             sessions
                 .entry(session)
@@ -284,6 +309,7 @@ fn read_database(
             records.into_values().collect(),
         ));
     }
+    let parser_revision = super::parsers::revision(GatewayUsageTool::OpenClaw);
     if !columns(&source, "session_transcript_archives")?.is_empty() {
         let mut query = source.prepare("SELECT session_id, generation, encoding, archive_blob, created_at FROM session_transcript_archives").map_err(|error| error.to_string())?;
         let rows = query
@@ -303,7 +329,7 @@ fn read_database(
             let source_id = format!("openclaw:archive:{session}:{generation}");
             if states
                 .and_then(|states| states.get(&source_id))
-                .is_some_and(|state| !state.pending)
+                .is_some_and(|state| !state.pending && state.parser_revision == parser_revision)
             {
                 continue;
             }

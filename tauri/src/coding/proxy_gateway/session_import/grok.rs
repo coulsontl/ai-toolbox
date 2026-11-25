@@ -1,6 +1,6 @@
 use super::parsers::{
-    bounded_session_duration_ms, native_record, number, read_jsonl, reported_cost, string,
-    timestamp, ParsedSession,
+    bounded_session_first_token_ms, json_millis, native_record, native_session_duration_ms,
+    number, read_jsonl, reported_cost, string, timestamp, ParsedSession,
 };
 use super::{GatewayUsageTool, SessionUsageGranularity, TokenUsage};
 use serde_json::Value;
@@ -183,11 +183,14 @@ fn parse_unified_log(path: &Path, _fallback: i64) -> Result<ParsedSession, Strin
         );
         let mut record =
             native_record(GatewayUsageTool::Grok, &session, &identity, None, usage, created_at);
-        // The client reports how long the model itself ran, retries excluded.
-        record.duration_ms = ctx
-            .get("model_elapsed_ms")
-            .and_then(Value::as_u64)
-            .and_then(bounded_session_duration_ms);
+        // The client reports how long the model itself ran, retries excluded,
+        // and native `ttft_ms` when available.
+        record.duration_ms =
+            json_millis(ctx.get("model_elapsed_ms")).and_then(native_session_duration_ms);
+        record.first_token_ms = record.duration_ms.and_then(|duration| {
+            let ttft = json_millis(ctx.get("ttft_ms")).filter(|ttft| *ttft > 0)?;
+            bounded_session_first_token_ms(ttft, duration)
+        });
         record.project_path = turn_project;
         record.metadata.granularity = SessionUsageGranularity::Request;
         record.metadata.call_count = Some(1);

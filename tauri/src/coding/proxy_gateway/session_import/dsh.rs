@@ -1,6 +1,6 @@
 use super::parsers::{
-    native_record, number, read_jsonl, session_duration_ms, string, timestamp, timestamp_millis,
-    ParsedSession,
+    native_record, number, read_jsonl, session_duration_ms, session_first_token_ms, string,
+    timestamp, timestamp_millis, ParsedSession,
 };
 use super::{GatewayUsageTool, SessionUsageRecord, TokenUsage};
 use serde_json::Value;
@@ -26,9 +26,11 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
     let mut last_settlement: Option<((u64, u64), String)> = None;
     let mut legacy_retries = HashMap::<(u64, u64), u64>::new();
     let mut project_path: Option<String> = None;
-    // `turn/start`, `request/header` and `llm/retry-started` all mean "a request
-    // is being sent now"; the settled message is written when it returns.
-    let mut request_started_ms: Option<i64> = None;
+    // `step/start` brackets each individual model call keyed by `(turn, step)`.
+    // Older logs also emit `turn/start`, `request/header` or `llm/retry-started`,
+    // kept as a per-step and fallback start time.
+    let mut step_starts = HashMap::<(u64, u64), i64>::new();
+    let mut fallback_started_ms: Option<i64> = None;
     let pending = read_jsonl(path, |index, event| {
         let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
         if kind == "session" {
@@ -59,16 +61,26 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
             seed_boundary_seen = true;
             last_settlement = None;
             legacy_retries.clear();
+            step_starts.clear();
+            fallback_started_ms = None;
             return;
         }
         let Some(data) = event.get("data") else {
             return;
         };
         let step = (number(data, &["turn"]), number(data, &["step"]));
-        if matches!(kind, "llm/retry-started" | "turn/start" | "request/header") {
-            last_settlement = None;
+        if matches!(
+            kind,
+            "step/start" | "llm/retry-started" | "turn/start" | "request/header"
+        ) {
+            if kind != "step/start" {
+                last_settlement = None;
+            }
             if let Some(at) = timestamp_millis(&event) {
-                request_started_ms = Some(at);
+                if data.get("turn").is_some() && data.get("step").is_some() {
+                    step_starts.insert(step, at);
+                }
+                fallback_started_ms = Some(at);
             }
             if kind == "llm/retry-started" {
                 *legacy_retries.entry(step).or_default() += 1;
@@ -160,12 +172,24 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
         );
         // A failed attempt is followed by `llm/retry-started`, so the next
         // start replaces this one; only a settled message consumes the bracket.
-        record.duration_ms = match (request_started_ms, timestamp_millis(&event)) {
+        let started_ms = step_starts.get(&step).copied().or(fallback_started_ms);
+        record.duration_ms = match (started_ms, timestamp_millis(&event)) {
             (Some(start), Some(end)) => session_duration_ms(start, end),
             _ => None,
         };
+        record.first_token_ms = match (
+            started_ms,
+            first_stream_output_ms(data.get("stream")),
+            record.duration_ms,
+        ) {
+            (Some(start), Some(first_output), Some(duration)) => {
+                session_first_token_ms(start, first_output, duration)
+            }
+            _ => None,
+        };
         if kind == "assistant/message" {
-            request_started_ms = None;
+            step_starts.remove(&step);
+            fallback_started_ms = None;
         }
         record.metadata.native_provider = string(
             data,
@@ -204,4 +228,16 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
         pending,
         ..Default::default()
     })
+}
+
+/// Earliest chunk timestamp in DSH's `data.stream` array (`time` for single
+/// chunks, `time0` for batched chunks).
+fn first_stream_output_ms(stream: Option<&Value>) -> Option<i64> {
+    stream?
+        .as_array()?
+        .iter()
+        .flat_map(|entry| [entry.get("time"), entry.get("time0")])
+        .flatten()
+        .filter_map(Value::as_i64)
+        .min()
 }

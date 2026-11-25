@@ -1,6 +1,7 @@
 use super::parsers::{
-    bounded_session_duration_ms, native_record, number, read_jsonl, reported_cost,
-    session_duration_ms, string, timestamp, timestamp_millis, ParsedSession,
+    bounded_session_first_token_ms, json_millis, native_record, native_session_duration_ms,
+    number, read_jsonl, reported_cost, session_duration_ms, string, timestamp, timestamp_millis,
+    ParsedSession,
 };
 use super::{GatewayUsageTool, SessionUsageRecord, TokenUsage};
 use serde_json::Value;
@@ -194,6 +195,9 @@ pub(super) fn parse_entry(
             .unwrap_or(fallback),
     );
     record.duration_ms = request_duration_ms(entry, payload);
+    record.first_token_ms = record
+        .duration_ms
+        .and_then(|duration| request_first_token_ms(payload, duration));
     record.metadata.native_provider = string(payload, &["/provider"]);
     record.metadata.reported_total_tokens = raw.get("totalTokens").and_then(Value::as_u64);
     record.reported_cost_usd = reported_cost(raw.pointer("/cost/total"));
@@ -214,11 +218,9 @@ pub(super) fn parse_entry(
 /// while the outer entry's `timestamp` is when the reply was persisted; the
 /// difference is the end-to-end time. Clients that record `duration` /
 /// `ttft` (milliseconds) report the model's own generation time instead.
-fn request_duration_ms(entry: &Value, message: &Value) -> Option<u64> {
-    if let Some(duration) = message
-        .get("duration")
-        .and_then(Value::as_u64)
-        .and_then(bounded_session_duration_ms)
+pub(super) fn request_duration_ms(entry: &Value, message: &Value) -> Option<u64> {
+    if let Some(duration) = json_millis(message.get("duration"))
+        .and_then(native_session_duration_ms)
     {
         return Some(duration);
     }
@@ -226,4 +228,9 @@ fn request_duration_ms(entry: &Value, message: &Value) -> Option<u64> {
         timestamp_millis(message)?,
         timestamp_millis(entry)?,
     )
+}
+
+pub(super) fn request_first_token_ms(message: &Value, duration_ms: u64) -> Option<u64> {
+    let ttft = json_millis(message.get("ttft"))?;
+    bounded_session_first_token_ms(ttft, duration_ms)
 }

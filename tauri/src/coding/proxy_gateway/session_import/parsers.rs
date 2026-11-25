@@ -35,6 +35,46 @@ pub(super) fn bounded_session_duration_ms(duration_ms: u64) -> Option<u64> {
         .then_some(duration_ms)
 }
 
+/// Native per-request durations reported directly by a CLI (e.g. Antigravity
+/// protobuf Duration, OMP `duration`, Grok `model_elapsed_ms`, MiniMax
+/// `request_duration_ms`, Kimi native latency) do not suffer from timestamp
+/// collision, so any positive value up to `MAX_SESSION_DURATION_MS` is valid.
+pub(super) fn native_session_duration_ms(duration_ms: u64) -> Option<u64> {
+    (duration_ms > 0 && duration_ms <= MAX_SESSION_DURATION_MS).then_some(duration_ms)
+}
+
+/// Parses a JSON millisecond number (integer or floating-point, e.g. JS
+/// `performance.now()` deltas) into a rounded `u64`.
+pub(super) fn json_millis(value: Option<&Value>) -> Option<u64> {
+    let value = value?;
+    if let Some(int) = value.as_u64() {
+        return Some(int);
+    }
+    let float = value.as_f64()?;
+    (float.is_finite() && float >= 0.0 && float <= MAX_SESSION_DURATION_MS as f64)
+        .then_some(float.round() as u64)
+}
+
+/// Bounds a native or explicit first-token latency to `[0, duration_ms]`.
+pub(super) fn bounded_session_first_token_ms(
+    first_token_ms: u64,
+    duration_ms: u64,
+) -> Option<u64> {
+    (first_token_ms <= duration_ms).then_some(first_token_ms)
+}
+
+/// Derives first-token latency from the request start and first output mark.
+/// Must fall strictly within `(0, duration_ms]`; otherwise one of the
+/// timestamps belongs to a different event.
+pub(super) fn session_first_token_ms(
+    start_ms: i64,
+    first_output_ms: i64,
+    duration_ms: u64,
+) -> Option<u64> {
+    let elapsed = u64::try_from(first_output_ms.checked_sub(start_ms)?).ok()?;
+    (elapsed > 0 && elapsed <= duration_ms).then_some(elapsed)
+}
+
 /// The prompt rows that time the next reply, matched on the raw line so the
 /// (possibly huge) body is never decoded.
 fn user_prompt_line() -> &'static regex::Regex {
@@ -92,7 +132,12 @@ pub(super) fn revision(cli_key: GatewayUsageTool) -> u32 {
         // 4: time each reply from the user/tool-result row that sent it.
         // 5: drop the gateway's opening `input: 1 / output: 1` placeholder, so
         // a re-read removes those rows instead of keeping them as billed calls.
-        GatewayUsageTool::Claude | GatewayUsageTool::ClaudeDesktop => 5,
+        // 6: estimate `first_token_ms` when the opening block is a thinking
+        // block with `thinkingDurationMs`.
+        // 7: trace request start along Claude's `parentUuid` chain (skipping
+        // `attachment` rows) and capture first-block timing before placeholder
+        // filtering.
+        GatewayUsageTool::Claude | GatewayUsageTool::ClaudeDesktop => 7,
         // 4: resolve a paginated parent through its whole `history_base` lineage
         // and key each page's events by rollout id, so a child no longer re-bills
         // a copied prefix and a rollover page no longer overwrites its sibling.
@@ -103,10 +148,16 @@ pub(super) fn revision(cli_key: GatewayUsageTool) -> u32 {
         // 7: keep the upstream `response_id` as the envelope identity, so a
         // cross-source match no longer depends on the usage-equal heuristic
         // (which only accepts `completed` proxy rows, issue #432).
-        GatewayUsageTool::Codex => 7,
+        // 8: derive `first_token_ms` from `item_completed.started_at_ms`.
+        // 9: track request boundaries with the full `CodexRequestTimer`
+        // (matching `response_item` user messages, `turn_context`, tool-wait
+        // fallback, and legacy flush slack).
+        GatewayUsageTool::Codex => 9,
         // 5: bracket each call with the `turn/start` / `request/header` /
         // `llm/retry-started` event that sent it and the settled message.
-        GatewayUsageTool::Dsh => 5,
+        // 6: derive `first_token_ms` from the earliest chunk in `data.stream`.
+        // 7: track `step/start` keyed by `(turn, step)`.
+        GatewayUsageTool::Dsh => 7,
         // 3: subtract the cached part from `input_tokens` (the column includes
         // it), prefer `completed_at`, and re-read old databases to repair the
         // doubled cache totals. 4 adds the exact `started_at`→`completed_at`
@@ -115,32 +166,59 @@ pub(super) fn revision(cli_key: GatewayUsageTool) -> u32 {
         // 4: read `logs/unified.jsonl` as the primary source; older installs
         // still import from the `updates.jsonl` mirror. Each inference also
         // carries its own `model_elapsed_ms`.
-        GatewayUsageTool::Grok => 4,
+        // 5: persist native `ctx.ttft_ms` from `logs/unified.jsonl`.
+        GatewayUsageTool::Grok => 5,
+        // 3: preserve `usage_row_duration` for OpenCode JSON files instead of
+        // overwriting it with an empty `trigger_ms`, and enable the OpenCode
+        // token/duration branch for MiMoCode SQLite rows.
+        GatewayUsageTool::OpenCode | GatewayUsageTool::Mimocode => 3,
+        // 3: extract native `llmFirstTokenLatencyMs` / `llmStreamDurationMs`
+        // and fallback step durations from Kimi Code loop events; time Python
+        // Kimi CLI steps from `StepBegin`/`StepRetry` to `StatusUpdate`.
+        GatewayUsageTool::Kimi | GatewayUsageTool::KimiCli => 3,
+        // 3: decode zstd-compressed `transcript_events.event_zstd` rows and
+        // extract Pi-compatible `duration_ms`/`first_token_ms`.
+        GatewayUsageTool::OpenClaw => 3,
         // 4: token counts come from `conversations/<uuid>.db`; the transcript
         // mirror no longer emits zero-token rows. Generations also carry the
         // provider's own TTFT + streaming duration (fields 11/12).
-        GatewayUsageTool::Antigravity => 4,
+        // 5: preserve full output tokens (including thoughts) and persist
+        // `first_token_ms` from field 11 alongside `duration_ms`.
+        GatewayUsageTool::Antigravity => 5,
         // Tools added after the original sixteen start on 2. They move to 3
         // when their transcript gains a duration the parser can read.
-        GatewayUsageTool::Musecode
-        | GatewayUsageTool::Qwencode
-        | GatewayUsageTool::Workbuddy
-        | GatewayUsageTool::WorkbuddyAi
-        | GatewayUsageTool::Codebuddy
-        | GatewayUsageTool::Pi
+        // 4: persist native `ttft` when present on Pi-family messages.
+        // 5: parse floating-point millisecond `duration` and `ttft` values.
+        GatewayUsageTool::Pi
         | GatewayUsageTool::OhMyPi
         | GatewayUsageTool::OmoNative
-        | GatewayUsageTool::PrimeAgent => 3,
-        GatewayUsageTool::Mimocode
-        | GatewayUsageTool::Devin
-        | GatewayUsageTool::Cmdcode
-        | GatewayUsageTool::Minimax
-        | GatewayUsageTool::QoderCli
-        | GatewayUsageTool::QoderCliCn => 2,
+        | GatewayUsageTool::PrimeAgent => 5,
+        GatewayUsageTool::Musecode | GatewayUsageTool::Qwencode => 3,
+        // 4: match top-level `"role":"user"` messages so the first turn in a
+        // WorkBuddy/CodeBuddy session gets a start timestamp.
+        // 5: prefer canonical `providerData.model` over display `requestModelName`
+        // for pricing consistency, and preserve fractional credits.
+        GatewayUsageTool::Workbuddy
+        | GatewayUsageTool::WorkbuddyAi
+        | GatewayUsageTool::Codebuddy => 5,
+        // 3: enrich MiniMax Code rows with `request_duration_ms` /
+        // `decode_duration_ms` from `local_runtime_message_rows`.
+        GatewayUsageTool::Minimax => 3,
+        // 3: bracket Command Code assistant replies from the preceding user turn.
+        GatewayUsageTool::Cmdcode => 3,
+        GatewayUsageTool::Devin => 2,
+        // 3: track `trigger_ms` in chronological order during the second pass
+        // instead of reusing the final user turn for every earlier reply.
+        // 4: resolve opaque Qoder model keys (`qfmodel`, `dfmodel`, ...) via
+        // `dynamic-texts.json` + static fallback and track `runtime-config`
+        // model switches chronologically.
+        GatewayUsageTool::QoderCli | GatewayUsageTool::QoderCliCn => 4,
         // 3: read the project from `chat_session.project_uri` when the session
         // table no longer has `cwd`, so an upgraded schema no longer fails the
         // whole scan at prepare time.
-        GatewayUsageTool::QoderIde | GatewayUsageTool::QoderIdeCn => 3,
+        // 4: resolve opaque Qoder model keys (`qfmodel`, `dfmodel`, ...) via
+        // `dynamic-texts.json` + static fallback.
+        GatewayUsageTool::QoderIde | GatewayUsageTool::QoderIdeCn => 4,
         _ => 2,
     }
 }
@@ -250,6 +328,127 @@ pub(super) fn parse_file(
     parse_generic_file(cli_key, path, fallback_timestamp)
 }
 
+/// Minimal top-level metadata extracted from a Claude JSONL row without
+/// materializing large prompt/tool-result bodies.
+#[derive(Deserialize)]
+struct ClaudeLineMeta {
+    uuid: Option<String>,
+    #[serde(rename = "parentUuid")]
+    parent_uuid: Option<String>,
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    timestamp: Option<Value>,
+}
+
+struct ClaudeChainNode {
+    parent: Option<String>,
+    timestamp_ms: Option<i64>,
+    is_attachment: bool,
+}
+
+struct ClaudeMessageTiming {
+    first_parent: Option<String>,
+    starts_at_first_block: bool,
+    first_output_ms: Option<i64>,
+    end_ms: Option<i64>,
+    saw_stop_reason_key: bool,
+    has_stop_reason: bool,
+}
+
+fn parse_timestamp_value_millis(value: &Value) -> Option<i64> {
+    if let Some(number) = value.as_f64().filter(|number| number.is_finite()) {
+        let number = number as i64;
+        return Some(if number > 100_000_000_000 {
+            number
+        } else {
+            number * 1000
+        });
+    }
+    value.as_str().and_then(parse_epoch_millis)
+}
+
+fn record_claude_chain_value(chain: &mut HashMap<String, ClaudeChainNode>, value: &Value) {
+    let Some(uuid) = value.get("uuid").and_then(Value::as_str) else {
+        return;
+    };
+    chain.insert(
+        uuid.to_string(),
+        ClaudeChainNode {
+            parent: value
+                .get("parentUuid")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            timestamp_ms: value
+                .get("timestamp")
+                .and_then(parse_timestamp_value_millis),
+            is_attachment: value.get("type").and_then(Value::as_str) == Some("attachment"),
+        },
+    );
+}
+
+fn record_claude_block_timing(
+    cli_key: GatewayUsageTool,
+    session_id: &str,
+    timings: &mut HashMap<String, ClaudeMessageTiming>,
+    value: &Value,
+) {
+    if value.get("type").and_then(Value::as_str) != Some("assistant") {
+        return;
+    }
+    let Some(message_id) = value.pointer("/message/id").and_then(Value::as_str) else {
+        return;
+    };
+    let request_id = if cli_key == GatewayUsageTool::Claude {
+        format!("SESSION:{message_id}")
+    } else {
+        format!("SESSION:{}:{session_id}:{message_id}", cli_key.as_str())
+    };
+    let block_end_ms = timestamp_millis(value);
+    let timing = timings.entry(request_id).or_insert_with(|| {
+        let starts_at_first_block = value
+            .get("apiBlockIndex")
+            .is_none_or(|index| index.as_u64() == Some(0));
+        ClaudeMessageTiming {
+            first_parent: value
+                .get("parentUuid")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            starts_at_first_block,
+            first_output_ms: starts_at_first_block
+                .then(|| claude_thinking_first_output_ms(value, block_end_ms?))
+                .flatten(),
+            end_ms: None,
+            saw_stop_reason_key: false,
+            has_stop_reason: false,
+        }
+    });
+    timing.end_ms = timing.end_ms.max(block_end_ms);
+    if let Some(stop) = value
+        .pointer("/message/stop_reason")
+        .or_else(|| value.get("stop_reason"))
+    {
+        timing.saw_stop_reason_key = true;
+        if !stop.is_null() {
+            timing.has_stop_reason = true;
+        }
+    }
+}
+
+fn resolve_claude_request_start_ms(
+    chain: &HashMap<String, ClaudeChainNode>,
+    first_parent: Option<&str>,
+) -> Option<i64> {
+    let mut cursor = first_parent?;
+    for _ in 0..32 {
+        let node = chain.get(cursor)?;
+        if !node.is_attachment {
+            return node.timestamp_ms;
+        }
+        cursor = node.parent.as_deref()?;
+    }
+    None
+}
+
 pub(super) fn parse_generic_file(
     cli_key: GatewayUsageTool,
     path: &Path,
@@ -262,23 +461,63 @@ pub(super) fn parse_generic_file(
     let mut records = BTreeMap::new();
     let mut session_id = source_identity(cli_key, path);
     let file_project = file_project(cli_key, path);
+    let is_claude_family = matches!(
+        cli_key,
+        GatewayUsageTool::Claude | GatewayUsageTool::ClaudeDesktop
+    );
     // Claude and Gemini do not record how long a call took. They do write the
     // prompt (or tool result) that triggered it and every streamed snapshot of
     // the answer, so the pair of timestamps brackets the call end to end.
     let mut trigger_ms: Option<i64> = None;
     // A tool result can land between two snapshots of one response; the
     // response still started at the prompt that opened it, so each response
-    // remembers its own start.
+    // remembers its own start and first-output timestamp.
     let mut record_starts = HashMap::<String, i64>::new();
+    let mut record_first_outputs = HashMap::<String, i64>::new();
+    let mut claude_chain = HashMap::<String, ClaudeChainNode>::new();
+    let mut claude_timings = HashMap::<String, ClaudeMessageTiming>::new();
     if path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
         let prompt_pattern = user_prompt_line();
         for (index, line) in BufReader::new(file).lines().enumerate() {
             let line = line.map_err(|error| error.to_string())?;
-            // A prompt row only times the next reply, and its body can be most
-            // of the file, so the prompt match and its timestamp are read from
-            // the raw line without decoding it. Running this before the usage
-            // filter keeps a prompt that happens to quote usage text counted.
-            if prompt_pattern.is_match(&line) {
+            let has_usage_marker = line.contains("\"usage\"")
+                || line.contains("\"usageMetadata\"")
+                || line.contains("\"tokens\"")
+                || line.contains("\"$set\"");
+            if is_claude_family {
+                // For non-usage rows, deserialize only the 4 tiny top-level
+                // metadata keys so huge tool outputs are skipped without
+                // allocating and quoted `"role":"user"` text inside assistant
+                // bodies never spoofs a prompt trigger.
+                if !has_usage_marker
+                    && (line.contains("\"uuid\"")
+                        || line.contains("\"type\":\"user\"")
+                        || line.contains("\"type\": \"user\""))
+                {
+                    if let Ok(meta) = serde_json::from_str::<ClaudeLineMeta>(&line) {
+                        let ts_ms = meta
+                            .timestamp
+                            .as_ref()
+                            .and_then(parse_timestamp_value_millis);
+                        if meta.kind.as_deref() == Some("user") {
+                            if let Some(at) = ts_ms {
+                                trigger_ms = Some(at);
+                            }
+                        }
+                        if let Some(uuid) = meta.uuid {
+                            claude_chain.insert(
+                                uuid,
+                                ClaudeChainNode {
+                                    parent: meta.parent_uuid,
+                                    timestamp_ms: ts_ms,
+                                    is_attachment: meta.kind.as_deref() == Some("attachment"),
+                                },
+                            );
+                        }
+                    }
+                }
+            } else if prompt_pattern.is_match(&line) {
+                // Non-Claude JSONL transcripts: keep the fast raw-line matcher.
                 if let Some(at) = line_timestamp()
                     .captures(&line)
                     .and_then(|captures| captures.get(1))
@@ -289,17 +528,26 @@ pub(super) fn parse_generic_file(
             }
             // The transcript can contain very large prompts/tool results. Only
             // decode records that can contain usage or session metadata.
-            if !line.contains("\"usage\"")
-                && !line.contains("\"usageMetadata\"")
-                && !line.contains("\"tokens\"")
-                && !line.contains("\"$set\"")
-            {
+            if !has_usage_marker {
                 continue;
             }
             let Ok(value) = serde_json::from_str::<Value>(&line) else {
                 // A CLI can be in the middle of appending its last JSONL record.
                 continue;
             };
+            if is_claude_family {
+                if let Some(id) = string(
+                    &value,
+                    &["/sessionId", "/sessionID", "/session_id", "/$set/sessionId"],
+                ) {
+                    session_id = id;
+                }
+                record_claude_chain_value(&mut claude_chain, &value);
+                // Capture first-block timing before `is_unsettled_message_start_usage`
+                // can drop an opening `1/1` placeholder block that still holds the
+                // reply's `parentUuid` and `thinkingDurationMs`.
+                record_claude_block_timing(cli_key, &session_id, &mut claude_timings, &value);
+            }
             collect_values(
                 cli_key,
                 path,
@@ -311,7 +559,40 @@ pub(super) fn parse_generic_file(
                 file_project.as_deref(),
                 &mut trigger_ms,
                 &mut record_starts,
+                &mut record_first_outputs,
             );
+        }
+        if is_claude_family && !claude_chain.is_empty() {
+            for record in records.values_mut() {
+                let Some(timing) = claude_timings.get(&record.request_id) else {
+                    continue;
+                };
+                if timing.first_parent.is_none() {
+                    continue;
+                }
+                let complete = !timing.saw_stop_reason_key || timing.has_stop_reason;
+                if !complete || !timing.starts_at_first_block {
+                    record.duration_ms = None;
+                    record.first_token_ms = None;
+                    continue;
+                }
+                let Some(start_ms) =
+                    resolve_claude_request_start_ms(&claude_chain, timing.first_parent.as_deref())
+                else {
+                    continue;
+                };
+                let duration_ms = timing
+                    .end_ms
+                    .and_then(|end_ms| session_duration_ms(start_ms, end_ms));
+                let first_token_ms = match (timing.first_output_ms, duration_ms) {
+                    (Some(first_output_ms), Some(duration)) => {
+                        session_first_token_ms(start_ms, first_output_ms, duration)
+                    }
+                    _ => None,
+                };
+                record.duration_ms = duration_ms;
+                record.first_token_ms = first_token_ms;
+            }
         }
     } else {
         let value: Value =
@@ -327,12 +608,31 @@ pub(super) fn parse_generic_file(
             file_project.as_deref(),
             &mut trigger_ms,
             &mut record_starts,
+            &mut record_first_outputs,
         );
     }
     Ok(ParsedSession {
         records: records.into_values().collect(),
         ..Default::default()
     })
+}
+
+/// When a Claude reply opens with a `thinking` block carrying
+/// `thinkingDurationMs`, its start time is `block_end_ms - thinkingDurationMs`.
+fn claude_thinking_first_output_ms(value: &Value, block_end_ms: i64) -> Option<i64> {
+    let starts_at_first_block = value
+        .get("apiBlockIndex")
+        .is_none_or(|index| index.as_u64() == Some(0));
+    if !starts_at_first_block {
+        return None;
+    }
+    let duration_ms = value.get("thinkingDurationMs")?.as_i64()?;
+    let first_block_type = value
+        .pointer("/message/content/0/type")
+        .and_then(Value::as_str)?;
+    (first_block_type == "thinking" && duration_ms > 0)
+        .then(|| block_end_ms.checked_sub(duration_ms))
+        .flatten()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -347,6 +647,7 @@ fn collect_values(
     file_project: Option<&str>,
     trigger_ms: &mut Option<i64>,
     record_starts: &mut HashMap<String, i64>,
+    record_first_outputs: &mut HashMap<String, i64>,
 ) {
     if let Some(id) = string(
         value,
@@ -386,6 +687,7 @@ fn collect_values(
                 file_project,
                 trigger_ms,
                 record_starts,
+                record_first_outputs,
             );
         }
         return;
@@ -406,20 +708,30 @@ fn collect_values(
     // as a measured duration and inflate the statistics. A row whose own
     // timestamp precedes the trigger (Claude writes attachments as a reply
     // lands) is not a call start either.
+    let end_ms = timestamp_millis(value);
     let started_at = match record_starts.get(&record.request_id) {
         Some(start) => Some(*start),
         None => {
-            let start = trigger_ms
-                .filter(|start| timestamp_millis(value).is_none_or(|end| end >= *start));
+            let start = trigger_ms.filter(|start| end_ms.is_none_or(|end| end >= *start));
             if let Some(start) = start {
                 record_starts.insert(record.request_id.clone(), start);
             }
             start
         }
     };
-    record.duration_ms = started_at
-        .and_then(|start| timestamp_millis(value).map(|end| session_duration_ms(start, end)))
-        .flatten();
+    if matches!(
+        cli_key,
+        GatewayUsageTool::Claude | GatewayUsageTool::ClaudeDesktop
+    ) && !record_first_outputs.contains_key(&record.request_id)
+    {
+        if let Some(first_output) = end_ms.and_then(|end| claude_thinking_first_output_ms(value, end)) {
+            record_first_outputs.insert(record.request_id.clone(), first_output);
+        }
+    }
+    if record.duration_ms.is_none() {
+        record.duration_ms = started_at
+            .and_then(|start| end_ms.and_then(|end| session_duration_ms(start, end)));
+    }
     let mut legacy_hasher = std::collections::hash_map::DefaultHasher::new();
     cli_key.as_str().hash(&mut legacy_hasher);
     path.to_string_lossy().hash(&mut legacy_hasher);
@@ -436,6 +748,7 @@ fn collect_values(
         // The last snapshot is the one closest to the reply finishing, so the
         // larger estimate is the end-to-end duration of the call.
         record.duration_ms = record.duration_ms.max(previous.duration_ms);
+        record.first_token_ms = previous.first_token_ms.or(record.first_token_ms);
         record.usage.input_tokens = record.usage.input_tokens.max(previous.usage.input_tokens);
         record.usage.output_tokens = record.usage.output_tokens.max(previous.usage.output_tokens);
         record.usage.cache_read_tokens = record
@@ -449,6 +762,15 @@ fn collect_values(
         record
             .legacy_request_ids
             .extend(previous.legacy_request_ids.iter().cloned());
+    }
+    if record.first_token_ms.is_none() {
+        if let (Some(start), Some(first_output), Some(duration)) = (
+            started_at,
+            record_first_outputs.get(&record.request_id).copied(),
+            record.duration_ms,
+        ) {
+            record.first_token_ms = session_first_token_ms(start, first_output, duration);
+        }
     }
     records.insert(record.request_id.clone(), record);
 }
@@ -509,7 +831,11 @@ pub(super) fn parse_value_with_project(
             cache_read_tokens: Some(cached),
             ..Default::default()
         }
-    } else if cli_key == GatewayUsageTool::OpenCode && value.get("tokens").is_some() {
+    } else if matches!(
+        cli_key,
+        GatewayUsageTool::OpenCode | GatewayUsageTool::Mimocode
+    ) && value.get("tokens").is_some()
+    {
         if !is_opencode_usage_row(value)
             || value.pointer("/time/completed").is_none_or(Value::is_null)
         {
@@ -623,6 +949,7 @@ pub(super) fn parse_value_with_project(
             .filter(|path| !path.trim().is_empty()),
         credits: None,
         duration_ms: usage_row_duration(cli_key, value),
+        first_token_ms: None,
     })
 }
 
@@ -659,7 +986,10 @@ fn is_unsettled_message_start_usage(value: &Value, usage: &TokenUsage) -> bool {
 /// with two timestamps on one record. Tools whose timing needs the previous
 /// event are handled inside their own parser.
 fn usage_row_duration(cli_key: GatewayUsageTool, value: &Value) -> Option<u64> {
-    if cli_key != GatewayUsageTool::OpenCode {
+    if !matches!(
+        cli_key,
+        GatewayUsageTool::OpenCode | GatewayUsageTool::Mimocode
+    ) {
         return None;
     }
     // OpenCode keeps both ends in milliseconds: start of the request and the
@@ -720,6 +1050,200 @@ pub(super) fn read_codex_lineage_snapshots(
     Ok(snapshots)
 }
 
+const CODEX_LINE_HEAD_BYTES: usize = 512;
+const CODEX_SAME_FLUSH_SLACK_MS: i64 = 100;
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn head_str<'a>(head: &'a [u8], needle: &[u8]) -> Option<&'a str> {
+    let start = find_bytes(head, needle)? + needle.len();
+    let len = head[start..].iter().position(|byte| *byte == b'"')?;
+    std::str::from_utf8(&head[start..start + len]).ok()
+}
+
+enum CodexTimingLine {
+    Boundary,
+    ToolOutput,
+    ModelOutput,
+    TurnReset,
+    OutputItemStarted(i64),
+}
+
+fn classify_codex_timing_line(line: &str) -> Option<(i64, CodexTimingLine)> {
+    let bytes = line.as_bytes();
+    let head = &bytes[..bytes.len().min(CODEX_LINE_HEAD_BYTES)];
+    let (envelope, payload) = match find_bytes(head, b"\"payload\":{") {
+        Some(at) => head.split_at(at),
+        None => (head, &[][..]),
+    };
+    let kind = match head_str(envelope, b"\"type\":\"")? {
+        "turn_context" => CodexTimingLine::Boundary,
+        "response_item" => match head_str(payload, b"\"type\":\"")? {
+            "message" => match head_str(payload, b"\"role\":\"")? {
+                "assistant" => CodexTimingLine::ModelOutput,
+                _ => CodexTimingLine::Boundary,
+            },
+            "reasoning" => CodexTimingLine::ModelOutput,
+            item if item.ends_with("_output") => CodexTimingLine::ToolOutput,
+            item if item.ends_with("_call") => CodexTimingLine::ModelOutput,
+            _ => return None,
+        },
+        "event_msg" => match head_str(payload, b"\"type\":\"")? {
+            "task_started" | "turn_aborted" => CodexTimingLine::TurnReset,
+            "user_message" => CodexTimingLine::Boundary,
+            "item_completed" => {
+                let item_at = find_bytes(payload, b"\"item\":{")?;
+                match head_str(&payload[item_at..], b"\"type\":\"")? {
+                    "Reasoning" | "AgentMessage" => {}
+                    _ => return None,
+                }
+                let value = serde_json::from_str::<Value>(line).ok()?;
+                let started_at_ms = value.pointer("/payload/started_at_ms")?.as_i64()?;
+                CodexTimingLine::OutputItemStarted(started_at_ms)
+            }
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let timestamp_ms = head_str(envelope, b"\"timestamp\":\"").and_then(parse_epoch_millis)?;
+    Some((timestamp_ms, kind))
+}
+
+/// Estimates per-request duration and TTFT across Codex rollout layouts.
+///
+/// Mirrors the reference `RequestTimer`:
+/// - `request_start_ms` latches `last_boundary_ms` on the first model output
+///   item (ignoring legacy 2025 output items flushed within 100ms of the
+///   previous settlement).
+/// - `token_usage_record` settles immediately with its own end timestamp.
+/// - Legacy `token_count` falls back to `last_model_output_ms` when tool
+///   outputs landed right before `token_count` (`<= 100ms`), avoiding charging
+///   tool execution time to the model call.
+#[derive(Default)]
+struct CodexRequestTimer {
+    last_boundary_ms: Option<i64>,
+    last_settle_ms: Option<i64>,
+    request_start_ms: Option<i64>,
+    last_model_output_ms: Option<i64>,
+    tool_output_after_model_output_ms: Option<i64>,
+    first_output_ms: Option<i64>,
+}
+
+impl CodexRequestTimer {
+    fn observe_line(&mut self, line: &str) {
+        let Some((timestamp_ms, kind)) = classify_codex_timing_line(line) else {
+            return;
+        };
+        match kind {
+            CodexTimingLine::Boundary => {
+                self.last_boundary_ms = self.last_boundary_ms.max(Some(timestamp_ms));
+            }
+            CodexTimingLine::ToolOutput => {
+                self.last_boundary_ms = self.last_boundary_ms.max(Some(timestamp_ms));
+                if self.last_model_output_ms.is_some() {
+                    self.tool_output_after_model_output_ms = Some(timestamp_ms);
+                }
+            }
+            CodexTimingLine::ModelOutput => {
+                let trails_settlement = self.request_start_ms.is_none()
+                    && self
+                        .last_settle_ms
+                        .is_some_and(|at| timestamp_ms - at <= CODEX_SAME_FLUSH_SLACK_MS);
+                if trails_settlement {
+                    return;
+                }
+                if self.request_start_ms.is_none() {
+                    self.request_start_ms = self.last_boundary_ms;
+                }
+                self.last_model_output_ms = Some(timestamp_ms);
+                self.tool_output_after_model_output_ms = None;
+            }
+            CodexTimingLine::OutputItemStarted(started_at_ms) => {
+                if self.request_start_ms.is_none() {
+                    self.request_start_ms = self.last_boundary_ms;
+                }
+                self.first_output_ms = Some(
+                    self.first_output_ms
+                        .map_or(started_at_ms, |prev| prev.min(started_at_ms)),
+                );
+            }
+            CodexTimingLine::TurnReset => {
+                *self = Self {
+                    last_boundary_ms: self.last_boundary_ms.max(Some(timestamp_ms)),
+                    last_settle_ms: self.last_settle_ms,
+                    ..Self::default()
+                };
+            }
+        }
+    }
+
+    fn finish_usage_record(&mut self, record_ms: Option<i64>) -> (Option<u64>, Option<u64>) {
+        let start_ms = self.request_start_ms.or(self.last_boundary_ms);
+        let first_output_ms = self.first_output_ms;
+        *self = Self {
+            last_boundary_ms: self.last_boundary_ms.max(record_ms),
+            last_settle_ms: record_ms,
+            ..Self::default()
+        };
+        let duration_ms = match (start_ms, record_ms) {
+            (Some(start), Some(end)) => session_duration_ms(start, end),
+            _ => None,
+        };
+        let first_token_ms = match (start_ms, first_output_ms, duration_ms) {
+            (Some(start), Some(first), Some(duration)) => {
+                session_first_token_ms(start, first, duration)
+            }
+            _ => None,
+        };
+        (duration_ms, first_token_ms)
+    }
+
+    fn finish_token_count(&mut self, token_count_ms: Option<i64>) -> (Option<u64>, Option<u64>) {
+        let start_ms = self.request_start_ms.or(self.last_boundary_ms);
+        let first_output_ms = self.first_output_ms;
+        let waited_for_tools = match (self.tool_output_after_model_output_ms, token_count_ms) {
+            (Some(tool_ms), Some(tc_ms)) => tc_ms - tool_ms <= CODEX_SAME_FLUSH_SLACK_MS,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        let end_ms = if waited_for_tools {
+            self.last_model_output_ms
+        } else {
+            token_count_ms
+        };
+        *self = Self {
+            last_boundary_ms: self.last_boundary_ms.max(token_count_ms),
+            last_settle_ms: token_count_ms,
+            ..Self::default()
+        };
+        let duration_ms = match (start_ms, end_ms) {
+            (Some(start), Some(end)) => session_duration_ms(start, end),
+            _ => None,
+        };
+        let first_token_ms = match (start_ms, first_output_ms, duration_ms) {
+            (Some(start), Some(first), Some(duration)) => {
+                session_first_token_ms(start, first, duration)
+            }
+            _ => None,
+        };
+        (duration_ms, first_token_ms)
+    }
+
+    /// A mirrored `token_count` echoes an already-settled `token_usage_record`
+    /// (often right after tool outputs finish). Advance the boundary timestamp
+    /// without clearing any in-flight next-request state.
+    fn observe_mirrored_token_count(&mut self, token_count_ms: Option<i64>) {
+        self.last_boundary_ms = self.last_boundary_ms.max(token_count_ms);
+        if self.request_start_ms.is_none() {
+            self.last_settle_ms = token_count_ms.or(self.last_settle_ms);
+        }
+    }
+}
+
 fn parse_codex_lines(
     reader: Box<dyn BufRead>,
     initial_thread_id: String,
@@ -740,20 +1264,17 @@ fn parse_codex_lines(
     let mut response_ids = std::collections::HashSet::<String>::new();
     let mut pending_responses = Vec::<Counters>::new();
     let mut legacy_before_response: Option<(Counters, String)> = None;
-    // When the prompt or tool result that triggered the current call landed.
-    let mut request_started_ms: Option<i64> = None;
+    let mut timer = CodexRequestTimer::default();
     for line in reader.lines() {
         let line = line.map_err(|error| error.to_string())?;
+        timer.observe_line(&line);
         if !line.contains("\"session_meta\"")
             && !line.contains("\"turn_context\"")
             && !line.contains("\"token_usage_record\"")
             && !(line.contains("\"event_msg\"")
                 && (line.contains("\"token_count\"")
                     || line.contains("\"task_started\"")
-                    || line.contains("\"user_message\"")))
-            && !(line.contains("\"response_item\"")
-                && (line.contains("\"function_call_output\"")
-                    || line.contains("\"custom_tool_call_output\"")))
+                    || line.contains("\"turn_aborted\"")))
         {
             continue;
         }
@@ -790,29 +1311,16 @@ fn parse_codex_lines(
                 }
             }
             Some("event_msg")
-                if payload.get("type").and_then(Value::as_str) == Some("task_started") =>
+                if matches!(
+                    payload.get("type").and_then(Value::as_str),
+                    Some("task_started" | "turn_aborted")
+                ) =>
             {
                 // A new turn cannot inherit a twin from the previous one. Any
                 // still-unmatched authoritative record is an orphan (its mirror
                 // never arrived); keep it pending rather than risk pairing it
                 // with the next turn's numbers.
                 legacy_before_response = None;
-                request_started_ms = timestamp_millis(&value);
-            }
-            Some("response_item")
-                if matches!(
-                    payload.get("type").and_then(Value::as_str),
-                    Some("function_call_output" | "custom_tool_call_output")
-                ) =>
-            {
-                // A tool result is written when the tool finishes, which is
-                // exactly when the next model call is sent.
-                request_started_ms = timestamp_millis(&value);
-            }
-            Some("event_msg")
-                if payload.get("type").and_then(Value::as_str) == Some("user_message") =>
-            {
-                request_started_ms = timestamp_millis(&value);
             }
             Some("event_msg")
                 if payload.get("type").and_then(Value::as_str) == Some("token_count") =>
@@ -866,17 +1374,14 @@ fn parse_codex_lines(
                     high_water.update_high_water(&total);
                 }
                 let created_at = timestamp(&value).unwrap_or(fallback_timestamp);
-                // A mirror is written when its response ends, but it consumes
-                // the start of the message that opened the reply; a mirror
-                // with no start of its own (a duplicate_total echo) must not
-                // carry the start into the next call.
-                let duration_ms = match (request_started_ms, timestamp_millis(&value)) {
-                    (Some(start), Some(end)) => session_duration_ms(start, end),
-                    _ => None,
+                let (duration_ms, first_token_ms) = if usage.total_tokens().is_some() {
+                    timer.finish_token_count(timestamp_millis(&value))
+                } else if mirrored {
+                    timer.observe_mirrored_token_count(timestamp_millis(&value));
+                    (None, None)
+                } else {
+                    (None, None)
                 };
-                if usage.total_tokens().is_some() {
-                    request_started_ms = None;
-                }
                 let request_id = usage.total_tokens().map(|_| {
                     event_index += 1;
                     // A paginated thread's pages all carry the same thread id
@@ -913,6 +1418,7 @@ fn parse_codex_lines(
                         project_path: project_path.clone(),
                         credits: None,
                         duration_ms,
+                        first_token_ms,
                     });
                 }
                 parsed.snapshots.push(CodexSnapshot {
@@ -948,14 +1454,7 @@ fn parse_codex_lines(
                     if mirror == usage {
                         // The legacy notification came first and was counted.
                         // Hijack its identity so an overlapping runtime segment
-                        // (or a later scan) still sees one call. The counted
-                        // mirror row had no start of its own, so the timing
-                        // read here is the only one a legacy-first call gets.
-                        let duration_ms = match (request_started_ms, timestamp_millis(&value)) {
-                            (Some(start), Some(end)) => session_duration_ms(start, end),
-                            _ => None,
-                        };
-                        request_started_ms = None;
+                        // (or a later scan) still sees one call.
                         if let Some(response_id) = &response_id {
                             if let Some(record) = parsed
                                 .records
@@ -967,9 +1466,6 @@ fn parse_codex_lines(
                                     .push(record.request_id.clone());
                                 record.request_id =
                                     format!("SESSION:codex:{thread_id}:{response_id}");
-                                // Keep the mirror's estimate when this record
-                                // cannot compute one of its own.
-                                record.duration_ms = duration_ms.or(record.duration_ms);
                                 // The upgraded identity is the upstream
                                 // response, so it also becomes the envelope the
                                 // cross-source matcher looks for.
@@ -984,13 +1480,8 @@ fn parse_codex_lines(
                     continue;
                 }
                 pending_responses.push(usage);
-                // The prompt or tool result that sent this request is the
-                // start; the record is written when the response completes.
-                let duration_ms = match (request_started_ms, timestamp_millis(&value)) {
-                    (Some(start), Some(end)) => session_duration_ms(start, end),
-                    _ => None,
-                };
-                request_started_ms = None;
+                let (duration_ms, first_token_ms) =
+                    timer.finish_usage_record(timestamp_millis(&value));
                 // `usage` includes the cached and cache-write parts; the
                 // importer's input bucket is the fresh remainder.
                 let request_id = match &response_id {
@@ -1021,6 +1512,7 @@ fn parse_codex_lines(
                     project_path: project_path.clone(),
                     credits: None,
                     duration_ms,
+                    first_token_ms,
                 });
             }
             _ => {}
@@ -1147,15 +1639,18 @@ pub(super) fn timestamp_millis(value: &Value) -> Option<i64> {
     .iter()
     .find_map(|path| {
         let value = value.pointer(path)?;
-        if let Some(value) = value
-            .as_f64()
-            .filter(|value| value.is_finite())
-            .map(|value| value as i64)
-        {
-            return Some(if value > 100_000_000_000 {
-                value
+        if let Some(number) = value.as_i64() {
+            return Some(if number > 100_000_000_000 {
+                number
             } else {
-                value * 1000
+                number * 1000
+            });
+        }
+        if let Some(number) = value.as_f64().filter(|value| value.is_finite()) {
+            return Some(if number > 100_000_000_000.0 {
+                number.round() as i64
+            } else {
+                (number * 1000.0).round() as i64
             });
         }
         chrono::DateTime::parse_from_rfc3339(value.as_str()?)
@@ -1247,6 +1742,7 @@ pub(super) fn native_record(
         project_path: None,
         credits: None,
         duration_ms: None,
+        first_token_ms: None,
     }
 }
 

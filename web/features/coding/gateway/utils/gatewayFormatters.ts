@@ -43,13 +43,32 @@ export const formatDuration = (durationMs: number) => {
 };
 
 /**
- * Duration cell for an imported local record. The value is an estimate the
- * parser derived from transcript timestamps, so an absent one must stay `-`
- * rather than read as a measured zero.
+ * Minimum thresholds before reporting a generation rate, preventing short tool
+ * calls or buffered bursts from producing wildly skewed tok/s spikes.
+ */
+export const PROXY_TPS_MIN_OUTPUT_TOKENS = 100;
+export const PROXY_TPS_MIN_GENERATION_MS = 100;
+export const SESSION_TPS_MIN_OUTPUT_TOKENS = 200;
+export const SESSION_TPS_MIN_DURATION_MS = 1000;
+
+/**
+ * Duration cell for an imported local record. Values are derived from native
+ * session stores or transcript timestamps rather than gateway HTTP timing;
+ * absent values stay `-`.
  */
 export const sessionDurationText = (durationMs?: number | null) =>
   durationMs != null && Number.isFinite(durationMs) && durationMs > 0
     ? formatDuration(durationMs)
+    : '-';
+
+/**
+ * First-token cell for an imported local record. Native stores may report a
+ * valid `0ms` TTFT, so non-negative finite values render directly while absent
+ * values stay `-`.
+ */
+export const sessionFirstTokenText = (firstTokenMs?: number | null) =>
+  firstTokenMs != null && Number.isFinite(firstTokenMs) && firstTokenMs >= 0
+    ? formatDuration(firstTokenMs)
     : '-';
 
 export const formatDurationPair = (durationMs: number, firstTokenMs?: number | null) => {
@@ -74,14 +93,25 @@ export const formatTps = (record: GatewayTpsInput): string | null => {
     || !Number.isFinite(durationMs) || durationMs <= 0) {
     return null;
   }
-  // Local session rows carry only an estimated end-to-end duration and no
-  // first-token mark, so their rate includes the wait before the first chunk.
+  if (record.data_source === 'session') {
+    // Local session rates always divide by the full end-to-end duration
+    // (including first-token/thinking wait) and apply stricter thresholds so
+    // short calls or thinking-heavy responses never produce inflated speeds.
+    if (outputTokens < SESSION_TPS_MIN_OUTPUT_TOKENS || durationMs < SESSION_TPS_MIN_DURATION_MS) {
+      return null;
+    }
+    const tokensPerSecond = Number((outputTokens * 1000 / durationMs).toFixed(1));
+    return `${tokensPerSecond} tok/s`;
+  }
   let generationMs = durationMs;
-  if (record.data_source !== 'session' && record.is_streaming && firstTokenMs != null) {
+  if (record.is_streaming && firstTokenMs != null) {
     if (!Number.isFinite(firstTokenMs) || firstTokenMs < 0 || firstTokenMs >= durationMs) {
       return null;
     }
     generationMs -= firstTokenMs;
+  }
+  if (outputTokens < PROXY_TPS_MIN_OUTPUT_TOKENS || generationMs < PROXY_TPS_MIN_GENERATION_MS) {
+    return null;
   }
   const tokensPerSecond = Number((outputTokens * 1000 / generationMs).toFixed(1));
   return `${tokensPerSecond} tok/s`;

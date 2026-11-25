@@ -1,5 +1,6 @@
 use super::parsers::{
-    bounded_session_duration_ms, native_record, read_jsonl_lenient, timestamp, ParsedSession,
+    bounded_session_first_token_ms, native_record, native_session_duration_ms, read_jsonl_lenient,
+    timestamp, ParsedSession,
 };
 use super::{GatewayUsageTool, SessionUsageGranularity, TokenUsage};
 use std::collections::HashMap;
@@ -151,10 +152,9 @@ fn proto_duration_ms(bytes: &[u8]) -> Option<u64> {
             _ => {}
         }
     }
-    let millis = seconds
+    seconds
         .checked_mul(1000)?
-        .checked_add(nanos / 1_000_000)?;
-    (millis > 0).then_some(millis)
+        .checked_add(nanos / 1_000_000)
 }
 
 /// Decodes one record out of `gen_metadata.data`.
@@ -236,9 +236,15 @@ fn decode_generation(data: &[u8], fallback_timestamp: Option<u64>) -> Option<Gen
     {
         return None;
     }
-    // Field 4.3 already contains the thoughts, so adding them again would
-    // double-count; the response field, when present, is the exact reply size.
-    let output = response.unwrap_or_else(|| output.saturating_sub(thoughts));
+    // Field 4.3 already contains thoughts (`response + thoughts`), matching
+    // Antigravity's own transcript usage, Gemini/OpenCode billing semantics,
+    // and `duration_ms = ttft_ms + stream_ms` (which covers the thinking
+    // window). Reconstruct from `4.10 + 4.9` only when `4.3` is absent/zero.
+    let output = if output > 0 {
+        output
+    } else {
+        response.unwrap_or(0).saturating_add(thoughts)
+    };
     Some(Generation {
         model: if model.is_empty() {
             "unknown".to_string()
@@ -276,6 +282,19 @@ fn decode_generation(data: &[u8], fallback_timestamp: Option<u64>) -> Option<Gen
 /// the CLI's). Only the newest copy per UUID is returned: importing every copy
 /// would let a stale one overwrite the live values, since they share request
 /// ids. The reference collector dedupes the same way.
+fn database_stamp_and_size(path: &Path) -> Result<(u64, u64), String> {
+    let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
+    let mut stamp = super::modified_nanos(&metadata);
+    let mut size = metadata.len();
+    let mut wal_os = path.as_os_str().to_os_string();
+    wal_os.push("-wal");
+    if let Ok(wal_meta) = fs::metadata(Path::new(&wal_os)) {
+        stamp = stamp.max(super::modified_nanos(&wal_meta));
+        size = size.saturating_add(wal_meta.len());
+    }
+    Ok((stamp, size))
+}
+
 fn databases(roots: &[PathBuf]) -> Vec<(String, PathBuf)> {
     let mut newest = HashMap::<String, (u64, PathBuf)>::new();
     for root in roots {
@@ -290,9 +309,8 @@ fn databases(roots: &[PathBuf]) -> Vec<(String, PathBuf)> {
             let Some(session_id) = path.file_stem().and_then(|value| value.to_str()) else {
                 continue;
             };
-            let stamp = fs::metadata(&path)
-                .ok()
-                .map(|metadata| super::modified_nanos(&metadata))
+            let stamp = database_stamp_and_size(&path)
+                .map(|(stamp, _)| stamp)
                 .unwrap_or(0);
             match newest.get(session_id) {
                 Some((existing, _)) if *existing >= stamp => {}
@@ -311,6 +329,15 @@ fn databases(roots: &[PathBuf]) -> Vec<(String, PathBuf)> {
     databases
 }
 
+fn apply_generation_timing(record: &mut super::SessionUsageRecord, generation: &Generation) {
+    if let (Some(ttft), Some(stream)) = (generation.ttft_ms, generation.stream_ms) {
+        if let Some(total) = native_session_duration_ms(ttft.saturating_add(stream)) {
+            record.duration_ms = Some(total);
+            record.first_token_ms = bounded_session_first_token_ms(ttft, total);
+        }
+    }
+}
+
 pub(super) fn sync_databases(
     db: &super::SqliteDbState,
     roots: &[PathBuf],
@@ -321,12 +348,11 @@ pub(super) fn sync_databases(
     let mut result = super::GatewaySessionUsageImportResult::default();
     for (session_id, path) in databases(roots) {
         let source_id = format!("antigravity:{session_id}");
-        let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
-        let stamp = super::modified_nanos(&metadata);
+        let (stamp, size) = database_stamp_and_size(&path)?;
         let old_state = states.get(&source_id).cloned().unwrap_or_default();
         if old_state.parser_revision == super::parsers::revision(GatewayUsageTool::Antigravity)
             && old_state.modified_nanos == stamp
-            && old_state.size == metadata.len()
+            && old_state.size == size
         {
             continue;
         }
@@ -341,7 +367,7 @@ pub(super) fn sync_databases(
                 GatewayUsageTool::Antigravity,
                 &session_id,
                 &format!("gen:{idx}:{record_index}"),
-                Some(generation.model),
+                Some(generation.model.clone()),
                 TokenUsage {
                     input_tokens: Some(generation.input),
                     output_tokens: Some(generation.output),
@@ -353,12 +379,7 @@ pub(super) fn sync_databases(
             );
             // The provider's own timing: TTFT plus the streaming window is
             // the whole request.
-            record.duration_ms = match (generation.ttft_ms, generation.stream_ms) {
-                (Some(ttft), Some(stream)) => {
-                    bounded_session_duration_ms(ttft.saturating_add(stream))
-                }
-                _ => None,
-            };
+            apply_generation_timing(&mut record, &generation);
             record.metadata.granularity = SessionUsageGranularity::Request;
             records.push(record);
         }
@@ -368,7 +389,7 @@ pub(super) fn sync_databases(
             cumulative_usage: old_state.cumulative_usage.clone(),
             parser_revision: super::parsers::revision(GatewayUsageTool::Antigravity),
             modified_nanos: stamp,
-            size: metadata.len(),
+            size,
             pending: false,
             records: old_state.records.clone(),
             codex_snapshots: Vec::new(),
@@ -398,7 +419,7 @@ pub(super) fn cost_records(path: &Path) -> Result<Vec<super::SessionUsageRecord>
                 GatewayUsageTool::Antigravity,
                 session_id,
                 &format!("gen:{idx}:{record_index}"),
-                Some(generation.model),
+                Some(generation.model.clone()),
                 TokenUsage {
                     input_tokens: Some(generation.input),
                     output_tokens: Some(generation.output),
@@ -408,12 +429,7 @@ pub(super) fn cost_records(path: &Path) -> Result<Vec<super::SessionUsageRecord>
                 },
                 generation.created_at as i64,
             );
-            record.duration_ms = match (generation.ttft_ms, generation.stream_ms) {
-                (Some(ttft), Some(stream)) => {
-                    bounded_session_duration_ms(ttft.saturating_add(stream))
-                }
-                _ => None,
-            };
+            apply_generation_timing(&mut record, &generation);
             record
         })
         .collect())
@@ -673,9 +689,9 @@ mod tests {
         let generation = &generations[0];
         assert_eq!(generation.model, "gemini-2.5-pro");
         assert_eq!(generation.input, 1_000);
-        // Field 4.3 already contains the 50 thoughts, and the exact response
-        // field (4.10) is absent here, so the thoughts are subtracted once.
-        assert_eq!(generation.output, 150);
+        // Field 4.3 already contains thoughts (200 = 150 response + 50 thoughts),
+        // so it is preserved verbatim without double-counting or stripping thoughts.
+        assert_eq!(generation.output, 200);
         assert_eq!(generation.cached, 400);
         assert_eq!(generation.created_at, 1_750_000_000);
     }
@@ -700,6 +716,19 @@ mod tests {
         let generation = decode_generation(&record, None).unwrap();
         assert_eq!(generation.ttft_ms, Some(1_250));
         assert_eq!(generation.stream_ms, Some(3_500));
+
+        // Zero-duration streaming (instant single-chunk reply) is still valid.
+        let zero_stream = [
+            field_bytes(19, b"gemini-2.5-pro"),
+            field_bytes(4, &[field_varint(2, 100), field_varint(3, 10)].concat()),
+            field_bytes(11, &duration(2, 0)),
+            field_bytes(12, &[]),
+            field_bytes(9, &field_bytes(4, &field_varint(1, 1_750_000_000))),
+        ]
+        .concat();
+        let generation = decode_generation(&zero_stream, None).unwrap();
+        assert_eq!(generation.ttft_ms, Some(2_000));
+        assert_eq!(generation.stream_ms, Some(0));
 
         // Without both fields the pair is incomplete and no duration is made up.
         let partial = [
@@ -796,7 +825,7 @@ mod tests {
         let row = &logs.data[0];
         assert_eq!(row.input_tokens, 1_000);
         assert_eq!(row.cache_read_tokens, 400);
-        assert_eq!(row.output_tokens, 150);
+        assert_eq!(row.output_tokens, 200);
         assert_eq!(row.upstream_model_id, "gemini-2.5-pro");
         // Rescanning an unchanged database must not import it again.
         let second = sync_databases(
@@ -808,6 +837,67 @@ mod tests {
         )
         .unwrap();
         assert_eq!(second.inserted_records, 0);
+    }
+
+    #[test]
+    fn sync_persists_antigravity_first_token_and_total_duration() {
+        let root = tempfile::tempdir().unwrap();
+        let session = "22222222-3333-4444-5555-666666666666";
+        let connection = conversation_db(root.path(), session);
+        let duration = |seconds: u64, nanos: u64| {
+            [field_varint(1, seconds), field_varint(2, nanos)].concat()
+        };
+        let tokens = [
+            field_varint(2, 1_200),
+            field_varint(3, 850),
+            field_varint(5, 300),
+            field_varint(9, 600),
+            field_varint(10, 250),
+        ]
+        .concat();
+        let record = [
+            field_bytes(19, b"gemini-4-neon"),
+            field_bytes(4, &tokens),
+            field_bytes(11, &duration(2, 799_000_000)),
+            field_bytes(12, &duration(1, 722_000_000)),
+            field_bytes(9, &field_bytes(4, &field_varint(1, 1_750_000_000))),
+        ]
+        .concat();
+        let blob = field_bytes(1, &record);
+        connection
+            .execute(
+                "INSERT INTO gen_metadata (idx, data) VALUES (1, ?1)",
+                [blob],
+            )
+            .unwrap();
+        let db = crate::db::SqliteDbState::in_memory_for_test().unwrap();
+        let mut states = HashMap::new();
+        let mut claims = HashMap::new();
+        let result = sync_databases(
+            &db,
+            &[root.path().to_path_buf()],
+            &mut states,
+            &mut claims,
+            1_800_000_100,
+        )
+        .unwrap();
+        assert_eq!(result.inserted_records, 1);
+        let logs = crate::coding::proxy_gateway::usage_stats::request_logs(
+            &db,
+            &crate::coding::proxy_gateway::types::GatewayRequestLogFilters {
+                cli_key: Some(GatewayUsageTool::Antigravity),
+                ..Default::default()
+            },
+            0,
+            10,
+            true,
+        )
+        .unwrap();
+        assert_eq!(logs.data.len(), 1);
+        let row = &logs.data[0];
+        assert_eq!(row.output_tokens, 850);
+        assert_eq!(row.first_token_ms, Some(2_799));
+        assert_eq!(row.duration_ms, 4_521);
     }
 
     #[test]

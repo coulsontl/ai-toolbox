@@ -14,9 +14,11 @@
 //! only needed by builds that leave the column empty, where the session's
 //! other rows supply the most frequent model instead.
 
-use super::parsers::native_record;
+use super::parsers::{
+    bounded_session_first_token_ms, native_record, native_session_duration_ms,
+};
 use super::{GatewayUsageTool, SessionUsageGranularity, SessionUsageRecord, SourceState, SqliteDbState, TokenUsage};
-use rusqlite::Connection;
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -52,13 +54,20 @@ pub(super) fn sync_database(
         return Ok(Default::default());
     }
     let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
-    let stamp = super::modified_nanos(&metadata);
+    let mut stamp = super::modified_nanos(&metadata);
+    let mut size = metadata.len();
+    let mut wal_os = path.as_os_str().to_os_string();
+    wal_os.push("-wal");
+    if let Ok(wal_meta) = std::fs::metadata(Path::new(&wal_os)) {
+        stamp = stamp.max(super::modified_nanos(&wal_meta));
+        size = size.saturating_add(wal_meta.len());
+    }
     let source_id = "minimax:database".to_string();
     let old_state = states.get(&source_id).cloned().unwrap_or_default();
     let parser_revision = super::parsers::revision(GatewayUsageTool::Minimax);
     if old_state.parser_revision == parser_revision
         && old_state.modified_nanos == stamp
-        && old_state.size == metadata.len()
+        && old_state.size == size
     {
         return Ok(Default::default());
     }
@@ -70,7 +79,7 @@ pub(super) fn sync_database(
         cumulative_usage: old_state.cumulative_usage.clone(),
         parser_revision,
         modified_nanos: stamp,
-        size: metadata.len(),
+        size,
         pending: false,
         records: old_state.records.clone(),
         codex_snapshots: Vec::new(),
@@ -161,6 +170,35 @@ fn read_records(path: &Path) -> Result<Vec<SessionUsageRecord>, String> {
                 .or_default() += 1;
         }
     }
+    let mut message_timing_stmt = if tables.contains("local_runtime_message_rows") {
+        let message_cols = super::hermes::columns(&source, "local_runtime_message_rows")?;
+        if ["session_id", "role", "created_at_ms", "data_json"]
+            .iter()
+            .all(|name| message_cols.contains(*name))
+        {
+            let turn_filter = if message_cols.contains("turn_id") {
+                "AND (?2 IS NULL OR turn_id = ?2)"
+            } else {
+                "AND (?2 IS NULL OR 1 = 1)"
+            };
+            source
+                .prepare(&format!(
+                    "SELECT json_extract(data_json, '$.usage.request_duration_ms'),
+                            json_extract(data_json, '$.usage.decode_duration_ms')
+                     FROM local_runtime_message_rows
+                     WHERE session_id = ?1 AND role = 'assistant' {turn_filter}
+                       AND created_at_ms >= ?3
+                       AND json_extract(data_json, '$.usage.input_tokens') = ?4
+                       AND json_extract(data_json, '$.usage.output_tokens') = ?5
+                     ORDER BY created_at_ms LIMIT 1"
+                ))
+                .ok()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let mut records = Vec::new();
     for row in rows {
         let model = row.model.clone().or_else(|| {
@@ -211,9 +249,50 @@ fn read_records(path: &Path) -> Result<Vec<SessionUsageRecord>, String> {
             },
             row.created_at,
         );
+        if let Some(stmt) = message_timing_stmt.as_mut() {
+            let ts_ms = if row.created_at > 100_000_000_000 {
+                row.created_at
+            } else {
+                row.created_at.saturating_mul(1000)
+            };
+            if let Ok(Some((request_ms, decode_ms))) = stmt
+                .query_row(
+                    params![
+                        &row.session,
+                        row.turn.as_deref(),
+                        ts_ms,
+                        row.input as i64,
+                        row.output as i64,
+                    ],
+                    |found| {
+                        Ok((
+                            found.get::<_, Option<f64>>(0)?,
+                            found.get::<_, Option<f64>>(1)?,
+                        ))
+                    },
+                )
+                .optional()
+            {
+                if let Some((duration_ms, first_token_ms)) = minimax_timing(request_ms, decode_ms) {
+                    record.duration_ms = Some(duration_ms);
+                    record.first_token_ms = first_token_ms;
+                }
+            }
+        }
         record.metadata.granularity = SessionUsageGranularity::Request;
         record.metadata.call_count = Some(1);
         records.push(record);
     }
     Ok(records)
+}
+
+fn minimax_timing(request: Option<f64>, decode: Option<f64>) -> Option<(u64, Option<u64>)> {
+    let request = request.filter(|ms| ms.is_finite() && *ms > 0.0)?;
+    let duration_ms = native_session_duration_ms(request.round() as u64)?;
+    let first_token_ms = decode
+        .filter(|ms| ms.is_finite() && (0.0..=request).contains(ms))
+        .and_then(|decode| {
+            bounded_session_first_token_ms((request - decode).round() as u64, duration_ms)
+        });
+    Some((duration_ms, first_token_ms))
 }
