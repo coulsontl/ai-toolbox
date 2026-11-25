@@ -148,8 +148,23 @@ async fn gateway_connection(
 }
 
 async fn receive_json<S: AsyncRead + AsyncWrite + Unpin>(socket: &mut WebSocketStream<S>) -> Value {
+    receive_json_with_timeout(socket, Duration::from_secs(5)).await
+}
+
+async fn receive_large_json<S: AsyncRead + AsyncWrite + Unpin>(
+    socket: &mut WebSocketStream<S>,
+) -> Value {
+    // Unoptimized debug builds under full CI concurrency need more than 5s to
+    // parse, mask, forward, and re-parse >16 MiB JSON WebSocket frames.
+    receive_json_with_timeout(socket, Duration::from_secs(30)).await
+}
+
+async fn receive_json_with_timeout<S: AsyncRead + AsyncWrite + Unpin>(
+    socket: &mut WebSocketStream<S>,
+    wait: Duration,
+) -> Value {
     loop {
-        let message = timeout(Duration::from_secs(5), socket.next())
+        let message = timeout(wait, socket.next())
             .await
             .unwrap()
             .unwrap()
@@ -3046,7 +3061,7 @@ async fn websocket_disconnect_then_non_incremental_resend_and_http_compaction_ov
         //    an incremental short follow-up in the same session.
         let (socket, _) = listener.accept().await.unwrap();
         let mut ws2 = accept_upstream_websocket_large(socket).await;
-        let resent = receive_json(&mut ws2).await;
+        let resent = receive_large_json(&mut ws2).await;
         assert!(resent.get("previous_response_id").is_none());
         assert_eq!(resent["input"].as_array().unwrap().len(), 18);
         assert!(resent["input"][0]["content"][0]["text"]
@@ -3062,7 +3077,7 @@ async fn websocket_disconnect_then_non_incremental_resend_and_http_compaction_ov
         )
         .await;
 
-        let followup = receive_json(&mut ws2).await;
+        let followup = receive_large_json(&mut ws2).await;
         assert_eq!(followup["previous_response_id"], "resp_turn_2_recovered");
         send_json(
             &mut ws2,
@@ -3145,7 +3160,7 @@ async fn websocket_disconnect_then_non_incremental_resend_and_http_compaction_ov
     let (mut client2, gateway2) =
         connect_gateway_websocket_with_limit(context.clone(), MAX_MESSAGE_BYTES).await;
     send_json(&mut client2, full_ws_turn).await;
-    let reply2 = receive_json(&mut client2).await;
+    let reply2 = receive_large_json(&mut client2).await;
     assert_eq!(reply2["response"]["id"], "resp_turn_2_recovered");
 
     send_json(
@@ -3158,11 +3173,11 @@ async fn websocket_disconnect_then_non_incremental_resend_and_http_compaction_ov
         }),
     )
     .await;
-    let reply3 = receive_json(&mut client2).await;
+    let reply3 = receive_large_json(&mut client2).await;
     assert_eq!(reply3["response"]["id"], "resp_turn_3_followup");
     let _ = client2.close(None).await;
     drop(client2);
-    timeout(Duration::from_secs(5), gateway2)
+    timeout(Duration::from_secs(30), gateway2)
         .await
         .unwrap()
         .unwrap();
@@ -3223,11 +3238,11 @@ async fn websocket_disconnect_then_non_incremental_resend_and_http_compaction_ov
     let compact_json: Value = compact_resp.json().await.unwrap();
     assert_eq!(compact_json["output"][0]["type"], "compaction");
 
-    timeout(Duration::from_secs(5), http_gateway_task)
+    timeout(Duration::from_secs(30), http_gateway_task)
         .await
         .unwrap()
         .unwrap();
-    timeout(Duration::from_secs(10), upstream)
+    timeout(Duration::from_secs(30), upstream)
         .await
         .unwrap()
         .unwrap();
@@ -3287,7 +3302,7 @@ async fn websocket_model_change_non_incremental_resend_over_16_mib_continues_sam
         )
         .await;
 
-        let locked_switch = receive_json(&mut ws1).await;
+        let locked_switch = receive_large_json(&mut ws1).await;
         assert_eq!(locked_switch["model"], "model-b");
         assert_eq!(locked_switch["input"].as_array().unwrap().len(), 18);
         send_json(
@@ -3309,7 +3324,7 @@ async fn websocket_model_change_non_incremental_resend_over_16_mib_continues_sam
         // and continues with a short follow-up on the same session.
         let (socket, _) = listener.accept().await.unwrap();
         let mut ws2 = accept_upstream_websocket_large(socket).await;
-        let retry_switch = receive_json(&mut ws2).await;
+        let retry_switch = receive_large_json(&mut ws2).await;
         assert_eq!(retry_switch["model"], "model-b");
         assert!(retry_switch["input"][0]["content"][0]["text"]
             .as_str()
@@ -3324,7 +3339,7 @@ async fn websocket_model_change_non_incremental_resend_over_16_mib_continues_sam
         )
         .await;
 
-        let followup = receive_json(&mut ws2).await;
+        let followup = receive_large_json(&mut ws2).await;
         assert_eq!(followup["model"], "model-b");
         assert_eq!(followup["previous_response_id"], "resp_model_b_1");
         send_json(
@@ -3357,10 +3372,10 @@ async fn websocket_model_change_non_incremental_resend_over_16_mib_continues_sam
     );
 
     send_json(&mut client1, switch_turn.clone()).await;
-    let lock_error = receive_json(&mut client1).await;
+    let lock_error = receive_large_json(&mut client1).await;
     assert_eq!(lock_error["error"]["code"], MODEL_LOCK_RETRY_CODE);
     drop(client1);
-    timeout(Duration::from_secs(5), gateway1)
+    timeout(Duration::from_secs(30), gateway1)
         .await
         .unwrap()
         .unwrap();
@@ -3370,7 +3385,7 @@ async fn websocket_model_change_non_incremental_resend_over_16_mib_continues_sam
         connect_gateway_websocket_with_limit(context.clone(), MAX_MESSAGE_BYTES).await;
     send_json(&mut client2, switch_turn).await;
     assert_eq!(
-        receive_json(&mut client2).await["response"]["id"],
+        receive_large_json(&mut client2).await["response"]["id"],
         "resp_model_b_1"
     );
     send_json(
@@ -3384,16 +3399,16 @@ async fn websocket_model_change_non_incremental_resend_over_16_mib_continues_sam
     )
     .await;
     assert_eq!(
-        receive_json(&mut client2).await["response"]["id"],
+        receive_large_json(&mut client2).await["response"]["id"],
         "resp_model_b_2"
     );
     let _ = client2.close(None).await;
     drop(client2);
-    timeout(Duration::from_secs(5), gateway2)
+    timeout(Duration::from_secs(30), gateway2)
         .await
         .unwrap()
         .unwrap();
-    timeout(Duration::from_secs(10), upstream)
+    timeout(Duration::from_secs(30), upstream)
         .await
         .unwrap()
         .unwrap();
