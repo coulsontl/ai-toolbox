@@ -29,7 +29,9 @@ pub(crate) use self::providers::{
 #[cfg(test)]
 use self::http_io::DebugHttpRequest;
 use self::http_io::{
-    decode_inbound_request_body, json_response, read_http_request, write_response,
+    decode_inbound_request_body_with_limit, json_response, read_http_request_with_limit,
+    request_body_too_large_response, write_response, InboundBodyDecodeError, ReadHttpRequestError,
+    MAX_REQUEST_BODY_BYTES,
 };
 #[cfg(test)]
 use self::http_io::{find_header_end, header_value};
@@ -800,6 +802,14 @@ async fn handle_connection(
     stream: &mut TokioTcpStream,
     context: &GatewayRuntimeContext,
 ) -> std::io::Result<()> {
+    handle_connection_with_body_limit(stream, context, MAX_REQUEST_BODY_BYTES).await
+}
+
+async fn handle_connection_with_body_limit(
+    stream: &mut TokioTcpStream,
+    context: &GatewayRuntimeContext,
+    max_body_bytes: usize,
+) -> std::io::Result<()> {
     let Some(_active_connection) = ActiveConnectionGuard::try_new(
         context.active_connections.clone(),
         MAX_CONCURRENT_CONNECTIONS,
@@ -821,10 +831,64 @@ async fn handle_connection(
         return Ok(());
     };
     let request_id = NEXT_REQUEST_ID.fetch_add(1, Ordering::SeqCst);
-    let mut request = match read_http_request(stream, request_id).await {
+    let started_at = Utc::now();
+    let started_instant = Instant::now();
+    let settings = context.settings_snapshot();
+    let mut request = match read_http_request_with_limit(stream, request_id, max_body_bytes).await {
         Ok(request) => request,
-        Err(error) => {
-            // Header/body read failure (2s header / 30s body timeout, oversize,
+        Err(ReadHttpRequestError::BodyTooLarge {
+            request,
+            declared_bytes,
+            received_bytes,
+            limit_bytes,
+        }) => {
+            let peer = stream
+                .peer_addr()
+                .map(|addr| addr.to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            log::warn!(
+                "[proxy-gateway] request_body_too_large peer={} method={} path={} declared_bytes={:?} received_bytes={} limit_bytes={}",
+                peer,
+                request.method,
+                super::request_log::redact_request_path(&request.path),
+                declared_bytes,
+                received_bytes,
+                limit_bytes,
+            );
+            let mut response = request_body_too_large_response(
+                &request.path,
+                declared_bytes,
+                limit_bytes,
+                "Gateway request body exceeds the maximum allowed size",
+            );
+            let write_result =
+                write_response(stream, &mut response, started_instant, &settings).await;
+            let _ = stream.shutdown().await;
+            // Give the peer a brief window to read the 413 before dropping the
+            // socket while unread request-body bytes may still be in flight.
+            let _ = tokio::time::timeout(Duration::from_millis(50), async {
+                let mut discard = [0_u8; 4096];
+                let mut drained = 0_usize;
+                while drained < 64 * 1024 {
+                    match stream.read(&mut discard).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => drained += n,
+                    }
+                }
+            })
+            .await;
+            let ended_at = Utc::now();
+            observability::record_gateway_observability(
+                &request,
+                &response,
+                context,
+                started_at,
+                ended_at,
+            );
+            return write_result;
+        }
+        Err(ReadHttpRequestError::Io(error)) => {
+            // Header/body read failure (2s header / 30s body timeout, header oversize,
             // peer reset). No parsed request exists, so this can never enter
             // request observability; log a distinct reason here so these dead
             // connections are not only the generic accept-loop warn.
@@ -840,19 +904,44 @@ async fn handle_connection(
             return Err(error);
         }
     };
-    let started_at = Utc::now();
-    let started_instant = Instant::now();
-    let settings = context.settings_snapshot();
 
     if websocket::is_upgrade_request(&request) {
-        return websocket::handle_upgrade(stream, request, context).await;
+        return websocket::handle_upgrade_with_limit(stream, request, context, max_body_bytes)
+            .await;
     }
 
     // Codex Desktop official-login clients may send zstd-compressed JSON bodies.
     // Decode before routing/JSON parsing so passthrough and conversion both see plain JSON.
-    let mut response = match decode_inbound_request_body(&mut request) {
+    let mut response = match decode_inbound_request_body_with_limit(&mut request, max_body_bytes) {
         Ok(()) => route_request(&request, context).await,
-        Err(message) => {
+        Err(InboundBodyDecodeError::TooLarge {
+            encoding,
+            compressed_bytes,
+            limit_bytes,
+        }) => {
+            let peer = stream
+                .peer_addr()
+                .map(|addr| addr.to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            log::warn!(
+                "[proxy-gateway] request_decompressed_body_too_large peer={} method={} path={} encoding={} compressed_bytes={} limit_bytes={}",
+                peer,
+                request.method,
+                super::request_log::redact_request_path(&request.path),
+                encoding,
+                compressed_bytes,
+                limit_bytes,
+            );
+            // Drop the raw compressed bytes so oversize rejections never store payload bodies.
+            request.body.clear();
+            request_body_too_large_response(
+                &request.path,
+                None,
+                limit_bytes,
+                &format!("Decompressed gateway request body ({encoding}) exceeds the maximum allowed size"),
+            )
+        }
+        Err(InboundBodyDecodeError::Invalid(message)) => {
             let mut response = json_response(
                 400,
                 "Bad Request",

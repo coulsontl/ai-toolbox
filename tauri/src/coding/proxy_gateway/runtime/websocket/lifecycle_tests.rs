@@ -488,6 +488,7 @@ async fn failed_terminal_write_keeps_usage_but_is_not_a_success() {
                 Vec::new(),
                 false,
                 Vec::new(),
+                MAX_PENDING_BYTES,
             ),
         )
         .await

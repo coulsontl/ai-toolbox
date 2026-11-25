@@ -1,6 +1,8 @@
 use super::content_encoding::{
-    decompress_body, get_content_encoding_from_pairs, is_supported_content_encoding,
+    decompress_body, get_content_encoding_from_pairs, is_decompressed_body_too_large,
+    is_supported_content_encoding,
 };
+use super::routes::match_gateway_route;
 use crate::coding::proxy_gateway::transformer::AiProtocol;
 use crate::coding::proxy_gateway::types::{
     CodexAuxTaskKind, GatewayAuxiliaryMetadata, GatewayCliKey, GatewayProviderAttempt,
@@ -8,7 +10,7 @@ use crate::coding::proxy_gateway::types::{
 };
 use crate::coding::proxy_gateway::usage_parser::{SseTerminalKind, SseUsageCollector, TokenUsage};
 use futures_util::{Stream, StreamExt};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::io::Write;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -18,7 +20,7 @@ use tokio::net::TcpStream;
 use tokio::time;
 
 pub(super) const MAX_REQUEST_HEADER_BYTES: usize = 64 * 1024;
-pub(super) const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
+pub(super) const MAX_REQUEST_BODY_BYTES: usize = 200 * 1024 * 1024;
 
 pub(super) type DebugBodyStream =
     Pin<Box<dyn Stream<Item = Result<Vec<u8>, String>> + Send + 'static>>;
@@ -329,10 +331,34 @@ impl DebugHttpResponse {
     }
 }
 
-pub(super) async fn read_http_request(
+#[derive(Debug)]
+pub(super) enum ReadHttpRequestError {
+    BodyTooLarge {
+        /// Parsed request metadata with an empty body so observability and 413
+        /// rendering have the route/method/path without retaining the oversized payload.
+        request: DebugHttpRequest,
+        declared_bytes: Option<u64>,
+        received_bytes: usize,
+        limit_bytes: usize,
+    },
+    Io(std::io::Error),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum InboundBodyDecodeError {
+    TooLarge {
+        encoding: String,
+        compressed_bytes: usize,
+        limit_bytes: usize,
+    },
+    Invalid(String),
+}
+
+pub(super) async fn read_http_request_with_limit(
     stream: &mut TcpStream,
     request_id: u64,
-) -> std::io::Result<DebugHttpRequest> {
+    max_body_bytes: usize,
+) -> Result<DebugHttpRequest, ReadHttpRequestError> {
     let mut raw = Vec::new();
     let mut header_end = None;
     let mut buffer = [0_u8; 8192];
@@ -341,20 +367,21 @@ pub(super) async fn read_http_request(
         let read = time::timeout(Duration::from_secs(2), stream.read(&mut buffer))
             .await
             .map_err(|_| {
-                std::io::Error::new(
+                ReadHttpRequestError::Io(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
                     "Timed out reading gateway request headers",
-                )
-            })??;
+                ))
+            })?
+            .map_err(ReadHttpRequestError::Io)?;
         if read == 0 {
             break;
         }
         raw.extend_from_slice(&buffer[..read]);
         if raw.len() > MAX_REQUEST_HEADER_BYTES {
-            return Err(std::io::Error::new(
+            return Err(ReadHttpRequestError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Gateway request headers exceed the maximum allowed size",
-            ));
+            )));
         }
         header_end = find_header_end(&raw);
     }
@@ -375,43 +402,72 @@ pub(super) async fn read_http_request(
         .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
         .collect();
 
-    let content_length = header_value(&headers, "content-length")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(0);
-    if content_length > MAX_REQUEST_BODY_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Gateway request body exceeds the maximum allowed size",
-        ));
-    }
     let body_start = header_end.min(raw.len());
+    let declared_bytes = header_value(&headers, "content-length")
+        .and_then(|value| value.trim().parse::<u64>().ok());
+    if let Some(declared) = declared_bytes {
+        if declared > max_body_bytes as u64 {
+            return Err(ReadHttpRequestError::BodyTooLarge {
+                request: DebugHttpRequest {
+                    id: request_id,
+                    method,
+                    path,
+                    headers,
+                    body: Vec::new(),
+                },
+                declared_bytes: Some(declared),
+                received_bytes: raw.len().saturating_sub(body_start),
+                limit_bytes: max_body_bytes,
+            });
+        }
+    }
+
+    let content_length = declared_bytes.unwrap_or(0) as usize;
     let mut body = raw[body_start..].to_vec();
-    if body.len() > MAX_REQUEST_BODY_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Gateway request body exceeds the maximum allowed size",
-        ));
+    if body.len() > max_body_bytes {
+        let received_bytes = body.len();
+        return Err(ReadHttpRequestError::BodyTooLarge {
+            request: DebugHttpRequest {
+                id: request_id,
+                method,
+                path,
+                headers,
+                body: Vec::new(),
+            },
+            declared_bytes,
+            received_bytes,
+            limit_bytes: max_body_bytes,
+        });
     }
     while body.len() < content_length {
         let read = time::timeout(Duration::from_secs(30), stream.read(&mut buffer))
             .await
             .map_err(|_| {
-                std::io::Error::new(
+                ReadHttpRequestError::Io(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
                     "Timed out reading gateway request body",
-                )
-            })??;
+                ))
+            })?
+            .map_err(ReadHttpRequestError::Io)?;
         if read == 0 {
             break;
         }
-        raw.extend_from_slice(&buffer[..read]);
-        body.extend_from_slice(&buffer[..read]);
-        if body.len() > MAX_REQUEST_BODY_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Gateway request body exceeds the maximum allowed size",
-            ));
+        if body.len().saturating_add(read) > max_body_bytes {
+            let received_bytes = body.len().saturating_add(read);
+            return Err(ReadHttpRequestError::BodyTooLarge {
+                request: DebugHttpRequest {
+                    id: request_id,
+                    method,
+                    path,
+                    headers,
+                    body: Vec::new(),
+                },
+                declared_bytes,
+                received_bytes,
+                limit_bytes: max_body_bytes,
+            });
         }
+        body.extend_from_slice(&buffer[..read]);
     }
 
     Ok(DebugHttpRequest {
@@ -423,29 +479,116 @@ pub(super) async fn read_http_request(
     })
 }
 
+#[cfg(test)]
+pub(super) async fn read_http_request(
+    stream: &mut TcpStream,
+    request_id: u64,
+) -> std::io::Result<DebugHttpRequest> {
+    read_http_request_with_limit(stream, request_id, MAX_REQUEST_BODY_BYTES)
+        .await
+        .map_err(|error| match error {
+            ReadHttpRequestError::BodyTooLarge { limit_bytes, .. } => std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "Gateway request body exceeds the maximum allowed size ({limit_bytes} bytes)"
+                ),
+            ),
+            ReadHttpRequestError::Io(io_error) => io_error,
+        })
+}
+
+pub(super) fn request_body_too_large_response(
+    path: &str,
+    declared_bytes: Option<u64>,
+    limit_bytes: usize,
+    reason_prefix: &str,
+) -> DebugHttpResponse {
+    let limit_mib = limit_bytes / (1024 * 1024);
+    let limit_display = if limit_bytes % (1024 * 1024) == 0 && limit_mib > 0 {
+        format!("{limit_mib} MiB ({limit_bytes} bytes)")
+    } else {
+        format!("{limit_bytes} bytes")
+    };
+    let message = match declared_bytes {
+        Some(declared) => format!(
+            "{reason_prefix} ({declared} bytes exceeds the maximum allowed size of {limit_display})"
+        ),
+        None => format!(
+            "{reason_prefix} (exceeds the maximum allowed size of {limit_display})"
+        ),
+    };
+    let mut error_object = json!({
+        "type": "invalid_request_error",
+        "code": "request_body_too_large",
+        "message": message,
+        "max_bytes": limit_bytes,
+    });
+    if let Some(declared) = declared_bytes {
+        error_object["declared_bytes"] = json!(declared);
+    }
+    let route = match_gateway_route(path);
+    let route_name = route
+        .as_ref()
+        .map(|matched| matched.route_name)
+        .unwrap_or("request_size_limit");
+    let mut response = json_response(
+        413,
+        "Content Too Large",
+        json!({ "error": error_object }),
+        route_name,
+        None,
+        &message,
+    );
+    response.cli_key = route.map(|matched| matched.cli_key);
+    response.error_category = Some("request_body_too_large".to_string());
+    response
+}
+
 /// Decode inbound compressed request bodies before JSON routing/conversion.
 ///
 /// Codex Desktop official-login clients commonly send `Content-Encoding: zstd`.
 /// After a successful decode, entity headers that no longer match the body are
 /// stripped so later forwarding rebuilds length/encoding from the plain JSON.
-pub(super) fn decode_inbound_request_body(request: &mut DebugHttpRequest) -> Result<(), String> {
+#[cfg(test)]
+pub(super) fn decode_inbound_request_body(
+    request: &mut DebugHttpRequest,
+) -> Result<(), InboundBodyDecodeError> {
+    decode_inbound_request_body_with_limit(request, MAX_REQUEST_BODY_BYTES)
+}
+
+pub(super) fn decode_inbound_request_body_with_limit(
+    request: &mut DebugHttpRequest,
+    max_body_bytes: usize,
+) -> Result<(), InboundBodyDecodeError> {
     let Some(encoding) = get_content_encoding_from_pairs(&request.headers) else {
         return Ok(());
     };
 
     if !is_supported_content_encoding(&encoding) {
-        return Err(format!("Unsupported request content-encoding: {encoding}"));
+        return Err(InboundBodyDecodeError::Invalid(format!(
+            "Unsupported request content-encoding: {encoding}"
+        )));
     }
 
-    let decompressed = match decompress_body(&encoding, &request.body, MAX_REQUEST_BODY_BYTES) {
+    let compressed_bytes = request.body.len();
+    let decompressed = match decompress_body(&encoding, &request.body, max_body_bytes) {
         Ok(Some(decompressed)) => decompressed,
         Ok(None) => {
-            return Err(format!("Unsupported request content-encoding: {encoding}"));
+            return Err(InboundBodyDecodeError::Invalid(format!(
+                "Unsupported request content-encoding: {encoding}"
+            )));
+        }
+        Err(error) if is_decompressed_body_too_large(&error) => {
+            return Err(InboundBodyDecodeError::TooLarge {
+                encoding,
+                compressed_bytes,
+                limit_bytes: max_body_bytes,
+            });
         }
         Err(error) => {
-            return Err(format!(
+            return Err(InboundBodyDecodeError::Invalid(format!(
                 "Failed to decompress request body ({encoding}): {error}"
-            ));
+            )));
         }
     };
 
@@ -954,7 +1097,12 @@ mod tests {
         };
 
         let error = decode_inbound_request_body(&mut request).unwrap_err();
-        assert!(error.contains("Unsupported request content-encoding: snappy"));
+        assert_eq!(
+            error,
+            InboundBodyDecodeError::Invalid(
+                "Unsupported request content-encoding: snappy".to_string()
+            )
+        );
         assert_eq!(request.body, b"\x00\x01\x02");
     }
 
@@ -969,7 +1117,99 @@ mod tests {
         };
 
         let error = decode_inbound_request_body(&mut request).unwrap_err();
-        assert!(error.contains("Failed to decompress request body (zstd)"));
+        match error {
+            InboundBodyDecodeError::Invalid(message) => {
+                assert!(message.contains("Failed to decompress request body (zstd)"));
+            }
+            other => panic!("expected Invalid error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_inbound_request_body_with_limit_returns_too_large_on_zstd_overflow() {
+        let payload = vec![b'A'; 4096];
+        let compressed = zstd::stream::encode_all(std::io::Cursor::new(&payload[..]), 0).unwrap();
+        assert!(compressed.len() < 1024);
+        let mut request = DebugHttpRequest {
+            id: 1,
+            method: "POST".to_string(),
+            path: "/openai/v1/responses".to_string(),
+            headers: vec![
+                ("content-encoding".to_string(), "zstd".to_string()),
+                ("content-length".to_string(), compressed.len().to_string()),
+            ],
+            body: compressed.clone(),
+        };
+
+        let error = decode_inbound_request_body_with_limit(&mut request, 1024).unwrap_err();
+        assert_eq!(
+            error,
+            InboundBodyDecodeError::TooLarge {
+                encoding: "zstd".to_string(),
+                compressed_bytes: compressed.len(),
+                limit_bytes: 1024,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn read_http_request_with_limit_returns_body_too_large_for_declared_content_length() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client_task = tokio::spawn(async move {
+            let mut client = TcpStream::connect(addr).await.unwrap();
+            let raw = "POST /openai/v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer secret-key\r\nContent-Length: 1025\r\n\r\n";
+            client.write_all(raw.as_bytes()).await.unwrap();
+            client.flush().await.unwrap();
+        });
+        let (mut server, _) = listener.accept().await.unwrap();
+        let error = read_http_request_with_limit(&mut server, 7, 1024)
+            .await
+            .unwrap_err();
+        client_task.await.unwrap();
+
+        match error {
+            ReadHttpRequestError::BodyTooLarge {
+                request,
+                declared_bytes,
+                limit_bytes,
+                ..
+            } => {
+                assert_eq!(request.id, 7);
+                assert_eq!(request.method, "POST");
+                assert_eq!(request.path, "/openai/v1/responses");
+                assert!(request.body.is_empty());
+                assert_eq!(declared_bytes, Some(1025));
+                assert_eq!(limit_bytes, 1024);
+            }
+            other => panic!("expected BodyTooLarge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_body_too_large_response_sets_413_route_and_limits() {
+        let response = request_body_too_large_response(
+            "/openai/v1/responses",
+            Some(201 * 1024 * 1024),
+            200 * 1024 * 1024,
+            "Gateway request body exceeds the maximum allowed size",
+        );
+        assert_eq!(response.status_code, 413);
+        assert_eq!(response.status_text, "Content Too Large");
+        assert_eq!(response.cli_key, Some(GatewayCliKey::Codex));
+        assert_eq!(response.route_name, "openai-compatible");
+        assert_eq!(
+            response.error_category.as_deref(),
+            Some("request_body_too_large")
+        );
+        let payload: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(payload["error"]["code"], "request_body_too_large");
+        assert_eq!(payload["error"]["max_bytes"], 200 * 1024 * 1024);
+        assert_eq!(payload["error"]["declared_bytes"], 201 * 1024 * 1024);
+        assert!(payload["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("200 MiB"));
     }
 
     fn io_error(kind: std::io::ErrorKind, message: &str) -> std::io::Error {

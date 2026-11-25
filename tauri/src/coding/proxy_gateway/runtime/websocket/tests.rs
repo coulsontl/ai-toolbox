@@ -2912,6 +2912,684 @@ async fn real_codex_title_turn_uses_the_auxiliary_http_channel() {
     upstream.abort();
 }
 
+/// Builds a synthetic multimodal Codex Responses `input` array containing
+/// base64-encoded image tool outputs whose total JSON size exceeds the old
+/// 16 MiB gateway ceiling (~17.5 MiB).
+fn synthetic_multimodal_history_over_16_mib(marker: &str) -> Vec<Value> {
+    let image_chunk = "A".repeat(1024 * 1024);
+    let mut items = vec![json!({
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": format!("Session state marker: {marker}")}]
+    })];
+    for index in 0..17 {
+        items.push(json!({
+            "type": "function_call_output",
+            "call_id": format!("call_img_{index}"),
+            "output": [{
+                "type": "input_image",
+                "image_url": format!("data:image/png;base64,{image_chunk}")
+            }]
+        }));
+    }
+    items
+}
+
+async fn accept_upstream_websocket_large(
+    socket: TcpStream,
+) -> WebSocketStream<TcpStream> {
+    tokio_tungstenite::accept_async_with_config(
+        socket,
+        Some(socket_config_with_limit(MAX_MESSAGE_BYTES)),
+    )
+    .await
+    .unwrap()
+}
+
+async fn connect_gateway_websocket_with_limit(
+    context: GatewayRuntimeContext,
+    gateway_limit_bytes: usize,
+) -> (WebSocketStream<TcpStream>, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let _ = super::super::handle_connection_with_body_limit(
+            &mut socket,
+            &context,
+            gateway_limit_bytes,
+        )
+        .await;
+    });
+    let socket = TcpStream::connect(address).await.unwrap();
+    let mut request =
+        tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!(
+            "ws://{address}/openai/v1/responses"
+        ))
+        .unwrap();
+    request.headers_mut().insert(
+        "authorization",
+        HeaderValue::from_static("Bearer client-test-key"),
+    );
+    let (websocket, response) = tokio_tungstenite::client_async_with_config(
+        request,
+        socket,
+        Some(socket_config_with_limit(MAX_MESSAGE_BYTES)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    (websocket, task)
+}
+
+#[tokio::test]
+async fn websocket_disconnect_then_non_incremental_resend_and_http_compaction_over_16_mib_succeed()
+{
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_address = listener.local_addr().unwrap();
+    let (_directory, context, provider_id) = test_context(
+        &format!("http://{upstream_address}/v1"),
+        "openai_responses",
+        false,
+    );
+    // Clear the provider's fixed default model so switching models within the
+    // same provider forwards `model-a` and `model-b` verbatim.
+    let passthrough_settings = json!({
+        "auth": { "OPENAI_API_KEY": "upstream-test-key" },
+        "config": format!(
+            "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"http://{upstream_address}/v1\"\nwire_api = \"responses\"\nsupports_websockets = true\n"
+        ),
+    });
+    context
+        .db
+        .as_ref()
+        .unwrap()
+        .with_conn(|conn| {
+            let mut record = db_get(conn, DbTable::CliProvider(Cli::Codex), &provider_id)?
+                .expect("provider record");
+            record["settings_config"] = json!(passthrough_settings.to_string());
+            db_put(conn, DbTable::CliProvider(Cli::Codex), &provider_id, &record)
+        })
+        .unwrap();
+    context.clear_provider_cache().unwrap();
+
+    let history = synthetic_multimodal_history_over_16_mib("ws-disconnect-recovery");
+    let full_ws_turn = json!({
+        "type": "response.create",
+        "model": "test-model",
+        "input": history.clone(),
+    });
+    let full_ws_bytes = full_ws_turn.to_string().len();
+    assert!(
+        full_ws_bytes > 16 * 1024 * 1024,
+        "test fixture must exceed legacy 16 MiB limit, got {full_ws_bytes}"
+    );
+
+    let upstream = tokio::spawn(async move {
+        // 1. Initial WebSocket connection: serves an incremental turn then drops.
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws1 = accept_upstream_websocket_large(socket).await;
+        let first = receive_json(&mut ws1).await;
+        assert_eq!(first["previous_response_id"], "resp_seed");
+        send_json(
+            &mut ws1,
+            json!({
+                "type": "response.completed",
+                "response": {"id": "resp_turn_1", "status": "completed", "output": []}
+            }),
+        )
+        .await;
+        // Simulate transient upstream disconnect.
+        drop(ws1);
+
+        // 2. Reconnected WebSocket: receives >16 MiB non-incremental resend, then
+        //    an incremental short follow-up in the same session.
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws2 = accept_upstream_websocket_large(socket).await;
+        let resent = receive_json(&mut ws2).await;
+        assert!(resent.get("previous_response_id").is_none());
+        assert_eq!(resent["input"].as_array().unwrap().len(), 18);
+        assert!(resent["input"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("ws-disconnect-recovery"));
+        send_json(
+            &mut ws2,
+            json!({
+                "type": "response.completed",
+                "response": {"id": "resp_turn_2_recovered", "status": "completed", "output": []}
+            }),
+        )
+        .await;
+
+        let followup = receive_json(&mut ws2).await;
+        assert_eq!(followup["previous_response_id"], "resp_turn_2_recovered");
+        send_json(
+            &mut ws2,
+            json!({
+                "type": "response.completed",
+                "response": {"id": "resp_turn_3_followup", "status": "completed", "output": []}
+            }),
+        )
+        .await;
+        let _ = ws2.next().await;
+
+        // 3. HTTP fallback POST /v1/responses (>16 MiB non-incremental).
+        let (mut http_socket, _) = listener.accept().await.unwrap();
+        let http_req = super::super::http_io::read_http_request(&mut http_socket, 0)
+            .await
+            .unwrap();
+        assert_eq!(http_req.method, "POST");
+        assert_eq!(http_req.path, "/v1/responses");
+        assert!(http_req.body.len() > 16 * 1024 * 1024);
+        let http_body = br#"{"id":"resp_http_fallback","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"recovered via http"}]}]}"#;
+        let http_header = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            http_body.len()
+        );
+        http_socket.write_all(http_header.as_bytes()).await.unwrap();
+        http_socket.write_all(http_body).await.unwrap();
+        http_socket.shutdown().await.unwrap();
+
+        // 4. HTTP remote compaction v2 POST /v1/responses with compaction_trigger (>16 MiB).
+        let (mut compact_socket, _) = listener.accept().await.unwrap();
+        let compact_req = super::super::http_io::read_http_request(&mut compact_socket, 0)
+            .await
+            .unwrap();
+        assert_eq!(compact_req.method, "POST");
+        assert_eq!(compact_req.path, "/v1/responses");
+        assert!(compact_req.body.len() > 16 * 1024 * 1024);
+        let compact_json: Value = serde_json::from_slice(&compact_req.body).unwrap();
+        assert!(compact_json["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["type"] == "compaction_trigger"));
+        let compact_body = br#"{"id":"resp_compacted","object":"response","status":"completed","output":[{"type":"compaction","id":"cmp_1","encrypted_content":"native-opaque-capsule"}]}"#;
+        let compact_header = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            compact_body.len()
+        );
+        compact_socket
+            .write_all(compact_header.as_bytes())
+            .await
+            .unwrap();
+        compact_socket.write_all(compact_body).await.unwrap();
+        compact_socket.shutdown().await.unwrap();
+    });
+
+    // Step 1: incremental WS turn before disconnect.
+    let (mut client1, gateway1) =
+        connect_gateway_websocket_with_limit(context.clone(), MAX_MESSAGE_BYTES).await;
+    send_json(
+        &mut client1,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "previous_response_id": "resp_seed",
+            "input": [{"type": "message", "role": "user", "content": "small delta"}]
+        }),
+    )
+    .await;
+    let reply1 = receive_json(&mut client1).await;
+    assert_eq!(reply1["response"]["id"], "resp_turn_1");
+    // Observe upstream disconnect propagating through the gateway.
+    let _ = timeout(Duration::from_secs(5), client1.next()).await;
+    drop(client1);
+    timeout(Duration::from_secs(5), gateway1)
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Step 2: WS reconnect with >16 MiB non-incremental history, then short follow-up.
+    let (mut client2, gateway2) =
+        connect_gateway_websocket_with_limit(context.clone(), MAX_MESSAGE_BYTES).await;
+    send_json(&mut client2, full_ws_turn).await;
+    let reply2 = receive_json(&mut client2).await;
+    assert_eq!(reply2["response"]["id"], "resp_turn_2_recovered");
+
+    send_json(
+        &mut client2,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "previous_response_id": "resp_turn_2_recovered",
+            "input": [{"type": "message", "role": "user", "content": "short follow-up"}]
+        }),
+    )
+    .await;
+    let reply3 = receive_json(&mut client2).await;
+    assert_eq!(reply3["response"]["id"], "resp_turn_3_followup");
+    let _ = client2.close(None).await;
+    drop(client2);
+    timeout(Duration::from_secs(5), gateway2)
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Step 3: HTTP fallback (>16 MiB non-incremental history).
+    let http_gateway_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let http_gateway_addr = http_gateway_listener.local_addr().unwrap();
+    let http_ctx = context.clone();
+    let http_gateway_task = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut socket, _) = http_gateway_listener.accept().await.unwrap();
+            let ctx = http_ctx.clone();
+            tokio::spawn(async move {
+                let _ = super::super::handle_connection(&mut socket, &ctx).await;
+            });
+        }
+    });
+
+    let client = reqwest::Client::new();
+    let http_fallback_body = serde_json::to_vec(&json!({
+        "model": "test-model",
+        "stream": false,
+        "input": history.clone(),
+    }))
+    .unwrap();
+    assert!(http_fallback_body.len() > 16 * 1024 * 1024);
+    let fallback_resp = client
+        .post(format!("http://{http_gateway_addr}/openai/v1/responses"))
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer client-test-key")
+        .body(http_fallback_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fallback_resp.status(), StatusCode::OK);
+    let fallback_json: Value = fallback_resp.json().await.unwrap();
+    assert_eq!(fallback_json["id"], "resp_http_fallback");
+
+    // Step 4: HTTP remote compaction v2 (>16 MiB history + compaction_trigger).
+    let mut compaction_input = history;
+    compaction_input.push(json!({"type": "compaction_trigger"}));
+    let compaction_body = serde_json::to_vec(&json!({
+        "model": "test-model",
+        "stream": false,
+        "input": compaction_input,
+    }))
+    .unwrap();
+    assert!(compaction_body.len() > 16 * 1024 * 1024);
+    let compact_resp = client
+        .post(format!("http://{http_gateway_addr}/openai/v1/responses"))
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer client-test-key")
+        .body(compaction_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(compact_resp.status(), StatusCode::OK);
+    let compact_json: Value = compact_resp.json().await.unwrap();
+    assert_eq!(compact_json["output"][0]["type"], "compaction");
+
+    timeout(Duration::from_secs(5), http_gateway_task)
+        .await
+        .unwrap()
+        .unwrap();
+    timeout(Duration::from_secs(10), upstream)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn websocket_model_change_non_incremental_resend_over_16_mib_continues_same_session() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_address = listener.local_addr().unwrap();
+    let (_directory, context, provider_id) = test_context(
+        &format!("http://{upstream_address}/v1"),
+        "openai_responses",
+        false,
+    );
+    // Clear the provider's fixed default model so switching models within the
+    // same provider forwards `model-a` and `model-b` verbatim.
+    let passthrough_settings = json!({
+        "auth": { "OPENAI_API_KEY": "upstream-test-key" },
+        "config": format!(
+            "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"http://{upstream_address}/v1\"\nwire_api = \"responses\"\nsupports_websockets = true\n"
+        ),
+    });
+    context
+        .db
+        .as_ref()
+        .unwrap()
+        .with_conn(|conn| {
+            let mut record = db_get(conn, DbTable::CliProvider(Cli::Codex), &provider_id)?
+                .expect("provider record");
+            record["settings_config"] = json!(passthrough_settings.to_string());
+            db_put(conn, DbTable::CliProvider(Cli::Codex), &provider_id, &record)
+        })
+        .unwrap();
+    context.clear_provider_cache().unwrap();
+
+    let history = synthetic_multimodal_history_over_16_mib("model-switch-session");
+    let switch_turn = json!({
+        "type": "response.create",
+        "model": "model-b",
+        "input": history,
+    });
+    assert!(switch_turn.to_string().len() > 16 * 1024 * 1024);
+
+    let upstream = tokio::spawn(async move {
+        // First connection locked to model-a; switching to model-b triggers
+        // model-lock reconnect (New API relay behavior) after reading the >16 MiB frame.
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws1 = accept_upstream_websocket_large(socket).await;
+        let turn1 = receive_json(&mut ws1).await;
+        assert_eq!(turn1["model"], "model-a");
+        send_json(
+            &mut ws1,
+            json!({
+                "type": "response.completed",
+                "response": {"id": "resp_model_a_1", "status": "completed", "output": []}
+            }),
+        )
+        .await;
+
+        let locked_switch = receive_json(&mut ws1).await;
+        assert_eq!(locked_switch["model"], "model-b");
+        assert_eq!(locked_switch["input"].as_array().unwrap().len(), 18);
+        send_json(
+            &mut ws1,
+            json!({
+                "type": "error",
+                "status": 400,
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "message": "responses websocket connection is locked to model model-a, cannot switch to model-b"
+                }
+            }),
+        )
+        .await;
+        let _ = ws1.next().await;
+
+        // Fresh reconnected socket accepts the >16 MiB non-incremental history on model-b
+        // and continues with a short follow-up on the same session.
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws2 = accept_upstream_websocket_large(socket).await;
+        let retry_switch = receive_json(&mut ws2).await;
+        assert_eq!(retry_switch["model"], "model-b");
+        assert!(retry_switch["input"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("model-switch-session"));
+        send_json(
+            &mut ws2,
+            json!({
+                "type": "response.completed",
+                "response": {"id": "resp_model_b_1", "status": "completed", "output": []}
+            }),
+        )
+        .await;
+
+        let followup = receive_json(&mut ws2).await;
+        assert_eq!(followup["model"], "model-b");
+        assert_eq!(followup["previous_response_id"], "resp_model_b_1");
+        send_json(
+            &mut ws2,
+            json!({
+                "type": "response.completed",
+                "response": {"id": "resp_model_b_2", "status": "completed", "output": []}
+            }),
+        )
+        .await;
+        let _ = ws2.next().await;
+    });
+
+    // Connection 1: model-a completes, then >16 MiB switch to model-b hits upstream lock
+    // and receives the retryable reconnect code (not an oversize disconnect).
+    let (mut client1, gateway1) =
+        connect_gateway_websocket_with_limit(context.clone(), MAX_MESSAGE_BYTES).await;
+    send_json(
+        &mut client1,
+        json!({
+            "type": "response.create",
+            "model": "model-a",
+            "input": [{"type": "message", "role": "user", "content": "initial turn"}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        receive_json(&mut client1).await["response"]["id"],
+        "resp_model_a_1"
+    );
+
+    send_json(&mut client1, switch_turn.clone()).await;
+    let lock_error = receive_json(&mut client1).await;
+    assert_eq!(lock_error["error"]["code"], MODEL_LOCK_RETRY_CODE);
+    drop(client1);
+    timeout(Duration::from_secs(5), gateway1)
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Connection 2: same session retries >16 MiB non-incremental turn on model-b and continues.
+    let (mut client2, gateway2) =
+        connect_gateway_websocket_with_limit(context.clone(), MAX_MESSAGE_BYTES).await;
+    send_json(&mut client2, switch_turn).await;
+    assert_eq!(
+        receive_json(&mut client2).await["response"]["id"],
+        "resp_model_b_1"
+    );
+    send_json(
+        &mut client2,
+        json!({
+            "type": "response.create",
+            "model": "model-b",
+            "previous_response_id": "resp_model_b_1",
+            "input": [{"type": "message", "role": "user", "content": "continue on model-b"}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        receive_json(&mut client2).await["response"]["id"],
+        "resp_model_b_2"
+    );
+    let _ = client2.close(None).await;
+    drop(client2);
+    timeout(Duration::from_secs(5), gateway2)
+        .await
+        .unwrap()
+        .unwrap();
+    timeout(Duration::from_secs(10), upstream)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn http_oversized_body_and_zstd_overflow_return_413_and_record_observability() {
+    let (_directory, context, _) = test_context("http://127.0.0.1:9/v1", "openai_responses", true);
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let gw_ctx = context.clone();
+    let gateway = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let ctx = gw_ctx.clone();
+            tokio::spawn(async move {
+                let _ = super::super::handle_connection_with_body_limit(&mut socket, &ctx, 4096)
+                    .await;
+            });
+        }
+    });
+
+    // Case 1: Declared Content-Length = limit + 1 (4097 bytes) -> 413 Content Too Large.
+    let mut raw_client = TcpStream::connect(address).await.unwrap();
+    let raw_request = "POST /openai/v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer super-secret-token\r\nContent-Type: application/json\r\nContent-Length: 4097\r\n\r\n";
+    raw_client.write_all(raw_request.as_bytes()).await.unwrap();
+    raw_client.flush().await.unwrap();
+    let mut raw_response = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut raw_client, &mut raw_response)
+        .await
+        .unwrap();
+    let raw_text = String::from_utf8_lossy(&raw_response);
+    assert!(
+        raw_text.starts_with("HTTP/1.1 413 Content Too Large\r\n"),
+        "expected 413 status line, got: {raw_text}"
+    );
+    let (_, body_part) = raw_text.split_once("\r\n\r\n").unwrap();
+    let body_json: Value = serde_json::from_str(body_part).unwrap();
+    assert_eq!(body_json["error"]["code"], "request_body_too_large");
+    assert_eq!(body_json["error"]["max_bytes"], 4096);
+    assert_eq!(body_json["error"]["declared_bytes"], 4097);
+
+    // Case 2: zstd body < 4096 compressed, > 4096 decompressed -> 413 Content Too Large (not 400).
+    let uncompressed = vec![b'x'; 8192];
+    let compressed =
+        zstd::stream::encode_all(std::io::Cursor::new(&uncompressed[..]), 0).unwrap();
+    assert!(compressed.len() < 4096);
+    let client = reqwest::Client::new();
+    let zstd_resp = client
+        .post(format!("http://{address}/openai/v1/responses"))
+        .header("content-type", "application/json")
+        .header("content-encoding", "zstd")
+        .header("authorization", "Bearer super-secret-token")
+        .body(compressed)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(zstd_resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let zstd_json: Value = zstd_resp.json().await.unwrap();
+    assert_eq!(zstd_json["error"]["code"], "request_body_too_large");
+    assert_eq!(zstd_json["error"]["max_bytes"], 4096);
+
+    timeout(Duration::from_secs(5), gateway)
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Both 413 rejections are visible in observability without storing oversized
+    // payloads or unredacted authorization headers, and without penalizing health.
+    let details = timeout(Duration::from_secs(5), async {
+        loop {
+            let items = recorded_details(&context);
+            if items.len() >= 2 {
+                return items;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(details.len(), 2);
+    for detail in &details {
+        assert_eq!(detail.summary.status_code, Some(413));
+        assert_eq!(
+            detail.summary.error_category.as_deref(),
+            Some("request_body_too_large")
+        );
+        assert_eq!(detail.summary.request_body_bytes, 0);
+        assert!(detail.request_body.as_deref().unwrap_or_default().is_empty());
+        let serialized = serde_json::to_string(detail).unwrap();
+        assert!(!serialized.contains("super-secret-token"));
+    }
+    assert!(context.health_items().unwrap_or_default().is_empty());
+}
+
+#[tokio::test]
+async fn websocket_oversized_message_records_request_body_too_large_not_client_disconnected() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_address = listener.local_addr().unwrap();
+    let (_directory, context, _) = test_context(
+        &format!("http://{upstream_address}/v1"),
+        "openai_responses",
+        true,
+    );
+
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = accept_upstream_websocket_large(socket).await;
+        let _ = ws.next().await;
+    });
+
+    let (mut client, gateway) = connect_gateway_websocket_with_limit(context.clone(), 4096).await;
+    let oversized_frame = json!({
+        "type": "response.create",
+        "model": "test-model",
+        "input": "A".repeat(8192),
+    });
+    send_json(&mut client, oversized_frame).await;
+
+    let mut saw_error_or_size_close = false;
+    while let Ok(Some(item)) = timeout(Duration::from_secs(5), client.next()).await {
+        match item {
+            Ok(Message::Text(text)) => {
+                if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                    if value["status"] == 413
+                        && value["error"]["code"] == "request_body_too_large"
+                    {
+                        saw_error_or_size_close = true;
+                    }
+                }
+            }
+            Ok(Message::Close(Some(frame))) => {
+                if frame.code == CloseCode::Size {
+                    saw_error_or_size_close = true;
+                }
+                break;
+            }
+            Ok(Message::Close(None)) | Err(_) => break,
+            _ => {}
+        }
+    }
+    assert!(
+        saw_error_or_size_close,
+        "client must receive either a 413 error frame or CloseCode::Size (1009)"
+    );
+    drop(client);
+    timeout(Duration::from_secs(5), gateway)
+        .await
+        .unwrap()
+        .unwrap();
+    timeout(Duration::from_secs(5), upstream)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let details = recorded_details(&context);
+    let oversized_record = details
+        .iter()
+        .find(|detail| detail.summary.error_category.as_deref() == Some("request_body_too_large"))
+        .expect("oversized WebSocket frame must be recorded as request_body_too_large");
+    assert_eq!(
+        oversized_record.summary.stream_outcome,
+        Some(GatewayStreamOutcome::Failed)
+    );
+    assert_eq!(oversized_record.summary.request_body_bytes, 0);
+    assert!(oversized_record
+        .request_body
+        .as_deref()
+        .unwrap_or_default()
+        .is_empty());
+    assert!(context.health_items().unwrap_or_default().is_empty());
+}
+
+#[test]
+fn websocket_pending_budget_and_write_timeout_scale_for_200_mib_messages() {
+    let pending = PendingTurns::with_max_pending_bytes(pending_bytes_limit_for_message_limit(
+        MAX_MESSAGE_BYTES,
+    ));
+    // A single 200 MiB inbound + 200 MiB prepared turn must fit in the queue budget.
+    assert!(!pending.full(MAX_MESSAGE_BYTES * 2));
+    assert!(pending.full(MAX_PENDING_BYTES + 1));
+
+    assert_eq!(
+        write_timeout_for_message(&Message::Text("small".into())),
+        Duration::from_secs(10)
+    );
+    assert_eq!(
+        write_timeout_for_message(&Message::Text("x".repeat(64 * 1024 * 1024).into())),
+        Duration::from_secs(74)
+    );
+    assert_eq!(
+        write_timeout_for_message(&Message::Text("x".repeat(200 * 1024 * 1024).into())),
+        Duration::from_secs(120)
+    );
+}
+
 /// The synthesized `response.failed` must terminate a real Codex turn even
 /// though the auxiliary HTTP request never sent a `response.created` frame and
 /// the frame carries no response id yet.

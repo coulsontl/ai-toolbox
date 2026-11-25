@@ -7,7 +7,7 @@
 
 use std::io::Read;
 
-pub(super) const MAX_DECOMPRESSED_BODY_BYTES: usize = 16 * 1024 * 1024;
+pub(super) const MAX_DECOMPRESSED_BODY_BYTES: usize = 128 * 1024 * 1024;
 const DECOMPRESSED_BODY_TOO_LARGE_ERROR: &str =
     "Decompressed body exceeds the maximum allowed size";
 
@@ -56,7 +56,7 @@ fn decompressed_body_too_large_error() -> std::io::Error {
     )
 }
 
-fn is_decompressed_body_too_large(error: &std::io::Error) -> bool {
+pub(super) fn is_decompressed_body_too_large(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::InvalidData
         && error.to_string() == DECOMPRESSED_BODY_TOO_LARGE_ERROR
 }

@@ -41,18 +41,23 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::{
+    error::CapacityError,
     handshake::{client::generate_key, derive_accept_key, server},
-    protocol::{Role, WebSocketConfig},
-    Message,
+    protocol::{frame::coding::CloseCode, CloseFrame, Role, WebSocketConfig},
+    Error as WsError, Message,
 };
 use tokio_tungstenite::WebSocketStream;
 
-const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+#[cfg(test)]
+const MAX_MESSAGE_BYTES: usize = super::http_io::MAX_REQUEST_BODY_BYTES;
+const MAX_LOG_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PENDING_REQUESTS: usize = 64;
-const MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PENDING_BYTES: usize =
+    super::http_io::MAX_REQUEST_BODY_BYTES * 2 + 112 * 1024 * 1024;
 const CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(50 * 60);
 const CONNECTION_MAX_LIFETIME: Duration = Duration::from_secs(55 * 60);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_WRITE_TIMEOUT: Duration = Duration::from_secs(120);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 const WEBSOCKET_BETA: &str = "responses_websockets=2026-02-06";
 const WEBSOCKET_DISABLED_REASON: &str =
@@ -60,11 +65,31 @@ const WEBSOCKET_DISABLED_REASON: &str =
 const AGGREGATE_WEBSOCKET_REASON: &str =
     "Codex aggregate mode uses HTTP/SSE because the model is selected after the WebSocket handshake.";
 
-fn socket_config() -> WebSocketConfig {
+fn socket_config_with_limit(max_message_bytes: usize) -> WebSocketConfig {
     WebSocketConfig::default()
         .write_buffer_size(0)
-        .max_message_size(Some(MAX_MESSAGE_BYTES))
-        .max_frame_size(Some(MAX_MESSAGE_BYTES))
+        .max_message_size(Some(max_message_bytes))
+        .max_frame_size(Some(max_message_bytes))
+}
+
+fn pending_bytes_limit_for_message_limit(max_message_bytes: usize) -> usize {
+    // One pending turn holds both the inbound frame and the prepared upstream
+    // body (2x), so the queue budget must stay at least 2x the single-message
+    // limit to avoid rejecting a single valid large non-incremental request.
+    max_message_bytes
+        .saturating_mul(2)
+        .saturating_add(64 * 1024 * 1024)
+        .max(MAX_PENDING_BYTES)
+}
+
+fn write_timeout_for_message(message: &Message) -> Duration {
+    let payload_bytes = match message {
+        Message::Text(text) => text.len(),
+        Message::Binary(bytes) => bytes.len(),
+        _ => 0,
+    };
+    let extra_secs = (payload_bytes / (1024 * 1024)) as u64;
+    Duration::from_secs(WRITE_TIMEOUT.as_secs().saturating_add(extra_secs)).min(MAX_WRITE_TIMEOUT)
 }
 
 pub(super) fn is_upgrade_request(request: &DebugHttpRequest) -> bool {
@@ -146,6 +171,7 @@ async fn connect_upstream(
     provider: &UpstreamProvider,
     context: &GatewayRuntimeContext,
     route: &GatewayRoute,
+    max_message_bytes: usize,
 ) -> Result<(WebSocketStream<reqwest::Upgraded>, HeaderMap, String), HandshakeFailure> {
     if !context.settings_snapshot().codex_websocket_enabled {
         return Err(HandshakeFailure::local(426, WEBSOCKET_DISABLED_REASON));
@@ -274,7 +300,12 @@ async fn connect_upstream(
         )
     })?;
     Ok((
-        WebSocketStream::from_raw_socket(upgraded, Role::Client, Some(socket_config())).await,
+        WebSocketStream::from_raw_socket(
+            upgraded,
+            Role::Client,
+            Some(socket_config_with_limit(max_message_bytes)),
+        )
+        .await,
         headers,
         display_url.to_string(),
     ))
@@ -296,10 +327,11 @@ fn is_single_provider_deployment(
             .is_none_or(|selection| selection.cross_site_failover)
 }
 
-pub(super) async fn handle_upgrade(
+pub(super) async fn handle_upgrade_with_limit(
     stream: &mut TcpStream,
     mut request: DebugHttpRequest,
     context: &GatewayRuntimeContext,
+    max_message_bytes: usize,
 ) -> io::Result<()> {
     let started_at = Utc::now();
     let started = Instant::now();
@@ -483,7 +515,7 @@ pub(super) async fn handle_upgrade(
             }
             provider_attempt_count += 1;
             let connected = tokio::select! {
-                result = connect_upstream(&request, &provider, context, &route) => result,
+                result = connect_upstream(&request, &provider, context, &route, max_message_bytes) => result,
                 _ = shutdown.changed() => return Ok(()),
             };
             attempts.push(GatewayProviderAttempt {
@@ -552,7 +584,7 @@ pub(super) async fn handle_upgrade(
                         stream,
                         initial_frames,
                         Role::Server,
-                        Some(socket_config()),
+                        Some(socket_config_with_limit(max_message_bytes)),
                     )
                     .await;
                     let response_headers = downstream_response
@@ -577,6 +609,7 @@ pub(super) async fn handle_upgrade(
                         response_headers,
                         apply_mapping,
                         attempts,
+                        pending_bytes_limit_for_message_limit(max_message_bytes),
                     )
                     .await;
                 }
@@ -922,7 +955,12 @@ impl PendingTurn {
             };
             let changed = match outcome {
                 GatewayStreamOutcome::Completed => upstream::record_health_success(context, &key),
-                GatewayStreamOutcome::Failed if category != Some("request_schema") => {
+                GatewayStreamOutcome::Failed
+                    if !matches!(
+                        category,
+                        Some("request_schema" | "request_body_too_large")
+                    ) =>
+                {
                     upstream::record_health_failure(
                         context,
                         &key,
@@ -1171,14 +1209,28 @@ fn websocket_aux_failure_frames(turn: &PendingTurn, code: &str, message: &str) -
     ]
 }
 
-#[derive(Default)]
 struct PendingTurns {
     lanes: HashMap<String, VecDeque<PendingTurn>>,
     completed: VecDeque<String>,
     protected_completed: std::collections::HashSet<String>,
+    max_pending_bytes: usize,
+}
+
+impl Default for PendingTurns {
+    fn default() -> Self {
+        Self::with_max_pending_bytes(MAX_PENDING_BYTES)
+    }
 }
 
 impl PendingTurns {
+    fn with_max_pending_bytes(max_pending_bytes: usize) -> Self {
+        Self {
+            lanes: HashMap::new(),
+            completed: VecDeque::new(),
+            protected_completed: std::collections::HashSet::new(),
+            max_pending_bytes,
+        }
+    }
     fn push(&mut self, lane: String, turn: PendingTurn) {
         self.lanes.entry(lane).or_default().push_back(turn);
     }
@@ -1263,7 +1315,7 @@ impl PendingTurns {
                 .map(PendingTurn::memory_bytes)
                 .sum::<usize>()
                 .saturating_add(additional_bytes)
-                > MAX_PENDING_BYTES
+                > self.max_pending_bytes
     }
     fn finish_all(
         &mut self,
@@ -1376,7 +1428,8 @@ async fn send_message<S: AsyncRead + AsyncWrite + Unpin>(
     socket: &mut WebSocketStream<S>,
     message: Message,
 ) -> io::Result<()> {
-    timeout(WRITE_TIMEOUT, socket.send(message))
+    let write_timeout = write_timeout_for_message(&message);
+    timeout(write_timeout, socket.send(message))
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "WebSocket write timed out"))?
         .map_err(io_error)
@@ -1415,8 +1468,8 @@ fn snapshot_push(snapshot: &mut Vec<u8>, bytes: &[u8], settings: &ProxyGatewaySe
         snapshot.clear();
         return;
     }
-    let limit =
-        (settings.log_max_body_size_kb.saturating_mul(1024) as usize).min(MAX_MESSAGE_BYTES);
+    let limit = (settings.log_max_body_size_kb.saturating_mul(1024) as usize)
+        .min(MAX_LOG_SNAPSHOT_BYTES);
     snapshot.truncate(limit);
     if snapshot.len() < limit {
         if !snapshot.is_empty() {
@@ -1476,8 +1529,9 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
     response_headers: Vec<(String, String)>,
     apply_mapping: bool,
     handshake_attempts: Vec<GatewayProviderAttempt>,
+    max_pending_bytes: usize,
 ) -> io::Result<()> {
-    let mut pending = PendingTurns::default();
+    let mut pending = PendingTurns::with_max_pending_bytes(max_pending_bytes);
     let (aux_completion_tx, mut aux_completion_rx) =
         mpsc::unbounded_channel::<AuxHttpCompletion>();
     let mut shutdown = context.websocket_shutdown.subscribe();
@@ -1488,6 +1542,7 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
     let mut last_data = connected_at;
     let mut last_upstream_frame = connected_at;
     let mut last_downstream_frame = connected_at;
+    let mut exit_note_override: Option<String> = None;
     let (outcome, category, note) = loop {
         // Keep in-flight generations and their usage intact. Once the connection
         // is idle, close it so the next handshake observes the HTTP fallback gate.
@@ -2157,7 +2212,106 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                             );
                         }
                     }
-                    Some(Err(_)) | None => {
+                    Some(Err(WsError::Capacity(CapacityError::MessageTooLong {
+                        size,
+                        max_size: max,
+                    }))) => {
+                        let limit_mib = max / (1024 * 1024);
+                        let limit_display = if max % (1024 * 1024) == 0 && limit_mib > 0 {
+                            format!("{limit_mib} MiB ({max} bytes)")
+                        } else {
+                            format!("{max} bytes")
+                        };
+                        let detail_message = format!(
+                            "Gateway WebSocket message exceeds the maximum allowed size ({size} bytes exceeds {limit_display})"
+                        );
+                        log::warn!(
+                            "[proxy-gateway] websocket_message_too_large connection_id={} size={} max={}",
+                            connection_id,
+                            size,
+                            max
+                        );
+                        let error_payload = json!({
+                            "type": "error",
+                            "status": 413,
+                            "error": {
+                                "type": "invalid_request_error",
+                                "code": "request_body_too_large",
+                                "message": detail_message,
+                                "size_bytes": size,
+                                "max_bytes": max,
+                            }
+                        });
+                        let _ = send_message(
+                            &mut downstream,
+                            Message::Text(error_payload.to_string().into()),
+                        )
+                        .await;
+                        let _ = send_message(
+                            &mut downstream,
+                            Message::Close(Some(CloseFrame {
+                                code: CloseCode::Size,
+                                reason: "Message exceeds maximum allowed size".into(),
+                            })),
+                        )
+                        .await;
+                        if pending.lanes.is_empty() {
+                            let now = Utc::now();
+                            let oversized_request = DebugHttpRequest {
+                                id: NEXT_REQUEST_ID.fetch_add(1, Ordering::SeqCst),
+                                method: "WS".to_string(),
+                                path: handshake.path.clone(),
+                                headers: handshake.headers.clone(),
+                                body: Vec::new(),
+                            };
+                            let mut oversized_response = new_websocket_response(
+                                &provider,
+                                &response_headers,
+                                &upstream_url,
+                                None,
+                            );
+                            oversized_response.stream_outcome = GatewayStreamOutcome::Failed;
+                            oversized_response.error_category =
+                                Some("request_body_too_large".to_string());
+                            oversized_response.note = detail_message.clone();
+                            record_gateway_observability_with_transport(
+                                &oversized_request,
+                                &oversized_response,
+                                context,
+                                now,
+                                now,
+                                GatewayRequestTransport::Websocket,
+                                GatewayRequestKind::Request,
+                                Some(GatewayWebSocketMetadata {
+                                    connection_id: connection_id.clone(),
+                                    handshake_status: 101,
+                                    upstream_handshake_status: Some(101),
+                                    handshake_attempts: handshake_attempts.clone(),
+                                    error_status: Some(413),
+                                    ..Default::default()
+                                }),
+                            );
+                        }
+                        exit_note_override = Some(detail_message);
+                        break (
+                            GatewayStreamOutcome::Failed,
+                            "request_body_too_large",
+                            "Gateway WebSocket message exceeds the maximum allowed size",
+                        );
+                    }
+                    Some(Err(error)) => {
+                        log::debug!(
+                            "[proxy-gateway] websocket_downstream_read_error connection_id={} error={}",
+                            connection_id,
+                            error
+                        );
+                        break (
+                            GatewayStreamOutcome::Canceled,
+                            "client_disconnected",
+                            "Client disconnected before the response finished",
+                        )
+                    }
+                    None => {
                         break (
                             GatewayStreamOutcome::Canceled,
                             "client_disconnected",
@@ -2512,7 +2666,39 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
                             );
                         }
                     }
-                    Some(Err(_)) | None => {
+                    Some(Err(WsError::Capacity(CapacityError::MessageTooLong {
+                        size,
+                        max_size: max,
+                    }))) => {
+                        let detail_message = format!(
+                            "Upstream WebSocket message exceeds the maximum allowed size ({size} bytes exceeds {max} bytes)"
+                        );
+                        log::warn!(
+                            "[proxy-gateway] upstream_websocket_message_too_large connection_id={} size={} max={}",
+                            connection_id,
+                            size,
+                            max
+                        );
+                        exit_note_override = Some(detail_message);
+                        break (
+                            GatewayStreamOutcome::Failed,
+                            "upstream_message_too_large",
+                            "Upstream WebSocket message exceeds the maximum allowed size",
+                        );
+                    }
+                    Some(Err(error)) => {
+                        log::debug!(
+                            "[proxy-gateway] websocket_upstream_read_error connection_id={} error={}",
+                            connection_id,
+                            error
+                        );
+                        break (
+                            GatewayStreamOutcome::Incomplete,
+                            "stream_incomplete",
+                            "Upstream disconnected before the response terminal event",
+                        )
+                    }
+                    None => {
                         break (
                             GatewayStreamOutcome::Incomplete,
                             "stream_incomplete",
@@ -2523,7 +2709,8 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin, U: AsyncRead + AsyncWrite + Un
             }
         }
     };
-    pending.finish_all(context, outcome, category, note);
+    let final_note = exit_note_override.as_deref().unwrap_or(note);
+    pending.finish_all(context, outcome, category, final_note);
     tokio::join!(
         close_socket(&mut downstream),
         close_socket(&mut upstream_socket)
