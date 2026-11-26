@@ -756,9 +756,16 @@ async fn adopt_found_skill(
     if central_path.exists() {
         return Ok(None);
     }
-    super::installer::install_local_skill_from_selection(app, state, &found.path, ".", false)
-        .await
-        .map_err(|e| format!("{:#}", e))?;
+    super::installer::install_local_skill_from_selection(
+        app,
+        state,
+        &found.path,
+        ".",
+        false,
+        None,
+    )
+    .await
+    .map_err(|e| format!("{:#}", e))?;
     Ok(skill_store::get_skill_by_name(state, &found.name).await?)
 }
 

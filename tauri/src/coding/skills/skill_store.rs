@@ -308,6 +308,21 @@ pub async fn get_skill_by_name(state: &SqliteDbState, name: &str) -> Result<Opti
     })
 }
 
+/// Get a skill by name (case-insensitive, trimmed)
+pub async fn get_skill_by_name_ci(
+    state: &SqliteDbState,
+    name: &str,
+) -> Result<Option<Skill>, String> {
+    let target = name.trim();
+    if target.is_empty() {
+        return Ok(None);
+    }
+    let skills = sqlite_get_managed_skills(state)?;
+    Ok(skills
+        .into_iter()
+        .find(|skill| skill.name.trim().eq_ignore_ascii_case(target)))
+}
+
 /// Delete a skill
 pub async fn delete_skill(state: &SqliteDbState, skill_id: &str) -> Result<(), String> {
     state.with_conn(|conn| db_delete(conn, DbTable::SkillEntity(SkillEntityKind::Skill), skill_id).map(|_| ()))?;
@@ -911,5 +926,54 @@ mod tests {
             .await
             .expect("list repos after delete")
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_skill_by_name_ci_matches_case_insensitively() {
+        let (_temp, state) = create_test_db();
+        let skill = Skill {
+            id: String::new(),
+            name: "MySkill".to_string(),
+            source_type: "local".to_string(),
+            source_ref: Some("/tmp/myskill".to_string()),
+            source_revision: None,
+            central_path: "MySkill".to_string(),
+            content_hash: None,
+            created_at: 1,
+            updated_at: 1,
+            last_sync_at: None,
+            status: "ok".to_string(),
+            sort_index: 0,
+            user_group: None,
+            group_id: None,
+            user_note: None,
+            management_enabled: true,
+            disabled_previous_tools: Vec::new(),
+            tags: Vec::new(),
+            enabled_tools: Vec::new(),
+            sync_details: None,
+        };
+        let id = upsert_skill(&state, &skill).await.expect("insert skill");
+
+        let exact = get_skill_by_name_ci(&state, "MySkill")
+            .await
+            .expect("query exact")
+            .expect("found exact");
+        assert_eq!(exact.id, id);
+
+        let lower = get_skill_by_name_ci(&state, "  myskill ")
+            .await
+            .expect("query lower")
+            .expect("found lower");
+        assert_eq!(lower.id, id);
+
+        assert!(get_skill_by_name_ci(&state, "other")
+            .await
+            .expect("query missing")
+            .is_none());
+        assert!(get_skill_by_name_ci(&state, "   ")
+            .await
+            .expect("query blank")
+            .is_none());
     }
 }

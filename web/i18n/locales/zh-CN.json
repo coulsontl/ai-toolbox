@@ -4179,6 +4179,19 @@
     "overwrite": {
       "title": "Skill 已存在",
       "messageWithName": "Skill「{{name}}」已存在，是否覆盖安装？",
+      "messageWithAlias": "Skill「{{name}}」已存在。你可以为新安装的 Skill 设置别名以同时保留两者，或覆盖原有 Skill。",
+      "aliasLabel": "别名",
+      "aliasPlaceholder": "输入新的 Skill 名称",
+      "aliasHint": "别名将同时用作目录名和同步到各工具的 Skill 名称",
+      "installWithAlias": "以别名安装",
+      "aliasErrors": {
+        "empty": "请输入别名",
+        "tooLong": "别名长度不能超过 128 个字符",
+        "startsWithDot": "别名不能以点号（.）开头",
+        "endsWithDot": "别名不能以点号（.）结尾",
+        "invalidChars": "别名不能包含 / \\ < > : \" | ? * 或控制字符",
+        "exists": "该名称已存在，请换一个别名"
+      },
       "confirm": "覆盖",
       "overwriteAll": "全部覆盖",
       "skip": "跳过"
@@ -4245,7 +4258,8 @@
     },
     "gitPick": {
       "title": "选择要导入的 Skills",
-      "description": "该仓库包含多个 Skills，请选择要导入的项目"
+      "description": "该仓库包含多个 Skills，请选择要导入的项目",
+      "alreadyExists": "已存在"
     },
     "installSelected": "安装选中",
     "delete": {

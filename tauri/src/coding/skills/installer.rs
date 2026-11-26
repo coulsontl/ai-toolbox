@@ -27,68 +27,140 @@ use super::types::{now_ms, GitSkillCandidate, InstallResult, Skill, UpdateResult
 use crate::http_client;
 use crate::SqliteDbState;
 
-/// Install a skill from a local folder
-pub async fn install_local_skill(
-    app: &tauri::AppHandle<impl tauri::Runtime>,
+/// Validate a user-supplied custom skill alias name.
+pub fn validate_custom_skill_name(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Skill name cannot be empty");
+    }
+    if trimmed.chars().count() > 128 {
+        anyhow::bail!("Skill name cannot exceed 128 characters");
+    }
+    if trimmed == "." || trimmed == ".." {
+        anyhow::bail!("Skill name cannot be '.' or '..'");
+    }
+    if trimmed.starts_with('.') {
+        anyhow::bail!("Skill name cannot start with '.'");
+    }
+    if trimmed.ends_with('.') {
+        anyhow::bail!("Skill name cannot end with '.'");
+    }
+    if trimmed.chars().any(|c| {
+        c.is_control()
+            || matches!(c, '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*')
+    }) {
+        anyhow::bail!("Skill name contains invalid characters");
+    }
+    Ok(trimmed.to_string())
+}
+
+fn resolve_install_skill_name(default_name: String, custom_name: Option<&str>) -> Result<String> {
+    match custom_name {
+        Some(raw) if !raw.trim().is_empty() => validate_custom_skill_name(raw),
+        _ => Ok(default_name),
+    }
+}
+
+/// Align `SKILL.md` frontmatter `name:` with the managed skill record name when
+/// `SKILL.md` exists and declares a different `name:`.
+fn sync_skill_md_name_to_record(dir: &Path, expected_name: &str) -> Result<()> {
+    let skill_md = dir.join("SKILL.md");
+    if !skill_md.is_file() {
+        return Ok(());
+    }
+    let (parsed_name, _) = super::frontmatter::parse_skill_md_frontmatter(&skill_md);
+    if let Some(current_name) = parsed_name {
+        if current_name != expected_name {
+            super::frontmatter::rewrite_skill_md_name(&skill_md, expected_name)
+                .with_context(|| format!("failed to rewrite SKILL.md name in {:?}", skill_md))?;
+        }
+    }
+    Ok(())
+}
+
+async fn prepare_install_target(
     state: &SqliteDbState,
-    source_path: &Path,
+    central_dir: &Path,
+    name: &str,
+    source_path_for_overlap_check: Option<&Path>,
     overwrite: bool,
-) -> Result<InstallResult> {
-    if !source_path.exists() {
-        anyhow::bail!("source path not found: {:?}", source_path);
+) -> Result<(PathBuf, Option<Skill>)> {
+    ensure_central_repo(central_dir)?;
+    let central_path = central_dir.join(name);
+    if let Some(source_path) = source_path_for_overlap_check {
+        ensure_source_target_not_overlapping(source_path, &central_path)?;
     }
 
-    let name = source_path
-        .file_name()
-        .map(|v| v.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unnamed-skill".to_string());
+    let existing_skill = skill_store::get_skill_by_name_ci(state, name)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
 
-    let central_dir = resolve_central_repo_path(app, state).await?;
-    ensure_central_repo(&central_dir)?;
-    let central_path = central_dir.join(&name);
-    ensure_source_target_not_overlapping(source_path, &central_path)?;
-
-    // Check if skill already exists and get its ID for update
-    let existing_skill = if central_path.exists() {
-        if overwrite {
-            // Get existing skill ID before deleting
-            let existing = skill_store::get_skill_by_name(state, &name)
-                .await
-                .ok()
-                .flatten();
-            std::fs::remove_dir_all(&central_path)
-                .with_context(|| format!("failed to remove existing skill: {:?}", central_path))?;
-            existing
-        } else {
+    if central_path.exists() || existing_skill.is_some() {
+        if !overwrite {
             anyhow::bail!("SKILL_EXISTS|{}", name);
         }
-    } else {
-        None
-    };
+        if central_path.exists() {
+            std::fs::remove_dir_all(&central_path)
+                .with_context(|| format!("failed to remove existing skill: {:?}", central_path))?;
+        }
+        if let Some(existing) = existing_skill.as_ref() {
+            let old_central_path = resolve_skill_central_path(&existing.central_path, central_dir);
+            if old_central_path != central_path && old_central_path.exists() {
+                if let Some(source_path) = source_path_for_overlap_check {
+                    ensure_source_target_not_overlapping(source_path, &old_central_path)?;
+                }
+                std::fs::remove_dir_all(&old_central_path).with_context(|| {
+                    format!("failed to remove existing skill: {:?}", old_central_path)
+                })?;
+            }
+        }
+        return Ok((central_path, existing_skill));
+    }
 
-    copy_skill_dir(source_path, &central_path)
-        .with_context(|| format!("copy {:?} -> {:?}", source_path, central_path))?;
+    Ok((central_path, None))
+}
+
+async fn save_installed_skill(
+    state: &SqliteDbState,
+    central_dir: &Path,
+    central_path: PathBuf,
+    name: String,
+    source_type: &str,
+    source_ref: Option<String>,
+    source_revision: Option<String>,
+    existing_skill: Option<Skill>,
+) -> Result<InstallResult> {
+    sync_skill_md_name_to_record(&central_path, &name)?;
 
     let now = now_ms();
     let content_hash = compute_content_hash(&central_path);
 
     let record = Skill {
-        tags: Vec::new(),
+        tags: existing_skill
+            .as_ref()
+            .map(|skill| skill.tags.clone())
+            .unwrap_or_default(),
         id: existing_skill
             .as_ref()
             .map(|skill| skill.id.clone())
-            .unwrap_or_default(), // Use existing ID if overwriting
+            .unwrap_or_default(),
         name: name.clone(),
-        source_type: "local".to_string(),
-        source_ref: Some(source_path.to_string_lossy().to_string()),
-        source_revision: None,
-        central_path: to_relative_central_path(&central_path, &central_dir),
+        source_type: source_type.to_string(),
+        source_ref,
+        source_revision,
+        central_path: to_relative_central_path(&central_path, central_dir),
         content_hash: content_hash.clone(),
-        created_at: now,
+        created_at: existing_skill
+            .as_ref()
+            .map(|skill| skill.created_at)
+            .unwrap_or(now),
         updated_at: now,
         last_sync_at: None,
         status: "ok".to_string(),
-        sort_index: 0,
+        sort_index: existing_skill
+            .as_ref()
+            .map(|skill| skill.sort_index)
+            .unwrap_or(0),
         user_group: existing_skill
             .as_ref()
             .and_then(|skill| skill.user_group.clone()),
@@ -120,6 +192,55 @@ pub async fn install_local_skill(
         central_path,
         content_hash,
     })
+}
+
+async fn install_local_skill_into_central_dir(
+    state: &SqliteDbState,
+    central_dir: &Path,
+    source_path: &Path,
+    overwrite: bool,
+    custom_name: Option<&str>,
+) -> Result<InstallResult> {
+    if !source_path.exists() {
+        anyhow::bail!("source path not found: {:?}", source_path);
+    }
+
+    let default_name = source_path
+        .file_name()
+        .map(|v| v.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unnamed-skill".to_string());
+    let name = resolve_install_skill_name(default_name, custom_name)?;
+
+    let (central_path, existing_skill) =
+        prepare_install_target(state, central_dir, &name, Some(source_path), overwrite).await?;
+
+    copy_skill_dir(source_path, &central_path)
+        .with_context(|| format!("copy {:?} -> {:?}", source_path, central_path))?;
+
+    save_installed_skill(
+        state,
+        central_dir,
+        central_path,
+        name,
+        "local",
+        Some(source_path.to_string_lossy().to_string()),
+        None,
+        existing_skill,
+    )
+    .await
+}
+
+/// Install a skill from a local folder
+pub async fn install_local_skill(
+    app: &tauri::AppHandle<impl tauri::Runtime>,
+    state: &SqliteDbState,
+    source_path: &Path,
+    overwrite: bool,
+    custom_name: Option<&str>,
+) -> Result<InstallResult> {
+    let central_dir = resolve_central_repo_path(app, state).await?;
+    install_local_skill_into_central_dir(state, &central_dir, source_path, overwrite, custom_name)
+        .await
 }
 
 /// List skills in a local folder by scanning for SKILL.md files
@@ -153,13 +274,13 @@ pub fn list_local_skills(source_path: &Path) -> Result<Vec<GitSkillCandidate>> {
     Ok(out)
 }
 
-/// Install a specific skill from a local folder selection (sub-folder)
-pub async fn install_local_skill_from_selection(
-    app: &tauri::AppHandle<impl tauri::Runtime>,
+async fn install_local_skill_from_selection_into_central_dir(
     state: &SqliteDbState,
+    central_dir: &Path,
     source_path: &Path,
     subpath: &str,
     overwrite: bool,
+    custom_name: Option<&str>,
 ) -> Result<InstallResult> {
     let copy_src = if subpath == "." {
         source_path.to_path_buf()
@@ -171,34 +292,16 @@ pub async fn install_local_skill_from_selection(
     }
 
     // Try to read name from SKILL.md, fallback to folder name
-    let name = read_skill_name_from_dir(&copy_src).unwrap_or_else(|| {
+    let default_name = read_skill_name_from_dir(&copy_src).unwrap_or_else(|| {
         copy_src
             .file_name()
             .map(|v| v.to_string_lossy().to_string())
             .unwrap_or_else(|| "unnamed-skill".to_string())
     });
+    let name = resolve_install_skill_name(default_name, custom_name)?;
 
-    let central_dir = resolve_central_repo_path(app, state).await?;
-    ensure_central_repo(&central_dir)?;
-    let central_path = central_dir.join(&name);
-    ensure_source_target_not_overlapping(&copy_src, &central_path)?;
-
-    // Check if skill already exists and get its ID for update
-    let existing_skill = if central_path.exists() {
-        if overwrite {
-            let existing = skill_store::get_skill_by_name(state, &name)
-                .await
-                .ok()
-                .flatten();
-            std::fs::remove_dir_all(&central_path)
-                .with_context(|| format!("failed to remove existing skill: {:?}", central_path))?;
-            existing
-        } else {
-            anyhow::bail!("SKILL_EXISTS|{}", name);
-        }
-    } else {
-        None
-    };
+    let (central_path, existing_skill) =
+        prepare_install_target(state, central_dir, &name, Some(&copy_src), overwrite).await?;
 
     copy_skill_dir(&copy_src, &central_path)
         .with_context(|| format!("copy {:?} -> {:?}", copy_src, central_path))?;
@@ -210,57 +313,38 @@ pub async fn install_local_skill_from_selection(
         copy_src.to_string_lossy().to_string()
     };
 
-    let now = now_ms();
-    let content_hash = compute_content_hash(&central_path);
-
-    let record = Skill {
-        tags: Vec::new(),
-        id: existing_skill
-            .as_ref()
-            .map(|skill| skill.id.clone())
-            .unwrap_or_default(),
-        name: name.clone(),
-        source_type: "local".to_string(),
-        source_ref: Some(full_source_ref),
-        source_revision: None,
-        central_path: to_relative_central_path(&central_path, &central_dir),
-        content_hash: content_hash.clone(),
-        created_at: now,
-        updated_at: now,
-        last_sync_at: None,
-        status: "ok".to_string(),
-        sort_index: 0,
-        user_group: existing_skill
-            .as_ref()
-            .and_then(|skill| skill.user_group.clone()),
-        group_id: existing_skill
-            .as_ref()
-            .and_then(|skill| skill.group_id.clone()),
-        user_note: existing_skill
-            .as_ref()
-            .and_then(|skill| skill.user_note.clone()),
-        management_enabled: existing_skill
-            .as_ref()
-            .map(|skill| skill.management_enabled)
-            .unwrap_or(true),
-        disabled_previous_tools: existing_skill
-            .as_ref()
-            .map(|skill| skill.disabled_previous_tools.clone())
-            .unwrap_or_default(),
-        enabled_tools: Vec::new(),
-        sync_details: None,
-    };
-
-    let skill_id = skill_store::upsert_skill(state, &record)
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-
-    Ok(InstallResult {
-        skill_id,
-        name,
+    save_installed_skill(
+        state,
+        central_dir,
         central_path,
-        content_hash,
-    })
+        name,
+        "local",
+        Some(full_source_ref),
+        None,
+        existing_skill,
+    )
+    .await
+}
+
+/// Install a specific skill from a local folder selection (sub-folder)
+pub async fn install_local_skill_from_selection(
+    app: &tauri::AppHandle<impl tauri::Runtime>,
+    state: &SqliteDbState,
+    source_path: &Path,
+    subpath: &str,
+    overwrite: bool,
+    custom_name: Option<&str>,
+) -> Result<InstallResult> {
+    let central_dir = resolve_central_repo_path(app, state).await?;
+    install_local_skill_from_selection_into_central_dir(
+        state,
+        &central_dir,
+        source_path,
+        subpath,
+        overwrite,
+        custom_name,
+    )
+    .await
 }
 
 /// Install a skill from a Git URL
@@ -270,6 +354,7 @@ pub async fn install_git_skill(
     repo_url: &str,
     branch: Option<&str>,
     overwrite: bool,
+    custom_name: Option<&str>,
 ) -> Result<InstallResult> {
     // Initialize proxy from app settings
     init_proxy_from_settings(state).await;
@@ -319,30 +404,13 @@ pub async fn install_git_skill(
     };
 
     // Try to read name from SKILL.md, fallback to URL-derived name
-    let name = read_skill_name_from_dir(&copy_src)
+    let default_name = read_skill_name_from_dir(&copy_src)
         .unwrap_or_else(|| derive_name_from_repo_url(&parsed.clone_url));
+    let name = resolve_install_skill_name(default_name, custom_name)?;
 
     let central_dir = resolve_central_repo_path(app, state).await?;
-    ensure_central_repo(&central_dir)?;
-    let central_path = central_dir.join(&name);
-
-    // Check if skill already exists and get its ID for update
-    let existing_skill = if central_path.exists() {
-        if overwrite {
-            // Get existing skill ID before deleting
-            let existing = skill_store::get_skill_by_name(state, &name)
-                .await
-                .ok()
-                .flatten();
-            std::fs::remove_dir_all(&central_path)
-                .with_context(|| format!("failed to remove existing skill: {:?}", central_path))?;
-            existing
-        } else {
-            anyhow::bail!("SKILL_EXISTS|{}", name);
-        }
-    } else {
-        None
-    };
+    let (central_path, existing_skill) =
+        prepare_install_target(state, &central_dir, &name, Some(&copy_src), overwrite).await?;
 
     copy_skill_dir(&copy_src, &central_path)
         .with_context(|| format!("copy {:?} -> {:?}", copy_src, central_path))?;
@@ -366,57 +434,17 @@ pub async fn install_git_skill(
         )
     };
 
-    let now = now_ms();
-    let content_hash = compute_content_hash(&central_path);
-
-    let record = Skill {
-        tags: Vec::new(),
-        id: existing_skill
-            .as_ref()
-            .map(|skill| skill.id.clone())
-            .unwrap_or_default(), // Use existing ID if overwriting
-        name: name.clone(),
-        source_type: "git".to_string(),
-        source_ref: Some(full_source_ref),
-        source_revision: Some(rev),
-        central_path: to_relative_central_path(&central_path, &central_dir),
-        content_hash: content_hash.clone(),
-        created_at: now,
-        updated_at: now,
-        last_sync_at: None,
-        status: "ok".to_string(),
-        sort_index: 0,
-        user_group: existing_skill
-            .as_ref()
-            .and_then(|skill| skill.user_group.clone()),
-        group_id: existing_skill
-            .as_ref()
-            .and_then(|skill| skill.group_id.clone()),
-        user_note: existing_skill
-            .as_ref()
-            .and_then(|skill| skill.user_note.clone()),
-        management_enabled: existing_skill
-            .as_ref()
-            .map(|skill| skill.management_enabled)
-            .unwrap_or(true),
-        disabled_previous_tools: existing_skill
-            .as_ref()
-            .map(|skill| skill.disabled_previous_tools.clone())
-            .unwrap_or_default(),
-        enabled_tools: Vec::new(),
-        sync_details: None,
-    };
-
-    let skill_id = skill_store::upsert_skill(state, &record)
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-
-    Ok(InstallResult {
-        skill_id,
-        name,
+    save_installed_skill(
+        state,
+        &central_dir,
         central_path,
-        content_hash,
-    })
+        name,
+        "git",
+        Some(full_source_ref),
+        Some(rev),
+        existing_skill,
+    )
+    .await
 }
 
 /// List skills in a Git repository
@@ -482,6 +510,7 @@ pub async fn install_git_skill_from_selection(
     subpath: &str,
     branch: Option<&str>,
     overwrite: bool,
+    custom_name: Option<&str>,
 ) -> Result<InstallResult> {
     // Initialize proxy from app settings
     init_proxy_from_settings(state).await;
@@ -504,34 +533,23 @@ pub async fn install_git_skill_from_selection(
     }
 
     // Try to read name from SKILL.md, fallback to subpath or URL-derived name
-    let display_name = read_skill_name_from_dir(&copy_src).unwrap_or_else(|| {
+    let default_name = read_skill_name_from_dir(&copy_src).unwrap_or_else(|| {
         Path::new(subpath)
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| derive_name_from_repo_url(&parsed.clone_url))
     });
+    let display_name = resolve_install_skill_name(default_name, custom_name)?;
 
     let central_dir = resolve_central_repo_path(app, state).await?;
-    ensure_central_repo(&central_dir)?;
-    let central_path = central_dir.join(&display_name);
-
-    // Check if skill already exists and get its ID for update
-    let existing_skill = if central_path.exists() {
-        if overwrite {
-            // Get existing skill ID before deleting
-            let existing = skill_store::get_skill_by_name(state, &display_name)
-                .await
-                .ok()
-                .flatten();
-            std::fs::remove_dir_all(&central_path)
-                .with_context(|| format!("failed to remove existing skill: {:?}", central_path))?;
-            existing
-        } else {
-            anyhow::bail!("SKILL_EXISTS|{}", display_name);
-        }
-    } else {
-        None
-    };
+    let (central_path, existing_skill) = prepare_install_target(
+        state,
+        &central_dir,
+        &display_name,
+        Some(&copy_src),
+        overwrite,
+    )
+    .await?;
 
     copy_skill_dir(&copy_src, &central_path)
         .with_context(|| format!("copy {:?} -> {:?}", copy_src, central_path))?;
@@ -550,55 +568,17 @@ pub async fn install_git_skill_from_selection(
         )
     };
 
-    let now = now_ms();
-    let content_hash = compute_content_hash(&central_path);
-    let record = Skill {
-        tags: Vec::new(),
-        id: existing_skill
-            .as_ref()
-            .map(|skill| skill.id.clone())
-            .unwrap_or_default(), // Use existing ID if overwriting
-        name: display_name.clone(),
-        source_type: "git".to_string(),
-        source_ref: Some(full_source_ref),
-        source_revision: Some(revision),
-        central_path: to_relative_central_path(&central_path, &central_dir),
-        content_hash: content_hash.clone(),
-        created_at: now,
-        updated_at: now,
-        last_sync_at: None,
-        status: "ok".to_string(),
-        sort_index: 0,
-        user_group: existing_skill
-            .as_ref()
-            .and_then(|skill| skill.user_group.clone()),
-        group_id: existing_skill
-            .as_ref()
-            .and_then(|skill| skill.group_id.clone()),
-        user_note: existing_skill
-            .as_ref()
-            .and_then(|skill| skill.user_note.clone()),
-        management_enabled: existing_skill
-            .as_ref()
-            .map(|skill| skill.management_enabled)
-            .unwrap_or(true),
-        disabled_previous_tools: existing_skill
-            .as_ref()
-            .map(|skill| skill.disabled_previous_tools.clone())
-            .unwrap_or_default(),
-        enabled_tools: Vec::new(),
-        sync_details: None,
-    };
-    let skill_id = skill_store::upsert_skill(state, &record)
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-
-    Ok(InstallResult {
-        skill_id,
-        name: display_name,
+    save_installed_skill(
+        state,
+        &central_dir,
         central_path,
-        content_hash,
-    })
+        display_name,
+        "git",
+        Some(full_source_ref),
+        Some(revision),
+        existing_skill,
+    )
+    .await
 }
 
 /// Update a managed skill from its source
@@ -672,6 +652,11 @@ pub async fn update_managed_skill_from_source(
             .with_context(|| format!("copy {:?} -> {:?}", source_path, staging_dir))?;
     } else {
         anyhow::bail!("unsupported source_type for update: {}", record.source_type);
+    }
+
+    if let Err(err) = sync_skill_md_name_to_record(&staging_dir, &record.name) {
+        let _ = std::fs::remove_dir_all(&staging_dir);
+        return Err(err);
     }
 
     // Skip the swap when the staged content is identical to what is already in
@@ -1244,4 +1229,261 @@ async fn init_proxy_from_settings(state: &SqliteDbState) {
         _ => GitProxyMode::System,
     };
     set_proxy(proxy_mode);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::coding::skills::frontmatter::parse_skill_md_frontmatter;
+
+    fn create_test_db() -> (tempfile::TempDir, SqliteDbState) {
+        let temp_dir = tempfile::tempdir().expect("create temp db dir");
+        let db_path = temp_dir.path().join("ai-toolbox.db");
+        let state = SqliteDbState::open(db_path).expect("open sqlite test db");
+        (temp_dir, state)
+    }
+
+    #[test]
+    fn validate_custom_skill_name_accepts_and_rejects_expected_cases() {
+        assert_eq!(
+            validate_custom_skill_name("  my-alias_1.0  ").expect("valid alias"),
+            "my-alias_1.0"
+        );
+        assert_eq!(
+            validate_custom_skill_name("中文别名").expect("unicode alias"),
+            "中文别名"
+        );
+        assert_eq!(
+            validate_custom_skill_name(&"a".repeat(128)).expect("max length alias"),
+            "a".repeat(128)
+        );
+
+        for invalid in [
+            "",
+            "   ",
+            ".",
+            "..",
+            ".hidden",
+            "foo.",
+            "foo. ",
+            "a/b",
+            "a\\b",
+            "a:b",
+            "a<b>c",
+            "a\"b",
+            "a|b",
+            "a?b",
+            "a*b",
+            "a\nb",
+            "a\0b",
+            &"a".repeat(129),
+        ] {
+            assert!(
+                validate_custom_skill_name(invalid).is_err(),
+                "expected invalid name error for {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_install_skill_name_uses_custom_only_when_non_blank() {
+        assert_eq!(
+            resolve_install_skill_name("orig".to_string(), None).unwrap(),
+            "orig"
+        );
+        assert_eq!(
+            resolve_install_skill_name("orig".to_string(), Some("   ")).unwrap(),
+            "orig"
+        );
+        assert_eq!(
+            resolve_install_skill_name("orig".to_string(), Some(" alias ")).unwrap(),
+            "alias"
+        );
+        assert!(resolve_install_skill_name("orig".to_string(), Some(".hidden")).is_err());
+    }
+
+    #[test]
+    fn sync_skill_md_name_to_record_updates_only_when_needed() {
+        let temp = tempfile::tempdir().expect("temp dir");
+
+        // Missing SKILL.md should succeed without creating one.
+        let empty_dir = temp.path().join("no-md");
+        std::fs::create_dir(&empty_dir).expect("create empty dir");
+        sync_skill_md_name_to_record(&empty_dir, "alias").expect("no SKILL.md ok");
+        assert!(!empty_dir.join("SKILL.md").exists());
+
+        // Matching name should leave the file untouched.
+        let same_dir = temp.path().join("same");
+        std::fs::create_dir(&same_dir).expect("create same dir");
+        let same_content = "---\nname: \"alias\"\ndescription: desc\n---\nbody\n";
+        std::fs::write(same_dir.join("SKILL.md"), same_content).expect("write same SKILL.md");
+        sync_skill_md_name_to_record(&same_dir, "alias").expect("same name ok");
+        assert_eq!(
+            std::fs::read_to_string(same_dir.join("SKILL.md")).expect("read same"),
+            same_content
+        );
+
+        // Different name should rewrite SKILL.md name while keeping description and body.
+        let diff_dir = temp.path().join("diff");
+        std::fs::create_dir(&diff_dir).expect("create diff dir");
+        std::fs::write(
+            diff_dir.join("SKILL.md"),
+            "---\nname: original\ndescription: desc\n---\nbody\n",
+        )
+        .expect("write diff SKILL.md");
+        sync_skill_md_name_to_record(&diff_dir, "alias").expect("diff name ok");
+        assert_eq!(
+            parse_skill_md_frontmatter(&diff_dir.join("SKILL.md")),
+            (Some("alias".to_string()), Some("desc".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn local_install_supports_alias_coexistence_ci_conflict_and_overwrite_metadata() {
+        let (_db_temp, state) = create_test_db();
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let central_dir = workspace.path().join("central");
+        let source_dir = workspace.path().join("my-skill");
+        std::fs::create_dir_all(&source_dir).expect("create source");
+        std::fs::write(
+            source_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: Original skill\n---\n# Hello\n",
+        )
+        .expect("write source SKILL.md");
+
+        // 1. Default install.
+        let first =
+            install_local_skill_into_central_dir(&state, &central_dir, &source_dir, false, None)
+                .await
+                .expect("install default");
+        assert_eq!(first.name, "my-skill");
+        assert_eq!(first.central_path, central_dir.join("my-skill"));
+
+        // 2. Duplicate without custom name fails with SKILL_EXISTS|.
+        let dup_err =
+            install_local_skill_into_central_dir(&state, &central_dir, &source_dir, false, None)
+                .await
+                .err()
+                .expect("duplicate must fail");
+        assert_eq!(dup_err.to_string(), "SKILL_EXISTS|my-skill");
+
+        // 3. Reinstall with custom alias coexists and rewrites SKILL.md frontmatter name.
+        let alias = install_local_skill_into_central_dir(
+            &state,
+            &central_dir,
+            &source_dir,
+            false,
+            Some("my-skill-v2"),
+        )
+        .await
+        .expect("install alias");
+        assert_eq!(alias.name, "my-skill-v2");
+        assert_eq!(alias.central_path, central_dir.join("my-skill-v2"));
+        assert_ne!(alias.skill_id, first.skill_id);
+        assert_eq!(
+            parse_skill_md_frontmatter(&alias.central_path.join("SKILL.md"))
+                .0
+                .as_deref(),
+            Some("my-skill-v2")
+        );
+        assert_eq!(
+            alias.content_hash,
+            compute_content_hash(&alias.central_path),
+            "stored hash must be computed after rewriting SKILL.md"
+        );
+
+        // 4. Case-insensitive conflict check rejects different casing without overwrite.
+        let ci_err = install_local_skill_into_central_dir(
+            &state,
+            &central_dir,
+            &source_dir,
+            false,
+            Some("MY-SKILL-V2"),
+        )
+        .await
+        .err()
+        .expect("case-insensitive duplicate must fail");
+        assert_eq!(ci_err.to_string(), "SKILL_EXISTS|MY-SKILL-V2");
+
+        // 5. Overwrite preserves existing DB metadata (id, group, note, tags, enabled, disabled_previous_tools).
+        let mut seeded = skill_store::get_skill_by_id(&state, &alias.skill_id)
+            .await
+            .expect("get alias")
+            .expect("alias exists");
+        seeded.user_group = Some("CustomGroup".to_string());
+        seeded.group_id = Some("grp-1".to_string());
+        seeded.user_note = Some("keep this note".to_string());
+        seeded.tags = vec!["tag-a".to_string(), "tag-b".to_string()];
+        seeded.management_enabled = false;
+        seeded.disabled_previous_tools = vec!["codex".to_string()];
+        skill_store::upsert_skill(&state, &seeded)
+            .await
+            .expect("seed metadata");
+
+        let overwritten = install_local_skill_into_central_dir(
+            &state,
+            &central_dir,
+            &source_dir,
+            true,
+            Some("my-skill-v2"),
+        )
+        .await
+        .expect("overwrite alias");
+        assert_eq!(overwritten.skill_id, alias.skill_id);
+
+        let reloaded = skill_store::get_skill_by_id(&state, &overwritten.skill_id)
+            .await
+            .expect("reload")
+            .expect("reloaded exists");
+        assert_eq!(reloaded.user_group.as_deref(), Some("CustomGroup"));
+        assert_eq!(reloaded.group_id.as_deref(), Some("grp-1"));
+        assert_eq!(reloaded.user_note.as_deref(), Some("keep this note"));
+        assert_eq!(reloaded.tags, vec!["tag-a".to_string(), "tag-b".to_string()]);
+        assert!(!reloaded.management_enabled);
+        assert_eq!(reloaded.disabled_previous_tools, vec!["codex".to_string()]);
+
+        // 6. Staging alignment during update keeps hash identical when source has not changed.
+        let staging_dir = workspace.path().join("staging");
+        copy_skill_dir(&source_dir, &staging_dir).expect("copy to staging");
+        sync_skill_md_name_to_record(&staging_dir, &reloaded.name).expect("align staging");
+        assert_eq!(
+            compute_content_hash(&staging_dir),
+            compute_content_hash(&overwritten.central_path)
+        );
+    }
+
+    #[tokio::test]
+    async fn local_selection_install_uses_custom_name_over_frontmatter_name() {
+        let (_db_temp, state) = create_test_db();
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let central_dir = workspace.path().join("central");
+        let repo_dir = workspace.path().join("repo");
+        let sub_dir = repo_dir.join("skills").join("review");
+        std::fs::create_dir_all(&sub_dir).expect("create subdir");
+        std::fs::write(
+            sub_dir.join("SKILL.md"),
+            "---\nname: review\ndescription: Review code\n---\n",
+        )
+        .expect("write sub SKILL.md");
+
+        let installed = install_local_skill_from_selection_into_central_dir(
+            &state,
+            &central_dir,
+            &repo_dir,
+            "skills/review",
+            false,
+            Some("review-team-b"),
+        )
+        .await
+        .expect("install selection with alias");
+
+        assert_eq!(installed.name, "review-team-b");
+        assert_eq!(installed.central_path, central_dir.join("review-team-b"));
+        assert_eq!(
+            parse_skill_md_frontmatter(&installed.central_path.join("SKILL.md"))
+                .0
+                .as_deref(),
+            Some("review-team-b")
+        );
+    }
 }

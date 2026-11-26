@@ -45,9 +45,30 @@
   min-width: 0;
 }
 
+.nameRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .name {
   font-weight: 500;
   color: var(--color-text-primary);
+}
+
+.existsBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--color-status-warning) 82%, var(--color-text-primary));
+  background: color-mix(in srgb, var(--color-status-warning) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-status-warning) 32%, transparent);
+  white-space: nowrap;
 }
 
 .description {

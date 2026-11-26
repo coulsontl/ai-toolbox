@@ -30,9 +30,7 @@ export {
   extractSkillName,
   parseTargetExistsError,
   showGitError,
-  confirmSkillOverwrite,
   confirmTargetOverwrite,
-  confirmBatchOverwrite,
 } from './utils/errorHandlers';
 export { syncSkillToTools } from './utils/syncHelpers';
 

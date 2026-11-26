@@ -5,11 +5,12 @@ import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import { useSkillsStore } from '../../stores/skillsStore';
 import * as api from '../../services/skillsApi';
+import type { InstallResult } from '../../types';
+import { useSkillConflictPrompt } from './SkillConflictModal';
 import {
   isSkillExistsError,
   extractSkillName,
   showGitError,
-  confirmBatchOverwrite,
 } from '../../utils/errorHandlers';
 import { syncSkillToTools } from '../../utils/syncHelpers';
 import { refreshTrayMenu } from '@/services/appApi';
@@ -31,7 +32,12 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   onSuccess,
 }) => {
   const { t } = useTranslation();
-  const { onboardingPlan, loadOnboardingPlan, toolStatus } = useSkillsStore();
+  const { onboardingPlan, loadOnboardingPlan, toolStatus, skills } = useSkillsStore();
+  const existingNames = React.useMemo(
+    () => new Set(skills.map((s) => s.name.trim().toLowerCase())),
+    [skills],
+  );
+  const { conflictModal, promptSkillConflict } = useSkillConflictPrompt();
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [selectedTools, setSelectedTools] = React.useState<string[]>([]);
   const [followCcSwitchMarks, setFollowCcSwitchMarks] = React.useState(true);
@@ -166,37 +172,64 @@ export const ImportModal: React.FC<ImportModalProps> = ({
 
     setLoading(true);
     const selectedPaths = Array.from(selected);
+    const knownNames = new Set(existingNames);
     const skippedNames: string[] = [];
     let overwriteAll = false;
 
     try {
       for (let i = 0; i < selectedPaths.length; i++) {
         const path = selectedPaths[i];
-        let result;
-        try {
-          result = await api.importExistingSkill(path);
-        } catch (error) {
-          const errMsg = String(error);
-          if (isSkillExistsError(errMsg)) {
-            const skillName = extractSkillName(errMsg);
-            if (overwriteAll) {
-              result = await api.importExistingSkill(path, true);
-            } else {
-              const hasMore = i < selectedPaths.length - 1;
-              const action = await confirmBatchOverwrite(skillName, hasMore, t);
-              if (action === 'overwrite') {
-                result = await api.importExistingSkill(path, true);
-              } else if (action === 'overwriteAll') {
-                overwriteAll = true;
-                result = await api.importExistingSkill(path, true);
-              } else {
-                skippedNames.push(skillName);
+        let overwrite = overwriteAll;
+        let customName: string | undefined;
+        let result: InstallResult | null = null;
+
+        while (true) {
+          setLoading(true);
+          try {
+            result = await api.importExistingSkill(path, overwrite, customName);
+            break;
+          } catch (error) {
+            const errMsg = String(error);
+            if (!overwrite && isSkillExistsError(errMsg)) {
+              const skillName = extractSkillName(errMsg);
+              if (skillName.trim()) {
+                knownNames.add(skillName.trim().toLowerCase());
+              }
+              if (overwriteAll) {
+                overwrite = true;
                 continue;
               }
+              setLoading(false);
+              const resolution = await promptSkillConflict({
+                skillName,
+                existingNames: new Set(knownNames),
+                isBatch: true,
+                hasMore: i < selectedPaths.length - 1,
+              });
+              if (resolution.action === 'overwrite') {
+                overwrite = true;
+              } else if (resolution.action === 'overwriteAll') {
+                overwriteAll = true;
+                overwrite = true;
+              } else if (resolution.action === 'alias') {
+                customName = resolution.alias;
+                overwrite = false;
+              } else {
+                skippedNames.push(skillName);
+                break;
+              }
+            } else {
+              throw error;
             }
-          } else {
-            throw error;
           }
+        }
+
+        if (!result) {
+          continue;
+        }
+
+        if (result.name.trim()) {
+          knownNames.add(result.name.trim().toLowerCase());
         }
 
         // Sync to target tools after successful import. CC Switch variants
@@ -209,7 +242,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
             installedToolIds.has(toolId)
           );
         }
-        if (result && toolsForSkill.length > 0) {
+        if (toolsForSkill.length > 0) {
           await syncSkillToTools({
             skillId: result.skill_id,
             centralPath: result.central_path,
@@ -246,13 +279,14 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   };
 
   return (
-    <Modal
-      title={t('skills.importTitle')}
-      open={open}
-      onCancel={onClose}
-      footer={null}
-      width={600}
-    >
+    <>
+      <Modal
+        title={t('skills.importTitle')}
+        open={open}
+        onCancel={onClose}
+        footer={null}
+        width={600}
+      >
       <Spin spinning={loading}>
         <p className={styles.hint}>{t('skills.importSummary')}</p>
 
@@ -410,6 +444,8 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           </Button>
         </div>
       </Spin>
-    </Modal>
+      </Modal>
+      {conflictModal}
+    </>
   );
 };

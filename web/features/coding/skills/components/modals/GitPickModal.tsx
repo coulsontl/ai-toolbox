@@ -8,6 +8,7 @@ import styles from './GitPickModal.module.less';
 interface GitPickModalProps {
   open: boolean;
   candidates: GitSkillCandidate[];
+  existingNames?: ReadonlySet<string>;
   onClose: () => void;
   onConfirm: (selections: { subpath: string }[]) => void;
 }
@@ -15,6 +16,7 @@ interface GitPickModalProps {
 export const GitPickModal: React.FC<GitPickModalProps> = ({
   open,
   candidates,
+  existingNames,
   onClose,
   onConfirm,
 }) => {
@@ -87,7 +89,12 @@ export const GitPickModal: React.FC<GitPickModalProps> = ({
               >
                 <Checkbox checked={selected.has(c.subpath)} />
                 <div className={styles.info}>
-                  <div className={styles.name}>{c.name}</div>
+                  <div className={styles.nameRow}>
+                    <span className={styles.name}>{c.name}</span>
+                    {existingNames?.has(c.name.trim().toLowerCase()) && (
+                      <span className={styles.existsBadge}>{t('skills.gitPick.alreadyExists')}</span>
+                    )}
+                  </div>
                   {c.description && (
                     <div className={styles.description}>{flattenDescription(c.description)}</div>
                   )}

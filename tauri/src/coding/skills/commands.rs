@@ -56,6 +56,7 @@ fn format_error(err: anyhow::Error) -> String {
     let first = err.to_string();
     // Frontend relies on these prefixes for special flows
     if first.starts_with("MULTI_SKILLS|")
+        || first.starts_with("SKILL_EXISTS|")
         || first.starts_with("TARGET_EXISTS|")
         || first.starts_with("TOOL_NOT_INSTALLED|")
         || first.starts_with("SKILL_DISABLED|")
@@ -1445,11 +1446,18 @@ pub async fn skills_install_local(
     state: State<'_, SqliteDbState>,
     sourcePath: String,
     overwrite: Option<bool>,
+    customName: Option<String>,
 ) -> Result<InstallResultDto, String> {
     let source_path = resolve_local_source_path(&sourcePath)?;
-    let result = install_local_skill(&app, &state, &source_path, overwrite.unwrap_or(false))
-        .await
-        .map_err(|e| format_error(e))?;
+    let result = install_local_skill(
+        &app,
+        &state,
+        &source_path,
+        overwrite.unwrap_or(false),
+        customName.as_deref(),
+    )
+    .await
+    .map_err(|e| format_error(e))?;
 
     Ok(InstallResultDto {
         skill_id: result.skill_id,
@@ -1476,6 +1484,7 @@ pub async fn skills_install_local_selection(
     sourcePath: String,
     subpath: String,
     overwrite: Option<bool>,
+    customName: Option<String>,
 ) -> Result<InstallResultDto, String> {
     let source_path = resolve_local_source_path(&sourcePath)?;
     let result = install_local_skill_from_selection(
@@ -1484,6 +1493,7 @@ pub async fn skills_install_local_selection(
         &source_path,
         &subpath,
         overwrite.unwrap_or(false),
+        customName.as_deref(),
     )
     .await
     .map_err(|e| format_error(e))?;
@@ -1504,6 +1514,7 @@ pub async fn skills_install_git(
     repoUrl: String,
     branch: Option<String>,
     overwrite: Option<bool>,
+    customName: Option<String>,
 ) -> Result<InstallResultDto, String> {
     let result = install_git_skill(
         &app,
@@ -1511,6 +1522,7 @@ pub async fn skills_install_git(
         &repoUrl,
         branch.as_deref(),
         overwrite.unwrap_or(false),
+        customName.as_deref(),
     )
     .await
     .map_err(|e| format_error(e))?;
@@ -1560,6 +1572,7 @@ pub async fn skills_install_git_selection(
     subpath: String,
     branch: Option<String>,
     overwrite: Option<bool>,
+    customName: Option<String>,
 ) -> Result<InstallResultDto, String> {
     let result = install_git_skill_from_selection(
         &app,
@@ -1568,6 +1581,7 @@ pub async fn skills_install_git_selection(
         &subpath,
         branch.as_deref(),
         overwrite.unwrap_or(false),
+        customName.as_deref(),
     )
     .await
     .map_err(|e| format_error(e))?;
@@ -2068,11 +2082,18 @@ pub async fn skills_import_existing(
     state: State<'_, SqliteDbState>,
     sourcePath: String,
     overwrite: Option<bool>,
+    customName: Option<String>,
 ) -> Result<InstallResultDto, String> {
     let source_path = resolve_local_source_path(&sourcePath)?;
-    let result = install_local_skill(&app, &state, &source_path, overwrite.unwrap_or(false))
-        .await
-        .map_err(|e| format_error(e))?;
+    let result = install_local_skill(
+        &app,
+        &state,
+        &source_path,
+        overwrite.unwrap_or(false),
+        customName.as_deref(),
+    )
+    .await
+    .map_err(|e| format_error(e))?;
 
     Ok(InstallResultDto {
         skill_id: result.skill_id,

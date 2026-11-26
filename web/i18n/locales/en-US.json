@@ -4182,6 +4182,19 @@
     "overwrite": {
       "title": "Skill Already Exists",
       "messageWithName": "Skill \"{{name}}\" already exists. Do you want to overwrite it?",
+      "messageWithAlias": "Skill \"{{name}}\" already exists. You can install it under an alias to keep both, or overwrite the existing one.",
+      "aliasLabel": "Alias",
+      "aliasPlaceholder": "Enter a new Skill name",
+      "aliasHint": "The alias is used as both the directory name and the Skill name synced to tools",
+      "installWithAlias": "Install with Alias",
+      "aliasErrors": {
+        "empty": "Please enter an alias",
+        "tooLong": "Alias cannot exceed 128 characters",
+        "startsWithDot": "Alias cannot start with a dot (.)",
+        "endsWithDot": "Alias cannot end with a dot (.)",
+        "invalidChars": "Alias cannot contain / \\ < > : \" | ? * or control characters",
+        "exists": "This name already exists, please choose another alias"
+      },
       "confirm": "Overwrite",
       "overwriteAll": "Overwrite All",
       "skip": "Skip"
@@ -4248,7 +4261,8 @@
     },
     "gitPick": {
       "title": "Select Skills to Import",
-      "description": "This repository contains multiple Skills. Select the ones to import"
+      "description": "This repository contains multiple Skills. Select the ones to import",
+      "alreadyExists": "Exists"
     },
     "installSelected": "Install Selected",
     "delete": {

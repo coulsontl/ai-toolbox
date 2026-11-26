@@ -1,5 +1,5 @@
 import React from 'react';
-import { Modal, Button, message } from 'antd';
+import { Modal, message } from 'antd';
 import type { TFunction } from 'i18next';
 import { formatGitError, isGitError } from './gitErrorParser';
 import type { ToolOption } from '../types';
@@ -69,24 +69,6 @@ export function showGitError(
 }
 
 /**
- * Confirm overwriting an existing skill
- */
-export function confirmSkillOverwrite(
-  skillName: string,
-  t: TFunction,
-  onOk: () => void
-): void {
-  Modal.confirm({
-    title: t('skills.overwrite.title'),
-    content: t('skills.overwrite.messageWithName', { name: skillName }),
-    okText: t('skills.overwrite.confirm'),
-    okType: 'danger',
-    cancelText: t('common.cancel'),
-    onOk,
-  });
-}
-
-/**
  * Confirm overwriting a target that already exists in a tool
  */
 export function confirmTargetOverwrite(
@@ -104,40 +86,6 @@ export function confirmTargetOverwrite(
       cancelText: t('skills.overwrite.skip'),
       onOk: () => resolve(true),
       onCancel: () => resolve(false),
-    });
-  });
-}
-
-/**
- * Confirm batch overwrite with three options: overwrite, overwriteAll, skip
- */
-export function confirmBatchOverwrite(
-  skillName: string,
-  hasMore: boolean,
-  t: TFunction
-): Promise<'overwrite' | 'overwriteAll' | 'skip'> {
-  return new Promise((resolve) => {
-    const modal = Modal.confirm({
-      title: t('skills.overwrite.title'),
-      content: t('skills.overwrite.messageWithName', { name: skillName }),
-      okText: t('skills.overwrite.confirm'),
-      okType: 'danger',
-      cancelText: t('skills.overwrite.skip'),
-      onOk: () => resolve('overwrite'),
-      onCancel: () => resolve('skip'),
-      footer: (_, { OkBtn, CancelBtn }) =>
-        React.createElement(React.Fragment, null, [
-          React.createElement(CancelBtn, { key: 'cancel' }),
-          hasMore && React.createElement(Button, {
-            key: 'overwriteAll',
-            danger: true,
-            onClick: () => {
-              modal.destroy();
-              resolve('overwriteAll');
-            },
-          }, t('skills.overwrite.overwriteAll')),
-          React.createElement(OkBtn, { key: 'ok' }),
-        ]),
     });
   });
 }

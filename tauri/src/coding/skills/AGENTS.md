@@ -220,9 +220,8 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
    - 如果不存在，返回错误
 
 2. **确定技能名称**
-   - 检查源目录下是否有 SKILL.md
-   - 如果有，解析 YAML frontmatter 中的 name 字段
-   - 如果没有或解析失败，使用目录名作为技能名
+   - 默认名称：检查源目录下是否有 SKILL.md，解析 YAML frontmatter 中的 name 字段（`install_local_skill` 直接回退源目录名），没有或解析失败则使用目录名
+   - 支持可选 `customName`（`resolve_install_skill_name` + `validate_custom_skill_name`）：非空时校验合法性（非空、≤128 字符、非 `.`/`..`、不以 `.` 开头或结尾、不含路径/通配/控制字符）并覆盖默认名称，实现同名 Skill 起别名共存
 
 3. **准备中央仓库**
    - 解析 central_repo_path（支持 ~ 展开）
@@ -230,17 +229,19 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
 
 4. **检查目标是否已存在**
    - 目标路径：central_repo_path/{name}
-   - 如果已存在且 overwrite=false，返回 `SKILL_EXISTS|{name}` 错误
-   - 如果已存在且 overwrite=true，删除现有目录
+   - 同时检查磁盘 `central_path.exists()` 与数据库 `skill_store::get_skill_by_name_ci(state, &name)`（大小写不敏感查重，避免 Linux 上产生 `Foo`/`foo` 重名）
+   - 如果任一命中且 overwrite=false，返回 `SKILL_EXISTS|{name}` 错误
+   - 如果任一命中且 overwrite=true，删除现有目录并复用已有 DB 记录元数据（`id`/`user_group`/`group_id`/`user_note`/`tags`/`management_enabled`/`disabled_previous_tools`）
 
-5. **复制技能内容**
+5. **复制技能内容与名称对齐**
    - 调用 copy_skill_dir 复制目录
    - 跳过 .git 目录
    - 解析顶层符号链接，复制实际内容
    - 处理 Windows Git 的文本符号链接
+   - 调用 `sync_skill_md_name_to_record`：若副本内 `SKILL.md` 存在且解析出的 frontmatter `name:` 与最终 `name` 不同，无损改写为 `name`（保证中央仓库扫描、自动发现与各工具识别一致）
 
 6. **计算内容哈希**
-   - 遍历目录所有文件
+   - 在 `sync_skill_md_name_to_record` 之后遍历目录所有文件
    - 计算整体 SHA256 哈希
 
 7. **创建数据库记录**
@@ -469,7 +470,7 @@ skills-git-cache/
 - 复用同一个 `update_all_skills_internal`（定时调用传 `emit_progress=false`，不发进度事件）；**定时场景只 `log::debug`，静默失败，不弹 UI 打扰用户**。非法 schedule 仅 debug 跳过（保存命令已用 `parse_cron` 校验，属兜底）。配置变更在下一 tick（≤60s）生效，无需重启。
 - **Gotcha：** `skills_set_auto_update` 保存前必须校验 cron 可解析，避免 enabled 状态下持久化坏表达式；`skills_preview_auto_update_schedule` 的 count 钳制 1..=100（默认 10）。
 
-**更新替换前保护（installer::update_managed_skill_from_source）：** staging 构建完成后先与现有 central 目录做内容哈希比对，哈希一致直接跳过 swap：不重写目录、不重同步工具（`updated_targets` 为空），但仍然 `upsert_skill` 刷新 DB 行的 `updated_at`、把新拉的 git `source_revision` 落库、并归一 `status="ok"`，使该路径与其余三个刷新入口统一为「成功即改时间、失败不写库」；`central_path` 顺手 `to_relative_central_path` 归一。避免定时任务每次 tick 无谓重写目录、也避免"源内容未变"仍覆盖 mtime。哈希不一致需要替换时，先把旧 central 内容复制到 `{app_data}/skills-backup/{skill_id}-{ts}`（每 skill 保留最新 5 份）再删除重建；用户经 symlink 工具目录直接改写的 central 内容因此可恢复，备份失败只 warn 不阻断更新。
+**更新替换前保护（installer::update_managed_skill_from_source）：** staging 构建完成后先调用 `sync_skill_md_name_to_record(&staging_dir, &record.name)` 将 `SKILL.md` frontmatter `name:` 对齐为当前 `record.name`（确保起过别名的 Skill 更新后仍保留别名，且上游无变更时不因原始 `name:` 不同而破坏哈希一致性），再与现有 central 目录做内容哈希比对，哈希一致直接跳过 swap：不重写目录、不重同步工具（`updated_targets` 为空），但仍然 `upsert_skill` 刷新 DB 行的 `updated_at`、把新拉的 git `source_revision` 落库、并归一 `status="ok"`，使该路径与其余三个刷新入口统一为「成功即改时间、失败不写库」；`central_path` 顺手 `to_relative_central_path` 归一。避免定时任务每次 tick 无谓重写目录、也避免"源内容未变"仍覆盖 mtime。哈希不一致需要替换时，先把旧 central 内容复制到 `{app_data}/skills-backup/{skill_id}-{ts}`（每 skill 保留最新 5 份）再删除重建；用户经 symlink 工具目录直接改写的 central 内容因此可恢复，备份失败只 warn 不阻断更新。
 
 ### 4.6.2 自动发现与分发（issue #446）
 
