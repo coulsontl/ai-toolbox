@@ -72,6 +72,12 @@ export async function verifyFetchedModelsModal({ send, evaluate, baseUrl, artifa
   check('the same dialog shows the fetched rows', await action('rows()'), [
     'model-alpha', 'model-beta', 'claude-opus-4-8',
   ]);
+  check('a fetched display name is shown beside the model id', await action('rowName("model-alpha")'), 'API Alpha');
+  check(
+    'an id-only model shows a placeholder instead of repeating the id',
+    await action('rowName("claude-opus-4-8")'),
+    '-',
+  );
   check('priority owner is pinned ahead of the alphabetical group', (await action('rows()'))[0], 'model-alpha');
   await screenshot('responses-fetched');
 

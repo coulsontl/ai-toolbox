@@ -14,6 +14,8 @@ export type ConfigValueMode = 'pi' | 'omp' | 'omo';
 /** Fetched model info from API */
 export interface FetchedModel {
   id: string;
+  /** Display label (`display_name` / `displayName` / `name` upstream). The
+   * backend falls back to `id` when the provider sends no label. */
   name?: string;
   ownedBy?: string;
   created?: number;

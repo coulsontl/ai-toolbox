@@ -166,6 +166,22 @@ const FetchModelsModal: React.FC<FetchModelsModalProps> = ({
       },
     },
     {
+      title: t('common.model.name'),
+      dataIndex: 'name',
+      key: 'name',
+      width: 220,
+      ellipsis: true,
+      render: (name: string | undefined, record: FetchedModel) => {
+        // The backend falls back to the model id when the provider sends no
+        // display name, so an unchanged value must not read as a second id.
+        const displayName = name?.trim();
+        if (!displayName || displayName === record.id.trim()) {
+          return <Text className={styles.ownedByText}>-</Text>;
+        }
+        return <Text className={styles.modelNameText}>{displayName}</Text>;
+      },
+    },
+    {
       title: t('opencode.fetchModels.ownedBy'),
       dataIndex: 'ownedBy',
       key: 'ownedBy',

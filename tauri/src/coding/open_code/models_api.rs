@@ -79,6 +79,30 @@ pub struct OpenAIModel {
     pub created: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owned_by: Option<String>,
+    /// Human-readable label some OpenAI-compatible relays attach to a model.
+    /// `display_name` is the Anthropic/Codex spelling; `displayName` is accepted
+    /// from camelCase gateways.
+    #[serde(alias = "displayName", skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// OpenRouter and this app's own plugin model list use `name` for the same
+    /// label. It is a lower-priority fallback than `display_name`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl OpenAIModel {
+    /// The label to show for this model: the upstream display label when it is
+    /// non-blank, otherwise the model id. Callers get one string, so an
+    /// id-only response and a labelled one follow the same path.
+    fn display_name_or_id(&self) -> String {
+        [self.display_name.as_deref(), self.name.as_deref()]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .find(|value| !value.is_empty())
+            .unwrap_or(&self.id)
+            .to_string()
+    }
 }
 
 /// Google AI models list response
@@ -186,11 +210,14 @@ fn parse_anthropic_models_response(response_text: &str) -> Result<Vec<FetchedMod
                 Ok(openai_response) => Ok(openai_response
                     .data
                     .into_iter()
-                    .map(|model| FetchedModel {
-                        id: model.id.clone(),
-                        name: Some(model.id),
-                        owned_by: model.owned_by,
-                        created: model.created.and_then(|value| value.as_i64()),
+                    .map(|model| {
+                        let name = model.display_name_or_id();
+                        FetchedModel {
+                            id: model.id,
+                            name: Some(name),
+                            owned_by: model.owned_by,
+                            created: model.created.and_then(|value| value.as_i64()),
+                        }
                     })
                     .collect()),
                 Err(openai_error) => Err(format!(
@@ -765,11 +792,14 @@ fn parse_generic_models_response(response_text: &str) -> Result<Vec<FetchedModel
         return Ok(openai_response
             .data
             .into_iter()
-            .map(|m| FetchedModel {
-                id: m.id.clone(),
-                name: Some(m.id),
-                owned_by: m.owned_by,
-                created: m.created.and_then(|v| v.as_i64()),
+            .map(|model| {
+                let name = model.display_name_or_id();
+                FetchedModel {
+                    id: model.id,
+                    name: Some(name),
+                    owned_by: model.owned_by,
+                    created: model.created.and_then(|value| value.as_i64()),
+                }
             })
             .collect());
     }
@@ -2117,6 +2147,62 @@ mod tests {
         assert_eq!(models[0].name.as_deref(), Some("claude-sonnet-4-6"));
         assert_eq!(models[0].owned_by.as_deref(), Some("claude"));
         assert_eq!(models[0].created, Some(1626777600));
+    }
+
+    #[test]
+    fn test_parse_anthropic_gateway_openai_response_keeps_display_name() {
+        let models = parse_anthropic_models_response(
+            r#"{
+                "object": "list",
+                "data": [{
+                    "id": "claude-sonnet-4-6",
+                    "object": "model",
+                    "created": 1626777600,
+                    "owned_by": "claude",
+                    "display_name": "Claude Sonnet 4.6"
+                }]
+            }"#,
+        )
+        .expect("OpenAI-compatible model list should parse");
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "claude-sonnet-4-6");
+        assert_eq!(models[0].name.as_deref(), Some("Claude Sonnet 4.6"));
+    }
+
+    #[test]
+    fn test_openai_models_response_prefers_display_name_then_name_then_id() {
+        let models = parse_generic_models_response(
+            r#"{
+                "object": "list",
+                "data": [
+                    { "id": "model-display", "display_name": "Display Name" },
+                    { "id": "model-camel", "displayName": "Camel Name" },
+                    { "id": "model-name", "name": "Plain Name" },
+                    { "id": "model-blank", "display_name": "   ", "name": "" },
+                    { "id": "model-blank-display", "display_name": "  ", "name": "Fallback Name" },
+                    { "id": "model-id-only" }
+                ]
+            }"#,
+        )
+        .expect("OpenAI model list should parse");
+
+        let names: Vec<&str> = models
+            .iter()
+            .map(|model| model.name.as_deref().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "Display Name",
+                "Camel Name",
+                "Plain Name",
+                "model-blank",
+                "Fallback Name",
+                "model-id-only"
+            ]
+        );
+        assert_eq!(models[0].id, "model-display");
     }
 
     #[test]

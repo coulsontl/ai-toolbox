@@ -130,6 +130,12 @@ const fixture = window.fetchedModelsModalFixture = {
     const row = visibleElements('tr[data-row-key]').find((item) => item.dataset.rowKey === modelId);
     return Boolean(row && row.textContent.includes(i18n.t('opencode.fetchModels.alreadyExists')));
   },
+  /** The display-name cell: selection, id, name, owner. */
+  rowName: (modelId) => {
+    const row = visibleElements('tr[data-row-key]').find((item) => item.dataset.rowKey === modelId);
+    const cells = row ? [...row.querySelectorAll('td')] : [];
+    return cells[2]?.textContent?.trim() ?? null;
+  },
   bodyText: () => document.body.textContent,
   lastRequest,
   errorVisible: () => Boolean(document.querySelector('.ant-alert-error')),
