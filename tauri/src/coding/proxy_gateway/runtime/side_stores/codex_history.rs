@@ -14,11 +14,29 @@ struct CachedResponse {
     call_order: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ScopedKey {
+    session_scope: Option<String>,
+    id: String,
+}
+
+impl ScopedKey {
+    fn new(session_scope: Option<&str>, id: &str) -> Self {
+        Self {
+            session_scope: session_scope
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string),
+            id: id.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct CodexHistoryInner {
-    responses: HashMap<String, CachedResponse>,
-    response_order: VecDeque<String>,
-    call_index: HashMap<String, VecDeque<String>>,
+    responses: HashMap<ScopedKey, CachedResponse>,
+    response_order: VecDeque<ScopedKey>,
+    call_index: HashMap<ScopedKey, VecDeque<ScopedKey>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -33,7 +51,16 @@ pub(crate) struct CodexHistoryStore {
 }
 
 impl CodexHistoryStore {
+    #[allow(dead_code)]
     pub(super) fn record_response(&self, response: &Value) -> usize {
+        self.record_response_scoped(None, response)
+    }
+
+    pub(super) fn record_response_scoped(
+        &self,
+        session_scope: Option<&str>,
+        response: &Value,
+    ) -> usize {
         let Some(response_id) = response
             .get("id")
             .and_then(Value::as_str)
@@ -57,10 +84,15 @@ impl CodexHistoryStore {
         let Ok(mut inner) = self.inner.lock() else {
             return 0;
         };
-        inner.insert_calls(response_id, calls)
+        inner.insert_calls(session_scope, response_id, calls)
     }
 
-    fn record_call_item(&self, response_id: Option<&str>, item: &Value) -> bool {
+    fn record_call_item_scoped(
+        &self,
+        session_scope: Option<&str>,
+        response_id: Option<&str>,
+        item: &Value,
+    ) -> bool {
         let Some(response_id) = response_id.filter(|value| !value.is_empty()) else {
             return false;
         };
@@ -70,10 +102,19 @@ impl CodexHistoryStore {
         let Ok(mut inner) = self.inner.lock() else {
             return false;
         };
-        inner.insert_calls(response_id, vec![call]) > 0
+        inner.insert_calls(session_scope, response_id, vec![call]) > 0
     }
 
+    #[allow(dead_code)]
     pub(super) fn enrich_request(&self, body: &mut Value) -> usize {
+        self.enrich_request_scoped(None, body)
+    }
+
+    pub(super) fn enrich_request_scoped(
+        &self,
+        session_scope: Option<&str>,
+        body: &mut Value,
+    ) -> usize {
         let previous_response_id = body
             .get("previous_response_id")
             .and_then(Value::as_str)
@@ -116,7 +157,11 @@ impl CodexHistoryStore {
             .union(&existing_call_ids)
             .cloned()
             .collect::<HashSet<_>>();
-        let lookup = self.lookup(previous_response_id.as_deref(), &requested_call_ids);
+        let lookup = self.lookup(
+            session_scope,
+            previous_response_id.as_deref(),
+            &requested_call_ids,
+        );
         let restore_group = lookup.restore_group(&output_call_ids, &existing_call_ids);
         let restore_group_ids = restore_group
             .iter()
@@ -174,24 +219,33 @@ impl CodexHistoryStore {
 
     fn lookup(
         &self,
+        session_scope: Option<&str>,
         previous_response_id: Option<&str>,
         requested_call_ids: &HashSet<String>,
     ) -> CachedLookup {
         let Ok(inner) = self.inner.lock() else {
             return CachedLookup::default();
         };
-        let previous = previous_response_id.and_then(|id| inner.responses.get(id).cloned());
-        let fallback = inner.unique_fallback_calls(requested_call_ids, previous.as_ref());
+        let previous = previous_response_id
+            .and_then(|id| inner.responses.get(&ScopedKey::new(session_scope, id)).cloned());
+        let fallback =
+            inner.unique_fallback_calls(session_scope, requested_call_ids, previous.as_ref());
         CachedLookup { previous, fallback }
     }
 }
 
 impl CodexHistoryInner {
-    fn insert_calls(&mut self, response_id: &str, calls: Vec<(String, Value)>) -> usize {
-        if !self.responses.contains_key(response_id) {
-            self.response_order.push_back(response_id.to_string());
+    fn insert_calls(
+        &mut self,
+        session_scope: Option<&str>,
+        response_id: &str,
+        calls: Vec<(String, Value)>,
+    ) -> usize {
+        let response_key = ScopedKey::new(session_scope, response_id);
+        if !self.responses.contains_key(&response_key) {
+            self.response_order.push_back(response_key.clone());
         }
-        let cached_response = self.responses.entry(response_id.to_string()).or_default();
+        let cached_response = self.responses.entry(response_key.clone()).or_default();
         let mut changed = 0usize;
         let mut indexed_call_ids = Vec::new();
         for (call_id, item) in calls {
@@ -203,7 +257,7 @@ impl CodexHistoryInner {
             changed += 1;
         }
         for call_id in indexed_call_ids {
-            self.index_call(&call_id, response_id);
+            self.index_call(session_scope, &call_id, &response_key);
         }
         self.prune();
         changed
@@ -211,30 +265,37 @@ impl CodexHistoryInner {
 
     fn prune(&mut self) {
         while self.response_order.len() > MAX_CODEX_CACHED_RESPONSES {
-            let Some(response_id) = self.response_order.pop_front() else {
+            let Some(response_key) = self.response_order.pop_front() else {
                 break;
             };
-            self.responses.remove(&response_id);
-            for response_ids in self.call_index.values_mut() {
-                response_ids.retain(|cached_id| cached_id != &response_id);
+            self.responses.remove(&response_key);
+            for response_keys in self.call_index.values_mut() {
+                response_keys.retain(|cached_key| cached_key != &response_key);
             }
             self.call_index
-                .retain(|_, response_ids| !response_ids.is_empty());
+                .retain(|_, response_keys| !response_keys.is_empty());
         }
     }
 
-    fn index_call(&mut self, call_id: &str, response_id: &str) {
-        let response_ids = self.call_index.entry(call_id.to_string()).or_default();
-        if !response_ids
+    fn index_call(
+        &mut self,
+        session_scope: Option<&str>,
+        call_id: &str,
+        response_key: &ScopedKey,
+    ) {
+        let call_key = ScopedKey::new(session_scope, call_id);
+        let response_keys = self.call_index.entry(call_key).or_default();
+        if !response_keys
             .iter()
-            .any(|cached_response_id| cached_response_id == response_id)
+            .any(|cached_response_key| cached_response_key == response_key)
         {
-            response_ids.push_back(response_id.to_string());
+            response_keys.push_back(response_key.clone());
         }
     }
 
     fn unique_fallback_calls(
         &self,
+        session_scope: Option<&str>,
         requested_call_ids: &HashSet<String>,
         previous: Option<&CachedResponse>,
     ) -> CachedResponse {
@@ -243,14 +304,20 @@ impl CodexHistoryInner {
             if previous.is_some_and(|response| response.calls_by_id.contains_key(call_id)) {
                 continue;
             }
-            if let Some(item) = self.unique_call(call_id) {
+            if let Some(item) = self.unique_call(session_scope, call_id) {
                 selected.insert(call_id.clone(), item.clone());
             }
         }
 
+        let normalized_scope = session_scope
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         let mut fallback = CachedResponse::default();
-        for response_id in &self.response_order {
-            let Some(response) = self.responses.get(response_id) else {
+        for response_key in &self.response_order {
+            if response_key.session_scope.as_deref() != normalized_scope {
+                continue;
+            }
+            let Some(response) = self.responses.get(response_key) else {
                 continue;
             };
             for call_id in &response.call_order {
@@ -263,13 +330,14 @@ impl CodexHistoryInner {
         fallback
     }
 
-    fn unique_call(&self, call_id: &str) -> Option<&Value> {
-        let response_ids = self.call_index.get(call_id)?;
+    fn unique_call(&self, session_scope: Option<&str>, call_id: &str) -> Option<&Value> {
+        let call_key = ScopedKey::new(session_scope, call_id);
+        let response_keys = self.call_index.get(&call_key)?;
         let mut found = None;
-        for response_id in response_ids {
+        for response_key in response_keys {
             let Some(item) = self
                 .responses
-                .get(response_id)
+                .get(response_key)
                 .and_then(|response| response.calls_by_id.get(call_id))
             else {
                 continue;
@@ -342,10 +410,12 @@ fn append_restore_group(
 pub(crate) fn record_responses_sse_stream(
     inner: Pin<Box<dyn Stream<Item = Result<Vec<u8>, String>> + Send + 'static>>,
     history: Arc<CodexHistoryStore>,
+    session_scope: Option<String>,
 ) -> Pin<Box<dyn Stream<Item = Result<Vec<u8>, String>> + Send + 'static>> {
     struct State {
         inner: Pin<Box<dyn Stream<Item = Result<Vec<u8>, String>> + Send + 'static>>,
         history: Arc<CodexHistoryStore>,
+        session_scope: Option<String>,
         buffer: Vec<u8>,
         current_response_id: Option<String>,
         recording_enabled: bool,
@@ -355,6 +425,7 @@ pub(crate) fn record_responses_sse_stream(
         State {
             inner,
             history,
+            session_scope,
             buffer: Vec::new(),
             current_response_id: None,
             recording_enabled: true,
@@ -373,6 +444,7 @@ pub(crate) fn record_responses_sse_stream(
                                 &block,
                                 &mut state.current_response_id,
                                 &state.history,
+                                state.session_scope.as_deref(),
                             );
                         }
                     }
@@ -387,6 +459,7 @@ fn inspect_sse_block(
     block: &[u8],
     current_response_id: &mut Option<String>,
     history: &CodexHistoryStore,
+    session_scope: Option<&str>,
 ) {
     let Ok(block) = std::str::from_utf8(block) else {
         return;
@@ -417,12 +490,16 @@ fn inspect_sse_block(
     match value.get("type").and_then(Value::as_str) {
         Some("response.output_item.done") => {
             if let Some(item) = value.get("item") {
-                history.record_call_item(current_response_id.as_deref(), item);
+                history.record_call_item_scoped(
+                    session_scope,
+                    current_response_id.as_deref(),
+                    item,
+                );
             }
         }
         Some("response.completed") => {
             if let Some(response) = value.get("response") {
-                history.record_response(response);
+                history.record_response_scoped(session_scope, response);
             }
         }
         _ => {}
@@ -487,6 +564,7 @@ fn enrich_call_item_from_cache(item: &mut Value, cached: &Value) -> bool {
         "execution",
         "reasoning_content",
         "reasoning",
+        "extra_content",
     ] {
         if object.get(key).is_some_and(|value| !is_empty_value(value)) {
             continue;
@@ -573,6 +651,61 @@ mod tests {
         assert_eq!(
             take_sse_block(&mut buffer).as_deref(),
             Some(b"data: second".as_slice())
+        );
+    }
+
+    #[test]
+    fn scoped_call_id_cache_isolates_sessions_and_restores_extra_content() {
+        let history = CodexHistoryStore::default();
+        history.record_response_scoped(
+            Some("session_a"),
+            &json!({
+                "id": "resp_shared",
+                "output": [{
+                    "type": "function_call",
+                    "call_id": "exec_command:0",
+                    "name": "exec_command",
+                    "arguments": "{\"cmd\":\"ls\"}",
+                    "reasoning_content": "session A reasoning",
+                    "extra_content": {"google": {"thought_signature": "sig-a"}}
+                }]
+            }),
+        );
+
+        // Session B must NOT receive Session A's cached reasoning for predictable call_id.
+        let mut req_b = json!({
+            "input": [{
+                "type": "function_call",
+                "call_id": "exec_command:0",
+                "name": "exec_command",
+                "arguments": "{\"cmd\":\"pwd\"}"
+            }, {
+                "type": "function_call_output",
+                "call_id": "exec_command:0",
+                "output": "/tmp"
+            }]
+        });
+        assert_eq!(history.enrich_request_scoped(Some("session_b"), &mut req_b), 0);
+        assert!(req_b["input"][0].get("reasoning_content").is_none());
+
+        // Session A restores both reasoning_content and extra_content.
+        let mut req_a = json!({
+            "input": [{
+                "type": "function_call",
+                "call_id": "exec_command:0",
+                "name": "exec_command",
+                "arguments": "{\"cmd\":\"ls\"}"
+            }, {
+                "type": "function_call_output",
+                "call_id": "exec_command:0",
+                "output": "Cargo.toml"
+            }]
+        });
+        assert_eq!(history.enrich_request_scoped(Some("session_a"), &mut req_a), 1);
+        assert_eq!(req_a["input"][0]["reasoning_content"], "session A reasoning");
+        assert_eq!(
+            req_a["input"][0]["extra_content"],
+            json!({"google": {"thought_signature": "sig-a"}})
         );
     }
 }

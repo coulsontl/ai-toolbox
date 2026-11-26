@@ -10,6 +10,10 @@ pub struct TokenUsage {
     pub output_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
     pub cache_creation_tokens: Option<u64>,
+    /// Subset of `cache_creation_tokens` written at Anthropic's 1-hour TTL
+    /// (`usage.cache_creation.ephemeral_1h_input_tokens`), billed at 1.6x the
+    /// 5-minute cache-write rate (2x base input vs 1.25x for 5m).
+    pub cache_creation_1h_tokens: Option<u64>,
     /// Upstream envelope id when available (Claude message id, OpenAI/Codex response id,
     /// Gemini responseId). Used to build stable usage request keys.
     pub envelope_id: Option<String>,
@@ -34,6 +38,8 @@ impl TokenUsage {
         self.cache_read_tokens = max_option(self.cache_read_tokens, other.cache_read_tokens);
         self.cache_creation_tokens =
             max_option(self.cache_creation_tokens, other.cache_creation_tokens);
+        self.cache_creation_1h_tokens =
+            max_option(self.cache_creation_1h_tokens, other.cache_creation_1h_tokens);
         if self.envelope_id.is_none() {
             self.envelope_id = other.envelope_id;
         }
@@ -871,16 +877,16 @@ fn claude_usage(value: &Value, provider_type: Option<&str>) -> TokenUsage {
                 ],
             )
         });
-    let cache_read_tokens = first_u64_at_paths(
-        usage_value,
-        &[
-            "/cache_read_input_tokens",
-            "/cache_read_tokens",
-            "/cached_tokens",
-        ],
-    )
-    .or_else(|| {
-        first_u64_at_paths(
+    let cache_read_tokens = first_nonzero_u64_across(&[
+        (
+            usage_value,
+            &[
+                "/cache_read_input_tokens",
+                "/cache_read_tokens",
+                "/cached_tokens",
+            ],
+        ),
+        (
             value,
             &[
                 "/usage/cache_read_input_tokens",
@@ -890,26 +896,62 @@ fn claude_usage(value: &Value, provider_type: Option<&str>) -> TokenUsage {
                 "/delta/usage/cache_read_input_tokens",
                 "/delta/usage/cached_tokens",
             ],
-        )
-    });
-    let cache_creation_tokens = first_u64_at_paths(
-        usage_value,
-        &[
-            "/cache_creation_input_tokens",
-            "/cache_creation_tokens",
-            "/cache_write_input_tokens",
-        ],
-    )
-    .or_else(|| {
-        first_u64_at_paths(
+        ),
+    ]);
+    let flat_cache_creation_tokens = first_nonzero_u64_across(&[
+        (
+            usage_value,
+            &[
+                "/cache_creation_input_tokens",
+                "/cache_creation_tokens",
+                "/cache_write_input_tokens",
+            ],
+        ),
+        (
             value,
             &[
                 "/usage/cache_creation_input_tokens",
                 "/message/usage/cache_creation_input_tokens",
                 "/delta/usage/cache_creation_input_tokens",
             ],
-        )
-    });
+        ),
+    ]);
+    let cache_creation_5m_tokens = first_nonzero_u64_across(&[
+        (usage_value, &["/cache_creation/ephemeral_5m_input_tokens"]),
+        (
+            value,
+            &[
+                "/usage/cache_creation/ephemeral_5m_input_tokens",
+                "/message/usage/cache_creation/ephemeral_5m_input_tokens",
+                "/delta/usage/cache_creation/ephemeral_5m_input_tokens",
+            ],
+        ),
+    ]);
+    let cache_creation_1h_tokens = first_nonzero_u64_across(&[
+        (usage_value, &["/cache_creation/ephemeral_1h_input_tokens"]),
+        (
+            value,
+            &[
+                "/usage/cache_creation/ephemeral_1h_input_tokens",
+                "/message/usage/cache_creation/ephemeral_1h_input_tokens",
+                "/delta/usage/cache_creation/ephemeral_1h_input_tokens",
+            ],
+        ),
+    ]);
+    let cache_creation_tokens = match flat_cache_creation_tokens {
+        Some(total) if total > 0 => Some(total),
+        other => match (cache_creation_5m_tokens, cache_creation_1h_tokens) {
+            (None, None) => other,
+            (t5m, t1h) => {
+                let sum = t5m.unwrap_or(0).saturating_add(t1h.unwrap_or(0));
+                if sum > 0 {
+                    Some(sum)
+                } else {
+                    other.or(Some(0))
+                }
+            }
+        },
+    };
     let input_tokens = if is_moonshot_provider_type(provider_type) {
         moonshot_fresh_input_tokens(signed_input_tokens, input_tokens, cache_read_tokens)
     } else {
@@ -931,6 +973,7 @@ fn claude_usage(value: &Value, provider_type: Option<&str>) -> TokenUsage {
             }),
         cache_read_tokens,
         cache_creation_tokens,
+        cache_creation_1h_tokens,
         envelope_id: extract_envelope_id(GatewayCliKey::Claude, value),
     }
 }
@@ -991,46 +1034,47 @@ fn openai_usage_with_extra_cache_read_paths(
                 ],
             )
         });
-    let cache_read_tokens = first_u64_at_paths(
-        usage,
-        &[
-            "/input_tokens_details/cached_tokens",
-            "/prompt_tokens_details/cached_tokens",
-        ],
-    )
-    .or_else(|| {
-        first_u64_at_paths(
+    // Explicit 0 in an earlier cache-read field (e.g. a relay stubbing
+    // `cached_tokens: 0` while reporting the real hit count in DeepSeek's
+    // `prompt_cache_hit_tokens`) must fall through instead of masking the
+    // real count (cc-switch 5667b287 / 46f19a15).
+    let cache_read_tokens = first_nonzero_u64_across(&[
+        (
+            usage,
+            &[
+                "/input_tokens_details/cached_tokens",
+                "/prompt_tokens_details/cached_tokens",
+                "/prompt_cache_hit_tokens",
+            ],
+        ),
+        (
             value,
             &[
                 "/usage/input_tokens_details/cached_tokens",
                 "/usage/prompt_tokens_details/cached_tokens",
                 "/response/usage/input_tokens_details/cached_tokens",
                 "/response/usage/prompt_tokens_details/cached_tokens",
+                "/usage/prompt_cache_hit_tokens",
+                "/response/usage/prompt_cache_hit_tokens",
             ],
-        )
-    })
-    .or_else(|| {
-        if extra_cache_read_paths.is_empty() {
-            None
-        } else {
-            first_u64_at_paths(value, extra_cache_read_paths)
-        }
-    });
+        ),
+        (value, extra_cache_read_paths),
+    ]);
     // Responses API cache writes (AxonHub 94704784) and Chat-compatible aliases.
     // OpenAI/Responses `input_tokens` / `prompt_tokens` are treated as cache-inclusive
     // totals: fresh input = raw - cache_read - cache_write. Providers that already
     // report fresh-only input would undercount if they also emit cache write details.
-    let cache_creation_tokens = first_u64_at_paths(
-        usage,
-        &[
-            "/input_tokens_details/cache_write_tokens",
-            "/prompt_tokens_details/cache_write_tokens",
-            "/input_tokens_details/cache_creation_tokens",
-            "/prompt_tokens_details/cache_creation_tokens",
-        ],
-    )
-    .or_else(|| {
-        first_u64_at_paths(
+    let cache_creation_tokens = first_nonzero_u64_across(&[
+        (
+            usage,
+            &[
+                "/input_tokens_details/cache_write_tokens",
+                "/prompt_tokens_details/cache_write_tokens",
+                "/input_tokens_details/cache_creation_tokens",
+                "/prompt_tokens_details/cache_creation_tokens",
+            ],
+        ),
+        (
             value,
             &[
                 "/usage/input_tokens_details/cache_write_tokens",
@@ -1042,8 +1086,8 @@ fn openai_usage_with_extra_cache_read_paths(
                 "/response/usage/input_tokens_details/cache_creation_tokens",
                 "/response/usage/prompt_tokens_details/cache_creation_tokens",
             ],
-        )
-    });
+        ),
+    ]);
     TokenUsage {
         input_tokens: subtract_cache_from_inclusive_input(
             raw_input_tokens,
@@ -1064,13 +1108,14 @@ fn openai_usage_with_extra_cache_read_paths(
             }),
         cache_read_tokens,
         cache_creation_tokens,
+        cache_creation_1h_tokens: None,
         envelope_id: extract_envelope_id(GatewayCliKey::Codex, value),
     }
 }
 
 fn gemini_usage(value: &Value) -> TokenUsage {
     let usage = value.pointer("/usageMetadata").unwrap_or(value);
-    let input_tokens =
+    let base_prompt_tokens =
         first_u64_at_paths(usage, &["/promptTokenCount", "/prompt_tokens"]).or_else(|| {
             first_u64_at_paths(
                 value,
@@ -1080,6 +1125,24 @@ fn gemini_usage(value: &Value) -> TokenUsage {
                 ],
             )
         });
+    // Gemini reports server-side tool retrieval tokens (Google Search, URL Context)
+    // in `toolUsePromptTokenCount` separately from `promptTokenCount` (AxonHub 84533aba).
+    let tool_use_prompt_tokens = first_u64_at_paths(usage, &["/toolUsePromptTokenCount"])
+        .or_else(|| {
+            first_u64_at_paths(
+                value,
+                &[
+                    "/usageMetadata/toolUsePromptTokenCount",
+                    "/response/usageMetadata/toolUsePromptTokenCount",
+                ],
+            )
+        });
+    let input_tokens = match (base_prompt_tokens, tool_use_prompt_tokens) {
+        (Some(base), Some(tool)) => Some(base.saturating_add(tool)),
+        (Some(base), None) => Some(base),
+        (None, Some(tool)) => Some(tool),
+        (None, None) => None,
+    };
     let output_tokens = first_u64_at_paths(
         usage,
         &[
@@ -1116,14 +1179,39 @@ fn gemini_usage(value: &Value) -> TokenUsage {
         output_tokens,
         cache_read_tokens,
         cache_creation_tokens: None,
+        cache_creation_1h_tokens: None,
         envelope_id: extract_envelope_id(GatewayCliKey::Gemini, value),
     }
+}
+
+fn json_value_as_u64(value: &Value) -> Option<u64> {
+    value.as_u64().or_else(|| {
+        // Vertex AI serializes protobuf int64 token counts as JSON strings (cc-switch 7d5fb657).
+        value.as_str()?.trim().parse::<u64>().ok()
+    })
 }
 
 fn first_u64_at_paths(value: &Value, paths: &[&str]) -> Option<u64> {
     paths
         .iter()
-        .find_map(|path| value.pointer(path).and_then(Value::as_u64))
+        .find_map(|path| value.pointer(path).and_then(json_value_as_u64))
+}
+
+/// Prefer the first non-zero candidate across groups; fall back to `Some(0)` if
+/// every present field was `0`, or `None` if no candidate existed.
+fn first_nonzero_u64_across(groups: &[(&Value, &[&str])]) -> Option<u64> {
+    let mut saw_zero = false;
+    for (root, paths) in groups {
+        for path in *paths {
+            if let Some(count) = root.pointer(path).and_then(json_value_as_u64) {
+                if count > 0 {
+                    return Some(count);
+                }
+                saw_zero = true;
+            }
+        }
+    }
+    saw_zero.then_some(0)
 }
 
 fn first_i64_at_paths(value: &Value, paths: &[&str]) -> Option<i64> {
@@ -2288,5 +2376,86 @@ data: [DONE]
         let mut collector = SseUsageCollector::with_provider_type(None);
         collector.observe_chunk(&buffer);
         collector.drain_terminal();
+    }
+
+    #[test]
+    fn openai_usage_falls_back_to_prompt_cache_hit_tokens_and_skips_stub_zero() {
+        let body = serde_json::json!({
+            "id": "chatcmpl-ds-1",
+            "usage": {
+                "prompt_tokens": 1000,
+                "completion_tokens": 50,
+                "prompt_tokens_details": { "cached_tokens": 0 },
+                "prompt_cache_hit_tokens": 800,
+                "prompt_cache_miss_tokens": 200
+            }
+        });
+        let parsed = from_response_body(
+            GatewayCliKey::Codex,
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(parsed.cache_read_tokens, Some(800));
+        assert_eq!(parsed.input_tokens, Some(200));
+        assert_eq!(parsed.output_tokens, Some(50));
+
+        // Explicit all-zero chain still reports Some(0).
+        let all_zero = serde_json::json!({
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 10,
+                "prompt_tokens_details": { "cached_tokens": 0 },
+                "prompt_cache_hit_tokens": 0
+            }
+        });
+        let parsed_zero = from_response_body(
+            GatewayCliKey::Codex,
+            &serde_json::to_vec(&all_zero).unwrap(),
+        );
+        assert_eq!(parsed_zero.cache_read_tokens, Some(0));
+        assert_eq!(parsed_zero.input_tokens, Some(100));
+    }
+
+    #[test]
+    fn gemini_usage_parses_vertex_string_int64_and_adds_tool_use_prompt_tokens() {
+        let body = serde_json::json!({
+            "responseId": "gem-resp-1",
+            "usageMetadata": {
+                "promptTokenCount": "1000",
+                "toolUsePromptTokenCount": "250",
+                "candidatesTokenCount": "120",
+                "cachedContentTokenCount": "400"
+            }
+        });
+        let parsed = from_response_body(
+            GatewayCliKey::Gemini,
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        // (1000 + 250) - 400 = 850 fresh input
+        assert_eq!(parsed.input_tokens, Some(850));
+        assert_eq!(parsed.output_tokens, Some(120));
+        assert_eq!(parsed.cache_read_tokens, Some(400));
+    }
+
+    #[test]
+    fn claude_usage_extracts_ephemeral_1h_cache_creation_tokens() {
+        let body = serde_json::json!({
+            "id": "msg_1h",
+            "usage": {
+                "input_tokens": 20,
+                "output_tokens": 10,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 1000,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 400,
+                    "ephemeral_1h_input_tokens": 600
+                }
+            }
+        });
+        let parsed = from_response_body(
+            GatewayCliKey::Claude,
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(parsed.cache_creation_tokens, Some(1000));
+        assert_eq!(parsed.cache_creation_1h_tokens, Some(600));
     }
 }

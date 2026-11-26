@@ -2005,7 +2005,9 @@ fn anthropic_tools_without_strict_omit_strict_for_openai_targets() {
         source,
     )
     .unwrap();
-    assert!(responses["tools"][0].get("strict").is_none());
+    // Responses defaults omitted `strict` to true and rejects optional schema fields;
+    // Anthropic tools without an explicit `strict` must send `"strict": false` (cc-switch 02759c67).
+    assert_eq!(responses["tools"][0].get("strict"), Some(&json!(false)));
 }
 
 #[test]
@@ -4337,7 +4339,7 @@ fn anthropic_metadata_and_max_tokens_roundtrip_to_anthropic_target() {
     )
     .unwrap();
     assert_eq!(anthropic["metadata"]["user_id"], "user_1");
-    assert_eq!(anthropic["max_tokens"], 8192);
+    assert_eq!(anthropic["max_tokens"], 32000);
 }
 
 #[test]
@@ -7736,4 +7738,482 @@ data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5","st
         !output.contains("service_tier"),
         "a default echo is not a premium confirmation; output={output}"
     );
+}
+
+#[test]
+fn chat_stream_missing_tool_call_index_allocates_distinct_indices_and_chat_target_dedups_headers() {
+    let input_sse = [
+        r#"data: {"id":"chat_noidx","model":"m1","choices":[{"index":0,"delta":{"role":"assistant"}}]}
+
+"#,
+        r#"data: {"id":"chat_noidx","model":"m1","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_first","type":"function","function":{"name":"read_file","arguments":"{\"path\":"}}]}}]}
+
+"#,
+        r#"data: {"id":"chat_noidx","model":"m1","choices":[{"index":0,"delta":{"tool_calls":[{"function":{"arguments":"\"a.rs\"}"}}]}}]}
+
+"#,
+        r#"data: {"id":"chat_noidx","model":"m1","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_second","type":"function","function":{"name":"list_dir","arguments":"{\"dir\":\".\"}"}}]}}]}
+
+"#,
+        r#"data: {"id":"chat_noidx","model":"m1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+"#,
+        "data: [DONE]\n\n",
+    ]
+    .concat();
+    let output = collect_stream(
+        ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::OpenAiResponses),
+        input_sse,
+    );
+    let values = sse_data_values(&output);
+    let done_tools: Vec<(&str, &str, &str)> = values
+        .iter()
+        .filter(|value| {
+            value.get("type").and_then(Value::as_str) == Some("response.output_item.done")
+                && value.pointer("/item/type").and_then(Value::as_str) == Some("function_call")
+        })
+        .map(|value| {
+            (
+                value["item"]["call_id"].as_str().unwrap_or_default(),
+                value["item"]["name"].as_str().unwrap_or_default(),
+                value["item"]["arguments"].as_str().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        done_tools,
+        vec![
+            ("call_first", "read_file", r#"{"path":"a.rs"}"#),
+            ("call_second", "list_dir", r#"{"dir":"."}"#),
+        ]
+    );
+
+    // Target Chat SSE should emit id/type/name only on the first chunk for each tool index.
+    let responses_sse = [
+        r#"event: response.created
+data: {"type":"response.created","response":{"id":"resp_dedup","model":"gpt-5"}}
+
+"#,
+        r#"event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read_file","arguments":""}}
+
+"#,
+        r#"event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\"path\":"}
+
+"#,
+        r#"event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"\"README.md\"}"}
+
+"#,
+        r#"event: response.function_call_arguments.done
+data: {"type":"response.function_call_arguments.done","item_id":"fc_1","output_index":0,"arguments":""}
+
+"#,
+        r#"event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_dedup","model":"gpt-5","status":"completed","output":[{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"README.md\"}"}]}}
+
+"#,
+    ]
+    .concat();
+    let chat_output = collect_stream(
+        ConversionRoute::new(AiProtocol::OpenAiResponses, AiProtocol::OpenAiChat),
+        responses_sse,
+    );
+    let chat_tool_chunks: Vec<Value> = sse_data_values(&chat_output)
+        .into_iter()
+        .filter_map(|value| value.pointer("/choices/0/delta/tool_calls/0").cloned())
+        .collect();
+    assert!(chat_tool_chunks.len() >= 3);
+    assert_eq!(chat_tool_chunks[0]["id"], "call_1");
+    assert_eq!(chat_tool_chunks[0]["type"], "function");
+    assert_eq!(chat_tool_chunks[0]["function"]["name"], "read_file");
+    for follow_up in &chat_tool_chunks[1..] {
+        assert!(follow_up.get("id").is_none());
+        assert!(follow_up.get("type").is_none());
+        assert!(follow_up["function"].get("name").is_none());
+    }
+    let joined_args: String = chat_tool_chunks
+        .iter()
+        .filter_map(|chunk| chunk.pointer("/function/arguments").and_then(Value::as_str))
+        .collect();
+    assert_eq!(joined_args, r#"{"path":"README.md"}"#);
+}
+
+#[test]
+fn chat_mistral_chunked_thinking_and_thinking_tags_convert_in_json_and_sse() {
+    let non_stream = json!({
+        "id": "chat_mistral",
+        "model": "mistral-large",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": [{"type": "text", "text": "plan step"}]},
+                    {"type": "text", "text": "final answer"}
+                ]
+            },
+            "finish_reason": "stop"
+        }]
+    });
+    let converted = convert_response_value(
+        ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::AnthropicMessages),
+        non_stream,
+    )
+    .unwrap();
+    assert_eq!(converted["content"][0]["type"], "thinking");
+    assert_eq!(converted["content"][0]["thinking"], "plan step");
+    assert_eq!(converted["content"][1]["type"], "text");
+    assert_eq!(converted["content"][1]["text"], "final answer");
+
+    let sse = [
+        r#"data: {"id":"chat_tag","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"<think"}}]}
+
+"#,
+        r#"data: {"id":"chat_tag","model":"m","choices":[{"index":0,"delta":{"content":"ing>step 1</thinking>done"}}]}
+
+"#,
+        r#"data: {"id":"chat_tag","model":"m","choices":[{"index":0,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"extra"}]}]}}]}
+
+"#,
+        r#"data: {"id":"chat_tag","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+"#,
+        "data: [DONE]\n\n",
+        r#"data: {"id":"chat_tag","model":"m","choices":[{"index":0,"delta":{"content":"TRAILING_GARBAGE"}}]}
+
+"#,
+    ]
+    .concat();
+    let out = collect_stream(
+        ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::AnthropicMessages),
+        sse,
+    );
+    assert!(out.contains("step 1"));
+    assert!(out.contains("thinking_delta"));
+    assert!(out.contains("done"));
+    assert!(out.contains("extra"));
+    assert!(!out.contains("TRAILING_GARBAGE"));
+}
+
+#[test]
+fn anthropic_tool_use_id_normalization_and_parallel_and_thinking_disabled_precedence() {
+    let responses_resp = json!({
+        "id": "resp_ids",
+        "model": "gpt-5",
+        "status": "completed",
+        "output": [
+            {"type": "function_call", "id": "fc_1", "call_id": "call_ok-1", "name": "ok_tool", "arguments": "{}"},
+            {"type": "function_call", "id": "fc_2", "call_id": "call:invalid/id.with spaces", "name": "bad_id_tool", "arguments": "{}"}
+        ]
+    });
+    let anth_resp = convert_response_value(
+        ConversionRoute::new(AiProtocol::OpenAiResponses, AiProtocol::AnthropicMessages),
+        responses_resp,
+    )
+    .unwrap();
+    assert_eq!(anth_resp["content"][0]["id"], "call_ok-1");
+    let normalized_id = anth_resp["content"][1]["id"].as_str().unwrap();
+    assert!(normalized_id.starts_with("toolu_"));
+    assert!(normalized_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
+
+    // Anthropic inbound: thinking.disabled overrides output_config.effort, disable_parallel_tool_use -> parallel_tool_calls=false,
+    // and null `required` inside schema is recursively sanitized.
+    let anth_req = json!({
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 1024,
+        "thinking": {"type": "disabled"},
+        "output_config": {"effort": "high"},
+        "tool_choice": {"type": "auto", "disable_parallel_tool_use": true},
+        "tools": [{
+            "name": "search",
+            "strict": true,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "nested": {"type": "object", "required": null, "properties": {"k": {"type": "string"}}}
+                },
+                "required": null
+            }
+        }],
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+    let chat_req = convert_request_value(
+        ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+        anth_req.clone(),
+    )
+    .unwrap();
+    assert_eq!(chat_req["reasoning_effort"], "none");
+    assert_eq!(chat_req["parallel_tool_calls"], false);
+    assert!(chat_req["tools"][0]["function"]["parameters"].get("required").is_none());
+    assert!(chat_req["tools"][0]["function"]["parameters"]["properties"]["nested"]
+        .get("required")
+        .is_none());
+
+    // Round-trip back to Anthropic outbound: parallel_tool_calls=false maps to disable_parallel_tool_use=true,
+    // and `strict` is NOT emitted on Anthropic outbound.
+    let back_to_anth = convert_request_value(
+        ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::AnthropicMessages),
+        chat_req,
+    )
+    .unwrap();
+    assert_eq!(back_to_anth["tool_choice"]["disable_parallel_tool_use"], true);
+    assert!(back_to_anth["tools"][0].get("strict").is_none());
+}
+
+#[test]
+fn responses_interleaved_tool_outputs_additional_tools_and_json_reminder_and_chat_hygiene() {
+    let responses_req = json!({
+        "model": "gpt-5",
+        "text": {"format": {"type": "json_object"}},
+        "tools": [{"type": "function", "name": "a", "parameters": {"type": "object"}}],
+        "input": [
+            {"type": "additional_tools", "tools": [{"type": "function", "name": "b", "parameters": {"type": "object"}}]},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": ""}]},
+            {"type": "function_call", "call_id": "c1", "name": "a", "arguments": "{}"},
+            {"type": "message", "role": "user", "content": [{"type": "input_image", "image_url": "data:image/png;base64,AA==", "detail": "original"}]},
+            {"type": "function_call_output", "call_id": "c1", "output": "ok"},
+            {"type": "function_call_output", "call_id": "orphan_call", "output": "stray output"}
+        ]
+    });
+
+    // Chat -> Responses with json_object and no "json" mention injects a minimal JSON reminder.
+    let chat_json_req = json!({
+        "model": "gpt-5",
+        "response_format": {"type": "json_object"},
+        "messages": [{"role": "user", "content": "list three colors"}]
+    });
+    let resp_out = convert_request_value(
+        ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::OpenAiResponses),
+        chat_json_req,
+    )
+    .unwrap();
+    assert!(resp_out.to_string().to_ascii_lowercase().contains("json"));
+
+    // Responses -> Chat: additional_tools hoisted into tools, interleaved c1 tool result adjacent
+    // to assistant tool_call, image detail "original" -> "auto", empty user dropped, orphan tool downgraded.
+    let chat_out = convert_request_value(
+        ConversionRoute::new(AiProtocol::OpenAiResponses, AiProtocol::OpenAiChat),
+        responses_req,
+    )
+    .unwrap();
+    let tool_names: Vec<&str> = chat_out["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t.pointer("/function/name").and_then(Value::as_str))
+        .collect();
+    assert_eq!(tool_names, vec!["a", "b"]);
+    let messages = chat_out["messages"].as_array().unwrap();
+    let assistant_idx = messages
+        .iter()
+        .position(|m| m["role"] == "assistant")
+        .expect("assistant message");
+    assert_eq!(messages[assistant_idx + 1]["role"], "tool");
+    assert_eq!(messages[assistant_idx + 1]["tool_call_id"], "c1");
+    assert!(messages
+        .iter()
+        .all(|m| !(m["role"] == "tool" && m["tool_call_id"] == "orphan_call")));
+    assert!(messages
+        .iter()
+        .any(|m| m["role"] == "user" && m["content"].to_string().contains("stray output")));
+    // Empty user message (`input_text: ""`) must be dropped.
+    assert!(messages.iter().all(|m| {
+        !(m["role"] == "user"
+            && m["content"]
+                .as_array()
+                .is_some_and(|parts| parts.iter().all(|p| p["text"] == "")))
+    }));
+    assert!(chat_out.to_string().contains("\"detail\":\"auto\""));
+    assert!(!chat_out.to_string().contains("\"detail\":\"original\""));
+}
+
+#[test]
+fn gemini_snake_case_system_ref_wrapping_mid_system_deferral_and_usage_fields() {
+    let gem_req = json!({
+        "system_instruction": {"parts": [{"text": "be concise"}]},
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}]
+    });
+    let chat_req = convert_request_value(
+        ConversionRoute::new(AiProtocol::GeminiNative, AiProtocol::OpenAiChat),
+        gem_req,
+    )
+    .unwrap();
+    assert_eq!(chat_req["messages"][0]["role"], "system");
+    assert_eq!(chat_req["messages"][0]["content"], "be concise");
+
+    // Chat -> Gemini with $ref inside JSON tool result wraps in {"result": ...}.
+    let chat_with_ref = json!({
+        "model": "gemini-2.5-pro",
+        "messages": [
+            {"role": "user", "content": "read schema"},
+            {"role": "assistant", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "{\"$ref\":\"#/defs/Foo\"}"}
+        ]
+    });
+    let gem_out = convert_request_value(
+        ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::GeminiNative),
+        chat_with_ref,
+    )
+    .unwrap();
+    let fn_resp = &gem_out["contents"][2]["parts"][0]["functionResponse"]["response"];
+    assert!(fn_resp.get("$ref").is_none());
+    assert!(fn_resp["result"].as_str().unwrap().contains("$ref"));
+
+    // Gemini response with stringified int64 usage + toolUsePromptTokenCount + IMAGE_SAFETY.
+    let gem_resp = json!({
+        "responseId": "gem_1",
+        "modelVersion": "gemini-2.5-pro",
+        "candidates": [{"content": {"role": "model", "parts": []}, "finishReason": "IMAGE_SAFETY"}],
+        "usageMetadata": {
+            "promptTokenCount": "100",
+            "toolUsePromptTokenCount": "25",
+            "candidatesTokenCount": "10",
+            "totalTokenCount": "135"
+        }
+    });
+    let chat_resp = convert_response_value(
+        ConversionRoute::new(AiProtocol::GeminiNative, AiProtocol::OpenAiChat),
+        gem_resp,
+    )
+    .unwrap();
+    assert_eq!(chat_resp["choices"][0]["finish_reason"], "content_filter");
+    assert_eq!(chat_resp["usage"]["prompt_tokens"], 125);
+}
+
+#[test]
+fn cross_protocol_moderation_incomplete_and_zero_usage_incomplete_error() {
+    // Chat "sensitive" -> Anthropic "refusal", Gemini "SAFETY", Responses status="incomplete" + content_filter.
+    let chat_sensitive = json!({
+        "id": "chat_sens",
+        "model": "m",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": "sensitive"}]
+    });
+    let to_anth = convert_response_value(
+        ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::AnthropicMessages),
+        chat_sensitive.clone(),
+    )
+    .unwrap();
+    assert_eq!(to_anth["stop_reason"], "refusal");
+
+    let to_resp = convert_response_value(
+        ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::OpenAiResponses),
+        chat_sensitive,
+    )
+    .unwrap();
+    assert_eq!(to_resp["status"], "incomplete");
+    assert_eq!(to_resp["incomplete_details"]["reason"], "content_filter");
+
+    // Responses stream: incomplete with zero usage and no output -> stream error.
+    let empty_incomplete_sse = [
+        r#"event: response.created
+data: {"type":"response.created","response":{"id":"resp_empty","model":"gpt-5","status":"in_progress","output":[]}}
+
+"#,
+        r#"event: response.incomplete
+data: {"type":"response.incomplete","response":{"id":"resp_empty","model":"gpt-5","status":"incomplete","output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}
+
+"#,
+    ]
+    .concat();
+    let err_out = collect_stream(
+        ConversionRoute::new(AiProtocol::OpenAiResponses, AiProtocol::OpenAiChat),
+        empty_incomplete_sse,
+    );
+    assert!(
+        err_out.contains("incomplete_empty_response"),
+        "expected incomplete_empty_response stream error, got: {err_out}"
+    );
+
+    // Chat stream: sensitive -> Responses stream keeps event response.completed + status=incomplete + incomplete_details.
+    let chat_sens_sse = [
+        r#"data: {"id":"chat_s","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}
+
+"#,
+        r#"data: {"id":"chat_s","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"sensitive"}]}
+
+"#,
+        "data: [DONE]\n\n",
+    ]
+    .concat();
+    let resp_sse = collect_stream(
+        ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::OpenAiResponses),
+        chat_sens_sse,
+    );
+    let completed = sse_data_values(&resp_sse)
+        .into_iter()
+        .rev()
+        .find(|v| v["type"] == "response.completed")
+        .expect("outer event must remain response.completed");
+    assert_eq!(completed["response"]["status"], "incomplete");
+    assert_eq!(
+        completed["response"]["incomplete_details"]["reason"],
+        "content_filter"
+    );
+}
+
+#[test]
+fn gemini_thinking_config_per_generation_rules_and_level_suffix_skip() {
+    // Gemini 2.5 Pro clamps disabled/none to minimum 128 (never 0).
+    let pro_disabled = convert_request_value(
+        ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::GeminiNative),
+        json!({
+            "model": "gemini-2.5-pro",
+            "reasoning_effort": "none",
+            "messages": [{"role": "user", "content": "hi"}]
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        pro_disabled["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+        128
+    );
+
+    // Gemini 3 Pro maps medium -> high and none -> low.
+    let g3_pro_medium = convert_request_value(
+        ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::GeminiNative),
+        json!({
+            "model": "gemini-3-pro-preview",
+            "reasoning_effort": "medium",
+            "messages": [{"role": "user", "content": "hi"}]
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        g3_pro_medium["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+        "high"
+    );
+
+    // Gemini 3 Flash maps none -> minimal.
+    let g3_flash_none = convert_request_value(
+        ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::GeminiNative),
+        json!({
+            "model": "gemini-3-flash",
+            "reasoning_effort": "none",
+            "messages": [{"role": "user", "content": "hi"}]
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        g3_flash_none["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+        "minimal"
+    );
+
+    // Level-suffixed relay alias skips thinkingConfig completely.
+    let suffixed = convert_request_value(
+        ConversionRoute::new(AiProtocol::OpenAiChat, AiProtocol::GeminiNative),
+        json!({
+            "model": "gemini-3-pro-high",
+            "reasoning_effort": "low",
+            "messages": [{"role": "user", "content": "hi"}]
+        }),
+    )
+    .unwrap();
+    assert!(suffixed
+        .pointer("/generationConfig/thinkingConfig")
+        .is_none());
 }

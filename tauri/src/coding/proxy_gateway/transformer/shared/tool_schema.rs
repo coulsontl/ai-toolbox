@@ -66,7 +66,46 @@ pub fn normalize_function_parameters(parameters: Option<&Value>) -> Value {
             }
         }
     }
+    sanitize_schema_required_null_recursive(&mut params);
     params
+}
+
+/// Recursively remove invalid `required: null` (or non-array `required`) fields
+/// emitted by some MCP/Codex schemas that strict OpenAI-compatible upstreams
+/// reject with HTTP 400 (cc-switch d5dfa830). Preserves `additionalProperties`.
+fn sanitize_schema_required_null_recursive(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            if let Some(required) = object.get("required") {
+                if !required.is_array() {
+                    object.remove("required");
+                }
+            }
+            for (key, child) in object {
+                if matches!(
+                    key.as_str(),
+                    "properties" | "patternProperties" | "definitions" | "$defs"
+                ) {
+                    if let Some(map) = child.as_object_mut() {
+                        for prop_schema in map.values_mut() {
+                            sanitize_schema_required_null_recursive(prop_schema);
+                        }
+                    }
+                } else if matches!(
+                    key.as_str(),
+                    "items" | "additionalProperties" | "anyOf" | "oneOf" | "allOf" | "not"
+                ) {
+                    sanitize_schema_required_null_recursive(child);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                sanitize_schema_required_null_recursive(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Convenience for owned optional parameters (e.g. IR `Option<Value>`).

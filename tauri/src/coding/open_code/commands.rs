@@ -1075,9 +1075,9 @@ pub async fn read_opencode_config(
             Ok(ReadConfigResult::Success { config })
         }
         Err(e) => {
-            // Truncate content preview to first 500 chars
-            let preview = if content.len() > 500 {
-                format!("{}...", &content[..500])
+            // Truncate content preview safely on a UTF-8 char boundary (first 500 chars)
+            let preview = if content.chars().count() > 500 {
+                format!("{}...", content.chars().take(500).collect::<String>())
             } else {
                 content
             };

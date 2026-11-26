@@ -55,12 +55,31 @@ pub(super) struct GatewaySideStores {
 }
 
 impl GatewaySideStores {
+    #[allow(dead_code)]
     pub(super) fn enrich_codex_request(&self, body: &mut serde_json::Value) -> usize {
         self.codex_history.enrich_request(body)
     }
 
+    pub(super) fn enrich_codex_request_scoped(
+        &self,
+        session_scope: Option<&str>,
+        body: &mut serde_json::Value,
+    ) -> usize {
+        self.codex_history.enrich_request_scoped(session_scope, body)
+    }
+
+    #[allow(dead_code)]
     pub(super) fn record_codex_response(&self, response: &serde_json::Value) -> usize {
         self.codex_history.record_response(response)
+    }
+
+    pub(super) fn record_codex_response_scoped(
+        &self,
+        session_scope: Option<&str>,
+        response: &serde_json::Value,
+    ) -> usize {
+        self.codex_history
+            .record_response_scoped(session_scope, response)
     }
 
     pub(super) fn codex_history(&self) -> Arc<codex_history::CodexHistoryStore> {

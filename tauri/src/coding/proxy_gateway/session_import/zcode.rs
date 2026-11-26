@@ -157,6 +157,7 @@ impl UsageRow {
                 output_tokens: Some(self.output_tokens.max(0) as u64),
                 cache_read_tokens: Some(cache_read),
                 cache_creation_tokens: Some(cache_creation),
+                cache_creation_1h_tokens: None,
                 envelope_id: None,
             },
             created_at,

@@ -16,8 +16,8 @@ use super::super::traits::OutboundTransformer;
 use super::super::types::AiProtocol;
 use super::inbound::{
     anthropic_request_to_llm, anthropic_response_to_llm, llm_response_to_anthropic,
-    ANTHROPIC_ARRAY_INSTRUCTIONS_KEY, ANTHROPIC_MESSAGE_INDEX_KEY, ANTHROPIC_RAW_CONTENT_BLOCK_KEY,
-    ANTHROPIC_RAW_TOOL_KEY,
+    normalize_anthropic_tool_use_id, ANTHROPIC_ARRAY_INSTRUCTIONS_KEY, ANTHROPIC_MESSAGE_INDEX_KEY,
+    ANTHROPIC_RAW_CONTENT_BLOCK_KEY, ANTHROPIC_RAW_TOOL_KEY,
 };
 use serde_json::{json, Value};
 
@@ -152,14 +152,24 @@ pub fn llm_request_to_anthropic(request: Request) -> Value {
         }
     }
 
-    let resolved_max_tokens = request
-        .max_tokens
-        .or(request.max_completion_tokens)
-        .unwrap_or(8192);
+    let explicit_max_tokens = request.max_tokens.or(request.max_completion_tokens);
+    let mut resolved_max_tokens =
+        explicit_max_tokens.unwrap_or_else(|| default_anthropic_max_tokens(&request.model));
     let thinking_plan = request
         .reasoning_effort
         .as_deref()
         .and_then(|effort| anthropic_thinking_plan(&request.model, effort, resolved_max_tokens));
+    // Anthropic Messages strictly requires `max_tokens > thinking.budget_tokens`.
+    // When the caller omitted `max_tokens` and a legacy budget plan resolved to
+    // >= our default (e.g. `high` = 32_768 or `xhigh`/`max` = 32_000), raise
+    // the default `max_tokens` above the budget so the upstream does not 400.
+    if explicit_max_tokens.is_none() {
+        if let Some(AnthropicThinkingPlan::Budget { budget_tokens }) = thinking_plan {
+            if budget_tokens >= resolved_max_tokens {
+                resolved_max_tokens = budget_tokens.saturating_add(4_096);
+            }
+        }
+    }
 
     let mut body = json!({
         "model": request.model,
@@ -238,7 +248,20 @@ pub fn llm_request_to_anthropic(request: Request) -> Value {
     if !tools.is_empty() {
         body["tools"] = json!(tools);
     }
-    if let Some(tool_choice) = tool_choice_to_anthropic(request.tool_choice) {
+    let mut tool_choice = tool_choice_to_anthropic(request.tool_choice);
+    if request.parallel_tool_calls == Some(false) {
+        if let Some(choice_obj) = tool_choice.as_mut().and_then(Value::as_object_mut) {
+            if choice_obj.get("type").and_then(Value::as_str) != Some("none") {
+                choice_obj.insert("disable_parallel_tool_use".to_string(), json!(true));
+            }
+        } else if body.get("tools").is_some() {
+            tool_choice = Some(json!({
+                "type": "auto",
+                "disable_parallel_tool_use": true
+            }));
+        }
+    }
+    if let Some(tool_choice) = tool_choice {
         body["tool_choice"] = tool_choice;
     }
     body
@@ -321,10 +344,22 @@ fn anthropic_message_index(message: &Message) -> Option<u64> {
         .and_then(Value::as_u64)
 }
 
+fn default_anthropic_max_tokens(model: &str) -> i64 {
+    let lower = model.trim().to_ascii_lowercase().replace(['.', '_'], "-");
+    if lower.contains("claude-3-opus") {
+        4_096
+    } else if lower.contains("claude-3-5-") {
+        8_192
+    } else {
+        32_000
+    }
+}
+
 fn tool_result_to_anthropic(message: &Message) -> Value {
+    let raw_id = message.tool_call_id.as_deref().unwrap_or_default();
     let mut result = json!({
         "type": "tool_result",
-        "tool_use_id": message.tool_call_id.clone().unwrap_or_default(),
+        "tool_use_id": normalize_anthropic_tool_use_id(raw_id),
         "content": tool_result_content_to_anthropic(&message.content)
     });
     if let Some(is_error) = message.tool_call_is_error {
@@ -496,7 +531,7 @@ fn message_content_part_to_anthropic(part: &MessageContentPart) -> Option<Value>
 fn tool_call_to_anthropic(tool_call: &ToolCall) -> Value {
     let mut value = json!({
         "type": "tool_use",
-        "id": tool_call.id,
+        "id": normalize_anthropic_tool_use_id(&tool_call.id),
         "name": tool_call.function.name,
         "input": tool_arguments_value(&tool_call.function.arguments)
     });

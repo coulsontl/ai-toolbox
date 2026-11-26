@@ -120,10 +120,50 @@ pub fn responses_request_to_llm(body: Value) -> Request {
             Value::Array(raw_input_items),
         );
     }
-    if let Some(tools) = body.get("tools").and_then(Value::as_array) {
-        request.tools = responses_tools_to_llm(tools);
+    let mut raw_tools_combined: Vec<Value> = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    // Codex Responses Lite carries extra tool definitions inside `input[]`
+    // items with `type == "additional_tools"` (cc-switch a35e5000). Hoist them
+    // into `request.tools` so Chat/Anthropic/Gemini targets receive them and do
+    // not turn the carrier into an empty developer message.
+    if let Some(input_items) = body.get("input").and_then(Value::as_array) {
+        let mut seen_names: std::collections::HashSet<String> = raw_tools_combined
+            .iter()
+            .filter_map(|tool| {
+                tool.get("name")
+                    .or_else(|| tool.pointer("/function/name"))
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+            })
+            .collect();
+        for item in input_items {
+            if item.get("type").and_then(Value::as_str) != Some("additional_tools") {
+                continue;
+            }
+            if let Some(extra_tools) = item.get("tools").and_then(Value::as_array) {
+                for tool in extra_tools {
+                    let key = tool
+                        .get("name")
+                        .or_else(|| tool.pointer("/function/name"))
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string);
+                    if let Some(name) = key {
+                        if !seen_names.insert(name) {
+                            continue;
+                        }
+                    }
+                    raw_tools_combined.push(tool.clone());
+                }
+            }
+        }
     }
-    attach_responses_raw_request_metadata(&body, &mut request);
+    if !raw_tools_combined.is_empty() {
+        request.tools = responses_tools_to_llm(&raw_tools_combined);
+    }
+    attach_responses_raw_request_metadata(&body, &raw_tools_combined, &mut request);
     request
 }
 
@@ -264,6 +304,7 @@ pub fn llm_request_to_responses(request: Request) -> Value {
     if let Some(stop) = stop_to_value(request.stop) {
         body["stop"] = stop;
     }
+    let default_non_strict_for_anthropic = request.api_format == Some(ApiFormat::AnthropicMessages);
     let tools = request
         .tools
         .into_iter()
@@ -289,7 +330,13 @@ pub fn llm_request_to_responses(request: Request) -> Value {
                 if function.name.is_empty() {
                     return None;
                 }
-                let strict = function.strict;
+                // Anthropic tools allow optional properties and are non-strict by
+                // default. Responses upstreams auto-strictify when `strict` is
+                // omitted, rejecting optional parameters (AxonHub 98b8195e /
+                // cc-switch 02759c67). Explicitly emit `strict: false` when absent.
+                let strict = function
+                    .strict
+                    .or_else(|| default_non_strict_for_anthropic.then_some(false));
                 let mut tool_object = Map::new();
                 tool_object.insert("type".to_string(), json!("function"));
                 tool_object.insert("name".to_string(), json!(function.name));
@@ -348,16 +395,38 @@ pub fn llm_request_to_responses(request: Request) -> Value {
     }
     if request.response_format.is_some() || request.verbosity.is_some() {
         let mut text = Map::new();
+        let mut is_json_object_format = false;
         if let Some(response_format) = request.response_format {
-            text.insert(
-                "format".to_string(),
-                response_format_to_responses_format(response_format),
-            );
+            let format_value = response_format_to_responses_format(response_format);
+            is_json_object_format =
+                format_value.get("type").and_then(Value::as_str) == Some("json_object");
+            text.insert("format".to_string(), format_value);
         }
         if let Some(verbosity) = request.verbosity {
             text.insert("verbosity".to_string(), json!(verbosity));
         }
         body["text"] = Value::Object(text);
+
+        // OpenAI Responses validates `text.format.type == "json_object"` by
+        // scanning `input` items (not `instructions`) for the word "json".
+        // Insert a minimal developer reminder when none is present (AxonHub dd364d6a).
+        if is_json_object_format {
+            if let Some(input_items) = body.get_mut("input").and_then(Value::as_array_mut) {
+                if !responses_input_mentions_json(input_items) {
+                    input_items.insert(
+                        0,
+                        json!({
+                            "type": "message",
+                            "role": "developer",
+                            "content": [{
+                                "type": "input_text",
+                                "text": "Respond in valid JSON format."
+                            }]
+                        }),
+                    );
+                }
+            }
+        }
     }
     if let Some(prompt_cache_key) = request.prompt_cache_key {
         body["prompt_cache_key"] = json!(prompt_cache_key);
@@ -378,6 +447,31 @@ pub fn llm_request_to_responses(request: Request) -> Value {
         body["truncation"] = truncation;
     }
     body
+}
+
+fn responses_input_mentions_json(items: &[Value]) -> bool {
+    items.iter().any(|item| {
+        let is_message = item
+            .get("type")
+            .and_then(Value::as_str)
+            .is_none_or(|kind| kind == "message");
+        if !is_message || item.get("role").and_then(Value::as_str) == Some("assistant") {
+            return false;
+        }
+        match item.get("content") {
+            Some(Value::String(text)) => text.to_ascii_lowercase().contains("json"),
+            Some(Value::Array(parts)) => parts.iter().any(|part| {
+                matches!(
+                    part.get("type").and_then(Value::as_str),
+                    Some("input_text" | "text")
+                ) && part
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.to_ascii_lowercase().contains("json"))
+            }),
+            _ => false,
+        }
+    })
 }
 
 pub fn llm_request_to_responses_compact(request: Request) -> Value {

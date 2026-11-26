@@ -102,6 +102,15 @@ pub fn validate_settings(settings: &ProxyGatewaySettings) -> Result<(String, u16
     Ok((host, port))
 }
 
+pub fn format_listen_base_url(host: &str, port: u16) -> String {
+    let trimmed = host.trim();
+    if trimmed.contains(':') && !trimmed.starts_with('[') && !trimmed.ends_with(']') {
+        format!("http://[{trimmed}]:{port}")
+    } else {
+        format!("http://{trimmed}:{port}")
+    }
+}
+
 pub fn bind_gateway_listener(
     settings: &ProxyGatewaySettings,
 ) -> Result<BoundGatewayListener, String> {
@@ -127,7 +136,7 @@ pub fn bind_gateway_listener(
                     listener,
                     listen_host: host.clone(),
                     listen_port: local_port,
-                    base_url: format!("http://{}:{}", host, local_port),
+                    base_url: format_listen_base_url(&host, local_port),
                 });
             }
             Err(error) => {
@@ -226,5 +235,18 @@ mod tests {
 
         assert_ne!(bound.listen_port, occupied_port);
         assert_eq!(bound.listen_host, "127.0.0.1");
+    }
+
+    #[test]
+    fn format_listen_base_url_brackets_bare_ipv6_literals() {
+        assert_eq!(
+            format_listen_base_url("127.0.0.1", 37123),
+            "http://127.0.0.1:37123"
+        );
+        assert_eq!(format_listen_base_url("::1", 37123), "http://[::1]:37123");
+        assert_eq!(
+            format_listen_base_url("[::1]", 37123),
+            "http://[::1]:37123"
+        );
     }
 }

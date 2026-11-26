@@ -16,7 +16,7 @@ use super::shared::signature::{
 use super::shared::{
     extract_reasoning_field_text, split_leading_think_block, strip_leading_think_open_tag,
 };
-use super::sse::{append_utf8_safe, parse_sse_block, sse_done, sse_event, take_sse_block};
+use super::sse::{parse_sse_block, sse_done, sse_event, SseBuffer};
 use super::types::{AiProtocol, ConversionRoute};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -66,9 +66,9 @@ pub struct StreamKernel {
     route: ConversionRoute,
     source: SourceStreamState,
     target: TargetStreamState,
-    buffer: String,
-    utf8_remainder: Vec<u8>,
+    sse_buffer: SseBuffer,
     terminated_by_error: bool,
+    done_received: bool,
     /// Last service tier the upstream confirmed in a source stream event
     /// (last-wins, mirroring `SseUsageCollector`). Captured here because the
     /// tier never passes through the IR, and the client-facing stream is what
@@ -87,32 +87,45 @@ impl StreamKernel {
             route,
             source: SourceStreamState::default(),
             target: TargetStreamState::with_conversion_context(context),
-            buffer: String::new(),
-            utf8_remainder: Vec::new(),
+            sse_buffer: SseBuffer::new(),
             terminated_by_error: false,
+            done_received: false,
             confirmed_service_tier: None,
         }
     }
 
     pub fn push_chunk(&mut self, chunk: &[u8]) -> Vec<Vec<u8>> {
-        append_utf8_safe(&mut self.buffer, &mut self.utf8_remainder, chunk);
+        if self.terminated_by_error || self.done_received {
+            return Vec::new();
+        }
+        self.sse_buffer.push_bytes(chunk);
         let mut out = Vec::new();
-        while let Some(block) = take_sse_block(&mut self.buffer) {
+        while let Some(block) = self.sse_buffer.next_block().map(str::to_owned) {
             out.extend(self.convert_block(&block));
+            if self.terminated_by_error || self.done_received {
+                self.sse_buffer.clear();
+                break;
+            }
         }
         out
     }
 
     pub fn finish(&mut self) -> Vec<Vec<u8>> {
-        if self.buffer.trim().is_empty() {
+        if self.done_received {
+            self.sse_buffer.clear();
+            return Vec::new();
+        }
+        let tail = self.sse_buffer.take_tail();
+        if tail.trim().is_empty() {
             let mut out = self.finish_source();
             out.extend(self.target.finish(self.target_protocol()));
             return out;
         }
-        let tail = std::mem::take(&mut self.buffer);
         let mut out = self.convert_block(&tail);
-        out.extend(self.finish_source());
-        out.extend(self.target.finish(self.target_protocol()));
+        if !self.done_received {
+            out.extend(self.finish_source());
+            out.extend(self.target.finish(self.target_protocol()));
+        }
         out
     }
 
@@ -132,7 +145,7 @@ impl StreamKernel {
     }
 
     fn convert_block(&mut self, block: &str) -> Vec<Vec<u8>> {
-        if self.terminated_by_error {
+        if self.terminated_by_error || self.done_received {
             return Vec::new();
         }
         let parsed = parse_sse_block(block);
@@ -151,6 +164,7 @@ impl StreamKernel {
             return Vec::new();
         }
         if parsed.data.trim() == "[DONE]" {
+            self.done_received = true;
             let mut out = self.finish_source();
             out.extend(self.target.finish(target));
             return out;
@@ -226,6 +240,10 @@ struct SourceStreamState {
     /// Accumulated arguments per tool index (for ordered flush / late identity).
     chat_tool_arguments: HashMap<usize, String>,
     chat_tool_types: HashMap<usize, String>,
+    /// Tracks synthesized indices when upstream Chat SSE omits `tool_calls[].index`.
+    chat_tool_next_index: usize,
+    chat_tool_last_index: Option<usize>,
+    chat_tool_index_by_id: HashMap<String, usize>,
     /// Next tool index that may be first-emitted (CS#5310 ordered flush).
     next_tool_index_to_add: usize,
     /// Tools whose id/name are ready but waiting for earlier indices.
@@ -237,6 +255,7 @@ struct SourceStreamState {
     chat_inline_think_buffer: String,
     anthropic_tool_by_block: HashMap<usize, SourceToolState>,
     responses_tool_by_item: HashMap<String, SourceToolState>,
+    responses_seen_output: bool,
     gemini_accumulated_text: String,
     gemini_accumulated_reasoning: String,
     gemini_seen_tool_call: bool,
@@ -360,10 +379,25 @@ impl SourceStreamState {
                     model: model.clone(),
                 });
             }
-            if let Some(text) = delta.get("content").and_then(Value::as_str) {
-                if !text.is_empty() {
+            match delta.get("content") {
+                Some(Value::String(text)) if !text.is_empty() => {
                     out.extend(self.parse_chat_content_delta(text));
                 }
+                Some(Value::Array(parts)) => {
+                    for part in parts {
+                        if part.get("type").and_then(Value::as_str) == Some("thinking") {
+                            let thinking = extract_mistral_thinking_part_text(part);
+                            if !thinking.is_empty() {
+                                out.push(UnifiedStreamEvent::ReasoningDelta(thinking));
+                            }
+                        } else if let Some(text) = part.get("text").and_then(Value::as_str) {
+                            if !text.is_empty() {
+                                out.extend(self.parse_chat_content_delta(text));
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
             if let Some(reasoning) = extract_reasoning_field_text(delta) {
                 if !reasoning.is_empty() {
@@ -382,8 +416,7 @@ impl SourceStreamState {
             if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 out.extend(self.flush_chat_inline_think_at_boundary());
                 for tool_call in tool_calls {
-                    let index =
-                        tool_call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                    let index = self.resolve_chat_tool_call_index(tool_call);
                     if tool_call.get("type").and_then(Value::as_str)
                         == Some(TOOL_TYPE_RESPONSES_CUSTOM_TOOL)
                     {
@@ -486,12 +519,11 @@ impl SourceStreamState {
                 .get("finish_reason")
                 .and_then(Value::as_str)
                 .filter(|reason| !reason.trim().is_empty())
-                .map(|reason| {
-                    if reason == "function_call" || (reason == "stop" && self.chat_seen_tool_call) {
-                        "tool_calls"
-                    } else {
-                        reason
-                    }
+                .map(|reason| match reason {
+                    "function_call" => "tool_calls",
+                    "stop" if self.chat_seen_tool_call => "tool_calls",
+                    "sensitive" => "content_filter",
+                    other => other,
                 })
                 .map(ToString::to_string)
             {
@@ -600,6 +632,53 @@ impl SourceStreamState {
             });
         }
         out
+    }
+
+    fn resolve_chat_tool_call_index(&mut self, tool_call: &Value) -> usize {
+        let id = tool_call
+            .pointer("/response_custom_tool_call/call_id")
+            .or_else(|| tool_call.get("id"))
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty());
+        if let Some(explicit) = tool_call.get("index").and_then(Value::as_u64) {
+            let index = explicit as usize;
+            self.chat_tool_next_index = self.chat_tool_next_index.max(index.saturating_add(1));
+            self.chat_tool_last_index = Some(index);
+            if let Some(id) = id {
+                self.chat_tool_index_by_id.insert(id.to_string(), index);
+            }
+            return index;
+        }
+        if let Some(id) = id {
+            if let Some(&existing) = self.chat_tool_index_by_id.get(id) {
+                self.chat_tool_last_index = Some(existing);
+                return existing;
+            }
+            let index = self.chat_tool_next_index;
+            self.chat_tool_next_index = self.chat_tool_next_index.saturating_add(1);
+            self.chat_tool_index_by_id.insert(id.to_string(), index);
+            self.chat_tool_last_index = Some(index);
+            return index;
+        }
+        let has_name = tool_call
+            .pointer("/response_custom_tool_call/name")
+            .or_else(|| tool_call.pointer("/function/name"))
+            .or_else(|| tool_call.get("name"))
+            .and_then(Value::as_str)
+            .is_some_and(|name| !name.is_empty());
+        if let Some(last) = self.chat_tool_last_index {
+            let last_has_name = self
+                .chat_tool_names
+                .get(&last)
+                .is_some_and(|name| !name.is_empty());
+            if !has_name || !last_has_name {
+                return last;
+            }
+        }
+        let index = self.chat_tool_next_index;
+        self.chat_tool_next_index = self.chat_tool_next_index.saturating_add(1);
+        self.chat_tool_last_index = Some(index);
+        index
     }
 
     fn mark_chat_tool_ready(&mut self, index: usize) {
@@ -827,13 +906,19 @@ impl SourceStreamState {
                 .get("delta")
                 .and_then(Value::as_str)
                 .filter(|text| !text.is_empty())
-                .map(|text| vec![UnifiedStreamEvent::TextDelta(text.to_string())])
+                .map(|text| {
+                    self.responses_seen_output = true;
+                    vec![UnifiedStreamEvent::TextDelta(text.to_string())]
+                })
                 .unwrap_or_default(),
             "response.reasoning_summary_text.delta" => value
                 .get("delta")
                 .and_then(Value::as_str)
                 .filter(|text| !text.is_empty())
-                .map(|text| vec![UnifiedStreamEvent::ReasoningDelta(text.to_string())])
+                .map(|text| {
+                    self.responses_seen_output = true;
+                    vec![UnifiedStreamEvent::ReasoningDelta(text.to_string())]
+                })
                 .unwrap_or_default(),
             "response.output_item.added" => {
                 let item = value.get("item").unwrap_or(&value);
@@ -844,6 +929,7 @@ impl SourceStreamState {
                         .and_then(Value::as_str)
                         .filter(|signature| !signature.is_empty())
                         .map(|signature| {
+                            self.responses_seen_output = true;
                             vec![UnifiedStreamEvent::ReasoningSignature {
                                 signature: encode_signature(
                                     SignatureProvider::OpenAiResponses,
@@ -856,6 +942,7 @@ impl SourceStreamState {
                 if item_type != "function_call" && item_type != "custom_tool_call" {
                     return Vec::new();
                 }
+                self.responses_seen_output = true;
                 let key = item
                     .get("id")
                     .or_else(|| value.get("item_id"))
@@ -935,6 +1022,9 @@ impl SourceStreamState {
                     if state.arguments_done {
                         return Vec::new();
                     }
+                    if !delta.is_empty() {
+                        self.responses_seen_output = true;
+                    }
                     state.arguments.push_str(&delta);
                 }
                 self.emit_responses_tool_arguments_progress(&key, false)
@@ -951,8 +1041,10 @@ impl SourceStreamState {
                         .get("arguments")
                         .or_else(|| value.get("input"))
                         .and_then(Value::as_str)
+                        .filter(|arguments| !arguments.is_empty())
                     {
-                        // Prefer the complete snapshot when present; only emit the unsent suffix.
+                        // Prefer the complete snapshot when non-empty; never let an empty
+                        // done snapshot erase previously streamed deltas.
                         state.arguments = arguments.to_string();
                     }
                 }
@@ -967,6 +1059,7 @@ impl SourceStreamState {
                         .and_then(Value::as_str)
                         .filter(|signature| !signature.is_empty())
                         .map(|signature| {
+                            self.responses_seen_output = true;
                             vec![UnifiedStreamEvent::ReasoningSignature {
                                 signature: encode_signature(
                                     SignatureProvider::OpenAiResponses,
@@ -1027,10 +1120,9 @@ impl SourceStreamState {
             | "response.canceled"
             | "response.incomplete" => {
                 let response = value.get("response").unwrap_or(&value);
+                let output_items = response.get("output").and_then(Value::as_array);
                 let has_tool_call = !self.responses_tool_by_item.is_empty()
-                    || response
-                        .get("output")
-                        .and_then(Value::as_array)
+                    || output_items
                         .map(|items| {
                             items.iter().any(|item| {
                                 matches!(
@@ -1040,16 +1132,48 @@ impl SourceStreamState {
                             })
                         })
                         .unwrap_or(false);
+                let incomplete_reason = response
+                    .pointer("/incomplete_details/reason")
+                    .and_then(Value::as_str);
+                let is_incomplete = event_type == "response.incomplete"
+                    || response.get("status").and_then(Value::as_str) == Some("incomplete");
+                if is_incomplete && incomplete_reason != Some("content_filter") {
+                    let has_zero_usage = response
+                        .get("usage")
+                        .is_some_and(is_zero_chat_usage_placeholder);
+                    let output_is_empty = output_items.is_none_or(|items| items.is_empty());
+                    if has_zero_usage
+                        && !self.responses_seen_output
+                        && !has_tool_call
+                        && output_is_empty
+                    {
+                        return vec![UnifiedStreamEvent::StreamError {
+                            code: "incomplete_empty_response".to_string(),
+                            message: "Upstream returned an incomplete empty response with zero token usage"
+                                .to_string(),
+                        }];
+                    }
+                }
                 let reason = match event_type {
                     "response.cancelled" | "response.canceled" => Some("cancelled".to_string()),
-                    "response.incomplete" => Some("length".to_string()),
+                    "response.incomplete" => Some(if incomplete_reason == Some("content_filter") {
+                        "content_filter".to_string()
+                    } else {
+                        "length".to_string()
+                    }),
                     _ => response
                         .get("status")
                         .and_then(Value::as_str)
                         .map(|status| match status {
                             "failed" => "error",
                             "canceled" | "cancelled" => "cancelled",
-                            "incomplete" => "length",
+                            "incomplete" => {
+                                if incomplete_reason == Some("content_filter") {
+                                    "content_filter"
+                                } else {
+                                    "length"
+                                }
+                            }
                             _ if has_tool_call => "tool_calls",
                             _ => "stop",
                         })
@@ -1188,9 +1312,11 @@ impl SourceStreamState {
                     .filter(|reason| !reason.trim().is_empty())
                     .map(|reason| {
                         let mapped_reason = match reason {
-                            "max_tokens" => "length",
+                            "max_tokens" | "model_context_window_exceeded" => "length",
                             "tool_use" => "tool_calls",
                             "refusal" => "refusal",
+                            "pause_turn" => "pause_turn",
+                            "stop_sequence" => "stop_sequence",
                             _ => "stop",
                         };
                         vec![UnifiedStreamEvent::Finish {
@@ -1553,13 +1679,39 @@ fn leading_think_prefix_decision(buffer: &str) -> ThinkPrefixDecision {
     }
 
     let normalized = trimmed.to_ascii_lowercase();
-    if normalized.starts_with("<think>") {
+    if normalized.starts_with("<think>") || normalized.starts_with("<thinking>") {
         return ThinkPrefixDecision::Reasoning;
     }
-    if "<think>".starts_with(&normalized) {
+    if "<think>".starts_with(&normalized) || "<thinking>".starts_with(&normalized) {
         return ThinkPrefixDecision::NeedMore;
     }
     ThinkPrefixDecision::Text
+}
+
+fn extract_mistral_thinking_part_text(part: &Value) -> String {
+    if let Some(thinking) = part.get("thinking") {
+        match thinking {
+            Value::String(text) => return text.clone(),
+            Value::Array(items) => {
+                let mut out = String::new();
+                for item in items {
+                    if let Some(text) = item.get("text").and_then(Value::as_str) {
+                        out.push_str(text);
+                    } else if let Some(text) = item.as_str() {
+                        out.push_str(text);
+                    }
+                }
+                if !out.is_empty() {
+                    return out;
+                }
+            }
+            _ => {}
+        }
+    }
+    part.get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn gemini_part_thought_signature(part: &Value) -> Option<&str> {
@@ -1736,9 +1888,11 @@ fn chat_usage_to_responses(usage: Option<&Value>) -> Value {
 
 fn anthropic_stop_reason(reason: &str) -> &'static str {
     match reason {
-        "length" | "max_tokens" => "max_tokens",
+        "length" | "max_tokens" | "model_context_window_exceeded" => "max_tokens",
         "tool_calls" | "function_call" | "tool_use" => "tool_use",
-        "refusal" => "refusal",
+        "refusal" | "content_filter" | "sensitive" => "refusal",
+        "pause_turn" => "pause_turn",
+        "stop_sequence" => "stop_sequence",
         _ => "end_turn",
     }
 }
@@ -1826,6 +1980,9 @@ struct TargetStreamState {
     open_anthropic_tools: HashMap<usize, TargetAnthropicToolState>,
     open_anthropic_current_tool_index: Option<usize>,
     pending_anthropic_stop_reason: Option<String>,
+    /// Tracks Chat target tool indices already opened (`value = name_emitted`)
+    /// so subsequent argument deltas omit repeated `id`/`type`/`name`.
+    emitted_chat_tools: HashMap<usize, bool>,
     seen_response_tools: HashMap<usize, TargetResponseToolState>,
     responses_next_output_index: usize,
     responses_reasoning_started: bool,
@@ -2440,13 +2597,21 @@ impl TargetStreamState {
             ));
             return out;
         }
+        let incomplete_reason = match finish_reason.as_str() {
+            "length" | "max_tokens" | "model_context_window_exceeded" => Some("max_output_tokens"),
+            "content_filter" | "refusal" | "sensitive" => Some("content_filter"),
+            _ => None,
+        };
         let mut response = json!({
             "id": self.id,
             "object": "response",
-            "status": if finish_reason == "length" { "incomplete" } else { "completed" },
+            "status": if incomplete_reason.is_some() { "incomplete" } else { "completed" },
             "model": self.model,
             "output": self.completed_responses_output()
         });
+        if let Some(reason) = incomplete_reason {
+            response["incomplete_details"] = json!({ "reason": reason });
+        }
         if let Some(usage) = usage.as_ref() {
             response["usage"] = chat_usage_to_responses(Some(usage));
         }
@@ -2604,6 +2769,25 @@ impl TargetStreamState {
         }
     }
 
+    fn close_all_anthropic_tool_blocks(&mut self, out: &mut Vec<Vec<u8>>) {
+        self.open_anthropic_current_tool_index = None;
+        if self.open_anthropic_tools.is_empty() {
+            return;
+        }
+        let mut remaining = self
+            .open_anthropic_tools
+            .drain()
+            .map(|(_, state)| state.block_index)
+            .collect::<Vec<_>>();
+        remaining.sort_unstable();
+        for block_index in remaining {
+            out.push(sse_event(
+                Some("content_block_stop"),
+                &json!({"type": "content_block_stop", "index": block_index}),
+            ));
+        }
+    }
+
     fn finish_anthropic_message(
         &mut self,
         reason: Option<String>,
@@ -2624,8 +2808,7 @@ impl TargetStreamState {
 
         self.close_anthropic_reasoning_block(&mut out);
         self.close_anthropic_text_block(&mut out);
-        self.close_anthropic_tool_block(&mut out);
-        self.open_anthropic_tools.clear();
+        self.close_all_anthropic_tool_blocks(&mut out);
         self.flush_pending_anthropic_signature_block(&mut out);
 
         if usage.is_none() && !force {
@@ -2823,12 +3006,13 @@ impl TargetStreamState {
                     self.open_anthropic_tools
                         .insert(index, TargetAnthropicToolState { block_index });
                     self.open_anthropic_current_tool_index = Some(index);
+                    let normalized_id = super::anthropic::normalize_anthropic_tool_use_id(&id);
                     out.push(sse_event(
                         Some("content_block_start"),
                         &json!({
                             "type": "content_block_start",
                             "index": block_index,
-                            "content_block": {"type": "tool_use", "id": id, "name": name, "input": {}}
+                            "content_block": {"type": "tool_use", "id": normalized_id, "name": name, "input": {}}
                         }),
                     ));
                 }
@@ -2921,18 +3105,26 @@ impl TargetStreamState {
                     ));
                     return out;
                 }
+                let is_first_chunk = !self.emitted_chat_tools.contains_key(&index);
+                let sent_name = self.emitted_chat_tools.entry(index).or_insert(false);
                 let mut function = json!({"arguments": arguments});
-                if !name.is_empty() {
+                if !name.is_empty() && !*sent_name {
                     function["name"] = json!(name);
+                    *sent_name = true;
+                }
+                let mut tool_call_entry = json!({
+                    "index": index,
+                    "function": function
+                });
+                if is_first_chunk {
+                    if !id.is_empty() {
+                        tool_call_entry["id"] = json!(id);
+                    }
+                    tool_call_entry["type"] = json!("function");
                 }
                 out.push(self.chat_chunk(
                     json!({
-                        "tool_calls": [{
-                            "index": index,
-                            "id": id,
-                            "type": "function",
-                            "function": function
-                        }]
+                        "tool_calls": [tool_call_entry]
                     }),
                     None,
                 ));
@@ -2982,7 +3174,9 @@ impl TargetStreamState {
                     Some(match reason.as_deref() {
                         Some("length") => "length",
                         Some("tool_calls") => "tool_calls",
-                        Some("refusal") => "content_filter",
+                        Some("refusal") | Some("content_filter") | Some("sensitive") => {
+                            "content_filter"
+                        }
                         Some("cancelled") | Some("canceled") => "cancelled",
                         _ => "stop",
                     }),
@@ -3308,7 +3502,7 @@ impl TargetStreamState {
         }
         let finish_reason = match self.pending_gemini_finish_reason.take().as_deref() {
             Some("length") => "MAX_TOKENS",
-            Some("refusal") => "SAFETY",
+            Some("refusal") | Some("content_filter") | Some("sensitive") => "SAFETY",
             _ => "STOP",
         };
         out.push(self.gemini_chunk(

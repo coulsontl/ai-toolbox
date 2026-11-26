@@ -120,6 +120,7 @@ pub(super) fn parse(path: &Path, fallback: i64) -> Result<ParsedSession, String>
             output_tokens: Some(number(raw, &["outputTokens"])),
             cache_read_tokens: Some(number(raw, &["cacheReadTokens"])),
             cache_creation_tokens: Some(number(raw, &["cacheWriteTokens"])),
+            cache_creation_1h_tokens: None,
             envelope_id: string(
                 data,
                 &[

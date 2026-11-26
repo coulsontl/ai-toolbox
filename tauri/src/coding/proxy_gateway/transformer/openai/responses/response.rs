@@ -101,7 +101,10 @@ pub fn responses_response_to_llm(body: Value) -> Response {
     message.tool_calls = tool_calls;
     let has_tool = !message.tool_calls.is_empty();
     let status = body.get("status").and_then(Value::as_str);
-    let finish_reason = responses_status_to_finish(status, has_tool);
+    let incomplete_reason = body
+        .pointer("/incomplete_details/reason")
+        .and_then(Value::as_str);
+    let finish_reason = responses_status_to_finish(status, incomplete_reason, has_tool);
     let error = if status == Some("failed") || finish_reason == "error" {
         Some(responses_error_to_llm(body.get("error")))
     } else {
@@ -198,6 +201,20 @@ pub fn llm_response_to_responses(response: Response) -> Value {
         choice.message.refusal.clone(),
         &mut output,
     );
+    // Strict Responses upstreams require replayed output message IDs to carry
+    // the `msg_` prefix (cc-switch 82c29d09).
+    let base_msg_id = if response.id.is_empty() {
+        "gateway".to_string()
+    } else {
+        response.id.clone()
+    };
+    for (idx, item) in output.iter_mut().enumerate() {
+        if item.get("type").and_then(Value::as_str) == Some("message")
+            && item.get("id").and_then(Value::as_str).is_none_or(|id| !id.starts_with("msg_"))
+        {
+            item["id"] = json!(format!("msg_{base_msg_id}_{idx}"));
+        }
+    }
     for tool_call in choice.message.tool_calls {
         output.push(tool_call_to_responses_item(tool_call));
     }
@@ -215,6 +232,13 @@ pub fn llm_response_to_responses(response: Response) -> Value {
         "output": output,
         "usage": usage_to_responses(response.usage.as_ref())
     });
+    if response_error.is_none() {
+        if let Some(details) =
+            finish_to_responses_incomplete_details(choice.finish_reason.as_deref())
+        {
+            body["incomplete_details"] = details;
+        }
+    }
     if let Some(previous_response_id) = previous_response_id {
         body["previous_response_id"] = json!(previous_response_id);
     }

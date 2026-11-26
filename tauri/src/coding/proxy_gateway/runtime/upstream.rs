@@ -2,13 +2,17 @@ use super::compat::codex_remote_compaction::{
     self as codex_remote_compaction, RemoteCompactionCompat, COMPACTION_MODE_FALLBACK,
     COMPACTION_MODE_LOCAL, COMPACTION_MODE_NATIVE, COMPACTION_MODE_SIMULATED,
 };
+use super::compat::codex_responses::{
+    apply_third_party_native_responses_request_compat,
+    strip_reasoning_summary_delivery_stream_option, wrap_late_arguments_repair_sse_stream,
+};
 use super::compat::codex_responses_compact::{
     CodexResponsesCompactCompat, CODEX_RESPONSES_COMPACT_COMPAT_HEADER,
 };
 use super::compat::provider_kind::ProviderBodyCompat;
 use super::compat::xai_responses::{
-    apply_xai_responses_passthrough, namespace_restore_map, restore_response_namespaces,
-    wrap_namespace_restore_sse_stream, NamespacedName,
+    apply_xai_responses_passthrough, namespace_restore_map, restore_xai_responses_value,
+    rewrite_xai_hosted_web_search_tool_choice, wrap_namespace_restore_sse_stream, NamespacedName,
 };
 use super::content_encoding::{
     get_content_encoding_from_header_map, maybe_decompress_encoded_body,
@@ -762,7 +766,7 @@ fn anthropic_sse_event_has_meaningful_content(event_type: &str, value: &Value) -
         "message_delta" => value
             .pointer("/delta/stop_reason")
             .and_then(Value::as_str)
-            .is_some_and(|reason| reason == "tool_use"),
+            .is_some_and(|reason| matches!(reason, "tool_use" | "refusal")),
         _ => false,
     }
 }
@@ -1377,14 +1381,23 @@ async fn forward_to_upstream(
 
         attempted_provider_count = attempted_provider_count.saturating_add(1);
         let mut provider_retry_count = 0_u32;
+        let mut force_strip_responses_opaque_state: Option<bool> = None;
+        let mut is_opaque_state_rectifier_retry = false;
         loop {
-            if attempt_count > 0 && retry_count >= app_config.max_retry_count {
+            if !is_opaque_state_rectifier_retry
+                && attempt_count > 0
+                && retry_count >= app_config.max_retry_count
+            {
                 break 'providers;
             }
 
-            attempt_count = attempt_count.saturating_add(1);
-            if attempt_count > 1 {
-                retry_count = retry_count.saturating_add(1);
+            let current_attempt_is_rectifier_retry =
+                std::mem::take(&mut is_opaque_state_rectifier_retry);
+            if !current_attempt_is_rectifier_retry {
+                attempt_count = attempt_count.saturating_add(1);
+                if attempt_count > 1 {
+                    retry_count = retry_count.saturating_add(1);
+                }
             }
 
             // Resolve once per attempt so forwarding and every failure path
@@ -1407,6 +1420,7 @@ async fn forward_to_upstream(
                 settings.thinking_budget_rectifier_enabled,
                 settings.cache_injection_enabled,
                 settings.codex_compaction_native_passthrough_enabled,
+                force_strip_responses_opaque_state,
                 app_config.non_streaming_timeout_secs,
                 app_config.streaming_idle_timeout_secs,
                 upstream_response_snapshot_limit,
@@ -1451,6 +1465,52 @@ async fn forward_to_upstream(
                                     && error.message == FIRST_CHUNK_PROTOCOL_ERROR_MESSAGE
                                     && (200..300).contains(&response.status_code)
                                     && response_is_sse_header_pairs(&response.headers);
+                                // HTTP 200 SSE pre-first-output opaque-state rejection
+                                // (e.g. Azure foreign resource, invalid encrypted_content,
+                                // or foreign item id prefix): strip opaque state and retry
+                                // once on the same provider without cooling health.
+                                if is_2xx_sse_protocol_error
+                                    && force_strip_responses_opaque_state.is_none()
+                                    && settings.responses_encrypted_content_rectifier_enabled
+                                    && provider.target_protocol == AiProtocol::OpenAiResponses
+                                    && !route_is_openai_responses_compact(route)
+                                {
+                                    if let Some(opaque_err) = error
+                                        .upstream_response_body
+                                        .as_deref()
+                                        .and_then(detect_responses_opaque_state_error_in_sse)
+                                    {
+                                        if let Some(sent_body) =
+                                            response.upstream_request_body.as_deref()
+                                        {
+                                            if opaque_err.should_cache_cipher {
+                                                context
+                                                    .side_stores
+                                                    .remember_rejected_responses_ciphers(
+                                                        provider_config_identity(&provider),
+                                                        sent_body,
+                                                        opaque_err
+                                                            .message
+                                                            .as_deref()
+                                                            .unwrap_or_default(),
+                                                    );
+                                            }
+                                            if build_responses_encrypted_content_rectified_body(
+                                                sent_body,
+                                                opaque_err.strip_item_ids,
+                                            )
+                                            .ok()
+                                            .flatten()
+                                            .is_some()
+                                            {
+                                                force_strip_responses_opaque_state =
+                                                    Some(opaque_err.strip_item_ids);
+                                                is_opaque_state_rectifier_retry = true;
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
                                 if !options.disable_health_mutation && !is_2xx_sse_protocol_error {
                                     health_changed |=
                                         record_health_failure(context, &health_key, failure_kind);
@@ -1749,6 +1809,7 @@ async fn send_upstream_request(
     thinking_budget_rectifier_enabled: bool,
     cache_injection_enabled: bool,
     codex_compaction_native_passthrough_enabled: bool,
+    force_strip_responses_opaque_state: Option<bool>,
     non_streaming_timeout_secs: u64,
     streaming_idle_timeout_secs: u64,
     upstream_response_snapshot_limit: Option<usize>,
@@ -1818,6 +1879,13 @@ async fn send_upstream_request(
     ) {
         strip_known_invalid_responses_ciphers(context, provider, &mut upstream_body)?;
     }
+    if let Some(strip_item_ids) = force_strip_responses_opaque_state {
+        if let Some(rectified) =
+            build_responses_encrypted_content_rectified_body(&upstream_body, strip_item_ids)?
+        {
+            upstream_body = rectified;
+        }
+    }
     if let Some(privacy) = privacy {
         upstream_body = privacy
             .prepare(&upstream_body, &provider.id)
@@ -1872,6 +1940,13 @@ async fn send_upstream_request(
         upstream_model_id,
     )
     .map_err(|message| GatewayForwardError::new(message, GatewayFailureKind::GatewayParse))?;
+
+    if let Err(message) = ensure_not_self_loopback(&upstream_url, context.listen_addr()) {
+        return Err(GatewayForwardError::new(
+            message,
+            GatewayFailureKind::RequestSchema,
+        ));
+    }
 
     let header_preserving_proxy = header_preserving_proxy(db).await;
 
@@ -2234,17 +2309,20 @@ async fn send_upstream_request(
             let encrypted_content_error =
                 detect_responses_encrypted_content_error(status_code, &body);
             if let Some(encrypted_content_error) = encrypted_content_error {
-                context.side_stores.remember_rejected_responses_ciphers(
-                    provider_config_identity(provider),
+                if encrypted_content_error.should_cache_cipher {
+                    context.side_stores.remember_rejected_responses_ciphers(
+                        provider_config_identity(provider),
+                        &upstream_body_snapshot,
+                        encrypted_content_error
+                            .message
+                            .as_deref()
+                            .unwrap_or_default(),
+                    );
+                }
+                if let Some(rectified_body) = build_responses_encrypted_content_rectified_body(
                     &upstream_body_snapshot,
-                    encrypted_content_error
-                        .message
-                        .as_deref()
-                        .unwrap_or_default(),
-                );
-                if let Some(rectified_body) =
-                    build_responses_encrypted_content_rectified_body(&upstream_body_snapshot)?
-                {
+                    encrypted_content_error.strip_item_ids,
+                )? {
                     let response = send_request_once(
                         &client,
                         method.clone(),
@@ -2285,12 +2363,18 @@ async fn send_upstream_request(
             }
         }
 
-        if should_attempt_thinking_budget_rectifier
-            && thinking_budget::should_rectify_thinking_budget(status_code, &body)
-        {
-            if let Some(rectified_body) =
+        if should_attempt_thinking_budget_rectifier {
+            let rectified_body = if thinking_budget::should_rectify_thinking_budget(
+                status_code,
+                &body,
+            ) {
                 thinking_budget::rectify_thinking_budget(&upstream_body_snapshot)
-            {
+            } else if thinking_budget::should_rectify_thinking_disabled(status_code, &body) {
+                thinking_budget::rectify_thinking_disabled(&upstream_body_snapshot)
+            } else {
+                None
+            };
+            if let Some(rectified_body) = rectified_body {
                 let response = send_request_once(
                     &client,
                     method.clone(),
@@ -2583,6 +2667,7 @@ pub(super) async fn run_websocket_aux_http(
         settings.thinking_budget_rectifier_enabled,
         settings.cache_injection_enabled,
         settings.codex_compaction_native_passthrough_enabled,
+        None,
         app_config.non_streaming_timeout_secs,
         app_config.streaming_idle_timeout_secs,
         upstream_response_snapshot_limit,
@@ -2821,7 +2906,10 @@ async fn send_request_once(
                         upstream_response_body_bytes: 0,
                     })?
                     .map_err(|error| GatewayForwardError {
-                        message: format!("Failed to send upstream request: {error}"),
+                        message: format!(
+                            "Failed to send upstream request: {}",
+                            describe_error_chain(&error)
+                        ),
                         kind: GatewayFailureKind::Connection,
                         upstream_request_body: None,
                         upstream_response_body: None,
@@ -2853,13 +2941,63 @@ async fn send_request_once(
         .send()
         .await
         .map_err(|error| GatewayForwardError {
-            message: format!("Failed to send upstream request: {error}"),
+            message: format!(
+                "Failed to send upstream request: {}",
+                describe_reqwest_error(&error)
+            ),
             kind: classify_reqwest_error(&error),
             upstream_request_body: None,
             upstream_response_body: None,
             upstream_response_body_bytes: 0,
         })?;
     Ok(UpstreamResponse::Reqwest(response))
+}
+
+/// Walk `Error::source()` to surface DNS/TCP/TLS root causes that reqwest and
+/// hyper hide behind generic outer messages (cc-switch 0d326a4c).
+pub(super) fn describe_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts = Vec::new();
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(err) = current {
+        let text = err.to_string();
+        let trimmed = text.trim();
+        if !trimmed.is_empty() && !parts.iter().any(|existing: &String| existing == trimmed) {
+            parts.push(trimmed.to_string());
+        }
+        current = err.source();
+    }
+    parts.join(": ")
+}
+
+/// Describe a `reqwest::Error` with its full source chain while stripping the
+/// URL so query-string API keys never leak into logs.
+pub(super) fn describe_reqwest_error(error: &reqwest::Error) -> String {
+    let redacted_url = error.url().map(|url| url.as_str()).filter(|s| !s.is_empty());
+    let mut parts = Vec::new();
+    // Strip URL from the outermost reqwest error and inner source chain so
+    // query-string API keys never leak into logs.
+    let redact = |raw: String| -> String {
+        match redacted_url {
+            Some(url_str) => raw.replace(url_str, "<redacted-url>"),
+            None => raw,
+        }
+    };
+    let outer = redact(error.to_string());
+    let outer_trimmed = outer.trim();
+    if !outer_trimmed.is_empty() {
+        parts.push(outer_trimmed.to_string());
+    }
+    let mut current: Option<&(dyn std::error::Error + 'static)> =
+        std::error::Error::source(error);
+    while let Some(err) = current {
+        let text = redact(err.to_string());
+        let trimmed = text.trim();
+        if !trimmed.is_empty() && !parts.iter().any(|existing| existing == trimmed) {
+            parts.push(trimmed.to_string());
+        }
+        current = err.source();
+    }
+    parts.join(": ")
 }
 
 async fn build_gateway_response(
@@ -2894,15 +3032,28 @@ async fn build_gateway_response(
     let source_protocol = source_protocol_from_route(route);
     let provider_kind =
         ProviderBodyCompat::from_provider_meta(Some(&provider.meta), provider.target_protocol);
+    let ollama_wants_stream = provider_kind == Some(ProviderBodyCompat::Ollama)
+        && (response_is_ndjson(response.headers())
+            || (!response_is_sse(response.headers())
+                && upstream_body_requests_stream(&upstream_body_snapshot)));
     let should_stream = aux_shaped_task.is_none()
         && (should_stream_response(request, route, response.headers(), status.as_u16())
-            || ((200..400).contains(&status.as_u16())
-                && provider_kind == Some(ProviderBodyCompat::Ollama)
-                && response_is_ndjson(response.headers())));
+            || ((200..400).contains(&status.as_u16()) && ollama_wants_stream));
     let response_conversion_route = conversion_route.map(ConversionRoute::reverse);
     // Align with cc-switch / design: restore only on HTTP 2xx, not 3xx.
-    let should_restore_xai_namespaces =
-        status.is_success() && !xai_namespace_restore_map.is_empty();
+    // For xAI native Responses, also wrap even with an empty namespace map so
+    // completed whole-float tool arguments (e.g. `92116.0`) are normalized.
+    let should_restore_xai_namespaces = status.is_success()
+        && (!xai_namespace_restore_map.is_empty()
+            || (provider_kind == Some(ProviderBodyCompat::Xai)
+                && source_protocol == Some(AiProtocol::OpenAiResponses)
+                && response_conversion_route.is_none()
+                && provider.target_protocol == AiProtocol::OpenAiResponses));
+    let should_repair_late_responses_args = status.is_success()
+        && source_protocol == Some(AiProtocol::OpenAiResponses)
+        && response_conversion_route.is_none()
+        && provider.target_protocol == AiProtocol::OpenAiResponses
+        && provider_kind != Some(ProviderBodyCompat::CodexOfficial);
 
     let aggregation_kind = sse_aggregation_kind_for_non_streaming_client(
         request,
@@ -3125,9 +3276,7 @@ async fn build_gateway_response(
     }
 
     if should_stream {
-        let converts_ollama_stream = (200..400).contains(&status.as_u16())
-            && provider_kind == Some(ProviderBodyCompat::Ollama)
-            && response_is_ndjson(response.headers());
+        let converts_ollama_stream = (200..400).contains(&status.as_u16()) && ollama_wants_stream;
         if response_conversion_route.is_some() || converts_ollama_stream {
             set_response_content_type(&mut response_headers, "text/event-stream");
         }
@@ -3139,6 +3288,12 @@ async fn build_gateway_response(
         let raw_body_stream = match upstream_response_body_stream_snapshot.clone() {
             Some(snapshot) => snapshot_response_stream(response.bytes_stream(), snapshot),
             None => response.bytes_stream(),
+        };
+        // Repair late tool-call arguments on third-party native Responses SSE streams.
+        let raw_body_stream = if should_repair_late_responses_args {
+            wrap_late_arguments_repair_sse_stream(raw_body_stream)
+        } else {
+            raw_body_stream
         };
         // Restore before other stream wrappers (native Responses passthrough only).
         let raw_body_stream = if should_restore_xai_namespaces {
@@ -3170,6 +3325,7 @@ async fn build_gateway_response(
         let body_stream = maybe_record_codex_responses_sse_stream(
             body_stream,
             context,
+            request,
             response_conversion_route,
         );
         // Client-facing reverse stream middleware (same request-scoped pipeline + context).
@@ -4584,6 +4740,7 @@ struct OpenAiChatSseAggregate {
     created: Option<i64>,
     model: Option<String>,
     system_fingerprint: Option<Value>,
+    citations: Option<Value>,
     usage: Option<Value>,
     /// Last premium service tier a Chat chunk confirmed (last-wins). Rendered
     /// into the aggregated body so the tier reader finds it before any
@@ -4598,8 +4755,12 @@ struct OpenAiChatChoiceAggregate {
     role: Option<String>,
     content: String,
     reasoning_content: String,
+    refusal: String,
     finish_reason: Option<Value>,
     tool_calls: HashMap<i64, OpenAiChatToolCallAggregate>,
+    next_tool_call_index: i64,
+    last_tool_call_index: Option<i64>,
+    tool_call_index_by_id: HashMap<String, i64>,
 }
 
 #[derive(Debug, Default)]
@@ -4688,6 +4849,9 @@ impl OpenAiChatSseAggregate {
         if self.system_fingerprint.is_none() {
             self.system_fingerprint = value.get("system_fingerprint").cloned();
         }
+        if let Some(citations) = value.get("citations").filter(|citations| !citations.is_null()) {
+            self.citations = Some(citations.clone());
+        }
     }
 
     fn push_choice(&mut self, choice: &Value) {
@@ -4717,10 +4881,19 @@ impl OpenAiChatSseAggregate {
         if let Some(content) = delta.get("content").and_then(Value::as_str) {
             entry.content.push_str(content);
         }
-        for field in ["reasoning_content", "reasoning"] {
-            if let Some(reasoning) = delta.get(field).and_then(Value::as_str) {
-                entry.reasoning_content.push_str(reasoning);
-            }
+        if let Some(reasoning) = ["reasoning_content", "reasoning", "reasoning_text"]
+            .into_iter()
+            .find_map(|field| {
+                delta
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+            })
+        {
+            entry.reasoning_content.push_str(reasoning);
+        }
+        if let Some(refusal) = delta.get("refusal").and_then(Value::as_str) {
+            entry.refusal.push_str(refusal);
         }
         if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for tool_call in tool_calls {
@@ -4763,13 +4936,60 @@ impl OpenAiChatSseAggregate {
         if let Some(system_fingerprint) = self.system_fingerprint {
             response.insert("system_fingerprint".to_string(), system_fingerprint);
         }
+        if let Some(citations) = self.citations {
+            response.insert("citations".to_string(), citations);
+        }
         Value::Object(response)
     }
 }
 
 impl OpenAiChatChoiceAggregate {
+    fn resolve_tool_call_index(&mut self, value: &Value) -> i64 {
+        let id = value
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty());
+        if let Some(explicit) = value.get("index").and_then(Value::as_i64) {
+            self.next_tool_call_index = self.next_tool_call_index.max(explicit.saturating_add(1));
+            self.last_tool_call_index = Some(explicit);
+            if let Some(id) = id {
+                self.tool_call_index_by_id.insert(id.to_string(), explicit);
+            }
+            return explicit;
+        }
+        if let Some(id) = id {
+            if let Some(&existing) = self.tool_call_index_by_id.get(id) {
+                self.last_tool_call_index = Some(existing);
+                return existing;
+            }
+            let index = self.next_tool_call_index;
+            self.next_tool_call_index = self.next_tool_call_index.saturating_add(1);
+            self.tool_call_index_by_id.insert(id.to_string(), index);
+            self.last_tool_call_index = Some(index);
+            return index;
+        }
+        let has_name = value
+            .pointer("/function/name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| !name.is_empty());
+        if let Some(last) = self.last_tool_call_index {
+            let last_has_name = self
+                .tool_calls
+                .get(&last)
+                .and_then(|tool| tool.function_name.as_deref())
+                .is_some_and(|name| !name.is_empty());
+            if !has_name || !last_has_name {
+                return last;
+            }
+        }
+        let index = self.next_tool_call_index;
+        self.next_tool_call_index = self.next_tool_call_index.saturating_add(1);
+        self.last_tool_call_index = Some(index);
+        index
+    }
+
     fn push_tool_call(&mut self, value: &Value) {
-        let index = value.get("index").and_then(Value::as_i64).unwrap_or(0);
+        let index = self.resolve_tool_call_index(value);
         let entry = self
             .tool_calls
             .entry(index)
@@ -4777,14 +4997,26 @@ impl OpenAiChatChoiceAggregate {
                 index,
                 ..OpenAiChatToolCallAggregate::default()
             });
-        if let Some(id) = value.get("id").and_then(Value::as_str) {
+        if let Some(id) = value
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        {
             entry.id = Some(id.to_string());
         }
-        if let Some(call_type) = value.get("type").and_then(Value::as_str) {
+        if let Some(call_type) = value
+            .get("type")
+            .and_then(Value::as_str)
+            .filter(|call_type| !call_type.is_empty())
+        {
             entry.call_type = Some(call_type.to_string());
         }
         if let Some(function) = value.get("function").and_then(Value::as_object) {
-            if let Some(name) = function.get("name").and_then(Value::as_str) {
+            if let Some(name) = function
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+            {
                 entry.function_name = Some(name.to_string());
             }
             if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
@@ -4809,6 +5041,9 @@ impl OpenAiChatChoiceAggregate {
                 "reasoning_content".to_string(),
                 Value::String(self.reasoning_content),
             );
+        }
+        if !self.refusal.is_empty() {
+            message.insert("refusal".to_string(), Value::String(self.refusal));
         }
         let mut tool_calls = self.tool_calls.into_values().collect::<Vec<_>>();
         tool_calls.sort_by_key(|tool_call| tool_call.index);
@@ -5074,6 +5309,7 @@ fn append_compact_compat_header(
 fn maybe_record_codex_responses_sse_stream(
     stream: DebugBodyStream,
     context: Option<&GatewayRuntimeContext>,
+    request: &DebugHttpRequest,
     response_conversion_route: Option<ConversionRoute>,
 ) -> DebugBodyStream {
     if !response_conversion_route.is_some_and(|route| route.target == AiProtocol::OpenAiResponses) {
@@ -5082,7 +5318,26 @@ fn maybe_record_codex_responses_sse_stream(
     let Some(context) = context else {
         return stream;
     };
-    record_responses_sse_stream(stream, context.side_stores.codex_history())
+    let session_scope = codex_history_session_scope(request);
+    record_responses_sse_stream(stream, context.side_stores.codex_history(), session_scope)
+}
+
+fn codex_history_session_scope(request: &DebugHttpRequest) -> Option<String> {
+    for header_name in [
+        "session_id",
+        "x-session-id",
+        "x-codex-thread-id",
+        "x-conversation-id",
+        "x-ai-toolbox-session-id",
+    ] {
+        if let Some(value) = header_value_ci(&request.headers, header_name)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            return Some(value.to_string());
+        }
+    }
+    None
 }
 
 fn maybe_filter_bailian_openai_chat_sse_stream(
@@ -5595,7 +5850,10 @@ fn record_side_store_response(
     }
     if response_conversion_route.is_some_and(|route| route.target == AiProtocol::OpenAiResponses) {
         if let Ok(response_value) = serde_json::from_slice::<Value>(final_body) {
-            context.side_stores.record_codex_response(&response_value);
+            let session_scope = codex_history_session_scope(request);
+            context
+                .side_stores
+                .record_codex_response_scoped(session_scope.as_deref(), &response_value);
         }
     }
 }
@@ -6113,6 +6371,13 @@ fn should_filter_known_invalid_responses_ciphers(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResponsesEncryptedContentError {
     message: Option<String>,
+    /// True when the upstream rejected foreign item IDs (Azure resource mismatch,
+    /// MiniMax/OpenAI `invalid_id_prefix`, or input-scoped `array_above_max_length`)
+    /// so the retry should also strip non-`item_reference` top-level `id` fields.
+    strip_item_ids: bool,
+    /// True only when the error indicates rejected encrypted reasoning/cipher
+    /// state that should be cached in `InvalidResponsesCipherStore`.
+    should_cache_cipher: bool,
 }
 
 fn detect_responses_encrypted_content_error(
@@ -6122,6 +6387,10 @@ fn detect_responses_encrypted_content_error(
     if !(400..500).contains(&status_code) {
         return None;
     }
+    detect_responses_opaque_state_error_body(body)
+}
+
+fn detect_responses_opaque_state_error_body(body: &[u8]) -> Option<ResponsesEncryptedContentError> {
     let parsed_body = serde_json::from_slice::<Value>(body).ok();
     let message = parsed_body
         .as_ref()
@@ -6130,20 +6399,65 @@ fn detect_responses_encrypted_content_error(
     let error_code = parsed_body
         .as_ref()
         .and_then(|value| string_at_error_or_top_level(value, "code"));
-    if error_code.is_some_and(|code| code.eq_ignore_ascii_case("invalid_encrypted_content")) {
-        return Some(ResponsesEncryptedContentError { message });
-    }
     let error_param = parsed_body
         .as_ref()
         .and_then(|value| string_at_error_or_top_level(value, "param"));
+    if error_code.is_some_and(|code| code.eq_ignore_ascii_case("invalid_encrypted_content")) {
+        return Some(ResponsesEncryptedContentError {
+            message,
+            strip_item_ids: false,
+            should_cache_cipher: true,
+        });
+    }
+    if error_code.is_some_and(|code| code.eq_ignore_ascii_case("invalid_id_prefix")) {
+        return Some(ResponsesEncryptedContentError {
+            message,
+            strip_item_ids: true,
+            should_cache_cipher: false,
+        });
+    }
+    if error_code.is_some_and(|code| code.eq_ignore_ascii_case("array_above_max_length")) {
+        let targets_input = error_param
+            .is_some_and(|param| param.to_ascii_lowercase().contains("input"))
+            || message.as_deref().is_some_and(|msg| {
+                let lower = msg.to_ascii_lowercase();
+                lower.contains("input") || lower.contains("encrypted")
+            });
+        if targets_input {
+            return Some(ResponsesEncryptedContentError {
+                message,
+                strip_item_ids: true,
+                should_cache_cipher: false,
+            });
+        }
+    }
     if error_param.is_some_and(|param| param.eq_ignore_ascii_case("encrypted_content")) {
-        return Some(ResponsesEncryptedContentError { message });
+        return Some(ResponsesEncryptedContentError {
+            message,
+            strip_item_ids: false,
+            should_cache_cipher: true,
+        });
     }
 
     let message = message?;
     let lower = message.to_ascii_lowercase();
-    let mentions_encrypted_content =
-        lower.contains("encrypted content") || lower.contains("encrypted_content");
+    if lower.contains("different azure openai resource") {
+        return Some(ResponsesEncryptedContentError {
+            message: Some(message),
+            strip_item_ids: true,
+            should_cache_cipher: true,
+        });
+    }
+    if lower.contains("expected an id that begins with") {
+        return Some(ResponsesEncryptedContentError {
+            message: Some(message),
+            strip_item_ids: true,
+            should_cache_cipher: false,
+        });
+    }
+    let mentions_encrypted_content = lower.contains("encrypted content")
+        || lower.contains("encrypted_content")
+        || lower.contains("encrypted function output content");
     let verification_failed = lower.contains("could not be verified");
     let decryption_failed = lower.contains("could not be decrypted")
         || lower.contains("could not be decrypted or parsed");
@@ -6151,8 +6465,71 @@ fn detect_responses_encrypted_content_error(
     (mentions_encrypted_content && (verification_failed || decryption_failed)).then_some(
         ResponsesEncryptedContentError {
             message: Some(message),
+            strip_item_ids: false,
+            should_cache_cipher: true,
         },
     )
+}
+
+fn detect_responses_opaque_state_error_in_sse(
+    sse_bytes: &[u8],
+) -> Option<ResponsesEncryptedContentError> {
+    let text = std::str::from_utf8(sse_bytes).ok()?;
+    let check_payload = |raw: &str| -> Option<ResponsesEncryptedContentError> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed == "[DONE]" {
+            return None;
+        }
+        let value = serde_json::from_str::<Value>(trimmed).ok()?;
+        let candidate = value
+            .pointer("/response/error")
+            .filter(|v| !v.is_null())
+            .or_else(|| value.get("error").filter(|v| !v.is_null()))
+            .unwrap_or(&value);
+        let bytes = serde_json::to_vec(candidate).ok()?;
+        detect_responses_opaque_state_error_body(&bytes)
+    };
+
+    let mut remaining = text.to_string();
+    let mut saw_block = false;
+    while let Some(block) = crate::coding::proxy_gateway::transformer::take_sse_block(&mut remaining)
+    {
+        saw_block = true;
+        let data_lines: Vec<&str> = block
+            .lines()
+            .filter_map(|line| strip_sse_field(line.trim(), "data"))
+            .collect();
+        if !data_lines.is_empty() {
+            if let Some(found) = check_payload(&data_lines.join("\n")) {
+                return Some(found);
+            }
+        }
+    }
+    if !remaining.trim().is_empty() {
+        let data_lines: Vec<&str> = remaining
+            .lines()
+            .filter_map(|line| strip_sse_field(line.trim(), "data"))
+            .collect();
+        if !data_lines.is_empty() {
+            if let Some(found) = check_payload(&data_lines.join("\n")) {
+                return Some(found);
+            }
+        }
+        if !saw_block {
+            let mut found = None;
+            for_each_flattened_sse_field(&remaining, |_event_name, data| {
+                if let Some(err) = check_payload(data) {
+                    found = Some(err);
+                    return true;
+                }
+                false
+            });
+            if found.is_some() {
+                return found;
+            }
+        }
+    }
+    None
 }
 
 fn string_at_error_or_top_level<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
@@ -6170,23 +6547,54 @@ fn should_rectify_responses_encrypted_content(status_code: u16, body: &[u8]) -> 
 
 fn build_responses_encrypted_content_rectified_body(
     body: &[u8],
+    strip_item_ids: bool,
 ) -> Result<Option<Vec<u8>>, GatewayForwardError> {
     let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
         return Ok(None);
     };
-    let Some(input) = value.get_mut("input").and_then(Value::as_array_mut) else {
-        return Ok(None);
-    };
-    let original_len = input.len();
-    input.retain(|item| {
-        let is_reasoning = item.get("type").and_then(Value::as_str) == Some("reasoning");
-        let has_encrypted_content = item
-            .get("encrypted_content")
-            .and_then(Value::as_str)
-            .is_some_and(|encrypted_content| !encrypted_content.trim().is_empty());
-        !(is_reasoning && has_encrypted_content)
-    });
-    if input.len() == original_len {
+    let mut changed = false;
+    if strip_item_ids {
+        if let Some(obj) = value.as_object_mut() {
+            changed |= obj.remove("previous_response_id").is_some();
+        }
+    }
+    if let Some(input) = value.get_mut("input").and_then(Value::as_array_mut) {
+        let original_len = input.len();
+        input.retain(|item| {
+            let is_reasoning = item.get("type").and_then(Value::as_str) == Some("reasoning");
+            let has_encrypted_content = item
+                .get("encrypted_content")
+                .and_then(Value::as_str)
+                .is_some_and(|encrypted_content| !encrypted_content.trim().is_empty());
+            !(is_reasoning && has_encrypted_content)
+        });
+        changed |= input.len() != original_len;
+
+        for item in input.iter_mut() {
+            let Some(item_obj) = item.as_object_mut() else {
+                continue;
+            };
+            let item_type = item_obj
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let is_compaction = item_type == "compaction";
+            let is_item_reference = item_type == "item_reference";
+            let has_non_empty_encrypted_content = item_obj
+                .get("encrypted_content")
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.trim().is_empty());
+            if !is_compaction && has_non_empty_encrypted_content {
+                changed |= item_obj.remove("encrypted_content").is_some();
+            }
+            changed |= item_obj.remove("encrypted_function_args").is_some();
+            if strip_item_ids && !is_item_reference {
+                // Keep `call_id` intact so function_call / function_call_output pairing survives.
+                changed |= item_obj.remove("id").is_some();
+            }
+        }
+    }
+    if !changed {
         return Ok(None);
     }
 
@@ -6352,6 +6760,7 @@ fn should_rectify_unsupported_media(status_code: u16, body: &[u8]) -> bool {
     if TEXT_ONLY_SELF_EVIDENT_HINTS
         .iter()
         .any(|hint| lower.contains(hint))
+        || (lower.contains("content.type 参数非法") && lower.contains("取值范围 ['text']"))
     {
         return true;
     }
@@ -6402,7 +6811,9 @@ fn build_unsupported_media_rectified_body(
     let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
         return Ok(None);
     };
-    if !replace_unsupported_image_parts(&mut value) {
+    let mut changed = replace_unsupported_image_parts(&mut value);
+    changed |= strip_non_image_media_parts(&mut value);
+    if !changed {
         return Ok(None);
     }
     serde_json::to_vec(&value)
@@ -6414,6 +6825,113 @@ fn build_unsupported_media_rectified_body(
             upstream_response_body: None,
             upstream_response_body_bytes: 0,
         })
+}
+
+const UNSUPPORTED_NON_IMAGE_MEDIA_MARKER: &str = "[Unsupported Media]";
+
+fn is_non_image_media_block_type(block_type: Option<&str>) -> bool {
+    matches!(
+        block_type,
+        Some("file" | "input_file" | "input_audio" | "document")
+    )
+}
+
+fn value_contains_non_image_media_parts(value: &Value) -> bool {
+    let in_messages = value
+        .get("messages")
+        .and_then(Value::as_array)
+        .is_some_and(|messages| {
+            messages.iter().any(|message| {
+                matches!(
+                    message.get("role").and_then(Value::as_str),
+                    Some("user" | "assistant")
+                ) && message
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|parts| {
+                        parts.iter().any(|part| {
+                            is_non_image_media_block_type(part.get("type").and_then(Value::as_str))
+                        })
+                    })
+            })
+        });
+    let in_input = value
+        .get("input")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                matches!(
+                    item.get("role").and_then(Value::as_str),
+                    Some("user" | "assistant")
+                ) && item
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|parts| {
+                        parts.iter().any(|part| {
+                            is_non_image_media_block_type(part.get("type").and_then(Value::as_str))
+                        })
+                    })
+            })
+        });
+    in_messages || in_input
+}
+
+/// Replace `file`/`input_file`/`input_audio`/`document` content blocks in
+/// user/assistant messages with `[Unsupported Media]` text markers (cc-switch 4a0baf69).
+fn strip_non_image_media_parts(value: &mut Value) -> bool {
+    let mut changed = false;
+    if let Some(messages) = value.get_mut("messages").and_then(Value::as_array_mut) {
+        for message in messages {
+            if !matches!(
+                message.get("role").and_then(Value::as_str),
+                Some("user" | "assistant")
+            ) {
+                continue;
+            }
+            if let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) {
+                for part in parts {
+                    if is_non_image_media_block_type(part.get("type").and_then(Value::as_str)) {
+                        let mut replacement = json!({
+                            "type": "text",
+                            "text": UNSUPPORTED_NON_IMAGE_MEDIA_MARKER
+                        });
+                        if let Some(cache_control) = part.get("cache_control").cloned() {
+                            replacement["cache_control"] = cache_control;
+                        }
+                        *part = replacement;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(input) = value.get_mut("input").and_then(Value::as_array_mut) {
+        for item in input {
+            if !matches!(
+                item.get("role").and_then(Value::as_str),
+                Some("user" | "assistant")
+            ) {
+                continue;
+            }
+            let replacement_type = if item.get("role").and_then(Value::as_str) == Some("assistant") {
+                "output_text"
+            } else {
+                "input_text"
+            };
+            if let Some(parts) = item.get_mut("content").and_then(Value::as_array_mut) {
+                for part in parts {
+                    if is_non_image_media_block_type(part.get("type").and_then(Value::as_str)) {
+                        *part = json!({
+                            "type": replacement_type,
+                            "text": UNSUPPORTED_NON_IMAGE_MEDIA_MARKER
+                        });
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    changed
 }
 
 fn replace_unsupported_image_parts(value: &mut Value) -> bool {
@@ -6573,7 +7091,11 @@ pub(super) fn can_retry_current_provider(
     retry_count: u32,
     max_retry_count: u32,
 ) -> bool {
-    should_retry_failure(failure_kind)
+    // HTTP 401/402/403 (GatewayFailureKind::Auth) is a credential/quota rejection
+    // that cannot recover by retrying the exact same provider; fail over immediately
+    // (cc-switch 984394c0).
+    failure_kind != GatewayFailureKind::Auth
+        && should_retry_failure(failure_kind)
         && provider_retry_count < per_provider_retry_count
         && retry_count < max_retry_count
 }
@@ -7486,7 +8008,10 @@ fn build_upstream_body_for_provider(
         || conversion_route.is_some_and(should_enrich_codex_history_before_conversion)
     {
         if let Some(context) = context {
-            context.side_stores.enrich_codex_request(&mut value);
+            let session_scope = codex_history_session_scope(request);
+            context
+                .side_stores
+                .enrich_codex_request_scoped(session_scope.as_deref(), &mut value);
         }
     }
     let lossy_warnings = if let Some(route) = conversion_route {
@@ -7645,6 +8170,17 @@ fn build_upstream_body_for_provider(
             );
         }
     }
+    // Third-party native OpenAI Responses passthrough compat (all non-CodexOfficial
+    // Responses upstreams): scrub OpenAI-only Codex fields, normalize call_id-less
+    // tool outputs, regroup interleaved notices, repair strict Kimi/DeepSeek history,
+    // and deduplicate duplicate JSON keys in historical function_call arguments.
+    apply_third_party_native_responses_passthrough_if_needed(
+        &mut upstream_body,
+        source_protocol,
+        conversion_route,
+        target_protocol,
+        provider_meta,
+    )?;
     // Native OpenAI Responses → xAI only: flatten namespace tools then scrub private
     // fields. Conversion paths (source!=target) rely on IR and must not run this.
     let xai_namespace_restore_map = apply_xai_responses_passthrough_if_needed(
@@ -7654,6 +8190,23 @@ fn build_upstream_body_for_provider(
         target_protocol,
         provider_meta,
     )?;
+    // Cross-protocol -> xAI Responses: rewrite forced hosted `web_search`
+    // tool_choice after IR conversion (native Responses passthrough already ran
+    // it at the end of `apply_xai_responses_passthrough`, after namespace
+    // flattening and `additional_tools` promotion).
+    if conversion_route.is_some()
+        && target_protocol == AiProtocol::OpenAiResponses
+        && ProviderBodyCompat::from_provider_meta(provider_meta, target_protocol)
+            == Some(ProviderBodyCompat::Xai)
+    {
+        if let Ok(mut parsed) = serde_json::from_slice::<Value>(&upstream_body) {
+            if rewrite_xai_hosted_web_search_tool_choice(&mut parsed) {
+                if let Ok(encoded) = serde_json::to_vec(&parsed) {
+                    upstream_body = encoded;
+                }
+            }
+        }
+    }
     // Per-model forced speed tier (issue #414): applied last, after every
     // protocol conversion and outbound pipeline pass, so the injected tier is
     // exactly what reaches the upstream.
@@ -7703,6 +8256,58 @@ fn build_upstream_body_for_provider(
         xai_namespace_restore_map,
         observations,
     })
+}
+
+fn should_apply_third_party_native_responses_passthrough(
+    source_protocol: Option<AiProtocol>,
+    conversion_route: Option<ConversionRoute>,
+    target_protocol: AiProtocol,
+    provider_meta: Option<&ProviderGatewayMeta>,
+) -> bool {
+    source_protocol == Some(AiProtocol::OpenAiResponses)
+        && conversion_route.is_none()
+        && target_protocol == AiProtocol::OpenAiResponses
+        && ProviderBodyCompat::from_provider_meta(provider_meta, target_protocol)
+            != Some(ProviderBodyCompat::CodexOfficial)
+}
+
+fn apply_third_party_native_responses_passthrough_if_needed(
+    upstream_body: &mut Vec<u8>,
+    source_protocol: Option<AiProtocol>,
+    conversion_route: Option<ConversionRoute>,
+    target_protocol: AiProtocol,
+    provider_meta: Option<&ProviderGatewayMeta>,
+) -> Result<(), GatewayForwardError> {
+    if !should_apply_third_party_native_responses_passthrough(
+        source_protocol,
+        conversion_route,
+        target_protocol,
+        provider_meta,
+    ) {
+        return Ok(());
+    }
+    let Ok(mut value) = serde_json::from_slice::<Value>(upstream_body) else {
+        return Ok(());
+    };
+    let provider_kind = ProviderBodyCompat::from_provider_meta(provider_meta, target_protocol);
+    if !apply_third_party_native_responses_request_compat(&mut value, provider_kind) {
+        return Ok(());
+    }
+    *upstream_body = serde_json::to_vec(&value).map_err(|error| GatewayForwardError {
+        message: format!("Failed to serialize third-party native Responses body: {error}"),
+        kind: GatewayFailureKind::GatewayParse,
+        upstream_request_body: Some(upstream_body.clone()),
+        upstream_response_body: None,
+        upstream_response_body_bytes: 0,
+    })?;
+    Ok(())
+}
+
+fn upstream_body_requests_stream(body: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| value.get("stream").and_then(Value::as_bool))
+        .unwrap_or(false)
 }
 
 /// Gate: native Responses → xAI only.
@@ -7769,13 +8374,10 @@ pub(super) fn restore_xai_namespace_json_body(
     body: &[u8],
     map: &HashMap<String, NamespacedName>,
 ) -> Vec<u8> {
-    if map.is_empty() {
-        return body.to_vec();
-    }
     let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
         return body.to_vec();
     };
-    if !restore_response_namespaces(&mut value, map) {
+    if !restore_xai_responses_value(&mut value, map) {
         return body.to_vec();
     }
     serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec())
@@ -8742,6 +9344,10 @@ fn apply_openai_chat_provider_body_compat_before_generic(
     object: &mut serde_json::Map<String, Value>,
     provider_kind: Option<ProviderBodyCompat>,
 ) {
+    // `stream_options.reasoning_summary_delivery` is Codex/OpenAI-Responses-only;
+    // never let it leak to Chat Completions upstreams.
+    strip_reasoning_summary_delivery_stream_option(object);
+
     match provider_kind {
         Some(ProviderBodyCompat::DeepSeek) => {
             convert_response_format_json_schema_to_json_object(object);
@@ -8749,6 +9355,7 @@ fn apply_openai_chat_provider_body_compat_before_generic(
         }
         Some(ProviderBodyCompat::Moonshot) => {
             convert_response_format_json_schema_to_json_object(object);
+            strip_moonshot_fixed_sampling_params(object);
             backfill_tool_call_reasoning_content(object);
         }
         Some(ProviderBodyCompat::Zai) => {
@@ -8782,6 +9389,8 @@ fn apply_openai_chat_provider_body_compat_before_generic(
             apply_copilot_model_normalization(object);
             strip_copilot_openai_chat_thinking_blocks(object);
             sanitize_copilot_openai_chat_orphan_tool_messages(object);
+            // Copilot Chat Completions rejects `stop` on several backends (cc-switch 56df6513).
+            object.remove("stop");
         }
         Some(
             ProviderBodyCompat::AnthropicBedrock
@@ -8789,9 +9398,37 @@ fn apply_openai_chat_provider_body_compat_before_generic(
             | ProviderBodyCompat::Longcat
             | ProviderBodyCompat::GeminiVertex
             | ProviderBodyCompat::CodexOfficial
-            | ProviderBodyCompat::Ollama,
+            | ProviderBodyCompat::Ollama
+            | ProviderBodyCompat::OpenCodeGo,
         )
         | None => {}
+    }
+}
+
+fn strip_moonshot_fixed_sampling_params(object: &mut serde_json::Map<String, Value>) {
+    let Some(model) = object.get("model").and_then(Value::as_str) else {
+        return;
+    };
+    let tail = model
+        .trim()
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .trim()
+        .to_ascii_lowercase();
+    let has_fixed_sampling = tail == "kimi-k2.6"
+        || tail.starts_with("kimi-k2.7-code")
+        || tail == "kimi-k3"
+        || tail.starts_with("kimi-k3.");
+    if has_fixed_sampling {
+        for field in [
+            "temperature",
+            "top_p",
+            "presence_penalty",
+            "frequency_penalty",
+        ] {
+            object.remove(field);
+        }
     }
 }
 
@@ -9231,6 +9868,9 @@ fn ollama_options_from_openai_chat(object: &mut serde_json::Map<String, Value>) 
         ("temperature", "temperature"),
         ("top_p", "top_p"),
         ("top_k", "top_k"),
+        ("seed", "seed"),
+        ("frequency_penalty", "frequency_penalty"),
+        ("presence_penalty", "presence_penalty"),
         ("max_tokens", "num_predict"),
         ("max_completion_tokens", "num_predict"),
     ] {
@@ -9421,10 +10061,10 @@ fn map_deepseek_reasoning_effort(value: &str) -> Option<&'static str> {
     if is_reasoning_disabled_effort(&normalized) {
         return None;
     }
-    if matches!(normalized.as_str(), "max" | "xhigh") {
-        Some("max")
-    } else {
-        Some("high")
+    match normalized.as_str() {
+        "minimal" | "low" => Some("low"),
+        "max" => Some("max"),
+        _ => Some("high"),
     }
 }
 
@@ -9466,14 +10106,15 @@ fn apply_predictive_unsupported_media_policy(
     let Some(meta) = provider_meta else {
         return;
     };
-    if !should_predictively_replace_images(value, meta) {
+    if !should_predictively_replace_media(value, meta) {
         return;
     }
     replace_unsupported_image_parts(value);
+    strip_non_image_media_parts(value);
 }
 
-fn should_predictively_replace_images(value: &Value, meta: &ProviderGatewayMeta) -> bool {
-    if !value_contains_image_parts(value) {
+fn should_predictively_replace_media(value: &Value, meta: &ProviderGatewayMeta) -> bool {
+    if !value_contains_image_parts(value) && !value_contains_non_image_media_parts(value) {
         return false;
     }
 
@@ -9774,28 +10415,30 @@ fn force_tool_choice_auto(object: &mut serde_json::Map<String, Value>) {
 }
 
 fn strip_xai_unsupported_openai_chat_fields(object: &mut serde_json::Map<String, Value>) {
-    let model = object
+    let Some(model) = object
         .get("model")
         .and_then(Value::as_str)
-        .map(normalize_xai_chat_model_id);
-    match model.as_deref() {
-        // grok-4.5 / xai/grok-4.5: same sampling knobs + reasoning_effort as Responses sanitize.
-        Some("grok-4.5") | Some("grok-4") => {
-            for field in [
-                "reasoning_effort",
-                "presence_penalty",
-                "frequency_penalty",
-                "stop",
-            ] {
-                object.remove(field);
-            }
+        .map(normalize_xai_chat_model_id)
+    else {
+        return;
+    };
+    if matches!(model.as_str(), "grok-4.5" | "grok-4") {
+        for field in [
+            "reasoning_effort",
+            "presence_penalty",
+            "frequency_penalty",
+            "stop",
+        ] {
+            object.remove(field);
         }
-        Some("grok-3" | "grok-3-mini") => {
-            for field in ["presence_penalty", "frequency_penalty", "stop"] {
-                object.remove(field);
-            }
+    } else if matches!(model.as_str(), "grok-3" | "grok-3-mini")
+        || (model.starts_with("grok-4") && !model.contains("non-reasoning"))
+    {
+        // All grok-4.x reasoning variants (except explicit *-non-reasoning) reject
+        // presence_penalty, frequency_penalty and stop (AxonHub eb020516).
+        for field in ["presence_penalty", "frequency_penalty", "stop"] {
+            object.remove(field);
         }
-        _ => {}
     }
 }
 
@@ -10547,7 +11190,8 @@ fn map_codex_chat_reasoning_effort(effort: &str, mode: Option<&str>) -> Option<&
     }
     match mode.unwrap_or("passthrough") {
         "deepseek" => match effort.as_str() {
-            "max" | "xhigh" => Some("max"),
+            "minimal" | "low" => Some("low"),
+            "max" => Some("max"),
             _ => Some("high"),
         },
         "low_high" => match effort.as_str() {
@@ -10589,7 +11233,59 @@ fn filter_private_outbound_fields(value: &mut Value, preserve_schema_name_keys: 
             if !preserve_schema_name_keys {
                 object.retain(|key, _| !key.starts_with('_'));
             }
+            let is_anthropic_tool_use = matches!(
+                object.get("type").and_then(Value::as_str),
+                Some("tool_use" | "server_tool_use" | "mcp_tool_use")
+            );
+            let is_openai_function_call = matches!(
+                object.get("type").and_then(Value::as_str),
+                Some("function_call" | "function")
+            ) || object.contains_key("call_id");
             for (key, child) in object {
+                // Tool call & tool response payloads (`tool_use.input`, Gemini
+                // `functionCall.args` / `functionResponse.response`, OpenAI
+                // `function_call.arguments` / `tool_calls[].function.arguments`)
+                // are user/tool data where leading underscores (`_id`, `_meta`,
+                // `__typename`) are legitimate fields and must not be stripped
+                // (cc-switch 3c9d7765).
+                if (is_anthropic_tool_use && key == "input")
+                    || (is_openai_function_call && key == "arguments")
+                {
+                    continue;
+                }
+                if key == "functionCall" {
+                    if let Some(fc_obj) = child.as_object_mut() {
+                        fc_obj.retain(|k, _| !k.starts_with('_'));
+                        for (fc_key, fc_val) in fc_obj {
+                            if fc_key != "args" {
+                                filter_private_outbound_fields(fc_val, false);
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if key == "functionResponse" {
+                    if let Some(fr_obj) = child.as_object_mut() {
+                        fr_obj.retain(|k, _| !k.starts_with('_'));
+                        for (fr_key, fr_val) in fr_obj {
+                            if fr_key != "response" {
+                                filter_private_outbound_fields(fr_val, false);
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if (is_openai_function_call && key == "function") || key == "function_call" {
+                    if let Some(fn_obj) = child.as_object_mut() {
+                        fn_obj.retain(|k, _| !k.starts_with('_'));
+                        for (fn_key, fn_val) in fn_obj {
+                            if fn_key != "arguments" {
+                                filter_private_outbound_fields(fn_val, false);
+                            }
+                        }
+                    }
+                    continue;
+                }
                 filter_private_outbound_fields(child, is_schema_name_map(key));
             }
         }
@@ -11460,10 +12156,18 @@ pub(super) fn build_upstream_headers(
     provider: &UpstreamProvider,
     upstream_body: Option<&[u8]>,
 ) -> Result<UpstreamHeaders, String> {
+    let provider_kind =
+        ProviderBodyCompat::from_provider_meta(Some(&provider.meta), provider.target_protocol);
+    let strip_codex_chatgpt_identity = provider.cli_key == GatewayCliKey::Codex
+        && provider_kind != Some(ProviderBodyCompat::CodexOfficial);
+
     let mut headers = HeaderMap::new();
     let mut preserved = Vec::new();
     for (name, value) in &request.headers {
         if should_skip_forwarded_request_header(name) {
+            continue;
+        }
+        if strip_codex_chatgpt_identity && is_codex_chatgpt_identity_header(name) {
             continue;
         }
         let header_name = HeaderName::from_bytes(name.as_bytes())
@@ -11482,6 +12186,17 @@ pub(super) fn build_upstream_headers(
         ACCEPT_ENCODING.as_str(),
         HeaderValue::from_static("identity"),
     )?;
+    if provider_kind == Some(ProviderBodyCompat::Ollama)
+        && upstream_body.is_some_and(upstream_body_requests_stream)
+    {
+        remove_header_ci(&mut headers, &mut preserved, ACCEPT.as_str());
+        append_preserved_header(
+            &mut headers,
+            &mut preserved,
+            ACCEPT.as_str(),
+            HeaderValue::from_static("application/x-ndjson"),
+        )?;
+    }
     inject_provider_auth(provider, &mut headers, &mut preserved)?;
     inject_anthropic_platform_headers(provider, upstream_body, &mut headers, &mut preserved)?;
     inject_codex_official_headers(request, provider, &mut headers, &mut preserved)?;
@@ -11492,11 +12207,133 @@ pub(super) fn build_upstream_headers(
         &mut headers,
         &mut preserved,
     )?;
+    inject_opencode_go_headers(
+        request,
+        provider_kind,
+        upstream_body,
+        &mut headers,
+        &mut preserved,
+    )?;
     inject_custom_headers(provider, &mut headers, &mut preserved)?;
     Ok(UpstreamHeaders {
         map: headers,
         preserved,
     })
+}
+
+/// ChatGPT/OpenAI account-identity headers emitted by Codex when logged into
+/// ChatGPT that must never leak to third-party providers. Keeps `session_id`
+/// and `x-codex-turn-state` intact (cc-switch / Codex third-party routing).
+fn is_codex_chatgpt_identity_header(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "chatgpt-account-id" | "openai-organization" | "openai-project" | "version"
+    ) || lower.starts_with("x-oai-")
+        || lower.starts_with("x-openai-")
+        || lower.starts_with("x-responsesapi-")
+}
+
+/// Inject `x-opencode-session` and a fallback `User-Agent` when targeting an
+/// explicit `providerType=opencode-go` / `opencode-zen` upstream (cc-switch 243cd9a9).
+fn inject_opencode_go_headers(
+    request: &DebugHttpRequest,
+    provider_kind: Option<ProviderBodyCompat>,
+    upstream_body: Option<&[u8]>,
+    headers: &mut HeaderMap,
+    preserved: &mut Vec<PreservedHeader>,
+) -> Result<(), String> {
+    if provider_kind != Some(ProviderBodyCompat::OpenCodeGo) {
+        return Ok(());
+    }
+    if !headers.contains_key("x-opencode-session") {
+        let session_id = opencode_go_session_id(request, upstream_body);
+        let value = HeaderValue::from_str(&session_id)
+            .map_err(|error| format!("Invalid x-opencode-session header value: {error}"))?;
+        append_preserved_header(headers, preserved, "x-opencode-session", value)?;
+    }
+    if !headers.contains_key("user-agent") {
+        append_preserved_header(
+            headers,
+            preserved,
+            "User-Agent",
+            HeaderValue::from_static("ai-toolbox"),
+        )?;
+    }
+    Ok(())
+}
+
+fn opencode_go_session_id(request: &DebugHttpRequest, upstream_body: Option<&[u8]>) -> String {
+    for header in [
+        "x-opencode-session",
+        "session_id",
+        "x-session-id",
+        "x-claude-code-session-id",
+    ] {
+        if let Some(value) = header_value_ci(&request.headers, header)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            return value.to_string();
+        }
+    }
+    if let Some(body) = upstream_body.and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
+    {
+        if let Some(hint) = gateway_session_id_hint(request, &body) {
+            return hint;
+        }
+        let mut seed = Vec::new();
+        if let Some(system) = body.get("system").or_else(|| body.get("instructions")) {
+            let mut stripped = system.clone();
+            strip_cache_control_recursive(&mut stripped);
+            if let Ok(bytes) = serde_json::to_vec(&stripped) {
+                seed.extend_from_slice(&bytes);
+            }
+        }
+        let first_user = body
+            .get("messages")
+            .or_else(|| body.get("input"))
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+            });
+        if let Some(user_msg) = first_user {
+            let mut stripped = user_msg.clone();
+            strip_cache_control_recursive(&mut stripped);
+            if let Ok(bytes) = serde_json::to_vec(&stripped) {
+                seed.push(0);
+                seed.extend_from_slice(&bytes);
+            }
+        }
+        if !seed.is_empty() {
+            let digest = Sha256::digest(&seed);
+            let mut hex = String::with_capacity(32);
+            for byte in &digest[..16] {
+                let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{byte:02x}"));
+            }
+            return format!("ses_{hex}");
+        }
+    }
+    format!("ses_{}", uuid::Uuid::new_v4().simple())
+}
+
+fn strip_cache_control_recursive(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.remove("cache_control");
+            for child in map.values_mut() {
+                strip_cache_control_recursive(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_cache_control_recursive(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn inject_codex_official_headers(
@@ -12427,6 +13264,14 @@ fn json_value_has_meaningful_content(value: &Value) -> bool {
             .and_then(|response| response.get("status"))
             .and_then(Value::as_str)
             .is_some_and(|status| matches!(status, "incomplete" | "cancelled" | "canceled"))
+        || value
+            .get("stop_reason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| matches!(reason, "refusal"))
+        || value
+            .pointer("/delta/stop_reason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| matches!(reason, "refusal"))
     {
         return true;
     }
@@ -12550,6 +13395,13 @@ fn gateway_response_status_reports_error(status: &str) -> bool {
 
 fn choice_has_meaningful_content(choice: &Value) -> bool {
     if choice
+        .get("finish_reason")
+        .and_then(Value::as_str)
+        .is_some_and(|reason| matches!(reason, "content_filter" | "sensitive"))
+    {
+        return true;
+    }
+    if choice
         .get("text")
         .and_then(Value::as_str)
         .is_some_and(|text| !text.trim().is_empty())
@@ -12649,10 +13501,15 @@ fn gemini_prompt_feedback_has_block_reason(value: &Value) -> bool {
 }
 
 fn extract_reasoning_like_text(value: &Value) -> Option<&str> {
-    ["reasoning_content", "reasoning", "reasoning_details"]
-        .into_iter()
-        .find_map(|key| value.get(key).and_then(Value::as_str))
-        .filter(|text| !text.trim().is_empty())
+    [
+        "reasoning_content",
+        "reasoning",
+        "reasoning_text",
+        "reasoning_details",
+    ]
+    .into_iter()
+    .find_map(|key| value.get(key).and_then(Value::as_str))
+    .filter(|text| !text.trim().is_empty())
 }
 
 pub(super) fn classify_status_failure(status_code: u16) -> Option<GatewayFailureKind> {
@@ -19399,7 +20256,14 @@ data: {data}\r\n\r\n"
         let value: Value = serde_json::from_slice(&converted).unwrap();
 
         assert_eq!(value["thinking"]["type"], "enabled");
-        assert_eq!(value["reasoning_effort"], "max");
+        assert_eq!(value["reasoning_effort"], "high");
+
+        assert_eq!(map_deepseek_reasoning_effort("minimal"), Some("low"));
+        assert_eq!(map_deepseek_reasoning_effort("low"), Some("low"));
+        assert_eq!(map_deepseek_reasoning_effort("medium"), Some("high"));
+        assert_eq!(map_deepseek_reasoning_effort("high"), Some("high"));
+        assert_eq!(map_deepseek_reasoning_effort("xhigh"), Some("high"));
+        assert_eq!(map_deepseek_reasoning_effort("max"), Some("max"));
     }
 
     #[test]
@@ -19492,7 +20356,14 @@ data: {data}\r\n\r\n"
         let value: Value = serde_json::from_slice(&converted).unwrap();
 
         assert_eq!(value["thinking"]["type"], "enabled");
-        assert_eq!(value["reasoning_effort"], "max");
+        assert_eq!(value["reasoning_effort"], "high");
+
+        assert_eq!(map_deepseek_reasoning_effort("minimal"), Some("low"));
+        assert_eq!(map_deepseek_reasoning_effort("low"), Some("low"));
+        assert_eq!(map_deepseek_reasoning_effort("medium"), Some("high"));
+        assert_eq!(map_deepseek_reasoning_effort("high"), Some("high"));
+        assert_eq!(map_deepseek_reasoning_effort("xhigh"), Some("high"));
+        assert_eq!(map_deepseek_reasoning_effort("max"), Some("max"));
     }
 
     #[test]
@@ -20690,7 +21561,7 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
             ]
         }"#;
 
-        let rectified = build_responses_encrypted_content_rectified_body(body)
+        let rectified = build_responses_encrypted_content_rectified_body(body, false)
             .unwrap()
             .expect("encrypted reasoning should be removed");
         let value = serde_json::from_slice::<Value>(&rectified).unwrap();
@@ -20953,7 +21824,7 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
                 && item.get("call_id").and_then(Value::as_str) == Some("call_1")
         }));
         assert!(
-            build_responses_encrypted_content_rectified_body(&original_body)
+            build_responses_encrypted_content_rectified_body(&original_body, false)
                 .unwrap()
                 .is_none()
         );
@@ -20962,12 +21833,13 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
     #[test]
     fn responses_encrypted_content_rectifier_skips_unrelated_bodies() {
         assert!(build_responses_encrypted_content_rectified_body(
-            br#"{"model":"gpt-5","input":[{"type":"message","role":"user","content":"hi"}]}"#
+            br#"{"model":"gpt-5","input":[{"type":"message","role":"user","content":"hi"}]}"#,
+            false
         )
         .unwrap()
         .is_none());
         assert!(
-            build_responses_encrypted_content_rectified_body(b"not-json")
+            build_responses_encrypted_content_rectified_body(b"not-json", false)
                 .unwrap()
                 .is_none()
         );
@@ -22094,4 +22966,371 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
             None
         );
     }
+
+    #[test]
+    fn filter_private_outbound_fields_preserves_tool_call_payload_underscores() {
+        let mut body = json!({
+            "_internal_gateway_hint": "drop-me",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "mongo_find",
+                            "_private_block_meta": "drop-me",
+                            "input": {
+                                "_id": "507f1f77bcf86cd799439011",
+                                "_meta": { "__typename": "Query", "_nested": 1 }
+                            }
+                        }
+                    ]
+                }
+            ],
+            "contents": [
+                {
+                    "role": "model",
+                    "parts": [
+                        {
+                            "functionCall": {
+                                "name": "graphql_query",
+                                "_private_fc": "drop-me",
+                                "args": {
+                                    "__typename": "User",
+                                    "_filter": { "_id": "abc" }
+                                }
+                            }
+                        }
+                    ]
+                }
+            ],
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "custom_fn",
+                    "_private_item": "drop-me",
+                    "arguments": {
+                        "_id": "42",
+                        "_meta": "keep"
+                    }
+                }
+            ]
+        });
+
+        filter_private_outbound_fields(&mut body, false);
+
+        assert!(body.get("_internal_gateway_hint").is_none());
+        let tool_use = &body["messages"][0]["content"][0];
+        assert!(tool_use.get("_private_block_meta").is_none());
+        assert_eq!(tool_use["input"]["_id"], "507f1f77bcf86cd799439011");
+        assert_eq!(tool_use["input"]["_meta"]["__typename"], "Query");
+        assert_eq!(tool_use["input"]["_meta"]["_nested"], 1);
+
+        let fc = &body["contents"][0]["parts"][0]["functionCall"];
+        assert!(fc.get("_private_fc").is_none());
+        assert_eq!(fc["args"]["__typename"], "User");
+        assert_eq!(fc["args"]["_filter"]["_id"], "abc");
+
+        let resp_fc = &body["input"][0];
+        assert!(resp_fc.get("_private_item").is_none());
+        assert_eq!(resp_fc["arguments"]["_id"], "42");
+        assert_eq!(resp_fc["arguments"]["_meta"], "keep");
+    }
+
+    #[test]
+    fn ensure_not_self_loopback_blocks_listener_and_allows_other_ports() {
+        let listener: std::net::SocketAddr = "127.0.0.1:37123".parse().unwrap();
+        let self_v4 = reqwest::Url::parse("http://127.0.0.1:37123/openai/v1/responses?key=secret")
+            .unwrap();
+        let err = ensure_not_self_loopback(&self_v4, Some(listener)).unwrap_err();
+        assert!(!err.contains("secret"), "error must not leak query key");
+
+        let self_localhost = reqwest::Url::parse("http://localhost:37123/v1/messages").unwrap();
+        assert!(ensure_not_self_loopback(&self_localhost, Some(listener)).is_err());
+
+        let other_port = reqwest::Url::parse("http://127.0.0.1:38000/v1/messages").unwrap();
+        assert!(ensure_not_self_loopback(&other_port, Some(listener)).is_ok());
+
+        let external = reqwest::Url::parse("https://api.openai.com/v1/responses").unwrap();
+        assert!(ensure_not_self_loopback(&external, Some(listener)).is_ok());
+    }
+
+    #[test]
+    fn provider_dialects_respect_provider_type_and_do_not_guess_custom_providers() {
+        // Moonshot Kimi K2.6/K2.7/K3 strips fixed sampling params when provider_type = moonshot.
+        let mut kimi = json!({
+            "model": "kimi-k2.7-code",
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "presence_penalty": 0.2,
+            "frequency_penalty": 0.1,
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        apply_openai_chat_provider_body_compat_before_generic(
+            kimi.as_object_mut().unwrap(),
+            Some(ProviderBodyCompat::Moonshot),
+        );
+        assert!(kimi.get("temperature").is_none());
+        assert!(kimi.get("top_p").is_none());
+        assert!(kimi.get("presence_penalty").is_none());
+        assert!(kimi.get("frequency_penalty").is_none());
+
+        // Custom provider (provider_kind = None) with same model keeps all sampling params intact!
+        let mut custom_kimi = json!({
+            "model": "kimi-k2.7-code",
+            "temperature": 0.7,
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        apply_openai_chat_provider_body_compat_before_generic(
+            custom_kimi.as_object_mut().unwrap(),
+            None,
+        );
+        assert_eq!(custom_kimi["temperature"], json!(0.7));
+
+        // xAI grok-4* reasoning strips penalties/stop, but grok-4-fast-non-reasoning keeps them.
+        let mut grok_reasoning = json!({
+            "model": "grok-4.1-fast-reasoning",
+            "presence_penalty": 0.5,
+            "frequency_penalty": 0.5,
+            "stop": ["END"]
+        });
+        apply_openai_chat_provider_body_compat_before_generic(
+            grok_reasoning.as_object_mut().unwrap(),
+            Some(ProviderBodyCompat::Xai),
+        );
+        assert!(grok_reasoning.get("presence_penalty").is_none());
+        assert!(grok_reasoning.get("stop").is_none());
+
+        let mut grok_non_reasoning = json!({
+            "model": "grok-4-fast-non-reasoning",
+            "presence_penalty": 0.5,
+            "stop": ["END"]
+        });
+        apply_openai_chat_provider_body_compat_before_generic(
+            grok_non_reasoning.as_object_mut().unwrap(),
+            Some(ProviderBodyCompat::Xai),
+        );
+        assert_eq!(grok_non_reasoning["presence_penalty"], json!(0.5));
+        assert_eq!(grok_non_reasoning["stop"], json!(["END"]));
+
+        // Copilot Chat strips `stop`.
+        let mut copilot = json!({"model": "gpt-4o", "stop": ["HALT"], "messages": []});
+        apply_openai_chat_provider_body_compat_before_generic(
+            copilot.as_object_mut().unwrap(),
+            Some(ProviderBodyCompat::Copilot),
+        );
+        assert!(copilot.get("stop").is_none());
+
+        // Ollama options forward seed / frequency_penalty / presence_penalty.
+        let ollama = convert_openai_chat_request_to_ollama_chat(json!({
+            "model": "qwen3",
+            "stream": true,
+            "seed": 7,
+            "frequency_penalty": 0.3,
+            "presence_penalty": 0.4,
+            "messages": [{"role": "user", "content": "hi"}]
+        }));
+        assert_eq!(ollama["options"]["seed"], json!(7));
+        assert_eq!(ollama["options"]["frequency_penalty"], json!(0.3));
+        assert_eq!(ollama["options"]["presence_penalty"], json!(0.4));
+    }
+
+    #[test]
+    fn non_official_codex_strips_chatgpt_identity_headers_and_opencode_go_injects_session() {
+        let mut third_party = provider_for_cli(GatewayCliKey::Codex);
+        third_party.target_protocol = AiProtocol::OpenAiResponses;
+        third_party.meta.provider_type = Some("moonshot".to_string());
+
+        let request = DebugHttpRequest {
+            id: 1,
+            method: "POST".to_string(),
+            path: "/codex/v1/responses".to_string(),
+            headers: vec![
+                ("chatgpt-account-id".to_string(), "acct_secret".to_string()),
+                ("openai-organization".to_string(), "org_123".to_string()),
+                ("openai-project".to_string(), "proj_123".to_string()),
+                ("version".to_string(), "0.167.0".to_string()),
+                ("x-oai-internal".to_string(), "1".to_string()),
+                ("x-openai-client".to_string(), "codex".to_string()),
+                ("x-responsesapi-debug".to_string(), "1".to_string()),
+                ("session_id".to_string(), "sess_keep".to_string()),
+                ("x-codex-turn-state".to_string(), "turn_keep".to_string()),
+            ],
+            body: Vec::new(),
+        };
+
+        let headers = build_upstream_headers(&request, &third_party, None).unwrap();
+        assert!(!headers.map.contains_key("chatgpt-account-id"));
+        assert!(!headers.map.contains_key("openai-organization"));
+        assert!(!headers.map.contains_key("openai-project"));
+        assert!(!headers.map.contains_key("version"));
+        assert!(!headers.map.contains_key("x-oai-internal"));
+        assert!(!headers.map.contains_key("x-openai-client"));
+        assert!(!headers.map.contains_key("x-responsesapi-debug"));
+        assert_eq!(
+            headers.map.get("session_id").and_then(|v| v.to_str().ok()),
+            Some("sess_keep")
+        );
+        assert_eq!(
+            headers
+                .map
+                .get("x-codex-turn-state")
+                .and_then(|v| v.to_str().ok()),
+            Some("turn_keep")
+        );
+
+        // OpenCode Go injects stable x-opencode-session (ignoring cache_control) and fallback User-Agent.
+        let mut opencode_go = provider_for_cli(GatewayCliKey::Claude);
+        opencode_go.meta.provider_type = Some("opencode-go".to_string());
+        let bare_req = DebugHttpRequest {
+            id: 2,
+            method: "POST".to_string(),
+            path: "/claude/v1/messages".to_string(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        };
+        let b1 = br#"{"system":"sys","messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}]}"#;
+        let b2 = br#"{"system":"sys","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}"#;
+        let h1 = build_upstream_headers(&bare_req, &opencode_go, Some(b1)).unwrap();
+        let h2 = build_upstream_headers(&bare_req, &opencode_go, Some(b2)).unwrap();
+        assert_eq!(
+            h1.map.get("x-opencode-session"),
+            h2.map.get("x-opencode-session")
+        );
+        assert!(h1.map.contains_key("user-agent"));
+    }
+
+    #[test]
+    fn glm_chinese_text_only_error_and_non_image_media_stripping() {
+        let err =
+            r#"{"error":{"message":"messages.content.type 参数非法，取值范围 ['text']"}}"#.as_bytes();
+        assert!(should_rectify_unsupported_media(400, err));
+
+        let body = br#"{"model":"glm-5.2","messages":[{"role":"user","content":[{"type":"text","text":"summarize"},{"type":"document","source":{"type":"base64","data":"AA=="}},{"type":"input_audio","input_audio":{"data":"BB=="}}]}]}"#;
+        let rectified = build_unsupported_media_rectified_body(body)
+            .unwrap()
+            .expect("document and audio should be replaced");
+        let parsed: Value = serde_json::from_slice(&rectified).unwrap();
+        assert_eq!(parsed["messages"][0]["content"][1]["type"], "text");
+        assert_eq!(
+            parsed["messages"][0]["content"][1]["text"],
+            "[Unsupported Media]"
+        );
+        assert_eq!(parsed["messages"][0]["content"][2]["type"], "text");
+        assert_eq!(
+            parsed["messages"][0]["content"][2]["text"],
+            "[Unsupported Media]"
+        );
+    }
+
+    #[test]
+    fn opaque_state_rectifier_handles_azure_minimax_sse_and_preserves_call_id() {
+        let azure = br#"{"error":{"message":"Item rs_123 belongs to a different Azure OpenAI resource"}}"#;
+        let err = detect_responses_encrypted_content_error(400, azure).expect("azure error");
+        assert!(err.strip_item_ids);
+
+        let minimax_prefix = br#"{"error":{"message":"Expected an ID that begins with 'msg_'"}}"#;
+        let err2 = detect_responses_encrypted_content_error(400, minimax_prefix).expect("prefix");
+        assert!(err2.strip_item_ids);
+
+        let func_output_err = br#"{"error":{"message":"Encrypted function output content could not be decrypted"}}"#;
+        let err3 = detect_responses_encrypted_content_error(400, func_output_err).expect("func out");
+        assert!(!err3.strip_item_ids);
+
+        let sse_200 = b"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"message\":\"Item belongs to a different Azure OpenAI resource\"}}}\n\n";
+        let sse_err = detect_responses_opaque_state_error_in_sse(sse_200).expect("sse error");
+        assert!(sse_err.strip_item_ids);
+
+        let body = br#"{
+            "model":"gpt-5",
+            "previous_response_id":"resp_old",
+            "input":[
+                {"type":"reasoning","id":"rs_1","encrypted_content":"cipher"},
+                {"type":"function_call","id":"fc_1","call_id":"call_keep","name":"run","arguments":"{}","encrypted_function_args":"enc_args"},
+                {"type":"item_reference","id":"ir_keep"}
+            ]
+        }"#;
+        let rectified = build_responses_encrypted_content_rectified_body(body, true)
+            .unwrap()
+            .expect("should rectify");
+        let parsed: Value = serde_json::from_slice(&rectified).unwrap();
+        assert!(parsed.get("previous_response_id").is_none());
+        let input = parsed["input"].as_array().unwrap();
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[0]["type"], "function_call");
+        assert!(input[0].get("id").is_none());
+        assert_eq!(input[0]["call_id"], "call_keep");
+        assert!(input[0].get("encrypted_function_args").is_none());
+        assert_eq!(input[1]["type"], "item_reference");
+        assert_eq!(input[1]["id"], "ir_keep");
+    }
+
+    #[test]
+    fn auth_failures_401_402_403_skip_same_provider_retry() {
+        assert!(!can_retry_current_provider(
+            GatewayFailureKind::Auth,
+            0,
+            2,
+            0,
+            5
+        ));
+    }
+}
+
+/// Reject forwarding an upstream request back into this gateway's own listener
+/// (cc-switch cd9c7210) to prevent infinite loopback recursion and OOM. The
+/// error message deliberately omits the URL so query-string API keys never leak.
+fn ensure_not_self_loopback(
+    upstream_url: &reqwest::Url,
+    listen_addr: Option<std::net::SocketAddr>,
+) -> Result<(), String> {
+    let Some(listen_addr) = listen_addr else {
+        return Ok(());
+    };
+    let Some(target_port) = upstream_url.port_or_known_default() else {
+        return Ok(());
+    };
+    if target_port != listen_addr.port() {
+        return Ok(());
+    }
+    let Some(host) = upstream_url.host_str() else {
+        return Ok(());
+    };
+    let normalized = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let is_loopback_ip = |ip: std::net::IpAddr| -> bool {
+        ip.is_loopback()
+            || matches!(
+                ip,
+                std::net::IpAddr::V6(v6)
+                    if v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
+            )
+    };
+    let listener_ip = listen_addr.ip();
+    let matches_self = if normalized == "localhost" || normalized.ends_with(".localhost") {
+        is_loopback_ip(listener_ip) || listener_ip.is_unspecified()
+    } else if let Ok(ip) = normalized.parse::<std::net::IpAddr>() {
+        if listener_ip.is_unspecified() {
+            is_loopback_ip(ip) || ip.is_unspecified()
+        } else if is_loopback_ip(listener_ip) {
+            is_loopback_ip(ip)
+        } else {
+            ip == listener_ip
+        }
+    } else {
+        false
+    };
+
+    if matches_self {
+        return Err(format!(
+            "Upstream URL targets the proxy gateway's own listening port ({}); refusing to forward to prevent a self-loop",
+            listen_addr.port()
+        ));
+    }
+    Ok(())
 }

@@ -181,6 +181,7 @@ pub(super) fn parse_entry(
         output_tokens: Some(number(raw, &["output"])),
         cache_read_tokens: Some(number(raw, &["cacheRead"])),
         cache_creation_tokens: Some(number(raw, &["cacheWrite"])),
+        cache_creation_1h_tokens: None,
         envelope_id: string(payload, &["/responseId", "/response_id"]),
     };
     let identity = string(entry, &["/id"]).unwrap_or_else(|| format!("entry-{index}"));

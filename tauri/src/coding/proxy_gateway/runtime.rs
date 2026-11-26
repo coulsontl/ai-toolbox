@@ -437,6 +437,7 @@ impl ProxyGatewayRuntime {
             .listener
             .local_addr()
             .map_err(|error| format!("Failed to read gateway listener address: {error}"))?;
+        context.set_listen_addr(addr);
         let running = Arc::new(AtomicBool::new(true));
         let server_running = running.clone();
         let settings = context.settings.clone();
@@ -530,6 +531,7 @@ struct GatewayRuntimeContext {
     side_stores: side_stores::GatewaySideStores,
     privacy: super::privacy::PrivacyRuntime,
     websocket_shutdown: tokio::sync::watch::Sender<bool>,
+    listen_addr: Arc<RwLock<Option<SocketAddr>>>,
 }
 
 #[derive(Clone)]
@@ -599,7 +601,18 @@ impl GatewayRuntimeContext {
             provider_cache: Arc::new(Mutex::new(HashMap::new())),
             side_stores: side_stores::GatewaySideStores::default(),
             websocket_shutdown: tokio::sync::watch::channel(false).0,
+            listen_addr: Arc::new(RwLock::new(None)),
         }
+    }
+
+    fn set_listen_addr(&self, addr: SocketAddr) {
+        if let Ok(mut guard) = self.listen_addr.write() {
+            *guard = Some(addr);
+        }
+    }
+
+    pub(super) fn listen_addr(&self) -> Option<SocketAddr> {
+        self.listen_addr.read().ok().and_then(|guard| *guard)
     }
 
     fn with_app_handle(mut self, app_handle: AppHandle) -> Self {
@@ -904,6 +917,24 @@ async fn handle_connection_with_body_limit(
             return Err(error);
         }
     };
+
+    if let Some(rejection) =
+        check_local_browser_guard(&request, context.listen_addr(), &settings.listen_host)
+    {
+        let peer = stream
+            .peer_addr()
+            .map(|addr| addr.to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        log::warn!(
+            "[proxy-gateway] browser_guard_rejected peer={} method={} path={} reason={}",
+            peer,
+            request.method,
+            super::request_log::redact_request_path(&request.path),
+            rejection.note
+        );
+        let mut response = rejection;
+        return write_response(stream, &mut response, started_instant, &settings).await;
+    }
 
     if websocket::is_upgrade_request(&request) {
         return websocket::handle_upgrade_with_limit(stream, request, context, max_body_bytes)
@@ -3434,4 +3465,210 @@ data: {"type":"response.completed","response":{"id":"resp_stream","status":"comp
             .expect("captured second upstream request");
         assert!(second_captured.contains(r#""model":"second-sonnet""#));
     }
+
+    /// Windows listener sockets must not be inheritable by spawned child
+    /// processes (terminals, CLIs), otherwise exiting the app leaves the port
+    /// stuck with os error 10048 until reboot (mio >= 1.2.1 sets
+    /// WSA_FLAG_NO_HANDLE_INHERIT; cc-switch 2dfc848f).
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn listener_socket_is_not_inheritable_on_windows() {
+        use std::os::windows::io::AsRawSocket;
+        use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind listener");
+        let mut flags = 0u32;
+        let ok = unsafe { GetHandleInformation(listener.as_raw_socket() as HANDLE, &mut flags) };
+        assert_ne!(ok, 0, "GetHandleInformation failed");
+        assert_eq!(
+            flags & HANDLE_FLAG_INHERIT,
+            0,
+            "listener socket must not be inheritable by child processes"
+        );
+    }
+
+    #[test]
+    fn browser_guard_rejects_origin_and_dns_rebinding_host_and_allows_cli_and_health() {
+        let loopback: SocketAddr = "127.0.0.1:37123".parse().unwrap();
+
+        let mut health = debug_request("GET", "/health", b"");
+        health.headers.push(("Origin".into(), "https://evil.example".into()));
+        health.headers.push(("Host".into(), "evil.example:37123".into()));
+        assert!(check_local_browser_guard(&health, Some(loopback), "127.0.0.1").is_none());
+
+        let mut with_origin = debug_request("POST", "/anthropic/v1/messages", b"{}");
+        with_origin
+            .headers
+            .push(("Origin".into(), "https://evil.example".into()));
+        with_origin
+            .headers
+            .push(("Host".into(), "127.0.0.1:37123".into()));
+        let rejected = check_local_browser_guard(&with_origin, Some(loopback), "127.0.0.1")
+            .expect("origin should be rejected");
+        assert_eq!(rejected.status_code, 403);
+
+        let mut dns_rebind = debug_request("POST", "/openai/v1/responses", b"{}");
+        dns_rebind
+            .headers
+            .push(("Host".into(), "attacker.com:37123".into()));
+        let rejected = check_local_browser_guard(&dns_rebind, Some(loopback), "127.0.0.1")
+            .expect("public host should be rejected");
+        assert_eq!(rejected.status_code, 403);
+
+        for allowed_host in [
+            "127.0.0.1:37123",
+            "localhost:37123",
+            "[::1]:37123",
+            "foo.localhost:37123",
+            "host.docker.internal:37123",
+        ] {
+            let mut ok_req = debug_request("POST", "/openai/v1/responses", b"{}");
+            ok_req
+                .headers
+                .push(("Host".into(), allowed_host.to_string()));
+            assert!(
+                check_local_browser_guard(&ok_req, Some(loopback), "127.0.0.1").is_none(),
+                "host {allowed_host} should be allowed"
+            );
+        }
+    }
+}
+
+/// Reject browser-originated requests and DNS-rebinding `Host` headers against
+/// the local proxy gateway (cc-switch e6d0bf61 / 9f1c1bb5).
+///
+/// The local gateway replaces client auth headers with the user's stored
+/// upstream credentials, so a web page sending a `no-cors` POST or DNS-rebound
+/// request could silently spend quota. CLI clients never send `Origin`, and on
+/// loopback listeners `Host` must be an IP literal, `localhost`, a reserved
+/// local suffix (`.localhost`/`.local`/`.internal`), or the configured listen
+/// host.
+fn check_local_browser_guard(
+    request: &self::http_io::DebugHttpRequest,
+    listen_addr: Option<SocketAddr>,
+    configured_host: &str,
+) -> Option<self::http_io::DebugHttpResponse> {
+    let (path, _) = self::routes::split_request_target(&request.path);
+    if path == "/health" {
+        return None;
+    }
+
+    for (name, value) in &request.headers {
+        let is_browser_origin = name.eq_ignore_ascii_case("origin") && !value.trim().is_empty();
+        let is_cross_site_fetch = name.eq_ignore_ascii_case("sec-fetch-site")
+            && value.trim().eq_ignore_ascii_case("cross-site");
+        if is_browser_origin || is_cross_site_fetch {
+            let mut response = json_response(
+                403,
+                "Forbidden",
+                json!({
+                    "error": "browser_origin_rejected",
+                    "message": "Browser-originated requests are not permitted on the local proxy gateway",
+                }),
+                "browser_guard",
+                None,
+                "Rejected request carrying browser Origin or cross-site Fetch metadata header",
+            );
+            response.error_category = Some("browser_origin_rejected".to_string());
+            return Some(response);
+        }
+    }
+
+    let is_loopback_listener = listen_addr
+        .is_none_or(|addr| addr.ip().is_loopback() || addr.ip().is_unspecified());
+    for (name, host_header) in &request.headers {
+        if name.eq_ignore_ascii_case("host")
+            && !is_allowed_gateway_host(host_header, configured_host, is_loopback_listener)
+        {
+            let mut response = json_response(
+                403,
+                "Forbidden",
+                json!({
+                    "error": "host_not_allowed",
+                    "message": "Host header is not permitted for this local proxy gateway",
+                }),
+                "browser_guard",
+                None,
+                "Rejected request with disallowed Host header (possible DNS rebinding)",
+            );
+            response.error_category = Some("host_not_allowed".to_string());
+            return Some(response);
+        }
+    }
+
+    None
+}
+
+fn is_allowed_gateway_host(
+    host_header: &str,
+    configured_host: &str,
+    is_loopback_listener: bool,
+) -> bool {
+    let Some(normalized) = parse_gateway_host_header(host_header) else {
+        return false;
+    };
+    if normalized.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    if normalized == "localhost"
+        || normalized
+            .strip_suffix(".localhost")
+            .is_some_and(|prefix| !prefix.is_empty())
+        || normalized
+            .strip_suffix(".local")
+            .is_some_and(|prefix| !prefix.is_empty())
+        || normalized
+            .strip_suffix(".internal")
+            .is_some_and(|prefix| !prefix.is_empty())
+    {
+        return true;
+    }
+    let configured = configured_host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if !configured.is_empty() && normalized == configured {
+        return true;
+    }
+    !is_loopback_listener
+}
+
+fn parse_gateway_host_header(host_header: &str) -> Option<String> {
+    let raw = host_header.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Some(rest) = raw.strip_prefix('[') {
+        let end = rest.find(']')?;
+        let ip_str = &rest[..end];
+        let after = &rest[end + 1..];
+        if !after.is_empty() {
+            let port_str = after.strip_prefix(':')?;
+            if port_str.is_empty() || port_str.parse::<u16>().is_err() {
+                return None;
+            }
+        }
+        ip_str.parse::<std::net::Ipv6Addr>().ok()?;
+        return Some(ip_str.to_ascii_lowercase());
+    }
+    if raw.contains('[') || raw.contains(']') {
+        return None;
+    }
+    if raw.parse::<std::net::Ipv6Addr>().is_ok() {
+        return Some(raw.to_ascii_lowercase());
+    }
+    let host_only = if let Some((host, port)) = raw.rsplit_once(':') {
+        if host.contains(':') || port.is_empty() || port.parse::<u16>().is_err() {
+            return None;
+        }
+        host
+    } else {
+        raw
+    };
+    let normalized = host_only.trim_end_matches('.').to_ascii_lowercase();
+    (!normalized.is_empty()).then_some(normalized)
 }

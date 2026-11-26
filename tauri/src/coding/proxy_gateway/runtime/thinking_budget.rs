@@ -56,6 +56,36 @@ pub(super) fn rectify_thinking_budget(body: &[u8]) -> Option<Vec<u8>> {
     changed.then(|| serde_json::to_vec(&value).ok()).flatten()
 }
 
+/// Detect upstreams that refuse `thinking: {"type": "disabled"}` (e.g.
+/// MiniMax-M3.1-Flash rejecting Claude Code auto-mode classifier requests,
+/// cc-switch f5ab4dfa).
+pub(super) fn should_rectify_thinking_disabled(status_code: u16, response_body: &[u8]) -> bool {
+    if !(400..500).contains(&status_code) {
+        return false;
+    }
+    let message = extract_error_text(response_body);
+    let lower = message.to_ascii_lowercase();
+    lower.contains("thinking")
+        && lower.contains("disabled")
+        && (lower.contains("not allowed") || lower.contains("requires adaptive thinking"))
+}
+
+/// Drop `thinking` when and only when `thinking.type == "disabled"`, letting
+/// the upstream use its own default thinking policy.
+pub(super) fn rectify_thinking_disabled(body: &[u8]) -> Option<Vec<u8>> {
+    let mut value = serde_json::from_slice::<Value>(body).ok()?;
+    let is_disabled = value
+        .get("thinking")
+        .and_then(|thinking| thinking.get("type"))
+        .and_then(Value::as_str)
+        == Some("disabled");
+    if !is_disabled {
+        return None;
+    }
+    value.as_object_mut()?.remove("thinking");
+    serde_json::to_vec(&value).ok()
+}
+
 fn extract_error_text(body: &[u8]) -> String {
     let Ok(value) = serde_json::from_slice::<Value>(body) else {
         return String::from_utf8_lossy(body).to_string();
@@ -102,5 +132,32 @@ mod tests {
             .to_string()
             .into_bytes();
         assert!(rectify_thinking_budget(&body).is_none());
+    }
+
+    #[test]
+    fn detects_and_rectifies_rejected_disabled_thinking() {
+        let err = br#"{"type":"error","error":{"type":"invalid_request_error","message":"invalid params, model \"MiniMax-M3.1-Flash\" requires adaptive thinking; thinking.type=\"disabled\" is not allowed (2013)"}}"#;
+        assert!(should_rectify_thinking_disabled(400, err));
+        assert!(!should_rectify_thinking_budget(400, err));
+
+        let disabled_body = json!({
+            "model": "MiniMax-M3.1-Flash",
+            "max_tokens": 64,
+            "thinking": {"type": "disabled"}
+        })
+        .to_string()
+        .into_bytes();
+        let rectified = rectify_thinking_disabled(&disabled_body).expect("should strip disabled");
+        let parsed: Value = serde_json::from_slice(&rectified).unwrap();
+        assert!(parsed.get("thinking").is_none());
+        assert_eq!(parsed["max_tokens"], 64);
+
+        let adaptive_body = json!({
+            "model": "MiniMax-M3.1-Flash",
+            "thinking": {"type": "adaptive"}
+        })
+        .to_string()
+        .into_bytes();
+        assert!(rectify_thinking_disabled(&adaptive_body).is_none());
     }
 }

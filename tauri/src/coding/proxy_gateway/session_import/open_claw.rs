@@ -169,6 +169,7 @@ pub(super) fn parse_entry(
         )),
         cache_read_tokens: Some(cached),
         cache_creation_tokens: Some(written),
+        cache_creation_1h_tokens: None,
         envelope_id: string(message, &["/responseId", "/response_id"]),
     };
     let identity = string(entry, &["/id"]).unwrap_or_else(|| format!("entry-{index}"));

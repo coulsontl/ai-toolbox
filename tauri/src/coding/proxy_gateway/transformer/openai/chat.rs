@@ -185,12 +185,13 @@ fn chat_message_to_llm(message: &Value) -> Message {
             ..Default::default()
         };
     }
+    let mut chunked_thinking_segments: Vec<String> = Vec::new();
     let content = match message.get("content") {
-        Some(Value::Array(parts)) => MessageContent::Parts(
-            parts
-                .iter()
-                .filter_map(|part| match part.get("type").and_then(Value::as_str) {
-                    Some("text") => Some(MessageContentPart {
+        Some(Value::Array(parts)) => {
+            let mut extracted = Vec::new();
+            for part in parts {
+                match part.get("type").and_then(Value::as_str) {
+                    Some("text") => extracted.push(MessageContentPart {
                         part_type: "text".to_string(),
                         text: part
                             .get("text")
@@ -198,7 +199,7 @@ fn chat_message_to_llm(message: &Value) -> Message {
                             .map(ToString::to_string),
                         ..Default::default()
                     }),
-                    Some("image_url") => Some(MessageContentPart {
+                    Some("image_url") => extracted.push(MessageContentPart {
                         part_type: "image_url".to_string(),
                         image_url: part
                             .get("image_url")
@@ -206,10 +207,21 @@ fn chat_message_to_llm(message: &Value) -> Message {
                             .and_then(|value| serde_json::from_value::<ImageUrl>(value).ok()),
                         ..Default::default()
                     }),
-                    _ => None,
-                })
-                .collect(),
-        ),
+                    // Mistral Chat API returns chunked `content` arrays with
+                    // `{"type":"thinking","thinking":[{"type":"text","text":...}]}`
+                    // (cc-switch 0c1121ce). Extract into unified reasoning.
+                    Some("thinking") => {
+                        extract_chat_thinking_part_text(part, &mut chunked_thinking_segments);
+                    }
+                    _ => {}
+                }
+            }
+            if extracted.is_empty() && !chunked_thinking_segments.is_empty() {
+                MessageContent::Empty
+            } else {
+                MessageContent::Parts(extracted)
+            }
+        }
         Some(Value::String(text)) => MessageContent::Text(text.clone()),
         _ => MessageContent::Empty,
     };
@@ -304,7 +316,9 @@ fn chat_message_to_llm(message: &Value) -> Message {
             ..Default::default()
         });
     }
-    let explicit_reasoning = extract_reasoning_field_text(message);
+    let explicit_reasoning = extract_reasoning_field_text(message).or_else(|| {
+        (!chunked_thinking_segments.is_empty()).then(|| chunked_thinking_segments.join(""))
+    });
     let (content, inline_reasoning) =
         split_chat_inline_think_content(content, explicit_reasoning.is_none());
     let reasoning = explicit_reasoning.or(inline_reasoning);
@@ -354,7 +368,7 @@ fn split_chat_inline_think_content(
 
 pub fn llm_request_to_chat(request: Request) -> Value {
     let placement = placement_for_api_format(request.api_format);
-    let messages = llm_messages_to_chat(request.messages);
+    let messages = llm_messages_to_chat(request.messages, request.api_format);
     let messages = normalize_chat_system_messages(messages, placement);
     let mut body = json!({
         "model": request.model,
@@ -483,18 +497,89 @@ pub fn llm_request_to_chat(request: Request) -> Value {
     body
 }
 
-fn llm_messages_to_chat(messages: Vec<Message>) -> Vec<Value> {
+fn extract_chat_thinking_part_text(part: &Value, out: &mut Vec<String>) {
+    if let Some(text) = part
+        .get("thinking")
+        .and_then(Value::as_str)
+        .or_else(|| part.get("text").and_then(Value::as_str))
+        .filter(|text| !text.is_empty())
+    {
+        out.push(text.to_string());
+        return;
+    }
+    if let Some(items) = part.get("thinking").and_then(Value::as_array) {
+        for item in items {
+            if let Some(text) = item
+                .get("text")
+                .or_else(|| item.get("content"))
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+            {
+                out.push(text.to_string());
+            }
+        }
+    }
+}
+
+fn llm_messages_to_chat(messages: Vec<Message>, api_format: Option<ApiFormat>) -> Vec<Value> {
     let mut converted = Vec::with_capacity(messages.len());
     let mut pending_media = Vec::new();
+    let mut deferred_orphan_outputs: Vec<Value> = Vec::new();
+    let mut seen_tool_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let has_any_assistant_tool_call = messages.iter().any(|m| !m.tool_calls.is_empty());
+    let downgrade_unmatched_ids = matches!(api_format, Some(ApiFormat::OpenAiResponses));
 
     for message in messages {
         if message.role == "tool" {
+            let call_id = message.tool_call_id.clone().unwrap_or_default();
+            let is_orphan = call_id.trim().is_empty()
+                || (downgrade_unmatched_ids
+                    && has_any_assistant_tool_call
+                    && !seen_tool_call_ids.contains(&call_id));
+            if is_orphan {
+                // Codex Desktop can emit call-less or orphaned tool outputs
+                // (e.g. `create_thread` / `heartbeat`). Strict Chat upstreams
+                // reject orphan `role: "tool"` with HTTP 400 (cc-switch 9055dd37).
+                // Downgrade to a deferred user message flushed after the active
+                // contiguous `role: "tool"` batch.
+                if let Some(plan) = plan_tool_result_images(
+                    &message.content,
+                    ToolImageScope::AnyImage,
+                    TOOL_RESULT_MEDIA_MOVED_MARKER,
+                ) {
+                    let label = if call_id.trim().is_empty() {
+                        "[Tool output]".to_string()
+                    } else {
+                        format!("[Tool output for {call_id}]")
+                    };
+                    let text = cleaned_tool_result_text(&plan);
+                    deferred_orphan_outputs.push(json!({
+                        "role": "user",
+                        "content": format!("{label}\n{text}")
+                    }));
+                    queue_chat_tool_media(&mut pending_media, &call_id, plan.images);
+                } else {
+                    let text = match message.content {
+                        MessageContent::Text(text) => text,
+                        other => serde_json::to_string(&other).unwrap_or_default(),
+                    };
+                    let label = if call_id.trim().is_empty() {
+                        "[Tool output]".to_string()
+                    } else {
+                        format!("[Tool output for {call_id}]")
+                    };
+                    deferred_orphan_outputs.push(json!({
+                        "role": "user",
+                        "content": format!("{label}\n{text}")
+                    }));
+                }
+                continue;
+            }
             if let Some(plan) = plan_tool_result_images(
                 &message.content,
                 ToolImageScope::AnyImage,
                 TOOL_RESULT_MEDIA_MOVED_MARKER,
             ) {
-                let call_id = message.tool_call_id.clone().unwrap_or_default();
                 let mut tool_message = json!({
                     "role": "tool",
                     "tool_call_id": call_id,
@@ -509,13 +594,56 @@ fn llm_messages_to_chat(messages: Vec<Message>) -> Vec<Value> {
             }
         } else {
             flush_chat_tool_media(&mut converted, &mut pending_media);
+            converted.extend(deferred_orphan_outputs.drain(..));
         }
 
+        // Drop completely empty user messages (e.g. post-compaction media-only
+        // turns that became empty `input_text`), which strict Chat upstreams
+        // reject with "message content cannot be empty" (cc-switch f7002d1e).
+        if message.role == "user" && is_empty_chat_user_message(&message) {
+            continue;
+        }
+
+        for call in &message.tool_calls {
+            if !call.id.is_empty() {
+                seen_tool_call_ids.insert(call.id.clone());
+            }
+        }
         converted.push(llm_message_to_chat(message));
     }
 
     flush_chat_tool_media(&mut converted, &mut pending_media);
+    converted.extend(deferred_orphan_outputs.drain(..));
     converted
+}
+
+fn is_empty_chat_user_message(message: &Message) -> bool {
+    match &message.content {
+        MessageContent::Empty => true,
+        MessageContent::Text(text) => text.is_empty(),
+        MessageContent::Parts(parts) => !parts.iter().any(|part| match part.part_type.as_str() {
+            "text" | "input_text" | "output_text" => {
+                part.text.as_deref().is_some_and(|text| !text.is_empty())
+            }
+            "image_url" | "input_image" => part
+                .image_url
+                .as_ref()
+                .is_some_and(|image| !image.url.is_empty()),
+            _ => false,
+        }),
+    }
+}
+
+fn normalize_chat_image_detail(detail: Option<String>) -> Option<String> {
+    detail.map(|value| {
+        if value.eq_ignore_ascii_case("original") {
+            // `detail: "original"` is Responses-only; Chat upstreams reject it
+            // with HTTP 400 (cc-switch 83a24dfb).
+            "auto".to_string()
+        } else {
+            value
+        }
+    })
 }
 
 fn queue_chat_tool_media(pending_media: &mut Vec<Value>, call_id: &str, images: Vec<ToolImage>) {
@@ -528,7 +656,7 @@ fn queue_chat_tool_media(pending_media: &mut Vec<Value>, call_id: &str, images: 
     }));
     pending_media.extend(images.into_iter().map(|image| {
         let mut image_url = json!({ "url": image.url });
-        if let Some(detail) = image.detail {
+        if let Some(detail) = normalize_chat_image_detail(image.detail) {
             image_url["detail"] = json!(detail);
         }
         json!({
@@ -572,9 +700,25 @@ fn llm_message_to_chat(message: Message) -> Value {
         }
         return result;
     }
+    let has_reasoning = message
+        .reasoning_content
+        .as_deref()
+        .or(message.reasoning.as_deref())
+        .is_some_and(|text| !text.is_empty());
+    let mut content_value = llm_content_to_chat_value(message.content);
+    // Strict OpenAI-compatible backends (e.g. llama.cpp/vLLM) reject
+    // reasoning-only assistant messages with `"content": null` when no
+    // `tool_calls` are present (AxonHub 250bd3bf).
+    if role == "assistant"
+        && message.tool_calls.is_empty()
+        && has_reasoning
+        && content_value.is_null()
+    {
+        content_value = json!("");
+    }
     let mut result = json!({
         "role": role,
-        "content": llm_content_to_chat_value(message.content),
+        "content": content_value,
     });
     if let Some(name) = message.name {
         result["name"] = json!(name);
@@ -651,7 +795,10 @@ fn llm_content_to_chat_value(content: MessageContent) -> Value {
                     })),
                     "image_url" | "input_image" => Some(json!({
                         "type": "image_url",
-                        "image_url": part.image_url
+                        "image_url": part.image_url.map(|mut image| {
+                            image.detail = normalize_chat_image_detail(image.detail);
+                            image
+                        })
                     })),
                     _ => None,
                 }
@@ -677,12 +824,10 @@ pub fn chat_response_to_llm(body: Value) -> Response {
                         finish_reason: choice
                             .get("finish_reason")
                             .and_then(Value::as_str)
-                            .map(|reason| {
-                                if reason == "function_call" {
-                                    "tool_calls"
-                                } else {
-                                    reason
-                                }
+                            .map(|reason| match reason {
+                                "function_call" => "tool_calls",
+                                "sensitive" => "content_filter",
+                                other => other,
                             })
                             .map(ToString::to_string),
                         ..Default::default()
@@ -800,10 +945,16 @@ pub fn llm_response_to_chat(response: Response) -> Value {
         "choices": choices
             .into_iter()
             .map(|choice| {
+                let finish_reason = match choice.finish_reason.as_deref() {
+                    Some("refusal") | Some("sensitive") => "content_filter".to_string(),
+                    Some("pause_turn") | Some("stop_sequence") => "stop".to_string(),
+                    Some(reason) if !reason.is_empty() => reason.to_string(),
+                    _ => "stop".to_string(),
+                };
                 json!({
                     "index": choice.index,
                     "message": llm_message_to_chat(choice.message),
-                    "finish_reason": choice.finish_reason.unwrap_or_else(|| "stop".to_string())
+                    "finish_reason": finish_reason
                 })
             })
             .collect::<Vec<_>>(),

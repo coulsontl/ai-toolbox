@@ -12,6 +12,7 @@ use super::super::shared::{
 use super::super::traits::InboundTransformer;
 use super::super::types::AiProtocol;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 pub(crate) const ANTHROPIC_MESSAGE_INDEX_KEY: &str = "anthropic_message_index";
@@ -62,6 +63,10 @@ pub fn anthropic_request_to_llm(body: Value) -> Request {
         stream: body.get("stream").and_then(Value::as_bool),
         stop: stop_from_value(body.get("stop_sequences")),
         tool_choice: tool_choice_from_anthropic(body.get("tool_choice")),
+        parallel_tool_calls: body
+            .pointer("/tool_choice/disable_parallel_tool_use")
+            .and_then(Value::as_bool)
+            .map(|disable| !disable),
         reasoning_effort: anthropic_reasoning_effort(&body).map(ToString::to_string),
         request_type: Some(RequestType::Chat),
         api_format: Some(ApiFormat::AnthropicMessages),
@@ -121,6 +126,7 @@ pub fn anthropic_request_to_llm(body: Value) -> Request {
                             .unwrap_or_default()
                             .to_string(),
                         parameters: tool.get("input_schema").cloned(),
+                        strict: tool.get("strict").and_then(Value::as_bool),
                         ..Default::default()
                     }),
                     cache_control: tool.get("cache_control").cloned(),
@@ -218,6 +224,16 @@ fn strip_leading_anthropic_billing_header(text: &str) -> Option<&str> {
 }
 
 fn anthropic_reasoning_effort(body: &Value) -> Option<&'static str> {
+    // Explicit thinking disable / between_tools takes precedence over
+    // `output_config.effort` so Claude 5.5 clients sending `between_tools`
+    // alongside an effort tier do not accidentally re-enable thinking when
+    // converted to another protocol (AxonHub 1c4fedda).
+    if let Some(thinking_type) = body.pointer("/thinking/type").and_then(Value::as_str) {
+        if matches!(thinking_type, "disabled" | "between_tools") {
+            return Some("none");
+        }
+    }
+
     if let Some(effort) = body
         .pointer("/output_config/effort")
         .and_then(Value::as_str)
@@ -571,7 +587,7 @@ pub fn llm_response_to_anthropic(response: Response) -> Value {
         for tool_call in &message.tool_calls {
             content.push(json!({
                 "type": "tool_use",
-                "id": tool_call.id,
+                "id": normalize_anthropic_tool_use_id(&tool_call.id),
                 "name": tool_call.function.name,
                 "input": serde_json::from_str::<Value>(&tool_call.function.arguments).unwrap_or_else(|_| json!({}))
             }));
@@ -667,11 +683,33 @@ fn usage_to_anthropic(usage: Option<&Usage>) -> Value {
     })
 }
 
+/// Anthropic requires `tool_use.id` to match `^[a-zA-Z0-9_-]+$`. Preserve valid
+/// IDs unchanged and deterministically map invalid or empty IDs to
+/// `toolu_<sha256-prefix>` so follow-up `tool_result` turns stay valid (AxonHub f17e5aba).
+pub(crate) fn normalize_anthropic_tool_use_id(raw: &str) -> String {
+    if !raw.is_empty()
+        && raw
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return raw.to_string();
+    }
+    let digest = Sha256::digest(raw.as_bytes());
+    let hex: String = digest
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("toolu_{hex}")
+}
+
 fn openai_finish_to_anthropic_stop(reason: &str) -> &'static str {
     match reason {
         "length" | "max_tokens" => "max_tokens",
         "tool_calls" | "function_call" | "tool_use" => "tool_use",
-        "refusal" => "refusal",
+        "refusal" | "content_filter" | "sensitive" => "refusal",
+        "pause_turn" => "pause_turn",
+        "stop_sequence" => "stop_sequence",
         _ => "end_turn",
     }
 }
@@ -811,9 +849,11 @@ fn anthropic_usage_to_llm(usage: Option<&Value>) -> Usage {
 
 fn anthropic_stop_to_openai_finish(reason: &str) -> &'static str {
     match reason {
-        "max_tokens" => "length",
+        "max_tokens" | "model_context_window_exceeded" => "length",
         "tool_use" => "tool_calls",
         "refusal" => "refusal",
+        "pause_turn" => "pause_turn",
+        "stop_sequence" => "stop_sequence",
         _ => "stop",
     }
 }

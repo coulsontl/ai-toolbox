@@ -159,6 +159,7 @@ pub(super) fn record_gateway_observability_with_transport(
     let output_tokens = usage.output_tokens;
     let cache_read_tokens = usage.cache_read_tokens;
     let cache_creation_tokens = usage.cache_creation_tokens;
+    let cache_creation_1h_tokens = usage.cache_creation_1h_tokens;
     let total_tokens = usage.total_tokens();
     let settings = context.settings_snapshot();
     // Route-key WebSocket auxiliary turns now carry their own metadata from the
@@ -289,6 +290,7 @@ pub(super) fn record_gateway_observability_with_transport(
                 output_tokens,
                 cache_read_tokens,
                 cache_creation_tokens,
+                cache_creation_1h_tokens,
                 total_tokens,
                 request_body_bytes: request.body.len() as u64,
                 response_body_bytes: response.response_body_bytes,

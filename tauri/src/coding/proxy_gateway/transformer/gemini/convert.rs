@@ -14,8 +14,9 @@ use super::super::shared::tool_media::{
 };
 use super::super::shared::{
     budget_tokens_to_reasoning_effort, extract_error_code, extract_error_message,
-    extract_error_type, json_string, reasoning_effort_to_budget_tokens, stop_from_value,
-    tool_arguments_value, tool_choice_from_gemini,
+    extract_error_type, instruction_hoist_plan, json_string, placement_for_api_format,
+    reasoning_effort_to_budget_tokens, stop_from_value, tool_arguments_value,
+    tool_choice_from_gemini,
 };
 use super::{synthesize_gemini_tool_id, SYNTHETIC_GEMINI_TOOL_ID_PREFIX};
 use serde_json::{json, Map, Value};
@@ -48,7 +49,10 @@ pub fn gemini_request_to_llm(mut body: Value) -> Request {
     }
     request.tool_choice =
         tool_choice_from_gemini(body.pointer("/toolConfig/functionCallingConfig"));
-    if let Some(system) = gemini_parts_text(body.pointer("/systemInstruction/parts")) {
+    if let Some(system) = gemini_parts_text(
+        body.pointer("/systemInstruction/parts")
+            .or_else(|| body.pointer("/system_instruction/parts")),
+    ) {
         request.messages.push(Message {
             role: "system".to_string(),
             content: MessageContent::Text(system),
@@ -558,27 +562,70 @@ pub fn llm_request_to_gemini(request: Request) -> Value {
     let mut tool_names_by_id = HashMap::new();
     let mut tool_call_order = HashMap::new();
     let mut pending_tool_results = Vec::new();
-    let supports_multimodal_function_response = is_gemini_3_model(&request.model);
-    for message in request.messages {
+    let mut deferred_mid_system_messages: Vec<String> = Vec::new();
+    let supports_multimodal_function_response = is_gemini_3_or_newer_model(&request.model);
+    let placement = placement_for_api_format(request.api_format);
+    let hoist_plan = instruction_hoist_plan(&request.messages, placement);
+    let mut awaiting_tool_responses = false;
+    for (msg_index, message) in request.messages.into_iter().enumerate() {
         if message.role == "tool" {
             pending_tool_results.push(message);
             continue;
         }
-        append_gemini_tool_result_batch(
-            &mut contents,
-            &mut pending_tool_results,
-            &tool_names_by_id,
-            &tool_call_order,
-            supports_multimodal_function_response,
-        );
         if message.role == "system" || message.role == "developer" {
-            if let MessageContent::Text(text) = message.content {
-                if !text.is_empty() {
-                    system_chunks.push(text);
-                }
+            let text = match message.content {
+                MessageContent::Empty => String::new(),
+                MessageContent::Text(text) => text,
+                MessageContent::Parts(parts) => parts
+                    .into_iter()
+                    .filter_map(|part| part.text)
+                    .filter(|text| !text.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            };
+            if text.is_empty() {
+                continue;
+            }
+            if hoist_plan.get(msg_index).copied().unwrap_or(true) {
+                system_chunks.push(text);
+            } else if awaiting_tool_responses || !pending_tool_results.is_empty() {
+                // Keep mid-conversation system reminders after functionResponse
+                // so model(functionCall) -> user(functionResponse) stays adjacent
+                // even when a reminder appears between parallel tool results
+                // (cc-switch da830bfd).
+                deferred_mid_system_messages.push(text);
+            } else {
+                contents.push(json!({
+                    "role": "user",
+                    "parts": [{ "text": text }]
+                }));
             }
             continue;
         }
+        if !pending_tool_results.is_empty() {
+            append_gemini_tool_result_batch(
+                &mut contents,
+                &mut pending_tool_results,
+                &tool_names_by_id,
+                &tool_call_order,
+                supports_multimodal_function_response,
+            );
+            for text in deferred_mid_system_messages.drain(..) {
+                contents.push(json!({
+                    "role": "user",
+                    "parts": [{ "text": text }]
+                }));
+            }
+        }
+        if !deferred_mid_system_messages.is_empty() {
+            for text in deferred_mid_system_messages.drain(..) {
+                contents.push(json!({
+                    "role": "user",
+                    "parts": [{ "text": text }]
+                }));
+            }
+        }
+        awaiting_tool_responses = !message.tool_calls.is_empty();
         for (index, tool_call) in message.tool_calls.iter().enumerate() {
             if !tool_call.id.is_empty() && !tool_call.function.name.is_empty() {
                 tool_names_by_id.insert(tool_call.id.clone(), tool_call.function.name.clone());
@@ -594,6 +641,12 @@ pub fn llm_request_to_gemini(request: Request) -> Value {
         &tool_call_order,
         supports_multimodal_function_response,
     );
+    for text in deferred_mid_system_messages.drain(..) {
+        contents.push(json!({
+            "role": "user",
+            "parts": [{ "text": text }]
+        }));
+    }
     let mut body = json!({
         "contents": contents
     });
@@ -797,32 +850,135 @@ fn gemini_thinking_config(
     reasoning_effort: &str,
     max_tokens: Option<i64>,
 ) -> Option<Value> {
+    if should_skip_gemini_thinking_config(model) {
+        return None;
+    }
     let budget_tokens = reasoning_effort_to_budget_tokens(reasoning_effort, max_tokens)?;
-    if is_gemini_3_model(model) {
+    if is_gemini_3_or_newer_model(model) {
         return Some(json!({
             "includeThoughts": budget_tokens > 0,
-            "thinkingLevel": gemini_3_thinking_level(reasoning_effort, budget_tokens)
+            "thinkingLevel": gemini_3_thinking_level(model, reasoning_effort, budget_tokens)
         }));
+    }
+    let mut effective_budget = budget_tokens.min(24576);
+    if is_gemini_2_5_pro_model(model) {
+        // Gemini 2.5 Pro cannot disable thinking and rejects thinkingBudget < 128
+        // (cc-switch 93d0bf18).
+        effective_budget = effective_budget.max(128);
     }
     Some(json!({
         "includeThoughts": budget_tokens > 0,
-        "thinkingBudget": budget_tokens.min(24576)
+        "thinkingBudget": effective_budget
     }))
 }
 
-fn is_gemini_3_model(model: &str) -> bool {
-    model.to_ascii_lowercase().contains("gemini-3")
+fn normalized_gemini_model_tail(model: &str) -> String {
+    model
+        .trim()
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .trim()
+        .to_ascii_lowercase()
 }
 
-fn gemini_3_thinking_level(reasoning_effort: &str, budget_tokens: i64) -> &'static str {
+fn should_skip_gemini_thinking_config(model: &str) -> bool {
+    let tail = normalized_gemini_model_tail(model);
+    if tail.is_empty() {
+        return false;
+    }
+    // Non-thinking Gemini 1.x / 2.0 (non-thinking) and media/embedding/live variants reject thinkingConfig.
+    if tail.contains("gemini-1.")
+        || (tail.contains("gemini-2.0") && !tail.contains("thinking"))
+    {
+        return true;
+    }
+    if [
+        "-image",
+        "image-",
+        "-audio",
+        "-live",
+        "embedding",
+        "-tts",
+        "imagen",
+    ]
+    .iter()
+    .any(|marker| tail.contains(marker))
+    {
+        return true;
+    }
+    // Relay aliases that already bake a thinking level into the model ID
+    // (e.g. `gemini-3-pro-high`, `gemini-2.5-pro-low`) must not also receive
+    // an overriding `thinkingConfig` (cc-switch 93d0bf18).
+    [
+        "-minimal",
+        "-low",
+        "-medium",
+        "-high",
+        "-xhigh",
+        "-max",
+        "-none",
+        "-off",
+        "-nothinking",
+        "-no-thinking",
+    ]
+    .iter()
+    .any(|suffix| tail.ends_with(suffix))
+}
+
+fn is_gemini_3_or_newer_model(model: &str) -> bool {
+    let tail = normalized_gemini_model_tail(model);
+    tail.contains("gemini-3") || tail.contains("gemini-4")
+}
+
+fn is_gemini_2_5_pro_model(model: &str) -> bool {
+    let tail = normalized_gemini_model_tail(model);
+    tail.contains("gemini-2.5-pro")
+}
+
+fn gemini_3_thinking_level(model: &str, reasoning_effort: &str, budget_tokens: i64) -> &'static str {
+    let tail = normalized_gemini_model_tail(model);
+    let is_pro = tail.contains("-pro");
+    let accepts_minimal = tail.contains("flash");
     match reasoning_effort.trim().to_ascii_lowercase().as_str() {
-        "none" | "off" | "disabled" => "none",
-        "minimal" | "low" => "low",
-        "medium" => "medium",
+        "none" | "off" | "disabled" => {
+            if accepts_minimal {
+                "minimal"
+            } else {
+                "low"
+            }
+        }
+        "minimal" => {
+            if accepts_minimal {
+                "minimal"
+            } else {
+                "low"
+            }
+        }
+        "low" => "low",
+        "medium" => {
+            if is_pro {
+                "high"
+            } else {
+                "medium"
+            }
+        }
         "high" | "xhigh" | "extra_high" | "max" => "high",
-        _ if budget_tokens <= 0 => "none",
+        _ if budget_tokens <= 0 => {
+            if accepts_minimal {
+                "minimal"
+            } else {
+                "low"
+            }
+        }
         _ if budget_tokens <= 4096 => "low",
-        _ if budget_tokens <= 10240 => "medium",
+        _ if budget_tokens <= 10240 => {
+            if is_pro {
+                "high"
+            } else {
+                "medium"
+            }
+        }
         _ => "high",
     }
 }
@@ -1100,7 +1256,13 @@ fn gemini_function_response_value(content: MessageContent) -> Value {
         other => serde_json::to_string(&other).unwrap_or_default(),
     };
     if let Ok(Value::Object(object)) = serde_json::from_str::<Value>(&text) {
-        return Value::Object(object);
+        let candidate = Value::Object(object);
+        // Gemini interprets `$ref` keys anywhere inside `functionResponse.response`
+        // as multimodal part pointers and rejects JSON Schema/OpenAPI payloads
+        // with HTTP 400 (AxonHub 59bb6734). Wrap as raw text instead.
+        if !value_contains_json_ref_key(&candidate) {
+            return candidate;
+        }
     }
     json!({ "result": text })
 }
@@ -1108,9 +1270,22 @@ fn gemini_function_response_value(content: MessageContent) -> Value {
 fn gemini_function_response_value_from_media(plan: &ToolResultMediaPlan) -> Value {
     let text = cleaned_tool_result_text(plan);
     if let Ok(Value::Object(object)) = serde_json::from_str::<Value>(&text) {
-        return Value::Object(object);
+        let candidate = Value::Object(object);
+        if !value_contains_json_ref_key(&candidate) {
+            return candidate;
+        }
     }
     json!({ "result": text })
+}
+
+fn value_contains_json_ref_key(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => object
+            .iter()
+            .any(|(key, child)| key == "$ref" || value_contains_json_ref_key(child)),
+        Value::Array(items) => items.iter().any(value_contains_json_ref_key),
+        _ => false,
+    }
 }
 
 fn gemini_stop_sequences(stop: Option<Stop>) -> Option<Vec<String>> {
@@ -1286,37 +1461,32 @@ pub fn llm_response_to_gemini(response: Response) -> Value {
     })
 }
 
+fn gemini_u64_field(usage: &Value, field: &str) -> Option<u64> {
+    let value = usage.get(field)?;
+    value
+        .as_u64()
+        .or_else(|| value.as_str()?.trim().parse::<u64>().ok())
+}
+
 pub(crate) fn gemini_usage_to_llm(usage: Option<&Value>) -> Usage {
     let usage = usage.unwrap_or(&Value::Null);
-    let prompt = usage
-        .get("promptTokenCount")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let cached = usage
-        .get("cachedContentTokenCount")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let candidate_tokens = usage
-        .get("candidatesTokenCount")
-        .and_then(Value::as_u64)
+    let base_prompt = gemini_u64_field(usage, "promptTokenCount").unwrap_or(0);
+    // Include server-side tool retrieval tokens (`toolUsePromptTokenCount`,
+    // AxonHub 84533aba) and accept Vertex AI protobuf stringified int64 values.
+    let tool_use_prompt = gemini_u64_field(usage, "toolUsePromptTokenCount").unwrap_or(0);
+    let prompt = base_prompt.saturating_add(tool_use_prompt);
+    let cached = gemini_u64_field(usage, "cachedContentTokenCount").unwrap_or(0);
+    let candidate_tokens = gemini_u64_field(usage, "candidatesTokenCount")
         .or_else(|| {
-            usage
-                .get("totalTokenCount")
-                .and_then(Value::as_u64)
-                .map(|total| total.saturating_sub(prompt))
+            gemini_u64_field(usage, "totalTokenCount").map(|total| total.saturating_sub(prompt))
         })
         .unwrap_or(0);
-    let reasoning = usage
-        .get("thoughtsTokenCount")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    let reasoning = gemini_u64_field(usage, "thoughtsTokenCount").unwrap_or(0);
     let completion = candidate_tokens.saturating_add(reasoning);
     Usage {
         prompt_tokens: prompt,
         completion_tokens: completion,
-        total_tokens: usage
-            .get("totalTokenCount")
-            .and_then(Value::as_u64)
+        total_tokens: gemini_u64_field(usage, "totalTokenCount")
             .unwrap_or_else(|| prompt.saturating_add(completion)),
         cached_tokens: cached,
         cache_write_tokens: 0,
@@ -1346,9 +1516,15 @@ pub(crate) fn gemini_finish_to_openai_finish(
     let reason = reason.filter(|reason| !reason.trim().is_empty())?;
     match reason {
         "MAX_TOKENS" => Some("length".to_string()),
-        "SAFETY" | "RECITATION" | "SPII" | "BLOCKLIST" | "PROHIBITED_CONTENT" => {
-            Some("refusal".to_string())
-        }
+        "SAFETY"
+        | "RECITATION"
+        | "SPII"
+        | "BLOCKLIST"
+        | "PROHIBITED_CONTENT"
+        | "LANGUAGE"
+        | "IMAGE_SAFETY"
+        | "IMAGE_PROHIBITED_CONTENT"
+        | "IMAGE_RECITATION" => Some("refusal".to_string()),
         _ if has_tool => Some("tool_calls".to_string()),
         _ => Some("stop".to_string()),
     }
@@ -1357,7 +1533,7 @@ pub(crate) fn gemini_finish_to_openai_finish(
 fn openai_finish_to_gemini_finish(reason: Option<&str>) -> &'static str {
     match reason {
         Some("length") | Some("max_tokens") => "MAX_TOKENS",
-        Some("refusal") => "SAFETY",
+        Some("refusal") | Some("content_filter") | Some("sensitive") => "SAFETY",
         _ => "STOP",
     }
 }

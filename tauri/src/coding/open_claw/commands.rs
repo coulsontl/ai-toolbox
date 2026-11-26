@@ -191,8 +191,8 @@ pub async fn read_openclaw_config(
     match json5::from_str::<OpenClawConfig>(&content) {
         Ok(config) => Ok(ReadOpenClawConfigResult::Success { config }),
         Err(e) => {
-            let preview = if content.len() > 500 {
-                format!("{}...", &content[..500])
+            let preview = if content.chars().count() > 500 {
+                format!("{}...", content.chars().take(500).collect::<String>())
             } else {
                 content
             };

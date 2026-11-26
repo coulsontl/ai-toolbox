@@ -1408,6 +1408,8 @@ pub struct GatewayRequestLogSummary {
     pub cache_read_tokens: Option<u64>,
     #[serde(default)]
     pub cache_creation_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_1h_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
     pub request_body_bytes: u64,
     pub response_body_bytes: u64,

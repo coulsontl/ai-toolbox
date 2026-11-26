@@ -759,6 +759,10 @@ fn collect_values(
             .usage
             .cache_creation_tokens
             .max(previous.usage.cache_creation_tokens);
+        record.usage.cache_creation_1h_tokens = record
+            .usage
+            .cache_creation_1h_tokens
+            .max(previous.usage.cache_creation_1h_tokens);
         record
             .legacy_request_ids
             .extend(previous.legacy_request_ids.iter().cloned());

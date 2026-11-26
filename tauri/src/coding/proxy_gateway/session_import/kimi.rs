@@ -309,6 +309,7 @@ pub(super) fn parse(
                     output_tokens: Some(number(raw, &["output"])),
                     cache_read_tokens: Some(number(raw, &["inputCacheRead"])),
                     cache_creation_tokens: Some(number(raw, &["inputCacheCreation"])),
+                    cache_creation_1h_tokens: None,
                     envelope_id: string(payload, &["/messageId", "/responseId"]),
                 };
                 let mut record = native_record(
@@ -423,6 +424,7 @@ fn collect_python(
         output_tokens: Some(number(raw, &["output"])),
         cache_read_tokens: Some(number(raw, &["input_cache_read"])),
         cache_creation_tokens: Some(number(raw, &["input_cache_creation"])),
+        cache_creation_1h_tokens: None,
         envelope_id,
     };
     let mut record = native_record(

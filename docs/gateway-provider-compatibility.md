@@ -215,11 +215,11 @@ Gemini 的通用工具语义见架构文档 §8.5：同批结果归为一个 use
 - 只在 HTTP 400/415/422/501 时尝试同 provider 重试。
 - 触发条件二选一：
   1. 错误文本明确 image/media/vision/attachment unsupported；
-  2. 自证性 text-only 短语 `only support text` / `only supports text` / `text only` / `text-only`（无需提到 image；覆盖火山 `Model only support text input`）。
-- 替换 OpenAI/Anthropic image/image_url、Responses `input_image`、Gemini image `inlineData/fileData` 为文本占位。
+  2. 自证性 text-only 短语 `only support text` / `only supports text` / `text only` / `text-only`（无需提到 image；覆盖火山 `Model only support text input`），或 GLM 中文校验错 `content.type 参数非法` + `取值范围 ['text']`（cc-switch `4a0baf69`）。
+- 替换 OpenAI/Anthropic image/image_url、Responses `input_image`、Gemini image `inlineData/fileData` 为 `[Unsupported Image]`，并替换 user/assistant 中的非图片媒体 `file` / `input_file` / `input_audio` / `document` 为 `[Unsupported Media]`（预测式纯文本模型与反应式重试共用）。
 - 保留 `cache_control`。
 
-测试：`unsupported_media_rectifier_*`、`predictive_media_policy_*`、`known_text_only_model_matches_glm_5_2_exact_tail_not_multimodal_variant`、`predictive_media_policy_replaces_images_for_glm_5_2_when_heuristic_enabled`。
+测试：`unsupported_media_rectifier_*`、`predictive_media_policy_*`、`known_text_only_model_matches_glm_5_2_exact_tail_not_multimodal_variant`、`predictive_media_policy_replaces_images_for_glm_5_2_when_heuristic_enabled`、`glm_chinese_text_only_error_and_non_image_media_stripping`。
 
 ### 2.5 middleware
 
@@ -389,20 +389,21 @@ Copilot 的 warmup 模型和 Chat/Responses 动态 target 在每次 attempt 的�
 1. `Content-Type: text/event-stream` 优先进入 SSE 路径。
 2. 明确非 SSE Content-Type，例如 `application/json`，不走 SSE wrapper，即使 request body 写了 `stream:true`。
 3. 缺少 Content-Type 时，才 fallback 到 request `stream:true` 或 Gemini route streaming。
-4. Ollama `application/x-ndjson` / `application/x-json-stream` 是专用例外，只对 Ollama provider_kind 转换。
+4. Ollama `application/x-ndjson` / `application/x-json-stream` 或请求显式 `stream:true`（修复 `ollama.com` 返回 `application/json` 的 NDJSON 流，AxonHub `9aca39c0`）进入 Ollama NDJSON -> Chat SSE 转换，只对 Ollama provider_kind 生效。
 
 ### 3.2 SSE wrapper 顺序
 
 当前流式路径顺序：
 
-1. xAI native Responses namespace restore，且只在 HTTP 2xx restore。
-2. Gemini shadow record。
-3. Bailian OpenAI Chat SSE filter。
-4. xAI/Grok OpenAI Chat SSE filter。
-5. Ollama NDJSON -> OpenAI Chat SSE。
-6. protocol SSE conversion。
-7. Codex Responses SSE record。
-8. request-scoped reverse pipeline middleware。
+1. 第三方 native Responses（非 `CodexOfficial`）迟到工具参数补全适配器（`runtime/compat/codex_responses.rs::wrap_late_arguments_repair_sse_stream`，仅在 HTTP 2xx 且空 `done` 早于增量时暂存补齐）。
+2. xAI native Responses 2xx 恢复（namespace restore + 完成态 `function_call` 整浮点参数转整数）。
+3. Gemini shadow record。
+4. Bailian OpenAI Chat SSE filter。
+5. xAI/Grok OpenAI Chat SSE filter。
+6. Ollama NDJSON -> OpenAI Chat SSE。
+7. protocol SSE conversion。
+8. Codex Responses SSE record（按客户端 session/thread 头隔离作用域）。
+9. request-scoped reverse pipeline middleware。
 
 provider raw stream filter 必须发生在 protocol SSE conversion 之前。
 
@@ -428,8 +429,8 @@ Responses 非流 response output 中的多个 `reasoning` item 由 transformer �
 | 设置 | 默认 | 行为 |
 |---|---:|---|
 | `thinking_rectifier_enabled` | `true` | Claude/Anthropic target 非流 4xx thinking/signature 兼容错误后，清理 thinking/signature 并同 provider 重试一次 |
-| `responses_encrypted_content_rectifier_enabled` | `true` | OpenAI Responses target 非 compact、非流 4xx 且明确 encrypted_content 无法验证/解密时，删除失效 reasoning item 并重试一次 |
-| `thinking_budget_rectifier_enabled` | `true` | Anthropic target 非流 4xx thinking budget 类问题时走预算修正重试 |
+| `responses_encrypted_content_rectifier_enabled` | `true` | OpenAI Responses target（含 Codex 与 Claude→Responses）非 compact 路径在 4xx 或 HTTP 200 SSE 首包前收到不透明状态拒绝（`encrypted_content` / 加密函数输出无法验证解密、Azure 跨资源、`array_above_max_length`、`Expected an ID that begins with`）时，清理加密项/外源非 `item_reference` 顶层 `id`（保留 `call_id`）并同 provider 重试一次且不扣健康 |
+| `thinking_budget_rectifier_enabled` | `true` | Anthropic target 非流 4xx 遇到 `budget_tokens < 1024` 预算约束，或上游拒绝 `thinking.type="disabled"`（如 MiniMax-M3.1-Flash 报 `requires adaptive thinking` / `not allowed`）时，修正预算或移除 disabled `thinking` 并同 provider 重试一次 |
 | `cache_injection_enabled` | `false` | target Anthropic 时才注入 cache_control |
 | `lossy_rejection_enabled` | `false` | 有损转换默认放过并写 warning；显式开启后才硬拒绝 |
 
@@ -483,6 +484,8 @@ xAI native Responses passthrough 不是用户开关控制，而是严格自动�
 - 缺 `Session_id` 时从 header `session_id` 或 header `x-codex-turn-metadata` JSON 中的 `session_id` 推导（不读 body `session_id`）。
 - 保留客户端已有 `Originator`、`Session_id`、`Chatgpt-Account-Id`。
 - 缺 `Chatgpt-Account-Id` 时尽力从 bearer JWT payload 的 OpenAI/ChatGPT account claim 解析。
+- 非 `CodexOfficial` 的 Codex 第三方 provider：`build_upstream_headers` 剥离 ChatGPT 身份头（`chatgpt-account-id`、`openai-organization`、`openai-project`、`version`、`x-oai-*`、`x-openai-*`、`x-responsesapi-*`，保留 `session_id` 与 `x-codex-turn-state`）；同协议原生 Responses 走 `runtime/compat/codex_responses.rs` 清理 Codex 0.163+/0.167+ OpenAI 私有字段、将缺 `call_id` 的 `function_call_output` 转为 user 消息、延后并行工具批次内交错的 developer/system notice、去重历史 `function_call.arguments` 的重复 JSON 键，并在 2xx SSE 上挂载迟到工具参数补全流适配器。
+- 重试边界：HTTP `401`/`402`/`403`（`GatewayFailureKind::Auth`）跳过同 provider 重试（`can_retry_current_provider` 返回 `false`），直接 failover 到下一候选。
 
 响应侧：
 
@@ -523,7 +526,7 @@ xAI native Responses passthrough 不是用户开关控制，而是严格自动�
 请求侧，OpenAI Chat：
 
 - 对 `grok-4.5` / `grok-4` 删除 `reasoning_effort`、`presence_penalty`、`frequency_penalty`、`stop`。
-- 对 `grok-3` / `grok-3-mini` 删除 `presence_penalty`、`frequency_penalty`、`stop`。
+- 对 `grok-3` / `grok-3-mini` 以及其余所有 `grok-4*` 推理模型（排除含 `non-reasoning` 的型号，AxonHub `eb020516`）删除 `presence_penalty`、`frequency_penalty`、`stop`。
 - 支持 `xai/grok-*` 前缀归一后判断。
 
 请求侧，native Responses：
@@ -533,18 +536,20 @@ xAI native Responses passthrough 不是用户开关控制，而是严格自动�
 - 同步改写 input history 的 `function_call.name/namespace`。
 - namespace `tool_choice` 降为 `"auto"`；其它指向 namespace child 的 choice 改写为 flat name。
 - flat name 与顶层 function/custom 或其它 namespace child 冲突时 fail closed，返回本地 RequestSchema。
-- 删除顶层 `prompt_cache_retention`、`safety_identifier`。
+- 删除顶层 `prompt_cache_retention`、`safety_identifier`，并过滤 `include` 中的 `output.encrypted_content`（空数组时删除 `include`）。
 - 对 `grok-4.5` 清理 presence/frequency penalty、stop。
 - 递归删除 `external_web_access`。
 - `input[].type=additional_tools` 提升到顶层 `tools` 并去重，carrier item 从 input 删除。
 - reasoning item 的 `content:null` 删除 content。
 - tools 只保留 allowlist：`function`、`web_search`、`x_search`、`image_generation`、`collections_search`、`file_search`、`code_execution`、`code_interpreter`、`mcp`、`shell`。
-- `tool_choice` 指向被删除/unsupported tool 时删除。
+- `tool_choice` 指向被删除/unsupported tool 时删除；强制托管搜索 `tool_choice:{"type":"web_search"}`（含跨协议转 xAI Responses）改写为 `"required"` 并仅保留 `web_search` 工具（无存活 `web_search` 时一并删除，cc-switch `5ba95160`）。
+- 折叠含非 object 分支的根级 `oneOf`/`anyOf` function 参数 schema（多 object 分支 `required` 取交集），对 `automation_update` 强制安全 object schema 与 `strict:false`。
+- 递归将 Codex multi-agent `agent_message` 项改写为普通 `user` `message`（展开 `encrypted_content` 为 `input_text`）。
 
 响应侧：
 
 - xAI Chat SSE filter 丢弃 choices 中全是空 delta、无 finish_reason、无 usage 的 chunk。
-- native Responses JSON/SSE 只在 HTTP 2xx 恢复 function_call namespace；3xx/4xx/5xx 不恢复。
+- native Responses JSON/SSE 只在 HTTP 2xx 恢复 function_call namespace，并对完成态 `function_call` / `function_call_arguments.done` 的整浮点参数改写为整数（含 `>= 2^64` 守卫，跳过 `*.delta`）；3xx/4xx/5xx 不恢复。
 - SSE restore 对 `[DONE]` 原样透传。
 
 开关/默认：
@@ -584,7 +589,8 @@ xAI native Responses passthrough 不是用户开关控制，而是严格自动�
 - `response_format.type=json_schema` 降为 `json_object`，移除 `json_schema`。
 - 按 `reasoning_effort` 写 `thinking.type=enabled|disabled`。
 - disabled 时移除 `reasoning_effort` 并清理 assistant reasoning 字段。
-- enabled 时 effort 映射：`max/xhigh -> max`，其它 -> `high`。
+- enabled 时 effort 映射：`minimal/low -> low`、`medium/high/xhigh -> high`、`max -> max`（cc-switch `2122f7da`）。
+- 原生 Responses 路径走 `codex_responses::repair_strict_tool_history`，清理空助手文本并将工具批次内插入的助手说明提到批次首个调用之前。
 - 有 tool_calls 的 assistant 历史保留/回填 `reasoning_content`；无 tool_calls 的 assistant 历史移除 `reasoning_content` 和 `reasoning`。
 
 请求侧，Anthropic target：
@@ -625,7 +631,8 @@ xAI native Responses passthrough 不是用户开关控制，而是严格自动�
 
 请求侧：
 
-- OpenAI Chat target：`response_format.type=json_schema` 降为 `json_object`；assistant 有 tool_calls 且无非空 `reasoning_content` 时补 `"tool call"`。
+- OpenAI Chat target：`response_format.type=json_schema` 降为 `json_object`；对 `kimi-k2.6`、`kimi-k2.7-code*`、`kimi-k3*` 移除固定采样参数 `temperature`/`top_p`/`presence_penalty`/`frequency_penalty`（AxonHub `10ae626f`）；assistant 有 tool_calls 且无非空 `reasoning_content` 时补 `"tool call"`。
+- 原生 Responses target：走 `codex_responses::repair_strict_tool_history` 修复工具批次内的空助手消息与中插说明。
 - Anthropic target：规范化 assistant tool_use 历史 thinking。
 - Codex -> Chat reasoning 矩阵可用 `thinking` + `reasoning_content`。
 - OpenAI Chat `prompt_cache_key` 对 `kimi` / `moonshot` allowlist provider 可 reinject。
@@ -1007,7 +1014,8 @@ xAI native Responses passthrough 不是用户开关控制，而是严格自动�
 请求侧，body：
 
 - Claude 4.x Copilot model id 归一化，覆盖 date/dash/dot 和 `[1M]` 形态。
-- Chat target 删除 assistant content 中 `thinking` / `redacted_thinking`。
+- Chat target 删除 assistant content 中 `thinking` / `redacted_thinking`，并删除顶层 `stop`（cc-switch `56df6513`）。
+- Chat 响应与 SSE/聚合识别 Copilot `reasoning_text` 字段（并豁免首包空响应误判）。
 - Chat orphan tool message 降级成 user 文本 `[Tool result for ...]`。
 - Responses orphan `function_call_output` 降级成 user message。
 - Responses `function_call` item `id=call_id`；缺 name 时 name=`function`。
@@ -1053,12 +1061,12 @@ xAI native Responses passthrough 不是用户开关控制，而是严格自动�
   - `image_url` data URL 去前缀放 `images[]`
   - 普通 URL 原样放 `images[]`
   - reasoning field -> `thinking`
-  - `temperature/top_p/top_k/max_tokens/max_completion_tokens` -> `options`
+  - `temperature/top_p/top_k/seed/frequency_penalty/presence_penalty/max_tokens/max_completion_tokens` -> `options`（AxonHub `c5795678`）
   - `max_*` -> `options.num_predict`
   - `stop` -> `options.stop` array
   - `response_format=json_object` -> `"json"`
   - `response_format=json_schema` -> schema object
-  - `stream` 缺省 false
+  - `stream` 缺省 false；请求 `stream:true` 时附加 `Accept: application/x-ndjson`（AxonHub `9aca39c0`）
 
 响应侧：
 
@@ -1133,7 +1141,7 @@ disabled 行为：
 
 effort 映射：
 
-- `deepseek`：`max/xhigh -> max`，其它 -> `high`。
+- `deepseek`：`minimal/low -> low`、`medium/high/xhigh -> high`、`max -> max`。
 - `low_high`：`minimal/low -> low`，其它 -> `high`。
 - `openrouter`：`max/xhigh -> xhigh`，`high/medium/low/minimal` 保留，其它 none。
 - `passthrough`：支持 `minimal/low/medium/high/xhigh/max`。
@@ -1194,6 +1202,7 @@ inferred provider：
   - `build_upstream_headers` 在 inject 链最末尾（`inject_copilot_headers` 之后）调用 `inject_custom_headers` 逐项应用，故覆盖优先级最高；未配置时保留客户端原请求头。
   - 校验用 `parse_header_override_name`（`HeaderName::from_bytes`）与 `parse_header_override_value`（`http::HeaderValue::from_str` 字节规则：可见 ASCII / 非 ASCII / `\t` 合法，其余控制字符非法），非法 name/value 运行时静默跳过不阻断请求；前端 `headerValidation`（`isValidHeaderName` RFC 7230 token 规则 + `isValidHeaderValue` 字节规则）与之对齐并给非阻断红字提示。
   - Copilot provider 避让：`ProviderBodyCompat::Copilot` 判定命中时，凡 `name`/`from`/`to` 落入 `COPILOT_MANAGED_HEADERS`（含 `user-agent` 等指纹头）的操作整条跳过，指纹 UA（`GitHubCopilotChat/0.38.2`）由 `inject_copilot_headers` 独占管理，不可被覆盖。
+  - OpenCode Go provider（显式 `providerType=opencode-go|opencodego|opencode-zen`，不按 URL 猜测）：缺少 `x-opencode-session` 时优先从客户端会话头推导，否则基于去除 `cache_control` 后的 system + 首条 user 消息计算稳定 SHA-256 会话 ID；缺 `User-Agent` 时补 `ai-toolbox`（cc-switch `243cd9a9`）。
   - `HeaderMap` 与 preserved vec 必须同时移除旧值，保证 header-preserving 裸客户端只写出预期条数；rename/copy 的多值用 `append_preserved_header_value`（append 语义）追加，避免 `insert` 丢值。
   - 连通性测试（`connectivity_test.rs`）走 `route_request_with_options` -> `build_upstream_headers`，自动继承 custom headers，可在表单内预验上游请求头白名单。它也覆盖 target protocol 与 CLI 原生协议一致的直通 provider，并在结果里回报 client `statusCode`/`statusText` 与真实 `upstreamStatusCode`/`upstreamUrl`（网关合成 502 时保留真实上游状态）。
   - 切换网关 profile 时 `customHeaders` 保留（`mergeGatewayProfileReferenceIntoMeta` 的 delete 白名单不含该 key），与 billing 字段同等待遇。

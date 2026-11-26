@@ -53,7 +53,7 @@ pub fn tool_arguments_value(raw: &str) -> Value {
 }
 
 pub fn extract_reasoning_field_text(value: &Value) -> Option<String> {
-    for field in ["reasoning_content", "reasoning"] {
+    for field in ["reasoning_content", "reasoning", "reasoning_text"] {
         if let Some(text) = value
             .get(field)
             .and_then(Value::as_str)
@@ -119,21 +119,30 @@ fn extract_reasoning_detail_part_text(value: &Value) -> Option<String> {
 }
 
 pub fn split_leading_think_block(raw: &str) -> Option<(String, String)> {
-    let rest = strip_leading_think_open_tag(raw)?;
-    let close_index = rest.to_ascii_lowercase().find("</think>")?;
+    let (rest, close_tag) = strip_leading_think_open_tag_with_close(raw)?;
+    let lower = rest.to_ascii_lowercase();
+    let close_index = lower.find(close_tag)?;
     let reasoning = rest[..close_index].trim().to_string();
-    let answer = rest[close_index + "</think>".len()..]
+    let answer = rest[close_index + close_tag.len()..]
         .trim_start_matches(['\r', '\n', ' ', '\t'])
         .to_string();
-    (!reasoning.is_empty()).then_some((reasoning, answer))
+    (!reasoning.is_empty() || !answer.is_empty()).then_some((reasoning, answer))
 }
 
 pub fn strip_leading_think_open_tag(raw: &str) -> Option<&str> {
+    strip_leading_think_open_tag_with_close(raw).map(|(rest, _)| rest)
+}
+
+fn strip_leading_think_open_tag_with_close(raw: &str) -> Option<(&str, &'static str)> {
     let trimmed = raw.trim_start_matches(['\r', '\n', ' ', '\t']);
     let lower = trimmed.to_ascii_lowercase();
-    lower
-        .strip_prefix("<think>")
-        .map(|_| &trimmed["<think>".len()..])
+    if lower.starts_with("<thinking>") {
+        return Some((&trimmed["<thinking>".len()..], "</thinking>"));
+    }
+    if lower.starts_with("<think>") {
+        return Some((&trimmed["<think>".len()..], "</think>"));
+    }
+    None
 }
 
 fn repair_common_json(raw: &str) -> Result<String, serde_json::Error> {

@@ -127,13 +127,14 @@ fn replacement_cost(
     {
         return None;
     }
-    let cost = usage_stats::calculate_session_costs(
+    let cost = usage_stats::calculate_session_costs_with_1h(
         conn,
         &record.model,
         record.usage.input_tokens.unwrap_or(0),
         record.usage.output_tokens.unwrap_or(0),
         record.usage.cache_read_tokens.unwrap_or(0),
         record.usage.cache_creation_tokens.unwrap_or(0),
+        record.usage.cache_creation_1h_tokens.unwrap_or(0),
     );
     Some(RecordedCost {
         source: "model_pricing".into(),
@@ -397,9 +398,10 @@ pub(super) fn reconcile_session_costs(
                     cost.source = "unavailable".into();
                 }
                 if let Some(replacement) = replacement_cost(&transaction, &record, &cost) {
-                    let breakdown = usage_stats::calculate_session_costs(&transaction, &record.model,
+                    let breakdown = usage_stats::calculate_session_costs_with_1h(&transaction, &record.model,
                         record.usage.input_tokens.unwrap_or(0), record.usage.output_tokens.unwrap_or(0),
-                        record.usage.cache_read_tokens.unwrap_or(0), record.usage.cache_creation_tokens.unwrap_or(0));
+                        record.usage.cache_read_tokens.unwrap_or(0), record.usage.cache_creation_tokens.unwrap_or(0),
+                        record.usage.cache_creation_1h_tokens.unwrap_or(0));
                     transaction.execute(
                         "UPDATE proxy_request_logs SET input_cost_usd=?2, output_cost_usd=?3,
                          cache_read_cost_usd=?4, cache_creation_cost_usd=?5, total_cost_usd=?6,

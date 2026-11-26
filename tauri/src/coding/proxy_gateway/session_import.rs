@@ -3,7 +3,9 @@ use super::types::{
     GatewayUsageRecordedEvent, GatewayUsageTool, SessionUsageGranularity, SessionUsageMetadata,
 };
 use super::usage_parser::TokenUsage;
-use super::usage_stats::{calculate_session_costs, format_decimal_cost};
+use super::usage_stats::{
+    calculate_session_costs, calculate_session_costs_with_1h, format_decimal_cost,
+};
 use crate::db::SqliteDbState;
 use chrono::Utc;
 use futures_util::FutureExt;
@@ -2008,6 +2010,21 @@ fn find_matching_proxy(
         return Ok(None);
     }
     // `app_type IN (...)` rather than `= ?1`: see the spelling note above.
+    // Also match multi-segment namespace prefixes such as
+    // `cpa/antigravity/claude-sonnet-4-6` against bare `claude-sonnet-4-6`
+    // (cc-switch c131f68e) by comparing the trailing `/` segment when present.
+    let bare_model = record
+        .model
+        .rsplit('/')
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or(&record.model);
+    let escaped_bare = bare_model
+        .to_ascii_lowercase()
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let slash_suffix_pattern = format!("%/{escaped_bare}");
     let app_type_count = app_types.len();
     let tail_base = app_type_count + 1;
     let sql = format!(
@@ -2018,7 +2035,14 @@ fn find_matching_proxy(
            AND (?{a} IS NULL OR request_id = ?{a})
            AND (?{b} IS NULL OR request_id NOT GLOB 'SESSION:*')
            AND (stream_outcome = 'completed' OR (stream_outcome IS NULL AND status_code >= 200 AND status_code < 300))
-           AND (LOWER(model) = LOWER(?{m}) OR LOWER(request_model) = LOWER(?{m}))
+           AND (
+               LOWER(model) = LOWER(?{m})
+               OR LOWER(request_model) = LOWER(?{m})
+               OR LOWER(model) = LOWER(?{bm})
+               OR LOWER(request_model) = LOWER(?{bm})
+               OR LOWER(model) LIKE ?{sp} ESCAPE '\\'
+               OR LOWER(request_model) LIKE ?{sp} ESCAPE '\\'
+           )
            AND input_tokens = ?{i} AND output_tokens = ?{o}
            AND cache_read_tokens = ?{cr} AND cache_creation_tokens = ?{cc}
            AND ?{t} BETWEEN created_at - (MAX(COALESCE(duration_ms, 0), 0) + 999) / 1000 - ?{g}
@@ -2035,6 +2059,8 @@ fn find_matching_proxy(
         a = tail_base + 7,
         b = tail_base + 8,
         e = tail_base + 9,
+        bm = tail_base + 10,
+        sp = tail_base + 11,
     );
     let mut query = conn.prepare(&sql).map_err(|error| error.to_string())?;
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -2054,6 +2080,8 @@ fn find_matching_proxy(
     params_vec.push(Box::new(only_proxy_id));
     params_vec.push(Box::new(record.usage.envelope_id.clone()));
     params_vec.push(Box::new(PROXY_MATCH_END_GRACE_SECONDS));
+    params_vec.push(Box::new(bare_model.to_string()));
+    params_vec.push(Box::new(slash_suffix_pattern));
     let param_refs: Vec<&dyn rusqlite::ToSql> =
         params_vec.iter().map(|value| value.as_ref()).collect();
     let matches = query
@@ -2077,7 +2105,16 @@ fn write_record(conn: &Connection, record: &SessionUsageRecord) -> Result<(), St
     let output = record.usage.output_tokens.unwrap_or(0);
     let read = record.usage.cache_read_tokens.unwrap_or(0);
     let creation = record.usage.cache_creation_tokens.unwrap_or(0);
-    let costs = calculate_session_costs(conn, &record.model, input, output, read, creation);
+    let creation_1h = record.usage.cache_creation_1h_tokens.unwrap_or(0);
+    let costs = calculate_session_costs_with_1h(
+        conn,
+        &record.model,
+        input,
+        output,
+        read,
+        creation,
+        creation_1h,
+    );
     let total = record
         .reported_cost_usd
         .clone()
@@ -2194,6 +2231,7 @@ fn reconcile_late_proxy_rows(
                 output_tokens: Some(output),
                 cache_read_tokens: Some(read),
                 cache_creation_tokens: Some(creation),
+                cache_creation_1h_tokens: None,
                 envelope_id: states
                     .get(source_id)
                     .and_then(|state| state.records.get(&id))

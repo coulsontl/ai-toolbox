@@ -19,6 +19,7 @@ pub(in crate::coding::proxy_gateway::runtime) enum ProviderBodyCompat {
     CodexOfficial,
     Copilot,
     Ollama,
+    OpenCodeGo,
 }
 
 impl ProviderBodyCompat {
@@ -66,6 +67,7 @@ impl ProviderBodyCompat {
                 Some(Self::CodexOfficial)
             }
             "copilot" | "github-copilot" | "githubcopilot" => Some(Self::Copilot),
+            "opencode-go" | "opencodego" | "opencode-zen" => Some(Self::OpenCodeGo),
             "ollama" | "ollama-chat" | "ollamachat"
                 if target_protocol == AiProtocol::OpenAiChat =>
             {
@@ -117,5 +119,16 @@ mod tests {
             ProviderBodyCompat::from_provider_type(Some("vertex"), AiProtocol::AnthropicMessages),
             Some(ProviderBodyCompat::AnthropicVertex)
         );
+    }
+
+    #[test]
+    fn opencode_go_provider_kind_matches_explicit_aliases() {
+        for alias in ["opencode-go", "opencodego", "opencode_go", "opencode-zen"] {
+            assert_eq!(
+                ProviderBodyCompat::from_provider_type(Some(alias), AiProtocol::OpenAiChat),
+                Some(ProviderBodyCompat::OpenCodeGo),
+                "alias={alias}"
+            );
+        }
     }
 }

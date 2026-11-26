@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use super::{append_side_store_sse_bytes, take_sse_block};
 
 const MAX_GEMINI_SHADOW_SESSIONS: usize = 200;
-const MAX_GEMINI_SHADOW_TURNS_PER_SESSION: usize = 64;
+const MAX_GEMINI_SHADOW_TURNS_PER_SESSION: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct GeminiShadowSessionKey {
@@ -74,19 +74,131 @@ impl GeminiShadowStore {
         let Some(contents) = body.get_mut("contents").and_then(Value::as_array_mut) else {
             return 0;
         };
-        if !request_needs_function_call_replay(contents) {
+        if request_needs_function_call_replay(contents) {
+            let requested_names = function_response_names(contents);
+            let Some(turn) = self.latest_matching_turn(key, &requested_names) else {
+                return 0;
+            };
+            let insert_index = contents
+                .iter()
+                .position(content_has_function_response)
+                .unwrap_or(contents.len());
+            contents.insert(insert_index, turn.assistant_content);
+            return 1;
+        }
+        // Long tool histories: when model functionCall parts are present but lost
+        // their thoughtSignature on replay, backfill signatures from recorded turns
+        // (cc-switch 8162adb3).
+        self.backfill_missing_function_call_signatures(key, contents)
+    }
+
+    fn backfill_missing_function_call_signatures(
+        &self,
+        key: &GeminiShadowSessionKey,
+        contents: &mut [Value],
+    ) -> usize {
+        let needs_backfill = contents.iter().any(|content| {
+            content
+                .get("parts")
+                .and_then(Value::as_array)
+                .is_some_and(|parts| {
+                    let has_fc = parts.iter().any(|part| part.get("functionCall").is_some());
+                    let has_signed_fc = parts
+                        .iter()
+                        .any(|part| part.get("functionCall").is_some() && part_signature(part).is_some());
+                    has_fc && !has_signed_fc
+                })
+        });
+        if !needs_backfill {
             return 0;
         }
-        let requested_names = function_response_names(contents);
-        let Some(turn) = self.latest_matching_turn(key, &requested_names) else {
+        let Ok(mut inner) = self.inner.lock() else {
             return 0;
         };
-        let insert_index = contents
-            .iter()
-            .position(content_has_function_response)
-            .unwrap_or(contents.len());
-        contents.insert(insert_index, turn.assistant_content);
-        1
+        let Some(turns) = inner.sessions.get(key) else {
+            return 0;
+        };
+        let mut sig_by_call_key: HashMap<(String, String), String> = HashMap::new();
+        // Track unambiguous tool-name fallback: `Some(sig)` if every signed call
+        // for `name` in this session carried the same signature, `None` if ambiguous.
+        let mut sig_by_name: HashMap<String, Option<String>> = HashMap::new();
+        for turn in turns {
+            if let Some(parts) = turn
+                .assistant_content
+                .get("parts")
+                .and_then(Value::as_array)
+            {
+                for part in parts {
+                    let Some(sig) = part_signature(part) else {
+                        continue;
+                    };
+                    if let Some(fc) = part.get("functionCall") {
+                        if let Some(name) = fc.get("name").and_then(Value::as_str) {
+                            let args = fc
+                                .get("args")
+                                .map(canonical_json_key)
+                                .unwrap_or_default();
+                            sig_by_call_key.insert((name.to_string(), args), sig.to_string());
+                            sig_by_name
+                                .entry(name.to_string())
+                                .and_modify(|existing| {
+                                    if existing.as_deref() != Some(sig) {
+                                        *existing = None;
+                                    }
+                                })
+                                .or_insert_with(|| Some(sig.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+        if sig_by_call_key.is_empty() {
+            return 0;
+        }
+        let mut restored = 0;
+        for content in contents.iter_mut() {
+            let Some(parts) = content.get_mut("parts").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            // In Gemini parallel function calling, only the first `functionCall`
+            // part of a model turn carries `thoughtSignature`. Never stamp a
+            // signature onto trailing sibling calls when the turn is already signed.
+            if parts
+                .iter()
+                .any(|part| part.get("functionCall").is_some() && part_signature(part).is_some())
+            {
+                continue;
+            }
+            let Some(first_fc_part) = parts
+                .iter_mut()
+                .find(|part| part.get("functionCall").is_some())
+            else {
+                continue;
+            };
+            let Some(name) = first_fc_part
+                .pointer("/functionCall/name")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+            else {
+                continue;
+            };
+            let args = first_fc_part
+                .pointer("/functionCall/args")
+                .map(canonical_json_key)
+                .unwrap_or_default();
+            let sig = sig_by_call_key
+                .get(&(name.clone(), args))
+                .cloned()
+                .or_else(|| sig_by_name.get(&name).and_then(|s| s.clone()));
+            if let (Some(sig), Some(obj)) = (sig, first_fc_part.as_object_mut()) {
+                obj.insert("thoughtSignature".to_string(), json!(sig));
+                restored += 1;
+            }
+        }
+        if restored > 0 {
+            touch_session_order(&mut inner.session_order, key);
+        }
+        restored
     }
 
     fn latest_matching_turn(
@@ -255,6 +367,41 @@ fn part_signature(part: &Value) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
+fn canonical_json_key(value: &Value) -> String {
+    fn write_canonical(value: &Value, out: &mut String) {
+        match value {
+            Value::Object(map) => {
+                out.push('{');
+                let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+                entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+                for (index, (k, v)) in entries.into_iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&serde_json::to_string(k).unwrap_or_default());
+                    out.push(':');
+                    write_canonical(v, out);
+                }
+                out.push('}');
+            }
+            Value::Array(items) => {
+                out.push('[');
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    write_canonical(item, out);
+                }
+                out.push(']');
+            }
+            other => out.push_str(&other.to_string()),
+        }
+    }
+    let mut out = String::new();
+    write_canonical(value, &mut out);
+    out
+}
+
 fn touch_session_order(order: &mut VecDeque<GeminiShadowSessionKey>, key: &GeminiShadowSessionKey) {
     if let Some(index) = order.iter().position(|existing| existing == key) {
         order.remove(index);
@@ -367,6 +514,50 @@ mod tests {
         assert_eq!(
             take_sse_block(&mut buffer).as_deref(),
             Some(b"data: second".as_slice())
+        );
+    }
+
+    #[test]
+    fn backfills_missing_thought_signatures_in_long_tool_history() {
+        let store = GeminiShadowStore::default();
+        let key = GeminiShadowSessionKey::new("provider-g", "session-long");
+        store.record_response(
+            key.clone(),
+            &json!({
+                "candidates": [{
+                    "content": {
+                        "role": "model",
+                        "parts": [{
+                            "functionCall": {"name": "read_file", "args": {"path": "src/lib.rs"}},
+                            "thoughtSignature": "sig-lib"
+                        }]
+                    }
+                }]
+            }),
+        );
+
+        let mut request = json!({
+            "contents": [
+                {"role": "user", "parts": [{"text": "inspect lib"}]},
+                {
+                    "role": "model",
+                    "parts": [{
+                        "functionCall": {"name": "read_file", "args": {"path": "src/lib.rs"}}
+                    }]
+                },
+                {
+                    "role": "user",
+                    "parts": [{
+                        "functionResponse": {"name": "read_file", "response": {"content": "ok"}}
+                    }]
+                }
+            ]
+        });
+
+        assert_eq!(store.enrich_request(&key, &mut request), 1);
+        assert_eq!(
+            request["contents"][1]["parts"][0]["thoughtSignature"],
+            "sig-lib"
         );
     }
 }

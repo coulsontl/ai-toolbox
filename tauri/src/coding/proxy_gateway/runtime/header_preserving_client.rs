@@ -287,17 +287,18 @@ async fn send_raw_request(
                 .await
                 .map_err(|message| HeaderPreservingError::PreWrite { message })?
         } else {
-            ProxyStream::Tcp(tokio::net::TcpStream::connect((host, port)).await.map_err(
-                |error| HeaderPreservingError::PreWrite {
-                    message: format!("TCP connect failed: {error}"),
-                },
-            )?)
+            ProxyStream::Tcp(
+                connect_direct_happy_eyeballs(host, port)
+                    .await
+                    .map_err(|message| HeaderPreservingError::PreWrite { message })?,
+            )
         };
 
     if scheme == "https" {
         let tls_connector = global_tls_connector();
+        let tls_host = host.trim_start_matches('[').trim_end_matches(']');
         let server_name =
-            rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|error| {
+            rustls::pki_types::ServerName::try_from(tls_host.to_string()).map_err(|error| {
                 HeaderPreservingError::PreWrite {
                     message: format!("Invalid upstream server name: {error}"),
                 }
@@ -503,12 +504,13 @@ async fn connect_via_proxy(
     let proxy_port = parsed
         .port()
         .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
-    let tcp_stream = tokio::net::TcpStream::connect((proxy_host, proxy_port))
+    let tcp_stream = connect_direct_happy_eyeballs(proxy_host, proxy_port)
         .await
         .map_err(|error| format!("Proxy TCP connect failed: {error}"))?;
     let mut stream = if parsed.scheme() == "https" {
         let tls_connector = global_tls_connector();
-        let server_name = rustls::pki_types::ServerName::try_from(proxy_host.to_string())
+        let tls_proxy_host = proxy_host.trim_start_matches('[').trim_end_matches(']');
+        let server_name = rustls::pki_types::ServerName::try_from(tls_proxy_host.to_string())
             .map_err(|error| format!("Invalid proxy server name: {error}"))?;
         let tls_stream = tls_connector
             .connect(server_name, tcp_stream)
@@ -654,4 +656,186 @@ mod tests {
         assert!(raw_text.contains("anthropic-version: 2023-06-01\r\n"));
         assert!(raw_text.contains("Content-Length: 2\r\n"));
     }
+
+    #[tokio::test]
+    async fn connect_direct_happy_eyeballs_reaches_ipv4_and_parses_bracketed_ipv6() {
+        let v4 = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind ipv4");
+        let v4_port = v4.local_addr().expect("v4 addr").port();
+        let stream = connect_direct_happy_eyeballs("127.0.0.1", v4_port)
+            .await
+            .expect("connect ipv4");
+        assert_eq!(stream.peer_addr().expect("peer").port(), v4_port);
+
+        // Verify bracketed IPv6 literal normalization without depending on host IPv6 firewall rules.
+        let parsed_v6 = parse_literal_socket_addr("[::1]", 8443).expect("parse bracketed ipv6");
+        assert!(parsed_v6.is_ipv6());
+        assert_eq!(parsed_v6.port(), 8443);
+
+        // Verify Happy Eyeballs falls through an immediate refusal to a working IPv4 listener.
+        let closed = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind temp");
+        let closed_addr = closed.local_addr().expect("closed addr");
+        drop(closed);
+        let live = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind live");
+        let live_addr = live.local_addr().expect("live addr");
+        let raced = connect_ordered_addresses(vec![closed_addr, live_addr])
+            .await
+            .expect("race should succeed on live address");
+        assert_eq!(raced.peer_addr().expect("peer"), live_addr);
+    }
+
+    #[test]
+    fn interleave_addresses_alternates_address_families() {
+        let addrs: Vec<std::net::SocketAddr> = vec![
+            "[::1]:443".parse().unwrap(),
+            "[::2]:443".parse().unwrap(),
+            "127.0.0.1:443".parse().unwrap(),
+            "127.0.0.2:443".parse().unwrap(),
+        ];
+        let ordered = interleave_address_families(addrs);
+        assert!(ordered[0].is_ipv6());
+        assert!(ordered[1].is_ipv4());
+        assert!(ordered[2].is_ipv6());
+        assert!(ordered[3].is_ipv4());
+    }
+}
+
+fn parse_literal_socket_addr(host: &str, port: u16) -> Option<std::net::SocketAddr> {
+    let normalized = host.trim_start_matches('[').trim_end_matches(']');
+    normalized
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .map(|ip| std::net::SocketAddr::new(ip, port))
+}
+
+/// Open a direct TCP connection to `host:port` using RFC 8305 Happy Eyeballs
+/// (300ms stagger between interleaved address families) so dead AAAA records
+/// in front of working IPv4 addresses do not stall requests for 43s-150s.
+async fn connect_direct_happy_eyeballs(
+    host: &str,
+    port: u16,
+) -> Result<tokio::net::TcpStream, String> {
+    if let Some(addr) = parse_literal_socket_addr(host, port) {
+        return tokio::net::TcpStream::connect(addr)
+            .await
+            .map_err(|error| format!("TCP connect failed: {error}"));
+    }
+    let normalized_host = host.trim_start_matches('[').trim_end_matches(']');
+    let resolved: Vec<std::net::SocketAddr> = tokio::net::lookup_host((normalized_host, port))
+        .await
+        .map_err(|error| format!("DNS resolution failed for {host}: {error}"))?
+        .collect();
+    if resolved.is_empty() {
+        return Err(format!("DNS resolution returned no addresses for {host}"));
+    }
+    connect_ordered_addresses(interleave_address_families(resolved)).await
+}
+
+async fn connect_ordered_addresses(
+    ordered: Vec<std::net::SocketAddr>,
+) -> Result<tokio::net::TcpStream, String> {
+    const HAPPY_EYEBALLS_DELAY: Duration = Duration::from_millis(300);
+
+    if ordered.len() == 1 {
+        return tokio::net::TcpStream::connect(ordered[0])
+            .await
+            .map_err(|error| format!("TCP connect failed: {error}"));
+    }
+
+    let mut attempts = tokio::task::JoinSet::new();
+    let mut iter = ordered.into_iter();
+    let mut last_error: Option<String> = None;
+
+    if let Some(first) = iter.next() {
+        attempts.spawn(async move { tokio::net::TcpStream::connect(first).await });
+    }
+
+    loop {
+        if let Some(next_addr) = iter.next() {
+            let sleep = tokio::time::sleep(HAPPY_EYEBALLS_DELAY);
+            tokio::pin!(sleep);
+            tokio::select! {
+                joined = attempts.join_next(), if !attempts.is_empty() => {
+                    match joined {
+                        Some(Ok(Ok(stream))) => {
+                            attempts.abort_all();
+                            return Ok(stream);
+                        }
+                        Some(Ok(Err(error))) => {
+                            last_error = Some(error.to_string());
+                            // Failed immediately — start the next address right away.
+                            attempts.spawn(async move { tokio::net::TcpStream::connect(next_addr).await });
+                        }
+                        Some(Err(join_error)) => {
+                            last_error = Some(join_error.to_string());
+                            attempts.spawn(async move { tokio::net::TcpStream::connect(next_addr).await });
+                        }
+                        None => {
+                            attempts.spawn(async move { tokio::net::TcpStream::connect(next_addr).await });
+                        }
+                    }
+                }
+                () = &mut sleep => {
+                    attempts.spawn(async move { tokio::net::TcpStream::connect(next_addr).await });
+                }
+            }
+        } else {
+            match attempts.join_next().await {
+                Some(Ok(Ok(stream))) => {
+                    attempts.abort_all();
+                    return Ok(stream);
+                }
+                Some(Ok(Err(error))) => {
+                    last_error = Some(error.to_string());
+                }
+                Some(Err(join_error)) => {
+                    last_error = Some(join_error.to_string());
+                }
+                None => break,
+            }
+        }
+    }
+
+    Err(format!(
+        "TCP connect failed: {}",
+        last_error.unwrap_or_else(|| "no reachable address".to_string())
+    ))
+}
+
+fn interleave_address_families(addrs: Vec<std::net::SocketAddr>) -> Vec<std::net::SocketAddr> {
+    if addrs.len() <= 1 {
+        return addrs;
+    }
+    let first_is_v6 = addrs[0].is_ipv6();
+    let mut primary = Vec::new();
+    let mut secondary = Vec::new();
+    for addr in addrs {
+        if addr.is_ipv6() == first_is_v6 {
+            primary.push(addr);
+        } else {
+            secondary.push(addr);
+        }
+    }
+    let mut out = Vec::with_capacity(primary.len() + secondary.len());
+    let mut p_iter = primary.into_iter();
+    let mut s_iter = secondary.into_iter();
+    loop {
+        let p = p_iter.next();
+        let s = s_iter.next();
+        if p.is_none() && s.is_none() {
+            break;
+        }
+        if let Some(addr) = p {
+            out.push(addr);
+        }
+        if let Some(addr) = s {
+            out.push(addr);
+        }
+    }
+    out
 }

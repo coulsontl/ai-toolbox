@@ -652,6 +652,7 @@ mod tests {
             output_tokens: Some(20),
             cache_read_tokens: Some(0),
             cache_creation_tokens: Some(0),
+            cache_creation_1h_tokens: None,
             total_tokens: Some(30),
             request_body_bytes: 2,
             response_body_bytes: 11,

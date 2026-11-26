@@ -48,8 +48,13 @@ pub(super) fn preserve_responses_transformer_metadata(
     }
 }
 
-pub(super) fn attach_responses_raw_request_metadata(body: &Value, request: &mut Request) {
-    if let Some(tools) = body.get("tools").and_then(Value::as_array) {
+pub(super) fn attach_responses_raw_request_metadata(
+    body: &Value,
+    combined_tools: &[Value],
+    request: &mut Request,
+) {
+    if !combined_tools.is_empty() {
+        let tools = combined_tools;
         // Namespace tools expand into IR functions (AxonHub 7d095b63) but the original
         // namespace envelope must still round-trip via raw fragments + represented_tool_count.
         let raw_tools = tools
@@ -275,12 +280,25 @@ pub(super) fn append_responses_input_to_messages(
     let mut raw_input_items = Vec::new();
     match input {
         Some(Value::Array(items)) => {
+            let mut emitted = vec![false; items.len()];
             let mut index = 0;
             let mut pending_trailing_reasoning: Option<Message> = None;
             let mut last_assistant_index: Option<usize> = None;
             let mut assistant_turn_index: Option<usize> = None;
             while index < items.len() {
+                if emitted[index] {
+                    index += 1;
+                    continue;
+                }
                 let item = &items[index];
+                // `additional_tools` carriers are hoisted into `request.tools`
+                // by `responses_request_to_llm`; skip them here so they do not
+                // become empty developer messages or raw input fragments
+                // (cc-switch a35e5000).
+                if item.get("type").and_then(Value::as_str) == Some("additional_tools") {
+                    index += 1;
+                    continue;
+                }
                 if item.get("type").and_then(Value::as_str) == Some("reasoning") {
                     // Consecutive reasoning items belong to the same assistant turn.
                     // Accumulate them so an immediately following assistant/tool item
@@ -292,10 +310,11 @@ pub(super) fn append_responses_input_to_messages(
                         reasoning_message = pending;
                     }
                     if items.get(index + 1).is_some_and(|following| {
-                        merge_responses_following_item_into_reasoning_message(
-                            &mut reasoning_message,
-                            following,
-                        )
+                        !emitted[index + 1]
+                            && merge_responses_following_item_into_reasoning_message(
+                                &mut reasoning_message,
+                                following,
+                            )
                     }) {
                         // Forward-merged with following item — not trailing.
                         last_assistant_index = Some(append_responses_assistant_message(
@@ -303,10 +322,13 @@ pub(super) fn append_responses_input_to_messages(
                             reasoning_message,
                             &mut assistant_turn_index,
                         ));
+                        emitted[index] = true;
+                        emitted[index + 1] = true;
                         index += 2;
                     } else {
                         // May be trailing: hold until next non-reasoning boundary or end.
                         pending_trailing_reasoning = Some(reasoning_message);
+                        emitted[index] = true;
                         index += 1;
                     }
                     continue;
@@ -337,11 +359,29 @@ pub(super) fn append_responses_input_to_messages(
                             message,
                             &mut assistant_turn_index,
                         ));
+                        emitted[index] = true;
                     }
                     message => {
-                        // Results, non-assistant messages and raw-only items end
-                        // this turn. Never merge two calls across a tool result.
-                        assistant_turn_index = None;
+                        // When an assistant turn carrying tool calls ends and
+                        // the next item is a non-tool message (e.g. a developer
+                        // or user notice interleaved before the tool outputs),
+                        // pull matching `function_call_output` / `custom_tool_call_output`
+                        // items forward so Chat/Anthropic keep tool results
+                        // immediately adjacent to their assistant turn
+                        // (AxonHub 5659a526).
+                        if let Some(turn_idx) = assistant_turn_index.take() {
+                            flush_interleaved_tool_outputs_for_turn(
+                                items,
+                                index,
+                                &mut emitted,
+                                messages,
+                                turn_idx,
+                            );
+                        }
+                        if emitted[index] {
+                            index += 1;
+                            continue;
+                        }
                         if !is_structurally_represented_responses_input_item(item) {
                             let mut fragment = raw_responses_fragment(index, item.clone());
                             // Assistant/reasoning items may collapse into fewer
@@ -353,6 +393,7 @@ pub(super) fn append_responses_input_to_messages(
                         if let Some(message) = message {
                             messages.push(message);
                         }
+                        emitted[index] = true;
                     }
                 }
                 index += 1;
@@ -370,6 +411,60 @@ pub(super) fn append_responses_input_to_messages(
         _ => {}
     }
     raw_input_items
+}
+
+fn flush_interleaved_tool_outputs_for_turn(
+    items: &[Value],
+    start_index: usize,
+    emitted: &mut [bool],
+    messages: &mut Vec<Message>,
+    assistant_turn_index: usize,
+) {
+    let mut call_ids: std::collections::HashSet<String> = messages
+        .get(assistant_turn_index)
+        .map(|msg| {
+            msg.tool_calls
+                .iter()
+                .map(|call| call.id.clone())
+                .filter(|id| !id.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if call_ids.is_empty() {
+        return;
+    }
+    let mut scan = start_index;
+    while scan < items.len() && !call_ids.is_empty() {
+        if emitted[scan] {
+            scan += 1;
+            continue;
+        }
+        let candidate = &items[scan];
+        let item_type = candidate.get("type").and_then(Value::as_str);
+        // Stop before a later assistant turn that reuses a `call_id` so we never
+        // steal outputs belonging to a subsequent invocation.
+        if matches!(item_type, Some("function_call" | "custom_tool_call")) {
+            if let Some(call_id) = candidate.get("call_id").and_then(Value::as_str) {
+                if call_ids.contains(call_id) {
+                    break;
+                }
+            }
+        }
+        if matches!(
+            item_type,
+            Some("function_call_output" | "custom_tool_call_output")
+        ) {
+            if let Some(call_id) = candidate.get("call_id").and_then(Value::as_str) {
+                if call_ids.remove(call_id) {
+                    if let Some(tool_msg) = responses_item_to_message(candidate) {
+                        messages.push(tool_msg);
+                    }
+                    emitted[scan] = true;
+                }
+            }
+        }
+        scan += 1;
+    }
 }
 
 fn append_responses_assistant_message(
@@ -487,6 +582,11 @@ fn responses_item_to_message(item: &Value) -> Option<Message> {
         }),
         Some("function_call_output") | Some("custom_tool_call_output") => Some(Message {
             role: "tool".to_string(),
+            name: item
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+                .map(ToString::to_string),
             tool_call_id: item
                 .get("call_id")
                 .and_then(Value::as_str)
@@ -1596,10 +1696,17 @@ pub(super) fn usage_to_responses(usage: Option<&Usage>) -> Value {
     })
 }
 
-pub(super) fn responses_status_to_finish(status: Option<&str>, has_tool: bool) -> String {
+pub(super) fn responses_status_to_finish(
+    status: Option<&str>,
+    incomplete_reason: Option<&str>,
+    has_tool: bool,
+) -> String {
     match status {
         Some("failed") => "error".to_string(),
-        Some("incomplete") => "length".to_string(),
+        Some("incomplete") => match incomplete_reason {
+            Some("content_filter") => "content_filter".to_string(),
+            _ => "length".to_string(),
+        },
         Some("cancelled") | Some("canceled") => "cancelled".to_string(),
         Some("completed") if has_tool => "tool_calls".to_string(),
         Some("completed") => "stop".to_string(),
@@ -1610,8 +1717,19 @@ pub(super) fn responses_status_to_finish(status: Option<&str>, has_tool: bool) -
 pub(super) fn finish_to_responses_status(reason: Option<&str>) -> &'static str {
     match reason {
         Some("error") => "failed",
-        Some("length") | Some("max_tokens") => "incomplete",
+        Some("length") | Some("max_tokens") | Some("content_filter") | Some("refusal")
+        | Some("sensitive") => "incomplete",
         Some("cancelled") | Some("canceled") => "canceled",
         _ => "completed",
+    }
+}
+
+pub(super) fn finish_to_responses_incomplete_details(reason: Option<&str>) -> Option<Value> {
+    match reason {
+        Some("content_filter") | Some("refusal") | Some("sensitive") => {
+            Some(json!({ "reason": "content_filter" }))
+        }
+        Some("length") | Some("max_tokens") => Some(json!({ "reason": "max_output_tokens" })),
+        _ => None,
     }
 }

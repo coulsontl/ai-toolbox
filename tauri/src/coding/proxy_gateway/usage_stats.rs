@@ -277,6 +277,7 @@ pub fn record_request_summary(
         let output_tokens = summary.output_tokens.unwrap_or(0) as i64;
         let cache_read_tokens = summary.cache_read_tokens.unwrap_or(0) as i64;
         let cache_creation_tokens = summary.cache_creation_tokens.unwrap_or(0) as i64;
+        let cache_creation_1h_tokens = summary.cache_creation_1h_tokens.unwrap_or(0);
         let first_token_ms = summary.first_token_ms.map(|value| value as i64);
         let latency_ms = first_token_ms.unwrap_or(summary.duration_ms as i64);
         let pricing = find_summary_model_pricing(conn, summary, upstream_model);
@@ -308,11 +309,12 @@ pub fn record_request_summary(
         let costs = pricing
             .as_ref()
             .map(|pricing| {
-                calculate_cost(
+                calculate_cost_with_1h(
                     input_tokens as u64,
                     output_tokens as u64,
                     cache_read_tokens as u64,
                     cache_creation_tokens as u64,
+                    cache_creation_1h_tokens,
                     pricing,
                 )
                 .apply_multiplier(cost_multiplier * service_tier_multiplier)
@@ -440,7 +442,10 @@ pub fn record_request_summary(
                     first_token_ms,
                     summary.duration_ms as i64,
                     status_code,
-                    summary.error_message,
+                    summary
+                        .error_message
+                        .as_deref()
+                        .map(truncate_error_message_for_db),
                     session_id,
                     summary.provider_type,
                     i64::from(summary.is_streaming),
@@ -2505,21 +2510,40 @@ fn to_param_refs(params: &[Box<dyn ToSql>]) -> Vec<&dyn ToSql> {
     params.iter().map(|param| param.as_ref()).collect()
 }
 
-fn calculate_cost(
+const MAX_DB_ERROR_MESSAGE_CHARS: usize = 4096;
+
+fn truncate_error_message_for_db(message: &str) -> String {
+    let mut chars = message.chars();
+    let prefix: String = chars.by_ref().take(MAX_DB_ERROR_MESSAGE_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{prefix}...")
+    } else {
+        prefix
+    }
+}
+
+fn calculate_cost_with_1h(
     input_tokens: u64,
     output_tokens: u64,
     cache_read_tokens: u64,
     cache_creation_tokens: u64,
+    cache_creation_1h_tokens: u64,
     pricing: &ModelPricing,
 ) -> CostBreakdown {
+    // Anthropic's 5m cache write is 1.25x input and 1h cache write is 2x input.
+    // The pricing table stores the 5m cache-write rate, so the 1h subset is
+    // billed at 1.6x that rate (cc-switch 533055bb).
+    let capped_1h = cache_creation_1h_tokens.min(cache_creation_tokens);
+    let standard_creation = cache_creation_tokens.saturating_sub(capped_1h);
+    let cache_creation_cost_usd = (Decimal::from(standard_creation)
+        + Decimal::from(capped_1h) * Decimal::new(16, 1))
+        * pricing.cache_creation_cost_per_million
+        / Decimal::from(1_000_000_u64);
     CostBreakdown {
         input_cost_usd: token_cost(input_tokens, pricing.input_cost_per_million),
         output_cost_usd: token_cost(output_tokens, pricing.output_cost_per_million),
         cache_read_cost_usd: token_cost(cache_read_tokens, pricing.cache_read_cost_per_million),
-        cache_creation_cost_usd: token_cost(
-            cache_creation_tokens,
-            pricing.cache_creation_cost_per_million,
-        ),
+        cache_creation_cost_usd,
     }
 }
 
@@ -2539,13 +2563,34 @@ pub(super) fn calculate_session_costs(
     cache_read_tokens: u64,
     cache_creation_tokens: u64,
 ) -> CostBreakdown {
+    calculate_session_costs_with_1h(
+        conn,
+        model,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+        0,
+    )
+}
+
+pub(super) fn calculate_session_costs_with_1h(
+    conn: &Connection,
+    model: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_creation_tokens: u64,
+    cache_creation_1h_tokens: u64,
+) -> CostBreakdown {
     find_model_pricing(conn, model)
         .map(|pricing| {
-            calculate_cost(
+            calculate_cost_with_1h(
                 input_tokens,
                 output_tokens,
                 cache_read_tokens,
                 cache_creation_tokens,
+                cache_creation_1h_tokens,
                 &pricing,
             )
         })
@@ -3054,6 +3099,7 @@ pub fn request_log_detail_from_summary(
                         output_tokens: Some(output_tokens),
                         cache_read_tokens: Some(cache_read_tokens),
                         cache_creation_tokens: Some(cache_creation_tokens),
+                        cache_creation_1h_tokens: None,
                         total_tokens: Some(total_tokens),
                         request_body_bytes: 0,
                         response_body_bytes: 0,
@@ -3365,6 +3411,7 @@ mod tests {
                 output_tokens: Some(output_tokens),
                 cache_read_tokens: Some(0),
                 cache_creation_tokens: Some(0),
+                cache_creation_1h_tokens: None,
                 total_tokens: Some(input_tokens + output_tokens),
                 request_body_bytes: 512,
                 response_body_bytes: 1024,
@@ -5855,5 +5902,33 @@ mod tests {
             Ok(())
         })
         .expect("unpriced exclusion assertions");
+    }
+
+    #[test]
+    fn claude_1h_cache_writes_are_billed_at_1_6x_five_minute_rate() {
+        // 5m cache write = $6.25/M (1.25x of $5/M input); 1h cache write = $10/M (2x input = 1.6x of 5m)
+        let pricing = ModelPricing {
+            input_cost_per_million: Decimal::from_str("5").unwrap(),
+            output_cost_per_million: Decimal::from_str("25").unwrap(),
+            cache_read_cost_per_million: Decimal::from_str("0.50").unwrap(),
+            cache_creation_cost_per_million: Decimal::from_str("6.25").unwrap(),
+        };
+        let costs = calculate_cost_with_1h(2, 1, 0, 1000, 600, &pricing);
+        // 400 * 6.25 / 1M + 600 * 10 / 1M = 0.0025 + 0.006 = 0.0085
+        assert_eq!(
+            costs.cache_creation_cost_usd,
+            Decimal::from_str("0.0085").unwrap()
+        );
+    }
+
+    #[test]
+    fn truncate_error_message_for_db_caps_multibyte_text_at_4096_chars() {
+        let short = "短错误信息";
+        assert_eq!(truncate_error_message_for_db(short), short);
+
+        let long = "错".repeat(5000);
+        let truncated = truncate_error_message_for_db(&long);
+        assert_eq!(truncated.chars().count(), MAX_DB_ERROR_MESSAGE_CHARS + 3);
+        assert!(truncated.ends_with("..."));
     }
 }

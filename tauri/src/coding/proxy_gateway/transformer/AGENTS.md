@@ -169,7 +169,9 @@
 
 - 入口：`anthropic/outbound.rs::llm_request_to_anthropic`、`llm_response_to_anthropic`，stream target 为 `AnthropicMessages`。
 - Request 输出 `model`、`messages`、`system`、`max_tokens`、`thinking`、temperature、`top_p`、`stream`、`stop_sequences`、`tool_choice`、`tools`。
-- `max_tokens` 缺失时默认输出 `8192`，避免 Anthropic target 缺必填字段。
+- `max_tokens` 缺失时默认输出 `32000`（对齐当前 Claude 4.x/5.x 长输出需求），避免 Anthropic target 缺必填字段。
+- `tool.strict` 保持不对称约束：Anthropic 入站解析 `tool.strict` 供 OpenAI 目标使用，且 Anthropic→Responses 在 `strict` 缺省时显式输出 `"strict": false`（Responses 默认省略即 `true` 会拒收可选参数）；**Anthropic 出站绝不写 `strict`**（兼容端点会 400）。
+- `StreamKernel` 使用 `sse.rs::SseBuffer` 零拷贝分帧（按块压缩、长分片尾端续扫），避免大流 O(N^2) 搬移，同时保持 LF/CRLF 最早分隔符（F-8）不变量。
 - 该 writer 只接 `MergeToHead`：source 为 Anthropic Messages 时协议相同、走直通不进入本 writer，因此所有 system/developer 都汇总进顶层 `system`（顺序保留、空行连接）。
 - `metadata["user_id"]` 要输出到 Anthropic `metadata.user_id`。
 - 无最终 tools 时清理 `tool_choice` 属于 Gateway runtime outbound adapter 兼容，不属于纯协议结构转换。
@@ -188,7 +190,7 @@
 - 入口：`gemini/mod.rs::llm_request_to_gemini`、`llm_response_to_gemini`，stream target 为 `GeminiNative`。
 - Request 输出 `contents`、`systemInstruction`、`generationConfig`、`toolConfig`、`tools`。
 - `max_tokens` / `max_completion_tokens`、temperature、`top_p`、presence/frequency penalty、`seed`、`stopSequences` 支持。
-- `reasoning_effort` 输出 `thinkingConfig`，支持 none/minimal/low/medium/high/xhigh，并通过 `shared/thinking_config.rs` 做 effort ↔ budget 映射。Gemini 2.x target 输出 `thinkingBudget` 且预算上限为 24576；Gemini 3 target 输出 `thinkingLevel`，不同时输出 `thinkingBudget`，其中 `xhigh`/`max` 降级为 Gemini 支持的 `high`。
+- `reasoning_effort` 输出 `thinkingConfig`，支持 none/minimal/low/medium/high/xhigh，并通过 `shared/thinking_config.rs` 做 effort ↔ budget 映射。Gemini 2.x target 输出 `thinkingBudget`（上限 24576；`gemini-2.5-pro` 下限 128 不得发 0）；Gemini 3+ target 输出 `thinkingLevel` 且不同时输出 `thinkingBudget`（`xhigh`/`max` 降级 `high`，Gemini 3 Pro 无 `medium` 映射 `high`，禁用思考映射 `minimal`（Flash）/`low`（Pro））；自带档位后缀的别名（如 `gemini-3-pro-high`）及 image/audio/live/embedding 型号跳过 `thinkingConfig`。
 - `thoughtSignature` 仅从 Gemini marker/heuristic 或 per-tool metadata 还原；当 Gemini target 存在 reasoning thought 或 functionCall 但没有有效 Gemini signature 时，按 AxonHub 兼容策略补 `DEFAULT_GEMINI_THOUGHT_SIGNATURE` 到第一条适用 thought/functionCall part。不能把 Anthropic/OpenAI 私有签名写入 Gemini `thoughtSignature`。
 - 默认 Gemini signature 是兼容占位，不代表真实签名绑定。runtime/隐私层需要区分它时，必须复用此模块导出的同一常量，不能复制字符串或把任意 signature 都视为可改写；策略和原值映射仍留在 runtime。
 - `response_format` json_schema/json_object 输出 `responseMimeType` / `responseJsonSchema`；不要把完整 JSON Schema 写到 Gemini SDK 旧 `responseSchema` 字段。
