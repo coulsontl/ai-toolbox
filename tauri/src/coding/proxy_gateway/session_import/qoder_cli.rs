@@ -47,35 +47,16 @@ fn is_qoder_strategy_key(key: &str) -> bool {
     )
 }
 
-/// Known Qoder internal model keys observed in Qoder's `dynamic-texts.json`,
-/// kept as a static fallback when the dynamic text cache is absent (e.g.
-/// isolated backups, older Qoder IDE databases, or fresh installs).
-fn static_model_label(key: &str) -> Option<&'static str> {
-    match key {
-        "cmodel" => Some("Cantus"),
-        "dfmodel" => Some("DeepSeek-Flash"),
-        "dmodel" => Some("DeepSeek-V4-Pro"),
-        "gfmodel" => Some("GLM-5.3-Flash"),
-        "gm51model" => Some("GLM-5.2"),
-        "gmodel" => Some("GLM-5.3"),
-        "kmodel" => Some("Kimi-K2.8-Preview"),
-        "kmodel_latest" => Some("Kimi-K3"),
-        "mmodel" => Some("MiniMax-M3"),
-        "q35model" => Some("Qwen3.5-Plus"),
-        "q35model_preview" => Some("Qwen3.7-Max-DogFooding"),
-        "qfmodel" => Some("Qwen3.8-Flash"),
-        "qmodel" => Some("Qwen3.7-Plus"),
-        "qmodel_38max" => Some("Qwen3.8-Max"),
-        "qmodel_latest" => Some("Qwen3.7-Max"),
-        "qmodel_preview" => Some("Qwen3.8-Max-Preview"),
-        "smodel" => Some("Sonus"),
-        _ => None,
-    }
-}
-
 /// Reads Qoder's cached `<config_dir>/.auth/dynamic-texts.json` to map opaque
 /// internal keys (`qfmodel`, `dfmodel`, `kmodel_latest`, ...) to Qoder's own
 /// model display names (`Qwen3.8-Flash`, `DeepSeek-Flash`, `Kimi-K3`, ...).
+///
+/// Older catalogs keep the labels under a top-level `texts` object; current
+/// catalogs (schemaVersion 3) group them by locale under
+/// `locales.<locale>`. The model labels themselves are locale-independent, so
+/// `en` is preferred and any other locale is used only as a fallback. When the
+/// file is absent or carries no usable entry the caller keeps the raw internal
+/// key instead of inventing a name from a built-in table.
 pub(super) fn load_dynamic_model_labels(config_dir: &Path) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let path = config_dir.join(".auth").join("dynamic-texts.json");
@@ -85,7 +66,17 @@ pub(super) fn load_dynamic_model_labels(config_dir: &Path) -> HashMap<String, St
     let Ok(value) = serde_json::from_str::<Value>(&text) else {
         return map;
     };
-    let Some(texts) = value.get("texts").and_then(Value::as_object) else {
+    let texts = value
+        .get("texts")
+        .and_then(Value::as_object)
+        .or_else(|| {
+            let locales = value.get("locales").and_then(Value::as_object)?;
+            locales
+                .get("en")
+                .and_then(Value::as_object)
+                .or_else(|| locales.values().find_map(Value::as_object))
+        });
+    let Some(texts) = texts else {
         return map;
     };
     for (full_key, label) in texts {
@@ -126,9 +117,6 @@ pub(super) fn resolve_model_name(
     }
     if let Some(label) = dynamic_labels.and_then(|map| map.get(&lowered)) {
         return label.clone();
-    }
-    if let Some(label) = static_model_label(&lowered) {
-        return label.to_string();
     }
     trimmed.to_string()
 }

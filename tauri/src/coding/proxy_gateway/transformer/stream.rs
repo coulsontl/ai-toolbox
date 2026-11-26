@@ -264,6 +264,10 @@ struct SourceStreamState {
     pending_chat_finish_reason: Option<String>,
     chat_emitted_finish: bool,
     pending_anthropic_usage: Option<Value>,
+    /// Input/cache usage keys whose `message_start` value was absent, null, or
+    /// numeric zero. Only these may be refreshed by later `message_delta`
+    /// snapshots; a non-zero start value stays authoritative.
+    anthropic_replaceable_usage_keys: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1219,6 +1223,8 @@ impl SourceStreamState {
             "message_start" => {
                 let message = value.get("message").unwrap_or(&value);
                 if let Some(usage) = message.get("usage").cloned() {
+                    self.anthropic_replaceable_usage_keys =
+                        anthropic_replaceable_usage_keys(&usage);
                     self.pending_anthropic_usage = Some(usage);
                 }
                 vec![UnifiedStreamEvent::Start {
@@ -1303,6 +1309,7 @@ impl SourceStreamState {
                 if let Some(usage) = value.get("usage") {
                     self.pending_anthropic_usage = Some(merge_anthropic_stream_usage(
                         self.pending_anthropic_usage.as_ref(),
+                        &self.anthropic_replaceable_usage_keys,
                         usage,
                     ));
                 }
@@ -1563,7 +1570,36 @@ fn llm_usage_to_unified_value(usage: &Usage) -> Value {
     value
 }
 
-fn merge_anthropic_stream_usage(start: Option<&Value>, delta: &Value) -> Value {
+const ANTHROPIC_INPUT_USAGE_KEYS: [&str; 4] = [
+    "input_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "cache_creation",
+];
+
+fn is_anthropic_input_usage_key(key: &str) -> bool {
+    ANTHROPIC_INPUT_USAGE_KEYS.contains(&key)
+}
+
+/// Input/cache keys whose `message_start` value carries no measurement yet:
+/// absent, null, or numeric zero. A non-zero start value is authoritative and
+/// is never replaced by a later snapshot.
+fn anthropic_replaceable_usage_keys(usage: &Value) -> BTreeSet<String> {
+    ANTHROPIC_INPUT_USAGE_KEYS
+        .iter()
+        .filter(|key| match usage.get(**key) {
+            None | Some(Value::Null) => true,
+            Some(value) => value.as_u64() == Some(0),
+        })
+        .map(|key| (*key).to_string())
+        .collect()
+}
+
+fn merge_anthropic_stream_usage(
+    start: Option<&Value>,
+    replaceable_input_keys: &BTreeSet<String>,
+    delta: &Value,
+) -> Value {
     let mut merged = start.cloned().unwrap_or_else(|| json!({}));
     let Some(merged_object) = merged.as_object_mut() else {
         return delta.clone();
@@ -1572,22 +1608,20 @@ fn merge_anthropic_stream_usage(start: Option<&Value>, delta: &Value) -> Value {
         return merged;
     };
     for (key, value) in delta_object {
-        // Prefer message_start for input/cache fields; take latest non-null for output.
-        let is_input_like = matches!(
-            key.as_str(),
-            "input_tokens"
-                | "cache_creation_input_tokens"
-                | "cache_read_input_tokens"
-                | "cache_creation"
-        );
-        if is_input_like {
-            if !merged_object.contains_key(key)
-                || merged_object.get(key).is_some_and(Value::is_null)
-            {
+        // Prefer a non-zero message_start for input/cache fields. Only a key
+        // that started absent/null/zero may be refreshed, and only by a legal
+        // positive integer; the latest such snapshot wins so the final
+        // message_delta is never masked by an earlier placeholder. A stream
+        // without any message_start snapshot has no authoritative start, so
+        // the delta counts fill the gap as before.
+        if is_anthropic_input_usage_key(key) {
+            let replaceable = start.is_none() || replaceable_input_keys.contains(key);
+            if replaceable && value.as_u64().is_some_and(|tokens| tokens > 0) {
                 merged_object.insert(key.clone(), value.clone());
             }
             continue;
         }
+        // Output and provider-specific counters take the latest non-null value.
         if !value.is_null() {
             merged_object.insert(key.clone(), value.clone());
         }

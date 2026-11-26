@@ -5969,6 +5969,172 @@ fn gemini_usage_only_stream_chunk_finishes_chat_target() {
 }
 
 #[test]
+fn anthropic_zero_start_usage_accepts_final_counts_without_changing_content() {
+    for (start, final_usage, expected) in [
+        (
+            json!({"input_tokens":0,"output_tokens":0}),
+            json!({"input_tokens":62765,"output_tokens":200,"cache_read_input_tokens":0}),
+            (62765_u64, 200_u64, 0_u64, 0_u64),
+        ),
+        (
+            json!({"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}),
+            json!({"input_tokens":17,"output_tokens":5,"cache_read_input_tokens":2,"cache_creation_input_tokens":3}),
+            (22, 5, 2, 3),
+        ),
+        (
+            json!({"input_tokens":17,"cache_read_input_tokens":2,"cache_creation_input_tokens":3}),
+            json!({"input_tokens":0,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}),
+            (22, 5, 2, 3),
+        ),
+        (
+            json!({"input_tokens":17,"cache_read_input_tokens":2,"cache_creation_input_tokens":3}),
+            json!({"input_tokens":99,"output_tokens":5,"cache_read_input_tokens":88,"cache_creation_input_tokens":77}),
+            (22, 5, 2, 3),
+        ),
+        (
+            json!({"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}),
+            json!({"input_tokens":null,"output_tokens":5,"cache_read_input_tokens":-1,"cache_creation_input_tokens":"3"}),
+            (0, 5, 0, 0),
+        ),
+    ] {
+        let source = format!(
+            "event: message_start\ndata: {}\n\nevent: content_block_delta\ndata: {}\n\nevent: message_delta\ndata: {}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
+            json!({"type":"message_start","message":{"id":"msg_usage","model":"fixture-model","usage":start}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":final_usage}),
+        );
+        for target in [
+            AiProtocol::OpenAiChat,
+            AiProtocol::OpenAiResponses,
+            AiProtocol::GeminiNative,
+        ] {
+            let output = collect_stream(
+                ConversionRoute::new(AiProtocol::AnthropicMessages, target),
+                source.clone(),
+            );
+            let values = sse_data_values(&output);
+            assert!(output.contains("hi"), "text must survive: {output}");
+            let (prompt, completion, cached, written) = expected;
+            match target {
+                AiProtocol::OpenAiChat => {
+                    let usage = &values
+                        .iter()
+                        .find(|value| value.get("usage").is_some())
+                        .unwrap()["usage"];
+                    assert_eq!(usage["prompt_tokens"], prompt);
+                    assert_eq!(usage["completion_tokens"], completion);
+                    assert_eq!(
+                        usage["prompt_tokens_details"]["cached_tokens"]
+                            .as_u64()
+                            .unwrap_or(0),
+                        cached
+                    );
+                    if written > 0 {
+                        assert_eq!(
+                            usage["prompt_tokens_details"]["cache_write_tokens"],
+                            written
+                        );
+                    }
+                    assert_eq!(occurrence_count(&output, "[DONE]"), 1);
+                }
+                AiProtocol::OpenAiResponses => {
+                    let completed: Vec<_> = values
+                        .iter()
+                        .filter(|value| value["type"] == "response.completed")
+                        .collect();
+                    assert_eq!(completed.len(), 1);
+                    let usage = &completed[0]["response"]["usage"];
+                    assert_eq!(usage["input_tokens"], prompt);
+                    assert_eq!(usage["output_tokens"], completion);
+                    assert_eq!(usage["total_tokens"], prompt + completion);
+                    assert_eq!(usage["input_tokens_details"]["cached_tokens"], cached);
+                    if written > 0 {
+                        assert_eq!(
+                            usage["input_tokens_details"]["cache_write_tokens"],
+                            written
+                        );
+                    }
+                }
+                AiProtocol::GeminiNative => {
+                    let usage = &values
+                        .iter()
+                        .find(|value| value.get("usageMetadata").is_some())
+                        .unwrap()["usageMetadata"];
+                    assert_eq!(usage["promptTokenCount"], prompt);
+                    assert_eq!(usage["candidatesTokenCount"], completion);
+                    assert_eq!(usage["totalTokenCount"], prompt + completion);
+                    if cached > 0 {
+                        assert_eq!(usage["cachedContentTokenCount"], cached);
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+#[test]
+fn anthropic_final_usage_snapshot_wins_across_multiple_deltas() {
+    let output = collect_stream(
+        ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+        r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_multi_usage","model":"fixture-model","usage":{"input_tokens":0,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+event: message_delta
+data: {"type":"message_delta","usage":{"input_tokens":111,"output_tokens":3,"cache_read_input_tokens":4}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":62765,"output_tokens":200,"cache_read_input_tokens":9,"cache_creation_input_tokens":6}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#
+        .to_string(),
+    );
+    let values = sse_data_values(&output);
+    let usage = &values
+        .iter()
+        .find(|value| value.get("usage").is_some())
+        .unwrap()["usage"];
+    assert_eq!(usage["prompt_tokens"], 62765_u64 + 9 + 6);
+    assert_eq!(usage["completion_tokens"], 200);
+    assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 9);
+    assert_eq!(usage["prompt_tokens_details"]["cache_write_tokens"], 6);
+    assert!(output.contains("hi"));
+    assert_eq!(occurrence_count(&output, "[DONE]"), 1);
+}
+
+#[test]
+fn anthropic_usage_without_message_start_still_keeps_delta_counts() {
+    let output = collect_stream(
+        ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+        r#"event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":17,"output_tokens":5,"cache_read_input_tokens":2}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#
+        .to_string(),
+    );
+    let values = sse_data_values(&output);
+    let usage = &values
+        .iter()
+        .find(|value| value.get("usage").is_some())
+        .unwrap()["usage"];
+    assert_eq!(usage["prompt_tokens"], 19);
+    assert_eq!(usage["completion_tokens"], 5);
+    assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 2);
+}
+
+#[test]
 fn anthropic_message_start_usage_merges_into_chat_usage() {
     let output = collect_stream(
             ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),

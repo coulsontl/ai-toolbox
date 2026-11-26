@@ -6,3 +6,4 @@ mod parallel_tools;
 mod parallel_tools_http;
 mod parallel_tools_matrix;
 mod support;
+mod usage_http;

@@ -4162,6 +4162,32 @@ fn session_timing_fixes_cover_real_world_cli_transcript_shapes() {
     assert_eq!(rows.data[0].duration_ms, 2_750);
 }
 
+/// `QODER_CONFIG_DIR` is process-global; serialize the one test that sets it
+/// so a parallel Qoder test can never observe another temp catalog.
+static QODER_CONFIG_DIR_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct TestEnvVar {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl TestEnvVar {
+    fn set(key: &'static str, value: &Path) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for TestEnvVar {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
 #[test]
 fn qoder_resolves_internal_model_keys_and_tracks_runtime_config_in_order() {
     let root = tempfile::tempdir().unwrap();
@@ -4169,15 +4195,21 @@ fn qoder_resolves_internal_model_keys_and_tracks_runtime_config_in_order() {
     let proj_dir = root.path().join("projects").join("demo");
     fs::create_dir_all(&auth_dir).unwrap();
     fs::create_dir_all(&proj_dir).unwrap();
-    // Dynamic catalog overrides/extends static table; strategy tiers stay raw.
+    // Current schemaVersion 3 catalog: labels live under `locales.<locale>`.
+    // Strategy tiers and keys absent from Qoder's own catalog stay raw.
     fs::write(
         auth_dir.join("dynamic-texts.json"),
         json!({
-            "version": 1,
-            "texts": {
-                "modelSelector.item.qfmodel": "Qwen3.8-Flash",
-                "modelSelector.item.newmodel": "Custom-New-Model",
-                "modelSelector.item.auto": "Auto"
+            "schemaVersion": 3,
+            "version": "1.0.363",
+            "locales": {
+                "en": {
+                    "modelSelector.item.qfmodel": "Qwen3.8-Flash",
+                    "modelSelector.item.newmodel": "Custom-New-Model",
+                    "modelSelector.item.kmodel_latest": "Kimi-K3",
+                    "modelSelector.item.dfmodel": "DeepSeek-Flash",
+                    "modelSelector.item.auto": "Auto"
+                }
             }
         })
         .to_string(),
@@ -4200,6 +4232,9 @@ fn qoder_resolves_internal_model_keys_and_tracks_runtime_config_in_order() {
                 "message":{"id":"m3","usage":{"request_id":"r3","input_tokens":0,"output_tokens":0,"credits":0.4}}}),
             json!({"type":"assistant","sessionId":"s1","timestamp":rfc3339_millis(THEN * 1000 + 10_000),
                 "message":{"id":"m4","model":"auto","usage":{"request_id":"r4","input_tokens":0,"output_tokens":0,"credits":0.1}}}),
+            // No catalog entry and no static table: keep the raw key.
+            json!({"type":"assistant","sessionId":"s1","timestamp":rfc3339_millis(THEN * 1000 + 11_000),
+                "message":{"id":"m5","model":"vendormodel","usage":{"request_id":"r5","input_tokens":0,"output_tokens":0,"credits":0.5}}}),
         ],
     );
 
@@ -4215,8 +4250,13 @@ fn qoder_resolves_internal_model_keys_and_tracks_runtime_config_in_order() {
     assert_eq!(by_id.get("SESSION:qodercli:s1:request:r2"), Some(&"Custom-New-Model"));
     assert_eq!(by_id.get("SESSION:qodercli:s1:request:r3"), Some(&"DeepSeek-Flash"));
     assert_eq!(by_id.get("SESSION:qodercli:s1:request:r4"), Some(&"auto"));
+    assert_eq!(by_id.get("SESSION:qodercli:s1:request:r5"), Some(&"vendormodel"));
 
-    // Qoder IDE also resolves opaque `model_key` via static fallback.
+    // Qoder IDE resolves the same opaque `model_key` through the same catalog.
+    let _env_lock = QODER_CONFIG_DIR_TEST_MUTEX
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _config_dir = TestEnvVar::set("QODER_CONFIG_DIR", root.path());
     let ide_dir = tempfile::tempdir().unwrap();
     let ide_db = ide_dir.path().join("local.db");
     let native = Connection::open(&ide_db).unwrap();
@@ -4245,6 +4285,28 @@ fn qoder_resolves_internal_model_keys_and_tracks_runtime_config_in_order() {
         usage_stats::request_logs(&db2, &GatewayRequestLogFilters::default(), 0, 10, true).unwrap();
     assert_eq!(ide_logs.data.len(), 1);
     assert_eq!(ide_logs.data[0].upstream_model_id, "Qwen3.8-Flash");
+}
+
+#[test]
+fn qoder_still_reads_the_legacy_texts_catalog_shape() {
+    let root = tempfile::tempdir().unwrap();
+    let auth_dir = root.path().join(".auth");
+    fs::create_dir_all(&auth_dir).unwrap();
+    fs::write(
+        auth_dir.join("dynamic-texts.json"),
+        json!({
+            "version": 1,
+            "texts": {
+                "modelSelector.item.qmodel_latest": "Qwen4-Max",
+                "modelSelector.item.auto": "Auto"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let labels = qoder_cli::load_dynamic_model_labels(root.path());
+    assert_eq!(labels.get("qmodel_latest").map(String::as_str), Some("Qwen4-Max"));
+    assert!(!labels.contains_key("auto"));
 }
 
 #[test]

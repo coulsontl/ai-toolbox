@@ -26,6 +26,9 @@ pub(super) enum BodyLogging {
 /// A real gateway process bound to an ephemeral port, forwarding to `upstream_url`.
 pub(super) struct RunningGateway {
     state: ProxyGatewayState,
+    /// The same in-memory database the gateway writes usage summaries to.
+    /// `SqliteDbState` is `Arc`-backed, so this clone observes those writes.
+    pub(super) db: SqliteDbState,
     pub(super) url: String,
     _directory: tempfile::TempDir,
 }
@@ -125,10 +128,15 @@ impl RunningGateway {
             .manager
             .lock()
             .unwrap()
-            .start_with_context(settings, db, ProxyGatewayPaths::new(directory.path()))
+            .start_with_context(
+                settings,
+                db.clone(),
+                ProxyGatewayPaths::new(directory.path()),
+            )
             .unwrap();
         Self {
             state,
+            db,
             url: format!(
                 "http://127.0.0.1:{}/openai/v1/responses",
                 status.listen_port.expect("bound gateway port")

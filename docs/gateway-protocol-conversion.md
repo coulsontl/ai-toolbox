@@ -408,6 +408,8 @@ pub struct ConversionContext {
 
 流式转换入口是 `convert_sse_stream_with_context()`。如果 route 是 identity，直接返回原 stream；否则创建 `StreamKernel` 包装 inner stream。
 
+Anthropic source 的输入/缓存用量仍以 `message_start` 的非零值为准；只有当起始对应字段缺失、`null` 或数值零时才视为占位，允许后续 `message_delta` 的合法非零整数快照更新，并且最终快照胜出（CodingX 先报 `input_tokens: 0`，结束才报真实输入量）。起始非零不可被后续值覆盖；`null`、负数、字符串和对象不会生效；同一轮快照不累加、不推测缓存，也不影响 content/tool/finish 与 SSE 终态。回归入口为 transformer 的 `anthropic_zero_start_usage_accepts_final_counts_without_changing_content`、`anthropic_final_usage_snapshot_wins_across_multiple_deltas` 与真实 HTTP/SQLite 的 `usage_http::anthropic_final_usage_survives_http_conversion_and_sqlite_without_body_logging`。
+
 `StreamKernel` 的处理模型：
 
 1. `append_utf8_safe()` 处理 UTF-8 跨 chunk 边界。

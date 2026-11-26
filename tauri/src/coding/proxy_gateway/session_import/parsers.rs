@@ -210,15 +210,20 @@ pub(super) fn revision(cli_key: GatewayUsageTool) -> u32 {
         // 3: track `trigger_ms` in chronological order during the second pass
         // instead of reusing the final user turn for every earlier reply.
         // 4: resolve opaque Qoder model keys (`qfmodel`, `dfmodel`, ...) via
-        // `dynamic-texts.json` + static fallback and track `runtime-config`
-        // model switches chronologically.
-        GatewayUsageTool::QoderCli | GatewayUsageTool::QoderCliCn => 4,
+        // `dynamic-texts.json` and track `runtime-config` model switches
+        // chronologically.
+        // 5: read both the legacy `texts` and current `locales` catalog shapes
+        // and drop the static label table, so a renamed model no longer keeps
+        // a stale display name; unresolved keys stay raw.
+        GatewayUsageTool::QoderCli | GatewayUsageTool::QoderCliCn => 5,
         // 3: read the project from `chat_session.project_uri` when the session
         // table no longer has `cwd`, so an upgraded schema no longer fails the
         // whole scan at prepare time.
         // 4: resolve opaque Qoder model keys (`qfmodel`, `dfmodel`, ...) via
-        // `dynamic-texts.json` + static fallback.
-        GatewayUsageTool::QoderIde | GatewayUsageTool::QoderIdeCn => 4,
+        // `dynamic-texts.json`.
+        // 5: read both the legacy `texts` and current `locales` catalog shapes
+        // and drop the static label table.
+        GatewayUsageTool::QoderIde | GatewayUsageTool::QoderIdeCn => 5,
         _ => 2,
     }
 }
