@@ -112,11 +112,16 @@ const SectionSidebarLayout: React.FC<SectionSidebarLayoutProps> = ({
     setScannedSidebarSections(sorted);
   }, [markerAttr]);
 
+  // KeepAlive can retain another page with the same section IDs.
+  const findSection = React.useCallback((id: string) => (
+    contentRef.current?.querySelector<HTMLElement>(`#${CSS.escape(id)}`)
+  ), []);
+
   const scrollToSection = React.useCallback((id: string, behavior: ScrollBehavior = 'smooth') => {
-    const el = document.getElementById(id);
+    const el = findSection(id);
     if (!el) return;
     el.scrollIntoView({ behavior, block: 'start' });
-  }, []);
+  }, [findSection]);
 
   const clearPendingScrollRetries = React.useCallback(() => {
     if (scrollRetryRafRef.current !== null) {
@@ -184,10 +189,10 @@ const SectionSidebarLayout: React.FC<SectionSidebarLayoutProps> = ({
   React.useEffect(() => {
     if (!effectiveSidebarSections.length) return;
 
-    const scrollRoot = document.querySelector('main') as HTMLElement | null;
+    const scrollRoot = contentRef.current?.closest('main');
     const targets = effectiveSidebarSections
-      .map((section) => document.getElementById(section.id))
-      .filter(Boolean) as HTMLElement[];
+      .map((section) => findSection(section.id))
+      .filter((target): target is HTMLElement => Boolean(target));
     if (!targets.length) return;
 
     const observer = new IntersectionObserver(
@@ -211,7 +216,7 @@ const SectionSidebarLayout: React.FC<SectionSidebarLayoutProps> = ({
     });
 
     return () => observer.disconnect();
-  }, [effectiveSidebarSections]);
+  }, [effectiveSidebarSections, findSection]);
 
   const menuItems = React.useMemo(() => {
     return effectiveSidebarSections.map((section) => {
