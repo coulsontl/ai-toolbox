@@ -265,9 +265,15 @@ struct SourceStreamState {
     chat_emitted_finish: bool,
     pending_anthropic_usage: Option<Value>,
     /// Input/cache usage keys whose `message_start` value was absent, null, or
-    /// numeric zero. Only these may be refreshed by later `message_delta`
-    /// snapshots; a non-zero start value stays authoritative.
+    /// numeric zero. These placeholders may be filled by any later positive
+    /// `message_delta` snapshot; keys the start reported with a positive value
+    /// only accept a smaller correction.
     anthropic_replaceable_usage_keys: BTreeSet<String>,
+    /// Set once a `message_delta` input count replaced an authoritative
+    /// `message_start` count. A later delta repeating that same input is then
+    /// allowed to bring the final cache counters instead of being dropped as a
+    /// stale duplicate.
+    anthropic_usage_input_corrected: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1226,6 +1232,7 @@ impl SourceStreamState {
                     self.anthropic_replaceable_usage_keys =
                         anthropic_replaceable_usage_keys(&usage);
                     self.pending_anthropic_usage = Some(usage);
+                    self.anthropic_usage_input_corrected = false;
                 }
                 vec![UnifiedStreamEvent::Start {
                     id: message
@@ -1307,11 +1314,14 @@ impl SourceStreamState {
             }
             "message_delta" => {
                 if let Some(usage) = value.get("usage") {
-                    self.pending_anthropic_usage = Some(merge_anthropic_stream_usage(
+                    let (merged, corrected_input) = merge_anthropic_stream_usage(
                         self.pending_anthropic_usage.as_ref(),
                         &self.anthropic_replaceable_usage_keys,
+                        self.anthropic_usage_input_corrected,
                         usage,
-                    ));
+                    );
+                    self.pending_anthropic_usage = Some(merged);
+                    self.anthropic_usage_input_corrected |= corrected_input;
                 }
                 value
                     .pointer("/delta/stop_reason")
@@ -1582,8 +1592,9 @@ fn is_anthropic_input_usage_key(key: &str) -> bool {
 }
 
 /// Input/cache keys whose `message_start` value carries no measurement yet:
-/// absent, null, or numeric zero. A non-zero start value is authoritative and
-/// is never replaced by a later snapshot.
+/// absent, null, or numeric zero. Those placeholders accept any later positive
+/// snapshot; a positive start value is the measurement and only accepts a
+/// smaller correction (never a larger stale value).
 fn anthropic_replaceable_usage_keys(usage: &Value) -> BTreeSet<String> {
     ANTHROPIC_INPUT_USAGE_KEYS
         .iter()
@@ -1595,28 +1606,81 @@ fn anthropic_replaceable_usage_keys(usage: &Value) -> BTreeSet<String> {
         .collect()
 }
 
+/// Merge one `message_delta.usage` block into the accumulated snapshot.
+///
+/// Returns the merged usage and whether an authoritative `message_start` input
+/// count was replaced by a smaller `message_delta` correction.
+///
+/// Anthropic defines `message_delta.usage` as the cumulative total, but
+/// Anthropic-compatible providers disagree on what `message_start` carries:
+/// some report the whole context window there (CodingX: 26,161) and the
+/// corrected fresh input only in `message_delta` (6,737 + 51,968 cached).
+/// A block is treated atomically: its `input_tokens` decides whether the block
+/// is adopted, so fresh and cached counts never come from two different
+/// snapshots (cc-switch `from_claude_stream_events`).
 fn merge_anthropic_stream_usage(
     start: Option<&Value>,
     replaceable_input_keys: &BTreeSet<String>,
+    input_corrected_by_delta: bool,
     delta: &Value,
-) -> Value {
+) -> (Value, bool) {
     let mut merged = start.cloned().unwrap_or_else(|| json!({}));
     let Some(merged_object) = merged.as_object_mut() else {
-        return delta.clone();
+        return (delta.clone(), false);
     };
     let Some(delta_object) = delta.as_object() else {
-        return merged;
+        return (merged, false);
     };
+
+    let current_input_tokens = merged_object
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let start_input_is_authoritative = start.is_some()
+        && !replaceable_input_keys.contains("input_tokens")
+        && current_input_tokens > 0;
+
+    let block_input_tokens = delta_object.get("input_tokens").and_then(Value::as_u64);
+    let adopted_input_tokens = match block_input_tokens {
+        // No usable count in this block: input stays, output counters merge below.
+        None | Some(0) => None,
+        // Placeholder start (zero/absent) or no message_start at all: fill it.
+        Some(tokens) if !start_input_is_authoritative => Some(tokens),
+        // The correction: only a smaller positive count replaces an estimate.
+        Some(tokens) if tokens < current_input_tokens => Some(tokens),
+        // A repeat of the already-corrected count may still carry the final
+        // cache counters; a larger count is stale noise.
+        Some(tokens) if input_corrected_by_delta && tokens == current_input_tokens => Some(tokens),
+        Some(_) => None,
+    };
+    // A positive count that lost the comparison is a stale block: its cache
+    // counters belong to the same outdated snapshot and must not overwrite the
+    // corrected ones. `input_tokens: 0` is not stale — a fully cached turn
+    // reports no fresh input, and its cache counters are the real measurement.
+    let block_rejected =
+        block_input_tokens.is_some_and(|tokens| tokens > 0) && adopted_input_tokens.is_none();
+
     for (key, value) in delta_object {
-        // Prefer a non-zero message_start for input/cache fields. Only a key
-        // that started absent/null/zero may be refreshed, and only by a legal
-        // positive integer; the latest such snapshot wins so the final
-        // message_delta is never masked by an earlier placeholder. A stream
-        // without any message_start snapshot has no authoritative start, so
-        // the delta counts fill the gap as before.
         if is_anthropic_input_usage_key(key) {
+            if block_rejected || key == "input_tokens" {
+                continue;
+            }
             let replaceable = start.is_none() || replaceable_input_keys.contains(key);
-            if replaceable && value.as_u64().is_some_and(|tokens| tokens > 0) {
+            // `cache_creation` is the TTL breakdown object; the other cache keys
+            // are non-negative integers. Anything else (null, negatives, strings)
+            // is ignored instead of silently zeroing a valid start count.
+            let legal_snapshot_value = if key == "cache_creation" {
+                value.is_object()
+            } else {
+                value.as_u64().is_some()
+            };
+            let adopt = match adopted_input_tokens {
+                Some(_) => legal_snapshot_value,
+                // Block without a usable input count: keep the placeholder rule
+                // and only fill what the start left empty with a positive value.
+                None => replaceable && value.as_u64().is_some_and(|tokens| tokens > 0),
+            };
+            if adopt {
                 merged_object.insert(key.clone(), value.clone());
             }
             continue;
@@ -1626,7 +1690,11 @@ fn merge_anthropic_stream_usage(
             merged_object.insert(key.clone(), value.clone());
         }
     }
-    merged
+    if let Some(tokens) = adopted_input_tokens {
+        merged_object.insert("input_tokens".to_string(), json!(tokens));
+    }
+    let corrected_authoritative_input = start_input_is_authoritative && adopted_input_tokens.is_some();
+    (merged, corrected_authoritative_input)
 }
 
 fn anthropic_usage_value_to_unified(usage: &Value) -> Value {

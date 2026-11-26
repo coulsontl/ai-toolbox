@@ -9,7 +9,10 @@ pub use config::{
 };
 
 use super::types::GatewayCliKey;
-use super::usage_parser::{from_response_body_with_provider_type, TokenUsage};
+use super::usage_parser::{
+    anthropic_start_input_placeholder_bytes, from_response_body_with_provider_type,
+    is_anthropic_cumulative_usage_snapshot_bytes, TokenUsage,
+};
 use crate::db::SqliteDbState;
 use regex::{Regex, RegexBuilder};
 use serde::Serialize;
@@ -513,6 +516,16 @@ struct RequestState {
     detail: PrivacyDetail,
     usage: TokenUsage,
     usage_provider_type: Option<String>,
+    /// Set once an Anthropic `message_delta` snapshot replaced the accumulated
+    /// input count, so a repeat of that input may still bring final cache
+    /// counters (see `TokenUsage::apply_snapshot`).
+    usage_input_from_delta: bool,
+    /// Set once an Anthropic `message_start` reported a positive input count.
+    /// Until then the start is a placeholder, so any positive delta may fill it.
+    usage_start_input_authoritative: bool,
+    /// Set when the observed bytes came from our own conversion layer; its
+    /// `message_start` usage is a fixed placeholder, not an upstream estimate.
+    usage_gateway_generated: bool,
 }
 
 #[derive(Clone)]
@@ -703,12 +716,38 @@ impl PrivacyRequest {
 
     pub(crate) fn observe_usage(&self, bytes: &[u8]) {
         if let Ok(mut state) = self.state.lock() {
+            if let Some(placeholder) = anthropic_start_input_placeholder_bytes(bytes) {
+                state.usage_start_input_authoritative = !placeholder;
+            }
             let usage = from_response_body_with_provider_type(
                 self.cli_key,
                 state.usage_provider_type.as_deref(),
                 bytes,
             );
-            state.usage.merge_max(usage);
+            // The redactor sees one SSE `data` payload at a time, so the
+            // collector never gets to fold an Anthropic cumulative
+            // `message_delta` into its `message_start` estimate; apply the same
+            // rule here instead of max-merging the two snapshots.
+            if !state.usage_gateway_generated && is_anthropic_cumulative_usage_snapshot_bytes(bytes) {
+                let input_from_delta = state.usage_input_from_delta;
+                let start_input_placeholder = !state.usage_start_input_authoritative;
+                state.usage_input_from_delta |= state.usage.apply_snapshot(
+                    usage,
+                    input_from_delta,
+                    start_input_placeholder,
+                );
+            } else {
+                state.usage.merge_max(usage);
+            }
+        }
+    }
+
+    /// Mark the observed stream as produced by our own conversion layer, whose
+    /// `message_start` usage is a fixed placeholder rather than an upstream
+    /// estimate. Must be set before the stream is wrapped.
+    pub(crate) fn set_usage_gateway_generated(&self, gateway_generated: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.usage_gateway_generated = gateway_generated;
         }
     }
 

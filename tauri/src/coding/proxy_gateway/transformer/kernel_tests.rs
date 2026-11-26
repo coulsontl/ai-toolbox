@@ -6109,6 +6109,275 @@ data: {"type":"message_stop"}
 }
 
 #[test]
+fn anthropic_smaller_delta_input_corrects_context_estimate() {
+    // CodingX-style upstream: `message_start` reports the whole context window
+    // (26,161) while `message_delta` carries the corrected fresh input (6,737)
+    // plus the real cache read count. The correction and its cache counters must
+    // win together, otherwise the cache hit rate is undercounted.
+    let output = collect_stream(
+        ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+        r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_corrected_usage","model":"fixture-model","usage":{"input_tokens":26161,"cache_read_input_tokens":18000,"cache_creation_input_tokens":0,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":6737,"cache_read_input_tokens":51968,"cache_creation_input_tokens":0,"output_tokens":200}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#
+        .to_string(),
+    );
+    let values = sse_data_values(&output);
+    let usage = &values
+        .iter()
+        .find(|value| value.get("usage").is_some())
+        .unwrap()["usage"];
+    assert_eq!(usage["prompt_tokens"], 6737_u64 + 51968);
+    assert_eq!(usage["completion_tokens"], 200);
+    assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 51968);
+    assert!(output.contains("hi"));
+    assert_eq!(occurrence_count(&output, "[DONE]"), 1);
+}
+
+#[test]
+fn anthropic_corrected_delta_input_keeps_start_cache_when_delta_omits_it() {
+    let output = collect_stream(
+        ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+        r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_corrected_partial","model":"fixture-model","usage":{"input_tokens":26161,"cache_read_input_tokens":51968,"cache_creation_input_tokens":100,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":6737,"output_tokens":10}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#
+        .to_string(),
+    );
+    let values = sse_data_values(&output);
+    let usage = &values
+        .iter()
+        .find(|value| value.get("usage").is_some())
+        .unwrap()["usage"];
+    assert_eq!(usage["prompt_tokens"], 6737_u64 + 51968 + 100);
+    assert_eq!(usage["completion_tokens"], 10);
+    assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 51968);
+    assert_eq!(usage["prompt_tokens_details"]["cache_write_tokens"], 100);
+}
+
+#[test]
+fn anthropic_corrected_delta_input_ignores_illegal_cache_values() {
+    // A corrected block must not let malformed cache values through: the
+    // downstream mapping reads `.as_u64().unwrap_or(0)`, so a negative or
+    // string value would silently zero the valid `message_start` count.
+    let output = collect_stream(
+        ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+        r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_illegal_cache","model":"fixture-model","usage":{"input_tokens":26161,"cache_read_input_tokens":18000,"cache_creation_input_tokens":500,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":6737,"cache_read_input_tokens":-1,"cache_creation_input_tokens":"500","output_tokens":200}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#
+        .to_string(),
+    );
+    let values = sse_data_values(&output);
+    let usage = &values
+        .iter()
+        .find(|value| value.get("usage").is_some())
+        .unwrap()["usage"];
+    assert_eq!(usage["prompt_tokens"], 6737_u64 + 18000 + 500);
+    assert_eq!(usage["completion_tokens"], 200);
+    assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 18000);
+    assert_eq!(usage["prompt_tokens_details"]["cache_write_tokens"], 500);
+}
+
+#[test]
+fn anthropic_corrected_delta_adopts_explicit_zero_cache_count() {
+    // An explicit `0` in the corrected snapshot is a real measurement (the
+    // upstream says nothing was cached), so it clears the start estimate; only
+    // an omitted field keeps the start value. Same rule as cc-switch.
+    let output = collect_stream(
+        ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+        r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_zero_cache","model":"fixture-model","usage":{"input_tokens":26161,"cache_read_input_tokens":18000,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":6737,"cache_read_input_tokens":0,"output_tokens":200}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#
+        .to_string(),
+    );
+    let values = sse_data_values(&output);
+    let usage = &values
+        .iter()
+        .find(|value| value.get("usage").is_some())
+        .unwrap()["usage"];
+    assert_eq!(usage["prompt_tokens"], 6737);
+    assert_eq!(usage["completion_tokens"], 200);
+    // A zero cache count is omitted from the details object entirely, so read
+    // the effective value rather than requiring the key.
+    assert_eq!(
+        usage["prompt_tokens_details"]["cached_tokens"]
+            .as_u64()
+            .unwrap_or(0),
+        0
+    );
+}
+
+#[test]
+fn anthropic_stale_delta_block_does_not_overwrite_corrected_cache() {
+    // The second delta repeats the context estimate (larger than the corrected
+    // input), so the whole block is stale: its cache count belongs to the same
+    // outdated snapshot and must not replace the corrected one.
+    let output = collect_stream(
+        ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+        r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_stale_delta","model":"fixture-model","usage":{"input_tokens":26161,"cache_read_input_tokens":0,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+event: message_delta
+data: {"type":"message_delta","usage":{"input_tokens":6737,"cache_read_input_tokens":51968,"output_tokens":50}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":26161,"cache_read_input_tokens":18000,"output_tokens":200}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#
+        .to_string(),
+    );
+    let values = sse_data_values(&output);
+    let usage = &values
+        .iter()
+        .find(|value| value.get("usage").is_some())
+        .unwrap()["usage"];
+    assert_eq!(usage["prompt_tokens"], 6737_u64 + 51968);
+    assert_eq!(usage["completion_tokens"], 200);
+    assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 51968);
+}
+
+#[test]
+fn anthropic_repeated_corrected_input_adopts_final_cache_counters() {
+    // A later delta may repeat the corrected input while carrying the final
+    // cache counters (progress deltas often omit them). The repeat must be
+    // adopted instead of being dropped as a duplicate.
+    let output = collect_stream(
+        ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+        r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_repeat_input","model":"fixture-model","usage":{"input_tokens":26161,"cache_read_input_tokens":18000,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+event: message_delta
+data: {"type":"message_delta","usage":{"input_tokens":6737,"output_tokens":50}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":6737,"cache_read_input_tokens":51968,"output_tokens":200}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#
+        .to_string(),
+    );
+    let values = sse_data_values(&output);
+    let usage = &values
+        .iter()
+        .find(|value| value.get("usage").is_some())
+        .unwrap()["usage"];
+    assert_eq!(usage["prompt_tokens"], 6737_u64 + 51968);
+    assert_eq!(usage["completion_tokens"], 200);
+    assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 51968);
+}
+
+#[test]
+fn anthropic_uncorrected_equal_delta_input_keeps_start_counts() {
+    // Without a prior correction an equal input is not a correction signal: the
+    // block is ignored so a stale snapshot cannot rewrite the start counts.
+    let output = collect_stream(
+        ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+        r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_equal_input","model":"fixture-model","usage":{"input_tokens":26161,"cache_read_input_tokens":18000,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":26161,"cache_read_input_tokens":100,"output_tokens":200}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#
+        .to_string(),
+    );
+    let values = sse_data_values(&output);
+    let usage = &values
+        .iter()
+        .find(|value| value.get("usage").is_some())
+        .unwrap()["usage"];
+    assert_eq!(usage["prompt_tokens"], 26161_u64 + 18000);
+    assert_eq!(usage["completion_tokens"], 200);
+    assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 18000);
+}
+
+#[test]
+fn anthropic_zero_input_delta_keeps_final_cache_counters() {
+    // A fully cached turn reports `input_tokens: 0` in the final delta. That is
+    // a placeholder, not a stale block, so its cache read is still adopted.
+    let output = collect_stream(
+        ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),
+        r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_full_cache_hit","model":"fixture-model","usage":{"input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"cache_read_input_tokens":50000,"output_tokens":20}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#
+        .to_string(),
+    );
+    let values = sse_data_values(&output);
+    let usage = &values
+        .iter()
+        .find(|value| value.get("usage").is_some())
+        .unwrap()["usage"];
+    assert_eq!(usage["prompt_tokens"], 50000);
+    assert_eq!(usage["completion_tokens"], 20);
+    assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 50000);
+}
+
+#[test]
 fn anthropic_usage_without_message_start_still_keeps_delta_counts() {
     let output = collect_stream(
         ConversionRoute::new(AiProtocol::AnthropicMessages, AiProtocol::OpenAiChat),

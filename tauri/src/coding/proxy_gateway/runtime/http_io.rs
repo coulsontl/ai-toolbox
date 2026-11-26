@@ -771,8 +771,19 @@ async fn write_streaming_body(
     // terminal-event tracking (independent of cli_key). Create it unconditionally
     // so a stream without a cli identity still gets a correct verdict and
     // client-facing error event instead of being misclassified as incomplete.
-    let mut usage_collector =
-        SseUsageCollector::with_provider_type(response.provider_type.as_deref());
+    // A cross-protocol route means these bytes were written by our own
+    // conversion layer: its `message_start` usage is a fixed
+    // `input_tokens: 1` placeholder and the final `message_delta` holds the
+    // real totals, so the upstream "start may be a context estimate" rule must
+    // not run on it.
+    let gateway_generated = matches!(
+        (response.source_protocol, response.target_protocol),
+        (Some(source), Some(target)) if source != target
+    );
+    let mut usage_collector = SseUsageCollector::with_provider_type_and_origin(
+        response.provider_type.as_deref(),
+        gateway_generated,
+    );
     // Hosted-tool markers are scanned on the bytes actually forwarded, so the
     // detail dialog can say whether the upstream really ran a native tool. This
     // is independent of body storage, which is off by default.

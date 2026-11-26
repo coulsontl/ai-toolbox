@@ -501,6 +501,25 @@ async fn restoration_failure_keeps_usage_received_in_the_same_sse_chunk() {
 }
 
 #[test]
+fn anthropic_cumulative_delta_usage_replaces_start_estimate() {
+    // The redactor observes one SSE `data` payload at a time, so it never gets
+    // the collector's fold: the cumulative `message_delta` must still replace
+    // the `message_start` context estimate instead of max-merging with it.
+    let runtime = runtime();
+    let request = runtime.begin("claude", &[], b"{}", None).unwrap().unwrap();
+    request.observe_usage(
+        br#"{"type":"message_start","message":{"usage":{"input_tokens":26161,"cache_read_input_tokens":18000}}}"#,
+    );
+    request.observe_usage(
+        br#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":6737,"cache_read_input_tokens":51968,"output_tokens":200}}"#,
+    );
+    let usage = request.usage();
+    assert_eq!(usage.input_tokens, Some(6737));
+    assert_eq!(usage.cache_read_tokens, Some(51968));
+    assert_eq!(usage.output_tokens, Some(200));
+}
+
+#[test]
 fn streamed_tools_restore_nested_json_and_unicode_encoded_placeholders() {
     let request = request(&runtime(), "nested-tools");
     let masked: Value = serde_json::from_slice(

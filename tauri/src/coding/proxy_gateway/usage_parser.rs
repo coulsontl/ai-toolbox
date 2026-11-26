@@ -32,6 +32,64 @@ impl TokenUsage {
         (total > 0).then_some(total)
     }
 
+    /// Apply an Anthropic cumulative snapshot (`message_delta.usage`), which
+    /// Anthropic defines as the total for the whole message.
+    ///
+    /// `input_from_delta` says whether the accumulated input already came from
+    /// an earlier delta. A delta input is adopted when it fills a placeholder
+    /// (`current == 0`), when it is smaller (a correction of a `message_start`
+    /// context estimate), or when a previous delta set it and this one repeats
+    /// the same value (the block may still carry the final cache counters). A
+    /// larger count is stale noise and takes its cache counters with it —
+    /// cc-switch `from_claude_stream_events`.
+    ///
+    /// Returns whether this snapshot set the input count.
+    pub(crate) fn apply_snapshot(
+        &mut self,
+        other: TokenUsage,
+        input_from_delta: bool,
+        start_input_placeholder: bool,
+    ) -> bool {
+        let current_input = self.input_tokens.unwrap_or(0);
+        let adopts_input = match other.input_tokens {
+            None => false,
+            // A placeholder start has no authority at all: the latest positive
+            // snapshot wins, even when it is larger than an intermediate one.
+            Some(tokens) if start_input_placeholder && tokens > 0 => true,
+            Some(tokens) => {
+                current_input == 0
+                    || tokens < current_input
+                    || (input_from_delta && tokens <= current_input)
+            }
+        };
+        if adopts_input || other.input_tokens.is_none() {
+            if let Some(tokens) = other.input_tokens {
+                self.input_tokens = Some(tokens);
+            }
+            if other.cache_read_tokens.is_some() {
+                self.cache_read_tokens = other.cache_read_tokens;
+            }
+            if let Some(creation) = other.cache_creation_tokens {
+                self.cache_creation_tokens = Some(creation);
+                // The 1h share belongs to this snapshot: a stale 1h count from
+                // `message_start` would bill the corrected write tokens at the
+                // 1.6x 1h rate.
+                self.cache_creation_1h_tokens = other.cache_creation_1h_tokens.or(Some(0));
+            }
+        }
+        // Output is cumulative and non-decreasing; a lower snapshot is stale.
+        if let Some(output) = other.output_tokens {
+            if output >= self.output_tokens.unwrap_or(0) {
+                self.output_tokens = Some(output);
+            }
+        }
+        if self.envelope_id.is_none() {
+            self.envelope_id = other.envelope_id;
+        }
+        // Filling a placeholder start is the normal case, not a correction.
+        adopts_input && !start_input_placeholder
+    }
+
     pub(crate) fn merge_max(&mut self, other: TokenUsage) {
         self.input_tokens = max_option(self.input_tokens, other.input_tokens);
         self.output_tokens = max_option(self.output_tokens, other.output_tokens);
@@ -109,6 +167,19 @@ pub struct SseUsageCollector {
     /// snapshot is the upstream's final word, while `response.created` can still
     /// carry the requested tier).
     service_tier: Option<&'static str>,
+    /// Set once an Anthropic `message_delta` snapshot replaced the accumulated
+    /// input count. A later delta repeating that same input may still bring the
+    /// final cache counters, while a larger one stays stale noise.
+    anthropic_input_from_delta: bool,
+    /// Whether the bytes were written by our own conversion layer. Those
+    /// streams already carry the normalized final usage, with a deliberate
+    /// `input_tokens: 1` placeholder in `message_start`, so the upstream
+    /// "start may be a context estimate" heuristic must not run on them.
+    gateway_generated: bool,
+    /// True when the stream's `message_start` reported no usable input count
+    /// (absent or zero). A placeholder start accepts any later positive delta,
+    /// including a larger one — a real start only accepts a smaller correction.
+    anthropic_start_input_placeholder: bool,
 }
 
 /// The protocol-level terminal event kind carried by an SSE block. Required so
@@ -141,6 +212,16 @@ impl Default for SseUsageCollector {
 
 impl SseUsageCollector {
     pub fn with_provider_type(provider_type: Option<&str>) -> Self {
+        Self::with_provider_type_and_origin(provider_type, false)
+    }
+
+    /// `gateway_generated` marks bytes produced by our own conversion layer;
+    /// their `message_start` usage is a fixed placeholder, so the upstream
+    /// estimate-correction rule must not apply.
+    pub fn with_provider_type_and_origin(
+        provider_type: Option<&str>,
+        gateway_generated: bool,
+    ) -> Self {
         Self {
             buffer: Vec::new(),
             next_flattened_scan_at: MAX_SSE_USAGE_BUFFER_BYTES,
@@ -152,6 +233,11 @@ impl SseUsageCollector {
                 .map(ToString::to_string),
             terminal_kind: None,
             service_tier: None,
+            anthropic_input_from_delta: false,
+            gateway_generated,
+            // A stream that never sends `message_start` has no authoritative
+            // start either, so the first delta fills it.
+            anthropic_start_input_placeholder: true,
         }
     }
 
@@ -345,13 +431,75 @@ impl SseUsageCollector {
         if let Some(tier) = service_tier_from_value(value) {
             self.service_tier = Some(tier);
         }
+        if let Some(placeholder) = anthropic_start_input_placeholder(value) {
+            self.anthropic_start_input_placeholder = placeholder;
+        }
         let mut parsed =
             from_json_response_with_provider_type(cli_key, value, self.provider_type.as_deref());
         if parsed.envelope_id.is_none() {
             parsed.envelope_id = extract_envelope_id(cli_key, value);
         }
-        self.usage.merge_max(parsed);
+        if !self.gateway_generated && is_anthropic_cumulative_usage_snapshot(value) {
+            self.anthropic_input_from_delta |= self.usage.apply_snapshot(
+                parsed,
+                self.anthropic_input_from_delta,
+                self.anthropic_start_input_placeholder,
+            );
+        } else {
+            self.usage.merge_max(parsed);
+        }
     }
+}
+
+/// Whether an SSE block is an Anthropic `message_delta` that reports the
+/// cumulative input count.
+///
+/// Anthropic defines `message_delta.usage` as the total for the whole message,
+/// while `message_start` may carry only a context estimate (CodingX reports the
+/// full window there and the corrected fresh input at the end). Such a block
+/// must replace the accumulated input/cache counts instead of max-merging with
+/// them; a delta without a positive `input_tokens` (the official shape) leaves
+/// the `message_start` numbers alone.
+fn is_anthropic_cumulative_usage_snapshot(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("message_delta")
+        && value
+            .pointer("/usage/input_tokens")
+            .and_then(Value::as_u64)
+            .is_some_and(|tokens| tokens > 0)
+}
+
+/// `Some(true)` when the block is an Anthropic `message_start` whose usage
+/// carries no usable input count (absent or zero). Such a start is a
+/// placeholder: any later positive snapshot wins, even a larger one. `None`
+/// for every other block.
+fn anthropic_start_input_placeholder(value: &Value) -> Option<bool> {
+    if value.get("type").and_then(Value::as_str) != Some("message_start") {
+        return None;
+    }
+    let input = value
+        .pointer("/message/usage")
+        .or_else(|| value.pointer("/usage"))
+        .and_then(|usage| usage.get("input_tokens"))
+        .and_then(Value::as_u64);
+    Some(matches!(input, None | Some(0)))
+}
+
+/// Bytes variant of [`anthropic_start_input_placeholder`] for the privacy
+/// redactor, which sees one SSE `data` payload at a time.
+pub(crate) fn anthropic_start_input_placeholder_bytes(bytes: &[u8]) -> Option<bool> {
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .and_then(|value| anthropic_start_input_placeholder(&value))
+}
+
+/// Bytes variant for callers that merge usage event by event instead of through
+/// [`SseUsageCollector`] (the privacy redactor sees one SSE `data` payload at a
+/// time). Unparseable input — e.g. a raw multi-event chunk — is not a snapshot;
+/// those go through `from_response_body`, which runs the collector itself.
+pub(crate) fn is_anthropic_cumulative_usage_snapshot_bytes(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .is_some_and(|value| is_anthropic_cumulative_usage_snapshot(&value))
 }
 
 /// Whether an SSE block carries a protocol-level terminal marker. Thin wrapper
@@ -1308,6 +1456,171 @@ data: {"type":"message_delta","usage":{"output_tokens":35}}
         assert_eq!(usage.cache_read_tokens, Some(40));
         assert_eq!(usage.cache_creation_tokens, Some(8));
         assert_eq!(usage.total_tokens(), Some(203));
+    }
+
+    #[test]
+    fn sse_usage_collector_treats_anthropic_delta_usage_as_cumulative_snapshot() {
+        // Same-protocol passthrough (Claude -> Anthropic-compatible upstream)
+        // never reaches the transformer, so the collector itself must apply the
+        // cumulative `message_delta` total instead of max-merging it with the
+        // `message_start` context estimate.
+        let mut collector = SseUsageCollector::default();
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":26161,\"cache_read_input_tokens\":18000,\"output_tokens\":0}}}\n\n",
+        );
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            b"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":6737,\"cache_read_input_tokens\":51968,\"output_tokens\":200}}\n\n",
+        );
+        let usage = collector.finish(GatewayCliKey::Claude);
+        assert_eq!(usage.input_tokens, Some(6737));
+        assert_eq!(usage.cache_read_tokens, Some(51968));
+        assert_eq!(usage.output_tokens, Some(200));
+    }
+
+    #[test]
+    fn sse_usage_collector_keeps_start_input_when_delta_reports_placeholder_input() {
+        let mut collector = SseUsageCollector::default();
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":120,\"cache_read_input_tokens\":40}}}\n\n",
+        );
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":35}}\n\n",
+        );
+        let usage = collector.finish(GatewayCliKey::Claude);
+        assert_eq!(usage.input_tokens, Some(120));
+        assert_eq!(usage.cache_read_tokens, Some(40));
+        assert_eq!(usage.output_tokens, Some(35));
+    }
+
+    #[test]
+    fn sse_usage_collector_keeps_converted_stream_totals_over_start_placeholder() {
+        // Our own Anthropic writer starts every converted stream with the fixed
+        // `1 / 1` placeholder and puts the real totals in `message_delta`. The
+        // upstream estimate-correction rule must stay off for those bytes, or
+        // the larger final count would be rejected as noise.
+        let start = b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":1}}}\n\n";
+        let delta = b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}\n\n";
+
+        let mut converted = SseUsageCollector::with_provider_type_and_origin(None, true);
+        converted.push_chunk(GatewayCliKey::Claude, start);
+        converted.push_chunk(GatewayCliKey::Claude, delta);
+        let usage = converted.finish(GatewayCliKey::Claude);
+        assert_eq!(usage.input_tokens, Some(12));
+        assert_eq!(usage.output_tokens, Some(3));
+
+        let mut upstream = SseUsageCollector::default();
+        upstream.push_chunk(GatewayCliKey::Claude, start);
+        upstream.push_chunk(GatewayCliKey::Claude, delta);
+        let usage = upstream.finish(GatewayCliKey::Claude);
+        assert_eq!(usage.input_tokens, Some(1));
+    }
+
+    #[test]
+    fn sse_usage_collector_keeps_increasing_snapshots_after_placeholder_start() {
+        // With a zero start every delta is the new cumulative total, even a
+        // larger one; rejecting the final 62,765 snapshot would lose almost the
+        // whole turn.
+        let mut collector = SseUsageCollector::default();
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n",
+        );
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":111,\"output_tokens\":3,\"cache_read_input_tokens\":4}}\n\n",
+        );
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":62765,\"output_tokens\":200,\"cache_read_input_tokens\":9,\"cache_creation_input_tokens\":6}}\n\n",
+        );
+        let usage = collector.finish(GatewayCliKey::Claude);
+        assert_eq!(usage.input_tokens, Some(62765));
+        assert_eq!(usage.cache_read_tokens, Some(9));
+        assert_eq!(usage.cache_creation_tokens, Some(6));
+        assert_eq!(usage.output_tokens, Some(200));
+    }
+
+    #[test]
+    fn sse_usage_collector_rejects_stale_anthropic_delta_snapshot() {
+        // A larger input in `message_delta` is a stale snapshot (some providers
+        // emit intermediate totals); it must not revert the start counts or
+        // bring its own cache counters.
+        let mut collector = SseUsageCollector::default();
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":17,\"cache_read_input_tokens\":2,\"cache_creation_input_tokens\":3}}}\n\n",
+        );
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":99,\"cache_read_input_tokens\":88,\"cache_creation_input_tokens\":77,\"output_tokens\":5}}\n\n",
+        );
+        let usage = collector.finish(GatewayCliKey::Claude);
+        assert_eq!(usage.input_tokens, Some(17));
+        assert_eq!(usage.cache_read_tokens, Some(2));
+        assert_eq!(usage.cache_creation_tokens, Some(3));
+        assert_eq!(usage.output_tokens, Some(5));
+    }
+
+    #[test]
+    fn sse_usage_collector_repeated_corrected_input_adopts_final_cache() {
+        let mut collector = SseUsageCollector::default();
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":26161,\"cache_read_input_tokens\":18000}}}\n\n",
+        );
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":6737,\"output_tokens\":50}}\n\n",
+        );
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":6737,\"cache_read_input_tokens\":51968,\"output_tokens\":200}}\n\n",
+        );
+        let usage = collector.finish(GatewayCliKey::Claude);
+        assert_eq!(usage.input_tokens, Some(6737));
+        assert_eq!(usage.cache_read_tokens, Some(51968));
+        assert_eq!(usage.output_tokens, Some(200));
+    }
+
+    #[test]
+    fn sse_usage_collector_resets_one_hour_share_with_cumulative_snapshot() {
+        // The snapshot's cache-write count replaces the start estimate, so the
+        // start's 1h share must not survive and bill the new count at 1.6x.
+        let mut collector = SseUsageCollector::default();
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":26161,\"cache_creation_input_tokens\":5000,\"cache_creation\":{\"ephemeral_1h_input_tokens\":5000}}}}\n\n",
+        );
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":6737,\"cache_read_input_tokens\":51968,\"cache_creation_input_tokens\":1000,\"output_tokens\":200}}\n\n",
+        );
+        let usage = collector.finish(GatewayCliKey::Claude);
+        assert_eq!(usage.cache_creation_tokens, Some(1000));
+        assert_eq!(usage.cache_creation_1h_tokens, Some(0));
+    }
+
+    #[test]
+    fn sse_usage_collector_does_not_regress_output_tokens_on_lower_snapshot() {
+        let mut collector = SseUsageCollector::default();
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":26161}}}\n\n",
+        );
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":6737,\"output_tokens\":200}}\n\n",
+        );
+        collector.push_chunk(
+            GatewayCliKey::Claude,
+            b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":6737,\"output_tokens\":0}}\n\n",
+        );
+        let usage = collector.finish(GatewayCliKey::Claude);
+        assert_eq!(usage.output_tokens, Some(200));
     }
 
     #[test]

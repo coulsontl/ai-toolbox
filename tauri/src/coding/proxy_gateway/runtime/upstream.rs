@@ -4269,6 +4269,13 @@ struct AnthropicSseAggregate {
     stop_reason: Option<String>,
     stop_sequence: Option<Value>,
     usage: Option<Value>,
+    /// Set once a `message_delta` corrected the `message_start` input count, so
+    /// a repeat of that input may still carry the final cache counters.
+    usage_input_corrected: bool,
+    /// Set when `message_start` reported a positive input count. A placeholder
+    /// start (absent or zero) accepts any later positive delta, even a larger
+    /// one, because it carries no measurement.
+    usage_start_input_authoritative: bool,
 }
 
 #[derive(Debug)]
@@ -4332,6 +4339,11 @@ impl AnthropicSseAggregate {
                 if let Some(message) = value.get("message").filter(|message| message.is_object()) {
                     if let Some(usage) = message.get("usage") {
                         merge_usage_snapshot(&mut self.usage, usage);
+                        self.usage_start_input_authoritative = usage
+                            .get("input_tokens")
+                            .and_then(Value::as_u64)
+                            .is_some_and(|tokens| tokens > 0);
+                        self.usage_input_corrected = false;
                     }
                     self.message = Some(message.clone());
                 }
@@ -4369,7 +4381,12 @@ impl AnthropicSseAggregate {
                     }
                 }
                 if let Some(usage) = value.get("usage") {
-                    merge_usage_snapshot(&mut self.usage, usage);
+                    merge_anthropic_delta_usage(
+                        &mut self.usage,
+                        usage,
+                        self.usage_start_input_authoritative,
+                        &mut self.usage_input_corrected,
+                    );
                 }
             }
             _ => {}
@@ -4713,6 +4730,104 @@ fn append_json_string_field(value: &mut Value, field: &str, suffix: &str) {
 
 /// Anthropic usage fields are cumulative snapshots, not per-event deltas.
 /// Chat/Responses may still sum deltas via local helpers; Anthropic uses overwrite.
+/// `message_delta.usage` is the cumulative total for the whole message, so a
+/// positive `input_tokens` there replaces the `message_start` input and cache
+/// counts instead of merging field-by-field. Compatible providers rely on this:
+/// CodingX reports the whole context window in `message_start` (26,161) and the
+/// corrected fresh input only in the final delta (6,737 + 51,968 cached).
+///
+/// A block that reports `input_tokens: 0` (placeholder) or a larger stale count
+/// keeps the start input and only updates the output counters; a block without
+/// any `input_tokens` (the official Anthropic shape) merges every field it has.
+fn merge_anthropic_delta_usage(
+    target: &mut Option<Value>,
+    usage: &Value,
+    start_input_authoritative: bool,
+    input_corrected: &mut bool,
+) {
+    let Some(usage_object) = usage.as_object() else {
+        return;
+    };
+    let reported_input = usage.get("input_tokens").and_then(Value::as_u64);
+    let current_input = target
+        .as_ref()
+        .and_then(|value| value.get("input_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let adopt_input = reported_input.is_some_and(|tokens| {
+        tokens > 0
+            && (!start_input_authoritative
+                || current_input == 0
+                || tokens < current_input
+                || (*input_corrected && tokens <= current_input))
+    });
+    // A positive count that lost the comparison is a stale block: its cache
+    // counters belong to the same outdated snapshot. `input_tokens: 0` is not
+    // stale — it is a placeholder (a fully cached turn reports no fresh input)
+    // and its cache counters are still the final measurement.
+    let stale_block = reported_input.is_some_and(|tokens| tokens > 0) && !adopt_input;
+
+    let target_value = target.get_or_insert_with(|| json!({}));
+    let Some(target_object) = target_value.as_object_mut() else {
+        *target = Some(usage.clone());
+        return;
+    };
+    for (key, value) in usage_object {
+        if value.is_null() {
+            continue;
+        }
+        let is_input_key = matches!(
+            key.as_str(),
+            "input_tokens"
+                | "cache_read_input_tokens"
+                | "cache_creation_input_tokens"
+                | "cache_creation"
+        );
+        if is_input_key {
+            if stale_block {
+                continue;
+            }
+            if key == "input_tokens" {
+                // Never let a placeholder overwrite a legal snapshot count.
+                if !adopt_input {
+                    continue;
+                }
+            } else if adopt_input {
+                let legal = if key == "cache_creation" {
+                    value.is_object()
+                } else {
+                    value.as_u64().is_some()
+                };
+                if !legal {
+                    continue;
+                }
+            } else {
+                // Placeholder/absent input in this block: its cache counters
+                // may only fill an empty slot, never clear or shrink a real
+                // measurement carried by an earlier snapshot. The TTL
+                // breakdown object has no numeric form, so it is only adopted
+                // together with an adopted input.
+                if key == "cache_creation" {
+                    continue;
+                }
+                let Some(incoming) = value.as_u64() else {
+                    continue;
+                };
+                let current = target_object.get(key).and_then(Value::as_u64).unwrap_or(0);
+                if incoming == 0 || current > 0 {
+                    continue;
+                }
+            }
+        }
+        target_object.insert(key.clone(), value.clone());
+    }
+    // Only a replacement of a real start count is a correction; filling a
+    // placeholder start is the normal case and needs no special follow-up.
+    if adopt_input && start_input_authoritative {
+        *input_corrected = true;
+    }
+}
+
 fn merge_usage_snapshot(target: &mut Option<Value>, usage: &Value) {
     let Some(usage_object) = usage.as_object() else {
         if !usage.is_null() {
@@ -22721,6 +22836,192 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
         assert_eq!(usage["output_tokens"], 3);
         assert_eq!(usage["total_tokens"], 11);
         assert_eq!(usage["cache_read_input_tokens"], 4);
+    }
+
+    #[test]
+    fn anthropic_delta_usage_replaces_context_estimate() {
+        let mut usage = Some(json!({
+            "input_tokens": 26161,
+            "cache_read_input_tokens": 18000,
+            "output_tokens": 0
+        }));
+        let mut corrected = false;
+
+        merge_anthropic_delta_usage(
+            &mut usage,
+            &json!({
+                "input_tokens": 6737,
+                "cache_read_input_tokens": 51968,
+                "output_tokens": 200
+            }),
+            true,
+            &mut corrected,
+        );
+
+        let usage = usage.expect("merged usage");
+        assert_eq!(usage["input_tokens"], 6737);
+        assert_eq!(usage["cache_read_input_tokens"], 51968);
+        assert_eq!(usage["output_tokens"], 200);
+        assert!(corrected);
+    }
+
+    #[test]
+    fn anthropic_delta_usage_rejects_stale_positive_input() {
+        // A larger count is a stale snapshot: it must not revert the corrected
+        // input, and its cache counters belong to the same outdated block.
+        let mut usage = Some(json!({
+            "input_tokens": 6737,
+            "cache_read_input_tokens": 51968,
+            "output_tokens": 50
+        }));
+        let mut corrected = true;
+        merge_anthropic_delta_usage(
+            &mut usage,
+            &json!({
+                "input_tokens": 26161,
+                "cache_read_input_tokens": 18000,
+                "output_tokens": 200
+            }),
+            true,
+            &mut corrected,
+        );
+        let usage = usage.expect("merged usage");
+        assert_eq!(usage["input_tokens"], 6737);
+        assert_eq!(usage["cache_read_input_tokens"], 51968);
+        assert_eq!(usage["output_tokens"], 200);
+    }
+
+    #[test]
+    fn anthropic_delta_usage_zero_input_keeps_cache_counters() {
+        // A fully cached turn reports no fresh input; that is a placeholder,
+        // not a stale block, so its cache read is still the final measurement.
+        let mut usage = Some(json!({"input_tokens": 0, "cache_read_input_tokens": 0}));
+        let mut corrected = false;
+        merge_anthropic_delta_usage(
+            &mut usage,
+            &json!({
+                "input_tokens": 0,
+                "cache_read_input_tokens": 50000,
+                "output_tokens": 20
+            }),
+            true,
+            &mut corrected,
+        );
+        let usage = usage.expect("merged usage");
+        assert_eq!(usage["input_tokens"], 0);
+        assert_eq!(usage["cache_read_input_tokens"], 50000);
+        assert_eq!(usage["output_tokens"], 20);
+        assert!(!corrected);
+    }
+
+    #[test]
+    fn anthropic_delta_usage_ignores_illegal_input_values() {
+        for delta in [
+            json!({"input_tokens": -1, "cache_read_input_tokens": -1, "output_tokens": 5}),
+            json!({"input_tokens": "6737", "cache_creation": 5, "output_tokens": 5}),
+        ] {
+            let mut usage = Some(json!({
+                "input_tokens": 26161,
+                "cache_read_input_tokens": 18000,
+                "cache_creation": {"ephemeral_5m_input_tokens": 500}
+            }));
+            let mut corrected = false;
+            merge_anthropic_delta_usage(&mut usage, &delta, true, &mut corrected);
+            let usage = usage.expect("merged usage");
+            assert_eq!(usage["input_tokens"], 26161, "{delta}");
+            assert_eq!(usage["cache_read_input_tokens"], 18000, "{delta}");
+            assert_eq!(
+                usage["cache_creation"]["ephemeral_5m_input_tokens"], 500,
+                "{delta}"
+            );
+            assert!(!corrected, "{delta}");
+        }
+    }
+
+    #[test]
+    fn anthropic_delta_usage_without_input_merges_output_counters() {
+        // Official Anthropic shape: the delta carries output counters only.
+        let mut usage = Some(json!({"input_tokens": 120, "cache_read_input_tokens": 40}));
+        let mut corrected = false;
+        merge_anthropic_delta_usage(
+            &mut usage,
+            &json!({"output_tokens": 35}),
+            true,
+            &mut corrected,
+        );
+        let usage = usage.expect("merged usage");
+        assert_eq!(usage["input_tokens"], 120);
+        assert_eq!(usage["cache_read_input_tokens"], 40);
+        assert_eq!(usage["output_tokens"], 35);
+    }
+
+    #[test]
+    fn anthropic_delta_usage_placeholder_start_keeps_increasing_snapshots() {
+        // A zero start carries no measurement, so every delta is the new
+        // cumulative total — including a larger one. Rejecting it would drop
+        // the final 62,765-token snapshot.
+        let mut usage = Some(json!({"input_tokens": 0, "output_tokens": 0}));
+        let mut corrected = false;
+        merge_anthropic_delta_usage(
+            &mut usage,
+            &json!({"input_tokens": 111, "output_tokens": 3, "cache_read_input_tokens": 4}),
+            false,
+            &mut corrected,
+        );
+        merge_anthropic_delta_usage(
+            &mut usage,
+            &json!({
+                "input_tokens": 62765,
+                "output_tokens": 200,
+                "cache_read_input_tokens": 9,
+                "cache_creation_input_tokens": 6
+            }),
+            false,
+            &mut corrected,
+        );
+        let usage = usage.expect("merged usage");
+        assert_eq!(usage["input_tokens"], 62765);
+        assert_eq!(usage["cache_read_input_tokens"], 9);
+        assert_eq!(usage["cache_creation_input_tokens"], 6);
+        assert_eq!(usage["output_tokens"], 200);
+        assert!(!corrected);
+    }
+
+    #[test]
+    fn anthropic_delta_usage_placeholder_input_keeps_positive_cache() {
+        // A `0` input in the delta is a placeholder: it must not clear the
+        // cache read the start already reported.
+        let mut usage = Some(json!({"input_tokens": 120, "cache_read_input_tokens": 40}));
+        let mut corrected = false;
+        merge_anthropic_delta_usage(
+            &mut usage,
+            &json!({"input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 35}),
+            true,
+            &mut corrected,
+        );
+        let usage = usage.expect("merged usage");
+        assert_eq!(usage["input_tokens"], 120);
+        assert_eq!(usage["cache_read_input_tokens"], 40);
+        assert_eq!(usage["output_tokens"], 35);
+    }
+
+    #[test]
+    fn anthropic_delta_usage_ignores_equal_input_until_corrected() {
+        // Without a prior correction an equal input is not a correction signal.
+        let mut usage = Some(json!({
+            "input_tokens": 26161,
+            "cache_read_input_tokens": 18000
+        }));
+        let mut corrected = false;
+        merge_anthropic_delta_usage(
+            &mut usage,
+            &json!({"input_tokens": 26161, "cache_read_input_tokens": 100}),
+            true,
+            &mut corrected,
+        );
+        let usage = usage.expect("merged usage");
+        assert_eq!(usage["cache_read_input_tokens"], 18000);
+        assert!(!corrected);
     }
 
     #[test]
