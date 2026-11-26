@@ -30,6 +30,10 @@ import {
   getStringField,
   omoNativeApiToNpm,
 } from '@/features/coding/omo_native/utils/omoNativeProviders';
+import {
+  getEffectiveCustomHeadersFromMeta,
+  type GatewayProviderHeadersMeta,
+} from '@/features/coding/shared/providerHeaders/customHeadersUtils';
 
 const DEFAULT_CLAUDE_BASE_URL = 'https://api.anthropic.com/v1';
 const DEFAULT_CODEX_BASE_URL = 'https://api.openai.com/v1';
@@ -116,6 +120,7 @@ export function buildClaudeProviderConnectivityInfo(
   const uniqueModelIds = getClaudeConfiguredModelIds(settingsConfig, {
     stripOneMMarker: true,
   });
+  const headers = getEffectiveCustomHeadersFromMeta(provider.meta);
 
   return {
     providerId: provider.id,
@@ -126,6 +131,7 @@ export function buildClaudeProviderConnectivityInfo(
       options: {
         baseURL: normalizeClaudeBaseUrl(settingsConfig.env?.ANTHROPIC_BASE_URL),
         ...(apiKey ? { apiKey } : {}),
+        ...(headers ? { headers } : {}),
       },
       models: buildProviderModels(uniqueModelIds),
     },
@@ -142,6 +148,7 @@ export function buildCodexProviderConnectivityInfo(provider: CodexProvider): Pro
   // The catalog is the provider's real model list, so the test covers every
   // catalog row in addition to the config.toml default.
   const modelIds = buildCodexConnectivityModelIds(modelId, settingsConfig.modelCatalog?.models);
+  const headers = getEffectiveCustomHeadersFromMeta(provider.meta);
 
   return {
     providerId: provider.id,
@@ -153,6 +160,7 @@ export function buildCodexProviderConnectivityInfo(provider: CodexProvider): Pro
         baseURL: baseUrl,
         ...(apiKey ? { apiKey } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(headers ? { headers } : {}),
       },
       models: buildProviderModels(modelIds),
     },
@@ -250,6 +258,7 @@ export function buildGrokProviderConnectivityInfo(provider: GrokProvider): Provi
   ])];
   const apiKey = settingsConfig.auth?.API_KEY?.trim();
   const baseUrl = extractGrokSettingsBaseUrl(settingsConfig)?.trim() || DEFAULT_GROK_BASE_URL;
+  const headers = getEffectiveCustomHeadersFromMeta(provider.meta);
 
   return {
     providerId: provider.id,
@@ -260,6 +269,7 @@ export function buildGrokProviderConnectivityInfo(provider: GrokProvider): Provi
       options: {
         baseURL: baseUrl,
         ...(apiKey ? { apiKey } : {}),
+        ...(headers ? { headers } : {}),
       },
       models: buildProviderModels(modelIds),
     },
@@ -291,6 +301,9 @@ export function buildKimiProviderConnectivityInfo(provider: KimiProvider): Provi
   ])];
   const apiKey = settingsConfig.apiKey.trim();
   const baseUrl = settingsConfig.baseUrl.trim() || KIMI_OFFICIAL_API_BASE_URL;
+  const headers = getEffectiveCustomHeadersFromMeta(
+    provider.meta as GatewayProviderHeadersMeta | undefined,
+  );
 
   return {
     providerId: provider.id,
@@ -302,6 +315,7 @@ export function buildKimiProviderConnectivityInfo(provider: KimiProvider): Provi
       options: {
         baseURL: baseUrl,
         ...(apiKey ? { apiKey } : {}),
+        ...(headers ? { headers } : {}),
       },
       models: buildProviderModels(modelIds),
     },

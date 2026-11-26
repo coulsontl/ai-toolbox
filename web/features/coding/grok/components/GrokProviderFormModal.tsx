@@ -25,6 +25,7 @@ import {
 } from '@/features/coding/shared/providerBilling/billingConfigUtils';
 import {
   getCustomHeadersFromMeta,
+  getEffectiveCustomHeaders,
   mergeCustomHeadersIntoMeta,
 } from '@/features/coding/shared/providerHeaders/customHeadersUtils';
 import {
@@ -1019,6 +1020,7 @@ const GrokProviderFormModal: React.FC<GrokProviderFormModalProps> = ({
           apiKey: apiKey || undefined,
           apiType: 'openai_compat',
           sdkType: '@ai-sdk/openai',
+          headers: getEffectiveCustomHeaders(customHeaders),
         },
       });
 

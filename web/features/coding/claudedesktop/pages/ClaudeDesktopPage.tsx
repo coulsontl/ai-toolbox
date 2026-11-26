@@ -100,7 +100,10 @@ import ProviderConnectivityTestModal, {
 import ImportProviderModal from '@/components/common/ImportProviderModal';
 import ImportFromCcSwitchModal from '@/features/coding/shared/ccSwitch/ImportFromCcSwitchModal';
 import ImportFromAllApiHubModalForTool from '@/features/coding/shared/allApiHub/ImportFromAllApiHubModalForTool';
-import { mergeCustomHeadersIntoMeta } from '@/features/coding/shared/providerHeaders/customHeadersUtils';
+import {
+  getEffectiveCustomHeadersFromMeta,
+  mergeCustomHeadersIntoMeta,
+} from '@/features/coding/shared/providerHeaders/customHeadersUtils';
 import { mergeModelRewritesIntoMeta } from '@/features/coding/shared/providerModelRewrites/modelRewritesUtils';
 import {
   buildFavoriteProviderOptions,
@@ -289,7 +292,10 @@ function buildProviderMeta(
   );
 }
 
-function buildDesktopProviderConnectivityInfo(provider: ClaudeDesktopProvider): ProviderConnectivityInfo {
+function buildDesktopProviderConnectivityInfo(
+  provider: ClaudeDesktopProvider,
+  includeCustomHeaders = false,
+): ProviderConnectivityInfo {
   const settingsConfig = parseClaudeSettingsConfig(provider.settingsConfig);
   const apiKey =
     settingsConfig.env?.ANTHROPIC_AUTH_TOKEN?.trim() ||
@@ -303,6 +309,11 @@ function buildDesktopProviderConnectivityInfo(provider: ClaudeDesktopProvider): 
   const modelIds = routeModelIds.length > 0
     ? routeModelIds
     : getClaudeConfiguredModelIds(settingsConfig, { stripOneMMarker: true });
+  // Favorites keep the provider envelope free of request overrides; only the
+  // connectivity probe needs them to pass UA-restricted upstreams.
+  const customHeaders = includeCustomHeaders
+    ? getEffectiveCustomHeadersFromMeta(provider.meta)
+    : undefined;
 
   return {
     providerId: provider.id,
@@ -313,6 +324,7 @@ function buildDesktopProviderConnectivityInfo(provider: ClaudeDesktopProvider): 
       options: {
         baseURL: normalizeBaseUrl(settingsConfig.env?.ANTHROPIC_BASE_URL),
         ...(apiKey ? { apiKey } : {}),
+        ...(customHeaders ? { headers: customHeaders } : {}),
       },
       models: Object.fromEntries(modelIds.map((modelId) => [modelId, {}])),
     },
@@ -727,7 +739,7 @@ const ClaudeDesktopPage: React.FC = () => {
   };
 
   const handleTestProvider = (provider: ClaudeDesktopProvider) => {
-    setConnectivityInfo(buildDesktopProviderConnectivityInfo(provider));
+    setConnectivityInfo(buildDesktopProviderConnectivityInfo(provider, true));
     setConnectivityModalOpen(true);
   };
 

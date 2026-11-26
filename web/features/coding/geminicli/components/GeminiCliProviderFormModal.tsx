@@ -15,6 +15,7 @@ import {
 } from '@/features/coding/shared/providerBilling/billingConfigUtils';
 import {
   getCustomHeadersFromMeta,
+  getEffectiveCustomHeaders,
   mergeCustomHeadersIntoMeta,
 } from '@/features/coding/shared/providerHeaders/customHeadersUtils';
 import {
@@ -731,7 +732,10 @@ const GeminiCliProviderFormModal: React.FC<GeminiCliProviderFormModalProps> = ({
               sdkType: '@ai-sdk/openai',
             };
       const response = await invoke<FetchModelsResponse>('fetch_provider_models', {
-        request: modelFetchRequest,
+        request: {
+          ...modelFetchRequest,
+          headers: getEffectiveCustomHeaders(customHeaders),
+        },
       });
 
       setFetchedModels(response.models);

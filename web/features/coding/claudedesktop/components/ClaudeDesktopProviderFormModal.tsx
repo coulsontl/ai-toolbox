@@ -14,6 +14,7 @@ import ProviderNotesCollapse from '@/features/coding/shared/providerConfig/Provi
 import CustomHeadersCollapse from '@/features/coding/shared/providerHeaders/CustomHeadersCollapse';
 import {
   getCustomHeadersFromMeta,
+  getEffectiveCustomHeaders,
   type CustomHeadersState,
 } from '@/features/coding/shared/providerHeaders/customHeadersUtils';
 import ModelRewritesCollapse from '@/features/coding/shared/providerModelRewrites/ModelRewritesCollapse';
@@ -435,6 +436,7 @@ const ClaudeDesktopProviderFormModal: React.FC<ClaudeDesktopProviderFormModalPro
           apiType: fetchApiType,
           sdkType: '@ai-sdk/anthropic',
           customUrl,
+          headers: getEffectiveCustomHeaders(customHeaders),
         },
       });
 

@@ -134,6 +134,7 @@ import ProviderConnectivityTestModal, {
   buildCodexProviderConnectivityInfo,
   type ProviderConnectivityInfo,
 } from '@/features/coding/shared/providerConnectivity/ProviderConnectivityTestModal';
+import { getEffectiveCustomHeadersFromMeta } from '@/features/coding/shared/providerHeaders/customHeadersUtils';
 import { SessionManagerPanel, type SessionSourceMode } from '@/features/coding/shared/sessionManager';
 import {
   PROVIDER_SORT_MODES,
@@ -1642,6 +1643,7 @@ const CodexPage: React.FC = () => {
       baseUrl: extractCodexBaseUrl(settings.config) || '',
       apiKey: settings.auth?.OPENAI_API_KEY || '',
       sdkType: getCodexProviderSdkType(fetchModelsProvider),
+      headers: getEffectiveCustomHeadersFromMeta(fetchModelsProvider.meta),
       existingModelIds: getCodexProviderCatalogModels(fetchModelsProvider)
         .map((item) => item.model.trim()),
     };
@@ -2942,6 +2944,7 @@ const CodexPage: React.FC = () => {
             providerName={fetchModelsProviderInfo.name}
             baseUrl={fetchModelsProviderInfo.baseUrl}
             apiKey={fetchModelsProviderInfo.apiKey || undefined}
+            headers={fetchModelsProviderInfo.headers}
             sdkType={fetchModelsProviderInfo.sdkType}
             existingModelIds={fetchModelsProviderInfo.existingModelIds}
             priorityOwnedBy={['openai']}

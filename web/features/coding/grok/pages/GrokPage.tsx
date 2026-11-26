@@ -110,6 +110,7 @@ import ProviderConnectivityTestModal, {
   buildGrokProviderConnectivityInfo,
   type ProviderConnectivityInfo,
 } from '@/features/coding/shared/providerConnectivity/ProviderConnectivityTestModal';
+import { getEffectiveCustomHeadersFromMeta } from '@/features/coding/shared/providerHeaders/customHeadersUtils';
 import { SessionManagerPanel, type SessionSourceMode } from '@/features/coding/shared/sessionManager';
 import {
   PROVIDER_SORT_MODES,
@@ -2086,6 +2087,7 @@ const GrokPage: React.FC = () => {
                 return '';
               }
             })()}
+            headers={getEffectiveCustomHeadersFromMeta(fetchModelsProvider.meta)}
             sdkType="@ai-sdk/openai"
             existingModelIds={getGrokProviderCatalogModels(fetchModelsProvider)
               .map((model) => model.key?.trim() || model.model)

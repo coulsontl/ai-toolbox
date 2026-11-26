@@ -67,6 +67,10 @@ import ProviderConnectivityTestModal, {
   type ProviderConnectivityInfo,
 } from '@/features/coding/shared/providerConnectivity/ProviderConnectivityTestModal';
 import {
+  getEffectiveCustomHeadersFromMeta,
+  type GatewayProviderHeadersMeta,
+} from '@/features/coding/shared/providerHeaders/customHeadersUtils';
+import {
   buildProviderConnectivityBatchTarget,
   runProviderConnectivityBatch,
 } from '@/features/coding/shared/providerConnectivity/batchTest';
@@ -535,6 +539,9 @@ const KimiPage: React.FC = () => {
       baseUrl: settings.baseUrl,
       apiKey: settings.apiKey,
       providerKey: settings.providerKey,
+      headers: getEffectiveCustomHeadersFromMeta(
+        fetchModelsProvider.meta as GatewayProviderHeadersMeta | undefined,
+      ),
       existingModelIds: settings.catalogModels.map((item) => item.model.trim()),
     };
   }, [fetchModelsProvider]);
@@ -1276,6 +1283,7 @@ const KimiPage: React.FC = () => {
           providerName={fetchModelsProviderInfo.name}
           baseUrl={fetchModelsProviderInfo.baseUrl}
           apiKey={fetchModelsProviderInfo.apiKey || undefined}
+          headers={fetchModelsProviderInfo.headers}
           // Kimi custom providers are OpenAI-compatible (`type = "openai"`),
           // so the models list always comes from `{base_url}/models`.
           sdkType="@ai-sdk/openai"

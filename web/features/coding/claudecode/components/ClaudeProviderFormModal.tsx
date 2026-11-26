@@ -27,6 +27,7 @@ import {
 } from '@/features/coding/shared/providerBilling/billingConfigUtils';
 import {
   getCustomHeadersFromMeta,
+  getEffectiveCustomHeaders,
   mergeCustomHeadersIntoMeta,
 } from '@/features/coding/shared/providerHeaders/customHeadersUtils';
 import {
@@ -636,6 +637,7 @@ const ClaudeProviderFormModal: React.FC<ClaudeProviderFormModalProps> = ({
           apiType: fetchApiType,
           sdkType: '@ai-sdk/anthropic',
           customUrl,
+          headers: getEffectiveCustomHeaders(customHeaders),
         },
       });
 

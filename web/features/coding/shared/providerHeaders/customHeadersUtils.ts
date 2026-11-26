@@ -14,6 +14,8 @@
  * preceding injector. See `tauri/.../proxy_gateway/types.rs` and
  * `.../runtime/upstream.rs::inject_custom_headers`.
  */
+import { isValidHeaderName, isValidHeaderValue } from './headerValidation';
+
 export type CustomHeaderOp = 'set' | 'delete' | 'rename' | 'copy';
 
 export interface CustomHeaderEntry {
@@ -79,6 +81,49 @@ export function getCustomHeadersFromMeta(
     enabled: headers.length > 0,
     headers: headers.length > 0 ? headers : [emptyHeaderEntry()],
   };
+}
+
+/**
+ * Flatten the override rows into the flat request-header map one-shot requests
+ * can carry (model discovery and direct connectivity probes).
+ *
+ * Those requests start from an empty header set, so only `set` rows can have
+ * an effect: `delete` / `rename` / `copy` address headers the request never
+ * carries. Rows apply in order and the last `set` for a header name wins
+ * case-insensitively, mirroring `inject_custom_headers` replacing any
+ * previously forwarded value. Invalid or blank rows are skipped exactly like
+ * the runtime's silent validation.
+ */
+export function getEffectiveCustomHeaders(
+  state?: CustomHeadersState | null,
+): Record<string, string> | undefined {
+  if (!state?.enabled) return undefined;
+
+  const headersByLowerName = new Map<string, { name: string; value: string }>();
+  for (const entry of state.headers) {
+    if (entry.op !== 'set') continue;
+    const name = entry.name.trim();
+    const value = entry.value.trim();
+    if (!name || !value) continue;
+    if (!isValidHeaderName(name) || !isValidHeaderValue(value)) continue;
+    headersByLowerName.set(name.toLowerCase(), { name, value });
+  }
+
+  return headersByLowerName.size > 0
+    ? Object.fromEntries(
+        [...headersByLowerName.values()].map(({ name, value }) => [name, value]),
+      )
+    : undefined;
+}
+
+/**
+ * Same as {@link getEffectiveCustomHeaders}, reading stored provider meta
+ * (including the legacy `customUserAgent` / `custom_user_agent` fallback).
+ */
+export function getEffectiveCustomHeadersFromMeta(
+  meta?: GatewayProviderHeadersMeta | null,
+): Record<string, string> | undefined {
+  return getEffectiveCustomHeaders(getCustomHeadersFromMeta(meta));
 }
 
 /** Merge the custom header state back into provider meta (field-level). */

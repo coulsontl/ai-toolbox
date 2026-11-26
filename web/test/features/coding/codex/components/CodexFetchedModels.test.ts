@@ -22,13 +22,17 @@ function compile(code: string) {
 const handler = compile(`${source.slice(start, end)}\nhandleFetchModels;`);
 const models = Array.from({ length: 8 }, (_, i) => ({ id: `model-${i}`, name: `Model ${i}` }));
 
-function harness(official = true) {
+function harness(official = true, effectiveHeaders?: Record<string, string>) {
   const state = {
     models: [] as typeof models, loading: false, search: 'old search', status: 'idle',
     sequence: { current: 0 }, notifications: [] as string[],
   };
-  const requests: Array<{ resolve: (value: unknown) => void; reject: (error: Error) => void }> = [];
-  const request = () => new Promise((resolve, reject) => requests.push({ resolve, reject }));
+  const requests: Array<{
+    resolve: (value: unknown) => void;
+    reject: (error: Error) => void;
+    args: unknown[];
+  }> = [];
+  const request = (...args: unknown[]) => new Promise((resolve, reject) => requests.push({ resolve, reject, args }));
   const notify = (value: string) => state.notifications.push(value);
   const fetch = runInNewContext(handler, {
     isOfficialMode: official,
@@ -43,6 +47,8 @@ function harness(official = true) {
     form: { getFieldValue: (key: string) => key === 'baseUrl' ? 'https://synthetic.invalid' : '' },
     modelsSdkType: '@ai-sdk/openai',
     getDefaultModelsApiType: () => 'openai',
+    customHeaders: { enabled: Boolean(effectiveHeaders), headers: [] },
+    getEffectiveCustomHeaders: () => effectiveHeaders,
     t: (key: string) => key,
     console: { error() {} },
     message: { success: notify, info: notify, warning: notify, error: notify },
@@ -144,6 +150,19 @@ test('custom empty/error states are explicit and failed refresh retains previous
   assert.equal(h.state.status, 'error');
   assert.equal(h.state.models, models);
   assert.equal(h.state.loading, false);
+});
+
+test('custom fetch forwards effective custom headers (issue #474)', async () => {
+  const effectiveHeaders = { 'User-Agent': 'claude-cli/2.1.237' };
+  const h = harness(false, effectiveHeaders);
+  const pending = h.fetch();
+  h.requests[0].resolve({ models: [] });
+  await pending;
+  const [, payload] = h.requests[0].args;
+  assert.deepEqual(
+    (payload as { request: { headers?: Record<string, string> } }).request.headers,
+    effectiveHeaders,
+  );
 });
 
 test('picker is independent of current input, searchable, labeled, and updates the TOML hook only on selection', () => {

@@ -24,6 +24,7 @@ import {
 } from '@/features/coding/shared/providerBilling/billingConfigUtils';
 import {
   getCustomHeadersFromMeta,
+  getEffectiveCustomHeaders,
   mergeCustomHeadersIntoMeta,
 } from '@/features/coding/shared/providerHeaders/customHeadersUtils';
 import {
@@ -1137,6 +1138,7 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
           apiKey: apiKey || undefined,
           apiType: getDefaultModelsApiType(modelsSdkType),
           sdkType: modelsSdkType,
+          headers: getEffectiveCustomHeaders(customHeaders),
         },
       });
 

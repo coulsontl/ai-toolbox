@@ -1206,6 +1206,7 @@ inferred provider：
   - `HeaderMap` 与 preserved vec 必须同时移除旧值，保证 header-preserving 裸客户端只写出预期条数；rename/copy 的多值用 `append_preserved_header_value`（append 语义）追加，避免 `insert` 丢值。
   - 连通性测试（`connectivity_test.rs`）走 `route_request_with_options` -> `build_upstream_headers`，自动继承 custom headers，可在表单内预验上游请求头白名单。它也覆盖 target protocol 与 CLI 原生协议一致的直通 provider，并在结果里回报 client `statusCode`/`statusText` 与真实 `upstreamStatusCode`/`upstreamUrl`（网关合成 502 时保留真实上游状态）。
   - 切换网关 profile 时 `customHeaders` 保留（`mergeGatewayProfileReferenceIntoMeta` 的 delete 白名单不含该 key），与 billing 字段同等待遇。
+  - 模型列表探测（`fetch_provider_models`）与直连连通性测试不经过转发链，所以前端调用方要把同一份 `set` 行转成扁平 `headers` 随请求发送（`customHeadersUtils.getEffectiveCustomHeaders` / `getEffectiveCustomHeadersFromMeta`）：表单用当前编辑态（未保存也生效），已保存页面用 provider meta。`delete` / `rename` / `copy` 对全新请求没有作用对象，不参与转换；无覆写时请求保持不变。这样按 UA 白名单放行的上游不会出现“网关转发能用、拉取模型/直连探测 403”（issue #474）。
   - 旧 `data.meta.customUserAgent`（字符串）已下线；读取侧在 `provider_meta_from_record` 做只读回退——若 `customHeaders` 缺失而 `customUserAgent` 存在，合成一行 `set User-Agent`。前端 `getCustomHeadersFromMeta` 同样回退旧字段以便用户查看/清理。写入侧只写 `customHeaders`，且 `mergeCustomHeadersIntoMeta` 同时删除旧 `customUserAgent`/`custom_user_agent` 与 `custom_headers`，故保存后旧 key 不再落盘。
 
 特殊 path：

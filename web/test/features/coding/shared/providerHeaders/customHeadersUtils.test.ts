@@ -4,6 +4,8 @@ import test from 'node:test';
 import {
   emptyHeaderEntry,
   getCustomHeadersFromMeta,
+  getEffectiveCustomHeaders,
+  getEffectiveCustomHeadersFromMeta,
   mergeCustomHeadersIntoMeta,
 } from '../../../../../features/coding/shared/providerHeaders/customHeadersUtils.ts';
 
@@ -149,4 +151,72 @@ test('mergeCustomHeadersIntoMeta preserves unrelated meta fields', () => {
       customHeaders: [{ op: 'set', name: 'User-Agent', value: 'Kilo-Code/1.0', from: '', to: '' }],
     },
   );
+});
+
+test('getEffectiveCustomHeaders returns an empty result when disabled or empty', () => {
+  assert.equal(getEffectiveCustomHeaders(undefined), undefined);
+  assert.equal(getEffectiveCustomHeaders({ enabled: false, headers: [
+    { op: 'set', name: 'User-Agent', value: 'Kilo-Code/1.0', from: '', to: '' },
+  ] }), undefined);
+  assert.equal(getEffectiveCustomHeaders({ enabled: true, headers: [emptyHeaderEntry()] }), undefined);
+});
+
+test('getEffectiveCustomHeaders flattens trimmed set rows into a request-header map', () => {
+  assert.deepEqual(
+    getEffectiveCustomHeaders({
+      enabled: true,
+      headers: [
+        { op: 'set', name: ' User-Agent ', value: ' claude-cli/2.1.237 ', from: '', to: '' },
+        { op: 'set', name: 'x-api-key', value: 'sk-test', from: '', to: '' },
+      ],
+    }),
+    {
+      'User-Agent': 'claude-cli/2.1.237',
+      'x-api-key': 'sk-test',
+    },
+  );
+});
+
+test('getEffectiveCustomHeaders keeps the last set row per header name case-insensitively', () => {
+  assert.deepEqual(
+    getEffectiveCustomHeaders({
+      enabled: true,
+      headers: [
+        { op: 'set', name: 'User-Agent', value: 'first-agent', from: '', to: '' },
+        { op: 'set', name: 'user-agent', value: 'second-agent', from: '', to: '' },
+      ],
+    }),
+    { 'user-agent': 'second-agent' },
+  );
+});
+
+test('getEffectiveCustomHeaders ignores non-set ops and invalid rows', () => {
+  assert.deepEqual(
+    getEffectiveCustomHeaders({
+      enabled: true,
+      headers: [
+        { op: 'delete', name: 'Authorization', value: '', from: '', to: '' },
+        { op: 'rename', name: '', value: '', from: 'X-Old', to: 'X-New' },
+        { op: 'copy', name: '', value: '', from: 'X-Source', to: 'X-Target' },
+        { op: 'set', name: 'Bad Header', value: 'value', from: '', to: '' },
+        { op: 'set', name: 'X-Empty', value: '   ', from: '', to: '' },
+        { op: 'set', name: 'X-Good', value: 'value', from: '', to: '' },
+      ],
+    }),
+    { 'X-Good': 'value' },
+  );
+});
+
+test('getEffectiveCustomHeadersFromMeta reads saved rows and the legacy customUserAgent', () => {
+  assert.deepEqual(
+    getEffectiveCustomHeadersFromMeta({
+      customHeaders: [{ op: 'set', name: 'User-Agent', value: 'claude-cli/2.1.237', from: '', to: '' }],
+    }),
+    { 'User-Agent': 'claude-cli/2.1.237' },
+  );
+  assert.deepEqual(
+    getEffectiveCustomHeadersFromMeta({ customUserAgent: 'Kilo-Code/1.0' }),
+    { 'User-Agent': 'Kilo-Code/1.0' },
+  );
+  assert.equal(getEffectiveCustomHeadersFromMeta(undefined), undefined);
 });
