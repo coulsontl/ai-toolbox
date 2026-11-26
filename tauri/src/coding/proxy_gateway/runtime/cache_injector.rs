@@ -1,7 +1,10 @@
 use serde_json::{json, Value};
 
 const MAX_CACHE_CONTROL_BREAKPOINTS: usize = 4;
-const ADAPTIVE_CACHE_CONTROL_BLOCK_WINDOW: usize = 20;
+/// cc-switch only adds the older user anchor once the conversation has at
+/// least four messages. Shorter histories are already covered by the latest
+/// anchor and would only spend a breakpoint that has to be dropped next turn.
+const PRIOR_USER_ANCHOR_MIN_MESSAGES: usize = 4;
 
 pub(super) fn inject_cache_control(body: &mut Value) -> bool {
     let original = body.clone();
@@ -17,13 +20,13 @@ pub(super) fn inject_cache_control(body: &mut Value) -> bool {
         remaining = ensure_structural_cache_controls(body, remaining);
 
         // A client that planned its own message breakpoints keeps them: its
-        // anchors are prefix-stable, while our distance-from-end window moves
-        // with every turn and changes the serialized prefix hash, which makes
-        // every request pay a full cache write (AxonHub 7444f537).
-        if count_message_breakpoints(body) == 0 {
-            let refs = collect_cacheable_message_block_refs(body);
-            let message_anchors = desired_message_cache_anchors(refs.len()).min(remaining);
-            inject_planned_message_cache_controls(body, &refs, message_anchors);
+        // anchors are prefix-stable, while replanning them every turn changes
+        // the serialized prefix hash and makes every request pay a full cache
+        // write (AxonHub 7444f537). Codex has no message breakpoints, so this
+        // path still plans the latest message anchor plus, for longer
+        // histories, the previous turn's user message (cc-switch b9263a80).
+        if remaining > 0 && count_message_breakpoints(body) == 0 {
+            inject_message_cache_controls(body, remaining);
         }
     }
 
@@ -163,82 +166,72 @@ fn ensure_structural_cache_controls(body: &mut Value, budget: usize) -> usize {
     remaining
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MessageBlockRef {
-    message_index: usize,
-    block_index: usize,
-}
-
-fn collect_cacheable_message_block_refs(body: &Value) -> Vec<MessageBlockRef> {
-    let Some(messages) = body.get("messages").and_then(Value::as_array) else {
-        return Vec::new();
+/// Marks the newest cacheable message and, when the budget and history allow,
+/// the second-most-recent `user` message. The older anchor gives long
+/// tool-result turns a read point inside Anthropic's ~20-block lookback, while
+/// the newest anchor keeps the prefix stable as the conversation grows. This
+/// mirrors cc-switch's planner (b9263a80); it deliberately does not use a
+/// distance-from-end window, whose index moves on every turn.
+fn inject_message_cache_controls(body: &mut Value, mut budget: usize) {
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
     };
 
-    let mut refs = Vec::new();
-    for (message_index, message) in messages.iter().enumerate() {
-        let Some(content) = message.get("content").and_then(Value::as_array) else {
+    let Some(latest_index) = inject_latest_message_anchor(messages) else {
+        return;
+    };
+    budget -= 1;
+
+    if budget == 0 || messages.len() < PRIOR_USER_ANCHOR_MIN_MESSAGES {
+        return;
+    }
+
+    let mut user_count = 0;
+    for (index, message) in messages.iter_mut().enumerate().rev() {
+        if message.get("role").and_then(Value::as_str) != Some("user") {
             continue;
-        };
-        for (block_index, block) in content.iter().enumerate() {
-            if is_cacheable_message_block(block) {
-                refs.push(MessageBlockRef {
-                    message_index,
-                    block_index,
-                });
+        }
+        user_count += 1;
+        if user_count == 2 {
+            // The newest anchor can fall back to this message when the tail is
+            // only thinking or empty text; never mark the same message twice.
+            if index != latest_index {
+                inject_last_cacheable_block(message);
             }
-        }
-    }
-    refs
-}
-
-fn desired_message_cache_anchors(cacheable_blocks: usize) -> usize {
-    if cacheable_blocks == 0 {
-        0
-    } else if cacheable_blocks >= ADAPTIVE_CACHE_CONTROL_BLOCK_WINDOW {
-        2
-    } else {
-        1
-    }
-}
-
-fn inject_planned_message_cache_controls(
-    body: &mut Value,
-    refs: &[MessageBlockRef],
-    target: usize,
-) {
-    if refs.is_empty() || target == 0 {
-        return;
-    }
-
-    inject_message_ref(body, refs[refs.len() - 1]);
-
-    if target > 1 {
-        let index = pick_window_anchor_index(refs.len(), ADAPTIVE_CACHE_CONTROL_BLOCK_WINDOW);
-        if let Some(index) = index {
-            inject_message_ref(body, refs[index]);
+            break;
         }
     }
 }
 
-fn pick_window_anchor_index(len: usize, window: usize) -> Option<usize> {
-    if len == 0 {
-        return None;
+/// Returns the index of the message that received the newest anchor. `None`
+/// means no message had a cacheable block, so there is nothing to anchor.
+fn inject_latest_message_anchor(messages: &mut [Value]) -> Option<usize> {
+    for (index, message) in messages.iter_mut().enumerate().rev() {
+        if inject_last_cacheable_block(message) {
+            return Some(index);
+        }
     }
-    Some(len.saturating_sub(1 + window))
+    None
 }
 
-fn inject_message_ref(body: &mut Value, block_ref: MessageBlockRef) {
-    let Some(block) = body
-        .get_mut("messages")
-        .and_then(Value::as_array_mut)
-        .and_then(|messages| messages.get_mut(block_ref.message_index))
-        .and_then(|message| message.get_mut("content"))
-        .and_then(Value::as_array_mut)
-        .and_then(|content| content.get_mut(block_ref.block_index))
-    else {
-        return;
+/// Injects `cache_control` on the last block the cache can key on, skipping
+/// `thinking` / `redacted_thinking` and empty text. Returns `false` when the
+/// message has no such block or its last cacheable block is already marked.
+fn inject_last_cacheable_block(message: &mut Value) -> bool {
+    let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) else {
+        return false;
     };
-    inject_block(block);
+    let Some(block) = content
+        .iter_mut()
+        .rev()
+        .find(|block| is_cacheable_message_block(block))
+    else {
+        return false;
+    };
+    if block.get("cache_control").is_some() {
+        return false;
+    }
+    inject_block(block)
 }
 
 fn sanitize_unsupported_cache_controls(body: &mut Value) {
@@ -463,23 +456,201 @@ mod tests {
                 stale_cached_system_block("old"),
                 {"type":"text","text":"current"}
             ],
-            "messages": [{
-                "role":"user",
-                "content": text_blocks(25)
-            }]
+            "messages": [
+                {"role":"user","content": text_blocks(2)},
+                {"role":"assistant","content": text_blocks(2)},
+                {"role":"user","content": text_blocks(2)},
+                {"role":"assistant","content": text_blocks(2)},
+                {"role":"user","content": text_blocks(2)}
+            ]
         });
 
         assert!(inject_cache_control(&mut body));
 
-        // Client anchors stay where they were; the planner only adds the
-        // missing message anchors within the remaining budget.
+        // Client anchors stay where they were; the planner adds the newest
+        // message anchor and the second-most-recent user anchor within the
+        // remaining budget.
         assert_cache_control_count(&body, 4);
         assert!(tool_has_cache_control(&body, 0));
         assert!(!tool_has_cache_control(&body, 1));
         assert!(system_has_cache_control(&body, 0));
         assert!(!system_has_cache_control(&body, 1));
-        assert!(message_block_has_cache_control(&body, 0, 4));
-        assert!(message_block_has_cache_control(&body, 0, 24));
+        assert!(!message_block_has_cache_control(&body, 0, 0));
+        assert!(!message_block_has_cache_control(&body, 1, 0));
+        assert!(message_block_has_cache_control(&body, 2, 1));
+        assert!(!message_block_has_cache_control(&body, 3, 0));
+        assert!(message_block_has_cache_control(&body, 4, 1));
+    }
+
+    fn tool_loop_body(tool_results: usize) -> Value {
+        let mut messages = vec![json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "start"}]
+        })];
+        for index in 0..tool_results {
+            messages.push(json!({
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": format!("call_{index}"),
+                    "name": "Read",
+                    "input": {}
+                }]
+            }));
+            messages.push(json!({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": format!("call_{index}"),
+                    "content": format!("result {index}")
+                }]
+            }));
+        }
+        json!({
+            "tools": [tool("Read")],
+            "system": [{"type": "text", "text": "system"}],
+            "messages": messages
+        })
+    }
+
+    #[test]
+    fn continuous_tool_loop_anchors_latest_and_prior_user() {
+        let mut first_turn = tool_loop_body(2);
+        assert!(inject_cache_control(&mut first_turn));
+        assert_cache_control_count(&first_turn, 4);
+        assert!(message_block_has_cache_control(&first_turn, 2, 0));
+        assert!(message_block_has_cache_control(&first_turn, 4, 0));
+        assert!(!message_block_has_cache_control(&first_turn, 0, 0));
+
+        let mut second_turn = tool_loop_body(3);
+        assert!(inject_cache_control(&mut second_turn));
+        assert_cache_control_count(&second_turn, 4);
+        // The previous turn's newest anchor (message 4) is kept as this turn's
+        // older anchor; only the older anchor from the first turn (message 2)
+        // is dropped.
+        assert!(message_block_has_cache_control(&second_turn, 4, 0));
+        assert!(message_block_has_cache_control(&second_turn, 6, 0));
+        assert!(!message_block_has_cache_control(&second_turn, 2, 0));
+    }
+
+    #[test]
+    fn short_history_below_four_messages_only_marks_latest_message() {
+        let mut body = json!({
+            "tools": [tool("Read")],
+            "system": [{"type": "text", "text": "system"}],
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "u0"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "a0"}]},
+                {"role": "user", "content": [{"type": "text", "text": "u1"}]}
+            ]
+        });
+
+        assert!(inject_cache_control(&mut body));
+
+        assert_cache_control_count(&body, 3);
+        assert!(message_block_has_cache_control(&body, 2, 0));
+        assert!(!message_block_has_cache_control(&body, 0, 0));
+    }
+
+    #[test]
+    fn long_history_ending_with_assistant_marks_latest_assistant_and_second_last_user() {
+        let mut body = json!({
+            "tools": [tool("Read")],
+            "system": [{"type": "text", "text": "system"}],
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "first"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "answer"}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "result"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "latest"}]}
+            ]
+        });
+
+        assert!(inject_cache_control(&mut body));
+
+        assert_cache_control_count(&body, 4);
+        assert!(message_block_has_cache_control(&body, 0, 0));
+        assert!(message_block_has_cache_control(&body, 3, 0));
+        assert!(!message_block_has_cache_control(&body, 2, 0));
+    }
+
+    #[test]
+    fn does_not_duplicate_when_latest_fallback_lands_on_prior_user() {
+        let mut body = json!({
+            "tools": [tool("Read")],
+            "system": [{"type": "text", "text": "system"}],
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "u0"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "a0"}]},
+                {"role": "user", "content": [{"type": "text", "text": "u1"}]},
+                {"role": "assistant", "content": [{"type": "thinking", "thinking": "thought"}]},
+                {"role": "user", "content": [{"type": "text", "text": ""}]}
+            ]
+        });
+
+        assert!(inject_cache_control(&mut body));
+
+        assert_cache_control_count(&body, 3);
+        assert!(message_block_has_cache_control(&body, 2, 0));
+        assert!(!message_block_has_cache_control(&body, 0, 0));
+        assert_no_unsupported_cache_controls(&body);
+    }
+
+    #[test]
+    fn skips_prior_user_when_only_one_budget_slot_remains() {
+        let mut body = json!({
+            "tools": [
+                {"name": "t1", "input_schema": {"type": "object"}, "cache_control": {"type": "ephemeral"}},
+                {"name": "t2", "input_schema": {"type": "object"}, "cache_control": {"type": "ephemeral"}}
+            ],
+            "system": [{"type": "text", "text": "system", "cache_control": {"type": "ephemeral"}}],
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "u0"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "a0"}]},
+                {"role": "user", "content": [{"type": "text", "text": "u1"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "a1"}]},
+                {"role": "user", "content": [{"type": "text", "text": "u2"}]}
+            ]
+        });
+
+        assert!(inject_cache_control(&mut body));
+
+        assert_cache_control_count(&body, 4);
+        assert!(message_block_has_cache_control(&body, 4, 0));
+        assert!(!message_block_has_cache_control(&body, 2, 0));
+    }
+
+    #[test]
+    fn latest_and_prior_user_skip_thinking_redacted_thinking_and_empty_text() {
+        let mut body = json!({
+            "tools": [tool("Read")],
+            "system": [{"type": "text", "text": "system"}],
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "u0"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "a0"}]},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "prior-valid"},
+                    {"type": "thinking", "thinking": "prior-thought"},
+                    {"type": "redacted_thinking", "data": "prior-redacted"},
+                    {"type": "text", "text": ""}
+                ]},
+                {"role": "assistant", "content": [{"type": "text", "text": "a1"}]},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "latest-valid"},
+                    {"type": "thinking", "thinking": "latest-thought"},
+                    {"type": "redacted_thinking", "data": "latest-redacted"},
+                    {"type": "text", "text": ""}
+                ]}
+            ]
+        });
+
+        assert!(inject_cache_control(&mut body));
+
+        assert_cache_control_count(&body, 4);
+        assert!(message_block_has_cache_control(&body, 2, 0));
+        assert!(message_block_has_cache_control(&body, 4, 0));
+        assert!(!message_block_has_cache_control(&body, 2, 3));
+        assert!(!message_block_has_cache_control(&body, 4, 1));
+        assert_no_unsupported_cache_controls(&body);
     }
 
     #[test]
@@ -498,8 +669,8 @@ mod tests {
         });
 
         // Nothing to do: the client already planned message breakpoints, so no
-        // distance-from-end anchor is added (AxonHub 7444f537) and the body
-        // stays byte-identical upstream.
+        // planner anchor is added (AxonHub 7444f537) and the body stays
+        // byte-identical upstream.
         assert!(!inject_cache_control(&mut body));
         assert_cache_control_count(&body, 1);
         assert!(message_block_has_cache_control(&body, 0, 0));
