@@ -1,6 +1,6 @@
 ---
 name: ai-toolbox
-description: AI Toolbox 桌面应用的内置使用指南与 Agent 行动手册。当用户需要管理 Coding CLI 配置、用 aitb 自动化操作、配置本机 Proxy Gateway、同步 Skills/MCP、浏览会话、处理 WSL/SSH 同步、备份恢复或使用 Magpie 插件时，先读本技能。
+description: AI Toolbox 桌面应用的内置使用指南与 Agent 行动手册。当用户提到 AI Toolbox、aitb 命令、本地控制 API / control API、Coding CLI 供应商与模型配置、Proxy Gateway 接管或故障切换、Magpie 插件、Skills/MCP 同步、WSL/SSH 同步、备份恢复时，先读本技能。也适用于排障：aitb 退出码 3/4/5、approval_denied、approval_timeout、read_only、unsupported、gateway 端口占用或插件模型连不通。
 ---
 
 # AI Toolbox 使用指南
@@ -27,21 +27,23 @@ aitb status --json
 aitb cli list --json
 ```
 
-关注目标 CLI 的 `providerCrud`、`modelCrud`、`config`、`prompts`、`apply`、`test`。Antigravity 没有自定义渠道；CodeBuddy 的全局配置只读；OpenClaw / WorkBuddy 没有提示词方案。
+关注目标 CLI 的 `providerCrud`、`modelCrud`、`config`、`configReadOnly`、`prompts`、`apply`、`test`。Antigravity 没有自定义渠道；CodeBuddy 的全局配置只读；WorkBuddy 没有全局配置文件；OpenClaw / WorkBuddy 没有提示词方案。返回 `unsupported` 是能力边界，换 CLI 或换命令，不要当成授权失败重试。
 
 ### 1.3 通过 `aitb` 执行并验收
 
 - 查询：`aitb provider list --cli codex --json`、`aitb config get --cli codex --json`、`aitb cli paths --cli codex --json` 等。
 - 写入：新增/修改供应商 → `apply` → `provider test`；改全局配置 → `config set` 后再 `config get` 核对；提示词 → `prompt apply` 后检查 `isApplied`。
-- 网关：`gateway status` → `engage/restore` → `gateway logs --only-failed`。
+- 网关：`gateway status` / `gateway clis` → `engage` 或 `switch` → `gateway logs --only-failed`；停止前先 `restore`。
+- 已被网关接管的 CLI 不要手工 `restore` 再改供应商：直接 `provider update` / `provider apply` / `model add`，后端会恢复直连、写入、再按原模式重新接管。
 - 插件：`plugin install` → `plugin reload` → `plugin logs` / `plugin middleware` / `plugin accounts` → `plugin link-cli`。
 - 每次写操作后做一次只读核对，不要只相信退出码。
 
 ### 1.4 授权与失败处理
 
 - 默认授权模式是「每次都询问」：L1 可逆写入和 L2 高风险操作都会在桌面弹窗等待用户点击。
-- 退出码 `4` 表示用户拒绝、授权超时或只读模式拒绝。**不要循环重试、不要换端口/换命令绕过，也不要说“已经完成”。** 向用户说明被拒绝的操作，等待新指示。
-- 退出码 `5` 是执行错误：读取 stderr 或 `--json` 错误体，修正参数/目标后重试一次；仍失败就报告事实。
+- 退出码 `4` 表示用户拒绝、授权超时、只读模式或能力不支持。看 `--json` 的 `error.code`：`approval_denied` / `approval_timeout` / `read_only` / `unsupported`。**不要循环重试、不要换端口/换命令绕过，也不要说“已经完成”。** 向用户说明具体原因，等待新指示。
+- 退出码 `5` 是执行错误（`bad_request`、`not_found`、`conflict`、`method_not_allowed`、`internal_error`）：读取 stderr 或 `--json` 错误体，修正参数/目标后重试一次；仍失败就报告事实。
+- 写操作默认等待桌面授权，`--timeout` 默认 120 秒，必须大于设置页的 `approvalTimeoutSecs`（默认 60 秒）。
 - API Key 只通过 `--api-key-env` 或 `--api-key-stdin` 传入；不要把 Key 放进 argv、日志、聊天记录或提交。
 
 ### 1.5 绝对不要做
@@ -111,7 +113,7 @@ http://127.0.0.1:37123
 
 Anthropic 风格客户端使用 `http://127.0.0.1:37123/v1/messages`；OpenAI 风格客户端使用 `/v1` 或 `/v1/chat/completions`；Gemini 风格客户端使用 `/v1beta`。
 
-用 `aitb` 时：`aitb gateway status`、`aitb gateway engage --cli codex --mode failover`、`aitb gateway logs --only-failed`。`stop` 前必须先 `restore` 所有被接管的 CLI。
+用 `aitb` 时：`aitb gateway status`、`aitb gateway clis --json`、`aitb gateway engage --cli codex --mode failover`、`aitb gateway switch --cli codex --provider <id>`、`aitb gateway logs --only-failed`。`gateway clis` 的 `mode`/`primaryProviderId`/`aggregate` 是当前接管的事实源；切换主 Provider 用 `switch`，不会丢 aggregate 配置。`stop` 前必须先 `restore` 所有被接管的 CLI。
 
 ### 3.3 官方账号切换与额度查看
 
@@ -154,11 +156,10 @@ Anthropic 风格客户端使用 `http://127.0.0.1:37123/v1/messages`；OpenAI �
 
 ### 3.8 本地控制面与 `aitb`
 
-- 默认开启，只监听 `127.0.0.1:0`（随机端口），令牌写入私有 `control.json`。
-- 默认「每次都询问」：写操作会在桌面弹窗等待用户确认；超时 60 秒（可设 15–300）。
-- Agent 用 `aitb` 读写；设置页只显示状态、策略和安装入口，**永远不显示 token**。
-- 常用：`aitb status --json`、`aitb cli list --json`、`aitb provider list --cli <key> --json`、`aitb config get --cli <key> --json`。
-- 安装：设置页「Agent 集成 → aitb 命令行 → 安装到 PATH」，或直接运行仓库构建出的 `aitb`。
+- 默认开启，只监听 `127.0.0.1:0`（随机端口），令牌写入私有 `control.json`；设置页只显示状态、策略和安装入口，**永远不显示 token**。
+- 默认「每次都询问」：写操作会在桌面弹窗等待用户确认；`approvalTimeoutSecs` 默认 60 秒（可设 15–300），CLI 的 `--timeout` 要大于它。
+- 安装：设置页「Agent 集成 → aitb 命令行 → 安装到 PATH」，或直接运行仓库构建出的 `aitb`。安装后重开终端；`command not found` 通常是 PATH 未刷新，`unknown subcommand` 通常是旧二进制，重新安装即可。
+- 常用命令与退出码见 §1 和 `references/control-cli.md`，这里不再重复。
 
 ## 4. 常见问题排查
 
@@ -185,9 +186,10 @@ Anthropic 风格客户端使用 `http://127.0.0.1:37123/v1/messages`；OpenAI �
 
 ### 4.3 控制面 / aitb 不工作
 
+- `command not found`：`aitb` 未安装或 PATH 未刷新；`unknown subcommand` / 参数与文档不一致：旧二进制，重新安装后重跑 `aitb status --json`。
 - `aitb status` 退出码 `3`：应用未启动、控制面关闭或发现文件失效。先在设置里确认「启用本地控制 API」为开，再看 `url` 是否非空。
-- 退出码 `4`：授权被拒绝/超时或只读模式。**不要重试轰炸**；向用户报告并询问是否调整授权策略。
-- 退出码 `5`：看 stderr 的错误码（`bad_request`、`not_found`、`internal_error` 等），修正目标后重试。
+- 退出码 `4` 按 `--json` 的 `error.code` 处理：`approval_denied` / `approval_timeout` 等待用户，`read_only` 请用户改授权模式，`unsupported` 换能力；**统一不要重试轰炸**。
+- 退出码 `5`：看 `error.code`（`bad_request`、`not_found`、`conflict`、`method_not_allowed`、`internal_error`），修正目标后重试一次。
 - 出现 `Host` / `Origin` 403 是安全防护，不要尝试伪造请求头；用 `aitb` 或本机工具访问。
 - 发现文件路径以设置页显示为准；不要 `cat` 它，也不要把内容粘到聊天里。
 

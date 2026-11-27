@@ -509,7 +509,22 @@ aitb provider list --cli codex --json
 aitb provider test --cli codex --id <providerId> --json
 ```
 
+`link-cli.json` 的最小形态（`pluginSpec` 必须与 `aitb plugin providers --json` 里的插件 spec 一致；URL 路径 provider 与 body 的 `providerId` 不一致会 400）：
+
+```json
+{
+  "cliKey": "codex",
+  "pluginSpec": "@acme/ai-plugin",
+  "providerId": "my-provider",
+  "displayName": "My Provider",
+  "accountStrategy": "auto_rotate",
+  "modelIds": []
+}
+```
+
+- 只刷新某一个 Provider 时直接 POST 四段路由（`/v1/plugins/providers/<provider>/refresh-models`）；CLI 的 `plugin refresh-models` 刷新全部。
 - `plugin reload` 是 L1 可逆写操作。默认授权模式下会弹窗；设置页可以单独开启「本地插件重载免确认」，但只对本地目录来源生效。
+- 页面清单的 `file` 或 `service.port` 改动后，旧页面 token 会被撤销；下次打开页面重新签发，不要沿用旧标签页。
 - `plugin install` 本地目录是 L1；`npm` / `github:` 远程来源是 L2，每次都要用户确认。
 - 改 `package.json` 的页面清单、权限、图标、Provider 列表后必须 reload，宿主才会重新探测。
 - 改 Provider / 中间件代码后，reload 会按需重启对应运行时；如果模块有顶层缓存，禁用再启用或重启宿主更彻底。
@@ -526,7 +541,7 @@ aitb provider test --cli codex --id <providerId> --json
 | 中间件超时或报错 | `aitb plugin logs`；单次调用是否超过 250ms / 32MiB | 缩减逻辑或打包依赖；失败是 fail-open，不会中断请求 |
 | Provider 登录失败 | `aitb plugin account-check <provider>`；OAuth 回调/设备码是否过期 | 重新登录；不要手工改 `plugin-auth.json` |
 | Provider 模型列表为空 | `aitb plugin refresh-models`；`auth.loader` 的 baseURL/apiKey；`provider.models` 返回值 | 修正 loader 或模型 hook 后 reload |
-| 添加到 CLI 后仍不通 | `aitb provider list --cli <key>`；目标 CLI 是否被网关接管；Base URL 是否指向网关 | `aitb gateway status` / `aitb gateway restore`，再 `aitb provider test` |
+| 添加到 CLI 后仍不通 | `aitb provider list --cli <key>`；`aitb gateway clis --json` 看目标 CLI 是否已被接管；Base URL 是否指向网关 | 直接 `aitb provider test`（后端用原始凭据）；不要先 `restore`，否则会丢 aggregate 配置 |
 | 请求日志里看不到插件流量 | 网关是否启动；客户端是否真的经网关；插件 Provider 是否被选中 | `aitb gateway status`、`aitb gateway logs` |
 | 修改代码后行为没变 | 是否执行了 `aitb plugin reload`；Bun host 是否被复用 | reload 指定 id；必要时 disable→enable |
 
