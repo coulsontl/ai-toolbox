@@ -789,6 +789,7 @@ const ClaudeDesktopPage: React.FC = () => {
 
       await saveProviderWithGatewayReengage({
         gatewayMode: shouldReengageGatewayProxy ? gatewayModeBeforeSave : null,
+        gatewayCliKey: 'claude_desktop',
         aggregateConfig: shouldReengageGatewayProxy ? gatewayAggregateBeforeSave : null,
         restoreDirect: () => restoreProxyGatewayCliDirect('claude_desktop'),
         engageSingle: () => engageProxyGatewaySingle('claude_desktop', savedProvider?.id || ''),

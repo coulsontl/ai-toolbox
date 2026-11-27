@@ -31,6 +31,7 @@ export async function saveGrokProviderCatalogWithGatewayReengage<TStatus>({
 
   return saveProviderWithGatewayReengage({
     gatewayMode: shouldReengageGateway ? gatewayMode : null,
+    gatewayCliKey: 'grok',
     restoreDirect,
     engageSingle,
     engageFailover,

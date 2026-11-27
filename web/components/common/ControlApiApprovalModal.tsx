@@ -183,7 +183,7 @@ export const ControlApiApprovalModal: React.FC = () => {
           {current.target && (
             <div className={styles.metaRow}>
               <Text type="secondary">{t('controlApiApproval.target')}</Text>
-              <Text>{current.target}</Text>
+              <Text className={styles.target}>{current.target}</Text>
             </div>
           )}
           <Text type="secondary" className={styles.note}>

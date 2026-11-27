@@ -2172,6 +2172,7 @@ const CodexPage: React.FC = () => {
 
       await saveProviderWithGatewayReengage({
         gatewayMode: shouldReengageGatewayProxy ? gatewayModeBeforeSave : null,
+        gatewayCliKey: 'codex',
         aggregateConfig: shouldReengageGatewayProxy
           ? withProposedCodexAggregateModels(
             gatewayAggregateBeforeSave,

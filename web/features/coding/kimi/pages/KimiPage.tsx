@@ -605,6 +605,7 @@ const KimiPage: React.FC = () => {
 
     await saveProviderWithGatewayReengage({
       gatewayMode: shouldReengageGatewayProxy ? gatewayModeBeforeSave : null,
+      gatewayCliKey: 'kimi',
       restoreDirect: () => restoreProxyGatewayCliDirect('kimi'),
       engageSingle: () => engageProxyGatewaySingle('kimi', savedProviderId),
       engageFailover: () => engageProxyGatewayFailover('kimi'),

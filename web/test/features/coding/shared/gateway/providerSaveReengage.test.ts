@@ -399,3 +399,110 @@ test('save helper rejects stale selection before restore or save', async () => {
 
   assert.deepEqual(calls, []);
 });
+
+test('save helper delegates restore and re-engage to the backend when a gateway CLI key is given', async () => {
+  const calls: string[] = [];
+  const snapshot = {
+    mode: 'aggregate',
+    aggregate: {
+      provider_ids: ['site-a', 'site-b'],
+      separator: '|',
+      cross_site_failover: true,
+    },
+  };
+  const originalWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = {
+    __TAURI_INTERNALS__: {
+      invoke: async (command: string, args: unknown) => {
+        calls.push(`${command}:${JSON.stringify(args)}`);
+        if (command === 'proxy_gateway_begin_provider_write') {
+          return snapshot;
+        }
+        return { mode: 'aggregate', primaryProviderId: null };
+      },
+    },
+  };
+
+  try {
+    const result = await saveProviderWithGatewayReengage({
+      gatewayMode: 'aggregate',
+      gatewayCliKey: 'codex',
+      aggregateConfig: { providerIds: ['site-a', 'site-b'], separator: '|' },
+      saveProvider: async () => {
+        calls.push('save');
+        return 'saved';
+      },
+      restoreDirect: async () => {
+        calls.push('frontend-restore');
+        return 'direct';
+      },
+      engageSingle: async () => {
+        calls.push('frontend-single');
+        return 'single';
+      },
+      engageFailover: async () => {
+        calls.push('frontend-failover');
+        return 'failover';
+      },
+      engageAggregate: async () => {
+        calls.push('frontend-aggregate');
+        return 'aggregate';
+      },
+      onGatewayStatusChange: (status) => {
+        calls.push(`status:${(status as { mode?: string }).mode}`);
+      },
+    });
+
+    assert.equal(result, 'saved');
+    assert.match(calls[0], /^proxy_gateway_begin_provider_write:/);
+    assert.equal(calls[1], 'save');
+    assert.match(calls[2], /^proxy_gateway_finish_provider_write:/);
+    assert.equal(calls[3], 'status:aggregate');
+    assert.ok(
+      !calls.some((call) => call.startsWith('frontend-')),
+      'the frontend must not replay restore/engage itself',
+    );
+  } finally {
+    (globalThis as { window?: unknown }).window = originalWindow;
+  }
+});
+
+test('save helper still finishes the backend re-engage when the save fails', async () => {
+  const calls: string[] = [];
+  const originalWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = {
+    __TAURI_INTERNALS__: {
+      invoke: async (command: string) => {
+        calls.push(command);
+        if (command === 'proxy_gateway_begin_provider_write') {
+          return { mode: 'single', primaryProviderId: 'p1' };
+        }
+        return { mode: 'single', primaryProviderId: 'p1' };
+      },
+    },
+  };
+
+  try {
+    await assert.rejects(
+      saveProviderWithGatewayReengage({
+        gatewayMode: 'single',
+        gatewayCliKey: 'codex',
+        saveProvider: async () => {
+          calls.push('save');
+          throw new Error('save failed');
+        },
+        restoreDirect: async () => 'direct',
+        engageSingle: async () => 'single',
+        engageFailover: async () => 'failover',
+      }),
+      /save failed/,
+    );
+    assert.deepEqual(calls, [
+      'proxy_gateway_begin_provider_write',
+      'save',
+      'proxy_gateway_finish_provider_write',
+    ]);
+  } finally {
+    (globalThis as { window?: unknown }).window = originalWindow;
+  }
+});

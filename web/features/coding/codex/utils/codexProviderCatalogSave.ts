@@ -148,6 +148,7 @@ export async function saveCodexProviderCatalogWithGatewayReengage<TStatus>({
 
   return saveProviderWithGatewayReengage({
     gatewayMode: shouldReengageGateway ? gatewayMode : null,
+    gatewayCliKey: 'codex',
     aggregateConfig: proposedAggregateConfig,
     restoreDirect,
     engageSingle,

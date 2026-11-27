@@ -1656,6 +1656,7 @@ const GrokPage: React.FC = () => {
 
       await saveProviderWithGatewayReengage({
         gatewayMode: shouldReengageGatewayProxy ? gatewayModeBeforeSave : null,
+        gatewayCliKey: 'grok',
         restoreDirect: () => restoreProxyGatewayCliDirect('grok'),
         engageSingle: () => engageProxyGatewaySingle('grok', savedProviderId),
         engageFailover: () => engageProxyGatewayFailover('grok'),

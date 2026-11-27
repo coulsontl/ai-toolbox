@@ -782,6 +782,7 @@ const GeminiCliPage: React.FC = () => {
 
       await saveProviderWithGatewayReengage({
         gatewayMode: shouldReengageGatewayProxy ? gatewayModeBeforeSave : null,
+        gatewayCliKey: 'gemini',
         aggregateConfig: shouldReengageGatewayProxy ? gatewayAggregateBeforeSave : null,
         restoreDirect: () => restoreProxyGatewayCliDirect('gemini'),
         engageSingle: () => engageProxyGatewaySingle('gemini', editingProvider?.id || ''),

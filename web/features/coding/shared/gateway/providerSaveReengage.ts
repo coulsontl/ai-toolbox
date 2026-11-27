@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import type { GatewayAggregateNamingMode } from '@/services';
 import {
   canReplaySubagentExposureSelection,
@@ -59,8 +60,34 @@ export interface GatewayReengageSnapshot {
   aggregateConfig?: GatewayAggregateReengageConfig | null;
 }
 
+/** Backend-owned canonical takeover captured just before a provider write. */
+export interface GatewayProviderWriteSnapshot {
+  mode: 'single' | 'failover' | 'aggregate';
+  primaryProviderId?: string;
+  aggregate?: {
+    provider_ids: string[];
+    separator: string;
+    aliases?: Record<string, string>;
+    naming?: GatewayAggregateNamingMode;
+    cross_site_failover?: boolean;
+    subagent_exposed_models?: string[];
+    subagent?: {
+      model?: string;
+      reasoning_effort?: string;
+    };
+  };
+}
+
 interface SaveProviderWithGatewayReengageOptions<TResult, TStatus> {
   gatewayMode: GatewayReengageMode;
+  /**
+   * Canonical gateway CLI key (`claudecode`, `codex`, ...). When present the
+   * restore -> write -> re-engage sequence runs in Rust through
+   * `proxy_gateway_begin_provider_write` / `proxy_gateway_finish_provider_write`
+   * and the callback fields below are ignored. The callback path remains for
+   * callers without a gateway CLI key.
+   */
+  gatewayCliKey?: string;
   saveProvider: () => Promise<TResult>;
   restoreDirect: () => Promise<TStatus>;
   engageSingle: () => Promise<TStatus>;
@@ -82,6 +109,7 @@ interface SaveProviderWithGatewayReengageOptions<TResult, TStatus> {
 
 export const saveProviderWithGatewayReengage = async <TResult, TStatus>({
   gatewayMode,
+  gatewayCliKey,
   saveProvider,
   restoreDirect,
   engageSingle,
@@ -93,6 +121,78 @@ export const saveProviderWithGatewayReengage = async <TResult, TStatus>({
 }: SaveProviderWithGatewayReengageOptions<TResult, TStatus>): Promise<TResult> => {
   if (!isGatewayReengageMode(gatewayMode)) {
     return saveProvider();
+  }
+
+  // The backend owns the exact restore -> write -> re-engage order: it holds
+  // the data-dir and provider-switch locks across all three steps and replays
+  // the canonical single/failover/aggregate manifest. The callback path below
+  // is kept for callers that do not have a gateway CLI key.
+  const saveWithBackendReattach = async (): Promise<TResult> => {
+    if (
+      gatewayMode === 'aggregate'
+      && aggregateConfig
+      && !canReplaySubagentExposureSelection(
+        aggregateConfig.subagentExposedModels,
+        aggregateConfig.proposedDeclaredBareModels,
+      )
+    ) {
+      throw new Error(
+        'Aggregate gateway re-engage cannot replay an exposure selection over the hint limit or containing undeclared models',
+      );
+    }
+
+    const snapshot = await invoke<GatewayProviderWriteSnapshot | null>(
+      'proxy_gateway_begin_provider_write',
+      { cliKey: gatewayCliKey },
+    );
+    if (!snapshot) {
+      // No active takeover: the plain save is the whole operation.
+      return saveProvider();
+    }
+
+    let result: TResult | undefined;
+    let saveFailure: unknown = null;
+    try {
+      result = await saveProvider();
+    } catch (error) {
+      saveFailure = error;
+    }
+
+    // Always finish, even when the save failed: `begin` already restored the
+    // direct config, so skipping the replay would silently drop the takeover.
+    let status: TStatus;
+    try {
+      status = await invoke<TStatus>('proxy_gateway_finish_provider_write', {
+        cliKey: gatewayCliKey,
+        snapshot,
+      });
+    } catch (finishError) {
+      if (saveFailure) {
+        throw new Error(
+          `Provider save failed: ${String(saveFailure)}; re-engaging the gateway also failed: ${String(finishError)}`,
+        );
+      }
+      throw finishError;
+    }
+    onGatewayStatusChange?.(status);
+    if (snapshot.mode === 'aggregate') {
+      notifyGatewayAggregateConfigChanged();
+    }
+    if (saveFailure) {
+      throw saveFailure;
+    }
+    return result as TResult;
+  };
+
+  // The web-only preview and the unit-test runner have no Tauri host. Keep the
+  // callback path there; every real desktop build has `__TAURI_INTERNALS__` and
+  // takes the backend-owned path.
+  const hasTauriHost =
+    typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  if (gatewayCliKey && hasTauriHost) {
+    return gatewayMode === 'aggregate'
+      ? runGatewayAggregateMutation(saveWithBackendReattach)
+      : saveWithBackendReattach();
   }
 
   const saveAndReengage = async (): Promise<TResult> => {

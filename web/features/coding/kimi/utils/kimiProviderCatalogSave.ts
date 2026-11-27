@@ -41,6 +41,7 @@ export async function saveKimiProviderCatalogWithGatewayReengage<TStatus>({
 
   return saveProviderWithGatewayReengage({
     gatewayMode: shouldReengageGateway ? gatewayMode : null,
+    gatewayCliKey: 'kimi',
     restoreDirect,
     engageSingle,
     engageFailover,
