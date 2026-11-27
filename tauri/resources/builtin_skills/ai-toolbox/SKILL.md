@@ -41,7 +41,7 @@ aitb cli list --json
 ### 1.4 授权与失败处理
 
 - 默认授权模式是「每次都询问」：L1 可逆写入和 L2 高风险操作都会在桌面弹窗等待用户点击。
-- 退出码 `4` 表示用户拒绝、授权超时、只读模式或能力不支持。看 `--json` 的 `error.code`：`approval_denied` / `approval_timeout` / `read_only` / `unsupported`。**不要循环重试、不要换端口/换命令绕过，也不要说“已经完成”。** 向用户说明具体原因，等待新指示。
+- 退出码 `4` 表示用户拒绝、授权超时、本地等待超时、只读模式或能力不支持。看 `--json` 的 `error.code`：`approval_denied` / `approval_timeout` / `request_timeout` / `read_only` / `unsupported`。**不要循环重试、不要换端口/换命令绕过，也不要说“已经完成”。** 向用户说明具体原因，等待新指示。`request_timeout` 是 CLI 的 `--timeout` 先到期（常见于还在等授权），把 `--timeout` 调到 `approvalTimeoutSecs` 以上再试，不要当成应用没启动。
 - 退出码 `5` 是执行错误（`bad_request`、`not_found`、`conflict`、`method_not_allowed`、`internal_error`）：读取 stderr 或 `--json` 错误体，修正参数/目标后重试一次；仍失败就报告事实。
 - 写操作默认等待桌面授权，`--timeout` 默认 120 秒，必须大于设置页的 `approvalTimeoutSecs`（默认 60 秒）。
 - API Key 只通过 `--api-key-env` 或 `--api-key-stdin` 传入；不要把 Key 放进 argv、日志、聊天记录或提交。
@@ -188,7 +188,7 @@ Anthropic 风格客户端使用 `http://127.0.0.1:37123/v1/messages`；OpenAI �
 
 - `command not found`：`aitb` 未安装或 PATH 未刷新；`unknown subcommand` / 参数与文档不一致：旧二进制，重新安装后重跑 `aitb status --json`。
 - `aitb status` 退出码 `3`：应用未启动、控制面关闭或发现文件失效。先在设置里确认「启用本地控制 API」为开，再看 `url` 是否非空。
-- 退出码 `4` 按 `--json` 的 `error.code` 处理：`approval_denied` / `approval_timeout` 等待用户，`read_only` 请用户改授权模式，`unsupported` 换能力；**统一不要重试轰炸**。
+- 退出码 `4` 按 `--json` 的 `error.code` 处理：`approval_denied` / `approval_timeout` 等待用户，`request_timeout` 把 `--timeout` 调到 `approvalTimeoutSecs` 以上再试，`read_only` 请用户改授权模式，`unsupported` 换能力；**统一不要重试轰炸**。
 - 退出码 `5`：看 `error.code`（`bad_request`、`not_found`、`conflict`、`method_not_allowed`、`internal_error`），修正目标后重试一次。
 - 出现 `Host` / `Origin` 403 是安全防护，不要尝试伪造请求头；用 `aitb` 或本机工具访问。
 - 发现文件路径以设置页显示为准；不要 `cat` 它，也不要把内容粘到聊天里。

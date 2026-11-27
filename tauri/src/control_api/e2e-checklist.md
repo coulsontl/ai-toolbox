@@ -37,6 +37,7 @@
 | `aitb cli paths --cli <cli>` | 已知配置路径 | 返回真实路径；文件存在性符合现状 | 对比文件系统 | 无需 |
 | 拒绝授权（任一 L1 写） | `approvalMode=always_ask` | 退出 4；`approval_denied`；弹窗关闭；无写入 | 退出码/JSON；文件哈希与 DB 快照 | 无需 |
 | 等待超时 | `approvalTimeoutSecs` 调小到 15 | 退出 4；`approval_timeout`；弹窗变为过期 | 退出码/JSON；前端无残留审批卡片 | 恢复原超时 |
+| CLI 本地超时 | `approvalTimeoutSecs=15`，`aitb --timeout 2` 发写请求 | 退出 4；`request_timeout`；不能是 `app_not_running`/退出 3 | 退出码/JSON；服务端弹窗随后过期 | 无需 |
 | `read_only` 模式写操作 | 设置切 `read_only` | 退出 4；`error.code=read_only`；后端未执行 | 退出码/JSON；文件与 DB 未变 | 恢复原模式 |
 | 不支持能力 | 如 `antigravity provider create` | 退出 4 或 5；`unsupported`（400），不是 `read_only` | `--json` 的 code/status | 无需 |
 
@@ -92,7 +93,8 @@
 | `config set` replace（TOML） | 同上 | 整份替换；`***` 400 | 文件内容；退出码 | 恢复备份 |
 | `config set` patch（YAML） | 记录未知字段 | Mapping 递归合并；非 mapping patch 400；`***` 400 | 读回；文件 diff | 恢复备份 |
 | `config set` replace（YAML） | 同上 | 整份替换；`***` 400 | 文件内容 | 恢复备份 |
-| `config set --file x.yml`（OMP/Hermes/DSH） | 记录原配置 | 字符串按 YAML 解析后合并；非法 YAML 400 | 读回；退出码 | 恢复备份 |
+| `config set --file x.yml`（OMP/Hermes） | 记录原配置 | 字符串按 YAML 解析后合并；非法 YAML 400；未知顶层键在 replace 下仍保留 | 读回；退出码 | 恢复备份 |
+| `config set`（DSH 0.1.7+ profile 模式） | 记录 profile patch 文件 | `unsupported` 400（不是 500）；文件不变 | 退出码/JSON；文件哈希 | 无需 |
 | `config set`（CodeBuddy） | — | `read_only` 403；不写 | 退出码/JSON；文件哈希不变 | 无需 |
 | `config set`（WorkBuddy） | — | `unsupported` 400；不写 | 退出码/JSON | 无需 |
 | `config extract`（支持列表内） | 记录 DB 公共配置与文件哈希 | 读当前文件→保存；返回等价 `config get` | 读回对比；文件未被改（除后端重写） | 恢复 DB/文件 |

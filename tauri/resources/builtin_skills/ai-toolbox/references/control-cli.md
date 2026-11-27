@@ -96,6 +96,7 @@ aitb provider fetch-models --cli <cliKey> --id <providerId>
 - Antigravity 仅支持 Google OAuth，对它的渠道 CRUD 会返回 `unsupported`（400），不是只读策略。
 - **网关接管中的 CLI 不要绕过 `apply`**：`claudecode`、`claudedesktop`、`codex`、`grok`、`kimi`、`geminicli` 正在被网关接管时，`provider create/update/apply`、模型增删/默认模型、`config set` 都会由后端先恢复直连、写入、再按原 single/failover/aggregate 清单重新接管。不要先手工 `gateway restore` 再写；那样会丢掉 aggregate 的站点选择、别名和 `[agents]` 默认值。只想换主 Provider 时用 `provider apply` 或 `gateway switch`，不要重建接管。
 - 插件 Provider（`meta.pluginProvider` 或 URL 含 `/plugin/<id>` 路由）同样视为网关接管型：`provider apply` 会走网关 Provider 路径，`provider test` / `fetch-models` 使用原始插件凭据。`customUrl` 指向其他 origin 时不会带上本机凭据，会直接 400。
+- `provider test` 是“测试”：上游连不通时仍返回 200，结果里每个模型带 `status: "error"` 与 `errorMessage`，不要把它当成命令失败；`fetch-models` 拉取失败才返回错误体（退出码 5）。
 
 ### 2.4 模型
 
@@ -105,6 +106,9 @@ aitb model add --cli <cliKey> --provider <providerId> --id <modelId> [--name "Di
 aitb model delete --cli <cliKey> --provider <providerId> --id <modelId>
 aitb model default --cli <cliKey> --provider <providerId> --id <modelId>
 ```
+
+- `model add --name` 会写入该 CLI 的显示名（Codex/Grok/Kimi/ZCode 的 `displayName`、OpenCode/OpenClaw/运行时/OMO 的 `name`）。
+- 删除当前默认模型时，后端把默认切到剩余的第一个模型；没有剩余模型时清空默认字段（Kimi/Grok/Codex/ZCode/OpenCode/OpenClaw）。不会留下指向已删除模型的悬空默认。
 
 ### 2.5 全局配置文件
 
@@ -140,6 +144,9 @@ aitb config extract --cli <cliKey> [--scope ...]
 
 - TOML/YAML 的入参（对象或原文）含字面量 `***` 会 400；保持旧密钥的正确做法是**省略该键**，不是回传掩码。
 - `scope` 不是统一语义词：ZCode 用 `scope=cli` 读写 CLI 自有配置、默认 `common`；OMO Native 用 `scope=omo` 读写 `shared_base`、默认 `settings`；其余 CLI 忽略 `scope`。`config get` 会返回实际 `configPath`，OpenCode/OpenClaw 读写的就是磁盘上的真实配置。
+- **ZCode 两个 scope 的格式不同**：默认 `common` 是 TOML；`scope=cli` 读的是产品自有的 `cli/config.json`，返回 `format: "json"`，写入也要传 JSON（对象或 JSON 字符串）。
+- **运行时 CLI 的 `other_settings` 是“受管视图”**：`pi` / `oh_my_pi` / `hermes` / `dsh` / `omo_native` 的 `config get` 返回可编辑的受管块；`mode=replace` 只替换提交的键，文件里未出现在该视图中的顶层键/注释会保留（避免误删用户数据）。要删除某个键，请用 `mode=patch` 提交该键的新值或使用对应 CLI 原生设置页。
+- **dsh 0.1.7+** 把配置迁到 `profiles/<profile>/cordis.patch.yml`，AI Toolbox 不再改写其中的其它配置块；此时 `config set --cli dsh` 返回 `unsupported` 400（`config get` 仍可读）。provider/model 命令不受影响。
 - `readOnly: true`（CodeBuddy）写入返回 `read_only` 403；WorkBuddy 能力是 `config=false`，`config get`/`set` 返回 `unsupported`，它的 `models.json` 通过 `provider`/`model` 命令维护。
 - `config extract` 只有 `claudecode`、`codex`、`grok`、`kimi`、`geminicli`、`antigravity` 支持从当前文件回读；其他 CLI 返回 405 `method_not_allowed`，不要反复重试。
 
@@ -228,6 +235,7 @@ aitb gateway restore --cli <cliKey>
 | --- | --- | --- |
 | `approval_denied` | 用户在桌面点了拒绝 | 停止；说明被拒绝的操作，等待新指示 |
 | `approval_timeout` | 桌面弹窗超时 | 停止；提示用户可调大 `approvalTimeoutSecs` 或当前 `--timeout`，不要连续重试 |
+| `request_timeout` | CLI 本地 `--timeout` 先到期（常见于写操作还在等桌面授权，或服务端很慢） | 停止；把 `--timeout` 调到 `approvalTimeoutSecs` 以上再试一次，不要当成应用未运行 |
 | `read_only` | 控制面处于只读模式 | 停止写操作；请用户在设置里切换授权模式 |
 | `unsupported` | 该 CLI/能力不存在（如 WorkBuddy 的 `config`） | 换 CLI 或换能力；不要重试、不要尝试改数据库 |
 
