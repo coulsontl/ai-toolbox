@@ -4,6 +4,7 @@
 //! keyed, so `DbTable::PluginEntity(kind)` scopes every statement and one kind
 //! can never read another's rows.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
@@ -260,8 +261,70 @@ pub fn save_plugin_settings(
     db: &SqliteDbState,
     settings: &PluginSettings,
 ) -> Result<PluginSettings, String> {
-    insert_record(db, PluginEntityKind::Settings, SETTINGS_RECORD_ID, settings)?;
+    let mut settings = settings.clone();
+    // The runtime settings form owns the Bun path, registry and proxy switch.
+    // Channel check-in switches are written by `set_provider_auto_checkin`;
+    // preserving them here keeps an unrelated save from silently erasing them.
+    settings.provider_auto_checkin = get_plugin_settings(db)?.provider_auto_checkin;
+    insert_record(
+        db,
+        PluginEntityKind::Settings,
+        SETTINGS_RECORD_ID,
+        &settings,
+    )?;
     get_plugin_settings(db)
+}
+
+/// Persist one channel-level auto check-in switch.
+pub fn set_provider_auto_checkin(
+    db: &SqliteDbState,
+    provider_id: &str,
+    enabled: bool,
+) -> Result<bool, String> {
+    let provider_id = provider_id.trim();
+    if provider_id.is_empty() {
+        return Err("Provider id cannot be empty".to_string());
+    }
+    let mut settings = get_plugin_settings(db)?;
+    settings
+        .provider_auto_checkin
+        .insert(provider_id.to_string(), enabled);
+    insert_record(
+        db,
+        PluginEntityKind::Settings,
+        SETTINGS_RECORD_ID,
+        &settings,
+    )?;
+    Ok(enabled)
+}
+
+/// The provider id an account metadata row belongs to. Older rows may only
+/// carry the account key, whose prefix before `#` is the provider id.
+pub fn provider_id_for_meta(meta: &PluginAccountMetaRecord) -> &str {
+    let provider = meta.provider_id.trim();
+    if !provider.is_empty() {
+        return provider;
+    }
+    meta.id.split('#').next().unwrap_or_default()
+}
+
+/// Effective channel-level auto check-in switches.
+///
+/// An explicit switch always wins. A provider that was never toggled inherits
+/// `true` when any of its accounts still carries the legacy account-level
+/// flag, so upgrading the app keeps existing daily check-ins running.
+pub fn resolve_provider_auto_checkin(db: &SqliteDbState) -> Result<HashMap<String, bool>, String> {
+    let mut resolved = get_plugin_settings(db)?.provider_auto_checkin;
+    for meta in list_account_metas(db)? {
+        if !meta.auto_checkin {
+            continue;
+        }
+        let provider = provider_id_for_meta(&meta);
+        if !provider.is_empty() {
+            resolved.entry(provider.to_string()).or_insert(true);
+        }
+    }
+    Ok(resolved)
 }
 
 // ---- provider options -------------------------------------------------------
@@ -479,10 +542,62 @@ mod tests {
             bun_manual_path: "C:/bun/bun.exe".to_string(),
             npm_registry: "https://registry.npmmirror.com".to_string(),
             follow_app_proxy: false,
+            provider_auto_checkin: HashMap::new(),
         };
         let saved = save_plugin_settings(&db, &settings).unwrap();
         assert_eq!(saved, settings);
         assert_eq!(get_plugin_settings(&db).unwrap(), settings);
+    }
+
+    #[test]
+    fn provider_auto_checkin_prefers_the_explicit_channel_switch() {
+        let db = test_db();
+
+        // A legacy account-level flag turns its channel on while no explicit
+        // channel switch exists.
+        upsert_account_meta(
+            &db,
+            &PluginAccountMetaRecord {
+                id: "legacy#2".to_string(),
+                plugin_id: "demo-plugin".to_string(),
+                provider_id: "legacy".to_string(),
+                auto_checkin: true,
+                ..PluginAccountMetaRecord::default()
+            },
+        )
+        .unwrap();
+        // Older rows may not have provider_id; the account key prefix is used.
+        upsert_account_meta(
+            &db,
+            &PluginAccountMetaRecord {
+                id: "prefixed".to_string(),
+                plugin_id: "demo-plugin".to_string(),
+                auto_checkin: true,
+                ..PluginAccountMetaRecord::default()
+            },
+        )
+        .unwrap();
+
+        let resolved = resolve_provider_auto_checkin(&db).unwrap();
+        assert_eq!(resolved.get("legacy"), Some(&true));
+        assert_eq!(resolved.get("prefixed"), Some(&true));
+
+        // An explicit off switch beats the legacy flag on that channel.
+        assert!(!set_provider_auto_checkin(&db, "legacy", false).unwrap());
+        let resolved = resolve_provider_auto_checkin(&db).unwrap();
+        assert_eq!(resolved.get("legacy"), Some(&false));
+        assert_eq!(resolved.get("prefixed"), Some(&true));
+
+        // Saving the runtime settings form must not erase channel switches.
+        let mut settings = get_plugin_settings(&db).unwrap();
+        settings.npm_registry = "https://registry.npmjs.org".to_string();
+        settings.provider_auto_checkin.clear();
+        let saved = save_plugin_settings(&db, &settings).unwrap();
+        assert_eq!(saved.provider_auto_checkin.get("legacy"), Some(&false));
+        assert_eq!(
+            resolve_provider_auto_checkin(&db).unwrap().get("legacy"),
+            Some(&false)
+        );
     }
 
     #[test]

@@ -67,6 +67,29 @@ fn attach_provider_option_values(db: &SqliteDbState, listing: Value) -> Result<V
     Ok(Value::Array(rows))
 }
 
+/// Attach the effective channel-level auto check-in switch to each provider
+/// row. Resolution includes the legacy account-level fallback, so the UI can
+/// show one switch per channel without a second request.
+fn attach_provider_auto_checkin(db: &SqliteDbState, listing: Value) -> Result<Value, String> {
+    let switches = store::resolve_provider_auto_checkin(db)?;
+    let Some(rows) = listing.as_array() else {
+        return Ok(listing);
+    };
+    let rows = rows
+        .iter()
+        .map(|row| {
+            let mut row = row.clone();
+            if let Some(object) = row.as_object_mut() {
+                let provider_id = object.get("id").and_then(Value::as_str).unwrap_or_default();
+                let enabled = switches.get(provider_id).copied().unwrap_or(false);
+                object.insert("autoCheckin".to_string(), Value::Bool(enabled));
+            }
+            row
+        })
+        .collect::<Vec<_>>();
+    Ok(Value::Array(rows))
+}
+
 fn installed_by_package(
     db: &SqliteDbState,
 ) -> Result<HashMap<String, InstalledPluginRecord>, String> {
@@ -585,7 +608,8 @@ pub async fn plugins_list_providers(
 ) -> Result<Value, String> {
     let manager = manager.inner().clone();
     let listing = manager.host().providers(json!({})).await?;
-    attach_provider_option_values(manager.db(), listing)
+    let listing = attach_provider_option_values(manager.db(), listing)?;
+    attach_provider_auto_checkin(manager.db(), listing)
 }
 
 #[tauri::command]
@@ -601,7 +625,8 @@ pub async fn plugins_refresh_provider_models(
         .set_provider_options(provider_options_value(manager.db())?)
         .await;
     let listing = manager.host().providers(json!({})).await?;
-    attach_provider_option_values(manager.db(), listing)
+    let listing = attach_provider_option_values(manager.db(), listing)?;
+    attach_provider_auto_checkin(manager.db(), listing)
 }
 
 #[tauri::command]
@@ -824,6 +849,15 @@ pub fn plugins_account_set_auto_checkin(
 }
 
 #[tauri::command]
+pub fn plugins_set_provider_auto_checkin(
+    manager: State<'_, PluginManagerState>,
+    provider_id: String,
+    enabled: bool,
+) -> Result<bool, String> {
+    store::set_provider_auto_checkin(manager.db(), &provider_id, enabled)
+}
+
+#[tauri::command]
 pub fn plugins_account_set_enabled(
     manager: State<'_, PluginManagerState>,
     account: String,
@@ -901,5 +935,42 @@ mod tests {
         let db = SqliteDbState::in_memory_for_test().unwrap();
         let merged = attach_provider_option_values(&db, json!([{"id": "demo"}])).unwrap();
         assert_eq!(merged[0]["optionValues"], json!({}));
+    }
+
+    #[test]
+    fn provider_listing_carries_the_channel_auto_checkin_switch() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        store::set_provider_auto_checkin(&db, "demo", true).unwrap();
+        store::set_provider_auto_checkin(&db, "off", false).unwrap();
+
+        let listing = json!([
+            {"id": "demo", "name": "Demo"},
+            {"id": "off", "name": "Off"},
+            {"id": "unknown", "name": "Unknown"},
+            "not-an-object",
+        ]);
+        let merged = attach_provider_auto_checkin(&db, listing).unwrap();
+        let rows = merged.as_array().unwrap();
+        assert_eq!(rows[0]["autoCheckin"], true);
+        assert_eq!(rows[1]["autoCheckin"], false);
+        assert_eq!(rows[2]["autoCheckin"], false);
+        assert_eq!(rows[3], json!("not-an-object"));
+    }
+
+    #[test]
+    fn legacy_account_auto_checkin_reaches_the_provider_listing() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        store::upsert_account_meta(
+            &db,
+            &PluginAccountMetaRecord {
+                id: "demo#2".to_string(),
+                plugin_id: "demo-plugin".to_string(),
+                auto_checkin: true,
+                ..PluginAccountMetaRecord::default()
+            },
+        )
+        .unwrap();
+        let merged = attach_provider_auto_checkin(&db, json!([{"id": "demo"}])).unwrap();
+        assert_eq!(merged[0]["autoCheckin"], true);
     }
 }

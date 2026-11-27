@@ -2,7 +2,7 @@
 
 ## 一句话职责
 
-- `tauri/src/plugins/` 是 AI Toolbox 的 Magpie 兼容插件宿主：负责插件与自定义市场源持久化、按需 Bun 运行时管理、OpenCode v1 / Magpie Provider 宿主进程、进程内 `rquickjs` 网关中间件引擎、按需启动的插件自定义页面静态服务器（`magpie.page` / `magpie.pages`）、插件私有持久化存储（`storage:kv` / `storage:files`）、插件 OAuth 后台续期与每日自动签到，以及网关和 17 个 CLI Tab 的双向接入桥接。
+- `tauri/src/plugins/` 是 AI Toolbox 的 Magpie 兼容插件宿主：负责插件与自定义市场源持久化、按需 Bun 运行时管理、OpenCode v1 / Magpie Provider 宿主进程、进程内 `rquickjs` 网关中间件引擎、按需启动的插件自定义页面静态服务器（`magpie.page` / `magpie.pages`）、插件私有持久化存储（`storage:kv` / `storage:files`）、插件 OAuth 后台续期与渠道级每日自动签到，以及网关和 17 个 CLI Tab 的双向接入桥接。
 
 ## Source of Truth
 
@@ -10,6 +10,7 @@
 - 插件私有数据不进 SQLite：`<app_data>/plugins/data/<slug>-<sha256前8位>/` 下保存 `kv.json` 与 `files/`。目录名用确定性短哈希区分同名 slug 的不同插件，slug 仅保留 `[a-z0-9_-]` 并规避 Windows 保留名；所有读写入口都重新校验插件存在、`enabled` 与 `permissions`，绝不信任前端传入的 `pluginId`。
 - 插件账号的真实 OAuth/API 凭据不在 SQLite 中，而是以 OpenCode/Magpie 兼容格式保存在 `<app_data>/plugins/plugin-auth.json`（`0600` 权限，读写必须经过 `store::acquire_auth_file_lock` 排他锁）。Tauri 命令 DTO 与诊断日志绝不返回或记录明文 `access`/`refresh`/`key`。
 - 账号展示与签到元数据存于 `PluginAccountMetaRecord`（`plugin_entity` / `AccountMeta`）：除显示名、启用态、排序与用量快照外，新增全部 `#[serde(default)]` 的 `auto_checkin` 与 `last_checkin_day` / `last_checkin_until` / `last_checkin_outcome` / `last_checkin_at` / `last_checkin_message` / `last_checkin_credit` / `last_checkin_streak`，旧记录零迁移。
+- 渠道级自动签到开关存于 `PluginSettings.provider_auto_checkin: HashMap<provider_id, bool>`（同样 `#[serde(default)]`，零迁移），由 `plugins_set_provider_auto_checkin` 单独写入；`store::resolve_provider_auto_checkin` 合并它和旧账号级 `auto_checkin`：显式渠道值优先，未记录的渠道只要任一账号旧标记为 `true` 就视为开启。`plugins_save_settings` 会保留该字段，避免运行时设置表单把它覆盖清空。
 - 市场离线兜底数据来自编译期嵌入的 `tauri/resources/magpie_market_fallback.json`；拉取失败时内置源回退到该快照，自定义源回退到各自本地缓存，并记录 `last_error`。
 - CLI Tab 的插件关联事实源分两类：6 个网关接管型 DB CLI（Claude Code / Claude Desktop / Codex / Grok / Kimi / Gemini CLI）以 `cli_provider` 记录的 `data.meta.pluginProvider` 为准；10 个文件配置型 CLI（OpenCode / OpenClaw / Pi / Oh My Pi / OmO Native / Hermes / DSH / ZCode / WorkBuddy / CodeBuddy）以各模块规范配置文件中指向本机网关 `/plugin/<provider_id>/v1` 的供应商节点为准；Antigravity CLI 仅支持 Google 官方 OAuth，刻意标记 `supported: false`。
 
@@ -21,7 +22,7 @@
 - **直连插件路由 `/plugin/<provider_id>/...`**：为不走网关接管的文件配置型 CLI 提供统一入口（支持探测、`/v1/models`、Chat / Responses / Anthropic Messages / Gemini Native 推理与自动跨协议转换），使全部可配供应商的 CLI 都能消费插件渠道。
 - **插件页面按需静态托管**：`page_server` 在首次 `plugins_open_page` 时才 bind `127.0.0.1:0`，每个 `(plugin_id, page_id)` 用 `ring` 随机源 + HMAC 签发 32 字符 token，路由为 `/_plugin/<token>/<rel_path>`；token 只绑定入口 HTML 的父目录，逐段拒绝 `..` / `\` / NUL 并二次 canonicalize。纯页面插件（无 provider entry 且所有页面无 `service.port`）不进入 Bun 宿主，本地安装也不会触发 Bun 下载。
 - **页面持久化存储按权限开放**：`storage:kv` 提供单插件一个 JSON 对象（单值 ≤ 1 MiB、整体 ≤ 20 MiB），`storage:files` 提供 `files/` 私有文件树（单文件 ≤ 20 MiB、总量 ≤ 200 MiB）。KV 与文件写入都走同目录临时文件 + `sync_all` + rename（Windows 共享冲突 3×10ms 重试）；文件路径逐段拒绝绝对路径、`..`、`\`、`:`（NTFS ADS）、NUL、空段、盘符、Windows 保留名与超过 16 层的深度，并拒绝任何 symlink 组件。Bun 宿主通过 `AI_TOOLBOX_PLUGINS_DATA_DIR` 获知数据根目录。
-- **插件账号后台维护按需启动 Bun**：`background_tasks::run_plugin_background_pass` 由 `coding/auth_refresh` 在启动后与每 15 分钟调用。它先只读 `plugin-auth.json` 与 SQLite：只有存在「启用中、OAuth、带 refresh、`expires > 0` 且距过期 ≤ 15 分钟（含已过期）」的账号时才调用宿主 `keepSignedIn`（宿主内部遵守 `auth.keepAlive !== false`）；只有存在「启用中且 `auto_checkin == true`、当天尚未结算」的账号时才调用 `checkin`。没有候选时绝不启动 Bun。
+- **插件账号后台维护按需启动 Bun**：`background_tasks::run_plugin_background_pass` 由 `coding/auth_refresh` 在启动后与每 15 分钟调用。它先只读 `plugin-auth.json` 与 SQLite：只有存在「启用中、OAuth、带 refresh、`expires > 0` 且距过期 ≤ 15 分钟（含已过期）」的账号时才调用宿主 `keepSignedIn`（宿主内部遵守 `auth.keepAlive !== false`）；只有存在「所属渠道级 `auto_checkin == true`、账号自身启用、对应插件启用且当天尚未结算」的账号时才调用 `checkin`，同一渠道下的每个启用账号各自记录 `last_checkin_*`。没有候选时绝不启动 Bun。`due_checkin_accounts` 是这条判定链的纯函数入口，单元测试直接覆盖渠道对多账号生效、停用账号跳过、渠道关闭不产生候选、旧账号级标记兼容。
 - **页面 CSP 必须写明完整 origin**：WKWebView 的 `sandbox` 页面是不透明 origin，`'self'` 不匹配任何自身资源。HTML 响应的 `default/script/style/img/font-src` 同时列出 `http://<监听地址>/_plugin/<token>/`；SVG 响应单独下发 `sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'`，防止 SVG 脚本绕过出网限制。
 
 ## 关键流程
@@ -53,7 +54,7 @@ sequenceDiagram
 - **崩溃不做无限重启**：Bun 宿主连续崩溃走 `1/2/4/8/16s` 指数退避，连续 5 次进入熔断态，需显式调用 `restart()` 复位；主动重启必须递增 generation，防止旧 stdout 读循环退出时误记一次崩溃。
 - **Windows 子进程与 `package.json` 脏尾**：所有 `bun` / `bun add` 调用必须加 `CREATE_NO_WINDOW`（`0x08000000`）；`bun add`/`remove` 前后必须调用 `mend_package_json` 修复 Windows 下覆写未截断导致的尾部脏字节（原文件备份 `.broken`）。
 - **`rquickjs` 中间件禁止篡改 `stream` 且必须 fail-open**：`onRequest`/`onProvider` 改写或新增顶层 `stream` 字段会被立刻回滚并计入失败；除显式 `ctx.reject(status, message)` 外，抛错、超时或非法返回值一律 fail-open。热路径必须先判 `Snapshot` 的 per-hook 存在位，无活跃中间件时不得产生任何 JSON 解析开销。
-- **`plugins_list_providers` 必须合并持久化 `optionValues`**：Bun 宿主 `providers` RPC 只返回插件声明的 `options` 定义，不含数据库里已保存的开关值；命令层必须从 `store::list_provider_options` 合并 `optionValues`，否则前端重载后开关会回弹到默认值。
+- **`plugins_list_providers` 必须合并持久化 `optionValues` 与 `autoCheckin`**：Bun 宿主 `providers` RPC 只返回插件声明的 `options` 定义，不含数据库里已保存的开关值；命令层必须从 `store::list_provider_options` 合并 `optionValues`，否则前端重载后开关会回弹到默认值。同理必须用 `store::resolve_provider_auto_checkin` 给每行补上渠道级 `autoCheckin`，前端渠道头部的签到开关才能显示真实状态（`plugins_refresh_provider_models` 也要走同一条合并链）。
 - **不要把 `plugins_*` 命令合并回 `lib.rs` 根 `generate_handler!`**（2026-11-26 实测复发）：Windows MSVC 默认主线程栈仅 1 MiB，debug 构建（`opt-level = 0`）不会复用 `match` 分支栈槽，把 40 个插件命令塞进 `lib.rs` 既有的 700+ 命令大 `match` 会直接在 `pnpm dev:debug` 启动阶段打爆主线程栈（`0xc000041d`）。所有 `plugins_*` 命令统一收口在 `plugins::invoke_handler`（`#[inline(never)]`），同时 `tauri/build.rs` 对 Windows MSVC 二进制设置 `/STACK:8388608` 与 macOS/Linux 8 MiB 对齐。
 - **文件型 CLI 写入不得绕过模块规范**：`cli_integration.rs` 写入各 CLI 配置必须复用目标模块的路径级 upsert helper（保留注释、未知字段、顺序与备份），写完统一触发 `config-changed` 与对应同步事件，不能手写整文件覆盖。
 - **Codex 插件接管的 `model_provider` 必须是 `custom`**：`takeover_settings` 生成 `model_provider = "custom"` + `[model_providers.custom]`（`name = "AI Toolbox Plugin"`）。不要写 `plugin` 等插件专属 id——Codex 恢复会话时会要求保存的 provider 仍存在于当前 `[model_providers]` 且与当前选择一致，插件专属 id 会在用户切走/禁用插件后变成孤儿并阻断恢复。
@@ -67,7 +68,7 @@ sequenceDiagram
 
 - 依赖 `db/`（`DbTable::PluginEntity`、schema `v38`）、`coding/cli_resolver.rs`（本机 Bun 探测与 `CREATE_NO_WINDOW`）、`http_client.rs`（应用代理透传）以及各 CLI 模块的规范写入 helper。
 - 被 `coding/proxy_gateway/`（`GatewayRuntimeContext` 通过 `AppHandle` 读取 `PluginManagerState`，接入 `gateway_bridge` 与 `middleware_rt`）、`coding/auth_refresh/`（`OfficialAuthTool::Plugins` 调用 `background_tasks::run_plugin_background_pass`）和 `lib.rs`（托管 `PluginManagerState` 与注册 50 个 `plugins_*` 命令）依赖。
-- 跨端契约（50 个 Tauri 命令、`cliKey` 采用 coding 子 Tab 拼写如 `claudecode`/`geminicli`/`workbuddy` 而非网关 `app_type`）由前端 `web/services/pluginsApi.ts` 消费，前端交互规范见 `web/features/coding/plugins/AGENTS.md`。
+- 跨端契约（51 个 Tauri 命令、`cliKey` 采用 coding 子 Tab 拼写如 `claudecode`/`geminicli`/`workbuddy` 而非网关 `app_type`）由前端 `web/services/pluginsApi.ts` 消费，前端交互规范见 `web/features/coding/plugins/AGENTS.md`。
 - `gateway_bridge::header_map_to_json` 必须丢弃入站的 `authorization` / `x-api-key` / `x-goog-api-key`：真实凭据由 Bun 宿主按账号注入，网关占位 Key 绝不能覆盖它。`plugin_spec` 非空时 `find_plugin_provider_row` 只接受精确匹配，绝不回退到同名其他插件。
 
 ## 最小验证

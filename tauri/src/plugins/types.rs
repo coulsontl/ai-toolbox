@@ -5,7 +5,7 @@
 //! `created_at` / `updated_at` columns; payloads that need to show a timestamp
 //! carry their own `installedAt` / `updatedAt` fields.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -245,6 +245,13 @@ pub struct PluginSettings {
     /// Whether market and npm requests go through the app proxy.
     #[serde(default = "default_true")]
     pub follow_app_proxy: bool,
+    /// Explicit per-provider auto check-in switches, keyed by provider id.
+    ///
+    /// Providers absent from this map fall back to the legacy account-level
+    /// `PluginAccountMetaRecord::auto_checkin` flags; once the user toggles a
+    /// channel, its explicit value wins from then on.
+    #[serde(default)]
+    pub provider_auto_checkin: HashMap<String, bool>,
 }
 
 impl Default for PluginSettings {
@@ -253,6 +260,7 @@ impl Default for PluginSettings {
             bun_manual_path: String::new(),
             npm_registry: default_npm_registry(),
             follow_app_proxy: true,
+            provider_auto_checkin: HashMap::new(),
         }
     }
 }

@@ -167,6 +167,7 @@ pub fn invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> bool {
         commands::plugins_account_usage,
         commands::plugins_account_checkin,
         commands::plugins_account_set_auto_checkin,
+        commands::plugins_set_provider_auto_checkin,
         commands::plugins_account_set_enabled,
         commands::plugins_set_provider_option,
         // Custom pages (`magpie.page` / `magpie.pages`)

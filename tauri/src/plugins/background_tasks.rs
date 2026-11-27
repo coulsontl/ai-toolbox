@@ -55,6 +55,8 @@ pub async fn run_plugin_background_pass(manager: &PluginManager) {
         .map(|record| record.id.clone())
         .collect();
     let provider_plugins = provider_plugin_ids(&records);
+    let provider_auto_checkin =
+        store::resolve_provider_auto_checkin(manager.db()).unwrap_or_default();
     let meta_by_account: HashMap<&str, &PluginAccountMetaRecord> =
         metas.iter().map(|meta| (meta.id.as_str(), meta)).collect();
     let now = beijing_now();
@@ -71,7 +73,8 @@ pub async fn run_plugin_background_pass(manager: &PluginManager) {
     checkin_due_accounts(
         manager,
         &accounts,
-        &metas,
+        &meta_by_account,
+        &provider_auto_checkin,
         &provider_plugins,
         &enabled_plugins,
         now,
@@ -122,51 +125,38 @@ async fn refresh_due_accounts(
 async fn checkin_due_accounts(
     manager: &PluginManager,
     accounts: &[PluginAccountSummary],
-    metas: &[PluginAccountMetaRecord],
+    meta_by_account: &HashMap<&str, &PluginAccountMetaRecord>,
+    provider_auto_checkin: &HashMap<String, bool>,
     provider_plugins: &HashMap<String, String>,
     enabled_plugins: &HashSet<String>,
     now: DateTime<FixedOffset>,
 ) {
-    for meta in metas {
-        if !meta.auto_checkin || !meta.enabled {
-            continue;
-        }
-        let provider = provider_for_meta(meta);
-        if provider.is_empty() {
-            continue;
-        }
-        if !accounts
-            .iter()
-            .any(|account| account.account == meta.id && account.provider == provider)
-        {
-            continue;
-        }
-        if !account_plugin_enabled(Some(meta), provider, provider_plugins, enabled_plugins) {
-            continue;
-        }
-        if !checkin_due(meta, now) {
-            continue;
-        }
-        let params = json!({ "provider": provider, "account": meta.id });
+    for (provider, account_key) in due_checkin_accounts(
+        accounts,
+        meta_by_account,
+        provider_auto_checkin,
+        provider_plugins,
+        enabled_plugins,
+        now,
+    ) {
+        let params = json!({ "provider": provider, "account": account_key });
         match manager.host().checkin(params).await {
             Ok(result) => {
                 if let Err(error) =
-                    record_checkin_result(manager.db(), provider, Some(&meta.id), &result)
+                    record_checkin_result(manager.db(), &provider, Some(&account_key), &result)
                 {
                     log::warn!(
-                        "plugin background pass could not save the check-in of {}: {error}",
-                        meta.id
+                        "plugin background pass could not save the check-in of {account_key}: {error}"
                     );
                 }
             }
             Err(error) => {
                 let failed = json!({ "outcome": "failed", "message": error });
                 if let Err(save_error) =
-                    record_checkin_result(manager.db(), provider, Some(&meta.id), &failed)
+                    record_checkin_result(manager.db(), &provider, Some(&account_key), &failed)
                 {
                     log::warn!(
-                        "plugin background pass could not save the failed check-in of {}: {save_error}",
-                        meta.id
+                        "plugin background pass could not save the failed check-in of {account_key}: {save_error}"
                     );
                 }
             }
@@ -174,12 +164,55 @@ async fn checkin_due_accounts(
     }
 }
 
-fn provider_for_meta(meta: &PluginAccountMetaRecord) -> &str {
-    let provider = meta.provider_id.trim();
-    if !provider.is_empty() {
-        return provider;
+/// Accounts the daily pass must check in now.
+///
+/// The channel switch is the only gate: when a provider is on, every enabled
+/// account of that provider is due independently (each keeps its own
+/// `last_checkin_*` bookkeeping). An off or missing channel switch returns no
+/// candidate, so the caller never starts Bun for a channel nobody opted into.
+fn due_checkin_accounts(
+    accounts: &[PluginAccountSummary],
+    meta_by_account: &HashMap<&str, &PluginAccountMetaRecord>,
+    provider_auto_checkin: &HashMap<String, bool>,
+    provider_plugins: &HashMap<String, String>,
+    enabled_plugins: &HashSet<String>,
+    now: DateTime<FixedOffset>,
+) -> Vec<(String, String)> {
+    let mut due = Vec::new();
+    for account in accounts {
+        if !account.enabled {
+            continue;
+        }
+        if provider_auto_checkin
+            .get(account.provider.as_str())
+            .copied()
+            != Some(true)
+        {
+            continue;
+        }
+        let meta = meta_by_account.get(account.account.as_str()).copied();
+        if !account_plugin_enabled(meta, &account.provider, provider_plugins, enabled_plugins) {
+            continue;
+        }
+        let synthetic;
+        let due_meta = if let Some(meta) = meta {
+            meta
+        } else {
+            // An account signed in directly by the host may have no metadata
+            // row yet; it starts due and the result creates the row.
+            synthetic = PluginAccountMetaRecord {
+                id: account.account.clone(),
+                provider_id: account.provider.clone(),
+                ..PluginAccountMetaRecord::default()
+            };
+            &synthetic
+        };
+        if !checkin_due(due_meta, now) {
+            continue;
+        }
+        due.push((account.provider.clone(), account.account.clone()));
     }
-    meta.id.split('#').next().unwrap_or_default()
+    due
 }
 
 /// Whether an account's plugin is installed and enabled. Accounts whose
@@ -500,6 +533,161 @@ mod tests {
         let listed = store::list_account_metas(&db).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].last_checkin_outcome.as_deref(), Some("failed"));
+    }
+
+    fn account(provider: &str, key: &str, enabled: bool) -> PluginAccountSummary {
+        PluginAccountSummary {
+            account: key.to_string(),
+            provider: provider.to_string(),
+            enabled,
+            ..PluginAccountSummary::default()
+        }
+    }
+
+    fn channel_map(provider: &str, enabled: bool) -> HashMap<String, bool> {
+        HashMap::from([(provider.to_string(), enabled)])
+    }
+
+    fn plugin_maps() -> (HashMap<String, String>, HashSet<String>) {
+        (
+            HashMap::from([("demo".to_string(), "demo-plugin".to_string())]),
+            HashSet::from(["demo-plugin".to_string()]),
+        )
+    }
+
+    #[test]
+    fn channel_switch_checks_in_every_enabled_account() {
+        let accounts = vec![
+            account("demo", "demo", true),
+            account("demo", "demo#2", true),
+            account("demo", "demo#3", false),
+        ];
+        let (provider_plugins, enabled_plugins) = plugin_maps();
+        let due = due_checkin_accounts(
+            &accounts,
+            &HashMap::new(),
+            &channel_map("demo", true),
+            &provider_plugins,
+            &enabled_plugins,
+            beijing_now(),
+        );
+        assert_eq!(
+            due,
+            vec![
+                ("demo".to_string(), "demo".to_string()),
+                ("demo".to_string(), "demo#2".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_channel_switch_that_is_off_or_missing_starts_no_checkin() {
+        let accounts = vec![account("demo", "demo", true)];
+        let (provider_plugins, enabled_plugins) = plugin_maps();
+        let now = beijing_now();
+
+        assert!(due_checkin_accounts(
+            &accounts,
+            &HashMap::new(),
+            &channel_map("demo", false),
+            &provider_plugins,
+            &enabled_plugins,
+            now,
+        )
+        .is_empty());
+        assert!(due_checkin_accounts(
+            &accounts,
+            &HashMap::new(),
+            &HashMap::new(),
+            &provider_plugins,
+            &enabled_plugins,
+            now,
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn a_disabled_plugin_or_settled_account_is_skipped() {
+        let now = beijing_now();
+        let today = beijing_day(now);
+        let accounts = vec![account("demo", "demo", true)];
+        let (provider_plugins, enabled_plugins) = plugin_maps();
+        let settled = PluginAccountMetaRecord {
+            id: "demo".to_string(),
+            provider_id: "demo".to_string(),
+            enabled: true,
+            last_checkin_day: Some(today),
+            last_checkin_outcome: Some("claimed".to_string()),
+            last_checkin_at: Some(now.to_rfc3339()),
+            ..PluginAccountMetaRecord::default()
+        };
+        let metas = HashMap::from([("demo", &settled)]);
+
+        assert!(due_checkin_accounts(
+            &accounts,
+            &metas,
+            &channel_map("demo", true),
+            &provider_plugins,
+            &enabled_plugins,
+            now,
+        )
+        .is_empty());
+
+        // An empty enabled-plugin set means no host can serve the account.
+        assert!(due_checkin_accounts(
+            &accounts,
+            &HashMap::new(),
+            &channel_map("demo", true),
+            &provider_plugins,
+            &HashSet::new(),
+            now,
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn legacy_account_flags_enable_the_channel_without_an_explicit_switch() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        store::upsert_account_meta(
+            &db,
+            &PluginAccountMetaRecord {
+                id: "demo".to_string(),
+                plugin_id: "demo-plugin".to_string(),
+                provider_id: "demo".to_string(),
+                enabled: true,
+                auto_checkin: true,
+                ..PluginAccountMetaRecord::default()
+            },
+        )
+        .unwrap();
+        let switches = store::resolve_provider_auto_checkin(&db).unwrap();
+        let (provider_plugins, enabled_plugins) = plugin_maps();
+        let due = due_checkin_accounts(
+            &[
+                account("demo", "demo", true),
+                account("demo", "demo#2", true),
+            ],
+            &HashMap::new(),
+            &switches,
+            &provider_plugins,
+            &enabled_plugins,
+            beijing_now(),
+        );
+        assert_eq!(due.len(), 2);
+
+        // Once the channel is explicitly turned off, the legacy flag no
+        // longer schedules anything.
+        store::set_provider_auto_checkin(&db, "demo", false).unwrap();
+        let switches = store::resolve_provider_auto_checkin(&db).unwrap();
+        assert!(due_checkin_accounts(
+            &[account("demo", "demo", true)],
+            &HashMap::new(),
+            &switches,
+            &provider_plugins,
+            &enabled_plugins,
+            beijing_now(),
+        )
+        .is_empty());
     }
 
     #[test]
