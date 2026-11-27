@@ -1062,6 +1062,19 @@ pub struct GatewayCliTakeoverStatus {
     pub message: Option<String>,
 }
 
+/// Canonical takeover state captured immediately before a provider/config
+/// write. Restoring first and replaying this snapshot afterwards keeps the
+/// gateway-managed runtime files consistent with the manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayProviderWriteSnapshot {
+    pub mode: GatewayProxyMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggregate: Option<GatewayAggregateConfig>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ProxyGatewayStopPreflight {

@@ -394,11 +394,11 @@ impl ProxyGatewayManager {
             .and_then(|runtime| runtime.context.health_items())
     }
 
-    pub fn reset_model_health(&self) -> bool {
-        self.runtime
-            .as_ref()
-            .map(|runtime| runtime.context.reset_health())
-            .unwrap_or(false)
+    pub fn reset_model_health(&self) -> Result<bool, String> {
+        match self.runtime.as_ref() {
+            Some(runtime) => runtime.context.reset_health(),
+            None => Ok(false),
+        }
     }
 }
 
@@ -699,20 +699,20 @@ impl GatewayRuntimeContext {
         Some(registry.health_items())
     }
 
-    fn reset_health(&self) -> bool {
+    fn reset_health(&self) -> Result<bool, String> {
         let Some(registry) = self.health_registry.as_ref() else {
-            return false;
+            return Ok(false);
         };
-        let Ok(mut registry) = registry.lock() else {
-            return false;
-        };
+        let mut registry = registry
+            .lock()
+            .map_err(|_| "Proxy gateway model health registry lock poisoned".to_string())?;
         registry.reset();
         if let Some(path) = self.health_path.as_ref() {
-            if let Err(error) = registry.save(path) {
-                log::warn!("Failed to persist the reset proxy gateway model health: {error}");
-            }
+            // Persistence is part of the reset: a success response that leaves
+            // the old cooldowns on disk would resurrect them after a restart.
+            registry.save(path)?;
         }
-        true
+        Ok(true)
     }
 
     fn update_health_settings(&self, settings: ProxyGatewaySettings) {

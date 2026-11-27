@@ -162,6 +162,24 @@ impl ApprovalHub {
             .and_then(|mut guard| guard.remove(request_id))
             .map(|pending| pending.info)
     }
+
+    /// Rejects every parked approval and returns their infos so the caller can
+    /// broadcast `control-api-approval-expired` and close the desktop modals.
+    pub fn cancel_all(&self) -> Vec<ApprovalInfo> {
+        let pending = self
+            .pending
+            .lock()
+            .map(|mut guard| guard.drain().map(|(_, pending)| pending).collect::<Vec<_>>())
+            .unwrap_or_default();
+        pending
+            .into_iter()
+            .map(|pending| {
+                let info = pending.info.clone();
+                let _ = pending.sender.send(false);
+                info
+            })
+            .collect()
+    }
 }
 
 /// Inputs needed by the approval gate. Keeping this small lets the route

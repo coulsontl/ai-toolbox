@@ -289,7 +289,15 @@ async fn read_body(request: Request<Incoming>) -> ApiResult<Value> {
         .map_err(|error| ApiError::bad_request(format!("Request body must be JSON: {error}")))
 }
 
-fn json_response(status: u16, body: Value) -> Response<Full<Bytes>> {
+fn json_response(status: u16, mut body: Value) -> Response<Full<Bytes>> {
+    if status >= 400 {
+        // Every error crosses the response boundary, including messages raised
+        // by code that forgot `ApiError::body`. Redact the whole `error`
+        // payload so an upstream parser cannot echo a credential.
+        if let Some(error) = body.get_mut("error") {
+            redact_strings(error);
+        }
+    }
     let text = serde_json::to_vec(&body).unwrap_or_else(|_| {
         b"{\"error\":{\"code\":\"internal_error\",\"message\":\"serialization failed\"}}".to_vec()
     });
@@ -302,6 +310,23 @@ fn json_response(status: u16, body: Value) -> Response<Full<Bytes>> {
         .unwrap_or_else(|_| Response::new(Full::new(Bytes::from_static(b"{}"))))
 }
 
+fn redact_strings(value: &mut Value) {
+    match value {
+        Value::String(text) => *text = super::redact::redact_text(text),
+        Value::Array(items) => {
+            for item in items {
+                redact_strings(item);
+            }
+        }
+        Value::Object(map) => {
+            for item in map.values_mut() {
+                redact_strings(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Small helper used by command handlers that need the live context.
 pub fn context_for(app: &tauri::AppHandle) -> Option<std::sync::Arc<ServerContext>> {
     app.try_state::<ControlApiState>()
@@ -311,6 +336,22 @@ pub fn context_for(app: &tauri::AppHandle) -> Option<std::sync::Arc<ServerContex
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn error_payloads_redact_strings_before_serialization() {
+        let mut body = serde_json::json!({
+            "error": {
+                "code": "bad_request",
+                "message": "failed with api_key = \"sk-live\"",
+                "details": ["token: tok-1"],
+            }
+        });
+        redact_strings(body.get_mut("error").unwrap());
+        let text = body.to_string();
+        assert!(!text.contains("sk-live"), "body: {text}");
+        assert!(!text.contains("tok-1"), "body: {text}");
+        assert!(text.contains("bad_request"));
+    }
 
     #[test]
     fn token_comparison_requires_the_exact_value() {

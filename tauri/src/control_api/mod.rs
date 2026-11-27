@@ -141,8 +141,27 @@ pub async fn start_if_enabled(state: &ControlApiState) -> Result<bool, String> {
 }
 
 /// Stops the listener and removes the discovery file.
+///
+/// Pending approvals are rejected and expired first: their HTTP handlers would
+/// otherwise wait for the full timeout against a listener that no longer
+/// exists, and the desktop modal would keep offering a dead request.
 pub async fn stop(state: &ControlApiState) -> Result<(), String> {
+    cancel_pending_approvals(&state.context, "control_api_stopped");
     server::stop(state).await
+}
+
+/// Rejects every parked approval and broadcasts the expiry event.
+pub fn cancel_pending_approvals(context: &ServerContext, reason: &str) -> usize {
+    use tauri::Emitter;
+    let cancelled = context.approval.cancel_all();
+    let count = cancelled.len();
+    for info in cancelled {
+        let _ = context.app.emit(
+            approval::APPROVAL_EXPIRED_EVENT,
+            serde_json::json!({"requestId": info.request_id, "reason": reason}),
+        );
+    }
+    count
 }
 
 /// App-exit hook: stop accepting connections and delete our discovery file.

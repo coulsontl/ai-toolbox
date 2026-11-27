@@ -39,6 +39,12 @@ pub async fn dispatch(
                 .map_err(ApiError::from)?;
             Ok(redacted(listing))
         }
+        // Global refresh route: `aitb plugin refresh-models` posts here.
+        (&Method::POST, "providers")
+            if segments.get(2).map(String::as_str) == Some("refresh-models") =>
+        {
+            refresh_models(context, None).await
+        }
         (&Method::GET, "accounts") => {
             let accounts = plugin_commands::plugins_list_accounts(manager_state(context))
                 .await
@@ -82,7 +88,7 @@ async fn dispatch_nested(
     context: &ServerContext,
     method: &Method,
     segments: &[String],
-    _query: &HashMap<String, String>,
+    query: &HashMap<String, String>,
     body: Value,
 ) -> ApiResult<Value> {
     let tail = segments.get(1).map(String::as_str).unwrap_or_default();
@@ -91,6 +97,18 @@ async fn dispatch_nested(
 
     match (method, tail, second, third) {
         // /plugins/providers/:provider/options
+        (&Method::GET, "providers", provider, "options") => {
+            let options = store::list_provider_options(manager_state(context).db())
+                .map_err(ApiError::from)?
+                .into_iter()
+                .find(|option| option.provider_id == provider)
+                .map(|option| option.options)
+                .unwrap_or_else(|| json!({}));
+            Ok(redacted(json!({
+                "provider": provider,
+                "options": options,
+            })))
+        }
         (&Method::PUT, "providers", provider, "options") => {
             approve_write(
                 context,
@@ -116,35 +134,30 @@ async fn dispatch_nested(
         }
         // /plugins/providers/:provider/refresh-models
         (&Method::POST, "providers", provider, "refresh-models") => {
-            approve_write(
-                context,
-                RiskLevel::L1,
-                "plugin.provider.refresh_models",
-                format!("Refresh models for plugin provider '{provider}'"),
-                Some(provider.to_string()),
-                false,
-            )
-            .await?;
-            let listing = plugin_commands::plugins_refresh_provider_models(manager_state(context))
-                .await
-                .map_err(ApiError::from)?;
-            Ok(redacted(listing))
+            refresh_models(context, Some(provider)).await
         }
         // /plugins/providers/:provider/link-cli
         (&Method::POST, "providers", provider, "link-cli") => {
-            approve_write(
-                context,
-                RiskLevel::L1,
-                "plugin.provider.link_cli",
-                format!("Add plugin provider '{provider}' to a coding CLI"),
-                Some(provider.to_string()),
-                false,
-            )
-            .await?;
+            // Parse and validate before asking the user: an approval summary
+            // built from the path alone can be spoofed by a body that names a
+            // different provider than the URL.
             let input: crate::plugins::cli_integration::AddPluginProviderToCliInput =
                 serde_json::from_value(body).map_err(|error| {
                     ApiError::bad_request(format!("Invalid link-cli payload: {error}"))
                 })?;
+            validate_link_cli(provider, &input)?;
+            approve_write(
+                context,
+                RiskLevel::L1,
+                "plugin.provider.link_cli",
+                format!(
+                    "Add plugin provider '{}' from '{}' to '{}'",
+                    input.provider_id, input.plugin_spec, input.cli_key
+                ),
+                Some(provider.to_string()),
+                false,
+            )
+            .await?;
             let result = crate::plugins::cli_integration::plugins_add_provider_to_cli(
                 context.app.clone(),
                 context.app.state::<crate::db::SqliteDbState>(),
@@ -282,7 +295,7 @@ async fn dispatch_nested(
                 false,
             )
             .await?;
-            let purge_data = body_bool(&body, "purgeData").unwrap_or(false);
+            let purge_data = purge_data_requested(query, &body);
             plugin_commands::plugins_uninstall(
                 manager_state(context),
                 id.to_string(),
@@ -297,6 +310,63 @@ async fn dispatch_nested(
             segments.join("/")
         ))),
     }
+}
+
+/// `aitb plugin remove --purge-data` sends a query parameter; older callers
+/// send a JSON body. Query wins when both are present.
+fn purge_data_requested(query: &HashMap<String, String>, body: &Value) -> bool {
+    query
+        .get("purgeData")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+        .or_else(|| body_bool(body, "purgeData"))
+        .unwrap_or(false)
+}
+
+/// Validates the body before the approval summary is built: a summary from the
+/// path alone could describe one provider while the body adds another.
+fn validate_link_cli(
+    provider: &str,
+    input: &crate::plugins::cli_integration::AddPluginProviderToCliInput,
+) -> ApiResult<()> {
+    if input.provider_id.trim().is_empty() {
+        return Err(ApiError::bad_request("'providerId' is required"));
+    }
+    if input.provider_id != provider {
+        return Err(ApiError::bad_request(format!(
+            "Path provider '{provider}' does not match body providerId '{}'",
+            input.provider_id
+        )));
+    }
+    if input.plugin_spec.trim().is_empty() {
+        return Err(ApiError::bad_request("'pluginSpec' is required"));
+    }
+    if input.cli_key.trim().is_empty() {
+        return Err(ApiError::bad_request("'cliKey' is required"));
+    }
+    Ok(())
+}
+
+async fn refresh_models(
+    context: &ServerContext,
+    provider: Option<&str>,
+) -> ApiResult<Value> {
+    let summary = match provider {
+        Some(provider) => format!("Refresh models for plugin provider '{provider}'"),
+        None => "Refresh models for every plugin provider".to_string(),
+    };
+    approve_write(
+        context,
+        RiskLevel::L1,
+        "plugin.provider.refresh_models",
+        summary,
+        provider.map(str::to_string),
+        false,
+    )
+    .await?;
+    let listing = plugin_commands::plugins_refresh_provider_models(manager_state(context))
+        .await
+        .map_err(ApiError::from)?;
+    Ok(redacted(listing))
 }
 
 async fn install(context: &ServerContext, body: Value) -> ApiResult<Value> {
@@ -393,4 +463,52 @@ fn manager_state(context: &ServerContext) -> tauri::State<'_, PluginManagerState
 fn redacted(mut value: Value) -> Value {
     redact_value(&mut value);
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::cli_integration::AddPluginProviderToCliInput;
+    use crate::plugins::gateway_bridge::PluginAccountStrategy;
+
+    fn link_input(provider_id: &str, plugin_spec: &str) -> AddPluginProviderToCliInput {
+        AddPluginProviderToCliInput {
+            cli_key: "codex".to_string(),
+            plugin_spec: plugin_spec.to_string(),
+            provider_id: provider_id.to_string(),
+            display_name: Some("Demo".to_string()),
+            account_strategy: PluginAccountStrategy::default(),
+            account_key: None,
+            model_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn purge_data_accepts_query_or_body_and_query_wins() {
+        let mut query = HashMap::new();
+        assert!(!purge_data_requested(&query, &json!({})));
+        assert!(purge_data_requested(&query, &json!({"purgeData": true})));
+
+        query.insert("purgeData".to_string(), "1".to_string());
+        assert!(purge_data_requested(&query, &json!({"purgeData": false})));
+
+        // An explicit false in the query beats a true body.
+        query.insert("purgeData".to_string(), "false".to_string());
+        assert!(!purge_data_requested(&query, &json!({"purgeData": true})));
+    }
+
+    #[test]
+    fn link_cli_requires_matching_provider_and_a_plugin_spec() {
+        assert!(validate_link_cli("demo", &link_input("demo", "@acme/plugin")).is_ok());
+
+        let mismatch = validate_link_cli("demo", &link_input("other", "@acme/plugin")).unwrap_err();
+        assert_eq!(mismatch.status, 400);
+
+        let empty_spec = validate_link_cli("demo", &link_input("demo", "   ")).unwrap_err();
+        assert_eq!(empty_spec.status, 400);
+
+        let mut missing_cli = link_input("demo", "@acme/plugin");
+        missing_cli.cli_key = String::new();
+        assert_eq!(validate_link_cli("demo", &missing_cli).unwrap_err().status, 400);
+    }
 }

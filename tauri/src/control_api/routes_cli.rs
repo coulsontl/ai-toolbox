@@ -15,8 +15,8 @@ use super::approval::RiskLevel;
 use super::cli_dispatch;
 use super::error::{ApiError, ApiResult};
 use super::redact::{
-    is_redacted_value, merge_patch_preserving_secrets, redact_json_string, redact_text,
-    redact_value, REDACTED,
+    contains_redacted, is_redacted_value, merge_patch_preserving_secrets, redact_json_string,
+    redact_text, redact_value, REDACTED,
 };
 use super::routes::{approve_write, body_optional_string, redacted};
 use super::ServerContext;
@@ -199,7 +199,7 @@ pub async fn dispatch(
                 false,
             )
             .await?;
-            get_config(context, cli, scope).await
+            extract_config(context, cli, scope).await
         }
         (&Method::GET, ["prompts"]) => list_prompts(context, cli).await,
         (&Method::POST, ["prompts"]) => {
@@ -291,7 +291,14 @@ fn config_kind(cli: &str) -> &'static str {
 }
 
 async fn get_config(context: &ServerContext, cli: &str, scope: &str) -> ApiResult<Value> {
+    if cli == "workbuddy" {
+        return Err(cli_dispatch::unsupported(
+            cli,
+            "Global config file editing",
+        ));
+    }
     let format = config_format(cli);
+    let mut config_path: Option<String> = None;
     let (config, root_dir, updated_at) = match cli {
         "claudecode" => {
             let existing =
@@ -304,7 +311,7 @@ async fn get_config(context: &ServerContext, cli: &str, scope: &str) -> ApiResul
                     common.root_dir,
                     common.updated_at,
                 ),
-                None => (Value::String("{}".to_string()), None, String::new()),
+                None => (json!({}), None, String::new()),
             }
         }
         "claudedesktop" => {
@@ -320,7 +327,7 @@ async fn get_config(context: &ServerContext, cli: &str, scope: &str) -> ApiResul
                     None,
                     common.updated_at,
                 ),
-                None => (Value::String("{}".to_string()), None, String::new()),
+                None => (json!({}), None, String::new()),
             }
         }
         "codex" => {
@@ -375,7 +382,7 @@ async fn get_config(context: &ServerContext, cli: &str, scope: &str) -> ApiResul
                     common.root_dir,
                     common.updated_at,
                 ),
-                None => (Value::String("{}".to_string()), None, String::new()),
+                None => (json!({}), None, String::new()),
             }
         }
         "antigravity" => {
@@ -389,6 +396,21 @@ async fn get_config(context: &ServerContext, cli: &str, scope: &str) -> ApiResul
                 common.root_dir,
                 common.updated_at,
             )
+        }
+        "zcode" if scope == "cli" => {
+            // `cli/config.json` is a separate product-owned file (MCP servers
+            // and CLI settings) from the provider registry common config.
+            let text =
+                crate::coding::zcode::commands::read_zcode_cli_config(db_state(context))
+                    .await
+                    .map_err(internal)?;
+            if text.trim().is_empty() {
+                (json!({}), None, String::new())
+            } else {
+                let parsed = serde_json::from_str::<Value>(&text)
+                    .map_err(|error| invalid(format!("ZCode cli/config.json is not valid JSON: {error}")))?;
+                (parse_config_text(&parsed.to_string(), format), None, String::new())
+            }
         }
         "zcode" => {
             let common = crate::coding::zcode::commands::get_zcode_common_config(db_state(context))
@@ -411,40 +433,22 @@ async fn get_config(context: &ServerContext, cli: &str, scope: &str) -> ApiResul
             )
         }
         "opencode" => {
-            let existing =
-                crate::coding::open_code::commands::get_opencode_common_config(db_state(context))
-                    .await
-                    .map_err(internal)?;
-            let mut config = Map::new();
-            if let Some(path) = existing
-                .as_ref()
-                .and_then(|common| common.config_path.clone())
-            {
-                config.insert("configPath".to_string(), json!(path));
-            }
-            (
-                Value::Object(config),
-                None,
-                existing.map(|common| common.updated_at).unwrap_or_default(),
+            config_path = crate::coding::open_code::commands::get_opencode_config_path(
+                db_state(context),
             )
+            .await
+            .ok();
+            let config = cli_dispatch::read_opencode_config_value(context).await?;
+            (redacted_value(config), None, String::new())
         }
         "openclaw" => {
-            let existing =
-                crate::coding::open_claw::commands::get_openclaw_common_config(db_state(context))
-                    .await
-                    .map_err(internal)?;
-            let mut config = Map::new();
-            if let Some(path) = existing
-                .as_ref()
-                .and_then(|common| common.config_path.clone())
-            {
-                config.insert("configPath".to_string(), json!(path));
-            }
-            (
-                Value::Object(config),
-                None,
-                existing.map(|common| common.updated_at).unwrap_or_default(),
+            config_path = crate::coding::open_claw::commands::get_openclaw_config_path(
+                db_state(context),
             )
+            .await
+            .ok();
+            let config = cli_dispatch::read_openclaw_config_value(context).await?;
+            (redacted_value(config), None, String::new())
         }
         "pi" => {
             let runtime = crate::coding::pi::commands::read_pi_runtime_config(db_state(context))
@@ -465,7 +469,14 @@ async fn get_config(context: &ServerContext, cli: &str, scope: &str) -> ApiResul
             )
             .await
             .map_err(internal)?;
-            (redacted_value(runtime.other_settings), None, String::new())
+            if scope == "omo" {
+                // `omo.jsonc` shared top-level keys (the file the engine reads).
+                (redacted_value(runtime.shared_base), None, String::new())
+            } else {
+                // `settings.json` keys owned by neither model settings nor
+                // extensions (the default scope kept for compatibility).
+                (redacted_value(runtime.other_settings), None, String::new())
+            }
         }
         "hermes" => {
             let runtime =
@@ -516,10 +527,139 @@ async fn get_config(context: &ServerContext, cli: &str, scope: &str) -> ApiResul
         "readOnly": cli == "codebuddy",
         "config": config,
         "rootDir": root_dir,
+        "configPath": config_path,
         "updatedAt": updated_at,
     });
     redact_value(&mut payload);
     Ok(payload)
+}
+
+/// Re-imports the CLI's current runtime file into the stored common config.
+///
+/// Only the six CLIs that own a real `extract_*_common_config_from_current_file`
+/// helper can do this. Everything else returns 405 instead of pretending the
+/// GET response was an import.
+async fn extract_config(context: &ServerContext, cli: &str, scope: &str) -> ApiResult<Value> {
+    match cli {
+        "claudecode" => {
+            let extracted =
+                crate::coding::claude_code::commands::extract_claude_common_config_from_current_file(
+                    db_state(context),
+                )
+                .await
+                .map_err(internal)?;
+            crate::coding::claude_code::commands::save_claude_common_config(
+                db_state(context),
+                app(context),
+                crate::coding::claude_code::types::ClaudeCommonConfigInput {
+                    config: extracted.config,
+                    root_dir: extracted.root_dir,
+                    clear_root_dir: false,
+                },
+            )
+            .await
+            .map_err(internal)?;
+        }
+        "codex" => {
+            let extracted =
+                crate::coding::codex::commands::extract_codex_common_config_from_current_file(
+                    db_state(context),
+                )
+                .await
+                .map_err(internal)?;
+            crate::coding::codex::commands::save_codex_common_config(
+                db_state(context),
+                app(context),
+                crate::coding::codex::types::CodexCommonConfigInput {
+                    config: extracted.config,
+                    root_dir: extracted.root_dir,
+                    clear_root_dir: false,
+                },
+            )
+            .await
+            .map_err(internal)?;
+        }
+        "grok" => {
+            let extracted =
+                crate::coding::grok::commands::extract_grok_common_config_from_current_file(
+                    db_state(context),
+                )
+                .await
+                .map_err(internal)?;
+            crate::coding::grok::commands::save_grok_common_config(
+                db_state(context),
+                app(context),
+                crate::coding::grok::types::GrokCommonConfigInput {
+                    config: extracted.config,
+                    root_dir: extracted.root_dir,
+                    clear_root_dir: false,
+                },
+            )
+            .await
+            .map_err(internal)?;
+        }
+        "kimi" => {
+            let extracted =
+                crate::coding::kimi::commands::extract_kimi_common_config_from_current_file(
+                    db_state(context),
+                )
+                .await
+                .map_err(internal)?;
+            crate::coding::kimi::commands::save_kimi_common_config(
+                db_state(context),
+                app(context),
+                crate::coding::kimi::types::KimiCommonConfigInput {
+                    config: extracted.config,
+                    root_dir: extracted.root_dir,
+                    clear_root_dir: false,
+                },
+            )
+            .await
+            .map_err(internal)?;
+        }
+        "geminicli" => {
+            let extracted = crate::coding::gemini_cli::commands::
+                extract_gemini_cli_common_config_from_current_file(db_state(context))
+                .await
+                .map_err(internal)?;
+            crate::coding::gemini_cli::commands::save_gemini_cli_common_config(
+                db_state(context),
+                app(context),
+                crate::coding::gemini_cli::types::GeminiCliCommonConfigInput {
+                    config: extracted.config,
+                    root_dir: extracted.root_dir,
+                    clear_root_dir: false,
+                },
+            )
+            .await
+            .map_err(internal)?;
+        }
+        "antigravity" => {
+            let extracted = crate::coding::antigravity::commands::
+                extract_antigravity_common_config_from_current_file(db_state(context))
+                .await
+                .map_err(internal)?;
+            crate::coding::antigravity::commands::save_antigravity_common_config(
+                app(context),
+                db_state(context),
+                crate::coding::antigravity::types::AntigravityCommonConfigInput {
+                    config: extracted.config,
+                    root_dir: extracted.root_dir,
+                    clear_root_dir: false,
+                },
+            )
+            .await
+            .map_err(internal)?;
+        }
+        other => {
+            return Err(ApiError::new(
+                405,
+                "method_not_allowed",
+                format!("Config extract is not supported for CLI '{other}'"),
+            ))
+        }
+    }
+    get_config(context, cli, scope).await
 }
 
 /// JSON-shaped configs are parsed (and therefore redacted structurally);
@@ -539,7 +679,19 @@ fn redacted_value(mut value: Value) -> Value {
 async fn put_config(
     context: &ServerContext,
     cli: &str,
-    _scope: &str,
+    scope: &str,
+    body: Value,
+) -> ApiResult<Value> {
+    cli_dispatch::with_gateway_reattach_api(context, cli, || async {
+        put_config_inner(context, cli, scope, body).await
+    })
+    .await
+}
+
+async fn put_config_inner(
+    context: &ServerContext,
+    cli: &str,
+    scope: &str,
     body: Value,
 ) -> ApiResult<Value> {
     if cli == "codebuddy" {
@@ -741,6 +893,25 @@ async fn put_config(
             .await
             .map_err(internal)?;
         }
+        "zcode" if scope == "cli" => {
+            let existing =
+                crate::coding::zcode::commands::read_zcode_cli_config(db_state(context))
+                    .await
+                    .map_err(internal)?;
+            let existing_text = if existing.trim().is_empty() {
+                "{}"
+            } else {
+                existing.as_str()
+            };
+            let config = merge_config_text(existing_text, &incoming, "json", &mode)?;
+            crate::coding::zcode::commands::save_zcode_cli_config(
+                db_state(context),
+                app(context),
+                config,
+            )
+            .await
+            .map_err(internal)?;
+        }
         "zcode" => {
             let existing =
                 crate::coding::zcode::commands::get_zcode_common_config(db_state(context))
@@ -768,57 +939,65 @@ async fn put_config(
             .map_err(internal)?;
         }
         "opencode" => {
-            let mut config =
-                crate::coding::open_code::commands::get_opencode_common_config(db_state(context))
-                    .await
-                    .map_err(internal)?
-                    .unwrap_or(crate::coding::open_code::types::OpenCodeCommonConfig {
-                        config_path: None,
-                        show_plugins_in_tray: false,
-                        updated_at: chrono::Local::now().to_rfc3339(),
-                    });
-            if let Some(path) = incoming
-                .get("configPath")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-            {
+            let (incoming, requested_path) = split_config_path(&incoming);
+            if let Some(path) = requested_path {
+                let mut config = crate::coding::open_code::commands::get_opencode_common_config(
+                    db_state(context),
+                )
+                .await
+                .map_err(internal)?
+                .unwrap_or(crate::coding::open_code::types::OpenCodeCommonConfig {
+                    config_path: None,
+                    show_plugins_in_tray: false,
+                    updated_at: chrono::Local::now().to_rfc3339(),
+                });
                 config.config_path = Some(path);
-            } else if incoming.is_string() {
-                config.config_path = Some(incoming.as_str().unwrap_or_default().to_string());
+                crate::coding::open_code::commands::save_opencode_common_config(
+                    db_state(context),
+                    app(context),
+                    config,
+                )
+                .await
+                .map_err(internal)?;
             }
-            crate::coding::open_code::commands::save_opencode_common_config(
-                db_state(context),
-                app(context),
-                config,
-            )
-            .await
-            .map_err(internal)?;
+            if has_config_body(&incoming) {
+                let existing = cli_dispatch::read_opencode_config_value(context).await?;
+                let merged = merge_config_text(&existing.to_string(), &incoming, "json", &mode)?;
+                let merged: Value = serde_json::from_str(&merged).map_err(|error| {
+                    invalid(format!("Merged OpenCode config is invalid: {error}"))
+                })?;
+                cli_dispatch::save_opencode_config_value(context, merged).await?;
+            }
         }
         "openclaw" => {
-            let mut config =
-                crate::coding::open_claw::commands::get_openclaw_common_config(db_state(context))
-                    .await
-                    .map_err(internal)?
-                    .unwrap_or(crate::coding::open_claw::types::OpenClawCommonConfig {
-                        config_path: None,
-                        updated_at: chrono::Local::now().to_rfc3339(),
-                    });
-            if let Some(path) = incoming
-                .get("configPath")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-            {
+            let (incoming, requested_path) = split_config_path(&incoming);
+            if let Some(path) = requested_path {
+                let mut config = crate::coding::open_claw::commands::get_openclaw_common_config(
+                    db_state(context),
+                )
+                .await
+                .map_err(internal)?
+                .unwrap_or(crate::coding::open_claw::types::OpenClawCommonConfig {
+                    config_path: None,
+                    updated_at: chrono::Local::now().to_rfc3339(),
+                });
                 config.config_path = Some(path);
-            } else if incoming.is_string() {
-                config.config_path = Some(incoming.as_str().unwrap_or_default().to_string());
+                crate::coding::open_claw::commands::save_openclaw_common_config(
+                    db_state(context),
+                    app(context),
+                    config,
+                )
+                .await
+                .map_err(internal)?;
             }
-            crate::coding::open_claw::commands::save_openclaw_common_config(
-                db_state(context),
-                app(context),
-                config,
-            )
-            .await
-            .map_err(internal)?;
+            if has_config_body(&incoming) {
+                let existing = cli_dispatch::read_openclaw_config_value(context).await?;
+                let merged = merge_config_text(&existing.to_string(), &incoming, "json", &mode)?;
+                let merged: Value = serde_json::from_str(&merged).map_err(|error| {
+                    invalid(format!("Merged OpenClaw config is invalid: {error}"))
+                })?;
+                cli_dispatch::save_openclaw_config_value(context, merged).await?;
+            }
         }
         "pi" => {
             let next = merge_other_settings(context, cli, &incoming, &mode).await?;
@@ -860,6 +1039,29 @@ async fn put_config(
             .await
             .map_err(internal)?;
         }
+        "omo_native" if scope == "omo" => {
+            let runtime = crate::coding::omo_native::commands::read_omo_native_runtime_config(
+                db_state(context),
+            )
+            .await
+            .map_err(internal)?;
+            let merged = merge_config_text(
+                &runtime.shared_base.to_string(),
+                &incoming,
+                "json",
+                &mode,
+            )?;
+            let merged: Value = serde_json::from_str(&merged).map_err(|error| {
+                invalid(format!("Merged omo.jsonc shared config is invalid: {error}"))
+            })?;
+            crate::coding::omo_native::commands::save_omo_native_other_config(
+                db_state(context),
+                app(context),
+                merged,
+            )
+            .await
+            .map_err(internal)?;
+        }
         "omo_native" => {
             let existing = crate::coding::omo_native::commands::read_omo_native_runtime_config(
                 db_state(context),
@@ -892,7 +1094,7 @@ async fn put_config(
         other => return Err(ApiError::not_found(format!("Unknown CLI '{other}'"))),
     }
 
-    get_config(context, cli, _scope).await
+    get_config(context, cli, scope).await
 }
 
 async fn merge_other_settings(
@@ -935,8 +1137,24 @@ async fn merge_other_settings(
         _ => Value::Object(Map::new()),
     };
     let incoming = match incoming {
-        Value::String(text) => serde_json::from_str::<Value>(text)
-            .map_err(|error| invalid(format!("'config' string is not valid JSON: {error}")))?,
+        Value::String(text) => match serde_json::from_str::<Value>(text) {
+            Ok(value) => value,
+            // These CLIs store YAML on disk, so accepting a YAML document is
+            // the natural input shape. `aitb config set --file x.yml` sends the
+            // file as a string.
+            Err(json_error) if matches!(cli, "oh_my_pi" | "hermes" | "dsh") => {
+                serde_yaml::from_str::<Value>(text).map_err(|yaml_error| {
+                    invalid(format!(
+                        "'config' string is neither valid JSON ({json_error}) nor valid YAML ({yaml_error})"
+                    ))
+                })?
+            }
+            Err(error) => {
+                return Err(invalid(format!(
+                    "'config' string is not valid JSON: {error}"
+                )))
+            }
+        },
         other => other.clone(),
     };
     if !incoming.is_object() {
@@ -951,82 +1169,312 @@ async fn merge_other_settings(
     }
 }
 
+fn split_config_path(incoming: &Value) -> (Value, Option<String>) {
+    match incoming {
+        Value::Object(object) => {
+            let mut object = object.clone();
+            let path = object
+                .remove("configPath")
+                .and_then(|value| value.as_str().map(str::to_string))
+                .filter(|path| !path.trim().is_empty());
+            (Value::Object(object), path)
+        }
+        Value::String(text) => match serde_json::from_str::<Value>(text) {
+            Ok(parsed @ Value::Object(_)) => (parsed, None),
+            Ok(_) => (Value::String(text.clone()), None),
+            Err(_) if text.trim().starts_with('{') => (Value::String(text.clone()), None),
+            // Legacy shape: a bare string meant "use this config path".
+            Err(_) => (Value::Null, Some(text.clone())),
+        },
+        other => (other.clone(), None),
+    }
+}
+
+fn has_config_body(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Object(object) => !object.is_empty(),
+        Value::String(text) => !text.trim().is_empty(),
+        _ => true,
+    }
+}
+
 fn merge_config_text(
     existing: &str,
     incoming: &Value,
     format: &str,
     mode: &str,
 ) -> ApiResult<String> {
+    match format {
+        "toml" => merge_toml_config_text(existing, incoming, mode),
+        "yaml" => merge_yaml_config_text(existing, incoming, mode),
+        _ => merge_json_config_text(existing, incoming, mode),
+    }
+}
+
+fn merge_json_config_text(existing: &str, incoming: &Value, mode: &str) -> ApiResult<String> {
+    let incoming = match incoming {
+        Value::String(text) => serde_json::from_str::<Value>(text).map_err(|error| {
+            invalid(format!("'config' string is not valid JSON: {error}"))
+        })?,
+        other => other.clone(),
+    };
+    if !incoming.is_object() {
+        return Err(ApiError::bad_request("'config' must be an object"));
+    }
+    let mut current = if existing.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str::<Value>(existing)
+            .map_err(|error| invalid(format!("Existing config is not valid JSON: {error}")))?
+    };
+    if !current.is_object() {
+        current = json!({});
+    }
+    if mode == "replace" {
+        current = fill_redacted(&current, incoming);
+    } else {
+        merge_patch_preserving_secrets(&mut current, incoming);
+    }
+    Ok(serde_json::to_string_pretty(&current)?)
+}
+
+fn merge_toml_config_text(existing: &str, incoming: &Value, mode: &str) -> ApiResult<String> {
     if let Value::String(text) = incoming {
-        if format != "toml" && format != "yaml" {
-            let parsed = serde_json::from_str::<Value>(text)
-                .map_err(|error| invalid(format!("'config' string is not valid JSON: {error}")))?;
-            return merge_config_text(existing, &parsed, format, mode);
-        }
         ensure_no_masked_secret_written(text)?;
-        return Ok(text.clone());
+        if mode == "replace" {
+            return Ok(text.clone());
+        }
+        let patch = text
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| invalid(format!("'config' string is not valid TOML: {error}")))?;
+        let mut document = parse_existing_toml(existing)?;
+        merge_toml_document(&mut document, &patch);
+        return Ok(document.to_string());
     }
     if !incoming.is_object() {
         return Err(ApiError::bad_request(
-            "'config' must be an object or a string",
+            "'config' must be a TOML string or an object",
         ));
     }
-    match format {
-        "toml" | "yaml" => {
-            if contains_redacted(incoming) {
-                return Err(ApiError::bad_request(
-                    "Masked secrets ('***') cannot be written back to a TOML/YAML file; send the full value or omit the key",
-                ));
+    if contains_redacted(incoming) {
+        return Err(ApiError::bad_request(
+            "Masked secrets ('***') cannot be written back to a TOML file; send the full value or omit the key",
+        ));
+    }
+    let patch_text = toml::to_string(incoming)
+        .map_err(|error| invalid(format!("Config cannot be represented as TOML: {error}")))?;
+    if mode == "replace" {
+        return Ok(patch_text);
+    }
+    let patch = patch_text
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| invalid(format!("Config cannot be represented as TOML: {error}")))?;
+    let mut document = parse_existing_toml(existing)?;
+    merge_toml_document(&mut document, &patch);
+    Ok(document.to_string())
+}
+
+fn parse_existing_toml(existing: &str) -> ApiResult<toml_edit::DocumentMut> {
+    if existing.trim().is_empty() {
+        return Ok(toml_edit::DocumentMut::new());
+    }
+    existing
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| invalid(format!("Existing config is not valid TOML: {error}")))
+}
+
+/// Recursively merges `patch` into `document`, preserving unknown fields,
+/// existing key order and comments. Tables and inline tables merge by key;
+/// scalars and arrays replace wholesale.
+fn merge_toml_document(
+    document: &mut toml_edit::DocumentMut,
+    patch: &toml_edit::DocumentMut,
+) {
+    let keys = patch.iter().map(|(key, _)| key.to_string()).collect::<Vec<_>>();
+    for key in keys {
+        let Some(patch_item) = patch.get(key.as_str()) else {
+            continue;
+        };
+        match document.get_mut(key.as_str()) {
+            Some(existing) => merge_toml_item(existing, patch_item.clone()),
+            None => {
+                document[key.as_str()] = patch_item.clone();
             }
-            let mut document = if existing.trim().is_empty() {
-                toml_edit::DocumentMut::new()
-            } else {
-                existing
-                    .parse::<toml_edit::DocumentMut>()
-                    .map_err(|error| {
-                        invalid(format!("Existing config is not valid TOML: {error}"))
-                    })?
-            };
-            let patch_text = toml::to_string(incoming).map_err(|error| {
-                invalid(format!("Config cannot be represented as TOML: {error}"))
-            })?;
-            let patch = patch_text
-                .parse::<toml_edit::DocumentMut>()
-                .map_err(|error| {
-                    invalid(format!("Config cannot be represented as TOML: {error}"))
-                })?;
-            for (key, item) in patch.iter() {
-                document[key] = item.clone();
-            }
-            Ok(document.to_string())
-        }
-        _ => {
-            let mut current = if existing.trim().is_empty() {
-                json!({})
-            } else {
-                serde_json::from_str::<Value>(existing).map_err(|error| {
-                    invalid(format!("Existing config is not valid JSON: {error}"))
-                })?
-            };
-            if !current.is_object() {
-                current = json!({});
-            }
-            if mode == "replace" {
-                current = fill_redacted(&current, incoming.clone());
-            } else {
-                merge_patch_preserving_secrets(&mut current, incoming.clone());
-            }
-            Ok(serde_json::to_string_pretty(&current)?)
         }
     }
 }
 
-fn contains_redacted(value: &Value) -> bool {
-    match value {
-        Value::String(text) => text == REDACTED || text.contains("***"),
-        Value::Array(items) => items.iter().any(contains_redacted),
-        Value::Object(map) => map.values().any(contains_redacted),
-        _ => false,
+fn merge_toml_item(existing: &mut toml_edit::Item, patch: toml_edit::Item) {
+    use toml_edit::Item;
+    match (existing, patch) {
+        (Item::Table(existing_table), Item::Table(patch_table)) => {
+            let keys = patch_table
+                .iter()
+                .map(|(key, _)| key.to_string())
+                .collect::<Vec<_>>();
+            for key in keys {
+                let Some(patch_item) = patch_table.get(key.as_str()) else {
+                    continue;
+                };
+                match existing_table.get_mut(key.as_str()) {
+                    Some(existing_item) => merge_toml_item(existing_item, patch_item.clone()),
+                    None => {
+                        existing_table[key.as_str()] = patch_item.clone();
+                    }
+                }
+            }
+        }
+        (Item::Value(existing_value), Item::Value(patch_value)) => {
+            merge_toml_value(existing_value, patch_value);
+        }
+        // `toml::to_string` serializes a nested JSON object as a `[table]`,
+        // while the user's file may have written the same node as an inline
+        // table (`http_headers = { ... }`). Replacing it wholesale would drop
+        // every sibling header the patch did not mention.
+        (Item::Value(existing_value), Item::Table(patch_table))
+            if matches!(existing_value, toml_edit::Value::InlineTable(_)) =>
+        {
+            let toml_edit::Value::InlineTable(existing_inline) = existing_value else {
+                unreachable!("guarded by matches!")
+            };
+            merge_inline_table_with_table(existing_inline, &patch_table);
+        }
+        (Item::Table(existing_table), Item::Value(toml_edit::Value::InlineTable(patch_inline))) => {
+            for (key, patch_value) in patch_inline.iter() {
+                match existing_table.get_mut(key) {
+                    Some(existing_item) => {
+                        merge_toml_item(existing_item, Item::Value(patch_value.clone()));
+                    }
+                    None => {
+                        existing_table.insert(key, Item::Value(patch_value.clone()));
+                    }
+                }
+            }
+        }
+        (existing, patch) => *existing = patch,
+    }
+}
+
+fn merge_inline_table_with_table(
+    existing: &mut toml_edit::InlineTable,
+    patch: &toml_edit::Table,
+) {
+    for (key, patch_item) in patch.iter() {
+        let patch_value = match patch_item {
+            toml_edit::Item::Value(value) => value.clone(),
+            toml_edit::Item::Table(table) => {
+                toml_edit::Value::InlineTable(table.clone().into_inline_table())
+            }
+            toml_edit::Item::ArrayOfTables(tables) => {
+                let mut array = toml_edit::Array::new();
+                for table in tables.iter() {
+                    array.push(toml_edit::Value::InlineTable(
+                        table.clone().into_inline_table(),
+                    ));
+                }
+                toml_edit::Value::Array(array)
+            }
+            toml_edit::Item::None => continue,
+        };
+        match existing.get_mut(key) {
+            Some(existing_value) => merge_toml_value(existing_value, patch_value),
+            None => {
+                existing.insert(key, patch_value);
+            }
+        }
+    }
+}
+
+fn merge_toml_value(existing: &mut toml_edit::Value, patch: toml_edit::Value) {
+    use toml_edit::Value as TomlValue;
+    match (existing, patch) {
+        (TomlValue::InlineTable(existing_table), TomlValue::InlineTable(patch_table)) => {
+            let keys = patch_table
+                .iter()
+                .map(|(key, _)| key.to_string())
+                .collect::<Vec<_>>();
+            for key in keys {
+                let Some(patch_value) = patch_table.get(key.as_str()) else {
+                    continue;
+                };
+                match existing_table.get_mut(key.as_str()) {
+                    Some(existing_value) => merge_toml_value(existing_value, patch_value.clone()),
+                    None => {
+                        existing_table.insert(key.as_str(), patch_value.clone());
+                    }
+                }
+            }
+        }
+        // Arrays and scalars cannot be deep-merged meaningfully.
+        (existing, patch) => *existing = patch,
+    }
+}
+
+fn merge_yaml_config_text(existing: &str, incoming: &Value, mode: &str) -> ApiResult<String> {
+    let incoming_yaml = match incoming {
+        Value::String(text) => {
+            ensure_no_masked_secret_written(text)?;
+            if mode == "replace" {
+                return Ok(text.clone());
+            }
+            serde_yaml::from_str::<serde_yaml::Value>(text)
+                .map_err(|error| invalid(format!("'config' string is not valid YAML: {error}")))?
+        }
+        Value::Object(_) => {
+            if contains_redacted(incoming) {
+                return Err(ApiError::bad_request(
+                    "Masked secrets ('***') cannot be written back to a YAML file; send the full value or omit the key",
+                ));
+            }
+            serde_yaml::to_value(incoming)
+                .map_err(|error| invalid(format!("Config cannot be represented as YAML: {error}")))?
+        }
+        _ => {
+            return Err(ApiError::bad_request(
+                "'config' must be a YAML string or an object",
+            ))
+        }
+    };
+    if mode == "replace" {
+        return serde_yaml::to_string(&incoming_yaml)
+            .map_err(|error| invalid(format!("Config cannot be represented as YAML: {error}")));
+    }
+    if !incoming_yaml.is_mapping() {
+        return Err(ApiError::bad_request(
+            "A YAML patch must be a mapping; use mode=replace for a whole document",
+        ));
+    }
+    let mut current = if existing.trim().is_empty() {
+        serde_yaml::Value::Mapping(Default::default())
+    } else {
+        // Never parse YAML with `toml_edit`: that was the old bug that made an
+        // arbitrary YAML patch replace the file wholesale.
+        serde_yaml::from_str::<serde_yaml::Value>(existing)
+            .map_err(|error| invalid(format!("Existing config is not valid YAML: {error}")))?
+    };
+    if !current.is_mapping() {
+        current = serde_yaml::Value::Mapping(Default::default());
+    }
+    merge_yaml_value(&mut current, incoming_yaml);
+    serde_yaml::to_string(&current)
+        .map_err(|error| invalid(format!("Config cannot be represented as YAML: {error}")))
+}
+
+fn merge_yaml_value(existing: &mut serde_yaml::Value, patch: serde_yaml::Value) {
+    use serde_yaml::Value as YamlValue;
+    match (existing, patch) {
+        (YamlValue::Mapping(existing_map), YamlValue::Mapping(patch_map)) => {
+            for (key, value) in patch_map {
+                match existing_map.get_mut(&key) {
+                    Some(existing_value) => merge_yaml_value(existing_value, value),
+                    None => {
+                        existing_map.insert(key, value);
+                    }
+                }
+            }
+        }
+        (existing, patch) => *existing = patch,
     }
 }
 
@@ -1190,8 +1638,39 @@ async fn update_prompt(
     context: &ServerContext,
     cli: &str,
     id: &str,
-    body: Value,
+    mut body: Value,
 ) -> ApiResult<Value> {
+    if !body.is_object() {
+        return Err(ApiError::bad_request(
+            "Prompt preset body must be an object",
+        ));
+    }
+    let has_name = body.get("name").and_then(Value::as_str).is_some();
+    let has_content = body.get("content").and_then(Value::as_str).is_some();
+    if !has_name || !has_content {
+        // The per-CLI prompt inputs require both fields. A partial update must
+        // read the stored preset first instead of failing deserialization or
+        // blanking the missing half.
+        let listing = list_prompts(context, cli).await?;
+        let existing = listing
+            .get("prompts")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| item.get("id").and_then(Value::as_str) == Some(id))
+            })
+            .cloned()
+            .ok_or_else(|| {
+                ApiError::not_found(format!("Prompt preset '{id}' was not found in '{cli}'"))
+            })?;
+        if !has_name {
+            body["name"] = existing.get("name").cloned().unwrap_or(Value::Null);
+        }
+        if !has_content {
+            body["content"] = existing.get("content").cloned().unwrap_or(Value::Null);
+        }
+    }
     macro_rules! update {
         ($module:path, $input:ty) => {{
             let mut value = body;
@@ -1821,6 +2300,104 @@ mod tests {
         )
         .unwrap();
         assert_eq!(accepted, "model = \"new\"");
+    }
+
+    #[test]
+    fn toml_patch_preserves_unknown_nested_fields_and_inline_tables() {
+        let existing = concat!(
+            "# user comment stays\n",
+            "model = \"old\"\n",
+            "[mcp_servers.docs]\n",
+            "command = \"node\"\n",
+            "args = [\"server.js\"]\n",
+            "http_headers = { \"X-Trace\" = \"keep\", \"X-Other\" = \"also\" }\n",
+        );
+        let merged = merge_config_text(
+            existing,
+            &json!({
+                "model": "new",
+                "mcp_servers": {"docs": {"http_headers": {"X-Trace": "changed"}}}
+            }),
+            "toml",
+            "patch",
+        )
+        .unwrap();
+        assert!(merged.contains("# user comment stays"));
+        assert!(merged.contains("model = \"new\""));
+        // Unknown sibling keys and the untouched inline header survive.
+        assert!(merged.contains("command = \"node\""));
+        assert!(merged.contains("\"X-Other\" = \"also\""));
+        assert!(merged.contains("\"X-Trace\" = \"changed\""));
+    }
+
+    #[test]
+    fn toml_raw_patch_merges_instead_of_replacing_the_whole_file() {
+        let existing = "model = \"old\"\napproval_policy = \"never\"\n";
+        let merged = merge_config_text(existing, &json!("sandbox_mode = \"read-only\""), "toml", "patch")
+            .unwrap();
+        assert!(merged.contains("model = \"old\""));
+        assert!(merged.contains("approval_policy = \"never\""));
+        assert!(merged.contains("sandbox_mode = \"read-only\""));
+    }
+
+    #[test]
+    fn yaml_patch_preserves_unknown_fields_and_replace_is_whole_file() {
+        let existing = concat!(
+            "model: old\n",
+            "providers:\n",
+            "  acme:\n",
+            "    base_url: https://acme.test\n",
+            "    timeout: 30\n",
+            "unknown_extra: keep\n",
+        );
+        let merged = merge_config_text(
+            existing,
+            &json!({"providers": {"acme": {"model": "new"}}}),
+            "yaml",
+            "patch",
+        )
+        .unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&merged).unwrap();
+        assert_eq!(parsed["model"], serde_yaml::Value::String("old".into()));
+        assert_eq!(
+            parsed["providers"]["acme"]["base_url"],
+            serde_yaml::Value::String("https://acme.test".into())
+        );
+        assert_eq!(
+            parsed["providers"]["acme"]["timeout"],
+            serde_yaml::Value::Number(30.into())
+        );
+        assert_eq!(
+            parsed["unknown_extra"],
+            serde_yaml::Value::String("keep".into())
+        );
+        assert_eq!(
+            parsed["providers"]["acme"]["model"],
+            serde_yaml::Value::String("new".into())
+        );
+
+        let replaced = merge_config_text(existing, &json!("model: only\n"), "yaml", "replace").unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&replaced).unwrap();
+        assert_eq!(parsed["model"], serde_yaml::Value::String("only".into()));
+        assert!(parsed.get("unknown_extra").is_none());
+    }
+
+    #[test]
+    fn yaml_patch_rejects_mask_placeholders_in_object_and_text() {
+        assert!(merge_config_text(
+            "model: old\n",
+            &json!({"api_key": "***"}),
+            "yaml",
+            "patch"
+        )
+        .is_err());
+        assert!(merge_config_text(
+            "model: old\n",
+            &json!("api_key: ***\n"),
+            "yaml",
+            "replace"
+        )
+        .is_err());
     }
 
     #[test]

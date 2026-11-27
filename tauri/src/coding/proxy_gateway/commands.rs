@@ -737,6 +737,26 @@ pub async fn proxy_gateway_switch_primary_provider(
     provider_switch::apply_or_switch_provider(&app, cli_key, &provider_id, false).await
 }
 
+/// Thin frontend half of the shared re-attach flow: restore direct first, then
+/// let the page run its existing save command.
+#[tauri::command]
+pub async fn proxy_gateway_begin_provider_write(
+    app: tauri::AppHandle,
+    cli_key: GatewayCliKey,
+) -> Result<Option<crate::coding::proxy_gateway::types::GatewayProviderWriteSnapshot>, String> {
+    provider_switch::begin_provider_write(&app, cli_key).await
+}
+
+/// Re-engage the takeover captured by `proxy_gateway_begin_provider_write`.
+#[tauri::command]
+pub async fn proxy_gateway_finish_provider_write(
+    app: tauri::AppHandle,
+    cli_key: GatewayCliKey,
+    snapshot: crate::coding::proxy_gateway::types::GatewayProviderWriteSnapshot,
+) -> Result<GatewayCliTakeoverStatus, String> {
+    provider_switch::finish_provider_write(&app, cli_key, snapshot).await
+}
+
 #[tauri::command]
 pub async fn proxy_gateway_stop_preflight(
     gateway_state: tauri::State<'_, ProxyGatewayState>,
@@ -1646,19 +1666,38 @@ pub async fn proxy_gateway_model_health_entries(
     Ok(items)
 }
 
-#[tauri::command]
+/// Clears model-health cooldowns whether or not the gateway is running.
+///
+/// Deliberately a plain backend function rather than a Tauri command: the
+/// desktop UI has no standalone reset entry, and the control API owns the
+/// approval gate. Persistence failures are surfaced instead of logged.
 pub fn proxy_gateway_reset_model_health(
-    gateway_state: tauri::State<'_, ProxyGatewayState>,
+    app: &tauri::AppHandle,
+    gateway_state: &ProxyGatewayState,
 ) -> Result<Value, String> {
-    let manager = gateway_state
-        .manager
-        .lock()
-        .map_err(|_| "Proxy gateway manager lock poisoned".to_string())?;
-    if !manager.status().running {
-        return Err("Gateway is not running".to_string());
+    let (running, reset) = {
+        let manager = gateway_state
+            .manager
+            .lock()
+            .map_err(|_| "Proxy gateway manager lock poisoned".to_string())?;
+        let running = manager.status().running;
+        let reset = manager.reset_model_health()?;
+        (running, reset)
+    };
+    if !reset {
+        // Stopped gateway (or a runtime without a health registry): the file is
+        // the only persisted state, so removing it is the reset.
+        let path = proxy_gateway_paths(app)?.model_health_path();
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|error| {
+                format!(
+                    "Failed to remove the model health file {}: {error}",
+                    path.display()
+                )
+            })?;
+        }
     }
-    let reset = manager.reset_model_health();
-    Ok(serde_json::json!({ "reset": reset }))
+    Ok(serde_json::json!({ "reset": reset || !running, "running": running }))
 }
 
 #[tauri::command]

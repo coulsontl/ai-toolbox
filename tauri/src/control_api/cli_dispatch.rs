@@ -63,6 +63,7 @@ struct CliCapability {
     provider_crud: bool,
     model_crud: bool,
     config: bool,
+    config_read_only: bool,
     prompts: bool,
     apply: bool,
     test: bool,
@@ -85,7 +86,11 @@ fn capability(key: &'static str) -> CliCapability {
         kind,
         provider_crud,
         model_crud,
-        config: true,
+        // WorkBuddy has no separate global config file; its models.json is
+        // reached through the provider/model endpoints. CodeBuddy's
+        // settings.json is product-owned and read-only.
+        config: key != "workbuddy",
+        config_read_only: key == "codebuddy",
         prompts,
         apply,
         test,
@@ -103,6 +108,7 @@ pub fn capability_matrix() -> Value {
                 "providerCrud": capability.provider_crud,
                 "modelCrud": capability.model_crud,
                 "config": capability.config,
+                "configReadOnly": capability.config_read_only,
                 "prompts": capability.prompts,
                 "apply": capability.apply,
                 "test": capability.test,
@@ -128,6 +134,17 @@ fn invalid(error: String) -> ApiError {
 
 fn internal(error: String) -> ApiError {
     ApiError::internal(error)
+}
+
+/// A create has no stored value to fall back to, so a `***` placeholder can
+/// only mean the caller echoed a masked read. Reject it before any writer runs.
+fn ensure_no_redacted_input(value: &Value, action: &str) -> ApiResult<()> {
+    if super::redact::contains_redacted(value) {
+        return Err(ApiError::bad_request(format!(
+            "Masked secrets ('***') cannot be used to {action}; send the full value or omit the key"
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -427,6 +444,9 @@ fn canonical_string<'a>(body: &'a Value, key: &str) -> Option<&'a str> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        // `***` is a masked read, never a credential. Writing it back would
+        // destroy the real key in every downstream config writer.
+        .filter(|value| !value.contains(super::redact::REDACTED))
 }
 
 fn ensure_object<'a>(map: &'a mut Map<String, Value>, key: &str) -> &'a mut Map<String, Value> {
@@ -723,6 +743,7 @@ pub async fn get_provider(context: &ServerContext, cli: &str, id: &str) -> ApiRe
 }
 
 pub async fn create_provider(context: &ServerContext, cli: &str, body: Value) -> ApiResult<Value> {
+    ensure_no_redacted_input(&body, "create a provider")?;
     match cli {
         "antigravity" => Err(ApiError::read_only(
             "Antigravity only supports Google OAuth and has no custom provider entry",
@@ -809,7 +830,9 @@ pub async fn create_provider(context: &ServerContext, cli: &str, body: Value) ->
             )
             .await
             .map_err(internal)?;
-            Ok(public_db_provider(serde_json::to_value(provider)?))
+            let value = serde_json::to_value(provider)?;
+            project_zcode_provider(context, value.clone()).await?;
+            Ok(public_db_provider(value))
         }
         "opencode" => create_opencode_provider(context, body).await,
         "openclaw" => create_openclaw_provider(context, body).await,
@@ -823,7 +846,98 @@ pub async fn create_provider(context: &ServerContext, cli: &str, body: Value) ->
     }
 }
 
+/// ZCode keeps a DB row plus a projected provider registry. The desktop form
+/// always calls `save_zcode_provider` after create/update; the control API must
+/// do the same or the CLI never sees the new provider.
+async fn project_zcode_provider(context: &ServerContext, provider: Value) -> ApiResult<()> {
+    let provider: crate::coding::zcode::types::ZcodeProvider =
+        serde_json::from_value(provider)
+            .map_err(|error| invalid(format!("Invalid ZCode provider: {error}")))?;
+    crate::coding::zcode::commands::save_zcode_provider(
+        db_state(context),
+        app(context),
+        crate::coding::zcode::types::ZcodeProviderInput {
+            id: Some(provider.id),
+            name: provider.name,
+            category: provider.category,
+            settings_config: provider.settings_config,
+            source_provider_id: provider.source_provider_id,
+            website_url: provider.website_url,
+            notes: provider.notes,
+            icon: provider.icon,
+            icon_color: provider.icon_color,
+            is_disabled: Some(provider.is_disabled),
+            meta: provider.meta,
+        },
+    )
+    .await
+    .map_err(internal)?;
+    Ok(())
+}
+
+/// Runs a provider/config write through the shared restore -> write -> re-engage
+/// sequence while preserving the original `ApiError` status/code.
+pub(crate) async fn with_gateway_reattach_api<T, F, Fut>(
+    context: &ServerContext,
+    cli: &str,
+    write: F,
+) -> ApiResult<T>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ApiResult<T>>,
+{
+    let Some(gateway_cli) = gateway_cli_key(cli) else {
+        return write().await;
+    };
+    let snapshot =
+        crate::coding::proxy_gateway::provider_switch::begin_provider_write(
+            &context.app,
+            gateway_cli,
+        )
+        .await
+        .map_err(internal)?;
+    let Some(snapshot) = snapshot else {
+        return write().await;
+    };
+
+    let write_result = write().await;
+    let reengage_result =
+        crate::coding::proxy_gateway::provider_switch::finish_provider_write(
+            &context.app,
+            gateway_cli,
+            snapshot,
+        )
+        .await;
+
+    match (write_result, reengage_result) {
+        (Ok(value), Ok(_)) => Ok(value),
+        (Err(error), Ok(_)) => Err(error),
+        (Ok(_), Err(error)) => Err(ApiError::internal(format!(
+            "The write succeeded but the gateway takeover could not be re-engaged: {error}"
+        ))),
+        (Err(mut write_error), Err(reengage_error)) => {
+            write_error.message = format!(
+                "{}; additionally the gateway takeover could not be re-engaged: {reengage_error}",
+                write_error.message
+            );
+            Err(write_error)
+        }
+    }
+}
+
 pub async fn update_provider(
+    context: &ServerContext,
+    cli: &str,
+    id: &str,
+    body: Value,
+) -> ApiResult<Value> {
+    with_gateway_reattach_api(context, cli, || async {
+        update_provider_inner(context, cli, id, body).await
+    })
+    .await
+}
+
+async fn update_provider_inner(
     context: &ServerContext,
     cli: &str,
     id: &str,
@@ -949,19 +1063,30 @@ async fn update_db_provider(
             )
             .await
             .map_err(internal)?;
-            Ok(public_db_provider(serde_json::to_value(provider)?))
+            let value = serde_json::to_value(provider)?;
+            project_zcode_provider(context, value.clone()).await?;
+            Ok(public_db_provider(value))
         }
         _ => Err(ApiError::not_found("Unknown database CLI")),
     }
 }
 
 fn merge_settings_config(raw: &mut Value, patch: &Value) {
-    if let Some(settings) = patch
-        .get("settingsConfig")
-        .filter(|value| value.is_object())
-    {
+    // `settingsConfig` reaches this layer in both shapes: the public API uses an
+    // object, while internal callers (add_model / delete_model /
+    // set_default_model) pass the raw DB row where it is a JSON string. Both
+    // must merge into the stored value, otherwise those commands return 200
+    // while the database silently keeps the old model list.
+    let patch_settings = match patch.get("settingsConfig") {
+        Some(Value::Object(settings)) => Some(Value::Object(settings.clone())),
+        Some(Value::String(text)) => serde_json::from_str::<Value>(text)
+            .ok()
+            .filter(Value::is_object),
+        _ => None,
+    };
+    if let Some(settings) = patch_settings {
         let mut stored = Value::Object(settings_config_object(raw));
-        super::redact::merge_patch_preserving_secrets(&mut stored, settings.clone());
+        super::redact::merge_patch_preserving_secrets(&mut stored, settings);
         if let Some(object) = stored.as_object() {
             set_settings_config(raw, object.clone());
         }
@@ -1175,45 +1300,32 @@ pub async fn apply_provider(
     id: &str,
     model_id: Option<&str>,
 ) -> ApiResult<Value> {
+    // The six gateway-managed DB CLIs must share the desktop orchestration:
+    // restore direct -> apply -> re-engage single/failover/aggregate. Calling
+    // the bare `apply_*` commands here would rewrite gateway-managed runtime
+    // files and desynchronize the manifest from reality.
+    if let Some(gateway_cli) = gateway_cli_key(cli) {
+        let status = crate::coding::proxy_gateway::provider_switch::apply_or_switch_provider(
+            &context.app,
+            gateway_cli,
+            id,
+            false,
+        )
+        .await
+        .map_err(internal)?;
+        return Ok(json!({"applied": id, "gatewayTakeover": status}));
+    }
+
     match cli {
-        "claudecode" => {
-            crate::coding::claude_code::commands::apply_claude_config(db_state(context), app(context), id.to_string())
-                .await
-                .map_err(internal)?;
-            Ok(json!({"applied": id}))
-        }
-        "claudedesktop" => {
-            crate::coding::claude_desktop::commands::apply_claude_desktop_provider(db_state(context), app(context), id.to_string())
-                .await
-                .map_err(internal)?;
-            Ok(json!({"applied": id}))
-        }
-        "codex" => {
-            crate::coding::codex::commands::apply_codex_config(db_state(context), app(context), id.to_string())
-                .await
-                .map_err(internal)?;
-            Ok(json!({"applied": id}))
-        }
-        "grok" => {
-            crate::coding::grok::commands::select_grok_provider(db_state(context), app(context), id.to_string())
-                .await
-                .map_err(internal)?;
-            Ok(json!({"applied": id}))
-        }
-        "kimi" => {
-            crate::coding::kimi::commands::select_kimi_provider(db_state(context), app(context), id.to_string())
-                .await
-                .map_err(internal)?;
-            Ok(json!({"applied": id}))
-        }
-        "geminicli" => {
-            crate::coding::gemini_cli::commands::select_gemini_cli_provider(db_state(context), app(context), id.to_string())
-                .await
-                .map_err(internal)?;
-            Ok(json!({"applied": id}))
-        }
         "zcode" => {
-            let model = model_id.unwrap_or_default();
+            let model = model_id
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    ApiError::bad_request(
+                        "ZCode requires a model id to apply a provider; pass 'modelId'",
+                    )
+                })?;
             crate::coding::zcode::commands::select_zcode_provider(
                 db_state(context),
                 app(context),
@@ -1265,7 +1377,7 @@ async fn list_file_providers_opencode(context: &ServerContext) -> ApiResult<Valu
     Ok(json!({ "providers": items }))
 }
 
-async fn read_opencode_config_value(context: &ServerContext) -> ApiResult<Value> {
+pub(crate) async fn read_opencode_config_value(context: &ServerContext) -> ApiResult<Value> {
     let result = crate::coding::open_code::commands::read_opencode_config(db_state(context))
         .await
         .map_err(internal)?;
@@ -1282,7 +1394,7 @@ async fn read_opencode_config_value(context: &ServerContext) -> ApiResult<Value>
     }
 }
 
-async fn save_opencode_config_value(context: &ServerContext, config: Value) -> ApiResult<()> {
+pub(crate) async fn save_opencode_config_value(context: &ServerContext, config: Value) -> ApiResult<()> {
     let config: crate::coding::open_code::types::OpenCodeConfig = serde_json::from_value(config)
         .map_err(|error| invalid(format!("Invalid OpenCode config: {error}")))?;
     crate::coding::open_code::commands::save_opencode_config(
@@ -1396,7 +1508,7 @@ async fn list_file_providers_openclaw(context: &ServerContext) -> ApiResult<Valu
     Ok(json!({ "providers": items }))
 }
 
-async fn read_openclaw_config_value(context: &ServerContext) -> ApiResult<Value> {
+pub(crate) async fn read_openclaw_config_value(context: &ServerContext) -> ApiResult<Value> {
     let result = crate::coding::open_claw::commands::read_openclaw_config(db_state(context))
         .await
         .map_err(internal)?;
@@ -1413,7 +1525,7 @@ async fn read_openclaw_config_value(context: &ServerContext) -> ApiResult<Value>
     }
 }
 
-async fn save_openclaw_config_value(context: &ServerContext, config: Value) -> ApiResult<()> {
+pub(crate) async fn save_openclaw_config_value(context: &ServerContext, config: Value) -> ApiResult<()> {
     let config: crate::coding::open_claw::types::OpenClawConfig = serde_json::from_value(config)
         .map_err(|error| invalid(format!("Invalid OpenClaw config: {error}")))?;
     crate::coding::open_claw::commands::save_openclaw_config(
@@ -1526,7 +1638,12 @@ async fn apply_openclaw_provider(
     {
         config["agents"]["defaults"] = json!({});
     }
-    config["agents"]["defaults"]["model"] = json!({"primary": format!("{id}/{model_id}")});
+    // Only replace the primary entry: OpenClaw's `model` object also carries a
+    // user-configured `fallbacks` list that an apply must not drop.
+    if !config["agents"]["defaults"]["model"].is_object() {
+        config["agents"]["defaults"]["model"] = json!({});
+    }
+    config["agents"]["defaults"]["model"]["primary"] = json!(format!("{id}/{model_id}"));
     save_openclaw_config_value(context, config).await?;
     Ok(json!({"applied": id, "modelId": model_id}))
 }
@@ -1964,38 +2081,105 @@ async fn create_omo_provider(context: &ServerContext, body: Value) -> ApiResult<
     get_provider(context, "omo_native", &key).await
 }
 
+async fn raw_omo_provider(context: &ServerContext, id: &str) -> ApiResult<Value> {
+    let providers = crate::coding::omo_native::providers::list_omo_native_providers(
+        db_state(context),
+    )
+    .await
+    .map_err(internal)?;
+    providers
+        .into_iter()
+        .find(|provider| provider.key == id)
+        .map(|provider| provider.config)
+        .ok_or_else(|| ApiError::not_found(format!("OMO provider '{id}' not found")))
+}
+
 async fn update_omo_provider(context: &ServerContext, id: &str, body: Value) -> ApiResult<Value> {
-    let listing = list_omo_providers(context).await?;
-    let existing = listing
-        .get("providers")
-        .and_then(Value::as_array)
-        .and_then(|items| items.iter().find(|item| item["providerKey"] == id))
-        .cloned()
-        .ok_or_else(|| ApiError::not_found(format!("OMO provider '{id}' not found")))?;
-    let mut config = existing
-        .get("provider")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
+    // Start from the raw models.json entry, never the redacted public DTO:
+    // merging from a masked tree writes `***` as the provider's apiKey.
+    let mut config = raw_omo_provider(context, id).await?;
     let patch = body
         .get("provider")
         .cloned()
         .unwrap_or_else(|| body.clone());
     super::redact::merge_patch_preserving_secrets(&mut config, patch);
+    let api_key = body
+        .get("apiKey")
+        .and_then(Value::as_str)
+        .filter(|value| !value.contains(super::redact::REDACTED))
+        .map(str::to_string);
     crate::coding::omo_native::providers::save_omo_native_provider(
         db_state(context),
         app(context),
         crate::coding::omo_native::types::OmoNativeProviderInput {
             key: id.to_string(),
             config,
-            api_key: body
-                .get("apiKey")
-                .and_then(Value::as_str)
-                .map(str::to_string),
+            api_key,
         },
     )
     .await
     .map_err(internal)?;
     get_provider(context, "omo_native", id).await
+}
+
+async fn add_omo_model(
+    context: &ServerContext,
+    provider_id: &str,
+    model_id: &str,
+    body: &Value,
+) -> ApiResult<Value> {
+    let mut config = raw_omo_provider(context, provider_id).await?;
+    let mut models = config
+        .get("models")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if !models
+        .iter()
+        .any(|model| model.get("id").and_then(Value::as_str) == Some(model_id))
+    {
+        let mut model = body.get("model").cloned().unwrap_or_else(|| json!({}));
+        if !model.is_object() {
+            model = json!({});
+        }
+        model["id"] = json!(model_id);
+        models.push(model);
+    }
+    config["models"] = Value::Array(models);
+    crate::coding::omo_native::providers::save_omo_native_provider(
+        db_state(context),
+        app(context),
+        crate::coding::omo_native::types::OmoNativeProviderInput {
+            key: provider_id.to_string(),
+            config,
+            api_key: None,
+        },
+    )
+    .await
+    .map_err(internal)?;
+    list_models(context, "omo_native", provider_id).await
+}
+
+async fn delete_omo_model(
+    context: &ServerContext,
+    provider_id: &str,
+    model_id: &str,
+) -> ApiResult<()> {
+    let mut config = raw_omo_provider(context, provider_id).await?;
+    if let Some(models) = config.get_mut("models").and_then(Value::as_array_mut) {
+        models.retain(|model| model.get("id").and_then(Value::as_str) != Some(model_id));
+    }
+    crate::coding::omo_native::providers::save_omo_native_provider(
+        db_state(context),
+        app(context),
+        crate::coding::omo_native::types::OmoNativeProviderInput {
+            key: provider_id.to_string(),
+            config,
+            api_key: None,
+        },
+    )
+    .await
+    .map_err(internal)
 }
 
 async fn delete_omo_provider(context: &ServerContext, id: &str) -> ApiResult<Value> {
@@ -2112,6 +2296,7 @@ async fn create_family_provider(
         .cloned()
         .or_else(|| {
             body.get("modelId")
+                .or_else(|| body.get("model"))
                 .and_then(Value::as_str)
                 .map(|id| json!({"id": id}))
         })
@@ -2198,14 +2383,21 @@ async fn create_family_provider(
 }
 
 async fn update_family_provider(
-    context: &ServerContext,
+    _context: &ServerContext,
     cli: &str,
-    id: &str,
+    _id: &str,
     _body: Value,
 ) -> ApiResult<Value> {
     // Channel identity is (baseUrl, apiKey); changing either creates a new
-    // channel. Model-level edits use the model endpoints instead.
-    get_provider(context, cli, id).await
+    // channel. Returning 200 here made `aitb provider update` look successful
+    // while nothing changed, so the contract is an explicit refusal.
+    Err(ApiError::new(
+        405,
+        "method_not_allowed",
+        format!(
+            "'{cli}' channels are identified by (baseUrl, apiKey) and cannot be renamed in place; edit models through the model endpoints"
+        ),
+    ))
 }
 
 async fn delete_family_provider(context: &ServerContext, cli: &str, id: &str) -> ApiResult<Value> {
@@ -2249,14 +2441,7 @@ async fn delete_family_provider(context: &ServerContext, cli: &str, id: &str) ->
 }
 
 fn family_channel_id(base_url: &str, api_key: &str) -> String {
-    // Mirrors `workbuddy_family::channel::channel_id`.
-    let seed = format!("{base_url}\u{1f}{api_key}");
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in seed.as_bytes() {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("channel-{hash:016x}")
+    crate::coding::workbuddy_family::channel::channel_id(base_url, api_key)
 }
 
 // ---------------------------------------------------------------------------
@@ -2384,6 +2569,18 @@ pub async fn add_model(
     provider_id: &str,
     body: Value,
 ) -> ApiResult<Value> {
+    with_gateway_reattach_api(context, cli, || async {
+        add_model_inner(context, cli, provider_id, body).await
+    })
+    .await
+}
+
+async fn add_model_inner(
+    context: &ServerContext,
+    cli: &str,
+    provider_id: &str,
+    body: Value,
+) -> ApiResult<Value> {
     let model_id = body
         .get("modelId")
         .or_else(|| body.get("id"))
@@ -2421,9 +2618,10 @@ pub async fn add_model(
         "opencode" | "openclaw" => {
             add_file_model(context, cli, provider_id, &model_id, &body).await
         }
-        "pi" | "oh_my_pi" | "hermes" | "dsh" | "omo_native" => {
+        "pi" | "oh_my_pi" | "hermes" | "dsh" => {
             add_runtime_model(context, cli, provider_id, &model_id, &body).await
         }
+        "omo_native" => add_omo_model(context, provider_id, &model_id, &body).await,
         "workbuddy" | "codebuddy" => {
             add_family_model(context, cli, provider_id, &model_id, &body).await
         }
@@ -2678,6 +2876,18 @@ pub async fn delete_model(
     provider_id: &str,
     model_id: &str,
 ) -> ApiResult<Value> {
+    with_gateway_reattach_api(context, cli, || async {
+        delete_model_inner(context, cli, provider_id, model_id).await
+    })
+    .await
+}
+
+async fn delete_model_inner(
+    context: &ServerContext,
+    cli: &str,
+    provider_id: &str,
+    model_id: &str,
+) -> ApiResult<Value> {
     match cli {
         "workbuddy" | "codebuddy" => {
             if cli == "workbuddy" {
@@ -2712,8 +2922,12 @@ pub async fn delete_model(
             delete_file_model(context, cli, provider_id, model_id).await?;
             Ok(json!({"deleted": model_id}))
         }
-        "pi" | "oh_my_pi" | "hermes" | "dsh" | "omo_native" => {
+        "pi" | "oh_my_pi" | "hermes" | "dsh" => {
             delete_runtime_model(context, cli, provider_id, model_id).await?;
+            Ok(json!({"deleted": model_id}))
+        }
+        "omo_native" => {
+            delete_omo_model(context, provider_id, model_id).await?;
             Ok(json!({"deleted": model_id}))
         }
         other => Err(ApiError::not_found(format!("Unknown CLI '{other}'"))),
@@ -2836,6 +3050,18 @@ pub async fn set_default_model(
     provider_id: &str,
     model_id: &str,
 ) -> ApiResult<Value> {
+    with_gateway_reattach_api(context, cli, || async {
+        set_default_model_inner(context, cli, provider_id, model_id).await
+    })
+    .await
+}
+
+async fn set_default_model_inner(
+    context: &ServerContext,
+    cli: &str,
+    provider_id: &str,
+    model_id: &str,
+) -> ApiResult<Value> {
     match cli {
         "claudecode" | "claudedesktop" | "geminicli" => {
             let mut raw = raw_db_provider(context, cli, provider_id).await?;
@@ -2905,6 +3131,108 @@ fn patch_codex_toml_default_model(existing: &str, model_id: &str) -> ApiResult<S
 // Test / fetch models
 // ---------------------------------------------------------------------------
 
+/// Raw provider payload used to build outbound connections.
+///
+/// Connectivity tests and model discovery must never be fed the public,
+/// redacted DTO: `***` is not a credential and would turn a valid key into a
+/// guaranteed 401.
+async fn raw_provider_for_connection(
+    context: &ServerContext,
+    cli: &str,
+    provider_id: &str,
+) -> ApiResult<Value> {
+    match cli {
+        "claudecode" | "claudedesktop" | "codex" | "grok" | "kimi" | "geminicli" | "zcode" => {
+            raw_db_provider(context, cli, provider_id).await
+        }
+        "opencode" => {
+            let config = read_opencode_config_value(context).await?;
+            let provider = config
+                .get("provider")
+                .and_then(|providers| providers.get(provider_id))
+                .cloned()
+                .ok_or_else(|| {
+                    ApiError::not_found(format!("OpenCode provider '{provider_id}' not found"))
+                })?;
+            Ok(json!({
+                "id": provider_id,
+                "providerKey": provider_id,
+                "provider": provider,
+            }))
+        }
+        "openclaw" => {
+            let config = read_openclaw_config_value(context).await?;
+            let provider = config
+                .get("models")
+                .and_then(|models| models.get("providers"))
+                .and_then(|providers| providers.get(provider_id))
+                .cloned()
+                .ok_or_else(|| {
+                    ApiError::not_found(format!("OpenClaw provider '{provider_id}' not found"))
+                })?;
+            Ok(json!({
+                "id": provider_id,
+                "providerKey": provider_id,
+                "provider": provider,
+            }))
+        }
+        "pi" | "oh_my_pi" | "hermes" | "dsh" => {
+            let runtime_cli = runtime_cli_from_key(cli)?;
+            let config = runtime_config(context, runtime_cli).await?;
+            let provider = config
+                .get("providers")
+                .and_then(Value::as_array)
+                .and_then(|items| items.iter().find(|item| item["providerKey"] == provider_id))
+                .and_then(|item| item.get("modelsProvider").or_else(|| item.get("provider")))
+                .cloned()
+                .ok_or_else(|| {
+                    ApiError::not_found(format!("Provider '{provider_id}' not found"))
+                })?;
+            Ok(json!({"providerKey": provider_id, "provider": provider}))
+        }
+        "omo_native" => Ok(json!({
+            "providerKey": provider_id,
+            "provider": raw_omo_provider(context, provider_id).await?,
+        })),
+        "workbuddy" | "codebuddy" => {
+            let config = family_runtime_config(context, cli).await?;
+            config
+                .get("providers")
+                .and_then(Value::as_array)
+                .and_then(|items| items.iter().find(|item| item["id"] == provider_id))
+                .cloned()
+                .ok_or_else(|| ApiError::not_found(format!("Channel '{provider_id}' not found")))
+        }
+        other => Err(ApiError::not_found(format!(
+            "'{other}' has no connectivity test"
+        ))),
+    }
+}
+
+/// DB providers store `settingsConfig` as a JSON string; parse it so the
+/// connection builder can read `env` / `auth` like the direct paths do.
+fn connection_provider(mut provider: Value) -> Value {
+    if let Some(Value::String(raw)) = provider.get("settingsConfig").cloned() {
+        if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
+            provider["settingsConfig"] = parsed;
+        }
+    }
+    provider
+}
+
+fn provider_config_value_mode(
+    cli: &str,
+) -> Option<crate::coding::open_code::models_api::ConfigValueMode> {
+    use crate::coding::open_code::models_api::ConfigValueMode;
+    match cli {
+        "pi" => Some(ConfigValueMode::Pi),
+        "oh_my_pi" => Some(ConfigValueMode::Omp),
+        // OmO Native uses Pi's interpolation syntax, not OMP's.
+        "omo_native" => Some(ConfigValueMode::Omo),
+        _ => None,
+    }
+}
+
 pub async fn test_provider(
     context: &ServerContext,
     cli: &str,
@@ -2969,7 +3297,8 @@ pub async fn test_provider(
         }
     }
 
-    let connection = provider_connection(cli, &provider)?;
+    let connection =
+        provider_connection(cli, &connection_provider(raw_provider_for_connection(context, cli, provider_id).await?))?;
     let request = crate::coding::open_code::models_api::ConnectivityTestRequest {
         npm: connection.npm,
         api_format: None,
@@ -2986,7 +3315,7 @@ pub async fn test_provider(
         body: None,
         model_ids,
         timeout_secs: Some(timeout_secs),
-        config_value_mode: None,
+        config_value_mode: provider_config_value_mode(cli),
         vision_probe: false,
     };
     let response = crate::coding::open_code::models_api::test_provider_model_connectivity(
@@ -3003,6 +3332,35 @@ struct ProviderConnection {
     base_url: String,
     api_key: Option<String>,
     headers: Option<Value>,
+}
+
+/// A `customUrl` may move the models probe to another path, but never to
+/// another origin while the provider's stored credential is attached: that
+/// would hand the key to an endpoint the user never configured.
+fn ensure_custom_url_same_origin(
+    base_url: &str,
+    custom_url: &str,
+    has_credential: bool,
+) -> ApiResult<()> {
+    if !has_credential || base_url.trim().is_empty() {
+        return Ok(());
+    }
+    let base = url::Url::parse(base_url.trim())
+        .map_err(|_| ApiError::bad_request("The provider base URL is not a valid URL"))?;
+    let custom = url::Url::parse(custom_url.trim())
+        .map_err(|_| ApiError::bad_request("'customUrl' is not a valid URL"))?;
+    let base_origin = (base.scheme(), base.host_str(), base.port_or_known_default());
+    let custom_origin = (
+        custom.scheme(),
+        custom.host_str(),
+        custom.port_or_known_default(),
+    );
+    if base_origin != custom_origin {
+        return Err(ApiError::bad_request(
+            "'customUrl' must use the same origin as the provider base URL; refusing to send the provider credential to another host",
+        ));
+    }
+    Ok(())
 }
 
 fn provider_connection(cli: &str, provider: &Value) -> ApiResult<ProviderConnection> {
@@ -3202,12 +3560,19 @@ pub async fn fetch_models(
     provider_id: &str,
     body: &Value,
 ) -> ApiResult<Value> {
-    let provider = get_provider(context, cli, provider_id).await?;
-    let connection = provider_connection(cli, &provider)?;
+    let connection =
+        provider_connection(cli, &connection_provider(raw_provider_for_connection(context, cli, provider_id).await?))?;
     let api_type = match body.get("apiType").and_then(Value::as_str) {
         Some("native") => crate::coding::open_code::models_api::ApiType::Native,
         _ => crate::coding::open_code::models_api::ApiType::OpenaiCompat,
     };
+    let custom_url = body
+        .get("customUrl")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if let Some(custom_url) = custom_url.as_deref() {
+        ensure_custom_url_same_origin(&connection.base_url, custom_url, connection.api_key.is_some())?;
+    }
     let request = crate::coding::open_code::models_api::FetchModelsRequest {
         provider_id: Some(provider_id.to_string()),
         base_url: connection.base_url,
@@ -3218,11 +3583,8 @@ pub async fn fetch_models(
             .get("sdkType")
             .and_then(Value::as_str)
             .map(str::to_string),
-        custom_url: body
-            .get("customUrl")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        config_value_mode: None,
+        custom_url,
+        config_value_mode: provider_config_value_mode(cli),
     };
     let response =
         crate::coding::open_code::models_api::fetch_provider_models(db_state(context), request)
@@ -3236,7 +3598,13 @@ pub async fn fetch_models(
 // ---------------------------------------------------------------------------
 
 pub fn unsupported(cli: &str, feature: &str) -> ApiError {
-    ApiError::read_only(format!("{feature} is not supported for CLI '{cli}'"))
+    // Its own code, not `read_only`: the user cannot fix this by changing the
+    // approval policy, and the CLI must not tell them to try.
+    ApiError::new(
+        400,
+        "unsupported",
+        format!("{feature} is not supported for CLI '{cli}'"),
+    )
 }
 
 #[cfg(test)]
@@ -3278,6 +3646,112 @@ mod tests {
             .unwrap();
         assert_eq!(claude["kind"], "database");
         assert_eq!(claude["providerCrud"], true);
+    }
+
+    #[test]
+    fn db_model_edits_merge_into_a_string_settings_config() {
+        // Regression for the seven DB CLIs: add/delete/set-default pass the raw
+        // row (`settingsConfig` is a JSON string). The old merge ignored that
+        // shape, returned 200, and silently kept the old model list.
+        for cli in [
+            "claudecode",
+            "claudedesktop",
+            "codex",
+            "grok",
+            "kimi",
+            "geminicli",
+            "zcode",
+        ] {
+            let mut stored = json!({
+                "id": "p1",
+                "settingsConfig": r#"{"models":[{"id":"old"}],"keep":"yes"}"#,
+            });
+            merge_settings_config(
+                &mut stored,
+                &json!({
+                    "settingsConfig": r#"{"models":[{"id":"new"}]}"#,
+                }),
+            );
+            let merged: Value =
+                serde_json::from_str(stored["settingsConfig"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                merged["models"][0]["id"], "new",
+                "{cli} must persist the new model list"
+            );
+            assert_eq!(merged["keep"], "yes", "{cli} must keep unknown keys");
+        }
+    }
+
+    #[test]
+    fn canonical_fields_ignore_mask_placeholders_and_create_rejects_them() {
+        assert_eq!(canonical_string(&json!({"apiKey": "***"}), "apiKey"), None);
+        assert_eq!(canonical_string(&json!({"apiKey": "sk-real"}), "apiKey"), Some("sk-real"));
+        assert!(ensure_no_redacted_input(
+            &json!({"settingsConfig": {"env": {"ANTHROPIC_AUTH_TOKEN": "***"}}}),
+            "create a provider"
+        )
+        .is_err());
+        assert!(ensure_no_redacted_input(&json!({"apiKey": "sk-real"}), "create a provider").is_ok());
+    }
+
+    #[test]
+    fn omo_update_merge_keeps_a_real_api_key_when_the_patch_echoes_the_mask() {
+        // Mirrors `update_omo_provider`: start from the raw models.json entry,
+        // merge the patch, and never let `***` replace the stored credential.
+        let mut raw = json!({
+            "apiKey": "sk-real",
+            "baseUrl": "https://omo.test/v1",
+            "models": [{"id": "m1"}],
+        });
+        super::super::redact::merge_patch_preserving_secrets(
+            &mut raw,
+            json!({
+                "apiKey": "***",
+                "baseUrl": "https://new.test/v1",
+                "models": [{"id": "m1"}, {"id": "m2"}],
+            }),
+        );
+        assert_eq!(raw["apiKey"], "sk-real");
+        assert_eq!(raw["baseUrl"], "https://new.test/v1");
+        assert_eq!(raw["models"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn connectivity_tests_pass_the_cli_specific_config_value_mode() {
+        use crate::coding::open_code::models_api::ConfigValueMode;
+        assert_eq!(provider_config_value_mode("pi"), Some(ConfigValueMode::Pi));
+        assert_eq!(
+            provider_config_value_mode("oh_my_pi"),
+            Some(ConfigValueMode::Omp)
+        );
+        assert_eq!(
+            provider_config_value_mode("omo_native"),
+            Some(ConfigValueMode::Omo)
+        );
+        assert_eq!(provider_config_value_mode("codex"), None);
+    }
+
+    #[test]
+    fn custom_model_url_must_keep_the_provider_origin_when_a_key_is_attached() {
+        assert!(ensure_custom_url_same_origin(
+            "https://api.test/v1",
+            "https://api.test/v1/models?x=1",
+            true
+        )
+        .is_ok());
+        assert!(ensure_custom_url_same_origin(
+            "https://api.test/v1",
+            "https://evil.test/v1/models",
+            true
+        )
+        .is_err());
+        // No credential means no trust boundary to cross.
+        assert!(ensure_custom_url_same_origin(
+            "https://api.test/v1",
+            "https://evil.test/v1/models",
+            false
+        )
+        .is_ok());
     }
 
     #[test]

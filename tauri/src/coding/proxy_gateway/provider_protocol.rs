@@ -52,6 +52,15 @@ pub(crate) fn provider_needs_gateway_proxy(
         return false;
     }
 
+    // A plugin-backed provider always needs the gateway: its upstream transport
+    // only exists inside the gateway's plugin bridge, so a "direct" config
+    // would point the CLI at an endpoint nothing serves. This mirrors the
+    // frontend `isPluginRoutedProvider` predicate (meta marker or `/plugin/`
+    // endpoint).
+    if provider_has_plugin_marker(meta, settings_config) {
+        return true;
+    }
+
     // Grok CLI natively supports responses, chat_completions and messages, but
     // not Gemini Native. Gemini endpoints still require Gateway conversion.
     if cli_key == GatewayCliKey::Grok {
@@ -80,6 +89,56 @@ pub(crate) fn provider_needs_gateway_proxy(
         }
     }
     false
+}
+
+/// True when the provider row is served by a plugin bridge.
+///
+/// The DB marker lives at `meta.pluginProvider` (camelCase from the Rust DTO,
+/// snake_case in older rows). File-config CLIs have no provider row, so their
+/// marker is the gateway endpoint `/plugin/<provider_id>` written into a base
+/// URL — checked recursively because each CLI stores it in a different field.
+fn provider_has_plugin_marker(meta: Option<&Value>, settings_config: &str) -> bool {
+    if let Some(meta) = meta {
+        let reference = meta
+            .get("pluginProvider")
+            .or_else(|| meta.get("plugin_provider"))
+            .and_then(Value::as_object);
+        if let Some(reference) = reference {
+            let plugin_spec = reference
+                .get("pluginSpec")
+                .or_else(|| reference.get("plugin_spec"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim();
+            let provider_id = reference
+                .get("providerId")
+                .or_else(|| reference.get("provider_id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim();
+            if !plugin_spec.is_empty() && !provider_id.is_empty() {
+                return true;
+            }
+        }
+    }
+
+    let settings = serde_json::from_str::<Value>(settings_config).unwrap_or(Value::Null);
+    value_has_plugin_route(&settings)
+}
+
+fn value_has_plugin_route(value: &Value) -> bool {
+    match value {
+        Value::String(text) => url::Url::parse(text)
+            .ok()
+            .and_then(|url| {
+                let mut segments = url.path_segments()?;
+                Some(segments.next() == Some("plugin") && segments.next().is_some())
+            })
+            .unwrap_or(false),
+        Value::Array(items) => items.iter().any(value_has_plugin_route),
+        Value::Object(map) => map.values().any(value_has_plugin_route),
+        _ => false,
+    }
 }
 
 fn provider_target_protocol(

@@ -75,7 +75,9 @@ impl ApiError {
         json!({
             "error": {
                 "code": self.code,
-                "message": self.message,
+                // Upstream/parse errors can quote the offending config line, so
+                // every error message crosses the same text redaction as reads.
+                "message": super::redact::redact_text(&self.message),
                 "status": self.status,
             }
         })
@@ -97,5 +99,30 @@ impl From<serde_json::Error> for ApiError {
 impl From<&str> for ApiError {
     fn from(message: &str) -> Self {
         Self::internal(message.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_bodies_redact_upstream_credentials() {
+        let error = ApiError::bad_request(
+            "Upstream rejected api_key = \"sk-live-secret\" (token: tok-123)",
+        );
+        let body = error.body();
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(!message.contains("sk-live-secret"), "message: {message}");
+        assert!(!message.contains("tok-123"), "message: {message}");
+        assert_eq!(body["error"]["code"], "bad_request");
+        assert_eq!(body["error"]["status"], 400);
+    }
+
+    #[test]
+    fn unsupported_is_its_own_code_not_read_only() {
+        let error = ApiError::new(400, "unsupported", "nope");
+        assert_eq!(error.code, "unsupported");
+        assert_eq!(error.body()["error"]["code"], "unsupported");
     }
 }

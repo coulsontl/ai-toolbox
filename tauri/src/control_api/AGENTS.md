@@ -22,6 +22,15 @@
 - **发现文件是同机唯一凭据载体**：CLI 读取 URL + Token，绝不打印；桌面端只显示路径。服务停止/退出时必须删除自己 pid 的发现文件，避免下一次启动误读旧 Token。
 - **HTTP 客户端独立**：`cli/` 不依赖 Tauri/WebView，使用 clap + 手写阻塞 HTTP/1.1；不要为了复用后端类型把 CLI 拖进 Tauri 依赖树。
 
+## 复用白名单与反腐蚀（Hard Rule 15）
+
+- **允许直接调用的层**：`coding/<cli>/commands`、`coding/proxy_gateway::commands`、`coding/proxy_gateway::provider_switch`、`plugins::commands`/`installer`/`store`/`cli_integration`、`workbuddy_family::channel`。除此之外不要在本目录新增配置解析器、模型目录合并器或凭据读写。
+- **6 个网关接管型 CLI 的写入必须走 `provider_switch`**：`claudecode` / `claudedesktop` / `codex` / `grok` / `kimi` / `geminicli` 的 provider 创建、更新、应用、模型增删/默认模型、全局配置写入，都必须在 `apply_or_switch_provider`（应用）或 `with_gateway_reattach`（写源）内完成。控制面不得自己调用 restore/engage 命令拼流程；否则单测能过、真实 takeover 会被降级成 direct 或丢掉 aggregate 清单。
+- **前端编排已下沉**：桌面端的 restore → save → re-engage 由 `proxy_gateway_begin_provider_write` / `proxy_gateway_finish_provider_write`（同一把 `DATA_DIR_CHANGE_LOCK` + `provider_switch_lock`）承担；TS 的 `providerSaveWithGatewayReengage` 在拿到 `gatewayCliKey` 时必须调这两个命令，不再自己串回调。新增页面直接传 `gatewayCliKey`。
+- **脱敏只发生在响应边界**：`redact_value`/`redact_text`/`redact_json_string` 只用于 GET/LIST/日志/审批摘要/错误体。业务函数、canonical 捷径、provider test/fetch-models、PATCH 合并都必须从原始 DB 行或原始配置文件重新读取；公开 DTO 里的 `***` 永远不能进入写入或联网路径。
+- **能力拒绝用稳定 code**：不支持的能力返回 `unsupported`（400），策略拒绝返回 `read_only`（403），两者都不能混用。CLI 的 `--json` 会原样透出 server code。
+- **新命令/新路由必须同步内置 Skill**：`tauri/resources/builtin_skills/ai-toolbox/references/control-cli.md` 的命令树、`format × mode` 矩阵和退出码要与 `cli/src/args.rs` 一致，并跑 `pnpm run test:control-api-reuse`。
+
 ## 关键流程
 
 ```mermaid
@@ -55,8 +64,9 @@ sequenceDiagram
 - **`public_db_provider` 的 `hasApiKey` 必须在脱敏前计算**：`hasApiKey` 本身要加入 `redact_value` 的豁免名单（`normalized == "hasapikey"`），否则会被当成 `*ApiKey` 掩码掉。不要用公开 DTO 做 PATCH 的输入；更新路径必须重新读取原始 provider（含明文 settingsConfig），再做 secret-preserving merge。
 - **`settingsConfig` 是字符串**：DB provider 的 settingsConfig 在存储层是 JSON 字符串，公开 GET 返回解析后的脱敏对象，PATCH 接受对象或字符串。`merge_settings_config` 必须先把对象合并回字符串再交给 update 命令，不能把临时 `Value` 丢弃。
 - **Canonical 捷径必须落到各 CLI 的类型化结构**：`baseUrl` / `apiKey` / `model` 不是通用扁平字段。ZCode 写 `providerId`/`providerName`/`config.api`/`config.access`/`models`/`defaultModelId`；Grok 写顶层 `baseUrl` + `modelCatalog.models[]` + `defaultModelKey`；Kimi 写 `providerConfigs.<key>.base_url` + `modelCatalog.models[]` + `defaultModelKey`；Codex 写 `auth.OPENAI_API_KEY` 与 TOML `config`。新增 CLI 时先对照其 settings builder/validator，否则 create 能成功但 apply 会失败。
-- **脱敏是结构 + 文本双层**：对象键按 secret 名识别；TOML/YAML/env 文本走正则。`apiKeyEnv`、`hasApiKey`、token 用量计数必须豁免。任何新的 GET/LIST/日志/网关响应都要显式调用 `redact_value`，不要假设底层日志已经脱敏。
-- **掩码不可写回**：JSON patch/replace 用 `merge_patch_preserving_secrets` / `fill_redacted` 回填 `***`；TOML/YAML 原文含 `***` 直接 400，避免把 `***` 写进配置文件。这是“不传 Key 保持原 Key”的另一半。
+- **脱敏是结构 + 文本双层**：JSON 先结构脱敏，TOML 用 `toml_edit::DocumentMut`、YAML 用 `serde_yaml::Value` 逐表/逐值识别（包括 inline table 里的 `http_headers = { "x-api-key" = "..." }` 和裸 `token:`），最后才退回正则覆盖任意 `*_api_key` / `*_token` / `*_secret` / `*_password`。`apiKeyEnv`、`hasApiKey`、token 用量计数必须豁免。任何新的 GET/LIST/日志/网关响应都要显式调用 `redact_value`，不要假设底层日志已经脱敏；`ApiError::body()` 也必须过 `redact_text`。
+- **掩码不可写回**：JSON patch/replace 用 `merge_patch_preserving_secrets` / `drop_redacted` 跳过 `***` 或 null secret；TOML/YAML 走结构化递归合并（保留未知字段/注释），replace 时含 `***` 直接 400。`canonical_string` 与 OMO 的 create/update 必须显式拒绝 `is_redacted_value`，`update_omo_provider` 必须从原始 `models.json`/`auth.json` 起合并。这是“不传 Key 保持原 Key”的另一半。
+- **config get/put 的 scope 是两套存储**：ZCode 的 `scope=cli` 读写 CLI 自己的配置，默认 `common` 读写公共配置；OMO Native 的 `scope=omo` 读写 `shared_base`，默认 `settings` 写 `other_settings`；OpenCode/OpenClaw 直接读写真实配置文件。`config extract` 只有 claudecode/codex/grok/kimi/geminicli/antigravity 有真实回读实现，其余必须 405，不能返回成功空对象。
 - **读取配置不等于能写配置**：CodeBuddy 的 `settings.json` 由产品拥有，控制面 `readOnly: true`，PUT 必须拒绝；WorkBuddy 没有独立全局配置文件编辑入口，`/config` 返回只读错误，不要为对称性伪造写接口。
 - **文件型 CLI 的 patch 必须保留未知字段**：OpenCode/OpenClaw/Pi/OMP/Hermes/DSH/OMO 的公开结构只是视图，写入要用模块的 `save_*` helper，不要在 `cli_dispatch` 手写整文件覆盖。
 - **WorkBuddy/CodeBuddy 的 channel 身份是 `(baseUrl, apiKey)`**：channel id 由 FNV 派生；`update` 不能原地改这两项（会变成新 channel），模型编辑走 model 端点。`delete` 必须重新读取原始 channel 拿真实 key，不能使用脱敏后的 `***`。
@@ -64,8 +74,9 @@ sequenceDiagram
 - **Stop 保护来自后端**：`gateway.stop` 在仍有 CLI 被接管时会报错；不要为了“让 CLI 成功”在路由层跳过检查。接管/恢复本身是 L2，必须弹窗。
 - **Host/Origin 防护不能放宽**：只接受 `Host: 127.0.0.1:<port>` / `localhost:<port>`，任何 `Origin` 头直接 403；Bearer 比较必须常量时间。不要加入 CORS 或“开发模式例外”。
 - **发现文件删除要认 pid**：`remove_discovery_file_if_owned` 只删除属于当前进程的文件；测试/多实例时不要直接 `remove_file`。
-- **CLI 安装路径**：Windows 写 HKCU `Environment\Path` 时必须保留 `REG_EXPAND_SZ` 的类型与 UTF-16 编码；不要用 `setx`（会截断）或把 PATH 写成 `REG_SZ`。Unix 只管理带标记的 `~/.profile` 行。找不到 `aitb` 二进制时返回明确错误，不要把应用自身复制/改名。
-- **授权超时竞态**：超时分支必须先从 hub 移除再发 `control-api-approval-expired`，否则前端允许按钮会打到一个已死的 channel。前端收到 `resolved: false` 只提示过期，不要重试 resolve。
+- **CLI 安装路径**：Windows 写 HKCU `Environment\Path` 时必须保留 `REG_EXPAND_SZ` 的类型与 UTF-16 编码；解码现有值要裁掉尾部 `\0`，否则最后一个 PATH 项会带空字符。不要用 `setx`（会截断）或把 PATH 写成 `REG_SZ`。Unix 安装写标记注释 + `export PATH="..."` 两行，卸载必须两行一起删（只删注释会留下死 export）。找不到 `aitb` 二进制时返回明确错误，不要把应用自身复制/改名。
+- **授权超时与策略切换竞态**：超时分支必须先从 hub 移除再发 `control-api-approval-expired`，否则前端允许按钮会打到一个已死的 channel。停止控制面或切到 `read_only` 时必须 `ApprovalHub::cancel_all()` 并广播 expired；前端收到 `resolved: false` 只提示过期，不要重试 resolve。
+- **插件页面路由会在 reload 后过期**：`page_server.sync_enabled_plugins` 不仅检查插件启用/page 是否存在，还比较入口文件名和解析后的 `service_port`；任一变化就撤销旧 token，让下次打开重新签发。否则新清单会继续用旧目录/旧 CSP 端口服务。
 
 ## 跨模块依赖
 

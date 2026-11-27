@@ -10,8 +10,8 @@ use serde_json::{json, Value};
 use tauri::State;
 
 use super::routes::status_payload;
-use super::settings::{save_control_api_settings, ControlApiSettings};
-use super::{start_if_enabled, stop, ControlApiState};
+use super::settings::{save_control_api_settings, ControlApiApprovalMode, ControlApiSettings};
+use super::{cancel_pending_approvals, start_if_enabled, stop, ControlApiState};
 
 #[tauri::command]
 pub fn control_api_get_settings(
@@ -29,6 +29,11 @@ pub async fn control_api_save_settings(
     context.context.update_settings(saved.clone());
 
     if saved.enabled {
+        // Waiting approvals were opened under the previous policy. Read-only
+        // must not leave a modal that would still let the caller through.
+        if saved.approval_mode == ControlApiApprovalMode::ReadOnly {
+            cancel_pending_approvals(&context.context, "approval_mode_read_only");
+        }
         start_if_enabled(&context).await?;
     } else {
         stop(&context).await?;
@@ -317,7 +322,13 @@ fn decode_utf16le(bytes: &[u8]) -> String {
         .chunks_exact(2)
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .collect();
-    String::from_utf16_lossy(&units)
+    let mut decoded = String::from_utf16_lossy(&units);
+    // Some writers terminate REG_EXPAND_SZ values with a NUL code unit. Left
+    // in place it becomes part of the last PATH entry and corrupts it.
+    while decoded.ends_with('\0') {
+        decoded.pop();
+    }
+    decoded
 }
 
 #[cfg(not(windows))]
@@ -354,15 +365,49 @@ fn remove_from_path(_dir: &Path) -> Result<(), String> {
     if !existing.contains(marker) {
         return Ok(());
     }
-    let cleaned = existing
-        .lines()
-        .filter(|line| !line.trim_start().starts_with(marker.trim()))
-        .filter(|line| !line.contains("AI Toolbox: add ~/.local/bin"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    std::fs::write(&profile, cleaned + "\n")
+    let cleaned = strip_unix_path_block(&existing, &marker);
+    if cleaned == existing {
+        return Ok(());
+    }
+    std::fs::write(&profile, cleaned)
         .map_err(|error| format!("Failed to update {}: {error}", profile.display()))?;
     Ok(())
+}
+
+/// Removes the marker comment and the `export PATH=...` line that follows it.
+///
+/// The installer appends both lines as one block; removing only the comment
+/// would leave a dead export behind and `uninstall` would never fully undo
+/// `install`. Kept platform-independent so it is testable on every host.
+#[cfg_attr(windows, allow(dead_code))]
+fn strip_unix_path_block(existing: &str, marker: &str) -> String {
+    let mut cleaned_lines = Vec::new();
+    let mut drop_following_export = false;
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains(marker.trim()) {
+            drop_following_export = true;
+            continue;
+        }
+        if drop_following_export {
+            if trimmed.starts_with("export PATH=") {
+                drop_following_export = false;
+                continue;
+            }
+            // A blank line between the comment and its export is allowed;
+            // anything else means the user edited the block, so keep it.
+            if trimmed.is_empty() {
+                continue;
+            }
+            drop_following_export = false;
+        }
+        cleaned_lines.push(line);
+    }
+    let mut cleaned = cleaned_lines.join("\n");
+    if !cleaned.is_empty() {
+        cleaned.push('\n');
+    }
+    cleaned
 }
 
 #[cfg(not(windows))]
@@ -400,5 +445,43 @@ mod tests {
         // On a clean checkout `cli/target` may not exist; the function must
         // simply return None rather than erroring.
         let _ = find_cli_binary();
+    }
+
+    #[test]
+    fn unix_path_block_removes_both_the_marker_and_its_export() {
+        let marker = "# AI Toolbox: add ~/.local/bin to PATH";
+        let profile = concat!(
+            "export EDITOR=vim\n",
+            "\n",
+            "# AI Toolbox: add ~/.local/bin to PATH\n",
+            "export PATH=\"$HOME/.local/bin:$PATH\"\n",
+            "export OTHER=1\n",
+        );
+        let cleaned = strip_unix_path_block(profile, marker);
+        assert!(!cleaned.contains(".local/bin"), "cleaned: {cleaned}");
+        assert!(cleaned.contains("export EDITOR=vim"));
+        assert!(cleaned.contains("export OTHER=1"));
+    }
+
+    #[test]
+    fn unix_path_block_keeps_unrelated_path_exports() {
+        let marker = "# AI Toolbox: add ~/.local/bin to PATH";
+        let profile = concat!(
+            "# Another tool\n",
+            "export PATH=\"$HOME/sdk/bin:$PATH\"\n",
+            "# AI Toolbox: add ~/.local/bin to PATH\n",
+            "export PATH=\"$HOME/.local/bin:$PATH\"\n",
+        );
+        let cleaned = strip_unix_path_block(profile, marker);
+        assert!(cleaned.contains("$HOME/sdk/bin"), "cleaned: {cleaned}");
+        assert!(!cleaned.contains(".local/bin"), "cleaned: {cleaned}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn utf16_path_decoding_drops_a_trailing_nul_terminator() {
+        let mut bytes = encode_utf16le("C:\\Tools\\aitb");
+        bytes.extend_from_slice(&[0, 0]);
+        assert_eq!(decode_utf16le(&bytes), "C:\\Tools\\aitb");
     }
 }

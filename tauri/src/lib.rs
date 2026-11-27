@@ -2364,6 +2364,8 @@ pub fn run() {
             coding::proxy_gateway::proxy_gateway_disengage_failover,
             coding::proxy_gateway::proxy_gateway_restore_cli_direct,
             coding::proxy_gateway::proxy_gateway_switch_primary_provider,
+            coding::proxy_gateway::proxy_gateway_begin_provider_write,
+            coding::proxy_gateway::proxy_gateway_finish_provider_write,
             coding::proxy_gateway::proxy_gateway_stop_preflight,
             coding::proxy_gateway::proxy_gateway_request_logs,
             coding::proxy_gateway::proxy_gateway_request_log_detail,
@@ -2385,7 +2387,6 @@ pub fn run() {
             coding::proxy_gateway::delete_model_pricing,
             coding::proxy_gateway::fetch_remote_model_pricing,
             coding::proxy_gateway::proxy_gateway_model_health_entries,
-            coding::proxy_gateway::proxy_gateway_reset_model_health,
             // Backup - Local
             settings::backup::backup_database,
             settings::backup::restore_database,

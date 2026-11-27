@@ -33,6 +33,16 @@ pub async fn dispatch(
                 .map_err(ApiError::from)?;
             Ok(redacted(serde_json::to_value(status)?))
         }
+        (&Method::GET, "clis") => {
+            let statuses = gateway_commands::proxy_gateway_cli_statuses(
+                gateway_state(context),
+                sqlite_state(context),
+                context.app.clone(),
+            )
+            .await
+            .map_err(ApiError::from)?;
+            Ok(redacted(serde_json::to_value(statuses)?))
+        }
         (&Method::POST, "start") => {
             approve_write(
                 context,
@@ -111,12 +121,7 @@ pub async fn dispatch(
             filters.model = query.get("model").cloned();
             filters.status_code = query.get("statusCode").and_then(|value| value.parse().ok());
             if let Some(cli_key) = query.get("cliKey") {
-                filters.cli_key = Some(
-                    serde_json::from_value::<GatewayUsageTool>(Value::String(cli_key.clone()))
-                        .map_err(|_| {
-                            ApiError::bad_request(format!("Unknown gateway usage tool '{cli_key}'"))
-                        })?,
-                );
+                filters.cli_key = Some(gateway_usage_tool(cli_key)?);
             }
             filters.only_failed = query
                 .get("onlyFailed")
@@ -155,15 +160,19 @@ pub async fn dispatch(
                 false,
             )
             .await?;
-            let result = gateway_commands::proxy_gateway_reset_model_health(gateway_state(context))
-                .map_err(ApiError::from)?;
-            Ok(result)
+            let result = gateway_commands::proxy_gateway_reset_model_health(
+                &context.app,
+                gateway_state(context).inner(),
+            )
+            .map_err(ApiError::from)?;
+            Ok(redacted(result))
         }
         (&Method::POST, "takeover") => {
             let action = segments.get(2).map(String::as_str).unwrap_or_default();
             match action {
                 "engage" => engage(context, body).await,
                 "restore" => restore(context, body).await,
+                "switch" => switch_primary(context, body).await,
                 _ => Err(ApiError::not_found("Unknown gateway takeover route")),
             }
         }
@@ -213,44 +222,92 @@ async fn engage(context: &ServerContext, body: Value) -> ApiResult<Value> {
             Ok(redacted(serde_json::to_value(status)?))
         }
         "aggregate" => {
-            let provider_ids: Vec<String> = body
-                .get("providerIds")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default();
-            let separator = body_optional_string(&body, "separator");
-            let aliases = body
-                .get("aliases")
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|error| ApiError::bad_request(format!("Invalid aliases: {error}")))?;
-            let naming = body
-                .get("naming")
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|error| ApiError::bad_request(format!("Invalid naming mode: {error}")))?;
-            let cross_site_failover = body_bool(&body, "crossSiteFailover");
+            let gateway_cli = cli_key.parse_gateway_cli()?;
+            // Missing fields fall back to the saved aggregate draft/manifest.
+            // An omitted sub-flag must not silently reset the user's aliases,
+            // naming mode, exposure selection or `[agents]` defaults.
+            let existing = gateway_commands::proxy_gateway_aggregate_draft(
+                context.app.clone(),
+                gateway_cli,
+            )
+            .await
+            .ok()
+            .flatten();
+
+            let provider_ids: Vec<String> = match body.get("providerIds").and_then(Value::as_array)
+            {
+                Some(items) => items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect(),
+                None => existing
+                    .as_ref()
+                    .map(|draft| draft.provider_ids.clone())
+                    .unwrap_or_default(),
+            };
+            if provider_ids.is_empty() {
+                return Err(ApiError::bad_request(
+                    "Aggregate mode requires at least one 'providerIds' entry",
+                ));
+            }
+            let separator = body_optional_string(&body, "separator").or_else(|| {
+                existing
+                    .as_ref()
+                    .map(|draft| draft.separator.clone())
+            });
+            let aliases = match body.get("aliases") {
+                Some(value) => Some(
+                    serde_json::from_value(value.clone()).map_err(|error| {
+                        ApiError::bad_request(format!("Invalid aliases: {error}"))
+                    })?,
+                ),
+                None => existing.as_ref().map(|draft| draft.aliases.clone()),
+            };
+            let naming = match body.get("naming") {
+                Some(value) => serde_json::from_value(value.clone()).map(Some).map_err(
+                    |error| ApiError::bad_request(format!("Invalid naming mode: {error}")),
+                )?,
+                None => existing.as_ref().map(|draft| draft.naming),
+            };
+            let cross_site_failover = body_bool(&body, "crossSiteFailover")
+                .or_else(|| existing.as_ref().map(|draft| draft.cross_site_failover));
+            let subagent_exposed_models = match body.get("subagentExposedModels") {
+                Some(value) => Some(
+                    serde_json::from_value::<Vec<String>>(value.clone()).map_err(|error| {
+                        ApiError::bad_request(format!("Invalid subagentExposedModels: {error}"))
+                    })?,
+                ),
+                None => existing
+                    .as_ref()
+                    .map(|draft| draft.subagent_exposed_models.clone()),
+            };
+            let subagent_model = body_optional_string(&body, "subagentModel").or_else(|| {
+                existing
+                    .as_ref()
+                    .and_then(|draft| draft.subagent.as_ref())
+                    .and_then(|subagent| subagent.model.clone())
+            });
+            let subagent_reasoning_effort =
+                body_optional_string(&body, "subagentReasoningEffort").or_else(|| {
+                    existing
+                        .as_ref()
+                        .and_then(|draft| draft.subagent.as_ref())
+                        .and_then(|subagent| subagent.reasoning_effort.clone())
+                });
             let status = gateway_commands::proxy_gateway_engage_aggregate(
                 gateway_state(context),
                 sqlite_state(context),
                 context.app.clone(),
-                cli_key.parse_gateway_cli()?,
+                gateway_cli,
                 provider_ids,
                 separator,
                 aliases,
                 naming,
                 cross_site_failover,
-                None,
-                None,
-                None,
+                subagent_exposed_models,
+                subagent_model,
+                subagent_reasoning_effort,
             )
             .await
             .map_err(ApiError::from)?;
@@ -282,6 +339,44 @@ async fn restore(context: &ServerContext, body: Value) -> ApiResult<Value> {
     .await
     .map_err(ApiError::from)?;
     Ok(redacted(serde_json::to_value(status)?))
+}
+
+/// Switch the primary provider of a CLI that is already managed by the
+/// gateway. Reuses the desktop orchestration (restore -> apply -> re-engage)
+/// so failover and aggregate manifests keep their configuration.
+async fn switch_primary(context: &ServerContext, body: Value) -> ApiResult<Value> {
+    let cli_key = normalize_cli_key(&body_string(&body, "cliKey")?)?;
+    let provider_id = body_string(&body, "providerId")?;
+    approve_write(
+        context,
+        RiskLevel::L2,
+        "gateway.takeover.switch",
+        format!("Switch the gateway-managed provider of '{cli_key}' to '{provider_id}'"),
+        Some(cli_key.clone()),
+        false,
+    )
+    .await?;
+    let status = gateway_commands::proxy_gateway_switch_primary_provider(
+        context.app.clone(),
+        cli_key.parse_gateway_cli()?,
+        provider_id,
+    )
+    .await
+    .map_err(ApiError::from)?;
+    Ok(redacted(serde_json::to_value(status)?))
+}
+
+/// `aitb gateway logs --cli claudecode` uses the coding-tab spelling; usage
+/// statistics and the log filter use the gateway tool spelling.
+fn gateway_usage_tool(cli_key: &str) -> ApiResult<GatewayUsageTool> {
+    let canonical = match cli_key {
+        "claudecode" | "claude_code" => "claude",
+        "claudedesktop" | "claude_desktop" => "claude_desktop",
+        "geminicli" | "gemini_cli" => "gemini",
+        other => other,
+    };
+    serde_json::from_value::<GatewayUsageTool>(Value::String(canonical.to_string()))
+        .map_err(|_| ApiError::bad_request(format!("Unknown gateway usage tool '{cli_key}'")))
 }
 
 fn normalize_cli_key(raw: &str) -> ApiResult<String> {
@@ -320,4 +415,30 @@ fn redacted(value: Value) -> Value {
     let mut value = value;
     redact_value(&mut value);
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gateway_logs_cli_keys_map_to_the_usage_tool_spelling() {
+        assert_eq!(
+            gateway_usage_tool("claudecode").unwrap(),
+            GatewayUsageTool::Claude
+        );
+        assert_eq!(
+            gateway_usage_tool("claudedesktop").unwrap(),
+            GatewayUsageTool::ClaudeDesktop
+        );
+        assert_eq!(
+            gateway_usage_tool("geminicli").unwrap(),
+            GatewayUsageTool::Gemini
+        );
+        assert_eq!(
+            gateway_usage_tool("codex").unwrap(),
+            GatewayUsageTool::Codex
+        );
+        assert_eq!(gateway_usage_tool("not-a-cli").unwrap_err().status, 400);
+    }
 }

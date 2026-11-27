@@ -198,22 +198,45 @@ impl PluginPageServer {
     }
 
     /// Keep only tokens whose plugin is still installed and enabled and whose
-    /// page still exists in its manifest.
+    /// page still exists in its manifest with the same entry file and service
+    /// port.
+    ///
+    /// Reloading an updated plugin re-reads the manifest. A page that now
+    /// points at a different file, or whose service moved to another port,
+    /// must not keep serving the old root/CSP: the token is revoked and the
+    /// next `open_page` mints a fresh one.
     pub fn sync_enabled_plugins(&self, db: &SqliteDbState) -> Result<(), String> {
-        let mut allowed = std::collections::HashSet::new();
+        let mut expected: HashMap<(String, String), (String, Option<u16>)> = HashMap::new();
         for record in store::list_installed_plugins(db)? {
             if !record.enabled {
                 continue;
             }
-            for page in record.pages {
-                allowed.insert((record.id.clone(), page.id));
+            for page in &record.pages {
+                let entry_file = std::path::Path::new(&page.entry_file)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| page.entry_file.clone());
+                let service_port = if record.has_provider_entry {
+                    crate::plugins::page_bridge::resolve_service_port(page, &record.options)
+                } else {
+                    None
+                };
+                expected.insert(
+                    (record.id.clone(), page.id.clone()),
+                    (entry_file, service_port),
+                );
             }
         }
-        self.state
-            .lock()
-            .unwrap()
+        let mut state = self.state.lock().unwrap();
+        state
             .routes
-            .retain(|_, route| allowed.contains(&(route.plugin_id.clone(), route.page_id.clone())));
+            .retain(|_, route| match expected.get(&(route.plugin_id.clone(), route.page_id.clone()))
+            {
+                Some((entry_file, service_port)) => {
+                    route.entry_file == *entry_file && route.service_port == *service_port
+                }
+                None => false,
+            });
         Ok(())
     }
 
@@ -547,6 +570,7 @@ fn content_type_for(path: &Path) -> &'static str {
 mod tests {
     use super::*;
     use crate::plugins::types::{InstalledPluginRecord, PluginPageManifest};
+    use serde_json::json;
 
     struct RawResponse {
         status: u16,
@@ -839,6 +863,66 @@ mod tests {
         server.sync_enabled_plugins(&db).unwrap();
         assert_eq!(
             request(address, "GET", &format!("/_plugin/{token}/index.html"))
+                .await
+                .status,
+            404
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_revokes_a_page_whose_entry_file_or_service_port_changed() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let (_root, entry) = page_fixture();
+        let server = Arc::new(PluginPageServer::new());
+        let token = server
+            .register_page("plugin-a", "default", &entry, Some(4000))
+            .unwrap();
+        let address = server.ensure_started().await.unwrap();
+
+        let mut record = InstalledPluginRecord {
+            id: "plugin-a".to_string(),
+            package_name: "plugin-a".to_string(),
+            enabled: true,
+            has_provider_entry: true,
+            options: json!({"port": 4000}),
+            pages: vec![PluginPageManifest {
+                id: "default".to_string(),
+                entry_file: "index.html".to_string(),
+                service_port: Some(3477),
+                service_option: Some("port".to_string()),
+                ..PluginPageManifest::default()
+            }],
+            ..InstalledPluginRecord::default()
+        };
+        store::upsert_installed_plugin(&db, &record).unwrap();
+        server.sync_enabled_plugins(&db).unwrap();
+        assert_eq!(
+            request(address, "GET", &format!("/_plugin/{token}/index.html"))
+                .await
+                .status,
+            200
+        );
+
+        // The option moved the service: the old CSP/CONNECT allowance is stale.
+        record.options = json!({"port": 4001});
+        store::upsert_installed_plugin(&db, &record).unwrap();
+        server.sync_enabled_plugins(&db).unwrap();
+        assert_eq!(
+            request(address, "GET", &format!("/_plugin/{token}/index.html"))
+                .await
+                .status,
+            404
+        );
+
+        // The entry file changed: the old folder must not keep serving it.
+        let second = server
+            .register_page("plugin-a", "default", &entry, Some(4001))
+            .unwrap();
+        record.pages[0].entry_file = "renamed.html".to_string();
+        store::upsert_installed_plugin(&db, &record).unwrap();
+        server.sync_enabled_plugins(&db).unwrap();
+        assert_eq!(
+            request(address, "GET", &format!("/_plugin/{second}/index.html"))
                 .await
                 .status,
             404
