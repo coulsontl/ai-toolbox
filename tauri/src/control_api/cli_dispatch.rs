@@ -238,7 +238,11 @@ fn apply_canonical_fields(cli: &str, body: &Value, settings: &mut Map<String, Va
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
-                if let Ok(patched) = patch_codex_toml(&existing, base_url, model) {
+                if let Ok(patched) =
+                    crate::coding::codex::commands::patch_provider_config_toml(
+                        &existing, base_url, model,
+                    )
+                {
                     settings.insert("config".to_string(), json!(patched));
                 }
             }
@@ -485,65 +489,6 @@ fn kimi_provider_key(settings: &Map<String, Value>) -> String {
     }
 }
 
-/// Writes the canonical channel address/model into Codex's TOML string.
-fn patch_codex_toml(
-    existing: &str,
-    base_url: Option<&str>,
-    model: Option<&str>,
-) -> Result<String, String> {
-    use toml_edit::{DocumentMut, Item, Table, Value as TomlValue};
-    let mut document = if existing.trim().is_empty() {
-        DocumentMut::new()
-    } else {
-        existing
-            .parse::<DocumentMut>()
-            .map_err(|error| format!("Invalid TOML: {error}"))?
-    };
-    if let Some(model) = model {
-        // Older Codex configs may pin the model inside `[chat]`; keep that
-        // location when present, otherwise write the top-level key.
-        let handled = document
-            .get_mut("chat")
-            .and_then(Item::as_table_mut)
-            .filter(|chat| chat.contains_key("model"))
-            .map(|chat| chat["model"] = Item::Value(TomlValue::from(model)))
-            .is_some();
-        if !handled {
-            document["model"] = Item::Value(TomlValue::from(model));
-        }
-    }
-    if let Some(base_url) = base_url {
-        let provider_id = document
-            .get("model_provider")
-            .and_then(Item::as_str)
-            .unwrap_or("custom")
-            .to_string();
-        if !document.contains_key("model_provider") {
-            document["model_provider"] = Item::Value(TomlValue::from(provider_id.clone()));
-        }
-        if !document.contains_key("model_providers") {
-            document["model_providers"] = Item::Table(Table::new());
-        }
-        let providers = document["model_providers"]
-            .as_table_mut()
-            .ok_or_else(|| "model_providers must be a table".to_string())?;
-        if !providers.contains_key(&provider_id) {
-            providers[&provider_id] = Item::Table(Table::new());
-        }
-        let table = providers[&provider_id]
-            .as_table_mut()
-            .ok_or_else(|| "model_provider entry must be a table".to_string())?;
-        table["base_url"] = Item::Value(TomlValue::from(base_url));
-        if !table.contains_key("name") {
-            table["name"] = Item::Value(TomlValue::from("AI Toolbox"));
-        }
-        if !table.contains_key("wire_api") {
-            table["wire_api"] = Item::Value(TomlValue::from("responses"));
-        }
-    }
-    Ok(document.to_string())
-}
-
 fn provider_slug(name: &str) -> String {
     let mut slug = String::new();
     for ch in name.trim().chars() {
@@ -744,6 +689,19 @@ pub async fn get_provider(context: &ServerContext, cli: &str, id: &str) -> ApiRe
 
 pub async fn create_provider(context: &ServerContext, cli: &str, body: Value) -> ApiResult<Value> {
     ensure_no_redacted_input(&body, "create a provider")?;
+    // Provider creation is a source write like update: while the gateway has
+    // the CLI taken over it must happen inside restore -> write -> re-engage.
+    with_gateway_reattach_api(context, cli, || async {
+        create_provider_inner(context, cli, body).await
+    })
+    .await
+}
+
+async fn create_provider_inner(
+    context: &ServerContext,
+    cli: &str,
+    body: Value,
+) -> ApiResult<Value> {
     match cli {
         "antigravity" => Err(ApiError::read_only(
             "Antigravity only supports Google OAuth and has no custom provider entry",
@@ -2554,13 +2512,7 @@ fn models_from_value(value: Option<&Value>) -> Vec<Value> {
 
 fn codex_default_model(settings: &Value) -> Option<String> {
     let config = settings.get("config").and_then(Value::as_str)?;
-    let parsed = config.parse::<toml_edit::DocumentMut>().ok()?;
-    parsed
-        .get("chat")
-        .and_then(|chat| chat.get("model"))
-        .and_then(|value| value.as_str())
-        .or_else(|| parsed.get("model").and_then(|value| value.as_str()))
-        .map(str::to_string)
+    crate::coding::proxy_gateway::provider_protocol::codex_model_from_config(config)
 }
 
 pub async fn add_model(
@@ -3087,7 +3039,10 @@ async fn set_default_model_inner(
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            let patched = patch_codex_toml_default_model(&config, model_id)?;
+            let patched = crate::coding::codex::commands::patch_default_model_in_config_toml(
+                &config, model_id,
+            )
+            .map_err(invalid)?;
             settings.insert("config".to_string(), json!(patched));
             set_settings_config(&mut raw, settings);
             update_db_provider(context, cli, provider_id, raw).await?;
@@ -3109,22 +3064,6 @@ async fn set_default_model_inner(
         )),
         other => Err(ApiError::not_found(format!("Unknown CLI '{other}'"))),
     }
-}
-
-fn patch_codex_toml_default_model(existing: &str, model_id: &str) -> ApiResult<String> {
-    use toml_edit::{DocumentMut, Item, Value as TomlValue};
-    let mut document = if existing.trim().is_empty() {
-        DocumentMut::new()
-    } else {
-        existing
-            .parse::<DocumentMut>()
-            .map_err(|error| invalid(format!("Invalid TOML: {error}")))?
-    };
-    document["model"] = Item::Value(TomlValue::from(model_id));
-    if document.get("chat").is_some() {
-        document["chat"]["model"] = Item::Value(TomlValue::from(model_id));
-    }
-    Ok(document.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -3435,7 +3374,13 @@ fn provider_connection(cli: &str, provider: &Value) -> ApiResult<ProviderConnect
                 .and_then(|auth| auth.get("OPENAI_API_KEY"))
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            let base_url = codex_base_url(settings.get("config").and_then(Value::as_str));
+            let base_url = settings
+                .get("config")
+                .and_then(Value::as_str)
+                .and_then(
+                    crate::coding::proxy_gateway::provider_protocol::codex_base_url_from_config,
+                )
+                .unwrap_or_default();
             Ok(ProviderConnection {
                 npm: default_npm,
                 base_url,
@@ -3519,26 +3464,6 @@ fn provider_connection(cli: &str, provider: &Value) -> ApiResult<ProviderConnect
             "'{cli}' has no connectivity test"
         ))),
     }
-}
-
-fn codex_base_url(config: Option<&str>) -> String {
-    let Some(config) = config else {
-        return String::new();
-    };
-    let Ok(document) = config.parse::<toml_edit::DocumentMut>() else {
-        return String::new();
-    };
-    let provider_id = document
-        .get("model_provider")
-        .and_then(|value| value.as_str())
-        .unwrap_or("custom");
-    document
-        .get("model_providers")
-        .and_then(|providers| providers.get(provider_id))
-        .and_then(|provider| provider.get("base_url"))
-        .and_then(|value| value.as_str())
-        .unwrap_or_default()
-        .to_string()
 }
 
 fn gateway_cli_key(cli: &str) -> Option<crate::coding::proxy_gateway::types::GatewayCliKey> {
@@ -3848,14 +3773,5 @@ mod tests {
         );
         assert_eq!(kimi["modelCatalog"]["models"][0]["provider"], "custom");
         assert_eq!(kimi["defaultModelKey"], "kimi-k2");
-    }
-
-    #[test]
-    fn codex_base_url_patch_keeps_existing_toml() {
-        let existing = "model = \"gpt-5\"\n";
-        let patched = patch_codex_toml(existing, Some("https://codex.test"), None).unwrap();
-        assert!(patched.contains("model = \"gpt-5\""));
-        assert!(patched.contains("base_url = \"https://codex.test\""));
-        assert!(patched.contains("model_provider"));
     }
 }

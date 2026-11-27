@@ -2803,6 +2803,88 @@ pub(crate) fn extract_codex_top_level_model(config_toml: &str) -> Option<String>
         .map(str::to_string)
 }
 
+/// Writes a canonical channel address/model into a Codex provider's `config`
+/// TOML string. Used by the control plane so it never has to own Codex TOML
+/// semantics (Hard Rule 15).
+pub fn patch_provider_config_toml(
+    existing: &str,
+    base_url: Option<&str>,
+    model: Option<&str>,
+) -> Result<String, String> {
+    use toml_edit::{DocumentMut, Item, Table, Value as TomlValue};
+    let mut document = if existing.trim().is_empty() {
+        DocumentMut::new()
+    } else {
+        existing
+            .parse::<DocumentMut>()
+            .map_err(|error| format!("Invalid TOML: {error}"))?
+    };
+    if let Some(model) = model {
+        // Older Codex configs may pin the model inside `[chat]`; keep that
+        // location when present, otherwise write the top-level key.
+        let handled = document
+            .get_mut("chat")
+            .and_then(Item::as_table_mut)
+            .filter(|chat| chat.contains_key("model"))
+            .map(|chat| chat["model"] = Item::Value(TomlValue::from(model)))
+            .is_some();
+        if !handled {
+            document["model"] = Item::Value(TomlValue::from(model));
+        }
+    }
+    if let Some(base_url) = base_url {
+        let provider_id = document
+            .get("model_provider")
+            .and_then(Item::as_str)
+            .unwrap_or("custom")
+            .to_string();
+        if !document.contains_key("model_provider") {
+            document["model_provider"] = Item::Value(TomlValue::from(provider_id.clone()));
+        }
+        if !document.contains_key("model_providers") {
+            document["model_providers"] = Item::Table(Table::new());
+        }
+        let providers = document["model_providers"]
+            .as_table_mut()
+            .ok_or_else(|| "model_providers must be a table".to_string())?;
+        if !providers.contains_key(&provider_id) {
+            providers[&provider_id] = Item::Table(Table::new());
+        }
+        let table = providers[&provider_id]
+            .as_table_mut()
+            .ok_or_else(|| "model_provider entry must be a table".to_string())?;
+        table["base_url"] = Item::Value(TomlValue::from(base_url));
+        if !table.contains_key("name") {
+            table["name"] = Item::Value(TomlValue::from("AI Toolbox"));
+        }
+        if !table.contains_key("wire_api") {
+            table["wire_api"] = Item::Value(TomlValue::from("responses"));
+        }
+    }
+    Ok(document.to_string())
+}
+
+/// Sets the default model in a Codex provider's `config` TOML string, keeping
+/// a legacy `[chat].model` in sync when that table exists.
+pub fn patch_default_model_in_config_toml(
+    existing: &str,
+    model_id: &str,
+) -> Result<String, String> {
+    use toml_edit::{DocumentMut, Item, Value as TomlValue};
+    let mut document = if existing.trim().is_empty() {
+        DocumentMut::new()
+    } else {
+        existing
+            .parse::<DocumentMut>()
+            .map_err(|error| format!("Invalid TOML: {error}"))?
+    };
+    document["model"] = Item::Value(TomlValue::from(model_id));
+    if document.get("chat").is_some() {
+        document["chat"]["model"] = Item::Value(TomlValue::from(model_id));
+    }
+    Ok(document.to_string())
+}
+
 fn normalize_codex_model_catalog_for_storage(
     settings_object: &serde_json::Map<String, serde_json::Value>,
 ) -> Option<serde_json::Value> {
@@ -11380,6 +11462,37 @@ approval_policy = "never"
             None
         );
         assert_eq!(std::fs::read_to_string(&config_path).unwrap(), garbage);
+    }
+
+    #[test]
+    fn provider_config_patch_keeps_existing_toml_and_writes_the_channel() {
+        let existing = "model = \"gpt-5\"\n";
+        let patched =
+            super::patch_provider_config_toml(existing, Some("https://codex.test"), None).unwrap();
+        assert!(patched.contains("model = \"gpt-5\""));
+        assert!(patched.contains("base_url = \"https://codex.test\""));
+        assert!(patched.contains("model_provider"));
+    }
+
+    #[test]
+    fn provider_config_patch_updates_a_legacy_chat_model_in_place() {
+        let existing = "[chat]\nmodel = \"old\"\n";
+        let patched = super::patch_provider_config_toml(existing, None, Some("new")).unwrap();
+        let document = patched.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(document["chat"]["model"].as_str(), Some("new"));
+        assert!(document.get("model").is_none());
+    }
+
+    #[test]
+    fn default_model_patch_writes_both_locations() {
+        let patched = super::patch_default_model_in_config_toml(
+            "model = \"old\"\n[chat]\nmodel = \"old\"\n",
+            "new",
+        )
+        .unwrap();
+        let document = patched.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(document["model"].as_str(), Some("new"));
+        assert_eq!(document["chat"]["model"].as_str(), Some("new"));
     }
 }
 

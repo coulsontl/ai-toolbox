@@ -140,8 +140,8 @@ aitb config extract --cli <cliKey> [--scope ...]
 
 - TOML/YAML 的入参（对象或原文）含字面量 `***` 会 400；保持旧密钥的正确做法是**省略该键**，不是回传掩码。
 - `scope` 不是统一语义词：ZCode 用 `scope=cli` 读写 CLI 自有配置、默认 `common`；OMO Native 用 `scope=omo` 读写 `shared_base`、默认 `settings`；其余 CLI 忽略 `scope`。`config get` 会返回实际 `configPath`，OpenCode/OpenClaw 读写的就是磁盘上的真实配置。
-- `readOnly: true`（CodeBuddy）拒绝写入；WorkBuddy 能力是 `config=false`，`config get`/`set` 返回 `unsupported`，它的 `models.json` 通过 `provider`/`model` 命令维护。
-- `config extract` 只有 `claudecode`、`codex`、`grok`、`kimi`、`geminicli`、`antigravity` 支持从当前文件回读；其他 CLI 返回 `unsupported`，不要反复重试。
+- `readOnly: true`（CodeBuddy）写入返回 `read_only` 403；WorkBuddy 能力是 `config=false`，`config get`/`set` 返回 `unsupported`，它的 `models.json` 通过 `provider`/`model` 命令维护。
+- `config extract` 只有 `claudecode`、`codex`、`grok`、`kimi`、`geminicli`、`antigravity` 支持从当前文件回读；其他 CLI 返回 405 `method_not_allowed`，不要反复重试。
 
 ### 2.6 全局提示词
 
@@ -207,7 +207,7 @@ aitb gateway restore --cli <cliKey>
 
 - `antigravity` 只有 Google OAuth：渠道/模型 CRUD、`apply`、`test` 返回 `unsupported`；`config` 与提示词仍可用。
 - `workbuddy` 没有独立全局配置文件，`config` 为 `false`；模型走 `provider`/`model` 命令。
-- `codebuddy` 的 `settings.json` 由产品拥有，`config` 可读、`configReadOnly=true`，写入返回 `unsupported`。
+- `codebuddy` 的 `settings.json` 由产品拥有，`config` 可读、`configReadOnly=true`，写入返回 `read_only` 403。
 - 不支持 ≠ 授权失败：`unsupported` 是能力边界，换命令或换 CLI；`read_only` 才是用户策略拒绝。
 
 别名：`claude` → `claudecode`、`gemini` → `geminicli`、`omp` / `oh-my-pi` → `oh_my_pi`、`omo` → `omo_native`。

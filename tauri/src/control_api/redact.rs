@@ -646,4 +646,16 @@ mod tests {
             assert!(!redacted.contains(secret), "'{secret}' leaked: {redacted}");
         }
     }
+
+    #[test]
+    fn masked_values_are_detected_recursively() {
+        assert!(contains_redacted(&json!({"a": {"b": "***"}})));
+        assert!(contains_redacted(&json!([{"a": "***"}])));
+        assert!(!contains_redacted(&json!({"a": "value"})));
+    }
+
+    #[test]
+    fn config_patch_rejects_the_same_mask_marker() {
+        assert_eq!(crate::coding::config_patch::MASK, REDACTED);
+    }
 }

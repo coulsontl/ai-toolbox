@@ -11,6 +11,9 @@ pub mod cli_resolver;
 pub mod codebuddy;
 pub mod codex;
 pub mod config_cleanup;
+// Structured TOML/YAML merge for whole-file CLI config text (Hard Rule 15:
+// adapters must not re-implement it).
+pub mod config_patch;
 // Shared host (local vs WSL Direct) for provider config value resolution.
 pub mod config_value_host;
 pub mod deeplink;

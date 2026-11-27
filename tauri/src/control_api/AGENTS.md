@@ -24,12 +24,58 @@
 
 ## 复用白名单与反腐蚀（Hard Rule 15）
 
-- **允许直接调用的层**：`coding/<cli>/commands`、`coding/proxy_gateway::commands`、`coding/proxy_gateway::provider_switch`、`plugins::commands`/`installer`/`store`/`cli_integration`、`workbuddy_family::channel`。除此之外不要在本目录新增配置解析器、模型目录合并器或凭据读写。
+- **允许直接调用的层**：`coding/<cli>/commands`、`coding/config_patch`（TOML/YAML 整文件合并）、`coding/proxy_gateway::commands`、`coding/proxy_gateway::provider_switch`、`plugins::commands`/`installer`/`store`/`cli_integration`、`workbuddy_family::channel`。除此之外不要在本目录新增配置解析器、模型目录合并器或凭据读写。
 - **6 个网关接管型 CLI 的写入必须走 `provider_switch`**：`claudecode` / `claudedesktop` / `codex` / `grok` / `kimi` / `geminicli` 的 provider 创建、更新、应用、模型增删/默认模型、全局配置写入，都必须在 `apply_or_switch_provider`（应用）或 `with_gateway_reattach`（写源）内完成。控制面不得自己调用 restore/engage 命令拼流程；否则单测能过、真实 takeover 会被降级成 direct 或丢掉 aggregate 清单。
 - **前端编排已下沉**：桌面端的 restore → save → re-engage 由 `proxy_gateway_begin_provider_write` / `proxy_gateway_finish_provider_write`（同一把 `DATA_DIR_CHANGE_LOCK` + `provider_switch_lock`）承担；TS 的 `providerSaveWithGatewayReengage` 在拿到 `gatewayCliKey` 时必须调这两个命令，不再自己串回调。新增页面直接传 `gatewayCliKey`。
 - **脱敏只发生在响应边界**：`redact_value`/`redact_text`/`redact_json_string` 只用于 GET/LIST/日志/审批摘要/错误体。业务函数、canonical 捷径、provider test/fetch-models、PATCH 合并都必须从原始 DB 行或原始配置文件重新读取；公开 DTO 里的 `***` 永远不能进入写入或联网路径。
 - **能力拒绝用稳定 code**：不支持的能力返回 `unsupported`（400），策略拒绝返回 `read_only`（403），两者都不能混用。CLI 的 `--json` 会原样透出 server code。
 - **新命令/新路由必须同步内置 Skill**：`tauri/resources/builtin_skills/ai-toolbox/references/control-cli.md` 的命令树、`format × mode` 矩阵和退出码要与 `cli/src/args.rs` 一致，并跑 `pnpm run test:control-api-reuse`。
+
+## Live E2E 验证 SOP（真实应用）
+
+单测只能证明“路由调用了正确的函数”，证明不了授权弹窗、takeover 恢复/重接管、备份、WSL/SSH 同步、托盘事件这些真实副作用。任何新增或修改的 `aitb` 命令（含 `aitb` 参数、HTTP 路由、`cli_dispatch` 分支）在合并前，都必须按内置 Skill 对**正在运行的 debug 应用**做一轮 E2E；只跑单测不算完成。
+
+### 1. 备份（先于任何写操作）
+
+- 在项目外建带时间戳的备份目录，例如 `%TEMP%\aitb-e2e-20261128-1530\`（macOS/Linux 用 `$TMPDIR`）。
+- 备份 AI Toolbox 自己的数据：SQLite 数据库文件（含 `-wal`/`-shm`）、控制面发现文件相关设置、插件数据目录、`proxy-gateway/` 清单（`cli-proxy/*/manifest.json`、aggregate 草稿）。
+- 备份本轮会触碰的每个 CLI 配置文件及其目录（Claude `~/.claude/settings.json`、Codex `~/.codex/config.toml`/`auth.json`、Gemini、Grok、Kimi 等）；保留原路径相对结构，恢复时才能核对。
+- 记录测试前快照：文件 SHA-256、`aitb gateway clis --json`、`aitb cli list --json`、关键 provider/model 的 `aitb ... --json` 输出（输出里的 `***` 原样保存即可，不要额外去取真实 Key）。
+
+### 2. 每个用例先写四件事，再执行
+
+| 项目 | 要求 |
+| --- | --- |
+| 现状 | 当前 CLI 是否被接管、主 provider、aggregate/failover 清单、配置文件路径与关键字段 |
+| 预期 | 命令成功后的 DB/文件/网关/事件各应变成什么；失败时返回哪个稳定 code |
+| 验证 | 用哪条 `aitb` 只读命令、哪个文件 diff、哪条日志/事件来证明；不能只看退出码 |
+| 回滚 | 若结果不符，先执行哪条命令/恢复哪个文件；需要用户操作时明确写出来 |
+
+案例模板与各能力域的具体清单见 [`e2e-checklist.md`](e2e-checklist.md)。没有四要素就不要执行写命令。
+
+### 3. 硬性禁令
+
+- **禁止用 `claudecode` 做写测试**：`provider create/update/apply/delete`、`model add/delete/default`、`config set/extract`、`gateway engage/switch/restore` 一律不得对 `claudecode` 执行；只允许 `aitb provider list/get`、`aitb model list`、`aitb config get`、`aitb cli paths` 等只读操作。Paseo 的 Claude Code 子代理依赖这份配置，写坏会让当前会话和其他代理一起掉线。
+- 其余 CLI 的写测试也要先确认没有别的 agent/用户正在使用；拿不准就先问。
+- 不得用真实生产 Key 做“能不能写进去”的试验；需要新 provider 时用合成数据（见下）。
+
+### 4. 合成数据与清理
+
+- 没有可安全复用的数据时，创建带明显前缀的合成对象（如 `e2e-<timestamp>-provider`、模型 `e2e-model`），测试后删除；不要留下测试 provider、模型、提示词、插件或网关清单。
+- 合成 provider 的 Key 用环境变量或占位值，不写入日志/提交/对话。
+- 若测试必须触发真实上游请求（`provider test`/`fetch-models`），优先用本地 mock 或已知可失败的地址验证错误路径；不要把真实凭据发到外部。
+
+### 5. 收尾（缺一不可）
+
+1. 按备份恢复所有被改文件与 SQLite；逐项对比测试前快照（文件哈希、`gateway clis`、provider/model 列表）。
+2. 删除合成数据；确认 `aitb gateway clis` 回到测试前状态（该 direct 的已 restore，该接管的已按原清单重新 engage）。
+3. 把控制面 `approval_mode` 重置为默认 `always_ask`（设置页或 `control_api` 设置行），避免留下 `auto_approve`。
+4. 重启/刷新应用后跑 `aitb status --json` 与一轮只读命令，确认发现文件、端口、权限正常。
+5. 在测试记录里写清：执行了哪些用例、哪些通过、哪些未验证、备份目录位置。
+
+### 6. 沉淀为自动化
+
+E2E 中发现的有价值场景（真实 takeover 后的 create/update、aggregate 重接管、掩码回写、extract 读到代理配置等）必须转成自动化回归：优先 Rust 单测（纯逻辑/路由分发），其次 `cli/` 的参数/HTTP 测试，再次 `scripts/` 下的可重复脚本。只留在手工记录里的用例，下一轮会重新踩坑。
 
 ## 关键流程
 
@@ -65,8 +111,8 @@ sequenceDiagram
 - **`settingsConfig` 是字符串**：DB provider 的 settingsConfig 在存储层是 JSON 字符串，公开 GET 返回解析后的脱敏对象，PATCH 接受对象或字符串。`merge_settings_config` 必须先把对象合并回字符串再交给 update 命令，不能把临时 `Value` 丢弃。
 - **Canonical 捷径必须落到各 CLI 的类型化结构**：`baseUrl` / `apiKey` / `model` 不是通用扁平字段。ZCode 写 `providerId`/`providerName`/`config.api`/`config.access`/`models`/`defaultModelId`；Grok 写顶层 `baseUrl` + `modelCatalog.models[]` + `defaultModelKey`；Kimi 写 `providerConfigs.<key>.base_url` + `modelCatalog.models[]` + `defaultModelKey`；Codex 写 `auth.OPENAI_API_KEY` 与 TOML `config`。新增 CLI 时先对照其 settings builder/validator，否则 create 能成功但 apply 会失败。
 - **脱敏是结构 + 文本双层**：JSON 先结构脱敏，TOML 用 `toml_edit::DocumentMut`、YAML 用 `serde_yaml::Value` 逐表/逐值识别（包括 inline table 里的 `http_headers = { "x-api-key" = "..." }` 和裸 `token:`），最后才退回正则覆盖任意 `*_api_key` / `*_token` / `*_secret` / `*_password`。`apiKeyEnv`、`hasApiKey`、token 用量计数必须豁免。任何新的 GET/LIST/日志/网关响应都要显式调用 `redact_value`，不要假设底层日志已经脱敏；`ApiError::body()` 也必须过 `redact_text`。
-- **掩码不可写回**：JSON patch/replace 用 `merge_patch_preserving_secrets` / `drop_redacted` 跳过 `***` 或 null secret；TOML/YAML 走结构化递归合并（保留未知字段/注释），replace 时含 `***` 直接 400。`canonical_string` 与 OMO 的 create/update 必须显式拒绝 `is_redacted_value`，`update_omo_provider` 必须从原始 `models.json`/`auth.json` 起合并。这是“不传 Key 保持原 Key”的另一半。
-- **config get/put 的 scope 是两套存储**：ZCode 的 `scope=cli` 读写 CLI 自己的配置，默认 `common` 读写公共配置；OMO Native 的 `scope=omo` 读写 `shared_base`，默认 `settings` 写 `other_settings`；OpenCode/OpenClaw 直接读写真实配置文件。`config extract` 只有 claudecode/codex/grok/kimi/geminicli/antigravity 有真实回读实现，其余必须 405，不能返回成功空对象。
+- **掩码不可写回**：JSON patch/replace 用 `merge_patch_preserving_secrets` / `drop_redacted` 跳过 `***` 或 null secret；TOML/YAML 交给 `coding::config_patch` 做结构化递归合并（保留未知字段/注释），replace 时含 `***` 直接 400。控制面不得再出现 `toml_edit`/`serde_yaml`（`redact.rs` 的响应边界除外），`pnpm run test:control-api-reuse` 会拦截。`canonical_string` 与 OMO 的 create/update 必须显式拒绝 `is_redacted_value`，`update_omo_provider` 必须从原始 `models.json`/`auth.json` 起合并。这是“不传 Key 保持原 Key”的另一半。
+- **config get/put 的 scope 是两套存储**：ZCode 的 `scope=cli` 读写 CLI 自己的配置，默认 `common` 读写公共配置；OMO Native 的 `scope=omo` 读写 `shared_base`，默认 `settings` 写 `other_settings`；OpenCode/OpenClaw 直接读写真实配置文件。`config extract` 只有 claudecode/codex/grok/kimi/geminicli/antigravity 有真实回读实现，其余必须 405，不能返回成功空对象。`extract` 读的是实时文件，必须包在 `with_gateway_reattach_api` 内；否则 takeover 期间会把网关代理配置当成用户的公共配置存回 DB。
 - **读取配置不等于能写配置**：CodeBuddy 的 `settings.json` 由产品拥有，控制面 `readOnly: true`，PUT 必须拒绝；WorkBuddy 没有独立全局配置文件编辑入口，`/config` 返回只读错误，不要为对称性伪造写接口。
 - **文件型 CLI 的 patch 必须保留未知字段**：OpenCode/OpenClaw/Pi/OMP/Hermes/DSH/OMO 的公开结构只是视图，写入要用模块的 `save_*` helper，不要在 `cli_dispatch` 手写整文件覆盖。
 - **WorkBuddy/CodeBuddy 的 channel 身份是 `(baseUrl, apiKey)`**：channel id 由 FNV 派生；`update` 不能原地改这两项（会变成新 channel），模型编辑走 model 端点。`delete` 必须重新读取原始 channel 拿真实 key，不能使用脱敏后的 `***`。
@@ -91,4 +137,5 @@ sequenceDiagram
 - `cd tauri && cargo test --lib plugins:: --jobs 2`（插件路由复用回归）
 - `cd tauri && cargo check`
 - `cd cli && cargo test --offline`
-- 手工：设置页开关 → `aitb status --json`；创建 provider 触发弹窗 → 拒绝看退出码 4 → 允许后 GET 确认已写入；`GET` 响应中搜索真实 Key 确认不存在；`aitb config get` 的掩码原样 PATCH 后 GET 确认 Key 未变。
+- `pnpm run test:control-api-reuse`（含脚本自检）
+- 手工：设置页开关 → `aitb status --json`；创建 provider 触发弹窗 → 拒绝看退出码 4 → 允许后 GET 确认已写入；`GET` 响应中搜索真实 Key 确认不存在；`aitb config get` 的掩码原样 PATCH 后 GET 确认 Key 未变。涉及写操作的完整回归按上面的 Live E2E SOP 执行。

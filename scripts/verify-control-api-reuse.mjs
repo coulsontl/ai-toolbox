@@ -10,19 +10,24 @@
  *
  * The checks are structural, deliberately:
  *
- * 1. `cli_dispatch.rs` / `routes_*.rs` must not write files directly; config
- *    writes belong to the owning CLI module (backups, WSL sync, events).
- * 2. The six gateway-managed CLIs must not be applied through bare
+ * 1. No control-plane file may write files directly; config writes belong to
+ *    the owning CLI module (backups, WSL sync, events). `commands.rs` (PATH
+ *    install) and `discovery.rs` (discovery file) are the only intentional
+ *    writers.
+ * 2. No control-plane file may parse or merge TOML/YAML itself. Whole-file
+ *    config semantics live in `coding::config_patch`; response-boundary
+ *    redaction in `redact.rs` is the only legitimate format parser here.
+ * 3. The six gateway-managed CLIs must not be applied through bare
  *    `apply_*_provider` commands. They go through `provider_switch`, which
  *    restores and re-engages the takeover.
- * 3. No family channel hash may be reimplemented here (`Sha256` or a local
+ * 4. No family channel hash may be reimplemented here (`Sha256` or a local
  *    `fn channel_id`); call `workbuddy_family::channel::channel_id`.
- * 4. Every `aitb <command> <subcommand>` documented in the built-in Skill must
- *    exist in `cli/src/args.rs`, so the Skill cannot describe ghost commands.
+ * 5. Every command in `cli/src/args.rs` must be documented in the built-in
+ *    Skill, and every documented `aitb <command> <subcommand>` must exist.
  *
- * Scope note: `commands.rs` and `discovery.rs` are intentionally out of the
- * file-write check — the first maintains the user PATH during `aitb` install,
- * the second writes the discovery file.
+ * The harness always runs `runSelfTests()` first: the scan is fed small
+ * positive/negative fixtures, so a broken regex or a scan path that silently
+ * stops matching fails the check instead of passing it.
  */
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -41,34 +46,58 @@ const skillPath = path.join(
   'control-cli.md',
 );
 
-const failures = [];
+/** `aitb` install rewrites the user PATH; the discovery file is the server's own state. */
+const INTENTIONAL_FILE_WRITERS = new Set(['commands.rs', 'discovery.rs']);
+/** Redaction at the response boundary must understand TOML/YAML to mask values. */
+const REDACTION_BOUNDARY = new Set(['redact.rs']);
 
-/** Route and dispatch files that must stay orchestration-only. */
-async function collectGuardedFiles() {
-  const entries = await readdir(controlRoot, { withFileTypes: true });
-  return entries
-    .filter(entry => entry.isFile() && entry.name.endsWith('.rs'))
-    .map(entry => entry.name)
-    .filter(name => name === 'cli_dispatch.rs' || name.startsWith('routes'))
-    .sort();
-}
-
-const guardedFiles = await collectGuardedFiles();
-if (guardedFiles.length === 0) {
-  console.error('No control API route/dispatch files found — the scan path is wrong.');
-  process.exit(1);
-}
+// JSON object merging is deliberately not forbidden: `merge_json_config_text`
+// applies the control API's own masked-PATCH contract to a JSON payload, not a
+// CLI config-file format. Format-specific TOML/YAML/JSONC parsing is what must
+// live in the owning module (`coding::config_patch` or the CLI module).
 
 const RULES = [
   {
-    pattern: /\b(?:std|tokio)::fs::write\s*\(/,
-    what: 'writes a file directly',
+    pattern: /\bfs::(?:write|copy|remove_file|remove_dir_all|create_dir|create_dir_all)\s*\(/,
+    what: 'writes or deletes a file directly',
     fix: 'call the owning CLI module command/save helper (or provider_switch) instead',
+    skipFiles: INTENTIONAL_FILE_WRITERS,
+  },
+  {
+    pattern: /\bFile::create\s*\(/,
+    what: 'creates a writable file handle',
+    fix: 'call the owning CLI module command/save helper instead',
+    skipFiles: INTENTIONAL_FILE_WRITERS,
   },
   {
     pattern: /\bOpenOptions\b/,
     what: 'opens a writable file handle',
     fix: 'call the owning CLI module command/save helper instead',
+    skipFiles: INTENTIONAL_FILE_WRITERS,
+  },
+  {
+    pattern: /\btoml_edit::/,
+    what: 'parses or writes TOML itself',
+    fix: 'call coding::config_patch or the owning CLI module; only redact.rs may parse formats',
+    skipFiles: REDACTION_BOUNDARY,
+  },
+  {
+    pattern: /\bserde_yaml::/,
+    what: 'parses or writes YAML itself',
+    fix: 'call coding::config_patch; only redact.rs may parse formats',
+    skipFiles: REDACTION_BOUNDARY,
+  },
+  {
+    pattern: /\btoml::(?:from_str|to_string|Value)\b/,
+    what: 'converts JSON into TOML itself',
+    fix: 'call coding::config_patch or the owning CLI module',
+    skipFiles: REDACTION_BOUNDARY,
+  },
+  {
+    pattern:
+      /\bfn\s+(?:merge_(?:toml|yaml|inline_table)\w*|parse_(?:existing_)?toml\w*|patch_\w*toml\w*)/,
+    what: 'defines a second TOML/YAML merge or parser',
+    fix: 'move it to coding::config_patch or the owning CLI module',
   },
   {
     pattern: /\bapply_claude_config\s*\(/,
@@ -101,8 +130,9 @@ const RULES = [
     fix: 'call provider_switch::apply_or_switch_provider',
   },
   {
-    pattern: /\bproxy_gateway_(?:restore_cli_direct|engage_single|engage_failover|engage_aggregate)\s*\(/,
-    // `/v1/gateway/*` is the takeover API itself; every other route/dispatch
+    pattern:
+      /\bproxy_gateway_(?:restore_cli_direct|engage_single|engage_failover|engage_aggregate)\s*\(/,
+    // `/v1/gateway/*` is the takeover API itself; every other control-plane
     // file must go through provider_switch.
     skipFiles: new Set(['routes_gateway.rs']),
     what: 'runs takeover restore/engage itself',
@@ -120,8 +150,17 @@ const RULES = [
   },
 ];
 
-for (const name of guardedFiles) {
-  const source = await readFile(path.join(controlRoot, name), 'utf8');
+/** All route/dispatch/support files in the control plane must follow the rules. */
+async function collectControlFiles() {
+  const entries = await readdir(controlRoot, { withFileTypes: true });
+  return entries
+    .filter(entry => entry.isFile() && entry.name.endsWith('.rs'))
+    .map(entry => entry.name)
+    .sort();
+}
+
+function scanSource(name, source) {
+  const failures = [];
   const lines = source.split('\n');
   for (const rule of RULES) {
     if (rule.skipFiles?.has(name)) {
@@ -143,12 +182,232 @@ for (const name of guardedFiles) {
       break;
     }
   }
+  return failures;
+}
+
+/** `ClearLogs` -> `clear-logs`, `FetchModels` -> `fetch-models`. */
+function kebabCase(name) {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2')
+    .toLowerCase();
+}
+
+/** Maps `pub enum Name { ... }` to its 4-space-indented variants. */
+function parseEnums(source) {
+  const enums = new Map();
+  for (const match of source.matchAll(/^pub enum (\w+) \{([\s\S]*?)^\}/gm)) {
+    const variants = [...match[2].matchAll(/^ {4}([A-Z][A-Za-z0-9]*)\b/gm)].map(
+      variant => variant[1],
+    );
+    enums.set(match[1], variants);
+  }
+  return enums;
+}
+
+/** Maps each `Command` variant to the enum named by its `command:` field. */
+function commandSubEnums(source) {
+  const commandBody = source.match(/^pub enum Command \{([\s\S]*?)^\}/m)?.[1];
+  if (commandBody === undefined) {
+    return new Map();
+  }
+  const variants = [...commandBody.matchAll(/^ {4}([A-Z][A-Za-z0-9]*)\b/gm)];
+  const subEnums = new Map();
+  variants.forEach((variant, index) => {
+    const end = index + 1 < variants.length ? variants[index + 1].index : commandBody.length;
+    const chunk = commandBody.slice(variant.index, end);
+    const subEnum = chunk.match(/\bcommand:\s*([A-Z]\w*),/)?.[1] ?? null;
+    subEnums.set(variant[1], subEnum);
+  });
+  return subEnums;
+}
+
+/** The exact `parent subcommand` set the clap enums define. */
+function expectedCommands(source) {
+  const enums = parseEnums(source);
+  const subEnums = commandSubEnums(source);
+  const expected = new Set();
+  for (const variant of enums.get('Command') ?? []) {
+    const parent = kebabCase(variant);
+    const subEnum = subEnums.get(variant);
+    const subs = subEnum ? enums.get(subEnum) : undefined;
+    if (subs && subs.length > 0) {
+      for (const sub of subs) {
+        expected.add(`${parent} ${kebabCase(sub)}`);
+      }
+    } else {
+      expected.add(parent);
+    }
+  }
+  return expected;
+}
+
+/** `aitb <command> [<subcommand>]` tokens documented in the Skill. */
+function documentedCommands(source) {
+  const documented = new Map();
+  // `[ \t]`, not `\s`: prose that ends one line with `aitb status` and starts
+  // the next with `aitb ...` must not read as `aitb status aitb`.
+  for (const match of source.matchAll(
+    /\baitb[ \t]+([a-z][a-z-]*)(?:[ \t]+([a-z][a-z-]*))?/g,
+  )) {
+    const [, command, subcommand] = match;
+    documented.set(`${command} ${subcommand ?? ''}`.trim(), { command, subcommand });
+  }
+  return documented;
+}
+
+/** Checks both directions: documented -> code and code -> documented. */
+function checkDocTree(argsSource, skillSource) {
+  const failures = [];
+  const expected = expectedCommands(argsSource);
+  const documented = documentedCommands(skillSource);
+  const topLevel = new Set([...expected].map(key => key.split(' ')[0]));
+
+  for (const { command, subcommand } of documented.values()) {
+    if (!topLevel.has(command)) {
+      failures.push({
+        file: 'tauri/resources/builtin_skills/ai-toolbox/references/control-cli.md',
+        line: 1,
+        text: `aitb ${command}`,
+        what: 'documents a top-level command that args.rs does not define',
+        fix: 'add the command to cli/src/args.rs or fix the Skill',
+      });
+      continue;
+    }
+    if (subcommand && !expected.has(`${command} ${subcommand}`)) {
+      failures.push({
+        file: 'tauri/resources/builtin_skills/ai-toolbox/references/control-cli.md',
+        line: 1,
+        text: `aitb ${command} ${subcommand}`,
+        what: 'documents a subcommand that args.rs does not define under that command',
+        fix: 'add the subcommand to cli/src/args.rs or fix the Skill',
+      });
+    }
+  }
+
+  for (const command of expected) {
+    if (!documented.has(command)) {
+      failures.push({
+        file: 'cli/src/args.rs',
+        line: 1,
+        text: `aitb ${command}`,
+        what: 'defines a command the built-in Skill does not document',
+        fix: 'document it in references/control-cli.md (and SKILL.md if it changes the workflow)',
+      });
+    }
+  }
+  return failures;
+}
+
+function assert(condition, message) {
+  if (!condition) {
+    throw new Error(`control-api reuse guard self-test failed: ${message}`);
+  }
+}
+
+/** Positive/negative fixtures for every rule and both doc directions. */
+function runSelfTests() {
+  const writeFailure = scanSource('routes_fixture.rs', 'std::fs::write(path, body)?;');
+  assert(writeFailure.length === 1, 'direct file write must be flagged');
+  assert(
+    scanSource('commands.rs', 'std::fs::write(path, body)?;').length === 0,
+    'the intentional PATH writer must stay allowed',
+  );
+
+  assert(
+    scanSource('routes_fixture.rs', 'let value: toml_edit::DocumentMut = text.parse()?;').length ===
+      1,
+    'TOML parsing in a route must be flagged',
+  );
+  assert(
+    scanSource('redact.rs', 'let value: toml_edit::DocumentMut = text.parse()?;').length === 0,
+    'response-boundary redaction must be allowed to parse TOML',
+  );
+  assert(
+    scanSource('routes_fixture.rs', 'fn merge_toml_document(a: &mut A, b: &B) {}').length === 1,
+    'a local TOML merge must be flagged',
+  );
+  assert(
+    scanSource('routes_fixture.rs', 'apply_codex_config(path);').length === 1,
+    'bare provider apply must be flagged',
+  );
+  assert(
+    scanSource('routes_cli.rs', 'proxy_gateway_engage_single(...).await?;').length === 1,
+    'takeover orchestration outside /v1/gateway must be flagged',
+  );
+  assert(
+    scanSource('routes_gateway.rs', 'proxy_gateway_engage_single(...).await?;').length === 0,
+    '/v1/gateway is the takeover API and must be allowed to engage',
+  );
+  assert(
+    scanSource('routes_fixture.rs', 'use sha2::{Digest, Sha256};').length === 1,
+    'a second family hash must be flagged',
+  );
+
+  const fixtureArgs = [
+    'pub enum Command {',
+    '    Status,',
+    '    Demo {',
+    '        command: DemoCommand,',
+    '    },',
+    '}',
+    'pub enum DemoCommand {',
+    '    List,',
+    '    FetchModels,',
+    '}',
+  ].join('\n');
+  assert(
+    [...expectedCommands(fixtureArgs)].sort().join('|') ===
+      ['demo fetch-models', 'demo list', 'status'].join('|'),
+    'the args.rs tree parser must follow nested subcommand enums',
+  );
+
+  const completeSkill = 'aitb status\naitb demo list\naitb demo fetch-models\n';
+  assert(
+    checkDocTree(fixtureArgs, completeSkill).length === 0,
+    'a fully documented tree must pass both directions',
+  );
+  assert(
+    checkDocTree(
+      fixtureArgs,
+      'aitb status\naitb demo list\naitb demo fetch-models\naitb demo delete\n',
+    ).some(failure => failure.text === 'aitb demo delete'),
+    'a documented ghost subcommand must be flagged',
+  );
+  assert(
+    checkDocTree(fixtureArgs, 'aitb status\naitb demo list\n').some(
+      failure => failure.text === 'aitb demo fetch-models',
+    ),
+    'an undocumented args.rs command must be flagged',
+  );
+  assert(
+    checkDocTree(fixtureArgs, 'aitb status\naitb demo list\naitb demo fetch-models\naitb ghost\n').some(
+      failure => failure.text === 'aitb ghost',
+    ),
+    'a documented ghost top-level command must be flagged',
+  );
+}
+
+runSelfTests();
+
+const guardedFiles = await collectControlFiles();
+if (guardedFiles.length === 0) {
+  console.error('No control API source files found — the scan path is wrong.');
+  process.exit(1);
+}
+
+const failures = [];
+const sources = new Map();
+for (const name of guardedFiles) {
+  const source = await readFile(path.join(controlRoot, name), 'utf8');
+  sources.set(name, source);
+  failures.push(...scanSource(name, source));
 }
 
 // The wrappers that make the control plane reuse the backend must stay in
 // place. Deleting them is the quiet way to reintroduce duplicate flows: the
 // app still builds, and only a real takeover reveals the regression.
-const dispatchSource = await readFile(path.join(controlRoot, 'cli_dispatch.rs'), 'utf8');
+const dispatchSource = sources.get('cli_dispatch.rs') ?? '';
 for (const symbol of ['apply_or_switch_provider', 'with_gateway_reattach']) {
   if (!dispatchSource.includes(symbol)) {
     failures.push({
@@ -161,48 +420,40 @@ for (const symbol of ['apply_or_switch_provider', 'with_gateway_reattach']) {
   }
 }
 
-// Doc -> code: every documented command must exist in the CLI parser.
+// create / update / add-model / delete-model / set-default all wrap their
+// write, and put_config + extract_config wrap theirs. A count catches the
+// regression where one wrapper call is deleted while the rest stay.
+const expectedWrappers = [
+  {
+    file: 'cli_dispatch.rs',
+    source: dispatchSource,
+    minimum: 5,
+    what: 'provider create/update/model writes',
+  },
+  {
+    file: 'routes_cli.rs',
+    source: sources.get('routes_cli.rs') ?? '',
+    minimum: 2,
+    what: 'global config set/extract',
+  },
+];
+for (const { file, source, minimum, what } of expectedWrappers) {
+  const count = (source.match(/\bwith_gateway_reattach_api\s*\(/g) ?? []).length;
+  if (count < minimum) {
+    failures.push({
+      file: `tauri/src/control_api/${file}`,
+      line: 1,
+      text: `${count} with_gateway_reattach_api call(s), expected at least ${minimum}`,
+      what: `no longer wraps every gateway-managed ${what} in the re-engage window`,
+      fix: 'wrap the write with with_gateway_reattach_api; do not call the backend save directly',
+    });
+  }
+}
+
+// Doc <-> code: the Skill and the clap tree must describe the same surface.
 const argsSource = await readFile(argsPath, 'utf8');
 const skillSource = await readFile(skillPath, 'utf8');
-const variantNames = new Set(
-  [...argsSource.matchAll(/^\s{4}([A-Z][A-Za-z0-9]*)\b/gm)].map(match => match[1]),
-);
-const pascalCase = token =>
-  token
-    .split('-')
-    .filter(Boolean)
-    .map(part => part[0].toUpperCase() + part.slice(1))
-    .join('');
-
-const documented = new Map();
-// `[ \t]`, not `\s`: prose that ends one line with `aitb status` and starts
-// the next with `aitb ...` must not read as `aitb status aitb`.
-for (const match of skillSource.matchAll(/\baitb[ \t]+([a-z][a-z-]*)(?:[ \t]+([a-z][a-z-]*))?/g)) {
-  const [, command, subcommand] = match;
-  documented.set(`${command} ${subcommand ?? ''}`.trim(), { command, subcommand });
-}
-
-for (const { command, subcommand } of documented.values()) {
-  if (!variantNames.has(pascalCase(command))) {
-    failures.push({
-      file: 'tauri/resources/builtin_skills/ai-toolbox/references/control-cli.md',
-      line: 1,
-      text: `aitb ${command}`,
-      what: 'documents a top-level command that args.rs does not define',
-      fix: 'add the command to cli/src/args.rs or fix the Skill',
-    });
-    continue;
-  }
-  if (subcommand && !variantNames.has(pascalCase(subcommand))) {
-    failures.push({
-      file: 'tauri/resources/builtin_skills/ai-toolbox/references/control-cli.md',
-      line: 1,
-      text: `aitb ${command} ${subcommand}`,
-      what: 'documents a subcommand that args.rs does not define',
-      fix: 'add the subcommand to cli/src/args.rs or fix the Skill',
-    });
-  }
-}
+failures.push(...checkDocTree(argsSource, skillSource));
 
 if (failures.length > 0) {
   console.error(
@@ -216,7 +467,8 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
+const documentedCount = documentedCommands(skillSource).size;
 console.log(
-  `Control API reuse check passed (${guardedFiles.length} route/dispatch files, ` +
-    `${documented.size} documented commands).`,
+  `Control API reuse check passed (${guardedFiles.length} control-plane files, ` +
+    `${documentedCount} documented commands, self-tests passed).`,
 );
