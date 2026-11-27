@@ -543,6 +543,7 @@ fn command_name(param: &str) -> Result<ReturnType, String> {
 - 构建失败时 `assemble-latest-json` 整个 job 不会运行（`needs` 不满足），所以失败收尾是独立的 `mark-beta-failed` job：它把失败与 run 链接写回 release body 并保持 draft。draft 的资产 URL 对客户端返回 404，也就是“beta 静默停止更新”，因此失败轮必须留下可读的原因，不要把这段删掉。
 - `scripts/next-beta-version.mjs` 里“读不到 beta release”和“GitHub API 失败”必须分开：前者返回 `null` 才会退回字母 `a`，后者必须抛错。把 API 失败也吞成 `null` 会在已有 `b` 之后重新算出 `a`，与已发布版本号撞车。
 - `build` job 刻意不设 `timeout-minutes`：冷缓存下 Windows/macOS 打包可能远超常规耗时，超时会把正常的慢构建误杀成失败轮。`test`、`create-release`、`assemble-latest-json` 仍有超时，避免卡死占住 release。
+- `aitoolbox` CLI 作为 Tauri `externalBin` sidecar 随安装包分发：先在 `Inject rolling beta version` 之后编译 `cli/`（保证 `aitoolbox --version` 与桌面版本一致），再按 `<triple>` 后缀放进 `tauri/binaries/`，并用 `--config` 合并只含 `bundle.externalBin` 的临时配置；仓库里的 `tauri.conf.json` 不静态写 `externalBin`，否则本地 `cargo test` / CI test job 会找不到 sidecar。**`--config` 必须用绝对路径**：tauri-action 按 `projectPath`（`tauri/`）解析相对路径，而 `pnpm tauri` 启动 CLI 时的 cwd 是仓库根（pnpm 会向上找到定义脚本的 `package.json`），相对路径无法同时满足两者。sidecar 在 Windows 安装目录、macOS `Contents/MacOS`、Linux `/usr/bin`（deb/rpm/AppImage）都与主程序同级，`find_cli_binary()` 直接命中。
 
 #### HTTP / TLS Compatibility
 

@@ -10,6 +10,8 @@ const packageJsonPath = path.join(projectRoot, 'package.json');
 const tauriConfigPath = path.join(projectRoot, 'tauri', 'tauri.conf.json');
 const cargoTomlPath = path.join(projectRoot, 'tauri', 'Cargo.toml');
 const cargoLockPath = path.join(projectRoot, 'tauri', 'Cargo.lock');
+const cliCargoTomlPath = path.join(projectRoot, 'cli', 'Cargo.toml');
+const cliCargoLockPath = path.join(projectRoot, 'cli', 'Cargo.lock');
 
 function detectLineEnding(fileContent) {
   return fileContent.includes('\r\n') ? '\r\n' : '\n';
@@ -110,7 +112,7 @@ export function updateCargoTomlVersion(cargoTomlContent, tauriVersion) {
   throw new Error('Failed to locate [package].version in tauri/Cargo.toml');
 }
 
-export function updateCargoLockVersion(cargoLockContent, tauriVersion) {
+export function updateCargoLockVersion(cargoLockContent, tauriVersion, packageName = 'ai-toolbox') {
   const lineEnding = detectLineEnding(cargoLockContent);
   const trailingLineEndingSuffix = extractTrailingLineEndingSuffix(cargoLockContent);
   const lines = splitLines(cargoLockContent);
@@ -136,7 +138,7 @@ export function updateCargoLockVersion(cargoLockContent, tauriVersion) {
       continue;
     }
 
-    if (currentPackageName !== 'ai-toolbox') {
+    if (currentPackageName !== packageName) {
       continue;
     }
 
@@ -162,7 +164,7 @@ export function updateCargoLockVersion(cargoLockContent, tauriVersion) {
     };
   }
 
-  throw new Error('Failed to locate ai-toolbox version in tauri/Cargo.lock');
+  throw new Error(`Failed to locate ${packageName} version in the Cargo.lock`);
 }
 
 export async function syncVersionFromTauriConfig() {
@@ -195,7 +197,29 @@ export async function syncVersionFromTauriConfig() {
     console.log(`Synced tauri/Cargo.lock version: ${cargoLockUpdate.previousVersion} -> ${tauriVersion}`);
   }
 
-  if (!packageJsonUpdate.changed && !cargoTomlUpdate.changed && !cargoLockUpdate.changed) {
+  // The `aitoolbox` CLI ships inside the installer, so `aitoolbox --version`
+  // must match the desktop app version.
+  const cliCargoTomlContent = await readFile(cliCargoTomlPath, 'utf8');
+  const cliCargoTomlUpdate = updateCargoTomlVersion(cliCargoTomlContent, tauriVersion);
+  if (cliCargoTomlUpdate.changed) {
+    await writeFile(cliCargoTomlPath, cliCargoTomlUpdate.content, 'utf8');
+    console.log(`Synced cli/Cargo.toml version: ${cliCargoTomlUpdate.previousVersion} -> ${tauriVersion}`);
+  }
+
+  const cliCargoLockContent = await readFile(cliCargoLockPath, 'utf8');
+  const cliCargoLockUpdate = updateCargoLockVersion(cliCargoLockContent, tauriVersion, 'aitoolbox');
+  if (cliCargoLockUpdate.changed) {
+    await writeFile(cliCargoLockPath, cliCargoLockUpdate.content, 'utf8');
+    console.log(`Synced cli/Cargo.lock version: ${cliCargoLockUpdate.previousVersion} -> ${tauriVersion}`);
+  }
+
+  if (
+    !packageJsonUpdate.changed &&
+    !cargoTomlUpdate.changed &&
+    !cargoLockUpdate.changed &&
+    !cliCargoTomlUpdate.changed &&
+    !cliCargoLockUpdate.changed
+  ) {
     console.log(`Versions already in sync: ${tauriVersion}`);
   }
 }

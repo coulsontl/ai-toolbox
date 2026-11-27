@@ -18,6 +18,9 @@ dist-ssr
 .sisyphus/
 .ace-tool/
 .tmp/
+# aitoolbox CLI sidecar assembled by the release workflow (Tauri externalBin)
+tauri/binaries/
+tauri/tauri.cli-bundle.json
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

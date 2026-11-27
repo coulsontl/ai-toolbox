@@ -214,6 +214,11 @@ jobs:
       - name: Run Rust tests
         run: cargo test --manifest-path tauri/Cargo.toml
 
+      # `cli/` is a separate crate with its own lockfile, so the Tauri test run
+      # above never compiles it.
+      - name: Run aitoolbox CLI tests
+        run: cargo test --manifest-path cli/Cargo.toml
+
       - name: Run TypeScript type check
         run: pnpm exec tsc --noEmit
 
@@ -347,6 +352,34 @@ jobs:
           cargo metadata --manifest-path tauri/Cargo.toml --no-deps --format-version 1 >/dev/null
           pnpm tauri --version
 
+      # Runs after `Inject rolling beta version` so `cli/Cargo.toml` (and the
+      # `aitoolbox --version` output) carries the same version as the app.
+      # Tauri requires external binaries to be named `<name>-<target-triple>`;
+      # it renames them to `aitoolbox[.exe]` and installs them next to the app
+      # executable when bundling.
+      - name: Build aitoolbox CLI sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --manifest-path cli/Cargo.toml --target ${{ matrix.target }}
+          suffix=""
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            suffix=".exe"
+          fi
+          mkdir -p tauri/binaries
+          cp "cli/target/${{ matrix.target }}/release/aitoolbox${suffix}" \
+             "tauri/binaries/aitoolbox-${{ matrix.target }}${suffix}"
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            chmod +x "tauri/binaries/aitoolbox-${{ matrix.target }}"
+          fi
+          printf '{"bundle":{"externalBin":["binaries/aitoolbox"]}}\n' > tauri/tauri.cli-bundle.json
+          # tauri-action parses `args` with string-argv, which treats a
+          # backslash as an escape character (measured: `D:\a\x` becomes
+          # `D:ax`). Publish a forward-slash absolute path so the same value
+          # survives both string-argv and the Tauri CLI's file lookup.
+          CONFIG_PATH="$(node -e "process.stdout.write(process.cwd().split(String.fromCharCode(92)).join('/') + '/tauri/tauri.cli-bundle.json')")"
+          echo "TAURI_CLI_BUNDLE_CONFIG=$CONFIG_PATH" >> "$GITHUB_ENV"
+
       - name: Build Tauri App
         uses: tauri-apps/tauri-action@v0
         env:
@@ -369,7 +402,14 @@ jobs:
           # WiX msi requires a numeric-only prerelease identifier (<= 65535),
           # which the rolling beta stamp `beta.261024a` can never satisfy; the
           # beta channel ships NSIS only, formal releases keep both bundles.
-          args: --target ${{ matrix.target }} --bundles ${{ github.event_name == 'workflow_dispatch' && matrix.platform == 'windows-latest' && 'nsis' || matrix.bundle }}
+          #
+          # The sidecar config must be absolute: tauri-action resolves a
+          # relative `--config` against `projectPath` (tauri/), while `pnpm
+          # tauri` launches the CLI with the repository root as its cwd (pnpm
+          # walks up to the package.json that defines the script), so a
+          # relative path cannot satisfy both. The path is published by the
+          # sidecar step with forward slashes (see the string-argv note).
+          args: --target ${{ matrix.target }} --bundles ${{ github.event_name == 'workflow_dispatch' && matrix.platform == 'windows-latest' && 'nsis' || matrix.bundle }} --config ${{ env.TAURI_CLI_BUNDLE_CONFIG }}
 
       - name: List generated bundles (debug)
         if: always()

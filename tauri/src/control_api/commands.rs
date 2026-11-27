@@ -113,6 +113,14 @@ fn install_path() -> Result<PathBuf, String> {
 
 /// Looks for a build of `aitoolbox` in the usual places: next to the desktop
 /// app, in a repo-local `cli/target/{release,debug}`, or an explicit override.
+///
+/// A sidecar declared through `bundle.externalBin` is installed next to the
+/// main executable on every bundle we ship: the Windows install directory
+/// (NSIS/MSI), `AI Toolbox.app/Contents/MacOS/`, `/usr/bin` for the Linux
+/// deb/rpm packages, and the AppImage's internal `usr/bin`. The first
+/// candidate below is therefore the bundled CLI and needs no environment
+/// override. `dir.join("aitoolbox")` covers a sidecar placed in a sibling
+/// subdirectory.
 fn find_cli_binary() -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(explicit) = std::env::var("AI_TOOLBOX_CLI_BINARY") {
