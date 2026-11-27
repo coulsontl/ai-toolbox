@@ -6494,7 +6494,10 @@
       },
       "notice": {
         "loadFailed": "Failed to load plugin data: {{error}}",
-        "refreshed": "Plugin data refreshed"
+        "refreshed": "Plugin data refreshed",
+        "mirrorOn": "Switched to the China mirror",
+        "mirrorOff": "Switched to the official registry",
+        "mirrorFailed": "Failed to switch the registry: {{error}}"
       }
     },
     "kind": {
@@ -6545,7 +6548,9 @@
         "manageAccounts": "Manage accounts",
         "options": "Options",
         "uninstall": "Uninstall",
-        "openPage": "Open page"
+        "openPage": "Open page",
+        "enable": "Enable",
+        "disable": "Disable"
       },
       "confirmUninstallTitle": "Uninstall plugin",
       "confirmUninstallContent": "Uninstall \"{{name}}\". The plugin's local data (KV and files) is kept by default and stays available after reinstalling.",
@@ -6553,7 +6558,21 @@
       "toggleSuccess": "Updated the enabled state of {{name}}",
       "uninstallSuccess": "Uninstalled {{name}}",
       "actionFailed": "Action failed: {{error}}",
-      "purgeData": "Also delete this plugin's local data (KV and files)"
+      "purgeData": "Also delete this plugin's local data (KV and files)",
+      "chinaMirror": "China mirror",
+      "sortAsc": "Sort A to Z",
+      "sortDesc": "Sort Z to A",
+      "refresh": "Refresh",
+      "install": "Install plugin",
+      "disabledTag": "Disabled",
+      "providersCarried": "Provides {{providers}}",
+      "providerSignedIn": "Signed in",
+      "providerSignedOut": "Not signed in",
+      "middlewareSummary": "{{hooks}} · {{calls}} calls · {{avg}} avg",
+      "pageSummary": "{{pages}} pages · {{permissions}} permissions",
+      "bunReady": "Plugins run on Bun {{version}}",
+      "bunMissing": "Bun runtime is not ready",
+      "viewRuntime": "View runtime"
     },
     "accounts": {
       "providersTitle": "Channels",
@@ -6640,7 +6659,7 @@
       "providerSearch": "Search channels",
       "providerSearchEmpty": "No matching channels",
       "autoCheckin": "Auto check-in",
-      "autoCheckinHint": "Checks in once per local day automatically, retrying later if it fails.",
+      "autoCheckinHint": "When on, every enabled account in this channel checks in once a day",
       "autoCheckinDisabled": "Account disabled. Enable the account for auto check-in to run.",
       "autoCheckinSuccess": "Auto check-in setting updated",
       "autoCheckinFailed": "Failed to save auto check-in setting: {{error}}",
@@ -6652,7 +6671,16 @@
       "checkinOutcomeInactive": "Check-in closed",
       "checkinOutcomeCaptcha": "Verification required",
       "checkinOutcomeFailed": "Failed",
-      "checkinOutcomeUnknown": "Unknown"
+      "checkinOutcomeUnknown": "Unknown",
+      "refresh": "Refresh",
+      "usedPercent": "{{percent}} used",
+      "modelIdCopied": "Model ID copied",
+      "modelIdCopyFailed": "Failed to copy the model ID: {{error}}",
+      "modelTooltipProtocol": "Protocol: {{protocol}}",
+      "modelTooltipContext": "Context: {{context}}",
+      "modelTooltipCapabilities": "Capabilities: {{capabilities}}",
+      "modelTooltipNone": "Capabilities: none declared",
+      "modelIdCopyHint": "Click to copy the model ID"
     },
     "market": {
       "filter": {
@@ -6678,7 +6706,27 @@
       "loadFailed": "Failed to load the plugin market: {{error}}",
       "weeklyDownloads": "{{value}} weekly downloads",
       "providersMore": "+{{count}}",
-      "community": "Community"
+      "community": "Community",
+      "communitySource": "magpie community",
+      "chinaMirror": "China mirror",
+      "refresh": "Refresh market",
+      "refreshed": "Market refreshed",
+      "detail": {
+        "title": "Plugin details",
+        "unknownSource": "Unknown source",
+        "version": "Version",
+        "type": "Type",
+        "source": "Source",
+        "provides": "Provides",
+        "channelCount": "{{count}} channels",
+        "pagePlugin": "Page plugin",
+        "npmLink": "npm ↗",
+        "descriptionTitle": "Details",
+        "providersTitle": "Provided channels",
+        "installCommand": "Install command",
+        "safety": "Plugins are someone else’s code: they sign in and send requests, or see requests as middleware.",
+        "close": "Close"
+      }
     },
     "marketRegistry": {
       "title": "Manage plugin markets",
@@ -6808,7 +6856,7 @@
       "hostRestartSuccess": "Plugin host restarted",
       "hostRestartFailed": "Failed to restart the plugin host: {{error}}",
       "settingsTitle": "Runtime settings",
-      "settingsHint": "Saved settings apply the next time Bun is probed or the host starts.",
+      "settingsHint": "Click save after editing; the China mirror switch applies immediately.",
       "bunManualPath": "Bun path",
       "bunManualHint": "Leave empty to use the managed copy or PATH",
       "bunManualPlaceholder": "Leave empty to search managed and PATH",
@@ -6856,7 +6904,11 @@
       "logsLoadFailed": "Failed to load logs: {{error}}",
       "logsClearConfirmTitle": "Clear diagnostic logs",
       "logsClearConfirmContent": "Clear the in-memory plugin host logs?",
-      "autoRefreshHint": "Host status and logs refresh every 5 seconds while this page is visible"
+      "autoRefreshHint": "Host status and logs refresh every 5 seconds while this page is visible",
+      "chinaMirror": "China mirror",
+      "chinaMirrorHint": "Use the npmmirror registry to speed up plugin installs and market fetches",
+      "npmRegistryHint": "Custom plugin package registry URL",
+      "refreshAll": "Refresh"
     },
     "providerCard": {
       "badge": "Plugin",

@@ -76,6 +76,15 @@ export const redactPluginLog = (text: string): string =>
     .replace(BEARER_TOKEN, (_match, prefix: string) => `${prefix}***`)
     .replace(KNOWN_KEY_SHAPE, '***');
 
+export const NPM_REGISTRY_OFFICIAL = 'https://registry.npmjs.org';
+export const NPM_REGISTRY_CHINA = 'https://registry.npmmirror.com';
+
+/** Whether a registry URL points at the China npmmirror mirror. */
+export const isChinaMirrorRegistry = (registry: string | null | undefined): boolean => {
+  const normalized = (registry ?? '').trim().replace(/\/+$/, '');
+  return normalized === NPM_REGISTRY_CHINA || normalized.includes('npmmirror.com');
+};
+
 export const formatCompactNumber = (value: number | null | undefined): string => {
   if (value == null || !Number.isFinite(value)) {
     return '';

@@ -36,6 +36,7 @@ import {
 import {
   formatMicroseconds,
   formatPluginError,
+  isChinaMirrorRegistry,
   redactPluginLog,
 } from '../utils/pluginFormatters';
 import styles from './PluginRuntimeView.module.less';
@@ -44,6 +45,10 @@ type LogFilter = 'all' | 'info' | 'warn' | 'error';
 
 interface PluginRuntimeViewProps {
   refreshKey: number;
+  pluginSettings: PluginSettings | null;
+  chinaMirrorBusy: boolean;
+  onToggleChinaMirror: (enabled: boolean) => void;
+  onSettingsSaved: (settings: PluginSettings) => void;
   onBunStatusChange: (status: BunRuntimeStatus) => void;
 }
 
@@ -51,6 +56,7 @@ const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   bunManualPath: '',
   npmRegistry: 'https://registry.npmjs.org',
   followAppProxy: true,
+  providerAutoCheckin: {},
 };
 
 const redactLogEntries = (entries: PluginRuntimeLogEntry[]): PluginRuntimeLogEntry[] =>
@@ -58,6 +64,10 @@ const redactLogEntries = (entries: PluginRuntimeLogEntry[]): PluginRuntimeLogEnt
 
 const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
   refreshKey,
+  pluginSettings,
+  chinaMirrorBusy,
+  onToggleChinaMirror,
+  onSettingsSaved,
   onBunStatusChange,
 }) => {
   const { t, i18n } = useTranslation();
@@ -122,6 +132,22 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
   React.useEffect(() => {
     void loadAll();
   }, [loadAll, refreshKey]);
+
+  // The page-level mirror switch writes settings immediately; keep this
+  // page's draft registry in step even while the form has unrelated edits.
+  React.useEffect(() => {
+    if (!pluginSettings) {
+      return;
+    }
+    setDraft((current) =>
+      current.npmRegistry === pluginSettings.npmRegistry
+        ? current
+        : { ...current, npmRegistry: pluginSettings.npmRegistry });
+    setSettings((current) =>
+      current && current.npmRegistry !== pluginSettings.npmRegistry
+        ? { ...current, npmRegistry: pluginSettings.npmRegistry }
+        : current);
+  }, [pluginSettings]);
 
   React.useEffect(() => {
     if (!isActive) {
@@ -231,6 +257,7 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
       const saved = await savePluginSettings(draft);
       setSettings(saved);
       setDraft(saved);
+      onSettingsSaved(saved);
       message.success(t('plugins.runtime.settingsSaved'));
       const nextBunStatus = await getPluginBunStatus();
       setBunStatus(nextBunStatus);
@@ -372,7 +399,10 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
           </span>
           <div className={styles.runtimeInfo}>
             <span className={styles.runtimeTitle}>{t('plugins.runtime.bunTitle')}</span>
-            <span className={styles.runtimePath}>
+            <span
+              className={styles.runtimePath}
+              title={bunStatus?.path || bunStatus?.managedPath || undefined}
+            >
               {bunStatus?.path || bunStatus?.managedPath || t('plugins.runtime.bunMissing')}
             </span>
             <div className={styles.runtimeMeta}>
@@ -393,12 +423,24 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
             </div>
           </div>
           <div className={styles.runtimeActions}>
-            {bunStatus?.available ? (
-              <button type="button" className={styles.actionButton} onClick={() => void handleRecheckBun()}>
-                <RefreshCw size={14} aria-hidden="true" />
-                <span>{t('plugins.runtime.recheck')}</span>
-              </button>
-            ) : (
+            <button
+              type="button"
+              className={styles.actionButton}
+              disabled={loading}
+              onClick={() => void loadAll()}
+            >
+              <RefreshCw size={14} aria-hidden="true" />
+              <span>{t('plugins.runtime.refreshAll')}</span>
+            </button>
+            <button
+              type="button"
+              className={styles.actionButton}
+              onClick={() => void handleRecheckBun()}
+            >
+              <ShieldCheck size={14} aria-hidden="true" />
+              <span>{t('plugins.runtime.recheck')}</span>
+            </button>
+            {bunStatus?.available ? null : (
               <button
                 type="button"
                 className={`${styles.actionButton} ${styles.actionButtonPrimary}`}
@@ -478,74 +520,102 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
           <span className={styles.settingsHint}>{t('plugins.runtime.settingsHint')}</span>
         </div>
 
-        <div className={styles.formRow}>
-          <span className={styles.formLabel}>
-            {t('plugins.runtime.bunManualPath')}
-            <span className={styles.formLabelHint}>
-              {t('plugins.runtime.bunManualHint')}
-            </span>
-          </span>
-          <div className={styles.formControl}>
-            <Input
-              value={draft.bunManualPath}
-              onChange={(event) => handleBunPathChange(event.target.value)}
-              placeholder={t('plugins.runtime.bunManualPlaceholder')}
-              className={styles.formInput}
-            />
-            <button
-              type="button"
-              className={styles.actionButton}
-              disabled={probeBusy}
-              onClick={() => void handleProbePath()}
-            >
-              {probeBusy ? (
-                <Loader2 size={14} className={styles.spin} aria-hidden="true" />
-              ) : (
-                <ShieldCheck size={14} aria-hidden="true" />
-              )}
-              <span>{t('plugins.runtime.probe')}</span>
-            </button>
+        <div className={styles.settingRows}>
+          <div className={styles.settingRow}>
+            <div className={styles.settingInfo}>
+              <span className={styles.settingTitle}>{t('plugins.runtime.chinaMirror')}</span>
+              <span className={styles.settingDesc}>
+                {t('plugins.runtime.chinaMirrorHint')}
+              </span>
+            </div>
+            <div className={styles.settingControl}>
+              <Switch
+                size="small"
+                checked={isChinaMirrorRegistry(draft.npmRegistry)}
+                loading={chinaMirrorBusy}
+                disabled={chinaMirrorBusy || !pluginSettings}
+                aria-label={t('plugins.runtime.chinaMirror')}
+                onChange={onToggleChinaMirror}
+              />
+            </div>
           </div>
-        </div>
-        {probeResult ? (
-          <div
-            className={`${styles.probeResult} ${probeResult.ok ? styles.probeOk : styles.probeError}`}
-          >
-            {probeResult.ok
-              ? t('plugins.runtime.probeOk', { version: probeResult.version ?? '' })
-              : t('plugins.runtime.probeFailed', {
-                error: probeResult.error ?? t('common.unknown'),
-              })}
-          </div>
-        ) : null}
 
-        <div className={styles.formRow}>
-          <span className={styles.formLabel}>
-            {t('plugins.runtime.npmRegistry')}
-          </span>
-          <div className={styles.formControl}>
-            <Input
-              value={draft.npmRegistry}
-              onChange={(event) => updateDraft({ npmRegistry: event.target.value })}
-              placeholder="https://registry.npmjs.org"
-              className={styles.formInput}
-            />
+          <div className={styles.settingRow}>
+            <div className={styles.settingInfoNarrow}>
+              <span className={styles.settingTitle}>{t('plugins.runtime.npmRegistry')}</span>
+              <span className={styles.settingDesc}>
+                {t('plugins.runtime.npmRegistryHint')}
+              </span>
+            </div>
+            <div className={styles.settingField}>
+              <Input
+                value={draft.npmRegistry}
+                onChange={(event) => updateDraft({ npmRegistry: event.target.value })}
+                placeholder="https://registry.npmjs.org"
+                className={styles.settingInput}
+              />
+            </div>
           </div>
-        </div>
 
-        <div className={styles.formRow}>
-          <span className={styles.formLabel}>
-            {t('plugins.runtime.followAppProxy')}
-            <span className={styles.formLabelHint}>
-              {t('plugins.runtime.followAppProxyHint')}
-            </span>
-          </span>
-          <div className={styles.formControl}>
-            <Switch
-              size="small"
-              checked={draft.followAppProxy}
-              onChange={(checked) => updateDraft({ followAppProxy: checked })}
-            />
+          <div className={styles.settingRow}>
+            <div className={styles.settingInfoNarrow}>
+              <span className={styles.settingTitle}>{t('plugins.runtime.bunManualPath')}</span>
+              <span className={styles.settingDesc}>
+                {t('plugins.runtime.bunManualHint')}
+              </span>
+            </div>
+            <div className={styles.settingField}>
+              <div className={styles.settingFieldRow}>
+                <Input
+                  value={draft.bunManualPath}
+                  onChange={(event) => handleBunPathChange(event.target.value)}
+                  placeholder={t('plugins.runtime.bunManualPlaceholder')}
+                  className={styles.settingInput}
+                />
+                <button
+                  type="button"
+                  className={styles.actionButton}
+                  disabled={probeBusy}
+                  onClick={() => void handleProbePath()}
+                >
+                  {probeBusy ? (
+                    <Loader2 size={14} className={styles.spin} aria-hidden="true" />
+                  ) : (
+                    <ShieldCheck size={14} aria-hidden="true" />
+                  )}
+                  <span>{t('plugins.runtime.probe')}</span>
+                </button>
+              </div>
+              {probeResult ? (
+                <div
+                  className={`${styles.probeResult} ${probeResult.ok ? styles.probeOk : styles.probeError}`}
+                >
+                  {probeResult.ok
+                    ? t('plugins.runtime.probeOk', { version: probeResult.version ?? '' })
+                    : t('plugins.runtime.probeFailed', {
+                      error: probeResult.error ?? t('common.unknown'),
+                    })}
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className={styles.settingRow}>
+            <div className={styles.settingInfo}>
+              <span className={styles.settingTitle}>
+                {t('plugins.runtime.followAppProxy')}
+              </span>
+              <span className={styles.settingDesc}>
+                {t('plugins.runtime.followAppProxyHint')}
+              </span>
+            </div>
+            <div className={styles.settingControl}>
+              <Switch
+                size="small"
+                checked={draft.followAppProxy}
+                onChange={(checked) => updateDraft({ followAppProxy: checked })}
+              />
+            </div>
           </div>
         </div>
 
@@ -574,28 +644,26 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
           </span>
         </div>
 
-        <div className={styles.tableCard}>
-          <table className={styles.statsTable}>
-            <thead>
-              <tr>
-                <th>{t('plugins.runtime.columns.name')}</th>
-                <th>{t('plugins.runtime.columns.hooks')}</th>
-                <th className={styles.numeric}>{t('plugins.runtime.columns.calls')}</th>
-                <th className={styles.numeric}>{t('plugins.runtime.columns.avg')}</th>
-                <th className={styles.numeric}>{t('plugins.runtime.columns.failures')}</th>
-                <th className={styles.numeric}>{t('plugins.runtime.columns.dropped')}</th>
-                <th>{t('plugins.runtime.columns.lastError')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {middlewareStates.length === 0 ? (
+        {middlewareStates.length === 0 ? (
+          <div className={styles.middlewareEmptyCard}>
+            {t('plugins.runtime.middlewareEmpty')}
+          </div>
+        ) : (
+          <div className={styles.tableCard}>
+            <table className={styles.statsTable}>
+              <thead>
                 <tr>
-                  <td colSpan={7} className={styles.tableEmpty}>
-                    {t('plugins.runtime.middlewareEmpty')}
-                  </td>
+                  <th>{t('plugins.runtime.columns.name')}</th>
+                  <th>{t('plugins.runtime.columns.hooks')}</th>
+                  <th className={styles.numeric}>{t('plugins.runtime.columns.calls')}</th>
+                  <th className={styles.numeric}>{t('plugins.runtime.columns.avg')}</th>
+                  <th className={styles.numeric}>{t('plugins.runtime.columns.failures')}</th>
+                  <th className={styles.numeric}>{t('plugins.runtime.columns.dropped')}</th>
+                  <th>{t('plugins.runtime.columns.lastError')}</th>
                 </tr>
-              ) : (
-                middlewareStates.map((state) => {
+              </thead>
+              <tbody>
+                {middlewareStates.map((state) => {
                   const lastError = state.lastError || state.loadError || '';
                   return (
                     <tr key={state.pluginId}>
@@ -633,11 +701,11 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
                       </td>
                     </tr>
                   );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <div className={styles.section}>

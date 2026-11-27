@@ -7,12 +7,24 @@ import {
   buildPluginQuotaRows,
   getPluginKindCategory,
   getPluginPageTitle,
+  isChinaMirrorRegistry,
   redactPluginLog,
 } from '../../../../../features/coding/plugins/utils/pluginFormatters.ts';
 import type {
   PluginUsage,
   PluginUsageWindow,
 } from '../../../../../services/pluginsApi.ts';
+
+test('isChinaMirrorRegistry matches npmmirror and ignores trailing slashes', () => {
+  assert.equal(isChinaMirrorRegistry('https://registry.npmmirror.com'), true);
+  assert.equal(isChinaMirrorRegistry('https://registry.npmmirror.com/'), true);
+  assert.equal(isChinaMirrorRegistry(' https://registry.npmmirror.com// '), true);
+  assert.equal(isChinaMirrorRegistry('https://mirror.example/npmmirror.com/proxy'), true);
+  assert.equal(isChinaMirrorRegistry('https://registry.npmjs.org'), false);
+  assert.equal(isChinaMirrorRegistry('https://npm.company.internal'), false);
+  assert.equal(isChinaMirrorRegistry(''), false);
+  assert.equal(isChinaMirrorRegistry(null), false);
+});
 
 test('redactPluginLog masks headers, assignments and known key shapes', () => {
   assert.equal(

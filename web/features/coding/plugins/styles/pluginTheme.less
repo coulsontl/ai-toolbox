@@ -1,0 +1,83 @@
+// Magpie plugin console palette.
+//
+// These are mixins, not a stylesheet of their own: `PluginsPage` mounts the
+// light tokens on its root and the dark override on `[data-theme='dark']`, and
+// the market detail modal mounts the same pair on its portal root (antd modals
+// render into `document.body`, outside the page subtree).
+
+.pluginThemeLight() {
+  /* Light theme: cool slate canvas so white cards lift cleanly without heavy shadows */
+  --pl-bg: #f6f7fa;
+  --pl-surface: #ffffff;
+  --pl-surface-raised: #f2f4f8;
+  --pl-surface-hover: #eceff5;
+  --pl-border: rgba(15, 23, 42, 0.08);
+  --pl-border-strong: rgba(15, 23, 42, 0.14);
+  --pl-divider: rgba(15, 23, 42, 0.06);
+
+  --pl-text-primary: #111827;
+  --pl-text-secondary: #4b5563;
+  --pl-text-muted: #6b7280;
+
+  /* Soft indigo accent (Magpie feel, high contrast >= 7:1 on tint) */
+  --pl-accent: #4f46e5;
+  --pl-accent-hover: #4338ca;
+  --pl-accent-text: #4338ca;
+  --pl-accent-bg: #eef2ff;
+  --pl-accent-bg-hover: #e0e7ff;
+  --pl-accent-border: rgba(79, 70, 229, 0.18);
+
+  /* Toned semantic colors */
+  --pl-success: #15803d;
+  --pl-success-bg: #ecfdf5;
+  --pl-success-border: rgba(21, 128, 61, 0.2);
+  --pl-warning: #b45309;
+  --pl-warning-bg: #fffbeb;
+  --pl-warning-border: rgba(180, 83, 9, 0.22);
+  --pl-error: #dc2626;
+  --pl-error-bg: #fef2f2;
+  --pl-error-border: rgba(220, 38, 38, 0.22);
+
+  /* Crisp minimal depth */
+  --pl-shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --pl-shadow-card-hover: 0 4px 12px rgba(15, 23, 42, 0.06);
+  --pl-radius-card: 12px;
+  --pl-radius-control: 8px;
+  --pl-radius-tag: 6px;
+  --pl-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.pluginThemeDark() {
+  --pl-bg: #0f1117;
+  --pl-surface: #171923;
+  --pl-surface-raised: #1f2230;
+  --pl-surface-hover: #272b3b;
+  --pl-border: rgba(255, 255, 255, 0.08);
+  --pl-border-strong: rgba(255, 255, 255, 0.15);
+  --pl-divider: rgba(255, 255, 255, 0.06);
+
+  --pl-text-primary: #f1f5f9;
+  --pl-text-secondary: #94a3b8;
+  --pl-text-muted: #64748b;
+
+  --pl-accent: #6366f1;
+  --pl-accent-hover: #818cf8;
+  --pl-accent-text: #a5b4fc;
+  --pl-accent-bg: rgba(99, 102, 241, 0.16);
+  --pl-accent-bg-hover: rgba(99, 102, 241, 0.24);
+  --pl-accent-border: rgba(129, 140, 248, 0.26);
+
+  --pl-success: #4ade80;
+  --pl-success-bg: rgba(34, 197, 94, 0.14);
+  --pl-success-border: rgba(74, 222, 128, 0.24);
+  --pl-warning: #fbbf24;
+  --pl-warning-bg: rgba(245, 158, 11, 0.14);
+  --pl-warning-border: rgba(251, 191, 36, 0.24);
+  --pl-error: #f87171;
+  --pl-error-bg: rgba(248, 113, 113, 0.14);
+  --pl-error-border: rgba(248, 113, 113, 0.26);
+
+  /* Dark mode depth relies on surface steps + hairlines, not blurry shadows */
+  --pl-shadow-card: none;
+  --pl-shadow-card-hover: none;
+}

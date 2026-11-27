@@ -1,0 +1,370 @@
+@import '../styles/pluginTheme.less';
+
+.modalRoot {
+  .pluginThemeLight();
+
+  :global(svg.lucide) {
+    stroke-width: 1.75;
+  }
+}
+
+:global([data-theme='dark']) .modalRoot {
+  .pluginThemeDark();
+}
+
+.content {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.header {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.headerIcon {
+  display: inline-flex;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+}
+
+.headerText {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.title {
+  margin: 0;
+  color: var(--pl-text-primary);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.subtitle {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  color: var(--pl-text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.packageName {
+  overflow: hidden;
+  max-width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.headerAction {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.installPill {
+  display: inline-flex;
+  height: 30px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 14px;
+  border: 1px solid var(--pl-accent-border);
+  border-radius: 999px;
+  background: var(--pl-accent-bg);
+  color: var(--pl-accent-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    background-color 150ms var(--pl-ease),
+    border-color 150ms var(--pl-ease),
+    opacity 150ms var(--pl-ease);
+
+  &:hover:not(:disabled) {
+    background: var(--pl-accent-bg-hover);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--pl-accent-border);
+    outline-offset: 2px;
+  }
+}
+
+.installedLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--pl-success);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.summary {
+  margin: 0;
+  color: var(--pl-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.attributes {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--pl-border);
+  border-radius: 10px;
+  background: var(--pl-surface);
+}
+
+.attribute {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+
+  & + & {
+    border-left: 1px solid var(--pl-divider);
+  }
+}
+
+.attributeLabel {
+  color: var(--pl-text-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.attributeValue {
+  overflow: hidden;
+  color: var(--pl-text-primary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.npmLink {
+  display: inline-flex;
+  min-height: 30px;
+  align-self: flex-start;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  border: 1px solid var(--pl-border);
+  border-radius: var(--pl-radius-control);
+  background: var(--pl-surface);
+  color: var(--pl-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  transition:
+    color 150ms var(--pl-ease),
+    background-color 150ms var(--pl-ease),
+    border-color 150ms var(--pl-ease);
+
+  &:hover {
+    border-color: var(--pl-border-strong);
+    background: var(--pl-surface-hover);
+    color: var(--pl-text-primary);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--pl-accent-border);
+    outline-offset: 2px;
+  }
+}
+
+.section {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--pl-divider);
+}
+
+.sectionTitle {
+  margin: 0;
+  color: var(--pl-text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.description {
+  margin: 0;
+  color: var(--pl-text-secondary);
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.providers {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.providersLabel {
+  color: var(--pl-text-muted);
+  font-size: 11.5px;
+}
+
+.providerList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.providerTag {
+  display: inline-flex;
+  min-height: 20px;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid var(--pl-accent-border);
+  border-radius: 999px;
+  background: var(--pl-accent-bg);
+  color: var(--pl-accent-text);
+  font-size: 11.5px;
+  line-height: 18px;
+}
+
+.installCommand {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.installCommandLabel {
+  color: var(--pl-text-muted);
+  font-size: 11.5px;
+}
+
+.installCommandCode {
+  overflow: hidden;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--pl-border);
+  border-radius: var(--pl-radius-tag);
+  background: var(--pl-surface-raised);
+  color: var(--pl-text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.footer {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--pl-divider);
+}
+
+.safety {
+  min-width: 0;
+  flex: 1;
+  color: var(--pl-text-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.closeButton {
+  display: inline-flex;
+  min-height: 32px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  border: 1px solid var(--pl-border);
+  border-radius: var(--pl-radius-control);
+  background: var(--pl-surface);
+  color: var(--pl-text-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  transition:
+    background-color 150ms var(--pl-ease),
+    border-color 150ms var(--pl-ease);
+
+  &:hover {
+    border-color: var(--pl-border-strong);
+    background: var(--pl-surface-hover);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--pl-accent-border);
+    outline-offset: 2px;
+  }
+}
+
+.spin {
+  animation: pluginMarketDetailSpin 0.78s linear infinite;
+}
+
+@keyframes pluginMarketDetailSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 560px) {
+  .attributes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .attribute:nth-child(3) {
+    border-left: none;
+  }
+
+  .attribute:nth-child(n + 3) {
+    border-top: 1px solid var(--pl-divider);
+  }
+
+  .header {
+    flex-wrap: wrap;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .installPill,
+  .npmLink,
+  .closeButton,
+  .spin {
+    transition: none;
+    animation: none;
+  }
+}

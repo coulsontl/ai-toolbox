@@ -1,8 +1,12 @@
 import React from 'react';
 import { App, Input, Switch, Tooltip, Spin } from 'antd';
 import {
+  Brain,
   CalendarCheck,
+  CheckCircle2,
+  Circle,
   CircleAlert,
+  Eye,
   Gauge,
   LogIn,
   LogOut,
@@ -12,6 +16,7 @@ import {
   Search,
   Send,
   Store,
+  Zap,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
@@ -22,8 +27,8 @@ import {
   listPluginAccounts,
   listPluginProviders,
   refreshPluginProviderModels,
-  setPluginAccountAutoCheckin,
   setPluginAccountEnabled,
+  setPluginProviderAutoCheckin,
   setPluginProviderOption,
   signOutPluginAccount,
   type InstalledPluginRecord,
@@ -33,13 +38,13 @@ import {
   type PluginProviderRow,
   type PluginUsage,
 } from '@/services';
+import { copyTextToClipboard } from '@/services/clipboardApi';
 import {
   buildPluginQuotaRows,
   formatContextWindow,
   formatDateTime,
   formatPluginError,
   getCountdownParts,
-  getPluginInitials,
   getProviderHealth,
   getProtocolLabel,
   pickLocalizedText,
@@ -82,7 +87,7 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
   const [checkinBusy, setCheckinBusy] = React.useState(false);
   const [checkBusyAccount, setCheckBusyAccount] = React.useState<string | null>(null);
   const [accountBusyKey, setAccountBusyKey] = React.useState<string | null>(null);
-  const [autoCheckinBusyKey, setAutoCheckinBusyKey] = React.useState<string | null>(null);
+  const [providerAutoCheckinBusy, setProviderAutoCheckinBusy] = React.useState(false);
   const [loginProvider, setLoginProvider] = React.useState<PluginProviderRow | null>(null);
   const [addToCliOpen, setAddToCliOpen] = React.useState(false);
   const [providerOptionValues, setProviderOptionValues] = React.useState<
@@ -371,25 +376,14 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
     }
   };
 
-  const handleAutoCheckinToggle = async (
-    account: PluginAccountSummary,
-    enabled: boolean,
-  ) => {
+  const handleProviderAutoCheckinToggle = async (enabled: boolean) => {
     if (!selectedProvider) return;
-    setAutoCheckinBusyKey(account.account);
-    const plugin = installedPlugins.find((entry) =>
-      entry.providers.includes(selectedProvider.id),
-    );
+    setProviderAutoCheckinBusy(true);
     try {
-      await setPluginAccountAutoCheckin({
-        account: account.account,
-        pluginId: plugin?.id ?? selectedProvider.id,
-        provider: selectedProvider.id,
-        enabled,
-      });
-      setAccounts((current) =>
-        current.map((entry) =>
-          entry.account === account.account ? { ...entry, autoCheckin: enabled } : entry,
+      await setPluginProviderAutoCheckin(selectedProvider.id, enabled);
+      setProviders((current) =>
+        current.map((provider) =>
+          provider.id === selectedProvider.id ? { ...provider, autoCheckin: enabled } : provider,
         ),
       );
       message.success(t('plugins.accounts.autoCheckinSuccess'));
@@ -398,7 +392,18 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
         t('plugins.accounts.autoCheckinFailed', { error: formatPluginError(error) }),
       );
     } finally {
-      setAutoCheckinBusyKey(null);
+      setProviderAutoCheckinBusy(false);
+    }
+  };
+
+  const copyModelId = async (modelId: string) => {
+    try {
+      await copyTextToClipboard(modelId);
+      message.success(t('plugins.accounts.modelIdCopied'));
+    } catch (error) {
+      message.error(
+        t('plugins.accounts.modelIdCopyFailed', { error: formatPluginError(error) }),
+      );
     }
   };
 
@@ -557,19 +562,6 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
   return (
     <div className={styles.view}>
       <div className={styles.providerPicker}>
-        <div className={styles.pickerHeader}>
-          <span className={styles.pickerTitle}>
-            {t('plugins.accounts.providersTitle')}
-          </span>
-          <Input
-            allowClear
-            value={providerSearch}
-            onChange={(event) => setProviderSearch(event.target.value)}
-            prefix={<Search size={13} aria-hidden="true" />}
-            placeholder={t('plugins.accounts.providerSearch')}
-            className={styles.providerSearch}
-          />
-        </div>
         <div className={styles.providerChips}>
           {filteredProviders.length === 0 ? (
             <span className={styles.chipsEmpty}>
@@ -589,7 +581,7 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                 <PluginIcon
                   icon={provider.icon}
                   name={provider.name || provider.id}
-                  size={22}
+                  size={20}
                 />
                 <span className={styles.chipName}>{provider.name || provider.id}</span>
                 <span
@@ -607,6 +599,24 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
             );
           })}
         </div>
+        <Input
+          allowClear
+          value={providerSearch}
+          onChange={(event) => setProviderSearch(event.target.value)}
+          prefix={<Search size={13} aria-hidden="true" />}
+          placeholder={t('plugins.accounts.providerSearch')}
+          className={styles.providerSearch}
+        />
+        <Tooltip title={t('plugins.accounts.refresh')}>
+          <button
+            type="button"
+            className={styles.iconButton}
+            aria-label={t('plugins.accounts.refresh')}
+            onClick={reload}
+          >
+            <RefreshCw size={15} aria-hidden="true" />
+          </button>
+        </Tooltip>
       </div>
 
       <div className={styles.detail}>
@@ -635,15 +645,19 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
               <PluginIcon
                 icon={selectedProvider.icon}
                 name={providerName}
-                size={36}
+                size={32}
               />
               <div className={styles.detailHeading}>
                 <h2 className={styles.detailTitle}>{providerName}</h2>
                 <div className={styles.detailMeta}>
-                  <span className={styles.pillProvider}>
-                    {t('plugins.kind.provider')}
-                  </span>
-                  <span className={styles.detailSpec}>{providerSpec}</span>
+                  {providerSpec ? (
+                    <>
+                      <span className={styles.detailSpec} title={providerSpec}>
+                        {providerSpec}
+                      </span>
+                      <span aria-hidden="true">·</span>
+                    </>
+                  ) : null}
                   <span>
                     {t('plugins.accounts.signedInCount', { count: providerAccounts.length })}
                   </span>
@@ -707,6 +721,27 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                     <span>{t('plugins.accounts.checkinAll')}</span>
                   </button>
                 ) : null}
+                {selectedProvider.checkin ? (
+                  <Tooltip title={t('plugins.accounts.autoCheckinHint')}>
+                    <label
+                      className={`${styles.autoCheckinControl} ${
+                        providerAutoCheckinBusy ? styles.switchControlDisabled : ''
+                      }`}
+                    >
+                      <span className={styles.switchLabel}>
+                        {t('plugins.accounts.autoCheckin')}
+                      </span>
+                      <Switch
+                        size="small"
+                        checked={Boolean(selectedProvider.autoCheckin)}
+                        loading={providerAutoCheckinBusy}
+                        disabled={providerAutoCheckinBusy}
+                        aria-label={t('plugins.accounts.autoCheckin')}
+                        onChange={(checked) => void handleProviderAutoCheckinToggle(checked)}
+                      />
+                    </label>
+                  </Tooltip>
+                ) : null}
               </div>
             </div>
 
@@ -748,108 +783,82 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                     const lastCheckinTime = account.lastCheckinAt
                       ? formatDateTime(account.lastCheckinAt, i18n.language)
                       : '';
+                    const primaryIdentity = usage?.user || label;
+                    const showAccountKey = providerAccounts.length > 1
+                      && account.account !== primaryIdentity;
+                    const hasFootnotes = Boolean(
+                      expiry || account.lastCheckinOutcome || account.lastCheckinAt,
+                    );
 
                     return (
                       <article key={account.account} className={styles.accountCard}>
                         <div className={styles.accountTop}>
-                          <span className={styles.accountAvatar} aria-hidden="true">
-                            {getPluginInitials(label)}
+                          <span
+                            className={`${styles.accountStatus} ${
+                              account.enabled ? styles.accountStatusOn : ''
+                            }`}
+                            aria-hidden="true"
+                          >
+                            {account.enabled ? (
+                              <CheckCircle2 size={18} />
+                            ) : (
+                              <Circle size={18} />
+                            )}
                           </span>
                           <div className={styles.accountIdentity}>
-                            <span className={styles.accountName} title={label}>
-                              {label}
-                            </span>
-                            <span className={styles.accountMeta}>
+                            <div className={styles.accountHeadline}>
+                              <span className={styles.accountName} title={label}>
+                                {primaryIdentity}
+                              </span>
+                              {usage?.plan ? (
+                                <span className={styles.planPill}>{usage.plan}</span>
+                              ) : null}
                               <span className={styles.accountType}>
                                 {account.authType === 'oauth'
                                   ? t('plugins.accounts.accountTypeOauth')
                                   : t('plugins.accounts.accountTypeApi')}
                               </span>
-                              {account.account !== label ? (
-                                <span className={styles.accountKey}>{account.account}</span>
-                              ) : null}
-                              {expiry ? (
-                                <span className={expired ? styles.expiryExpired : undefined}>
-                                  {expired
-                                    ? t('plugins.accounts.expired')
-                                    : t('plugins.accounts.expiresAt', {
-                                      time: formatDateTime(expiry, i18n.language),
-                                    })}
+                              {showAccountKey ? (
+                                <span className={styles.accountKey} title={account.account}>
+                                  {account.account}
                                 </span>
-                              ) : null}
-                              {account.lastCheckinOutcome || account.lastCheckinAt ? (
-                                <span
-                                  className={styles.accountCheckinMeta}
-                                  title={account.lastCheckinMessage ?? undefined}
-                                >
-                                  {lastCheckinTime
-                                    ? t('plugins.accounts.lastCheckin', {
-                                      outcome: checkinOutcomeLabel(account.lastCheckinOutcome),
-                                      time: lastCheckinTime,
-                                    })
-                                    : t('plugins.accounts.lastCheckinNoTime', {
-                                      outcome: checkinOutcomeLabel(account.lastCheckinOutcome),
-                                    })}
-                                </span>
-                              ) : null}
-                            </span>
-                          </div>
-                          <div className={styles.accountControls}>
-                            <div className={styles.switchGroup}>
-                              <Tooltip title={t('plugins.accounts.enabledHint')}>
-                                <label
-                                  className={`${styles.switchControl} ${
-                                    accountBusy ? styles.switchControlDisabled : ''
-                                  }`}
-                                >
-                                  <span className={styles.switchLabel}>
-                                    {t('plugins.accounts.enabledLabel')}
-                                  </span>
-                                  <Switch
-                                    size="small"
-                                    checked={account.enabled}
-                                    loading={accountBusy}
-                                    disabled={accountBusy}
-                                    aria-label={t('plugins.accounts.enabledToggle')}
-                                    onChange={(checked) =>
-                                      void handleAccountToggle(account, checked)}
-                                  />
-                                </label>
-                              </Tooltip>
-                              {selectedProvider.checkin ? (
-                                <Tooltip
-                                  title={
-                                    account.enabled
-                                      ? t('plugins.accounts.autoCheckinHint')
-                                      : t('plugins.accounts.autoCheckinDisabled')
-                                  }
-                                >
-                                  <label
-                                    className={`${styles.switchControl} ${
-                                      !account.enabled || autoCheckinBusyKey === account.account
-                                        ? styles.switchControlDisabled
-                                        : ''
-                                    }`}
-                                  >
-                                    <span className={styles.switchLabel}>
-                                      {t('plugins.accounts.autoCheckin')}
-                                    </span>
-                                    <Switch
-                                      size="small"
-                                      checked={Boolean(account.autoCheckin)}
-                                      loading={autoCheckinBusyKey === account.account}
-                                      disabled={
-                                        !account.enabled
-                                        || autoCheckinBusyKey === account.account
-                                      }
-                                      aria-label={t('plugins.accounts.autoCheckin')}
-                                      onChange={(checked) =>
-                                        void handleAutoCheckinToggle(account, checked)}
-                                    />
-                                  </label>
-                                </Tooltip>
                               ) : null}
                             </div>
+                          </div>
+                          {selectedProvider.usage ? (
+                            <Tooltip title={t('plugins.accounts.refreshUsage')}>
+                              <button
+                                type="button"
+                                className={styles.inlineIconButton}
+                                aria-label={t('plugins.accounts.refreshUsage')}
+                                disabled={usageBusy}
+                                onClick={() => void refreshUsage([account.account], true)}
+                              >
+                                <RefreshCw size={13} aria-hidden="true" />
+                              </button>
+                            </Tooltip>
+                          ) : null}
+                          <div className={styles.accountControls}>
+                            <Tooltip title={t('plugins.accounts.enabledHint')}>
+                              <label
+                                className={`${styles.switchControl} ${
+                                  accountBusy ? styles.switchControlDisabled : ''
+                                }`}
+                              >
+                                <span className={styles.switchLabel}>
+                                  {t('plugins.accounts.enabledLabel')}
+                                </span>
+                                <Switch
+                                  size="small"
+                                  checked={account.enabled}
+                                  loading={accountBusy}
+                                  disabled={accountBusy}
+                                  aria-label={t('plugins.accounts.enabledToggle')}
+                                  onChange={(checked) =>
+                                    void handleAccountToggle(account, checked)}
+                                />
+                              </label>
+                            </Tooltip>
                             <span className={styles.controlsDivider} aria-hidden="true" />
                             <div className={styles.iconActions}>
                               <Tooltip title={t('plugins.accounts.check')}>
@@ -867,19 +876,6 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                                   )}
                                 </button>
                               </Tooltip>
-                              {selectedProvider.usage ? (
-                                <Tooltip title={t('plugins.accounts.refreshUsage')}>
-                                  <button
-                                    type="button"
-                                    className={styles.iconButton}
-                                    aria-label={t('plugins.accounts.refreshUsage')}
-                                    disabled={usageBusy}
-                                    onClick={() => void refreshUsage([account.account], true)}
-                                  >
-                                    <RefreshCw size={14} aria-hidden="true" />
-                                  </button>
-                                </Tooltip>
-                              ) : null}
                               {selectedProvider.checkin ? (
                                 <Tooltip title={t('plugins.accounts.checkin')}>
                                   <button
@@ -910,43 +906,56 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                         <div className={styles.quotaArea}>
                           {usage ? (
                             <>
-                              <div className={styles.usageMetaRow}>
-                                {usage.plan ? (
-                                  <span className={styles.planPill}>{usage.plan}</span>
-                                ) : null}
-                                {usage.user ? (
-                                  <span className={styles.usageUser}>{usage.user}</span>
-                                ) : null}
-                                {usage.balance ? (
-                                  <span className={styles.walletInline}>
-                                    {t('plugins.accounts.walletBalance', {
-                                      balance: usage.balance,
-                                    })}
-                                  </span>
-                                ) : null}
-                                {usage.until ? (
-                                  <span className={styles.usageHint}>
-                                    {t('plugins.accounts.usageUntil', {
-                                      time: formatDateTime(usage.until, i18n.language),
-                                    })}
-                                  </span>
-                                ) : null}
-                                {usage.signIn === 'expired' ? (
-                                  <span className={styles.usageWarning}>
-                                    {t('plugins.accounts.signInExpired')}
-                                  </span>
-                                ) : null}
-                              </div>
+                              {usage.balance || usage.until || usage.signIn === 'expired' ? (
+                                <div className={styles.usageMetaRow}>
+                                  {usage.balance ? (
+                                    <span className={styles.walletInline}>
+                                      {t('plugins.accounts.walletBalance', {
+                                        balance: usage.balance,
+                                      })}
+                                    </span>
+                                  ) : null}
+                                  {usage.until ? (
+                                    <span className={styles.usageHint}>
+                                      {t('plugins.accounts.usageUntil', {
+                                        time: formatDateTime(usage.until, i18n.language),
+                                      })}
+                                    </span>
+                                  ) : null}
+                                  {usage.signIn === 'expired' ? (
+                                    <span className={styles.usageWarning}>
+                                      {t('plugins.accounts.signInExpired')}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              ) : null}
                               {usage.error ? (
                                 <div className={styles.inlineError}>
                                   {t('plugins.accounts.usageError', { error: usage.error })}
                                 </div>
                               ) : null}
                               {quotaRows.length > 0 ? (
-                                <div className={styles.quotaList}>
-                                  {quotaRows.map((row) => (
-                                    <div key={row.key} className={styles.quotaRow}>
-                                      <div className={styles.quotaHeader}>
+                                <div className={styles.quotaStrip}>
+                                  {quotaRows.map((row) => {
+                                    const resetText = row.resetAt
+                                      ? t('plugins.accounts.resetIn', {
+                                        time: formatCountdown(row.resetAt),
+                                      })
+                                      : '';
+                                    const runsOutText = row.runsOutAt
+                                      ? t('plugins.accounts.runsOutIn', {
+                                        time: formatCountdown(row.runsOutAt),
+                                      })
+                                      : '';
+                                    const valueText = row.percentText
+                                      ? `${row.amountText ? `${row.amountText} · ` : ''}${
+                                        t('plugins.accounts.usedPercent', {
+                                          percent: row.percentText,
+                                        })
+                                      }`
+                                      : row.amountText || row.balanceText || '';
+                                    return (
+                                      <div key={row.key} className={styles.quotaItem}>
                                         <span className={styles.quotaName}>
                                           {row.name || t('plugins.accounts.quotaWindow')}
                                           {row.credits ? (
@@ -960,47 +969,40 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                                             </span>
                                           ) : null}
                                         </span>
-                                        <span className={styles.quotaValue}>
-                                          {row.percentText
-                                            || row.amountText
-                                            || row.balanceText}
-                                        </span>
-                                      </div>
-                                      {row.percent != null ? (
-                                        <div className={styles.quotaTrack}>
+                                        {row.percent != null ? (
+                                          <span className={styles.quotaTrack} aria-hidden="true">
+                                            <span
+                                              className={`${styles.quotaFill} ${
+                                                row.level === 'error'
+                                                  ? styles.quotaFillError
+                                                  : row.level === 'warning'
+                                                    ? styles.quotaFillWarning
+                                                    : ''
+                                              }`}
+                                              style={{ width: `${Math.min(100, row.percent)}%` }}
+                                            />
+                                          </span>
+                                        ) : null}
+                                        {valueText ? (
+                                          <span className={styles.quotaValue}>{valueText}</span>
+                                        ) : null}
+                                        {row.displayText ? (
                                           <span
-                                            className={`${styles.quotaFill} ${
-                                              row.level === 'error'
-                                                ? styles.quotaFillError
-                                                : row.level === 'warning'
-                                                  ? styles.quotaFillWarning
-                                                  : ''
-                                            }`}
-                                            style={{ width: `${Math.min(100, row.percent)}%` }}
-                                          />
-                                        </div>
-                                      ) : null}
-                                      <div className={styles.quotaFooter}>
-                                        <span>
-                                          {row.displayText
-                                            || (row.percent != null ? row.balanceText : '')
-                                            || row.model}
-                                        </span>
-                                        <span>
-                                          {row.resetAt
-                                            ? t('plugins.accounts.resetIn', {
-                                              time: formatCountdown(row.resetAt),
-                                            })
-                                            : ''}
-                                          {row.runsOutAt
-                                            ? t('plugins.accounts.runsOutIn', {
-                                              time: formatCountdown(row.runsOutAt),
-                                            })
-                                            : ''}
-                                        </span>
+                                            className={styles.quotaDisplay}
+                                            title={row.displayText}
+                                          >
+                                            {row.displayText}
+                                          </span>
+                                        ) : null}
+                                        {resetText || runsOutText ? (
+                                          <span className={styles.quotaReset}>
+                                            {resetText}
+                                            {runsOutText}
+                                          </span>
+                                        ) : null}
                                       </div>
-                                    </div>
-                                  ))}
+                                    );
+                                  })}
                                 </div>
                               ) : (
                                 <div className={styles.usageEmpty}>
@@ -1015,6 +1017,34 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                                 : t('plugins.accounts.usageEmpty')}
                             </div>
                           )}
+                          {hasFootnotes ? (
+                            <div className={styles.accountFootnotes}>
+                              {expiry ? (
+                                <span className={expired ? styles.expiryExpired : undefined}>
+                                  {expired
+                                    ? t('plugins.accounts.expired')
+                                    : t('plugins.accounts.expiresAt', {
+                                      time: formatDateTime(expiry, i18n.language),
+                                    })}
+                                </span>
+                              ) : null}
+                              {account.lastCheckinOutcome || account.lastCheckinAt ? (
+                                <span
+                                  className={styles.accountCheckinMeta}
+                                  title={account.lastCheckinMessage ?? undefined}
+                                >
+                                  {lastCheckinTime
+                                    ? t('plugins.accounts.lastCheckin', {
+                                      outcome: checkinOutcomeLabel(account.lastCheckinOutcome),
+                                      time: lastCheckinTime,
+                                    })
+                                    : t('plugins.accounts.lastCheckinNoTime', {
+                                      outcome: checkinOutcomeLabel(account.lastCheckinOutcome),
+                                    })}
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : null}
                           {checkinResult ? (
                             <div
                               className={`${styles.checkinStatus} ${checkinStatusClass(checkinResult)}`}
@@ -1062,69 +1092,95 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                   {t('plugins.accounts.modelsFilteredEmpty')}
                 </div>
               ) : (
-                <div className={styles.modelTable}>
-                  <div className={styles.modelTableHead}>
-                    <span>{t('plugins.accounts.modelColumns.model')}</span>
-                    <span>{t('plugins.accounts.modelColumns.protocol')}</span>
-                    <span>{t('plugins.accounts.modelColumns.context')}</span>
-                    <span>{t('plugins.accounts.modelColumns.flags')}</span>
-                  </div>
-                  <div className={styles.modelTableBody}>
-                    {filteredModels.map((model) => (
-                      <div key={model.id} className={styles.modelRow}>
-                        <div className={styles.modelIdentity}>
-                          <span className={styles.modelId} title={model.id}>
-                            {model.id}
-                          </span>
-                          {model.name && model.name !== model.id ? (
-                            <span className={styles.modelName} title={model.name}>
-                              {model.name}
+                <div className={styles.modelWall}>
+                  {filteredModels.map((model) => {
+                    const capabilityLabels = [
+                      model.reasoning ? t('plugins.accounts.modelFlags.reasoning') : '',
+                      model.image ? t('plugins.accounts.modelFlags.vision') : '',
+                      model.fast ? t('plugins.accounts.modelFlags.fast') : '',
+                    ].filter(Boolean);
+                    return (
+                      <Tooltip
+                        key={model.id}
+                        title={(
+                          <div className={styles.modelTooltip}>
+                            <span className={styles.modelTooltipId}>{model.id}</span>
+                            {model.name && model.name !== model.id ? (
+                              <span>{model.name}</span>
+                            ) : null}
+                            <span>
+                              {t('plugins.accounts.modelTooltipProtocol', {
+                                protocol: getProtocolLabel(model.npm),
+                              })}
                             </span>
-                          ) : null}
-                        </div>
-                        <span className={styles.protocolValue}>
-                          {getProtocolLabel(model.npm)}
-                        </span>
-                        <span className={styles.contextValue}>
-                          {formatContextWindow(model.context)}
-                        </span>
-                        <div className={styles.modelFlags}>
+                            <span>
+                              {t('plugins.accounts.modelTooltipContext', {
+                                context: formatContextWindow(model.context),
+                              })}
+                            </span>
+                            <span>
+                              {capabilityLabels.length > 0
+                                ? t('plugins.accounts.modelTooltipCapabilities', {
+                                  capabilities: capabilityLabels.join(
+                                    i18n.language.startsWith('zh') ? '、' : ', ',
+                                  ),
+                                })
+                                : t('plugins.accounts.modelTooltipNone')}
+                            </span>
+                            <span className={styles.modelTooltipHint}>
+                              {t('plugins.accounts.modelIdCopyHint')}
+                            </span>
+                          </div>
+                        )}
+                      >
+                        <button
+                          type="button"
+                          className={styles.modelPill}
+                          onClick={() => void copyModelId(model.id)}
+                        >
+                          <span className={styles.modelPillName}>
+                            {model.name || model.id}
+                          </span>
                           {model.reasoning ? (
-                            <span className={styles.flag}>
-                              {t('plugins.accounts.modelFlags.reasoning')}
+                            <span
+                              className={styles.modelCapability}
+                              aria-label={t('plugins.accounts.modelFlags.reasoning')}
+                            >
+                              <Brain size={12} aria-hidden="true" />
                             </span>
                           ) : null}
                           {model.image ? (
-                            <span className={styles.flag}>
-                              {t('plugins.accounts.modelFlags.vision')}
-                            </span>
-                          ) : null}
-                          {model.free ? (
-                            <span className={`${styles.flag} ${styles.flagFree}`}>
-                              {t('plugins.accounts.modelFlags.free')}
-                            </span>
-                          ) : null}
-                          {model.rate > 0 ? (
-                            <span className={`${styles.flag} ${styles.flagRate}`}>
-                              {t('plugins.accounts.modelFlags.rate', { rate: model.rate })}
+                            <span
+                              className={styles.modelCapability}
+                              aria-label={t('plugins.accounts.modelFlags.vision')}
+                            >
+                              <Eye size={12} aria-hidden="true" />
                             </span>
                           ) : null}
                           {model.fast ? (
-                            <span className={styles.flag}>
-                              {t('plugins.accounts.modelFlags.fast')}
+                            <span
+                              className={styles.modelCapability}
+                              aria-label={t('plugins.accounts.modelFlags.fast')}
+                            >
+                              <Zap size={12} aria-hidden="true" />
                             </span>
                           ) : null}
-                          {!model.reasoning
-                            && !model.image
-                            && !model.free
-                            && model.rate <= 0
-                            && !model.fast ? (
-                              <span className={styles.modelFlagsEmpty}>—</span>
-                            ) : null}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                          {model.free ? (
+                            <span className={styles.modelBadgeFree}>
+                              {t('plugins.accounts.modelFlags.free')}
+                            </span>
+                          ) : model.rate > 0 ? (
+                            <span className={styles.modelBadge}>{model.rate}×</span>
+                          ) : null}
+                          {model.context > 0 ? (
+                            <span className={styles.modelBadge}>
+                              {formatContextWindow(model.context)}
+                            </span>
+                          ) : null}
+                        </button>
+                      </Tooltip>
+                    );
+                  })}
                 </div>
               )}
             </section>

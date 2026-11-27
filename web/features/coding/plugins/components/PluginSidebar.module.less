@@ -7,10 +7,11 @@
   gap: 8px;
   padding: 10px;
   overflow: hidden;
-  border: 1px solid var(--color-border-card);
-  border-radius: 10px;
-  background: var(--color-bg-container);
-  transition: width 0.18s ease;
+  border: 1px solid var(--pl-border);
+  border-radius: var(--pl-radius-card);
+  background: var(--pl-surface);
+  box-shadow: var(--pl-shadow-card);
+  transition: width 180ms var(--pl-ease);
 }
 
 .sidebarCollapsed {
@@ -27,7 +28,7 @@
   bottom: 0;
   left: 0;
   z-index: 20;
-  box-shadow: var(--shadow-card-hover);
+  box-shadow: var(--pl-shadow-card-hover);
 }
 
 .header {
@@ -49,17 +50,17 @@
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  border: 1px solid color-mix(in srgb, var(--color-primary) 18%, var(--color-border));
+  border: 1px solid var(--pl-accent-border);
   border-radius: 7px;
-  background: color-mix(in srgb, var(--color-primary) 6%, var(--color-bg-container));
-  color: var(--color-primary);
+  background: var(--pl-accent-bg);
+  color: var(--pl-accent-text);
 }
 
 .brandTitle {
   min-width: 0;
   flex: 1;
   overflow: hidden;
-  color: var(--color-text-primary);
+  color: var(--pl-text-primary);
   font-size: 14px;
   font-weight: 600;
   line-height: 1.3;
@@ -77,19 +78,19 @@
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
-  color: var(--color-text-secondary);
+  color: var(--pl-text-secondary);
   cursor: pointer;
   transition:
-    background 0.16s ease,
-    color 0.16s ease;
+    background-color 150ms var(--pl-ease),
+    color 150ms var(--pl-ease);
 
   &:hover:not(:disabled) {
-    background: var(--color-bg-hover);
-    color: var(--color-primary);
+    background: var(--pl-surface-hover);
+    color: var(--pl-text-primary);
   }
 
   &:focus-visible {
-    outline: 2px solid var(--color-border-secondary);
+    outline: 2px solid var(--pl-accent-border);
     outline-offset: 2px;
   }
 
@@ -106,27 +107,26 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 0 10px;
-  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, var(--color-border));
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--color-primary) 6%, var(--color-bg-container));
-  color: var(--color-primary);
+  padding: 0 12px;
+  border: 1px solid var(--pl-accent-border);
+  border-radius: 999px;
+  background: var(--pl-accent-bg);
+  color: var(--pl-accent-text);
   cursor: pointer;
   font: inherit;
   font-size: 12px;
-  font-weight: 560;
+  font-weight: 500;
   white-space: nowrap;
   transition:
-    background 0.16s ease,
-    border-color 0.16s ease;
+    background-color 150ms var(--pl-ease),
+    border-color 150ms var(--pl-ease);
 
   &:hover {
-    border-color: color-mix(in srgb, var(--color-primary) 34%, var(--color-border));
-    background: color-mix(in srgb, var(--color-primary) 10%, var(--color-bg-container));
+    background: var(--pl-accent-bg-hover);
   }
 
   &:focus-visible {
-    outline: 2px solid var(--color-border-secondary);
+    outline: 2px solid var(--pl-accent-border);
     outline-offset: 2px;
   }
 }
@@ -171,9 +171,9 @@
 .groupLabel {
   padding: 4px 8px;
   overflow: hidden;
-  color: var(--color-text-tertiary);
-  font-size: 10px;
-  font-weight: 600;
+  color: var(--pl-text-muted);
+  font-size: 11.5px;
+  font-weight: 500;
   line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -183,7 +183,7 @@
   width: 28px;
   height: 1px;
   margin: 6px 0;
-  background: var(--color-border);
+  background: var(--pl-divider);
 }
 
 .navItem {
@@ -196,25 +196,25 @@
   gap: 8px;
   padding: 0 8px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--pl-radius-control);
   background: transparent;
-  color: var(--color-text-secondary);
+  color: var(--pl-text-secondary);
   cursor: pointer;
   font: inherit;
   font-size: 13px;
   font-weight: 500;
   text-align: left;
   transition:
-    background 0.16s ease,
-    color 0.16s ease;
+    background-color 150ms var(--pl-ease),
+    color 150ms var(--pl-ease);
 
   &:hover {
-    background: var(--color-bg-hover);
-    color: var(--color-text-primary);
+    background: var(--pl-surface-hover);
+    color: var(--pl-text-primary);
   }
 
   &:focus-visible {
-    outline: 2px solid var(--color-border-secondary);
+    outline: 2px solid var(--pl-accent-border);
     outline-offset: 2px;
   }
 }
@@ -227,23 +227,12 @@
 }
 
 .navItemActive {
-  background: color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-container));
-  color: var(--color-primary);
-
-  &::before {
-    position: absolute;
-    top: 7px;
-    bottom: 7px;
-    left: 0;
-    width: 2px;
-    border-radius: 999px;
-    background: var(--color-primary);
-    content: '';
-  }
+  background: var(--pl-accent-bg);
+  color: var(--pl-accent-text);
 
   &:hover {
-    background: color-mix(in srgb, var(--color-primary) 11%, var(--color-bg-container));
-    color: var(--color-primary);
+    background: var(--pl-accent-bg-hover);
+    color: var(--pl-accent-text);
   }
 }
 
@@ -273,17 +262,17 @@
   justify-content: center;
   padding: 0 5px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--color-text-tertiary) 10%, transparent);
-  color: var(--color-text-tertiary);
-  font-size: 10px;
+  background: var(--pl-surface-raised);
+  color: var(--pl-text-muted);
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   line-height: 1;
 }
 
 .navItemActive .navCount {
-  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
-  color: var(--color-primary);
+  background: var(--pl-accent-bg-hover);
+  color: var(--pl-accent-text);
 }
 
 .footer {
@@ -293,7 +282,7 @@
   align-items: center;
   gap: 6px;
   padding-top: 8px;
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid var(--pl-divider);
 }
 
 .sidebarCollapsed .footer {
@@ -313,26 +302,26 @@
   align-items: center;
   gap: 6px;
   padding: 0 8px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  background: var(--color-bg-elevated);
-  color: var(--color-text-secondary);
+  border: 1px solid var(--pl-border);
+  border-radius: var(--pl-radius-control);
+  background: var(--pl-surface-raised);
+  color: var(--pl-text-secondary);
   cursor: pointer;
   font: inherit;
-  font-size: 11px;
-  font-weight: 560;
+  font-size: 11.5px;
+  font-weight: 500;
   white-space: nowrap;
   transition:
-    background 0.16s ease,
-    border-color 0.16s ease;
+    background-color 150ms var(--pl-ease),
+    border-color 150ms var(--pl-ease);
 
   &:hover:not(:disabled) {
-    border-color: var(--color-border-secondary);
-    background: var(--color-bg-hover);
+    border-color: var(--pl-border-strong);
+    background: var(--pl-surface-hover);
   }
 
   &:focus-visible {
-    outline: 2px solid var(--color-border-secondary);
+    outline: 2px solid var(--pl-accent-border);
     outline-offset: 2px;
   }
 
@@ -358,19 +347,19 @@
 }
 
 .bunDot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   flex: 0 0 auto;
   border-radius: 50%;
-  background: var(--color-text-tertiary);
+  background: var(--pl-text-muted);
 }
 
 .bunDotReady {
-  background: var(--color-status-success);
+  background: var(--pl-success);
 }
 
 .bunDotMissing {
-  background: var(--color-status-warning);
+  background: var(--pl-warning);
 }
 
 .spin {

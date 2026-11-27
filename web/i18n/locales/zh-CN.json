@@ -6491,7 +6491,10 @@
       },
       "notice": {
         "loadFailed": "加载插件数据失败：{{error}}",
-        "refreshed": "插件数据已刷新"
+        "refreshed": "插件数据已刷新",
+        "mirrorOn": "已切换到国内镜像",
+        "mirrorOff": "已切换到官方源",
+        "mirrorFailed": "切换镜像失败：{{error}}"
       }
     },
     "kind": {
@@ -6542,7 +6545,9 @@
         "manageAccounts": "管理账号",
         "options": "配置选项",
         "uninstall": "卸载",
-        "openPage": "打开页面"
+        "openPage": "打开页面",
+        "enable": "启用",
+        "disable": "停用"
       },
       "confirmUninstallTitle": "卸载插件",
       "confirmUninstallContent": "将卸载「{{name}}」。插件保存的本地数据（KV 与文件）默认保留，重新安装后可继续使用。",
@@ -6550,7 +6555,21 @@
       "toggleSuccess": "已更新 {{name}} 的启用状态",
       "uninstallSuccess": "已卸载 {{name}}",
       "actionFailed": "操作失败：{{error}}",
-      "purgeData": "同时删除该插件保存的本地数据（KV 与文件）"
+      "purgeData": "同时删除该插件保存的本地数据（KV 与文件）",
+      "chinaMirror": "国内镜像",
+      "sortAsc": "A→Z 排序",
+      "sortDesc": "Z→A 排序",
+      "refresh": "刷新",
+      "install": "安装插件",
+      "disabledTag": "已停用",
+      "providersCarried": "承载 {{providers}}",
+      "providerSignedIn": "已登录",
+      "providerSignedOut": "未登录",
+      "middlewareSummary": "{{hooks}} · {{calls}} 次调用 · 均值 {{avg}}",
+      "pageSummary": "{{pages}} 个页面 · {{permissions}} 项权限",
+      "bunReady": "插件运行在 Bun {{version}} 上",
+      "bunMissing": "Bun 运行时未就绪",
+      "viewRuntime": "查看运行时"
     },
     "accounts": {
       "providersTitle": "渠道",
@@ -6637,7 +6656,7 @@
       "providerSearch": "搜索渠道",
       "providerSearchEmpty": "没有匹配的渠道",
       "autoCheckin": "自动签到",
-      "autoCheckinHint": "每天按自然日自动签到一次，失败后稍后重试。",
+      "autoCheckinHint": "开启后每天自动为该渠道下所有已启用账号签到",
       "autoCheckinDisabled": "账号已停用；启用账号后自动签到才会执行。",
       "autoCheckinSuccess": "自动签到设置已更新",
       "autoCheckinFailed": "保存自动签到设置失败：{{error}}",
@@ -6649,7 +6668,16 @@
       "checkinOutcomeInactive": "签到未开放",
       "checkinOutcomeCaptcha": "需完成验证",
       "checkinOutcomeFailed": "签到失败",
-      "checkinOutcomeUnknown": "未知结果"
+      "checkinOutcomeUnknown": "未知结果",
+      "refresh": "刷新",
+      "usedPercent": "已用 {{percent}}",
+      "modelIdCopied": "已复制模型 ID",
+      "modelIdCopyFailed": "复制模型 ID 失败：{{error}}",
+      "modelTooltipProtocol": "协议：{{protocol}}",
+      "modelTooltipContext": "上下文：{{context}}",
+      "modelTooltipCapabilities": "能力：{{capabilities}}",
+      "modelTooltipNone": "能力：无标注",
+      "modelIdCopyHint": "点击复制模型 ID"
     },
     "market": {
       "filter": {
@@ -6675,7 +6703,27 @@
       "loadFailed": "加载插件市场失败：{{error}}",
       "weeklyDownloads": "周下载 {{value}}",
       "providersMore": "+{{count}}",
-      "community": "社区"
+      "community": "社区",
+      "communitySource": "magpie 社区",
+      "chinaMirror": "国内镜像",
+      "refresh": "刷新市场",
+      "refreshed": "市场已刷新",
+      "detail": {
+        "title": "插件详情",
+        "unknownSource": "未知来源",
+        "version": "版本",
+        "type": "类型",
+        "source": "来源",
+        "provides": "提供渠道或页面",
+        "channelCount": "{{count}} 个渠道",
+        "pagePlugin": "页面插件",
+        "npmLink": "npm ↗",
+        "descriptionTitle": "详细说明",
+        "providersTitle": "提供的渠道",
+        "installCommand": "安装命令参考",
+        "safety": "插件是他人的代码：由它登录并发出请求，或作为中间件看到请求。",
+        "close": "关闭"
+      }
     },
     "marketRegistry": {
       "title": "管理插件市场源",
@@ -6805,7 +6853,7 @@
       "hostRestartSuccess": "插件宿主已重启",
       "hostRestartFailed": "重启插件宿主失败：{{error}}",
       "settingsTitle": "运行时设置",
-      "settingsHint": "保存后下次探测或启动插件宿主时生效。",
+      "settingsHint": "修改后点击保存；国内镜像开关会立即生效。",
       "bunManualPath": "Bun 路径",
       "bunManualHint": "留空则依次查找应用托管与系统 PATH",
       "bunManualPlaceholder": "留空则依次查找应用托管与系统 PATH",
@@ -6853,7 +6901,11 @@
       "logsLoadFailed": "加载日志失败：{{error}}",
       "logsClearConfirmTitle": "清空诊断日志",
       "logsClearConfirmContent": "将清空当前内存中的插件宿主日志，确定继续吗？",
-      "autoRefreshHint": "页面可见时每 5 秒自动刷新宿主状态与日志"
+      "autoRefreshHint": "页面可见时每 5 秒自动刷新宿主状态与日志",
+      "chinaMirror": "国内镜像",
+      "chinaMirrorHint": "启用后使用 npmmirror 镜像加速插件安装与市场拉取",
+      "npmRegistryHint": "自定义插件包源地址",
+      "refreshAll": "刷新"
     },
     "providerCard": {
       "badge": "插件",

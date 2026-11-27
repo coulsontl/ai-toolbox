@@ -1,12 +1,17 @@
 import React from 'react';
-import { App, Input, Select, Spin, Switch } from 'antd';
+import { App, Input, Select, Spin, Switch, Tooltip } from 'antd';
 import {
   Check,
+  Combine,
   Download,
+  Layers,
   Loader2,
+  PanelsTopLeft,
+  PlugZap,
   RefreshCw,
   Search,
   Settings2,
+  ShieldCheck,
   Store,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -14,16 +19,20 @@ import {
   getPluginMarketListings,
   installPlugin,
   listPluginMarkets,
+  refreshPluginMarkets,
   type MarketPluginListing,
   type MarketSourceRecord,
+  type PluginKind,
+  type PluginSettings,
 } from '@/services';
 import {
-  formatCompactNumber,
   formatPluginError,
   getPluginKindCategory,
   getPluginSummary,
+  isChinaMirrorRegistry,
 } from '../utils/pluginFormatters';
 import PluginIcon from './PluginIcon';
+import PluginMarketDetailModal from './PluginMarketDetailModal';
 import MarketRegistryModal from './MarketRegistryModal';
 import styles from './PluginMarketView.module.less';
 
@@ -31,12 +40,18 @@ type MarketKindFilter = 'all' | 'provider' | 'middleware' | 'page';
 
 interface PluginMarketViewProps {
   refreshKey: number;
+  pluginSettings: PluginSettings | null;
+  chinaMirrorBusy: boolean;
+  onToggleChinaMirror: (enabled: boolean) => void;
   onDataChanged: () => Promise<void>;
   onListingCountChange: (count: number) => void;
 }
 
 const PluginMarketView: React.FC<PluginMarketViewProps> = ({
   refreshKey,
+  pluginSettings,
+  chinaMirrorBusy,
+  onToggleChinaMirror,
   onDataChanged,
   onListingCountChange,
 }) => {
@@ -45,6 +60,7 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
   const [markets, setMarkets] = React.useState<MarketSourceRecord[]>([]);
   const [listings, setListings] = React.useState<MarketPluginListing[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [refreshing, setRefreshing] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [kindFilter, setKindFilter] = React.useState<MarketKindFilter>('all');
   const [marketFilter, setMarketFilter] = React.useState('all');
@@ -53,6 +69,7 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
   const [includeNpmSearch, setIncludeNpmSearch] = React.useState(false);
   const [installingPackage, setInstallingPackage] = React.useState<string | null>(null);
   const [registryOpen, setRegistryOpen] = React.useState(false);
+  const [detailPackage, setDetailPackage] = React.useState<string | null>(null);
   // Bumped when the empty state resets every filter; state updates are batched,
   // so requesting from the click handler would still read the old filters.
   const [reloadToken, setReloadToken] = React.useState(0);
@@ -119,6 +136,21 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
     await Promise.all([loadMarkets(), loadListings()]);
   };
 
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await refreshPluginMarkets();
+      await Promise.all([loadMarkets(), loadListings()]);
+      message.success(t('plugins.market.refreshed'));
+    } catch (refreshError) {
+      setError(
+        t('plugins.market.loadFailed', { error: formatPluginError(refreshError) }),
+      );
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const handleInstall = async (listing: MarketPluginListing) => {
     setInstallingPackage(listing.package);
     setError(null);
@@ -142,7 +174,7 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
     const name = listing.marketIds
       .map((marketId) => markets.find((market) => market.id === marketId)?.name)
       .find(Boolean);
-    return name ?? (listing.community ? t('plugins.market.community') : '');
+    return name ?? (listing.community ? t('plugins.market.communitySource') : '');
   };
 
   const kindLabels: Record<MarketKindFilter, string> = {
@@ -155,23 +187,74 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
   const kindBadge = (kind: string) => {
     const category = getPluginKindCategory(kind);
     if (category === 'middleware') {
-      return { text: t('plugins.kind.middleware'), className: styles.kindMiddleware };
+      return { text: t('plugins.kind.middleware'), category };
     }
     if (category === 'both') {
-      return { text: t('plugins.kind.both'), className: styles.kindBoth };
+      return { text: t('plugins.kind.both'), category };
     }
     if (category === 'page') {
-      return { text: t('plugins.kind.page'), className: styles.kindPage };
+      return { text: t('plugins.kind.page'), category };
     }
     if (category === 'unknown') {
-      return { text: t('plugins.kind.unknown'), className: styles.kindUnknown };
+      return { text: t('plugins.kind.unknown'), category };
     }
-    return { text: t('plugins.kind.provider'), className: styles.kindProvider };
+    return { text: t('plugins.kind.provider'), category };
   };
+
+  const kindIcon = (category: PluginKind) => {
+    if (category === 'middleware') {
+      return <Layers size={12} aria-hidden="true" />;
+    }
+    if (category === 'both') {
+      return <Combine size={12} aria-hidden="true" />;
+    }
+    if (category === 'page') {
+      return <PanelsTopLeft size={12} aria-hidden="true" />;
+    }
+    return <PlugZap size={12} aria-hidden="true" />;
+  };
+
+  const renderInstallControl = (listing: MarketPluginListing) => {
+    const installing = installingPackage === listing.package;
+    if (listing.installed) {
+      return (
+        <span className={styles.installedLabel}>
+          <Check size={13} aria-hidden="true" />
+          {listing.installedVersion
+            ? t('plugins.market.installedVersion', { version: listing.installedVersion })
+            : t('plugins.market.installed')}
+        </span>
+      );
+    }
+    return (
+      <button
+        type="button"
+        className={styles.installPill}
+        disabled={installingPackage !== null}
+        onClick={(event) => {
+          event.stopPropagation();
+          void handleInstall(listing);
+        }}
+      >
+        {installing ? (
+          <Loader2 size={13} className={styles.spin} aria-hidden="true" />
+        ) : (
+          <Download size={13} aria-hidden="true" />
+        )}
+        <span>
+          {installing ? t('plugins.market.installing') : t('plugins.market.install')}
+        </span>
+      </button>
+    );
+  };
+
+  const detailListing = detailPackage
+    ? listings.find((listing) => listing.package === detailPackage) ?? null
+    : null;
 
   return (
     <div className={styles.view}>
-      <div className={styles.filterBar}>
+      <div className={styles.toolbar}>
         <div className={styles.segmented}>
           {(['all', 'provider', 'middleware', 'page'] as MarketKindFilter[]).map((key) => (
             <button
@@ -220,6 +303,18 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
           <span>{t('plugins.market.includeNpmSearch')}</span>
         </label>
 
+        <label className={styles.mirrorToggle}>
+          <span>{t('plugins.market.chinaMirror')}</span>
+          <Switch
+            size="small"
+            checked={isChinaMirrorRegistry(pluginSettings?.npmRegistry)}
+            loading={chinaMirrorBusy}
+            disabled={chinaMirrorBusy || !pluginSettings}
+            aria-label={t('plugins.market.chinaMirror')}
+            onChange={onToggleChinaMirror}
+          />
+        </label>
+
         <button
           type="button"
           className={styles.actionButton}
@@ -228,6 +323,22 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
           <Settings2 size={14} aria-hidden="true" />
           <span>{t('plugins.market.manageMarkets')}</span>
         </button>
+
+        <Tooltip title={t('plugins.market.refresh')}>
+          <button
+            type="button"
+            className={styles.iconButton}
+            aria-label={t('plugins.market.refresh')}
+            disabled={refreshing}
+            onClick={() => void handleRefresh()}
+          >
+            <RefreshCw
+              size={15}
+              className={refreshing ? styles.spin : undefined}
+              aria-hidden="true"
+            />
+          </button>
+        </Tooltip>
 
         <span className={styles.totalLabel}>
           {t('plugins.market.count', { count: listings.length })}
@@ -276,37 +387,58 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
             const summary = getPluginSummary(listing.summary, i18n.language)
               || listing.description;
             const marketName = marketNameFor(listing);
-            const installing = installingPackage === listing.package;
             const kind = kindBadge(listing.kind);
             return (
-              <article key={listing.package} className={styles.card}>
-                <header className={styles.cardHeader}>
-                  <PluginIcon
-                    icon={listing.icon}
-                    name={listing.name || listing.package}
-                  />
+              <article
+                key={listing.package}
+                className={styles.card}
+                role="button"
+                tabIndex={0}
+                aria-label={listing.name || listing.package}
+                onClick={() => setDetailPackage(listing.package)}
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget) {
+                    return;
+                  }
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    setDetailPackage(listing.package);
+                  }
+                }}
+              >
+                <header className={styles.cardTop}>
+                  <span className={styles.cardIcon}>
+                    <PluginIcon
+                      icon={listing.icon}
+                      name={listing.name || listing.package}
+                    />
+                  </span>
                   <div className={styles.cardHeading}>
                     <span className={styles.name} title={listing.name || listing.package}>
                       {listing.name || listing.package}
                     </span>
-                    <div className={styles.metaRow}>
-                      <span className={`${styles.kindBadge} ${kind.className}`}>
-                        {kind.text}
-                      </span>
-                      {marketName ? (
-                        <span className={styles.marketBadge}>{marketName}</span>
-                      ) : null}
-                      {listing.latestVersion ? (
-                        <span className={styles.version}>v{listing.latestVersion}</span>
-                      ) : null}
-                      {listing.weeklyDownloads != null ? (
-                        <span className={styles.downloads}>
-                          {t('plugins.market.weeklyDownloads', {
-                            value: formatCompactNumber(listing.weeklyDownloads),
-                          })}
-                        </span>
-                      ) : null}
-                    </div>
+                    <span className={styles.sourceRow}>
+                      {listing.community ? (
+                        <>
+                          <ShieldCheck
+                            size={12}
+                            className={styles.communityIcon}
+                            aria-hidden="true"
+                          />
+                          <span className={styles.communityText}>
+                            {t('plugins.market.communitySource')}
+                          </span>
+                        </>
+                      ) : (
+                        <span className={styles.sourceText}>{marketName}</span>
+                      )}
+                    </span>
+                  </div>
+                  <div
+                    className={styles.cardAction}
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    {renderInstallControl(listing)}
                   </div>
                 </header>
 
@@ -314,53 +446,14 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
                   {summary || listing.package}
                 </p>
 
-                <div className={styles.providerTags}>
-                  {listing.providers.slice(0, 3).map((provider) => (
-                    <span key={provider} className={styles.providerTag}>
-                      {provider}
-                    </span>
-                  ))}
-                  {listing.providers.length > 3 ? (
-                    <span className={styles.providerTagMore}>
-                      {t('plugins.market.providersMore', {
-                        count: listing.providers.length - 3,
-                      })}
-                    </span>
-                  ) : null}
-                </div>
-
                 <footer className={styles.cardFooter}>
-                  <span className={styles.packageName} title={listing.package}>
-                    {listing.package}
+                  <span className={styles.kindLine}>
+                    {kindIcon(kind.category)}
+                    <span>{kind.text}</span>
                   </span>
-                  {listing.installed ? (
-                    <span className={styles.installedButton}>
-                      <Check size={13} aria-hidden="true" />
-                      {listing.installedVersion
-                        ? t('plugins.market.installedVersion', {
-                          version: listing.installedVersion,
-                        })
-                        : t('plugins.market.installed')}
-                    </span>
-                  ) : (
-                    <button
-                      type="button"
-                      className={styles.installButton}
-                      disabled={installingPackage !== null}
-                      onClick={() => void handleInstall(listing)}
-                    >
-                      {installing ? (
-                        <Loader2 size={13} className={styles.spin} aria-hidden="true" />
-                      ) : (
-                        <Download size={13} aria-hidden="true" />
-                      )}
-                      <span>
-                        {installing
-                          ? t('plugins.market.installing')
-                          : t('plugins.market.install')}
-                      </span>
-                    </button>
-                  )}
+                  {listing.latestVersion ? (
+                    <span className={styles.version}>v{listing.latestVersion}</span>
+                  ) : null}
                 </footer>
               </article>
             );
@@ -373,6 +466,18 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
         markets={markets}
         onClose={() => setRegistryOpen(false)}
         onChanged={handleMarketChanged}
+      />
+      <PluginMarketDetailModal
+        open={Boolean(detailListing)}
+        listing={detailListing}
+        marketName={detailListing ? marketNameFor(detailListing) : ''}
+        installing={installingPackage === detailListing?.package}
+        onInstall={() => {
+          if (detailListing) {
+            void handleInstall(detailListing);
+          }
+        }}
+        onClose={() => setDetailPackage(null)}
       />
     </div>
   );

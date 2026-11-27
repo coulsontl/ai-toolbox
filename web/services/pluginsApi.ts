@@ -86,6 +86,8 @@ export interface PluginSettings {
   bunManualPath: string;
   npmRegistry: string;
   followAppProxy: boolean;
+  /** Explicit per-channel auto check-in switches keyed by provider id. */
+  providerAutoCheckin?: Record<string, boolean>;
 }
 
 export interface BunRuntimeStatus {
@@ -275,6 +277,8 @@ export interface PluginProviderRow {
   options: PluginProviderOptionDeclaration[];
   /** Persisted per-provider option switches; missing entries fall back to `options[].default`. */
   optionValues?: Record<string, boolean>;
+  /** Channel-level daily auto check-in switch resolved from the backend. */
+  autoCheckin?: boolean;
   signedIn: boolean;
   authType: string;
   accountId: string;
@@ -741,6 +745,13 @@ export const setPluginProviderOption = (
   options: Record<string, boolean>,
 ): Promise<PluginProviderOptionValue> =>
   invoke<PluginProviderOptionValue>('plugins_set_provider_option', { providerId, options });
+
+/** Toggle the daily auto check-in switch of a whole channel. */
+export const setPluginProviderAutoCheckin = (
+  providerId: string,
+  enabled: boolean,
+): Promise<boolean> =>
+  invoke<boolean>('plugins_set_provider_auto_checkin', { providerId, enabled });
 
 // ---- custom plugin pages ---------------------------------------------------
 

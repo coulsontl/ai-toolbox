@@ -8,17 +8,20 @@ import {
   ensurePluginBun,
   getPluginBunStatus,
   getPluginMiddlewareStates,
+  getPluginSettings,
   listInstalledPlugins,
   listPluginAccounts,
   listPluginMarkets,
   listPluginPages,
   openPluginPage,
+  savePluginSettings,
   type BunRuntimeStatus,
   type InstalledPluginRecord,
   type MarketSourceRecord,
   type MiddlewareStateView,
   type PluginAccountSummary,
   type PluginPageSession,
+  type PluginSettings,
   type RegisteredPluginPage,
 } from '@/services';
 import InstalledPluginsView from '../components/InstalledPluginsView';
@@ -29,7 +32,11 @@ import PluginOptionsModal from '../components/PluginOptionsModal';
 import PluginPageFrame from '../components/PluginPageFrame';
 import PluginRuntimeView from '../components/PluginRuntimeView';
 import PluginSidebar from '../components/PluginSidebar';
-import { formatPluginError } from '../utils/pluginFormatters';
+import {
+  formatPluginError,
+  NPM_REGISTRY_CHINA,
+  NPM_REGISTRY_OFFICIAL,
+} from '../utils/pluginFormatters';
 import { usePluginBridgeTheme } from '../utils/pluginPageTheme';
 import {
   DEFAULT_PLUGINS_PATH,
@@ -78,6 +85,8 @@ const PluginsPage: React.FC = () => {
   const [markets, setMarkets] = React.useState<MarketSourceRecord[]>([]);
   const [middlewareStates, setMiddlewareStates] = React.useState<MiddlewareStateView[]>([]);
   const [bunStatus, setBunStatus] = React.useState<BunRuntimeStatus | null>(null);
+  const [pluginSettings, setPluginSettings] = React.useState<PluginSettings | null>(null);
+  const [chinaMirrorBusy, setChinaMirrorBusy] = React.useState(false);
   const [marketCount, setMarketCount] = React.useState<number | null>(null);
   const [registeredPages, setRegisteredPages] = React.useState<RegisteredPluginPage[]>([]);
   const [pagesLoaded, setPagesLoaded] = React.useState(false);
@@ -129,6 +138,7 @@ const PluginsPage: React.FC = () => {
       marketsResult,
       middlewareResult,
       bunResult,
+      settingsResult,
       pagesResult,
     ] = await Promise.allSettled([
       listInstalledPlugins(),
@@ -136,6 +146,7 @@ const PluginsPage: React.FC = () => {
       listPluginMarkets(),
       getPluginMiddlewareStates(),
       getPluginBunStatus(),
+      getPluginSettings(),
       listPluginPages(),
     ]);
 
@@ -156,6 +167,9 @@ const PluginsPage: React.FC = () => {
     }
     if (bunResult.status === 'fulfilled') {
       setBunStatus(bunResult.value);
+    }
+    if (settingsResult.status === 'fulfilled') {
+      setPluginSettings(settingsResult.value);
     }
     if (pagesResult.status === 'fulfilled') {
       setRegisteredPages(pagesResult.value);
@@ -325,6 +339,37 @@ const PluginsPage: React.FC = () => {
       message.success(t('plugins.page.notice.refreshed'));
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  // One switch shared by the installed list, market and runtime settings; it
+  // only rewrites `npmRegistry`, so the other settings are carried through.
+  const handleToggleChinaMirror = async (enabled: boolean) => {
+    if (!pluginSettings || chinaMirrorBusy) {
+      return;
+    }
+    const previous = pluginSettings;
+    const next: PluginSettings = {
+      ...pluginSettings,
+      npmRegistry: enabled ? NPM_REGISTRY_CHINA : NPM_REGISTRY_OFFICIAL,
+    };
+    setPluginSettings(next);
+    setChinaMirrorBusy(true);
+    try {
+      const saved = await savePluginSettings(next);
+      setPluginSettings(saved);
+      if (enabled) {
+        message.success(t('plugins.page.notice.mirrorOn'));
+      } else {
+        message.success(t('plugins.page.notice.mirrorOff'));
+      }
+    } catch (error) {
+      setPluginSettings(previous);
+      message.error(
+        t('plugins.page.notice.mirrorFailed', { error: formatPluginError(error) }),
+      );
+    } finally {
+      setChinaMirrorBusy(false);
     }
   };
 
@@ -527,10 +572,15 @@ const PluginsPage: React.FC = () => {
               plugins={installedPlugins}
               accounts={accounts}
               middlewareStates={middlewareStates}
+              bunStatus={bunStatus}
+              pluginSettings={pluginSettings}
+              chinaMirrorBusy={chinaMirrorBusy}
               loading={loading}
               onDataChanged={loadSharedData}
+              onToggleChinaMirror={(enabled) => void handleToggleChinaMirror(enabled)}
               onOpenInstall={() => openInstallModal()}
               onBrowseMarket={() => handleSelectTab('market')}
+              onOpenRuntime={() => handleSelectTab('runtime')}
               onManageAccounts={(providerId) => navigate(getPluginsAccountsPath(providerId))}
               onEditOptions={setOptionsTarget}
               onOpenPage={(pluginId, pageId) => navigate(getPluginsCustomPagePath(pluginId, pageId))}
@@ -548,12 +598,22 @@ const PluginsPage: React.FC = () => {
           {activeTab === 'market' ? (
             <PluginMarketView
               refreshKey={refreshKey}
+              pluginSettings={pluginSettings}
+              chinaMirrorBusy={chinaMirrorBusy}
+              onToggleChinaMirror={(enabled) => void handleToggleChinaMirror(enabled)}
               onDataChanged={loadSharedData}
               onListingCountChange={setMarketCount}
             />
           ) : null}
           {activeTab === 'runtime' ? (
-            <PluginRuntimeView refreshKey={refreshKey} onBunStatusChange={setBunStatus} />
+            <PluginRuntimeView
+              refreshKey={refreshKey}
+              pluginSettings={pluginSettings}
+              chinaMirrorBusy={chinaMirrorBusy}
+              onToggleChinaMirror={(enabled) => void handleToggleChinaMirror(enabled)}
+              onSettingsSaved={setPluginSettings}
+              onBunStatusChange={setBunStatus}
+            />
           ) : null}
         </div>
       </div>

@@ -1,10 +1,24 @@
+@import '../styles/pluginTheme.less';
+
 .pluginsPage {
+  .pluginThemeLight();
+
   display: flex;
   width: 100%;
   min-width: 0;
   height: calc(100vh - var(--content-top-offset) - 48px);
   min-height: 420px;
   flex-direction: column;
+  padding: 12px;
+  background: var(--pl-bg);
+
+  :global(svg.lucide) {
+    stroke-width: 1.75;
+  }
+}
+
+:global([data-theme='dark']) .pluginsPage {
+  .pluginThemeDark();
 }
 
 .workspace {
@@ -28,7 +42,7 @@
 .stageManage {
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 2px 2px 24px 0;
+  padding: 0 0 24px;
 }
 
 .stagePage {

@@ -1,7 +1,18 @@
 import React from 'react';
-import { App, Checkbox, Dropdown, Input, Modal, Spin, Switch } from 'antd';
+import { App, Checkbox, Dropdown, Input, Modal, Spin, Switch, Tooltip } from 'antd';
 import {
+  ArrowDownAZ,
+  ArrowUpAZ,
+  Combine,
+  Layers,
+  Loader2,
   PackageCheck,
+  PanelsTopLeft,
+  PlugZap,
+  Plus,
+  Power,
+  PowerOff,
+  RefreshCw,
   Search,
   Settings2,
   SquareArrowOutUpRight,
@@ -13,16 +24,19 @@ import { useTranslation } from 'react-i18next';
 import {
   setPluginEnabled,
   uninstallPlugin,
+  type BunRuntimeStatus,
   type InstalledPluginRecord,
   type MiddlewareStateView,
   type PluginAccountSummary,
+  type PluginKind,
+  type PluginSettings,
 } from '@/services';
 import {
   formatMicroseconds,
   formatPluginError,
   getPluginKindCategory,
   getPluginPageTitle,
-  getPluginSummary,
+  isChinaMirrorRegistry,
   isMiddlewarePluginKind,
   isPagePluginKind,
   isProviderPluginKind,
@@ -31,15 +45,21 @@ import PluginIcon from './PluginIcon';
 import styles from './InstalledPluginsView.module.less';
 
 type PluginFilter = 'all' | 'provider' | 'middleware' | 'page';
+type SortDirection = 'asc' | 'desc';
 
 interface InstalledPluginsViewProps {
   plugins: InstalledPluginRecord[];
   accounts: PluginAccountSummary[];
   middlewareStates: MiddlewareStateView[];
+  bunStatus: BunRuntimeStatus | null;
+  pluginSettings: PluginSettings | null;
+  chinaMirrorBusy: boolean;
   loading: boolean;
   onDataChanged: () => Promise<void>;
+  onToggleChinaMirror: (enabled: boolean) => void;
   onOpenInstall: () => void;
   onBrowseMarket: () => void;
+  onOpenRuntime: () => void;
   onManageAccounts: (providerId?: string) => void;
   onEditOptions: (plugin: InstalledPluginRecord) => void;
   onOpenPage: (pluginId: string, pageId?: string) => void;
@@ -49,10 +69,15 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
   plugins,
   accounts,
   middlewareStates,
+  bunStatus,
+  pluginSettings,
+  chinaMirrorBusy,
   loading,
   onDataChanged,
+  onToggleChinaMirror,
   onOpenInstall,
   onBrowseMarket,
+  onOpenRuntime,
   onManageAccounts,
   onEditOptions,
   onOpenPage,
@@ -61,10 +86,13 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
   const { message } = App.useApp();
   const [filter, setFilter] = React.useState<PluginFilter>('all');
   const [search, setSearch] = React.useState('');
+  const [sortDirection, setSortDirection] = React.useState<SortDirection>('asc');
+  const [refreshing, setRefreshing] = React.useState(false);
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [uninstallTarget, setUninstallTarget] = React.useState<InstalledPluginRecord | null>(null);
   const [purgeData, setPurgeData] = React.useState(false);
   const [uninstallBusy, setUninstallBusy] = React.useState(false);
+  const chinaMirror = isChinaMirrorRegistry(pluginSettings?.npmRegistry);
 
   const counts = React.useMemo(() => {
     const next = { all: plugins.length, provider: 0, middleware: 0, page: 0 };
@@ -79,7 +107,7 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
 
   const filteredPlugins = React.useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return plugins.filter((plugin) => {
+    const matched = plugins.filter((plugin) => {
       const category = getPluginKindCategory(plugin.kind);
       if (filter === 'provider' && !isProviderPluginKind(category)) {
         return false;
@@ -101,12 +129,13 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
       ].join(' ').toLowerCase();
       return haystack.includes(needle);
     });
-  }, [filter, plugins, search]);
-
-  const getAccountCount = (plugin: InstalledPluginRecord) => {
-    const providerIds = new Set(plugin.providers);
-    return accounts.filter((account) => providerIds.has(account.provider)).length;
-  };
+    return [...matched].sort((left, right) => {
+      const leftName = left.displayName || left.packageName || left.spec;
+      const rightName = right.displayName || right.packageName || right.spec;
+      const order = leftName.localeCompare(rightName, i18n.language, { sensitivity: 'base' });
+      return sortDirection === 'asc' ? order : -order;
+    });
+  }, [filter, i18n.language, plugins, search, sortDirection]);
 
   const getMiddlewareState = (plugin: InstalledPluginRecord) =>
     middlewareStates.find((state) => state.pluginId === plugin.id);
@@ -127,6 +156,15 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
       );
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await onDataChanged();
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -168,21 +206,36 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
     }
   };
 
-  const kindLabel = (plugin: InstalledPluginRecord) => {
-    const category = getPluginKindCategory(plugin.kind);
+  const kindLabel = (category: PluginKind) => {
     if (category === 'middleware') {
-      return { text: t('plugins.kind.middleware'), className: styles.pillMiddleware };
+      return t('plugins.kind.middleware');
     }
     if (category === 'both') {
-      return { text: t('plugins.kind.both'), className: styles.pillBoth };
+      return t('plugins.kind.both');
     }
     if (category === 'page') {
-      return { text: t('plugins.kind.page'), className: styles.pillPage };
+      return t('plugins.kind.page');
     }
     if (category === 'unknown') {
-      return { text: t('plugins.kind.unknown'), className: styles.pillMuted };
+      return t('plugins.kind.unknown');
     }
-    return { text: t('plugins.kind.provider'), className: styles.pillProvider };
+    return t('plugins.kind.provider');
+  };
+
+  const kindIcon = (category: PluginKind) => {
+    if (category === 'middleware') {
+      return <Layers size={12} aria-hidden="true" />;
+    }
+    if (category === 'both') {
+      return <Combine size={12} aria-hidden="true" />;
+    }
+    if (category === 'page') {
+      return <PanelsTopLeft size={12} aria-hidden="true" />;
+    }
+    if (category === 'unknown') {
+      return <PackageCheck size={12} aria-hidden="true" />;
+    }
+    return <PlugZap size={12} aria-hidden="true" />;
   };
 
   const sourceLabel = (sourceType: string) => {
@@ -235,7 +288,7 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
 
   return (
     <div className={styles.view}>
-      <div className={styles.filterBar}>
+      <div className={styles.toolbar}>
         <div className={styles.segmented}>
           {(['all', 'provider', 'middleware', 'page'] as PluginFilter[]).map((key) => (
             <button
@@ -249,17 +302,75 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
             </button>
           ))}
         </div>
-        <Input
-          allowClear
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          prefix={<Search size={14} aria-hidden="true" />}
-          placeholder={t('plugins.installed.searchPlaceholder')}
-          className={styles.searchInput}
-        />
-        <span className={styles.totalLabel}>
-          {t('plugins.installed.count', { count: filteredPlugins.length })}
-        </span>
+        <div className={styles.toolbarActions}>
+          <label className={styles.mirrorToggle}>
+            <span>{t('plugins.installed.chinaMirror')}</span>
+            <Switch
+              size="small"
+              checked={chinaMirror}
+              loading={chinaMirrorBusy}
+              disabled={chinaMirrorBusy || !pluginSettings}
+              aria-label={t('plugins.installed.chinaMirror')}
+              onChange={onToggleChinaMirror}
+            />
+          </label>
+          <Input
+            allowClear
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            prefix={<Search size={14} aria-hidden="true" />}
+            placeholder={t('plugins.installed.searchPlaceholder')}
+            className={styles.searchInput}
+          />
+          <Tooltip
+            title={
+              sortDirection === 'asc'
+                ? t('plugins.installed.sortDesc')
+                : t('plugins.installed.sortAsc')
+            }
+          >
+            <button
+              type="button"
+              className={styles.iconButton}
+              aria-label={
+                sortDirection === 'asc'
+                  ? t('plugins.installed.sortDesc')
+                  : t('plugins.installed.sortAsc')
+              }
+              onClick={() =>
+                setSortDirection((current) => (current === 'asc' ? 'desc' : 'asc'))}
+            >
+              {sortDirection === 'asc' ? (
+                <ArrowDownAZ size={15} aria-hidden="true" />
+              ) : (
+                <ArrowUpAZ size={15} aria-hidden="true" />
+              )}
+            </button>
+          </Tooltip>
+          <Tooltip title={t('plugins.installed.refresh')}>
+            <button
+              type="button"
+              className={styles.iconButton}
+              aria-label={t('plugins.installed.refresh')}
+              disabled={refreshing}
+              onClick={() => void handleRefresh()}
+            >
+              <RefreshCw
+                size={15}
+                className={refreshing ? styles.spin : undefined}
+                aria-hidden="true"
+              />
+            </button>
+          </Tooltip>
+          <button
+            type="button"
+            className={`${styles.actionButton} ${styles.actionButtonPrimary}`}
+            onClick={onOpenInstall}
+          >
+            <Plus size={14} aria-hidden="true" />
+            <span>{t('plugins.installed.install')}</span>
+          </button>
+        </div>
       </div>
 
       {filteredPlugins.length === 0 ? (
@@ -283,121 +394,112 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
           </div>
         </div>
       ) : (
-        <div className={styles.grid}>
+        <div className={styles.list}>
           {filteredPlugins.map((plugin) => {
             const category = getPluginKindCategory(plugin.kind);
-            const kind = kindLabel(plugin);
             const middlewareState = getMiddlewareState(plugin);
             const canManageAccounts = isProviderPluginKind(category) && plugin.hasProviderEntry;
-            const accountCount = getAccountCount(plugin);
-            const summary = getPluginSummary(plugin.summary, i18n.language);
             const busy = busyId === plugin.id;
             const openablePages = plugin.enabled ? plugin.pages ?? [] : [];
+            const providerStatuses = plugin.providers.map((provider) => ({
+              provider,
+              signedIn: accounts.some((account) => account.provider === provider),
+            }));
+            const showSourceTag =
+              plugin.sourceType === 'github' || plugin.sourceType === 'local';
+            const providerList = plugin.providers.join(
+              i18n.language.startsWith('zh') ? '、' : ', ',
+            );
 
             return (
-              <article key={plugin.id} className={styles.card}>
-                <header className={styles.cardHeader}>
+              <article
+                key={plugin.id}
+                className={`${styles.row} ${plugin.enabled ? '' : styles.rowDisabled}`}
+              >
+                <span className={styles.rowIcon}>
                   <PluginIcon icon={plugin.icon} name={plugin.displayName || plugin.packageName} />
-                  <div className={styles.cardHeading}>
-                    <div className={styles.nameRow}>
-                      <span
-                        className={styles.name}
-                        title={plugin.displayName || plugin.packageName}
-                      >
-                        {plugin.displayName || plugin.packageName}
-                      </span>
-                      <span className={styles.version}>v{plugin.version || '—'}</span>
-                    </div>
-                    <div className={styles.metaRow}>
-                      <span className={`${styles.pill} ${kind.className}`}>{kind.text}</span>
-                      <span className={`${styles.pill} ${styles.pillMuted}`}>
+                </span>
+                <div className={styles.rowMain}>
+                  <div className={styles.rowHeading}>
+                    <span
+                      className={`${styles.rowName} ${plugin.enabled ? '' : styles.rowNameDisabled}`}
+                      title={plugin.displayName || plugin.packageName}
+                    >
+                      {plugin.displayName || plugin.packageName}
+                    </span>
+                    <span className={styles.rowVersion}>v{plugin.version || '—'}</span>
+                    {showSourceTag ? (
+                      <span className={styles.rowSourceTag}>
                         {sourceLabel(plugin.sourceType)}
                       </span>
-                      {plugin.marketId ? (
-                        <span className={`${styles.pill} ${styles.pillMuted}`}>
-                          {t('plugins.installed.marketTag')}
-                        </span>
-                      ) : null}
-                    </div>
+                    ) : null}
+                    {plugin.enabled ? null : (
+                      <span className={styles.rowDisabledTag}>
+                        {t('plugins.installed.disabledTag')}
+                      </span>
+                    )}
+                    {providerStatuses.length > 0 ? (
+                      <span className={styles.rowCarries}>
+                        <span className={styles.rowCarriesDot} aria-hidden="true" />
+                        {t('plugins.installed.providersCarried', { providers: providerList })}
+                      </span>
+                    ) : null}
+                    <span className={styles.rowKind}>
+                      {kindIcon(category)}
+                      <span>{kindLabel(category)}</span>
+                    </span>
                   </div>
-                  <Switch
-                    size="small"
-                    checked={plugin.enabled}
-                    loading={busy}
-                    disabled={busy}
-                    aria-label={t('plugins.installed.toggleLabel', {
-                      name: plugin.displayName || plugin.packageName,
-                    })}
-                    onChange={(checked) => void handleToggle(plugin, checked)}
-                  />
-                </header>
-
-                <p className={styles.summary}>
-                  {summary || plugin.packageName || plugin.spec}
-                </p>
-
-                <div className={styles.metrics}>
-                  {isProviderPluginKind(category) ? (
-                    <>
-                      <span className={styles.metric}>
-                        <span className={styles.metricLabel}>
-                          {t('plugins.installed.metrics.channels')}
+                  <div className={styles.rowStatus}>
+                    {providerStatuses.map((status) => (
+                      <span key={status.provider} className={styles.statusItem}>
+                        <span
+                          className={`${styles.statusDot} ${
+                            status.signedIn ? styles.statusDotOn : ''
+                          }`}
+                          aria-hidden="true"
+                        />
+                        <span className={styles.statusProvider}>{status.provider}</span>
+                        <span className={styles.statusText}>
+                          {status.signedIn
+                            ? t('plugins.installed.providerSignedIn')
+                            : t('plugins.installed.providerSignedOut')}
                         </span>
-                        {plugin.providers.length}
                       </span>
-                      <span className={styles.metric}>
-                        <span className={styles.metricLabel}>
-                          {t('plugins.installed.metrics.accounts')}
+                    ))}
+                    {isMiddlewarePluginKind(category) ? (
+                      middlewareState ? (
+                        <span className={styles.statusItem}>
+                          {t('plugins.installed.middlewareSummary', {
+                            hooks: middlewareState.hooks.length > 0
+                              ? middlewareState.hooks.join(' · ')
+                              : t('plugins.runtime.hooksEmpty'),
+                            calls: middlewareState.calls,
+                            avg: formatMicroseconds(middlewareState.avgMicros),
+                          })}
                         </span>
-                        {accountCount}
-                      </span>
-                    </>
-                  ) : null}
-                  {isMiddlewarePluginKind(category) && middlewareState ? (
-                    <>
-                      <span className={styles.metric}>
-                        <span className={styles.metricLabel}>
-                          {t('plugins.installed.metrics.calls')}
+                      ) : (
+                        <span className={styles.statusItem}>
+                          {t('plugins.installed.metrics.notLoaded')}
                         </span>
-                        {middlewareState.calls}
+                      )
+                    ) : null}
+                    {isPagePluginKind(category) ? (
+                      <span className={styles.statusItem}>
+                        {t('plugins.installed.pageSummary', {
+                          pages: plugin.pages?.length ?? 0,
+                          permissions: plugin.permissions?.length ?? 0,
+                        })}
                       </span>
-                      <span className={styles.metric}>
-                        <span className={styles.metricLabel}>
-                          {t('plugins.installed.metrics.avg')}
-                        </span>
-                        {formatMicroseconds(middlewareState.avgMicros)}
-                      </span>
-                      <span className={styles.metric}>
-                        <span className={styles.metricLabel}>
-                          {t('plugins.installed.metrics.failures')}
-                        </span>
-                        {middlewareState.failures}
-                      </span>
-                    </>
-                  ) : null}
-                  {isMiddlewarePluginKind(category) && !middlewareState ? (
-                    <span className={styles.metricMuted}>
-                      {t('plugins.installed.metrics.notLoaded')}
-                    </span>
-                  ) : null}
-                  {plugin.pages && plugin.pages.length > 0 ? (
-                    <span className={styles.metric}>
-                      <span className={styles.metricLabel}>
-                        {t('plugins.installed.metrics.pages')}
-                      </span>
-                      {plugin.pages.length}
-                    </span>
+                    ) : null}
+                  </div>
+                  {plugin.lastError ? (
+                    <details className={styles.errorDetails}>
+                      <summary>{t('plugins.installed.viewError')}</summary>
+                      <p>{plugin.lastError}</p>
+                    </details>
                   ) : null}
                 </div>
-
-                {plugin.lastError ? (
-                  <details className={styles.errorDetails}>
-                    <summary>{t('plugins.installed.viewError')}</summary>
-                    <p>{plugin.lastError}</p>
-                  </details>
-                ) : null}
-
-                <footer className={styles.cardFooter}>
+                <div className={styles.rowActions}>
                   {canManageAccounts ? (
                     <button
                       type="button"
@@ -444,7 +546,25 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
                     <Settings2 size={14} aria-hidden="true" />
                     <span>{t('plugins.installed.actions.options')}</span>
                   </button>
-                  <span className={styles.footerSpacer} />
+                  <button
+                    type="button"
+                    className={styles.textButton}
+                    disabled={busy}
+                    onClick={() => void handleToggle(plugin, !plugin.enabled)}
+                  >
+                    {busy ? (
+                      <Loader2 size={14} className={styles.spin} aria-hidden="true" />
+                    ) : plugin.enabled ? (
+                      <PowerOff size={14} aria-hidden="true" />
+                    ) : (
+                      <Power size={14} aria-hidden="true" />
+                    )}
+                    <span>
+                      {plugin.enabled
+                        ? t('plugins.installed.actions.disable')
+                        : t('plugins.installed.actions.enable')}
+                    </span>
+                  </button>
                   <button
                     type="button"
                     className={`${styles.textButton} ${styles.textButtonDanger}`}
@@ -454,12 +574,35 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
                     <Trash2 size={14} aria-hidden="true" />
                     <span>{t('plugins.installed.actions.uninstall')}</span>
                   </button>
-                </footer>
+                </div>
               </article>
             );
           })}
         </div>
       )}
+
+      <div className={styles.statusBar}>
+        <span className={styles.statusBarText}>
+          {bunStatus?.available
+            ? t('plugins.installed.bunReady', {
+              version: bunStatus.version ?? bunStatus.expectedVersion,
+            })
+            : t('plugins.installed.bunMissing')}
+        </span>
+        <span className={styles.statusBarActions}>
+          <button type="button" className={styles.statusBarButton} onClick={onOpenRuntime}>
+            {t('plugins.installed.viewRuntime')}
+          </button>
+          <button
+            type="button"
+            className={styles.statusBarButton}
+            disabled={refreshing}
+            onClick={() => void handleRefresh()}
+          >
+            {t('plugins.installed.refresh')}
+          </button>
+        </span>
+      </div>
 
       <Modal
         open={Boolean(uninstallTarget)}
