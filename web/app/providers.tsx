@@ -6,6 +6,7 @@ import { listen } from '@tauri-apps/api/event';
 import { TRAY_CONFIG_REFRESH_EVENT } from '@/constants/configEvents';
 import UpdateProgressModal from '@/components/common/UpdateProgressModal';
 import DeepLinkImportDialog from '@/features/shared/deepLink/DeepLinkImportDialog';
+import ControlApiApprovalModal from '@/components/common/ControlApiApprovalModal';
 import { useDeepLinkImport } from '@/features/shared/deepLink/useDeepLinkImport';
 import type { DeepLinkErrorPayload } from '@/services/deeplinkApi';
 import { useAppStore, useSettingsStore } from '@/stores';
@@ -250,6 +251,8 @@ const AppInitializer: React.FC<{ children: React.ReactNode }> = ({ children }) =
       {children}
       {/* Deep-link (`aitoolbox://`) provider import confirmation */}
       <DeepLinkImportMount />
+      {/* Local Agent Control API approval gate */}
+      <ControlApiApprovalModal />
       {/* Update Progress Modal */}
       <UpdateProgressModal
         open={updateModalOpen}

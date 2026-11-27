@@ -22,4 +22,5 @@ export * from './miniBrowserApi';
 export * from './deeplinkApi';
 export * from './ohMyOpenAgentApi';
 export * from './pluginsApi';
+export * from './controlApi';
 export * from '../features/coding/shared/sessionManager/sessionManagerApi';

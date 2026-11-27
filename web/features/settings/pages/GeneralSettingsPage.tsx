@@ -37,7 +37,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { useAppStore, useSettingsStore } from '@/stores';
 import { useThemeStore, type ThemeMode } from '@/stores/themeStore';
 import { SYSTEM_LANGUAGE, languages, type LanguagePreference } from '@/i18n';
-import { BackupSettingsModal, RemoteBackupRestoreModal, type RemoteBackupSelection } from '../components';
+import { BackupSettingsModal, ControlApiSettingsCard, RemoteBackupRestoreModal, type RemoteBackupSelection } from '../components';
 import UpdateProgressModal from '@/components/common/UpdateProgressModal';
 import LinuxRenderingSetting from '../components/LinuxRenderingSetting';
 import FieldHelp from '@/components/common/FieldHelp';
@@ -1173,6 +1173,8 @@ const GeneralSettingsPage: React.FC = () => {
         {/* Right Column: Tab Visibility + Network & Backup */}
         <Col xs={24} lg={12}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <ControlApiSettingsCard />
+
           {/* Tab Visibility Card */}
           <Card
             title={<CardTitle icon={<EyeOutlined style={{ color: '#722ed1' }} />} title={t('settings.cards.tabVisibility')} />}
