@@ -392,6 +392,13 @@ impl ProxyGatewayManager {
             .as_ref()
             .and_then(|runtime| runtime.context.health_items())
     }
+
+    pub fn reset_model_health(&self) -> bool {
+        self.runtime
+            .as_ref()
+            .map(|runtime| runtime.context.reset_health())
+            .unwrap_or(false)
+    }
 }
 
 pub struct ProxyGatewayRuntime {
@@ -689,6 +696,22 @@ impl GatewayRuntimeContext {
         let mut registry = registry.lock().ok()?;
         registry.refresh_due_cooldowns(Utc::now());
         Some(registry.health_items())
+    }
+
+    fn reset_health(&self) -> bool {
+        let Some(registry) = self.health_registry.as_ref() else {
+            return false;
+        };
+        let Ok(mut registry) = registry.lock() else {
+            return false;
+        };
+        registry.reset();
+        if let Some(path) = self.health_path.as_ref() {
+            if let Err(error) = registry.save(path) {
+                log::warn!("Failed to persist the reset proxy gateway model health: {error}");
+            }
+        }
+        true
     }
 
     fn update_health_settings(&self, settings: ProxyGatewaySettings) {

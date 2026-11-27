@@ -1642,6 +1642,21 @@ pub async fn proxy_gateway_model_health_entries(
 }
 
 #[tauri::command]
+pub fn proxy_gateway_reset_model_health(
+    gateway_state: tauri::State<'_, ProxyGatewayState>,
+) -> Result<Value, String> {
+    let manager = gateway_state
+        .manager
+        .lock()
+        .map_err(|_| "Proxy gateway manager lock poisoned".to_string())?;
+    if !manager.status().running {
+        return Err("Gateway is not running".to_string());
+    }
+    let reset = manager.reset_model_health();
+    Ok(serde_json::json!({ "reset": reset }))
+}
+
+#[tauri::command]
 pub async fn proxy_gateway_test_provider_model_connectivity(
     gateway_state: tauri::State<'_, ProxyGatewayState>,
     db_state: tauri::State<'_, SqliteDbState>,

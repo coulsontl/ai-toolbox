@@ -222,6 +222,13 @@ impl ModelHealthRegistry {
         })
     }
 
+    /// Clears every cooling/degraded entry. Used by the explicit
+    /// `gateway health reset` control action.
+    pub fn reset(&mut self) {
+        self.model_entries.clear();
+        self.provider_entries.clear();
+    }
+
     pub fn health_items(&self) -> Vec<GatewayModelHealthItem> {
         let mut items = Vec::new();
         for (key, entry) in &self.model_entries {

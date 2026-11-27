@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Value};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::db::SqliteDbState;
 
@@ -77,7 +77,7 @@ fn installed_by_package(
         .collect())
 }
 
-async fn reload_runtimes(manager: &PluginManagerState) {
+pub(crate) async fn reload_runtimes(manager: &PluginManagerState) {
     manager.gateway().clear_provider_cache();
     manager.middleware().reload().await;
     if let Err(error) = manager.page_server().sync_enabled_plugins(manager.db()) {
@@ -86,6 +86,37 @@ async fn reload_runtimes(manager: &PluginManagerState) {
     if let Err(error) = manager.host().notify_plugins_changed().await {
         log::warn!("plugin host restart after a plugin change failed: {error}");
     }
+}
+
+/// Atomic reload shared by the desktop command and the control API.
+///
+/// Rescans installed manifests, recompiles middleware, re-syncs page tokens,
+/// restarts the Bun host when provider plugins are present and finally emits
+/// one `plugins-changed` event so open desktop pages refresh without a restart.
+pub async fn reload_plugins(
+    manager: &PluginManagerState,
+    app: &AppHandle,
+    id: Option<&str>,
+) -> Result<Vec<InstalledPluginRecord>, String> {
+    if let Some(id) = id {
+        if store::get_installed_plugin(manager.db(), id)?.is_none() {
+            return Err(format!("Plugin '{id}' is not installed"));
+        }
+    }
+    let records = installer::refresh_installed_plugins(manager.db(), manager.paths())?;
+    reload_runtimes(manager).await;
+    let _ = app.emit("plugins-changed", json!({ "id": id }));
+    Ok(records)
+}
+
+#[tauri::command]
+pub async fn plugins_reload(
+    manager: State<'_, PluginManagerState>,
+    app: AppHandle,
+    id: Option<String>,
+) -> Result<Vec<InstalledPluginRecord>, String> {
+    let manager = manager.inner().clone();
+    reload_plugins(&manager, &app, id.as_deref()).await
 }
 
 #[tauri::command]
