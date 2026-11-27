@@ -703,9 +703,7 @@ async fn create_provider_inner(
     body: Value,
 ) -> ApiResult<Value> {
     match cli {
-        "antigravity" => Err(ApiError::read_only(
-            "Antigravity only supports Google OAuth and has no custom provider entry",
-        )),
+        "antigravity" => Err(unsupported("antigravity", "Custom providers")),
         "claudecode" => {
             let input = serde_json::from_value(db_provider_input(cli, &body))
                 .map_err(|error| invalid(format!("Invalid Claude provider: {error}")))?;
@@ -902,9 +900,7 @@ async fn update_provider_inner(
     body: Value,
 ) -> ApiResult<Value> {
     match cli {
-        "antigravity" => Err(ApiError::read_only(
-            "Antigravity only supports Google OAuth and has no custom provider entry",
-        )),
+        "antigravity" => Err(unsupported("antigravity", "Custom providers")),
         "claudecode" | "claudedesktop" | "codex" | "grok" | "kimi" | "geminicli" | "zcode" => {
             update_db_provider(context, cli, id, body).await
         }
@@ -1167,9 +1163,7 @@ async fn raw_db_provider(context: &ServerContext, cli: &str, id: &str) -> ApiRes
 
 pub async fn delete_provider(context: &ServerContext, cli: &str, id: &str) -> ApiResult<Value> {
     match cli {
-        "antigravity" => Err(ApiError::read_only(
-            "Antigravity only supports Google OAuth and has no custom provider entry",
-        )),
+        "antigravity" => Err(unsupported("antigravity", "Custom providers")),
         "claudecode" => {
             crate::coding::claude_code::commands::delete_claude_provider(
                 db_state(context),
@@ -1301,12 +1295,8 @@ pub async fn apply_provider(
         "hermes" => apply_runtime_provider(context, RuntimeCli::Hermes, id, model_id).await,
         "dsh" => apply_runtime_provider(context, RuntimeCli::Dsh, id, model_id).await,
         "omo_native" => apply_omo_provider(context, id, model_id).await,
-        "workbuddy" | "codebuddy" => Err(ApiError::read_only(
-            "This product has no explicit provider apply step; its models are discovered from models.json",
-        )),
-        "antigravity" => Err(ApiError::read_only(
-            "Antigravity only supports Google OAuth and has no custom provider entry",
-        )),
+        "workbuddy" | "codebuddy" => Err(unsupported(cli, "Provider apply")),
+        "antigravity" => Err(unsupported("antigravity", "Custom providers")),
         other => Err(ApiError::not_found(format!("Unknown CLI '{other}'"))),
     }
 }
@@ -2577,7 +2567,7 @@ async fn add_model_inner(
         "workbuddy" | "codebuddy" => {
             add_family_model(context, cli, provider_id, &model_id, &body).await
         }
-        "antigravity" => Err(ApiError::read_only("Antigravity has no custom models")),
+        "antigravity" => Err(unsupported("antigravity", "Custom models")),
         other => Err(ApiError::not_found(format!("Unknown CLI '{other}'"))),
     }
 }
@@ -2861,7 +2851,7 @@ async fn delete_model_inner(
             }
             Ok(json!({"deleted": model_id}))
         }
-        "antigravity" => Err(ApiError::read_only("Antigravity has no custom models")),
+        "antigravity" => Err(unsupported("antigravity", "Custom models")),
         "claudecode" | "claudedesktop" | "codex" | "grok" | "kimi" | "geminicli" | "zcode" => {
             let mut raw = raw_db_provider(context, cli, provider_id).await?;
             let mut settings = settings_config_object(&raw);
@@ -3059,9 +3049,7 @@ async fn set_default_model_inner(
         "opencode" | "openclaw" | "pi" | "oh_my_pi" | "hermes" | "dsh" | "omo_native" => {
             apply_provider(context, cli, provider_id, Some(model_id)).await
         }
-        "workbuddy" | "codebuddy" | "antigravity" => Err(ApiError::read_only(
-            "This CLI has no editable default-model setting",
-        )),
+        "workbuddy" | "codebuddy" | "antigravity" => Err(unsupported(cli, "Default model")),
         other => Err(ApiError::not_found(format!("Unknown CLI '{other}'"))),
     }
 }
@@ -3178,6 +3166,9 @@ pub async fn test_provider(
     provider_id: &str,
     body: &Value,
 ) -> ApiResult<Value> {
+    if cli == "antigravity" {
+        return Err(unsupported(cli, "Provider test"));
+    }
     let provider = get_provider(context, cli, provider_id).await?;
     let model_ids = body
         .get("modelIds")
@@ -3485,6 +3476,9 @@ pub async fn fetch_models(
     provider_id: &str,
     body: &Value,
 ) -> ApiResult<Value> {
+    if cli == "antigravity" {
+        return Err(unsupported(cli, "Model discovery"));
+    }
     let connection =
         provider_connection(cli, &connection_provider(raw_provider_for_connection(context, cli, provider_id).await?))?;
     let api_type = match body.get("apiType").and_then(Value::as_str) {

@@ -205,7 +205,7 @@ aitb gateway restore --cli <cliKey>
 | `workbuddy` | file | ✓ | ✓ | — | — | — | — | ✓ |
 | `codebuddy` | file | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 
-- `antigravity` 只有 Google OAuth：渠道/模型 CRUD、`apply`、`test` 返回 `unsupported`；`config` 与提示词仍可用。
+- `antigravity` 只有 Google OAuth：渠道/模型 CRUD、`apply`、`test`、`fetch-models` 返回 `unsupported`；`config` 与提示词仍可用。
 - `workbuddy` 没有独立全局配置文件，`config` 为 `false`；模型走 `provider`/`model` 命令。
 - `codebuddy` 的 `settings.json` 由产品拥有，`config` 可读、`configReadOnly=true`，写入返回 `read_only` 403。
 - 不支持 ≠ 授权失败：`unsupported` 是能力边界，换命令或换 CLI；`read_only` 才是用户策略拒绝。
