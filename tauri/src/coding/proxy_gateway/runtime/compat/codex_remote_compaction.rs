@@ -20,13 +20,13 @@
 //! must stay readable after the user moves the config root, switches machines,
 //! or restores a backup, because Codex's history keeps replaying it.
 
+use super::super::providers::UpstreamProvider;
 use super::super::routes::GatewayRoute;
+use crate::coding::proxy_gateway::transformer::AiProtocol;
 use crate::coding::proxy_gateway::types::GatewayCliKey;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
-use super::super::providers::UpstreamProvider;
-use crate::coding::proxy_gateway::transformer::AiProtocol;
 use ring::rand::{SecureRandom, SystemRandom};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -54,8 +54,7 @@ struct CompactionCapsule {
 fn derive_key() -> LessSafeKey {
     let key_bytes = Sha256::digest(COMPACTION_KEY_SECRET.as_bytes());
     LessSafeKey::new(
-        UnboundKey::new(&AES_256_GCM, &key_bytes)
-            .expect("AES-256-GCM accepts a 32-byte key"),
+        UnboundKey::new(&AES_256_GCM, &key_bytes).expect("AES-256-GCM accepts a 32-byte key"),
     )
 }
 
@@ -129,7 +128,11 @@ pub(in crate::coding::proxy_gateway::runtime) fn open_compaction_summary(
     let mut sealed = sealed.to_vec();
 
     let plaintext = derive_key()
-        .open_in_place(Nonce::assume_unique_for_key(nonce), Aad::empty(), &mut sealed)
+        .open_in_place(
+            Nonce::assume_unique_for_key(nonce),
+            Aad::empty(),
+            &mut sealed,
+        )
         .ok()?;
     let capsule: CompactionCapsule = serde_json::from_slice(plaintext).ok()?;
     let summary = capsule.summary.trim().to_string();
@@ -297,8 +300,8 @@ fn compaction_turn_mode(
     provider: Option<&UpstreamProvider>,
     native_first: bool,
 ) -> RemoteCompactionCompat {
-    let forwardable = provider
-        .is_some_and(|provider| provider.target_protocol == AiProtocol::OpenAiResponses);
+    let forwardable =
+        provider.is_some_and(|provider| provider.target_protocol == AiProtocol::OpenAiResponses);
     if forwardable && native_first {
         RemoteCompactionCompat::Passthrough
     } else {
@@ -313,7 +316,9 @@ fn compaction_turn_mode(
 /// else — an ordinary assistant message, an empty reply, two compaction items —
 /// is what an upstream that does not really implement v2 returns, and Codex
 /// would fail the turn on it. The caller falls back to sealing its own item.
-pub(in crate::coding::proxy_gateway::runtime) fn is_native_compaction_response(body: &[u8]) -> bool {
+pub(in crate::coding::proxy_gateway::runtime) fn is_native_compaction_response(
+    body: &[u8],
+) -> bool {
     let Ok(value) = serde_json::from_slice::<Value>(body) else {
         return false;
     };
@@ -339,8 +344,7 @@ pub(in crate::coding::proxy_gateway::runtime) fn is_native_compaction_response(b
 pub(super) const COMPACTION_SYSTEM_INSTRUCTION: &str = "Produce a concise, complete continuation summary of the conversation so far for another coding agent. Cover user goals, constraints and decisions, work already completed, files and symbols touched, tool results, validation evidence, unresolved errors, and the exact next steps. Do not continue the task and do not call tools. Reply with the summary only.";
 
 /// Follow-up user turn that triggers the summary.
-pub(super) const COMPACTION_USER_INSTRUCTION: &str =
-    "Produce the continuation summary now.";
+pub(super) const COMPACTION_USER_INSTRUCTION: &str = "Produce the continuation summary now.";
 
 /// Heading prefixed to a restored summary so the model reads it as background
 /// rather than as its own prior words.
@@ -422,7 +426,9 @@ pub(super) fn carries_gateway_compaction_capsule(body: &Value) -> bool {
 /// is a private control item no third-party provider understands, the tool
 /// inventory is irrelevant to summarizing, and Codex's base instructions would
 /// otherwise make the model resume the coding task instead of summarizing it.
-pub(in crate::coding::proxy_gateway::runtime) fn build_compaction_summary_request(body: &Value) -> Option<Value> {
+pub(in crate::coding::proxy_gateway::runtime) fn build_compaction_summary_request(
+    body: &Value,
+) -> Option<Value> {
     let mut summary_request = body.clone();
     let object = summary_request.as_object_mut()?;
 
@@ -468,7 +474,9 @@ pub(in crate::coding::proxy_gateway::runtime) fn build_compaction_summary_reques
 /// real OpenAI item still flows through to an upstream that understands it.
 ///
 /// Returns the number of capsules expanded.
-pub(in crate::coding::proxy_gateway::runtime) fn expand_compaction_capsules(body: &mut Value) -> usize {
+pub(in crate::coding::proxy_gateway::runtime) fn expand_compaction_capsules(
+    body: &mut Value,
+) -> usize {
     let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) else {
         return 0;
     };
@@ -499,7 +507,10 @@ pub(in crate::coding::proxy_gateway::runtime) fn expand_compaction_capsules(body
 }
 
 /// Builds the compaction item Codex installs in its history.
-pub(in crate::coding::proxy_gateway::runtime) fn build_compaction_item(summary: &str, model: &str) -> Option<Value> {
+pub(in crate::coding::proxy_gateway::runtime) fn build_compaction_item(
+    summary: &str,
+    model: &str,
+) -> Option<Value> {
     let encrypted_content = seal_compaction_summary(summary, model)?;
     Some(serde_json::json!({
         "type": "compaction",
@@ -985,8 +996,14 @@ fn compaction_events(response: &Value) -> Vec<(&'static str, Value)> {
     completed_item["status"] = serde_json::json!("completed");
 
     vec![
-        ("response.created", serde_json::json!({ "type": "response.created", "response": opened })),
-        ("response.in_progress", serde_json::json!({ "type": "response.in_progress", "response": opened })),
+        (
+            "response.created",
+            serde_json::json!({ "type": "response.created", "response": opened }),
+        ),
+        (
+            "response.in_progress",
+            serde_json::json!({ "type": "response.in_progress", "response": opened }),
+        ),
         (
             "response.output_item.added",
             serde_json::json!({ "type": "response.output_item.added", "output_index": 0, "item": in_progress_item }),
@@ -1034,8 +1051,14 @@ mod tests {
     fn each_seal_uses_a_fresh_nonce() {
         let first = seal_compaction_summary("same", "m").unwrap();
         let second = seal_compaction_summary("same", "m").unwrap();
-        assert_ne!(first, second, "identical summaries must not share ciphertext");
-        assert_eq!(open_compaction_summary(&first), open_compaction_summary(&second));
+        assert_ne!(
+            first, second,
+            "identical summaries must not share ciphertext"
+        );
+        assert_eq!(
+            open_compaction_summary(&first),
+            open_compaction_summary(&second)
+        );
     }
 
     /// Two items sealed back to back — two sessions compacting in the same
@@ -1074,7 +1097,10 @@ mod tests {
         let mut bytes = URL_SAFE_NO_PAD.decode(body).unwrap();
         let last = bytes.len() - 1;
         bytes[last] ^= 0xff;
-        let tampered = format!("{COMPACTION_CAPSULE_PREFIX}{}", URL_SAFE_NO_PAD.encode(&bytes));
+        let tampered = format!(
+            "{COMPACTION_CAPSULE_PREFIX}{}",
+            URL_SAFE_NO_PAD.encode(&bytes)
+        );
         assert_eq!(open_compaction_summary(&tampered), None);
 
         // Truncated and malformed bodies are rejected without panicking.
@@ -1168,11 +1194,17 @@ mod tests {
                     "x-codex-turn-metadata": format!("{{\"request_kind\":\"{kind}\"}}")
                 }
             });
-            assert!(!is_local_compaction_request(&other, None), "request_kind={kind}");
+            assert!(
+                !is_local_compaction_request(&other, None),
+                "request_kind={kind}"
+            );
         }
 
         // Absent, malformed, or non-object metadata is simply not a label.
-        assert!(!is_local_compaction_request(&serde_json::json!({ "input": [] }), None));
+        assert!(!is_local_compaction_request(
+            &serde_json::json!({ "input": [] }),
+            None
+        ));
         assert!(!is_local_compaction_request(
             &serde_json::json!({ "client_metadata": { "x-codex-turn-metadata": "not json" } }),
             None,
@@ -1201,7 +1233,10 @@ mod tests {
             "the trigger must not reach the upstream"
         );
         assert_eq!(
-            input.last().and_then(|item| item.get("role")).and_then(Value::as_str),
+            input
+                .last()
+                .and_then(|item| item.get("role"))
+                .and_then(Value::as_str),
             Some("user")
         );
         assert_eq!(
@@ -1238,7 +1273,10 @@ mod tests {
         assert_eq!(expand_compaction_capsules(&mut body), 1);
 
         let input = body.get("input").and_then(Value::as_array).unwrap();
-        assert_eq!(input[0].get("role").and_then(Value::as_str), Some("assistant"));
+        assert_eq!(
+            input[0].get("role").and_then(Value::as_str),
+            Some("assistant")
+        );
         let text = input[0]
             .pointer("/content/0/text")
             .and_then(Value::as_str)
@@ -1287,7 +1325,12 @@ mod tests {
                 ] } }]
             }),
         ];
-        let expected = ["from responses", "from chat", "from anthropic", "from gemini"];
+        let expected = [
+            "from responses",
+            "from chat",
+            "from anthropic",
+            "from gemini",
+        ];
         for (response, expected) in cases.iter().zip(expected) {
             assert_eq!(extract_summary_text(response).as_deref(), Ok(expected));
         }
@@ -1365,7 +1408,10 @@ mod tests {
         let response = build_compaction_response(&item, "m", &serde_json::json!({}));
         let stream = build_compaction_sse(&response);
 
-        assert_eq!(stream.matches("event: response.output_item.done").count(), 1);
+        assert_eq!(
+            stream.matches("event: response.output_item.done").count(),
+            1
+        );
         assert_eq!(stream.matches("event: response.completed").count(), 1);
         assert_eq!(stream.matches("event: response.created").count(), 1);
         assert_eq!(stream.matches("event: response.in_progress").count(), 1);
@@ -1394,17 +1440,26 @@ mod tests {
     #[test]
     fn the_websocket_frames_are_bare_json_with_one_compaction_item() {
         let item = build_compaction_item("summary", "m").unwrap();
-        let response =
-            build_websocket_compaction_response(&item, "m", &serde_json::json!({"input_tokens": 5}));
+        let response = build_websocket_compaction_response(
+            &item,
+            "m",
+            &serde_json::json!({"input_tokens": 5}),
+        );
         let frames = build_compaction_frames(&response);
 
         assert_eq!(frames.len(), 5);
         assert_eq!(
-            frames.iter().filter(|frame| frame.contains("\"response.output_item.done\"")).count(),
+            frames
+                .iter()
+                .filter(|frame| frame.contains("\"response.output_item.done\""))
+                .count(),
             1,
         );
         assert_eq!(
-            frames.iter().filter(|frame| frame.contains("\"response.completed\"")).count(),
+            frames
+                .iter()
+                .filter(|frame| frame.contains("\"response.completed\""))
+                .count(),
             1,
         );
         for frame in &frames {
@@ -1516,10 +1571,7 @@ mod tests {
             "type": "response.completed",
             "response": { "id": "resp_1", "status": "incomplete" },
         }));
-        assert_eq!(
-            truncated.finish(),
-            Err(CompactionSummaryError::Truncated)
-        );
+        assert_eq!(truncated.finish(), Err(CompactionSummaryError::Truncated));
 
         // A healthy snapshot stays a summary.
         let mut healthy = CompactionStreamSummary::default();
@@ -1681,7 +1733,8 @@ mod tests {
         });
         let summary = extract_summary_text(&summary_reply).expect("summary must be readable");
         let item = build_compaction_item(&summary, "deepseek-v4-pro").unwrap();
-        let compaction_response = build_compaction_response(&item, "deepseek-v4-pro", &summary_reply);
+        let compaction_response =
+            build_compaction_response(&item, "deepseek-v4-pro", &summary_reply);
 
         let items = compaction_response["output"].as_array().unwrap();
         assert_eq!(items.len(), 1, "Codex requires exactly one output item");
@@ -1784,7 +1837,11 @@ mod tests {
             RemoteCompactionCompat::Passthrough
         );
         assert_eq!(
-            RemoteCompactionCompat::resolve_websocket(Some(&provider), false, &compaction_request()),
+            RemoteCompactionCompat::resolve_websocket(
+                Some(&provider),
+                false,
+                &compaction_request()
+            ),
             RemoteCompactionCompat::Summarize
         );
     }
@@ -1867,7 +1924,10 @@ mod tests {
     #[test]
     fn usage_survives_from_every_upstream_shape() {
         let cases = [
-            (serde_json::json!({ "usage": { "input_tokens": 10, "output_tokens": 2 } }), (10, 2, 12)),
+            (
+                serde_json::json!({ "usage": { "input_tokens": 10, "output_tokens": 2 } }),
+                (10, 2, 12),
+            ),
             (
                 serde_json::json!({ "usage": { "prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10 } }),
                 (7, 3, 10),

@@ -1813,14 +1813,12 @@ async fn resolve_targets(
         ],
         GatewayCliKey::Workbuddy => vec![CliProxyTarget {
             kind: WORKBUDDY_MODELS_KIND,
-            path: runtime_root
-                .join(crate::coding::workbuddy_family::models_json::MODELS_FILE_NAME),
+            path: runtime_root.join(crate::coding::workbuddy_family::models_json::MODELS_FILE_NAME),
             managed_fields: Vec::new(),
         }],
         GatewayCliKey::Codebuddy => vec![CliProxyTarget {
             kind: CODEBUDDY_MODELS_KIND,
-            path: runtime_root
-                .join(crate::coding::workbuddy_family::models_json::MODELS_FILE_NAME),
+            path: runtime_root.join(crate::coding::workbuddy_family::models_json::MODELS_FILE_NAME),
             managed_fields: Vec::new(),
         }],
         GatewayCliKey::OpenCode => Vec::new(),
@@ -2715,12 +2713,10 @@ fn current_cli_gateway_endpoint(
         GatewayCliKey::Antigravity => {
             current_gemini_gateway_endpoint(required_target_path(targets, ANTIGRAVITY_ENV_KIND)?)
         }
-        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => {
-            current_workbuddy_family_endpoint(
-                cli_key,
-                required_target_path(targets, models_kind_for(cli_key))?,
-            )
-        }
+        GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => current_workbuddy_family_endpoint(
+            cli_key,
+            required_target_path(targets, models_kind_for(cli_key))?,
+        ),
         GatewayCliKey::OpenCode => Ok(None),
     }
 }
@@ -2776,7 +2772,8 @@ fn desktop_gateway_model_specs(
     db: &SqliteDbState,
     provider_id: &str,
 ) -> Result<Vec<claude_desktop_config_writer::GatewayModelSpec>, String> {
-    let raw = db.with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::ClaudeDesktop), provider_id))?;
+    let raw =
+        db.with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::ClaudeDesktop), provider_id))?;
     let Some(raw) = raw else {
         log::debug!("[desktop-gateway] no provider row found for id {provider_id}");
         return Ok(Vec::new());
@@ -3460,10 +3457,8 @@ fn patch_grok_config(path: &Path, gateway_endpoint: &str) -> Result<(), String> 
 /// a field-level rollback would silently drop them.
 fn patch_workbuddy_family_models(path: &Path, gateway_base: &str) -> Result<(), String> {
     let raw = fs::read_to_string(path).unwrap_or_default();
-    let mut document = crate::coding::workbuddy_family::models_json::ModelsDocument::parse(
-        &raw,
-        path.exists(),
-    )?;
+    let mut document =
+        crate::coding::workbuddy_family::models_json::ModelsDocument::parse(&raw, path.exists())?;
     let endpoint = format!(
         "{}{}",
         gateway_base.trim_end_matches('/'),
@@ -3572,7 +3567,10 @@ fn current_workbuddy_family_endpoint(
             // returning the full URL here made every engaged WorkBuddy /
             // CodeBuddy report `Drifted` forever.
             let prefix = &url[..index];
-            return Ok(Some(format!("{prefix}/{}/v1", family_route_segment(cli_key))));
+            return Ok(Some(format!(
+                "{prefix}/{}/v1",
+                family_route_segment(cli_key)
+            )));
         }
     }
     Ok(None)
@@ -4442,7 +4440,9 @@ mod tests {
         // Left in place they would pin subagents and one picker row to the
         // channel the gateway just took over from.
         assert!(patched.pointer("/env/CLAUDE_CODE_SUBAGENT_MODEL").is_none());
-        assert!(patched.pointer("/env/ANTHROPIC_CUSTOM_MODEL_OPTION").is_none());
+        assert!(patched
+            .pointer("/env/ANTHROPIC_CUSTOM_MODEL_OPTION")
+            .is_none());
         assert!(patched
             .pointer("/env/ANTHROPIC_CUSTOM_MODEL_OPTION_NAME")
             .is_none());
@@ -4730,8 +4730,12 @@ mod tests {
                     );
                     assert!(codex_config_managed_fields_for_provider("custom")
                         .contains(&"model_providers.custom.supports_websockets".to_string()));
-                    restore_codex_config(&path, Some(&backup), &DEFAULT_AGGREGATE_SUBAGENT_DEFAULTS)
-                        .unwrap();
+                    restore_codex_config(
+                        &path,
+                        Some(&backup),
+                        &DEFAULT_AGGREGATE_SUBAGENT_DEFAULTS,
+                    )
+                    .unwrap();
                     let restored = parse_toml_file(&path).unwrap();
                     assert_eq!(
                         restored["model_providers"]["custom"]
@@ -4799,8 +4803,7 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let paths = ProxyGatewayPaths::new(dir.path());
                 // Start from the opposite value so the rewrite is observable.
-                let config_path =
-                    write_taken_over_codex_config(&paths, mode, Some(!enabled));
+                let config_path = write_taken_over_codex_config(&paths, mode, Some(!enabled));
 
                 assert!(reproject_codex_websocket_capability(&paths, enabled).unwrap());
 
@@ -4850,10 +4853,8 @@ mod tests {
         let config_path = write_taken_over_codex_config(&paths, GatewayProxyMode::Single, None);
         let mut document = read_or_new_toml_document(&config_path).unwrap();
         document["model_provider"] = value("other");
-        document["model_providers"]["other"] =
-            Item::Table(toml_edit::Table::new());
-        document["model_providers"]["other"]["base_url"] =
-            value("https://upstream.example/v1");
+        document["model_providers"]["other"] = Item::Table(toml_edit::Table::new());
+        document["model_providers"]["other"]["base_url"] = value("https://upstream.example/v1");
         write_toml_file(&config_path, &document).unwrap();
 
         assert!(reproject_codex_websocket_capability(&paths, true).unwrap());
